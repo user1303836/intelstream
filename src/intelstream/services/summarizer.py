@@ -21,7 +21,7 @@ class SummarizationError(Exception):
 
 class SummarizationService:
     def __init__(self, api_key: str, model: str = DEFAULT_MODEL) -> None:
-        self._client = anthropic.Anthropic(api_key=api_key)
+        self._client = anthropic.AsyncAnthropic(api_key=api_key)
         self._model = model
 
     @retry(
@@ -52,7 +52,7 @@ class SummarizationService:
         try:
             logger.debug("Requesting summary from Anthropic", title=title, model=self._model)
 
-            message = self._client.messages.create(
+            message = await self._client.messages.create(
                 model=self._model,
                 max_tokens=1024,
                 messages=[{"role": "user", "content": prompt}],

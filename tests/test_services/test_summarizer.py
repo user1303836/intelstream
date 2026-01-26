@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import anthropic
 import pytest
@@ -26,25 +26,27 @@ def mock_message():
 
 class TestSummarizationService:
     async def test_summarize_success(self, summarizer: SummarizationService, mock_message):
-        with patch.object(summarizer._client.messages, "create", return_value=mock_message):
-            result = await summarizer.summarize(
-                content="This is the article content.",
-                title="Test Article",
-                source_type="substack",
-                author="Test Author",
-            )
+        summarizer._client.messages.create = AsyncMock(return_value=mock_message)
 
-            assert result == "This is the summary of the article."
+        result = await summarizer.summarize(
+            content="This is the article content.",
+            title="Test Article",
+            source_type="substack",
+            author="Test Author",
+        )
+
+        assert result == "This is the summary of the article."
 
     async def test_summarize_without_author(self, summarizer: SummarizationService, mock_message):
-        with patch.object(summarizer._client.messages, "create", return_value=mock_message):
-            result = await summarizer.summarize(
-                content="This is the article content.",
-                title="Test Article",
-                source_type="rss",
-            )
+        summarizer._client.messages.create = AsyncMock(return_value=mock_message)
 
-            assert result == "This is the summary of the article."
+        result = await summarizer.summarize(
+            content="This is the article content.",
+            title="Test Article",
+            source_type="rss",
+        )
+
+        assert result == "This is the summary of the article."
 
     async def test_summarize_empty_content_raises_error(self, summarizer: SummarizationService):
         with pytest.raises(SummarizationError, match="Cannot summarize empty content"):
@@ -67,28 +69,25 @@ class TestSummarizationService:
     ):
         long_content = "x" * (MAX_CONTENT_LENGTH + 1000)
 
-        with patch.object(
-            summarizer._client.messages, "create", return_value=mock_message
-        ) as mock_create:
-            await summarizer.summarize(
-                content=long_content,
-                title="Test Article",
-                source_type="substack",
-            )
+        mock_create = AsyncMock(return_value=mock_message)
+        summarizer._client.messages.create = mock_create
 
-            call_args = mock_create.call_args
-            prompt = call_args.kwargs["messages"][0]["content"]
-            assert len(prompt) < len(long_content)
+        await summarizer.summarize(
+            content=long_content,
+            title="Test Article",
+            source_type="substack",
+        )
+
+        call_args = mock_create.call_args
+        prompt = call_args.kwargs["messages"][0]["content"]
+        assert len(prompt) < len(long_content)
 
     async def test_summarize_api_error(self, summarizer: SummarizationService):
-        with (
-            patch.object(
-                summarizer._client.messages,
-                "create",
-                side_effect=anthropic.APIError(message="API Error", request=MagicMock(), body=None),
-            ),
-            pytest.raises(SummarizationError, match="API error"),
-        ):
+        summarizer._client.messages.create = AsyncMock(
+            side_effect=anthropic.APIError(message="API Error", request=MagicMock(), body=None)
+        )
+
+        with pytest.raises(SummarizationError, match="API error"):
             await summarizer.summarize(
                 content="Test content",
                 title="Test Article",
@@ -99,10 +98,9 @@ class TestSummarizationService:
         mock_message = MagicMock()
         mock_message.content = []
 
-        with (
-            patch.object(summarizer._client.messages, "create", return_value=mock_message),
-            pytest.raises(SummarizationError, match="Empty response"),
-        ):
+        summarizer._client.messages.create = AsyncMock(return_value=mock_message)
+
+        with pytest.raises(SummarizationError, match="Empty response"):
             await summarizer.summarize(
                 content="Test content",
                 title="Test Article",
@@ -114,10 +112,9 @@ class TestSummarizationService:
         non_text_block = MagicMock(spec=[])
         mock_message.content = [non_text_block]
 
-        with (
-            patch.object(summarizer._client.messages, "create", return_value=mock_message),
-            pytest.raises(SummarizationError, match="No text content"),
-        ):
+        summarizer._client.messages.create = AsyncMock(return_value=mock_message)
+
+        with pytest.raises(SummarizationError, match="No text content"):
             await summarizer.summarize(
                 content="Test content",
                 title="Test Article",
@@ -128,10 +125,9 @@ class TestSummarizationService:
         mock_message = MagicMock()
         mock_message.content = None
 
-        with (
-            patch.object(summarizer._client.messages, "create", return_value=mock_message),
-            pytest.raises(SummarizationError, match="Empty response"),
-        ):
+        summarizer._client.messages.create = AsyncMock(return_value=mock_message)
+
+        with pytest.raises(SummarizationError, match="Empty response"):
             await summarizer.summarize(
                 content="Test content",
                 title="Test Article",
@@ -146,30 +142,31 @@ class TestSummarizationService:
         block2.text = "Second paragraph."
         mock_message.content = [block1, block2]
 
-        with patch.object(summarizer._client.messages, "create", return_value=mock_message):
-            result = await summarizer.summarize(
-                content="Test content",
-                title="Test Article",
-                source_type="substack",
-            )
+        summarizer._client.messages.create = AsyncMock(return_value=mock_message)
 
-            assert result == "First paragraph.\n\nSecond paragraph."
+        result = await summarizer.summarize(
+            content="Test content",
+            title="Test Article",
+            source_type="substack",
+        )
+
+        assert result == "First paragraph.\n\nSecond paragraph."
 
     async def test_summarize_uses_custom_model(self, mock_message):
         custom_model = "claude-3-opus-20240229"
         summarizer = SummarizationService(api_key="test-key", model=custom_model)
 
-        with patch.object(
-            summarizer._client.messages, "create", return_value=mock_message
-        ) as mock_create:
-            await summarizer.summarize(
-                content="Test content",
-                title="Test Article",
-                source_type="substack",
-            )
+        mock_create = AsyncMock(return_value=mock_message)
+        summarizer._client.messages.create = mock_create
 
-            call_args = mock_create.call_args
-            assert call_args.kwargs["model"] == custom_model
+        await summarizer.summarize(
+            content="Test content",
+            title="Test Article",
+            source_type="substack",
+        )
+
+        call_args = mock_create.call_args
+        assert call_args.kwargs["model"] == custom_model
 
     def test_build_prompt_substack(self, summarizer: SummarizationService):
         prompt = summarizer._build_prompt(

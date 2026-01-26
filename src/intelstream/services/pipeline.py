@@ -14,6 +14,8 @@ from intelstream.services.summarizer import SummarizationError, SummarizationSer
 
 logger = structlog.get_logger()
 
+SUMMARIZATION_DELAY_SECONDS = 0.5
+
 
 class ContentPipeline:
     def __init__(
@@ -158,7 +160,7 @@ class ContentPipeline:
                     error=str(e),
                 )
 
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(SUMMARIZATION_DELAY_SECONDS)
 
         logger.info("Summarization complete", summarized_count=summarized_count)
         return summarized_count
