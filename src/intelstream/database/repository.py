@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -67,7 +67,7 @@ class Repository:
             result = await session.execute(select(Source).where(Source.id == source_id))
             source = result.scalar_one_or_none()
             if source:
-                source.last_polled_at = datetime.utcnow()
+                source.last_polled_at = datetime.now(UTC)
                 await session.commit()
 
     async def set_source_active(self, identifier: str, is_active: bool) -> Source | None:

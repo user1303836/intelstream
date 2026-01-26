@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import discord
@@ -39,7 +39,7 @@ class IntelStreamBot(commands.Bot):
         logger.info("Bot setup complete, commands synced")
 
     async def on_ready(self) -> None:
-        self.start_time = datetime.utcnow()
+        self.start_time = datetime.now(UTC)
         logger.info(f"Logged in as {self.user} (ID: {self.user.id if self.user else 'Unknown'})")
 
         try:
@@ -84,7 +84,7 @@ class CoreCommands(commands.Cog):
 
         uptime = "Unknown"
         if self.bot.start_time:
-            delta = datetime.utcnow() - self.bot.start_time
+            delta = datetime.now(UTC) - self.bot.start_time
             hours, remainder = divmod(int(delta.total_seconds()), 3600)
             minutes, seconds = divmod(remainder, 60)
             uptime = f"{hours}h {minutes}m {seconds}s"
@@ -92,7 +92,7 @@ class CoreCommands(commands.Cog):
         embed = discord.Embed(
             title="IntelStream Status",
             color=discord.Color.green(),
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
         )
 
         embed.add_field(name="Uptime", value=uptime, inline=True)

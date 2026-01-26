@@ -1,5 +1,5 @@
 import enum
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text
@@ -27,9 +27,9 @@ class Source(Base):
     poll_interval_minutes: Mapped[int] = mapped_column(Integer, default=5)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_polled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC)
     )
 
     content_items: Mapped[list["ContentItem"]] = relationship(
@@ -55,7 +55,7 @@ class ContentItem(Base):
     thumbnail_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     posted_to_discord: Mapped[bool] = mapped_column(Boolean, default=False)
     discord_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
 
     source: Mapped["Source"] = relationship("Source", back_populates="content_items")
 
@@ -70,9 +70,9 @@ class DiscordConfig(Base):
     guild_id: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
     channel_id: Mapped[str] = mapped_column(String(36), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC)
     )
 
     def __repr__(self) -> str:
