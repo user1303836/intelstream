@@ -61,10 +61,57 @@ See `.env.example` for all available configuration options.
 - `DEFAULT_POLL_INTERVAL_MINUTES` - Polling interval (default: 5)
 - `LOG_LEVEL` - Logging level (default: INFO)
 
-## Discord Commands
+## Usage
 
-- `/status` - Show bot status and configured sources
-- `/ping` - Check bot responsiveness
+### Getting Started
+
+1. **Invite the bot** to your Discord server with the necessary permissions (Send Messages, Embed Links, Use Slash Commands)
+
+2. **Set the output channel** where content summaries will be posted:
+   ```
+   /config channel #your-channel-name
+   ```
+
+3. **Add content sources** to monitor:
+   ```
+   /source add type:Substack name:"My Newsletter" url:https://example.substack.com
+   /source add type:YouTube name:"Tech Channel" url:https://youtube.com/@channel
+   /source add type:RSS name:"Blog Feed" url:https://example.com/feed.xml
+   ```
+
+4. The bot will automatically poll sources every 5 minutes (configurable), fetch new content, generate AI summaries, and post them to your configured channel.
+
+### Discord Commands
+
+#### Source Management
+
+| Command | Description |
+|---------|-------------|
+| `/source add type:<type> name:<name> url:<url>` | Add a new content source (Substack, YouTube, or RSS) |
+| `/source list` | List all configured sources with their status |
+| `/source remove name:<name>` | Remove a source by name |
+| `/source toggle name:<name>` | Enable or disable a source |
+
+#### Configuration
+
+| Command | Description |
+|---------|-------------|
+| `/config channel #channel` | Set the channel where summaries will be posted |
+| `/config show` | Show current bot configuration (channel, sources, poll interval) |
+
+### How It Works
+
+1. **Polling**: The bot periodically checks all active sources for new content
+2. **Fetching**: New articles/videos are fetched and stored in the database
+3. **Summarization**: Claude AI generates concise summaries of each piece of content
+4. **Posting**: Rich Discord embeds are posted with the summary, source info, and link
+
+### Embed Styling
+
+Each source type has distinct styling:
+- **Substack**: Orange accent color with newsletter icon
+- **YouTube**: Red accent color with video icon
+- **RSS**: Blue accent color with feed icon
 
 ## Development
 
