@@ -137,6 +137,17 @@ class Repository:
             )
             return list(result.scalars().all())
 
+    async def get_unsummarized_content_items(self, limit: int = 10) -> list[ContentItem]:
+        async with self.session() as session:
+            result = await session.execute(
+                select(ContentItem)
+                .where(ContentItem.summary.is_(None))
+                .where(ContentItem.raw_content.isnot(None))
+                .order_by(ContentItem.created_at.asc())
+                .limit(limit)
+            )
+            return list(result.scalars().all())
+
     async def update_content_item_summary(self, content_id: str, summary: str) -> None:
         async with self.session() as session:
             result = await session.execute(select(ContentItem).where(ContentItem.id == content_id))
