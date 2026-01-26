@@ -10,9 +10,7 @@ from intelstream.adapters.youtube import YouTubeAdapter
 class TestYouTubeAdapter:
     def setup_method(self) -> None:
         self.mock_youtube = MagicMock()
-        self.patcher = patch(
-            "intelstream.adapters.youtube.build", return_value=self.mock_youtube
-        )
+        self.patcher = patch("intelstream.adapters.youtube.build", return_value=self.mock_youtube)
         self.patcher.start()
 
     def teardown_method(self) -> None:
@@ -62,9 +60,7 @@ class TestYouTubeAdapter:
         }
 
         adapter = YouTubeAdapter(api_key="test-key")
-        channel_id = await adapter._resolve_channel_id(
-            "https://www.youtube.com/@somehandle"
-        )
+        channel_id = await adapter._resolve_channel_id("https://www.youtube.com/@somehandle")
 
         assert channel_id == "UChandleurl1234567890123"
 
@@ -83,11 +79,7 @@ class TestYouTubeAdapter:
             {"items": [{"id": "UCtest123456789012345AB"}]},
             {
                 "items": [
-                    {
-                        "contentDetails": {
-                            "relatedPlaylists": {"uploads": "UUtest123456789012345AB"}
-                        }
-                    }
+                    {"contentDetails": {"relatedPlaylists": {"uploads": "UUtest123456789012345AB"}}}
                 ]
             },
         ]
@@ -112,9 +104,7 @@ class TestYouTubeAdapter:
         mock_transcript = MagicMock()
         mock_transcript.fetch.return_value = [{"text": "Hello"}, {"text": "World"}]
         mock_transcript_list = MagicMock()
-        mock_transcript_list.find_manually_created_transcript.return_value = (
-            mock_transcript
-        )
+        mock_transcript_list.find_manually_created_transcript.return_value = mock_transcript
         mock_transcript_api.list_transcripts.return_value = mock_transcript_list
 
         adapter = YouTubeAdapter(api_key="test-key")
@@ -130,18 +120,12 @@ class TestYouTubeAdapter:
         assert item.thumbnail_url == "https://img.youtube.com/vi/video123/hq.jpg"
 
     @patch("intelstream.adapters.youtube.YouTubeTranscriptApi")
-    async def test_fetch_latest_no_transcript(
-        self, mock_transcript_api: MagicMock
-    ) -> None:
+    async def test_fetch_latest_no_transcript(self, mock_transcript_api: MagicMock) -> None:
         self.mock_youtube.channels().list().execute.side_effect = [
             {"items": [{"id": "UCtest123456789012345AB"}]},
             {
                 "items": [
-                    {
-                        "contentDetails": {
-                            "relatedPlaylists": {"uploads": "UUtest123456789012345AB"}
-                        }
-                    }
+                    {"contentDetails": {"relatedPlaylists": {"uploads": "UUtest123456789012345AB"}}}
                 ]
             },
         ]
@@ -162,9 +146,7 @@ class TestYouTubeAdapter:
 
         from youtube_transcript_api._errors import TranscriptsDisabled
 
-        mock_transcript_api.list_transcripts.side_effect = TranscriptsDisabled(
-            "novideo"
-        )
+        mock_transcript_api.list_transcripts.side_effect = TranscriptsDisabled("novideo")
 
         adapter = YouTubeAdapter(api_key="test-key")
         items = await adapter.fetch_latest("@testchannel")
@@ -173,9 +155,7 @@ class TestYouTubeAdapter:
         assert items[0].raw_content is None
 
     async def test_fetch_latest_api_error(self) -> None:
-        http_error = HttpError(
-            resp=MagicMock(status=403), content=b"API quota exceeded"
-        )
+        http_error = HttpError(resp=MagicMock(status=403), content=b"API quota exceeded")
         self.mock_youtube.channels().list().execute.side_effect = http_error
 
         adapter = YouTubeAdapter(api_key="test-key")
@@ -265,6 +245,4 @@ class TestYouTubeAdapter:
         adapter = YouTubeAdapter(api_key="test-key")
 
         with pytest.raises(ValueError, match="Could not extract channel ID"):
-            await adapter._extract_channel_id_from_url(
-                "https://www.youtube.com/watch?v=somevideo"
-            )
+            await adapter._extract_channel_id_from_url("https://www.youtube.com/watch?v=somevideo")

@@ -27,9 +27,7 @@ class SubstackAdapter(BaseAdapter):
             return identifier
         return f"https://{identifier}.substack.com/feed"
 
-    async def fetch_latest(
-        self, identifier: str, feed_url: str | None = None
-    ) -> list[ContentData]:
+    async def fetch_latest(self, identifier: str, feed_url: str | None = None) -> list[ContentData]:
         url = feed_url or await self.get_feed_url(identifier)
 
         logger.debug("Fetching Substack feed", identifier=identifier, url=url)
@@ -69,9 +67,7 @@ class SubstackAdapter(BaseAdapter):
                     )
                     continue
 
-            logger.info(
-                "Fetched Substack content", identifier=identifier, count=len(items)
-            )
+            logger.info("Fetched Substack content", identifier=identifier, count=len(items))
             return items
 
         except httpx.HTTPStatusError as e:

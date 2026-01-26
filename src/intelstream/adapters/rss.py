@@ -22,9 +22,7 @@ class RSSAdapter(BaseAdapter):
     async def get_feed_url(self, identifier: str) -> str:
         return identifier
 
-    async def fetch_latest(
-        self, identifier: str, feed_url: str | None = None
-    ) -> list[ContentData]:
+    async def fetch_latest(self, identifier: str, feed_url: str | None = None) -> list[ContentData]:
         url = feed_url or identifier
 
         logger.debug("Fetching RSS feed", identifier=identifier, url=url)
@@ -75,9 +73,7 @@ class RSSAdapter(BaseAdapter):
             )
             raise
         except httpx.RequestError as e:
-            logger.error(
-                "Request error fetching RSS feed", identifier=identifier, error=str(e)
-            )
+            logger.error("Request error fetching RSS feed", identifier=identifier, error=str(e))
             raise
 
     def _parse_entry(

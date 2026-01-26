@@ -37,7 +37,10 @@ class YouTubeAdapter(BaseAdapter):
         return f"https://www.youtube.com/channel/{channel_id}"
 
     async def fetch_latest(
-        self, identifier: str, feed_url: str | None = None, max_results: int = 5  # noqa: ARG002
+        self,
+        identifier: str,
+        feed_url: str | None = None,  # noqa: ARG002
+        max_results: int = 5,
     ) -> list[ContentData]:
         logger.debug("Fetching YouTube videos", identifier=identifier)
 
@@ -56,16 +59,12 @@ class YouTubeAdapter(BaseAdapter):
                 except Exception as e:
                     logger.warning(
                         "Failed to process video",
-                        video_id=video.get("snippet", {})
-                        .get("resourceId", {})
-                        .get("videoId"),
+                        video_id=video.get("snippet", {}).get("resourceId", {}).get("videoId"),
                         error=str(e),
                     )
                     continue
 
-            logger.info(
-                "Fetched YouTube content", identifier=identifier, count=len(items)
-            )
+            logger.info("Fetched YouTube content", identifier=identifier, count=len(items))
             return items
 
         except HttpError as e:
@@ -77,9 +76,7 @@ class YouTubeAdapter(BaseAdapter):
             )
             raise
         except Exception as e:
-            logger.error(
-                "Error fetching YouTube content", identifier=identifier, error=str(e)
-            )
+            logger.error("Error fetching YouTube content", identifier=identifier, error=str(e))
             raise
 
     async def _resolve_channel_id(self, identifier: str) -> str:
@@ -164,9 +161,7 @@ class YouTubeAdapter(BaseAdapter):
         snippet: dict[str, Any] = video.get("snippet", {})
         content_details: dict[str, Any] = video.get("contentDetails", {})
 
-        video_id = content_details.get("videoId") or snippet.get("resourceId", {}).get(
-            "videoId"
-        )
+        video_id = content_details.get("videoId") or snippet.get("resourceId", {}).get("videoId")
 
         if not video_id:
             raise ValueError("Could not extract video ID")
@@ -239,7 +234,5 @@ class YouTubeAdapter(BaseAdapter):
             logger.debug("Video unavailable", video_id=video_id)
             return None
         except Exception as e:
-            logger.warning(
-                "Failed to fetch transcript", video_id=video_id, error=str(e)
-            )
+            logger.warning("Failed to fetch transcript", video_id=video_id, error=str(e))
             return None

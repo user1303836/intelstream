@@ -93,9 +93,7 @@ class TestSubstackAdapter:
 
     @respx.mock
     async def test_fetch_latest_http_error(self) -> None:
-        respx.get("https://notfound.substack.com/feed").mock(
-            return_value=httpx.Response(404)
-        )
+        respx.get("https://notfound.substack.com/feed").mock(return_value=httpx.Response(404))
 
         async with httpx.AsyncClient() as client:
             adapter = SubstackAdapter(http_client=client)
@@ -111,9 +109,7 @@ class TestSubstackAdapter:
 
         async with httpx.AsyncClient() as client:
             adapter = SubstackAdapter(http_client=client)
-            items = await adapter.fetch_latest(
-                "ignored", feed_url="https://custom.example.com/rss"
-            )
+            items = await adapter.fetch_latest("ignored", feed_url="https://custom.example.com/rss")
 
         assert len(items) == 2
 
