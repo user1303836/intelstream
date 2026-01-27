@@ -342,7 +342,7 @@ class TestFirstPostingOperations:
             identifier="test",
         )
 
-        unsummarized = await repository.add_content_item(
+        await repository.add_content_item(
             source_id=source.id,
             external_id="unsummarized",
             title="Unsummarized",
