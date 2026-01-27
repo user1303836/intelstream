@@ -258,7 +258,6 @@ class ArxivAdapter(BaseAdapter):
             return None
 
         content = "\n\n".join(paragraphs)
-        content = re.sub(r"\s+", " ", content)
         content = re.sub(r"\n\s*\n", "\n\n", content)
 
         return content.strip() if content.strip() else None
