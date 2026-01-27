@@ -1,6 +1,6 @@
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any, cast
 
 import discord
 from discord import app_commands
@@ -9,19 +9,16 @@ from discord.ext import commands
 from intelstream.config import Settings
 from intelstream.database.repository import Repository
 
-if TYPE_CHECKING:
-    from typing import Self
-
 logger = logging.getLogger(__name__)
 
 
 class RestrictedCommandTree(app_commands.CommandTree):
     def __init__(self, bot: "IntelStreamBot", *args: Any, **kwargs: Any) -> None:
         super().__init__(bot, *args, **kwargs)
-        self._bot = bot
 
     async def interaction_check(self, interaction: discord.Interaction, /) -> bool:
-        allowed_channel_id = self._bot.settings.discord_channel_id
+        bot = cast("IntelStreamBot", self.client)
+        allowed_channel_id = bot.settings.discord_channel_id
         if interaction.channel_id != allowed_channel_id:
             await interaction.response.send_message(
                 f"Commands can only be used in <#{allowed_channel_id}>",
