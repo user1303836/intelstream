@@ -88,14 +88,21 @@ class ContentPoster:
     async def post_unposted_items(self, guild_id: int) -> int:
         config = await self._bot.repository.get_discord_config(str(guild_id))
 
-        if config is None or not config.is_active:
-            logger.debug("No active Discord config for guild", guild_id=guild_id)
+        if config is None:
+            logger.info(
+                "No Discord config for guild - run /config channel to set up posting",
+                guild_id=guild_id,
+            )
+            return 0
+
+        if not config.is_active:
+            logger.info("Discord config is inactive for guild", guild_id=guild_id)
             return 0
 
         channel = self._bot.get_channel(int(config.channel_id))
         if channel is None or not isinstance(channel, discord.TextChannel):
             logger.warning(
-                "Could not find output channel",
+                "Could not find output channel - check bot permissions and channel ID",
                 guild_id=guild_id,
                 channel_id=config.channel_id,
             )
