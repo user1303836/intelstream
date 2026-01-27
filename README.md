@@ -61,6 +61,13 @@ See `.env.example` for all available configuration options.
 - `DEFAULT_POLL_INTERVAL_MINUTES` - Polling interval (default: 5)
 - `LOG_LEVEL` - Logging level (default: INFO)
 
+### Summarization Settings
+
+- `SUMMARY_MAX_TOKENS` - Maximum tokens for AI-generated summaries (default: 2048, range: 256-8192)
+- `SUMMARY_MAX_INPUT_LENGTH` - Maximum input content length before truncation (default: 100000, range: 1000-500000)
+- `SUMMARY_MODEL` - Claude model to use for summarization (default: claude-sonnet-4-20250514)
+- `DISCORD_MAX_MESSAGE_LENGTH` - Maximum Discord message length (default: 2000, range: 500-2000)
+
 ## Usage
 
 ### Getting Started
