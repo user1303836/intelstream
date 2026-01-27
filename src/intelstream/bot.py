@@ -1,6 +1,6 @@
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import discord
 from discord import app_commands
@@ -9,7 +9,26 @@ from discord.ext import commands
 from intelstream.config import Settings
 from intelstream.database.repository import Repository
 
+if TYPE_CHECKING:
+    from typing import Self
+
 logger = logging.getLogger(__name__)
+
+
+class RestrictedCommandTree(app_commands.CommandTree):
+    def __init__(self, bot: "IntelStreamBot", *args: Any, **kwargs: Any) -> None:
+        super().__init__(bot, *args, **kwargs)
+        self._bot = bot
+
+    async def interaction_check(self, interaction: discord.Interaction, /) -> bool:
+        allowed_channel_id = self._bot.settings.discord_channel_id
+        if interaction.channel_id != allowed_channel_id:
+            await interaction.response.send_message(
+                f"Commands can only be used in <#{allowed_channel_id}>",
+                ephemeral=True,
+            )
+            return False
+        return True
 
 
 class IntelStreamBot(commands.Bot):
@@ -21,6 +40,7 @@ class IntelStreamBot(commands.Bot):
             command_prefix="!",
             intents=intents,
             help_command=None,
+            tree_cls=RestrictedCommandTree,
         )
 
         self.settings = settings
@@ -43,22 +63,6 @@ class IntelStreamBot(commands.Bot):
         await self.add_cog(ConfigManagement(self))
         await self.add_cog(ContentPosting(self))
         await self.add_cog(Summarize(self))
-
-        # Add global check to restrict commands to configured channel
-        original_interaction_check = self.tree.interaction_check
-
-        async def channel_check(interaction: discord.Interaction) -> bool:
-            if interaction.channel_id != self.settings.discord_channel_id:
-                await interaction.response.send_message(
-                    f"Commands can only be used in <#{self.settings.discord_channel_id}>",
-                    ephemeral=True,
-                )
-                return False
-            if original_interaction_check:
-                return await original_interaction_check(interaction)
-            return True
-
-        self.tree.interaction_check = channel_check
 
         guild = discord.Object(id=self.settings.discord_guild_id)
         self.tree.copy_global_to(guild=guild)
