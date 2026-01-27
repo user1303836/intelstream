@@ -30,6 +30,7 @@ class Repository:
         identifier: str,
         feed_url: str | None = None,
         poll_interval_minutes: int = 5,
+        extraction_profile: str | None = None,
     ) -> Source:
         async with self.session() as session:
             source = Source(
@@ -38,6 +39,7 @@ class Repository:
                 identifier=identifier,
                 feed_url=feed_url,
                 poll_interval_minutes=poll_interval_minutes,
+                extraction_profile=extraction_profile,
             )
             session.add(source)
             await session.commit()

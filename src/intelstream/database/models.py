@@ -14,6 +14,7 @@ class SourceType(enum.Enum):
     SUBSTACK = "substack"
     YOUTUBE = "youtube"
     RSS = "rss"
+    PAGE = "page"
 
 
 class Source(Base):
@@ -24,6 +25,7 @@ class Source(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     identifier: Mapped[str] = mapped_column(String(512), nullable=False, unique=True)
     feed_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    extraction_profile: Mapped[str | None] = mapped_column(Text, nullable=True)
     poll_interval_minutes: Mapped[int] = mapped_column(Integer, default=5)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_polled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -1,3 +1,4 @@
+import json
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
@@ -7,6 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from intelstream.database.models import SourceType
+from intelstream.services.page_analyzer import PageAnalysisError, PageAnalyzer
 
 if TYPE_CHECKING:
     from intelstream.bot import IntelStreamBot
@@ -44,6 +46,10 @@ def parse_source_identifier(source_type: SourceType, url: str) -> tuple[str, str
         identifier = parsed.netloc + parsed.path
         return identifier, url
 
+    elif source_type == SourceType.PAGE:
+        identifier = parsed.netloc + parsed.path.rstrip("/")
+        return identifier, url
+
     return url, None
 
 
@@ -68,6 +74,7 @@ class SourceManagement(commands.Cog):
             app_commands.Choice(name="Substack", value="substack"),
             app_commands.Choice(name="YouTube", value="youtube"),
             app_commands.Choice(name="RSS", value="rss"),
+            app_commands.Choice(name="Page", value="page"),
         ]
     )
     async def source_add(
@@ -94,6 +101,26 @@ class SourceManagement(commands.Cog):
             )
             return
 
+        if stype == SourceType.PAGE and not self.bot.settings.anthropic_api_key:
+            await interaction.followup.send(
+                "Page sources are not available. No Anthropic API key configured.",
+                ephemeral=True,
+            )
+            return
+
+        extraction_profile_json: str | None = None
+        if stype == SourceType.PAGE:
+            try:
+                analyzer = PageAnalyzer(api_key=self.bot.settings.anthropic_api_key)
+                profile = await analyzer.analyze(url)
+                extraction_profile_json = json.dumps(profile.to_dict())
+            except PageAnalysisError as e:
+                await interaction.followup.send(
+                    f"Failed to analyze page structure: {e}",
+                    ephemeral=True,
+                )
+                return
+
         identifier, feed_url = parse_source_identifier(stype, url)
 
         existing = await self.bot.repository.get_source_by_identifier(identifier)
@@ -118,6 +145,7 @@ class SourceManagement(commands.Cog):
             identifier=identifier,
             feed_url=feed_url,
             poll_interval_minutes=self.bot.settings.default_poll_interval_minutes,
+            extraction_profile=extraction_profile_json,
         )
 
         logger.info(
