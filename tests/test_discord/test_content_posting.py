@@ -13,6 +13,10 @@ def mock_bot():
     bot.settings = MagicMock()
     bot.settings.anthropic_api_key = "test-api-key"
     bot.settings.content_poll_interval_minutes = 5
+    bot.settings.summary_model = "claude-sonnet-4-20250514"
+    bot.settings.summary_max_tokens = 2048
+    bot.settings.summary_max_input_length = 100000
+    bot.settings.discord_max_message_length = 2000
     bot.guilds = []
     bot.wait_until_ready = AsyncMock()
     bot.notify_owner = AsyncMock()
@@ -40,10 +44,15 @@ class TestContentPostingCogLoad:
 
         await cog.cog_load()
 
-        mock_summarizer_cls.assert_called_once_with(api_key="test-api-key")
+        mock_summarizer_cls.assert_called_once_with(
+            api_key="test-api-key",
+            model="claude-sonnet-4-20250514",
+            max_tokens=2048,
+            max_input_length=100000,
+        )
         mock_pipeline_cls.assert_called_once()
         mock_pipeline.initialize.assert_called_once()
-        mock_poster_cls.assert_called_once_with(mock_bot)
+        mock_poster_cls.assert_called_once_with(mock_bot, max_message_length=2000)
         assert cog._initialized is True
 
     @patch("intelstream.discord.cogs.content_posting.SummarizationService")

@@ -17,12 +17,57 @@ SOURCE_TYPE_LABELS: dict[SourceType, str] = {
     SourceType.PAGE: "Web",
 }
 
-MAX_MESSAGE_LENGTH = 2000
+TRUNCATION_NOTICE = "\n\n*[Summary truncated]*"
+
+
+def truncate_summary_at_bullet(summary: str, max_length: int) -> str:
+    """Truncate summary at a complete bullet point boundary.
+
+    Tries to keep complete bullet points (lines starting with - or *)
+    rather than cutting mid-sentence.
+    """
+    if len(summary) <= max_length:
+        return summary
+
+    truncate_target = max_length - len(TRUNCATION_NOTICE)
+
+    lines = summary.split("\n")
+    result_lines: list[str] = []
+    current_length = 0
+
+    for line in lines:
+        line_length = len(line) + (1 if result_lines else 0)
+
+        if current_length + line_length > truncate_target:
+            break
+
+        result_lines.append(line)
+        current_length += line_length
+
+    if not result_lines:
+        return summary[:truncate_target] + TRUNCATION_NOTICE
+
+    result = "\n".join(result_lines)
+
+    last_line = result_lines[-1] if result_lines else ""
+    is_sub_bullet = last_line.strip().startswith("- ") and last_line.startswith("  ")
+
+    if is_sub_bullet:
+        for j in range(len(result_lines) - 1, -1, -1):
+            line = result_lines[j]
+            if line.strip().startswith("- **") and not line.startswith("  "):
+                result_lines = result_lines[: j + 1]
+                break
+
+        result = "\n".join(result_lines)
+
+    return result.rstrip() + TRUNCATION_NOTICE
 
 
 class ContentPoster:
-    def __init__(self, bot: "IntelStreamBot") -> None:
+    def __init__(self, bot: "IntelStreamBot", max_message_length: int = 2000) -> None:
         self._bot = bot
+        self._max_message_length = max_message_length
 
     def format_message(
         self,
@@ -30,31 +75,44 @@ class ContentPoster:
         source_type: SourceType,
         source_name: str,
     ) -> str:
-        parts = []
+        header_parts: list[str] = []
 
         if content_item.author:
-            parts.append(f"**{content_item.author}**")
+            header_parts.append(f"**{content_item.author}**")
 
         title = content_item.title
         if content_item.original_url:
-            parts.append(f"[{title}]({content_item.original_url})")
+            header_parts.append(f"[{title}]({content_item.original_url})")
         else:
-            parts.append(f"**{title}**")
+            header_parts.append(f"**{title}**")
 
-        parts.append("")
-
-        summary = content_item.summary or "No summary available."
-        parts.append(summary)
+        header_parts.append("")
 
         source_label = SOURCE_TYPE_LABELS.get(source_type, "Unknown")
-        parts.append("")
-        parts.append(f"*{source_label} | {source_name}*")
+        footer = f"\n*{source_label} | {source_name}*"
 
-        message = "\n".join(parts)
+        header = "\n".join(header_parts)
+        overhead = len(header) + len(footer)
 
-        if len(message) > MAX_MESSAGE_LENGTH:
-            truncate_at = MAX_MESSAGE_LENGTH - 50
-            message = message[:truncate_at] + "...\n\n*[Message truncated]*"
+        summary = content_item.summary or "No summary available."
+
+        available_for_summary = self._max_message_length - overhead
+        if len(summary) > available_for_summary:
+            summary = truncate_summary_at_bullet(summary, available_for_summary)
+
+        message = header + summary + footer
+
+        if len(message) > self._max_message_length:
+            logger.warning(
+                "Message still exceeds limit after truncation",
+                length=len(message),
+                max_length=self._max_message_length,
+            )
+            if summary.endswith(TRUNCATION_NOTICE):
+                summary = summary[: -len(TRUNCATION_NOTICE)]
+            excess = len(message) - self._max_message_length + len(TRUNCATION_NOTICE)
+            summary = summary[:-excess] + TRUNCATION_NOTICE
+            message = header + summary + footer
 
         return message
 

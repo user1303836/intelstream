@@ -6,10 +6,13 @@ import pytest
 
 from intelstream.database.models import ContentItem, SourceType
 from intelstream.services.content_poster import (
-    MAX_MESSAGE_LENGTH,
     SOURCE_TYPE_LABELS,
+    TRUNCATION_NOTICE,
     ContentPoster,
+    truncate_summary_at_bullet,
 )
+
+DEFAULT_MAX_MESSAGE_LENGTH = 2000
 
 
 @pytest.fixture
@@ -124,7 +127,7 @@ class TestContentPosterFormatMessage:
             assert f"*{expected_label} | Test*" in message
 
     def test_format_message_truncates_long_content(self, content_poster, sample_content_item):
-        sample_content_item.summary = "A" * (MAX_MESSAGE_LENGTH + 500)
+        sample_content_item.summary = "A" * (DEFAULT_MAX_MESSAGE_LENGTH + 500)
 
         message = content_poster.format_message(
             content_item=sample_content_item,
@@ -132,8 +135,8 @@ class TestContentPosterFormatMessage:
             source_name="Test RSS",
         )
 
-        assert len(message) <= MAX_MESSAGE_LENGTH
-        assert message.endswith("*[Message truncated]*")
+        assert len(message) <= DEFAULT_MAX_MESSAGE_LENGTH
+        assert TRUNCATION_NOTICE.strip() in message
 
     def test_format_message_unknown_source_type(self, content_poster, sample_content_item):
         unknown_type = MagicMock()
@@ -310,3 +313,51 @@ class TestContentPosterPostUnpostedItems:
         result = await content_poster.post_unposted_items(guild_id=123)
 
         assert result == 0
+
+
+class TestTruncateSummaryAtBullet:
+    def test_returns_unchanged_when_under_limit(self):
+        summary = "Short summary"
+        result = truncate_summary_at_bullet(summary, 100)
+        assert result == summary
+
+    def test_truncates_at_line_boundary(self):
+        summary = "This is line one with more content here\nThis is line two with more text\nThis is line three with even more"
+        result = truncate_summary_at_bullet(summary, 80)
+        assert "This is line one" in result
+        assert TRUNCATION_NOTICE.strip() in result
+        assert "line three" not in result
+
+    def test_preserves_complete_bullet_points(self):
+        summary = """- **Point 1:** Description
+  - Sub point A
+  - Sub point B
+- **Point 2:** Another description"""
+        result = truncate_summary_at_bullet(summary, 60)
+        assert "- **Point 1:**" in result
+        assert TRUNCATION_NOTICE.strip() in result
+
+    def test_backs_up_from_sub_bullet_to_parent(self):
+        summary = """- **Point 1:** First point
+  - Sub point A
+  - Sub point B
+- **Point 2:** Second point"""
+        result = truncate_summary_at_bullet(summary, 70)
+        assert "- **Point 1:**" in result
+        assert TRUNCATION_NOTICE.strip() in result
+
+    def test_fallback_truncation_when_no_lines_fit(self):
+        summary = "A" * 200
+        result = truncate_summary_at_bullet(summary, 50)
+        assert len(result) <= 50
+        assert TRUNCATION_NOTICE.strip() in result
+
+    def test_handles_empty_summary(self):
+        result = truncate_summary_at_bullet("", 100)
+        assert result == ""
+
+    def test_exact_limit_not_truncated(self):
+        summary = "Exactly fits"
+        result = truncate_summary_at_bullet(summary, len(summary))
+        assert result == summary
+        assert TRUNCATION_NOTICE not in result

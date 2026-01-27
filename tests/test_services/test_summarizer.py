@@ -4,11 +4,12 @@ import anthropic
 import pytest
 
 from intelstream.services.summarizer import (
-    MAX_CONTENT_LENGTH,
     SYSTEM_PROMPT,
     SummarizationError,
     SummarizationService,
 )
+
+DEFAULT_MAX_INPUT_LENGTH = 100000
 
 
 @pytest.fixture
@@ -68,7 +69,7 @@ class TestSummarizationService:
     async def test_summarize_truncates_long_content(
         self, summarizer: SummarizationService, mock_message
     ):
-        long_content = "x" * (MAX_CONTENT_LENGTH + 1000)
+        long_content = "x" * (DEFAULT_MAX_INPUT_LENGTH + 1000)
 
         mock_create = AsyncMock(return_value=mock_message)
         summarizer._client.messages.create = mock_create

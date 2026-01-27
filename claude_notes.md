@@ -242,5 +242,42 @@ Newer discord.py versions removed `discord.Embed.Empty`. Changed tests to check 
 2. **Phase 2**: Source adapters (merged)
 3. **Phase 3**: Content pipeline (merged)
 4. **Phase 4**: Discord integration (PR #3, merged)
+5. **Smart Page Adapter**: Add support for non-RSS blog sites with Claude-powered extraction (PR #6, merged)
+6. **Restrict Commands**: Restrict commands to admin channel and require permissions (PR #14, merged)
+7. **Limit Initial Fetch**: Only fetch 1 article on first poll of new source (PR #15, pending review)
+8. **Plain Text Posts**: Replace embed-based posting with plain text formatting (PR #16, pending review)
 
 All PRs included greptile code review via @greptile comment.
+
+## Recent Work (January 2026)
+
+### PR #15: Limit Initial Source Fetch
+When adding a new source, the bot was summarizing ~10 articles from the new source. Changed behavior to only fetch the most recent article on first poll (as confirmation), then fetch all new articles on subsequent polls.
+
+**Changes**:
+- Modified `_fetch_source()` in `pipeline.py` to detect first poll via `source.last_polled_at is None`
+- On first poll, break after storing the first content item
+- Added tests for both first-poll and subsequent-poll behaviors
+
+### PR #16: Plain Text Formatting
+Discord embeds appear in a colored box. Changed to plain text messages that look like regular user messages while maintaining formatting.
+
+**Changes**:
+- Replaced `create_embed()` method with `format_message()` in `content_poster.py`
+- Messages use Discord markdown: `**bold**` for author, `[title](url)` for links, `*italics*` for source footer
+- Changed `post_content()` to use `channel.send(content=...)` instead of embeds
+- Updated all tests to verify plain text formatting behavior
+
+### Smart Page Adapter (Merged)
+Added support for blogs without RSS feeds using Claude-powered page analysis.
+
+**New Files**:
+- `src/intelstream/adapters/page.py` - Extracts content using CSS selectors from Claude-generated profile
+- `src/intelstream/services/page_analyzer.py` - Uses Claude to analyze page structure and generate extraction profiles
+- New `SourceType.PAGE` added to models
+
+**How it works**:
+1. User adds a Page source with `/source add type:page name:X url:Y`
+2. `PageAnalyzer` fetches the page and asks Claude to identify CSS selectors for posts, titles, links, dates, authors
+3. Profile is stored as JSON in `Source.extraction_profile`
+4. `PageAdapter` uses the profile to extract posts on subsequent polls
