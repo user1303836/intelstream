@@ -164,12 +164,6 @@ class ContentPoster:
             logger.debug("No unposted content items to post")
             return 0
 
-        items = await self._filter_first_posting_items(items)
-
-        if not items:
-            logger.debug("No items to post after first-posting filter")
-            return 0
-
         posted_count = 0
 
         for item in items:
@@ -208,6 +202,3 @@ class ContentPoster:
 
         logger.info("Posted unposted items", count=posted_count, guild_id=guild_id)
         return posted_count
-
-    async def _filter_first_posting_items(self, items: list[ContentItem]) -> list[ContentItem]:
-        return items
