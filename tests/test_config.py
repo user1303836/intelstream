@@ -13,8 +13,9 @@ class TestSettings:
         monkeypatch.setenv("DISCORD_CHANNEL_ID", "987654321")
         monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
 
-        settings = Settings()
+        settings = Settings(_env_file=None)
 
         assert settings.discord_bot_token == "test_token"
         assert settings.discord_guild_id == 123456789
@@ -33,7 +34,7 @@ class TestSettings:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         monkeypatch.setenv("YOUTUBE_API_KEY", "yt-api-key")
 
-        settings = Settings()
+        settings = Settings(_env_file=None)
 
         assert settings.youtube_api_key == "yt-api-key"
 
@@ -46,7 +47,7 @@ class TestSettings:
         monkeypatch.setenv("DEFAULT_POLL_INTERVAL_MINUTES", "0")
 
         with pytest.raises(ValidationError):
-            Settings()
+            Settings(_env_file=None)
 
     def test_settings_missing_required(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
@@ -60,4 +61,4 @@ class TestSettings:
                 monkeypatch.delenv(key, raising=False)
 
         with pytest.raises(ValidationError):
-            Settings()
+            Settings(_env_file=None)
