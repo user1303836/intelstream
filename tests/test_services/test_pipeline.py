@@ -203,6 +203,86 @@ class TestFetchAllSources:
 
         await pipeline.close()
 
+    async def test_first_poll_limits_to_one_item(
+        self,
+        pipeline: ContentPipeline,
+        mock_repository: AsyncMock,
+        sample_source,
+    ):
+        """On first poll (last_polled_at is None), only store the most recent item."""
+        await pipeline.initialize()
+
+        sample_source.last_polled_at = None
+
+        items = [
+            ContentData(
+                external_id=f"article-{i}",
+                title=f"Article {i}",
+                original_url=f"https://test.com/article-{i}",
+                author="Author",
+                published_at=datetime(2024, 1, i + 1, 12, 0, 0, tzinfo=UTC),
+                raw_content=f"Content {i}",
+                thumbnail_url=None,
+            )
+            for i in range(5)
+        ]
+
+        mock_repository.get_all_sources.return_value = [sample_source]
+        mock_repository.content_item_exists.return_value = False
+
+        with patch.object(
+            pipeline._adapters[SourceType.SUBSTACK],
+            "fetch_latest",
+            new_callable=AsyncMock,
+            return_value=items,
+        ):
+            result = await pipeline.fetch_all_sources()
+
+        assert result == 1
+        assert mock_repository.add_content_item.call_count == 1
+
+        await pipeline.close()
+
+    async def test_subsequent_poll_stores_all_new_items(
+        self,
+        pipeline: ContentPipeline,
+        mock_repository: AsyncMock,
+        sample_source,
+    ):
+        """On subsequent polls (last_polled_at is set), store all new items."""
+        await pipeline.initialize()
+
+        sample_source.last_polled_at = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+
+        items = [
+            ContentData(
+                external_id=f"article-{i}",
+                title=f"Article {i}",
+                original_url=f"https://test.com/article-{i}",
+                author="Author",
+                published_at=datetime(2024, 1, i + 1, 12, 0, 0, tzinfo=UTC),
+                raw_content=f"Content {i}",
+                thumbnail_url=None,
+            )
+            for i in range(5)
+        ]
+
+        mock_repository.get_all_sources.return_value = [sample_source]
+        mock_repository.content_item_exists.return_value = False
+
+        with patch.object(
+            pipeline._adapters[SourceType.SUBSTACK],
+            "fetch_latest",
+            new_callable=AsyncMock,
+            return_value=items,
+        ):
+            result = await pipeline.fetch_all_sources()
+
+        assert result == 5
+        assert mock_repository.add_content_item.call_count == 5
+
+        await pipeline.close()
+
 
 class TestSummarizePending:
     async def test_summarize_pending_success(
