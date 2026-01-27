@@ -15,6 +15,7 @@ class SourceType(enum.Enum):
     YOUTUBE = "youtube"
     RSS = "rss"
     PAGE = "page"
+    ARXIV = "arxiv"
 
 
 class Source(Base):
