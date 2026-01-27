@@ -21,7 +21,12 @@ class ContentPosting(commands.Cog):
         self._initialized = False
 
     async def cog_load(self) -> None:
-        summarizer = SummarizationService(api_key=self.bot.settings.anthropic_api_key)
+        summarizer = SummarizationService(
+            api_key=self.bot.settings.anthropic_api_key,
+            model=self.bot.settings.summary_model,
+            max_tokens=self.bot.settings.summary_max_tokens,
+            max_input_length=self.bot.settings.summary_max_input_length,
+        )
 
         self._pipeline = ContentPipeline(
             settings=self.bot.settings,
@@ -30,7 +35,10 @@ class ContentPosting(commands.Cog):
         )
         await self._pipeline.initialize()
 
-        self._poster = ContentPoster(self.bot)
+        self._poster = ContentPoster(
+            self.bot,
+            max_message_length=self.bot.settings.discord_max_message_length,
+        )
         self._initialized = True
 
         self.content_loop.change_interval(minutes=self.bot.settings.content_poll_interval_minutes)

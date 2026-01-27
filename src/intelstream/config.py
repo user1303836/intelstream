@@ -49,6 +49,32 @@ class Settings(BaseSettings):
         description="Logging level",
     )
 
+    summary_max_tokens: int = Field(
+        default=2048,
+        ge=256,
+        le=8192,
+        description="Maximum tokens for summary generation",
+    )
+
+    summary_max_input_length: int = Field(
+        default=100000,
+        ge=1000,
+        le=500000,
+        description="Maximum input content length for summarization",
+    )
+
+    summary_model: str = Field(
+        default="claude-sonnet-4-20250514",
+        description="Model to use for summarization",
+    )
+
+    discord_max_message_length: int = Field(
+        default=2000,
+        ge=500,
+        le=2000,
+        description="Maximum Discord message length (Discord limit is 2000)",
+    )
+
     @field_validator("database_url")
     @classmethod
     def ensure_data_directory(cls, v: str) -> str:

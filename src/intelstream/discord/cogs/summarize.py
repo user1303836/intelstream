@@ -60,7 +60,12 @@ class Summarize(commands.Cog):
             follow_redirects=True,
             headers={"User-Agent": "Mozilla/5.0 (compatible; IntelStream/1.0)"},
         )
-        self._summarizer = SummarizationService(api_key=self.bot.settings.anthropic_api_key)
+        self._summarizer = SummarizationService(
+            api_key=self.bot.settings.anthropic_api_key,
+            model=self.bot.settings.summary_model,
+            max_tokens=self.bot.settings.summary_max_tokens,
+            max_input_length=self.bot.settings.summary_max_input_length,
+        )
         logger.info("Summarize cog loaded")
 
     async def cog_unload(self) -> None:
@@ -298,7 +303,12 @@ class Summarize(commands.Cog):
 
         try:
             if not self._summarizer:
-                self._summarizer = SummarizationService(api_key=self.bot.settings.anthropic_api_key)
+                self._summarizer = SummarizationService(
+                    api_key=self.bot.settings.anthropic_api_key,
+                    model=self.bot.settings.summary_model,
+                    max_tokens=self.bot.settings.summary_max_tokens,
+                    max_input_length=self.bot.settings.summary_max_input_length,
+                )
 
             summary = await self._summarizer.summarize(
                 content=content.content,
