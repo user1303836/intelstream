@@ -15,7 +15,11 @@ class ConfigManagement(commands.Cog):
     def __init__(self, bot: "IntelStreamBot") -> None:
         self.bot = bot
 
-    config_group = app_commands.Group(name="config", description="Configure bot settings")
+    config_group = app_commands.Group(
+        name="config",
+        description="Configure bot settings",
+        default_permissions=discord.Permissions(manage_guild=True),
+    )
 
     @config_group.command(name="channel", description="Set the channel for content posts")
     @app_commands.describe(channel="The channel where content summaries will be posted")

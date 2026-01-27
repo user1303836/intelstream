@@ -51,7 +51,11 @@ class SourceManagement(commands.Cog):
     def __init__(self, bot: "IntelStreamBot") -> None:
         self.bot = bot
 
-    source_group = app_commands.Group(name="source", description="Manage content sources")
+    source_group = app_commands.Group(
+        name="source",
+        description="Manage content sources",
+        default_permissions=discord.Permissions(manage_guild=True),
+    )
 
     @source_group.command(name="add", description="Add a new content source")
     @app_commands.describe(
