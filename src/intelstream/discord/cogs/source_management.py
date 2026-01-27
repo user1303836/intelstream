@@ -57,11 +57,7 @@ class SourceManagement(commands.Cog):
     def __init__(self, bot: "IntelStreamBot") -> None:
         self.bot = bot
 
-    source_group = app_commands.Group(
-        name="source",
-        description="Manage content sources",
-        default_permissions=discord.Permissions(manage_guild=True),
-    )
+    source_group = app_commands.Group(name="source", description="Manage content sources")
 
     @source_group.command(name="add", description="Add a new content source")
     @app_commands.describe(
@@ -171,12 +167,12 @@ class SourceManagement(commands.Cog):
 
     @source_group.command(name="list", description="List all configured sources")
     async def source_list(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
 
         sources = await self.bot.repository.get_all_sources(active_only=False)
 
         if not sources:
-            await interaction.followup.send("No sources configured.", ephemeral=True)
+            await interaction.followup.send("No sources configured.")
             return
 
         embed = discord.Embed(
@@ -197,9 +193,10 @@ class SourceManagement(commands.Cog):
                 inline=True,
             )
 
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed)
 
     @source_group.command(name="remove", description="Remove a content source")
+    @app_commands.default_permissions(manage_guild=True)
     @app_commands.describe(name="Name of the source to remove")
     async def source_remove(
         self,
@@ -229,6 +226,7 @@ class SourceManagement(commands.Cog):
             await interaction.followup.send(f"Failed to remove source **{name}**.", ephemeral=True)
 
     @source_group.command(name="toggle", description="Enable or disable a content source")
+    @app_commands.default_permissions(manage_guild=True)
     @app_commands.describe(name="Name of the source to toggle")
     async def source_toggle(
         self,
