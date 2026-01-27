@@ -4,6 +4,7 @@ import json
 import httpx
 import structlog
 
+from intelstream.adapters.arxiv import ArxivAdapter
 from intelstream.adapters.base import BaseAdapter, ContentData
 from intelstream.adapters.rss import RSSAdapter
 from intelstream.adapters.substack import SubstackAdapter
@@ -45,6 +46,7 @@ class ContentPipeline:
         adapters: dict[SourceType, BaseAdapter] = {
             SourceType.SUBSTACK: SubstackAdapter(http_client=self._http_client),
             SourceType.RSS: RSSAdapter(http_client=self._http_client),
+            SourceType.ARXIV: ArxivAdapter(http_client=self._http_client),
         }
 
         if self._settings.youtube_api_key:

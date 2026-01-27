@@ -21,6 +21,13 @@ Guidelines:
 - Aim for 4-8 key arguments depending on content length and density.
 - Write in a neutral, analytical tone."""
 
+ARXIV_PROMPT_ADDITION = """
+This is an academic research paper abstract. Focus on:
+1. What problem does this paper solve?
+2. What is the key innovation or finding?
+3. Why does this matter for practitioners?
+Keep technical jargon minimal - explain for a smart but non-expert audience."""
+
 
 class SummarizationError(Exception):
     pass
@@ -100,11 +107,16 @@ class SummarizationService:
             "youtube": "video transcript",
             "rss": "blog post",
             "web": "article",
+            "arxiv": "research paper abstract",
         }.get(source_type, "article")
 
         author_info = author if author else "Unknown"
 
-        return f"""Summarize the following {content_type} from {author_info}:
+        source_specific_guidance = ""
+        if source_type == "arxiv":
+            source_specific_guidance = ARXIV_PROMPT_ADDITION
+
+        return f"""Summarize the following {content_type} from {author_info}:{source_specific_guidance}
 
 Title: {title}
 

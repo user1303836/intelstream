@@ -50,6 +50,11 @@ def parse_source_identifier(source_type: SourceType, url: str) -> tuple[str, str
         identifier = parsed.netloc + parsed.path.rstrip("/")
         return identifier, url
 
+    elif source_type == SourceType.ARXIV:
+        identifier = url.strip()
+        feed_url = f"https://arxiv.org/rss/{identifier}"
+        return identifier, feed_url
+
     return url, None
 
 
@@ -71,6 +76,7 @@ class SourceManagement(commands.Cog):
             app_commands.Choice(name="YouTube", value="youtube"),
             app_commands.Choice(name="RSS", value="rss"),
             app_commands.Choice(name="Page", value="page"),
+            app_commands.Choice(name="Arxiv", value="arxiv"),
         ]
     )
     async def source_add(
