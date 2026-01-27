@@ -14,6 +14,16 @@ logger = structlog.get_logger()
 DEFAULT_MODEL = "claude-sonnet-4-20250514"
 MAX_CONTENT_LENGTH = 100000
 
+SYSTEM_PROMPT = """You are a content summarizer for a Discord channel. Your job is to extract the key insights from articles, videos, and posts in a structured format.
+
+Guidelines:
+- Extract the INSIGHTS, not just topics. Each bullet should convey a takeaway.
+- Be specific and concrete. Include numbers, names, and examples where relevant.
+- Use sub-bullets for supporting evidence, examples, or important caveats.
+- Keep the thesis to one sentence that captures the main argument or finding.
+- Aim for 4-8 key arguments depending on content length and density.
+- Write in a neutral, analytical tone."""
+
 
 class SummarizationError(Exception):
     pass
@@ -23,6 +33,7 @@ class SummarizationService:
     def __init__(self, api_key: str, model: str = DEFAULT_MODEL) -> None:
         self._client = anthropic.AsyncAnthropic(api_key=api_key)
         self._model = model
+        self._system_prompt = SYSTEM_PROMPT
 
     @retry(
         retry=retry_if_exception_type(anthropic.RateLimitError),
@@ -55,6 +66,7 @@ class SummarizationService:
             message = await self._client.messages.create(
                 model=self._model,
                 max_tokens=1024,
+                system=self._system_prompt,
                 messages=[{"role": "user", "content": prompt}],
             )
 
@@ -78,27 +90,32 @@ class SummarizationService:
         source_type: str,
         author: str | None,
     ) -> str:
-        source_context = {
+        content_type = {
             "substack": "newsletter article",
             "youtube": "video transcript",
             "rss": "blog post",
+            "web": "article",
         }.get(source_type, "article")
 
-        author_info = f" by {author}" if author else ""
+        author_info = author if author else "Unknown"
 
-        return f"""Summarize the following {source_context}{author_info} titled "{title}".
+        return f"""Summarize the following {content_type} from {author_info}:
 
-Provide a concise summary (2-4 paragraphs) that captures:
-- The main topic and key points
-- Any important insights or conclusions
-- Why this might be interesting or relevant
-
-Write in a clear, engaging style suitable for a Discord message. Do not use headers or bullet points.
+Title: {title}
 
 Content:
 {content}
 
-Summary:"""
+Format your response EXACTLY as follows:
+
+**Thesis:** [One sentence capturing the central argument or main finding]
+
+**Key Arguments**
+- **[Insight or key concept]:** [Explanation of this point and why it matters]
+  - [Supporting detail, evidence, example, or caveat]
+  - [Additional detail if needed]
+- **[Insight or key concept]:** [Explanation of this point and why it matters]
+  - [Supporting detail, evidence, example, or caveat]"""
 
     def _extract_summary(self, message: Any) -> str:
         if not message.content:

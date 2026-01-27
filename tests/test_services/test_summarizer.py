@@ -5,6 +5,7 @@ import pytest
 
 from intelstream.services.summarizer import (
     MAX_CONTENT_LENGTH,
+    SYSTEM_PROMPT,
     SummarizationError,
     SummarizationService,
 )
@@ -177,9 +178,11 @@ class TestSummarizationService:
         )
 
         assert "newsletter article" in prompt
-        assert "by John Doe" in prompt
+        assert "from John Doe" in prompt
         assert "My Substack Post" in prompt
         assert "Article content here" in prompt
+        assert "**Thesis:**" in prompt
+        assert "**Key Arguments**" in prompt
 
     def test_build_prompt_youtube(self, summarizer: SummarizationService):
         prompt = summarizer._build_prompt(
@@ -191,7 +194,7 @@ class TestSummarizationService:
 
         assert "video transcript" in prompt
         assert "My Video" in prompt
-        assert "by " not in prompt
+        assert "from Unknown" in prompt
 
     def test_build_prompt_rss(self, summarizer: SummarizationService):
         prompt = summarizer._build_prompt(
@@ -202,7 +205,18 @@ class TestSummarizationService:
         )
 
         assert "blog post" in prompt
-        assert "by Jane Smith" in prompt
+        assert "from Jane Smith" in prompt
+
+    def test_build_prompt_web(self, summarizer: SummarizationService):
+        prompt = summarizer._build_prompt(
+            content="Web content",
+            title="Web Article",
+            source_type="web",
+            author="Web Author",
+        )
+
+        assert "article" in prompt
+        assert "from Web Author" in prompt
 
     def test_build_prompt_unknown_source(self, summarizer: SummarizationService):
         prompt = summarizer._build_prompt(
@@ -213,3 +227,19 @@ class TestSummarizationService:
         )
 
         assert "article" in prompt
+        assert "from Unknown" in prompt
+
+    async def test_summarize_includes_system_prompt(
+        self, summarizer: SummarizationService, mock_message
+    ):
+        mock_create = AsyncMock(return_value=mock_message)
+        summarizer._client.messages.create = mock_create
+
+        await summarizer.summarize(
+            content="Test content",
+            title="Test Article",
+            source_type="substack",
+        )
+
+        call_args = mock_create.call_args
+        assert call_args.kwargs["system"] == SYSTEM_PROMPT
