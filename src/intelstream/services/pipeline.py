@@ -108,11 +108,20 @@ class ContentPipeline:
 
         items = await adapter.fetch_latest(source.identifier, feed_url=source.feed_url)
 
+        is_first_poll = source.last_polled_at is None
+
         new_count = 0
         for item in items:
             if not await self._repository.content_item_exists(item.external_id):
                 await self._store_content_item(source, item)
                 new_count += 1
+
+                if is_first_poll:
+                    logger.info(
+                        "First poll for source, limiting to most recent item",
+                        source_name=source.name,
+                    )
+                    break
 
         await self._repository.update_source_last_polled(source.id)
 
