@@ -10,7 +10,7 @@ from intelstream.adapters.rss import RSSAdapter
 from intelstream.adapters.substack import SubstackAdapter
 from intelstream.adapters.youtube import YouTubeAdapter
 from intelstream.config import Settings
-from intelstream.database.models import Source, SourceType
+from intelstream.database.models import ContentItem, Source, SourceType
 from intelstream.database.repository import Repository
 from intelstream.services.summarizer import SummarizationError, SummarizationService
 
@@ -156,6 +156,10 @@ class ContentPipeline:
         items = await self._repository.get_unsummarized_content_items(limit=max_items)
         logger.info("Summarizing pending items", count=len(items))
 
+        await self._handle_first_posting_backfill(items)
+
+        items = await self._repository.get_unsummarized_content_items(limit=max_items)
+
         summarized_count = 0
 
         for item in items:
@@ -197,6 +201,36 @@ class ContentPipeline:
 
         logger.info("Summarization complete", summarized_count=summarized_count)
         return summarized_count
+
+    async def _handle_first_posting_backfill(self, items: list[ContentItem]) -> None:
+        processed_sources: set[str] = set()
+
+        for item in items:
+            if item.source_id in processed_sources:
+                continue
+
+            has_posted = await self._repository.has_source_posted_content(item.source_id)
+
+            if not has_posted:
+                most_recent = await self._repository.get_most_recent_item_for_source(item.source_id)
+
+                if most_recent:
+                    backfilled_count = await self._repository.mark_items_as_backfilled(
+                        source_id=item.source_id,
+                        exclude_item_id=most_recent.id,
+                    )
+
+                    if backfilled_count > 0:
+                        source = await self._repository.get_source_by_id(item.source_id)
+                        source_name = source.name if source else "unknown"
+                        logger.info(
+                            "First posting for source - backfilled old items",
+                            source_name=source_name,
+                            backfilled_count=backfilled_count,
+                            most_recent_title=most_recent.title,
+                        )
+
+            processed_sources.add(item.source_id)
 
     async def run_cycle(self) -> tuple[int, int]:
         new_items = await self.fetch_all_sources()

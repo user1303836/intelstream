@@ -258,6 +258,7 @@ class TestContentPosterPostUnpostedItems:
         mock_source.name = "Test Source"
         mock_bot.repository.get_source_by_id = AsyncMock(return_value=mock_source)
         mock_bot.repository.mark_content_item_posted = AsyncMock()
+        mock_bot.repository.has_source_posted_content = AsyncMock(return_value=True)
 
         result = await content_poster.post_unposted_items(guild_id=123)
 
@@ -289,6 +290,7 @@ class TestContentPosterPostUnpostedItems:
         mock_source.type = SourceType.SUBSTACK
         mock_source.name = "Test Source"
         mock_bot.repository.get_source_by_id = AsyncMock(return_value=mock_source)
+        mock_bot.repository.has_source_posted_content = AsyncMock(return_value=True)
 
         result = await content_poster.post_unposted_items(guild_id=123)
 
@@ -309,6 +311,7 @@ class TestContentPosterPostUnpostedItems:
             return_value=[sample_content_item]
         )
         mock_bot.repository.get_source_by_id = AsyncMock(return_value=None)
+        mock_bot.repository.has_source_posted_content = AsyncMock(return_value=True)
 
         result = await content_poster.post_unposted_items(guild_id=123)
 

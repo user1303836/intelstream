@@ -297,6 +297,7 @@ class TestSummarizePending:
 
         mock_repository.get_unsummarized_content_items.return_value = [sample_content_item]
         mock_repository.get_source_by_id.return_value = sample_source
+        mock_repository.has_source_posted_content.return_value = True
         mock_summarizer.summarize.return_value = "This is the summary."
 
         result = await pipeline.summarize_pending(max_items=5)
@@ -334,9 +335,11 @@ class TestSummarizePending:
 
         item_without_content = MagicMock(spec=ContentItem)
         item_without_content.id = "item-456"
+        item_without_content.source_id = "source-456"
         item_without_content.raw_content = None
 
         mock_repository.get_unsummarized_content_items.return_value = [item_without_content]
+        mock_repository.has_source_posted_content.return_value = True
 
         result = await pipeline.summarize_pending()
 
@@ -357,6 +360,7 @@ class TestSummarizePending:
 
         mock_repository.get_unsummarized_content_items.return_value = [sample_content_item]
         mock_repository.get_source_by_id.return_value = sample_source
+        mock_repository.has_source_posted_content.return_value = True
         mock_summarizer.summarize.side_effect = SummarizationError("API error")
 
         result = await pipeline.summarize_pending()
@@ -378,6 +382,7 @@ class TestSummarizePending:
 
         mock_repository.get_unsummarized_content_items.return_value = [sample_content_item]
         mock_repository.get_source_by_id.return_value = sample_source
+        mock_repository.has_source_posted_content.return_value = True
         mock_summarizer.summarize.side_effect = RuntimeError("Unexpected")
 
         result = await pipeline.summarize_pending()
@@ -397,6 +402,7 @@ class TestSummarizePending:
 
         mock_repository.get_unsummarized_content_items.return_value = [sample_content_item]
         mock_repository.get_source_by_id.return_value = None
+        mock_repository.has_source_posted_content.return_value = True
         mock_summarizer.summarize.return_value = "Summary"
 
         result = await pipeline.summarize_pending()
@@ -404,6 +410,52 @@ class TestSummarizePending:
         assert result == 1
         call_args = mock_summarizer.summarize.call_args
         assert call_args.kwargs["source_type"] == "unknown"
+
+        await pipeline.close()
+
+    async def test_summarize_pending_backfills_first_posting_items(
+        self,
+        pipeline: ContentPipeline,
+        mock_repository: AsyncMock,
+        mock_summarizer: AsyncMock,
+        sample_source,
+    ):
+        await pipeline.initialize()
+
+        old_item = MagicMock(spec=ContentItem)
+        old_item.id = "old-item"
+        old_item.source_id = sample_source.id
+        old_item.raw_content = "Old content"
+        old_item.title = "Old Article"
+        old_item.author = "Author"
+        old_item.published_at = datetime(2024, 1, 1, tzinfo=UTC)
+
+        new_item = MagicMock(spec=ContentItem)
+        new_item.id = "new-item"
+        new_item.source_id = sample_source.id
+        new_item.raw_content = "New content"
+        new_item.title = "New Article"
+        new_item.author = "Author"
+        new_item.published_at = datetime(2024, 1, 15, tzinfo=UTC)
+
+        mock_repository.get_unsummarized_content_items.side_effect = [
+            [old_item, new_item],
+            [new_item],
+        ]
+        mock_repository.has_source_posted_content.return_value = False
+        mock_repository.get_most_recent_item_for_source.return_value = new_item
+        mock_repository.mark_items_as_backfilled.return_value = 1
+        mock_repository.get_source_by_id.return_value = sample_source
+        mock_summarizer.summarize.return_value = "Summary"
+
+        result = await pipeline.summarize_pending()
+
+        mock_repository.mark_items_as_backfilled.assert_called_once_with(
+            source_id=sample_source.id,
+            exclude_item_id=new_item.id,
+        )
+
+        assert result == 1
 
         await pipeline.close()
 
@@ -418,6 +470,7 @@ class TestRunCycle:
 
         mock_repository.get_all_sources.return_value = []
         mock_repository.get_unsummarized_content_items.return_value = []
+        mock_repository.has_source_posted_content.return_value = True
 
         result = await pipeline.run_cycle()
 

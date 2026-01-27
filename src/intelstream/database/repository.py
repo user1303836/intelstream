@@ -155,6 +155,49 @@ class Repository:
             )
             return list(result.scalars().all())
 
+    async def has_source_posted_content(self, source_id: str) -> bool:
+        async with self.session() as session:
+            result = await session.execute(
+                select(ContentItem.id)
+                .where(ContentItem.source_id == source_id)
+                .where(ContentItem.posted_to_discord == True)  # noqa: E712
+                .limit(1)
+            )
+            return result.scalar_one_or_none() is not None
+
+    async def get_most_recent_item_for_source(self, source_id: str) -> ContentItem | None:
+        async with self.session() as session:
+            result = await session.execute(
+                select(ContentItem)
+                .where(ContentItem.source_id == source_id)
+                .order_by(ContentItem.published_at.desc())
+                .limit(1)
+            )
+            return result.scalar_one_or_none()
+
+    async def mark_items_as_backfilled(
+        self, source_id: str, exclude_item_id: str | None = None
+    ) -> int:
+        async with self.session() as session:
+            query = (
+                select(ContentItem)
+                .where(ContentItem.source_id == source_id)
+                .where(ContentItem.posted_to_discord == False)  # noqa: E712
+                .where(ContentItem.summary.is_(None))
+            )
+            if exclude_item_id:
+                query = query.where(ContentItem.id != exclude_item_id)
+
+            result = await session.execute(query)
+            items = list(result.scalars().all())
+
+            for item in items:
+                item.posted_to_discord = True
+                item.discord_message_id = "backfilled"
+
+            await session.commit()
+            return len(items)
+
     async def update_content_item_summary(self, content_id: str, summary: str) -> None:
         async with self.session() as session:
             result = await session.execute(select(ContentItem).where(ContentItem.id == content_id))

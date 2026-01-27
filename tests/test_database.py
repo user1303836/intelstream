@@ -201,6 +201,217 @@ class TestContentItemOperations:
         assert unposted[0].external_id == "post-2"
 
 
+class TestFirstPostingOperations:
+    async def test_has_source_posted_content_false_when_none_posted(
+        self, repository: Repository
+    ) -> None:
+        source = await repository.add_source(
+            source_type=SourceType.SUBSTACK,
+            name="Test",
+            identifier="test",
+        )
+
+        await repository.add_content_item(
+            source_id=source.id,
+            external_id="post-1",
+            title="Post 1",
+            original_url="https://example.com/1",
+            author="Author",
+            published_at=datetime(2024, 1, 1),
+        )
+
+        has_posted = await repository.has_source_posted_content(source.id)
+        assert has_posted is False
+
+    async def test_has_source_posted_content_true_when_posted(self, repository: Repository) -> None:
+        source = await repository.add_source(
+            source_type=SourceType.SUBSTACK,
+            name="Test",
+            identifier="test",
+        )
+
+        content = await repository.add_content_item(
+            source_id=source.id,
+            external_id="post-1",
+            title="Post 1",
+            original_url="https://example.com/1",
+            author="Author",
+            published_at=datetime(2024, 1, 1),
+        )
+
+        await repository.mark_content_item_posted(content.id, "msg-123")
+
+        has_posted = await repository.has_source_posted_content(source.id)
+        assert has_posted is True
+
+    async def test_get_most_recent_item_for_source(self, repository: Repository) -> None:
+        source = await repository.add_source(
+            source_type=SourceType.RSS,
+            name="Test",
+            identifier="test",
+        )
+
+        await repository.add_content_item(
+            source_id=source.id,
+            external_id="old-post",
+            title="Old Post",
+            original_url="https://example.com/old",
+            author="Author",
+            published_at=datetime(2024, 1, 1),
+        )
+
+        await repository.add_content_item(
+            source_id=source.id,
+            external_id="new-post",
+            title="New Post",
+            original_url="https://example.com/new",
+            author="Author",
+            published_at=datetime(2024, 1, 15),
+        )
+
+        most_recent = await repository.get_most_recent_item_for_source(source.id)
+        assert most_recent is not None
+        assert most_recent.external_id == "new-post"
+
+    async def test_get_most_recent_item_for_source_empty(self, repository: Repository) -> None:
+        source = await repository.add_source(
+            source_type=SourceType.RSS,
+            name="Test",
+            identifier="test",
+        )
+
+        most_recent = await repository.get_most_recent_item_for_source(source.id)
+        assert most_recent is None
+
+    async def test_mark_items_as_backfilled(self, repository: Repository) -> None:
+        source = await repository.add_source(
+            source_type=SourceType.ARXIV,
+            name="Test",
+            identifier="test",
+        )
+
+        await repository.add_content_item(
+            source_id=source.id,
+            external_id="old-1",
+            title="Old 1",
+            original_url="https://example.com/old1",
+            author="Author",
+            published_at=datetime(2024, 1, 1),
+        )
+
+        await repository.add_content_item(
+            source_id=source.id,
+            external_id="old-2",
+            title="Old 2",
+            original_url="https://example.com/old2",
+            author="Author",
+            published_at=datetime(2024, 1, 2),
+        )
+
+        content3 = await repository.add_content_item(
+            source_id=source.id,
+            external_id="new",
+            title="New",
+            original_url="https://example.com/new",
+            author="Author",
+            published_at=datetime(2024, 1, 15),
+        )
+
+        backfilled_count = await repository.mark_items_as_backfilled(
+            source_id=source.id,
+            exclude_item_id=content3.id,
+        )
+
+        assert backfilled_count == 2
+
+        item1 = await repository.get_content_item_by_external_id("old-1")
+        assert item1 is not None
+        assert item1.posted_to_discord is True
+        assert item1.discord_message_id == "backfilled"
+
+        item3 = await repository.get_content_item_by_external_id("new")
+        assert item3 is not None
+        assert item3.posted_to_discord is False
+
+    async def test_mark_items_as_backfilled_skips_summarized_items(
+        self, repository: Repository
+    ) -> None:
+        source = await repository.add_source(
+            source_type=SourceType.ARXIV,
+            name="Test",
+            identifier="test",
+        )
+
+        await repository.add_content_item(
+            source_id=source.id,
+            external_id="unsummarized",
+            title="Unsummarized",
+            original_url="https://example.com/1",
+            author="Author",
+            published_at=datetime(2024, 1, 1),
+        )
+
+        summarized = await repository.add_content_item(
+            source_id=source.id,
+            external_id="summarized",
+            title="Summarized",
+            original_url="https://example.com/2",
+            author="Author",
+            published_at=datetime(2024, 1, 2),
+        )
+        await repository.update_content_item_summary(summarized.id, "This has a summary")
+
+        backfilled_count = await repository.mark_items_as_backfilled(source_id=source.id)
+
+        assert backfilled_count == 1
+
+        item1 = await repository.get_content_item_by_external_id("unsummarized")
+        assert item1 is not None
+        assert item1.posted_to_discord is True
+        assert item1.discord_message_id == "backfilled"
+
+        item2 = await repository.get_content_item_by_external_id("summarized")
+        assert item2 is not None
+        assert item2.posted_to_discord is False
+
+    async def test_mark_items_as_backfilled_excludes_already_posted(
+        self, repository: Repository
+    ) -> None:
+        source = await repository.add_source(
+            source_type=SourceType.ARXIV,
+            name="Test",
+            identifier="test",
+        )
+
+        content1 = await repository.add_content_item(
+            source_id=source.id,
+            external_id="already-posted",
+            title="Already Posted",
+            original_url="https://example.com/1",
+            author="Author",
+            published_at=datetime(2024, 1, 1),
+        )
+
+        await repository.mark_content_item_posted(content1.id, "real-msg-123")
+
+        await repository.add_content_item(
+            source_id=source.id,
+            external_id="unposted",
+            title="Unposted",
+            original_url="https://example.com/2",
+            author="Author",
+            published_at=datetime(2024, 1, 2),
+        )
+
+        backfilled_count = await repository.mark_items_as_backfilled(source_id=source.id)
+
+        assert backfilled_count == 1
+
+        item1 = await repository.get_content_item_by_external_id("already-posted")
+        assert item1 is not None
+        assert item1.discord_message_id == "real-msg-123"
+
+
 class TestDiscordConfigOperations:
     async def test_get_or_create_discord_config(self, repository: Repository) -> None:
         config = await repository.get_or_create_discord_config(
