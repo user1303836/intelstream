@@ -2,6 +2,7 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 import anthropic
 import httpx
@@ -101,6 +102,12 @@ class PageAnalyzer:
         self._model = model
 
     async def analyze(self, url: str) -> ExtractionProfile:
+        parsed_url = urlparse(url)
+        if not parsed_url.scheme or not parsed_url.netloc:
+            raise PageAnalysisError(f"Invalid URL format: {url}")
+        if parsed_url.scheme not in ("http", "https"):
+            raise PageAnalysisError(f"URL must use http or https scheme: {url}")
+
         logger.info("Analyzing page structure", url=url)
 
         html = await self._fetch_html(url)

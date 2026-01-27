@@ -56,6 +56,18 @@ def valid_llm_response() -> dict:
 
 
 class TestPageAnalyzer:
+    async def test_analyze_rejects_invalid_url_format(self) -> None:
+        analyzer = PageAnalyzer(api_key="test-key")
+
+        with pytest.raises(PageAnalysisError, match="Invalid URL format"):
+            await analyzer.analyze("not-a-valid-url")
+
+    async def test_analyze_rejects_non_http_scheme(self) -> None:
+        analyzer = PageAnalyzer(api_key="test-key")
+
+        with pytest.raises(PageAnalysisError, match="must use http or https"):
+            await analyzer.analyze("ftp://example.com/blog")
+
     async def test_analyze_success(self, sample_html: str, valid_llm_response: dict) -> None:
         mock_http_client = MagicMock(spec=httpx.AsyncClient)
         mock_response = MagicMock()

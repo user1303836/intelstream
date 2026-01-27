@@ -33,7 +33,6 @@ class PageAdapter(BaseAdapter):
         self,
         identifier: str,
         feed_url: str | None = None,
-        max_results: int = 20,
     ) -> list[ContentData]:
         url = feed_url or identifier
 
@@ -46,9 +45,6 @@ class PageAdapter(BaseAdapter):
         try:
             html = await self._fetch_html(url)
             items = self._extract_posts(html, url)
-
-            if max_results:
-                items = items[:max_results]
 
             logger.info(
                 "Fetched page content",
@@ -186,10 +182,11 @@ class PageAdapter(BaseAdapter):
 
         date_match = re.search(r"(\w+)\s+(\d{1,2}),?\s+(\d{4})", date_str)
         if date_match:
-            with contextlib.suppress(ValueError):
-                month_str, day, year = date_match.groups()
-                parsed = datetime.strptime(f"{month_str} {day}, {year}", "%B %d, %Y")
-                return parsed.replace(tzinfo=UTC)
+            month_str, day, year = date_match.groups()
+            for month_fmt in ["%B", "%b"]:
+                with contextlib.suppress(ValueError):
+                    parsed = datetime.strptime(f"{month_str} {day}, {year}", f"{month_fmt} %d, %Y")
+                    return parsed.replace(tzinfo=UTC)
 
         return datetime.now(UTC)
 

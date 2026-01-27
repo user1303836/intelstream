@@ -121,20 +121,6 @@ class TestPageAdapter:
         assert items[2].published_at.tzinfo == UTC
         assert (datetime.now(UTC) - items[2].published_at).total_seconds() < 5
 
-    async def test_fetch_latest_respects_max_results(
-        self, sample_profile: ExtractionProfile, sample_html: str
-    ) -> None:
-        mock_client = MagicMock(spec=httpx.AsyncClient)
-        mock_response = MagicMock()
-        mock_response.text = sample_html
-        mock_response.raise_for_status = MagicMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-
-        adapter = PageAdapter(extraction_profile=sample_profile, http_client=mock_client)
-        items = await adapter.fetch_latest("https://example.com/blog", max_results=2)
-
-        assert len(items) == 2
-
     async def test_fetch_latest_handles_http_error(self, sample_profile: ExtractionProfile) -> None:
         mock_client = MagicMock(spec=httpx.AsyncClient)
         mock_response = MagicMock()
@@ -230,6 +216,13 @@ class TestPageAdapter:
     def test_parse_date_string_month_name(self, sample_profile: ExtractionProfile) -> None:
         adapter = PageAdapter(extraction_profile=sample_profile)
         result = adapter._parse_date_string("January 15, 2024")
+        assert result.year == 2024
+        assert result.month == 1
+        assert result.day == 15
+
+    def test_parse_date_string_abbreviated_month(self, sample_profile: ExtractionProfile) -> None:
+        adapter = PageAdapter(extraction_profile=sample_profile)
+        result = adapter._parse_date_string("Jan 15, 2024")
         assert result.year == 2024
         assert result.month == 1
         assert result.day == 15
