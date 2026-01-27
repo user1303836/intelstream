@@ -212,9 +212,7 @@ class ContentPipeline:
             has_posted = await self._repository.has_source_posted_content(item.source_id)
 
             if not has_posted:
-                most_recent = await self._repository.get_most_recent_item_for_source(
-                    item.source_id
-                )
+                most_recent = await self._repository.get_most_recent_item_for_source(item.source_id)
 
                 if most_recent:
                     backfilled_count = await self._repository.mark_items_as_backfilled(

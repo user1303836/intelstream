@@ -209,9 +209,7 @@ class ContentPoster:
         logger.info("Posted unposted items", count=posted_count, guild_id=guild_id)
         return posted_count
 
-    async def _filter_first_posting_items(
-        self, items: list[ContentItem]
-    ) -> list[ContentItem]:
+    async def _filter_first_posting_items(self, items: list[ContentItem]) -> list[ContentItem]:
         items_by_source: dict[str, list[ContentItem]] = {}
         for item in items:
             if item.source_id not in items_by_source:

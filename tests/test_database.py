@@ -223,9 +223,7 @@ class TestFirstPostingOperations:
         has_posted = await repository.has_source_posted_content(source.id)
         assert has_posted is False
 
-    async def test_has_source_posted_content_true_when_posted(
-        self, repository: Repository
-    ) -> None:
+    async def test_has_source_posted_content_true_when_posted(self, repository: Repository) -> None:
         source = await repository.add_source(
             source_type=SourceType.SUBSTACK,
             name="Test",
