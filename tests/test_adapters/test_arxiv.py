@@ -66,6 +66,41 @@ SAMPLE_ARXIV_FEED_WITH_ATOM_AUTHORS = """<?xml version='1.0' encoding='UTF-8'?>
 </rss>
 """
 
+SAMPLE_ARXIV_HTML = """<!DOCTYPE html>
+<html>
+<head><title>Sample Paper</title></head>
+<body>
+<article>
+  <h1>Scaling Laws for Neural Machine Translation</h1>
+  <section>
+    <h2>1 Introduction</h2>
+    <p>Neural machine translation has seen remarkable progress in recent years. This paper presents scaling laws that predict performance improvements.</p>
+    <p>We conducted experiments across 12 language pairs to establish these relationships.</p>
+  </section>
+  <section>
+    <h2>2 Methodology</h2>
+    <p>Our methodology involves training models of varying sizes on different amounts of data.</p>
+    <p>We measure translation quality using BLEU scores and human evaluation.</p>
+  </section>
+  <section>
+    <h2>3 Results</h2>
+    <p>Our experiments show that doubling compute yields consistent 0.3 BLEU improvement.</p>
+    <p>This relationship holds across all tested language pairs.</p>
+  </section>
+  <section>
+    <h2>References</h2>
+    <p>This section should be excluded from extraction.</p>
+  </section>
+</article>
+</body>
+</html>
+"""
+
+
+def mock_html_not_available() -> None:
+    respx.get("https://arxiv.org/html/2401.12345").mock(return_value=httpx.Response(404))
+    respx.get("https://arxiv.org/html/2401.12346").mock(return_value=httpx.Response(404))
+
 
 class TestArxivAdapter:
     async def test_source_type(self) -> None:
@@ -87,6 +122,7 @@ class TestArxivAdapter:
         respx.get("https://arxiv.org/rss/cs.AI").mock(
             return_value=httpx.Response(200, text=SAMPLE_ARXIV_FEED)
         )
+        mock_html_not_available()
 
         async with httpx.AsyncClient() as client:
             adapter = ArxivAdapter(http_client=client)
@@ -99,6 +135,7 @@ class TestArxivAdapter:
         respx.get("https://arxiv.org/rss/cs.AI").mock(
             return_value=httpx.Response(200, text=SAMPLE_ARXIV_FEED)
         )
+        mock_html_not_available()
 
         async with httpx.AsyncClient() as client:
             adapter = ArxivAdapter(http_client=client)
@@ -112,6 +149,7 @@ class TestArxivAdapter:
         respx.get("https://arxiv.org/rss/cs.AI").mock(
             return_value=httpx.Response(200, text=SAMPLE_ARXIV_FEED)
         )
+        mock_html_not_available()
 
         async with httpx.AsyncClient() as client:
             adapter = ArxivAdapter(http_client=client)
@@ -125,6 +163,7 @@ class TestArxivAdapter:
         respx.get("https://arxiv.org/rss/cs.AI").mock(
             return_value=httpx.Response(200, text=SAMPLE_ARXIV_FEED)
         )
+        mock_html_not_available()
 
         async with httpx.AsyncClient() as client:
             adapter = ArxivAdapter(http_client=client)
@@ -134,10 +173,11 @@ class TestArxivAdapter:
         assert items[1].author == "Bob Williams"
 
     @respx.mock
-    async def test_fetch_latest_extracts_abstract(self) -> None:
+    async def test_fetch_latest_falls_back_to_abstract_when_html_unavailable(self) -> None:
         respx.get("https://arxiv.org/rss/cs.AI").mock(
             return_value=httpx.Response(200, text=SAMPLE_ARXIV_FEED)
         )
+        mock_html_not_available()
 
         async with httpx.AsyncClient() as client:
             adapter = ArxivAdapter(http_client=client)
@@ -148,10 +188,30 @@ class TestArxivAdapter:
         assert "arXiv:" not in items[0].raw_content
 
     @respx.mock
+    async def test_fetch_latest_extracts_html_content_when_available(self) -> None:
+        respx.get("https://arxiv.org/rss/cs.AI").mock(
+            return_value=httpx.Response(200, text=SAMPLE_ARXIV_FEED)
+        )
+        respx.get("https://arxiv.org/html/2401.12345").mock(
+            return_value=httpx.Response(200, text=SAMPLE_ARXIV_HTML)
+        )
+        respx.get("https://arxiv.org/html/2401.12346").mock(return_value=httpx.Response(404))
+
+        async with httpx.AsyncClient() as client:
+            adapter = ArxivAdapter(http_client=client)
+            items = await adapter.fetch_latest("cs.AI")
+
+        assert len(items) == 2
+        assert "Neural machine translation has seen remarkable progress" in items[0].raw_content
+        assert "methodology involves training models" in items[0].raw_content
+        assert "should be excluded" not in items[0].raw_content
+
+    @respx.mock
     async def test_fetch_latest_extracts_url(self) -> None:
         respx.get("https://arxiv.org/rss/cs.AI").mock(
             return_value=httpx.Response(200, text=SAMPLE_ARXIV_FEED)
         )
+        mock_html_not_available()
 
         async with httpx.AsyncClient() as client:
             adapter = ArxivAdapter(http_client=client)
@@ -165,6 +225,7 @@ class TestArxivAdapter:
         respx.get("https://arxiv.org/rss/cs.AI").mock(
             return_value=httpx.Response(200, text=SAMPLE_ARXIV_FEED)
         )
+        mock_html_not_available()
 
         async with httpx.AsyncClient() as client:
             adapter = ArxivAdapter(http_client=client)
@@ -179,6 +240,7 @@ class TestArxivAdapter:
         respx.get("https://custom.arxiv.org/feed").mock(
             return_value=httpx.Response(200, text=SAMPLE_ARXIV_FEED)
         )
+        mock_html_not_available()
 
         async with httpx.AsyncClient() as client:
             adapter = ArxivAdapter(http_client=client)
@@ -213,6 +275,7 @@ class TestArxivAdapter:
         respx.get("https://arxiv.org/rss/cs.AI").mock(
             return_value=httpx.Response(200, text=SAMPLE_ARXIV_FEED)
         )
+        mock_html_not_available()
 
         adapter = ArxivAdapter()
         items = await adapter.fetch_latest("cs.AI")
@@ -257,6 +320,36 @@ class TestTitleCleaning:
     def test_clean_title_normalizes_whitespace(self) -> None:
         adapter = ArxivAdapter()
         assert adapter._clean_title("Title  with   spaces") == "Title with spaces"
+
+
+class TestHtmlContentExtraction:
+    def test_extract_paper_content_from_article(self) -> None:
+        adapter = ArxivAdapter()
+        content = adapter._extract_paper_content(SAMPLE_ARXIV_HTML)
+        assert content is not None
+        assert "Neural machine translation" in content
+        assert "methodology involves training models" in content
+
+    def test_extract_paper_content_excludes_references(self) -> None:
+        adapter = ArxivAdapter()
+        content = adapter._extract_paper_content(SAMPLE_ARXIV_HTML)
+        assert content is not None
+        assert "should be excluded" not in content
+
+    def test_extract_paper_content_empty_html(self) -> None:
+        adapter = ArxivAdapter()
+        content = adapter._extract_paper_content("<html><body></body></html>")
+        assert content is None
+
+    def test_extract_paper_content_no_article_falls_back_to_body(self) -> None:
+        adapter = ArxivAdapter()
+        html = """<html><body>
+            <p>This is a paragraph with enough content to be extracted.</p>
+            <p>Another paragraph with sufficient text for testing purposes.</p>
+        </body></html>"""
+        content = adapter._extract_paper_content(html)
+        assert content is not None
+        assert "paragraph" in content
 
 
 class TestAbstractExtraction:
