@@ -36,11 +36,13 @@ class IntelStreamBot(commands.Bot):
             ConfigManagement,
             ContentPosting,
             SourceManagement,
+            Summarize,
         )
 
         await self.add_cog(SourceManagement(self))
         await self.add_cog(ConfigManagement(self))
         await self.add_cog(ContentPosting(self))
+        await self.add_cog(Summarize(self))
 
         guild = discord.Object(id=self.settings.discord_guild_id)
         self.tree.copy_global_to(guild=guild)

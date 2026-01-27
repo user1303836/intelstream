@@ -208,7 +208,8 @@ class YouTubeAdapter(BaseAdapter):
 
     async def _fetch_transcript(self, video_id: str) -> str | None:
         try:
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)  # type: ignore[attr-defined]
+            ytt_api = YouTubeTranscriptApi()
+            transcript_list = ytt_api.list(video_id)
 
             try:
                 transcript = transcript_list.find_manually_created_transcript(["en"])
@@ -225,7 +226,7 @@ class YouTubeAdapter(BaseAdapter):
                         return None
 
             entries = transcript.fetch()
-            return " ".join(str(entry["text"]) for entry in entries)
+            return " ".join(str(entry.text) for entry in entries)
 
         except TranscriptsDisabled:
             logger.debug("Transcripts disabled for video", video_id=video_id)

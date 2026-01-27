@@ -101,11 +101,15 @@ class TestYouTubeAdapter:
             ]
         }
 
+        mock_entry1 = MagicMock()
+        mock_entry1.text = "Hello"
+        mock_entry2 = MagicMock()
+        mock_entry2.text = "World"
         mock_transcript = MagicMock()
-        mock_transcript.fetch.return_value = [{"text": "Hello"}, {"text": "World"}]
+        mock_transcript.fetch.return_value = [mock_entry1, mock_entry2]
         mock_transcript_list = MagicMock()
         mock_transcript_list.find_manually_created_transcript.return_value = mock_transcript
-        mock_transcript_api.list_transcripts.return_value = mock_transcript_list
+        mock_transcript_api.return_value.list.return_value = mock_transcript_list
 
         adapter = YouTubeAdapter(api_key="test-key")
         items = await adapter.fetch_latest("@testchannel")
@@ -146,7 +150,7 @@ class TestYouTubeAdapter:
 
         from youtube_transcript_api._errors import TranscriptsDisabled
 
-        mock_transcript_api.list_transcripts.side_effect = TranscriptsDisabled("novideo")
+        mock_transcript_api.return_value.list.side_effect = TranscriptsDisabled("novideo")
 
         adapter = YouTubeAdapter(api_key="test-key")
         items = await adapter.fetch_latest("@testchannel")
