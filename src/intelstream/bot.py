@@ -44,6 +44,22 @@ class IntelStreamBot(commands.Bot):
         await self.add_cog(ContentPosting(self))
         await self.add_cog(Summarize(self))
 
+        # Add global check to restrict commands to configured channel
+        original_interaction_check = self.tree.interaction_check
+
+        async def channel_check(interaction: discord.Interaction) -> bool:
+            if interaction.channel_id != self.settings.discord_channel_id:
+                await interaction.response.send_message(
+                    f"Commands can only be used in <#{self.settings.discord_channel_id}>",
+                    ephemeral=True,
+                )
+                return False
+            if original_interaction_check:
+                return await original_interaction_check(interaction)
+            return True
+
+        self.tree.interaction_check = channel_check
+
         guild = discord.Object(id=self.settings.discord_guild_id)
         self.tree.copy_global_to(guild=guild)
         await self.tree.sync(guild=guild)
