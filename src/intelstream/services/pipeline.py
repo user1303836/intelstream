@@ -86,8 +86,16 @@ class ContentPipeline:
             from intelstream.adapters.page import PageAdapter
             from intelstream.services.page_analyzer import ExtractionProfile
 
-            profile_data = json.loads(source.extraction_profile)
-            profile = ExtractionProfile.from_dict(profile_data)
+            try:
+                profile_data = json.loads(source.extraction_profile)
+                profile = ExtractionProfile.from_dict(profile_data)
+            except (json.JSONDecodeError, KeyError) as e:
+                logger.error(
+                    "Invalid extraction profile",
+                    source_name=source.name,
+                    error=str(e),
+                )
+                return 0
             adapter = PageAdapter(extraction_profile=profile, http_client=self._http_client)
         else:
             adapter = self._adapters.get(source.type)
