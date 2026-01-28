@@ -95,13 +95,31 @@ class TestGetDestination:
 
     async def test_get_destination_not_found(self, forwarder, mock_bot):
         mock_guild = MagicMock()
+        mock_guild.id = 123456
         mock_guild.get_thread = MagicMock(return_value=None)
+        mock_guild.fetch_channel = AsyncMock(side_effect=discord.NotFound(MagicMock(), "Not found"))
         mock_bot.guilds = [mock_guild]
         mock_bot.get_channel = MagicMock(return_value=None)
 
         result = await forwarder._get_destination(99999, "thread")
 
         assert result is None
+
+    async def test_get_thread_destination_via_api_fetch(self, forwarder, mock_bot):
+        mock_thread = MagicMock(spec=discord.Thread)
+        mock_thread.name = "test-thread"
+        mock_thread.archived = False
+        mock_guild = MagicMock()
+        mock_guild.id = 123456
+        mock_guild.get_thread = MagicMock(return_value=None)
+        mock_guild.fetch_channel = AsyncMock(return_value=mock_thread)
+        mock_bot.guilds = [mock_guild]
+        mock_bot.get_channel = MagicMock(return_value=None)
+
+        result = await forwarder._get_destination(12345, "thread")
+
+        assert result == mock_thread
+        mock_guild.fetch_channel.assert_called_once_with(12345)
 
 
 class TestDownloadAttachments:

@@ -29,6 +29,7 @@ class MessageForwarding(commands.Cog):
 
     async def _refresh_cache(self) -> None:
         self._rules_cache.clear()
+        total_rules = 0
         for guild in self.bot.guilds:
             rules = await self.bot.repository.get_forwarding_rules_for_guild(str(guild.id))
             for rule in rules:
@@ -36,6 +37,13 @@ class MessageForwarding(commands.Cog):
                     if rule.source_channel_id not in self._rules_cache:
                         self._rules_cache[rule.source_channel_id] = []
                     self._rules_cache[rule.source_channel_id].append(rule)
+                    total_rules += 1
+
+        logger.info(
+            "Forwarding rules cache refreshed",
+            total_active_rules=total_rules,
+            source_channels=list(self._rules_cache.keys()),
+        )
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
@@ -51,8 +59,25 @@ class MessageForwarding(commands.Cog):
         if not rules:
             return
 
+        logger.debug(
+            "Message received in forwarding source channel",
+            channel_id=channel_id,
+            channel_name=getattr(message.channel, "name", "Unknown"),
+            message_id=message.id,
+            author_id=message.author.id,
+            rules_count=len(rules),
+        )
+
         for rule in rules:
             destination_id = int(rule.destination_channel_id)
+
+            logger.debug(
+                "Attempting to forward message",
+                source_channel_id=channel_id,
+                destination_id=destination_id,
+                destination_type=rule.destination_type,
+                rule_id=rule.id,
+            )
 
             forwarded = await self.forwarder.forward_message(
                 message=message,
@@ -62,6 +87,19 @@ class MessageForwarding(commands.Cog):
 
             if forwarded:
                 await self.bot.repository.increment_forwarding_count(rule.id)
+                logger.debug(
+                    "Forward succeeded, count incremented",
+                    rule_id=rule.id,
+                    forwarded_message_id=forwarded.id,
+                )
+            else:
+                logger.warning(
+                    "Forward failed",
+                    source_channel_id=channel_id,
+                    destination_id=destination_id,
+                    destination_type=rule.destination_type,
+                    rule_id=rule.id,
+                )
 
     @forward_group.command(name="add", description="Add a forwarding rule")
     @app_commands.describe(

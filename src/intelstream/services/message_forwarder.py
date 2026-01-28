@@ -71,18 +71,94 @@ class MessageForwarder:
     async def _get_destination(
         self, destination_id: int, destination_type: str
     ) -> discord.TextChannel | discord.Thread | None:
+        logger.debug(
+            "Resolving forwarding destination",
+            destination_id=destination_id,
+            destination_type=destination_type,
+        )
+
         if destination_type == "thread":
             channel = self.bot.get_channel(destination_id)
+            logger.debug(
+                "Thread lookup via get_channel",
+                destination_id=destination_id,
+                found=channel is not None,
+                channel_type=type(channel).__name__ if channel else None,
+            )
             if isinstance(channel, discord.Thread):
+                logger.debug(
+                    "Thread found via get_channel",
+                    thread_id=destination_id,
+                    thread_name=channel.name,
+                    archived=channel.archived,
+                )
                 return channel
+
+            logger.debug(
+                "Thread not in channel cache, searching guilds",
+                destination_id=destination_id,
+                guild_count=len(self.bot.guilds),
+            )
             for guild in self.bot.guilds:
                 thread = guild.get_thread(destination_id)
                 if thread is not None:
+                    logger.debug(
+                        "Thread found via guild search",
+                        thread_id=destination_id,
+                        thread_name=thread.name,
+                        guild_id=guild.id,
+                        archived=thread.archived,
+                    )
                     return thread
+
+            logger.debug(
+                "Thread not in any guild cache, attempting API fetch",
+                destination_id=destination_id,
+            )
+            for guild in self.bot.guilds:
+                try:
+                    fetched = await guild.fetch_channel(destination_id)
+                    if isinstance(fetched, discord.Thread):
+                        logger.info(
+                            "Thread fetched from API",
+                            thread_id=destination_id,
+                            thread_name=fetched.name,
+                            guild_id=guild.id,
+                            archived=fetched.archived,
+                        )
+                        return fetched
+                except discord.NotFound:
+                    continue
+                except discord.Forbidden:
+                    logger.debug(
+                        "No permission to fetch channel in guild",
+                        guild_id=guild.id,
+                        destination_id=destination_id,
+                    )
+                    continue
+
+            logger.warning(
+                "Thread not found in any cache or via API",
+                destination_id=destination_id,
+                guilds_searched=[g.id for g in self.bot.guilds],
+            )
             return None
+
         channel = self.bot.get_channel(destination_id)
+        logger.debug(
+            "Channel lookup via get_channel",
+            destination_id=destination_id,
+            found=channel is not None,
+            channel_type=type(channel).__name__ if channel else None,
+        )
         if isinstance(channel, discord.TextChannel):
             return channel
+
+        logger.warning(
+            "Channel not found or wrong type",
+            destination_id=destination_id,
+            actual_type=type(channel).__name__ if channel else None,
+        )
         return None
 
     async def _download_attachments(
