@@ -7,6 +7,7 @@ import structlog
 
 from intelstream.adapters.base import BaseAdapter, ContentData
 from intelstream.adapters.strategies import (
+    DiscoveredPost,
     DiscoveryResult,
     DiscoveryStrategy,
     LLMExtractionStrategy,
@@ -135,8 +136,10 @@ class SmartBlogAdapter(BaseAdapter):
 
         await self._repository.reset_failure_count(source.id)
 
-        known_urls = await self._repository.get_known_urls_for_source(source.id)
-        new_posts = [p for p in result.posts if p.url not in known_urls]
+        new_posts: list[DiscoveredPost] = []
+        for post in result.posts:
+            if not await self._repository.content_item_exists(post.url):
+                new_posts.append(post)
 
         if not new_posts:
             logger.debug("No new posts found", identifier=identifier)

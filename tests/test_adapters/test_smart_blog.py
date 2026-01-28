@@ -16,6 +16,7 @@ def mock_repository():
     repo = AsyncMock(spec=Repository)
     repo.get_source_by_identifier = AsyncMock(return_value=None)
     repo.get_known_urls_for_source = AsyncMock(return_value=set())
+    repo.content_item_exists = AsyncMock(return_value=False)
     repo.get_extraction_cache = AsyncMock(return_value=None)
     repo.set_extraction_cache = AsyncMock()
     repo.update_source_discovery_strategy = AsyncMock()
@@ -219,7 +220,11 @@ class TestSmartBlogAdapterFetchLatest:
         sample_source.discovery_strategy = "sitemap"
         sample_source.feed_url = None
         mock_repository.get_source_by_identifier.return_value = sample_source
-        mock_repository.get_known_urls_for_source.return_value = {"https://example.com/old"}
+
+        async def check_exists(url: str) -> bool:
+            return url == "https://example.com/old"
+
+        mock_repository.content_item_exists = AsyncMock(side_effect=check_exists)
 
         discovery_result = DiscoveryResult(
             posts=[

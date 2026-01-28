@@ -268,7 +268,7 @@ class SitemapDiscoveryStrategy(DiscoveryStrategy):
         url_strings = [u["url"] for u in all_urls if isinstance(u["url"], str)]
         for pattern in BLOG_PATH_PATTERNS:
             pattern_urls = [u for u in url_strings if f"/{pattern}/" in u.lower()]
-            if len(pattern_urls) >= 3:
+            if len(pattern_urls) >= 2:
                 for u in url_strings:
                     if f"/{pattern}/" in u.lower():
                         match = re.search(rf"/({pattern})/", u, re.IGNORECASE)
