@@ -336,6 +336,6 @@ class Repository:
         async with self.session() as session:
             result = await session.execute(select(Source).where(Source.id == source_id))
             source = result.scalar_one_or_none()
-            if source and source.consecutive_failures > 0:
+            if source and (source.consecutive_failures or 0) > 0:
                 source.consecutive_failures = 0
                 await session.commit()
