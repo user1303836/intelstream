@@ -1,7 +1,12 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from intelstream.database.models import (
     Base,
@@ -11,6 +16,13 @@ from intelstream.database.models import (
     Source,
     SourceType,
 )
+
+SOURCES_MIGRATIONS: list[tuple[str, str]] = [
+    ("discovery_strategy", "VARCHAR(50)"),
+    ("url_pattern", "VARCHAR(255)"),
+    ("last_content_hash", "VARCHAR(64)"),
+    ("consecutive_failures", "INTEGER DEFAULT 0"),
+]
 
 
 class Repository:
@@ -23,6 +35,17 @@ class Repository:
     async def initialize(self) -> None:
         async with self._engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            await self._migrate_sources_table(conn)
+
+    async def _migrate_sources_table(self, conn: AsyncConnection) -> None:
+        result = await conn.execute(text("PRAGMA table_info(sources)"))
+        existing_columns = {row[1] for row in result.fetchall()}
+
+        for column_name, column_type in SOURCES_MIGRATIONS:
+            if column_name not in existing_columns:
+                await conn.execute(
+                    text(f"ALTER TABLE sources ADD COLUMN {column_name} {column_type}")
+                )
 
     async def close(self) -> None:
         await self._engine.dispose()

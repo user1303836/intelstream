@@ -1,6 +1,8 @@
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from intelstream.database.models import SourceType
 from intelstream.database.repository import Repository
@@ -442,3 +444,51 @@ class TestDiscordConfigOperations:
 
         missing = await repository.get_discord_config("nonexistent")
         assert missing is None
+
+
+class TestMigrations:
+    async def test_migrate_adds_missing_columns_to_sources(self, tmp_path) -> None:
+        db_path = tmp_path / "test.db"
+        db_url = f"sqlite+aiosqlite:///{db_path}"
+
+        engine = create_async_engine(db_url, echo=False)
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("""
+                CREATE TABLE sources (
+                    id VARCHAR(36) PRIMARY KEY,
+                    type VARCHAR(10) NOT NULL,
+                    name VARCHAR(255) NOT NULL,
+                    identifier VARCHAR(512) NOT NULL UNIQUE,
+                    feed_url VARCHAR(512),
+                    extraction_profile TEXT,
+                    poll_interval_minutes INTEGER DEFAULT 5,
+                    is_active BOOLEAN DEFAULT 1,
+                    last_polled_at DATETIME,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+            """)
+            )
+        await engine.dispose()
+
+        repo = Repository(db_url)
+        await repo.initialize()
+
+        async with repo._engine.begin() as conn:
+            result = await conn.execute(text("PRAGMA table_info(sources)"))
+            columns = {row[1] for row in result.fetchall()}
+
+        assert "discovery_strategy" in columns
+        assert "url_pattern" in columns
+        assert "last_content_hash" in columns
+        assert "consecutive_failures" in columns
+
+        await repo.close()
+
+    async def test_migrate_is_idempotent(self, repository: Repository) -> None:
+        await repository.initialize()
+        await repository.initialize()
+
+        sources = await repository.get_all_sources()
+        assert sources == []
