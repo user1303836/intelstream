@@ -31,7 +31,7 @@ class Source(Base):
     discovery_strategy: Mapped[str | None] = mapped_column(String(50), nullable=True)
     url_pattern: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     poll_interval_minutes: Mapped[int] = mapped_column(Integer, default=5)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_polled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
