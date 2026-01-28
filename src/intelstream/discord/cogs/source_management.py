@@ -67,6 +67,14 @@ def parse_source_identifier(source_type: SourceType, url: str) -> tuple[str, str
 class SourceManagement(commands.Cog):
     def __init__(self, bot: "IntelStreamBot") -> None:
         self.bot = bot
+        self._anthropic_client: anthropic.AsyncAnthropic | None = None
+
+    def _get_anthropic_client(self) -> anthropic.AsyncAnthropic:
+        if self._anthropic_client is None:
+            self._anthropic_client = anthropic.AsyncAnthropic(
+                api_key=self.bot.settings.anthropic_api_key
+            )
+        return self._anthropic_client
 
     source_group = app_commands.Group(name="source", description="Manage content sources")
 
@@ -129,9 +137,8 @@ class SourceManagement(commands.Cog):
         discovered_url_pattern: str | None = None
 
         if stype == SourceType.BLOG:
-            anthropic_client = anthropic.AsyncAnthropic(api_key=self.bot.settings.anthropic_api_key)
             adapter = SmartBlogAdapter(
-                anthropic_client=anthropic_client,
+                anthropic_client=self._get_anthropic_client(),
                 repository=self.bot.repository,
             )
             result = await adapter.analyze_site(url)
