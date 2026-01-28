@@ -16,7 +16,10 @@ class Settings(BaseSettings):
 
     discord_bot_token: str = Field(description="Discord bot token")
     discord_guild_id: int = Field(description="Discord guild (server) ID")
-    discord_channel_id: int = Field(description="Discord channel ID for posting summaries")
+    discord_channel_id: int | None = Field(
+        default=None,
+        description="Default Discord channel ID for posting summaries (legacy, now per-source)",
+    )
     discord_owner_id: int = Field(
         description="Discord user ID of the bot owner for DM notifications"
     )

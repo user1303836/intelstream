@@ -50,6 +50,19 @@ class Repository:
                     text(f"ALTER TABLE sources ADD COLUMN {column_name} {column_type}")
                 )
 
+    async def migrate_sources_to_channel(self, guild_id: str, channel_id: str) -> int:
+        """Assign existing sources without a channel to the specified guild and channel."""
+        async with self.session() as session:
+            result = await session.execute(select(Source).where(Source.channel_id.is_(None)))
+            sources = list(result.scalars().all())
+
+            for source in sources:
+                source.guild_id = guild_id
+                source.channel_id = channel_id
+
+            await session.commit()
+            return len(sources)
+
     async def close(self) -> None:
         await self._engine.dispose()
 

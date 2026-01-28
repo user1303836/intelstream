@@ -151,6 +151,8 @@ class ContentPoster:
                     logger.warning("Source not found for content item", item_id=item.id)
                     continue
 
+                # Skip sources belonging to a different guild.
+                # Sources without guild_id are legacy/global and can post to any guild.
                 if source.guild_id and str(guild_id) != source.guild_id:
                     continue
 

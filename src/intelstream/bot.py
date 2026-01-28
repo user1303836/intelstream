@@ -19,7 +19,7 @@ class RestrictedCommandTree(app_commands.CommandTree):
     async def interaction_check(self, interaction: discord.Interaction, /) -> bool:
         bot = cast("IntelStreamBot", self.client)
         allowed_channel_id = bot.settings.discord_channel_id
-        if interaction.channel_id != allowed_channel_id:
+        if allowed_channel_id is not None and interaction.channel_id != allowed_channel_id:
             await interaction.response.send_message(
                 f"Commands can only be used in <#{allowed_channel_id}>",
                 ephemeral=True,
@@ -47,6 +47,17 @@ class IntelStreamBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         await self.repository.initialize()
+
+        if self.settings.discord_channel_id is not None:
+            migrated = await self.repository.migrate_sources_to_channel(
+                guild_id=str(self.settings.discord_guild_id),
+                channel_id=str(self.settings.discord_channel_id),
+            )
+            if migrated > 0:
+                logger.info(
+                    f"Migrated {migrated} existing sources to channel {self.settings.discord_channel_id}"
+                )
+
         await self.add_cog(CoreCommands(self))
 
         from intelstream.discord.cogs import (
