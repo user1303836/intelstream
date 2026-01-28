@@ -136,28 +136,6 @@ class ContentPoster:
         return message
 
     async def post_unposted_items(self, guild_id: int) -> int:
-        config = await self._bot.repository.get_discord_config(str(guild_id))
-
-        if config is None:
-            logger.info(
-                "No Discord config for guild - run /config channel to set up posting",
-                guild_id=guild_id,
-            )
-            return 0
-
-        if not config.is_active:
-            logger.info("Discord config is inactive for guild", guild_id=guild_id)
-            return 0
-
-        channel = self._bot.get_channel(int(config.channel_id))
-        if channel is None or not isinstance(channel, discord.TextChannel):
-            logger.warning(
-                "Could not find output channel - check bot permissions and channel ID",
-                guild_id=guild_id,
-                channel_id=config.channel_id,
-            )
-            return 0
-
         items = await self._bot.repository.get_unposted_content_items()
 
         if not items:
@@ -171,6 +149,31 @@ class ContentPoster:
                 source = await self._bot.repository.get_source_by_id(item.source_id)
                 if source is None:
                     logger.warning("Source not found for content item", item_id=item.id)
+                    continue
+
+                if source.guild_id and str(guild_id) != source.guild_id:
+                    continue
+
+                if not source.channel_id:
+                    config = await self._bot.repository.get_discord_config(str(guild_id))
+                    if config is None or not config.is_active:
+                        logger.debug(
+                            "No channel for source and no guild config",
+                            source_id=source.id,
+                            guild_id=guild_id,
+                        )
+                        continue
+                    channel_id = config.channel_id
+                else:
+                    channel_id = source.channel_id
+
+                channel = self._bot.get_channel(int(channel_id))
+                if channel is None or not isinstance(channel, discord.TextChannel):
+                    logger.warning(
+                        "Could not find channel for source",
+                        source_id=source.id,
+                        channel_id=channel_id,
+                    )
                     continue
 
                 message = await self.post_content(

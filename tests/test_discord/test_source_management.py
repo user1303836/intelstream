@@ -84,6 +84,8 @@ class TestSourceManagementAdd:
         interaction.followup.send = AsyncMock()
         interaction.user = MagicMock()
         interaction.user.id = 123
+        interaction.guild_id = 456
+        interaction.channel_id = 789
 
         source_type_choice = MagicMock()
         source_type_choice.value = "substack"
@@ -106,6 +108,9 @@ class TestSourceManagementAdd:
 
         interaction.response.defer.assert_called_once_with(ephemeral=True)
         mock_bot.repository.add_source.assert_called_once()
+        call_kwargs = mock_bot.repository.add_source.call_args.kwargs
+        assert call_kwargs["guild_id"] == "456"
+        assert call_kwargs["channel_id"] == "789"
         interaction.followup.send.assert_called_once()
         call_kwargs = interaction.followup.send.call_args.kwargs
         assert "embed" in call_kwargs
@@ -218,12 +223,14 @@ class TestSourceManagementList:
         source1.type = SourceType.SUBSTACK
         source1.is_active = True
         source1.last_polled_at = None
+        source1.channel_id = "123456789"
 
         source2 = MagicMock()
         source2.name = "Source 2"
         source2.type = SourceType.RSS
         source2.is_active = False
         source2.last_polled_at = None
+        source2.channel_id = None
 
         mock_bot.repository.get_all_sources = AsyncMock(return_value=[source1, source2])
 

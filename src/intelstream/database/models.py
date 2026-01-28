@@ -26,6 +26,8 @@ class Source(Base):
     type: Mapped[SourceType] = mapped_column(Enum(SourceType), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     identifier: Mapped[str] = mapped_column(String(512), nullable=False, unique=True)
+    guild_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    channel_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     feed_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     extraction_profile: Mapped[str | None] = mapped_column(Text, nullable=True)
     discovery_strategy: Mapped[str | None] = mapped_column(String(50), nullable=True)

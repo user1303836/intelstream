@@ -23,6 +23,8 @@ SOURCES_MIGRATIONS: list[tuple[str, str]] = [
     ("url_pattern", "VARCHAR(255)"),
     ("last_content_hash", "VARCHAR(64)"),
     ("consecutive_failures", "INTEGER DEFAULT 0"),
+    ("guild_id", "VARCHAR(36)"),
+    ("channel_id", "VARCHAR(36)"),
 ]
 
 
@@ -64,6 +66,8 @@ class Repository:
         extraction_profile: str | None = None,
         discovery_strategy: str | None = None,
         url_pattern: str | None = None,
+        guild_id: str | None = None,
+        channel_id: str | None = None,
     ) -> Source:
         async with self.session() as session:
             source = Source(
@@ -75,6 +79,8 @@ class Repository:
                 extraction_profile=extraction_profile,
                 discovery_strategy=discovery_strategy,
                 url_pattern=url_pattern,
+                guild_id=guild_id,
+                channel_id=channel_id,
             )
             session.add(source)
             await session.commit()
@@ -176,6 +182,15 @@ class Repository:
                 .where(ContentItem.posted_to_discord == False)  # noqa: E712
                 .where(ContentItem.summary.isnot(None))
                 .order_by(ContentItem.published_at.asc())
+            )
+            return list(result.scalars().all())
+
+    async def get_sources_for_guild(self, guild_id: str) -> list[Source]:
+        async with self.session() as session:
+            result = await session.execute(
+                select(Source)
+                .where(Source.guild_id == guild_id)
+                .where(Source.is_active == True)  # noqa: E712
             )
             return list(result.scalars().all())
 

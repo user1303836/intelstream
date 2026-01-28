@@ -34,6 +34,20 @@ class TestSourceOperations:
         assert source.poll_interval_minutes == 10
         assert source.is_active is True
 
+    async def test_add_source_with_channel(self, repository: Repository) -> None:
+        source = await repository.add_source(
+            source_type=SourceType.SUBSTACK,
+            name="Channel Scoped Source",
+            identifier="channel-scoped",
+            feed_url="https://test.substack.com/feed",
+            guild_id="guild-123",
+            channel_id="channel-456",
+        )
+
+        assert source.id is not None
+        assert source.guild_id == "guild-123"
+        assert source.channel_id == "channel-456"
+
     async def test_get_source_by_identifier(self, repository: Repository) -> None:
         await repository.add_source(
             source_type=SourceType.YOUTUBE,
@@ -483,6 +497,8 @@ class TestMigrations:
         assert "url_pattern" in columns
         assert "last_content_hash" in columns
         assert "consecutive_failures" in columns
+        assert "guild_id" in columns
+        assert "channel_id" in columns
 
         await repo.close()
 

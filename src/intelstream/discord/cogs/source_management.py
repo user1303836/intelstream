@@ -200,6 +200,8 @@ class SourceManagement(commands.Cog):
             extraction_profile=extraction_profile_json,
             discovery_strategy=discovery_strategy,
             url_pattern=discovered_url_pattern,
+            guild_id=str(interaction.guild_id) if interaction.guild_id else None,
+            channel_id=str(interaction.channel_id),
         )
 
         logger.info(
@@ -247,9 +249,10 @@ class SourceManagement(commands.Cog):
                 if source.last_polled_at
                 else "Never"
             )
+            channel_info = f"<#{source.channel_id}>" if source.channel_id else "Not set"
             embed.add_field(
                 name=f"{'[ON]' if source.is_active else '[OFF]'} {source.name}",
-                value=f"**Type:** {source.type.value}\n**Status:** {status}\n**Last Poll:** {last_poll}",
+                value=f"**Type:** {source.type.value}\n**Channel:** {channel_info}\n**Status:** {status}\n**Last Poll:** {last_poll}",
                 inline=True,
             )
 

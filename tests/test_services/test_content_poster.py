@@ -193,54 +193,49 @@ class TestContentPosterPostContent:
 
 
 class TestContentPosterPostUnpostedItems:
-    async def test_returns_zero_when_no_config(self, content_poster, mock_bot):
-        mock_bot.repository.get_discord_config = AsyncMock(return_value=None)
-
-        result = await content_poster.post_unposted_items(guild_id=123)
-
-        assert result == 0
-
-    async def test_returns_zero_when_config_inactive(self, content_poster, mock_bot):
-        mock_config = MagicMock()
-        mock_config.is_active = False
-        mock_bot.repository.get_discord_config = AsyncMock(return_value=mock_config)
-
-        result = await content_poster.post_unposted_items(guild_id=123)
-
-        assert result == 0
-
-    async def test_returns_zero_when_channel_not_found(self, content_poster, mock_bot):
-        mock_config = MagicMock()
-        mock_config.is_active = True
-        mock_config.channel_id = "999"
-        mock_bot.repository.get_discord_config = AsyncMock(return_value=mock_config)
-        mock_bot.get_channel = MagicMock(return_value=None)
-
-        result = await content_poster.post_unposted_items(guild_id=123)
-
-        assert result == 0
-
     async def test_returns_zero_when_no_items(self, content_poster, mock_bot):
-        mock_config = MagicMock()
-        mock_config.is_active = True
-        mock_config.channel_id = "456"
-        mock_bot.repository.get_discord_config = AsyncMock(return_value=mock_config)
-
-        mock_channel = MagicMock(spec=discord.TextChannel)
-        mock_bot.get_channel = MagicMock(return_value=mock_channel)
-
         mock_bot.repository.get_unposted_content_items = AsyncMock(return_value=[])
 
         result = await content_poster.post_unposted_items(guild_id=123)
 
         assert result == 0
 
-    async def test_posts_items_and_marks_posted(
+    async def test_posts_to_source_channel(
+        self, content_poster, mock_bot, sample_content_item
+    ):
+        mock_channel = MagicMock(spec=discord.TextChannel)
+        mock_message = MagicMock(spec=discord.Message)
+        mock_message.id = 789
+        mock_channel.send = AsyncMock(return_value=mock_message)
+        mock_bot.get_channel = MagicMock(return_value=mock_channel)
+
+        mock_bot.repository.get_unposted_content_items = AsyncMock(
+            return_value=[sample_content_item]
+        )
+
+        mock_source = MagicMock()
+        mock_source.type = SourceType.SUBSTACK
+        mock_source.name = "Test Source"
+        mock_source.guild_id = "123"
+        mock_source.channel_id = "456"
+        mock_bot.repository.get_source_by_id = AsyncMock(return_value=mock_source)
+        mock_bot.repository.mark_content_item_posted = AsyncMock()
+
+        result = await content_poster.post_unposted_items(guild_id=123)
+
+        assert result == 1
+        mock_bot.get_channel.assert_called_with(456)
+        mock_bot.repository.mark_content_item_posted.assert_called_once_with(
+            content_id=sample_content_item.id,
+            discord_message_id="789",
+        )
+
+    async def test_falls_back_to_guild_config_when_no_source_channel(
         self, content_poster, mock_bot, sample_content_item
     ):
         mock_config = MagicMock()
         mock_config.is_active = True
-        mock_config.channel_id = "456"
+        mock_config.channel_id = "999"
         mock_bot.repository.get_discord_config = AsyncMock(return_value=mock_config)
 
         mock_channel = MagicMock(spec=discord.TextChannel)
@@ -256,24 +251,75 @@ class TestContentPosterPostUnpostedItems:
         mock_source = MagicMock()
         mock_source.type = SourceType.SUBSTACK
         mock_source.name = "Test Source"
+        mock_source.guild_id = None
+        mock_source.channel_id = None
         mock_bot.repository.get_source_by_id = AsyncMock(return_value=mock_source)
         mock_bot.repository.mark_content_item_posted = AsyncMock()
-        mock_bot.repository.has_source_posted_content = AsyncMock(return_value=True)
 
         result = await content_poster.post_unposted_items(guild_id=123)
 
         assert result == 1
-        mock_bot.repository.mark_content_item_posted.assert_called_once_with(
-            content_id=sample_content_item.id,
-            discord_message_id="789",
+        mock_bot.get_channel.assert_called_with(999)
+
+    async def test_skips_item_from_different_guild(
+        self, content_poster, mock_bot, sample_content_item
+    ):
+        mock_bot.repository.get_unposted_content_items = AsyncMock(
+            return_value=[sample_content_item]
         )
 
-    async def test_continues_on_http_exception(self, content_poster, mock_bot, sample_content_item):
-        mock_config = MagicMock()
-        mock_config.is_active = True
-        mock_config.channel_id = "456"
-        mock_bot.repository.get_discord_config = AsyncMock(return_value=mock_config)
+        mock_source = MagicMock()
+        mock_source.type = SourceType.SUBSTACK
+        mock_source.name = "Test Source"
+        mock_source.guild_id = "999"
+        mock_source.channel_id = "456"
+        mock_bot.repository.get_source_by_id = AsyncMock(return_value=mock_source)
 
+        result = await content_poster.post_unposted_items(guild_id=123)
+
+        assert result == 0
+
+    async def test_skips_when_no_channel_and_no_config(
+        self, content_poster, mock_bot, sample_content_item
+    ):
+        mock_bot.repository.get_discord_config = AsyncMock(return_value=None)
+
+        mock_bot.repository.get_unposted_content_items = AsyncMock(
+            return_value=[sample_content_item]
+        )
+
+        mock_source = MagicMock()
+        mock_source.type = SourceType.SUBSTACK
+        mock_source.name = "Test Source"
+        mock_source.guild_id = None
+        mock_source.channel_id = None
+        mock_bot.repository.get_source_by_id = AsyncMock(return_value=mock_source)
+
+        result = await content_poster.post_unposted_items(guild_id=123)
+
+        assert result == 0
+
+    async def test_skips_when_channel_not_found(
+        self, content_poster, mock_bot, sample_content_item
+    ):
+        mock_bot.get_channel = MagicMock(return_value=None)
+
+        mock_bot.repository.get_unposted_content_items = AsyncMock(
+            return_value=[sample_content_item]
+        )
+
+        mock_source = MagicMock()
+        mock_source.type = SourceType.SUBSTACK
+        mock_source.name = "Test Source"
+        mock_source.guild_id = "123"
+        mock_source.channel_id = "456"
+        mock_bot.repository.get_source_by_id = AsyncMock(return_value=mock_source)
+
+        result = await content_poster.post_unposted_items(guild_id=123)
+
+        assert result == 0
+
+    async def test_continues_on_http_exception(self, content_poster, mock_bot, sample_content_item):
         mock_channel = MagicMock(spec=discord.TextChannel)
         mock_response = MagicMock()
         mock_response.status = 500
@@ -289,8 +335,9 @@ class TestContentPosterPostUnpostedItems:
         mock_source = MagicMock()
         mock_source.type = SourceType.SUBSTACK
         mock_source.name = "Test Source"
+        mock_source.guild_id = "123"
+        mock_source.channel_id = "456"
         mock_bot.repository.get_source_by_id = AsyncMock(return_value=mock_source)
-        mock_bot.repository.has_source_posted_content = AsyncMock(return_value=True)
 
         result = await content_poster.post_unposted_items(guild_id=123)
 
@@ -299,19 +346,10 @@ class TestContentPosterPostUnpostedItems:
     async def test_skips_item_when_source_not_found(
         self, content_poster, mock_bot, sample_content_item
     ):
-        mock_config = MagicMock()
-        mock_config.is_active = True
-        mock_config.channel_id = "456"
-        mock_bot.repository.get_discord_config = AsyncMock(return_value=mock_config)
-
-        mock_channel = MagicMock(spec=discord.TextChannel)
-        mock_bot.get_channel = MagicMock(return_value=mock_channel)
-
         mock_bot.repository.get_unposted_content_items = AsyncMock(
             return_value=[sample_content_item]
         )
         mock_bot.repository.get_source_by_id = AsyncMock(return_value=None)
-        mock_bot.repository.has_source_posted_content = AsyncMock(return_value=True)
 
         result = await content_poster.post_unposted_items(guild_id=123)
 
