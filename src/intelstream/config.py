@@ -65,7 +65,12 @@ class Settings(BaseSettings):
 
     summary_model: str = Field(
         default="claude-3-5-haiku-20241022",
-        description="Model to use for summarization",
+        description="Model to use for background summarization",
+    )
+
+    summary_model_interactive: str = Field(
+        default="claude-sonnet-4-20250514",
+        description="Model to use for interactive /summarize command",
     )
 
     discord_max_message_length: int = Field(

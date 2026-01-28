@@ -62,7 +62,7 @@ class Summarize(commands.Cog):
         )
         self._summarizer = SummarizationService(
             api_key=self.bot.settings.anthropic_api_key,
-            model=self.bot.settings.summary_model,
+            model=self.bot.settings.summary_model_interactive,
             max_tokens=self.bot.settings.summary_max_tokens,
             max_input_length=self.bot.settings.summary_max_input_length,
         )
@@ -305,7 +305,7 @@ class Summarize(commands.Cog):
             if not self._summarizer:
                 self._summarizer = SummarizationService(
                     api_key=self.bot.settings.anthropic_api_key,
-                    model=self.bot.settings.summary_model,
+                    model=self.bot.settings.summary_model_interactive,
                     max_tokens=self.bot.settings.summary_max_tokens,
                     max_input_length=self.bot.settings.summary_max_input_length,
                 )
