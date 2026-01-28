@@ -151,12 +151,12 @@ class LLMExtractionStrategy(DiscoveryStrategy):
         if len(cleaned) > MAX_HTML_LENGTH:
             truncated = cleaned[:MAX_HTML_LENGTH]
             last_close = truncated.rfind(">")
-            if last_close > 0:
+            if last_close > MAX_HTML_LENGTH - 1000:
                 truncated = truncated[: last_close + 1]
             else:
-                last_space = truncated.rfind(" ")
-                if last_space > MAX_HTML_LENGTH - 1000:
-                    truncated = truncated[:last_space]
+                last_open = truncated.rfind("<")
+                if last_open > 0:
+                    truncated = truncated[:last_open]
             cleaned = truncated
 
         return cleaned
