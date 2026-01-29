@@ -24,7 +24,8 @@ class MessageForwarding(commands.Cog):
         self.forwarder = MessageForwarder(bot)
         self._rules_cache: dict[str, list[Any]] = {}
 
-    async def cog_load(self) -> None:
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
         await self._refresh_cache()
 
     async def _refresh_cache(self) -> None:
