@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 
+import structlog
 from sqlalchemy import exists, select, text
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
@@ -18,6 +19,8 @@ from intelstream.database.models import (
     Source,
     SourceType,
 )
+
+logger = structlog.get_logger()
 
 SOURCES_MIGRATIONS: list[tuple[str, str]] = [
     ("discovery_strategy", "VARCHAR(50)"),
@@ -41,9 +44,11 @@ class Repository:
         )
 
     async def initialize(self) -> None:
+        logger.info("Initializing database")
         async with self._engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             await self._migrate_sources_table(conn)
+        logger.info("Database initialization complete")
 
     async def _migrate_sources_table(self, conn: AsyncConnection) -> None:
         result = await conn.execute(text("PRAGMA table_info(sources)"))
@@ -51,6 +56,7 @@ class Repository:
 
         for column_name, column_type in SOURCES_MIGRATIONS:
             if column_name not in existing_columns:
+                logger.info("Applying migration", column=column_name)
                 await conn.execute(
                     text(f"ALTER TABLE sources ADD COLUMN {column_name} {column_type}")
                 )
@@ -109,6 +115,13 @@ class Repository:
             session.add(source)
             await session.commit()
             await session.refresh(source)
+            logger.info(
+                "Source added",
+                source_id=source.id,
+                name=name,
+                type=source_type.value,
+                identifier=identifier,
+            )
             return source
 
     async def get_source_by_identifier(self, identifier: str) -> Source | None:
@@ -173,6 +186,15 @@ class Repository:
                     source.pause_reason = PauseReason.NONE.value
                 await session.commit()
                 await session.refresh(source)
+                logger.info(
+                    "Source active state changed",
+                    source_id=source.id,
+                    identifier=identifier,
+                    is_active=is_active,
+                    pause_reason=source.pause_reason,
+                )
+            else:
+                logger.warning("Source not found for active state change", identifier=identifier)
             return source
 
     async def delete_source(self, identifier: str) -> bool:
@@ -180,9 +202,12 @@ class Repository:
             result = await session.execute(select(Source).where(Source.identifier == identifier))
             source = result.scalar_one_or_none()
             if source:
+                source_id = source.id
                 await session.delete(source)
                 await session.commit()
+                logger.info("Source deleted", source_id=source_id, identifier=identifier)
                 return True
+            logger.warning("Source not found for deletion", identifier=identifier)
             return False
 
     async def add_content_item(
@@ -210,6 +235,13 @@ class Repository:
             session.add(content_item)
             await session.commit()
             await session.refresh(content_item)
+            logger.debug(
+                "Content item added",
+                content_id=content_item.id,
+                source_id=source_id,
+                external_id=external_id,
+                title=title,
+            )
             return content_item
 
     async def get_content_item_by_external_id(self, external_id: str) -> ContentItem | None:
@@ -303,7 +335,9 @@ class Repository:
             if content_item:
                 content_item.summary = summary
                 await session.commit()
+                logger.debug("Content item summary updated", content_id=content_id)
                 return True
+            logger.warning("Content item not found for summary update", content_id=content_id)
             return False
 
     async def mark_content_item_posted(self, content_id: str, discord_message_id: str) -> bool:
@@ -314,7 +348,13 @@ class Repository:
                 content_item.posted_to_discord = True
                 content_item.discord_message_id = discord_message_id
                 await session.commit()
+                logger.debug(
+                    "Content item marked as posted",
+                    content_id=content_id,
+                    discord_message_id=discord_message_id,
+                )
                 return True
+            logger.warning("Content item not found for posting", content_id=content_id)
             return False
 
     async def get_latest_content_for_source(self, source_id: str) -> ContentItem | None:
@@ -425,7 +465,13 @@ class Repository:
             if source:
                 source.consecutive_failures = (source.consecutive_failures or 0) + 1
                 await session.commit()
+                logger.debug(
+                    "Source failure count incremented",
+                    source_id=source_id,
+                    consecutive_failures=source.consecutive_failures,
+                )
                 return source.consecutive_failures
+            logger.warning("Source not found for failure count increment", source_id=source_id)
             return 0
 
     async def reset_failure_count(self, source_id: str) -> bool:
@@ -458,6 +504,13 @@ class Repository:
             session.add(rule)
             await session.commit()
             await session.refresh(rule)
+            logger.info(
+                "Forwarding rule added",
+                rule_id=rule.id,
+                guild_id=guild_id,
+                source_channel_id=source_channel_id,
+                destination_channel_id=destination_channel_id,
+            )
             return rule
 
     async def get_forwarding_rules_for_source(self, source_channel_id: str) -> list[ForwardingRule]:
@@ -503,9 +556,23 @@ class Repository:
             )
             rule = result.scalar_one_or_none()
             if rule:
+                rule_id = rule.id
                 await session.delete(rule)
                 await session.commit()
+                logger.info(
+                    "Forwarding rule deleted",
+                    rule_id=rule_id,
+                    guild_id=guild_id,
+                    source_channel_id=source_channel_id,
+                    destination_channel_id=destination_channel_id,
+                )
                 return True
+            logger.warning(
+                "Forwarding rule not found for deletion",
+                guild_id=guild_id,
+                source_channel_id=source_channel_id,
+                destination_channel_id=destination_channel_id,
+            )
             return False
 
     async def set_forwarding_rule_active(
