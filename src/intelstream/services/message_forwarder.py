@@ -46,13 +46,11 @@ class MessageForwarder:
                         return None
 
                 content = self._build_forwarded_content(message)
-                embeds = message.embeds[:10] if message.embeds else []
                 files = await self._download_attachments(message, destination)
 
                 try:
                     forwarded = await destination.send(
                         content=content,
-                        embeds=embeds,
                         files=files,
                     )
                 except Exception:
