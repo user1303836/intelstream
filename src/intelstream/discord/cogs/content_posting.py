@@ -58,6 +58,8 @@ class ContentPosting(commands.Cog):
 
     async def cog_unload(self) -> None:
         self.content_loop.cancel()
+        if self.content_loop.is_running():
+            await asyncio.sleep(0.1)
 
         try:
             if self._pipeline:
