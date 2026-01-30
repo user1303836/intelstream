@@ -1,15 +1,15 @@
-import logging
 from datetime import UTC, datetime
 from typing import Any
 
 import discord
+import structlog
 from discord import app_commands
 from discord.ext import commands
 
 from intelstream.config import Settings
 from intelstream.database.repository import Repository
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class RestrictedCommandTree(app_commands.CommandTree):
@@ -28,6 +28,68 @@ class RestrictedCommandTree(app_commands.CommandTree):
             )
             return False
         return True
+
+    async def on_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        original_error: BaseException = error
+        if isinstance(error, app_commands.CommandInvokeError):
+            original_error = error.original
+
+        command_name = interaction.command.name if interaction.command else "unknown"
+
+        if isinstance(original_error, discord.Forbidden):
+            logger.error(
+                "Missing permissions for command response",
+                command=command_name,
+                user_id=interaction.user.id,
+                channel_id=interaction.channel_id,
+                error=str(original_error),
+            )
+            return
+
+        if isinstance(original_error, discord.NotFound):
+            logger.warning(
+                "Interaction expired or invalid",
+                command=command_name,
+                user_id=interaction.user.id,
+                error=str(original_error),
+            )
+            return
+
+        if isinstance(original_error, discord.HTTPException):
+            logger.error(
+                "Discord API error during command",
+                command=command_name,
+                user_id=interaction.user.id,
+                status=original_error.status,
+                error=str(original_error),
+            )
+            await self._send_error_response(
+                interaction, "A Discord error occurred. Please try again."
+            )
+            return
+
+        logger.exception(
+            "Unhandled error in command",
+            command=command_name,
+            user_id=interaction.user.id,
+            error=str(original_error),
+        )
+        await self._send_error_response(
+            interaction, "An unexpected error occurred. Please try again."
+        )
+
+    async def _send_error_response(
+        self, interaction: discord.Interaction, message: str
+    ) -> None:
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+        except discord.HTTPException:
+            pass
 
 
 class IntelStreamBot(commands.Bot):
