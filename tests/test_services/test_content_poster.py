@@ -216,7 +216,9 @@ class TestContentPosterPostUnpostedItems:
         mock_source.name = "Test Source"
         mock_source.guild_id = "123"
         mock_source.channel_id = "456"
-        mock_bot.repository.get_source_by_id = AsyncMock(return_value=mock_source)
+        mock_bot.repository.get_sources_by_ids = AsyncMock(
+            return_value={sample_content_item.source_id: mock_source}
+        )
         mock_bot.repository.mark_content_item_posted = AsyncMock()
 
         result = await content_poster.post_unposted_items(guild_id=123)
@@ -251,7 +253,9 @@ class TestContentPosterPostUnpostedItems:
         mock_source.name = "Test Source"
         mock_source.guild_id = None
         mock_source.channel_id = None
-        mock_bot.repository.get_source_by_id = AsyncMock(return_value=mock_source)
+        mock_bot.repository.get_sources_by_ids = AsyncMock(
+            return_value={sample_content_item.source_id: mock_source}
+        )
         mock_bot.repository.mark_content_item_posted = AsyncMock()
 
         result = await content_poster.post_unposted_items(guild_id=123)
@@ -271,7 +275,9 @@ class TestContentPosterPostUnpostedItems:
         mock_source.name = "Test Source"
         mock_source.guild_id = "999"
         mock_source.channel_id = "456"
-        mock_bot.repository.get_source_by_id = AsyncMock(return_value=mock_source)
+        mock_bot.repository.get_sources_by_ids = AsyncMock(
+            return_value={sample_content_item.source_id: mock_source}
+        )
 
         result = await content_poster.post_unposted_items(guild_id=123)
 
@@ -291,7 +297,9 @@ class TestContentPosterPostUnpostedItems:
         mock_source.name = "Test Source"
         mock_source.guild_id = None
         mock_source.channel_id = None
-        mock_bot.repository.get_source_by_id = AsyncMock(return_value=mock_source)
+        mock_bot.repository.get_sources_by_ids = AsyncMock(
+            return_value={sample_content_item.source_id: mock_source}
+        )
 
         result = await content_poster.post_unposted_items(guild_id=123)
 
@@ -311,7 +319,9 @@ class TestContentPosterPostUnpostedItems:
         mock_source.name = "Test Source"
         mock_source.guild_id = "123"
         mock_source.channel_id = "456"
-        mock_bot.repository.get_source_by_id = AsyncMock(return_value=mock_source)
+        mock_bot.repository.get_sources_by_ids = AsyncMock(
+            return_value={sample_content_item.source_id: mock_source}
+        )
 
         result = await content_poster.post_unposted_items(guild_id=123)
 
@@ -335,7 +345,9 @@ class TestContentPosterPostUnpostedItems:
         mock_source.name = "Test Source"
         mock_source.guild_id = "123"
         mock_source.channel_id = "456"
-        mock_bot.repository.get_source_by_id = AsyncMock(return_value=mock_source)
+        mock_bot.repository.get_sources_by_ids = AsyncMock(
+            return_value={sample_content_item.source_id: mock_source}
+        )
 
         result = await content_poster.post_unposted_items(guild_id=123)
 
@@ -347,7 +359,7 @@ class TestContentPosterPostUnpostedItems:
         mock_bot.repository.get_unposted_content_items = AsyncMock(
             return_value=[sample_content_item]
         )
-        mock_bot.repository.get_source_by_id = AsyncMock(return_value=None)
+        mock_bot.repository.get_sources_by_ids = AsyncMock(return_value={})
 
         result = await content_poster.post_unposted_items(guild_id=123)
 
@@ -400,3 +412,13 @@ class TestTruncateSummaryAtBullet:
         result = truncate_summary_at_bullet(summary, len(summary))
         assert result == summary
         assert TRUNCATION_NOTICE not in result
+
+    def test_removes_orphaned_sub_bullet_when_no_parent_found(self):
+        summary = """Some intro text
+  - Sub bullet A
+  - Sub bullet B
+  - Sub bullet C"""
+        result = truncate_summary_at_bullet(summary, 60)
+        assert "Some intro text" in result
+        assert "Sub bullet" not in result
+        assert TRUNCATION_NOTICE.strip() in result
