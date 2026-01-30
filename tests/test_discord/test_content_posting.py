@@ -302,12 +302,12 @@ class TestContentLoopBackoff:
     @patch("intelstream.discord.cogs.content_posting.SummarizationService")
     @patch("intelstream.discord.cogs.content_posting.ContentPipeline")
     @patch("intelstream.discord.cogs.content_posting.ContentPoster")
-    async def test_backoff_pauses_after_max_failures(
+    async def test_circuit_breaker_notifies_and_retries_hourly(
         self, _mock_poster_cls, mock_pipeline_cls, _mock_summarizer_cls, mock_bot
     ):
         mock_pipeline = MagicMock()
         mock_pipeline.initialize = AsyncMock()
-        mock_pipeline.run_cycle = AsyncMock(return_value=(5, 3))
+        mock_pipeline.run_cycle = AsyncMock(side_effect=Exception("Still failing"))
         mock_pipeline_cls.return_value = mock_pipeline
 
         cog = ContentPosting(mock_bot)
@@ -316,12 +316,40 @@ class TestContentLoopBackoff:
 
         await cog.content_loop()
 
-        mock_pipeline.run_cycle.assert_not_called()
+        assert mock_bot.notify_owner.call_count == 1
+        assert "consecutive failures" in mock_bot.notify_owner.call_args[0][0]
+        assert cog.content_loop.minutes == 60
+        mock_pipeline.run_cycle.assert_called_once()
 
     @patch("intelstream.discord.cogs.content_posting.SummarizationService")
     @patch("intelstream.discord.cogs.content_posting.ContentPipeline")
     @patch("intelstream.discord.cogs.content_posting.ContentPoster")
-    async def test_apply_backoff_increases_interval(
+    async def test_circuit_breaker_recovers_on_success(
+        self, mock_poster_cls, mock_pipeline_cls, _mock_summarizer_cls, mock_bot
+    ):
+        mock_pipeline = MagicMock()
+        mock_pipeline.initialize = AsyncMock()
+        mock_pipeline.run_cycle = AsyncMock(return_value=(5, 3))
+        mock_pipeline_cls.return_value = mock_pipeline
+
+        mock_poster = MagicMock()
+        mock_poster.post_unposted_items = AsyncMock(return_value=0)
+        mock_poster_cls.return_value = mock_poster
+
+        cog = ContentPosting(mock_bot)
+        await cog.cog_load()
+        cog._consecutive_failures = ContentPosting.MAX_CONSECUTIVE_FAILURES + 1
+        cog.content_loop.change_interval(minutes=60)
+
+        await cog.content_loop()
+
+        assert cog._consecutive_failures == 0
+        assert cog.content_loop.minutes == cog._base_interval
+
+    @patch("intelstream.discord.cogs.content_posting.SummarizationService")
+    @patch("intelstream.discord.cogs.content_posting.ContentPipeline")
+    @patch("intelstream.discord.cogs.content_posting.ContentPoster")
+    async def test_apply_backoff_keeps_base_on_first_failure(
         self, _mock_poster_cls, mock_pipeline_cls, _mock_summarizer_cls, mock_bot
     ):
         mock_pipeline = MagicMock()
@@ -331,6 +359,24 @@ class TestContentLoopBackoff:
         cog = ContentPosting(mock_bot)
         await cog.cog_load()
         cog._consecutive_failures = 1
+
+        cog._apply_backoff()
+
+        assert cog.content_loop.minutes == cog._base_interval
+
+    @patch("intelstream.discord.cogs.content_posting.SummarizationService")
+    @patch("intelstream.discord.cogs.content_posting.ContentPipeline")
+    @patch("intelstream.discord.cogs.content_posting.ContentPoster")
+    async def test_apply_backoff_doubles_on_second_failure(
+        self, _mock_poster_cls, mock_pipeline_cls, _mock_summarizer_cls, mock_bot
+    ):
+        mock_pipeline = MagicMock()
+        mock_pipeline.initialize = AsyncMock()
+        mock_pipeline_cls.return_value = mock_pipeline
+
+        cog = ContentPosting(mock_bot)
+        await cog.cog_load()
+        cog._consecutive_failures = 2
 
         cog._apply_backoff()
 
@@ -348,7 +394,7 @@ class TestContentLoopBackoff:
 
         cog = ContentPosting(mock_bot)
         await cog.cog_load()
-        cog._consecutive_failures = 10
+        cog._consecutive_failures = 4
 
         cog._apply_backoff()
 

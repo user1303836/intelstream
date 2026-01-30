@@ -70,12 +70,17 @@ class ContentPosting(commands.Cog):
             logger.warning("Content loop skipped: not initialized")
             return
 
-        if self._consecutive_failures >= self.MAX_CONSECUTIVE_FAILURES:
-            logger.warning(
-                "Content loop paused due to consecutive failures",
+        if self._consecutive_failures == self.MAX_CONSECUTIVE_FAILURES:
+            logger.error(
+                "Content loop circuit breaker triggered, will retry hourly",
                 consecutive_failures=self._consecutive_failures,
             )
-            return
+            await self.bot.notify_owner(
+                f"Content loop hit {self.MAX_CONSECUTIVE_FAILURES} consecutive failures. "
+                "Switching to hourly retries until recovered."
+            )
+            self._consecutive_failures += 1
+            self.content_loop.change_interval(minutes=60)
 
         try:
             new_items, summarized = await self._pipeline.run_cycle()
@@ -138,7 +143,9 @@ class ContentPosting(commands.Cog):
         self._apply_backoff()
 
     def _apply_backoff(self) -> None:
-        multiplier = min(2**self._consecutive_failures, self.MAX_BACKOFF_MULTIPLIER)
+        if self._consecutive_failures > self.MAX_CONSECUTIVE_FAILURES:
+            return
+        multiplier = min(2 ** (self._consecutive_failures - 1), self.MAX_BACKOFF_MULTIPLIER)
         new_interval = self._base_interval * multiplier
         self.content_loop.change_interval(minutes=new_interval)
         logger.info(
