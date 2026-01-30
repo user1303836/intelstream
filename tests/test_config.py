@@ -1,9 +1,10 @@
 import os
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from intelstream.config import Settings
+from intelstream.config import Settings, get_database_directory
 
 
 class TestSettings:
@@ -119,3 +120,29 @@ class TestSettings:
 
         with pytest.raises(ValidationError):
             Settings(_env_file=None)
+
+
+class TestGetDatabaseDirectory:
+    def test_returns_parent_directory_for_sqlite_file(self) -> None:
+        result = get_database_directory("sqlite+aiosqlite:///./data/mydb.db")
+        assert result == Path("./data")
+
+    def test_returns_parent_for_absolute_path(self) -> None:
+        result = get_database_directory("sqlite+aiosqlite:////home/user/data/intelstream.db")
+        assert result == Path("/home/user/data")
+
+    def test_returns_none_for_memory_database(self) -> None:
+        result = get_database_directory("sqlite+aiosqlite:///:memory:")
+        assert result is None
+
+    def test_returns_none_for_postgres(self) -> None:
+        result = get_database_directory("postgresql+asyncpg://user:pass@localhost/db")
+        assert result is None
+
+    def test_returns_none_for_mysql(self) -> None:
+        result = get_database_directory("mysql+aiomysql://user:pass@localhost/db")
+        assert result is None
+
+    def test_returns_current_dir_for_db_in_root(self) -> None:
+        result = get_database_directory("sqlite+aiosqlite:///mydb.db")
+        assert result == Path()

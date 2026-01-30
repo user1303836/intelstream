@@ -6,7 +6,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from intelstream.config import Settings
+from intelstream.config import Settings, get_database_directory
 from intelstream.database.repository import Repository
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,10 @@ class IntelStreamBot(commands.Bot):
         self._owner: discord.User | None = None
 
     async def setup_hook(self) -> None:
+        db_dir = get_database_directory(self.settings.database_url)
+        if db_dir is not None:
+            db_dir.mkdir(parents=True, exist_ok=True)
+
         await self.repository.initialize()
 
         if self.settings.discord_channel_id is not None:
