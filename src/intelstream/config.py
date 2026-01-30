@@ -118,6 +118,13 @@ class Settings(BaseSettings):
         description="Maximum number of YouTube videos to fetch per poll",
     )
 
+    fetch_delay_seconds: float = Field(
+        default=1.0,
+        ge=0,
+        le=30.0,
+        description="Delay between fetching sources to avoid rate limiting",
+    )
+
     @field_validator("database_url")
     @classmethod
     def ensure_data_directory(cls, v: str) -> str:

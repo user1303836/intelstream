@@ -169,6 +169,7 @@ class MessageForwarder:
             if attachment.size > destination.guild.filesize_limit:
                 logger.warning(
                     "Attachment too large to forward",
+                    filename=attachment.filename,
                     size=attachment.size,
                     limit=destination.guild.filesize_limit,
                 )
@@ -176,10 +177,12 @@ class MessageForwarder:
             try:
                 file = await attachment.to_file()
                 files.append(file)
-            except discord.HTTPException:
+            except discord.HTTPException as e:
                 logger.warning(
                     "Failed to download attachment",
+                    filename=attachment.filename,
                     attachment_id=attachment.id,
+                    error=str(e),
                 )
         return files
 
