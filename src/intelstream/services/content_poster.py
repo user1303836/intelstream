@@ -53,11 +53,16 @@ def truncate_summary_at_bullet(summary: str, max_length: int) -> str:
     is_sub_bullet = last_line.strip().startswith("- ") and last_line.startswith("  ")
 
     if is_sub_bullet:
+        found_parent = False
         for j in range(len(result_lines) - 1, -1, -1):
             line = result_lines[j]
             if line.strip().startswith("- **") and not line.startswith("  "):
                 result_lines = result_lines[: j + 1]
+                found_parent = True
                 break
+
+        if not found_parent:
+            result_lines = result_lines[:-1]
 
         result = "\n".join(result_lines)
 
