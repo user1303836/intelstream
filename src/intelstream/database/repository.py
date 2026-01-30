@@ -146,13 +146,15 @@ class Repository:
             result = await session.execute(query)
             return list(result.scalars().all())
 
-    async def update_source_last_polled(self, source_id: str) -> None:
+    async def update_source_last_polled(self, source_id: str) -> bool:
         async with self.session() as session:
             result = await session.execute(select(Source).where(Source.id == source_id))
             source = result.scalar_one_or_none()
             if source:
                 source.last_polled_at = datetime.now(UTC)
                 await session.commit()
+                return True
+            return False
 
     async def set_source_active(
         self,
@@ -294,15 +296,17 @@ class Repository:
             await session.commit()
             return len(items)
 
-    async def update_content_item_summary(self, content_id: str, summary: str) -> None:
+    async def update_content_item_summary(self, content_id: str, summary: str) -> bool:
         async with self.session() as session:
             result = await session.execute(select(ContentItem).where(ContentItem.id == content_id))
             content_item = result.scalar_one_or_none()
             if content_item:
                 content_item.summary = summary
                 await session.commit()
+                return True
+            return False
 
-    async def mark_content_item_posted(self, content_id: str, discord_message_id: str) -> None:
+    async def mark_content_item_posted(self, content_id: str, discord_message_id: str) -> bool:
         async with self.session() as session:
             result = await session.execute(select(ContentItem).where(ContentItem.id == content_id))
             content_item = result.scalar_one_or_none()
@@ -310,6 +314,8 @@ class Repository:
                 content_item.posted_to_discord = True
                 content_item.discord_message_id = discord_message_id
                 await session.commit()
+                return True
+            return False
 
     async def get_latest_content_for_source(self, source_id: str) -> ContentItem | None:
         async with self.session() as session:
@@ -351,7 +357,7 @@ class Repository:
         discovery_strategy: str,
         feed_url: str | None = None,
         url_pattern: str | None = None,
-    ) -> None:
+    ) -> bool:
         async with self.session() as session:
             result = await session.execute(select(Source).where(Source.id == source_id))
             source = result.scalar_one_or_none()
@@ -362,14 +368,18 @@ class Repository:
                 if url_pattern is not None:
                     source.url_pattern = url_pattern
                 await session.commit()
+                return True
+            return False
 
-    async def update_source_content_hash(self, source_id: str, content_hash: str) -> None:
+    async def update_source_content_hash(self, source_id: str, content_hash: str) -> bool:
         async with self.session() as session:
             result = await session.execute(select(Source).where(Source.id == source_id))
             source = result.scalar_one_or_none()
             if source:
                 source.last_content_hash = content_hash
                 await session.commit()
+                return True
+            return False
 
     async def get_extraction_cache(self, url: str) -> ExtractionCache | None:
         async with self.session() as session:
@@ -418,13 +428,16 @@ class Repository:
                 return source.consecutive_failures
             return 0
 
-    async def reset_failure_count(self, source_id: str) -> None:
+    async def reset_failure_count(self, source_id: str) -> bool:
         async with self.session() as session:
             result = await session.execute(select(Source).where(Source.id == source_id))
             source = result.scalar_one_or_none()
-            if source and (source.consecutive_failures or 0) > 0:
-                source.consecutive_failures = 0
-                await session.commit()
+            if source:
+                if (source.consecutive_failures or 0) > 0:
+                    source.consecutive_failures = 0
+                    await session.commit()
+                return True
+            return False
 
     async def add_forwarding_rule(
         self,
@@ -465,7 +478,7 @@ class Repository:
             )
             return list(result.scalars().all())
 
-    async def increment_forwarding_count(self, rule_id: str) -> None:
+    async def increment_forwarding_count(self, rule_id: str) -> bool:
         async with self.session() as session:
             result = await session.execute(
                 select(ForwardingRule).where(ForwardingRule.id == rule_id)
@@ -475,6 +488,8 @@ class Repository:
                 rule.messages_forwarded = (rule.messages_forwarded or 0) + 1
                 rule.last_forwarded_at = datetime.now(UTC)
                 await session.commit()
+                return True
+            return False
 
     async def delete_forwarding_rule(
         self, guild_id: str, source_channel_id: str, destination_channel_id: str
