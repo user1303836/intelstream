@@ -177,7 +177,7 @@ class MessageForwarder:
             try:
                 file = await attachment.to_file()
                 files.append(file)
-            except (discord.HTTPException, discord.NotFound) as e:
+            except discord.HTTPException as e:
                 logger.warning(
                     "Failed to download attachment",
                     filename=attachment.filename,
