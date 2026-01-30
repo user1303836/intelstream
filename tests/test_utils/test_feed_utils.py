@@ -7,7 +7,9 @@ from intelstream.utils.feed_utils import parse_feed_date
 class TestParseFeedDate:
     def test_published_parsed(self) -> None:
         entry = MagicMock()
-        entry.get.side_effect = lambda k: (2024, 1, 15, 10, 30, 0, 0, 0, 0) if k == "published_parsed" else None
+        entry.get.side_effect = (
+            lambda k: (2024, 1, 15, 10, 30, 0, 0, 0, 0) if k == "published_parsed" else None
+        )
         entry.published_parsed = (2024, 1, 15, 10, 30, 0, 0, 0, 0)
 
         result = parse_feed_date(entry)
@@ -16,7 +18,9 @@ class TestParseFeedDate:
 
     def test_published_raw_string(self) -> None:
         entry = MagicMock()
-        entry.get.side_effect = lambda k: "Tue, 16 Jan 2024 08:00:00 GMT" if k == "published" else None
+        entry.get.side_effect = (
+            lambda k: "Tue, 16 Jan 2024 08:00:00 GMT" if k == "published" else None
+        )
         entry.published = "Tue, 16 Jan 2024 08:00:00 GMT"
 
         result = parse_feed_date(entry)
@@ -28,7 +32,9 @@ class TestParseFeedDate:
 
     def test_updated_parsed(self) -> None:
         entry = MagicMock()
-        entry.get.side_effect = lambda k: (2024, 2, 20, 14, 0, 0, 0, 0, 0) if k == "updated_parsed" else None
+        entry.get.side_effect = (
+            lambda k: (2024, 2, 20, 14, 0, 0, 0, 0, 0) if k == "updated_parsed" else None
+        )
         entry.updated_parsed = (2024, 2, 20, 14, 0, 0, 0, 0, 0)
 
         result = parse_feed_date(entry)
@@ -37,7 +43,9 @@ class TestParseFeedDate:
 
     def test_updated_raw_string(self) -> None:
         entry = MagicMock()
-        entry.get.side_effect = lambda k: "Wed, 21 Feb 2024 12:00:00 GMT" if k == "updated" else None
+        entry.get.side_effect = (
+            lambda k: "Wed, 21 Feb 2024 12:00:00 GMT" if k == "updated" else None
+        )
         entry.updated = "Wed, 21 Feb 2024 12:00:00 GMT"
 
         result = parse_feed_date(entry)
