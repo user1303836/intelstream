@@ -346,7 +346,7 @@ class Repository:
                     await session.commit()
                     return config
                 except IntegrityError:
-                    pass
+                    await session.rollback()
 
         raise RuntimeError(f"Failed to get or create discord config for guild {guild_id}")
 
