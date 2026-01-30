@@ -40,9 +40,8 @@ MAX_POLL_INTERVAL_MINUTES = 60
 class Repository:
     def __init__(self, database_url: str) -> None:
         if not database_url.startswith("sqlite"):
-            raise ValueError(
-                f"Only SQLite databases are supported. Got: {database_url.split('://')[0]}"
-            )
+            db_type = database_url.split("://")[0] if "://" in database_url else database_url
+            raise ValueError(f"Only SQLite databases are supported. Got: {db_type}")
         self._engine = create_async_engine(database_url, echo=False)
         self._session_factory: async_sessionmaker[AsyncSession] = async_sessionmaker(
             self._engine, class_=AsyncSession, expire_on_commit=False
