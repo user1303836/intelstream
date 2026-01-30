@@ -79,7 +79,7 @@ class LLMExtractionStrategy(DiscoveryStrategy):
                 if isinstance(posts_data, list):
                     posts = []
                     for p in posts_data:
-                        if isinstance(p, dict) and isinstance(p.get("url"), str):
+                        if isinstance(p, dict) and isinstance(p.get("url"), str) and p.get("url"):
                             posts.append(
                                 DiscoveredPost(url=p["url"], title=p.get("title", ""))
                             )

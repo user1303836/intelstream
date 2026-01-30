@@ -275,3 +275,27 @@ class TestLLMExtractionStrategy:
         assert len(result.posts) == 1
         assert result.posts[0].url == "https://example.com/valid"
         mock_anthropic_client.messages.create.assert_not_called()
+
+    @respx.mock
+    async def test_discover_filters_empty_urls_from_cache(
+        self, llm_strategy: LLMExtractionStrategy, mock_repository, mock_anthropic_client
+    ):
+        html = "<html><body>Content</body></html>"
+        expected_hash = llm_strategy._get_content_hash(html)
+
+        cached = MagicMock(spec=ExtractionCache)
+        cached.content_hash = expected_hash
+        cached.posts_json = json.dumps(
+            [{"url": "", "title": "Empty URL"}, {"url": "https://example.com/valid", "title": "Valid"}]
+        )
+
+        mock_repository.get_extraction_cache.return_value = cached
+
+        respx.get("https://example.com/").mock(return_value=httpx.Response(200, text=html))
+
+        result = await llm_strategy.discover("https://example.com/")
+
+        assert result is not None
+        assert len(result.posts) == 1
+        assert result.posts[0].url == "https://example.com/valid"
+        mock_anthropic_client.messages.create.assert_not_called()
