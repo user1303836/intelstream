@@ -80,9 +80,7 @@ class LLMExtractionStrategy(DiscoveryStrategy):
                     posts = []
                     for p in posts_data:
                         if isinstance(p, dict) and isinstance(p.get("url"), str) and p.get("url"):
-                            posts.append(
-                                DiscoveredPost(url=p["url"], title=p.get("title", ""))
-                            )
+                            posts.append(DiscoveredPost(url=p["url"], title=p.get("title", "")))
                     if posts:
                         logger.debug(
                             "Using cached LLM extraction",

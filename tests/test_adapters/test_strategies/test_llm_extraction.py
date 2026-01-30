@@ -205,9 +205,7 @@ class TestLLMExtractionStrategy:
         result = llm_strategy._extract_json_from_response(text)
         assert len(result) == 1
 
-    async def test_extract_json_filters_non_dict_items(
-        self, llm_strategy: LLMExtractionStrategy
-    ):
+    async def test_extract_json_filters_non_dict_items(self, llm_strategy: LLMExtractionStrategy):
         text = '["string1", "string2", {"url": "valid", "title": "Valid Post"}]'
         result = llm_strategy._extract_json_from_response(text)
         assert len(result) == 1
@@ -237,9 +235,7 @@ class TestLLMExtractionStrategy:
         assert len(result) == 1
         assert result[0]["url"] == "valid"
 
-    async def test_extract_json_handles_non_string_title(
-        self, llm_strategy: LLMExtractionStrategy
-    ):
+    async def test_extract_json_handles_non_string_title(self, llm_strategy: LLMExtractionStrategy):
         text = '[{"url": "test", "title": 123}]'
         result = llm_strategy._extract_json_from_response(text)
         assert len(result) == 1
@@ -286,7 +282,10 @@ class TestLLMExtractionStrategy:
         cached = MagicMock(spec=ExtractionCache)
         cached.content_hash = expected_hash
         cached.posts_json = json.dumps(
-            [{"url": "", "title": "Empty URL"}, {"url": "https://example.com/valid", "title": "Valid"}]
+            [
+                {"url": "", "title": "Empty URL"},
+                {"url": "https://example.com/valid", "title": "Valid"},
+            ]
         )
 
         mock_repository.get_extraction_cache.return_value = cached
