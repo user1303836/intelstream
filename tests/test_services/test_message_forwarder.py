@@ -270,7 +270,8 @@ class TestForwardMessage:
         assert result == mock_forwarded
         mock_destination.edit.assert_called_once_with(archived=False)
 
-    async def test_forward_message_with_embeds(self, forwarder, mock_bot):
+    async def test_forward_message_does_not_include_embeds(self, forwarder, mock_bot):
+        """Embeds are not forwarded so Discord can generate native URL previews."""
         mock_destination = MagicMock(spec=discord.TextChannel)
         mock_destination.guild = MagicMock()
         mock_destination.guild.filesize_limit = 8_000_000
@@ -287,7 +288,7 @@ class TestForwardMessage:
         message.id = 222
         message.author = MagicMock()
         message.author.bot = False
-        message.content = "Test"
+        message.content = "Check out this video: https://youtu.be/example"
         message.embeds = [mock_embed]
         message.attachments = []
 
@@ -295,7 +296,8 @@ class TestForwardMessage:
 
         assert result == mock_forwarded
         call_kwargs = mock_destination.send.call_args.kwargs
-        assert call_kwargs["embeds"] == [mock_embed]
+        assert "embeds" not in call_kwargs
+        assert call_kwargs["content"] == "Check out this video: https://youtu.be/example"
 
     async def test_forward_message_closes_files_on_send_failure(self, forwarder, mock_bot):
         mock_file = MagicMock(spec=discord.File)
