@@ -151,8 +151,6 @@ class PageAnalyzer:
             raise PageAnalysisError(f"Failed to fetch page: HTTP {e.response.status_code}") from e
         except httpx.RequestError as e:
             raise PageAnalysisError(f"Failed to fetch page: {e}") from e
-        except TimeoutError as e:
-            raise PageAnalysisError(f"Request timed out fetching {url}") from e
 
     def _clean_html(self, html: str) -> str:
         soup = BeautifulSoup(html, "lxml")
