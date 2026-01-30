@@ -14,6 +14,7 @@ from intelstream.database.models import (
     DiscordConfig,
     ExtractionCache,
     ForwardingRule,
+    PauseReason,
     Source,
     SourceType,
 )
@@ -25,6 +26,7 @@ SOURCES_MIGRATIONS: list[tuple[str, str]] = [
     ("consecutive_failures", "INTEGER DEFAULT 0"),
     ("guild_id", "VARCHAR(36)"),
     ("channel_id", "VARCHAR(36)"),
+    ("pause_reason", "VARCHAR(32) DEFAULT 'none'"),
 ]
 
 MIN_POLL_INTERVAL_MINUTES = 1
@@ -152,12 +154,21 @@ class Repository:
                 source.last_polled_at = datetime.now(UTC)
                 await session.commit()
 
-    async def set_source_active(self, identifier: str, is_active: bool) -> Source | None:
+    async def set_source_active(
+        self,
+        identifier: str,
+        is_active: bool,
+        pause_reason: PauseReason | None = None,
+    ) -> Source | None:
         async with self.session() as session:
             result = await session.execute(select(Source).where(Source.identifier == identifier))
             source = result.scalar_one_or_none()
             if source:
                 source.is_active = is_active
+                if pause_reason is not None:
+                    source.pause_reason = pause_reason.value
+                elif is_active:
+                    source.pause_reason = PauseReason.NONE.value
                 await session.commit()
                 await session.refresh(source)
             return source
