@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 BLOCKED_HOSTS = frozenset(
     {
         "localhost",
+        "localhost.",
         "localhost.localdomain",
         "127.0.0.1",
         "::1",
@@ -16,10 +17,10 @@ BLOCKED_HOSTS = frozenset(
 
 
 def is_private_ip(ip_str: str) -> bool:
-    """Check if an IP address is private, loopback, or link-local."""
+    """Check if an IP address is private, loopback, link-local, or reserved."""
     try:
         ip = ipaddress.ip_address(ip_str)
-        return ip.is_private or ip.is_loopback or ip.is_link_local
+        return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
     except ValueError:
         return False
 
