@@ -87,3 +87,53 @@ class TestParseFeedDate:
         result = parse_feed_date(entry)
 
         assert result == datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+
+    def test_short_tuple_falls_back(self) -> None:
+        entry = MagicMock()
+        entry.get.side_effect = lambda k: (2024, 1, 15) if k == "published_parsed" else None
+        entry.published_parsed = (2024, 1, 15)
+
+        before = datetime.now(UTC)
+        result = parse_feed_date(entry)
+        after = datetime.now(UTC)
+
+        assert before <= result <= after
+
+    def test_invalid_date_values_fall_back(self) -> None:
+        entry = MagicMock()
+        entry.get.side_effect = (
+            lambda k: (2024, 13, 45, 25, 61, 99) if k == "published_parsed" else None
+        )
+        entry.published_parsed = (2024, 13, 45, 25, 61, 99)
+
+        before = datetime.now(UTC)
+        result = parse_feed_date(entry)
+        after = datetime.now(UTC)
+
+        assert before <= result <= after
+
+    def test_none_in_tuple_falls_back(self) -> None:
+        entry = MagicMock()
+        entry.get.side_effect = (
+            lambda k: (None, 1, 15, 10, 30, 0) if k == "published_parsed" else None
+        )
+        entry.published_parsed = (None, 1, 15, 10, 30, 0)
+
+        before = datetime.now(UTC)
+        result = parse_feed_date(entry)
+        after = datetime.now(UTC)
+
+        assert before <= result <= after
+
+    def test_malformed_published_falls_back_to_updated(self) -> None:
+        entry = MagicMock()
+        entry.get.side_effect = lambda k: {
+            "published_parsed": (2024, 13, 45),
+            "updated_parsed": (2024, 2, 20, 14, 0, 0, 0, 0, 0),
+        }.get(k)
+        entry.published_parsed = (2024, 13, 45)
+        entry.updated_parsed = (2024, 2, 20, 14, 0, 0, 0, 0, 0)
+
+        result = parse_feed_date(entry)
+
+        assert result == datetime(2024, 2, 20, 14, 0, 0, tzinfo=UTC)
