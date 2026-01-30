@@ -125,6 +125,13 @@ class Settings(BaseSettings):
         description="Delay between fetching sources to avoid rate limiting",
     )
 
+    max_concurrent_forwards: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description="Maximum concurrent message forwards",
+    )
+
     @field_validator("database_url")
     @classmethod
     def ensure_data_directory(cls, v: str) -> str:
