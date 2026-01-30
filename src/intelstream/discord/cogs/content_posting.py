@@ -58,7 +58,9 @@ class ContentPosting(commands.Cog):
 
     async def cog_unload(self) -> None:
         self.content_loop.cancel()
-        if self.content_loop.is_running():
+        for _ in range(30):
+            if not self.content_loop.is_running():
+                break
             await asyncio.sleep(0.1)
 
         try:

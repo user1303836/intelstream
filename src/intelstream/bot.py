@@ -188,8 +188,10 @@ class IntelStreamBot(commands.Bot):
 
         for cog_name in list(self.cogs.keys()):
             try:
-                await self.remove_cog(cog_name)
+                await asyncio.wait_for(self.remove_cog(cog_name), timeout=10.0)
                 logger.debug("Unloaded cog", cog=cog_name)
+            except TimeoutError:
+                logger.error("Cog unload timed out", cog=cog_name)
             except Exception as e:
                 logger.error("Error unloading cog", cog=cog_name, error=str(e))
 
