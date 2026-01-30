@@ -2,7 +2,17 @@ import ipaddress
 import socket
 from urllib.parse import urlparse
 
-BLOCKED_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+BLOCKED_HOSTS = frozenset(
+    {
+        "localhost",
+        "localhost.localdomain",
+        "127.0.0.1",
+        "::1",
+        "0.0.0.0",
+        "[::1]",
+        "[0:0:0:0:0:0:0:1]",
+    }
+)
 
 
 def is_private_ip(ip_str: str) -> bool:
@@ -19,6 +29,11 @@ def is_safe_url(url: str) -> tuple[bool, str]:
 
     Returns a tuple of (is_safe, error_message).
     If is_safe is True, error_message is empty.
+
+    Note: This validation is subject to TOCTOU (time-of-check-time-of-use) race
+    conditions. DNS rebinding attacks could bypass this check if the DNS response
+    changes between validation and actual request. For high-security contexts,
+    consider additional protections at the HTTP client level.
     """
     parsed = urlparse(url)
 
@@ -35,9 +50,11 @@ def is_safe_url(url: str) -> tuple[bool, str]:
         return False, "URLs pointing to localhost are not allowed."
 
     try:
-        resolved_ip = socket.gethostbyname(hostname)
-        if is_private_ip(resolved_ip):
-            return False, "URLs pointing to private or internal addresses are not allowed."
+        addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        for _, _, _, _, sockaddr in addr_info:
+            ip_str = sockaddr[0]
+            if is_private_ip(ip_str):
+                return False, "URLs pointing to private or internal addresses are not allowed."
     except socket.gaierror:
         pass
 
