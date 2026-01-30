@@ -134,12 +134,11 @@ class Settings(BaseSettings):
 
     @field_validator("database_url")
     @classmethod
-    def ensure_data_directory(cls, v: str) -> str:
+    def validate_database_url(cls, v: str) -> str:
         if v.startswith("sqlite"):
             db_path = v.split("///")[-1]
-            if db_path != ":memory:":
-                path = Path(db_path)
-                path.parent.mkdir(parents=True, exist_ok=True)
+            if db_path != ":memory:" and not db_path:
+                raise ValueError("SQLite database path cannot be empty")
         return v
 
     def __repr__(self) -> str:
@@ -159,3 +158,18 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def get_database_directory(database_url: str) -> Path | None:
+    """Extract the parent directory path from a SQLite database URL.
+
+    Returns None for non-SQLite databases or :memory: databases.
+    """
+    if not database_url.startswith("sqlite"):
+        return None
+
+    db_path = database_url.split("///")[-1]
+    if db_path == ":memory:" or not db_path:
+        return None
+
+    return Path(db_path).parent
