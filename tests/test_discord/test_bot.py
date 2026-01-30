@@ -71,9 +71,7 @@ class TestRestrictedCommandTreeErrorHandler:
         interaction.followup.send = AsyncMock()
         return interaction
 
-    async def test_handles_forbidden_error(
-        self, mock_interaction: MagicMock
-    ) -> None:
+    async def test_handles_forbidden_error(self, mock_interaction: MagicMock) -> None:
         mock_response = MagicMock()
         mock_response.status = 403
         error = app_commands.CommandInvokeError(
@@ -86,9 +84,7 @@ class TestRestrictedCommandTreeErrorHandler:
         mock_interaction.response.send_message.assert_not_called()
         mock_interaction.followup.send.assert_not_called()
 
-    async def test_handles_not_found_error(
-        self, mock_interaction: MagicMock
-    ) -> None:
+    async def test_handles_not_found_error(self, mock_interaction: MagicMock) -> None:
         mock_response = MagicMock()
         mock_response.status = 404
         error = app_commands.CommandInvokeError(
@@ -101,9 +97,7 @@ class TestRestrictedCommandTreeErrorHandler:
         mock_interaction.response.send_message.assert_not_called()
         mock_interaction.followup.send.assert_not_called()
 
-    async def test_handles_http_exception_with_response(
-        self, mock_interaction: MagicMock
-    ) -> None:
+    async def test_handles_http_exception_with_response(self, mock_interaction: MagicMock) -> None:
         mock_response = MagicMock()
         mock_response.status = 500
         error = app_commands.CommandInvokeError(
@@ -121,9 +115,7 @@ class TestRestrictedCommandTreeErrorHandler:
         assert args[0] == mock_interaction
         assert "Discord error" in args[1]
 
-    async def test_handles_generic_exception(
-        self, mock_interaction: MagicMock
-    ) -> None:
+    async def test_handles_generic_exception(self, mock_interaction: MagicMock) -> None:
         error = app_commands.CommandInvokeError(
             mock_interaction.command,
             ValueError("Something went wrong"),
@@ -148,9 +140,7 @@ class TestRestrictedCommandTreeErrorHandler:
             MagicMock(), mock_interaction, "Test error message"
         )
 
-        mock_interaction.followup.send.assert_called_once_with(
-            "Test error message", ephemeral=True
-        )
+        mock_interaction.followup.send.assert_called_once_with("Test error message", ephemeral=True)
         mock_interaction.response.send_message.assert_not_called()
 
     async def test_send_error_response_uses_response_when_not_done(

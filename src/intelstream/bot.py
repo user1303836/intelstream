@@ -80,9 +80,7 @@ class RestrictedCommandTree(app_commands.CommandTree):
             interaction, "An unexpected error occurred. Please try again."
         )
 
-    async def _send_error_response(
-        self, interaction: discord.Interaction, message: str
-    ) -> None:
+    async def _send_error_response(self, interaction: discord.Interaction, message: str) -> None:
         try:
             if interaction.response.is_done():
                 await interaction.followup.send(message, ephemeral=True)
