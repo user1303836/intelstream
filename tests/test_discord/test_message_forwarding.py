@@ -29,8 +29,9 @@ class TestForwardAdd:
         interaction.response.defer = AsyncMock()
         interaction.followup = MagicMock()
         interaction.followup.send = AsyncMock()
-        interaction.user = MagicMock()
-        interaction.user.id = 123
+        mock_member = MagicMock(spec=discord.Member)
+        mock_member.id = 123
+        interaction.user = mock_member
         interaction.guild_id = 456
         interaction.guild = MagicMock(spec=discord.Guild)
         interaction.guild.me = MagicMock()
@@ -92,7 +93,7 @@ class TestForwardAdd:
         call_args = interaction.followup.send.call_args
         assert "already exists" in call_args[0][0]
 
-    async def test_forward_add_no_permission(self, cog, mock_bot):
+    async def test_forward_add_bot_no_permission(self, cog, mock_bot):
         interaction = MagicMock(spec=discord.Interaction)
         interaction.response = MagicMock()
         interaction.response.defer = AsyncMock()
@@ -119,6 +120,49 @@ class TestForwardAdd:
         mock_bot.repository.add_forwarding_rule.assert_not_called()
         call_args = interaction.followup.send.call_args
         assert "permission" in call_args[0][0].lower()
+        assert "I don't" in call_args[0][0]
+
+    async def test_forward_add_user_no_permission(self, cog, mock_bot):
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = MagicMock()
+        interaction.response.defer = AsyncMock()
+        interaction.followup = MagicMock()
+        interaction.followup.send = AsyncMock()
+        interaction.guild_id = 456
+        interaction.guild = MagicMock(spec=discord.Guild)
+        interaction.guild.me = MagicMock()
+
+        mock_member = MagicMock(spec=discord.Member)
+        mock_member.id = 123
+        interaction.user = mock_member
+
+        mock_source = MagicMock(spec=discord.TextChannel)
+        mock_source.id = 111
+
+        mock_dest = MagicMock(spec=discord.TextChannel)
+        mock_dest.id = 222
+        mock_dest.mention = "#dest"
+
+        bot_permissions = MagicMock()
+        bot_permissions.send_messages = True
+        user_permissions = MagicMock()
+        user_permissions.send_messages = False
+
+        def permissions_for(entity):
+            if entity == interaction.guild.me:
+                return bot_permissions
+            return user_permissions
+
+        mock_dest.permissions_for = MagicMock(side_effect=permissions_for)
+
+        mock_bot.repository.get_forwarding_rules_for_source = AsyncMock(return_value=[])
+
+        await cog.forward_add.callback(cog, interaction, source=mock_source, destination=mock_dest)
+
+        mock_bot.repository.add_forwarding_rule.assert_not_called()
+        call_args = interaction.followup.send.call_args
+        assert "permission" in call_args[0][0].lower()
+        assert "You don't" in call_args[0][0]
 
     async def test_forward_add_not_in_guild(self, cog, mock_bot):
         interaction = MagicMock(spec=discord.Interaction)

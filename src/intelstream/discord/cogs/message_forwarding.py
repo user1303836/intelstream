@@ -129,6 +129,17 @@ class MessageForwarding(commands.Cog):
             )
             return
 
+        member = interaction.user
+        if (
+            isinstance(member, discord.Member)
+            and not destination.permissions_for(member).send_messages
+        ):
+            await interaction.followup.send(
+                f"You don't have permission to send messages in {destination.mention}.",
+                ephemeral=True,
+            )
+            return
+
         await self.bot.repository.add_forwarding_rule(
             guild_id=str(interaction.guild_id),
             source_channel_id=str(source.id),
