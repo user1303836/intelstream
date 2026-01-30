@@ -157,6 +157,32 @@ class TestDownloadAttachments:
 
         assert len(files) == 0
 
+    async def test_download_attachments_closes_files_on_unexpected_error(self, forwarder):
+        mock_file1 = MagicMock(spec=discord.File)
+        mock_file2 = MagicMock(spec=discord.File)
+        mock_attachment1 = MagicMock()
+        mock_attachment1.size = 1000
+        mock_attachment1.to_file = AsyncMock(return_value=mock_file1)
+        mock_attachment2 = MagicMock()
+        mock_attachment2.size = 1000
+        mock_attachment2.to_file = AsyncMock(return_value=mock_file2)
+        mock_attachment3 = MagicMock()
+        mock_attachment3.size = 1000
+        mock_attachment3.to_file = AsyncMock(side_effect=RuntimeError("Unexpected"))
+
+        message = MagicMock(spec=discord.Message)
+        message.attachments = [mock_attachment1, mock_attachment2, mock_attachment3]
+
+        destination = MagicMock(spec=discord.TextChannel)
+        destination.guild = MagicMock()
+        destination.guild.filesize_limit = 8_000_000
+
+        with pytest.raises(RuntimeError):
+            await forwarder._download_attachments(message, destination)
+
+        mock_file1.close.assert_called_once()
+        mock_file2.close.assert_called_once()
+
 
 class TestForwardMessage:
     async def test_forward_message_success(self, forwarder, mock_bot):
@@ -270,3 +296,56 @@ class TestForwardMessage:
         assert result == mock_forwarded
         call_kwargs = mock_destination.send.call_args.kwargs
         assert call_kwargs["embeds"] == [mock_embed]
+
+    async def test_forward_message_closes_files_on_send_failure(self, forwarder, mock_bot):
+        mock_file = MagicMock(spec=discord.File)
+        mock_attachment = MagicMock()
+        mock_attachment.size = 1000
+        mock_attachment.to_file = AsyncMock(return_value=mock_file)
+
+        mock_destination = MagicMock(spec=discord.TextChannel)
+        mock_destination.guild = MagicMock()
+        mock_destination.guild.filesize_limit = 8_000_000
+        mock_destination.send = AsyncMock(
+            side_effect=discord.HTTPException(MagicMock(), "Failed to send")
+        )
+
+        mock_bot.get_channel = MagicMock(return_value=mock_destination)
+
+        message = MagicMock(spec=discord.Message)
+        message.channel = MagicMock()
+        message.channel.name = "source"
+        message.author = MagicMock()
+        message.author.bot = False
+        message.content = "Test"
+        message.embeds = []
+        message.attachments = [mock_attachment]
+
+        result = await forwarder.forward_message(message, 333, "channel")
+
+        assert result is None
+        mock_file.close.assert_called_once()
+
+
+class TestCloseFiles:
+    def test_close_files_closes_all_files(self, forwarder):
+        mock_file1 = MagicMock(spec=discord.File)
+        mock_file2 = MagicMock(spec=discord.File)
+
+        forwarder._close_files([mock_file1, mock_file2])
+
+        mock_file1.close.assert_called_once()
+        mock_file2.close.assert_called_once()
+
+    def test_close_files_handles_exceptions(self, forwarder):
+        mock_file1 = MagicMock(spec=discord.File)
+        mock_file1.close.side_effect = Exception("Close error")
+        mock_file2 = MagicMock(spec=discord.File)
+
+        forwarder._close_files([mock_file1, mock_file2])
+
+        mock_file1.close.assert_called_once()
+        mock_file2.close.assert_called_once()
+
+    def test_close_files_empty_list(self, forwarder):
+        forwarder._close_files([])

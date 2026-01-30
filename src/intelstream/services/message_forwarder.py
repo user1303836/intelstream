@@ -1,3 +1,4 @@
+import contextlib
 from asyncio import Semaphore
 
 import discord
@@ -48,11 +49,15 @@ class MessageForwarder:
                 embeds = message.embeds[:10] if message.embeds else []
                 files = await self._download_attachments(message, destination)
 
-                forwarded = await destination.send(
-                    content=content,
-                    embeds=embeds,
-                    files=files,
-                )
+                try:
+                    forwarded = await destination.send(
+                        content=content,
+                        embeds=embeds,
+                        files=files,
+                    )
+                except Exception:
+                    self._close_files(files)
+                    raise
 
                 logger.info(
                     "Message forwarded",
@@ -127,36 +132,45 @@ class MessageForwarder:
     ) -> list[discord.File]:
         files: list[discord.File] = []
         total_size = 0
-        for attachment in message.attachments[:10]:
-            if attachment.size > destination.guild.filesize_limit:
-                logger.warning(
-                    "Attachment too large to forward",
-                    filename=attachment.filename,
-                    size=attachment.size,
-                    limit=destination.guild.filesize_limit,
-                )
-                continue
-            if total_size + attachment.size > MAX_TOTAL_ATTACHMENT_SIZE:
-                logger.warning(
-                    "Skipping remaining attachments due to total size limit",
-                    current_total=total_size,
-                    attachment_size=attachment.size,
-                    limit=MAX_TOTAL_ATTACHMENT_SIZE,
-                    skipped_count=len(message.attachments[:10]) - len(files),
-                )
-                break
-            try:
-                file = await attachment.to_file()
-                files.append(file)
-                total_size += attachment.size
-            except discord.HTTPException as e:
-                logger.warning(
-                    "Failed to download attachment",
-                    filename=attachment.filename,
-                    attachment_id=attachment.id,
-                    error=str(e),
-                )
+        try:
+            for attachment in message.attachments[:10]:
+                if attachment.size > destination.guild.filesize_limit:
+                    logger.warning(
+                        "Attachment too large to forward",
+                        filename=attachment.filename,
+                        size=attachment.size,
+                        limit=destination.guild.filesize_limit,
+                    )
+                    continue
+                if total_size + attachment.size > MAX_TOTAL_ATTACHMENT_SIZE:
+                    logger.warning(
+                        "Skipping remaining attachments due to total size limit",
+                        current_total=total_size,
+                        attachment_size=attachment.size,
+                        limit=MAX_TOTAL_ATTACHMENT_SIZE,
+                        skipped_count=len(message.attachments[:10]) - len(files),
+                    )
+                    break
+                try:
+                    file = await attachment.to_file()
+                    files.append(file)
+                    total_size += attachment.size
+                except discord.HTTPException as e:
+                    logger.warning(
+                        "Failed to download attachment",
+                        filename=attachment.filename,
+                        attachment_id=attachment.id,
+                        error=str(e),
+                    )
+        except Exception:
+            self._close_files(files)
+            raise
         return files
+
+    def _close_files(self, files: list[discord.File]) -> None:
+        for file in files:
+            with contextlib.suppress(Exception):
+                file.close()
 
     def _build_forwarded_content(self, message: discord.Message) -> str:
         return message.content
