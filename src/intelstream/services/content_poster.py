@@ -147,11 +147,14 @@ class ContentPoster:
             logger.debug("No unposted content items to post")
             return 0
 
+        source_ids = {item.source_id for item in items}
+        sources_map = await self._bot.repository.get_sources_by_ids(source_ids)
+
         posted_count = 0
 
         for item in items:
             try:
-                source = await self._bot.repository.get_source_by_id(item.source_id)
+                source = sources_map.get(item.source_id)
                 if source is None:
                     logger.warning("Source not found for content item", item_id=item.id)
                     continue

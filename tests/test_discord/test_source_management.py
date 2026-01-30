@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 import discord
 import pytest
 
-from intelstream.database.models import SourceType
+from intelstream.database.models import PauseReason, SourceType
 from intelstream.discord.cogs.source_management import (
     SourceManagement,
     parse_source_identifier,
@@ -222,6 +222,7 @@ class TestSourceManagementList:
         source1.name = "Source 1"
         source1.type = SourceType.SUBSTACK
         source1.is_active = True
+        source1.pause_reason = PauseReason.NONE.value
         source1.last_polled_at = None
         source1.channel_id = "123456789"
 
@@ -229,6 +230,8 @@ class TestSourceManagementList:
         source2.name = "Source 2"
         source2.type = SourceType.RSS
         source2.is_active = False
+        source2.pause_reason = PauseReason.USER_PAUSED.value
+        source2.consecutive_failures = 0
         source2.last_polled_at = None
         source2.channel_id = None
 
@@ -306,7 +309,9 @@ class TestSourceManagementToggle:
             source_management, interaction, name="Test Source"
         )
 
-        mock_bot.repository.set_source_active.assert_called_once_with("test-identifier", True)
+        mock_bot.repository.set_source_active.assert_called_once_with(
+            "test-identifier", True, pause_reason=PauseReason.NONE
+        )
         call_args = interaction.followup.send.call_args
         assert "enabled" in call_args[0][0]
 
@@ -332,7 +337,9 @@ class TestSourceManagementToggle:
             source_management, interaction, name="Test Source"
         )
 
-        mock_bot.repository.set_source_active.assert_called_once_with("test-identifier", False)
+        mock_bot.repository.set_source_active.assert_called_once_with(
+            "test-identifier", False, pause_reason=PauseReason.USER_PAUSED
+        )
         call_args = interaction.followup.send.call_args
         assert "disabled" in call_args[0][0]
 

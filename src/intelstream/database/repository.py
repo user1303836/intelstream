@@ -14,6 +14,7 @@ from intelstream.database.models import (
     DiscordConfig,
     ExtractionCache,
     ForwardingRule,
+    PauseReason,
     Source,
     SourceType,
 )
@@ -25,7 +26,11 @@ SOURCES_MIGRATIONS: list[tuple[str, str]] = [
     ("consecutive_failures", "INTEGER DEFAULT 0"),
     ("guild_id", "VARCHAR(36)"),
     ("channel_id", "VARCHAR(36)"),
+    ("pause_reason", "VARCHAR(32) DEFAULT 'none'"),
 ]
+
+MIN_POLL_INTERVAL_MINUTES = 1
+MAX_POLL_INTERVAL_MINUTES = 60
 
 
 class Repository:
@@ -82,6 +87,12 @@ class Repository:
         guild_id: str | None = None,
         channel_id: str | None = None,
     ) -> Source:
+        if not MIN_POLL_INTERVAL_MINUTES <= poll_interval_minutes <= MAX_POLL_INTERVAL_MINUTES:
+            raise ValueError(
+                f"poll_interval_minutes must be between {MIN_POLL_INTERVAL_MINUTES} and "
+                f"{MAX_POLL_INTERVAL_MINUTES}, got {poll_interval_minutes}"
+            )
+
         async with self.session() as session:
             source = Source(
                 type=source_type,
@@ -110,6 +121,14 @@ class Repository:
             result = await session.execute(select(Source).where(Source.id == source_id))
             return result.scalar_one_or_none()
 
+    async def get_sources_by_ids(self, source_ids: set[str]) -> dict[str, Source]:
+        if not source_ids:
+            return {}
+        async with self.session() as session:
+            result = await session.execute(select(Source).where(Source.id.in_(source_ids)))
+            sources = result.scalars().all()
+            return {source.id: source for source in sources}
+
     async def get_source_by_name(self, name: str) -> Source | None:
         async with self.session() as session:
             result = await session.execute(select(Source).where(Source.name == name))
@@ -135,12 +154,21 @@ class Repository:
                 source.last_polled_at = datetime.now(UTC)
                 await session.commit()
 
-    async def set_source_active(self, identifier: str, is_active: bool) -> Source | None:
+    async def set_source_active(
+        self,
+        identifier: str,
+        is_active: bool,
+        pause_reason: PauseReason | None = None,
+    ) -> Source | None:
         async with self.session() as session:
             result = await session.execute(select(Source).where(Source.identifier == identifier))
             source = result.scalar_one_or_none()
             if source:
                 source.is_active = is_active
+                if pause_reason is not None:
+                    source.pause_reason = pause_reason.value
+                elif is_active:
+                    source.pause_reason = PauseReason.NONE.value
                 await session.commit()
                 await session.refresh(source)
             return source
