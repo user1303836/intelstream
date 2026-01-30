@@ -62,25 +62,8 @@ class MessageForwarding(commands.Cog):
         if not rules:
             return
 
-        logger.debug(
-            "Message received in forwarding source channel",
-            channel_id=channel_id,
-            channel_name=getattr(message.channel, "name", "Unknown"),
-            message_id=message.id,
-            author_id=message.author.id,
-            rules_count=len(rules),
-        )
-
         for rule in rules:
             destination_id = int(rule.destination_channel_id)
-
-            logger.debug(
-                "Attempting to forward message",
-                source_channel_id=channel_id,
-                destination_id=destination_id,
-                destination_type=rule.destination_type,
-                rule_id=rule.id,
-            )
 
             forwarded = await self.forwarder.forward_message(
                 message=message,
