@@ -48,6 +48,41 @@ class TestSourceOperations:
         assert source.guild_id == "guild-123"
         assert source.channel_id == "channel-456"
 
+    async def test_add_source_poll_interval_too_low(self, repository: Repository) -> None:
+        with pytest.raises(ValueError, match="poll_interval_minutes must be between"):
+            await repository.add_source(
+                source_type=SourceType.SUBSTACK,
+                name="Test",
+                identifier="test-low",
+                poll_interval_minutes=0,
+            )
+
+    async def test_add_source_poll_interval_too_high(self, repository: Repository) -> None:
+        with pytest.raises(ValueError, match="poll_interval_minutes must be between"):
+            await repository.add_source(
+                source_type=SourceType.SUBSTACK,
+                name="Test",
+                identifier="test-high",
+                poll_interval_minutes=61,
+            )
+
+    async def test_add_source_poll_interval_at_boundaries(self, repository: Repository) -> None:
+        source_min = await repository.add_source(
+            source_type=SourceType.SUBSTACK,
+            name="Min Interval",
+            identifier="test-min",
+            poll_interval_minutes=1,
+        )
+        assert source_min.poll_interval_minutes == 1
+
+        source_max = await repository.add_source(
+            source_type=SourceType.SUBSTACK,
+            name="Max Interval",
+            identifier="test-max",
+            poll_interval_minutes=60,
+        )
+        assert source_max.poll_interval_minutes == 60
+
     async def test_get_source_by_identifier(self, repository: Repository) -> None:
         await repository.add_source(
             source_type=SourceType.YOUTUBE,

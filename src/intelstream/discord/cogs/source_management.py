@@ -9,7 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from intelstream.adapters.smart_blog import SmartBlogAdapter
-from intelstream.database.models import SourceType
+from intelstream.database.models import PauseReason, SourceType
 from intelstream.services.page_analyzer import PageAnalysisError, PageAnalyzer
 
 if TYPE_CHECKING:
@@ -246,7 +246,14 @@ class SourceManagement(commands.Cog):
         )
 
         for source in sources:
-            status = "Active" if source.is_active else "Paused"
+            if source.is_active:
+                status = "Active"
+            elif source.pause_reason == PauseReason.USER_PAUSED.value:
+                status = "Paused by user"
+            elif source.pause_reason == PauseReason.CONSECUTIVE_FAILURES.value:
+                status = f"Disabled: {source.consecutive_failures} consecutive failures"
+            else:
+                status = "Paused"
             last_poll = (
                 source.last_polled_at.strftime("%Y-%m-%d %H:%M UTC")
                 if source.last_polled_at
@@ -308,7 +315,10 @@ class SourceManagement(commands.Cog):
             return
 
         new_state = not source.is_active
-        updated = await self.bot.repository.set_source_active(source.identifier, new_state)
+        pause_reason = PauseReason.NONE if new_state else PauseReason.USER_PAUSED
+        updated = await self.bot.repository.set_source_active(
+            source.identifier, new_state, pause_reason=pause_reason
+        )
 
         if updated:
             status = "enabled" if new_state else "disabled"

@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import re
@@ -25,6 +26,7 @@ logger = structlog.get_logger()
 
 DEFAULT_MODEL = "claude-3-5-haiku-20241022"
 MAX_HTML_LENGTH = 50000
+LLM_EXTRACTION_TIMEOUT_SECONDS = 120
 
 EXTRACTION_PROMPT = """Analyze this HTML and extract all blog posts/articles listed on the page.
 
@@ -84,7 +86,16 @@ class LLMExtractionStrategy(DiscoveryStrategy):
             except (json.JSONDecodeError, KeyError):
                 pass
 
-        posts = await self._extract_with_llm(html, url)
+        try:
+            async with asyncio.timeout(LLM_EXTRACTION_TIMEOUT_SECONDS):
+                posts = await self._extract_with_llm(html, url)
+        except TimeoutError:
+            logger.error(
+                "LLM extraction timed out",
+                url=url,
+                timeout_seconds=LLM_EXTRACTION_TIMEOUT_SECONDS,
+            )
+            posts = []
 
         posts_json = json.dumps([{"url": p.url, "title": p.title} for p in posts])
         await self._repository.set_extraction_cache(url, content_hash, posts_json)
