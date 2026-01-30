@@ -76,14 +76,21 @@ class LLMExtractionStrategy(DiscoveryStrategy):
         if cached and cached.content_hash == content_hash:
             try:
                 posts_data = json.loads(cached.posts_json)
-                posts = [DiscoveredPost(url=p["url"], title=p.get("title", "")) for p in posts_data]
-                logger.debug(
-                    "Using cached LLM extraction",
-                    url=url,
-                    post_count=len(posts),
-                )
-                return DiscoveryResult(posts=posts) if posts else None
-            except (json.JSONDecodeError, KeyError):
+                if isinstance(posts_data, list):
+                    posts = []
+                    for p in posts_data:
+                        if isinstance(p, dict) and isinstance(p.get("url"), str):
+                            posts.append(
+                                DiscoveredPost(url=p["url"], title=p.get("title", ""))
+                            )
+                    if posts:
+                        logger.debug(
+                            "Using cached LLM extraction",
+                            url=url,
+                            post_count=len(posts),
+                        )
+                        return DiscoveryResult(posts=posts)
+            except json.JSONDecodeError:
                 pass
 
         try:
@@ -204,14 +211,10 @@ class LLMExtractionStrategy(DiscoveryStrategy):
 
             posts: list[DiscoveredPost] = []
             for p in posts_data:
-                post_url = p.get("url", "")
-                if not post_url:
-                    continue
-
+                post_url = p["url"]
                 if not post_url.startswith(("http://", "https://")):
                     post_url = urljoin(base_url, post_url)
-
-                posts.append(DiscoveredPost(url=post_url, title=p.get("title", "")))
+                posts.append(DiscoveredPost(url=post_url, title=p["title"]))
 
             return posts
 
@@ -223,8 +226,20 @@ class LLMExtractionStrategy(DiscoveryStrategy):
         def parse_and_validate(data: str) -> list[dict[str, str]] | None:
             try:
                 parsed = json.loads(data)
-                if isinstance(parsed, list):
-                    return parsed
+                if not isinstance(parsed, list):
+                    return None
+                validated: list[dict[str, str]] = []
+                for item in parsed:
+                    if not isinstance(item, dict):
+                        continue
+                    url = item.get("url")
+                    if not isinstance(url, str) or not url:
+                        continue
+                    title = item.get("title", "")
+                    if not isinstance(title, str):
+                        title = str(title) if title is not None else ""
+                    validated.append({"url": url, "title": title})
+                return validated
             except json.JSONDecodeError:
                 pass
             return None

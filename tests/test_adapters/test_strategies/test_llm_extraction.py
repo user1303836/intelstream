@@ -204,3 +204,74 @@ class TestLLMExtractionStrategy:
         text = 'Found these posts: [{"url": "test", "title": "Test"}] That\'s all.'
         result = llm_strategy._extract_json_from_response(text)
         assert len(result) == 1
+
+    async def test_extract_json_filters_non_dict_items(
+        self, llm_strategy: LLMExtractionStrategy
+    ):
+        text = '["string1", "string2", {"url": "valid", "title": "Valid Post"}]'
+        result = llm_strategy._extract_json_from_response(text)
+        assert len(result) == 1
+        assert result[0]["url"] == "valid"
+
+    async def test_extract_json_filters_items_without_url(
+        self, llm_strategy: LLMExtractionStrategy
+    ):
+        text = '[{"title": "No URL"}, {"url": "valid", "title": "Has URL"}]'
+        result = llm_strategy._extract_json_from_response(text)
+        assert len(result) == 1
+        assert result[0]["url"] == "valid"
+
+    async def test_extract_json_filters_items_with_null_url(
+        self, llm_strategy: LLMExtractionStrategy
+    ):
+        text = '[{"url": null, "title": "Null URL"}, {"url": "valid", "title": "Valid"}]'
+        result = llm_strategy._extract_json_from_response(text)
+        assert len(result) == 1
+        assert result[0]["url"] == "valid"
+
+    async def test_extract_json_filters_items_with_empty_url(
+        self, llm_strategy: LLMExtractionStrategy
+    ):
+        text = '[{"url": "", "title": "Empty URL"}, {"url": "valid", "title": "Valid"}]'
+        result = llm_strategy._extract_json_from_response(text)
+        assert len(result) == 1
+        assert result[0]["url"] == "valid"
+
+    async def test_extract_json_handles_non_string_title(
+        self, llm_strategy: LLMExtractionStrategy
+    ):
+        text = '[{"url": "test", "title": 123}]'
+        result = llm_strategy._extract_json_from_response(text)
+        assert len(result) == 1
+        assert result[0]["title"] == "123"
+
+    async def test_extract_json_returns_empty_for_non_list(
+        self, llm_strategy: LLMExtractionStrategy
+    ):
+        text = '{"url": "test", "title": "Not a list"}'
+        result = llm_strategy._extract_json_from_response(text)
+        assert len(result) == 0
+
+    @respx.mock
+    async def test_discover_uses_cache_with_validated_data(
+        self, llm_strategy: LLMExtractionStrategy, mock_repository, mock_anthropic_client
+    ):
+        html = "<html><body>Content</body></html>"
+        expected_hash = llm_strategy._get_content_hash(html)
+
+        cached = MagicMock(spec=ExtractionCache)
+        cached.content_hash = expected_hash
+        cached.posts_json = json.dumps(
+            ["string", {"url": "https://example.com/valid", "title": "Valid"}, None]
+        )
+
+        mock_repository.get_extraction_cache.return_value = cached
+
+        respx.get("https://example.com/").mock(return_value=httpx.Response(200, text=html))
+
+        result = await llm_strategy.discover("https://example.com/")
+
+        assert result is not None
+        assert len(result.posts) == 1
+        assert result.posts[0].url == "https://example.com/valid"
+        mock_anthropic_client.messages.create.assert_not_called()
