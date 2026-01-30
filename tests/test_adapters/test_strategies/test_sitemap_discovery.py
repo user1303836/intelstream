@@ -1,9 +1,11 @@
 import gzip
+from unittest.mock import patch
 
 import httpx
 import pytest
 import respx
 
+from intelstream.adapters.strategies import sitemap_discovery
 from intelstream.adapters.strategies.sitemap_discovery import SitemapDiscoveryStrategy
 
 
@@ -200,3 +202,108 @@ class TestSitemapDiscoveryStrategy:
         result = await sitemap_strategy.discover("https://example.com/random-path")
 
         assert result is None
+
+    @respx.mock
+    async def test_rejects_oversized_compressed_sitemap(
+        self, sitemap_strategy: SitemapDiscoveryStrategy
+    ):
+        small_xml = """<?xml version="1.0"?>
+        <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+            <url><loc>https://example.com/blog/post</loc></url>
+        </urlset>
+        """
+        gzipped = gzip.compress(small_xml.encode())
+
+        respx.get("https://example.com/robots.txt").mock(return_value=httpx.Response(404))
+        respx.get("https://example.com/sitemap.xml").mock(
+            return_value=httpx.Response(200, content=gzipped)
+        )
+        respx.get("https://example.com/sitemap_index.xml").mock(return_value=httpx.Response(404))
+        respx.get("https://example.com/sitemap/").mock(return_value=httpx.Response(404))
+        respx.get("https://example.com/sitemaps/sitemap.xml").mock(return_value=httpx.Response(404))
+
+        with patch.object(sitemap_discovery, "MAX_COMPRESSED_SIZE", 100):
+            result = await sitemap_strategy.discover(
+                "https://example.com/blog", url_pattern="/blog/"
+            )
+
+        assert result is None
+
+    @respx.mock
+    async def test_rejects_oversized_decompressed_sitemap(
+        self, sitemap_strategy: SitemapDiscoveryStrategy
+    ):
+        small_xml = """<?xml version="1.0"?>
+        <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+            <url><loc>https://example.com/blog/post</loc></url>
+        </urlset>
+        """
+        gzipped = gzip.compress(small_xml.encode())
+
+        respx.get("https://example.com/robots.txt").mock(return_value=httpx.Response(404))
+        respx.get("https://example.com/sitemap.xml").mock(
+            return_value=httpx.Response(200, content=gzipped)
+        )
+        respx.get("https://example.com/sitemap_index.xml").mock(return_value=httpx.Response(404))
+        respx.get("https://example.com/sitemap/").mock(return_value=httpx.Response(404))
+        respx.get("https://example.com/sitemaps/sitemap.xml").mock(return_value=httpx.Response(404))
+
+        with patch.object(sitemap_discovery, "MAX_DECOMPRESSED_SIZE", 100):
+            result = await sitemap_strategy.discover(
+                "https://example.com/blog", url_pattern="/blog/"
+            )
+
+        assert result is None
+
+    @respx.mock
+    async def test_rejects_oversized_uncompressed_sitemap(
+        self, sitemap_strategy: SitemapDiscoveryStrategy
+    ):
+        large_xml = """<?xml version="1.0"?>
+        <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+            <url><loc>https://example.com/blog/post</loc></url>
+        </urlset>
+        """
+
+        respx.get("https://example.com/robots.txt").mock(return_value=httpx.Response(404))
+        respx.get("https://example.com/sitemap.xml").mock(
+            return_value=httpx.Response(200, text=large_xml)
+        )
+        respx.get("https://example.com/sitemap_index.xml").mock(return_value=httpx.Response(404))
+        respx.get("https://example.com/sitemap/").mock(return_value=httpx.Response(404))
+        respx.get("https://example.com/sitemaps/sitemap.xml").mock(return_value=httpx.Response(404))
+
+        with patch.object(sitemap_discovery, "MAX_DECOMPRESSED_SIZE", 100):
+            result = await sitemap_strategy.discover(
+                "https://example.com/blog", url_pattern="/blog/"
+            )
+
+        assert result is None
+
+    @respx.mock
+    async def test_accepts_large_uncompressed_sitemap_under_limit(
+        self, sitemap_strategy: SitemapDiscoveryStrategy
+    ):
+        """Verify uncompressed sitemaps between MAX_COMPRESSED_SIZE and MAX_DECOMPRESSED_SIZE are accepted."""
+        xml = """<?xml version="1.0"?>
+        <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+            <url><loc>https://example.com/blog/post</loc></url>
+        </urlset>
+        """
+
+        respx.get("https://example.com/robots.txt").mock(return_value=httpx.Response(404))
+        respx.get("https://example.com/sitemap.xml").mock(
+            return_value=httpx.Response(200, text=xml)
+        )
+
+        with (
+            patch.object(sitemap_discovery, "MAX_COMPRESSED_SIZE", 100),
+            patch.object(sitemap_discovery, "MAX_DECOMPRESSED_SIZE", 10000),
+        ):
+            result = await sitemap_strategy.discover(
+                "https://example.com/blog", url_pattern="/blog/"
+            )
+
+        assert result is not None
+        assert len(result.posts) == 1
+        assert result.posts[0].url == "https://example.com/blog/post"

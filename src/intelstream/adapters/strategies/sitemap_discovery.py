@@ -18,6 +18,8 @@ logger = structlog.get_logger()
 
 MAX_SITEMAP_URLS = 10000
 MAX_SUB_SITEMAPS = 10
+MAX_COMPRESSED_SIZE = 10 * 1024 * 1024  # 10MB compressed
+MAX_DECOMPRESSED_SIZE = 50 * 1024 * 1024  # 50MB decompressed
 
 SITEMAP_PATHS = [
     "/sitemap.xml",
@@ -160,10 +162,35 @@ class SitemapDiscoveryStrategy(DiscoveryStrategy):
             response.raise_for_status()
 
             content = response.content
+
             if sitemap_url.endswith(".gz") or content[:2] == b"\x1f\x8b":
+                if len(content) > MAX_COMPRESSED_SIZE:
+                    logger.warning(
+                        "Compressed sitemap too large",
+                        url=sitemap_url,
+                        size=len(content),
+                        limit=MAX_COMPRESSED_SIZE,
+                    )
+                    return []
                 content = gzip.decompress(content)
+                if len(content) > MAX_DECOMPRESSED_SIZE:
+                    logger.warning(
+                        "Decompressed sitemap too large",
+                        url=sitemap_url,
+                        size=len(content),
+                        limit=MAX_DECOMPRESSED_SIZE,
+                    )
+                    return []
                 xml_text = content.decode("utf-8")
             else:
+                if len(content) > MAX_DECOMPRESSED_SIZE:
+                    logger.warning(
+                        "Sitemap too large",
+                        url=sitemap_url,
+                        size=len(content),
+                        limit=MAX_DECOMPRESSED_SIZE,
+                    )
+                    return []
                 xml_text = response.text
 
             root = ElementTree.fromstring(xml_text)
