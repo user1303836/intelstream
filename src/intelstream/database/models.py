@@ -64,7 +64,7 @@ class ContentItem(Base):
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     thumbnail_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     posted_to_discord: Mapped[bool] = mapped_column(Boolean, default=False)
-    discord_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    discord_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
 
     source: Mapped["Source"] = relationship("Source", back_populates="content_items")
