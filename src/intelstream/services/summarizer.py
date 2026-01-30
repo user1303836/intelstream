@@ -11,6 +11,16 @@ from tenacity import (
 
 logger = structlog.get_logger()
 
+MODEL_MAX_OUTPUT_TOKENS: dict[str, int] = {
+    "claude-3-5-haiku-20241022": 8192,
+    "claude-3-5-sonnet-20241022": 8192,
+    "claude-sonnet-4-20250514": 16384,
+    "claude-3-opus-20240229": 4096,
+    "claude-3-haiku-20240307": 4096,
+    "claude-3-sonnet-20240229": 4096,
+}
+DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 4096
+
 SYSTEM_PROMPT = """You are a content summarizer for a Discord channel. Your job is to extract the key insights from articles, videos, and posts in a structured format.
 
 Guidelines:
@@ -43,9 +53,20 @@ class SummarizationService:
     ) -> None:
         self._client = anthropic.AsyncAnthropic(api_key=api_key)
         self._model = model
-        self._max_tokens = max_tokens
         self._max_input_length = max_input_length
         self._system_prompt = SYSTEM_PROMPT
+
+        model_limit = MODEL_MAX_OUTPUT_TOKENS.get(model, DEFAULT_MODEL_MAX_OUTPUT_TOKENS)
+        if max_tokens > model_limit:
+            logger.warning(
+                "max_tokens exceeds model limit, clamping",
+                requested=max_tokens,
+                model=model,
+                model_limit=model_limit,
+            )
+            self._max_tokens = model_limit
+        else:
+            self._max_tokens = max_tokens
 
     @retry(
         retry=retry_if_exception_type(anthropic.RateLimitError),

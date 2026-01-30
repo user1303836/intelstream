@@ -14,6 +14,10 @@ def mock_bot():
     bot.settings = MagicMock()
     bot.settings.anthropic_api_key = "test-api-key"
     bot.settings.youtube_api_key = "test-youtube-key"
+    bot.settings.http_timeout_seconds = 30.0
+    bot.settings.summary_model_interactive = "claude-sonnet-4-20250514"
+    bot.settings.summary_max_tokens = 2048
+    bot.settings.summary_max_input_length = 100000
     return bot
 
 

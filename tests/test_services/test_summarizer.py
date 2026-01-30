@@ -4,6 +4,8 @@ import anthropic
 import pytest
 
 from intelstream.services.summarizer import (
+    DEFAULT_MODEL_MAX_OUTPUT_TOKENS,
+    MODEL_MAX_OUTPUT_TOKENS,
     SYSTEM_PROMPT,
     SummarizationError,
     SummarizationService,
@@ -244,3 +246,29 @@ class TestSummarizationService:
 
         call_args = mock_create.call_args
         assert call_args.kwargs["system"] == SYSTEM_PROMPT
+
+    def test_max_tokens_clamped_to_model_limit(self):
+        model = "claude-3-opus-20240229"
+        model_limit = MODEL_MAX_OUTPUT_TOKENS[model]
+        requested = model_limit + 1000
+
+        summarizer = SummarizationService(api_key="test-key", model=model, max_tokens=requested)
+
+        assert summarizer._max_tokens == model_limit
+
+    def test_max_tokens_not_clamped_when_within_limit(self):
+        model = "claude-sonnet-4-20250514"
+        requested = 2048
+
+        summarizer = SummarizationService(api_key="test-key", model=model, max_tokens=requested)
+
+        assert summarizer._max_tokens == requested
+
+    def test_max_tokens_uses_default_limit_for_unknown_model(self):
+        requested = DEFAULT_MODEL_MAX_OUTPUT_TOKENS + 1000
+
+        summarizer = SummarizationService(
+            api_key="test-key", model="unknown-model", max_tokens=requested
+        )
+
+        assert summarizer._max_tokens == DEFAULT_MODEL_MAX_OUTPUT_TOKENS
