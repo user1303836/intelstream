@@ -8,6 +8,7 @@ import anthropic
 import httpx
 import structlog
 from bs4 import BeautifulSoup
+from soupsieve import SelectorSyntaxError
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -249,7 +250,7 @@ Respond with ONLY a JSON object, no markdown formatting."""
 
         try:
             posts = soup.select(profile.post_selector)
-        except Exception as e:
+        except (SelectorSyntaxError, ValueError) as e:
             logger.warning(
                 "Invalid CSS selector from LLM",
                 selector=profile.post_selector,
@@ -257,7 +258,7 @@ Respond with ONLY a JSON object, no markdown formatting."""
             )
             return {
                 "valid": False,
-                "reason": f"Invalid post selector: {profile.post_selector}",
+                "reason": f"Invalid CSS selector: {profile.post_selector}",
                 "post_count": 0,
             }
 
@@ -273,7 +274,7 @@ Respond with ONLY a JSON object, no markdown formatting."""
             try:
                 title_elem = post.select_one(profile.title_selector)
                 url_elem = post.select_one(profile.url_selector)
-            except Exception as e:
+            except (SelectorSyntaxError, ValueError) as e:
                 logger.warning(
                     "Invalid CSS selector from LLM",
                     title_selector=profile.title_selector,
@@ -282,7 +283,7 @@ Respond with ONLY a JSON object, no markdown formatting."""
                 )
                 return {
                     "valid": False,
-                    "reason": f"Invalid title/url selector: {e}",
+                    "reason": f"Invalid CSS selector in title or url: {e}",
                     "post_count": 0,
                 }
 

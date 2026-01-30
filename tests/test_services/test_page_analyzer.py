@@ -327,34 +327,6 @@ class TestPageAnalyzer:
         assert result["valid"] is False
         assert "Could not extract" in result["reason"]
 
-    def test_validate_profile_invalid_post_selector(self, sample_html: str) -> None:
-        profile = ExtractionProfile(
-            site_name="Test",
-            post_selector="[invalid[selector",
-            title_selector="h3",
-            url_selector="a",
-            url_attribute="href",
-        )
-        analyzer = PageAnalyzer(api_key="test-key")
-        result = analyzer._validate_profile(sample_html, profile)
-
-        assert result["valid"] is False
-        assert "Invalid post selector" in result["reason"]
-
-    def test_validate_profile_invalid_title_selector(self, sample_html: str) -> None:
-        profile = ExtractionProfile(
-            site_name="Test",
-            post_selector="article.post-card",
-            title_selector="h3[[[",
-            url_selector="a.post-link",
-            url_attribute="href",
-        )
-        analyzer = PageAnalyzer(api_key="test-key")
-        result = analyzer._validate_profile(sample_html, profile)
-
-        assert result["valid"] is False
-        assert "Invalid title/url selector" in result["reason"]
-
     async def test_analyze_extracts_json_from_markdown(
         self, sample_html: str, valid_llm_response: dict
     ) -> None:
@@ -375,3 +347,31 @@ class TestPageAnalyzer:
         profile = await analyzer.analyze("https://example.com/blog")
 
         assert profile.site_name == "Test Blog"
+
+    def test_validate_profile_invalid_post_selector(self, sample_html: str) -> None:
+        profile = ExtractionProfile(
+            site_name="Test",
+            post_selector="[invalid selector syntax",
+            title_selector="h3",
+            url_selector="a",
+            url_attribute="href",
+        )
+        analyzer = PageAnalyzer(api_key="test-key")
+        result = analyzer._validate_profile(sample_html, profile)
+
+        assert result["valid"] is False
+        assert "Invalid CSS selector" in result["reason"]
+
+    def test_validate_profile_invalid_title_selector(self, sample_html: str) -> None:
+        profile = ExtractionProfile(
+            site_name="Test",
+            post_selector="article.post-card",
+            title_selector="h3[unclosed",
+            url_selector="a.post-link",
+            url_attribute="href",
+        )
+        analyzer = PageAnalyzer(api_key="test-key")
+        result = analyzer._validate_profile(sample_html, profile)
+
+        assert result["valid"] is False
+        assert "Invalid CSS selector" in result["reason"]
