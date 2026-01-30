@@ -1,5 +1,3 @@
-from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
 from typing import Any
 
 import feedparser
@@ -7,6 +5,7 @@ import httpx
 import structlog
 
 from intelstream.adapters.base import BaseAdapter, ContentData
+from intelstream.utils.feed_utils import parse_feed_date
 
 logger = structlog.get_logger()
 
@@ -83,7 +82,7 @@ class RSSAdapter(BaseAdapter):
         title: str = str(entry.get("title", "Untitled"))
         original_url: str = str(entry.get("link", ""))
         author = self._extract_author(entry, feed)
-        published_at = self._parse_date(entry)
+        published_at = parse_feed_date(entry)
         raw_content = self._extract_content(entry)
         thumbnail_url = self._extract_thumbnail(entry)
 
@@ -117,33 +116,6 @@ class RSSAdapter(BaseAdapter):
             return str(feed_data.title)
 
         return "Unknown Author"
-
-    def _parse_date(self, entry: feedparser.FeedParserDict) -> datetime:
-        if entry.get("published_parsed"):
-            parsed = entry.published_parsed
-            return datetime(
-                parsed[0], parsed[1], parsed[2], parsed[3], parsed[4], parsed[5], tzinfo=UTC
-            )
-
-        if entry.get("published"):
-            try:
-                return parsedate_to_datetime(str(entry.published))
-            except (TypeError, ValueError):
-                pass
-
-        if entry.get("updated_parsed"):
-            parsed = entry.updated_parsed
-            return datetime(
-                parsed[0], parsed[1], parsed[2], parsed[3], parsed[4], parsed[5], tzinfo=UTC
-            )
-
-        if entry.get("updated"):
-            try:
-                return parsedate_to_datetime(str(entry.updated))
-            except (TypeError, ValueError):
-                pass
-
-        return datetime.now(UTC)
 
     def _extract_content(self, entry: feedparser.FeedParserDict) -> str | None:
         if entry.get("content"):

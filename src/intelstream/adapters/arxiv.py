@@ -1,6 +1,4 @@
 import re
-from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
 
 import feedparser
 import httpx
@@ -8,6 +6,7 @@ import structlog
 from bs4 import BeautifulSoup, Tag
 
 from intelstream.adapters.base import BaseAdapter, ContentData
+from intelstream.utils.feed_utils import parse_feed_date
 
 logger = structlog.get_logger()
 
@@ -93,7 +92,7 @@ class ArxivAdapter(BaseAdapter):
         title = self._clean_title(str(entry.get("title", "Untitled")))
         original_url = str(entry.get("link", ""))
         author = self._extract_authors(entry)
-        published_at = self._parse_date(entry)
+        published_at = parse_feed_date(entry)
         abstract = self._extract_abstract(entry)
 
         arxiv_id = external_id.replace("arxiv:", "") if external_id.startswith("arxiv:") else None
@@ -145,27 +144,6 @@ class ArxivAdapter(BaseAdapter):
             return str(dc_creator).strip()
 
         return "Unknown Authors"
-
-    def _parse_date(self, entry: feedparser.FeedParserDict) -> datetime:
-        if entry.get("published_parsed"):
-            parsed = entry.published_parsed
-            return datetime(
-                parsed[0], parsed[1], parsed[2], parsed[3], parsed[4], parsed[5], tzinfo=UTC
-            )
-
-        if entry.get("published"):
-            try:
-                return parsedate_to_datetime(str(entry.published))
-            except (TypeError, ValueError):
-                pass
-
-        if entry.get("updated_parsed"):
-            parsed = entry.updated_parsed
-            return datetime(
-                parsed[0], parsed[1], parsed[2], parsed[3], parsed[4], parsed[5], tzinfo=UTC
-            )
-
-        return datetime.now(UTC)
 
     def _extract_abstract(self, entry: feedparser.FeedParserDict) -> str | None:
         description = entry.get("summary") or entry.get("description")
