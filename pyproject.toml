@@ -32,6 +32,8 @@ dev = [
     "mypy>=1.14.1",
     "respx>=0.22.0",
     "types-beautifulsoup4>=4.12.0.20241020",
+    "pip-audit>=2.7.0",
+    "bandit>=1.7.0",
 ]
 
 [project.scripts]
@@ -106,3 +108,7 @@ exclude_lines = [
     "if TYPE_CHECKING:",
     "raise NotImplementedError",
 ]
+
+[tool.bandit]
+exclude_dirs = ["tests", "design"]
+skips = ["B101"]  # Skip assert warnings (used appropriately in production code)
