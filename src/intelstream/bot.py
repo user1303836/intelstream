@@ -99,16 +99,22 @@ class IntelStreamBot(commands.Bot):
             try:
                 self._owner = await self.fetch_user(self.settings.discord_owner_id)
             except discord.NotFound:
-                logger.warning("Cannot notify owner: user not found")
+                logger.error("Cannot notify owner: user not found")
                 return
+
+        if len(message) > 1900:
+            message = message[:1900] + "... (truncated)"
 
         try:
             await self._owner.send(f"**IntelStream Alert**\n{message}")
             logger.info(f"Notified owner: {message[:50]}...")
+        except discord.NotFound:
+            logger.error("Owner user not found - check DISCORD_OWNER_ID")
+            self._owner = None
         except discord.Forbidden:
-            logger.warning("Cannot DM owner: forbidden")
+            logger.error("Cannot DM owner: DMs may be disabled")
         except discord.HTTPException as e:
-            logger.warning(f"Failed to DM owner: {e}")
+            logger.error(f"Failed to DM owner: {e}")
 
     async def close(self) -> None:
         await self.repository.close()
