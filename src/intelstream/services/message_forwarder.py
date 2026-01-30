@@ -184,15 +184,4 @@ class MessageForwarder:
         return files
 
     def _build_forwarded_content(self, message: discord.Message) -> str:
-        parts = []
-        source_name = getattr(message.channel, "name", "Unknown")
-        parts.append(f"**Forwarded from #{source_name}**")
-
-        if message.author.bot:
-            parts.append(f"*Original author: {message.author.name}*")
-
-        if message.content:
-            parts.append("")
-            parts.append(message.content)
-
-        return "\n".join(parts)
+        return message.content

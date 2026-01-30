@@ -22,45 +22,27 @@ def forwarder(mock_bot):
 class TestBuildForwardedContent:
     def test_build_content_with_text(self, forwarder):
         message = MagicMock(spec=discord.Message)
-        message.channel = MagicMock()
-        message.channel.name = "announcements"
-        message.author = MagicMock()
-        message.author.bot = False
         message.content = "Hello world!"
 
         content = forwarder._build_forwarded_content(message)
 
-        assert "**Forwarded from #announcements**" in content
-        assert "Hello world!" in content
-        assert "Original author" not in content
+        assert content == "Hello world!"
 
     def test_build_content_with_bot_author(self, forwarder):
         message = MagicMock(spec=discord.Message)
-        message.channel = MagicMock()
-        message.channel.name = "news"
-        message.author = MagicMock()
-        message.author.bot = True
-        message.author.name = "NewsBot"
         message.content = "Breaking news!"
 
         content = forwarder._build_forwarded_content(message)
 
-        assert "**Forwarded from #news**" in content
-        assert "*Original author: NewsBot*" in content
-        assert "Breaking news!" in content
+        assert content == "Breaking news!"
 
     def test_build_content_without_text(self, forwarder):
         message = MagicMock(spec=discord.Message)
-        message.channel = MagicMock()
-        message.channel.name = "media"
-        message.author = MagicMock()
-        message.author.bot = False
         message.content = ""
 
         content = forwarder._build_forwarded_content(message)
 
-        assert "**Forwarded from #media**" in content
-        assert content.strip().endswith("#media**")
+        assert content == ""
 
 
 class TestGetDestination:
