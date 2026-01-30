@@ -1,3 +1,4 @@
+import asyncio
 from typing import TYPE_CHECKING, Any
 
 import discord
@@ -23,30 +24,32 @@ class MessageForwarding(commands.Cog):
         self.bot = bot
         self.forwarder = MessageForwarder(bot)
         self._rules_cache: dict[str, list[Any]] = {}
+        self._cache_lock = asyncio.Lock()
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
         await self._refresh_cache()
 
     async def _refresh_cache(self) -> None:
-        new_cache: dict[str, list[Any]] = {}
-        total_rules = 0
-        for guild in self.bot.guilds:
-            rules = await self.bot.repository.get_forwarding_rules_for_guild(str(guild.id))
-            for rule in rules:
-                if rule.is_active:
-                    if rule.source_channel_id not in new_cache:
-                        new_cache[rule.source_channel_id] = []
-                    new_cache[rule.source_channel_id].append(rule)
-                    total_rules += 1
+        async with self._cache_lock:
+            new_cache: dict[str, list[Any]] = {}
+            total_rules = 0
+            for guild in self.bot.guilds:
+                rules = await self.bot.repository.get_forwarding_rules_for_guild(str(guild.id))
+                for rule in rules:
+                    if rule.is_active:
+                        if rule.source_channel_id not in new_cache:
+                            new_cache[rule.source_channel_id] = []
+                        new_cache[rule.source_channel_id].append(rule)
+                        total_rules += 1
 
-        self._rules_cache = new_cache
+            self._rules_cache = new_cache
 
-        logger.info(
-            "Forwarding rules cache refreshed",
-            total_active_rules=total_rules,
-            source_channels=list(self._rules_cache.keys()),
-        )
+            logger.info(
+                "Forwarding rules cache refreshed",
+                total_active_rules=total_rules,
+                source_channels=list(self._rules_cache.keys()),
+            )
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
