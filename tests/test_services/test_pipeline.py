@@ -16,6 +16,7 @@ def mock_settings():
     settings = MagicMock(spec=Settings)
     settings.youtube_api_key = "test-youtube-key"
     settings.anthropic_api_key = "test-anthropic-key"
+    settings.fetch_delay_seconds = 0.0
     return settings
 
 
@@ -95,6 +96,7 @@ class TestContentPipelineInitialization:
         settings = MagicMock(spec=Settings)
         settings.youtube_api_key = None
         settings.anthropic_api_key = "test-anthropic-key"
+        settings.fetch_delay_seconds = 0.0
 
         pipeline = ContentPipeline(
             settings=settings, repository=mock_repository, summarizer=mock_summarizer
@@ -282,6 +284,57 @@ class TestFetchAllSources:
 
         assert result == 5
         assert mock_repository.add_content_item.call_count == 5
+
+        await pipeline.close()
+
+    async def test_fetch_all_sources_applies_rate_limiting(
+        self,
+        mock_repository: AsyncMock,
+        mock_summarizer: AsyncMock,
+    ):
+        """Verify that fetch_delay_seconds is applied between source fetches."""
+        settings = MagicMock(spec=Settings)
+        settings.youtube_api_key = "test-key"
+        settings.anthropic_api_key = "test-key"
+        settings.fetch_delay_seconds = 0.1
+
+        pipeline = ContentPipeline(
+            settings=settings, repository=mock_repository, summarizer=mock_summarizer
+        )
+        await pipeline.initialize()
+
+        source1 = MagicMock(spec=Source)
+        source1.id = "source-1"
+        source1.name = "Source 1"
+        source1.type = SourceType.SUBSTACK
+        source1.identifier = "source1"
+        source1.feed_url = "https://source1.substack.com/feed"
+        source1.last_polled_at = None
+
+        source2 = MagicMock(spec=Source)
+        source2.id = "source-2"
+        source2.name = "Source 2"
+        source2.type = SourceType.SUBSTACK
+        source2.identifier = "source2"
+        source2.feed_url = "https://source2.substack.com/feed"
+        source2.last_polled_at = None
+
+        mock_repository.get_all_sources.return_value = [source1, source2]
+        mock_repository.content_item_exists.return_value = True
+
+        with (
+            patch.object(
+                pipeline._adapters[SourceType.SUBSTACK],
+                "fetch_latest",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "intelstream.services.pipeline.asyncio.sleep", new_callable=AsyncMock
+            ) as mock_sleep,
+        ):
+            await pipeline.fetch_all_sources()
+            mock_sleep.assert_called_once_with(0.1)
 
         await pipeline.close()
 

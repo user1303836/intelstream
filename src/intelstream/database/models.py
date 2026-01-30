@@ -19,6 +19,12 @@ class SourceType(enum.Enum):
     BLOG = "blog"
 
 
+class PauseReason(enum.Enum):
+    NONE = "none"
+    USER_PAUSED = "user_paused"
+    CONSECUTIVE_FAILURES = "consecutive_failures"
+
+
 class Source(Base):
     __tablename__ = "sources"
 
@@ -36,6 +42,9 @@ class Source(Base):
     consecutive_failures: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     poll_interval_minutes: Mapped[int] = mapped_column(Integer, default=5)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    pause_reason: Mapped[str] = mapped_column(
+        String(32), default=PauseReason.NONE.value, server_default="none"
+    )
     last_polled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
     updated_at: Mapped[datetime] = mapped_column(
@@ -64,7 +73,7 @@ class ContentItem(Base):
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     thumbnail_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     posted_to_discord: Mapped[bool] = mapped_column(Boolean, default=False)
-    discord_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    discord_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
 
     source: Mapped["Source"] = relationship("Source", back_populates="content_items")
