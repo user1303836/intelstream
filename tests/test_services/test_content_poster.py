@@ -400,3 +400,13 @@ class TestTruncateSummaryAtBullet:
         result = truncate_summary_at_bullet(summary, len(summary))
         assert result == summary
         assert TRUNCATION_NOTICE not in result
+
+    def test_removes_orphan_sub_bullet_without_parent(self):
+        summary = """Some intro text
+  - Sub point without parent
+  - Another sub point
+- **Point 1:** First point"""
+        result = truncate_summary_at_bullet(summary, 70)
+        assert "Some intro text" in result
+        assert "Sub point without parent" not in result
+        assert TRUNCATION_NOTICE.strip() in result
