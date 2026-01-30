@@ -27,6 +27,9 @@ SOURCES_MIGRATIONS: list[tuple[str, str]] = [
     ("channel_id", "VARCHAR(36)"),
 ]
 
+MIN_POLL_INTERVAL_MINUTES = 1
+MAX_POLL_INTERVAL_MINUTES = 60
+
 
 class Repository:
     def __init__(self, database_url: str) -> None:
@@ -82,6 +85,12 @@ class Repository:
         guild_id: str | None = None,
         channel_id: str | None = None,
     ) -> Source:
+        if not MIN_POLL_INTERVAL_MINUTES <= poll_interval_minutes <= MAX_POLL_INTERVAL_MINUTES:
+            raise ValueError(
+                f"poll_interval_minutes must be between {MIN_POLL_INTERVAL_MINUTES} and "
+                f"{MAX_POLL_INTERVAL_MINUTES}, got {poll_interval_minutes}"
+            )
+
         async with self.session() as session:
             source = Source(
                 type=source_type,
