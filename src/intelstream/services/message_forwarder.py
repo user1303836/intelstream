@@ -5,6 +5,8 @@ import structlog
 
 logger = structlog.get_logger()
 
+MAX_TOTAL_ATTACHMENT_SIZE = 25 * 1024 * 1024  # 25MB total limit
+
 
 class MessageForwarder:
     def __init__(self, bot: discord.Client) -> None:
@@ -164,7 +166,8 @@ class MessageForwarder:
     async def _download_attachments(
         self, message: discord.Message, destination: discord.TextChannel | discord.Thread
     ) -> list[discord.File]:
-        files = []
+        files: list[discord.File] = []
+        total_size = 0
         for attachment in message.attachments[:10]:
             if attachment.size > destination.guild.filesize_limit:
                 logger.warning(
@@ -174,9 +177,19 @@ class MessageForwarder:
                     limit=destination.guild.filesize_limit,
                 )
                 continue
+            if total_size + attachment.size > MAX_TOTAL_ATTACHMENT_SIZE:
+                logger.warning(
+                    "Skipping remaining attachments due to total size limit",
+                    current_total=total_size,
+                    attachment_size=attachment.size,
+                    limit=MAX_TOTAL_ATTACHMENT_SIZE,
+                    skipped_count=len(message.attachments[:10]) - len(files),
+                )
+                break
             try:
                 file = await attachment.to_file()
                 files.append(file)
+                total_size += attachment.size
             except discord.HTTPException as e:
                 logger.warning(
                     "Failed to download attachment",
