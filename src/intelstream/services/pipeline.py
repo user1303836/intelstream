@@ -72,8 +72,9 @@ class ContentPipeline:
         logger.info("Fetching content from sources", count=len(sources))
 
         total_new_items = 0
+        fetch_delay = self._settings.fetch_delay_seconds
 
-        for source in sources:
+        for i, source in enumerate(sources):
             try:
                 new_items = await self._fetch_source(source)
                 total_new_items += new_items
@@ -84,6 +85,9 @@ class ContentPipeline:
                     source_type=source.type.value,
                     error=str(e),
                 )
+
+            if fetch_delay > 0 and i < len(sources) - 1:
+                await asyncio.sleep(fetch_delay)
 
         logger.info("Fetch complete", total_new_items=total_new_items)
         return total_new_items

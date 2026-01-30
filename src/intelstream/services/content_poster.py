@@ -53,11 +53,16 @@ def truncate_summary_at_bullet(summary: str, max_length: int) -> str:
     is_sub_bullet = last_line.strip().startswith("- ") and last_line.startswith("  ")
 
     if is_sub_bullet:
+        found_parent = False
         for j in range(len(result_lines) - 1, -1, -1):
             line = result_lines[j]
             if line.strip().startswith("- **") and not line.startswith("  "):
                 result_lines = result_lines[: j + 1]
+                found_parent = True
                 break
+
+        if not found_parent:
+            result_lines = result_lines[:-1]
 
         result = "\n".join(result_lines)
 
@@ -142,11 +147,14 @@ class ContentPoster:
             logger.debug("No unposted content items to post")
             return 0
 
+        source_ids = {item.source_id for item in items}
+        sources_map = await self._bot.repository.get_sources_by_ids(source_ids)
+
         posted_count = 0
 
         for item in items:
             try:
-                source = await self._bot.repository.get_source_by_id(item.source_id)
+                source = sources_map.get(item.source_id)
                 if source is None:
                     logger.warning("Source not found for content item", item_id=item.id)
                     continue
