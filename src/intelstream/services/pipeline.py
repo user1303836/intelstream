@@ -76,9 +76,48 @@ class ContentPipeline:
             try:
                 new_items = await self._fetch_source(source)
                 total_new_items += new_items
+                await self._repository.reset_failure_count(source.id)
+            except httpx.TimeoutException:
+                logger.warning(
+                    "Source fetch timed out",
+                    source_name=source.name,
+                    source_type=source.type.value,
+                )
+                await self._repository.increment_failure_count(source.id)
+            except httpx.HTTPStatusError as e:
+                status = e.response.status_code
+                if status == 404:
+                    logger.error(
+                        "Source not found (404), consider removing",
+                        source_name=source.name,
+                        source_type=source.type.value,
+                    )
+                elif status >= 500:
+                    logger.warning(
+                        "Server error fetching source",
+                        source_name=source.name,
+                        source_type=source.type.value,
+                        status=status,
+                    )
+                    await self._repository.increment_failure_count(source.id)
+                else:
+                    logger.error(
+                        "HTTP error fetching source",
+                        source_name=source.name,
+                        source_type=source.type.value,
+                        status=status,
+                    )
+            except httpx.RequestError as e:
+                logger.warning(
+                    "Network error fetching source",
+                    source_name=source.name,
+                    source_type=source.type.value,
+                    error=type(e).__name__,
+                )
+                await self._repository.increment_failure_count(source.id)
             except Exception as e:
-                logger.error(
-                    "Failed to fetch source",
+                logger.exception(
+                    "Unexpected error fetching source",
                     source_name=source.name,
                     source_type=source.type.value,
                     error=str(e),

@@ -344,6 +344,118 @@ class TestFetchAllSources:
 
         await pipeline.close()
 
+    async def test_fetch_timeout_increments_failure_count(
+        self,
+        pipeline: ContentPipeline,
+        mock_repository: AsyncMock,
+        sample_source,
+    ):
+        import httpx
+
+        await pipeline.initialize()
+
+        mock_repository.get_all_sources.return_value = [sample_source]
+
+        with patch.object(
+            pipeline._adapters[SourceType.SUBSTACK],
+            "fetch_latest",
+            new_callable=AsyncMock,
+            side_effect=httpx.TimeoutException("Connection timed out"),
+        ):
+            result = await pipeline.fetch_all_sources()
+
+        assert result == 0
+        mock_repository.increment_failure_count.assert_called_once_with(sample_source.id)
+
+        await pipeline.close()
+
+    async def test_fetch_server_error_increments_failure_count(
+        self,
+        pipeline: ContentPipeline,
+        mock_repository: AsyncMock,
+        sample_source,
+    ):
+        import httpx
+
+        await pipeline.initialize()
+
+        mock_repository.get_all_sources.return_value = [sample_source]
+
+        mock_response = MagicMock()
+        mock_response.status_code = 503
+        mock_request = MagicMock()
+
+        with patch.object(
+            pipeline._adapters[SourceType.SUBSTACK],
+            "fetch_latest",
+            new_callable=AsyncMock,
+            side_effect=httpx.HTTPStatusError(
+                "Service Unavailable", request=mock_request, response=mock_response
+            ),
+        ):
+            result = await pipeline.fetch_all_sources()
+
+        assert result == 0
+        mock_repository.increment_failure_count.assert_called_once_with(sample_source.id)
+
+        await pipeline.close()
+
+    async def test_fetch_404_does_not_increment_failure_count(
+        self,
+        pipeline: ContentPipeline,
+        mock_repository: AsyncMock,
+        sample_source,
+    ):
+        import httpx
+
+        await pipeline.initialize()
+
+        mock_repository.get_all_sources.return_value = [sample_source]
+
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        mock_request = MagicMock()
+
+        with patch.object(
+            pipeline._adapters[SourceType.SUBSTACK],
+            "fetch_latest",
+            new_callable=AsyncMock,
+            side_effect=httpx.HTTPStatusError(
+                "Not Found", request=mock_request, response=mock_response
+            ),
+        ):
+            result = await pipeline.fetch_all_sources()
+
+        assert result == 0
+        mock_repository.increment_failure_count.assert_not_called()
+
+        await pipeline.close()
+
+    async def test_fetch_success_resets_failure_count(
+        self,
+        pipeline: ContentPipeline,
+        mock_repository: AsyncMock,
+        sample_source,
+        sample_content_data,
+    ):
+        await pipeline.initialize()
+
+        mock_repository.get_all_sources.return_value = [sample_source]
+        mock_repository.content_item_exists.return_value = False
+
+        with patch.object(
+            pipeline._adapters[SourceType.SUBSTACK],
+            "fetch_latest",
+            new_callable=AsyncMock,
+            return_value=[sample_content_data],
+        ):
+            result = await pipeline.fetch_all_sources()
+
+        assert result == 1
+        mock_repository.reset_failure_count.assert_called_once_with(sample_source.id)
+
+        await pipeline.close()
+
 
 class TestSummarizePending:
     async def test_summarize_pending_success(
