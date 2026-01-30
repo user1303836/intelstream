@@ -135,6 +135,19 @@ class Settings(BaseSettings):
                 path.parent.mkdir(parents=True, exist_ok=True)
         return v
 
+    def __repr__(self) -> str:
+        return (
+            f"Settings("
+            f"discord_bot_token='*****', "
+            f"discord_guild_id={self.discord_guild_id}, "
+            f"discord_owner_id={self.discord_owner_id}, "
+            f"anthropic_api_key='*****', "
+            f"youtube_api_key={'*****' if self.youtube_api_key else None}, "
+            f"database_url={self.database_url!r}, "
+            f"log_level={self.log_level!r}"
+            f")"
+        )
+
 
 @lru_cache
 def get_settings() -> Settings:

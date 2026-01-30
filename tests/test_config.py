@@ -62,3 +62,32 @@ class TestSettings:
 
         with pytest.raises(ValidationError):
             Settings(_env_file=None)
+
+    def test_repr_masks_secrets(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "secret-discord-token-12345")
+        monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
+        monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret-key-67890")
+        monkeypatch.setenv("YOUTUBE_API_KEY", "yt-secret-api-key")
+
+        settings = Settings(_env_file=None)
+        repr_str = repr(settings)
+
+        assert "secret-discord-token-12345" not in repr_str
+        assert "sk-ant-secret-key-67890" not in repr_str
+        assert "yt-secret-api-key" not in repr_str
+        assert "*****" in repr_str
+        assert "discord_guild_id=123456789" in repr_str
+        assert "discord_owner_id=111222333" in repr_str
+
+    def test_repr_handles_none_youtube_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
+        monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
+        monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
+
+        settings = Settings(_env_file=None)
+        repr_str = repr(settings)
+
+        assert "youtube_api_key=None" in repr_str
