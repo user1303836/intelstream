@@ -246,3 +246,28 @@ class TestSitemapDiscoveryStrategy:
             )
 
         assert result is None
+
+    @respx.mock
+    async def test_rejects_oversized_uncompressed_sitemap(
+        self, sitemap_strategy: SitemapDiscoveryStrategy
+    ):
+        large_xml = """<?xml version="1.0"?>
+        <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+            <url><loc>https://example.com/blog/post</loc></url>
+        </urlset>
+        """
+
+        respx.get("https://example.com/robots.txt").mock(return_value=httpx.Response(404))
+        respx.get("https://example.com/sitemap.xml").mock(
+            return_value=httpx.Response(200, text=large_xml)
+        )
+        respx.get("https://example.com/sitemap_index.xml").mock(return_value=httpx.Response(404))
+        respx.get("https://example.com/sitemap/").mock(return_value=httpx.Response(404))
+        respx.get("https://example.com/sitemaps/sitemap.xml").mock(return_value=httpx.Response(404))
+
+        with patch.object(sitemap_discovery, "MAX_DECOMPRESSED_SIZE", 100):
+            result = await sitemap_strategy.discover(
+                "https://example.com/blog", url_pattern="/blog/"
+            )
+
+        assert result is None

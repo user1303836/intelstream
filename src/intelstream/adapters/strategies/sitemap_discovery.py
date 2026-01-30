@@ -183,6 +183,14 @@ class SitemapDiscoveryStrategy(DiscoveryStrategy):
                     return []
                 xml_text = content.decode("utf-8")
             else:
+                if len(content) > MAX_DECOMPRESSED_SIZE:
+                    logger.warning(
+                        "Sitemap too large",
+                        url=sitemap_url,
+                        size=len(content),
+                        limit=MAX_DECOMPRESSED_SIZE,
+                    )
+                    return []
                 xml_text = response.text
 
             root = ElementTree.fromstring(xml_text)
