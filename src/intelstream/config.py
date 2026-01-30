@@ -137,7 +137,7 @@ class Settings(BaseSettings):
     def validate_database_url(cls, v: str) -> str:
         if v.startswith("sqlite"):
             db_path = v.split("///")[-1]
-            if db_path != ":memory:" and db_path == "":
+            if db_path == "":
                 raise ValueError("SQLite database path cannot be empty")
         return v
 
