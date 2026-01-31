@@ -13,11 +13,6 @@ logger = structlog.get_logger()
 
 
 class SuckBoobs(commands.Cog):
-    suck_boobs_group = app_commands.Group(
-        name="suck_boobs",
-        description="The suck_boobs command",
-    )
-
     def __init__(self, bot: "IntelStreamBot") -> None:
         self.bot = bot
 
@@ -29,8 +24,8 @@ class SuckBoobs(commands.Cog):
             return None
         return random.choice(eligible)
 
-    @suck_boobs_group.command(name="do", description="Suck someone's boobs")
-    async def suck_boobs_do(self, interaction: discord.Interaction) -> None:
+    @app_commands.command(name="suck_boobs", description="Suck someone's boobs")
+    async def suck_boobs(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None or not isinstance(
             interaction.channel, (discord.TextChannel, discord.Thread)
         ):
@@ -58,7 +53,7 @@ class SuckBoobs(commands.Cog):
             f"🍼 {interaction.user.display_name} sucks <@{target.id}>'s boobs 🥛😳"
         )
 
-    @suck_boobs_group.command(name="score", description="Show the suck_boobs leaderboard")
+    @app_commands.command(name="suck_boobs_score", description="Show the suck_boobs leaderboard")
     async def suck_boobs_score(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None:
             await interaction.response.send_message(
