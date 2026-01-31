@@ -12,6 +12,7 @@ from intelstream.adapters.smart_blog import SmartBlogAdapter
 from intelstream.adapters.substack import SubstackAdapter
 from intelstream.adapters.youtube import YouTubeAdapter
 from intelstream.config import Settings
+from intelstream.database.exceptions import DuplicateContentError
 from intelstream.database.models import ContentItem, Source, SourceType
 from intelstream.database.repository import Repository
 from intelstream.services.summarizer import SummarizationError, SummarizationService
@@ -185,8 +186,12 @@ class ContentPipeline:
         new_count = 0
         for item in items:
             if not await self._repository.content_item_exists(item.external_id):
-                await self._store_content_item(source, item)
-                new_count += 1
+                try:
+                    await self._store_content_item(source, item)
+                    new_count += 1
+                except DuplicateContentError:
+                    logger.debug("Content item already exists", external_id=item.external_id)
+                    continue
 
                 if is_first_poll:
                     logger.info(

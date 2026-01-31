@@ -9,7 +9,11 @@ from discord import app_commands
 from discord.ext import commands
 
 from intelstream.adapters.smart_blog import SmartBlogAdapter
-from intelstream.database.exceptions import DatabaseConnectionError, SourceNotFoundError
+from intelstream.database.exceptions import (
+    DatabaseConnectionError,
+    DuplicateSourceError,
+    SourceNotFoundError,
+)
 from intelstream.database.models import PauseReason, SourceType
 from intelstream.services.page_analyzer import PageAnalysisError, PageAnalyzer
 
@@ -219,18 +223,25 @@ class SourceManagement(commands.Cog):
 
         final_feed_url = discovered_feed_url if discovered_feed_url else feed_url
 
-        source = await self.bot.repository.add_source(
-            source_type=stype,
-            name=name,
-            identifier=identifier,
-            feed_url=final_feed_url,
-            poll_interval_minutes=self.bot.settings.default_poll_interval_minutes,
-            extraction_profile=extraction_profile_json,
-            discovery_strategy=discovery_strategy,
-            url_pattern=discovered_url_pattern,
-            guild_id=str(interaction.guild_id) if interaction.guild_id else None,
-            channel_id=str(interaction.channel_id),
-        )
+        try:
+            source = await self.bot.repository.add_source(
+                source_type=stype,
+                name=name,
+                identifier=identifier,
+                feed_url=final_feed_url,
+                poll_interval_minutes=self.bot.settings.default_poll_interval_minutes,
+                extraction_profile=extraction_profile_json,
+                discovery_strategy=discovery_strategy,
+                url_pattern=discovered_url_pattern,
+                guild_id=str(interaction.guild_id) if interaction.guild_id else None,
+                channel_id=str(interaction.channel_id),
+            )
+        except DuplicateSourceError:
+            await interaction.followup.send(
+                f"A source with identifier `{identifier}` or name **{name}** already exists.",
+                ephemeral=True,
+            )
+            return
 
         logger.info(
             "Source added",
