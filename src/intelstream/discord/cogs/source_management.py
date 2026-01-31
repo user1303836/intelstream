@@ -9,6 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from intelstream.adapters.smart_blog import SmartBlogAdapter
+from intelstream.database.exceptions import DatabaseConnectionError, SourceNotFoundError
 from intelstream.database.models import PauseReason, SourceType
 from intelstream.services.page_analyzer import PageAnalysisError, PageAnalyzer
 
@@ -311,9 +312,8 @@ class SourceManagement(commands.Cog):
             )
             return
 
-        deleted = await self.bot.repository.delete_source(source.identifier)
-
-        if deleted:
+        try:
+            await self.bot.repository.delete_source(source.identifier)
             logger.info(
                 "Source removed",
                 name=name,
@@ -321,8 +321,14 @@ class SourceManagement(commands.Cog):
                 user_id=interaction.user.id,
             )
             await interaction.followup.send(f"Source **{name}** has been removed.", ephemeral=True)
-        else:
-            await interaction.followup.send(f"Failed to remove source **{name}**.", ephemeral=True)
+        except SourceNotFoundError:
+            await interaction.followup.send(
+                f"Source **{name}** was already removed.", ephemeral=True
+            )
+        except DatabaseConnectionError:
+            await interaction.followup.send(
+                f"Failed to remove source **{name}** due to a database error.", ephemeral=True
+            )
 
     @source_group.command(name="toggle", description="Enable or disable a content source")
     @app_commands.default_permissions(manage_guild=True)
@@ -343,11 +349,11 @@ class SourceManagement(commands.Cog):
 
         new_state = not source.is_active
         pause_reason = PauseReason.NONE if new_state else PauseReason.USER_PAUSED
-        updated = await self.bot.repository.set_source_active(
-            source.identifier, new_state, pause_reason=pause_reason
-        )
 
-        if updated:
+        try:
+            await self.bot.repository.set_source_active(
+                source.identifier, new_state, pause_reason=pause_reason
+            )
             status = "enabled" if new_state else "disabled"
             logger.info(
                 "Source toggled",
@@ -357,8 +363,12 @@ class SourceManagement(commands.Cog):
                 user_id=interaction.user.id,
             )
             await interaction.followup.send(f"Source **{name}** has been {status}.", ephemeral=True)
-        else:
-            await interaction.followup.send(f"Failed to toggle source **{name}**.", ephemeral=True)
+        except SourceNotFoundError:
+            await interaction.followup.send(f"Source **{name}** no longer exists.", ephemeral=True)
+        except DatabaseConnectionError:
+            await interaction.followup.send(
+                f"Failed to toggle source **{name}** due to a database error.", ephemeral=True
+            )
 
 
 async def setup(bot: "IntelStreamBot") -> None:

@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 import structlog
 from sqlalchemy import exists, func, select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
     AsyncSession,
@@ -10,6 +10,12 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from intelstream.database.exceptions import (
+    DatabaseConnectionError,
+    DuplicateContentError,
+    DuplicateSourceError,
+    SourceNotFoundError,
+)
 from intelstream.database.models import (
     Base,
     ContentItem,
@@ -118,7 +124,12 @@ class Repository:
                 channel_id=channel_id,
             )
             session.add(source)
-            await session.commit()
+            try:
+                await session.commit()
+            except IntegrityError as e:
+                await session.rollback()
+                logger.warning("Duplicate source", identifier=identifier, error=str(e))
+                raise DuplicateSourceError(identifier) from e
             await session.refresh(source)
             logger.info(
                 "Source added",
@@ -179,41 +190,51 @@ class Repository:
         identifier: str,
         is_active: bool,
         pause_reason: PauseReason | None = None,
-    ) -> Source | None:
+    ) -> Source:
         async with self.session() as session:
             result = await session.execute(select(Source).where(Source.identifier == identifier))
             source = result.scalar_one_or_none()
-            if source:
-                source.is_active = is_active
-                if pause_reason is not None:
-                    source.pause_reason = pause_reason.value
-                elif is_active:
-                    source.pause_reason = PauseReason.NONE.value
-                await session.commit()
-                await session.refresh(source)
-                logger.info(
-                    "Source active state changed",
-                    source_id=source.id,
-                    identifier=identifier,
-                    is_active=is_active,
-                    pause_reason=source.pause_reason,
-                )
-            else:
+            if not source:
                 logger.warning("Source not found for active state change", identifier=identifier)
+                raise SourceNotFoundError(identifier)
+            source.is_active = is_active
+            if pause_reason is not None:
+                source.pause_reason = pause_reason.value
+            elif is_active:
+                source.pause_reason = PauseReason.NONE.value
+            try:
+                await session.commit()
+            except OperationalError as e:
+                await session.rollback()
+                logger.error("Database error updating source", identifier=identifier, error=str(e))
+                raise DatabaseConnectionError(f"Failed to update source: {e}") from e
+            await session.refresh(source)
+            logger.info(
+                "Source active state changed",
+                source_id=source.id,
+                identifier=identifier,
+                is_active=is_active,
+                pause_reason=source.pause_reason,
+            )
             return source
 
     async def delete_source(self, identifier: str) -> bool:
         async with self.session() as session:
             result = await session.execute(select(Source).where(Source.identifier == identifier))
             source = result.scalar_one_or_none()
-            if source:
-                source_id = source.id
-                await session.delete(source)
+            if not source:
+                logger.warning("Source not found for deletion", identifier=identifier)
+                raise SourceNotFoundError(identifier)
+            source_id = source.id
+            await session.delete(source)
+            try:
                 await session.commit()
-                logger.info("Source deleted", source_id=source_id, identifier=identifier)
-                return True
-            logger.warning("Source not found for deletion", identifier=identifier)
-            return False
+            except OperationalError as e:
+                await session.rollback()
+                logger.error("Database error deleting source", identifier=identifier, error=str(e))
+                raise DatabaseConnectionError(f"Failed to delete source: {e}") from e
+            logger.info("Source deleted", source_id=source_id, identifier=identifier)
+            return True
 
     async def add_content_item(
         self,
@@ -238,7 +259,12 @@ class Repository:
                 thumbnail_url=thumbnail_url,
             )
             session.add(content_item)
-            await session.commit()
+            try:
+                await session.commit()
+            except IntegrityError as e:
+                await session.rollback()
+                logger.debug("Duplicate content item", external_id=external_id)
+                raise DuplicateContentError(external_id) from e
             await session.refresh(content_item)
             logger.debug(
                 "Content item added",

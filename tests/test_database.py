@@ -5,6 +5,11 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from intelstream.database.exceptions import (
+    DuplicateContentError,
+    DuplicateSourceError,
+    SourceNotFoundError,
+)
 from intelstream.database.models import SourceType
 from intelstream.database.repository import Repository
 
@@ -81,6 +86,22 @@ class TestSourceOperations:
                 identifier="test-high",
                 poll_interval_minutes=61,
             )
+
+    async def test_add_duplicate_source_raises_error(self, repository: Repository) -> None:
+        await repository.add_source(
+            source_type=SourceType.SUBSTACK,
+            name="Original",
+            identifier="duplicate-test",
+        )
+
+        with pytest.raises(DuplicateSourceError) as exc_info:
+            await repository.add_source(
+                source_type=SourceType.SUBSTACK,
+                name="Duplicate",
+                identifier="duplicate-test",
+            )
+
+        assert exc_info.value.identifier == "duplicate-test"
 
     async def test_add_source_poll_interval_at_boundaries(self, repository: Repository) -> None:
         source_min = await repository.add_source(
@@ -188,8 +209,9 @@ class TestSourceOperations:
         source = await repository.get_source_by_identifier("to-delete")
         assert source is None
 
-        result = await repository.delete_source("nonexistent")
-        assert result is False
+    async def test_delete_source_not_found(self, repository: Repository) -> None:
+        with pytest.raises(SourceNotFoundError):
+            await repository.delete_source("nonexistent")
 
 
 class TestContentItemOperations:
@@ -232,6 +254,34 @@ class TestContentItemOperations:
 
         assert await repository.content_item_exists("video123") is True
         assert await repository.content_item_exists("nonexistent") is False
+
+    async def test_add_duplicate_content_raises_error(self, repository: Repository) -> None:
+        source = await repository.add_source(
+            source_type=SourceType.RSS,
+            name="Test Blog",
+            identifier="dup-content-test",
+        )
+
+        await repository.add_content_item(
+            source_id=source.id,
+            external_id="duplicate-post",
+            title="Original Post",
+            original_url="https://blog.example.com/post",
+            author="Author",
+            published_at=datetime.now(UTC),
+        )
+
+        with pytest.raises(DuplicateContentError) as exc_info:
+            await repository.add_content_item(
+                source_id=source.id,
+                external_id="duplicate-post",
+                title="Duplicate Post",
+                original_url="https://blog.example.com/post",
+                author="Author",
+                published_at=datetime.now(UTC),
+            )
+
+        assert exc_info.value.external_id == "duplicate-post"
 
     async def test_update_and_mark_posted(self, repository: Repository) -> None:
         source = await repository.add_source(
