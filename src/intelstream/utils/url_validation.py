@@ -31,8 +31,17 @@ def validate_url_for_ssrf(url: str) -> None:
     """
     Validate a URL to prevent SSRF attacks.
 
+    WARNING: This validation has inherent limitations:
+    - TOCTOU (time-of-check-time-of-use): DNS resolution may change between
+      validation and the actual HTTP request. An attacker could use DNS rebinding
+      to bypass this check.
+    - This function only validates URLs at entry points. Internal code paths
+      (e.g., URLs discovered from sitemaps, RSS feeds, or scraped links) may
+      bypass this validation when processed by WebFetcher or PageAnalyzer.
+
     Raises:
-        SSRFError: If the URL points to a blocked host or internal IP.
+        SSRFError: If the URL points to a blocked host or internal IP, or if
+            the hostname cannot be resolved.
     """
     parsed = urlparse(url)
 
@@ -59,13 +68,16 @@ def validate_url_for_ssrf(url: str) -> None:
                 raise SSRFError(
                     f"URL resolves to a private IP address ({ip_str})"
                 )
-    except socket.gaierror:
-        pass
+    except socket.gaierror as e:
+        raise SSRFError("Could not resolve hostname") from e
 
 
 def is_safe_url(url: str) -> tuple[bool, str]:
     """
     Check if a URL is safe from SSRF attacks.
+
+    WARNING: See validate_url_for_ssrf() for important limitations regarding
+    TOCTOU vulnerabilities and internal code paths that may bypass validation.
 
     Returns:
         Tuple of (is_safe, error_message). If is_safe is True, error_message is empty.
