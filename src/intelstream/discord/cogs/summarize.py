@@ -20,6 +20,7 @@ from youtube_transcript_api._errors import (
 from intelstream.adapters.substack import SubstackAdapter
 from intelstream.services.summarizer import SummarizationService
 from intelstream.services.web_fetcher import WebContent, WebFetcher, WebFetchError
+from intelstream.utils.url_validation import is_safe_url
 
 if TYPE_CHECKING:
     from intelstream.bot import IntelStreamBot
@@ -266,6 +267,11 @@ class Summarize(commands.Cog):
 
         if not parsed.scheme.startswith("http"):
             await interaction.followup.send("Please provide an HTTP or HTTPS URL.", ephemeral=True)
+            return
+
+        safe, error_msg = is_safe_url(url)
+        if not safe:
+            await interaction.followup.send(f"URL not allowed: {error_msg}", ephemeral=True)
             return
 
         source_type = self.detect_url_type(url)
