@@ -130,6 +130,7 @@ class IntelStreamBot(commands.Bot):
             ConfigManagement,
             ContentPosting,
             SourceManagement,
+            SuckBoobs,
             Summarize,
         )
         from intelstream.discord.cogs.message_forwarding import MessageForwarding
@@ -139,6 +140,7 @@ class IntelStreamBot(commands.Bot):
         await self.add_cog(ContentPosting(self))
         await self.add_cog(Summarize(self))
         await self.add_cog(MessageForwarding(self))
+        await self.add_cog(SuckBoobs(self))
 
         guild = discord.Object(id=self.settings.discord_guild_id)
         self.tree.copy_global_to(guild=guild)

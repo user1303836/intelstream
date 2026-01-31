@@ -19,6 +19,7 @@ from intelstream.database.models import (
     PauseReason,
     Source,
     SourceType,
+    SuckBoobsStats,
 )
 
 logger = structlog.get_logger()
@@ -602,3 +603,59 @@ class Repository:
                 await session.commit()
                 return True
             return False
+
+    async def record_suck_boobs_usage(
+        self, guild_id: str, user_id: str, pinged_user_id: str
+    ) -> None:
+        async with self.session() as session:
+            user_result = await session.execute(
+                select(SuckBoobsStats)
+                .where(SuckBoobsStats.guild_id == guild_id)
+                .where(SuckBoobsStats.user_id == user_id)
+            )
+            user_stat = user_result.scalar_one_or_none()
+            if user_stat:
+                user_stat.times_used += 1
+            else:
+                user_stat = SuckBoobsStats(guild_id=guild_id, user_id=user_id, times_used=1)
+                session.add(user_stat)
+
+            pinged_result = await session.execute(
+                select(SuckBoobsStats)
+                .where(SuckBoobsStats.guild_id == guild_id)
+                .where(SuckBoobsStats.user_id == pinged_user_id)
+            )
+            pinged_stat = pinged_result.scalar_one_or_none()
+            if pinged_stat:
+                pinged_stat.times_pinged += 1
+            else:
+                pinged_stat = SuckBoobsStats(
+                    guild_id=guild_id, user_id=pinged_user_id, times_pinged=1
+                )
+                session.add(pinged_stat)
+
+            await session.commit()
+
+    async def get_suck_boobs_leaderboard(
+        self, guild_id: str, limit: int = 10
+    ) -> tuple[list[SuckBoobsStats], list[SuckBoobsStats]]:
+        async with self.session() as session:
+            used_result = await session.execute(
+                select(SuckBoobsStats)
+                .where(SuckBoobsStats.guild_id == guild_id)
+                .where(SuckBoobsStats.times_used > 0)
+                .order_by(SuckBoobsStats.times_used.desc())
+                .limit(limit)
+            )
+            top_users = list(used_result.scalars().all())
+
+            pinged_result = await session.execute(
+                select(SuckBoobsStats)
+                .where(SuckBoobsStats.guild_id == guild_id)
+                .where(SuckBoobsStats.times_pinged > 0)
+                .order_by(SuckBoobsStats.times_pinged.desc())
+                .limit(limit)
+            )
+            top_pinged = list(pinged_result.scalars().all())
+
+            return top_users, top_pinged
