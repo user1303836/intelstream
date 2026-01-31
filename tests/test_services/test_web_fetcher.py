@@ -308,3 +308,26 @@ class TestWebFetcher:
             fetcher = WebFetcher()
             with pytest.raises(RuntimeError, match="Client creation failed"):
                 await fetcher.fetch("https://example.com/article")
+
+    async def test_fetch_rejects_localhost_url(self):
+        fetcher = WebFetcher()
+        with pytest.raises(WebFetchError, match="SSRF"):
+            await fetcher.fetch("http://localhost/admin")
+
+    async def test_fetch_rejects_private_ip(self):
+        fetcher = WebFetcher()
+        with pytest.raises(WebFetchError, match="SSRF"):
+            await fetcher.fetch("http://192.168.1.1/admin")
+
+    async def test_fetch_allows_skip_ssrf_check(self, sample_html):
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.text = sample_html
+        mock_response.headers = {"content-type": "text/html"}
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        fetcher = WebFetcher(http_client=mock_client)
+        result = await fetcher.fetch("http://localhost/article", skip_ssrf_check=True)
+        assert isinstance(result, WebContent)

@@ -5,6 +5,8 @@ import httpx
 import structlog
 from bs4 import BeautifulSoup, Tag
 
+from intelstream.utils.url_validation import SSRFError, validate_url_for_ssrf
+
 logger = structlog.get_logger()
 
 DEFAULT_TIMEOUT = 30.0
@@ -30,7 +32,13 @@ class WebFetcher:
         self._client = http_client
         self._owns_client = http_client is None
 
-    async def fetch(self, url: str) -> WebContent:
+    async def fetch(self, url: str, skip_ssrf_check: bool = False) -> WebContent:
+        if not skip_ssrf_check:
+            try:
+                validate_url_for_ssrf(url)
+            except SSRFError as e:
+                raise WebFetchError(f"URL blocked by SSRF protection: {e}") from e
+
         client = None
         try:
             client = self._client or httpx.AsyncClient(
