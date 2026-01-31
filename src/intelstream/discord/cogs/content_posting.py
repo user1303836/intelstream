@@ -1,3 +1,4 @@
+import asyncio
 from typing import TYPE_CHECKING
 
 import structlog
@@ -58,11 +59,25 @@ class ContentPosting(commands.Cog):
     async def cog_unload(self) -> None:
         self.content_loop.cancel()
 
-        if self._pipeline:
-            await self._pipeline.close()
+        task = self.content_loop.get_task()
+        if task is not None and not task.done():
+            try:
+                await asyncio.wait_for(task, timeout=5.0)
+            except TimeoutError:
+                logger.warning("Content loop task did not complete within timeout")
+            except asyncio.CancelledError:
+                pass
 
-        self._initialized = False
-        logger.info("Content posting cog unloaded")
+        try:
+            if self._pipeline:
+                await asyncio.wait_for(self._pipeline.close(), timeout=5.0)
+        except TimeoutError:
+            logger.error("Pipeline close timed out during cog unload")
+        except Exception as e:
+            logger.error("Error closing pipeline during cog unload", error=str(e))
+        finally:
+            self._initialized = False
+            logger.info("Content posting cog unloaded")
 
     @tasks.loop(minutes=5)
     async def content_loop(self) -> None:
