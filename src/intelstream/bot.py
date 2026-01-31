@@ -206,6 +206,8 @@ class CoreCommands(commands.Cog):
         return f"{hours}h {minutes}m {seconds}s"
 
     def _format_relative_time(self, dt: datetime) -> str:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
         delta = datetime.now(UTC) - dt
         total_seconds = int(delta.total_seconds())
 
