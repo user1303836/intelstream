@@ -132,6 +132,15 @@ class SourceManagement(commands.Cog):
     ) -> None:
         await interaction.response.defer(ephemeral=True)
 
+        logger.info(
+            "source_add command invoked",
+            user_id=interaction.user.id,
+            guild_id=str(interaction.guild_id) if interaction.guild_id else None,
+            source_type=source_type.value,
+            name=name,
+            url=url,
+        )
+
         try:
             stype = SourceType(source_type.value)
         except ValueError:
@@ -275,6 +284,13 @@ class SourceManagement(commands.Cog):
     @source_group.command(name="list", description="List sources for this channel")
     async def source_list(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
+
+        logger.debug(
+            "source_list command invoked",
+            user_id=interaction.user.id,
+            guild_id=str(interaction.guild_id) if interaction.guild_id else None,
+            channel_id=str(interaction.channel_id),
+        )
 
         channel_id = str(interaction.channel_id)
         sources = await self.bot.repository.get_all_sources(

@@ -155,6 +155,13 @@ class GitHubCommands(commands.Cog):
     ) -> None:
         await interaction.response.defer()
 
+        logger.debug(
+            "github_list command invoked",
+            user_id=interaction.user.id,
+            guild_id=str(interaction.guild_id) if interaction.guild_id else None,
+            channel_id=str(channel.id) if channel else None,
+        )
+
         target_channel = channel or interaction.channel
         if target_channel is None:
             await interaction.followup.send("Could not determine target channel.")

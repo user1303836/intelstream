@@ -265,6 +265,12 @@ class CoreCommands(commands.Cog):
 
     @app_commands.command(name="status", description="Show bot status and information")
     async def status(self, interaction: discord.Interaction) -> None:
+        logger.debug(
+            "status command invoked",
+            user_id=interaction.user.id,
+            guild_id=str(interaction.guild_id) if interaction.guild_id else None,
+        )
+
         guild_id = str(interaction.guild_id) if interaction.guild_id else None
 
         sources = await self.bot.repository.get_all_sources(active_only=False)
@@ -369,6 +375,11 @@ class CoreCommands(commands.Cog):
 
     @app_commands.command(name="ping", description="Check if the bot is responsive")
     async def ping(self, interaction: discord.Interaction) -> None:
+        logger.debug(
+            "ping command invoked",
+            user_id=interaction.user.id,
+            guild_id=str(interaction.guild_id) if interaction.guild_id else None,
+        )
         latency = round(self.bot.latency * 1000)
         await interaction.response.send_message(f"Pong! Latency: {latency}ms")
 

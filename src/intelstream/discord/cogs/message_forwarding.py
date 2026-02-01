@@ -167,6 +167,12 @@ class MessageForwarding(commands.Cog):
     async def forward_list(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
 
+        logger.debug(
+            "forward_list command invoked",
+            user_id=interaction.user.id,
+            guild_id=str(interaction.guild_id) if interaction.guild_id else None,
+        )
+
         if interaction.guild is None:
             await interaction.followup.send(
                 "This command can only be used in a server.", ephemeral=True

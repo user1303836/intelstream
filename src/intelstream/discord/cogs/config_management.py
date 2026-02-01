@@ -79,6 +79,12 @@ class ConfigManagement(commands.Cog):
     async def config_show(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
 
+        logger.debug(
+            "config_show command invoked",
+            user_id=interaction.user.id,
+            guild_id=str(interaction.guild_id) if interaction.guild_id else None,
+        )
+
         if interaction.guild is None:
             await interaction.followup.send(
                 "This command must be used in a server.", ephemeral=True

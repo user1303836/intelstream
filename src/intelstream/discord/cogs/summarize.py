@@ -260,6 +260,13 @@ class Summarize(commands.Cog):
     async def summarize(self, interaction: discord.Interaction, url: str) -> None:
         await interaction.response.defer()
 
+        logger.info(
+            "summarize command invoked",
+            user_id=interaction.user.id,
+            guild_id=str(interaction.guild_id) if interaction.guild_id else None,
+            url=url,
+        )
+
         parsed = urlparse(url)
         if not parsed.scheme or not parsed.netloc:
             await interaction.followup.send("Please provide a valid URL.", ephemeral=True)
