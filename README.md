@@ -10,6 +10,7 @@ A Discord bot that monitors content sources and posts AI-generated summaries to 
 - **Arxiv papers** - Monitor research paper categories (cs.AI, cs.LG, cs.CL, etc.)
 - **Blogs** - Smart extraction from any blog using cascading discovery strategies (RSS, Sitemap, LLM extraction)
 - **Web pages** - Monitor any web page URL with automatic content detection
+- **GitHub repositories** - Track commits, pull requests, and issues with Discord embeds
 - **Manual summarization** - Summarize any URL on-demand with `/summarize`
 - **Message forwarding** - Forward messages from channels to threads for better organization
 - **AI summaries** - Claude-powered summaries with thesis and key arguments format
@@ -67,6 +68,8 @@ A Discord bot that monitors content sources and posts AI-generated summaries to 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `YOUTUBE_API_KEY` | - | YouTube Data API key (required for YouTube monitoring) |
+| `GITHUB_TOKEN` | - | GitHub Personal Access Token (required for GitHub monitoring) |
+| `GITHUB_POLL_INTERVAL_MINUTES` | `5` | Polling interval for GitHub repositories (1-60) |
 | `DATABASE_URL` | `sqlite+aiosqlite:///./data/intelstream.db` | Database connection string |
 | `DEFAULT_POLL_INTERVAL_MINUTES` | `5` | Default polling interval for new sources (1-60) |
 | `CONTENT_POLL_INTERVAL_MINUTES` | `5` | Interval for checking and posting new content (1-60) |
@@ -181,6 +184,34 @@ Your Server: #announcements -> "AI News" thread
 - Skips attachments that exceed the server's file size limit
 - Supports multiple forwarding rules from the same source to different destinations
 
+#### GitHub Monitoring
+
+Monitor GitHub repositories for new commits, pull requests, and issues. Updates are posted as Discord embeds.
+
+| Command | Description |
+|---------|-------------|
+| `/github add <repo_url> [channel]` | Monitor a GitHub repository |
+| `/github list [channel]` | List monitored repositories |
+| `/github remove <repo>` | Stop monitoring a repository |
+
+**Adding a repository**:
+```
+/github add repo_url:https://github.com/owner/repo
+/github add repo_url:owner/repo channel:#github-feed
+```
+
+Both full GitHub URLs and `owner/repo` format are supported. The optional `channel` parameter specifies where updates should be posted (defaults to the current channel).
+
+**Features**:
+- Tracks commits, pull requests, and issues
+- Color-coded embeds (gray for commits, purple for PRs, blue for issues)
+- Shows PR/issue status (open, closed, merged)
+- Displays author avatars and links to GitHub
+- Automatically disables repos after 5 consecutive failures
+- Case-insensitive repository names
+
+**Requirements**: Set `GITHUB_TOKEN` environment variable with a GitHub Personal Access Token. The token needs `repo` scope for private repositories or `public_repo` for public repositories only.
+
 #### Bot Status
 
 | Command | Description |
@@ -284,7 +315,9 @@ src/intelstream/
 │   ├── config_management.py     # /config commands
 │   ├── content_posting.py       # Background polling task
 │   ├── summarize.py             # /summarize command
-│   └── message_forwarding.py    # /forward commands
+│   ├── message_forwarding.py    # /forward commands
+│   ├── github.py                # /github commands
+│   └── github_polling.py        # GitHub polling task
 ├── services/
 │   ├── pipeline.py           # Content pipeline orchestration
 │   ├── summarizer.py         # Claude summarization
@@ -292,7 +325,9 @@ src/intelstream/
 │   ├── content_extractor.py  # Content extraction utilities
 │   ├── message_forwarder.py  # Message forwarding logic
 │   ├── page_analyzer.py      # LLM-based page structure analysis
-│   └── web_fetcher.py        # HTTP fetching
+│   ├── web_fetcher.py        # HTTP fetching
+│   ├── github_service.py     # GitHub API client
+│   └── github_poster.py      # GitHub embed formatting
 ├── bot.py                 # Discord bot main class
 ├── config.py              # Pydantic settings
 └── main.py                # Entry point

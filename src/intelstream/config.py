@@ -28,6 +28,17 @@ class Settings(BaseSettings):
 
     youtube_api_key: str | None = Field(default=None, description="YouTube Data API key (optional)")
 
+    github_token: str | None = Field(
+        default=None, description="GitHub Personal Access Token (optional)"
+    )
+
+    github_poll_interval_minutes: int = Field(
+        default=5,
+        ge=1,
+        le=60,
+        description="Polling interval for GitHub repositories in minutes",
+    )
+
     database_url: str = Field(
         default="sqlite+aiosqlite:///./data/intelstream.db",
         description="Database connection URL",
@@ -149,6 +160,7 @@ class Settings(BaseSettings):
             f"discord_owner_id={self.discord_owner_id}, "
             f"anthropic_api_key='*****', "
             f"youtube_api_key={'*****' if self.youtube_api_key else None}, "
+            f"github_token={'*****' if self.github_token else None}, "
             f"database_url={self.database_url!r}, "
             f"log_level={self.log_level!r}"
             f")"

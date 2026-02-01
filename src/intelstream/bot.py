@@ -138,6 +138,8 @@ class IntelStreamBot(commands.Bot):
             SuckBoobs,
             Summarize,
         )
+        from intelstream.discord.cogs.github import GitHubCommands
+        from intelstream.discord.cogs.github_polling import GitHubPolling
         from intelstream.discord.cogs.message_forwarding import MessageForwarding
 
         await self.add_cog(SourceManagement(self))
@@ -146,6 +148,8 @@ class IntelStreamBot(commands.Bot):
         await self.add_cog(Summarize(self))
         await self.add_cog(MessageForwarding(self))
         await self.add_cog(SuckBoobs(self))
+        await self.add_cog(GitHubCommands(self))
+        await self.add_cog(GitHubPolling(self))
 
         guild = discord.Object(id=self.settings.discord_guild_id)
         self.tree.copy_global_to(guild=guild)

@@ -22,6 +22,7 @@ from intelstream.database.models import (
     DiscordConfig,
     ExtractionCache,
     ForwardingRule,
+    GitHubRepo,
     PauseReason,
     Source,
     SourceType,
@@ -736,3 +737,129 @@ class Repository:
             query = query.order_by(ContentItem.created_at.desc()).limit(1)
             result = await session.execute(query)
             return result.scalar_one_or_none()
+
+    async def add_github_repo(
+        self,
+        guild_id: str,
+        channel_id: str,
+        owner: str,
+        repo: str,
+        track_commits: bool = True,
+        track_prs: bool = True,
+        track_issues: bool = True,
+    ) -> GitHubRepo:
+        async with self.session() as session:
+            github_repo = GitHubRepo(
+                guild_id=guild_id,
+                channel_id=channel_id,
+                owner=owner,
+                repo=repo,
+                track_commits=track_commits,
+                track_prs=track_prs,
+                track_issues=track_issues,
+            )
+            session.add(github_repo)
+            await session.commit()
+            await session.refresh(github_repo)
+            return github_repo
+
+    async def get_github_repo(self, guild_id: str, owner: str, repo: str) -> GitHubRepo | None:
+        async with self.session() as session:
+            result = await session.execute(
+                select(GitHubRepo)
+                .where(GitHubRepo.guild_id == guild_id)
+                .where(GitHubRepo.owner == owner)
+                .where(GitHubRepo.repo == repo)
+            )
+            return result.scalar_one_or_none()
+
+    async def get_github_repos_for_channel(self, channel_id: str) -> list[GitHubRepo]:
+        async with self.session() as session:
+            result = await session.execute(
+                select(GitHubRepo).where(GitHubRepo.channel_id == channel_id)
+            )
+            return list(result.scalars().all())
+
+    async def get_all_github_repos(self, active_only: bool = True) -> list[GitHubRepo]:
+        async with self.session() as session:
+            query = select(GitHubRepo)
+            if active_only:
+                query = query.where(GitHubRepo.is_active == True)  # noqa: E712
+            result = await session.execute(query)
+            return list(result.scalars().all())
+
+    async def delete_github_repo(self, guild_id: str, owner: str, repo: str) -> bool:
+        async with self.session() as session:
+            result = await session.execute(
+                select(GitHubRepo)
+                .where(GitHubRepo.guild_id == guild_id)
+                .where(GitHubRepo.owner == owner)
+                .where(GitHubRepo.repo == repo)
+            )
+            github_repo = result.scalar_one_or_none()
+            if github_repo:
+                repo_id = github_repo.id
+                await session.delete(github_repo)
+                await session.commit()
+                logger.info(
+                    "GitHub repo deleted",
+                    repo_id=repo_id,
+                    owner=owner,
+                    repo=repo,
+                )
+                return True
+            logger.warning("GitHub repo not found for deletion", owner=owner, repo=repo)
+            return False
+
+    async def update_github_repo_state(
+        self,
+        repo_id: str,
+        last_commit_sha: str | None = None,
+        last_pr_number: int | None = None,
+        last_issue_number: int | None = None,
+    ) -> bool:
+        async with self.session() as session:
+            result = await session.execute(select(GitHubRepo).where(GitHubRepo.id == repo_id))
+            github_repo = result.scalar_one_or_none()
+            if github_repo:
+                if last_commit_sha is not None:
+                    github_repo.last_commit_sha = last_commit_sha
+                if last_pr_number is not None:
+                    github_repo.last_pr_number = last_pr_number
+                if last_issue_number is not None:
+                    github_repo.last_issue_number = last_issue_number
+                github_repo.last_polled_at = datetime.now(UTC)
+                await session.commit()
+                return True
+            return False
+
+    async def increment_github_failure(self, repo_id: str) -> int:
+        async with self.session() as session:
+            result = await session.execute(select(GitHubRepo).where(GitHubRepo.id == repo_id))
+            github_repo = result.scalar_one_or_none()
+            if github_repo:
+                github_repo.consecutive_failures = (github_repo.consecutive_failures or 0) + 1
+                await session.commit()
+                return github_repo.consecutive_failures
+            return 0
+
+    async def reset_github_failure(self, repo_id: str) -> bool:
+        async with self.session() as session:
+            result = await session.execute(select(GitHubRepo).where(GitHubRepo.id == repo_id))
+            github_repo = result.scalar_one_or_none()
+            if github_repo:
+                if (github_repo.consecutive_failures or 0) > 0:
+                    github_repo.consecutive_failures = 0
+                    await session.commit()
+                return True
+            return False
+
+    async def set_github_repo_active(self, repo_id: str, is_active: bool) -> bool:
+        async with self.session() as session:
+            result = await session.execute(select(GitHubRepo).where(GitHubRepo.id == repo_id))
+            github_repo = result.scalar_one_or_none()
+            if github_repo:
+                github_repo.is_active = is_active
+                await session.commit()
+                return True
+            return False

@@ -852,3 +852,182 @@ class TestForwardingRuleOperations:
             "guild-123", "nonexistent", "dest-789", False
         )
         assert not_found is False
+
+
+class TestGitHubRepoOperations:
+    async def test_add_github_repo(self, repository: Repository) -> None:
+        repo = await repository.add_github_repo(
+            guild_id="guild-123",
+            channel_id="channel-456",
+            owner="owner",
+            repo="repo",
+        )
+
+        assert repo.id is not None
+        assert repo.guild_id == "guild-123"
+        assert repo.channel_id == "channel-456"
+        assert repo.owner == "owner"
+        assert repo.repo == "repo"
+        assert repo.track_commits is True
+        assert repo.track_prs is True
+        assert repo.track_issues is True
+        assert repo.is_active is True
+        assert repo.consecutive_failures == 0
+
+    async def test_add_github_repo_with_custom_tracking(self, repository: Repository) -> None:
+        repo = await repository.add_github_repo(
+            guild_id="guild-123",
+            channel_id="channel-456",
+            owner="owner",
+            repo="repo",
+            track_commits=True,
+            track_prs=False,
+            track_issues=False,
+        )
+
+        assert repo.track_commits is True
+        assert repo.track_prs is False
+        assert repo.track_issues is False
+
+    async def test_get_github_repo(self, repository: Repository) -> None:
+        await repository.add_github_repo(
+            guild_id="guild-123",
+            channel_id="channel-456",
+            owner="owner",
+            repo="repo",
+        )
+
+        found = await repository.get_github_repo("guild-123", "owner", "repo")
+        assert found is not None
+        assert found.owner == "owner"
+        assert found.repo == "repo"
+
+        not_found = await repository.get_github_repo("guild-123", "other", "repo")
+        assert not_found is None
+
+    async def test_get_github_repos_for_channel(self, repository: Repository) -> None:
+        await repository.add_github_repo(
+            guild_id="guild-123",
+            channel_id="channel-456",
+            owner="owner1",
+            repo="repo1",
+        )
+
+        await repository.add_github_repo(
+            guild_id="guild-123",
+            channel_id="channel-456",
+            owner="owner2",
+            repo="repo2",
+        )
+
+        await repository.add_github_repo(
+            guild_id="guild-123",
+            channel_id="channel-other",
+            owner="owner3",
+            repo="repo3",
+        )
+
+        repos = await repository.get_github_repos_for_channel("channel-456")
+        assert len(repos) == 2
+        assert {r.owner for r in repos} == {"owner1", "owner2"}
+
+    async def test_get_all_github_repos(self, repository: Repository) -> None:
+        await repository.add_github_repo(
+            guild_id="guild-123",
+            channel_id="channel-456",
+            owner="owner1",
+            repo="repo1",
+        )
+
+        repo2 = await repository.add_github_repo(
+            guild_id="guild-123",
+            channel_id="channel-456",
+            owner="owner2",
+            repo="repo2",
+        )
+
+        await repository.set_github_repo_active(repo2.id, False)
+
+        active_repos = await repository.get_all_github_repos(active_only=True)
+        assert len(active_repos) == 1
+        assert active_repos[0].owner == "owner1"
+
+        all_repos = await repository.get_all_github_repos(active_only=False)
+        assert len(all_repos) == 2
+
+    async def test_delete_github_repo(self, repository: Repository) -> None:
+        await repository.add_github_repo(
+            guild_id="guild-123",
+            channel_id="channel-456",
+            owner="owner",
+            repo="repo",
+        )
+
+        deleted = await repository.delete_github_repo("guild-123", "owner", "repo")
+        assert deleted is True
+
+        not_found = await repository.delete_github_repo("guild-123", "owner", "repo")
+        assert not_found is False
+
+    async def test_update_github_repo_state(self, repository: Repository) -> None:
+        repo = await repository.add_github_repo(
+            guild_id="guild-123",
+            channel_id="channel-456",
+            owner="owner",
+            repo="repo",
+        )
+
+        updated = await repository.update_github_repo_state(
+            repo.id,
+            last_commit_sha="abc123",
+            last_pr_number=42,
+            last_issue_number=10,
+        )
+        assert updated is True
+
+        found = await repository.get_github_repo("guild-123", "owner", "repo")
+        assert found is not None
+        assert found.last_commit_sha == "abc123"
+        assert found.last_pr_number == 42
+        assert found.last_issue_number == 10
+        assert found.last_polled_at is not None
+
+    async def test_increment_and_reset_github_failure(self, repository: Repository) -> None:
+        repo = await repository.add_github_repo(
+            guild_id="guild-123",
+            channel_id="channel-456",
+            owner="owner",
+            repo="repo",
+        )
+
+        count1 = await repository.increment_github_failure(repo.id)
+        assert count1 == 1
+
+        count2 = await repository.increment_github_failure(repo.id)
+        assert count2 == 2
+
+        await repository.reset_github_failure(repo.id)
+
+        found = await repository.get_github_repo("guild-123", "owner", "repo")
+        assert found is not None
+        assert found.consecutive_failures == 0
+
+    async def test_set_github_repo_active(self, repository: Repository) -> None:
+        repo = await repository.add_github_repo(
+            guild_id="guild-123",
+            channel_id="channel-456",
+            owner="owner",
+            repo="repo",
+        )
+
+        await repository.set_github_repo_active(repo.id, False)
+
+        found = await repository.get_github_repo("guild-123", "owner", "repo")
+        assert found is not None
+        assert found.is_active is False
+
+        await repository.set_github_repo_active(repo.id, True)
+
+        found = await repository.get_github_repo("guild-123", "owner", "repo")
+        assert found is not None
+        assert found.is_active is True

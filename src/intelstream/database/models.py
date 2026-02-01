@@ -141,3 +141,27 @@ class SuckBoobsStats(Base):
 
     def __repr__(self) -> str:
         return f"<SuckBoobsStats(user_id={self.user_id!r}, used={self.times_used}, pinged={self.times_pinged})>"
+
+
+class GitHubRepo(Base):
+    __tablename__ = "github_repos"
+    __table_args__ = (UniqueConstraint("guild_id", "owner", "repo", name="uq_github_guild_repo"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    guild_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    channel_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    owner: Mapped[str] = mapped_column(String(255), nullable=False)
+    repo: Mapped[str] = mapped_column(String(255), nullable=False)
+    track_commits: Mapped[bool] = mapped_column(Boolean, default=True)
+    track_prs: Mapped[bool] = mapped_column(Boolean, default=True)
+    track_issues: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    last_pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_issue_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_polled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
+
+    def __repr__(self) -> str:
+        return f"<GitHubRepo(owner={self.owner!r}, repo={self.repo!r})>"
