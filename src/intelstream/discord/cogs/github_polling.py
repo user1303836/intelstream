@@ -60,6 +60,7 @@ class GitHubPolling(commands.Cog):
         self._initialized = False
         logger.info("GitHub polling cog unloaded")
 
+    # Interval placeholder; actual value set via change_interval() in cog_load
     @tasks.loop(minutes=5)
     async def github_loop(self) -> None:
         if not self._initialized or not self._service or not self._poster:
@@ -91,6 +92,12 @@ class GitHubPolling(commands.Cog):
     async def _process_repo(self, repo: GitHubRepo) -> None:
         if not self._service or not self._poster:
             return
+
+        is_first_poll = (
+            repo.last_commit_sha is None
+            and repo.last_pr_number is None
+            and repo.last_issue_number is None
+        )
 
         events: list[GitHubEvent] = []
 
@@ -134,7 +141,7 @@ class GitHubPolling(commands.Cog):
                     error=e.message,
                 )
 
-        if events:
+        if events and not is_first_poll:
             channel = self.bot.get_channel(int(repo.channel_id))
             if channel and isinstance(channel, (discord.TextChannel, discord.Thread)):
                 await self._poster.post_events(channel, events)
@@ -151,6 +158,13 @@ class GitHubPolling(commands.Cog):
                     owner=repo.owner,
                     repo=repo.repo,
                 )
+        elif is_first_poll and events:
+            logger.info(
+                "First poll - initialized state without posting",
+                owner=repo.owner,
+                repo=repo.repo,
+                event_count=len(events),
+            )
 
         new_commit_sha = None
         new_pr_number = None

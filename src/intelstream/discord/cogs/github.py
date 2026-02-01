@@ -24,11 +24,11 @@ def parse_github_url(url: str) -> tuple[str, str] | None:
 
     match = GITHUB_URL_PATTERN.match(url)
     if match:
-        return match.group(1), match.group(2)
+        return match.group(1).lower(), match.group(2).lower()
 
     match = OWNER_REPO_PATTERN.match(url)
     if match:
-        return match.group(1), match.group(2)
+        return match.group(1).lower(), match.group(2).lower()
 
     return None
 
@@ -44,6 +44,10 @@ class GitHubCommands(commands.Cog):
         if self._github_service is None:
             self._github_service = GitHubService(token=self.bot.settings.github_token)
         return self._github_service
+
+    async def cog_unload(self) -> None:
+        if self._github_service:
+            await self._github_service.close()
 
     github_group = app_commands.Group(name="github", description="Monitor GitHub repositories")
 

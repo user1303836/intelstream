@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
 import httpx
@@ -56,6 +56,7 @@ class GitHubService:
             "Authorization": f"Bearer {self._token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "intelstream-bot",
         }
 
     async def _request(
@@ -215,11 +216,11 @@ class GitHubService:
 
     def _parse_datetime(self, dt_str: str) -> datetime:
         if not dt_str:
-            return datetime.now()
+            return datetime.now(UTC)
         try:
             return datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
         except ValueError:
-            return datetime.now()
+            return datetime.now(UTC)
 
     def _truncate(self, text: str | None, max_length: int) -> str | None:
         if not text:

@@ -57,3 +57,11 @@ class TestParseGitHubUrl:
     def test_parse_owner_with_numbers(self) -> None:
         result = parse_github_url("https://github.com/user123/repo456")
         assert result == ("user123", "repo456")
+
+    def test_parse_normalizes_to_lowercase(self) -> None:
+        result = parse_github_url("https://github.com/MyOrg/MyRepo")
+        assert result == ("myorg", "myrepo")
+
+    def test_parse_owner_repo_normalizes_to_lowercase(self) -> None:
+        result = parse_github_url("Owner/Repo")
+        assert result == ("owner", "repo")

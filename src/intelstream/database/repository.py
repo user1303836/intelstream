@@ -735,13 +735,6 @@ class Repository:
             session.add(github_repo)
             await session.commit()
             await session.refresh(github_repo)
-            logger.info(
-                "GitHub repo added",
-                repo_id=github_repo.id,
-                owner=owner,
-                repo=repo,
-                channel_id=channel_id,
-            )
             return github_repo
 
     async def get_github_repo(self, guild_id: str, owner: str, repo: str) -> GitHubRepo | None:
