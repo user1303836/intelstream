@@ -74,7 +74,7 @@ class GitHubService:
         if response.status_code >= 400:
             raise GitHubAPIError(response.status_code, response.text)
 
-        return cast(dict[str, Any] | list[dict[str, Any]], response.json())
+        return cast("dict[str, Any] | list[dict[str, Any]]", response.json())
 
     async def validate_repo(self, owner: str, repo: str) -> bool:
         try:
