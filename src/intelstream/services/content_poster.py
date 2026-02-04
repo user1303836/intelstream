@@ -15,6 +15,7 @@ SOURCE_TYPE_LABELS: dict[SourceType, str] = {
     SourceType.YOUTUBE: "YouTube",
     SourceType.RSS: "RSS",
     SourceType.PAGE: "Web",
+    SourceType.TWITTER: "Twitter",
 }
 
 TRUNCATION_NOTICE = "\n\n*[Summary truncated]*"

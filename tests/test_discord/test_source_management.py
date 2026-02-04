@@ -18,6 +18,7 @@ def mock_bot():
     bot.settings = MagicMock()
     bot.settings.default_poll_interval_minutes = 5
     bot.settings.youtube_api_key = "test-api-key"
+    bot.settings.twitter_api_key = "test-twitter-key"
     return bot
 
 
@@ -106,6 +107,45 @@ class TestParseSourceIdentifier:
     def test_parse_blog_no_host(self):
         with pytest.raises(InvalidSourceURLError, match="No host found"):
             parse_source_identifier(SourceType.BLOG, "not-a-url")
+
+    def test_parse_twitter_url(self):
+        identifier, feed_url = parse_source_identifier(
+            SourceType.TWITTER,
+            "https://twitter.com/elonmusk",
+        )
+        assert identifier == "elonmusk"
+        assert feed_url is None
+
+    def test_parse_twitter_x_url(self):
+        identifier, feed_url = parse_source_identifier(
+            SourceType.TWITTER,
+            "https://x.com/elonmusk",
+        )
+        assert identifier == "elonmusk"
+        assert feed_url is None
+
+    def test_parse_twitter_with_path(self):
+        identifier, feed_url = parse_source_identifier(
+            SourceType.TWITTER,
+            "https://x.com/elonmusk/status/12345",
+        )
+        assert identifier == "elonmusk"
+        assert feed_url is None
+
+    def test_parse_twitter_uppercase_normalized(self):
+        identifier, _feed_url = parse_source_identifier(
+            SourceType.TWITTER,
+            "https://x.com/ElonMusk",
+        )
+        assert identifier == "elonmusk"
+
+    def test_parse_twitter_no_username(self):
+        with pytest.raises(InvalidSourceURLError, match="Could not extract username"):
+            parse_source_identifier(SourceType.TWITTER, "https://twitter.com/")
+
+    def test_parse_twitter_wrong_domain(self):
+        with pytest.raises(InvalidSourceURLError, match=r"Expected twitter\.com or x\.com"):
+            parse_source_identifier(SourceType.TWITTER, "https://example.com/user")
 
 
 class TestSourceManagementAdd:
@@ -221,6 +261,30 @@ class TestSourceManagementAdd:
             source_type=source_type_choice,
             name="Test Channel",
             url="https://www.youtube.com/@testchannel",
+        )
+
+        mock_bot.repository.add_source.assert_not_called()
+        call_args = interaction.followup.send.call_args
+        assert "not available" in call_args[0][0]
+
+    async def test_add_twitter_without_api_key(self, source_management, mock_bot):
+        mock_bot.settings.twitter_api_key = None
+
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = MagicMock()
+        interaction.response.defer = AsyncMock()
+        interaction.followup = MagicMock()
+        interaction.followup.send = AsyncMock()
+
+        source_type_choice = MagicMock()
+        source_type_choice.value = "twitter"
+
+        await source_management.source_add.callback(
+            source_management,
+            interaction,
+            source_type=source_type_choice,
+            name="Test Twitter",
+            url="https://x.com/testuser",
         )
 
         mock_bot.repository.add_source.assert_not_called()

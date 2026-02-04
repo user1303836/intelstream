@@ -10,6 +10,7 @@ from intelstream.adapters.base import BaseAdapter, ContentData
 from intelstream.adapters.rss import RSSAdapter
 from intelstream.adapters.smart_blog import SmartBlogAdapter
 from intelstream.adapters.substack import SubstackAdapter
+from intelstream.adapters.twitter import TwitterAdapter
 from intelstream.adapters.youtube import YouTubeAdapter
 from intelstream.config import Settings
 from intelstream.database.exceptions import DuplicateContentError
@@ -53,6 +54,12 @@ class ContentPipeline:
         if self._settings.youtube_api_key:
             adapters[SourceType.YOUTUBE] = YouTubeAdapter(
                 api_key=self._settings.youtube_api_key,
+                http_client=self._http_client,
+            )
+
+        if self._settings.twitter_api_key:
+            adapters[SourceType.TWITTER] = TwitterAdapter(
+                api_key=self._settings.twitter_api_key,
                 http_client=self._http_client,
             )
 

@@ -16,6 +16,7 @@ def mock_settings():
     settings = MagicMock(spec=Settings)
     settings.youtube_api_key = "test-youtube-key"
     settings.anthropic_api_key = "test-anthropic-key"
+    settings.twitter_api_key = None
     settings.http_timeout_seconds = 30.0
     settings.summarization_delay_seconds = 0.5
     settings.fetch_delay_seconds = 0.0
@@ -99,6 +100,7 @@ class TestContentPipelineInitialization:
         settings = MagicMock(spec=Settings)
         settings.youtube_api_key = None
         settings.anthropic_api_key = "test-anthropic-key"
+        settings.twitter_api_key = None
         settings.http_timeout_seconds = 30.0
         settings.summarization_delay_seconds = 0.5
         settings.fetch_delay_seconds = 0.0
@@ -112,6 +114,42 @@ class TestContentPipelineInitialization:
         assert SourceType.SUBSTACK in pipeline._adapters
         assert SourceType.RSS in pipeline._adapters
         assert SourceType.YOUTUBE not in pipeline._adapters
+
+        await pipeline.close()
+
+    async def test_initialize_creates_twitter_adapter(self, mock_repository, mock_summarizer):
+        settings = MagicMock(spec=Settings)
+        settings.youtube_api_key = "test-key"
+        settings.anthropic_api_key = "test-key"
+        settings.twitter_api_key = "test-twitter-key"
+        settings.http_timeout_seconds = 30.0
+        settings.summarization_delay_seconds = 0.5
+        settings.fetch_delay_seconds = 0.0
+
+        pipeline = ContentPipeline(
+            settings=settings, repository=mock_repository, summarizer=mock_summarizer
+        )
+        await pipeline.initialize()
+
+        assert SourceType.TWITTER in pipeline._adapters
+
+        await pipeline.close()
+
+    async def test_initialize_without_twitter_key(self, mock_repository, mock_summarizer):
+        settings = MagicMock(spec=Settings)
+        settings.youtube_api_key = "test-key"
+        settings.anthropic_api_key = "test-key"
+        settings.twitter_api_key = None
+        settings.http_timeout_seconds = 30.0
+        settings.summarization_delay_seconds = 0.5
+        settings.fetch_delay_seconds = 0.0
+
+        pipeline = ContentPipeline(
+            settings=settings, repository=mock_repository, summarizer=mock_summarizer
+        )
+        await pipeline.initialize()
+
+        assert SourceType.TWITTER not in pipeline._adapters
 
         await pipeline.close()
 
@@ -301,6 +339,7 @@ class TestFetchAllSources:
         settings = MagicMock(spec=Settings)
         settings.youtube_api_key = "test-key"
         settings.anthropic_api_key = "test-key"
+        settings.twitter_api_key = None
         settings.http_timeout_seconds = 30.0
         settings.summarization_delay_seconds = 0.5
         settings.fetch_delay_seconds = 0.1

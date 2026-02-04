@@ -17,6 +17,7 @@ class SourceType(enum.Enum):
     PAGE = "page"
     ARXIV = "arxiv"
     BLOG = "blog"
+    TWITTER = "twitter"
 
 
 class PauseReason(enum.Enum):

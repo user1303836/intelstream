@@ -9,6 +9,7 @@ A Discord bot that monitors content sources and posts AI-generated summaries to 
 - **RSS/Atom feeds** - Support for any standard RSS or Atom feed
 - **Arxiv papers** - Monitor research paper categories (cs.AI, cs.LG, cs.CL, etc.)
 - **Blogs** - Smart extraction from any blog using cascading discovery strategies (RSS, Sitemap, LLM extraction)
+- **Twitter/X accounts** - Monitor Twitter accounts for new tweets via twitterapi.io
 - **Web pages** - Monitor any web page URL with automatic content detection
 - **GitHub repositories** - Track commits, pull requests, and issues with Discord embeds
 - **Manual summarization** - Summarize any URL on-demand with `/summarize`
@@ -22,6 +23,7 @@ A Discord bot that monitors content sources and posts AI-generated summaries to 
 - Discord Bot Token
 - Anthropic API Key (for Claude)
 - YouTube API Key (optional, for YouTube monitoring)
+- twitterapi.io API Key (optional, for Twitter monitoring)
 
 ## Setup
 
@@ -45,6 +47,9 @@ A Discord bot that monitors content sources and posts AI-generated summaries to 
 
    # Optional: YouTube monitoring
    # YOUTUBE_API_KEY=your_youtube_api_key
+
+   # Optional: Twitter monitoring
+   # TWITTER_API_KEY=your_twitterapi_io_api_key
    ```
 
 4. Run the bot:
@@ -68,6 +73,7 @@ A Discord bot that monitors content sources and posts AI-generated summaries to 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `YOUTUBE_API_KEY` | - | YouTube Data API key (required for YouTube monitoring) |
+| `TWITTER_API_KEY` | - | twitterapi.io API key (required for Twitter monitoring) |
 | `GITHUB_TOKEN` | - | GitHub Personal Access Token (required for GitHub monitoring) |
 | `GITHUB_POLL_INTERVAL_MINUTES` | `5` | Polling interval for GitHub repositories (1-60) |
 | `DATABASE_URL` | `sqlite+aiosqlite:///./data/intelstream.db` | Database connection string |
@@ -116,6 +122,8 @@ A Discord bot that monitors content sources and posts AI-generated summaries to 
    /source add type:RSS name:"Blog Feed" url:https://example.com/feed.xml
    /source add type:Arxiv name:"ML Papers" url:cs.LG
    /source add type:Blog name:"Company Blog" url:https://example.com/blog
+   /source add type:Twitter name:"Elon Musk" url:https://x.com/elonmusk
+   /source add type:Twitter name:"OpenAI" url:https://twitter.com/OpenAI summarize:False
    /source add type:Page name:"News Site" url:https://example.com/news
    ```
 
@@ -142,6 +150,7 @@ The optional `summarize` parameter controls whether content is summarized by AI.
 - `RSS` - Any RSS/Atom feed URL
 - `Arxiv` - Arxiv category code (e.g., `cs.AI`, `cs.LG`, `cs.CL`, `cs.CV`, `stat.ML`)
 - `Blog` - Any blog URL (uses cascading discovery: RSS, Sitemap, LLM extraction)
+- `Twitter` - Twitter/X account URL (requires twitterapi.io API key)
 - `Page` - Any web page URL (uses AI to detect content structure)
 
 #### Configuration
@@ -242,6 +251,8 @@ Both full GitHub URLs and `owner/repo` format are supported. The optional `chann
 
 Results are cached to avoid repeated extraction on subsequent polls.
 
+**Twitter**: Monitors Twitter/X accounts for new original tweets using the twitterapi.io API. Retweets are skipped; only original tweets and quote tweets are included. Quoted tweet text is included in the content for richer summarization. When added with `summarize:False`, the bot posts bare tweet URLs (Discord auto-embeds the tweet preview). Requires a twitterapi.io API key (`TWITTER_API_KEY`).
+
 **Page**: When you add a Page source, the bot uses Claude to analyze the page structure and automatically determine CSS selectors for extracting posts.
 
 ### Multi-Channel Setup
@@ -305,6 +316,7 @@ src/intelstream/
 │   ├── rss.py             # Generic RSS/Atom adapter
 │   ├── arxiv.py           # Arxiv RSS adapter
 │   ├── smart_blog.py      # Blog adapter with cascading strategies
+│   ├── twitter.py         # Twitter/X adapter via twitterapi.io
 │   ├── page.py            # Web page adapter
 │   └── strategies/        # Discovery strategies for Blog adapter
 │       ├── rss_discovery.py
