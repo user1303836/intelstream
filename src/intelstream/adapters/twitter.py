@@ -52,6 +52,15 @@ class TwitterAdapter(BaseAdapter):
         response.raise_for_status()
         data = response.json()
 
+        tweets_raw = data.get("tweets", [])
+        logger.debug(
+            "Twitter API response",
+            identifier=identifier,
+            status=data.get("status"),
+            tweet_count=len(tweets_raw),
+            has_next_page=data.get("has_next_page"),
+        )
+
         if data.get("status") != "success":
             logger.error(
                 "Twitter API returned error",
@@ -61,7 +70,7 @@ class TwitterAdapter(BaseAdapter):
             return []
 
         items: list[ContentData] = []
-        for tweet in data.get("tweets", []):
+        for tweet in tweets_raw:
             if tweet.get("retweeted_tweet"):
                 continue
 
