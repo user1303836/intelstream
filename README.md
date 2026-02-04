@@ -5,7 +5,7 @@ A Discord bot that monitors content sources and posts AI-generated summaries to 
 ## Features
 
 - **Substack newsletters** - Monitor any Substack publication via RSS
-- **YouTube channels** - Track new videos with transcript-based summarization
+- **YouTube channels** - Track new videos with transcript-based summarization or notify-only mode
 - **RSS/Atom feeds** - Support for any standard RSS or Atom feed
 - **Arxiv papers** - Monitor research paper categories (cs.AI, cs.LG, cs.CL, etc.)
 - **Blogs** - Smart extraction from any blog using cascading discovery strategies (RSS, Sitemap, LLM extraction)
@@ -112,6 +112,7 @@ A Discord bot that monitors content sources and posts AI-generated summaries to 
    ```
    /source add type:Substack name:"My Newsletter" url:https://example.substack.com
    /source add type:YouTube name:"Tech Channel" url:https://youtube.com/@channel
+   /source add type:YouTube name:"Upload Alerts" url:https://youtube.com/@channel summarize:False
    /source add type:RSS name:"Blog Feed" url:https://example.com/feed.xml
    /source add type:Arxiv name:"ML Papers" url:cs.LG
    /source add type:Blog name:"Company Blog" url:https://example.com/blog
@@ -126,12 +127,14 @@ A Discord bot that monitors content sources and posts AI-generated summaries to 
 
 | Command | Description |
 |---------|-------------|
-| `/source add type:<type> name:<name> url:<url> [channel:#channel]` | Add a new content source |
+| `/source add type:<type> name:<name> url:<url> [channel:#channel] [summarize:True/False]` | Add a new content source |
 | `/source list [channel:#channel]` | List sources (optionally filter by channel) |
 | `/source remove name:<name>` | Remove a source by name |
 | `/source toggle name:<name>` | Enable or disable a source |
 
 The optional `channel` parameter on `/source add` specifies which channel this source should post to. If omitted, the source uses the guild's default channel (set via `/config channel`).
+
+The optional `summarize` parameter controls whether content is summarized by AI. Defaults to `True`. When set to `False`, the bot posts bare URLs instead of summaries, letting Discord's native embed handle the preview.
 
 **Supported source types:**
 - `Substack` - Substack newsletter URL
@@ -228,7 +231,7 @@ Both full GitHub URLs and `owner/repo` format are supported. The optional `chann
 
 ### Source-Specific Behavior
 
-**YouTube**: Fetches video transcripts (manual or auto-generated) for summarization. Falls back to video description if no transcript is available.
+**YouTube**: Fetches video transcripts (manual or auto-generated) for summarization. Falls back to video description if no transcript is available. When added with `summarize:False`, transcript fetching is skipped entirely and the bot posts the video URL directly (Discord auto-embeds the video preview).
 
 **Arxiv**: Monitors RSS feeds for specific categories. Summaries focus on the problem solved, key innovation, and practical implications.
 
