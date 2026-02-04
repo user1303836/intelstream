@@ -129,6 +129,7 @@ class SummarizationService:
             "rss": "blog post",
             "web": "article",
             "arxiv": "research paper abstract",
+            "twitter": "tweet",
         }.get(source_type, "article")
 
         author_info = author if author else "Unknown"
