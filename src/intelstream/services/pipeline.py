@@ -85,7 +85,8 @@ class ContentPipeline:
             if source.last_polled_at is not None:
                 interval = self._settings.get_poll_interval(source.type)
                 next_poll_at = source.last_polled_at + timedelta(minutes=interval)
-                if datetime.now(UTC) < next_poll_at:
+                now = datetime.now(UTC).replace(tzinfo=next_poll_at.tzinfo)
+                if now < next_poll_at:
                     logger.debug(
                         "Skipping source, not due yet",
                         source_name=source.name,
