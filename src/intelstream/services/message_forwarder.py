@@ -48,11 +48,24 @@ class MessageForwarder:
                 content = self._build_forwarded_content(message)
                 files = await self._download_attachments(message, destination)
 
-                try:
-                    forwarded = await destination.send(
-                        content=content,
-                        files=files,
+                if not content and not files and not message.embeds:
+                    logger.warning(
+                        "Nothing to forward",
+                        source_channel=message.channel.id,
+                        message_id=message.id,
                     )
+                    return None
+
+                try:
+                    if not content and not files and message.embeds:
+                        forwarded = await destination.send(
+                            embeds=message.embeds[:10],
+                        )
+                    else:
+                        forwarded = await destination.send(
+                            content=content,
+                            files=files,
+                        )
                 except Exception:
                     self._close_files(files)
                     raise
