@@ -326,6 +326,30 @@ class TestForwardMessage:
         assert result == mock_forwarded
         call_kwargs = mock_destination.send.call_args.kwargs
         assert call_kwargs["embeds"] == [mock_embed]
+        assert "content" not in call_kwargs
+        assert "files" not in call_kwargs
+
+    async def test_forward_empty_message_returns_none(self, forwarder, mock_bot):
+        """Messages with no content, no attachments, and no embeds are skipped."""
+        mock_destination = MagicMock(spec=discord.TextChannel)
+        mock_destination.guild = MagicMock()
+        mock_destination.guild.filesize_limit = 8_000_000
+        mock_destination.send = AsyncMock()
+
+        mock_bot.get_channel = MagicMock(return_value=mock_destination)
+
+        message = MagicMock(spec=discord.Message)
+        message.channel = MagicMock()
+        message.channel.id = 111
+        message.id = 222
+        message.content = ""
+        message.embeds = []
+        message.attachments = []
+
+        result = await forwarder.forward_message(message, 333, "channel")
+
+        assert result is None
+        mock_destination.send.assert_not_called()
 
     async def test_forward_message_closes_files_on_send_failure(self, forwarder, mock_bot):
         mock_file = MagicMock(spec=discord.File)
