@@ -5,6 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from intelstream.config import Settings, get_database_directory
+from intelstream.database.models import SourceType
 
 
 class TestSettings:
@@ -120,6 +121,42 @@ class TestSettings:
 
         with pytest.raises(ValidationError):
             Settings(_env_file=None)
+
+
+class TestGetPollInterval:
+    def _base_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
+        monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
+        monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+    def test_falls_back_to_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._base_env(monkeypatch)
+        monkeypatch.setenv("DEFAULT_POLL_INTERVAL_MINUTES", "10")
+        settings = Settings(_env_file=None)
+
+        assert settings.get_poll_interval(SourceType.TWITTER) == 10
+        assert settings.get_poll_interval(SourceType.YOUTUBE) == 10
+        assert settings.get_poll_interval(SourceType.RSS) == 10
+
+    def test_type_specific_overrides_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._base_env(monkeypatch)
+        monkeypatch.setenv("DEFAULT_POLL_INTERVAL_MINUTES", "5")
+        monkeypatch.setenv("TWITTER_POLL_INTERVAL_MINUTES", "20")
+        monkeypatch.setenv("YOUTUBE_POLL_INTERVAL_MINUTES", "10")
+        settings = Settings(_env_file=None)
+
+        assert settings.get_poll_interval(SourceType.TWITTER) == 20
+        assert settings.get_poll_interval(SourceType.YOUTUBE) == 10
+        assert settings.get_poll_interval(SourceType.RSS) == 5
+
+    def test_all_adapter_types_supported(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._base_env(monkeypatch)
+        settings = Settings(_env_file=None)
+
+        for source_type in SourceType:
+            interval = settings.get_poll_interval(source_type)
+            assert interval == settings.default_poll_interval_minutes
 
 
 class TestGetDatabaseDirectory:

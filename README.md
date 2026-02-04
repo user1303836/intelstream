@@ -81,6 +81,20 @@ A Discord bot that monitors content sources and posts AI-generated summaries to 
 | `CONTENT_POLL_INTERVAL_MINUTES` | `5` | Interval for checking and posting new content (1-60) |
 | `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL) |
 
+### Per-Adapter Polling Intervals
+
+Override the default polling interval for specific source types. Each defaults to `DEFAULT_POLL_INTERVAL_MINUTES` when not set. Useful for rate-limiting expensive API calls (e.g., Twitter) while keeping free sources (RSS) on a faster schedule.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SUBSTACK_POLL_INTERVAL_MINUTES` | `DEFAULT_POLL_INTERVAL_MINUTES` | Polling interval for Substack sources (1-1440) |
+| `YOUTUBE_POLL_INTERVAL_MINUTES` | `DEFAULT_POLL_INTERVAL_MINUTES` | Polling interval for YouTube sources (1-1440) |
+| `RSS_POLL_INTERVAL_MINUTES` | `DEFAULT_POLL_INTERVAL_MINUTES` | Polling interval for RSS sources (1-1440) |
+| `ARXIV_POLL_INTERVAL_MINUTES` | `DEFAULT_POLL_INTERVAL_MINUTES` | Polling interval for Arxiv sources (1-1440) |
+| `BLOG_POLL_INTERVAL_MINUTES` | `DEFAULT_POLL_INTERVAL_MINUTES` | Polling interval for Blog sources (1-1440) |
+| `TWITTER_POLL_INTERVAL_MINUTES` | `DEFAULT_POLL_INTERVAL_MINUTES` | Polling interval for Twitter sources (1-1440) |
+| `PAGE_POLL_INTERVAL_MINUTES` | `DEFAULT_POLL_INTERVAL_MINUTES` | Polling interval for Page sources (1-1440) |
+
 ### Summarization Settings
 
 | Variable | Default | Description |

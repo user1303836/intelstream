@@ -20,6 +20,7 @@ def mock_settings():
     settings.http_timeout_seconds = 30.0
     settings.summarization_delay_seconds = 0.5
     settings.fetch_delay_seconds = 0.0
+    settings.get_poll_interval.return_value = 5
     return settings
 
 
@@ -51,6 +52,7 @@ def sample_source():
     source.identifier = "test-substack"
     source.feed_url = "https://test.substack.com/feed"
     source.skip_summary = False
+    source.last_polled_at = None
     return source
 
 
@@ -241,6 +243,7 @@ class TestFetchAllSources:
         source = MagicMock(spec=Source)
         source.type = MagicMock()
         source.type.value = "unknown"
+        source.last_polled_at = None
 
         mock_repository.get_all_sources.return_value = [source]
 
@@ -556,6 +559,85 @@ class TestFetchAllSources:
             feed_url=sample_source.feed_url,
             skip_content=True,
         )
+
+        await pipeline.close()
+
+    async def test_skips_source_not_yet_due(
+        self,
+        pipeline: ContentPipeline,
+        mock_settings: MagicMock,
+        mock_repository: AsyncMock,
+        sample_source,
+    ):
+        await pipeline.initialize()
+
+        sample_source.last_polled_at = datetime(2099, 1, 1, 0, 0, 0, tzinfo=UTC)
+        mock_settings.get_poll_interval.return_value = 20
+        mock_repository.get_all_sources.return_value = [sample_source]
+
+        with patch.object(
+            pipeline._adapters[SourceType.SUBSTACK],
+            "fetch_latest",
+            new_callable=AsyncMock,
+        ) as mock_fetch:
+            result = await pipeline.fetch_all_sources()
+
+        assert result == 0
+        mock_fetch.assert_not_called()
+
+        await pipeline.close()
+
+    async def test_fetches_source_when_interval_elapsed(
+        self,
+        pipeline: ContentPipeline,
+        mock_settings: MagicMock,
+        mock_repository: AsyncMock,
+        sample_source,
+        sample_content_data,
+    ):
+        await pipeline.initialize()
+
+        sample_source.last_polled_at = datetime(2000, 1, 1, 0, 0, 0, tzinfo=UTC)
+        mock_settings.get_poll_interval.return_value = 5
+        mock_repository.get_all_sources.return_value = [sample_source]
+        mock_repository.content_item_exists.return_value = False
+
+        with patch.object(
+            pipeline._adapters[SourceType.SUBSTACK],
+            "fetch_latest",
+            new_callable=AsyncMock,
+            return_value=[sample_content_data],
+        ):
+            result = await pipeline.fetch_all_sources()
+
+        assert result == 1
+
+        await pipeline.close()
+
+    async def test_never_skips_first_poll(
+        self,
+        pipeline: ContentPipeline,
+        mock_settings: MagicMock,
+        mock_repository: AsyncMock,
+        sample_source,
+        sample_content_data,
+    ):
+        await pipeline.initialize()
+
+        sample_source.last_polled_at = None
+        mock_repository.get_all_sources.return_value = [sample_source]
+        mock_repository.content_item_exists.return_value = False
+
+        with patch.object(
+            pipeline._adapters[SourceType.SUBSTACK],
+            "fetch_latest",
+            new_callable=AsyncMock,
+            return_value=[sample_content_data],
+        ):
+            result = await pipeline.fetch_all_sources()
+
+        assert result == 1
+        mock_settings.get_poll_interval.assert_not_called()
 
         await pipeline.close()
 

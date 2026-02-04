@@ -1,9 +1,14 @@
+from __future__ import annotations
+
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+if TYPE_CHECKING:
+    from intelstream.database.models import SourceType
 
 
 class Settings(BaseSettings):
@@ -146,6 +151,63 @@ class Settings(BaseSettings):
         le=20,
         description="Maximum concurrent message forwards",
     )
+
+    substack_poll_interval_minutes: int | None = Field(
+        default=None,
+        ge=1,
+        le=1440,
+        description="Polling interval for Substack sources (falls back to DEFAULT_POLL_INTERVAL_MINUTES)",
+    )
+    youtube_poll_interval_minutes: int | None = Field(
+        default=None,
+        ge=1,
+        le=1440,
+        description="Polling interval for YouTube sources (falls back to DEFAULT_POLL_INTERVAL_MINUTES)",
+    )
+    rss_poll_interval_minutes: int | None = Field(
+        default=None,
+        ge=1,
+        le=1440,
+        description="Polling interval for RSS sources (falls back to DEFAULT_POLL_INTERVAL_MINUTES)",
+    )
+    arxiv_poll_interval_minutes: int | None = Field(
+        default=None,
+        ge=1,
+        le=1440,
+        description="Polling interval for Arxiv sources (falls back to DEFAULT_POLL_INTERVAL_MINUTES)",
+    )
+    blog_poll_interval_minutes: int | None = Field(
+        default=None,
+        ge=1,
+        le=1440,
+        description="Polling interval for Blog sources (falls back to DEFAULT_POLL_INTERVAL_MINUTES)",
+    )
+    twitter_poll_interval_minutes: int | None = Field(
+        default=None,
+        ge=1,
+        le=1440,
+        description="Polling interval for Twitter sources (falls back to DEFAULT_POLL_INTERVAL_MINUTES)",
+    )
+    page_poll_interval_minutes: int | None = Field(
+        default=None,
+        ge=1,
+        le=1440,
+        description="Polling interval for Page sources (falls back to DEFAULT_POLL_INTERVAL_MINUTES)",
+    )
+
+    def get_poll_interval(self, source_type: SourceType) -> int:
+        from intelstream.database.models import SourceType
+
+        intervals: dict[SourceType, int | None] = {
+            SourceType.SUBSTACK: self.substack_poll_interval_minutes,
+            SourceType.YOUTUBE: self.youtube_poll_interval_minutes,
+            SourceType.RSS: self.rss_poll_interval_minutes,
+            SourceType.ARXIV: self.arxiv_poll_interval_minutes,
+            SourceType.BLOG: self.blog_poll_interval_minutes,
+            SourceType.TWITTER: self.twitter_poll_interval_minutes,
+            SourceType.PAGE: self.page_poll_interval_minutes,
+        }
+        return intervals.get(source_type) or self.default_poll_interval_minutes
 
     @field_validator("database_url")
     @classmethod
