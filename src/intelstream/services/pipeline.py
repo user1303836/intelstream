@@ -170,6 +170,8 @@ class ContentPipeline:
             if fetch_delay > 0 and i < len(sources) - 1:
                 await asyncio.sleep(fetch_delay)
 
+        await self._repository.cleanup_extraction_cache()
+
         logger.info("Fetch complete", total_new_items=total_new_items)
         return total_new_items
 

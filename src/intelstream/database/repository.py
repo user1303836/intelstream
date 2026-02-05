@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import structlog
 from sqlalchemy import exists, func, select, text
@@ -492,6 +492,20 @@ class Repository:
             await session.commit()
             await session.refresh(cache)
             return cache
+
+    async def cleanup_extraction_cache(self, max_age_days: int = 7) -> int:
+        cutoff = datetime.now(UTC) - timedelta(days=max_age_days)
+        async with self.session() as session:
+            result = await session.execute(
+                select(ExtractionCache).where(ExtractionCache.cached_at < cutoff)
+            )
+            entries = list(result.scalars().all())
+            for entry in entries:
+                await session.delete(entry)
+            await session.commit()
+            if entries:
+                logger.info("Cleaned up extraction cache", removed=len(entries))
+            return len(entries)
 
     async def get_known_urls_for_source(self, source_id: str) -> set[str]:
         async with self.session() as session:
