@@ -17,6 +17,7 @@ logger = structlog.get_logger()
 
 class GitHubPolling(commands.Cog):
     MAX_CONSECUTIVE_FAILURES = 5
+    MAX_BACKOFF_MULTIPLIER = 4
 
     def __init__(self, bot: "IntelStreamBot") -> None:
         self.bot = bot
@@ -24,6 +25,7 @@ class GitHubPolling(commands.Cog):
         self._poster: GitHubPoster | None = None
         self._http_client: httpx.AsyncClient | None = None
         self._initialized = False
+        self._consecutive_failures = 0
         self._base_interval: int = 5
 
     async def cog_load(self) -> None:
@@ -66,19 +68,47 @@ class GitHubPolling(commands.Cog):
         if not self._initialized or not self._service or not self._poster:
             return
 
-        repos = await self.bot.repository.get_all_github_repos(active_only=True)
+        if self._consecutive_failures == self.MAX_CONSECUTIVE_FAILURES:
+            logger.error(
+                "GitHub polling loop circuit breaker triggered, will retry hourly",
+                consecutive_failures=self._consecutive_failures,
+            )
+            await self.bot.notify_owner(
+                f"GitHub polling loop hit {self.MAX_CONSECUTIVE_FAILURES} consecutive failures. "
+                "Switching to hourly retries until recovered."
+            )
+            self._consecutive_failures += 1
+            self.github_loop.change_interval(minutes=60)
 
-        for repo in repos:
-            try:
-                await self._process_repo(repo)
-            except Exception as e:
-                logger.error(
-                    "Error processing GitHub repo",
-                    owner=repo.owner,
-                    repo=repo.repo,
-                    error=str(e),
-                )
-                await self._handle_failure(repo, e)
+        try:
+            repos = await self.bot.repository.get_all_github_repos(active_only=True)
+
+            for repo in repos:
+                try:
+                    await self._process_repo(repo)
+                except Exception as e:
+                    logger.error(
+                        "Error processing GitHub repo",
+                        owner=repo.owner,
+                        repo=repo.repo,
+                        error=str(e),
+                    )
+                    await self._handle_failure(repo, e)
+
+            self._reset_backoff()
+
+        except Exception as e:
+            self._consecutive_failures += 1
+            logger.error(
+                "GitHub polling loop error",
+                error=str(e),
+                consecutive_failures=self._consecutive_failures,
+            )
+
+            if self._consecutive_failures == 1:
+                await self.bot.notify_owner(f"GitHub polling loop error: {e}")
+
+            self._apply_backoff()
 
     @github_loop.before_loop
     async def before_github_loop(self) -> None:
@@ -87,7 +117,35 @@ class GitHubPolling(commands.Cog):
 
     @github_loop.error  # type: ignore[type-var]
     async def github_loop_error(self, error: Exception) -> None:
-        logger.error("GitHub polling loop encountered an error", error=str(error))
+        self._consecutive_failures += 1
+        logger.error(
+            "GitHub polling loop encountered an error",
+            error=str(error),
+            consecutive_failures=self._consecutive_failures,
+        )
+
+        if self._consecutive_failures == 1:
+            await self.bot.notify_owner(f"GitHub polling loop error: {error}")
+
+        self._apply_backoff()
+
+    def _apply_backoff(self) -> None:
+        if self._consecutive_failures > self.MAX_CONSECUTIVE_FAILURES:
+            return
+        multiplier = min(2 ** (self._consecutive_failures - 1), self.MAX_BACKOFF_MULTIPLIER)
+        new_interval = self._base_interval * multiplier
+        self.github_loop.change_interval(minutes=new_interval)
+        logger.info(
+            "Applied backoff to GitHub polling loop",
+            new_interval_minutes=new_interval,
+            consecutive_failures=self._consecutive_failures,
+        )
+
+    def _reset_backoff(self) -> None:
+        if self._consecutive_failures > 0:
+            self._consecutive_failures = 0
+            self.github_loop.change_interval(minutes=self._base_interval)
+            logger.info("GitHub polling loop backoff reset")
 
     async def _process_repo(self, repo: GitHubRepo) -> None:
         if not self._service or not self._poster:
