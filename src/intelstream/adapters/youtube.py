@@ -123,13 +123,13 @@ class YouTubeAdapter(BaseAdapter):
         identifier = identifier.lstrip("@")
 
         request = self._youtube.channels().list(part="id", forHandle=identifier)
-        response: dict[str, Any] = request.execute()
+        response: dict[str, Any] = await asyncio.to_thread(request.execute)
 
         if response.get("items"):
             return str(response["items"][0]["id"])
 
         request = self._youtube.channels().list(part="id", forUsername=identifier)
-        response = request.execute()
+        response = await asyncio.to_thread(request.execute)
 
         if response.get("items"):
             return str(response["items"][0]["id"])
@@ -137,7 +137,7 @@ class YouTubeAdapter(BaseAdapter):
         request = self._youtube.search().list(
             part="snippet", q=identifier, type="channel", maxResults=1
         )
-        response = request.execute()
+        response = await asyncio.to_thread(request.execute)
 
         if response.get("items"):
             return str(response["items"][0]["snippet"]["channelId"])
@@ -146,7 +146,7 @@ class YouTubeAdapter(BaseAdapter):
 
     async def _get_uploads_playlist_id(self, channel_id: str) -> str:
         request = self._youtube.channels().list(part="contentDetails", id=channel_id)
-        response: dict[str, Any] = request.execute()
+        response: dict[str, Any] = await asyncio.to_thread(request.execute)
 
         if not response.get("items"):
             raise ValueError(f"Channel not found: {channel_id}")
@@ -161,7 +161,7 @@ class YouTubeAdapter(BaseAdapter):
             playlistId=playlist_id,
             maxResults=max_results,
         )
-        response: dict[str, Any] = request.execute()
+        response: dict[str, Any] = await asyncio.to_thread(request.execute)
         return list(response.get("items", []))
 
     async def _create_content_data(
