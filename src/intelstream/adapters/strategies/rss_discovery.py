@@ -13,6 +13,7 @@ from intelstream.adapters.strategies.base import (
 )
 from intelstream.config import get_settings
 from intelstream.utils.feed_utils import parse_feed_date
+from intelstream.utils.url_validation import SSRFError, validate_url_for_ssrf
 
 logger = structlog.get_logger()
 
@@ -90,12 +91,24 @@ class RSSDiscoveryStrategy(DiscoveryStrategy):
             if "rss" in link_type or "atom" in link_type:
                 href = link.get("href")
                 if href:
-                    return urljoin(base_url, str(href))
+                    feed_url = urljoin(base_url, str(href))
+                    try:
+                        validate_url_for_ssrf(feed_url)
+                        return feed_url
+                    except SSRFError:
+                        logger.warning("Skipping RSS URL blocked by SSRF protection", url=feed_url)
+                        continue
 
         for link in soup.find_all("link", rel=re.compile(r"feed", re.IGNORECASE)):
             href = link.get("href")
             if href:
-                return urljoin(base_url, str(href))
+                feed_url = urljoin(base_url, str(href))
+                try:
+                    validate_url_for_ssrf(feed_url)
+                    return feed_url
+                except SSRFError:
+                    logger.warning("Skipping RSS URL blocked by SSRF protection", url=feed_url)
+                    continue
 
         return None
 

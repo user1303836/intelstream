@@ -14,6 +14,7 @@ from intelstream.adapters.strategies.base import (
     DiscoveryStrategy,
 )
 from intelstream.config import get_settings
+from intelstream.utils.url_validation import SSRFError, validate_url_for_ssrf
 
 logger = structlog.get_logger()
 
@@ -128,6 +129,14 @@ class SitemapDiscoveryStrategy(DiscoveryStrategy):
                 line = line.strip()
                 if line.lower().startswith("sitemap:"):
                     sitemap_url = line.split(":", 1)[1].strip()
+                    try:
+                        validate_url_for_ssrf(sitemap_url)
+                    except SSRFError:
+                        logger.warning(
+                            "Skipping sitemap URL blocked by SSRF protection",
+                            url=sitemap_url,
+                        )
+                        return None
                     return sitemap_url
 
         except httpx.HTTPError:
@@ -214,6 +223,11 @@ class SitemapDiscoveryStrategy(DiscoveryStrategy):
                 break
             loc = sitemap.find("sm:loc", SITEMAP_NS)
             if loc is not None and loc.text:
+                try:
+                    validate_url_for_ssrf(loc.text)
+                except SSRFError:
+                    logger.warning("Skipping sub-sitemap blocked by SSRF protection", url=loc.text)
+                    continue
                 child_urls = await self._parse_sitemap(loc.text)
                 all_urls.extend(child_urls)
                 sitemap_count += 1
@@ -225,6 +239,11 @@ class SitemapDiscoveryStrategy(DiscoveryStrategy):
                 break
             loc = sitemap.find("loc")
             if loc is not None and loc.text:
+                try:
+                    validate_url_for_ssrf(loc.text)
+                except SSRFError:
+                    logger.warning("Skipping sub-sitemap blocked by SSRF protection", url=loc.text)
+                    continue
                 child_urls = await self._parse_sitemap(loc.text)
                 all_urls.extend(child_urls)
                 sitemap_count += 1

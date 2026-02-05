@@ -22,6 +22,7 @@ from intelstream.adapters.strategies.base import (
 )
 from intelstream.config import get_settings
 from intelstream.database.repository import Repository
+from intelstream.utils.url_validation import SSRFError, validate_url_for_ssrf
 
 logger = structlog.get_logger()
 
@@ -212,6 +213,14 @@ class LLMExtractionStrategy(DiscoveryStrategy):
                 post_url = p["url"]
                 if not post_url.startswith(("http://", "https://")):
                     post_url = urljoin(base_url, post_url)
+                try:
+                    validate_url_for_ssrf(post_url)
+                except SSRFError:
+                    logger.warning(
+                        "Skipping LLM-extracted URL blocked by SSRF protection",
+                        url=post_url,
+                    )
+                    continue
                 posts.append(DiscoveredPost(url=post_url, title=p["title"]))
 
             return posts
