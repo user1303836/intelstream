@@ -380,6 +380,8 @@ class SourceManagement(commands.Cog):
             )
             return
 
+        content_count = await self.bot.repository.get_content_count_for_source(source.id)
+
         try:
             await self.bot.repository.delete_source(source.identifier)
             logger.info(
@@ -387,8 +389,17 @@ class SourceManagement(commands.Cog):
                 name=name,
                 identifier=source.identifier,
                 user_id=interaction.user.id,
+                content_items_deleted=content_count,
             )
-            await interaction.followup.send(f"Source **{name}** has been removed.", ephemeral=True)
+            if content_count > 0:
+                msg = (
+                    f"Source **{name}** and {content_count} content item"
+                    f"{'s' if content_count != 1 else ''} "
+                    f"have been removed. Use `/source toggle` next time to disable without deleting."
+                )
+            else:
+                msg = f"Source **{name}** has been removed."
+            await interaction.followup.send(msg, ephemeral=True)
         except SourceNotFoundError:
             await interaction.followup.send(
                 f"Source **{name}** was already removed.", ephemeral=True

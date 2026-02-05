@@ -428,7 +428,9 @@ class TestSourceManagementRemove:
 
         mock_source = MagicMock()
         mock_source.identifier = "test-identifier"
+        mock_source.id = "source-id-1"
         mock_bot.repository.get_source_by_name = AsyncMock(return_value=mock_source)
+        mock_bot.repository.get_content_count_for_source = AsyncMock(return_value=0)
         mock_bot.repository.delete_source = AsyncMock(return_value=True)
 
         await source_management.source_remove.callback(
@@ -438,6 +440,30 @@ class TestSourceManagementRemove:
         mock_bot.repository.delete_source.assert_called_once_with("test-identifier")
         call_args = interaction.followup.send.call_args
         assert "removed" in call_args[0][0]
+
+    async def test_remove_source_with_content_warns(self, source_management, mock_bot):
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = MagicMock()
+        interaction.response.defer = AsyncMock()
+        interaction.followup = MagicMock()
+        interaction.followup.send = AsyncMock()
+        interaction.user = MagicMock()
+        interaction.user.id = 123
+
+        mock_source = MagicMock()
+        mock_source.identifier = "test-identifier"
+        mock_source.id = "source-id-1"
+        mock_bot.repository.get_source_by_name = AsyncMock(return_value=mock_source)
+        mock_bot.repository.get_content_count_for_source = AsyncMock(return_value=42)
+        mock_bot.repository.delete_source = AsyncMock(return_value=True)
+
+        await source_management.source_remove.callback(
+            source_management, interaction, name="Test Source"
+        )
+
+        msg = interaction.followup.send.call_args[0][0]
+        assert "42 content items" in msg
+        assert "/source toggle" in msg
 
     async def test_remove_source_not_found(self, source_management, mock_bot):
         interaction = MagicMock(spec=discord.Interaction)
