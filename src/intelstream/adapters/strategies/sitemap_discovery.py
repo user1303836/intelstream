@@ -2,10 +2,11 @@ import gzip
 import re
 from datetime import UTC, datetime
 from urllib.parse import urljoin, urlparse
-from xml.etree import ElementTree
+from xml.etree.ElementTree import Element, ParseError
 
 import httpx
 import structlog
+from defusedxml import ElementTree
 
 from intelstream.adapters.strategies.base import (
     DiscoveredPost,
@@ -200,13 +201,11 @@ class SitemapDiscoveryStrategy(DiscoveryStrategy):
 
             return self._parse_urlset(root)
 
-        except (httpx.HTTPError, ElementTree.ParseError, gzip.BadGzipFile) as e:
+        except (httpx.HTTPError, ParseError, gzip.BadGzipFile) as e:
             logger.debug("Failed to parse sitemap", url=sitemap_url, error=str(e))
             return []
 
-    async def _parse_sitemap_index(
-        self, root: ElementTree.Element
-    ) -> list[dict[str, str | datetime | None]]:
+    async def _parse_sitemap_index(self, root: Element) -> list[dict[str, str | datetime | None]]:
         all_urls: list[dict[str, str | datetime | None]] = []
         sitemap_count = 0
 
@@ -234,7 +233,7 @@ class SitemapDiscoveryStrategy(DiscoveryStrategy):
 
         return all_urls[:MAX_SITEMAP_URLS]
 
-    def _parse_urlset(self, root: ElementTree.Element) -> list[dict[str, str | datetime | None]]:
+    def _parse_urlset(self, root: Element) -> list[dict[str, str | datetime | None]]:
         urls: list[dict[str, str | datetime | None]] = []
 
         for url_elem in root.findall("sm:url", SITEMAP_NS):

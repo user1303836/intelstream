@@ -954,6 +954,7 @@ dependencies = [
     { name = "aiosqlite" },
     { name = "anthropic" },
     { name = "beautifulsoup4" },
+    { name = "defusedxml" },
     { name = "discord-py" },
     { name = "feedparser" },
     { name = "google-api-python-client" },
@@ -980,6 +981,7 @@ dev = [
     { name = "respx" },
     { name = "ruff" },
     { name = "types-beautifulsoup4" },
+    { name = "types-defusedxml" },
 ]
 
 [package.metadata]
@@ -988,6 +990,7 @@ requires-dist = [
     { name = "anthropic", specifier = ">=0.43.0" },
     { name = "bandit", marker = "extra == 'dev'", specifier = ">=1.7.0" },
     { name = "beautifulsoup4", specifier = ">=4.12.3" },
+    { name = "defusedxml", specifier = ">=0.7.1" },
     { name = "discord-py", specifier = ">=2.4.0" },
     { name = "feedparser", specifier = ">=6.0.11" },
     { name = "google-api-python-client", specifier = ">=2.159.0" },
@@ -1008,6 +1011,7 @@ requires-dist = [
     { name = "tenacity", specifier = ">=9.0.0" },
     { name = "trafilatura", specifier = ">=1.12.0" },
     { name = "types-beautifulsoup4", marker = "extra == 'dev'", specifier = ">=4.12.0.20241020" },
+    { name = "types-defusedxml", marker = "extra == 'dev'", specifier = ">=0.7.0.20250822" },
     { name = "youtube-transcript-api", specifier = ">=0.6.3" },
 ]
 provides-extras = ["dev"]
@@ -2322,6 +2326,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/6d/d1/32b410f6d65eda94d3dfb0b3d0ca151f12cb1dc4cef731dcf7cbfd8716ff/types_beautifulsoup4-4.12.0.20250516.tar.gz", hash = "sha256:aa19dd73b33b70d6296adf92da8ab8a0c945c507e6fb7d5db553415cc77b417e", size = 16628, upload-time = "2025-05-16T03:09:09.93Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7c/79/d84de200a80085b32f12c5820d4fd0addcbe7ba6dce8c1c9d8605e833c8e/types_beautifulsoup4-4.12.0.20250516-py3-none-any.whl", hash = "sha256:5923399d4a1ba9cc8f0096fe334cc732e130269541d66261bb42ab039c0376ee", size = 16879, upload-time = "2025-05-16T03:09:09.051Z" },
+]
+
+[[package]]
+name = "types-defusedxml"
+version = "0.7.0.20250822"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/7d/4a/5b997ae87bf301d1796f72637baa4e0e10d7db17704a8a71878a9f77f0c0/types_defusedxml-0.7.0.20250822.tar.gz", hash = "sha256:ba6c395105f800c973bba8a25e41b215483e55ec79c8ca82b6fe90ba0bc3f8b2", size = 10590, upload-time = "2025-08-22T03:02:59.547Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/13/73/8a36998cee9d7c9702ed64a31f0866c7f192ecffc22771d44dbcc7878f18/types_defusedxml-0.7.0.20250822-py3-none-any.whl", hash = "sha256:5ee219f8a9a79c184773599ad216123aedc62a969533ec36737ec98601f20dcf", size = 13430, upload-time = "2025-08-22T03:02:58.466Z" },
 ]
 
 [[package]]
