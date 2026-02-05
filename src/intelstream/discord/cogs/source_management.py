@@ -147,6 +147,7 @@ class SourceManagement(commands.Cog):
             app_commands.Choice(name="Twitter", value="twitter"),
         ]
     )
+    @app_commands.default_permissions(manage_guild=True)
     async def source_add(
         self,
         interaction: discord.Interaction,
