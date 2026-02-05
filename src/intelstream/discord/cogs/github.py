@@ -56,6 +56,7 @@ class GitHubCommands(commands.Cog):
         repo_url="GitHub repository URL or owner/repo format",
         channel="Channel or thread for updates (defaults to current)",
     )
+    @app_commands.default_permissions(manage_guild=True)
     async def github_add(
         self,
         interaction: discord.Interaction,
