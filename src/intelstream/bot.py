@@ -126,7 +126,9 @@ class IntelStreamBot(commands.Bot):
             )
             if migrated > 0:
                 logger.info(
-                    f"Migrated {migrated} existing sources to channel {self.settings.discord_channel_id}"
+                    "Migrated existing sources to channel",
+                    migrated=migrated,
+                    channel_id=self.settings.discord_channel_id,
                 )
 
         await self.add_cog(CoreCommands(self))
@@ -159,16 +161,23 @@ class IntelStreamBot(commands.Bot):
 
     async def on_ready(self) -> None:
         self.start_time = datetime.now(UTC)
-        logger.info(f"Logged in as {self.user} (ID: {self.user.id if self.user else 'Unknown'})")
+        logger.info(
+            "Logged in",
+            user=str(self.user),
+            user_id=self.user.id if self.user else None,
+        )
 
         try:
             self._owner = await self.fetch_user(self.settings.discord_owner_id)
-            logger.info(f"Owner set to {self._owner}")
+            logger.info("Owner set", owner=str(self._owner))
         except discord.NotFound:
-            logger.warning(f"Could not find owner with ID {self.settings.discord_owner_id}")
+            logger.warning(
+                "Could not find owner",
+                owner_id=self.settings.discord_owner_id,
+            )
 
     async def on_error(self, event_method: str, *_args: Any, **_kwargs: Any) -> None:
-        logger.exception(f"Error in {event_method}")
+        logger.exception("Error in event handler", event_method=event_method)
         await self.notify_owner(f"Error in {event_method}. Check logs for details.")
 
     async def notify_owner(self, message: str) -> None:
@@ -184,14 +193,14 @@ class IntelStreamBot(commands.Bot):
 
         try:
             await self._owner.send(f"**IntelStream Alert**\n{message}")
-            logger.info(f"Notified owner: {message[:50]}...")
+            logger.info("Notified owner", message_preview=message[:50])
         except discord.NotFound:
             logger.error("Owner user not found - check DISCORD_OWNER_ID")
             self._owner = None
         except discord.Forbidden:
             logger.error("Cannot DM owner: DMs may be disabled")
         except discord.HTTPException as e:
-            logger.error(f"Failed to DM owner: {e}")
+            logger.error("Failed to DM owner", error=str(e))
 
     async def close(self) -> None:
         logger.info("Shutting down bot...")

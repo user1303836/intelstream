@@ -83,9 +83,15 @@ class GitHubPolling(commands.Cog):
         try:
             repos = await self.bot.repository.get_all_github_repos(active_only=True)
 
+            repos_polled = 0
+            repos_failed = 0
+            total_events = 0
+
             for repo in repos:
                 try:
-                    await self._process_repo(repo)
+                    events_posted = await self._process_repo(repo)
+                    repos_polled += 1
+                    total_events += events_posted
                 except Exception as e:
                     logger.error(
                         "Error processing GitHub repo",
@@ -94,6 +100,15 @@ class GitHubPolling(commands.Cog):
                         error=str(e),
                     )
                     await self._handle_failure(repo, e)
+                    repos_failed += 1
+
+            if repos:
+                logger.info(
+                    "GitHub cycle complete",
+                    repos_polled=repos_polled,
+                    repos_failed=repos_failed,
+                    events_posted=total_events,
+                )
 
             self._reset_backoff()
 
@@ -147,9 +162,9 @@ class GitHubPolling(commands.Cog):
             self.github_loop.change_interval(minutes=self._base_interval)
             logger.info("GitHub polling loop backoff reset")
 
-    async def _process_repo(self, repo: GitHubRepo) -> None:
+    async def _process_repo(self, repo: GitHubRepo) -> int:
         if not self._service or not self._poster:
-            return
+            return 0
 
         is_first_poll = (
             repo.last_commit_sha is None
@@ -216,7 +231,7 @@ class GitHubPolling(commands.Cog):
                     owner=repo.owner,
                     repo=repo.repo,
                 )
-        elif is_first_poll and events:
+        elif is_first_poll:
             logger.info(
                 "First poll - initialized state without posting",
                 owner=repo.owner,
@@ -249,6 +264,9 @@ class GitHubPolling(commands.Cog):
         )
 
         await self.bot.repository.reset_github_failure(repo.id)
+
+        posted_count = len(events) if events and not is_first_poll else 0
+        return posted_count
 
     async def _handle_failure(self, repo: GitHubRepo, error: Exception) -> None:
         failure_count = await self.bot.repository.increment_github_failure(repo.id)

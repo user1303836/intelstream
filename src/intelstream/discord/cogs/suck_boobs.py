@@ -49,6 +49,13 @@ class SuckBoobs(commands.Cog):
             pinged_user_id=str(target.id),
         )
 
+        logger.info(
+            "suck_boobs command used",
+            user_id=interaction.user.id,
+            target_id=target.id,
+            guild_id=interaction.guild_id,
+        )
+
         await interaction.response.send_message(
             f"🍼 {interaction.user.display_name} sucks <@{target.id}>'s boobs 🥛😳"
         )
@@ -60,6 +67,12 @@ class SuckBoobs(commands.Cog):
                 "This command can only be used in a server.", ephemeral=True
             )
             return
+
+        logger.debug(
+            "suck_boobs_score command invoked",
+            user_id=interaction.user.id,
+            guild_id=interaction.guild_id,
+        )
 
         await interaction.response.defer()
 

@@ -178,6 +178,12 @@ class ContentPoster:
                 # Skip sources belonging to a different guild.
                 # Sources without guild_id are legacy/global and can post to any guild.
                 if source.guild_id and str(guild_id) != source.guild_id:
+                    logger.debug(
+                        "Skipping item, guild mismatch",
+                        item_id=item.id,
+                        source_guild_id=source.guild_id,
+                        current_guild_id=guild_id,
+                    )
                     continue
 
                 if not source.channel_id:
@@ -223,14 +229,21 @@ class ContentPoster:
                 logger.error(
                     "Failed to post content item",
                     item_id=item.id,
+                    title=item.title,
+                    source_name=source.name if source else "unknown",
                     error=str(e),
                 )
             except Exception as e:
                 logger.error(
                     "Unexpected error posting content item",
                     item_id=item.id,
+                    title=item.title,
+                    source_name=source.name if source else "unknown",
                     error=str(e),
                 )
 
-        logger.info("Posted unposted items", count=posted_count, guild_id=guild_id)
+        if posted_count > 0:
+            logger.info("Posted unposted items", count=posted_count, guild_id=guild_id)
+        else:
+            logger.debug("No items to post for guild", guild_id=guild_id)
         return posted_count

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from datetime import UTC, datetime, timedelta
 
 import anthropic
@@ -38,12 +39,12 @@ class ContentPipeline:
     async def initialize(self) -> None:
         self._http_client = httpx.AsyncClient(timeout=self._settings.http_timeout_seconds)
         self._adapters = self._create_adapters()
-        logger.info("Content pipeline initialized")
+        logger.debug("Content pipeline initialized")
 
     async def close(self) -> None:
         if self._http_client:
             await self._http_client.aclose()
-        logger.info("Content pipeline closed")
+        logger.debug("Content pipeline closed")
 
     def _create_adapters(self) -> dict[SourceType, BaseAdapter]:
         adapters: dict[SourceType, BaseAdapter] = {
@@ -78,7 +79,11 @@ class ContentPipeline:
         sources = await self._repository.get_all_sources(active_only=True)
         logger.info("Fetching content from sources", count=len(sources))
 
+        fetch_start = time.monotonic()
         total_new_items = 0
+        sources_polled = 0
+        sources_skipped = 0
+        sources_failed = 0
         fetch_delay = self._settings.fetch_delay_seconds
 
         for i, source in enumerate(sources):
@@ -95,6 +100,7 @@ class ContentPipeline:
                         source_type=source.type.value,
                         next_poll_at=next_poll_at.isoformat(),
                     )
+                    sources_skipped += 1
                     continue
 
             fetch_succeeded = False
@@ -102,6 +108,7 @@ class ContentPipeline:
                 new_items = await self._fetch_source(source)
                 total_new_items += new_items
                 fetch_succeeded = True
+                sources_polled += 1
             except httpx.TimeoutException:
                 logger.warning(
                     "Source fetch timed out",
@@ -109,6 +116,7 @@ class ContentPipeline:
                     source_type=source.type.value,
                 )
                 await self._repository.increment_failure_count(source.id)
+                sources_failed += 1
             except httpx.HTTPStatusError as e:
                 status = e.response.status_code
                 if status == 404:
@@ -148,6 +156,7 @@ class ContentPipeline:
                         source_type=source.type.value,
                         status=status,
                     )
+                sources_failed += 1
             except httpx.RequestError as e:
                 logger.warning(
                     "Network error fetching source",
@@ -156,6 +165,7 @@ class ContentPipeline:
                     error=type(e).__name__,
                 )
                 await self._repository.increment_failure_count(source.id)
+                sources_failed += 1
             except Exception as e:
                 logger.exception(
                     "Unexpected error fetching source",
@@ -163,6 +173,7 @@ class ContentPipeline:
                     source_type=source.type.value,
                     error=str(e),
                 )
+                sources_failed += 1
 
             if fetch_succeeded:
                 await self._repository.reset_failure_count(source.id)
@@ -172,7 +183,15 @@ class ContentPipeline:
 
         await self._repository.cleanup_extraction_cache()
 
-        logger.info("Fetch complete", total_new_items=total_new_items)
+        elapsed = round(time.monotonic() - fetch_start, 2)
+        logger.info(
+            "Fetch complete",
+            total_new_items=total_new_items,
+            sources_polled=sources_polled,
+            sources_skipped=sources_skipped,
+            sources_failed=sources_failed,
+            elapsed_seconds=elapsed,
+        )
         return total_new_items
 
     async def _fetch_source(self, source: Source) -> int:
@@ -203,7 +222,7 @@ class ContentPipeline:
             logger.warning("No adapter for source type", source_type=source.type.value)
             return 0
 
-        logger.debug("Fetching source", source_name=source.name)
+        logger.info("Fetching source", source_name=source.name, source_type=source.type.value)
 
         items = await adapter.fetch_latest(
             source.identifier,
@@ -259,15 +278,24 @@ class ContentPipeline:
             return 0
 
         items = await self._repository.get_unsummarized_content_items(limit=max_items)
-        logger.info("Summarizing pending items", count=len(items))
 
         await self._handle_first_posting_backfill(items)
 
         items = await self._repository.get_unsummarized_content_items(limit=max_items)
 
+        if not items:
+            logger.debug("No items pending summarization")
+            return 0
+
+        logger.info("Summarizing pending items", count=len(items))
+        summarize_start = time.monotonic()
         summarized_count = 0
 
         for item in items:
+            source = await self._repository.get_source_by_id(item.source_id)
+            source_name = source.name if source else "unknown"
+            source_type = source.type.value if source else "unknown"
+
             if not item.raw_content:
                 await self._repository.update_content_item_summary(item.id, "")
                 summarized_count += 1
@@ -275,13 +303,12 @@ class ContentPipeline:
                     "Item has no content, marked ready for posting",
                     item_id=item.id,
                     title=item.title,
+                    source_name=source_name,
                 )
                 continue
 
             try:
-                source = await self._repository.get_source_by_id(item.source_id)
-                source_type = source.type.value if source else "unknown"
-
+                item_start = time.monotonic()
                 summary = await self._summarizer.summarize(
                     content=item.raw_content,
                     title=item.title,
@@ -291,26 +318,41 @@ class ContentPipeline:
 
                 await self._repository.update_content_item_summary(item.id, summary)
                 summarized_count += 1
+                item_elapsed = round(time.monotonic() - item_start, 2)
 
-                logger.debug("Item summarized", item_id=item.id, title=item.title)
+                logger.info(
+                    "Item summarized",
+                    item_id=item.id,
+                    title=item.title,
+                    source_name=source_name,
+                    elapsed_seconds=item_elapsed,
+                )
 
             except SummarizationError as e:
                 logger.error(
                     "Summarization failed",
                     item_id=item.id,
                     title=item.title,
+                    source_name=source_name,
                     error=str(e),
                 )
             except Exception as e:
                 logger.error(
                     "Unexpected error during summarization",
                     item_id=item.id,
+                    title=item.title,
+                    source_name=source_name,
                     error=str(e),
                 )
 
             await asyncio.sleep(self._settings.summarization_delay_seconds)
 
-        logger.info("Summarization complete", summarized_count=summarized_count)
+        elapsed = round(time.monotonic() - summarize_start, 2)
+        logger.info(
+            "Summarization complete",
+            summarized_count=summarized_count,
+            elapsed_seconds=elapsed,
+        )
         return summarized_count
 
     async def _handle_first_posting_backfill(self, items: list[ContentItem]) -> None:

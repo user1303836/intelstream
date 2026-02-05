@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import time
 from typing import TYPE_CHECKING
 
 import structlog
@@ -101,30 +102,29 @@ class ContentPosting(commands.Cog):
             self.content_loop.change_interval(minutes=60)
 
         try:
+            cycle_start = time.monotonic()
             new_items, summarized = await self._pipeline.run_cycle()
 
-            logger.info(
-                "Pipeline cycle complete",
-                new_items=new_items,
-                summarized=summarized,
-            )
-
+            total_posted = 0
             for guild in self.bot.guilds:
                 try:
                     posted = await self._poster.post_unposted_items(guild.id)
-                    if posted > 0:
-                        logger.info(
-                            "Posted items to guild",
-                            guild_id=guild.id,
-                            guild_name=guild.name,
-                            count=posted,
-                        )
+                    total_posted += posted
                 except Exception as e:
                     logger.error(
                         "Error posting to guild",
                         guild_id=guild.id,
                         error=str(e),
                     )
+
+            cycle_elapsed = round(time.monotonic() - cycle_start, 2)
+            logger.info(
+                "Pipeline cycle complete",
+                new_items=new_items,
+                summarized=summarized,
+                posted=total_posted,
+                elapsed_seconds=cycle_elapsed,
+            )
 
             self._reset_backoff()
 
