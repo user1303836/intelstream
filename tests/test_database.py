@@ -1,8 +1,8 @@
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from intelstream.database.exceptions import (
@@ -1031,3 +1031,54 @@ class TestGitHubRepoOperations:
         found = await repository.get_github_repo("guild-123", "owner", "repo")
         assert found is not None
         assert found.is_active is True
+
+
+class TestExtractionCacheCleanup:
+    async def test_cleanup_removes_old_entries(self, repository: Repository) -> None:
+        await repository.set_extraction_cache(
+            url="https://example.com/old",
+            content_hash="hash1",
+            posts_json='[{"title": "old"}]',
+        )
+
+        async with repository.session() as session:
+            from intelstream.database.models import ExtractionCache
+
+            result = await session.execute(
+                select(ExtractionCache).where(ExtractionCache.url == "https://example.com/old")
+            )
+            entry = result.scalar_one()
+            entry.cached_at = datetime.now(UTC) - timedelta(days=10)
+            await session.commit()
+
+        await repository.set_extraction_cache(
+            url="https://example.com/recent",
+            content_hash="hash2",
+            posts_json='[{"title": "recent"}]',
+        )
+
+        removed = await repository.cleanup_extraction_cache(max_age_days=7)
+
+        assert removed == 1
+
+        old_entry = await repository.get_extraction_cache("https://example.com/old")
+        assert old_entry is None
+
+        recent_entry = await repository.get_extraction_cache("https://example.com/recent")
+        assert recent_entry is not None
+
+    async def test_cleanup_returns_zero_when_nothing_to_remove(
+        self, repository: Repository
+    ) -> None:
+        await repository.set_extraction_cache(
+            url="https://example.com/fresh",
+            content_hash="hash1",
+            posts_json='[{"title": "fresh"}]',
+        )
+
+        removed = await repository.cleanup_extraction_cache(max_age_days=7)
+
+        assert removed == 0
+
+        entry = await repository.get_extraction_cache("https://example.com/fresh")
+        assert entry is not None
