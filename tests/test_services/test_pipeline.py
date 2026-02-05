@@ -445,7 +445,7 @@ class TestFetchAllSources:
 
         await pipeline.close()
 
-    async def test_fetch_404_does_not_increment_failure_count(
+    async def test_fetch_404_increments_failure_count(
         self,
         pipeline: ContentPipeline,
         mock_repository: AsyncMock,
@@ -472,7 +472,7 @@ class TestFetchAllSources:
             result = await pipeline.fetch_all_sources()
 
         assert result == 0
-        mock_repository.increment_failure_count.assert_not_called()
+        mock_repository.increment_failure_count.assert_called_once_with(sample_source.id)
 
         await pipeline.close()
 

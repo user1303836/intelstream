@@ -115,6 +115,7 @@ class ContentPipeline:
                         source_name=source.name,
                         source_type=source.type.value,
                     )
+                    await self._repository.increment_failure_count(source.id)
                 elif status == 429:
                     logger.warning(
                         "Rate limited by source",
