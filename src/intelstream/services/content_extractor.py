@@ -9,6 +9,7 @@ import trafilatura
 from bs4 import BeautifulSoup, Tag
 
 from intelstream.config import get_settings
+from intelstream.utils.url_validation import SSRFError, validate_url_for_ssrf
 
 logger = structlog.get_logger()
 
@@ -26,6 +27,12 @@ class ContentExtractor:
         self._client = http_client
 
     async def extract(self, url: str) -> ExtractedContent:
+        try:
+            validate_url_for_ssrf(url)
+        except SSRFError:
+            logger.warning("Skipping URL blocked by SSRF protection", url=url)
+            return ExtractedContent(text="")
+
         html = await self._fetch_html(url)
         if not html:
             return ExtractedContent(text="")
