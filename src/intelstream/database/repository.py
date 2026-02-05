@@ -222,6 +222,15 @@ class Repository:
             )
             return source
 
+    async def get_content_count_for_source(self, source_id: str) -> int:
+        async with self.session() as session:
+            result = await session.execute(
+                select(func.count())
+                .select_from(ContentItem)
+                .where(ContentItem.source_id == source_id)
+            )
+            return result.scalar_one()
+
     async def delete_source(self, identifier: str) -> bool:
         async with self.session() as session:
             result = await session.execute(select(Source).where(Source.identifier == identifier))
