@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import re
 from datetime import UTC, datetime
@@ -153,7 +154,7 @@ class Summarize(commands.Cog):
         youtube = build("youtube", "v3", developerKey=api_key)
 
         request = youtube.videos().list(part="snippet", id=video_id)
-        response = request.execute()
+        response = await asyncio.to_thread(request.execute)
 
         if not response.get("items"):
             raise WebFetchError("Video not found")
