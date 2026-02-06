@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -13,10 +14,10 @@ if TYPE_CHECKING:
 
 @dataclass
 class ProcessedMessage:
-    guild_id: str
-    channel_id: str
-    user_id: str
-    message_id: str
+    guild_id: int
+    channel_id: int
+    user_id: int
+    message_id: int
     content: str
     timestamp: datetime
     is_bot: bool
@@ -27,7 +28,7 @@ class ProcessedMessage:
 
 @dataclass
 class CommunityStateVector:
-    guild_id: str
+    guild_id: int
     timestamp: datetime
     semantic_coherence: float = 0.0
     vocab_convergence: float = 0.0
@@ -41,3 +42,8 @@ class CommunityStateVector:
     reply_depth: float = 0.0
     activity_entropy: float = 0.0
     egregore_index: float = 0.0
+    sentiment_alignment: float = math.nan
+    interaction_modularity: float = math.nan
+    fractal_dimension: float = math.nan
+    lyapunov_exponent: float = math.nan
+    gromov_curvature: float = math.nan

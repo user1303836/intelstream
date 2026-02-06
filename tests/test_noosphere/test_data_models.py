@@ -1,3 +1,4 @@
+import math
 from datetime import datetime
 
 import numpy as np
@@ -9,10 +10,10 @@ from intelstream.noosphere.shared.data_models import CommunityStateVector, Proce
 class TestProcessedMessage:
     def test_create(self) -> None:
         msg = ProcessedMessage(
-            guild_id="g1",
-            channel_id="ch1",
-            user_id="u1",
-            message_id="m1",
+            guild_id=1,
+            channel_id=2,
+            user_id=3,
+            message_id=4,
             content="hello",
             timestamp=datetime.utcnow(),
             is_bot=False,
@@ -24,10 +25,10 @@ class TestProcessedMessage:
     def test_with_embedding(self) -> None:
         emb = np.random.randn(384).astype(np.float32)
         msg = ProcessedMessage(
-            guild_id="g1",
-            channel_id="ch1",
-            user_id="u1",
-            message_id="m1",
+            guild_id=1,
+            channel_id=2,
+            user_id=3,
+            message_id=4,
             content="hello",
             timestamp=datetime.utcnow(),
             is_bot=False,
@@ -40,7 +41,15 @@ class TestProcessedMessage:
 
 class TestCommunityStateVector:
     def test_defaults(self) -> None:
-        v = CommunityStateVector(guild_id="g1", timestamp=datetime.utcnow())
+        v = CommunityStateVector(guild_id=1, timestamp=datetime.utcnow())
         assert v.semantic_coherence == 0.0
         assert v.egregore_index == 0.0
         assert v.anthrophony_ratio == 0.0
+
+    def test_phase4_fields_default_to_nan(self) -> None:
+        v = CommunityStateVector(guild_id=1, timestamp=datetime.utcnow())
+        assert math.isnan(v.sentiment_alignment)
+        assert math.isnan(v.interaction_modularity)
+        assert math.isnan(v.fractal_dimension)
+        assert math.isnan(v.lyapunov_exponent)
+        assert math.isnan(v.gromov_curvature)

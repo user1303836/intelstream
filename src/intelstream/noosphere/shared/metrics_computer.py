@@ -27,10 +27,10 @@ class MetricsComputer:
 
     def __init__(self, soundscape: SoundscapeMonitor) -> None:
         self._soundscape = soundscape
-        self._embeddings: dict[str, list[np.ndarray]] = {}
-        self._messages: dict[str, list[ProcessedMessage]] = {}
-        self._state_vectors: dict[str, CommunityStateVector] = {}
-        self._baselines: dict[str, dict[str, WelfordAccumulator]] = {}
+        self._embeddings: dict[int, list[np.ndarray]] = {}
+        self._messages: dict[int, list[ProcessedMessage]] = {}
+        self._state_vectors: dict[int, CommunityStateVector] = {}
+        self._baselines: dict[int, dict[str, WelfordAccumulator]] = {}
 
     def ingest_message(self, message: ProcessedMessage) -> None:
         guild_id = message.guild_id
@@ -38,11 +38,11 @@ class MetricsComputer:
         if message.embedding is not None:
             self._embeddings.setdefault(guild_id, []).append(message.embedding)
 
-    def get_baseline(self, guild_id: str, metric: str) -> WelfordAccumulator:
+    def get_baseline(self, guild_id: int, metric: str) -> WelfordAccumulator:
         guild_baselines = self._baselines.setdefault(guild_id, {})
         return guild_baselines.setdefault(metric, WelfordAccumulator())
 
-    def compute_hourly(self, guild_id: str) -> CommunityStateVector:
+    def compute_hourly(self, guild_id: int) -> CommunityStateVector:
         messages = self._messages.get(guild_id, [])
         embeddings = self._embeddings.get(guild_id, [])
 
@@ -69,7 +69,7 @@ class MetricsComputer:
         self._state_vectors[guild_id] = vector
         return vector
 
-    def compute_daily(self, guild_id: str) -> CommunityStateVector:
+    def compute_daily(self, guild_id: int) -> CommunityStateVector:
         vector = self.compute_hourly(guild_id)
         embeddings = self._embeddings.get(guild_id, [])
 
@@ -86,7 +86,7 @@ class MetricsComputer:
         self._state_vectors[guild_id] = vector
         return vector
 
-    def get_state_vector(self, guild_id: str) -> CommunityStateVector | None:
+    def get_state_vector(self, guild_id: int) -> CommunityStateVector | None:
         return self._state_vectors.get(guild_id)
 
     def _compute_centroid_coherence(self, embeddings: list[np.ndarray]) -> float:
@@ -113,7 +113,7 @@ class MetricsComputer:
     def _compute_activity_entropy(self, messages: list[ProcessedMessage]) -> float:
         if not messages:
             return 0.0
-        user_counts: dict[str, int] = {}
+        user_counts: dict[int, int] = {}
         for msg in messages:
             user_counts[msg.user_id] = user_counts.get(msg.user_id, 0) + 1
 
@@ -139,7 +139,7 @@ class MetricsComputer:
             sims.append(sim)
         return float(np.mean(sims))
 
-    def _compute_egregore_index(self, guild_id: str, vector: CommunityStateVector) -> float:
+    def _compute_egregore_index(self, guild_id: int, vector: CommunityStateVector) -> float:
         coherence_bl = self.get_baseline(guild_id, "coherence")
         convergence_bl = self.get_baseline(guild_id, "convergence")
         diversity_bl = self.get_baseline(guild_id, "diversity")
