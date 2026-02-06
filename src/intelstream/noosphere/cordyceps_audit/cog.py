@@ -21,8 +21,8 @@ logger = structlog.get_logger(__name__)
 class CordycepsAuditCog(commands.Cog):
     def __init__(self, bot: IntelStreamBot) -> None:
         self.bot = bot
-        self._trackers: dict[int, VocabularyTracker] = defaultdict(VocabularyTracker)
-        self._message_counts: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))
+        self._trackers: dict[str, VocabularyTracker] = defaultdict(VocabularyTracker)
+        self._message_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
     @commands.Cog.listener("on_message_processed")
     async def _on_message(self, msg: ProcessedMessage) -> None:
@@ -43,7 +43,7 @@ class CordycepsAuditCog(commands.Cog):
             )
             return
 
-        guild_id = interaction.guild.id
+        guild_id = str(interaction.guild.id)
         tracker = self._trackers.get(guild_id)
         counts = self._message_counts.get(guild_id)
 

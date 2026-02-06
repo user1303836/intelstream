@@ -11,7 +11,7 @@ class CordycepsReport:
     flagged: bool
 
 
-def herfindahl_index(message_counts: dict[int, int]) -> float:
+def herfindahl_index(message_counts: dict[str, int]) -> float:
     total = sum(message_counts.values())
     if total == 0:
         return 0.0
@@ -38,7 +38,7 @@ def compute_parasitism_score(
 
 
 def run_audit(
-    message_counts: dict[int, int],
+    message_counts: dict[str, int],
     bot_terms: set[str],
     community_terms: set[str],
     parasitism_threshold: float = 0.6,

@@ -12,8 +12,8 @@ if TYPE_CHECKING:
 
 @dataclass
 class UserState:
-    user_id: int
-    guild_id: int
+    user_id: str
+    guild_id: str
     embedding_sum: np.ndarray[tuple[int], np.dtype[np.float64]]
     message_count: int = 0
     last_active: datetime | None = None
@@ -27,20 +27,20 @@ class UserState:
 
 @dataclass
 class CouplingResult:
-    user_a: int
-    user_b: int
+    user_a: str
+    user_b: str
     score: float
 
 
 @dataclass
 class MorphogeneticField:
-    guild_id: int
-    users: dict[int, UserState] = field(default_factory=dict)
+    guild_id: str
+    users: dict[str, UserState] = field(default_factory=dict)
     interaction_graph: nx.Graph = field(default_factory=nx.Graph)
 
     def update_user(
         self,
-        user_id: int,
+        user_id: str,
         embedding: np.ndarray[tuple[int], np.dtype[np.float64]] | list[float],
         timestamp: datetime,
     ) -> None:
@@ -60,7 +60,7 @@ class MorphogeneticField:
             state.message_count += 1
             state.last_active = timestamp
 
-    def record_interaction(self, user_a: int, user_b: int) -> None:
+    def record_interaction(self, user_a: str, user_b: str) -> None:
         if user_a == user_b:
             return
         if self.interaction_graph.has_edge(user_a, user_b):
@@ -68,7 +68,7 @@ class MorphogeneticField:
         else:
             self.interaction_graph.add_edge(user_a, user_b, weight=1)
 
-    def compute_coupling(self, user_a: int, user_b: int) -> float:
+    def compute_coupling(self, user_a: str, user_b: str) -> float:
         state_a = self.users.get(user_a)
         state_b = self.users.get(user_b)
         if state_a is None or state_b is None:

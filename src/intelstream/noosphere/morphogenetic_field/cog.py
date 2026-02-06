@@ -19,10 +19,10 @@ logger = structlog.get_logger(__name__)
 class MorphogeneticFieldCog(commands.Cog):
     def __init__(self, bot: IntelStreamBot) -> None:
         self.bot = bot
-        self._fields: dict[int, MorphogeneticField] = {}
-        self._reply_cache: dict[int, int] = {}
+        self._fields: dict[str, MorphogeneticField] = {}
+        self._reply_cache: dict[int, str] = {}
 
-    def _get_field(self, guild_id: int) -> MorphogeneticField:
+    def _get_field(self, guild_id: str) -> MorphogeneticField:
         if guild_id not in self._fields:
             self._fields[guild_id] = MorphogeneticField(guild_id=guild_id)
         return self._fields[guild_id]
@@ -41,9 +41,9 @@ class MorphogeneticFieldCog(commands.Cog):
         if message.reference and message.reference.message_id:
             replied_to_author = self._reply_cache.get(message.reference.message_id)
             if replied_to_author is not None:
-                mf = self._get_field(message.guild.id)
-                mf.record_interaction(message.author.id, replied_to_author)
-        self._reply_cache[message.id] = message.author.id
+                mf = self._get_field(str(message.guild.id))
+                mf.record_interaction(str(message.author.id), replied_to_author)
+        self._reply_cache[message.id] = str(message.author.id)
         if len(self._reply_cache) > 10000:
             oldest_keys = list(self._reply_cache.keys())[: len(self._reply_cache) - 5000]
             for k in oldest_keys:
@@ -57,7 +57,7 @@ class MorphogeneticFieldCog(commands.Cog):
             )
             return
 
-        guild_id = interaction.guild.id
+        guild_id = str(interaction.guild.id)
         mf = self._fields.get(guild_id)
         if mf is None or not mf.users:
             await interaction.response.send_message(

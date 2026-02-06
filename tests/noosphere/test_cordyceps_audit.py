@@ -13,22 +13,22 @@ from intelstream.noosphere.cordyceps_audit.vocabulary_tracker import (
 
 class TestHerfindahlIndex:
     def test_single_speaker(self) -> None:
-        counts = {1: 100}
+        counts = {"1": 100}
         assert herfindahl_index(counts) == 1.0
 
     def test_equal_speakers(self) -> None:
-        counts = {1: 50, 2: 50}
+        counts = {"1": 50, "2": 50}
         assert abs(herfindahl_index(counts) - 0.5) < 1e-9
 
     def test_four_equal_speakers(self) -> None:
-        counts = {1: 25, 2: 25, 3: 25, 4: 25}
+        counts = {"1": 25, "2": 25, "3": 25, "4": 25}
         assert abs(herfindahl_index(counts) - 0.25) < 1e-9
 
     def test_empty(self) -> None:
         assert herfindahl_index({}) == 0.0
 
     def test_dominated_conversation(self) -> None:
-        counts = {1: 90, 2: 5, 3: 5}
+        counts = {"1": 90, "2": 5, "3": 5}
         hhi = herfindahl_index(counts)
         assert hhi > 0.8
 
@@ -62,7 +62,7 @@ class TestComputeParasitismScore:
 class TestRunAudit:
     def test_healthy_community(self) -> None:
         report = run_audit(
-            message_counts={1: 30, 2: 25, 3: 20, 4: 15, 5: 10},
+            message_counts={"1": 30, "2": 25, "3": 20, "4": 15, "5": 10},
             bot_terms={"hello", "world"},
             community_terms={"python", "discord", "bot"},
         )
@@ -71,7 +71,7 @@ class TestRunAudit:
 
     def test_flagged_when_dominated(self) -> None:
         report = run_audit(
-            message_counts={1: 95, 2: 5},
+            message_counts={"1": 95, "2": 5},
             bot_terms={"alpha", "beta", "gamma"},
             community_terms={"alpha", "beta", "gamma"},
         )
@@ -79,7 +79,7 @@ class TestRunAudit:
 
     def test_report_structure(self) -> None:
         report = run_audit(
-            message_counts={1: 50, 2: 50},
+            message_counts={"1": 50, "2": 50},
             bot_terms=set(),
             community_terms=set(),
         )

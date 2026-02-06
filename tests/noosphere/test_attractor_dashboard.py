@@ -24,7 +24,7 @@ def _make_csv(
     biophony: float = 0.8,
 ) -> CommunityStateVector:
     return CommunityStateVector(
-        guild_id=1,
+        guild_id="1",
         timestamp=datetime(2025, 1, 1, tzinfo=UTC),
         semantic_coherence=coherence,
         semantic_momentum=momentum,

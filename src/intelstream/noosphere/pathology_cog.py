@@ -24,8 +24,8 @@ logger = structlog.get_logger(__name__)
 class PathologyMonitorCog(commands.Cog):
     def __init__(self, bot: IntelStreamBot) -> None:
         self.bot = bot
-        self._baselines: dict[int, GuildBaseline] = {}
-        self._latest_alerts: dict[int, list[PathologyAlert]] = defaultdict(list)
+        self._baselines: dict[str, GuildBaseline] = {}
+        self._latest_alerts: dict[str, list[PathologyAlert]] = defaultdict(list)
 
     @commands.Cog.listener("on_state_vector_updated")
     async def _on_state_vector(self, csv: CommunityStateVector) -> None:
@@ -57,7 +57,7 @@ class PathologyMonitorCog(commands.Cog):
             )
             return
 
-        guild_id = interaction.guild.id
+        guild_id = str(interaction.guild.id)
         alerts = self._latest_alerts.get(guild_id, [])
 
         if not alerts:

@@ -15,7 +15,7 @@ from intelstream.noosphere.shared.data_models import CommunityStateVector
 
 def _make_csv(**overrides: float) -> CommunityStateVector:
     defaults: dict[str, object] = {
-        "guild_id": 1,
+        "guild_id": "1",
         "timestamp": datetime(2025, 1, 1, tzinfo=UTC),
         "semantic_coherence": 0.5,
         "vocab_convergence": 0.4,

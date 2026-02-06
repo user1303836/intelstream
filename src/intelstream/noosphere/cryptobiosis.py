@@ -82,9 +82,9 @@ class CryptobiosisMonitor:
 class CryptobiosisCog(commands.Cog):
     def __init__(self, bot: IntelStreamBot) -> None:
         self.bot = bot
-        self._monitors: dict[int, CryptobiosisMonitor] = {}
+        self._monitors: dict[str, CryptobiosisMonitor] = {}
 
-    def _get_monitor(self, guild_id: int) -> CryptobiosisMonitor:
+    def _get_monitor(self, guild_id: str) -> CryptobiosisMonitor:
         if guild_id not in self._monitors:
             self._monitors[guild_id] = CryptobiosisMonitor()
         return self._monitors[guild_id]

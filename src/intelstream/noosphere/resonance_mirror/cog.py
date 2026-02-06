@@ -22,8 +22,8 @@ logger = structlog.get_logger(__name__)
 class ResonanceMirrorCog(commands.Cog):
     def __init__(self, bot: IntelStreamBot) -> None:
         self.bot = bot
-        self._latest: dict[int, CommunityStateVector] = {}
-        self._previous: dict[int, CommunityStateVector] = {}
+        self._latest: dict[str, CommunityStateVector] = {}
+        self._previous: dict[str, CommunityStateVector] = {}
 
     @commands.Cog.listener("on_state_vector_updated")
     async def _on_state_vector(self, csv: CommunityStateVector) -> None:
@@ -40,7 +40,7 @@ class ResonanceMirrorCog(commands.Cog):
             )
             return
 
-        guild_id = interaction.guild.id
+        guild_id = str(interaction.guild.id)
         csv = self._latest.get(guild_id)
         if csv is None:
             await interaction.response.send_message(

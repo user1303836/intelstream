@@ -25,7 +25,7 @@ MAX_HISTORY = 168
 class AttractorDashboardCog(commands.Cog):
     def __init__(self, bot: IntelStreamBot) -> None:
         self.bot = bot
-        self._history: dict[int, list[CommunityStateVector]] = defaultdict(list)
+        self._history: dict[str, list[CommunityStateVector]] = defaultdict(list)
 
     @commands.Cog.listener("on_state_vector_updated")
     async def _on_state_vector(self, csv: CommunityStateVector) -> None:
@@ -42,7 +42,7 @@ class AttractorDashboardCog(commands.Cog):
             )
             return
 
-        guild_id = interaction.guild.id
+        guild_id = str(interaction.guild.id)
         history = self._history.get(guild_id, [])
         if not history:
             await interaction.response.send_message(
