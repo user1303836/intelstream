@@ -16,7 +16,7 @@ def mock_settings():
     settings = MagicMock(spec=Settings)
     settings.youtube_api_key = "test-youtube-key"
     settings.anthropic_api_key = "test-anthropic-key"
-    settings.twitter_api_key = None
+    settings.twitter_bearer_token = None
     settings.http_timeout_seconds = 30.0
     settings.summarization_delay_seconds = 0.5
     settings.fetch_delay_seconds = 0.0
@@ -102,7 +102,7 @@ class TestContentPipelineInitialization:
         settings = MagicMock(spec=Settings)
         settings.youtube_api_key = None
         settings.anthropic_api_key = "test-anthropic-key"
-        settings.twitter_api_key = None
+        settings.twitter_bearer_token = None
         settings.http_timeout_seconds = 30.0
         settings.summarization_delay_seconds = 0.5
         settings.fetch_delay_seconds = 0.0
@@ -123,7 +123,7 @@ class TestContentPipelineInitialization:
         settings = MagicMock(spec=Settings)
         settings.youtube_api_key = "test-key"
         settings.anthropic_api_key = "test-key"
-        settings.twitter_api_key = "test-twitter-key"
+        settings.twitter_bearer_token = "test-twitter-key"
         settings.http_timeout_seconds = 30.0
         settings.summarization_delay_seconds = 0.5
         settings.fetch_delay_seconds = 0.0
@@ -141,7 +141,7 @@ class TestContentPipelineInitialization:
         settings = MagicMock(spec=Settings)
         settings.youtube_api_key = "test-key"
         settings.anthropic_api_key = "test-key"
-        settings.twitter_api_key = None
+        settings.twitter_bearer_token = None
         settings.http_timeout_seconds = 30.0
         settings.summarization_delay_seconds = 0.5
         settings.fetch_delay_seconds = 0.0
@@ -342,7 +342,7 @@ class TestFetchAllSources:
         settings = MagicMock(spec=Settings)
         settings.youtube_api_key = "test-key"
         settings.anthropic_api_key = "test-key"
-        settings.twitter_api_key = None
+        settings.twitter_bearer_token = None
         settings.http_timeout_seconds = 30.0
         settings.summarization_delay_seconds = 0.5
         settings.fetch_delay_seconds = 0.1

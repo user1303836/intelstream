@@ -3,6 +3,7 @@ from intelstream.adapters.base import BaseAdapter, ContentData
 from intelstream.adapters.page import PageAdapter
 from intelstream.adapters.rss import RSSAdapter
 from intelstream.adapters.substack import SubstackAdapter
+from intelstream.adapters.twitter import TwitterAdapter
 from intelstream.adapters.youtube import YouTubeAdapter
 
 __all__ = [
@@ -12,5 +13,6 @@ __all__ = [
     "PageAdapter",
     "RSSAdapter",
     "SubstackAdapter",
+    "TwitterAdapter",
     "YouTubeAdapter",
 ]

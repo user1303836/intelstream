@@ -196,9 +196,9 @@ class SourceManagement(commands.Cog):
             )
             return
 
-        if stype == SourceType.TWITTER and not self.bot.settings.twitter_api_key:
+        if stype == SourceType.TWITTER and not self.bot.settings.twitter_bearer_token:
             await interaction.followup.send(
-                "Twitter sources are not available. No Twitter API key configured.",
+                "Twitter sources are not available. No Twitter Bearer Token configured.",
                 ephemeral=True,
             )
             return
