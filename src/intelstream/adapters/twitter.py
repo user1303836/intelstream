@@ -11,9 +11,7 @@ logger = structlog.get_logger()
 X_API_BASE = "https://api.x.com/2"
 TITLE_MAX_LENGTH = 100
 
-TWEET_FIELDS = (
-    "created_at,author_id,referenced_tweets,entities,attachments,public_metrics,note_tweet"
-)
+TWEET_FIELDS = "created_at,author_id,referenced_tweets,attachments,public_metrics,note_tweet"
 USER_FIELDS = "name,username,profile_image_url"
 MEDIA_FIELDS = "url,preview_image_url,type"
 EXPANSIONS = "author_id,attachments.media_keys,referenced_tweets.id"

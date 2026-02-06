@@ -375,3 +375,46 @@ class TestTwitterAdapter:
         assert len(items) == 1
         assert items[0].original_url == "https://x.com/i/status/77777"
         assert items[0].author == "Unknown"
+
+    @respx.mock
+    async def test_note_tweet_uses_long_form_text(self) -> None:
+        response_with_note = {
+            "data": [
+                {
+                    "id": "88888",
+                    "text": "This is the truncated version...",
+                    "note_tweet": {
+                        "text": "This is the full long-form tweet text that exceeds 280 characters and would normally be truncated in the regular text field.",
+                    },
+                    "created_at": "2024-12-10T07:00:30.000Z",
+                    "author_id": "2244994945",
+                },
+            ],
+            "includes": {
+                "users": [
+                    {
+                        "id": "2244994945",
+                        "name": "Test User",
+                        "username": "testuser",
+                        "profile_image_url": "https://pbs.twimg.com/profile.jpg",
+                    },
+                ],
+            },
+            "meta": {"result_count": 1},
+        }
+
+        respx.get("https://api.x.com/2/users/by/username/testuser").mock(
+            return_value=httpx.Response(200, json=SAMPLE_USER_RESPONSE)
+        )
+        respx.get("https://api.x.com/2/users/2244994945/tweets").mock(
+            return_value=httpx.Response(200, json=response_with_note)
+        )
+
+        async with httpx.AsyncClient() as client:
+            adapter = TwitterAdapter(bearer_token="test-token", http_client=client)
+            items = await adapter.fetch_latest("testuser")
+
+        assert len(items) == 1
+        assert items[0].raw_content is not None
+        assert "full long-form tweet text" in items[0].raw_content
+        assert "truncated version" not in items[0].raw_content

@@ -267,7 +267,7 @@ Results are cached to avoid repeated extraction on subsequent polls.
 
 **Twitter**: Monitors Twitter/X accounts for new original tweets using the official X API v2. Retweets and replies are filtered server-side for cost efficiency. Quote tweets are included with the quoted text appended for context. Long tweets (over 280 characters) are fully captured. Media attachments (images, videos) are detected and the first image URL is stored as the thumbnail. When added with `summarize:False`, the bot posts bare tweet URLs (Discord auto-embeds the tweet preview). Requires an X API v2 Bearer Token (`TWITTER_BEARER_TOKEN`).
 
-**Twitter cost considerations**: The X API v2 uses either a tiered subscription (Basic: $200/month, 15,000 reads) or a pay-per-use credit system. IntelStream fetches 5 tweets per poll and caches user ID lookups in memory to minimize API usage. With the default 15-minute poll interval, 10 Twitter sources consume roughly 4,800 reads/month (well within Basic tier limits). Set `TWITTER_POLL_INTERVAL_MINUTES` to a higher value (e.g., 30 or 60) for even lower consumption.
+**Twitter cost considerations**: The X API v2 uses either a tiered subscription (Basic: $200/month, 15,000 reads) or a pay-per-use credit system. IntelStream fetches 5 tweets per poll and caches user ID lookups in memory to minimize API usage. With the default 15-minute poll interval, 10 Twitter sources consume roughly 28,800 reads/month (10 sources x 4 polls/hour x 24h x 30d). Set `TWITTER_POLL_INTERVAL_MINUTES` to a higher value (e.g., 30 or 60) for even lower consumption.
 
 **Page**: When you add a Page source, the bot uses Claude to analyze the page structure and automatically determine CSS selectors for extracting posts.
 
