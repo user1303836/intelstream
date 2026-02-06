@@ -948,7 +948,11 @@ class Repository:
             if guild_id:
                 query = query.where(Source.guild_id == guild_id)
             if source_type:
-                query = query.where(Source.type == SourceType(source_type))
+                try:
+                    st = SourceType(source_type)
+                except ValueError:
+                    return []
+                query = query.where(Source.type == st)
             if since:
                 query = query.where(ContentItem.published_at >= since)
             result = await session.execute(query)

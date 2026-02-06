@@ -62,8 +62,13 @@ def compute_text_hash(text: str) -> str:
 
 
 def cosine_similarity(query: np.ndarray, candidates: np.ndarray) -> np.ndarray:
-    query_norm = query / np.linalg.norm(query)
-    candidates_norm = candidates / np.linalg.norm(candidates, axis=1, keepdims=True)
+    query_len = np.linalg.norm(query)
+    if query_len == 0:
+        return np.zeros(candidates.shape[0], dtype=np.float32)
+    query_norm = query / query_len
+    candidate_norms = np.linalg.norm(candidates, axis=1, keepdims=True)
+    candidate_norms = np.where(candidate_norms == 0, 1.0, candidate_norms)
+    candidates_norm = candidates / candidate_norms
     return candidates_norm @ query_norm  # type: ignore[no-any-return]
 
 
@@ -99,14 +104,12 @@ class SearchService:
         limit: int = 5,
         threshold: float = 0.3,
     ) -> list[SearchResult]:
-        await self._check_model_consistency()
         query_embedding = (await self._provider.embed([query]))[0]
         query_array = np.array(query_embedding, dtype=np.float32)
         candidates = await self._get_candidates(guild_id, source_type, days)
         return self._rank(query_array, candidates, limit, threshold)
 
     async def embed_pending(self) -> int:
-        await self._check_model_consistency()
         items = await self._repository.get_items_without_embeddings(limit=100)
         count = 0
         for item in items:
@@ -134,6 +137,7 @@ class SearchService:
     async def _ensure_cache_loaded(self) -> None:
         if self._cache_loaded:
             return
+        await self._check_model_consistency()
         embeddings = await self._repository.get_all_embeddings()
         for emb in embeddings:
             self._embeddings_cache[emb.content_item_id] = np.array(

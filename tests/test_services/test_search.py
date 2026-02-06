@@ -129,6 +129,20 @@ class TestCosineSimilarity:
         scores = cosine_similarity(v, candidates)
         assert scores[0] < -0.99
 
+    def test_zero_query_vector_returns_zeros(self):
+        v = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+        candidates = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
+        scores = cosine_similarity(v, candidates)
+        assert scores.shape == (2,)
+        np.testing.assert_array_equal(scores, np.zeros(2, dtype=np.float32))
+
+    def test_zero_candidate_vector_returns_zero_score(self):
+        v = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        candidates = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32)
+        scores = cosine_similarity(v, candidates)
+        assert abs(scores[0]) < 1e-6
+        assert abs(scores[1] - 1.0) < 1e-6
+
 
 class TestEmbeddingGeneration:
     async def test_embed_pending_processes_items_without_embeddings(
@@ -329,22 +343,28 @@ class TestSearch:
 
 
 class TestModelConsistency:
-    async def test_model_change_clears_all_embeddings(self, search_service, mock_repository):
+    async def test_model_change_clears_all_embeddings(
+        self, search_service, mock_repository, mock_provider
+    ):
         latest = MagicMock(spec=ContentEmbedding)
         latest.model_name = "old-model"
         mock_repository.get_latest_embedding.return_value = latest
-        mock_repository.get_items_without_embeddings.return_value = []
+        mock_repository.get_all_embeddings.return_value = []
+        mock_repository.get_embeddings_with_items.return_value = []
+        mock_provider.embed.return_value = [[0.1, 0.2, 0.3]]
 
-        await search_service.embed_pending()
+        await search_service.search("test")
 
         mock_repository.clear_all_embeddings.assert_called_once()
 
-    async def test_same_model_does_not_clear(self, search_service, mock_repository):
+    async def test_same_model_does_not_clear(self, search_service, mock_repository, mock_provider):
         latest = MagicMock(spec=ContentEmbedding)
         latest.model_name = "test-model"
         mock_repository.get_latest_embedding.return_value = latest
-        mock_repository.get_items_without_embeddings.return_value = []
+        mock_repository.get_all_embeddings.return_value = []
+        mock_repository.get_embeddings_with_items.return_value = []
+        mock_provider.embed.return_value = [[0.1, 0.2, 0.3]]
 
-        await search_service.embed_pending()
+        await search_service.search("test")
 
         mock_repository.clear_all_embeddings.assert_not_called()

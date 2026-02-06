@@ -57,6 +57,12 @@ class SearchCog(commands.Cog):
             )
             return
 
+        if days is not None and days < 1:
+            await interaction.response.send_message(
+                "Days must be a positive number.", ephemeral=True
+            )
+            return
+
         await interaction.response.defer(ephemeral=True)
 
         guild_id = str(interaction.guild_id) if interaction.guild_id else None

@@ -125,6 +125,24 @@ class TestSearchCog:
         call_args = mock_interaction.response.send_message.call_args
         assert "3 and 200 characters" in call_args.args[0]
 
+    async def test_search_command_rejects_zero_days(self, search_cog, mock_interaction):
+        await search_cog.search.callback(
+            search_cog, mock_interaction, query="test query", days=0, source_type=None
+        )
+
+        mock_interaction.response.send_message.assert_called_once()
+        call_args = mock_interaction.response.send_message.call_args
+        assert "positive" in call_args.args[0]
+
+    async def test_search_command_rejects_negative_days(self, search_cog, mock_interaction):
+        await search_cog.search.callback(
+            search_cog, mock_interaction, query="test query", days=-5, source_type=None
+        )
+
+        mock_interaction.response.send_message.assert_called_once()
+        call_args = mock_interaction.response.send_message.call_args
+        assert "positive" in call_args.args[0]
+
     async def test_search_error_handler_returns_cooldown_message(
         self, search_cog, mock_interaction
     ):
