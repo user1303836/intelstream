@@ -28,19 +28,13 @@ class PhiParameter:
 
     def __init__(self) -> None:
         self._phase = 0.0
-        self._tick_count = 0
 
     @property
     def phase(self) -> float:
         return self._phase
 
-    @property
-    def tick_count(self) -> int:
-        return self._tick_count
-
     def advance(self) -> None:
         self._phase = (self._phase + GOLDEN_ANGLE) % (2 * math.pi)
-        self._tick_count += 1
 
     def mode_weights(self) -> dict[str, float]:
         proximity = self._fibonacci_proximity()
@@ -49,8 +43,13 @@ class PhiParameter:
         attractor_w = math.sin(self._phase) * 0.3 + 0.3
         ghost_w = math.cos(self._phase * PHI) * 0.2 + 0.2
         total = crystal_w + quasicrystal_w + attractor_w + ghost_w
-        if total <= 0:
-            return {"crystal": 0.25, "attractor": 0.25, "quasicrystal": 0.25, "ghost": 0.25}
+        if total < 1e-10:
+            return {
+                "crystal": 0.25,
+                "attractor": 0.25,
+                "quasicrystal": 0.25,
+                "ghost": 0.25,
+            }
         return {
             "crystal": crystal_w / total,
             "attractor": attractor_w / total,
@@ -59,7 +58,6 @@ class PhiParameter:
         }
 
     def _fibonacci_proximity(self) -> float:
-        """How close the current phase is to any Fibonacci fraction of 2*pi."""
         min_dist = float("inf")
         for p, q in self.FIBONACCI_FRACTIONS:
             frac_phase = (2 * math.pi * p / q) % (2 * math.pi)
@@ -69,6 +67,3 @@ class PhiParameter:
             )
             min_dist = min(min_dist, dist)
         return 1.0 - (min_dist / math.pi)
-
-    def set_phase(self, phase: float) -> None:
-        self._phase = phase % (2 * math.pi)

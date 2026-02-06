@@ -42,13 +42,15 @@ class TestSerendipityInjector:
         bridges = injector.find_bridges(current, archived, similarities=similarities)
         assert len(bridges) <= 3
 
-    def test_find_bridges_respects_range(self, injector: SerendipityInjector) -> None:
+    def test_find_bridges_respects_range(self) -> None:
+        noiseless = SerendipityInjector(noise_sigma=0.0, similarity_min=0.3, similarity_max=0.6)
+
         too_similar = {("a", "b"): 0.9}
-        bridges = injector.find_bridges(["a"], ["b"], similarities=too_similar)
+        bridges = noiseless.find_bridges(["a"], ["b"], similarities=too_similar)
         assert len(bridges) == 0
 
         too_different = {("a", "b"): 0.05}
-        bridges = injector.find_bridges(["a"], ["b"], similarities=too_different)
+        bridges = noiseless.find_bridges(["a"], ["b"], similarities=too_different)
         assert len(bridges) == 0
 
     def test_select_injection(self, injector: SerendipityInjector) -> None:

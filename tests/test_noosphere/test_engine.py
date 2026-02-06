@@ -29,9 +29,9 @@ class TestNoosphereEngine:
         assert engine.is_active
 
     async def test_tick_advances_phi(self, engine: NoosphereEngine) -> None:
-        initial_tick = engine.phi.tick_count
+        initial_tick = engine._tick_count
         await engine.tick()
-        assert engine.phi.tick_count == initial_tick + 1
+        assert engine._tick_count == initial_tick + 1
 
     async def test_tick_dispatches_event(self, engine: NoosphereEngine, bot: MagicMock) -> None:
         await engine.tick()
@@ -39,15 +39,15 @@ class TestNoosphereEngine:
 
     async def test_tick_inactive_does_nothing(self, engine: NoosphereEngine) -> None:
         await engine.shutdown()
-        initial_tick = engine.phi.tick_count
+        initial_tick = engine._tick_count
         await engine.tick()
-        assert engine.phi.tick_count == initial_tick
+        assert engine._tick_count == initial_tick
 
     async def test_tick_cryptobiotic_does_nothing(self, engine: NoosphereEngine) -> None:
         engine._is_cryptobiotic = True
-        initial_tick = engine.phi.tick_count
+        initial_tick = engine._tick_count
         await engine.tick()
-        assert engine.phi.tick_count == initial_tick
+        assert engine._tick_count == initial_tick
 
     async def test_process_message_updates_activity(self, engine: NoosphereEngine) -> None:
         message = MagicMock()
