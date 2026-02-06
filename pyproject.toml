@@ -22,6 +22,8 @@ dependencies = [
     "structlog>=24.4.0",
     "defusedxml>=0.7.1",
     "trafilatura>=1.12.0",
+    "ruptures>=1.1.10",
+    "networkx>=3.6.1",
 ]
 
 [project.optional-dependencies]
@@ -91,6 +93,8 @@ module = [
     "googleapiclient.*",
     "youtube_transcript_api.*",
     "trafilatura.*",
+    "ruptures.*",
+    "networkx.*",
 ]
 ignore_missing_imports = true
 
