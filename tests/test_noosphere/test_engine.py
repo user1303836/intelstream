@@ -22,7 +22,7 @@ class TestNoosphereEngine:
 
     @pytest.fixture
     def engine(self, bot: MagicMock, settings: NoosphereSettings) -> NoosphereEngine:
-        return NoosphereEngine(bot, 123, settings)
+        return NoosphereEngine(bot, "guild_123", settings)
 
     async def test_initialize(self, engine: NoosphereEngine) -> None:
         await engine.initialize()
@@ -76,7 +76,7 @@ class TestNoosphereEngine:
         assert engine.is_cryptobiotic
         bot.dispatch.assert_called_with(
             "cryptobiosis_trigger",
-            guild_id=123,
+            guild_id="guild_123",
             entering_or_exiting="entering",
         )
 
@@ -111,12 +111,12 @@ class TestNoosphereCog:
 
     def test_creates_engines_per_guild(self, bot: MagicMock, settings: NoosphereSettings) -> None:
         cog = NoosphereCog(bot, settings)
-        engine = cog._get_or_create_engine(1)
-        assert engine.guild_id == 1
-        assert 1 in cog.engines
+        engine = cog._get_or_create_engine("guild_1")
+        assert engine.guild_id == "guild_1"
+        assert "guild_1" in cog.engines
 
     def test_reuses_engine(self, bot: MagicMock, settings: NoosphereSettings) -> None:
         cog = NoosphereCog(bot, settings)
-        e1 = cog._get_or_create_engine(1)
-        e2 = cog._get_or_create_engine(1)
+        e1 = cog._get_or_create_engine("guild_1")
+        e2 = cog._get_or_create_engine("guild_1")
         assert e1 is e2

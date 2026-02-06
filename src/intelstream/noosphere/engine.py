@@ -23,7 +23,7 @@ class NoosphereEngine:
     and handles mode transitions. One instance per guild.
     """
 
-    def __init__(self, bot: commands.Bot, guild_id: int, settings: NoosphereSettings):
+    def __init__(self, bot: commands.Bot, guild_id: str, settings: NoosphereSettings):
         self.bot = bot
         self.guild_id = guild_id
         self.settings = settings
@@ -79,8 +79,8 @@ class NoosphereEngine:
         self.bot.dispatch(
             "message_processed",
             guild_id=self.guild_id,
-            channel_id=message.channel.id,
-            author_id=message.author.id,
+            channel_id=str(message.channel.id),
+            author_id=str(message.author.id),
             content=message.content,
         )
 
@@ -125,7 +125,7 @@ class NoosphereCog(commands.Cog, name="Noosphere"):
     def __init__(self, bot: commands.Bot, settings: NoosphereSettings | None = None) -> None:
         self.bot = bot
         self.settings = settings or NoosphereSettings()
-        self.engines: dict[int, NoosphereEngine] = {}
+        self.engines: dict[str, NoosphereEngine] = {}
         self._tick_task_running = False
 
     async def cog_load(self) -> None:
@@ -161,7 +161,7 @@ class NoosphereCog(commands.Cog, name="Noosphere"):
             except Exception:
                 logger.exception("Failed to load noosphere sub-cog", cog=type(cog).__name__)
 
-    def _get_or_create_engine(self, guild_id: int) -> NoosphereEngine:
+    def _get_or_create_engine(self, guild_id: str) -> NoosphereEngine:
         if guild_id not in self.engines:
             engine = NoosphereEngine(self.bot, guild_id, self.settings)
             self.engines[guild_id] = engine
@@ -190,7 +190,8 @@ class NoosphereCog(commands.Cog, name="Noosphere"):
             return
         if not self.settings.enabled:
             return
-        engine = self._get_or_create_engine(message.guild.id)
+        guild_id = str(message.guild.id)
+        engine = self._get_or_create_engine(guild_id)
         await engine.process_message(message)
 
     @commands.Cog.listener()
@@ -198,6 +199,7 @@ class NoosphereCog(commands.Cog, name="Noosphere"):
         if not self.settings.enabled:
             return
         for guild in self.bot.guilds:
-            engine = self._get_or_create_engine(guild.id)
+            guild_id = str(guild.id)
+            engine = self._get_or_create_engine(guild_id)
             await engine.initialize()
         logger.info("NoosphereEngine initialized for all guilds", count=len(self.engines))

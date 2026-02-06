@@ -27,7 +27,7 @@ class ModeManager:
     Phase 4: automatic transitions driven by pathology detection.
     """
 
-    def __init__(self, guild_id: int, default_mode: ComputationMode = ComputationMode.INTEGRATIVE):
+    def __init__(self, guild_id: str, default_mode: ComputationMode = ComputationMode.INTEGRATIVE):
         self.guild_id = guild_id
         self._current_mode = default_mode
         self._history: list[ModeTransition] = []
@@ -97,9 +97,9 @@ class ModeManagerCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self._managers: dict[int, ModeManager] = {}
+        self._managers: dict[str, ModeManager] = {}
 
-    def get_manager(self, guild_id: int) -> ModeManager:
+    def get_manager(self, guild_id: str) -> ModeManager:
         if guild_id not in self._managers:
             self._managers[guild_id] = ModeManager(guild_id)
         return self._managers[guild_id]
@@ -110,7 +110,7 @@ class ModeManagerCog(commands.Cog):
             await interaction.response.send_message("This command must be used in a server.")
             return
 
-        manager = self.get_manager(interaction.guild.id)
+        manager = self.get_manager(str(interaction.guild.id))
         mode = manager.current_mode
         description = manager.get_mode_description()
 
@@ -141,12 +141,12 @@ class ModeManagerCog(commands.Cog):
             )
             return
 
-        manager = self.get_manager(interaction.guild.id)
+        manager = self.get_manager(str(interaction.guild.id))
         transition = manager.set_mode(new_mode, reason=f"manual by {interaction.user}")
 
         self.bot.dispatch(
             "mode_transition",
-            guild_id=interaction.guild.id,
+            guild_id=str(interaction.guild.id),
             old_mode=transition.old_mode.value,
             new_mode=transition.new_mode.value,
             reason=transition.reason,
@@ -162,7 +162,7 @@ class ModeManagerCog(commands.Cog):
             await interaction.response.send_message("This command must be used in a server.")
             return
 
-        manager = self.get_manager(interaction.guild.id)
+        manager = self.get_manager(str(interaction.guild.id))
         history = manager.history
 
         if not history:
