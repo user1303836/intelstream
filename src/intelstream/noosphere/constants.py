@@ -21,6 +21,18 @@ ARCHIVE_REFERENCE_EXTENSION: float = 1.5
 ARCHIVE_FIDELITY_FLOOR: float = 0.01
 
 
+class CrystalRoomMode(str, enum.Enum):
+    NUMBER_STATION = "number_station"
+    WHALE = "whale"
+    GHOST = "ghost"
+
+
+class CrystalRoomState(str, enum.Enum):
+    OPEN = "open"
+    SEALED = "sealed"
+    BREATHING = "breathing"
+
+
 class ComputationMode(str, enum.Enum):
     SUBTRACTIVE = "subtractive"
     BROADCAST = "broadcast"
