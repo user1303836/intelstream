@@ -27,6 +27,8 @@ class ModeManager:
     Phase 4: automatic transitions driven by pathology detection.
     """
 
+    MAX_HISTORY = 100
+
     def __init__(self, guild_id: str, default_mode: ComputationMode = ComputationMode.INTEGRATIVE):
         self.guild_id = guild_id
         self._current_mode = default_mode
@@ -54,6 +56,8 @@ class ModeManager:
         )
         self._current_mode = new_mode
         self._history.append(transition)
+        if len(self._history) > self.MAX_HISTORY:
+            self._history = self._history[-self.MAX_HISTORY :]
         logger.info(
             "Mode transition",
             guild_id=self.guild_id,

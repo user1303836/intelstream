@@ -7,6 +7,8 @@ import structlog
 from discord.ext import commands, tasks
 
 from intelstream.noosphere.config import NoosphereSettings
+from intelstream.noosphere.constants import MessageClassification
+from intelstream.noosphere.shared.data_models import CommunityStateVector, ProcessedMessage
 from intelstream.noosphere.shared.mode_manager import ModeManager
 from intelstream.noosphere.shared.phi_parameter import PhiParameter
 
@@ -57,12 +59,12 @@ class NoosphereEngine:
 
         mode_weights = self.phi.mode_weights()
 
-        self.bot.dispatch(
-            "state_vector_updated",
+        csv = CommunityStateVector(
             guild_id=self.guild_id,
-            mode_weights=mode_weights,
-            tick_count=self._tick_count,
+            timestamp=datetime.now(UTC),
         )
+
+        self.bot.dispatch("state_vector_updated", csv, mode_weights, self._tick_count)
 
         await self._check_dormancy()
 
@@ -76,13 +78,18 @@ class NoosphereEngine:
         if self._is_cryptobiotic:
             await self._exit_cryptobiosis()
 
-        self.bot.dispatch(
-            "message_processed",
+        processed = ProcessedMessage(
             guild_id=self.guild_id,
             channel_id=str(message.channel.id),
-            author_id=str(message.author.id),
+            user_id=str(message.author.id),
+            message_id=str(message.id),
             content=message.content,
+            timestamp=datetime.now(UTC),
+            is_bot=False,
+            classification=MessageClassification.ANTHROPHONY,
         )
+
+        self.bot.dispatch("message_processed", processed)
 
     async def _check_dormancy(self) -> None:
         """Check if the guild should enter cryptobiosis."""

@@ -161,8 +161,10 @@ class IntelStreamBot(commands.Bot):
             if noosphere_settings.enabled:
                 await self.add_cog(NoosphereCog(self, noosphere_settings))
                 logger.info("Noosphere Engine cog loaded")
+        except ImportError:
+            logger.debug("Noosphere Engine not loaded (missing dependencies)")
         except Exception:
-            logger.debug("Noosphere Engine not loaded (disabled or missing dependencies)")
+            logger.warning("Noosphere Engine failed to load", exc_info=True)
 
         guild = discord.Object(id=self.settings.discord_guild_id)
         self.tree.copy_global_to(guild=guild)

@@ -66,3 +66,9 @@ class TestModeManager:
         pathologies = manager.active_pathologies
         pathologies.clear()
         assert len(manager.active_pathologies) == 1
+
+    def test_history_bounded(self, manager: ModeManager) -> None:
+        modes = [ComputationMode.RESONANT, ComputationMode.BROADCAST]
+        for i in range(ModeManager.MAX_HISTORY + 20):
+            manager.set_mode(modes[i % 2], reason=f"test_{i}")
+        assert len(manager.history) == ModeManager.MAX_HISTORY

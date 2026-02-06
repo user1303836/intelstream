@@ -5,6 +5,7 @@ import pytest
 
 from intelstream.noosphere.config import NoosphereSettings
 from intelstream.noosphere.engine import NoosphereCog, NoosphereEngine
+from intelstream.noosphere.shared.data_models import CommunityStateVector, ProcessedMessage
 
 
 class TestNoosphereEngine:
@@ -33,9 +34,31 @@ class TestNoosphereEngine:
         await engine.tick()
         assert engine._tick_count == initial_tick + 1
 
-    async def test_tick_dispatches_event(self, engine: NoosphereEngine, bot: MagicMock) -> None:
+    async def test_tick_dispatches_state_vector(
+        self, engine: NoosphereEngine, bot: MagicMock
+    ) -> None:
         await engine.tick()
         bot.dispatch.assert_called()
+        args = bot.dispatch.call_args[0]
+        assert args[0] == "state_vector_updated"
+        assert isinstance(args[1], CommunityStateVector)
+        assert args[1].guild_id == "guild_123"
+
+    async def test_process_message_dispatches_processed_message(
+        self, engine: NoosphereEngine, bot: MagicMock
+    ) -> None:
+        message = MagicMock()
+        message.author.bot = False
+        message.content = "test"
+        message.channel.id = 123
+        message.author.id = 456
+        message.id = 789
+        await engine.process_message(message)
+        args = bot.dispatch.call_args[0]
+        assert args[0] == "message_processed"
+        assert isinstance(args[1], ProcessedMessage)
+        assert args[1].guild_id == "guild_123"
+        assert args[1].content == "test"
 
     async def test_tick_inactive_does_nothing(self, engine: NoosphereEngine) -> None:
         await engine.shutdown()
@@ -55,6 +78,7 @@ class TestNoosphereEngine:
         message.content = "test"
         message.channel.id = 123
         message.author.id = 456
+        message.id = 789
 
         before = engine._last_human_message
         await engine.process_message(message)
@@ -87,6 +111,7 @@ class TestNoosphereEngine:
         message.content = "hello"
         message.channel.id = 123
         message.author.id = 456
+        message.id = 789
         await engine.process_message(message)
         assert not engine.is_cryptobiotic
 
