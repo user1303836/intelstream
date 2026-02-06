@@ -59,9 +59,9 @@ class ContentPipeline:
                 http_client=self._http_client,
             )
 
-        if self._settings.twitter_api_key:
+        if self._settings.twitter_bearer_token:
             adapters[SourceType.TWITTER] = TwitterAdapter(
-                api_key=self._settings.twitter_api_key,
+                bearer_token=self._settings.twitter_bearer_token,
                 http_client=self._http_client,
             )
 

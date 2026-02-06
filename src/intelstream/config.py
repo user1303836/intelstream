@@ -33,8 +33,8 @@ class Settings(BaseSettings):
 
     youtube_api_key: str | None = Field(default=None, description="YouTube Data API key (optional)")
 
-    twitter_api_key: str | None = Field(
-        default=None, description="twitterapi.io API key (optional)"
+    twitter_bearer_token: str | None = Field(
+        default=None, description="X API v2 Bearer Token for Twitter monitoring (optional)"
     )
 
     github_token: str | None = Field(
@@ -226,7 +226,7 @@ class Settings(BaseSettings):
             f"discord_owner_id={self.discord_owner_id}, "
             f"anthropic_api_key='*****', "
             f"youtube_api_key={'*****' if self.youtube_api_key else None}, "
-            f"twitter_api_key={'*****' if self.twitter_api_key else None}, "
+            f"twitter_bearer_token={'*****' if self.twitter_bearer_token else None}, "
             f"github_token={'*****' if self.github_token else None}, "
             f"database_url={self.database_url!r}, "
             f"log_level={self.log_level!r}"

@@ -18,7 +18,7 @@ def mock_bot():
     bot.settings = MagicMock()
     bot.settings.default_poll_interval_minutes = 5
     bot.settings.youtube_api_key = "test-api-key"
-    bot.settings.twitter_api_key = "test-twitter-key"
+    bot.settings.twitter_bearer_token = "test-twitter-token"
     return bot
 
 
@@ -271,8 +271,8 @@ class TestSourceManagementAdd:
         call_args = interaction.followup.send.call_args
         assert "not available" in call_args[0][0]
 
-    async def test_add_twitter_without_api_key(self, source_management, mock_bot):
-        mock_bot.settings.twitter_api_key = None
+    async def test_add_twitter_without_bearer_token(self, source_management, mock_bot):
+        mock_bot.settings.twitter_bearer_token = None
 
         interaction = MagicMock(spec=discord.Interaction)
         interaction.response = MagicMock()
