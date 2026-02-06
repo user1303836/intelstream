@@ -1,10 +1,14 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
 import numpy as np
 
 from intelstream.noosphere.constants import MessageClassification
 from intelstream.noosphere.shared.data_models import ProcessedMessage
-from intelstream.noosphere.shared.metrics_computer import MetricsComputer
+from intelstream.noosphere.shared.metrics_computer import (
+    MAX_EMBEDDINGS_PER_GUILD,
+    MAX_MESSAGES_PER_GUILD,
+    MetricsComputer,
+)
 from intelstream.noosphere.shared.soundscape import SoundscapeMonitor
 
 
@@ -20,7 +24,7 @@ def _make_message(
         user_id=user_id,
         message_id=f"m_{user_id}_{id(embedding)}",
         content="test",
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(UTC),
         is_bot=is_bot,
         classification=MessageClassification.BIOPHONY
         if not is_bot
@@ -117,3 +121,19 @@ class TestMetricsComputer:
         assert mc.get_state_vector("g1") is None
         mc.compute_hourly("g1")
         assert mc.get_state_vector("g1") is not None
+
+    def test_memory_bounds_messages(self) -> None:
+        soundscape = SoundscapeMonitor()
+        mc = MetricsComputer(soundscape)
+        for i in range(MAX_MESSAGES_PER_GUILD + 100):
+            mc.ingest_message(_make_message(user_id=f"u{i}"))
+        assert len(mc._messages["g1"]) == MAX_MESSAGES_PER_GUILD
+
+    def test_memory_bounds_embeddings(self) -> None:
+        soundscape = SoundscapeMonitor()
+        mc = MetricsComputer(soundscape)
+        rng = np.random.default_rng(42)
+        for i in range(MAX_EMBEDDINGS_PER_GUILD + 100):
+            emb = rng.standard_normal(384).astype(np.float32)
+            mc.ingest_message(_make_message(user_id=f"u{i}", embedding=emb))
+        assert len(mc._embeddings["g1"]) == MAX_EMBEDDINGS_PER_GUILD

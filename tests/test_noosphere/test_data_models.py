@@ -1,5 +1,5 @@
 import math
-from datetime import datetime
+from datetime import UTC, datetime
 
 import numpy as np
 
@@ -15,7 +15,7 @@ class TestProcessedMessage:
             user_id="u1",
             message_id="m1",
             content="hello",
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
             is_bot=False,
             classification=MessageClassification.BIOPHONY,
         )
@@ -30,7 +30,7 @@ class TestProcessedMessage:
             user_id="u1",
             message_id="m1",
             content="hello",
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
             is_bot=False,
             classification=MessageClassification.BIOPHONY,
             embedding=emb,
@@ -41,13 +41,13 @@ class TestProcessedMessage:
 
 class TestCommunityStateVector:
     def test_defaults(self) -> None:
-        v = CommunityStateVector(guild_id="g1", timestamp=datetime.utcnow())
+        v = CommunityStateVector(guild_id="g1", timestamp=datetime.now(UTC))
         assert v.semantic_coherence == 0.0
         assert v.egregore_index == 0.0
         assert v.anthrophony_ratio == 0.0
 
     def test_phase4_fields_default_to_nan(self) -> None:
-        v = CommunityStateVector(guild_id="g1", timestamp=datetime.utcnow())
+        v = CommunityStateVector(guild_id="g1", timestamp=datetime.now(UTC))
         assert math.isnan(v.sentiment_alignment)
         assert math.isnan(v.interaction_modularity)
         assert math.isnan(v.fractal_dimension)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 import numpy as np
 import structlog
@@ -14,6 +14,9 @@ logger = structlog.get_logger(__name__)
 EI_WEIGHT_COHERENCE = 0.4
 EI_WEIGHT_CONVERGENCE = 0.3
 EI_WEIGHT_CONCENTRATION = 0.3
+
+MAX_MESSAGES_PER_GUILD = 5000
+MAX_EMBEDDINGS_PER_GUILD = 5000
 
 
 class MetricsComputer:
@@ -34,9 +37,16 @@ class MetricsComputer:
 
     def ingest_message(self, message: ProcessedMessage) -> None:
         guild_id = message.guild_id
-        self._messages.setdefault(guild_id, []).append(message)
+        msgs = self._messages.setdefault(guild_id, [])
+        msgs.append(message)
+        if len(msgs) > MAX_MESSAGES_PER_GUILD:
+            self._messages[guild_id] = msgs[-MAX_MESSAGES_PER_GUILD:]
+
         if message.embedding is not None:
-            self._embeddings.setdefault(guild_id, []).append(message.embedding)
+            embs = self._embeddings.setdefault(guild_id, [])
+            embs.append(message.embedding)
+            if len(embs) > MAX_EMBEDDINGS_PER_GUILD:
+                self._embeddings[guild_id] = embs[-MAX_EMBEDDINGS_PER_GUILD:]
 
     def get_baseline(self, guild_id: str, metric: str) -> WelfordAccumulator:
         guild_baselines = self._baselines.setdefault(guild_id, {})
@@ -55,7 +65,7 @@ class MetricsComputer:
         activity_entropy = self._compute_activity_entropy(messages)
         momentum = self._compute_semantic_momentum(embeddings)
 
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         vector = CommunityStateVector(
             guild_id=guild_id,
             timestamp=now,

@@ -23,7 +23,6 @@ dependencies = [
     "defusedxml>=0.7.1",
     "trafilatura>=1.12.0",
     "sentence-transformers>=5.2.2",
-    "chromadb>=1.4.1",
     "numpy>=2.4.2",
     "scipy>=1.17.0",
     "networkx>=3.6.1",
@@ -97,7 +96,6 @@ module = [
     "youtube_transcript_api.*",
     "trafilatura.*",
     "sentence_transformers.*",
-    "chromadb.*",
     "sklearn.*",
     "scipy.*",
     "numpy.*",
@@ -125,12 +123,3 @@ exclude_lines = [
 [tool.bandit]
 exclude_dirs = ["tests", "design"]
 skips = ["B101"]  # Skip assert warnings (used appropriately in production code)
-
-[dependency-groups]
-dev = [
-    "mypy>=1.19.1",
-    "pytest>=9.0.2",
-    "pytest-asyncio>=1.3.0",
-    "pytest-cov>=7.0.0",
-    "ruff>=0.14.14",
-]

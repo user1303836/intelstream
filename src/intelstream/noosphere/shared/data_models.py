@@ -2,14 +2,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from datetime import datetime  # noqa: TC003
 
-if TYPE_CHECKING:
-    from datetime import datetime
+import numpy as np  # noqa: TC002
 
-    import numpy as np
-
-    from intelstream.noosphere.constants import MessageClassification
+from intelstream.noosphere.constants import MessageClassification  # noqa: TC001
 
 
 @dataclass

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
 from intelstream.noosphere.constants import MessageClassification
 from intelstream.noosphere.shared.data_models import ProcessedMessage
@@ -17,7 +17,7 @@ def _make_message(
         user_id=user_id,
         message_id="m1",
         content="hello",
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(UTC),
         is_bot=is_bot,
         classification=classification,
     )
