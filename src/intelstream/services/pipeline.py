@@ -2,10 +2,14 @@ import asyncio
 import json
 import time
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 import anthropic
 import httpx
 import structlog
+
+if TYPE_CHECKING:
+    from intelstream.services.search import SearchService
 
 from intelstream.adapters.arxiv import ArxivAdapter
 from intelstream.adapters.base import BaseAdapter, ContentData
@@ -29,10 +33,12 @@ class ContentPipeline:
         settings: Settings,
         repository: Repository,
         summarizer: SummarizationService | None = None,
+        search_service: "SearchService | None" = None,
     ) -> None:
         self._settings = settings
         self._repository = repository
         self._summarizer = summarizer
+        self._search_service = search_service
         self._http_client: httpx.AsyncClient | None = None
         self._adapters: dict[SourceType, BaseAdapter] = {}
 
@@ -388,4 +394,9 @@ class ContentPipeline:
     async def run_cycle(self) -> tuple[int, int]:
         new_items = await self.fetch_all_sources()
         summarized = await self.summarize_pending()
+        if self._search_service:
+            try:
+                await self._search_service.embed_pending()
+            except Exception:
+                logger.warning("Embedding step failed", exc_info=True)
         return new_items, summarized

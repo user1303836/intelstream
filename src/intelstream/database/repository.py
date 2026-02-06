@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 import structlog
-from sqlalchemy import exists, func, select, text
+from sqlalchemy import delete, exists, func, select, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
@@ -18,6 +18,7 @@ from intelstream.database.exceptions import (
 )
 from intelstream.database.models import (
     Base,
+    ContentEmbedding,
     ContentItem,
     DiscordConfig,
     ExtractionCache,
@@ -890,3 +891,80 @@ class Repository:
                 await session.commit()
                 return True
             return False
+
+    async def add_content_embedding(
+        self, content_item_id: str, embedding_json: str, model_name: str, text_hash: str
+    ) -> ContentEmbedding:
+        async with self.session() as session:
+            result = await session.execute(
+                select(ContentEmbedding).where(ContentEmbedding.content_item_id == content_item_id)
+            )
+            existing = result.scalar_one_or_none()
+            if existing:
+                existing.embedding_json = embedding_json
+                existing.model_name = model_name
+                existing.text_hash = text_hash
+            else:
+                existing = ContentEmbedding(
+                    content_item_id=content_item_id,
+                    embedding_json=embedding_json,
+                    model_name=model_name,
+                    text_hash=text_hash,
+                )
+                session.add(existing)
+            await session.commit()
+            await session.refresh(existing)
+            return existing
+
+    async def get_all_embeddings(self) -> list[ContentEmbedding]:
+        async with self.session() as session:
+            result = await session.execute(select(ContentEmbedding))
+            return list(result.scalars().all())
+
+    async def get_items_without_embeddings(self, limit: int = 100) -> list[ContentItem]:
+        async with self.session() as session:
+            subquery = select(ContentEmbedding.content_item_id)
+            result = await session.execute(
+                select(ContentItem)
+                .where(ContentItem.id.notin_(subquery))
+                .where(ContentItem.summary.isnot(None))
+                .order_by(ContentItem.created_at.desc())
+                .limit(limit)
+            )
+            return list(result.scalars().all())
+
+    async def get_embeddings_with_items(
+        self,
+        guild_id: str | None = None,
+        source_type: str | None = None,
+        since: datetime | None = None,
+    ) -> list[tuple[ContentEmbedding, ContentItem, Source]]:
+        async with self.session() as session:
+            query = (
+                select(ContentEmbedding, ContentItem, Source)
+                .join(ContentItem, ContentEmbedding.content_item_id == ContentItem.id)
+                .join(Source, ContentItem.source_id == Source.id)
+            )
+            if guild_id:
+                query = query.where(Source.guild_id == guild_id)
+            if source_type:
+                query = query.where(Source.type == SourceType(source_type))
+            if since:
+                query = query.where(ContentItem.published_at >= since)
+            result = await session.execute(query)
+            return [(row[0], row[1], row[2]) for row in result.all()]
+
+    async def get_latest_embedding(self) -> ContentEmbedding | None:
+        async with self.session() as session:
+            result = await session.execute(
+                select(ContentEmbedding).order_by(ContentEmbedding.created_at.desc()).limit(1)
+            )
+            return result.scalar_one_or_none()
+
+    async def clear_all_embeddings(self) -> int:
+        async with self.session() as session:
+            result = await session.execute(select(func.count()).select_from(ContentEmbedding))
+            count = result.scalar_one()
+            await session.execute(delete(ContentEmbedding))
+            await session.commit()
+            return count

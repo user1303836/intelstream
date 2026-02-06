@@ -12,6 +12,7 @@ from intelstream.database.repository import Repository
 
 if TYPE_CHECKING:
     from intelstream.database.models import Source
+    from intelstream.services.search import SearchService
 
 logger = structlog.get_logger(__name__)
 
@@ -109,6 +110,7 @@ class IntelStreamBot(commands.Bot):
 
         self.settings = settings
         self.repository = repository
+        self.search_service: SearchService | None = None
         self.start_time: datetime | None = None
         self._owner: discord.User | None = None
 
@@ -152,6 +154,10 @@ class IntelStreamBot(commands.Bot):
         await self.add_cog(SuckBoobs(self))
         await self.add_cog(GitHubCommands(self))
         await self.add_cog(GitHubPolling(self))
+
+        from intelstream.discord.cogs.search import SearchCog
+
+        await self.add_cog(SearchCog(self))
 
         guild = discord.Object(id=self.settings.discord_guild_id)
         self.tree.copy_global_to(guild=guild)

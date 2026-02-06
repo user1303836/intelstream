@@ -36,10 +36,23 @@ class ContentPosting(commands.Cog):
             max_input_length=self.bot.settings.summary_max_input_length,
         )
 
+        search_service = None
+        if self.bot.settings.voyage_api_key:
+            from intelstream.services.search import SearchService, VoyageEmbeddingProvider
+
+            provider = VoyageEmbeddingProvider(
+                self.bot.settings.voyage_api_key,
+                model=self.bot.settings.search_embedding_model,
+            )
+            search_service = SearchService(self.bot.repository, provider)
+
+        self.bot.search_service = search_service
+
         self._pipeline = ContentPipeline(
             settings=self.bot.settings,
             repository=self.bot.repository,
             summarizer=summarizer,
+            search_service=search_service,
         )
         await self._pipeline.initialize()
 
