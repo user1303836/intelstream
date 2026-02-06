@@ -6,7 +6,7 @@ from intelstream.noosphere.resonance_mirror.analyzer import (
     ei_color,
     trend_arrow,
 )
-from intelstream.noosphere.shared.models import CommunityStateVector
+from intelstream.noosphere.shared.data_models import CommunityStateVector
 
 
 def _make_csv(**overrides: float) -> CommunityStateVector:

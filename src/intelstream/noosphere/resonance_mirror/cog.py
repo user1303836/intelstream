@@ -14,7 +14,7 @@ from intelstream.noosphere.resonance_mirror.analyzer import (
 
 if TYPE_CHECKING:
     from intelstream.bot import IntelStreamBot
-    from intelstream.noosphere.shared.models import CommunityStateVector
+    from intelstream.noosphere.shared.data_models import CommunityStateVector
 
 logger = structlog.get_logger(__name__)
 

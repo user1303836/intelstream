@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from intelstream.noosphere.shared.models import CommunityStateVector
+    from intelstream.noosphere.shared.data_models import CommunityStateVector
 
 
 def ei_color(ei: float) -> int:

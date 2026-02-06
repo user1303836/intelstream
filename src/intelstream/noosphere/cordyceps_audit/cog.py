@@ -13,7 +13,7 @@ from intelstream.noosphere.cordyceps_audit.vocabulary_tracker import VocabularyT
 
 if TYPE_CHECKING:
     from intelstream.bot import IntelStreamBot
-    from intelstream.noosphere.shared.models import ProcessedMessage
+    from intelstream.noosphere.shared.data_models import ProcessedMessage
 
 logger = structlog.get_logger(__name__)
 
@@ -23,12 +23,6 @@ class CordycepsAuditCog(commands.Cog):
         self.bot = bot
         self._trackers: dict[int, VocabularyTracker] = defaultdict(VocabularyTracker)
         self._message_counts: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))
-        self._bot_user_id: int | None = None
-
-    @commands.Cog.listener("on_ready")
-    async def _cache_bot_id(self) -> None:
-        if self.bot.user is not None:
-            self._bot_user_id = self.bot.user.id
 
     @commands.Cog.listener("on_message_processed")
     async def _on_message(self, msg: ProcessedMessage) -> None:
@@ -36,7 +30,7 @@ class CordycepsAuditCog(commands.Cog):
         counts = self._message_counts[msg.guild_id]
         counts[msg.user_id] += 1
 
-        if self._bot_user_id is not None and msg.user_id == self._bot_user_id:
+        if msg.is_bot:
             tracker.record_bot_message(msg.content)
         else:
             tracker.record_community_message(msg.content)

@@ -10,7 +10,7 @@ from intelstream.noosphere.pathology import (
     detect_server_death,
     run_pathology_scan,
 )
-from intelstream.noosphere.shared.models import CommunityStateVector
+from intelstream.noosphere.shared.data_models import CommunityStateVector
 
 
 def _make_csv(**overrides: float) -> CommunityStateVector:

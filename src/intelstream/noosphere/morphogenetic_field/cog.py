@@ -11,7 +11,7 @@ from intelstream.noosphere.morphogenetic_field.field import MorphogeneticField
 
 if TYPE_CHECKING:
     from intelstream.bot import IntelStreamBot
-    from intelstream.noosphere.shared.models import ProcessedMessage
+    from intelstream.noosphere.shared.data_models import ProcessedMessage
 
 logger = structlog.get_logger(__name__)
 
@@ -29,6 +29,8 @@ class MorphogeneticFieldCog(commands.Cog):
 
     @commands.Cog.listener("on_message_processed")
     async def _on_message(self, msg: ProcessedMessage) -> None:
+        if msg.embedding is None:
+            return
         mf = self._get_field(msg.guild_id)
         mf.update_user(msg.user_id, msg.embedding, msg.timestamp)
 

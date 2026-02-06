@@ -9,7 +9,7 @@ from intelstream.noosphere.attractor_dashboard.metrics import (
     find_change_points,
     format_dashboard,
 )
-from intelstream.noosphere.shared.models import CommunityStateVector
+from intelstream.noosphere.shared.data_models import CommunityStateVector
 
 
 def _make_csv(

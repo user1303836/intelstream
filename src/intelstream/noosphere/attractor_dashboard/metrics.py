@@ -7,7 +7,7 @@ import numpy as np
 import ruptures
 
 if TYPE_CHECKING:
-    from intelstream.noosphere.shared.models import CommunityStateVector
+    from intelstream.noosphere.shared.data_models import CommunityStateVector
 
 METRIC_FIELDS = [
     "semantic_coherence",

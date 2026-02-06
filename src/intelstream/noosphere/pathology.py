@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from intelstream.noosphere.shared.models import CommunityStateVector
+    from intelstream.noosphere.shared.data_models import CommunityStateVector
 
 
 class PathologyType(enum.Enum):

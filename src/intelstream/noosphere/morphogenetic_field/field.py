@@ -41,10 +41,10 @@ class MorphogeneticField:
     def update_user(
         self,
         user_id: int,
-        embedding: list[float],
+        embedding: np.ndarray[tuple[int], np.dtype[np.float64]] | list[float],
         timestamp: datetime,
     ) -> None:
-        emb = np.array(embedding, dtype=np.float64)
+        emb = np.asarray(embedding, dtype=np.float64)
         state = self.users.get(user_id)
         if state is None:
             state = UserState(
