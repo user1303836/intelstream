@@ -20,7 +20,7 @@ class SoundscapeState:
     anthrophony: int = 0
     geophony: int = 0
     bot_anthrophony: int = 0
-    unique_human_authors: set[int] | None = None
+    unique_human_authors: set[str] | None = None
 
     def __post_init__(self) -> None:
         if self.unique_human_authors is None:
@@ -53,9 +53,9 @@ class SoundscapeState:
 class SoundscapeMonitor:
     """Classifies messages and tracks acoustic ecology per guild."""
 
-    def __init__(self, bot_user_id: int | None = None) -> None:
+    def __init__(self, bot_user_id: str | None = None) -> None:
         self._bot_user_id = bot_user_id
-        self._states: dict[int, SoundscapeState] = {}
+        self._states: dict[str, SoundscapeState] = {}
 
     def classify_message(self, message: ProcessedMessage) -> MessageClassification:
         if message.is_bot:
@@ -82,13 +82,13 @@ class SoundscapeMonitor:
         elif classification == MessageClassification.GEOPHONY:
             state.geophony += 1
 
-    def record_system_event(self, guild_id: int) -> None:
+    def record_system_event(self, guild_id: str) -> None:
         state = self._states.setdefault(guild_id, SoundscapeState())
         state.total += 1
         state.geophony += 1
 
-    def get_state(self, guild_id: int) -> SoundscapeState:
+    def get_state(self, guild_id: str) -> SoundscapeState:
         return self._states.get(guild_id, SoundscapeState())
 
-    def reset(self, guild_id: int) -> None:
+    def reset(self, guild_id: str) -> None:
         self._states.pop(guild_id, None)

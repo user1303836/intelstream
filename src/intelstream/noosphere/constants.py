@@ -21,7 +21,7 @@ ARCHIVE_REFERENCE_EXTENSION: float = 1.5
 ARCHIVE_FIDELITY_FLOOR: float = 0.01
 
 
-class ComputationMode(enum.Enum):
+class ComputationMode(str, enum.Enum):
     SUBTRACTIVE = "subtractive"
     BROADCAST = "broadcast"
     RESONANT = "resonant"
@@ -34,7 +34,7 @@ class ComputationMode(enum.Enum):
     TOPOLOGICAL = "topological"
 
 
-class PathologyType(enum.Enum):
+class PathologyType(str, enum.Enum):
     CANCER = "non_terminating_pruning"
     CYTOKINE_STORM = "receiver_saturation"
     SEIZURE = "destructive_sync"
@@ -47,7 +47,7 @@ class PathologyType(enum.Enum):
     SCHISM = "topological_damage"
 
 
-class MessageClassification(enum.Enum):
+class MessageClassification(str, enum.Enum):
     ANTHROPHONY = "anthrophony"
     BIOPHONY = "biophony"
     GEOPHONY = "geophony"

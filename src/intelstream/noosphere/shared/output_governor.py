@@ -38,18 +38,18 @@ class OutputGovernor:
         self._cooldown_seconds = cooldown_seconds
         self._gain_recompute_interval = gain_recompute_interval
 
-        self._bot_counts: dict[int, int] = {}
-        self._total_counts: dict[int, int] = {}
-        self._last_gain: dict[int, float] = {}
-        self._gain_updated: dict[int, float] = {}
-        self._last_response_time: dict[int, float] = {}
+        self._bot_counts: dict[str, int] = {}
+        self._total_counts: dict[str, int] = {}
+        self._last_gain: dict[str, float] = {}
+        self._gain_updated: dict[str, float] = {}
+        self._last_response_time: dict[str, float] = {}
 
-    def record_message(self, channel_id: int, *, is_bot: bool) -> None:
+    def record_message(self, channel_id: str, *, is_bot: bool) -> None:
         self._total_counts[channel_id] = self._total_counts.get(channel_id, 0) + 1
         if is_bot:
             self._bot_counts[channel_id] = self._bot_counts.get(channel_id, 0) + 1
 
-    def get_gain(self, channel_id: int) -> float:
+    def get_gain(self, channel_id: str) -> float:
         now = time.monotonic()
         last_updated = self._gain_updated.get(channel_id, 0.0)
         if now - last_updated < self._gain_recompute_interval:
@@ -70,7 +70,7 @@ class OutputGovernor:
         self._gain_updated[channel_id] = now
         return gain
 
-    def should_send(self, channel_id: int) -> bool:
+    def should_send(self, channel_id: str) -> bool:
         now = time.monotonic()
         last_response = self._last_response_time.get(channel_id, 0.0)
         if now - last_response < self._cooldown_seconds:
@@ -82,10 +82,10 @@ class OutputGovernor:
 
         return random.random() < gain
 
-    def record_response(self, channel_id: int) -> None:
+    def record_response(self, channel_id: str) -> None:
         self._last_response_time[channel_id] = time.monotonic()
 
-    def reset_channel(self, channel_id: int) -> None:
+    def reset_channel(self, channel_id: str) -> None:
         self._bot_counts.pop(channel_id, None)
         self._total_counts.pop(channel_id, None)
         self._last_gain.pop(channel_id, None)

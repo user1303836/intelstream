@@ -14,10 +14,10 @@ if TYPE_CHECKING:
 
 @dataclass
 class ProcessedMessage:
-    guild_id: int
-    channel_id: int
-    user_id: int
-    message_id: int
+    guild_id: str
+    channel_id: str
+    user_id: str
+    message_id: str
     content: str
     timestamp: datetime
     is_bot: bool
@@ -28,7 +28,7 @@ class ProcessedMessage:
 
 @dataclass
 class CommunityStateVector:
-    guild_id: int
+    guild_id: str
     timestamp: datetime
     semantic_coherence: float = 0.0
     vocab_convergence: float = 0.0

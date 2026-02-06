@@ -33,3 +33,10 @@ class TestConstants:
         assert MessageClassification.ANTHROPHONY.value == "anthrophony"
         assert MessageClassification.BIOPHONY.value == "biophony"
         assert MessageClassification.GEOPHONY.value == "geophony"
+
+    def test_enums_are_str_serializable(self) -> None:
+        import json
+
+        assert json.dumps({"mode": ComputationMode.INTEGRATIVE}) == '{"mode": "integrative"}'
+        assert json.dumps({"cls": MessageClassification.BIOPHONY}) == '{"cls": "biophony"}'
+        assert json.dumps({"path": PathologyType.CANCER}) == '{"path": "non_terminating_pruning"}'
