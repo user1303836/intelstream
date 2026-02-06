@@ -1,6 +1,6 @@
 # IntelStream
 
-A Discord bot that monitors content sources and posts AI-generated summaries to Discord channels.
+A Discord bot that monitors content sources and posts AI-generated summaries to Discord channels. It turns scattered information across newsletters, YouTube, research papers, blogs, Twitter, and GitHub into a searchable, organized knowledge base delivered directly to your Discord server.
 
 ## Features
 
@@ -12,6 +12,7 @@ A Discord bot that monitors content sources and posts AI-generated summaries to 
 - **Twitter/X accounts** - Monitor Twitter accounts for new tweets via twitterapi.io
 - **Web pages** - Monitor any web page URL with automatic content detection
 - **GitHub repositories** - Track commits, pull requests, and issues with Discord embeds
+- **Semantic search** - Search across all accumulated content using natural language queries powered by Voyage AI embeddings
 - **Manual summarization** - Summarize any URL on-demand with `/summarize`
 - **Message forwarding** - Forward messages from channels to threads for better organization
 - **AI summaries** - Claude-powered summaries with thesis and key arguments format
@@ -24,6 +25,8 @@ A Discord bot that monitors content sources and posts AI-generated summaries to 
 - Anthropic API Key (for Claude)
 - YouTube API Key (optional, for YouTube monitoring)
 - twitterapi.io API Key (optional, for Twitter monitoring)
+- GitHub Personal Access Token (optional, for GitHub monitoring)
+- Voyage AI API Key (optional, for semantic search)
 
 ## Setup
 
@@ -50,6 +53,12 @@ A Discord bot that monitors content sources and posts AI-generated summaries to 
 
    # Optional: Twitter monitoring
    # TWITTER_API_KEY=your_twitterapi_io_api_key
+
+   # Optional: GitHub monitoring
+   # GITHUB_TOKEN=your_github_personal_access_token
+
+   # Optional: Semantic search
+   # VOYAGE_API_KEY=your_voyage_ai_api_key
    ```
 
 4. Run the bot:
@@ -76,6 +85,7 @@ A Discord bot that monitors content sources and posts AI-generated summaries to 
 | `TWITTER_API_KEY` | - | twitterapi.io API key (required for Twitter monitoring) |
 | `GITHUB_TOKEN` | - | GitHub Personal Access Token (required for GitHub monitoring) |
 | `GITHUB_POLL_INTERVAL_MINUTES` | `5` | Polling interval for GitHub repositories (1-60) |
+| `VOYAGE_API_KEY` | - | Voyage AI API key (required for semantic search) |
 | `DATABASE_URL` | `sqlite+aiosqlite:///./data/intelstream.db` | Database connection string |
 | `DEFAULT_POLL_INTERVAL_MINUTES` | `5` | Default polling interval for new sources (1-60) |
 | `CONTENT_POLL_INTERVAL_MINUTES` | `5` | Interval for checking and posting new content (1-60) |
@@ -104,6 +114,16 @@ Override the default polling interval for specific source types. Each defaults t
 | `SUMMARY_MODEL` | `claude-3-5-haiku-20241022` | Claude model for background summarization |
 | `SUMMARY_MODEL_INTERACTIVE` | `claude-sonnet-4-20250514` | Claude model for interactive `/summarize` command |
 | `DISCORD_MAX_MESSAGE_LENGTH` | `2000` | Maximum Discord message length (500-2000) |
+
+### Semantic Search Settings
+
+These settings are only relevant when `VOYAGE_API_KEY` is configured.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SEARCH_EMBEDDING_MODEL` | `voyage-3.5-lite` | Voyage AI embedding model to use |
+| `SEARCH_SIMILARITY_THRESHOLD` | `0.3` | Minimum cosine similarity score to include in results (0.0-1.0) |
+| `SEARCH_MAX_RESULTS` | `5` | Maximum number of search results to return (1-20) |
 
 ### Advanced Settings
 
@@ -151,6 +171,7 @@ Override the default polling interval for specific source types. Each defaults t
 |---------|-------------|
 | `/source add type:<type> name:<name> url:<url> [channel:#channel] [summarize:True/False]` | Add a new content source |
 | `/source list [channel:#channel]` | List sources (optionally filter by channel) |
+| `/source info name:<name>` | Show detailed info about a source |
 | `/source remove name:<name>` | Remove a source by name |
 | `/source toggle name:<name>` | Enable or disable a source |
 
@@ -174,11 +195,39 @@ The optional `summarize` parameter controls whether content is summarized by AI.
 | `/config channel #channel` | Set the channel where summaries will be posted |
 | `/config show` | Show current bot configuration |
 
+#### Semantic Search
+
+Search across all accumulated content using natural language queries. Requires `VOYAGE_API_KEY` to be configured.
+
+| Command | Description |
+|---------|-------------|
+| `/search query:<query> [days:<N>] [source_type:<type>]` | Search across all content |
+
+**Parameters:**
+- `query` - What to search for (3-200 characters). Uses semantic matching, not keyword search, so natural language queries work well.
+- `days` - Limit results to the last N days (optional, must be a positive number).
+- `source_type` - Filter by source type: Substack, YouTube, RSS, Arxiv, Blog, Twitter, or Page (optional). Provides autocomplete suggestions.
+
+**Examples:**
+```
+/search query:"scaling laws transformers"
+/search query:"RLHF techniques" days:30
+/search query:"latest arxiv papers on agents" source_type:Arxiv
+```
+
+Search results are shown as an ephemeral message (only visible to you) with each result displaying the title, a link, source type, date, and relevance score. Results are ranked by semantic similarity to your query.
+
+Rate limited to 5 searches per 60 seconds.
+
+**How it works:** Content is automatically embedded using Voyage AI after summarization. When you search, your query is embedded and compared against all stored content using cosine similarity. New content is embedded incrementally as it's processed, and existing content is backfilled automatically.
+
 #### Manual Summarization
 
 | Command | Description |
 |---------|-------------|
 | `/summarize url:<url>` | Get an AI summary of any URL (YouTube, Substack, or web page) |
+
+Rate limited to 10 uses per 5 minutes.
 
 #### Message Forwarding
 
@@ -219,6 +268,7 @@ Monitor GitHub repositories for new commits, pull requests, and issues. Updates 
 | `/github add <repo_url> [channel]` | Monitor a GitHub repository |
 | `/github list [channel]` | List monitored repositories |
 | `/github remove <repo>` | Stop monitoring a repository |
+| `/github toggle <repo>` | Enable or disable monitoring for a repository |
 
 **Adding a repository**:
 ```
@@ -250,7 +300,8 @@ Both full GitHub URLs and `owner/repo` format are supported. The optional `chann
 1. **Polling**: The bot periodically checks all active sources for new content
 2. **Fetching**: New articles/videos are fetched and stored in the database
 3. **Summarization**: Claude AI generates structured summaries with thesis and key arguments
-4. **Posting**: Plain text messages are posted with the summary, author, title link, and source
+4. **Embedding**: Content is embedded using Voyage AI for semantic search (when configured)
+5. **Posting**: Summaries are posted to Discord with the author, title link, and source info
 
 ### Source-Specific Behavior
 
@@ -297,8 +348,6 @@ In this example:
 uv run pytest
 ```
 
-The project has 250+ tests covering adapters, services, Discord cogs, and database operations.
-
 ### Linting and Formatting
 
 ```bash
@@ -344,12 +393,14 @@ src/intelstream/
 │   ├── config_management.py     # /config commands
 │   ├── content_posting.py       # Background polling task
 │   ├── summarize.py             # /summarize command
+│   ├── search.py                # /search command
 │   ├── message_forwarding.py    # /forward commands
 │   ├── github.py                # /github commands
 │   └── github_polling.py        # GitHub polling task
 ├── services/
 │   ├── pipeline.py           # Content pipeline orchestration
 │   ├── summarizer.py         # Claude summarization
+│   ├── search.py             # Semantic search service
 │   ├── content_poster.py     # Discord message formatting
 │   ├── content_extractor.py  # Content extraction utilities
 │   ├── message_forwarder.py  # Message forwarding logic
