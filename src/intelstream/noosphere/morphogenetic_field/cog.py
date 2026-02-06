@@ -49,13 +49,13 @@ class MorphogeneticPulseCog(commands.Cog, name="MorphogeneticPulse"):
             return
 
         pulse = self.pulse_generator.generate_pulse(
-            channel_id=str(interaction.channel_id),
+            channel_id=interaction.channel_id,
         )
 
         self.bot.dispatch(
             "pulse_fired",
-            guild_id=str(interaction.guild.id),
-            channel_id=str(interaction.channel_id),
+            guild_id=interaction.guild.id,
+            channel_id=interaction.channel_id,
             content=pulse.content,
         )
 

@@ -7,13 +7,13 @@ from intelstream.noosphere.shared.mode_manager import ModeManager
 class TestModeManager:
     @pytest.fixture
     def manager(self) -> ModeManager:
-        return ModeManager("guild_123")
+        return ModeManager(123)
 
     def test_initial_mode(self, manager: ModeManager) -> None:
         assert manager.current_mode == ComputationMode.INTEGRATIVE
 
     def test_custom_initial_mode(self) -> None:
-        manager = ModeManager("guild_123", default_mode=ComputationMode.RESONANT)
+        manager = ModeManager(123, default_mode=ComputationMode.RESONANT)
         assert manager.current_mode == ComputationMode.RESONANT
 
     def test_set_mode(self, manager: ModeManager) -> None:

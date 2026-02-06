@@ -27,27 +27,27 @@ class TestMorphogeneticPulseGenerator:
         assert generator.step == 1
 
     def test_generate_pulse(self, generator: MorphogeneticPulseGenerator) -> None:
-        pulse = generator.generate_pulse("chan_1")
+        pulse = generator.generate_pulse(2001)
         assert isinstance(pulse, Pulse)
-        assert pulse.target_channel_id == "chan_1"
+        assert pulse.target_channel_id == 2001
         assert pulse.pulse_type in list(PulseType)
         assert len(pulse.content) > 0
 
     def test_generate_pulse_with_mode_weights(self, generator: MorphogeneticPulseGenerator) -> None:
         weights = {"crystal": 1.0, "attractor": 0.0, "quasicrystal": 0.0, "ghost": 0.0}
-        pulse = generator.generate_pulse("chan_1", mode_weights=weights)
+        pulse = generator.generate_pulse(2001, mode_weights=weights)
         assert isinstance(pulse, Pulse)
 
     def test_generate_pulse_with_topics(self, generator: MorphogeneticPulseGenerator) -> None:
         pulse = generator.generate_pulse(
-            "chan_1",
+            2001,
             available_topics=["quantum computing", "neural networks"],
         )
         assert isinstance(pulse, Pulse)
 
     def test_generate_pulse_with_questions(self, generator: MorphogeneticPulseGenerator) -> None:
         pulse = generator.generate_pulse(
-            "chan_1",
+            2001,
             recent_questions=["What about entropy?"],
         )
         assert isinstance(pulse, Pulse)
@@ -55,6 +55,6 @@ class TestMorphogeneticPulseGenerator:
     def test_pulse_types_selected_by_weights(self, generator: MorphogeneticPulseGenerator) -> None:
         type_counts: dict[PulseType, int] = dict.fromkeys(PulseType, 0)
         for _ in range(100):
-            pulse = generator.generate_pulse("chan_1")
+            pulse = generator.generate_pulse(2001)
             type_counts[pulse.pulse_type] += 1
         assert all(count > 0 for count in type_counts.values())

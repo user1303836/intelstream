@@ -67,10 +67,10 @@ class CrystalRoomCog(commands.Cog, name="CrystalRoom"):
             )
 
             self.manager.create_room(
-                guild_id=str(interaction.guild.id),
-                channel_id=str(channel.id),
+                guild_id=interaction.guild.id,
+                channel_id=channel.id,
                 mode=room_mode,
-                creator_id=str(interaction.user.id),
+                creator_id=interaction.user.id,
             )
 
             await interaction.followup.send(
@@ -87,13 +87,17 @@ class CrystalRoomCog(commands.Cog, name="CrystalRoom"):
 
     @crystal.command(name="join", description="Join an existing Crystal Room")
     async def crystal_join(self, interaction: discord.Interaction) -> None:
-        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        if (
+            not interaction.guild
+            or not isinstance(interaction.user, discord.Member)
+            or not interaction.channel_id
+        ):
             await interaction.response.send_message(
                 "This command must be used in a server.", ephemeral=True
             )
             return
 
-        channel_id = str(interaction.channel_id)
+        channel_id = interaction.channel_id
         room = self.manager.get_room(channel_id)
 
         if room is None:
@@ -103,12 +107,12 @@ class CrystalRoomCog(commands.Cog, name="CrystalRoom"):
             return
 
         try:
-            self.manager.add_member(channel_id, str(interaction.user.id))
+            self.manager.add_member(channel_id, interaction.user.id)
         except ValueError as e:
             await interaction.response.send_message(str(e), ephemeral=True)
             return
 
-        channel = interaction.guild.get_channel(int(channel_id))
+        channel = interaction.guild.get_channel(channel_id)
         if isinstance(channel, discord.TextChannel):
             await grant_access(channel, interaction.user)
 
@@ -118,28 +122,28 @@ class CrystalRoomCog(commands.Cog, name="CrystalRoom"):
 
     @crystal.command(name="seal", description="Vote to seal the Crystal Room")
     async def crystal_seal(self, interaction: discord.Interaction) -> None:
-        if not interaction.guild:
+        if not interaction.guild or not interaction.channel_id:
             await interaction.response.send_message(
                 "This command must be used in a server.", ephemeral=True
             )
             return
 
-        channel_id = str(interaction.channel_id)
+        channel_id = interaction.channel_id
 
         try:
-            sealed, current, needed = self.manager.vote_seal(channel_id, str(interaction.user.id))
+            sealed, current, needed = self.manager.vote_seal(channel_id, interaction.user.id)
         except ValueError as e:
             await interaction.response.send_message(str(e), ephemeral=True)
             return
 
         if sealed:
-            channel = interaction.guild.get_channel(int(channel_id))
+            channel = interaction.guild.get_channel(channel_id)
             if isinstance(channel, discord.TextChannel):
                 await set_sealed_permissions(channel)
 
             self.bot.dispatch(
                 "crystal_state_change",
-                guild_id=str(interaction.guild.id),
+                guild_id=interaction.guild.id,
                 channel_id=channel_id,
                 new_state=CrystalRoomState.SEALED.value,
             )
@@ -154,27 +158,27 @@ class CrystalRoomCog(commands.Cog, name="CrystalRoom"):
 
     @crystal.command(name="unseal", description="Unseal the Crystal Room")
     async def crystal_unseal(self, interaction: discord.Interaction) -> None:
-        if not interaction.guild:
+        if not interaction.guild or not interaction.channel_id:
             await interaction.response.send_message(
                 "This command must be used in a server.", ephemeral=True
             )
             return
 
-        channel_id = str(interaction.channel_id)
+        channel_id = interaction.channel_id
 
         try:
-            self.manager.unseal(channel_id, str(interaction.user.id))
+            self.manager.unseal(channel_id, interaction.user.id)
         except ValueError as e:
             await interaction.response.send_message(str(e), ephemeral=True)
             return
 
-        channel = interaction.guild.get_channel(int(channel_id))
+        channel = interaction.guild.get_channel(channel_id)
         if isinstance(channel, discord.TextChannel):
             await set_open_permissions(channel)
 
         self.bot.dispatch(
             "crystal_state_change",
-            guild_id=str(interaction.guild.id),
+            guild_id=interaction.guild.id,
             channel_id=channel_id,
             new_state=CrystalRoomState.OPEN.value,
         )
@@ -183,8 +187,13 @@ class CrystalRoomCog(commands.Cog, name="CrystalRoom"):
 
     @crystal.command(name="status", description="Show Crystal Room status")
     async def crystal_status(self, interaction: discord.Interaction) -> None:
-        channel_id = str(interaction.channel_id)
-        room = self.manager.get_room(channel_id)
+        if not interaction.channel_id:
+            await interaction.response.send_message(
+                "This command must be used in a channel.", ephemeral=True
+            )
+            return
+
+        room = self.manager.get_room(interaction.channel_id)
 
         if room is None:
             await interaction.response.send_message(

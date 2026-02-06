@@ -23,7 +23,7 @@ class PulseType(str, Enum):
 class Pulse:
     pulse_type: PulseType
     content: str
-    target_channel_id: str
+    target_channel_id: int
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -52,7 +52,7 @@ class MorphogeneticPulseGenerator:
 
     def generate_pulse(
         self,
-        channel_id: str,
+        channel_id: int,
         mode_weights: dict[str, float] | None = None,
         available_topics: list[str] | None = None,
         recent_questions: list[str] | None = None,

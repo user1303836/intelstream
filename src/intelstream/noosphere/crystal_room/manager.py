@@ -12,14 +12,14 @@ logger = structlog.get_logger(__name__)
 
 @dataclass
 class CrystalRoomInfo:
-    guild_id: str
-    channel_id: str
+    guild_id: int
+    channel_id: int
     mode: CrystalRoomMode
     state: CrystalRoomState
-    member_ids: list[str]
+    member_ids: list[int]
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     sealed_at: datetime | None = None
-    sealed_by: list[str] = field(default_factory=list)
+    sealed_by: list[int] = field(default_factory=list)
 
 
 class CrystalRoomManager:
@@ -30,24 +30,24 @@ class CrystalRoomManager:
     """
 
     def __init__(self, seal_quorum: int = 3, max_rooms_per_guild: int = 5):
-        self._rooms: dict[str, CrystalRoomInfo] = {}
+        self._rooms: dict[int, CrystalRoomInfo] = {}
         self._seal_quorum = seal_quorum
         self._max_rooms_per_guild = max_rooms_per_guild
-        self._seal_votes: dict[str, set[str]] = {}
+        self._seal_votes: dict[int, set[int]] = {}
 
     @property
-    def rooms(self) -> dict[str, CrystalRoomInfo]:
+    def rooms(self) -> dict[int, CrystalRoomInfo]:
         return dict(self._rooms)
 
-    def guild_room_count(self, guild_id: str) -> int:
+    def guild_room_count(self, guild_id: int) -> int:
         return sum(1 for r in self._rooms.values() if r.guild_id == guild_id)
 
     def create_room(
         self,
-        guild_id: str,
-        channel_id: str,
+        guild_id: int,
+        channel_id: int,
         mode: CrystalRoomMode,
-        creator_id: str,
+        creator_id: int,
     ) -> CrystalRoomInfo:
         if self.guild_room_count(guild_id) >= self._max_rooms_per_guild:
             raise ValueError(
@@ -76,10 +76,10 @@ class CrystalRoomManager:
         )
         return room
 
-    def get_room(self, channel_id: str) -> CrystalRoomInfo | None:
+    def get_room(self, channel_id: int) -> CrystalRoomInfo | None:
         return self._rooms.get(channel_id)
 
-    def add_member(self, channel_id: str, user_id: str) -> CrystalRoomInfo:
+    def add_member(self, channel_id: int, user_id: int) -> CrystalRoomInfo:
         room = self._rooms.get(channel_id)
         if room is None:
             raise ValueError(f"No room for channel {channel_id}")
@@ -99,7 +99,7 @@ class CrystalRoomManager:
 
         return room
 
-    def remove_member(self, channel_id: str, user_id: str) -> CrystalRoomInfo:
+    def remove_member(self, channel_id: int, user_id: int) -> CrystalRoomInfo:
         room = self._rooms.get(channel_id)
         if room is None:
             raise ValueError(f"No room for channel {channel_id}")
@@ -116,7 +116,7 @@ class CrystalRoomManager:
 
         return room
 
-    def vote_seal(self, channel_id: str, user_id: str) -> tuple[bool, int, int]:
+    def vote_seal(self, channel_id: int, user_id: int) -> tuple[bool, int, int]:
         """Vote to seal a room. Returns (sealed, current_votes, needed)."""
         room = self._rooms.get(channel_id)
         if room is None:
@@ -148,7 +148,7 @@ class CrystalRoomManager:
 
         return False, current, needed
 
-    def unseal(self, channel_id: str, user_id: str) -> CrystalRoomInfo:
+    def unseal(self, channel_id: int, user_id: int) -> CrystalRoomInfo:
         room = self._rooms.get(channel_id)
         if room is None:
             raise ValueError(f"No room for channel {channel_id}")
@@ -167,6 +167,6 @@ class CrystalRoomManager:
         logger.info("Room unsealed", channel_id=channel_id, unsealed_by=user_id)
         return room
 
-    def delete_room(self, channel_id: str) -> None:
+    def delete_room(self, channel_id: int) -> None:
         self._rooms.pop(channel_id, None)
         self._seal_votes.pop(channel_id, None)
