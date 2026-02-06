@@ -84,6 +84,7 @@ class MorphogeneticField:
         return float(np.dot(emb_a, emb_b) / (norm_a * norm_b))
 
     def top_couplings(self, limit: int = 10) -> list[CouplingResult]:
+        # O(n^2) pairwise comparison -- fine for typical guild sizes (<1000 active users)
         user_ids = [uid for uid, s in self.users.items() if s.message_count > 0]
         results: list[CouplingResult] = []
         for i, uid_a in enumerate(user_ids):

@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-class CryptobiosisState(enum.Enum):
+class CryptobiosisState(enum.StrEnum):
     ACTIVE = "active"
     ENTERING = "entering"
     CRYPTOBIOTIC = "cryptobiotic"

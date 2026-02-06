@@ -16,7 +16,7 @@ METRIC_FIELDS = [
     "topic_churn",
     "activity_entropy",
     "reply_depth",
-    "interaction_modularity",
+    "interaction_modularity",  # populated by Phase 1 metrics_computer
     "anthrophony_ratio",
     "biophony_ratio",
 ]

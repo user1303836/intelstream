@@ -7,7 +7,7 @@ GOLDEN_ANGLE: float = 2.0 * math.pi / (PHI**2)
 FIBONACCI_SEQ: list[int] = [1, 1, 2, 3, 5, 8, 13, 21, 34, 55]
 
 
-class MessageClassification(enum.Enum):
+class MessageClassification(enum.StrEnum):
     ANTHROPHONY = "anthrophony"
     BIOPHONY = "biophony"
     GEOPHONY = "geophony"

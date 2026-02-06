@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from intelstream.noosphere.shared.data_models import CommunityStateVector
 
 
-class PathologyType(enum.Enum):
+class PathologyType(enum.StrEnum):
     ECHO_CHAMBER = "echo_chamber"
     BOT_DOMINANCE = "bot_dominance"
     SERVER_DEATH = "server_death"
