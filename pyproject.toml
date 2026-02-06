@@ -22,6 +22,10 @@ dependencies = [
     "structlog>=24.4.0",
     "defusedxml>=0.7.1",
     "trafilatura>=1.12.0",
+    "sentence-transformers>=5.2.2",
+    "numpy>=2.4.2",
+    "scipy>=1.17.0",
+    "networkx>=3.6.1",
 ]
 
 [project.optional-dependencies]
@@ -91,6 +95,11 @@ module = [
     "googleapiclient.*",
     "youtube_transcript_api.*",
     "trafilatura.*",
+    "sentence_transformers.*",
+    "sklearn.*",
+    "scipy.*",
+    "numpy.*",
+    "networkx.*",
 ]
 ignore_missing_imports = true
 
