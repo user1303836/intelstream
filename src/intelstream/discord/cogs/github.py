@@ -45,9 +45,7 @@ class GitHubCommands(commands.Cog):
         guild_id = str(interaction.guild_id) if interaction.guild_id else None
         if guild_id:
             repos = [r for r in repos if r.guild_id == guild_id]
-        matches = [
-            r for r in repos if current.lower() in f"{r.owner}/{r.repo}".lower()
-        ]
+        matches = [r for r in repos if current.lower() in f"{r.owner}/{r.repo}".lower()]
         return [
             app_commands.Choice(name=f"{r.owner}/{r.repo}", value=f"{r.owner}/{r.repo}")
             for r in matches[:25]
