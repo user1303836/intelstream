@@ -120,6 +120,16 @@ class SourceManagement(commands.Cog):
         self.bot = bot
         self._anthropic_client: anthropic.AsyncAnthropic | None = None
 
+    async def _source_name_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        sources = await self.bot.repository.get_all_sources(active_only=False)
+        guild_id = str(interaction.guild_id) if interaction.guild_id else None
+        if guild_id:
+            sources = [s for s in sources if s.guild_id == guild_id]
+        matches = [s for s in sources if current.lower() in s.name.lower()]
+        return [app_commands.Choice(name=s.name, value=s.name) for s in matches[:25]]
+
     def _get_anthropic_client(self) -> anthropic.AsyncAnthropic:
         if self._anthropic_client is None:
             self._anthropic_client = anthropic.AsyncAnthropic(
@@ -367,6 +377,7 @@ class SourceManagement(commands.Cog):
     @source_group.command(name="remove", description="Remove a content source")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.describe(name="Name of the source to remove")
+    @app_commands.autocomplete(name=_source_name_autocomplete)
     async def source_remove(
         self,
         interaction: discord.Interaction,
@@ -412,6 +423,7 @@ class SourceManagement(commands.Cog):
 
     @source_group.command(name="info", description="Show detailed info about a source")
     @app_commands.describe(name="Name of the source to inspect")
+    @app_commands.autocomplete(name=_source_name_autocomplete)
     async def source_info(
         self,
         interaction: discord.Interaction,
@@ -462,6 +474,7 @@ class SourceManagement(commands.Cog):
     @source_group.command(name="toggle", description="Enable or disable a content source")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.describe(name="Name of the source to toggle")
+    @app_commands.autocomplete(name=_source_name_autocomplete)
     async def source_toggle(
         self,
         interaction: discord.Interaction,
