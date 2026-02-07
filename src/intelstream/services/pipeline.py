@@ -242,12 +242,20 @@ class ContentPipeline:
                     logger.debug("Content item already exists", external_id=item.external_id)
                     continue
 
-                if is_first_poll:
+        if is_first_poll and new_count > 0:
+            most_recent = await self._repository.get_most_recent_item_for_source(source.id)
+            if most_recent:
+                backfilled = await self._repository.mark_items_as_backfilled(
+                    source_id=source.id,
+                    exclude_item_id=most_recent.id,
+                )
+                if backfilled > 0:
                     logger.info(
-                        "First poll for source, limiting to most recent item",
+                        "First poll: backfilled pre-existing items",
                         source_name=source.name,
+                        backfilled_count=backfilled,
+                        most_recent_title=most_recent.title,
                     )
-                    break
 
         await self._repository.update_source_last_polled(source.id)
 
