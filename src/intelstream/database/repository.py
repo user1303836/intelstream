@@ -302,6 +302,15 @@ class Repository:
             )
             return result.scalar_one()
 
+    async def content_items_exist(self, external_ids: list[str]) -> set[str]:
+        if not external_ids:
+            return set()
+        async with self.session() as session:
+            result = await session.execute(
+                select(ContentItem.external_id).where(ContentItem.external_id.in_(external_ids))
+            )
+            return {row[0] for row in result.all()}
+
     async def get_unposted_content_items(self, limit: int = 10) -> list[ContentItem]:
         async with self.session() as session:
             result = await session.execute(

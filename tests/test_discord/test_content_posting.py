@@ -16,7 +16,6 @@ def mock_bot():
     bot.settings.summary_model = "claude-sonnet-4-20250514"
     bot.settings.summary_max_tokens = 2048
     bot.settings.summary_max_input_length = 100000
-    bot.settings.discord_max_message_length = 2000
     bot.guilds = []
     bot.wait_until_ready = AsyncMock()
     bot.notify_owner = AsyncMock()
@@ -52,7 +51,7 @@ class TestContentPostingCogLoad:
         )
         mock_pipeline_cls.assert_called_once()
         mock_pipeline.initialize.assert_called_once()
-        mock_poster_cls.assert_called_once_with(mock_bot, max_message_length=2000)
+        mock_poster_cls.assert_called_once_with(mock_bot)
         assert cog._initialized is True
 
     @patch("intelstream.discord.cogs.content_posting.SummarizationService")

@@ -683,3 +683,94 @@ class TestSourceManagementToggle:
         mock_bot.repository.set_source_active.assert_not_called()
         call_args = interaction.followup.send.call_args
         assert "No source found" in call_args[0][0]
+
+
+class TestSourceNameAutocomplete:
+    async def test_returns_matching_sources(self, source_management, mock_bot):
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.guild_id = 123
+
+        source1 = MagicMock()
+        source1.name = "My Newsletter"
+        source1.guild_id = "123"
+
+        source2 = MagicMock()
+        source2.name = "Tech Blog"
+        source2.guild_id = "123"
+
+        mock_bot.repository.get_all_sources = AsyncMock(return_value=[source1, source2])
+
+        choices = await source_management._source_name_autocomplete(interaction, "news")
+
+        assert len(choices) == 1
+        assert choices[0].name == "My Newsletter"
+        assert choices[0].value == "My Newsletter"
+
+    async def test_returns_all_when_empty_query(self, source_management, mock_bot):
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.guild_id = 123
+
+        source1 = MagicMock()
+        source1.name = "Source A"
+        source1.guild_id = "123"
+
+        source2 = MagicMock()
+        source2.name = "Source B"
+        source2.guild_id = "123"
+
+        mock_bot.repository.get_all_sources = AsyncMock(return_value=[source1, source2])
+
+        choices = await source_management._source_name_autocomplete(interaction, "")
+
+        assert len(choices) == 2
+
+    async def test_filters_by_guild(self, source_management, mock_bot):
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.guild_id = 123
+
+        source1 = MagicMock()
+        source1.name = "My Source"
+        source1.guild_id = "123"
+
+        source2 = MagicMock()
+        source2.name = "Other Guild Source"
+        source2.guild_id = "999"
+
+        mock_bot.repository.get_all_sources = AsyncMock(return_value=[source1, source2])
+
+        choices = await source_management._source_name_autocomplete(interaction, "")
+
+        assert len(choices) == 1
+        assert choices[0].name == "My Source"
+
+    async def test_limits_to_25_choices(self, source_management, mock_bot):
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.guild_id = 123
+
+        sources = []
+        for i in range(30):
+            s = MagicMock()
+            s.name = f"Source {i}"
+            s.guild_id = "123"
+            sources.append(s)
+
+        mock_bot.repository.get_all_sources = AsyncMock(return_value=sources)
+
+        choices = await source_management._source_name_autocomplete(interaction, "")
+
+        assert len(choices) == 25
+
+    async def test_case_insensitive_matching(self, source_management, mock_bot):
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.guild_id = 123
+
+        source1 = MagicMock()
+        source1.name = "Tech Newsletter"
+        source1.guild_id = "123"
+
+        mock_bot.repository.get_all_sources = AsyncMock(return_value=[source1])
+
+        choices = await source_management._source_name_autocomplete(interaction, "TECH")
+
+        assert len(choices) == 1
+        assert choices[0].name == "Tech Newsletter"

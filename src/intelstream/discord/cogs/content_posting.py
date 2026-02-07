@@ -43,10 +43,7 @@ class ContentPosting(commands.Cog):
         )
         await self._pipeline.initialize()
 
-        self._poster = ContentPoster(
-            self.bot,
-            max_message_length=self.bot.settings.discord_max_message_length,
-        )
+        self._poster = ContentPoster(self.bot)
         self._initialized = True
 
         self._base_interval = self.bot.settings.content_poll_interval_minutes

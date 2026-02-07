@@ -38,6 +38,19 @@ class GitHubCommands(commands.Cog):
         self.bot = bot
         self._github_service: GitHubService | None = None
 
+    async def _repo_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        repos = await self.bot.repository.get_all_github_repos(active_only=False)
+        guild_id = str(interaction.guild_id) if interaction.guild_id else None
+        if guild_id:
+            repos = [r for r in repos if r.guild_id == guild_id]
+        matches = [r for r in repos if current.lower() in f"{r.owner}/{r.repo}".lower()]
+        return [
+            app_commands.Choice(name=f"{r.owner}/{r.repo}", value=f"{r.owner}/{r.repo}")
+            for r in matches[:25]
+        ]
+
     def _get_github_service(self) -> GitHubService | None:
         if not self.bot.settings.github_token:
             return None
@@ -228,6 +241,7 @@ class GitHubCommands(commands.Cog):
     @github_group.command(name="remove", description="Stop monitoring a GitHub repository")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.describe(repo="Repository name (owner/repo format)")
+    @app_commands.autocomplete(repo=_repo_autocomplete)
     async def github_remove(
         self,
         interaction: discord.Interaction,
@@ -273,6 +287,7 @@ class GitHubCommands(commands.Cog):
     @github_group.command(name="toggle", description="Enable or disable GitHub repo monitoring")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.describe(repo="Repository name (owner/repo format)")
+    @app_commands.autocomplete(repo=_repo_autocomplete)
     async def github_toggle(
         self,
         interaction: discord.Interaction,

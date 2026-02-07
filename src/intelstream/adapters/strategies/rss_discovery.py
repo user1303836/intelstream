@@ -1,3 +1,4 @@
+import asyncio
 import re
 from urllib.parse import urljoin, urlparse
 
@@ -142,8 +143,8 @@ class RSSDiscoveryStrategy(DiscoveryStrategy):
                 pass
             return None
 
-        for path in RSS_PATHS:
-            result = await check_path(path)
+        results = await asyncio.gather(*(check_path(path) for path in RSS_PATHS))
+        for result in results:
             if result:
                 return result
 
