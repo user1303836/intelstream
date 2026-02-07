@@ -22,6 +22,8 @@ dependencies = [
     "structlog>=24.4.0",
     "defusedxml>=0.7.1",
     "trafilatura>=1.12.0",
+    "numpy>=1.26.0",
+    "voyageai>=0.3.0",
 ]
 
 [project.optional-dependencies]
@@ -91,6 +93,7 @@ module = [
     "googleapiclient.*",
     "youtube_transcript_api.*",
     "trafilatura.*",
+    "voyageai.*",
 ]
 ignore_missing_imports = true
 

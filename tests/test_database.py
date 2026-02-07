@@ -1082,3 +1082,185 @@ class TestExtractionCacheCleanup:
 
         entry = await repository.get_extraction_cache("https://example.com/fresh")
         assert entry is not None
+
+
+class TestContentEmbeddingRepository:
+    async def _create_source_and_item(self, repository: Repository) -> tuple:
+        source = await repository.add_source(
+            source_type=SourceType.SUBSTACK,
+            name="Test Substack",
+            identifier="test-substack-emb",
+            feed_url="https://test.substack.com/feed",
+            guild_id="guild-123",
+        )
+        item = await repository.add_content_item(
+            source_id=source.id,
+            external_id="article-emb-1",
+            title="Test Article",
+            original_url="https://test.substack.com/p/test",
+            author="Author",
+            published_at=datetime.now(UTC),
+            raw_content="Content here",
+        )
+        await repository.update_content_item_summary(item.id, "A summary")
+        return source, item
+
+    async def test_add_content_embedding(self, repository: Repository) -> None:
+        _source, item = await self._create_source_and_item(repository)
+        emb = await repository.add_content_embedding(
+            content_item_id=item.id,
+            embedding_json="[0.1, 0.2, 0.3]",
+            model_name="test-model",
+            text_hash="abc123",
+        )
+        assert emb.id is not None
+        assert emb.content_item_id == item.id
+        assert emb.model_name == "test-model"
+
+    async def test_add_duplicate_embedding_updates_existing(self, repository: Repository) -> None:
+        _source, item = await self._create_source_and_item(repository)
+        await repository.add_content_embedding(
+            content_item_id=item.id,
+            embedding_json="[0.1, 0.2, 0.3]",
+            model_name="model-v1",
+            text_hash="hash1",
+        )
+        updated = await repository.add_content_embedding(
+            content_item_id=item.id,
+            embedding_json="[0.4, 0.5, 0.6]",
+            model_name="model-v2",
+            text_hash="hash2",
+        )
+        assert updated.model_name == "model-v2"
+        assert updated.embedding_json == "[0.4, 0.5, 0.6]"
+
+        all_embs = await repository.get_all_embeddings()
+        assert len(all_embs) == 1
+
+    async def test_get_all_embeddings(self, repository: Repository) -> None:
+        _source, item = await self._create_source_and_item(repository)
+        await repository.add_content_embedding(
+            content_item_id=item.id,
+            embedding_json="[0.1, 0.2, 0.3]",
+            model_name="test-model",
+            text_hash="abc123",
+        )
+        embs = await repository.get_all_embeddings()
+        assert len(embs) == 1
+
+    async def test_get_items_without_embeddings(self, repository: Repository) -> None:
+        _source, item = await self._create_source_and_item(repository)
+
+        items = await repository.get_items_without_embeddings()
+        assert len(items) == 1
+        assert items[0].id == item.id
+
+        await repository.add_content_embedding(
+            content_item_id=item.id,
+            embedding_json="[0.1, 0.2, 0.3]",
+            model_name="test-model",
+            text_hash="abc123",
+        )
+
+        items_after = await repository.get_items_without_embeddings()
+        assert len(items_after) == 0
+
+    async def test_get_embeddings_with_items_filters_by_guild(self, repository: Repository) -> None:
+        _source, item = await self._create_source_and_item(repository)
+        await repository.add_content_embedding(
+            content_item_id=item.id,
+            embedding_json="[0.1, 0.2, 0.3]",
+            model_name="test-model",
+            text_hash="abc123",
+        )
+
+        results = await repository.get_embeddings_with_items(guild_id="guild-123")
+        assert len(results) == 1
+
+        results_other = await repository.get_embeddings_with_items(guild_id="guild-999")
+        assert len(results_other) == 0
+
+    async def test_get_embeddings_with_items_filters_by_source_type(
+        self, repository: Repository
+    ) -> None:
+        _source, item = await self._create_source_and_item(repository)
+        await repository.add_content_embedding(
+            content_item_id=item.id,
+            embedding_json="[0.1, 0.2, 0.3]",
+            model_name="test-model",
+            text_hash="abc123",
+        )
+
+        results = await repository.get_embeddings_with_items(source_type="substack")
+        assert len(results) == 1
+
+        results_other = await repository.get_embeddings_with_items(source_type="arxiv")
+        assert len(results_other) == 0
+
+    async def test_get_embeddings_with_items_filters_by_date(self, repository: Repository) -> None:
+        _source, item = await self._create_source_and_item(repository)
+        await repository.add_content_embedding(
+            content_item_id=item.id,
+            embedding_json="[0.1, 0.2, 0.3]",
+            model_name="test-model",
+            text_hash="abc123",
+        )
+
+        results = await repository.get_embeddings_with_items(
+            since=datetime.now(UTC) - timedelta(days=1)
+        )
+        assert len(results) == 1
+
+        results_future = await repository.get_embeddings_with_items(
+            since=datetime.now(UTC) + timedelta(days=1)
+        )
+        assert len(results_future) == 0
+
+    async def test_cascade_delete_source_deletes_embedding(self, repository: Repository) -> None:
+        source, item = await self._create_source_and_item(repository)
+        await repository.add_content_embedding(
+            content_item_id=item.id,
+            embedding_json="[0.1, 0.2, 0.3]",
+            model_name="test-model",
+            text_hash="abc123",
+        )
+
+        embs_before = await repository.get_all_embeddings()
+        assert len(embs_before) == 1
+
+        await repository.delete_source(source.identifier)
+
+        embs_after = await repository.get_all_embeddings()
+        assert len(embs_after) == 0
+
+    async def test_clear_all_embeddings(self, repository: Repository) -> None:
+        _source, item = await self._create_source_and_item(repository)
+        await repository.add_content_embedding(
+            content_item_id=item.id,
+            embedding_json="[0.1, 0.2, 0.3]",
+            model_name="test-model",
+            text_hash="abc123",
+        )
+
+        count = await repository.clear_all_embeddings()
+        assert count == 1
+
+        embs = await repository.get_all_embeddings()
+        assert len(embs) == 0
+
+    async def test_get_latest_embedding(self, repository: Repository) -> None:
+        _source, item = await self._create_source_and_item(repository)
+        await repository.add_content_embedding(
+            content_item_id=item.id,
+            embedding_json="[0.1, 0.2, 0.3]",
+            model_name="test-model",
+            text_hash="abc123",
+        )
+
+        latest = await repository.get_latest_embedding()
+        assert latest is not None
+        assert latest.content_item_id == item.id
+
+    async def test_get_latest_embedding_empty(self, repository: Repository) -> None:
+        latest = await repository.get_latest_embedding()
+        assert latest is None

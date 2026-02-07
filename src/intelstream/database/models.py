@@ -79,9 +79,33 @@ class ContentItem(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
 
     source: Mapped["Source"] = relationship("Source", back_populates="content_items")
+    embedding: Mapped["ContentEmbedding | None"] = relationship(
+        "ContentEmbedding",
+        back_populates="content_item",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
 
     def __repr__(self) -> str:
         return f"<ContentItem(title={self.title!r}, source_id={self.source_id!r})>"
+
+
+class ContentEmbedding(Base):
+    __tablename__ = "content_embeddings"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    content_item_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("content_items.id"), nullable=False, unique=True
+    )
+    embedding_json: Mapped[str] = mapped_column(Text, nullable=False)
+    model_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    text_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
+
+    content_item: Mapped["ContentItem"] = relationship("ContentItem", back_populates="embedding")
+
+    def __repr__(self) -> str:
+        return f"<ContentEmbedding(content_item_id={self.content_item_id!r}, model={self.model_name!r})>"
 
 
 class DiscordConfig(Base):

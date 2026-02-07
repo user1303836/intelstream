@@ -37,6 +37,29 @@ class Settings(BaseSettings):
         default=None, description="X API v2 Bearer Token for Twitter monitoring (optional)"
     )
 
+    voyage_api_key: str | None = Field(
+        default=None, description="Voyage AI API key for semantic search embeddings"
+    )
+
+    search_embedding_model: str = Field(
+        default="voyage-3.5-lite",
+        description="Embedding model name for semantic search",
+    )
+
+    search_similarity_threshold: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        description="Minimum cosine similarity to include in search results",
+    )
+
+    search_max_results: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description="Maximum number of search results to return",
+    )
+
     github_token: str | None = Field(
         default=None, description="GitHub Personal Access Token (optional)"
     )

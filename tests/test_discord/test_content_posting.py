@@ -17,6 +17,7 @@ def mock_bot():
     bot.settings.summary_max_tokens = 2048
     bot.settings.summary_max_input_length = 100000
     bot.settings.discord_max_message_length = 2000
+    bot.settings.voyage_api_key = None
     bot.guilds = []
     bot.wait_until_ready = AsyncMock()
     bot.notify_owner = AsyncMock()
