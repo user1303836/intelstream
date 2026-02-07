@@ -255,6 +255,37 @@ class TestContentItemOperations:
         assert await repository.content_item_exists("video123") is True
         assert await repository.content_item_exists("nonexistent") is False
 
+    async def test_content_items_exist_batch(self, repository: Repository) -> None:
+        source = await repository.add_source(
+            source_type=SourceType.RSS,
+            name="Batch Test",
+            identifier="batch-test",
+        )
+
+        await repository.add_content_item(
+            source_id=source.id,
+            external_id="item-a",
+            title="Item A",
+            original_url="https://example.com/a",
+            author="Author",
+            published_at=datetime.now(UTC),
+        )
+        await repository.add_content_item(
+            source_id=source.id,
+            external_id="item-b",
+            title="Item B",
+            original_url="https://example.com/b",
+            author="Author",
+            published_at=datetime.now(UTC),
+        )
+
+        result = await repository.content_items_exist(["item-a", "item-b", "item-c"])
+        assert result == {"item-a", "item-b"}
+
+    async def test_content_items_exist_empty_list(self, repository: Repository) -> None:
+        result = await repository.content_items_exist([])
+        assert result == set()
+
     async def test_add_duplicate_content_raises_error(self, repository: Repository) -> None:
         source = await repository.add_source(
             source_type=SourceType.RSS,

@@ -82,6 +82,18 @@ class TestRSSDiscoveryStrategy:
                 headers={"content-type": "application/rss+xml"},
             )
         )
+        for path in [
+            "/feed.xml",
+            "/rss",
+            "/rss.xml",
+            "/atom.xml",
+            "/blog/feed",
+            "/blog/rss",
+            "/research/feed",
+            "/index.xml",
+            "/feeds/posts/default",
+        ]:
+            respx.head(f"https://example.com{path}").mock(return_value=httpx.Response(404))
 
         result = await rss_strategy.discover("https://example.com/blog")
 

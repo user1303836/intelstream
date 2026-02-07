@@ -75,111 +75,54 @@ class ContentPipeline:
 
         return adapters
 
+    MAX_CONCURRENT_FETCHES = 5
+
+    def _is_due_for_poll(self, source: Source) -> bool:
+        if source.last_polled_at is None:
+            return True
+        interval = self._settings.get_poll_interval(source.type)
+        last_polled = source.last_polled_at
+        if last_polled.tzinfo is None:
+            last_polled = last_polled.replace(tzinfo=UTC)
+        next_poll_at = last_polled + timedelta(minutes=interval)
+        return datetime.now(UTC) >= next_poll_at
+
     async def fetch_all_sources(self) -> int:
         sources = await self._repository.get_all_sources(active_only=True)
         logger.info("Fetching content from sources", count=len(sources))
 
         fetch_start = time.monotonic()
+
+        due_sources: list[Source] = []
+        sources_skipped = 0
+        for source in sources:
+            if self._is_due_for_poll(source):
+                due_sources.append(source)
+            else:
+                logger.debug(
+                    "Skipping source, not due yet",
+                    source_name=source.name,
+                    source_type=source.type.value,
+                )
+                sources_skipped += 1
+
+        semaphore = asyncio.Semaphore(self.MAX_CONCURRENT_FETCHES)
+
+        async def fetch_with_limit(source: Source) -> tuple[int, bool]:
+            async with semaphore:
+                return await self._fetch_source_safe(source)
+
+        results = await asyncio.gather(*[fetch_with_limit(s) for s in due_sources])
+
         total_new_items = 0
         sources_polled = 0
-        sources_skipped = 0
         sources_failed = 0
-        fetch_delay = self._settings.fetch_delay_seconds
-
-        for i, source in enumerate(sources):
-            if source.last_polled_at is not None:
-                interval = self._settings.get_poll_interval(source.type)
-                last_polled = source.last_polled_at
-                if last_polled.tzinfo is None:
-                    last_polled = last_polled.replace(tzinfo=UTC)
-                next_poll_at = last_polled + timedelta(minutes=interval)
-                if datetime.now(UTC) < next_poll_at:
-                    logger.debug(
-                        "Skipping source, not due yet",
-                        source_name=source.name,
-                        source_type=source.type.value,
-                        next_poll_at=next_poll_at.isoformat(),
-                    )
-                    sources_skipped += 1
-                    continue
-
-            fetch_succeeded = False
-            try:
-                new_items = await self._fetch_source(source)
-                total_new_items += new_items
-                fetch_succeeded = True
+        for new_items, succeeded in results:
+            total_new_items += new_items
+            if succeeded:
                 sources_polled += 1
-            except httpx.TimeoutException:
-                logger.warning(
-                    "Source fetch timed out",
-                    source_name=source.name,
-                    source_type=source.type.value,
-                )
-                await self._repository.increment_failure_count(source.id)
+            else:
                 sources_failed += 1
-            except httpx.HTTPStatusError as e:
-                status = e.response.status_code
-                if status == 404:
-                    logger.error(
-                        "Source not found (404), consider removing",
-                        source_name=source.name,
-                        source_type=source.type.value,
-                    )
-                    await self._repository.increment_failure_count(source.id)
-                elif status == 429:
-                    logger.warning(
-                        "Rate limited by source",
-                        source_name=source.name,
-                        source_type=source.type.value,
-                    )
-                    await self._repository.increment_failure_count(source.id)
-                elif status in (401, 403):
-                    logger.error(
-                        "Auth error fetching source, check credentials",
-                        source_name=source.name,
-                        source_type=source.type.value,
-                        status=status,
-                    )
-                    await self._repository.increment_failure_count(source.id)
-                elif status >= 500:
-                    logger.warning(
-                        "Server error fetching source",
-                        source_name=source.name,
-                        source_type=source.type.value,
-                        status=status,
-                    )
-                    await self._repository.increment_failure_count(source.id)
-                else:
-                    logger.error(
-                        "HTTP error fetching source",
-                        source_name=source.name,
-                        source_type=source.type.value,
-                        status=status,
-                    )
-                sources_failed += 1
-            except httpx.RequestError as e:
-                logger.warning(
-                    "Network error fetching source",
-                    source_name=source.name,
-                    source_type=source.type.value,
-                    error=type(e).__name__,
-                )
-                await self._repository.increment_failure_count(source.id)
-                sources_failed += 1
-            except Exception as e:
-                logger.exception(
-                    "Unexpected error fetching source",
-                    source_name=source.name,
-                    source_type=source.type.value,
-                    error=str(e),
-                )
-                sources_failed += 1
-
-            if fetch_succeeded:
-                await self._repository.reset_failure_count(source.id)
-
-            if fetch_delay > 0 and i < len(sources) - 1:
-                await asyncio.sleep(fetch_delay)
 
         await self._repository.cleanup_extraction_cache()
 
@@ -193,6 +136,74 @@ class ContentPipeline:
             elapsed_seconds=elapsed,
         )
         return total_new_items
+
+    async def _fetch_source_safe(self, source: Source) -> tuple[int, bool]:
+        try:
+            new_items = await self._fetch_source(source)
+            await self._repository.reset_failure_count(source.id)
+            return new_items, True
+        except httpx.TimeoutException:
+            logger.warning(
+                "Source fetch timed out",
+                source_name=source.name,
+                source_type=source.type.value,
+            )
+            await self._repository.increment_failure_count(source.id)
+        except httpx.HTTPStatusError as e:
+            status = e.response.status_code
+            if status == 404:
+                logger.error(
+                    "Source not found (404), consider removing",
+                    source_name=source.name,
+                    source_type=source.type.value,
+                )
+                await self._repository.increment_failure_count(source.id)
+            elif status == 429:
+                logger.warning(
+                    "Rate limited by source",
+                    source_name=source.name,
+                    source_type=source.type.value,
+                )
+                await self._repository.increment_failure_count(source.id)
+            elif status in (401, 403):
+                logger.error(
+                    "Auth error fetching source, check credentials",
+                    source_name=source.name,
+                    source_type=source.type.value,
+                    status=status,
+                )
+                await self._repository.increment_failure_count(source.id)
+            elif status >= 500:
+                logger.warning(
+                    "Server error fetching source",
+                    source_name=source.name,
+                    source_type=source.type.value,
+                    status=status,
+                )
+                await self._repository.increment_failure_count(source.id)
+            else:
+                logger.error(
+                    "HTTP error fetching source",
+                    source_name=source.name,
+                    source_type=source.type.value,
+                    status=status,
+                )
+        except httpx.RequestError as e:
+            logger.warning(
+                "Network error fetching source",
+                source_name=source.name,
+                source_type=source.type.value,
+                error=type(e).__name__,
+            )
+            await self._repository.increment_failure_count(source.id)
+        except Exception as e:
+            logger.exception(
+                "Unexpected error fetching source",
+                source_name=source.name,
+                source_type=source.type.value,
+                error=str(e),
+            )
+        return 0, False
 
     async def _fetch_source(self, source: Source) -> int:
         adapter: BaseAdapter | None = None
@@ -232,9 +243,13 @@ class ContentPipeline:
 
         is_first_poll = source.last_polled_at is None
 
+        existing_ids = await self._repository.content_items_exist(
+            [item.external_id for item in items]
+        )
+
         new_count = 0
         for item in items:
-            if not await self._repository.content_item_exists(item.external_id):
+            if item.external_id not in existing_ids:
                 try:
                     await self._store_content_item(source, item)
                     new_count += 1
@@ -299,8 +314,11 @@ class ContentPipeline:
         summarize_start = time.monotonic()
         summarized_count = 0
 
+        source_ids = {item.source_id for item in items}
+        sources_map = await self._repository.get_sources_by_ids(source_ids)
+
         for item in items:
-            source = await self._repository.get_source_by_id(item.source_id)
+            source = sources_map.get(item.source_id)
             source_name = source.name if source else "unknown"
             source_type = source.type.value if source else "unknown"
 
@@ -364,6 +382,8 @@ class ContentPipeline:
         return summarized_count
 
     async def _handle_first_posting_backfill(self, items: list[ContentItem]) -> None:
+        source_ids = {item.source_id for item in items}
+        sources_map = await self._repository.get_sources_by_ids(source_ids)
         processed_sources: set[str] = set()
 
         for item in items:
@@ -382,7 +402,7 @@ class ContentPipeline:
                     )
 
                     if backfilled_count > 0:
-                        source = await self._repository.get_source_by_id(item.source_id)
+                        source = sources_map.get(item.source_id)
                         source_name = source.name if source else "unknown"
                         logger.info(
                             "First posting for source - backfilled old items",

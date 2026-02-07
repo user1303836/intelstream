@@ -175,7 +175,7 @@ class TestFetchAllSources:
         await pipeline.initialize()
 
         mock_repository.get_all_sources.return_value = [sample_source]
-        mock_repository.content_item_exists.return_value = False
+        mock_repository.content_items_exist.return_value = set()
         mock_repository.get_most_recent_item_for_source.return_value = MagicMock(
             spec=ContentItem, id="item-1", title="Test"
         )
@@ -205,7 +205,7 @@ class TestFetchAllSources:
         await pipeline.initialize()
 
         mock_repository.get_all_sources.return_value = [sample_source]
-        mock_repository.content_item_exists.return_value = True
+        mock_repository.content_items_exist.return_value = {sample_content_data.external_id}
 
         with patch.object(
             pipeline._adapters[SourceType.SUBSTACK],
@@ -286,7 +286,7 @@ class TestFetchAllSources:
         ]
 
         mock_repository.get_all_sources.return_value = [sample_source]
-        mock_repository.content_item_exists.return_value = False
+        mock_repository.content_items_exist.return_value = set()
         mock_repository.get_most_recent_item_for_source.return_value = most_recent
         mock_repository.mark_items_as_backfilled.return_value = 4
 
@@ -325,7 +325,7 @@ class TestFetchAllSources:
         most_recent.title = "Test Article"
 
         mock_repository.get_all_sources.return_value = [sample_source]
-        mock_repository.content_item_exists.return_value = False
+        mock_repository.content_items_exist.return_value = set()
         mock_repository.get_most_recent_item_for_source.return_value = most_recent
         mock_repository.mark_items_as_backfilled.return_value = 0
 
@@ -368,7 +368,7 @@ class TestFetchAllSources:
         ]
 
         mock_repository.get_all_sources.return_value = [sample_source]
-        mock_repository.content_item_exists.return_value = False
+        mock_repository.content_items_exist.return_value = set()
 
         with patch.object(
             pipeline._adapters[SourceType.SUBSTACK],
@@ -383,19 +383,19 @@ class TestFetchAllSources:
 
         await pipeline.close()
 
-    async def test_fetch_all_sources_applies_rate_limiting(
+    async def test_fetch_all_sources_concurrent(
         self,
         mock_repository: AsyncMock,
         mock_summarizer: AsyncMock,
     ):
-        """Verify that fetch_delay_seconds is applied between source fetches."""
+        """Verify that multiple sources are fetched concurrently."""
         settings = MagicMock(spec=Settings)
         settings.youtube_api_key = "test-key"
         settings.anthropic_api_key = "test-key"
         settings.twitter_bearer_token = None
         settings.http_timeout_seconds = 30.0
         settings.summarization_delay_seconds = 0.5
-        settings.fetch_delay_seconds = 0.1
+        settings.fetch_delay_seconds = 0.0
 
         pipeline = ContentPipeline(
             settings=settings, repository=mock_repository, summarizer=mock_summarizer
@@ -421,21 +421,18 @@ class TestFetchAllSources:
         source2.skip_summary = False
 
         mock_repository.get_all_sources.return_value = [source1, source2]
-        mock_repository.content_item_exists.return_value = True
+        mock_repository.content_items_exist.return_value = set()
 
-        with (
-            patch.object(
-                pipeline._adapters[SourceType.SUBSTACK],
-                "fetch_latest",
-                new_callable=AsyncMock,
-                return_value=[],
-            ),
-            patch(
-                "intelstream.services.pipeline.asyncio.sleep", new_callable=AsyncMock
-            ) as mock_sleep,
+        with patch.object(
+            pipeline._adapters[SourceType.SUBSTACK],
+            "fetch_latest",
+            new_callable=AsyncMock,
+            return_value=[],
         ):
-            await pipeline.fetch_all_sources()
-            mock_sleep.assert_called_once_with(0.1)
+            result = await pipeline.fetch_all_sources()
+
+        assert result == 0
+        assert mock_repository.reset_failure_count.call_count == 2
 
         await pipeline.close()
 
@@ -567,7 +564,7 @@ class TestFetchAllSources:
         await pipeline.initialize()
 
         mock_repository.get_all_sources.return_value = [sample_source]
-        mock_repository.content_item_exists.return_value = False
+        mock_repository.content_items_exist.return_value = set()
         mock_repository.get_most_recent_item_for_source.return_value = MagicMock(
             spec=ContentItem, id="item-1", title="Test"
         )
@@ -598,7 +595,7 @@ class TestFetchAllSources:
         sample_source.skip_summary = True
 
         mock_repository.get_all_sources.return_value = [sample_source]
-        mock_repository.content_item_exists.return_value = False
+        mock_repository.content_items_exist.return_value = set()
         mock_repository.get_most_recent_item_for_source.return_value = MagicMock(
             spec=ContentItem, id="item-1", title="Test"
         )
@@ -658,7 +655,7 @@ class TestFetchAllSources:
         sample_source.last_polled_at = datetime(2000, 1, 1, 0, 0, 0, tzinfo=UTC)
         mock_settings.get_poll_interval.return_value = 5
         mock_repository.get_all_sources.return_value = [sample_source]
-        mock_repository.content_item_exists.return_value = False
+        mock_repository.content_items_exist.return_value = set()
 
         with patch.object(
             pipeline._adapters[SourceType.SUBSTACK],
@@ -684,7 +681,7 @@ class TestFetchAllSources:
 
         sample_source.last_polled_at = None
         mock_repository.get_all_sources.return_value = [sample_source]
-        mock_repository.content_item_exists.return_value = False
+        mock_repository.content_items_exist.return_value = set()
         mock_repository.get_most_recent_item_for_source.return_value = MagicMock(
             spec=ContentItem, id="item-1", title="Test"
         )
@@ -716,7 +713,7 @@ class TestSummarizePending:
         await pipeline.initialize()
 
         mock_repository.get_unsummarized_content_items.return_value = [sample_content_item]
-        mock_repository.get_source_by_id.return_value = sample_source
+        mock_repository.get_sources_by_ids.return_value = {sample_source.id: sample_source}
         mock_repository.has_source_posted_content.return_value = True
         mock_summarizer.summarize.return_value = "This is the summary."
 
@@ -759,6 +756,7 @@ class TestSummarizePending:
         item_without_content.raw_content = None
 
         mock_repository.get_unsummarized_content_items.return_value = [item_without_content]
+        mock_repository.get_sources_by_ids.return_value = {}
         mock_repository.has_source_posted_content.return_value = True
 
         result = await pipeline.summarize_pending()
@@ -780,7 +778,7 @@ class TestSummarizePending:
         await pipeline.initialize()
 
         mock_repository.get_unsummarized_content_items.return_value = [sample_content_item]
-        mock_repository.get_source_by_id.return_value = sample_source
+        mock_repository.get_sources_by_ids.return_value = {sample_source.id: sample_source}
         mock_repository.has_source_posted_content.return_value = True
         mock_summarizer.summarize.side_effect = SummarizationError("API error")
 
@@ -802,7 +800,7 @@ class TestSummarizePending:
         await pipeline.initialize()
 
         mock_repository.get_unsummarized_content_items.return_value = [sample_content_item]
-        mock_repository.get_source_by_id.return_value = sample_source
+        mock_repository.get_sources_by_ids.return_value = {sample_source.id: sample_source}
         mock_repository.has_source_posted_content.return_value = True
         mock_summarizer.summarize.side_effect = RuntimeError("Unexpected")
 
@@ -822,7 +820,7 @@ class TestSummarizePending:
         await pipeline.initialize()
 
         mock_repository.get_unsummarized_content_items.return_value = [sample_content_item]
-        mock_repository.get_source_by_id.return_value = None
+        mock_repository.get_sources_by_ids.return_value = {}
         mock_repository.has_source_posted_content.return_value = True
         mock_summarizer.summarize.return_value = "Summary"
 
@@ -866,7 +864,7 @@ class TestSummarizePending:
         mock_repository.has_source_posted_content.return_value = False
         mock_repository.get_most_recent_item_for_source.return_value = new_item
         mock_repository.mark_items_as_backfilled.return_value = 1
-        mock_repository.get_source_by_id.return_value = sample_source
+        mock_repository.get_sources_by_ids.return_value = {sample_source.id: sample_source}
         mock_summarizer.summarize.return_value = "Summary"
 
         result = await pipeline.summarize_pending()

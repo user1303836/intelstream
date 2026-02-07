@@ -10,6 +10,9 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
+MAX_EMBED_TITLE = 256
+MAX_EMBED_DESCRIPTION = 4096
+
 SOURCE_TYPE_LABELS: dict[SourceType, str] = {
     SourceType.SUBSTACK: "Substack",
     SourceType.YOUTUBE: "YouTube",
@@ -18,6 +21,16 @@ SOURCE_TYPE_LABELS: dict[SourceType, str] = {
     SourceType.ARXIV: "ArXiv",
     SourceType.BLOG: "Blog",
     SourceType.TWITTER: "Twitter",
+}
+
+SOURCE_TYPE_COLORS: dict[SourceType, discord.Color] = {
+    SourceType.SUBSTACK: discord.Color.from_rgb(255, 103, 25),
+    SourceType.YOUTUBE: discord.Color.red(),
+    SourceType.RSS: discord.Color.from_rgb(255, 165, 0),
+    SourceType.PAGE: discord.Color.blue(),
+    SourceType.ARXIV: discord.Color.from_rgb(179, 27, 27),
+    SourceType.BLOG: discord.Color.teal(),
+    SourceType.TWITTER: discord.Color.from_rgb(29, 161, 242),
 }
 
 TRUNCATION_NOTICE = "\n\n*[Summary truncated]*"
@@ -73,56 +86,43 @@ def truncate_summary_at_bullet(summary: str, max_length: int) -> str:
 
 
 class ContentPoster:
-    def __init__(self, bot: "IntelStreamBot", max_message_length: int = 2000) -> None:
+    def __init__(self, bot: "IntelStreamBot") -> None:
         self._bot = bot
-        self._max_message_length = max_message_length
 
-    def format_message(
+    def format_embed(
         self,
         content_item: ContentItem,
         source_type: SourceType,
         source_name: str,
-    ) -> str:
-        header_parts: list[str] = []
-
-        if content_item.author:
-            header_parts.append(f"**{content_item.author}**")
-
+    ) -> discord.Embed:
         title = content_item.title
-        if content_item.original_url:
-            header_parts.append(f"[{title}]({content_item.original_url})")
-        else:
-            header_parts.append(f"**{title}**")
-
-        header_parts.append("")
-
-        source_label = SOURCE_TYPE_LABELS.get(source_type, "Unknown")
-        footer = f"\n*{source_label} | {source_name}*"
-
-        header = "\n".join(header_parts)
-        overhead = len(header) + len(footer)
+        if len(title) > MAX_EMBED_TITLE:
+            title = title[: MAX_EMBED_TITLE - 3] + "..."
 
         summary = content_item.summary or "No summary available."
+        if len(summary) > MAX_EMBED_DESCRIPTION:
+            summary = truncate_summary_at_bullet(summary, MAX_EMBED_DESCRIPTION)
 
-        available_for_summary = self._max_message_length - overhead
-        if len(summary) > available_for_summary:
-            summary = truncate_summary_at_bullet(summary, available_for_summary)
+        color = SOURCE_TYPE_COLORS.get(source_type, discord.Color.greyple())
+        source_label = SOURCE_TYPE_LABELS.get(source_type, "Unknown")
 
-        message = header + summary + footer
+        embed = discord.Embed(
+            title=title,
+            url=content_item.original_url or None,
+            description=summary,
+            color=color,
+            timestamp=content_item.published_at,
+        )
 
-        if len(message) > self._max_message_length:
-            logger.warning(
-                "Message still exceeds limit after truncation",
-                length=len(message),
-                max_length=self._max_message_length,
-            )
-            if summary.endswith(TRUNCATION_NOTICE):
-                summary = summary[: -len(TRUNCATION_NOTICE)]
-            excess = len(message) - self._max_message_length + len(TRUNCATION_NOTICE)
-            summary = summary[:-excess] + TRUNCATION_NOTICE
-            message = header + summary + footer
+        if content_item.author:
+            embed.set_author(name=content_item.author)
 
-        return message
+        if content_item.thumbnail_url:
+            embed.set_image(url=content_item.thumbnail_url)
+
+        embed.set_footer(text=f"{source_label} | {source_name}")
+
+        return embed
 
     async def post_content(
         self,
@@ -142,10 +142,10 @@ class ContentPoster:
                 raise ValueError(
                     f"No URL available for skip-summary content item {content_item.id}"
                 )
-            content = content_item.original_url
+            message = await channel.send(content=content_item.original_url)
         else:
-            content = self.format_message(content_item, source_type, source_name)
-        message = await channel.send(content=content)
+            embed = self.format_embed(content_item, source_type, source_name)
+            message = await channel.send(embed=embed)
 
         logger.info(
             "Posted content to Discord",

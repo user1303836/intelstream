@@ -96,13 +96,6 @@ class Settings(BaseSettings):
         description="Model to use for interactive /summarize command",
     )
 
-    discord_max_message_length: int = Field(
-        default=2000,
-        ge=500,
-        le=2000,
-        description="Maximum Discord message length (Discord limit is 2000)",
-    )
-
     http_timeout_seconds: float = Field(
         default=30.0,
         ge=5.0,
