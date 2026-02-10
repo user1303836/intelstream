@@ -153,6 +153,19 @@ class IntelStreamBot(commands.Bot):
         await self.add_cog(GitHubCommands(self))
         await self.add_cog(GitHubPolling(self))
 
+        try:
+            from intelstream.noosphere.config import NoosphereSettings
+            from intelstream.noosphere.engine import NoosphereCog
+
+            noosphere_settings = NoosphereSettings()
+            if noosphere_settings.enabled:
+                await self.add_cog(NoosphereCog(self, noosphere_settings))
+                logger.info("Noosphere Engine cog loaded")
+        except ImportError:
+            logger.debug("Noosphere Engine not loaded (missing dependencies)")
+        except Exception:
+            logger.warning("Noosphere Engine failed to load", exc_info=True)
+
         guild = discord.Object(id=self.settings.discord_guild_id)
         self.tree.copy_global_to(guild=guild)
         await self.tree.sync(guild=guild)
