@@ -22,20 +22,13 @@ _NAV_KEYWORDS = frozenset(
         "about",
         "contact",
         "subscribe",
-        "sign in",
-        "sign up",
-        "log in",
         "login",
         "register",
         "menu",
         "navigation",
-        "privacy policy",
-        "terms of service",
         "cookie",
         "search",
-        "follow us",
         "share",
-        "skip to content",
     }
 )
 
