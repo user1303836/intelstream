@@ -935,8 +935,7 @@ class TestEmbedItem:
             settings=mock_settings,
             repository=mock_repository,
             summarizer=mock_summarizer,
-            embedding_service=mock_embedding,
-            vector_store=mock_vector_store,
+            get_search_services=lambda: (mock_embedding, mock_vector_store),
         )
 
         mock_repository.get_unsummarized_content_items.return_value = [sample_content_item]
@@ -970,8 +969,7 @@ class TestEmbedItem:
             settings=mock_settings,
             repository=mock_repository,
             summarizer=mock_summarizer,
-            embedding_service=mock_embedding,
-            vector_store=mock_vector_store,
+            get_search_services=lambda: (mock_embedding, mock_vector_store),
         )
 
         mock_repository.get_unsummarized_content_items.return_value = [sample_content_item]

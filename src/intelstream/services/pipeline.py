@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -25,6 +26,8 @@ if TYPE_CHECKING:
     from intelstream.database.vector_store import VectorStore
     from intelstream.services.embedding_service import EmbeddingService
 
+SearchServicesGetter = Callable[[], tuple["EmbeddingService | None", "VectorStore | None"]]
+
 logger = structlog.get_logger()
 
 
@@ -34,14 +37,12 @@ class ContentPipeline:
         settings: Settings,
         repository: Repository,
         summarizer: SummarizationService | None = None,
-        embedding_service: "EmbeddingService | None" = None,
-        vector_store: "VectorStore | None" = None,
+        get_search_services: SearchServicesGetter | None = None,
     ) -> None:
         self._settings = settings
         self._repository = repository
         self._summarizer = summarizer
-        self._embedding_service = embedding_service
-        self._vector_store = vector_store
+        self._get_search_services = get_search_services
         self._http_client: httpx.AsyncClient | None = None
         self._adapters: dict[SourceType, BaseAdapter] = {}
 
@@ -383,12 +384,15 @@ class ContentPipeline:
         return summarized_count
 
     async def _embed_item(self, item_id: str, title: str, summary: str) -> None:
-        if self._embedding_service is None or self._vector_store is None:
+        if self._get_search_services is None:
+            return
+        embedding_service, vector_store = self._get_search_services()
+        if embedding_service is None or vector_store is None:
             return
         try:
             text = f"{title} {summary}"
-            embedding = await self._embedding_service.embed_text(text)
-            await self._vector_store.upsert_article(item_id, embedding)
+            embedding = await embedding_service.embed_text(text)
+            await vector_store.upsert_article(item_id, embedding)
         except Exception as e:
             logger.warning("Failed to embed item", item_id=item_id, error=str(e))
 
