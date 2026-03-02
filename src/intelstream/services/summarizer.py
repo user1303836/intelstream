@@ -38,6 +38,21 @@ This is an academic research paper abstract. Focus on:
 3. Why does this matter for practitioners?
 Keep technical jargon minimal - explain for a smart but non-expert audience."""
 
+_REFUSAL_PATTERNS = [
+    "i'm unable to access",
+    "i don't have the ability to browse",
+    "i cannot access",
+    "i can't access",
+    "please paste the article",
+    "please provide the article",
+    "i don't have access to",
+    "i cannot browse",
+    "i can't browse",
+    "i'm not able to access",
+    "unable to retrieve the article",
+    "i cannot retrieve",
+]
+
 
 class SummarizationError(Exception):
     pass
@@ -104,6 +119,7 @@ class SummarizationService:
             )
 
             summary = self._extract_summary(message)
+            self._check_for_refusal(summary, title)
 
             logger.info("Summary generated", title=title, summary_length=len(summary))
 
@@ -127,6 +143,7 @@ class SummarizationService:
             "substack": "newsletter article",
             "youtube": "video transcript",
             "rss": "blog post",
+            "blog": "blog post",
             "web": "article",
             "arxiv": "research paper abstract",
             "twitter": "tweet",
@@ -155,6 +172,19 @@ Format your response EXACTLY as follows:
   - [Additional detail if needed]
 - **[Insight or key concept]:** [Explanation of this point and why it matters]
   - [Supporting detail, evidence, example, or caveat]"""
+
+    def _check_for_refusal(self, summary: str, title: str) -> None:
+        summary_lower = summary.lower()
+        for pattern in _REFUSAL_PATTERNS:
+            if pattern in summary_lower:
+                logger.warning(
+                    "Summarizer returned refusal response",
+                    title=title,
+                    pattern=pattern,
+                )
+                raise SummarizationError(
+                    f"Model refused to summarize content (matched: '{pattern}')"
+                )
 
     def _extract_summary(self, message: Any) -> str:
         if not message.content:

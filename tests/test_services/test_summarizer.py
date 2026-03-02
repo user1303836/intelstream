@@ -272,3 +272,68 @@ class TestSummarizationService:
         )
 
         assert summarizer._max_tokens == DEFAULT_MODEL_MAX_OUTPUT_TOKENS
+
+    def test_build_prompt_blog(self, summarizer: SummarizationService):
+        prompt = summarizer._build_prompt(
+            content="Blog content here",
+            title="My Blog Post",
+            source_type="blog",
+            author="Blog Author",
+        )
+
+        assert "blog post" in prompt
+        assert "from Blog Author" in prompt
+
+
+class TestRefusalDetection:
+    def test_check_for_refusal_raises_on_unable_to_access(self, summarizer: SummarizationService):
+        with pytest.raises(SummarizationError, match="refused to summarize"):
+            summarizer._check_for_refusal(
+                "I'm unable to access the article you referenced.", "Test"
+            )
+
+    def test_check_for_refusal_raises_on_cannot_browse(self, summarizer: SummarizationService):
+        with pytest.raises(SummarizationError, match="refused to summarize"):
+            summarizer._check_for_refusal(
+                "I don't have the ability to browse the web or access URLs.", "Test"
+            )
+
+    def test_check_for_refusal_raises_on_paste_article(self, summarizer: SummarizationService):
+        with pytest.raises(SummarizationError, match="refused to summarize"):
+            summarizer._check_for_refusal(
+                "Could you please paste the article text so I can summarize it?", "Test"
+            )
+
+    def test_check_for_refusal_raises_on_cannot_access(self, summarizer: SummarizationService):
+        with pytest.raises(SummarizationError, match="refused to summarize"):
+            summarizer._check_for_refusal(
+                "I can't access external websites or URLs directly.", "Test"
+            )
+
+    def test_check_for_refusal_passes_valid_summary(self, summarizer: SummarizationService):
+        valid_summary = (
+            "**Thesis:** The article argues that AI will transform education.\n\n"
+            "**Key Arguments**\n"
+            "- **Personalized learning:** AI enables adaptive curricula.\n"
+            "  - Students learn at their own pace."
+        )
+        summarizer._check_for_refusal(valid_summary, "Test")
+
+    def test_check_for_refusal_case_insensitive(self, summarizer: SummarizationService):
+        with pytest.raises(SummarizationError, match="refused to summarize"):
+            summarizer._check_for_refusal("I'M UNABLE TO ACCESS the article content.", "Test")
+
+    async def test_summarize_raises_on_refusal_response(self, summarizer: SummarizationService):
+        mock_message = MagicMock()
+        text_block = MagicMock()
+        text_block.text = "I'm unable to access the article you're referring to. Please paste the content directly."
+        mock_message.content = [text_block]
+
+        summarizer._client.messages.create = AsyncMock(return_value=mock_message)
+
+        with pytest.raises(SummarizationError, match="refused to summarize"):
+            await summarizer.summarize(
+                content="Some extracted content",
+                title="Test Article",
+                source_type="blog",
+            )

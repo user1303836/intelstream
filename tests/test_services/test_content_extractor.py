@@ -2,7 +2,10 @@ import httpx
 import pytest
 import respx
 
-from intelstream.services.content_extractor import ContentExtractor
+from intelstream.services.content_extractor import (
+    MIN_CONTENT_LENGTH,
+    ContentExtractor,
+)
 
 
 @pytest.fixture
@@ -46,7 +49,9 @@ class TestContentExtractor:
         <body>
             <nav>Navigation content</nav>
             <main>
-                <p>Main content paragraph that is significant enough.</p>
+                <p>This is the first paragraph of the main content area with important details about the topic at hand. It contains enough text to be considered substantial content.</p>
+                <p>The second paragraph continues with more analysis and supporting evidence for the main argument. This provides additional context and depth to the discussion.</p>
+                <p>Finally, the third paragraph wraps up the key points and offers a conclusion. The reader should now have a clear understanding of the core ideas presented in this article.</p>
             </main>
             <footer>Footer content</footer>
         </body>
@@ -58,7 +63,7 @@ class TestContentExtractor:
         result = await extractor.extract("https://example.com/page")
 
         assert result.text
-        assert "Navigation" not in result.text or "Main content" in result.text
+        assert "Navigation" not in result.text or "first paragraph" in result.text
 
     @respx.mock
     async def test_extract_title_from_og_meta(self, extractor: ContentExtractor):
@@ -156,3 +161,136 @@ class TestContentExtractor:
     def test_parse_date_none(self, extractor: ContentExtractor):
         result = extractor._parse_date(None)
         assert result is None
+
+
+class TestContentValidation:
+    def test_validate_rejects_empty_text(self, extractor: ContentExtractor):
+        assert extractor._validate_content("") is False
+
+    def test_validate_rejects_short_text(self, extractor: ContentExtractor):
+        assert extractor._validate_content("Too short.") is False
+
+    def test_validate_rejects_text_below_min_length(self, extractor: ContentExtractor):
+        short_text = "A" * (MIN_CONTENT_LENGTH - 1)
+        assert extractor._validate_content(short_text) is False
+
+    def test_validate_rejects_too_few_sentences(self, extractor: ContentExtractor):
+        text = "A" * (MIN_CONTENT_LENGTH + 50) + ". Second sentence."
+        assert len(text) >= MIN_CONTENT_LENGTH
+        assert extractor._validate_content(text) is False
+
+    def test_validate_accepts_valid_article_content(self, extractor: ContentExtractor):
+        text = (
+            "This is the first sentence of a well-written article about technology. "
+            "The second sentence provides additional context and supporting details. "
+            "A third sentence wraps up the key points being discussed. "
+            "And a fourth sentence adds even more depth to the analysis."
+        )
+        assert len(text) >= MIN_CONTENT_LENGTH
+        assert extractor._validate_content(text) is True
+
+    def test_validate_rejects_mostly_nav_keywords(self, extractor: ContentExtractor):
+        text = (
+            "Home About Contact Subscribe Menu Navigation "
+            "Home About Contact Subscribe Menu Navigation "
+            "Home About Contact Subscribe Menu Navigation "
+            "Home About Contact Subscribe Menu Navigation "
+            "Home About Contact Subscribe Menu Navigation. "
+            "Some actual content here. Another sentence for length."
+        )
+        assert extractor._validate_content(text) is False
+
+    def test_validate_accepts_content_with_some_nav_words(self, extractor: ContentExtractor):
+        text = (
+            "This article explores the fascinating world of technology and innovation. "
+            "Home automation has become increasingly popular in recent years. "
+            "Many people subscribe to newsletters about the latest developments. "
+            "The contact between humans and machines continues to evolve rapidly."
+        )
+        assert extractor._validate_content(text) is True
+
+
+class TestCssSelectorFallback:
+    @respx.mock
+    async def test_extract_via_post_content_class(self, extractor: ContentExtractor):
+        html = """
+        <html>
+        <body>
+            <div class="sidebar">Sidebar links and navigation</div>
+            <div class="post-content">
+                <p>This is a blog post written with a Hugo static site generator. It contains detailed analysis of market trends and their implications for investors.</p>
+                <p>The second paragraph provides supporting evidence with specific data points. Market returns averaged 12 percent over the period studied.</p>
+                <p>In conclusion, the evidence suggests a strong correlation between policy changes and market movements. Investors should consider these factors carefully.</p>
+            </div>
+        </body>
+        </html>
+        """
+
+        respx.get("https://example.com/blog-post").mock(return_value=httpx.Response(200, text=html))
+
+        result = await extractor.extract("https://example.com/blog-post")
+
+        assert result.text
+        assert "blog post" in result.text
+        assert "Sidebar" not in result.text
+
+    @respx.mock
+    async def test_extract_via_entry_content_class(self, extractor: ContentExtractor):
+        html = """
+        <html>
+        <body>
+            <nav>Home Blog About</nav>
+            <div class="entry-content">
+                <p>WordPress blog entry with substantial content about artificial intelligence research. The field has seen remarkable progress in recent years across multiple domains.</p>
+                <p>Natural language processing capabilities have improved dramatically. Large language models can now perform complex reasoning tasks that were previously impossible.</p>
+                <p>Computer vision has also advanced significantly. Object detection and image generation have reached near-human performance levels in many benchmarks.</p>
+            </div>
+        </body>
+        </html>
+        """
+
+        respx.get("https://example.com/wp-post").mock(return_value=httpx.Response(200, text=html))
+
+        result = await extractor.extract("https://example.com/wp-post")
+
+        assert result.text
+        assert "artificial intelligence" in result.text
+
+    @respx.mock
+    async def test_extract_returns_metadata_on_failed_validation(self, extractor: ContentExtractor):
+        html = """
+        <html>
+        <head>
+            <meta property="og:title" content="Short Page Title">
+            <meta name="author" content="Test Author">
+        </head>
+        <body><p>Too short.</p></body>
+        </html>
+        """
+
+        respx.get("https://example.com/short").mock(return_value=httpx.Response(200, text=html))
+
+        result = await extractor.extract("https://example.com/short")
+
+        assert result.text == ""
+        assert result.title == "Short Page Title"
+        assert result.author == "Test Author"
+
+    @respx.mock
+    async def test_extract_nav_heavy_page_returns_empty(self, extractor: ContentExtractor):
+        html = """
+        <html>
+        <body>
+            <div>Home About Contact Subscribe Menu Navigation Search Login Register
+            Home About Contact Subscribe Menu Navigation Search Login Register
+            Home About Contact Subscribe Menu Navigation Search Login Register.
+            Some text. More text here.</div>
+        </body>
+        </html>
+        """
+
+        respx.get("https://example.com/nav-heavy").mock(return_value=httpx.Response(200, text=html))
+
+        result = await extractor.extract("https://example.com/nav-heavy")
+
+        assert result.text == ""

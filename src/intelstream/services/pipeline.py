@@ -305,14 +305,22 @@ class ContentPipeline:
             source_type = source.type.value if source else "unknown"
 
             if not item.raw_content:
-                await self._repository.update_content_item_summary(item.id, "")
-                summarized_count += 1
-                logger.debug(
-                    "Item has no content, marked ready for posting",
-                    item_id=item.id,
-                    title=item.title,
-                    source_name=source_name,
-                )
+                if source and source.skip_summary:
+                    await self._repository.update_content_item_summary(item.id, "")
+                    summarized_count += 1
+                    logger.debug(
+                        "Skip-summary item, marked ready for posting",
+                        item_id=item.id,
+                        title=item.title,
+                        source_name=source_name,
+                    )
+                else:
+                    logger.warning(
+                        "Item has no content, skipping (extraction likely failed)",
+                        item_id=item.id,
+                        title=item.title,
+                        source_name=source_name,
+                    )
                 continue
 
             try:

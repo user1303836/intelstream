@@ -745,7 +745,7 @@ class TestSummarizePending:
         assert result == 0
         mock_repository.get_unsummarized_content_items.assert_not_called()
 
-    async def test_summarize_pending_marks_items_without_content_ready_for_posting(
+    async def test_summarize_pending_skip_summary_item_without_content_marked_ready(
         self,
         pipeline: ContentPipeline,
         mock_repository: AsyncMock,
@@ -758,7 +758,13 @@ class TestSummarizePending:
         item_without_content.source_id = "source-456"
         item_without_content.raw_content = None
 
+        skip_source = MagicMock(spec=Source)
+        skip_source.name = "Skip Source"
+        skip_source.type = SourceType.BLOG
+        skip_source.skip_summary = True
+
         mock_repository.get_unsummarized_content_items.return_value = [item_without_content]
+        mock_repository.get_source_by_id.return_value = skip_source
         mock_repository.has_source_posted_content.return_value = True
 
         result = await pipeline.summarize_pending()
@@ -766,6 +772,37 @@ class TestSummarizePending:
         assert result == 1
         mock_summarizer.summarize.assert_not_called()
         mock_repository.update_content_item_summary.assert_called_once_with("item-456", "")
+
+        await pipeline.close()
+
+    async def test_summarize_pending_skips_items_without_content_when_not_skip_summary(
+        self,
+        pipeline: ContentPipeline,
+        mock_repository: AsyncMock,
+        mock_summarizer: AsyncMock,
+    ):
+        await pipeline.initialize()
+
+        item_without_content = MagicMock(spec=ContentItem)
+        item_without_content.id = "item-789"
+        item_without_content.source_id = "source-789"
+        item_without_content.title = "Failed Extraction"
+        item_without_content.raw_content = None
+
+        source = MagicMock(spec=Source)
+        source.name = "Blog Source"
+        source.type = SourceType.BLOG
+        source.skip_summary = False
+
+        mock_repository.get_unsummarized_content_items.return_value = [item_without_content]
+        mock_repository.get_source_by_id.return_value = source
+        mock_repository.has_source_posted_content.return_value = True
+
+        result = await pipeline.summarize_pending()
+
+        assert result == 0
+        mock_summarizer.summarize.assert_not_called()
+        mock_repository.update_content_item_summary.assert_not_called()
 
         await pipeline.close()
 
