@@ -31,6 +31,15 @@ Guidelines:
 - Aim for 4-8 key arguments depending on content length and density.
 - Write in a neutral, analytical tone."""
 
+CHAT_SUMMARY_SYSTEM_PROMPT = """You are summarizing a Discord channel conversation. Your job is to extract the key highlights, decisions, and important discussions from the message history provided.
+
+Guidelines:
+- Focus on substance: decisions made, questions asked, links shared, and key opinions expressed.
+- Group related messages into coherent topics.
+- Mention usernames when attributing opinions or actions.
+- Skip small talk, greetings, and reactions unless they are relevant to a topic.
+- Be concise but thorough."""
+
 ARXIV_PROMPT_ADDITION = """
 This is an academic research paper abstract. Focus on:
 1. What problem does this paper solve?
@@ -130,6 +139,57 @@ class SummarizationService:
             raise
         except anthropic.APIError as e:
             logger.error("Anthropic API error", error=str(e))
+            raise SummarizationError(f"API error: {e}") from e
+
+    @retry(
+        retry=retry_if_exception_type(anthropic.RateLimitError),
+        wait=wait_exponential(multiplier=1, min=4, max=60),
+        stop=stop_after_attempt(3),
+    )
+    async def summarize_chat(self, messages_text: str, message_count: int) -> str:
+        if not messages_text or not messages_text.strip():
+            raise SummarizationError("Cannot summarize empty messages")
+
+        truncated = messages_text[: self._max_input_length]
+        if len(messages_text) > self._max_input_length:
+            logger.warning(
+                "Chat messages truncated for summarization",
+                original_length=len(messages_text),
+                truncated_length=self._max_input_length,
+            )
+
+        prompt = (
+            f"Summarize the following {message_count} messages from a Discord channel.\n\n"
+            "Format your response as:\n\n"
+            "**Key Topics**\n"
+            "- **[Topic]:** [What was discussed and any conclusions]\n\n"
+            "**Notable Highlights**\n"
+            "- [Important announcements, decisions, or links shared]\n\n"
+            "**Active Participants:** [list of most active users]\n\n"
+            f"--- Messages ---\n{truncated}"
+        )
+
+        try:
+            logger.debug(
+                "Requesting chat summary from Anthropic",
+                message_count=message_count,
+                model=self._model,
+            )
+
+            message = await self._client.messages.create(
+                model=self._model,
+                max_tokens=self._max_tokens,
+                system=CHAT_SUMMARY_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            return self._extract_summary(message)
+
+        except anthropic.RateLimitError:
+            logger.warning("Rate limited by Anthropic API, retrying...")
+            raise
+        except anthropic.APIError as e:
+            logger.error("Anthropic API error during chat summary", error=str(e))
             raise SummarizationError(f"API error: {e}") from e
 
     def _build_prompt(
