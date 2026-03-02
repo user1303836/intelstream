@@ -70,6 +70,7 @@ class TestSettings:
         monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
         monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret-key-67890")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-secret")
         monkeypatch.setenv("YOUTUBE_API_KEY", "yt-secret-api-key")
 
         settings = Settings(_env_file=None)
@@ -77,22 +78,27 @@ class TestSettings:
 
         assert "secret-discord-token-12345" not in repr_str
         assert "sk-ant-secret-key-67890" not in repr_str
+        assert "sk-openai-secret" not in repr_str
         assert "yt-secret-api-key" not in repr_str
         assert "*****" in repr_str
         assert "discord_guild_id=123456789" in repr_str
         assert "discord_owner_id=111222333" in repr_str
+        assert "llm_provider=" in repr_str
 
-    def test_repr_handles_none_youtube_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_repr_handles_none_keys(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
         monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
         monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
 
         settings = Settings(_env_file=None)
         repr_str = repr(settings)
 
         assert "youtube_api_key=None" in repr_str
+        assert "anthropic_api_key=None" in repr_str
+        assert "openai_api_key=None" in repr_str
 
     def test_empty_discord_bot_token_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "")
@@ -103,14 +109,37 @@ class TestSettings:
         with pytest.raises(ValidationError):
             Settings(_env_file=None)
 
-    def test_empty_anthropic_api_key_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_empty_anthropic_api_key_treated_as_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
         monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
         monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "")
 
-        with pytest.raises(ValidationError):
-            Settings(_env_file=None)
+        settings = Settings(_env_file=None)
+        assert settings.anthropic_api_key == ""
+
+    def test_llm_api_key_returns_correct_provider_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
+        monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
+        monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
+        monkeypatch.setenv("LLM_PROVIDER", "openai")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+
+        settings = Settings(_env_file=None)
+        assert settings.llm_api_key == "sk-openai-test"
+
+    def test_llm_api_key_raises_when_key_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
+        monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
+        monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
+        monkeypatch.setenv("LLM_PROVIDER", "openai")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        settings = Settings(_env_file=None)
+        with pytest.raises(ValueError, match="No API key configured"):
+            _ = settings.llm_api_key
 
     def test_summarization_delay_minimum(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")

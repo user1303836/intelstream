@@ -1,6 +1,3 @@
-from typing import Any
-
-import anthropic
 import structlog
 from tenacity import (
     retry,
@@ -9,17 +6,9 @@ from tenacity import (
     wait_exponential,
 )
 
-logger = structlog.get_logger()
+from intelstream.services.llm_client import LLMClient, LLMRateLimitError
 
-MODEL_MAX_OUTPUT_TOKENS: dict[str, int] = {
-    "claude-3-5-haiku-20241022": 8192,
-    "claude-3-5-sonnet-20241022": 8192,
-    "claude-sonnet-4-20250514": 16384,
-    "claude-3-opus-20240229": 4096,
-    "claude-3-haiku-20240307": 4096,
-    "claude-3-sonnet-20240229": 4096,
-}
-DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 4096
+logger = structlog.get_logger()
 
 SYSTEM_PROMPT = """You are a content summarizer for a Discord channel. Your job is to extract the key insights from articles, videos, and posts in a structured format.
 
@@ -70,30 +59,17 @@ class SummarizationError(Exception):
 class SummarizationService:
     def __init__(
         self,
-        api_key: str,
-        model: str = "claude-sonnet-4-20250514",
+        client: LLMClient,
         max_tokens: int = 2048,
         max_input_length: int = 100000,
     ) -> None:
-        self._client = anthropic.AsyncAnthropic(api_key=api_key)
-        self._model = model
+        self._client = client
+        self._max_tokens = max_tokens
         self._max_input_length = max_input_length
         self._system_prompt = SYSTEM_PROMPT
 
-        model_limit = MODEL_MAX_OUTPUT_TOKENS.get(model, DEFAULT_MODEL_MAX_OUTPUT_TOKENS)
-        if max_tokens > model_limit:
-            logger.warning(
-                "max_tokens exceeds model limit, clamping",
-                requested=max_tokens,
-                model=model,
-                model_limit=model_limit,
-            )
-            self._max_tokens = model_limit
-        else:
-            self._max_tokens = max_tokens
-
     @retry(
-        retry=retry_if_exception_type(anthropic.RateLimitError),
+        retry=retry_if_exception_type(LLMRateLimitError),
         wait=wait_exponential(multiplier=1, min=4, max=60),
         stop=stop_after_attempt(3),
     )
@@ -118,31 +94,29 @@ class SummarizationService:
         prompt = self._build_prompt(truncated_content, title, source_type, author)
 
         try:
-            logger.debug("Requesting summary from Anthropic", title=title, model=self._model)
+            logger.debug("Requesting summary", title=title)
 
-            message = await self._client.messages.create(
-                model=self._model,
-                max_tokens=self._max_tokens,
+            summary = await self._client.complete(
                 system=self._system_prompt,
-                messages=[{"role": "user", "content": prompt}],
+                user_message=prompt,
+                max_tokens=self._max_tokens,
             )
 
-            summary = self._extract_summary(message)
-            self._check_for_refusal(summary, title)
-
-            logger.info("Summary generated", title=title, summary_length=len(summary))
-
-            return summary
-
-        except anthropic.RateLimitError:
-            logger.warning("Rate limited by Anthropic API, retrying...")
+        except LLMRateLimitError:
+            logger.warning("Rate limited by LLM API, retrying...")
             raise
-        except anthropic.APIError as e:
-            logger.error("Anthropic API error", error=str(e))
+        except Exception as e:
+            logger.error("LLM API error", error=str(e))
             raise SummarizationError(f"API error: {e}") from e
 
+        self._check_for_refusal(summary, title)
+
+        logger.info("Summary generated", title=title, summary_length=len(summary))
+
+        return summary
+
     @retry(
-        retry=retry_if_exception_type(anthropic.RateLimitError),
+        retry=retry_if_exception_type(LLMRateLimitError),
         wait=wait_exponential(multiplier=1, min=4, max=60),
         stop=stop_after_attempt(3),
     )
@@ -171,25 +145,21 @@ class SummarizationService:
 
         try:
             logger.debug(
-                "Requesting chat summary from Anthropic",
+                "Requesting chat summary",
                 message_count=message_count,
-                model=self._model,
             )
 
-            message = await self._client.messages.create(
-                model=self._model,
-                max_tokens=self._max_tokens,
+            return await self._client.complete(
                 system=CHAT_SUMMARY_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": prompt}],
+                user_message=prompt,
+                max_tokens=self._max_tokens,
             )
 
-            return self._extract_summary(message)
-
-        except anthropic.RateLimitError:
-            logger.warning("Rate limited by Anthropic API, retrying...")
+        except LLMRateLimitError:
+            logger.warning("Rate limited by LLM API, retrying...")
             raise
-        except anthropic.APIError as e:
-            logger.error("Anthropic API error during chat summary", error=str(e))
+        except Exception as e:
+            logger.error("LLM API error during chat summary", error=str(e))
             raise SummarizationError(f"API error: {e}") from e
 
     def _build_prompt(
@@ -245,14 +215,3 @@ Format your response EXACTLY as follows:
                 raise SummarizationError(
                     f"Model refused to summarize content (matched: '{pattern}')"
                 )
-
-    def _extract_summary(self, message: Any) -> str:
-        if not message.content:
-            raise SummarizationError("Empty response from API")
-
-        text_blocks = [block.text for block in message.content if hasattr(block, "text")]
-
-        if not text_blocks:
-            raise SummarizationError("No text content in API response")
-
-        return "\n\n".join(text_blocks).strip()

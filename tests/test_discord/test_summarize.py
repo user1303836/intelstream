@@ -12,7 +12,8 @@ from intelstream.services.web_fetcher import WebContent, WebFetchError
 def mock_bot():
     bot = MagicMock()
     bot.settings = MagicMock()
-    bot.settings.anthropic_api_key = "test-api-key"
+    bot.settings.llm_provider = "anthropic"
+    bot.settings.llm_api_key = "test-api-key"
     bot.settings.youtube_api_key = "test-youtube-key"
     bot.settings.http_timeout_seconds = 30.0
     bot.settings.summary_model_interactive = "claude-sonnet-4-20250514"

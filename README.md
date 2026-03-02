@@ -14,14 +14,14 @@ A Discord bot that monitors content sources and posts AI-generated summaries to 
 - **GitHub repositories** - Track commits, pull requests, and issues with Discord embeds
 - **Manual summarization** - Summarize any URL on-demand with `/summarize`
 - **Message forwarding** - Forward messages from channels to threads for better organization
-- **AI summaries** - Claude-powered summaries with thesis and key arguments format
+- **AI summaries** - LLM-powered summaries (Anthropic, OpenAI, Gemini, Kimi) with thesis and key arguments format
 - **Multi-channel routing** - Route different sources to different channels
 
 ## Requirements
 
 - Python 3.12+
 - Discord Bot Token
-- Anthropic API Key (for Claude)
+- An LLM API key (one of: Anthropic, OpenAI, Google Gemini, or Kimi/Moonshot)
 - YouTube API Key (optional, for YouTube monitoring)
 - X/Twitter API v2 Bearer Token (optional, for Twitter monitoring)
 
@@ -43,7 +43,14 @@ A Discord bot that monitors content sources and posts AI-generated summaries to 
    DISCORD_BOT_TOKEN=your_discord_bot_token
    DISCORD_GUILD_ID=your_guild_id
    DISCORD_OWNER_ID=your_user_id
+
+   # LLM provider: anthropic, openai, gemini, or kimi
+   LLM_PROVIDER=anthropic
    ANTHROPIC_API_KEY=your_anthropic_api_key
+
+   # Or use a different provider:
+   # LLM_PROVIDER=openai
+   # OPENAI_API_KEY=your_openai_api_key
 
    # Optional: YouTube monitoring
    # YOUTUBE_API_KEY=your_youtube_api_key
@@ -66,7 +73,18 @@ A Discord bot that monitors content sources and posts AI-generated summaries to 
 | `DISCORD_BOT_TOKEN` | Your Discord bot token |
 | `DISCORD_GUILD_ID` | The Discord server ID |
 | `DISCORD_OWNER_ID` | Your Discord user ID (for error notifications) |
-| `ANTHROPIC_API_KEY` | Your Anthropic API key for Claude |
+
+### LLM Provider Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_PROVIDER` | `anthropic` | LLM provider: `anthropic`, `openai`, `gemini`, or `kimi` |
+| `ANTHROPIC_API_KEY` | - | Anthropic API key (required when provider is `anthropic`) |
+| `OPENAI_API_KEY` | - | OpenAI API key (required when provider is `openai`) |
+| `GEMINI_API_KEY` | - | Google Gemini API key (required when provider is `gemini`) |
+| `KIMI_API_KEY` | - | Kimi/Moonshot AI API key (required when provider is `kimi`) |
+
+Set the API key that matches your chosen `LLM_PROVIDER`. The provider is used for all summarization (background and interactive). Blog and Page source analysis always requires `ANTHROPIC_API_KEY` regardless of the summarization provider.
 
 ### Optional Environment Variables
 
@@ -101,8 +119,8 @@ Override the default polling interval for specific source types. Each defaults t
 |----------|---------|-------------|
 | `SUMMARY_MAX_TOKENS` | `2048` | Maximum tokens for AI-generated summaries (256-8192) |
 | `SUMMARY_MAX_INPUT_LENGTH` | `100000` | Maximum input content length before truncation (1000-500000) |
-| `SUMMARY_MODEL` | `claude-3-5-haiku-20241022` | Claude model for background summarization |
-| `SUMMARY_MODEL_INTERACTIVE` | `claude-sonnet-4-20250514` | Claude model for interactive `/summarize` command |
+| `SUMMARY_MODEL` | `claude-3-5-haiku-20241022` | Model for background summarization (provider-specific model name) |
+| `SUMMARY_MODEL_INTERACTIVE` | `claude-sonnet-4-20250514` | Model for interactive `/summarize` command (provider-specific model name) |
 | `DISCORD_MAX_MESSAGE_LENGTH` | `2000` | Maximum Discord message length (500-2000) |
 
 ### Advanced Settings
@@ -249,7 +267,7 @@ Both full GitHub URLs and `owner/repo` format are supported. The optional `chann
 
 1. **Polling**: The bot periodically checks all active sources for new content
 2. **Fetching**: New articles/videos are fetched and stored in the database
-3. **Summarization**: Claude AI generates structured summaries with thesis and key arguments
+3. **Summarization**: AI generates structured summaries with thesis and key arguments
 4. **Posting**: Plain text messages are posted with the summary, author, title link, and source
 
 ### Source-Specific Behavior
@@ -351,7 +369,8 @@ src/intelstream/
 │   └── github_polling.py        # GitHub polling task
 ├── services/
 │   ├── pipeline.py           # Content pipeline orchestration
-│   ├── summarizer.py         # Claude summarization
+│   ├── llm_client.py         # Multi-provider LLM abstraction
+│   ├── summarizer.py         # LLM summarization
 │   ├── content_poster.py     # Discord message formatting
 │   ├── content_extractor.py  # Content extraction utilities
 │   ├── message_forwarder.py  # Message forwarding logic

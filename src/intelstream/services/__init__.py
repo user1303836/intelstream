@@ -1,3 +1,10 @@
+from intelstream.services.llm_client import (
+    LLMClient,
+    LLMError,
+    LLMProvider,
+    LLMRateLimitError,
+    create_llm_client,
+)
 from intelstream.services.page_analyzer import (
     ExtractionProfile,
     PageAnalysisError,
@@ -9,8 +16,13 @@ from intelstream.services.summarizer import SummarizationError, SummarizationSer
 __all__ = [
     "ContentPipeline",
     "ExtractionProfile",
+    "LLMClient",
+    "LLMError",
+    "LLMProvider",
+    "LLMRateLimitError",
     "PageAnalysisError",
     "PageAnalyzer",
     "SummarizationError",
     "SummarizationService",
+    "create_llm_client",
 ]

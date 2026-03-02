@@ -1,12 +1,10 @@
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
-import anthropic
 import pytest
 
+from intelstream.services.llm_client import LLMClient, LLMError, LLMRateLimitError
 from intelstream.services.summarizer import (
     CHAT_SUMMARY_SYSTEM_PROMPT,
-    DEFAULT_MODEL_MAX_OUTPUT_TOKENS,
-    MODEL_MAX_OUTPUT_TOKENS,
     SYSTEM_PROMPT,
     SummarizationError,
     SummarizationService,
@@ -15,24 +13,24 @@ from intelstream.services.summarizer import (
 DEFAULT_MAX_INPUT_LENGTH = 100000
 
 
-@pytest.fixture
-def summarizer():
-    return SummarizationService(api_key="test-api-key")
+class MockLLMClient(LLMClient):
+    def __init__(self, response: str = "This is the summary of the article.") -> None:
+        self.complete = AsyncMock(return_value=response)
+        self.close = AsyncMock()
 
 
 @pytest.fixture
-def mock_message():
-    message = MagicMock()
-    text_block = MagicMock()
-    text_block.text = "This is the summary of the article."
-    message.content = [text_block]
-    return message
+def mock_client():
+    return MockLLMClient()
+
+
+@pytest.fixture
+def summarizer(mock_client):
+    return SummarizationService(client=mock_client)
 
 
 class TestSummarizationService:
-    async def test_summarize_success(self, summarizer: SummarizationService, mock_message):
-        summarizer._client.messages.create = AsyncMock(return_value=mock_message)
-
+    async def test_summarize_success(self, summarizer: SummarizationService, mock_client):
         result = await summarizer.summarize(
             content="This is the article content.",
             title="Test Article",
@@ -41,10 +39,11 @@ class TestSummarizationService:
         )
 
         assert result == "This is the summary of the article."
+        mock_client.complete.assert_called_once()
+        call_kwargs = mock_client.complete.call_args.kwargs
+        assert call_kwargs["system"] == SYSTEM_PROMPT
 
-    async def test_summarize_without_author(self, summarizer: SummarizationService, mock_message):
-        summarizer._client.messages.create = AsyncMock(return_value=mock_message)
-
+    async def test_summarize_without_author(self, summarizer: SummarizationService, mock_client):
         result = await summarizer.summarize(
             content="This is the article content.",
             title="Test Article",
@@ -52,6 +51,8 @@ class TestSummarizationService:
         )
 
         assert result == "This is the summary of the article."
+        call_kwargs = mock_client.complete.call_args.kwargs
+        assert "from Unknown" in call_kwargs["user_message"]
 
     async def test_summarize_empty_content_raises_error(self, summarizer: SummarizationService):
         with pytest.raises(SummarizationError, match="Cannot summarize empty content"):
@@ -70,12 +71,9 @@ class TestSummarizationService:
             )
 
     async def test_summarize_truncates_long_content(
-        self, summarizer: SummarizationService, mock_message
+        self, summarizer: SummarizationService, mock_client
     ):
         long_content = "x" * (DEFAULT_MAX_INPUT_LENGTH + 1000)
-
-        mock_create = AsyncMock(return_value=mock_message)
-        summarizer._client.messages.create = mock_create
 
         await summarizer.summarize(
             content=long_content,
@@ -83,14 +81,11 @@ class TestSummarizationService:
             source_type="substack",
         )
 
-        call_args = mock_create.call_args
-        prompt = call_args.kwargs["messages"][0]["content"]
-        assert len(prompt) < len(long_content)
+        call_kwargs = mock_client.complete.call_args.kwargs
+        assert len(call_kwargs["user_message"]) < len(long_content)
 
-    async def test_summarize_api_error(self, summarizer: SummarizationService):
-        summarizer._client.messages.create = AsyncMock(
-            side_effect=anthropic.APIError(message="API Error", request=MagicMock(), body=None)
-        )
+    async def test_summarize_api_error(self, summarizer: SummarizationService, mock_client):
+        mock_client.complete = AsyncMock(side_effect=LLMError("API Error"))
 
         with pytest.raises(SummarizationError, match="API error"):
             await summarizer.summarize(
@@ -99,70 +94,8 @@ class TestSummarizationService:
                 source_type="substack",
             )
 
-    async def test_summarize_empty_response(self, summarizer: SummarizationService):
-        mock_message = MagicMock()
-        mock_message.content = []
-
-        summarizer._client.messages.create = AsyncMock(return_value=mock_message)
-
-        with pytest.raises(SummarizationError, match="Empty response"):
-            await summarizer.summarize(
-                content="Test content",
-                title="Test Article",
-                source_type="substack",
-            )
-
-    async def test_summarize_no_text_blocks(self, summarizer: SummarizationService):
-        mock_message = MagicMock()
-        non_text_block = MagicMock(spec=[])
-        mock_message.content = [non_text_block]
-
-        summarizer._client.messages.create = AsyncMock(return_value=mock_message)
-
-        with pytest.raises(SummarizationError, match="No text content"):
-            await summarizer.summarize(
-                content="Test content",
-                title="Test Article",
-                source_type="substack",
-            )
-
-    async def test_summarize_null_response_content(self, summarizer: SummarizationService):
-        mock_message = MagicMock()
-        mock_message.content = None
-
-        summarizer._client.messages.create = AsyncMock(return_value=mock_message)
-
-        with pytest.raises(SummarizationError, match="Empty response"):
-            await summarizer.summarize(
-                content="Test content",
-                title="Test Article",
-                source_type="substack",
-            )
-
-    async def test_summarize_multiple_text_blocks(self, summarizer: SummarizationService):
-        mock_message = MagicMock()
-        block1 = MagicMock()
-        block1.text = "First paragraph."
-        block2 = MagicMock()
-        block2.text = "Second paragraph."
-        mock_message.content = [block1, block2]
-
-        summarizer._client.messages.create = AsyncMock(return_value=mock_message)
-
-        result = await summarizer.summarize(
-            content="Test content",
-            title="Test Article",
-            source_type="substack",
-        )
-
-        assert result == "First paragraph.\n\nSecond paragraph."
-
-    async def test_summarize_uses_custom_model(self, mock_message):
-        custom_model = "claude-3-opus-20240229"
-        summarizer = SummarizationService(api_key="test-key", model=custom_model)
-
-        mock_create = AsyncMock(return_value=mock_message)
-        summarizer._client.messages.create = mock_create
+    async def test_summarize_passes_max_tokens(self, mock_client):
+        summarizer = SummarizationService(client=mock_client, max_tokens=4096)
 
         await summarizer.summarize(
             content="Test content",
@@ -170,8 +103,20 @@ class TestSummarizationService:
             source_type="substack",
         )
 
-        call_args = mock_create.call_args
-        assert call_args.kwargs["model"] == custom_model
+        call_kwargs = mock_client.complete.call_args.kwargs
+        assert call_kwargs["max_tokens"] == 4096
+
+    async def test_summarize_uses_system_prompt(
+        self, summarizer: SummarizationService, mock_client
+    ):
+        await summarizer.summarize(
+            content="Test content",
+            title="Test Article",
+            source_type="substack",
+        )
+
+        call_kwargs = mock_client.complete.call_args.kwargs
+        assert call_kwargs["system"] == SYSTEM_PROMPT
 
     def test_build_prompt_substack(self, summarizer: SummarizationService):
         prompt = summarizer._build_prompt(
@@ -233,46 +178,16 @@ class TestSummarizationService:
         assert "article" in prompt
         assert "from Unknown" in prompt
 
-    async def test_summarize_includes_system_prompt(
-        self, summarizer: SummarizationService, mock_message
-    ):
-        mock_create = AsyncMock(return_value=mock_message)
-        summarizer._client.messages.create = mock_create
-
-        await summarizer.summarize(
-            content="Test content",
-            title="Test Article",
-            source_type="substack",
+    def test_build_prompt_arxiv(self, summarizer: SummarizationService):
+        prompt = summarizer._build_prompt(
+            content="Abstract content",
+            title="Paper Title",
+            source_type="arxiv",
+            author="Researcher",
         )
 
-        call_args = mock_create.call_args
-        assert call_args.kwargs["system"] == SYSTEM_PROMPT
-
-    def test_max_tokens_clamped_to_model_limit(self):
-        model = "claude-3-opus-20240229"
-        model_limit = MODEL_MAX_OUTPUT_TOKENS[model]
-        requested = model_limit + 1000
-
-        summarizer = SummarizationService(api_key="test-key", model=model, max_tokens=requested)
-
-        assert summarizer._max_tokens == model_limit
-
-    def test_max_tokens_not_clamped_when_within_limit(self):
-        model = "claude-sonnet-4-20250514"
-        requested = 2048
-
-        summarizer = SummarizationService(api_key="test-key", model=model, max_tokens=requested)
-
-        assert summarizer._max_tokens == requested
-
-    def test_max_tokens_uses_default_limit_for_unknown_model(self):
-        requested = DEFAULT_MODEL_MAX_OUTPUT_TOKENS + 1000
-
-        summarizer = SummarizationService(
-            api_key="test-key", model="unknown-model", max_tokens=requested
-        )
-
-        assert summarizer._max_tokens == DEFAULT_MODEL_MAX_OUTPUT_TOKENS
+        assert "research paper abstract" in prompt
+        assert "What problem does this paper solve?" in prompt
 
     def test_build_prompt_blog(self, summarizer: SummarizationService):
         prompt = summarizer._build_prompt(
@@ -284,6 +199,22 @@ class TestSummarizationService:
 
         assert "blog post" in prompt
         assert "from Blog Author" in prompt
+
+    async def test_summarize_rate_limit_retries_then_fails(self, mock_client):
+        mock_client.complete = AsyncMock(side_effect=LLMRateLimitError("Rate limited"))
+        summarizer = SummarizationService(client=mock_client)
+        summarizer.summarize.retry.wait = lambda *_a, **_kw: 0  # type: ignore[union-attr]
+
+        from tenacity import RetryError
+
+        with pytest.raises(RetryError):
+            await summarizer.summarize(
+                content="Test content",
+                title="Test Article",
+                source_type="substack",
+            )
+
+        assert mock_client.complete.call_count == 3
 
 
 class TestRefusalDetection:
@@ -324,13 +255,11 @@ class TestRefusalDetection:
         with pytest.raises(SummarizationError, match="refused to summarize"):
             summarizer._check_for_refusal("I'M UNABLE TO ACCESS the article content.", "Test")
 
-    async def test_summarize_raises_on_refusal_response(self, summarizer: SummarizationService):
-        mock_message = MagicMock()
-        text_block = MagicMock()
-        text_block.text = "I'm unable to access the article you're referring to. Please paste the content directly."
-        mock_message.content = [text_block]
-
-        summarizer._client.messages.create = AsyncMock(return_value=mock_message)
+    async def test_summarize_raises_on_refusal_response(self, mock_client):
+        mock_client.complete = AsyncMock(
+            return_value="I'm unable to access the article you're referring to. Please paste the content directly."
+        )
+        summarizer = SummarizationService(client=mock_client)
 
         with pytest.raises(SummarizationError, match="refused to summarize"):
             await summarizer.summarize(
@@ -341,38 +270,30 @@ class TestRefusalDetection:
 
 
 class TestSummarizeChat:
-    async def test_summarize_chat_success(self, summarizer: SummarizationService, mock_message):
-        summarizer._client.messages.create = AsyncMock(return_value=mock_message)
-
+    async def test_summarize_chat_success(self, summarizer: SummarizationService, mock_client):
         result = await summarizer.summarize_chat(
             messages_text="[12:00] alice: Hello\n[12:01] bob: Hi",
             message_count=2,
         )
 
         assert result == "This is the summary of the article."
+        mock_client.complete.assert_called()
 
     async def test_summarize_chat_uses_chat_system_prompt(
-        self, summarizer: SummarizationService, mock_message
+        self, summarizer: SummarizationService, mock_client
     ):
-        mock_create = AsyncMock(return_value=mock_message)
-        summarizer._client.messages.create = mock_create
-
         await summarizer.summarize_chat(messages_text="test messages", message_count=5)
 
-        call_args = mock_create.call_args
-        assert call_args.kwargs["system"] == CHAT_SUMMARY_SYSTEM_PROMPT
+        call_kwargs = mock_client.complete.call_args.kwargs
+        assert call_kwargs["system"] == CHAT_SUMMARY_SYSTEM_PROMPT
 
     async def test_summarize_chat_includes_message_count_in_prompt(
-        self, summarizer: SummarizationService, mock_message
+        self, summarizer: SummarizationService, mock_client
     ):
-        mock_create = AsyncMock(return_value=mock_message)
-        summarizer._client.messages.create = mock_create
-
         await summarizer.summarize_chat(messages_text="test messages", message_count=42)
 
-        call_args = mock_create.call_args
-        prompt = call_args.kwargs["messages"][0]["content"]
-        assert "42 messages" in prompt
+        call_kwargs = mock_client.complete.call_args.kwargs
+        assert "42 messages" in call_kwargs["user_message"]
 
     async def test_summarize_chat_empty_raises_error(self, summarizer: SummarizationService):
         with pytest.raises(SummarizationError, match="Cannot summarize empty messages"):
@@ -383,22 +304,18 @@ class TestSummarizeChat:
             await summarizer.summarize_chat(messages_text="   \n  ", message_count=0)
 
     async def test_summarize_chat_truncates_long_input(
-        self, summarizer: SummarizationService, mock_message
+        self, summarizer: SummarizationService, mock_client
     ):
         long_text = "x" * (DEFAULT_MAX_INPUT_LENGTH + 1000)
-        mock_create = AsyncMock(return_value=mock_message)
-        summarizer._client.messages.create = mock_create
 
         await summarizer.summarize_chat(messages_text=long_text, message_count=100)
 
-        call_args = mock_create.call_args
-        prompt = call_args.kwargs["messages"][0]["content"]
-        assert len(prompt) < len(long_text)
+        call_kwargs = mock_client.complete.call_args.kwargs
+        assert len(call_kwargs["user_message"]) < len(long_text)
 
-    async def test_summarize_chat_api_error(self, summarizer: SummarizationService):
-        summarizer._client.messages.create = AsyncMock(
-            side_effect=anthropic.APIError(message="API Error", request=MagicMock(), body=None)
-        )
+    async def test_summarize_chat_api_error(self, mock_client):
+        mock_client.complete = AsyncMock(side_effect=LLMError("API Error"))
+        summarizer = SummarizationService(client=mock_client)
 
         with pytest.raises(SummarizationError, match="API error"):
             await summarizer.summarize_chat(messages_text="test", message_count=1)

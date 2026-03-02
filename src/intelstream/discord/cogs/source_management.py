@@ -280,6 +280,12 @@ class SourceManagement(commands.Cog):
 
         extraction_profile_json: str | None = None
         if stype == SourceType.PAGE:
+            if not self.bot.settings.anthropic_api_key:
+                await interaction.followup.send(
+                    "Page sources require ANTHROPIC_API_KEY to be configured.",
+                    ephemeral=True,
+                )
+                return
             try:
                 analyzer = PageAnalyzer(api_key=self.bot.settings.anthropic_api_key)
                 profile = await analyzer.analyze(url)

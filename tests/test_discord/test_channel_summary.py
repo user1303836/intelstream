@@ -13,7 +13,8 @@ from intelstream.services.summarizer import SummarizationError
 def mock_bot():
     bot = MagicMock()
     bot.settings = MagicMock()
-    bot.settings.anthropic_api_key = "test-api-key"
+    bot.settings.llm_provider = "anthropic"
+    bot.settings.llm_api_key = "test-api-key"
     bot.settings.summary_model_interactive = "claude-sonnet-4-20250514"
     bot.settings.summary_max_tokens = 2048
     bot.settings.summary_max_input_length = 100000

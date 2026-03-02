@@ -13,6 +13,8 @@ dependencies = [
     "google-api-python-client>=2.159.0",
     "youtube-transcript-api>=0.6.3",
     "anthropic>=0.43.0",
+    "openai>=1.60.0",
+    "google-genai>=1.0.0",
     "sqlalchemy[asyncio]>=2.0.36",
     "aiosqlite>=0.20.0",
     "greenlet>=3.1.1",
@@ -95,6 +97,7 @@ module = [
     "trafilatura.*",
     "zvec.*",
     "sentence_transformers.*",
+    "google.genai.*",
 ]
 ignore_missing_imports = true
 
