@@ -138,6 +138,7 @@ class IntelStreamBot(commands.Bot):
         await self.add_cog(CoreCommands(self))
 
         from intelstream.discord.cogs import (
+            ChannelSummary,
             ConfigManagement,
             ContentPosting,
             SourceManagement,
@@ -152,6 +153,7 @@ class IntelStreamBot(commands.Bot):
         await self.add_cog(ConfigManagement(self))
         await self.add_cog(ContentPosting(self))
         await self.add_cog(Summarize(self))
+        await self.add_cog(ChannelSummary(self))
         await self.add_cog(MessageForwarding(self))
         await self.add_cog(SuckBoobs(self))
         await self.add_cog(GitHubCommands(self))

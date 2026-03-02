@@ -4,6 +4,7 @@ import anthropic
 import pytest
 
 from intelstream.services.summarizer import (
+    CHAT_SUMMARY_SYSTEM_PROMPT,
     DEFAULT_MODEL_MAX_OUTPUT_TOKENS,
     MODEL_MAX_OUTPUT_TOKENS,
     SYSTEM_PROMPT,
@@ -337,3 +338,67 @@ class TestRefusalDetection:
                 title="Test Article",
                 source_type="blog",
             )
+
+
+class TestSummarizeChat:
+    async def test_summarize_chat_success(self, summarizer: SummarizationService, mock_message):
+        summarizer._client.messages.create = AsyncMock(return_value=mock_message)
+
+        result = await summarizer.summarize_chat(
+            messages_text="[12:00] alice: Hello\n[12:01] bob: Hi",
+            message_count=2,
+        )
+
+        assert result == "This is the summary of the article."
+
+    async def test_summarize_chat_uses_chat_system_prompt(
+        self, summarizer: SummarizationService, mock_message
+    ):
+        mock_create = AsyncMock(return_value=mock_message)
+        summarizer._client.messages.create = mock_create
+
+        await summarizer.summarize_chat(messages_text="test messages", message_count=5)
+
+        call_args = mock_create.call_args
+        assert call_args.kwargs["system"] == CHAT_SUMMARY_SYSTEM_PROMPT
+
+    async def test_summarize_chat_includes_message_count_in_prompt(
+        self, summarizer: SummarizationService, mock_message
+    ):
+        mock_create = AsyncMock(return_value=mock_message)
+        summarizer._client.messages.create = mock_create
+
+        await summarizer.summarize_chat(messages_text="test messages", message_count=42)
+
+        call_args = mock_create.call_args
+        prompt = call_args.kwargs["messages"][0]["content"]
+        assert "42 messages" in prompt
+
+    async def test_summarize_chat_empty_raises_error(self, summarizer: SummarizationService):
+        with pytest.raises(SummarizationError, match="Cannot summarize empty messages"):
+            await summarizer.summarize_chat(messages_text="", message_count=0)
+
+    async def test_summarize_chat_whitespace_raises_error(self, summarizer: SummarizationService):
+        with pytest.raises(SummarizationError, match="Cannot summarize empty messages"):
+            await summarizer.summarize_chat(messages_text="   \n  ", message_count=0)
+
+    async def test_summarize_chat_truncates_long_input(
+        self, summarizer: SummarizationService, mock_message
+    ):
+        long_text = "x" * (DEFAULT_MAX_INPUT_LENGTH + 1000)
+        mock_create = AsyncMock(return_value=mock_message)
+        summarizer._client.messages.create = mock_create
+
+        await summarizer.summarize_chat(messages_text=long_text, message_count=100)
+
+        call_args = mock_create.call_args
+        prompt = call_args.kwargs["messages"][0]["content"]
+        assert len(prompt) < len(long_text)
+
+    async def test_summarize_chat_api_error(self, summarizer: SummarizationService):
+        summarizer._client.messages.create = AsyncMock(
+            side_effect=anthropic.APIError(message="API Error", request=MagicMock(), body=None)
+        )
+
+        with pytest.raises(SummarizationError, match="API error"):
+            await summarizer.summarize_chat(messages_text="test", message_count=1)
