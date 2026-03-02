@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import structlog
@@ -24,7 +24,7 @@ class VectorStore:
         self._articles: zvec.Collection | None = None
 
     async def initialize(self) -> None:
-        Path(self._data_dir).mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(os.makedirs, self._data_dir, exist_ok=True)
         articles_path = f"{self._data_dir}/articles"
         try:
             schema = zvec.CollectionSchema(
