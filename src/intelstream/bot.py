@@ -170,6 +170,7 @@ class IntelStreamBot(commands.Bot):
 
     async def _setup_search(self) -> None:
         from intelstream.database.vector_store import VectorStore
+        from intelstream.discord.cogs.lore import Lore
         from intelstream.discord.cogs.search import Search
         from intelstream.services.embedding_service import EmbeddingService
 
@@ -186,6 +187,7 @@ class IntelStreamBot(commands.Bot):
             await self.vector_store.initialize()
 
             await self.add_cog(Search(self, self.embedding_service, self.vector_store))
+            await self.add_cog(Lore(self, self.embedding_service, self.vector_store))
             logger.info("Search services initialized")
         except Exception as e:
             logger.error("Failed to initialize search services", error=str(e))
@@ -208,6 +210,13 @@ class IntelStreamBot(commands.Bot):
                 "Could not find owner",
                 owner_id=self.settings.discord_owner_id,
             )
+
+        lore_cog = self.cogs.get("Lore")
+        if lore_cog is not None and hasattr(lore_cog, "auto_resume_ingestion"):
+            try:
+                await lore_cog.auto_resume_ingestion()
+            except Exception as e:
+                logger.error("Failed to auto-resume lore ingestion", error=str(e))
 
     async def on_error(self, event_method: str, *_args: Any, **_kwargs: Any) -> None:
         logger.exception("Error in event handler", event_method=event_method)

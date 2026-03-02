@@ -23,6 +23,8 @@ from intelstream.database.models import (
     ExtractionCache,
     ForwardingRule,
     GitHubRepo,
+    IngestionProgress,
+    MessageChunkMeta,
     PauseReason,
     Source,
     SourceType,
@@ -921,3 +923,125 @@ class Repository:
                 await session.commit()
                 return True
             return False
+
+    async def add_message_chunk_meta(self, chunk: MessageChunkMeta) -> MessageChunkMeta:
+        async with self.session() as session:
+            session.add(chunk)
+            await session.commit()
+            await session.refresh(chunk)
+            return chunk
+
+    async def add_message_chunk_metas_batch(self, chunks: list[MessageChunkMeta]) -> None:
+        if not chunks:
+            return
+        async with self.session() as session:
+            session.add_all(chunks)
+            await session.commit()
+
+    async def get_message_chunk_metas_by_ids(self, chunk_ids: list[str]) -> list[MessageChunkMeta]:
+        if not chunk_ids:
+            return []
+        async with self.session() as session:
+            result = await session.execute(
+                select(MessageChunkMeta).where(MessageChunkMeta.id.in_(chunk_ids))
+            )
+            return list(result.scalars().all())
+
+    async def get_message_chunk_metas_for_channel(
+        self, guild_id: str, channel_id: str
+    ) -> list[MessageChunkMeta]:
+        async with self.session() as session:
+            result = await session.execute(
+                select(MessageChunkMeta)
+                .where(MessageChunkMeta.guild_id == guild_id)
+                .where(MessageChunkMeta.channel_id == channel_id)
+                .order_by(MessageChunkMeta.start_timestamp.asc())
+            )
+            return list(result.scalars().all())
+
+    async def delete_message_chunk_metas_for_channel(
+        self, guild_id: str, channel_id: str
+    ) -> list[str]:
+        async with self.session() as session:
+            result = await session.execute(
+                select(MessageChunkMeta)
+                .where(MessageChunkMeta.guild_id == guild_id)
+                .where(MessageChunkMeta.channel_id == channel_id)
+            )
+            chunks = list(result.scalars().all())
+            chunk_ids = [c.id for c in chunks]
+            for chunk in chunks:
+                await session.delete(chunk)
+            await session.commit()
+            return chunk_ids
+
+    async def get_or_create_ingestion_progress(
+        self, guild_id: str, channel_id: str
+    ) -> IngestionProgress:
+        async with self.session() as session:
+            result = await session.execute(
+                select(IngestionProgress)
+                .where(IngestionProgress.guild_id == guild_id)
+                .where(IngestionProgress.channel_id == channel_id)
+            )
+            progress = result.scalar_one_or_none()
+            if progress:
+                return progress
+            progress = IngestionProgress(guild_id=guild_id, channel_id=channel_id)
+            session.add(progress)
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                result = await session.execute(
+                    select(IngestionProgress)
+                    .where(IngestionProgress.guild_id == guild_id)
+                    .where(IngestionProgress.channel_id == channel_id)
+                )
+                progress = result.scalar_one()
+            await session.refresh(progress)
+            return progress
+
+    async def update_ingestion_progress(
+        self,
+        guild_id: str,
+        channel_id: str,
+        last_message_id: str | None = None,
+        total_fetched: int | None = None,
+        status: str | None = None,
+    ) -> bool:
+        async with self.session() as session:
+            result = await session.execute(
+                select(IngestionProgress)
+                .where(IngestionProgress.guild_id == guild_id)
+                .where(IngestionProgress.channel_id == channel_id)
+            )
+            progress = result.scalar_one_or_none()
+            if not progress:
+                return False
+            if last_message_id is not None:
+                progress.last_message_id = last_message_id
+            if total_fetched is not None:
+                progress.total_fetched = total_fetched
+            if status is not None:
+                progress.status = status
+                if status == "in_progress" and progress.started_at is None:
+                    progress.started_at = datetime.now(UTC)
+                elif status == "completed":
+                    progress.completed_at = datetime.now(UTC)
+            await session.commit()
+            return True
+
+    async def get_ingestion_progress_for_guild(self, guild_id: str) -> list[IngestionProgress]:
+        async with self.session() as session:
+            result = await session.execute(
+                select(IngestionProgress).where(IngestionProgress.guild_id == guild_id)
+            )
+            return list(result.scalars().all())
+
+    async def get_in_progress_ingestions(self) -> list[IngestionProgress]:
+        async with self.session() as session:
+            result = await session.execute(
+                select(IngestionProgress).where(IngestionProgress.status == "in_progress")
+            )
+            return list(result.scalars().all())
