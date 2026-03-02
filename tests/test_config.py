@@ -129,6 +129,17 @@ class TestGetPollInterval:
         monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
         monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        for prefix in (
+            "SUBSTACK",
+            "YOUTUBE",
+            "RSS",
+            "ARXIV",
+            "BLOG",
+            "TWITTER",
+            "PAGE",
+            "GITHUB",
+        ):
+            monkeypatch.delenv(f"{prefix}_POLL_INTERVAL_MINUTES", raising=False)
 
     def test_falls_back_to_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._base_env(monkeypatch)
