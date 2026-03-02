@@ -219,6 +219,29 @@ class Settings(BaseSettings):
         description="Enable semantic search features",
     )
 
+    lore_chunk_gap_minutes: int = Field(
+        default=10,
+        ge=1,
+        le=60,
+        description="Time gap in minutes that triggers a new chunk boundary",
+    )
+    lore_chunk_max_messages: int = Field(
+        default=20,
+        ge=5,
+        le=100,
+        description="Maximum messages per chunk before forced split",
+    )
+    lore_search_results: int = Field(
+        default=15,
+        ge=1,
+        le=50,
+        description="Number of chunks to retrieve per lore query",
+    )
+    lore_auto_resume: bool = Field(
+        default=True,
+        description="Auto-resume in-progress ingestion on bot restart",
+    )
+
     def get_poll_interval(self, source_type: SourceType) -> int:
         from intelstream.database.models import SourceType
 

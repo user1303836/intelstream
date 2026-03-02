@@ -145,6 +145,45 @@ class SuckBoobsStats(Base):
         return f"<SuckBoobsStats(user_id={self.user_id!r}, used={self.times_used}, pinged={self.times_pinged})>"
 
 
+class MessageChunkMeta(Base):
+    __tablename__ = "message_chunk_meta"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    guild_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    channel_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    channel_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    start_message_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    end_message_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    start_timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    end_timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    authors: Mapped[str | None] = mapped_column(Text, nullable=True)
+    message_count: Mapped[int] = mapped_column(Integer, default=0)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    embedded_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
+
+    def __repr__(self) -> str:
+        return f"<MessageChunkMeta(id={self.id!r}, channel={self.channel_name!r}, msgs={self.message_count})>"
+
+
+class IngestionProgress(Base):
+    __tablename__ = "ingestion_progress"
+    __table_args__ = (
+        UniqueConstraint("guild_id", "channel_id", name="uq_ingestion_guild_channel"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    guild_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    channel_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    last_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    total_fetched: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(20), default="pending", server_default="pending")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    def __repr__(self) -> str:
+        return f"<IngestionProgress(guild={self.guild_id!r}, channel={self.channel_id!r}, status={self.status!r})>"
+
+
 class GitHubRepo(Base):
     __tablename__ = "github_repos"
     __table_args__ = (UniqueConstraint("guild_id", "owner", "repo", name="uq_github_guild_repo"),)
