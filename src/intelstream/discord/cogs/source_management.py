@@ -115,6 +115,32 @@ def parse_source_identifier(source_type: SourceType, url: str) -> tuple[str, str
     return url, None
 
 
+class ConfirmSourceRemoveView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=30)
+        self.confirmed: bool | None = None
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger)
+    async def confirm(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button["ConfirmSourceRemoveView"],
+    ) -> None:
+        self.confirmed = True
+        self.stop()
+        await interaction.response.defer()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button["ConfirmSourceRemoveView"],
+    ) -> None:
+        self.confirmed = False
+        self.stop()
+        await interaction.response.defer()
+
+
 class SourceManagement(commands.Cog):
     def __init__(self, bot: "IntelStreamBot") -> None:
         self.bot = bot
@@ -126,6 +152,24 @@ class SourceManagement(commands.Cog):
                 api_key=self.bot.settings.anthropic_api_key
             )
         return self._anthropic_client
+
+    async def _source_name_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        channel_id = str(interaction.channel_id)
+        sources = await self.bot.repository.get_all_sources(
+            active_only=False, channel_id=channel_id
+        )
+        return [
+            app_commands.Choice(
+                name=f"{'[ON]' if s.is_active else '[OFF]'} {s.name} ({s.type.value})",
+                value=s.name,
+            )
+            for s in sources
+            if current.lower() in s.name.lower()
+        ][:25]
 
     source_group = app_commands.Group(name="source", description="Manage content sources")
 
@@ -383,6 +427,28 @@ class SourceManagement(commands.Cog):
 
         content_count = await self.bot.repository.get_content_count_for_source(source.id)
 
+        status = "Active" if source.is_active else "Paused"
+        embed = discord.Embed(
+            title="Confirm Source Removal",
+            description=f"Are you sure you want to remove **{name}**?",
+            color=discord.Color.red(),
+        )
+        embed.add_field(name="Type", value=source.type.value, inline=True)
+        embed.add_field(name="Status", value=status, inline=True)
+        embed.add_field(name="Content Items", value=str(content_count), inline=True)
+        if content_count > 0:
+            embed.set_footer(text="All content items will be permanently deleted.")
+
+        view = ConfirmSourceRemoveView()
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        timed_out = await view.wait()
+
+        if timed_out or not view.confirmed:
+            await interaction.edit_original_response(
+                content="Source removal cancelled.", embed=None, view=None
+            )
+            return
+
         try:
             await self.bot.repository.delete_source(source.identifier)
             logger.info(
@@ -400,15 +466,23 @@ class SourceManagement(commands.Cog):
                 )
             else:
                 msg = f"Source **{name}** has been removed."
-            await interaction.followup.send(msg, ephemeral=True)
+            await interaction.edit_original_response(content=msg, embed=None, view=None)
         except SourceNotFoundError:
-            await interaction.followup.send(
-                f"Source **{name}** was already removed.", ephemeral=True
+            await interaction.edit_original_response(
+                content=f"Source **{name}** was already removed.", embed=None, view=None
             )
         except DatabaseConnectionError:
-            await interaction.followup.send(
-                f"Failed to remove source **{name}** due to a database error.", ephemeral=True
+            await interaction.edit_original_response(
+                content=f"Failed to remove source **{name}** due to a database error.",
+                embed=None,
+                view=None,
             )
+
+    @source_remove.autocomplete("name")
+    async def source_remove_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await self._source_name_autocomplete(interaction, current)
 
     @source_group.command(name="info", description="Show detailed info about a source")
     @app_commands.describe(name="Name of the source to inspect")
@@ -459,6 +533,12 @@ class SourceManagement(commands.Cog):
 
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+    @source_info.autocomplete("name")
+    async def source_info_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await self._source_name_autocomplete(interaction, current)
+
     @source_group.command(name="toggle", description="Enable or disable a content source")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.describe(name="Name of the source to toggle")
@@ -498,6 +578,12 @@ class SourceManagement(commands.Cog):
             await interaction.followup.send(
                 f"Failed to toggle source **{name}** due to a database error.", ephemeral=True
             )
+
+    @source_toggle.autocomplete("name")
+    async def source_toggle_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await self._source_name_autocomplete(interaction, current)
 
 
 async def setup(bot: "IntelStreamBot") -> None:
