@@ -488,6 +488,7 @@ class TestSourceManagementRemove:
 
         msg = interaction.edit_original_response.call_args.kwargs["content"]
         assert "42 content items" in msg
+        assert "/source toggle" in msg
 
     @patch("intelstream.discord.cogs.source_management.ConfirmSourceRemoveView")
     async def test_remove_source_cancelled(self, mock_view_cls, source_management, mock_bot):

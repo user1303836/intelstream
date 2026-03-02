@@ -34,10 +34,8 @@ def parse_github_url(url: str) -> tuple[str, str] | None:
 
 
 class ConfirmGitHubRemoveView(discord.ui.View):
-    def __init__(self, owner: str, repo_name: str) -> None:
+    def __init__(self) -> None:
         super().__init__(timeout=30)
-        self.owner = owner
-        self.repo_name = repo_name
         self.confirmed: bool | None = None
 
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger)
@@ -325,7 +323,7 @@ class GitHubCommands(commands.Cog):
         )
         embed.add_field(name="Tracking", value=", ".join(tracking) or "None", inline=True)
 
-        view = ConfirmGitHubRemoveView(owner, repo_name)
+        view = ConfirmGitHubRemoveView()
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
         timed_out = await view.wait()
 

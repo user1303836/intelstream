@@ -116,11 +116,8 @@ def parse_source_identifier(source_type: SourceType, url: str) -> tuple[str, str
 
 
 class ConfirmSourceRemoveView(discord.ui.View):
-    def __init__(self, source_name: str, source_identifier: str, content_count: int) -> None:
+    def __init__(self) -> None:
         super().__init__(timeout=30)
-        self.source_name = source_name
-        self.source_identifier = source_identifier
-        self.content_count = content_count
         self.confirmed: bool | None = None
 
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger)
@@ -442,7 +439,7 @@ class SourceManagement(commands.Cog):
         if content_count > 0:
             embed.set_footer(text="All content items will be permanently deleted.")
 
-        view = ConfirmSourceRemoveView(name, source.identifier, content_count)
+        view = ConfirmSourceRemoveView()
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
         timed_out = await view.wait()
 
@@ -465,7 +462,7 @@ class SourceManagement(commands.Cog):
                 msg = (
                     f"Source **{name}** and {content_count} content item"
                     f"{'s' if content_count != 1 else ''} "
-                    f"have been removed."
+                    f"have been removed. Use `/source toggle` next time to disable without deleting."
                 )
             else:
                 msg = f"Source **{name}** has been removed."
