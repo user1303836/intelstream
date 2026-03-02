@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "9ab3be31e21a",
+  "session_id": "d26fa8a2-818f-4479-80d2-a6f42477b362",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-02T22:25:46.233892Z",
+  "branch": "feature/semantic-search-v2",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/intelstream/database/vector_store.py"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "18f26e61d88c",
+  "transcript_identifier_at_start": "7fbb8825-3c0b-4643-b28c-ad82442bafce",
+  "token_usage": {
+    "input_tokens": 10,
+    "cache_creation_tokens": 32390,
+    "cache_read_tokens": 272280,
+    "output_tokens": 3207,
+    "api_call_count": 8
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-02T22:25:46.166592Z",
+    "agent_lines": 0,
+    "human_added": 2527,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 2527,
+    "agent_percentage": 0
+  },
+  "transcript_path": ".claude/projects/-Users-user1303836-Development-intelstream/d26fa8a2-818f-4479-80d2-a6f42477b362.jsonl"
+}
