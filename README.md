@@ -4,7 +4,7 @@
 
 **AI-powered content aggregation for Discord**
 
-Monitor newsletters, YouTube channels, RSS feeds, research papers, blogs, Twitter accounts, GitHub repos, and more — with Claude-generated summaries delivered straight to your server.
+Monitor newsletters, YouTube channels, RSS feeds, research papers, blogs, Twitter accounts, GitHub repos, and more — with LLM-generated summaries delivered straight to your server.
 
 [![CI](https://github.com/user1303836/intelstream/actions/workflows/ci.yml/badge.svg)](https://github.com/user1303836/intelstream/actions/workflows/ci.yml)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
@@ -21,7 +21,7 @@ Monitor newsletters, YouTube channels, RSS feeds, research papers, blogs, Twitte
 
 - **7 content source types** — Substack, YouTube, RSS, Arxiv, Blogs, Twitter/X, Web Pages
 - **GitHub monitoring** — Track commits, PRs, and issues with color-coded Discord embeds
-- **AI summaries** — Claude extracts thesis and key arguments, not just topics
+- **AI summaries** — LLM-powered summaries that extract thesis and key arguments, not just topics (Claude by default, configurable model)
 - **On-demand summarization** — `/summarize` any URL instantly
 - **Message forwarding** — Route announcement channels into organized threads
 - **Multi-channel routing** — Different sources post to different channels
@@ -110,7 +110,7 @@ Preserves embeds and attachments. Auto-unarchives destination threads.
 
 | Command | Description |
 |---------|-------------|
-| `/summarize url:<url>` | Summarize any URL on-demand (uses faster Sonnet model) |
+| `/summarize url:<url>` | Summarize any URL on-demand |
 | `/config channel #channel` | Set default output channel |
 | `/config show` | Show current configuration |
 | `/status` | Uptime, latency, source counts |
@@ -183,8 +183,8 @@ Override per source type (each defaults to `DEFAULT_POLL_INTERVAL_MINUTES`, rang
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SUMMARY_MODEL` | `claude-haiku-4-5-20251001` | Model for background summarization |
-| `SUMMARY_MODEL_INTERACTIVE` | `claude-sonnet-4-20250514` | Model for `/summarize` (faster, higher quality) |
+| `SUMMARY_MODEL` | `claude-haiku-4-5-20251001` | Model for background summarization (any Anthropic model ID) |
+| `SUMMARY_MODEL_INTERACTIVE` | `claude-sonnet-4-20250514` | Model for `/summarize` (any Anthropic model ID) |
 | `SUMMARY_MAX_TOKENS` | `2048` | Max tokens per summary (256-8192) |
 | `SUMMARY_MAX_INPUT_LENGTH` | `100000` | Max input length before truncation (1000-500000) |
 | `DISCORD_MAX_MESSAGE_LENGTH` | `2000` | Max Discord message length (500-2000) |
@@ -221,7 +221,7 @@ Sources (Substack, YouTube, RSS, ...)
               │
               ▼
 ┌─────────────────────────────┐
-│  Summarization Service      │  Claude generates thesis + key arguments
+│  Summarization Service      │  LLM generates thesis + key arguments
 │  (summarizer.py)            │  Retry with backoff on rate limits
 └─────────────┬───────────────┘
               │
