@@ -2,6 +2,7 @@ import asyncio
 import json
 import time
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 import anthropic
 import httpx
@@ -20,6 +21,10 @@ from intelstream.database.models import ContentItem, Source, SourceType
 from intelstream.database.repository import Repository
 from intelstream.services.summarizer import SummarizationError, SummarizationService
 
+if TYPE_CHECKING:
+    from intelstream.database.vector_store import VectorStore
+    from intelstream.services.embedding_service import EmbeddingService
+
 logger = structlog.get_logger()
 
 
@@ -29,10 +34,14 @@ class ContentPipeline:
         settings: Settings,
         repository: Repository,
         summarizer: SummarizationService | None = None,
+        embedding_service: "EmbeddingService | None" = None,
+        vector_store: "VectorStore | None" = None,
     ) -> None:
         self._settings = settings
         self._repository = repository
         self._summarizer = summarizer
+        self._embedding_service = embedding_service
+        self._vector_store = vector_store
         self._http_client: httpx.AsyncClient | None = None
         self._adapters: dict[SourceType, BaseAdapter] = {}
 
@@ -336,6 +345,8 @@ class ContentPipeline:
                 summarized_count += 1
                 item_elapsed = round(time.monotonic() - item_start, 2)
 
+                await self._embed_item(item.id, item.title, summary)
+
                 logger.info(
                     "Item summarized",
                     item_id=item.id,
@@ -370,6 +381,16 @@ class ContentPipeline:
             elapsed_seconds=elapsed,
         )
         return summarized_count
+
+    async def _embed_item(self, item_id: str, title: str, summary: str) -> None:
+        if self._embedding_service is None or self._vector_store is None:
+            return
+        try:
+            text = f"{title} {summary}"
+            embedding = await self._embedding_service.embed_text(text)
+            await self._vector_store.upsert_article(item_id, embedding)
+        except Exception as e:
+            logger.warning("Failed to embed item", item_id=item_id, error=str(e))
 
     async def _handle_first_posting_backfill(self, items: list[ContentItem]) -> None:
         processed_sources: set[str] = set()

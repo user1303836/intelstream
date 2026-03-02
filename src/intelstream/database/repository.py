@@ -295,6 +295,30 @@ class Repository:
             )
             return result.scalar_one_or_none()
 
+    async def get_content_items_by_ids(self, item_ids: list[str]) -> list[ContentItem]:
+        if not item_ids:
+            return []
+        async with self.session() as session:
+            result = await session.execute(select(ContentItem).where(ContentItem.id.in_(item_ids)))
+            items = list(result.scalars().all())
+            id_order = {item_id: idx for idx, item_id in enumerate(item_ids)}
+            items.sort(key=lambda item: id_order.get(item.id, len(item_ids)))
+            return items
+
+    async def get_summarized_content_items(
+        self, offset: int = 0, limit: int = 100
+    ) -> list[ContentItem]:
+        async with self.session() as session:
+            result = await session.execute(
+                select(ContentItem)
+                .where(ContentItem.summary.isnot(None))
+                .where(ContentItem.summary != "")
+                .order_by(ContentItem.created_at.asc())
+                .offset(offset)
+                .limit(limit)
+            )
+            return list(result.scalars().all())
+
     async def content_item_exists(self, external_id: str) -> bool:
         async with self.session() as session:
             result = await session.execute(
