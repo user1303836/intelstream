@@ -13,6 +13,39 @@ from intelstream.utils.url_validation import SSRFError, validate_url_for_ssrf
 
 logger = structlog.get_logger()
 
+MIN_CONTENT_LENGTH = 200
+MIN_SENTENCE_COUNT = 3
+
+_NAV_KEYWORDS = frozenset(
+    {
+        "home",
+        "about",
+        "contact",
+        "subscribe",
+        "login",
+        "register",
+        "menu",
+        "navigation",
+        "cookie",
+        "search",
+        "share",
+    }
+)
+
+_CSS_SELECTORS = [
+    ".post-content",
+    ".entry-content",
+    ".article-body",
+    ".article-content",
+    ".gh-content",
+    ".body.markup",
+    "[itemprop='articleBody']",
+    ".post-body",
+    ".blog-content",
+    ".content-body",
+    ".markdown-body",
+]
+
 
 @dataclass
 class ExtractedContent:
@@ -44,10 +77,27 @@ class ContentExtractor:
             output_format="txt",
         )
 
-        if result:
+        if result and self._validate_content(result):
             metadata = trafilatura.extract_metadata(html)
             return ExtractedContent(
                 text=result,
+                title=metadata.title if metadata else None,
+                author=metadata.author if metadata else None,
+                published_at=self._parse_date(metadata.date if metadata else None),
+            )
+
+        recall_result = trafilatura.extract(
+            html,
+            include_comments=False,
+            include_tables=True,
+            output_format="txt",
+            favor_recall=True,
+        )
+
+        if recall_result and self._validate_content(recall_result):
+            metadata = trafilatura.extract_metadata(html)
+            return ExtractedContent(
+                text=recall_result,
                 title=metadata.title if metadata else None,
                 author=metadata.author if metadata else None,
                 published_at=self._parse_date(metadata.date if metadata else None),
@@ -57,28 +107,74 @@ class ContentExtractor:
 
         article = soup.find("article")
         if article:
-            return ExtractedContent(
-                text=article.get_text(separator="\n", strip=True),
-                title=self._extract_title(soup),
-                author=self._extract_author(soup),
-                published_at=self._extract_date(soup),
-            )
+            text = article.get_text(separator="\n", strip=True)
+            if self._validate_content(text):
+                return ExtractedContent(
+                    text=text,
+                    title=self._extract_title(soup),
+                    author=self._extract_author(soup),
+                    published_at=self._extract_date(soup),
+                )
 
         main = soup.find("main")
         if main:
+            text = main.get_text(separator="\n", strip=True)
+            if self._validate_content(text):
+                return ExtractedContent(
+                    text=text,
+                    title=self._extract_title(soup),
+                    author=self._extract_author(soup),
+                    published_at=self._extract_date(soup),
+                )
+
+        css_text = self._extract_via_css_selectors(soup)
+        if css_text and self._validate_content(css_text):
             return ExtractedContent(
-                text=main.get_text(separator="\n", strip=True),
+                text=css_text,
                 title=self._extract_title(soup),
                 author=self._extract_author(soup),
                 published_at=self._extract_date(soup),
             )
 
+        largest_block = self._extract_largest_text_block(soup)
+        if self._validate_content(largest_block):
+            return ExtractedContent(
+                text=largest_block,
+                title=self._extract_title(soup),
+                author=self._extract_author(soup),
+                published_at=self._extract_date(soup),
+            )
+
+        logger.warning("Content extraction failed validation", url=url)
         return ExtractedContent(
-            text=self._extract_largest_text_block(soup),
+            text="",
             title=self._extract_title(soup),
             author=self._extract_author(soup),
             published_at=self._extract_date(soup),
         )
+
+    def _validate_content(self, text: str) -> bool:
+        if not text or len(text.strip()) < MIN_CONTENT_LENGTH:
+            return False
+
+        sentences = re.split(r"[.!?]+\s", text)
+        if len(sentences) < MIN_SENTENCE_COUNT:
+            return False
+
+        words = text.lower().split()
+        if not words:
+            return False
+        nav_word_count = sum(1 for w in words if w.strip(".,;:!?()[]") in _NAV_KEYWORDS)
+        return nav_word_count / len(words) <= 0.3
+
+    def _extract_via_css_selectors(self, soup: BeautifulSoup) -> str | None:
+        for selector in _CSS_SELECTORS:
+            element = soup.select_one(selector)
+            if element:
+                text = element.get_text(separator="\n", strip=True)
+                if text:
+                    return text
+        return None
 
     async def _fetch_html(self, url: str) -> str | None:
         headers = {
