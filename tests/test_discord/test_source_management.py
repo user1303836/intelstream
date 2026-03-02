@@ -1,10 +1,11 @@
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 import pytest
 
 from intelstream.database.models import PauseReason, SourceType
 from intelstream.discord.cogs.source_management import (
+    ConfirmSourceRemoveView,
     InvalidSourceURLError,
     SourceManagement,
     parse_source_identifier,
@@ -417,18 +418,36 @@ class TestSourceManagementList:
 
 
 class TestSourceManagementRemove:
-    async def test_remove_source_success(self, source_management, mock_bot):
+    def _make_confirmed_view(self) -> MagicMock:
+        view = MagicMock(spec=ConfirmSourceRemoveView)
+        view.confirmed = True
+        view.wait = AsyncMock(return_value=False)
+        return view
+
+    def _make_cancelled_view(self) -> MagicMock:
+        view = MagicMock(spec=ConfirmSourceRemoveView)
+        view.confirmed = False
+        view.wait = AsyncMock(return_value=False)
+        return view
+
+    @patch("intelstream.discord.cogs.source_management.ConfirmSourceRemoveView")
+    async def test_remove_source_confirmed(self, mock_view_cls, source_management, mock_bot):
+        mock_view_cls.return_value = self._make_confirmed_view()
+
         interaction = MagicMock(spec=discord.Interaction)
         interaction.response = MagicMock()
         interaction.response.defer = AsyncMock()
         interaction.followup = MagicMock()
         interaction.followup.send = AsyncMock()
+        interaction.edit_original_response = AsyncMock()
         interaction.user = MagicMock()
         interaction.user.id = 123
 
         mock_source = MagicMock()
         mock_source.identifier = "test-identifier"
         mock_source.id = "source-id-1"
+        mock_source.type = SourceType.SUBSTACK
+        mock_source.is_active = True
         mock_bot.repository.get_source_by_name = AsyncMock(return_value=mock_source)
         mock_bot.repository.get_content_count_for_source = AsyncMock(return_value=0)
         mock_bot.repository.delete_source = AsyncMock(return_value=True)
@@ -438,21 +457,27 @@ class TestSourceManagementRemove:
         )
 
         mock_bot.repository.delete_source.assert_called_once_with("test-identifier")
-        call_args = interaction.followup.send.call_args
-        assert "removed" in call_args[0][0]
+        msg = interaction.edit_original_response.call_args.kwargs["content"]
+        assert "removed" in msg
 
-    async def test_remove_source_with_content_warns(self, source_management, mock_bot):
+    @patch("intelstream.discord.cogs.source_management.ConfirmSourceRemoveView")
+    async def test_remove_source_with_content(self, mock_view_cls, source_management, mock_bot):
+        mock_view_cls.return_value = self._make_confirmed_view()
+
         interaction = MagicMock(spec=discord.Interaction)
         interaction.response = MagicMock()
         interaction.response.defer = AsyncMock()
         interaction.followup = MagicMock()
         interaction.followup.send = AsyncMock()
+        interaction.edit_original_response = AsyncMock()
         interaction.user = MagicMock()
         interaction.user.id = 123
 
         mock_source = MagicMock()
         mock_source.identifier = "test-identifier"
         mock_source.id = "source-id-1"
+        mock_source.type = SourceType.SUBSTACK
+        mock_source.is_active = True
         mock_bot.repository.get_source_by_name = AsyncMock(return_value=mock_source)
         mock_bot.repository.get_content_count_for_source = AsyncMock(return_value=42)
         mock_bot.repository.delete_source = AsyncMock(return_value=True)
@@ -461,9 +486,37 @@ class TestSourceManagementRemove:
             source_management, interaction, name="Test Source"
         )
 
-        msg = interaction.followup.send.call_args[0][0]
+        msg = interaction.edit_original_response.call_args.kwargs["content"]
         assert "42 content items" in msg
-        assert "/source toggle" in msg
+
+    @patch("intelstream.discord.cogs.source_management.ConfirmSourceRemoveView")
+    async def test_remove_source_cancelled(self, mock_view_cls, source_management, mock_bot):
+        mock_view_cls.return_value = self._make_cancelled_view()
+
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = MagicMock()
+        interaction.response.defer = AsyncMock()
+        interaction.followup = MagicMock()
+        interaction.followup.send = AsyncMock()
+        interaction.edit_original_response = AsyncMock()
+        interaction.user = MagicMock()
+        interaction.user.id = 123
+
+        mock_source = MagicMock()
+        mock_source.identifier = "test-identifier"
+        mock_source.id = "source-id-1"
+        mock_source.type = SourceType.SUBSTACK
+        mock_source.is_active = True
+        mock_bot.repository.get_source_by_name = AsyncMock(return_value=mock_source)
+        mock_bot.repository.get_content_count_for_source = AsyncMock(return_value=0)
+
+        await source_management.source_remove.callback(
+            source_management, interaction, name="Test Source"
+        )
+
+        mock_bot.repository.delete_source.assert_not_called()
+        msg = interaction.edit_original_response.call_args.kwargs["content"]
+        assert "cancelled" in msg
 
     async def test_remove_source_not_found(self, source_management, mock_bot):
         interaction = MagicMock(spec=discord.Interaction)
@@ -481,6 +534,40 @@ class TestSourceManagementRemove:
         mock_bot.repository.delete_source.assert_not_called()
         call_args = interaction.followup.send.call_args
         assert "No source found" in call_args[0][0]
+
+    @patch("intelstream.discord.cogs.source_management.ConfirmSourceRemoveView")
+    async def test_remove_shows_confirmation_embed(
+        self, mock_view_cls, source_management, mock_bot
+    ):
+        mock_view_cls.return_value = self._make_cancelled_view()
+
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = MagicMock()
+        interaction.response.defer = AsyncMock()
+        interaction.followup = MagicMock()
+        interaction.followup.send = AsyncMock()
+        interaction.edit_original_response = AsyncMock()
+
+        mock_source = MagicMock()
+        mock_source.identifier = "test-id"
+        mock_source.id = "source-id-1"
+        mock_source.type = SourceType.RSS
+        mock_source.is_active = False
+        mock_bot.repository.get_source_by_name = AsyncMock(return_value=mock_source)
+        mock_bot.repository.get_content_count_for_source = AsyncMock(return_value=5)
+
+        await source_management.source_remove.callback(
+            source_management, interaction, name="My RSS"
+        )
+
+        call_kwargs = interaction.followup.send.call_args.kwargs
+        embed = call_kwargs["embed"]
+        assert embed.title == "Confirm Source Removal"
+        assert "My RSS" in embed.description
+        field_names = [f.name for f in embed.fields]
+        assert "Type" in field_names
+        assert "Status" in field_names
+        assert "Content Items" in field_names
 
 
 class TestSourceManagementInfo:
@@ -683,3 +770,80 @@ class TestSourceManagementToggle:
         mock_bot.repository.set_source_active.assert_not_called()
         call_args = interaction.followup.send.call_args
         assert "No source found" in call_args[0][0]
+
+
+class TestSourceAutocomplete:
+    def _make_source(self, name: str, stype: SourceType, is_active: bool) -> MagicMock:
+        s = MagicMock()
+        s.name = name
+        s.type = stype
+        s.is_active = is_active
+        return s
+
+    async def test_autocomplete_returns_matching_sources(self, source_management, mock_bot):
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.channel_id = 789
+
+        sources = [
+            self._make_source("Alpha Blog", SourceType.BLOG, True),
+            self._make_source("Beta RSS", SourceType.RSS, False),
+            self._make_source("Gamma Newsletter", SourceType.SUBSTACK, True),
+        ]
+        mock_bot.repository.get_all_sources = AsyncMock(return_value=sources)
+
+        choices = await source_management._source_name_autocomplete(interaction, "beta")
+
+        assert len(choices) == 1
+        assert choices[0].value == "Beta RSS"
+        assert "[OFF]" in choices[0].name
+
+    async def test_autocomplete_returns_all_on_empty_input(self, source_management, mock_bot):
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.channel_id = 789
+
+        sources = [
+            self._make_source("Source A", SourceType.BLOG, True),
+            self._make_source("Source B", SourceType.RSS, True),
+        ]
+        mock_bot.repository.get_all_sources = AsyncMock(return_value=sources)
+
+        choices = await source_management._source_name_autocomplete(interaction, "")
+
+        assert len(choices) == 2
+
+    async def test_autocomplete_limits_to_25(self, source_management, mock_bot):
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.channel_id = 789
+
+        sources = [self._make_source(f"Source {i}", SourceType.RSS, True) for i in range(30)]
+        mock_bot.repository.get_all_sources = AsyncMock(return_value=sources)
+
+        choices = await source_management._source_name_autocomplete(interaction, "")
+
+        assert len(choices) == 25
+
+    async def test_autocomplete_includes_status_indicator(self, source_management, mock_bot):
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.channel_id = 789
+
+        sources = [
+            self._make_source("Active Source", SourceType.BLOG, True),
+            self._make_source("Paused Source", SourceType.RSS, False),
+        ]
+        mock_bot.repository.get_all_sources = AsyncMock(return_value=sources)
+
+        choices = await source_management._source_name_autocomplete(interaction, "")
+
+        assert "[ON]" in choices[0].name
+        assert "[OFF]" in choices[1].name
+
+    async def test_autocomplete_includes_type(self, source_management, mock_bot):
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.channel_id = 789
+
+        sources = [self._make_source("My Feed", SourceType.RSS, True)]
+        mock_bot.repository.get_all_sources = AsyncMock(return_value=sources)
+
+        choices = await source_management._source_name_autocomplete(interaction, "")
+
+        assert "(rss)" in choices[0].name

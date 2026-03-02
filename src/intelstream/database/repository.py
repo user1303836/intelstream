@@ -807,6 +807,13 @@ class Repository:
             )
             return list(result.scalars().all())
 
+    async def get_github_repos_for_guild(self, guild_id: str) -> list[GitHubRepo]:
+        async with self.session() as session:
+            result = await session.execute(
+                select(GitHubRepo).where(GitHubRepo.guild_id == guild_id)
+            )
+            return list(result.scalars().all())
+
     async def get_all_github_repos(self, active_only: bool = True) -> list[GitHubRepo]:
         async with self.session() as session:
             query = select(GitHubRepo)

@@ -33,6 +33,34 @@ def parse_github_url(url: str) -> tuple[str, str] | None:
     return None
 
 
+class ConfirmGitHubRemoveView(discord.ui.View):
+    def __init__(self, owner: str, repo_name: str) -> None:
+        super().__init__(timeout=30)
+        self.owner = owner
+        self.repo_name = repo_name
+        self.confirmed: bool | None = None
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger)
+    async def confirm(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button["ConfirmGitHubRemoveView"],
+    ) -> None:
+        self.confirmed = True
+        self.stop()
+        await interaction.response.defer()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button["ConfirmGitHubRemoveView"],
+    ) -> None:
+        self.confirmed = False
+        self.stop()
+        await interaction.response.defer()
+
+
 class GitHubCommands(commands.Cog):
     def __init__(self, bot: "IntelStreamBot") -> None:
         self.bot = bot
@@ -48,6 +76,24 @@ class GitHubCommands(commands.Cog):
     async def cog_unload(self) -> None:
         if self._github_service:
             await self._github_service.close()
+
+    async def _github_repo_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        guild_id = str(interaction.guild_id) if interaction.guild_id else None
+        if not guild_id:
+            return []
+        repos = await self.bot.repository.get_github_repos_for_guild(guild_id)
+        return [
+            app_commands.Choice(
+                name=f"{'[ON]' if r.is_active else '[OFF]'} {r.owner}/{r.repo}",
+                value=f"{r.owner}/{r.repo}",
+            )
+            for r in repos
+            if current.lower() in f"{r.owner}/{r.repo}".lower()
+        ][:25]
 
     github_group = app_commands.Group(name="github", description="Monitor GitHub repositories")
 
@@ -252,6 +298,43 @@ class GitHubCommands(commands.Cog):
             )
             return
 
+        github_repo = await self.bot.repository.get_github_repo(guild_id, owner, repo_name)
+        if not github_repo:
+            await interaction.followup.send(
+                f"Repository `{owner}/{repo_name}` is not being monitored in this server.",
+                ephemeral=True,
+            )
+            return
+
+        tracking = []
+        if github_repo.track_commits:
+            tracking.append("Commits")
+        if github_repo.track_prs:
+            tracking.append("PRs")
+        if github_repo.track_issues:
+            tracking.append("Issues")
+
+        embed = discord.Embed(
+            title="Confirm Repository Removal",
+            description=f"Are you sure you want to stop monitoring **{owner}/{repo_name}**?",
+            color=discord.Color.red(),
+        )
+        embed.add_field(name="Channel", value=f"<#{github_repo.channel_id}>", inline=True)
+        embed.add_field(
+            name="Status", value="Active" if github_repo.is_active else "Paused", inline=True
+        )
+        embed.add_field(name="Tracking", value=", ".join(tracking) or "None", inline=True)
+
+        view = ConfirmGitHubRemoveView(owner, repo_name)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        timed_out = await view.wait()
+
+        if timed_out or not view.confirmed:
+            await interaction.edit_original_response(
+                content="Repository removal cancelled.", embed=None, view=None
+            )
+            return
+
         deleted = await self.bot.repository.delete_github_repo(guild_id, owner, repo_name)
 
         if deleted:
@@ -261,14 +344,21 @@ class GitHubCommands(commands.Cog):
                 repo=repo_name,
                 user_id=interaction.user.id,
             )
-            await interaction.followup.send(
-                f"Stopped monitoring `{owner}/{repo_name}`.", ephemeral=True
+            await interaction.edit_original_response(
+                content=f"Stopped monitoring `{owner}/{repo_name}`.", embed=None, view=None
             )
         else:
-            await interaction.followup.send(
-                f"Repository `{owner}/{repo_name}` is not being monitored in this server.",
-                ephemeral=True,
+            await interaction.edit_original_response(
+                content=f"Repository `{owner}/{repo_name}` was already removed.",
+                embed=None,
+                view=None,
             )
+
+    @github_remove.autocomplete("repo")
+    async def github_remove_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await self._github_repo_autocomplete(interaction, current)
 
     @github_group.command(name="toggle", description="Enable or disable GitHub repo monitoring")
     @app_commands.default_permissions(manage_guild=True)
@@ -319,6 +409,12 @@ class GitHubCommands(commands.Cog):
         await interaction.followup.send(
             f"Monitoring for `{owner}/{repo_name}` has been {status}.", ephemeral=True
         )
+
+    @github_toggle.autocomplete("repo")
+    async def github_toggle_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await self._github_repo_autocomplete(interaction, current)
 
 
 async def setup(bot: "IntelStreamBot") -> None:
