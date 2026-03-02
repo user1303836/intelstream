@@ -287,9 +287,9 @@ class MessageIngestionService:
                         buffer, guild_id, channel_id, channel_name
                     )
                     if chunks:
-                        leftover_start = len(buffer)
+                        leftover_start = 0
                         for chunk in chunks:
-                            leftover_start = min(
+                            leftover_start = max(
                                 leftover_start,
                                 next(
                                     (
@@ -297,7 +297,7 @@ class MessageIngestionService:
                                         for i, m in enumerate(buffer)
                                         if m.id == chunk.messages[-1].id
                                     ),
-                                    len(buffer),
+                                    0,
                                 )
                                 + 1,
                             )
@@ -364,7 +364,7 @@ class MessageIngestionService:
         channels = [
             ch for ch in guild.text_channels if ch.permissions_for(guild.me).read_message_history
         ]
-        channels.sort(key=lambda c: c.last_message_id or 0, reverse=True)
+        channels.sort(key=lambda c: c.last_message_id or "", reverse=True)
 
         logger.info(
             "Starting backfill",

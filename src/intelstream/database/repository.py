@@ -1042,6 +1042,8 @@ class Repository:
     async def get_in_progress_ingestions(self) -> list[IngestionProgress]:
         async with self.session() as session:
             result = await session.execute(
-                select(IngestionProgress).where(IngestionProgress.status == "in_progress")
+                select(IngestionProgress).where(
+                    IngestionProgress.status.in_(("in_progress", "paused"))
+                )
             )
             return list(result.scalars().all())
