@@ -56,9 +56,17 @@ class SuckBoobs(commands.Cog):
             guild_id=interaction.guild_id,
         )
 
-        await interaction.response.send_message(
-            f"🍼 {interaction.user.display_name} sucks <@{target.id}>'s boobs 🥛😳"
-        )
+        # 1/20 chance (5%)
+        if random.randint(1, 20) == 1:
+            await interaction.response.send_message(
+                f"{interaction.user.display_name} lost all self-control! Instead of the boob, they bypassed it entirely "
+                f"and started violently gobbling on <@{target.id}>'s dick like it's their last meal on Earth. "
+                f"Have some shame, you starving animal!"
+            )
+        else:
+            await interaction.response.send_message(
+                f"🍼 {interaction.user.display_name} sucks <@{target.id}>'s boobs 🥛😳"
+            )
 
     @app_commands.command(name="suck_boobs_score", description="Show the suck_boobs leaderboard")
     async def suck_boobs_score(self, interaction: discord.Interaction) -> None:
