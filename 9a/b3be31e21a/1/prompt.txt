@@ -1,0 +1,54 @@
+IMPORTANT: After completing the task below, you MUST output a JSON object in a ```json code fence at the very end of your response. Do NOT forget this — the workflow fails without it.
+
+Verify semantic search on branch "feature/semantic-search-v2" at /Users/user1303836/Development/intelstream.
+
+Run the full verification suite:
+1. git checkout feature/semantic-search-v2
+2. uv run ruff check .
+3. uv run ruff format --check .
+4. uv run mypy src/
+5. uv run pytest tests/ -v --tb=short
+
+Fix any failures before proceeding.
+
+Return JSON with:
+- tests_pass: boolean
+- lint_pass: boolean
+- type_check_pass: boolean
+- test_count: number of tests that ran (integer)
+- summary: brief description of test results
+
+
+**REQUIRED OUTPUT** — You MUST end your response with a JSON object in a code fence matching this schema:
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "tests_pass": {
+      "type": "boolean"
+    },
+    "lint_pass": {
+      "type": "boolean"
+    },
+    "type_check_pass": {
+      "type": "boolean"
+    },
+    "test_count": {
+      "type": "number"
+    },
+    "summary": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "tests_pass",
+    "lint_pass",
+    "type_check_pass",
+    "test_count",
+    "summary"
+  ],
+  "additionalProperties": false
+}
+```
+Output the JSON at the END of your response. The workflow will fail without it.
