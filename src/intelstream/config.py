@@ -195,6 +195,30 @@ class Settings(BaseSettings):
         description="Polling interval for Page sources (falls back to DEFAULT_POLL_INTERVAL_MINUTES)",
     )
 
+    embedding_model: str = Field(
+        default="all-MiniLM-L6-v2",
+        description="Sentence-transformers model for embeddings",
+    )
+    embedding_dimensions: int = Field(
+        default=384,
+        ge=1,
+        description="Embedding vector dimensions (must match the model)",
+    )
+    search_result_limit: int = Field(
+        default=5,
+        ge=1,
+        le=25,
+        description="Max search results per query",
+    )
+    zvec_data_dir: str = Field(
+        default="data/vectors",
+        description="Directory for zvec vector data files",
+    )
+    search_enabled: bool = Field(
+        default=True,
+        description="Enable semantic search features",
+    )
+
     def get_poll_interval(self, source_type: SourceType) -> int:
         from intelstream.database.models import SourceType
 

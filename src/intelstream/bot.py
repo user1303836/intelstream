@@ -12,6 +12,8 @@ from intelstream.database.repository import Repository
 
 if TYPE_CHECKING:
     from intelstream.database.models import Source
+    from intelstream.database.vector_store import VectorStore
+    from intelstream.services.embedding_service import EmbeddingService
 
 logger = structlog.get_logger(__name__)
 
@@ -111,6 +113,8 @@ class IntelStreamBot(commands.Bot):
         self.repository = repository
         self.start_time: datetime | None = None
         self._owner: discord.User | None = None
+        self.embedding_service: EmbeddingService | None = None
+        self.vector_store: VectorStore | None = None
 
     async def setup_hook(self) -> None:
         db_dir = get_database_directory(self.settings.database_url)
@@ -153,11 +157,38 @@ class IntelStreamBot(commands.Bot):
         await self.add_cog(GitHubCommands(self))
         await self.add_cog(GitHubPolling(self))
 
+        if self.settings.search_enabled:
+            await self._setup_search()
+
         guild = discord.Object(id=self.settings.discord_guild_id)
         self.tree.copy_global_to(guild=guild)
         await self.tree.sync(guild=guild)
 
         logger.info("Bot setup complete, commands synced")
+
+    async def _setup_search(self) -> None:
+        from intelstream.database.vector_store import VectorStore
+        from intelstream.discord.cogs.search import Search
+        from intelstream.services.embedding_service import EmbeddingService
+
+        try:
+            self.embedding_service = EmbeddingService(
+                model_name=self.settings.embedding_model,
+            )
+            await self.embedding_service.initialize()
+
+            self.vector_store = VectorStore(
+                data_dir=self.settings.zvec_data_dir,
+                dimensions=self.settings.embedding_dimensions,
+            )
+            await self.vector_store.initialize()
+
+            await self.add_cog(Search(self, self.embedding_service, self.vector_store))
+            logger.info("Search services initialized")
+        except Exception as e:
+            logger.error("Failed to initialize search services", error=str(e))
+            self.embedding_service = None
+            self.vector_store = None
 
     async def on_ready(self) -> None:
         self.start_time = datetime.now(UTC)
@@ -219,6 +250,14 @@ class IntelStreamBot(commands.Bot):
             await asyncio.wait_for(unload_all_cogs(), timeout=30.0)
         except TimeoutError:
             logger.error("Total cog unload exceeded 30s timeout")
+
+        if self.vector_store is not None:
+            try:
+                await asyncio.wait_for(self.vector_store.close(), timeout=5.0)
+            except TimeoutError:
+                logger.error("Vector store close timed out")
+            except Exception as e:
+                logger.error("Error closing vector store", error=str(e))
 
         try:
             await asyncio.wait_for(self.repository.close(), timeout=5.0)

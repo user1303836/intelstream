@@ -918,6 +918,88 @@ class TestSummarizePending:
         await pipeline.close()
 
 
+class TestEmbedItem:
+    async def test_embeds_after_summarization(
+        self,
+        mock_settings,
+        mock_repository: AsyncMock,
+        sample_content_item,
+        sample_source,
+    ):
+        mock_summarizer = AsyncMock(spec=SummarizationService)
+        mock_embedding = AsyncMock()
+        mock_embedding.embed_text = AsyncMock(return_value=[0.1, 0.2, 0.3])
+        mock_vector_store = AsyncMock()
+
+        pipeline = ContentPipeline(
+            settings=mock_settings,
+            repository=mock_repository,
+            summarizer=mock_summarizer,
+            get_search_services=lambda: (mock_embedding, mock_vector_store),
+        )
+
+        mock_repository.get_unsummarized_content_items.return_value = [sample_content_item]
+        mock_repository.get_source_by_id.return_value = sample_source
+        mock_repository.has_source_posted_content.return_value = True
+        mock_summarizer.summarize.return_value = "This is the summary."
+
+        result = await pipeline.summarize_pending()
+
+        assert result == 1
+        mock_embedding.embed_text.assert_called_once_with(
+            f"{sample_content_item.title} This is the summary."
+        )
+        mock_vector_store.upsert_article.assert_called_once_with(
+            sample_content_item.id, [0.1, 0.2, 0.3]
+        )
+
+    async def test_embedding_failure_does_not_block_summarization(
+        self,
+        mock_settings,
+        mock_repository: AsyncMock,
+        sample_content_item,
+        sample_source,
+    ):
+        mock_summarizer = AsyncMock(spec=SummarizationService)
+        mock_embedding = AsyncMock()
+        mock_embedding.embed_text = AsyncMock(side_effect=RuntimeError("embed failed"))
+        mock_vector_store = AsyncMock()
+
+        pipeline = ContentPipeline(
+            settings=mock_settings,
+            repository=mock_repository,
+            summarizer=mock_summarizer,
+            get_search_services=lambda: (mock_embedding, mock_vector_store),
+        )
+
+        mock_repository.get_unsummarized_content_items.return_value = [sample_content_item]
+        mock_repository.get_source_by_id.return_value = sample_source
+        mock_repository.has_source_posted_content.return_value = True
+        mock_summarizer.summarize.return_value = "Summary"
+
+        result = await pipeline.summarize_pending()
+
+        assert result == 1
+        mock_repository.update_content_item_summary.assert_called_once()
+
+    async def test_no_embedding_when_services_not_configured(
+        self,
+        pipeline: ContentPipeline,
+        mock_repository: AsyncMock,
+        mock_summarizer: AsyncMock,
+        sample_content_item,
+        sample_source,
+    ):
+        mock_repository.get_unsummarized_content_items.return_value = [sample_content_item]
+        mock_repository.get_source_by_id.return_value = sample_source
+        mock_repository.has_source_posted_content.return_value = True
+        mock_summarizer.summarize.return_value = "Summary"
+
+        result = await pipeline.summarize_pending()
+
+        assert result == 1
+
+
 class TestRunCycle:
     async def test_run_cycle_returns_tuple(
         self,

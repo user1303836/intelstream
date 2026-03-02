@@ -40,6 +40,10 @@ class ContentPosting(commands.Cog):
             settings=self.bot.settings,
             repository=self.bot.repository,
             summarizer=summarizer,
+            get_search_services=lambda: (
+                self.bot.embedding_service,
+                self.bot.vector_store,
+            ),
         )
         await self._pipeline.initialize()
 
