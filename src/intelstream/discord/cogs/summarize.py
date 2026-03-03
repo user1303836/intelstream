@@ -76,6 +76,8 @@ class Summarize(commands.Cog):
         logger.info("Summarize cog loaded")
 
     async def cog_unload(self) -> None:
+        if self._summarizer:
+            await self._summarizer.close()
         if self._http_client:
             await self._http_client.aclose()
         logger.info("Summarize cog unloaded")
