@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 import structlog
 
@@ -209,6 +210,7 @@ class MessageIngestionService:
 
         for chunk, embedding in zip(chunks, embeddings, strict=True):
             meta = MessageChunkMeta(
+                id=str(uuid4()),
                 guild_id=chunk.guild_id,
                 channel_id=chunk.channel_id,
                 channel_name=chunk.channel_name,

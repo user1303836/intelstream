@@ -130,7 +130,7 @@ class Lore(commands.Cog):
         channel="Limit search to a specific channel",
         timeframe="Time range, e.g. 'last 6 months', '2024'",
     )
-    @app_commands.checks.cooldown(rate=1, per=120.0)
+    @app_commands.checks.cooldown(rate=1, per=30.0)
     async def lore(
         self,
         interaction: discord.Interaction,
@@ -167,10 +167,13 @@ class Lore(commands.Cog):
         results = await self._vector_store.search_message_chunks(query_embedding, topk=topk)
 
         if not results:
-            await interaction.followup.send(
-                "No lore found. The message index may still be building.",
-                ephemeral=True,
+            still_building = (
+                self._ingestion_service is not None and self._ingestion_service.is_running
             )
+            msg = "No lore found yet."
+            if still_building:
+                msg += " The message index is still being built -- try again soon."
+            await interaction.followup.send(msg, ephemeral=True)
             return
 
         chunk_ids = [r.chunk_id for r in results]
