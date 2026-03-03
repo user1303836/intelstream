@@ -22,6 +22,7 @@ class ConfigManagement(commands.Cog):
     )
 
     @config_group.command(name="channel", description="Set the channel for content posts")
+    @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.describe(channel="The channel where content summaries will be posted")
     async def config_channel(
         self,
@@ -139,6 +140,17 @@ class ConfigManagement(commands.Cog):
         )
 
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @config_channel.error
+    async def config_channel_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        if isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message(
+                "You need Manage Server permission to configure the bot.", ephemeral=True
+            )
+        else:
+            raise error
 
 
 async def setup(bot: "IntelStreamBot") -> None:
