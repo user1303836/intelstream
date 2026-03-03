@@ -19,6 +19,7 @@ from youtube_transcript_api._errors import (
 )
 
 from intelstream.adapters.substack import SubstackAdapter
+from intelstream.services.llm_client import create_llm_client
 from intelstream.services.summarizer import SummarizationService
 from intelstream.services.web_fetcher import WebContent, WebFetcher, WebFetchError
 from intelstream.utils.url_validation import is_safe_url
@@ -62,9 +63,13 @@ class Summarize(commands.Cog):
             follow_redirects=True,
             headers={"User-Agent": "Mozilla/5.0 (compatible; IntelStream/1.0)"},
         )
-        self._summarizer = SummarizationService(
-            api_key=self.bot.settings.anthropic_api_key,
+        llm_client = create_llm_client(
+            provider=self.bot.settings.llm_provider,
+            api_key=self.bot.settings.llm_api_key,
             model=self.bot.settings.summary_model_interactive,
+        )
+        self._summarizer = SummarizationService(
+            client=llm_client,
             max_tokens=self.bot.settings.summary_max_tokens,
             max_input_length=self.bot.settings.summary_max_input_length,
         )
@@ -318,9 +323,13 @@ class Summarize(commands.Cog):
 
         try:
             if not self._summarizer:
-                self._summarizer = SummarizationService(
-                    api_key=self.bot.settings.anthropic_api_key,
+                llm_client = create_llm_client(
+                    provider=self.bot.settings.llm_provider,
+                    api_key=self.bot.settings.llm_api_key,
                     model=self.bot.settings.summary_model_interactive,
+                )
+                self._summarizer = SummarizationService(
+                    client=llm_client,
                     max_tokens=self.bot.settings.summary_max_tokens,
                     max_input_length=self.bot.settings.summary_max_input_length,
                 )

@@ -29,7 +29,15 @@ class Settings(BaseSettings):
         description="Discord user ID of the bot owner for DM notifications"
     )
 
-    anthropic_api_key: str = Field(min_length=1, description="Anthropic API key for Claude")
+    llm_provider: str = Field(
+        default="anthropic",
+        description="LLM provider for summarization: anthropic, openai, gemini, or kimi",
+    )
+
+    anthropic_api_key: str | None = Field(default=None, description="Anthropic API key for Claude")
+    openai_api_key: str | None = Field(default=None, description="OpenAI API key")
+    gemini_api_key: str | None = Field(default=None, description="Google Gemini API key")
+    kimi_api_key: str | None = Field(default=None, description="Kimi (Moonshot AI) API key")
 
     youtube_api_key: str | None = Field(default=None, description="YouTube Data API key (optional)")
 
@@ -256,6 +264,24 @@ class Settings(BaseSettings):
         }
         return intervals.get(source_type) or self.default_poll_interval_minutes
 
+    @property
+    def llm_api_key(self) -> str:
+        """Return the API key for the configured LLM provider."""
+        keys = {
+            "anthropic": self.anthropic_api_key,
+            "openai": self.openai_api_key,
+            "gemini": self.gemini_api_key,
+            "kimi": self.kimi_api_key,
+        }
+        key = keys.get(self.llm_provider)
+        if not key:
+            raise ValueError(
+                f"No API key configured for LLM provider '{self.llm_provider}'. "
+                f"Set the corresponding environment variable "
+                f"(e.g., ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, KIMI_API_KEY)."
+            )
+        return key
+
     @field_validator("database_url")
     @classmethod
     def validate_database_url(cls, v: str) -> str:
@@ -271,7 +297,11 @@ class Settings(BaseSettings):
             f"discord_bot_token='*****', "
             f"discord_guild_id={self.discord_guild_id}, "
             f"discord_owner_id={self.discord_owner_id}, "
-            f"anthropic_api_key='*****', "
+            f"llm_provider={self.llm_provider!r}, "
+            f"anthropic_api_key={'*****' if self.anthropic_api_key else None}, "
+            f"openai_api_key={'*****' if self.openai_api_key else None}, "
+            f"gemini_api_key={'*****' if self.gemini_api_key else None}, "
+            f"kimi_api_key={'*****' if self.kimi_api_key else None}, "
             f"youtube_api_key={'*****' if self.youtube_api_key else None}, "
             f"twitter_bearer_token={'*****' if self.twitter_bearer_token else None}, "
             f"github_token={'*****' if self.github_token else None}, "

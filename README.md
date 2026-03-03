@@ -1,367 +1,348 @@
+<div align="center">
+
 # IntelStream
 
-A Discord bot that monitors content sources and posts AI-generated summaries to Discord channels.
+**AI-powered content aggregation for Discord**
+
+Monitor newsletters, YouTube channels, RSS feeds, research papers, blogs, Twitter accounts, GitHub repos, and more — with LLM-generated summaries delivered straight to your server.
+
+[![CI](https://github.com/user1303836/intelstream/actions/workflows/ci.yml/badge.svg)](https://github.com/user1303836/intelstream/actions/workflows/ci.yml)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![discord.py](https://img.shields.io/badge/discord.py-2.4+-7289da.svg)](https://discordpy.readthedocs.io/)
+
+[Quickstart](#-quickstart) · [Commands](#-commands) · [Sources](#-supported-sources) · [Configuration](#%EF%B8%8F-configuration) · [Development](#-development)
+
+</div>
+
+---
 
 ## Features
 
-- **Substack newsletters** - Monitor any Substack publication via RSS
-- **YouTube channels** - Track new videos with transcript-based summarization or notify-only mode
-- **RSS/Atom feeds** - Support for any standard RSS or Atom feed
-- **Arxiv papers** - Monitor research paper categories (cs.AI, cs.LG, cs.CL, etc.)
-- **Blogs** - Smart extraction from any blog using cascading discovery strategies (RSS, Sitemap, LLM extraction)
-- **Twitter/X accounts** - Monitor Twitter accounts for new tweets via official X API v2
-- **Web pages** - Monitor any web page URL with automatic content detection
-- **GitHub repositories** - Track commits, pull requests, and issues with Discord embeds
-- **Manual summarization** - Summarize any URL on-demand with `/summarize`
-- **Message forwarding** - Forward messages from channels to threads for better organization
-- **AI summaries** - Claude-powered summaries with thesis and key arguments format
-- **Multi-channel routing** - Route different sources to different channels
+- **7 content source types** — Substack, YouTube, RSS, Arxiv, Blogs, Twitter/X, Web Pages
+- **GitHub monitoring** — Track commits, PRs, and issues with color-coded Discord embeds
+- **Multi-provider AI summaries** — Anthropic, OpenAI, Gemini, or Kimi — extracts thesis and key arguments, not just topics
+- **On-demand summarization** — `/summarize` any URL instantly
+- **Channel summaries** — `/summary` to recap recent channel messages
+- **Server lore** — `/lore query` to search your server's message history with semantic search
+- **Semantic search** — `/search` to find past articles by meaning, not just keywords
+- **Message forwarding** — Route announcement channels into organized threads
+- **Multi-channel routing** — Different sources post to different channels
+- **Per-source polling** — Fine-tune intervals from 1 minute to 24 hours per source type
+- **Auto-recovery** — Exponential backoff and auto-disable on consecutive failures
 
-## Requirements
+## Quickstart
 
-- Python 3.12+
-- Discord Bot Token
-- Anthropic API Key (for Claude)
-- YouTube API Key (optional, for YouTube monitoring)
-- X/Twitter API v2 Bearer Token (optional, for Twitter monitoring)
+```bash
+# Clone and install
+git clone https://github.com/user1303836/intelstream.git
+cd intelstream
+uv sync
 
-## Setup
+# Configure (minimum required)
+cat > .env << 'EOF'
+DISCORD_BOT_TOKEN=your_discord_bot_token
+DISCORD_GUILD_ID=your_guild_id
+DISCORD_OWNER_ID=your_user_id
+ANTHROPIC_API_KEY=your_anthropic_api_key
+EOF
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/user1303836/intelstream.git
-   cd intelstream
-   ```
+# Run
+uv run intelstream
+```
 
-2. Install dependencies using uv:
-   ```bash
-   uv sync
-   ```
+Then in Discord:
 
-3. Create a `.env` file with your configuration:
-   ```bash
-   DISCORD_BOT_TOKEN=your_discord_bot_token
-   DISCORD_GUILD_ID=your_guild_id
-   DISCORD_OWNER_ID=your_user_id
-   ANTHROPIC_API_KEY=your_anthropic_api_key
+```
+/config channel #news-feed
+/source add type:Substack name:"Stratechery" url:https://stratechery.com
+/source add type:YouTube name:"3Blue1Brown" url:https://youtube.com/@3blue1brown
+```
 
-   # Optional: YouTube monitoring
-   # YOUTUBE_API_KEY=your_youtube_api_key
+The bot polls your sources, generates summaries, and posts them to your channel automatically.
 
-   # Optional: Twitter monitoring (X API v2)
-   # TWITTER_BEARER_TOKEN=your_x_api_bearer_token
-   ```
+### Using a different LLM provider
 
-4. Run the bot:
-   ```bash
-   uv run intelstream
-   ```
+```bash
+# OpenAI
+LLM_PROVIDER=openai
+OPENAI_API_KEY=sk-...
 
-## Configuration
+# Google Gemini
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=...
 
-### Required Environment Variables
+# Kimi (Moonshot AI)
+LLM_PROVIDER=kimi
+KIMI_API_KEY=...
+```
 
-| Variable | Description |
-|----------|-------------|
-| `DISCORD_BOT_TOKEN` | Your Discord bot token |
-| `DISCORD_GUILD_ID` | The Discord server ID |
-| `DISCORD_OWNER_ID` | Your Discord user ID (for error notifications) |
-| `ANTHROPIC_API_KEY` | Your Anthropic API key for Claude |
+Set the API key that matches your chosen `LLM_PROVIDER`. Blog and Page source analysis always requires `ANTHROPIC_API_KEY` regardless of the summarization provider.
 
-### Optional Environment Variables
+## Commands
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `YOUTUBE_API_KEY` | - | YouTube Data API key (required for YouTube monitoring) |
-| `TWITTER_BEARER_TOKEN` | - | X API v2 Bearer Token (required for Twitter monitoring) |
-| `GITHUB_TOKEN` | - | GitHub Personal Access Token (required for GitHub monitoring) |
-| `GITHUB_POLL_INTERVAL_MINUTES` | `5` | Polling interval for GitHub repositories (1-60) |
-| `DATABASE_URL` | `sqlite+aiosqlite:///./data/intelstream.db` | Database connection string |
-| `DEFAULT_POLL_INTERVAL_MINUTES` | `5` | Default polling interval for new sources (1-60) |
-| `CONTENT_POLL_INTERVAL_MINUTES` | `5` | Interval for checking and posting new content (1-60) |
-| `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL) |
-
-### Per-Adapter Polling Intervals
-
-Override the default polling interval for specific source types. Each defaults to `DEFAULT_POLL_INTERVAL_MINUTES` when not set. Useful for rate-limiting expensive API calls (e.g., Twitter) while keeping free sources (RSS) on a faster schedule.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SUBSTACK_POLL_INTERVAL_MINUTES` | `DEFAULT_POLL_INTERVAL_MINUTES` | Polling interval for Substack sources (1-1440) |
-| `YOUTUBE_POLL_INTERVAL_MINUTES` | `DEFAULT_POLL_INTERVAL_MINUTES` | Polling interval for YouTube sources (1-1440) |
-| `RSS_POLL_INTERVAL_MINUTES` | `DEFAULT_POLL_INTERVAL_MINUTES` | Polling interval for RSS sources (1-1440) |
-| `ARXIV_POLL_INTERVAL_MINUTES` | `DEFAULT_POLL_INTERVAL_MINUTES` | Polling interval for Arxiv sources (1-1440) |
-| `BLOG_POLL_INTERVAL_MINUTES` | `DEFAULT_POLL_INTERVAL_MINUTES` | Polling interval for Blog sources (1-1440) |
-| `TWITTER_POLL_INTERVAL_MINUTES` | `DEFAULT_POLL_INTERVAL_MINUTES` | Polling interval for Twitter sources (1-1440) |
-| `PAGE_POLL_INTERVAL_MINUTES` | `DEFAULT_POLL_INTERVAL_MINUTES` | Polling interval for Page sources (1-1440) |
-
-### Summarization Settings
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SUMMARY_MAX_TOKENS` | `2048` | Maximum tokens for AI-generated summaries (256-8192) |
-| `SUMMARY_MAX_INPUT_LENGTH` | `100000` | Maximum input content length before truncation (1000-500000) |
-| `SUMMARY_MODEL` | `claude-3-5-haiku-20241022` | Claude model for background summarization |
-| `SUMMARY_MODEL_INTERACTIVE` | `claude-sonnet-4-20250514` | Claude model for interactive `/summarize` command |
-| `DISCORD_MAX_MESSAGE_LENGTH` | `2000` | Maximum Discord message length (500-2000) |
-
-### Advanced Settings
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `HTTP_TIMEOUT_SECONDS` | `30.0` | Timeout for HTTP requests (5-120) |
-| `MAX_HTML_LENGTH` | `50000` | Maximum HTML length for LLM processing (10000-200000) |
-| `SUMMARIZATION_DELAY_SECONDS` | `0.5` | Delay between summarization requests (0.1-5.0) |
-| `MAX_CONSECUTIVE_FAILURES` | `3` | Failures before re-analyzing a source (1-20) |
-| `YOUTUBE_MAX_RESULTS` | `5` | Maximum YouTube videos to fetch per poll (1-50) |
-| `FETCH_DELAY_SECONDS` | `1.0` | Delay between fetching sources (0-30) |
-| `MAX_CONCURRENT_FORWARDS` | `5` | Maximum concurrent message forwards (1-20) |
-
-## Usage
-
-### Getting Started
-
-1. **Invite the bot** to your Discord server with permissions: Send Messages, Use Slash Commands
-
-2. **Set the output channel** where content summaries will be posted:
-   ```
-   /config channel #your-channel-name
-   ```
-
-3. **Add content sources** to monitor:
-   ```
-   /source add type:Substack name:"My Newsletter" url:https://example.substack.com
-   /source add type:YouTube name:"Tech Channel" url:https://youtube.com/@channel
-   /source add type:YouTube name:"Upload Alerts" url:https://youtube.com/@channel summarize:False
-   /source add type:RSS name:"Blog Feed" url:https://example.com/feed.xml
-   /source add type:Arxiv name:"ML Papers" url:cs.LG
-   /source add type:Blog name:"Company Blog" url:https://example.com/blog
-   /source add type:Twitter name:"Elon Musk" url:https://x.com/elonmusk
-   /source add type:Twitter name:"OpenAI" url:https://twitter.com/OpenAI summarize:False
-   /source add type:Page name:"News Site" url:https://example.com/news
-   ```
-
-4. The bot will automatically poll sources, fetch new content, generate AI summaries, and post them to your configured channel.
-
-### Discord Commands
-
-#### Source Management
+### Source Management
 
 | Command | Description |
 |---------|-------------|
-| `/source add type:<type> name:<name> url:<url> [channel:#channel] [summarize:True/False]` | Add a new content source |
-| `/source list [channel:#channel]` | List sources (optionally filter by channel) |
-| `/source remove name:<name>` | Remove a source by name |
-| `/source toggle name:<name>` | Enable or disable a source |
+| `/source add type:<type> name:<name> url:<url>` | Add a content source |
+| `/source list` | List all sources |
+| `/source remove name:<name>` | Remove a source |
+| `/source toggle name:<name>` | Pause or resume a source |
+| `/source info name:<name>` | Diagnostics: failure count, last polled, metrics |
 
-The optional `channel` parameter on `/source add` specifies which channel this source should post to. If omitted, the source uses the guild's default channel (set via `/config channel`).
+Optional parameters on `/source add`:
+- `channel:#channel` — Post to a specific channel (otherwise uses default)
+- `summarize:False` — Post bare URLs instead of AI summaries (Discord auto-embeds)
 
-The optional `summarize` parameter controls whether content is summarized by AI. Defaults to `True`. When set to `False`, the bot posts bare URLs instead of summaries, letting Discord's native embed handle the preview.
-
-**Supported source types:**
-- `Substack` - Substack newsletter URL
-- `YouTube` - YouTube channel URL (requires YouTube API key)
-- `RSS` - Any RSS/Atom feed URL
-- `Arxiv` - Arxiv category code (e.g., `cs.AI`, `cs.LG`, `cs.CL`, `cs.CV`, `stat.ML`)
-- `Blog` - Any blog URL (uses cascading discovery: RSS, Sitemap, LLM extraction)
-- `Twitter` - Twitter/X account URL (requires X API v2 Bearer Token)
-- `Page` - Any web page URL (uses AI to detect content structure)
-
-#### Configuration
+### GitHub Monitoring
 
 | Command | Description |
 |---------|-------------|
-| `/config channel #channel` | Set the channel where summaries will be posted |
-| `/config show` | Show current bot configuration |
+| `/github add repo_url:<url>` | Monitor a repo (supports `owner/repo` or full URL) |
+| `/github list` | List monitored repos |
+| `/github remove repo:<name>` | Stop monitoring |
+| `/github toggle repo:<name>` | Pause or resume |
 
-#### Manual Summarization
+Optional parameters on `/github add`:
+- `channel:#channel` — Post to a specific channel
+- `track_commits:False` — Disable commit tracking
+- `track_prs:False` — Disable PR tracking
+- `track_issues:False` — Disable issue tracking
 
-| Command | Description |
-|---------|-------------|
-| `/summarize url:<url>` | Get an AI summary of any URL (YouTube, Substack, or web page) |
+Color-coded embeds: gray for commits, purple for PRs, blue for issues.
 
-#### Message Forwarding
+### Message Forwarding
 
-Forward messages from one channel to another. Useful for routing followed announcement channels into organized threads.
+Forward messages from channels to threads for better organization. Useful for routing Discord's native "Follow" announcements into threads.
 
 | Command | Description |
 |---------|-------------|
 | `/forward add source:#channel destination:#thread` | Create a forwarding rule |
-| `/forward list [channel:#channel]` | List forwarding rules (optionally filter by channel) |
-| `/forward remove source:#channel destination:#thread` | Remove a forwarding rule |
-| `/forward pause source:#channel destination:#thread` | Temporarily pause forwarding |
-| `/forward resume source:#channel destination:#thread` | Resume paused forwarding |
+| `/forward list` | List forwarding rules |
+| `/forward remove source:#channel destination:#thread` | Remove a rule |
+| `/forward pause source:#channel destination:#thread` | Pause forwarding |
+| `/forward resume source:#channel destination:#thread` | Resume forwarding |
 
-**Use case**: Discord's native "Follow" feature only forwards announcement channel messages to channels, not threads. Use message forwarding to route those messages into a thread for better organization:
+Preserves embeds and attachments. Auto-unarchives destination threads.
 
-```
-External Server (OpenAI Announcements)
-    | (Discord native "Follow")
-    v
-Your Server: #announcement-intake
-    | (Bot forwards)
-    v
-Your Server: #announcements -> "AI News" thread
-```
-
-**Features**:
-- Preserves embeds and attachments from original messages
-- Automatically unarchives archived destination threads
-- Skips attachments that exceed the server's file size limit
-- Supports multiple forwarding rules from the same source to different destinations
-
-#### GitHub Monitoring
-
-Monitor GitHub repositories for new commits, pull requests, and issues. Updates are posted as Discord embeds.
+### Other Commands
 
 | Command | Description |
 |---------|-------------|
-| `/github add <repo_url> [channel]` | Monitor a GitHub repository |
-| `/github list [channel]` | List monitored repositories |
-| `/github remove <repo>` | Stop monitoring a repository |
-
-**Adding a repository**:
-```
-/github add repo_url:https://github.com/owner/repo
-/github add repo_url:owner/repo channel:#github-feed
-```
-
-Both full GitHub URLs and `owner/repo` format are supported. The optional `channel` parameter specifies where updates should be posted (defaults to the current channel).
-
-**Features**:
-- Tracks commits, pull requests, and issues
-- Color-coded embeds (gray for commits, purple for PRs, blue for issues)
-- Shows PR/issue status (open, closed, merged)
-- Displays author avatars and links to GitHub
-- Automatically disables repos after 5 consecutive failures
-- Case-insensitive repository names
-
-**Requirements**: Set `GITHUB_TOKEN` environment variable with a GitHub Personal Access Token. The token needs `repo` scope for private repositories or `public_repo` for public repositories only.
-
-#### Bot Status
-
-| Command | Description |
-|---------|-------------|
-| `/status` | Show uptime, source counts, and latency |
+| `/summarize url:<url>` | Summarize any URL on-demand |
+| `/summary [count] [channel]` | Summarize recent messages in a channel |
+| `/search query:<text>` | Search ingested articles by semantic similarity |
+| `/lore query question:<text>` | Query server message history with natural language |
+| `/lore setup` | Start ingesting server message history (admin) |
+| `/lore status` | Show message ingestion progress |
+| `/config channel #channel` | Set default output channel |
+| `/config show` | Show current configuration |
+| `/status` | Uptime, latency, source counts |
 | `/ping` | Check bot responsiveness |
 
-### How It Works
+## Supported Sources
 
-1. **Polling**: The bot periodically checks all active sources for new content
-2. **Fetching**: New articles/videos are fetched and stored in the database
-3. **Summarization**: Claude AI generates structured summaries with thesis and key arguments
-4. **Posting**: Plain text messages are posted with the summary, author, title link, and source
+| Source | Identifier | Notes |
+|--------|-----------|-------|
+| **Substack** | Publication URL | Auto-discovers RSS feed |
+| **YouTube** | Channel URL or `@handle` | Fetches transcripts for summarization; `summarize:False` posts video URL directly |
+| **RSS** | Feed URL | Any standard RSS or Atom feed |
+| **Arxiv** | Category code (`cs.AI`, `cs.LG`, etc.) | Fetches full HTML papers; summaries focus on problem, innovation, and implications |
+| **Blog** | Blog root URL | Cascading discovery: RSS, Sitemap, LLM extraction. Results cached. |
+| **Twitter/X** | Profile URL or `@username` | Official X API v2. Filters retweets/replies. Includes quoted tweets. |
+| **Page** | Any web page URL | Claude analyzes page structure to auto-detect content selectors |
 
-### Source-Specific Behavior
+### YouTube Details
 
-**YouTube**: Fetches video transcripts (manual or auto-generated) for summarization. Falls back to video description if no transcript is available. When added with `summarize:False`, transcript fetching is skipped entirely and the bot posts the video URL directly (Discord auto-embeds the video preview).
+Fetches video transcripts (manual or auto-generated) for summarization. Falls back to description if no transcript is available. With `summarize:False`, transcript fetching is skipped entirely — Discord auto-embeds the video preview.
 
-**Arxiv**: Monitors RSS feeds for specific categories. Summaries focus on the problem solved, key innovation, and practical implications.
+### Blog Discovery
 
-**Blog**: Uses cascading discovery strategies to find content:
-1. **RSS Discovery** - Tries common RSS paths (`/feed`, `/rss.xml`, `/feed.xml`, etc.)
-2. **Sitemap Discovery** - Parses `sitemap.xml` to extract article URLs
-3. **LLM Extraction** - Uses Claude to analyze HTML and extract post information
+The blog adapter uses cascading strategies to find posts:
 
-Results are cached to avoid repeated extraction on subsequent polls.
+1. **RSS Discovery** — Tries common paths (`/feed`, `/rss.xml`, `/feed.xml`, etc.)
+2. **Sitemap Discovery** — Parses `sitemap.xml` for article URLs
+3. **LLM Extraction** — Claude analyzes the HTML structure to find posts
 
-**Twitter**: Monitors Twitter/X accounts for new original tweets using the official X API v2. Retweets and replies are filtered server-side for cost efficiency. Quote tweets are included with the quoted text appended for context. Long tweets (over 280 characters) are fully captured. Media attachments (images, videos) are detected and the first image URL is stored as the thumbnail. When added with `summarize:False`, the bot posts bare tweet URLs (Discord auto-embeds the tweet preview). Requires an X API v2 Bearer Token (`TWITTER_BEARER_TOKEN`).
+Results are cached. If discovery fails, the bot re-analyzes automatically after `MAX_CONSECUTIVE_FAILURES`.
 
-**Twitter cost considerations**: The X API v2 uses either a tiered subscription (Basic: $200/month, 15,000 reads) or a pay-per-use credit system. IntelStream fetches 5 tweets per poll and caches user ID lookups in memory to minimize API usage. With the default 15-minute poll interval, 10 Twitter sources consume roughly 28,800 reads/month (10 sources x 4 polls/hour x 24h x 30d). Set `TWITTER_POLL_INTERVAL_MINUTES` to a higher value (e.g., 30 or 60) for even lower consumption.
+### Twitter/X Cost Considerations
 
-**Page**: When you add a Page source, the bot uses Claude to analyze the page structure and automatically determine CSS selectors for extracting posts.
+The X API v2 uses a tiered subscription or pay-per-use credits. IntelStream fetches 5 tweets per poll and caches user ID lookups to minimize API usage. With the default 15-minute interval, 10 Twitter sources consume ~28,800 reads/month. Set `TWITTER_POLL_INTERVAL_MINUTES` higher (30 or 60) for lower consumption.
 
-### Multi-Channel Setup
+## Configuration
 
-By default, all sources post to a single channel configured via `/config channel`. For more advanced setups, you can route different sources to different channels.
+All configuration is via environment variables (`.env` file supported).
 
-**Per-source channels**: Specify a channel when adding a source:
+### Required
+
+| Variable | Description |
+|----------|-------------|
+| `DISCORD_BOT_TOKEN` | Discord bot token |
+| `DISCORD_GUILD_ID` | Discord server ID |
+| `DISCORD_OWNER_ID` | Your user ID (receives error DMs) |
+
+### LLM Provider
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_PROVIDER` | `anthropic` | LLM provider: `anthropic`, `openai`, `gemini`, or `kimi` |
+| `ANTHROPIC_API_KEY` | — | Anthropic API key (required when provider is `anthropic`; also required for Blog/Page analysis) |
+| `OPENAI_API_KEY` | — | OpenAI API key (required when provider is `openai`) |
+| `GEMINI_API_KEY` | — | Google Gemini API key (required when provider is `gemini`) |
+| `KIMI_API_KEY` | — | Kimi/Moonshot AI API key (required when provider is `kimi`) |
+
+### Optional API Keys
+
+| Variable | Description |
+|----------|-------------|
+| `YOUTUBE_API_KEY` | YouTube Data API key (required for YouTube sources) |
+| `TWITTER_BEARER_TOKEN` | X API v2 Bearer Token (required for Twitter sources) |
+| `GITHUB_TOKEN` | GitHub PAT (required for GitHub monitoring) |
+
+### Polling Intervals
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DEFAULT_POLL_INTERVAL_MINUTES` | `5` | Default for all source types (1-60) |
+| `CONTENT_POLL_INTERVAL_MINUTES` | `5` | How often to check and post new content (1-60) |
+| `GITHUB_POLL_INTERVAL_MINUTES` | `5` | How often to poll GitHub repos (1-60) |
+
+Override per source type (each defaults to `DEFAULT_POLL_INTERVAL_MINUTES`, range 1-1440):
+
+`SUBSTACK_POLL_INTERVAL_MINUTES` · `YOUTUBE_POLL_INTERVAL_MINUTES` · `RSS_POLL_INTERVAL_MINUTES` · `ARXIV_POLL_INTERVAL_MINUTES` · `BLOG_POLL_INTERVAL_MINUTES` · `TWITTER_POLL_INTERVAL_MINUTES` · `PAGE_POLL_INTERVAL_MINUTES`
+
+### Summarization
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SUMMARY_MODEL` | `claude-haiku-4-5-20251001` | Model for background summarization (provider-specific model ID) |
+| `SUMMARY_MODEL_INTERACTIVE` | `claude-sonnet-4-20250514` | Model for `/summarize` (provider-specific model ID) |
+| `SUMMARY_MAX_TOKENS` | `2048` | Max tokens per summary (256-8192) |
+| `SUMMARY_MAX_INPUT_LENGTH` | `100000` | Max input length before truncation (1000-500000) |
+| `DISCORD_MAX_MESSAGE_LENGTH` | `2000` | Max Discord message length (500-2000) |
+
+### Advanced
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | `sqlite+aiosqlite:///./data/intelstream.db` | Database connection string |
+| `HTTP_TIMEOUT_SECONDS` | `30.0` | HTTP request timeout (5-120) |
+| `FETCH_DELAY_SECONDS` | `1.0` | Delay between source fetches (0-30) |
+| `SUMMARIZATION_DELAY_SECONDS` | `0.5` | Delay between summarization requests (0.1-5.0) |
+| `MAX_CONSECUTIVE_FAILURES` | `3` | Failures before auto-disabling a source (1-20) |
+| `YOUTUBE_MAX_RESULTS` | `5` | Videos to fetch per YouTube poll (1-50) |
+| `MAX_CONCURRENT_FORWARDS` | `5` | Concurrent message forwards (1-20) |
+| `LOG_LEVEL` | `INFO` | Logging level |
+
+## How It Works
+
 ```
-/source add type:Substack name:"Tech News" url:https://tech.substack.com channel:#tech-feed
-/source add type:YouTube name:"Gaming" url:https://youtube.com/@gaming channel:#gaming-feed
-/source add type:RSS name:"General" url:https://example.com/feed.xml
+Sources (Substack, YouTube, RSS, ...)
+    |
+    v
++---------------------------------+
+|  Adapters                       |  Fetch new content per source type
+|  (one per source type)          |  De-duplicate against existing items
++-----------------+---------------+
+                  |
+                  v
++---------------------------------+
+|  Content Pipeline               |  Store raw content in SQLite
+|  (pipeline.py)                  |  Queue for summarization
++-----------------+---------------+
+                  |
+                  v
++---------------------------------+
+|  Summarization Service          |  LLM generates thesis + key arguments
+|  (summarizer.py)                |  Retry with backoff on rate limits
++-----------------+---------------+
+                  |
+                  v
++---------------------------------+
+|  Content Poster                 |  Format and post to Discord
+|  (content_poster.py)            |  Route to correct channel
++---------------------------------+
 ```
 
-In this example:
-- "Tech News" posts to #tech-feed
-- "Gaming" posts to #gaming-feed
-- "General" uses the default channel (set via `/config channel`)
+**Failure handling:** Consecutive failures are tracked per source. After `MAX_CONSECUTIVE_FAILURES` (default: 3), the source is auto-paused. The bot owner receives a DM on unhandled errors.
 
-**Channel priority**:
+**Channel routing priority:**
 1. Source-specific channel (set via `/source add ... channel:#channel`)
 2. Guild default channel (set via `/config channel`)
 
 ## Development
 
+### Prerequisites
+
+- Python 3.12+
+- [uv](https://github.com/astral-sh/uv) (package manager)
+
 ### Running Tests
 
 ```bash
-uv run pytest
+uv run pytest                # Run all tests
+uv run pytest -x             # Stop on first failure
+uv run pytest -k "youtube"   # Run tests matching pattern
 ```
 
-The project has 250+ tests covering adapters, services, Discord cogs, and database operations.
-
-### Linting and Formatting
+### Linting & Type Checking
 
 ```bash
-uv run ruff check .
-uv run ruff format .
+uv run ruff check .          # Lint
+uv run ruff format --check . # Format check
+uv run mypy src/             # Type check (strict mode)
 ```
 
-### Type Checking
+### CI
 
-```bash
-uv run mypy src/
-```
-
-### Continuous Integration
-
-GitHub Actions runs on all pull requests:
-- Ruff linting and formatting checks
-- MyPy type checking
-- Pytest with coverage (uploaded to Codecov)
-- Security scanning (pip-audit for dependency vulnerabilities, bandit for code security)
+GitHub Actions runs on all PRs: ruff, mypy, pytest with coverage (Codecov), pip-audit, bandit.
 
 ### Project Structure
 
 ```
 src/intelstream/
-├── adapters/              # Source adapters
-│   ├── substack.py        # Substack RSS adapter
-│   ├── youtube.py         # YouTube API adapter
-│   ├── rss.py             # Generic RSS/Atom adapter
-│   ├── arxiv.py           # Arxiv RSS adapter
-│   ├── smart_blog.py      # Blog adapter with cascading strategies
-│   ├── twitter.py         # Twitter/X adapter via official X API v2
-│   ├── page.py            # Web page adapter
-│   └── strategies/        # Discovery strategies for Blog adapter
-│       ├── rss_discovery.py
-│       ├── sitemap_discovery.py
-│       └── llm_extraction.py
+├── adapters/                  # One adapter per source type
+│   ├── substack.py
+│   ├── youtube.py
+│   ├── rss.py
+│   ├── arxiv.py
+│   ├── smart_blog.py          # Cascading discovery strategies
+│   ├── twitter.py             # Official X API v2
+│   ├── page.py                # AI-powered page analysis
+│   └── strategies/            # Blog discovery strategies
 ├── database/
-│   ├── models.py          # SQLAlchemy models
-│   └── repository.py      # Database operations
+│   ├── models.py              # SQLAlchemy models
+│   ├── repository.py          # Async database operations
+│   └── vector_store.py        # Embedding storage (zvec)
 ├── discord/cogs/
-│   ├── source_management.py     # /source commands
-│   ├── config_management.py     # /config commands
-│   ├── content_posting.py       # Background polling task
-│   ├── summarize.py             # /summarize command
-│   ├── message_forwarding.py    # /forward commands
-│   ├── github.py                # /github commands
-│   └── github_polling.py        # GitHub polling task
+│   ├── source_management.py   # /source commands
+│   ├── config_management.py   # /config commands
+│   ├── content_posting.py     # Background polling loop
+│   ├── summarize.py           # /summarize command
+│   ├── channel_summary.py     # /summary command
+│   ├── message_forwarding.py  # /forward commands + listener
+│   ├── github.py              # /github commands
+│   ├── github_polling.py      # GitHub polling loop
+│   ├── lore.py                # /lore commands + message ingestion
+│   └── search.py              # /search command
 ├── services/
-│   ├── pipeline.py           # Content pipeline orchestration
-│   ├── summarizer.py         # Claude summarization
-│   ├── content_poster.py     # Discord message formatting
-│   ├── content_extractor.py  # Content extraction utilities
-│   ├── message_forwarder.py  # Message forwarding logic
-│   ├── page_analyzer.py      # LLM-based page structure analysis
-│   ├── web_fetcher.py        # HTTP fetching
-│   ├── github_service.py     # GitHub API client
-│   └── github_poster.py      # GitHub embed formatting
-├── bot.py                 # Discord bot main class
-├── config.py              # Pydantic settings
-└── main.py                # Entry point
+│   ├── pipeline.py            # Content pipeline orchestration
+│   ├── llm_client.py          # Multi-provider LLM abstraction
+│   ├── summarizer.py          # LLM summarization
+│   ├── content_poster.py      # Discord message formatting
+│   ├── content_extractor.py   # HTML content extraction
+│   ├── embedding_service.py   # Text embedding for search
+│   ├── message_ingestion.py   # Server history ingestion
+│   ├── message_forwarder.py   # Message forwarding logic
+│   ├── page_analyzer.py       # LLM page structure analysis
+│   ├── web_fetcher.py         # HTTP fetching
+│   ├── github_service.py      # GitHub API client
+│   └── github_poster.py       # GitHub embed formatting
+├── bot.py                     # Bot class and startup
+├── config.py                  # Pydantic settings
+└── main.py                    # Entry point
 ```
 
 ## License

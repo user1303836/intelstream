@@ -5,6 +5,7 @@ import structlog
 from discord import MessageType, app_commands
 from discord.ext import commands
 
+from intelstream.services.llm_client import create_llm_client
 from intelstream.services.summarizer import SummarizationService
 
 if TYPE_CHECKING:
@@ -22,9 +23,13 @@ class ChannelSummary(commands.Cog):
         self._summarizer: SummarizationService | None = None
 
     async def cog_load(self) -> None:
-        self._summarizer = SummarizationService(
-            api_key=self.bot.settings.anthropic_api_key,
+        llm_client = create_llm_client(
+            provider=self.bot.settings.llm_provider,
+            api_key=self.bot.settings.llm_api_key,
             model=self.bot.settings.summary_model_interactive,
+        )
+        self._summarizer = SummarizationService(
+            client=llm_client,
             max_tokens=self.bot.settings.summary_max_tokens,
             max_input_length=self.bot.settings.summary_max_input_length,
         )

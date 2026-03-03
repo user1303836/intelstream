@@ -7,6 +7,7 @@ import structlog
 from discord.ext import commands, tasks
 
 from intelstream.services.content_poster import ContentPoster
+from intelstream.services.llm_client import create_llm_client
 from intelstream.services.pipeline import ContentPipeline
 from intelstream.services.summarizer import SummarizationService
 
@@ -29,9 +30,13 @@ class ContentPosting(commands.Cog):
         self._base_interval: int = 5
 
     async def cog_load(self) -> None:
-        summarizer = SummarizationService(
-            api_key=self.bot.settings.anthropic_api_key,
+        llm_client = create_llm_client(
+            provider=self.bot.settings.llm_provider,
+            api_key=self.bot.settings.llm_api_key,
             model=self.bot.settings.summary_model,
+        )
+        summarizer = SummarizationService(
+            client=llm_client,
             max_tokens=self.bot.settings.summary_max_tokens,
             max_input_length=self.bot.settings.summary_max_input_length,
         )
