@@ -226,6 +226,13 @@ class MessageIngestionService:
         await self._repository.add_message_chunk_metas_batch(metas)
         await self._vector_store.upsert_message_chunks_batch(vector_items)
 
+        total_messages = sum(len(c.messages) for c in chunks)
+        logger.info(
+            "Stored message chunks",
+            chunks=len(metas),
+            messages=total_messages,
+        )
+
         return len(metas)
 
     async def ingest_channel(
@@ -364,7 +371,7 @@ class MessageIngestionService:
         channels = [
             ch for ch in guild.text_channels if ch.permissions_for(guild.me).read_message_history
         ]
-        channels.sort(key=lambda c: c.last_message_id or "", reverse=True)
+        channels.sort(key=lambda c: c.last_message_id or 0, reverse=True)
 
         logger.info(
             "Starting backfill",
@@ -372,19 +379,34 @@ class MessageIngestionService:
             channels=len(channels),
         )
 
+        completed = 0
         for channel in channels:
             if self._paused:
-                logger.info("Backfill paused by user")
+                logger.info("Backfill paused", completed_channels=completed)
                 return
             await self.ingest_channel(channel, guild_id)
+            completed += 1
 
-        logger.info("Backfill complete", guild=guild.name)
+        logger.info(
+            "Backfill complete",
+            guild=guild.name,
+            channels=completed,
+        )
 
     def start_backfill(self, guild: discord.Guild) -> None:
         if self.is_running:
             return
         self._paused = False
-        self._backfill_task = asyncio.create_task(self.run_backfill(guild))
+        self._backfill_task = asyncio.create_task(
+            self._run_backfill_safe(guild),
+            name=f"lore-backfill-{guild.id}",
+        )
+
+    async def _run_backfill_safe(self, guild: discord.Guild) -> None:
+        try:
+            await self.run_backfill(guild)
+        except Exception:
+            logger.exception("Backfill task crashed", guild=guild.name)
 
     def stop_backfill(self) -> None:
         self._paused = True

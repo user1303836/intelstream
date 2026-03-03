@@ -4,12 +4,12 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-import anthropic
 import discord
 import structlog
 from discord import MessageType, app_commands
 from discord.ext import commands, tasks
 
+from intelstream.services.llm_client import LLMClient, LLMError, create_llm_client
 from intelstream.services.message_ingestion import (
     MessageChunker,
     MessageIngestionService,
@@ -60,6 +60,23 @@ def _parse_timeframe(timeframe: str) -> tuple[datetime | None, datetime | None]:
     return None, None
 
 
+def _split_message(text: str, max_len: int = MAX_DISCORD_MESSAGE_LENGTH) -> list[str]:
+    if len(text) <= max_len:
+        return [text]
+
+    parts: list[str] = []
+    while text:
+        if len(text) <= max_len:
+            parts.append(text)
+            break
+        split_at = text.rfind("\n", 0, max_len)
+        if split_at == -1:
+            split_at = max_len
+        parts.append(text[:split_at])
+        text = text[split_at:].lstrip("\n")
+    return parts
+
+
 class Lore(commands.Cog):
     def __init__(
         self,
@@ -71,7 +88,7 @@ class Lore(commands.Cog):
         self._embedding_service = embedding_service
         self._vector_store = vector_store
         self._ingestion_service: MessageIngestionService | None = None
-        self._anthropic: anthropic.AsyncAnthropic | None = None
+        self._llm_client: LLMClient | None = None
         self._message_buffers: dict[str, list[RawMessage]] = {}
         self._chunker: MessageChunker | None = None
 
@@ -83,11 +100,14 @@ class Lore(commands.Cog):
             gap_minutes=self.bot.settings.lore_chunk_gap_minutes,
             max_messages=self.bot.settings.lore_chunk_max_messages,
         )
-        api_key = self.bot.settings.anthropic_api_key
-        if api_key and api_key.strip():
-            self._anthropic = anthropic.AsyncAnthropic(api_key=api_key)
-        else:
-            logger.warning("ANTHROPIC_API_KEY not set; lore query feature will be disabled")
+        try:
+            self._llm_client = create_llm_client(
+                provider=self.bot.settings.llm_provider,
+                api_key=self.bot.settings.llm_api_key,
+                model=self.bot.settings.summary_model_interactive,
+            )
+        except ValueError:
+            logger.warning("No LLM API key configured; /lore queries will be disabled")
         self._chunker = MessageChunker(
             gap_minutes=self.bot.settings.lore_chunk_gap_minutes,
             max_messages=self.bot.settings.lore_chunk_max_messages,
@@ -100,18 +120,18 @@ class Lore(commands.Cog):
         if self._ingestion_service and self._ingestion_service.is_running:
             self._ingestion_service.stop_backfill()
         await self._flush_all_buffers()
+        if self._llm_client:
+            await self._llm_client.close()
         logger.info("Lore cog unloaded")
 
-    lore_group = app_commands.Group(name="lore", description="Server lore and history commands")
-
-    @lore_group.command(name="query", description="Query server lore with natural language")
+    @app_commands.command(name="lore", description="Ask about server history and lore")
     @app_commands.describe(
         query="What do you want to know about?",
         channel="Limit search to a specific channel",
         timeframe="Time range, e.g. 'last 6 months', '2024'",
     )
     @app_commands.checks.cooldown(rate=1, per=120.0)
-    async def lore_query(
+    async def lore(
         self,
         interaction: discord.Interaction,
         query: str,
@@ -127,8 +147,15 @@ class Lore(commands.Cog):
             )
             return
 
+        if self._llm_client is None:
+            await interaction.followup.send(
+                "Lore queries are unavailable. No LLM API key is configured.",
+                ephemeral=True,
+            )
+            return
+
         logger.info(
-            "lore query invoked",
+            "Lore query",
             user_id=interaction.user.id,
             query=query,
             channel=channel.name if channel else None,
@@ -141,7 +168,7 @@ class Lore(commands.Cog):
 
         if not results:
             await interaction.followup.send(
-                "No lore found. The message index may be empty. Run `/lore setup` first.",
+                "No lore found. The message index may still be building.",
                 ephemeral=True,
             )
             return
@@ -191,23 +218,13 @@ class Lore(commands.Cog):
             f"--- Message History ---\n{context_text}"
         )
 
-        if self._anthropic is None:
-            await interaction.followup.send(
-                "Lore queries are unavailable. ANTHROPIC_API_KEY is not configured.",
-                ephemeral=True,
-            )
-            return
         try:
-            message = await self._anthropic.messages.create(
-                model=self.bot.settings.summary_model_interactive,
-                max_tokens=2048,
+            response_text = await self._llm_client.complete(
                 system=LORE_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": prompt}],
+                user_message=prompt,
+                max_tokens=2048,
             )
-            response_text = "\n\n".join(
-                block.text for block in message.content if hasattr(block, "text")
-            ).strip()
-        except Exception as e:
+        except LLMError as e:
             logger.error("Failed to generate lore response", error=str(e))
             await interaction.followup.send(
                 "Failed to generate lore response. Please try again later.", ephemeral=True
@@ -220,104 +237,6 @@ class Lore(commands.Cog):
             parts = _split_message(response_text)
             for part in parts:
                 await interaction.followup.send(part)
-
-    @lore_group.command(
-        name="setup", description="Start ingesting server message history (admin only)"
-    )
-    @app_commands.checks.has_permissions(administrator=True)
-    async def lore_setup(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
-
-        if not interaction.guild:
-            await interaction.followup.send(
-                "This command can only be used in a server.", ephemeral=True
-            )
-            return
-
-        assert self._ingestion_service is not None
-
-        if self._ingestion_service.is_running:
-            await interaction.followup.send("Ingestion is already running.", ephemeral=True)
-            return
-
-        channels = [
-            ch
-            for ch in interaction.guild.text_channels
-            if ch.permissions_for(interaction.guild.me).read_message_history
-        ]
-
-        self._ingestion_service.start_backfill(interaction.guild)
-
-        await interaction.followup.send(
-            f"Started message ingestion for {len(channels)} channels. "
-            f"Use `/lore status` to check progress.",
-            ephemeral=True,
-        )
-
-    @lore_group.command(name="status", description="Show message ingestion progress")
-    async def lore_status(self, interaction: discord.Interaction) -> None:
-        guild_id = str(interaction.guild_id) if interaction.guild_id else None
-        if not guild_id:
-            await interaction.response.send_message("Server only.", ephemeral=True)
-            return
-
-        progress_list = await self.bot.repository.get_ingestion_progress_for_guild(guild_id)
-        if not progress_list:
-            await interaction.response.send_message(
-                "No ingestion started. Run `/lore setup` to begin.", ephemeral=True
-            )
-            return
-
-        lines = []
-        total_fetched = 0
-        completed = 0
-        for p in progress_list:
-            status_icon = {
-                "pending": "-",
-                "in_progress": ">",
-                "completed": "+",
-                "paused": "||",
-            }.get(p.status, "?")
-            lines.append(
-                f"`{status_icon}` <#{p.channel_id}> -- {p.total_fetched:,} messages ({p.status})"
-            )
-            total_fetched += p.total_fetched or 0
-            if p.status == "completed":
-                completed += 1
-
-        header = f"**Lore Ingestion** ({completed}/{len(progress_list)} channels done, {total_fetched:,} total messages)\n"
-        text = header + "\n".join(lines[:20])
-        if len(progress_list) > 20:
-            text += f"\n*... and {len(progress_list) - 20} more channels*"
-
-        if len(text) > MAX_DISCORD_MESSAGE_LENGTH:
-            text = text[: MAX_DISCORD_MESSAGE_LENGTH - 3] + "..."
-
-        await interaction.response.send_message(text, ephemeral=True)
-
-    @lore_group.command(name="pause", description="Pause message ingestion (admin only)")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def lore_pause(self, interaction: discord.Interaction) -> None:
-        assert self._ingestion_service is not None
-        if not self._ingestion_service.is_running:
-            await interaction.response.send_message("No ingestion is running.", ephemeral=True)
-            return
-        self._ingestion_service.pause()
-        await interaction.response.send_message("Ingestion paused.", ephemeral=True)
-
-    @lore_group.command(name="resume", description="Resume paused message ingestion (admin only)")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def lore_resume(self, interaction: discord.Interaction) -> None:
-        if not interaction.guild:
-            await interaction.response.send_message("Server only.", ephemeral=True)
-            return
-        assert self._ingestion_service is not None
-        if self._ingestion_service.is_running:
-            self._ingestion_service.resume()
-            await interaction.response.send_message("Ingestion resumed.", ephemeral=True)
-        else:
-            self._ingestion_service.start_backfill(interaction.guild)
-            await interaction.response.send_message("Restarted ingestion.", ephemeral=True)
 
     @commands.Cog.listener("on_message")
     async def on_message(self, message: discord.Message) -> None:
@@ -380,8 +299,8 @@ class Lore(commands.Cog):
         if chunks and self._ingestion_service:
             stored = await self._ingestion_service.store_chunks(chunks)
             if stored > 0:
-                logger.debug(
-                    "Flushed real-time message buffer",
+                logger.info(
+                    "Real-time lore flush",
                     channel=channel_name,
                     chunks=stored,
                     messages=len(buf),
@@ -392,24 +311,34 @@ class Lore(commands.Cog):
         for key in keys:
             await self._flush_buffer(key)
 
-    async def auto_resume_ingestion(self) -> None:
-        if not self.bot.settings.lore_auto_resume:
+    async def start_ingestion_for_guild(self, guild: discord.Guild) -> None:
+        if not self._ingestion_service:
+            return
+        if self._ingestion_service.is_running:
             return
 
-        in_progress = await self.bot.repository.get_in_progress_ingestions()
-        if not in_progress:
+        progress = await self.bot.repository.get_ingestion_progress_for_guild(str(guild.id))
+        in_progress_or_paused = [p for p in progress if p.status in ("in_progress", "paused")]
+        all_completed = progress and all(p.status == "completed" for p in progress)
+
+        if all_completed:
+            logger.info("Lore ingestion already complete", guild=guild.name)
             return
 
-        guild_ids = {p.guild_id for p in in_progress}
-        for gid in guild_ids:
-            guild = self.bot.get_guild(int(gid))
-            if guild and self._ingestion_service:
-                logger.info("Auto-resuming ingestion", guild=guild.name)
-                self._ingestion_service.start_backfill(guild)
-                break
+        if in_progress_or_paused:
+            logger.info("Resuming lore ingestion", guild=guild.name)
+        else:
+            logger.info("Starting lore ingestion", guild=guild.name)
 
-    @lore_query.error
-    async def lore_query_error(
+        self._ingestion_service.start_backfill(guild)
+
+    async def auto_start_ingestion(self) -> None:
+        for guild in self.bot.guilds:
+            await self.start_ingestion_for_guild(guild)
+            break
+
+    @lore.error
+    async def lore_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
     ) -> None:
         if isinstance(error, app_commands.CommandOnCooldown):
@@ -420,53 +349,3 @@ class Lore(commands.Cog):
             )
         else:
             raise error
-
-    @lore_setup.error
-    async def lore_setup_error(
-        self, interaction: discord.Interaction, error: app_commands.AppCommandError
-    ) -> None:
-        if isinstance(error, app_commands.MissingPermissions):
-            await interaction.response.send_message(
-                "Administrator permissions required.", ephemeral=True
-            )
-        else:
-            raise error
-
-    @lore_pause.error
-    async def lore_pause_error(
-        self, interaction: discord.Interaction, error: app_commands.AppCommandError
-    ) -> None:
-        if isinstance(error, app_commands.MissingPermissions):
-            await interaction.response.send_message(
-                "Administrator permissions required.", ephemeral=True
-            )
-        else:
-            raise error
-
-    @lore_resume.error
-    async def lore_resume_error(
-        self, interaction: discord.Interaction, error: app_commands.AppCommandError
-    ) -> None:
-        if isinstance(error, app_commands.MissingPermissions):
-            await interaction.response.send_message(
-                "Administrator permissions required.", ephemeral=True
-            )
-        else:
-            raise error
-
-
-def _split_message(text: str, max_len: int = MAX_DISCORD_MESSAGE_LENGTH) -> list[str]:
-    if len(text) <= max_len:
-        return [text]
-
-    parts: list[str] = []
-    while text:
-        if len(text) <= max_len:
-            parts.append(text)
-            break
-        split_at = text.rfind("\n", 0, max_len)
-        if split_at == -1:
-            split_at = max_len
-        parts.append(text[:split_at])
-        text = text[split_at:].lstrip("\n")
-    return parts

@@ -15,11 +15,12 @@ def mock_bot():
     bot.settings.lore_chunk_gap_minutes = 10
     bot.settings.lore_chunk_max_messages = 20
     bot.settings.lore_search_results = 15
-    bot.settings.lore_auto_resume = True
-    bot.settings.anthropic_api_key = "test-key"
+    bot.settings.llm_provider = "anthropic"
+    bot.settings.llm_api_key = "test-key"
     bot.settings.summary_model_interactive = "claude-test"
     bot.repository = AsyncMock()
     bot.get_guild = MagicMock(return_value=None)
+    bot.guilds = []
     bot.cogs = {}
     return bot
 
@@ -43,7 +44,8 @@ def lore_cog(mock_bot, mock_embedding_service, mock_vector_store):
     cog = Lore(mock_bot, mock_embedding_service, mock_vector_store)
     cog._ingestion_service = MagicMock()
     cog._ingestion_service.is_running = False
-    cog._anthropic = AsyncMock()
+    cog._llm_client = AsyncMock()
+    cog._llm_client.complete = AsyncMock(return_value="Here is the lore about that topic.")
     cog._chunker = MagicMock()
     return cog
 
@@ -131,13 +133,13 @@ class TestSplitMessage:
 class TestLoreQuery:
     async def test_query_no_guild(self, lore_cog, mock_interaction):
         mock_interaction.guild_id = None
-        await lore_cog.lore_query.callback(lore_cog, mock_interaction, "test")
+        await lore_cog.lore.callback(lore_cog, mock_interaction, "test")
         mock_interaction.followup.send.assert_called_once()
         assert "server" in mock_interaction.followup.send.call_args[0][0].lower()
 
     async def test_query_no_results(self, lore_cog, mock_interaction, mock_vector_store):
         mock_vector_store.search_message_chunks.return_value = []
-        await lore_cog.lore_query.callback(lore_cog, mock_interaction, "test query")
+        await lore_cog.lore.callback(lore_cog, mock_interaction, "test query")
         mock_interaction.followup.send.assert_called_once()
         assert "no lore" in mock_interaction.followup.send.call_args[0][0].lower()
 
@@ -158,13 +160,9 @@ class TestLoreQuery:
         meta.text = "Some conversation text here"
         mock_bot.repository.get_message_chunk_metas_by_ids.return_value = [meta]
 
-        response_block = MagicMock()
-        response_block.text = "Here is the lore about that topic."
-        claude_response = MagicMock()
-        claude_response.content = [response_block]
-        lore_cog._anthropic.messages.create = AsyncMock(return_value=claude_response)
+        lore_cog._llm_client.complete = AsyncMock(return_value="Here is the lore about that topic.")
 
-        await lore_cog.lore_query.callback(lore_cog, mock_interaction, "test query")
+        await lore_cog.lore.callback(lore_cog, mock_interaction, "test query")
         mock_interaction.followup.send.assert_called()
         sent_text = mock_interaction.followup.send.call_args[0][0]
         assert "lore" in sent_text.lower()
@@ -182,137 +180,89 @@ class TestLoreQuery:
         meta.channel_id = "999"
         mock_bot.repository.get_message_chunk_metas_by_ids.return_value = [meta]
 
-        await lore_cog.lore_query.callback(lore_cog, mock_interaction, "test query")
+        await lore_cog.lore.callback(lore_cog, mock_interaction, "test query")
         mock_interaction.followup.send.assert_called()
         assert "no relevant" in mock_interaction.followup.send.call_args[0][0].lower()
 
+    async def test_query_no_llm_client(self, lore_cog, mock_interaction):
+        lore_cog._llm_client = None
+        await lore_cog.lore.callback(lore_cog, mock_interaction, "test query")
+        mock_interaction.followup.send.assert_called_once()
+        assert "unavailable" in mock_interaction.followup.send.call_args[0][0].lower()
 
-class TestLoreCogLoadWithoutAnthropicKey:
+
+class TestLoreCogLoadWithoutApiKey:
     async def test_cog_load_without_api_key(
         self, mock_bot, mock_embedding_service, mock_vector_store
     ):
-        mock_bot.settings.anthropic_api_key = None
+        type(mock_bot.settings).llm_api_key = property(
+            lambda _: (_ for _ in ()).throw(ValueError("No API key"))
+        )
         cog = Lore(mock_bot, mock_embedding_service, mock_vector_store)
         cog._flush_buffers = MagicMock()
         cog._flush_buffers.start = MagicMock()
 
         await cog.cog_load()
 
-        assert cog._anthropic is None
+        assert cog._llm_client is None
         assert cog._ingestion_service is not None
         assert cog._chunker is not None
 
-    async def test_cog_load_with_empty_api_key(
-        self, mock_bot, mock_embedding_service, mock_vector_store
-    ):
-        mock_bot.settings.anthropic_api_key = "  "
-        cog = Lore(mock_bot, mock_embedding_service, mock_vector_store)
-        cog._flush_buffers = MagicMock()
-        cog._flush_buffers.start = MagicMock()
 
-        await cog.cog_load()
-
-        assert cog._anthropic is None
-
-    async def test_query_returns_error_when_no_anthropic(
-        self, mock_interaction, mock_vector_store, mock_bot, mock_embedding_service
-    ):
-        mock_bot.settings.anthropic_api_key = None
-        cog = Lore(mock_bot, mock_embedding_service, mock_vector_store)
-        cog._anthropic = None
-        cog._ingestion_service = MagicMock()
-        cog._chunker = MagicMock()
-
-        mock_vector_store.search_message_chunks.return_value = [
-            ChunkSearchResult(chunk_id="chunk-1", score=0.9),
-        ]
-        meta = MagicMock()
-        meta.id = "chunk-1"
-        meta.guild_id = str(mock_interaction.guild_id)
-        meta.channel_id = "999"
-        meta.channel_name = "general"
-        meta.start_timestamp = datetime(2024, 6, 1, tzinfo=UTC)
-        meta.end_timestamp = datetime(2024, 6, 1, 1, 0, tzinfo=UTC)
-        meta.text = "Some text"
-        mock_bot.repository.get_message_chunk_metas_by_ids.return_value = [meta]
-
-        await cog.lore_query.callback(cog, mock_interaction, "test query")
-
-        mock_interaction.followup.send.assert_called()
-        sent_text = mock_interaction.followup.send.call_args[0][0]
-        assert "unavailable" in sent_text.lower()
-
-
-class TestLoreSetup:
-    async def test_setup_no_guild(self, lore_cog, mock_interaction):
-        mock_interaction.guild = None
-        await lore_cog.lore_setup.callback(lore_cog, mock_interaction)
-        mock_interaction.followup.send.assert_called_once()
-        assert (
-            "server"
-            in mock_interaction.followup.send.call_args.kwargs.get(
-                "content", mock_interaction.followup.send.call_args[0][0]
-            ).lower()
-        )
-
-    async def test_setup_already_running(self, lore_cog, mock_interaction):
-        lore_cog._ingestion_service.is_running = True
-        await lore_cog.lore_setup.callback(lore_cog, mock_interaction)
-        mock_interaction.followup.send.assert_called_once()
-        assert "already running" in mock_interaction.followup.send.call_args[0][0].lower()
-
-    async def test_setup_starts_backfill(self, lore_cog, mock_interaction):
-        lore_cog._ingestion_service.is_running = False
-        await lore_cog.lore_setup.callback(lore_cog, mock_interaction)
-        lore_cog._ingestion_service.start_backfill.assert_called_once()
-
-
-class TestLoreStatus:
-    async def test_status_no_guild(self, lore_cog, mock_interaction):
-        mock_interaction.guild_id = None
-        await lore_cog.lore_status.callback(lore_cog, mock_interaction)
-        mock_interaction.response.send_message.assert_called_once()
-
-    async def test_status_no_ingestion(self, lore_cog, mock_interaction, mock_bot):
+class TestAutoStartIngestion:
+    async def test_starts_for_guild_with_no_progress(self, lore_cog, mock_bot):
+        guild = MagicMock(spec=discord.Guild)
+        guild.id = 111
+        guild.name = "Test Server"
         mock_bot.repository.get_ingestion_progress_for_guild.return_value = []
-        await lore_cog.lore_status.callback(lore_cog, mock_interaction)
-        mock_interaction.response.send_message.assert_called_once()
-        assert "no ingestion" in mock_interaction.response.send_message.call_args[0][0].lower()
 
-    async def test_status_shows_progress(self, lore_cog, mock_interaction, mock_bot):
+        await lore_cog.start_ingestion_for_guild(guild)
+        lore_cog._ingestion_service.start_backfill.assert_called_once_with(guild)
+
+    async def test_skips_completed_guild(self, lore_cog, mock_bot):
+        guild = MagicMock(spec=discord.Guild)
+        guild.id = 111
+        guild.name = "Test Server"
         progress = MagicMock()
-        progress.channel_id = "123"
-        progress.total_fetched = 5000
-        progress.status = "in_progress"
+        progress.status = "completed"
         mock_bot.repository.get_ingestion_progress_for_guild.return_value = [progress]
 
-        await lore_cog.lore_status.callback(lore_cog, mock_interaction)
-        mock_interaction.response.send_message.assert_called_once()
-        text = mock_interaction.response.send_message.call_args[0][0]
-        assert "5,000" in text
+        await lore_cog.start_ingestion_for_guild(guild)
+        lore_cog._ingestion_service.start_backfill.assert_not_called()
 
+    async def test_resumes_paused_guild(self, lore_cog, mock_bot):
+        guild = MagicMock(spec=discord.Guild)
+        guild.id = 111
+        guild.name = "Test Server"
+        progress = MagicMock()
+        progress.status = "paused"
+        mock_bot.repository.get_ingestion_progress_for_guild.return_value = [progress]
 
-class TestLorePauseResume:
-    async def test_pause_not_running(self, lore_cog, mock_interaction):
-        lore_cog._ingestion_service.is_running = False
-        await lore_cog.lore_pause.callback(lore_cog, mock_interaction)
-        mock_interaction.response.send_message.assert_called_once()
-        assert "no ingestion" in mock_interaction.response.send_message.call_args[0][0].lower()
+        await lore_cog.start_ingestion_for_guild(guild)
+        lore_cog._ingestion_service.start_backfill.assert_called_once_with(guild)
 
-    async def test_pause_running(self, lore_cog, mock_interaction):
+    async def test_skips_if_already_running(self, lore_cog):
+        guild = MagicMock(spec=discord.Guild)
+        guild.id = 111
         lore_cog._ingestion_service.is_running = True
-        await lore_cog.lore_pause.callback(lore_cog, mock_interaction)
-        lore_cog._ingestion_service.pause.assert_called_once()
 
-    async def test_resume_restarts_when_not_running(self, lore_cog, mock_interaction):
-        lore_cog._ingestion_service.is_running = False
-        await lore_cog.lore_resume.callback(lore_cog, mock_interaction)
-        lore_cog._ingestion_service.start_backfill.assert_called_once()
+        await lore_cog.start_ingestion_for_guild(guild)
+        lore_cog._ingestion_service.start_backfill.assert_not_called()
 
-    async def test_resume_unpauses_when_running(self, lore_cog, mock_interaction):
-        lore_cog._ingestion_service.is_running = True
-        await lore_cog.lore_resume.callback(lore_cog, mock_interaction)
-        lore_cog._ingestion_service.resume.assert_called_once()
+    async def test_auto_start_uses_first_guild(self, lore_cog, mock_bot):
+        guild = MagicMock(spec=discord.Guild)
+        guild.id = 111
+        guild.name = "Test Server"
+        mock_bot.guilds = [guild]
+        mock_bot.repository.get_ingestion_progress_for_guild.return_value = []
+
+        await lore_cog.auto_start_ingestion()
+        lore_cog._ingestion_service.start_backfill.assert_called_once_with(guild)
+
+    async def test_auto_start_no_guilds(self, lore_cog, mock_bot):
+        mock_bot.guilds = []
+        await lore_cog.auto_start_ingestion()
+        lore_cog._ingestion_service.start_backfill.assert_not_called()
 
 
 class TestOnMessage:
