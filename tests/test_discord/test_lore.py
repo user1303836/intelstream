@@ -141,7 +141,18 @@ class TestLoreQuery:
         mock_vector_store.search_message_chunks.return_value = []
         await lore_cog.lore.callback(lore_cog, mock_interaction, "test query")
         mock_interaction.followup.send.assert_called_once()
-        assert "no lore" in mock_interaction.followup.send.call_args[0][0].lower()
+        msg = mock_interaction.followup.send.call_args[0][0].lower()
+        assert "no lore" in msg
+
+    async def test_query_no_results_while_building(
+        self, lore_cog, mock_interaction, mock_vector_store
+    ):
+        mock_vector_store.search_message_chunks.return_value = []
+        lore_cog._ingestion_service.is_running = True
+        await lore_cog.lore.callback(lore_cog, mock_interaction, "test query")
+        mock_interaction.followup.send.assert_called_once()
+        msg = mock_interaction.followup.send.call_args[0][0].lower()
+        assert "still being built" in msg
 
     async def test_query_with_results(
         self, lore_cog, mock_interaction, mock_vector_store, mock_bot
