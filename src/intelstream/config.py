@@ -245,10 +245,6 @@ class Settings(BaseSettings):
         le=50,
         description="Number of chunks to retrieve per lore query",
     )
-    lore_auto_resume: bool = Field(
-        default=True,
-        description="Auto-resume in-progress ingestion on bot restart",
-    )
 
     def get_poll_interval(self, source_type: SourceType) -> int:
         from intelstream.database.models import SourceType

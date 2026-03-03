@@ -212,11 +212,11 @@ class IntelStreamBot(commands.Bot):
             )
 
         lore_cog = self.cogs.get("Lore")
-        if lore_cog is not None and hasattr(lore_cog, "auto_resume_ingestion"):
+        if lore_cog is not None and hasattr(lore_cog, "auto_start_ingestion"):
             try:
-                await lore_cog.auto_resume_ingestion()
+                await lore_cog.auto_start_ingestion()
             except Exception as e:
-                logger.error("Failed to auto-resume lore ingestion", error=str(e))
+                logger.error("Failed to auto-start lore ingestion", error=str(e))
 
     async def on_error(self, event_method: str, *_args: Any, **_kwargs: Any) -> None:
         logger.exception("Error in event handler", event_method=event_method)
