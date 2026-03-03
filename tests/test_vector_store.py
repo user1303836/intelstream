@@ -1,6 +1,21 @@
+import subprocess
+import sys
+
 import pytest
 
 from intelstream.database.vector_store import VectorStore
+
+
+def _can_import_zvec() -> bool:
+    result = subprocess.run(
+        [sys.executable, "-c", "import zvec"],
+        capture_output=True,
+        timeout=10,
+    )
+    return result.returncode == 0
+
+
+pytestmark = pytest.mark.skipif(not _can_import_zvec(), reason="zvec native library not available")
 
 
 @pytest.fixture
