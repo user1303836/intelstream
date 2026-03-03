@@ -190,6 +190,76 @@ class TestSettings:
             Settings(_env_file=None)
 
 
+class TestProviderAwareModelDefaults:
+    def _base_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
+        monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
+        monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
+        monkeypatch.delenv("SUMMARY_MODEL", raising=False)
+        monkeypatch.delenv("SUMMARY_MODEL_INTERACTIVE", raising=False)
+
+    def test_anthropic_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._base_env(monkeypatch)
+        monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+        settings = Settings(_env_file=None)
+        assert settings.summary_model == "claude-3-5-haiku-20241022"
+        assert settings.summary_model_interactive == "claude-sonnet-4-20250514"
+
+    def test_openai_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._base_env(monkeypatch)
+        monkeypatch.setenv("LLM_PROVIDER", "openai")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+
+        settings = Settings(_env_file=None)
+        assert settings.summary_model == "gpt-4o-mini"
+        assert settings.summary_model_interactive == "gpt-4o"
+
+    def test_gemini_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._base_env(monkeypatch)
+        monkeypatch.setenv("LLM_PROVIDER", "gemini")
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-test")
+
+        settings = Settings(_env_file=None)
+        assert settings.summary_model == "gemini-2.0-flash"
+        assert settings.summary_model_interactive == "gemini-2.5-pro-preview-06-05"
+
+    def test_kimi_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._base_env(monkeypatch)
+        monkeypatch.setenv("LLM_PROVIDER", "kimi")
+        monkeypatch.setenv("KIMI_API_KEY", "kimi-test")
+
+        settings = Settings(_env_file=None)
+        assert settings.summary_model == "moonshot-v1-8k"
+        assert settings.summary_model_interactive == "moonshot-v1-32k"
+
+    def test_explicit_model_overrides_provider_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._base_env(monkeypatch)
+        monkeypatch.setenv("LLM_PROVIDER", "openai")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+        monkeypatch.setenv("SUMMARY_MODEL", "my-custom-model")
+        monkeypatch.setenv("SUMMARY_MODEL_INTERACTIVE", "my-custom-interactive")
+
+        settings = Settings(_env_file=None)
+        assert settings.summary_model == "my-custom-model"
+        assert settings.summary_model_interactive == "my-custom-interactive"
+
+    def test_partial_override_uses_default_for_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._base_env(monkeypatch)
+        monkeypatch.setenv("LLM_PROVIDER", "openai")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+        monkeypatch.setenv("SUMMARY_MODEL", "my-custom-model")
+
+        settings = Settings(_env_file=None)
+        assert settings.summary_model == "my-custom-model"
+        assert settings.summary_model_interactive == "gpt-4o"
+
+
 class TestGetPollInterval:
     def _base_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
