@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
-import zvec
+
+if TYPE_CHECKING:
+    import zvec
 
 logger = structlog.get_logger(__name__)
 
@@ -31,6 +33,8 @@ class VectorStore:
         self._message_chunks: zvec.Collection | None = None
 
     async def initialize(self) -> None:
+        import zvec
+
         await asyncio.to_thread(os.makedirs, self._data_dir, exist_ok=True)
         articles_path = f"{self._data_dir}/articles"
         try:
@@ -65,6 +69,8 @@ class VectorStore:
             logger.info("Opened existing message_chunks vector collection")
 
     async def upsert_article(self, content_item_id: str, embedding: list[float]) -> None:
+        import zvec
+
         if self._articles is None:
             raise RuntimeError("VectorStore not initialized")
         doc = zvec.Doc(
@@ -74,6 +80,8 @@ class VectorStore:
         await asyncio.to_thread(self._articles.upsert, [doc])
 
     async def upsert_articles_batch(self, items: list[tuple[str, list[float]]]) -> None:
+        import zvec
+
         if self._articles is None:
             raise RuntimeError("VectorStore not initialized")
         if not items:
@@ -84,6 +92,8 @@ class VectorStore:
     async def search_articles(
         self, query_embedding: list[float], topk: int = 5
     ) -> list[SearchResult]:
+        import zvec
+
         if self._articles is None:
             raise RuntimeError("VectorStore not initialized")
         results: Any = await asyncio.to_thread(
@@ -99,6 +109,8 @@ class VectorStore:
         await asyncio.to_thread(self._articles.delete, content_item_id)
 
     async def upsert_message_chunk(self, chunk_id: str, embedding: list[float]) -> None:
+        import zvec
+
         if self._message_chunks is None:
             raise RuntimeError("VectorStore not initialized")
         doc = zvec.Doc(
@@ -108,6 +120,8 @@ class VectorStore:
         await asyncio.to_thread(self._message_chunks.upsert, [doc])
 
     async def upsert_message_chunks_batch(self, items: list[tuple[str, list[float]]]) -> None:
+        import zvec
+
         if self._message_chunks is None:
             raise RuntimeError("VectorStore not initialized")
         if not items:
@@ -118,6 +132,8 @@ class VectorStore:
     async def search_message_chunks(
         self, query_embedding: list[float], topk: int = 30
     ) -> list[ChunkSearchResult]:
+        import zvec
+
         if self._message_chunks is None:
             raise RuntimeError("VectorStore not initialized")
         results: Any = await asyncio.to_thread(
