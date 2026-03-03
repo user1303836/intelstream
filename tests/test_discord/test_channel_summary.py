@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 import pytest
@@ -7,6 +7,9 @@ from discord import MessageType
 
 from intelstream.discord.cogs.channel_summary import ChannelSummary
 from intelstream.services.summarizer import SummarizationError
+
+PATCH_CREATE_LLM = "intelstream.discord.cogs.channel_summary.create_llm_client"
+PATCH_SUMMARIZER = "intelstream.discord.cogs.channel_summary.SummarizationService"
 
 
 @pytest.fixture
@@ -276,13 +279,43 @@ class TestFormatMessages:
 
 
 class TestCogLoad:
-    async def test_cog_load_creates_summarizer(self, mock_bot):
+    @patch(PATCH_CREATE_LLM)
+    @patch(PATCH_SUMMARIZER)
+    async def test_cog_load_creates_summarizer(self, mock_summarizer_cls, mock_create_llm, mock_bot):
+        mock_llm_client = MagicMock()
+        mock_create_llm.return_value = mock_llm_client
+
+        mock_summarizer = MagicMock()
+        mock_summarizer_cls.return_value = mock_summarizer
+
         cog = ChannelSummary(mock_bot)
         assert cog._summarizer is None
 
         await cog.cog_load()
 
-        assert cog._summarizer is not None
+        mock_create_llm.assert_called_once_with(
+            provider="anthropic",
+            api_key="test-api-key",
+            model="claude-sonnet-4-20250514",
+        )
+        mock_summarizer_cls.assert_called_once_with(
+            client=mock_llm_client,
+            max_tokens=2048,
+            max_input_length=100000,
+        )
+        assert cog._summarizer is mock_summarizer
+
+
+class TestCogUnload:
+    async def test_cog_unload_closes_summarizer(self, mock_bot):
+        cog = ChannelSummary(mock_bot)
+        mock_summarizer = MagicMock()
+        mock_summarizer.close = AsyncMock()
+        cog._summarizer = mock_summarizer
+
+        await cog.cog_unload()
+
+        mock_summarizer.close.assert_called_once()
 
 
 class _async_iter:

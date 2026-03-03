@@ -25,6 +25,7 @@ class ContentPosting(commands.Cog):
         self.bot = bot
         self._pipeline: ContentPipeline | None = None
         self._poster: ContentPoster | None = None
+        self._summarizer: SummarizationService | None = None
         self._initialized = False
         self._consecutive_failures = 0
         self._base_interval: int = 5
@@ -35,7 +36,7 @@ class ContentPosting(commands.Cog):
             api_key=self.bot.settings.llm_api_key,
             model=self.bot.settings.summary_model,
         )
-        summarizer = SummarizationService(
+        self._summarizer = SummarizationService(
             client=llm_client,
             max_tokens=self.bot.settings.summary_max_tokens,
             max_input_length=self.bot.settings.summary_max_input_length,
@@ -44,7 +45,7 @@ class ContentPosting(commands.Cog):
         self._pipeline = ContentPipeline(
             settings=self.bot.settings,
             repository=self.bot.repository,
-            summarizer=summarizer,
+            summarizer=self._summarizer,
             get_search_services=lambda: (
                 self.bot.embedding_service,
                 self.bot.vector_store,
@@ -88,9 +89,12 @@ class ContentPosting(commands.Cog):
             logger.error("Pipeline close timed out during cog unload")
         except Exception as e:
             logger.error("Error closing pipeline during cog unload", error=str(e))
-        finally:
-            self._initialized = False
-            logger.info("Content posting cog unloaded")
+
+        if self._summarizer:
+            await self._summarizer.close()
+
+        self._initialized = False
+        logger.info("Content posting cog unloaded")
 
     @tasks.loop(minutes=5)
     async def content_loop(self) -> None:
