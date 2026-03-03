@@ -68,6 +68,9 @@ class SummarizationService:
         self._max_input_length = max_input_length
         self._system_prompt = SYSTEM_PROMPT
 
+    async def close(self) -> None:
+        await self._client.close()
+
     @retry(
         retry=retry_if_exception_type(LLMRateLimitError),
         wait=wait_exponential(multiplier=1, min=4, max=60),

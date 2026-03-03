@@ -35,6 +35,11 @@ class ChannelSummary(commands.Cog):
         )
         logger.info("ChannelSummary cog loaded")
 
+    async def cog_unload(self) -> None:
+        if self._summarizer:
+            await self._summarizer.close()
+        logger.info("ChannelSummary cog unloaded")
+
     @app_commands.command(
         name="summary",
         description="Summarize recent messages in a channel",

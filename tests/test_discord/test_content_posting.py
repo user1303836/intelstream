@@ -52,6 +52,7 @@ def _patch_cog_deps():
         mock_create_llm.return_value = mock_llm_client
 
         mock_summarizer = MagicMock()
+        mock_summarizer.close = AsyncMock()
         mock_summarizer_cls.return_value = mock_summarizer
 
         yield {
@@ -121,7 +122,7 @@ class TestContentPostingCogLoad:
 
         await cog.cog_load()
 
-        assert cog.content_loop.is_running() or True
+        assert cog.content_loop.is_running()
 
 
 class TestContentPostingCogUnload:
@@ -135,6 +136,16 @@ class TestContentPostingCogUnload:
 
         deps["pipeline"].close.assert_called_once()
         assert cog._initialized is False
+
+    async def test_cog_unload_closes_summarizer(self, _patch_cog_deps, mock_bot):
+        deps = _patch_cog_deps
+
+        cog = ContentPosting(mock_bot)
+        await cog.cog_load()
+
+        await cog.cog_unload()
+
+        deps["summarizer"].close.assert_called_once()
 
 
 class TestContentLoop:
