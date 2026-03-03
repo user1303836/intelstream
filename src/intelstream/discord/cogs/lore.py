@@ -87,9 +87,7 @@ class Lore(commands.Cog):
         if api_key and api_key.strip():
             self._anthropic = anthropic.AsyncAnthropic(api_key=api_key)
         else:
-            logger.warning(
-                "ANTHROPIC_API_KEY not set; lore query feature will be disabled"
-            )
+            logger.warning("ANTHROPIC_API_KEY not set; lore query feature will be disabled")
         self._chunker = MessageChunker(
             gap_minutes=self.bot.settings.lore_chunk_gap_minutes,
             max_messages=self.bot.settings.lore_chunk_max_messages,

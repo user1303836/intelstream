@@ -164,12 +164,8 @@ class TestContentPipelineInitialization:
         assert http_client.is_closed
 
 
-
-
 class TestCreateAdaptersWithoutAnthropicKey:
-    async def test_no_blog_adapter_without_anthropic_key(
-        self, mock_repository, mock_summarizer
-    ):
+    async def test_no_blog_adapter_without_anthropic_key(self, mock_repository, mock_summarizer):
         settings = MagicMock(spec=Settings)
         settings.youtube_api_key = "test-key"
         settings.anthropic_api_key = None
@@ -188,9 +184,7 @@ class TestCreateAdaptersWithoutAnthropicKey:
 
         await pipeline.close()
 
-    async def test_no_blog_adapter_with_empty_anthropic_key(
-        self, mock_repository, mock_summarizer
-    ):
+    async def test_no_blog_adapter_with_empty_anthropic_key(self, mock_repository, mock_summarizer):
         settings = MagicMock(spec=Settings)
         settings.youtube_api_key = "test-key"
         settings.anthropic_api_key = "  "

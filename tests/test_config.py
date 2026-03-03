@@ -247,9 +247,7 @@ class TestProviderAwareModelDefaults:
         assert settings.summary_model == "my-custom-model"
         assert settings.summary_model_interactive == "my-custom-interactive"
 
-    def test_partial_override_uses_default_for_unset(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_partial_override_uses_default_for_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._base_env(monkeypatch)
         monkeypatch.setenv("LLM_PROVIDER", "openai")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")

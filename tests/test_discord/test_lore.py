@@ -187,8 +187,6 @@ class TestLoreQuery:
         assert "no relevant" in mock_interaction.followup.send.call_args[0][0].lower()
 
 
-
-
 class TestLoreCogLoadWithoutAnthropicKey:
     async def test_cog_load_without_api_key(
         self, mock_bot, mock_embedding_service, mock_vector_store

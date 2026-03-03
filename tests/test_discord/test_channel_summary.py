@@ -281,7 +281,9 @@ class TestFormatMessages:
 class TestCogLoad:
     @patch(PATCH_CREATE_LLM)
     @patch(PATCH_SUMMARIZER)
-    async def test_cog_load_creates_summarizer(self, mock_summarizer_cls, mock_create_llm, mock_bot):
+    async def test_cog_load_creates_summarizer(
+        self, mock_summarizer_cls, mock_create_llm, mock_bot
+    ):
         mock_llm_client = MagicMock()
         mock_create_llm.return_value = mock_llm_client
 
