@@ -241,14 +241,23 @@ class MessageIngestionService:
         self,
         channel: discord.TextChannel,
         guild_id: str,
+        *,
+        channel_index: int = 0,
+        total_channels: int = 0,
     ) -> None:
         channel_id = str(channel.id)
         channel_name = channel.name
+        progress_label = f"[{channel_index}/{total_channels}]" if total_channels else ""
 
         progress = await self._repository.get_or_create_ingestion_progress(guild_id, channel_id)
 
         if progress.status == "completed":
-            logger.info("Channel already fully ingested", channel=channel_name)
+            logger.info(
+                "Channel already fully ingested",
+                progress=progress_label,
+                channel=channel_name,
+                messages=progress.total_fetched or 0,
+            )
             return
 
         after_snowflake = None
@@ -259,14 +268,17 @@ class MessageIngestionService:
 
         await self._repository.update_ingestion_progress(guild_id, channel_id, status="in_progress")
 
+        resuming = progress.last_message_id is not None
         logger.info(
-            "Starting channel ingestion",
+            "Resuming channel ingestion" if resuming else "Starting channel ingestion",
+            progress=progress_label,
             channel=channel_name,
-            resume_from=progress.last_message_id,
+            fetched_so_far=progress.total_fetched or 0,
         )
 
         buffer: list[RawMessage] = []
         total_fetched = progress.total_fetched or 0
+        chunks_stored = 0
         messages_since_checkpoint = 0
 
         try:
@@ -283,7 +295,12 @@ class MessageIngestionService:
                         last_message_id=str(msg.id),
                         total_fetched=total_fetched,
                     )
-                    logger.info("Ingestion paused", channel=channel_name, fetched=total_fetched)
+                    logger.info(
+                        "Ingestion paused",
+                        progress=progress_label,
+                        channel=channel_name,
+                        fetched=total_fetched,
+                    )
                     return
 
                 raw = discord_message_to_raw(msg)
@@ -311,6 +328,7 @@ class MessageIngestionService:
                                 + 1,
                             )
                         await self.store_chunks(chunks)
+                        chunks_stored += len(chunks)
                         buffer = buffer[leftover_start:]
 
                     await self._repository.update_ingestion_progress(
@@ -324,8 +342,10 @@ class MessageIngestionService:
                     if total_fetched % LOG_INTERVAL == 0:
                         logger.info(
                             "Ingestion progress",
+                            progress=progress_label,
                             channel=channel_name,
                             fetched=total_fetched,
+                            chunks=chunks_stored,
                         )
 
                 if total_fetched % YIELD_INTERVAL == 0:
@@ -335,6 +355,7 @@ class MessageIngestionService:
                 chunks = self._chunker.chunk_messages(buffer, guild_id, channel_id, channel_name)
                 if chunks:
                     await self.store_chunks(chunks)
+                    chunks_stored += len(chunks)
 
             await self._repository.update_ingestion_progress(
                 guild_id,
@@ -345,12 +366,20 @@ class MessageIngestionService:
             )
             logger.info(
                 "Channel ingestion complete",
+                progress=progress_label,
                 channel=channel_name,
-                total_fetched=total_fetched,
+                fetched=total_fetched,
+                chunks=chunks_stored,
             )
 
         except Exception:
-            logger.exception("Ingestion failed", channel=channel_name)
+            logger.exception(
+                "Ingestion failed",
+                progress=progress_label,
+                channel=channel_name,
+                fetched=total_fetched,
+                chunks=chunks_stored,
+            )
             if buffer:
                 last_id = str(buffer[-1].id)
             elif progress.last_message_id:
@@ -375,18 +404,27 @@ class MessageIngestionService:
         ]
         channels.sort(key=lambda c: c.last_message_id or 0, reverse=True)
 
+        channel_names = [ch.name for ch in channels]
         logger.info(
             "Starting backfill",
             guild=guild.name,
-            channels=len(channels),
+            total_channels=len(channels),
+            channels=channel_names,
         )
 
         completed = 0
-        for channel in channels:
+        for i, channel in enumerate(channels, 1):
             if self._paused:
-                logger.info("Backfill paused", completed_channels=completed)
+                logger.info(
+                    "Backfill paused",
+                    guild=guild.name,
+                    completed_channels=completed,
+                    total_channels=len(channels),
+                )
                 return
-            await self.ingest_channel(channel, guild_id)
+            await self.ingest_channel(
+                channel, guild_id, channel_index=i, total_channels=len(channels)
+            )
             completed += 1
 
         logger.info(
