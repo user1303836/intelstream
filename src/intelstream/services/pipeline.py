@@ -82,6 +82,10 @@ class ContentPipeline:
                 repository=self._repository,
                 http_client=self._http_client,
             )
+        else:
+            logger.warning(
+                "ANTHROPIC_API_KEY not set; Blog and Page source types will be unavailable"
+            )
 
         return adapters
 
