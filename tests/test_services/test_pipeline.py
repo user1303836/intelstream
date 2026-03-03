@@ -164,6 +164,51 @@ class TestContentPipelineInitialization:
         assert http_client.is_closed
 
 
+
+
+class TestCreateAdaptersWithoutAnthropicKey:
+    async def test_no_blog_adapter_without_anthropic_key(
+        self, mock_repository, mock_summarizer
+    ):
+        settings = MagicMock(spec=Settings)
+        settings.youtube_api_key = "test-key"
+        settings.anthropic_api_key = None
+        settings.twitter_bearer_token = None
+        settings.http_timeout_seconds = 30.0
+        settings.summarization_delay_seconds = 0.5
+        settings.fetch_delay_seconds = 0.0
+
+        pipeline = ContentPipeline(
+            settings=settings, repository=mock_repository, summarizer=mock_summarizer
+        )
+        await pipeline.initialize()
+
+        assert SourceType.BLOG not in pipeline._adapters
+        assert SourceType.SUBSTACK in pipeline._adapters
+
+        await pipeline.close()
+
+    async def test_no_blog_adapter_with_empty_anthropic_key(
+        self, mock_repository, mock_summarizer
+    ):
+        settings = MagicMock(spec=Settings)
+        settings.youtube_api_key = "test-key"
+        settings.anthropic_api_key = "  "
+        settings.twitter_bearer_token = None
+        settings.http_timeout_seconds = 30.0
+        settings.summarization_delay_seconds = 0.5
+        settings.fetch_delay_seconds = 0.0
+
+        pipeline = ContentPipeline(
+            settings=settings, repository=mock_repository, summarizer=mock_summarizer
+        )
+        await pipeline.initialize()
+
+        assert SourceType.BLOG not in pipeline._adapters
+
+        await pipeline.close()
+
+
 class TestFetchAllSources:
     async def test_fetch_all_sources_success(
         self,
