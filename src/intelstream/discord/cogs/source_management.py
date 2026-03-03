@@ -192,6 +192,7 @@ class SourceManagement(commands.Cog):
         ]
     )
     @app_commands.default_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def source_add(
         self,
         interaction: discord.Interaction,
@@ -416,6 +417,7 @@ class SourceManagement(commands.Cog):
 
     @source_group.command(name="remove", description="Remove a content source")
     @app_commands.default_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.describe(name="Name of the source to remove")
     async def source_remove(
         self,
@@ -547,6 +549,7 @@ class SourceManagement(commands.Cog):
 
     @source_group.command(name="toggle", description="Enable or disable a content source")
     @app_commands.default_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.describe(name="Name of the source to toggle")
     async def source_toggle(
         self,
@@ -590,6 +593,39 @@ class SourceManagement(commands.Cog):
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
         return await self._source_name_autocomplete(interaction, current)
+
+    @source_add.error
+    async def source_add_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        if isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message(
+                "You need Manage Server permission to add sources.", ephemeral=True
+            )
+        else:
+            raise error
+
+    @source_remove.error
+    async def source_remove_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        if isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message(
+                "You need Manage Server permission to remove sources.", ephemeral=True
+            )
+        else:
+            raise error
+
+    @source_toggle.error
+    async def source_toggle_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        if isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message(
+                "You need Manage Server permission to toggle sources.", ephemeral=True
+            )
+        else:
+            raise error
 
 
 async def setup(bot: "IntelStreamBot") -> None:

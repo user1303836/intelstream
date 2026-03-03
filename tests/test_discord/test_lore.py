@@ -187,6 +187,64 @@ class TestLoreQuery:
         assert "no relevant" in mock_interaction.followup.send.call_args[0][0].lower()
 
 
+
+
+class TestLoreCogLoadWithoutAnthropicKey:
+    async def test_cog_load_without_api_key(
+        self, mock_bot, mock_embedding_service, mock_vector_store
+    ):
+        mock_bot.settings.anthropic_api_key = None
+        cog = Lore(mock_bot, mock_embedding_service, mock_vector_store)
+        cog._flush_buffers = MagicMock()
+        cog._flush_buffers.start = MagicMock()
+
+        await cog.cog_load()
+
+        assert cog._anthropic is None
+        assert cog._ingestion_service is not None
+        assert cog._chunker is not None
+
+    async def test_cog_load_with_empty_api_key(
+        self, mock_bot, mock_embedding_service, mock_vector_store
+    ):
+        mock_bot.settings.anthropic_api_key = "  "
+        cog = Lore(mock_bot, mock_embedding_service, mock_vector_store)
+        cog._flush_buffers = MagicMock()
+        cog._flush_buffers.start = MagicMock()
+
+        await cog.cog_load()
+
+        assert cog._anthropic is None
+
+    async def test_query_returns_error_when_no_anthropic(
+        self, mock_interaction, mock_vector_store, mock_bot, mock_embedding_service
+    ):
+        mock_bot.settings.anthropic_api_key = None
+        cog = Lore(mock_bot, mock_embedding_service, mock_vector_store)
+        cog._anthropic = None
+        cog._ingestion_service = MagicMock()
+        cog._chunker = MagicMock()
+
+        mock_vector_store.search_message_chunks.return_value = [
+            ChunkSearchResult(chunk_id="chunk-1", score=0.9),
+        ]
+        meta = MagicMock()
+        meta.id = "chunk-1"
+        meta.guild_id = str(mock_interaction.guild_id)
+        meta.channel_id = "999"
+        meta.channel_name = "general"
+        meta.start_timestamp = datetime(2024, 6, 1, tzinfo=UTC)
+        meta.end_timestamp = datetime(2024, 6, 1, 1, 0, tzinfo=UTC)
+        meta.text = "Some text"
+        mock_bot.repository.get_message_chunk_metas_by_ids.return_value = [meta]
+
+        await cog.lore_query.callback(cog, mock_interaction, "test query")
+
+        mock_interaction.followup.send.assert_called()
+        sent_text = mock_interaction.followup.send.call_args[0][0]
+        assert "unavailable" in sent_text.lower()
+
+
 class TestLoreSetup:
     async def test_setup_no_guild(self, lore_cog, mock_interaction):
         mock_interaction.guild = None

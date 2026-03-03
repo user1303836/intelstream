@@ -83,9 +83,13 @@ class Lore(commands.Cog):
             gap_minutes=self.bot.settings.lore_chunk_gap_minutes,
             max_messages=self.bot.settings.lore_chunk_max_messages,
         )
-        self._anthropic = anthropic.AsyncAnthropic(
-            api_key=self.bot.settings.anthropic_api_key,
-        )
+        api_key = self.bot.settings.anthropic_api_key
+        if api_key and api_key.strip():
+            self._anthropic = anthropic.AsyncAnthropic(api_key=api_key)
+        else:
+            logger.warning(
+                "ANTHROPIC_API_KEY not set; lore query feature will be disabled"
+            )
         self._chunker = MessageChunker(
             gap_minutes=self.bot.settings.lore_chunk_gap_minutes,
             max_messages=self.bot.settings.lore_chunk_max_messages,
@@ -189,7 +193,12 @@ class Lore(commands.Cog):
             f"--- Message History ---\n{context_text}"
         )
 
-        assert self._anthropic is not None
+        if self._anthropic is None:
+            await interaction.followup.send(
+                "Lore queries are unavailable. ANTHROPIC_API_KEY is not configured.",
+                ephemeral=True,
+            )
+            return
         try:
             message = await self._anthropic.messages.create(
                 model=self.bot.settings.summary_model_interactive,
