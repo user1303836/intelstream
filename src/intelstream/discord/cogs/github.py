@@ -104,6 +104,7 @@ class GitHubCommands(commands.Cog):
         track_issues="Track issues (default: True)",
     )
     @app_commands.default_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def github_add(
         self,
         interaction: discord.Interaction,
@@ -271,6 +272,7 @@ class GitHubCommands(commands.Cog):
 
     @github_group.command(name="remove", description="Stop monitoring a GitHub repository")
     @app_commands.default_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.describe(repo="Repository name (owner/repo format)")
     async def github_remove(
         self,
@@ -360,6 +362,7 @@ class GitHubCommands(commands.Cog):
 
     @github_group.command(name="toggle", description="Enable or disable GitHub repo monitoring")
     @app_commands.default_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.describe(repo="Repository name (owner/repo format)")
     async def github_toggle(
         self,
@@ -413,6 +416,42 @@ class GitHubCommands(commands.Cog):
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
         return await self._github_repo_autocomplete(interaction, current)
+
+    @github_add.error
+    async def github_add_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        if isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message(
+                "You need Manage Server permission to add GitHub repositories.",
+                ephemeral=True,
+            )
+        else:
+            raise error
+
+    @github_remove.error
+    async def github_remove_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        if isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message(
+                "You need Manage Server permission to remove GitHub repositories.",
+                ephemeral=True,
+            )
+        else:
+            raise error
+
+    @github_toggle.error
+    async def github_toggle_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        if isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message(
+                "You need Manage Server permission to toggle GitHub repositories.",
+                ephemeral=True,
+            )
+        else:
+            raise error
 
 
 async def setup(bot: "IntelStreamBot") -> None:

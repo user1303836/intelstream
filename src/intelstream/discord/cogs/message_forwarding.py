@@ -96,6 +96,7 @@ class MessageForwarding(commands.Cog):
         destination="Destination channel or thread to forward TO",
     )
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def forward_add(
         self,
         interaction: discord.Interaction,
@@ -220,6 +221,7 @@ class MessageForwarding(commands.Cog):
         destination="Destination channel/thread to stop forwarding to",
     )
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def forward_remove(
         self,
         interaction: discord.Interaction,
@@ -264,6 +266,7 @@ class MessageForwarding(commands.Cog):
         destination="Destination channel/thread to pause forwarding to",
     )
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def forward_pause(
         self,
         interaction: discord.Interaction,
@@ -309,6 +312,7 @@ class MessageForwarding(commands.Cog):
         destination="Destination channel/thread to resume forwarding to",
     )
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def forward_resume(
         self,
         interaction: discord.Interaction,
@@ -347,6 +351,54 @@ class MessageForwarding(commands.Cog):
                 f"No forwarding rule found from {source.mention} to {destination.mention}.",
                 ephemeral=True,
             )
+
+    @forward_add.error
+    async def forward_add_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        if isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message(
+                "You need Manage Server permission to add forwarding rules.",
+                ephemeral=True,
+            )
+        else:
+            raise error
+
+    @forward_remove.error
+    async def forward_remove_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        if isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message(
+                "You need Manage Server permission to remove forwarding rules.",
+                ephemeral=True,
+            )
+        else:
+            raise error
+
+    @forward_pause.error
+    async def forward_pause_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        if isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message(
+                "You need Manage Server permission to pause forwarding rules.",
+                ephemeral=True,
+            )
+        else:
+            raise error
+
+    @forward_resume.error
+    async def forward_resume_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        if isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message(
+                "You need Manage Server permission to resume forwarding rules.",
+                ephemeral=True,
+            )
+        else:
+            raise error
 
 
 async def setup(bot: "IntelStreamBot") -> None:
