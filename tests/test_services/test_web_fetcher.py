@@ -45,6 +45,7 @@ def minimal_html():
 class TestWebFetcher:
     async def test_fetch_success(self, sample_html):
         mock_response = MagicMock(spec=httpx.Response)
+        mock_response.is_redirect = False
         mock_response.text = sample_html
         mock_response.headers = {"content-type": "text/html; charset=utf-8"}
         mock_response.raise_for_status = MagicMock()
@@ -64,6 +65,7 @@ class TestWebFetcher:
 
     async def test_fetch_extracts_title_from_og_tag(self, sample_html):
         mock_response = MagicMock(spec=httpx.Response)
+        mock_response.is_redirect = False
         mock_response.text = sample_html
         mock_response.headers = {"content-type": "text/html"}
         mock_response.raise_for_status = MagicMock()
@@ -85,6 +87,7 @@ class TestWebFetcher:
         """
 
         mock_response = MagicMock(spec=httpx.Response)
+        mock_response.is_redirect = False
         mock_response.text = html
         mock_response.headers = {"content-type": "text/html"}
         mock_response.raise_for_status = MagicMock()
@@ -99,6 +102,7 @@ class TestWebFetcher:
 
     async def test_fetch_extracts_content_from_article_tag(self, sample_html):
         mock_response = MagicMock(spec=httpx.Response)
+        mock_response.is_redirect = False
         mock_response.text = sample_html
         mock_response.headers = {"content-type": "text/html"}
         mock_response.raise_for_status = MagicMock()
@@ -115,6 +119,7 @@ class TestWebFetcher:
 
     async def test_fetch_extracts_published_date(self, sample_html):
         mock_response = MagicMock(spec=httpx.Response)
+        mock_response.is_redirect = False
         mock_response.text = sample_html
         mock_response.headers = {"content-type": "text/html"}
         mock_response.raise_for_status = MagicMock()
@@ -132,6 +137,7 @@ class TestWebFetcher:
 
     async def test_fetch_raises_on_insufficient_content(self, minimal_html):
         mock_response = MagicMock(spec=httpx.Response)
+        mock_response.is_redirect = False
         mock_response.text = minimal_html
         mock_response.headers = {"content-type": "text/html"}
         mock_response.raise_for_status = MagicMock()
@@ -146,6 +152,7 @@ class TestWebFetcher:
 
     async def test_fetch_raises_on_non_html_content(self):
         mock_response = MagicMock(spec=httpx.Response)
+        mock_response.is_redirect = False
         mock_response.headers = {"content-type": "application/json"}
         mock_response.raise_for_status = MagicMock()
 
@@ -159,6 +166,7 @@ class TestWebFetcher:
 
     async def test_fetch_raises_on_http_error(self):
         mock_response = MagicMock(spec=httpx.Response)
+        mock_response.is_redirect = False
         mock_response.status_code = 404
         mock_response.raise_for_status = MagicMock(
             side_effect=httpx.HTTPStatusError(
@@ -192,6 +200,7 @@ class TestWebFetcher:
         """
 
         mock_response = MagicMock(spec=httpx.Response)
+        mock_response.is_redirect = False
         mock_response.text = html
         mock_response.headers = {"content-type": "text/html"}
         mock_response.raise_for_status = MagicMock()
@@ -213,6 +222,7 @@ class TestWebFetcher:
         """
 
         mock_response = MagicMock(spec=httpx.Response)
+        mock_response.is_redirect = False
         mock_response.text = html
         mock_response.headers = {"content-type": "text/html"}
         mock_response.raise_for_status = MagicMock()
@@ -237,6 +247,7 @@ class TestWebFetcher:
         """
 
         mock_response = MagicMock(spec=httpx.Response)
+        mock_response.is_redirect = False
         mock_response.text = html
         mock_response.headers = {"content-type": "text/html"}
         mock_response.raise_for_status = MagicMock()
@@ -263,6 +274,7 @@ class TestWebFetcher:
         """
 
         mock_response = MagicMock(spec=httpx.Response)
+        mock_response.is_redirect = False
         mock_response.text = html
         mock_response.headers = {"content-type": "text/html"}
         mock_response.raise_for_status = MagicMock()
@@ -288,6 +300,7 @@ class TestWebFetcher:
         """
 
         mock_response = MagicMock(spec=httpx.Response)
+        mock_response.is_redirect = False
         mock_response.text = html
         mock_response.headers = {"content-type": "text/html"}
         mock_response.raise_for_status = MagicMock()
@@ -321,6 +334,7 @@ class TestWebFetcher:
 
     async def test_fetch_allows_skip_ssrf_check(self, sample_html):
         mock_response = MagicMock(spec=httpx.Response)
+        mock_response.is_redirect = False
         mock_response.text = sample_html
         mock_response.headers = {"content-type": "text/html"}
         mock_response.raise_for_status = MagicMock()
@@ -331,3 +345,39 @@ class TestWebFetcher:
         fetcher = WebFetcher(http_client=mock_client)
         result = await fetcher.fetch("http://localhost/article", skip_ssrf_check=True)
         assert isinstance(result, WebContent)
+
+    async def test_fetch_blocks_redirect_to_private_ip(self):
+        redirect_response = MagicMock(spec=httpx.Response)
+        redirect_response.is_redirect = True
+        mock_next_request = MagicMock()
+        mock_next_request.url = "http://127.0.0.1/admin"
+        redirect_response.next_request = mock_next_request
+
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=redirect_response)
+
+        fetcher = WebFetcher(http_client=mock_client)
+        with pytest.raises(WebFetchError, match="Redirect blocked by SSRF"):
+            await fetcher.fetch("https://evil.com/redirect")
+
+    async def test_fetch_follows_safe_redirect(self, sample_html):
+        redirect_response = MagicMock(spec=httpx.Response)
+        redirect_response.is_redirect = True
+        mock_next_request = MagicMock()
+        mock_next_request.url = "https://example.com/final"
+        redirect_response.next_request = mock_next_request
+
+        final_response = MagicMock(spec=httpx.Response)
+        final_response.is_redirect = False
+        final_response.text = sample_html
+        final_response.headers = {"content-type": "text/html"}
+        final_response.raise_for_status = MagicMock()
+
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(side_effect=[redirect_response, final_response])
+
+        fetcher = WebFetcher(http_client=mock_client)
+        result = await fetcher.fetch("https://example.com/article")
+
+        assert isinstance(result, WebContent)
+        assert mock_client.get.call_count == 2

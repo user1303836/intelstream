@@ -27,6 +27,9 @@ class WebFetchError(Exception):
     pass
 
 
+MAX_REDIRECTS = 10
+
+
 class WebFetcher:
     def __init__(self, http_client: httpx.AsyncClient | None = None) -> None:
         self._client = http_client
@@ -43,13 +46,34 @@ class WebFetcher:
         try:
             client = self._client or httpx.AsyncClient(
                 timeout=DEFAULT_TIMEOUT,
-                follow_redirects=True,
+                follow_redirects=False,
                 headers={
                     "User-Agent": "Mozilla/5.0 (compatible; IntelStream/1.0; +https://github.com/intelstream)"
                 },
             )
-            response = await client.get(url)
-            response.raise_for_status()
+
+            current_url = url
+            for _ in range(MAX_REDIRECTS):
+                response = await client.get(current_url)
+
+                if response.is_redirect:
+                    redirect_url = str(response.next_request.url) if response.next_request else None
+                    if not redirect_url:
+                        raise WebFetchError("Redirect without a target URL")
+
+                    if not skip_ssrf_check:
+                        try:
+                            validate_url_for_ssrf(redirect_url)
+                        except SSRFError as e:
+                            raise WebFetchError(f"Redirect blocked by SSRF protection: {e}") from e
+
+                    current_url = redirect_url
+                    continue
+
+                response.raise_for_status()
+                break
+            else:
+                raise WebFetchError("Too many redirects")
 
             content_type = response.headers.get("content-type", "")
             if "text/html" not in content_type:
