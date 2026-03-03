@@ -95,6 +95,8 @@ class OpenAILLMClient(LLMClient):
         except openai.APIError as e:
             raise LLMError(f"OpenAI API error: {e}") from e
 
+        if not response.choices:
+            raise LLMError("Empty response from OpenAI: no choices returned")
         content = response.choices[0].message.content
         if not content:
             raise LLMError("Empty response from OpenAI")
@@ -129,9 +131,13 @@ class GeminiLLMClient(LLMClient):
                 raise LLMRateLimitError(str(e)) from e
             raise LLMError(f"Gemini API error: {e}") from e
 
-        if not response.text:
+        try:
+            text = response.text
+        except ValueError as e:
+            raise LLMError(f"Gemini response blocked by safety filter: {e}") from e
+        if not text:
             raise LLMError("Empty response from Gemini")
-        return response.text.strip()
+        return text.strip()
 
 
 def create_llm_client(

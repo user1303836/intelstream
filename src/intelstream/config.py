@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 if TYPE_CHECKING:
@@ -29,7 +29,7 @@ class Settings(BaseSettings):
         description="Discord user ID of the bot owner for DM notifications"
     )
 
-    llm_provider: str = Field(
+    llm_provider: Literal["anthropic", "openai", "gemini", "kimi"] = Field(
         default="anthropic",
         description="LLM provider for summarization: anthropic, openai, gemini, or kimi",
     )
@@ -95,13 +95,13 @@ class Settings(BaseSettings):
     )
 
     summary_model: str = Field(
-        default="claude-3-5-haiku-20241022",
-        description="Model to use for background summarization",
+        default="",
+        description="Model to use for background summarization (auto-detected from llm_provider if not set)",
     )
 
     summary_model_interactive: str = Field(
-        default="claude-sonnet-4-20250514",
-        description="Model to use for interactive /summarize command",
+        default="",
+        description="Model to use for interactive /summarize command (auto-detected from llm_provider if not set)",
     )
 
     discord_max_message_length: int = Field(
@@ -281,6 +281,40 @@ class Settings(BaseSettings):
                 f"(e.g., ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, KIMI_API_KEY)."
             )
         return key
+
+    _PROVIDER_MODEL_DEFAULTS: dict[str, tuple[str, str]] = {
+        "anthropic": ("claude-3-5-haiku-20241022", "claude-sonnet-4-20250514"),
+        "openai": ("gpt-4o-mini", "gpt-4o"),
+        "gemini": ("gemini-2.0-flash", "gemini-2.5-pro-preview-06-05"),
+        "kimi": ("moonshot-v1-8k", "moonshot-v1-32k"),
+    }
+
+    @model_validator(mode="after")
+    def set_provider_model_defaults(self) -> Settings:
+        defaults = self._PROVIDER_MODEL_DEFAULTS.get(self.llm_provider)
+        if defaults:
+            if not self.summary_model:
+                self.summary_model = defaults[0]
+            if not self.summary_model_interactive:
+                self.summary_model_interactive = defaults[1]
+        return self
+
+    @model_validator(mode="after")
+    def validate_llm_api_key(self) -> Settings:
+        keys = {
+            "anthropic": self.anthropic_api_key,
+            "openai": self.openai_api_key,
+            "gemini": self.gemini_api_key,
+            "kimi": self.kimi_api_key,
+        }
+        key = keys.get(self.llm_provider)
+        if not key:
+            raise ValueError(
+                f"No API key configured for LLM provider '{self.llm_provider}'. "
+                f"Set the corresponding environment variable "
+                f"(e.g., ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, KIMI_API_KEY)."
+            )
+        return self
 
     @field_validator("database_url")
     @classmethod
