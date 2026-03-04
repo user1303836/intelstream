@@ -280,6 +280,7 @@ class MessageIngestionService:
         total_fetched = progress.total_fetched or 0
         chunks_stored = 0
         messages_since_checkpoint = 0
+        latest_message_date: str | None = None
 
         try:
             async for msg in channel.history(
@@ -300,6 +301,7 @@ class MessageIngestionService:
                         progress=progress_label,
                         channel=channel_name,
                         fetched=total_fetched,
+                        latest_date=latest_message_date,
                     )
                     return
 
@@ -307,6 +309,7 @@ class MessageIngestionService:
                 buffer.append(raw)
                 total_fetched += 1
                 messages_since_checkpoint += 1
+                latest_message_date = raw.created_at.strftime("%Y-%m-%d")
 
                 if messages_since_checkpoint >= CHECKPOINT_INTERVAL:
                     chunks = self._chunker.chunk_messages(
@@ -346,6 +349,7 @@ class MessageIngestionService:
                             channel=channel_name,
                             fetched=total_fetched,
                             chunks=chunks_stored,
+                            latest_date=latest_message_date,
                         )
 
                 if total_fetched % YIELD_INTERVAL == 0:
@@ -370,6 +374,7 @@ class MessageIngestionService:
                 channel=channel_name,
                 fetched=total_fetched,
                 chunks=chunks_stored,
+                latest_date=latest_message_date,
             )
 
         except Exception:
@@ -379,6 +384,7 @@ class MessageIngestionService:
                 channel=channel_name,
                 fetched=total_fetched,
                 chunks=chunks_stored,
+                latest_date=latest_message_date,
             )
             if buffer:
                 last_id = str(buffer[-1].id)

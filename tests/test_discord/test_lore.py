@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock, MagicMock
 import discord
 import pytest
 
-from intelstream.database.vector_store import ChunkSearchResult
 from intelstream.discord.cogs.lore import Lore, _parse_timeframe, _split_message
 
 
@@ -131,75 +130,11 @@ class TestSplitMessage:
 
 
 class TestLoreQuery:
-    async def test_query_no_guild(self, lore_cog, mock_interaction):
-        mock_interaction.guild_id = None
-        await lore_cog.lore.callback(lore_cog, mock_interaction, "test")
-        mock_interaction.followup.send.assert_called_once()
-        assert "server" in mock_interaction.followup.send.call_args[0][0].lower()
-
-    async def test_query_no_results(self, lore_cog, mock_interaction, mock_vector_store):
-        mock_vector_store.search_message_chunks.return_value = []
+    async def test_command_temporarily_disabled(self, lore_cog, mock_interaction):
         await lore_cog.lore.callback(lore_cog, mock_interaction, "test query")
-        mock_interaction.followup.send.assert_called_once()
-        msg = mock_interaction.followup.send.call_args[0][0].lower()
-        assert "no lore" in msg
-
-    async def test_query_no_results_while_building(
-        self, lore_cog, mock_interaction, mock_vector_store
-    ):
-        mock_vector_store.search_message_chunks.return_value = []
-        lore_cog._ingestion_service.is_running = True
-        await lore_cog.lore.callback(lore_cog, mock_interaction, "test query")
-        mock_interaction.followup.send.assert_called_once()
-        msg = mock_interaction.followup.send.call_args[0][0].lower()
-        assert "still being built" in msg
-
-    async def test_query_with_results(
-        self, lore_cog, mock_interaction, mock_vector_store, mock_bot
-    ):
-        mock_vector_store.search_message_chunks.return_value = [
-            ChunkSearchResult(chunk_id="chunk-1", score=0.9),
-        ]
-
-        meta = MagicMock()
-        meta.id = "chunk-1"
-        meta.guild_id = str(mock_interaction.guild_id)
-        meta.channel_id = "999"
-        meta.channel_name = "general"
-        meta.start_timestamp = datetime(2024, 6, 1, tzinfo=UTC)
-        meta.end_timestamp = datetime(2024, 6, 1, 1, 0, tzinfo=UTC)
-        meta.text = "Some conversation text here"
-        mock_bot.repository.get_message_chunk_metas_by_ids.return_value = [meta]
-
-        lore_cog._llm_client.complete = AsyncMock(return_value="Here is the lore about that topic.")
-
-        await lore_cog.lore.callback(lore_cog, mock_interaction, "test query")
-        mock_interaction.followup.send.assert_called()
-        sent_text = mock_interaction.followup.send.call_args[0][0]
-        assert "lore" in sent_text.lower()
-
-    async def test_query_filters_other_guild(
-        self, lore_cog, mock_interaction, mock_vector_store, mock_bot
-    ):
-        mock_vector_store.search_message_chunks.return_value = [
-            ChunkSearchResult(chunk_id="chunk-1", score=0.9),
-        ]
-
-        meta = MagicMock()
-        meta.id = "chunk-1"
-        meta.guild_id = "999999"
-        meta.channel_id = "999"
-        mock_bot.repository.get_message_chunk_metas_by_ids.return_value = [meta]
-
-        await lore_cog.lore.callback(lore_cog, mock_interaction, "test query")
-        mock_interaction.followup.send.assert_called()
-        assert "no relevant" in mock_interaction.followup.send.call_args[0][0].lower()
-
-    async def test_query_no_llm_client(self, lore_cog, mock_interaction):
-        lore_cog._llm_client = None
-        await lore_cog.lore.callback(lore_cog, mock_interaction, "test query")
-        mock_interaction.followup.send.assert_called_once()
-        assert "unavailable" in mock_interaction.followup.send.call_args[0][0].lower()
+        mock_interaction.response.send_message.assert_called_once()
+        msg = mock_interaction.response.send_message.call_args[0][0].lower()
+        assert "temporarily disabled" in msg
 
 
 class TestLoreCogLoadWithoutApiKey:
