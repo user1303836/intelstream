@@ -9,7 +9,7 @@ import structlog
 from discord import MessageType, app_commands
 from discord.ext import commands, tasks
 
-from intelstream.services.llm_client import LLMClient, LLMError, create_llm_client
+from intelstream.services.llm_client import LLMClient, create_llm_client
 from intelstream.services.message_ingestion import (
     MessageChunker,
     MessageIngestionService,
@@ -25,12 +25,10 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 LORE_SYSTEM_PROMPT = (
-    "You are a Discord server historian. Based on the message excerpts provided, "
-    "tell the story of what was asked about. Organize the information chronologically. "
-    "Include specific quotes when they are interesting or funny. Mention usernames. "
-    "If the excerpts don't contain enough information to tell a complete story, "
-    "say what you found and note that the history may be incomplete. "
-    "Be conversational and engaging -- this is server lore, not a formal report."
+    "Based on the message excerpts provided, answer the user's question. "
+    "Organize the information chronologically. Include specific quotes when relevant. "
+    "Mention usernames. If the excerpts don't contain enough information, "
+    "say what you found and note that the history may be incomplete."
 )
 
 BUFFER_FLUSH_MINUTES = 5
@@ -130,116 +128,18 @@ class Lore(commands.Cog):
         channel="Limit search to a specific channel",
         timeframe="Time range, e.g. 'last 6 months', '2024'",
     )
-    @app_commands.checks.cooldown(rate=1, per=30.0)
     async def lore(
         self,
         interaction: discord.Interaction,
-        query: str,
-        channel: discord.TextChannel | None = None,
-        timeframe: str | None = None,
+        query: str,  # noqa: ARG002
+        channel: discord.TextChannel | None = None,  # noqa: ARG002
+        timeframe: str | None = None,  # noqa: ARG002
     ) -> None:
-        await interaction.response.defer()
-
-        guild_id = str(interaction.guild_id) if interaction.guild_id else None
-        if not guild_id:
-            await interaction.followup.send(
-                "This command can only be used in a server.", ephemeral=True
-            )
-            return
-
-        if self._llm_client is None:
-            await interaction.followup.send(
-                "Lore queries are unavailable. No LLM API key is configured.",
-                ephemeral=True,
-            )
-            return
-
-        logger.info(
-            "Lore query",
-            user_id=interaction.user.id,
-            query=query,
-            channel=channel.name if channel else None,
-            timeframe=timeframe,
+        await interaction.response.send_message(
+            "The /lore command is temporarily disabled while the message index is being built. "
+            "Check back soon!",
+            ephemeral=True,
         )
-
-        query_embedding = await self._embedding_service.embed_text(query)
-        topk = self.bot.settings.lore_search_results * 2
-        results = await self._vector_store.search_message_chunks(query_embedding, topk=topk)
-
-        if not results:
-            still_building = (
-                self._ingestion_service is not None and self._ingestion_service.is_running
-            )
-            msg = "No lore found yet."
-            if still_building:
-                msg += " The message index is still being built -- try again soon."
-            await interaction.followup.send(msg, ephemeral=True)
-            return
-
-        chunk_ids = [r.chunk_id for r in results]
-        metas = await self.bot.repository.get_message_chunk_metas_by_ids(chunk_ids)
-        metas_by_id = {m.id: m for m in metas}
-
-        filtered = []
-        for result in results:
-            meta = metas_by_id.get(result.chunk_id)
-            if meta is None:
-                continue
-            if meta.guild_id != guild_id:
-                continue
-            if channel and meta.channel_id != str(channel.id):
-                continue
-            if timeframe:
-                start_dt, end_dt = _parse_timeframe(timeframe)
-                if start_dt and meta.end_timestamp < start_dt:
-                    continue
-                if end_dt and meta.start_timestamp > end_dt:
-                    continue
-            filtered.append(meta)
-
-        max_results = self.bot.settings.lore_search_results
-        filtered = filtered[:max_results]
-
-        if not filtered:
-            await interaction.followup.send(
-                "No relevant lore found for that query.", ephemeral=True
-            )
-            return
-
-        filtered.sort(key=lambda m: m.start_timestamp)
-
-        context_parts = []
-        for meta in filtered:
-            ch_name = meta.channel_name or "unknown"
-            ts = meta.start_timestamp.strftime("%Y-%m-%d")
-            context_parts.append(f"--- #{ch_name} ({ts}) ---\n{meta.text}")
-        context_text = "\n\n".join(context_parts)
-
-        prompt = (
-            f"Based on the following message excerpts from this server's history, "
-            f'tell the story of: "{query}"\n\n'
-            f"--- Message History ---\n{context_text}"
-        )
-
-        try:
-            response_text = await self._llm_client.complete(
-                system=LORE_SYSTEM_PROMPT,
-                user_message=prompt,
-                max_tokens=2048,
-            )
-        except LLMError as e:
-            logger.error("Failed to generate lore response", error=str(e))
-            await interaction.followup.send(
-                "Failed to generate lore response. Please try again later.", ephemeral=True
-            )
-            return
-
-        if len(response_text) <= MAX_DISCORD_MESSAGE_LENGTH:
-            await interaction.followup.send(response_text)
-        else:
-            parts = _split_message(response_text)
-            for part in parts:
-                await interaction.followup.send(part)
 
     @commands.Cog.listener("on_message")
     async def on_message(self, message: discord.Message) -> None:
@@ -339,16 +239,3 @@ class Lore(commands.Cog):
         for guild in self.bot.guilds:
             await self.start_ingestion_for_guild(guild)
             break
-
-    @lore.error
-    async def lore_error(
-        self, interaction: discord.Interaction, error: app_commands.AppCommandError
-    ) -> None:
-        if isinstance(error, app_commands.CommandOnCooldown):
-            minutes, seconds = divmod(int(error.retry_after), 60)
-            time_str = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
-            await interaction.response.send_message(
-                f"Lore queries are on cooldown. Try again in {time_str}.", ephemeral=True
-            )
-        else:
-            raise error
