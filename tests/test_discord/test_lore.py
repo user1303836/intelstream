@@ -177,9 +177,7 @@ class TestIndexHealth:
 
         assert result is True
 
-    async def test_message_index_unhealthy_on_count_mismatch(
-        self, lore_cog, mock_vector_store
-    ):
+    async def test_message_index_unhealthy_on_count_mismatch(self, lore_cog, mock_vector_store):
         mock_vector_store.message_chunk_doc_count.return_value = 0
 
         result = await lore_cog._message_index_is_healthy(expected_count=2)
