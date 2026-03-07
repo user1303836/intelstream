@@ -1,5 +1,5 @@
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -301,6 +301,47 @@ class TestMessageIngestionService:
         assert metas[0].guild_id == "111"
         assert metas[0].channel_id == "222"
         assert metas[0].message_count == 3
+
+    async def test_rebuild_vector_index(self, service, mock_deps):
+        repository, embedding_service, vector_store = mock_deps
+        repository.count_message_chunk_metas = AsyncMock(return_value=3)
+
+        meta1 = MagicMock(id="chunk-1", text="first chunk text")
+        meta2 = MagicMock(id="chunk-2", text="second chunk text")
+        meta3 = MagicMock(id="chunk-3", text="third chunk text")
+        repository.get_message_chunk_metas_batch = AsyncMock(
+            side_effect=[
+                [meta1, meta2],
+                [meta3],
+                [],
+            ]
+        )
+        embedding_service.embed_batch = AsyncMock(
+            side_effect=[
+                [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]],
+                [[0.7, 0.8, 0.9]],
+            ]
+        )
+
+        result = await service.rebuild_vector_index(batch_size=2)
+
+        assert result == 3
+        vector_store.recreate_message_chunks_collection.assert_called_once()
+        assert vector_store.upsert_message_chunks_batch.await_count == 2
+        repository.get_message_chunk_metas_batch.assert_any_call(offset=0, limit=2)
+        repository.get_message_chunk_metas_batch.assert_any_call(offset=2, limit=2)
+
+    async def test_rebuild_vector_index_empty(self, service, mock_deps):
+        repository, embedding_service, vector_store = mock_deps
+        repository.count_message_chunk_metas = AsyncMock(return_value=0)
+        repository.get_message_chunk_metas_batch = AsyncMock(return_value=[])
+
+        result = await service.rebuild_vector_index()
+
+        assert result == 0
+        vector_store.recreate_message_chunks_collection.assert_called_once()
+        embedding_service.embed_batch.assert_not_called()
+        vector_store.upsert_message_chunks_batch.assert_not_called()
 
     def test_is_running_no_task(self, service):
         assert service.is_running is False

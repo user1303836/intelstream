@@ -237,6 +237,44 @@ class MessageIngestionService:
 
         return len(metas)
 
+    async def rebuild_vector_index(self, batch_size: int = EMBED_BATCH_SIZE) -> int:
+        total_chunks = await self._repository.count_message_chunk_metas()
+        await self._vector_store.recreate_message_chunks_collection()
+
+        if total_chunks == 0:
+            logger.info("No stored message chunks to reindex")
+            return 0
+
+        indexed = 0
+        offset = 0
+
+        while True:
+            metas = await self._repository.get_message_chunk_metas_batch(
+                offset=offset,
+                limit=batch_size,
+            )
+            if not metas:
+                break
+
+            embeddings = await self._embedding_service.embed_batch([meta.text for meta in metas])
+            vector_items = [
+                (meta.id, embedding) for meta, embedding in zip(metas, embeddings, strict=True)
+            ]
+            await self._vector_store.upsert_message_chunks_batch(vector_items)
+
+            indexed += len(metas)
+            offset += len(metas)
+
+            if indexed == total_chunks or indexed % (batch_size * 10) == 0:
+                logger.info(
+                    "Lore vector index rebuild progress",
+                    indexed=indexed,
+                    total=total_chunks,
+                )
+
+        logger.info("Lore vector index rebuild complete", indexed=indexed, total=total_chunks)
+        return indexed
+
     async def ingest_channel(
         self,
         channel: discord.TextChannel,

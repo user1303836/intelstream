@@ -938,6 +938,23 @@ class Repository:
             session.add_all(chunks)
             await session.commit()
 
+    async def count_message_chunk_metas(self) -> int:
+        async with self.session() as session:
+            result = await session.execute(select(func.count()).select_from(MessageChunkMeta))
+            return int(result.scalar_one())
+
+    async def get_message_chunk_metas_batch(
+        self, offset: int = 0, limit: int = 100
+    ) -> list[MessageChunkMeta]:
+        async with self.session() as session:
+            result = await session.execute(
+                select(MessageChunkMeta)
+                .order_by(MessageChunkMeta.start_timestamp.asc(), MessageChunkMeta.id.asc())
+                .offset(offset)
+                .limit(limit)
+            )
+            return list(result.scalars().all())
+
     async def get_message_chunk_metas_by_ids(self, chunk_ids: list[str]) -> list[MessageChunkMeta]:
         if not chunk_ids:
             return []

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import re
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -33,6 +35,7 @@ LORE_SYSTEM_PROMPT = (
 
 BUFFER_FLUSH_MINUTES = 5
 MAX_DISCORD_MESSAGE_LENGTH = 2000
+HEALTH_CHECK_TOPK = 10
 
 
 def _parse_timeframe(timeframe: str) -> tuple[datetime | None, datetime | None]:
@@ -89,6 +92,8 @@ class Lore(commands.Cog):
         self._llm_client: LLMClient | None = None
         self._message_buffers: dict[str, list[RawMessage]] = {}
         self._chunker: MessageChunker | None = None
+        self._index_rebuild_task: asyncio.Task[None] | None = None
+        self._index_rebuild_error: str | None = None
 
     async def cog_load(self) -> None:
         self._ingestion_service = MessageIngestionService(
@@ -111,10 +116,18 @@ class Lore(commands.Cog):
             max_messages=self.bot.settings.lore_chunk_max_messages,
         )
         self._flush_buffers.start()
+        self._index_rebuild_task = asyncio.create_task(
+            self._ensure_message_chunk_index(),
+            name="lore-index-rebuild",
+        )
         logger.info("Lore cog loaded")
 
     async def cog_unload(self) -> None:
         self._flush_buffers.cancel()
+        if self._index_rebuild_task is not None:
+            self._index_rebuild_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._index_rebuild_task
         if self._ingestion_service and self._ingestion_service.is_running:
             self._ingestion_service.stop_backfill()
         await self._flush_all_buffers()
@@ -135,11 +148,81 @@ class Lore(commands.Cog):
         channel: discord.TextChannel | None = None,  # noqa: ARG002
         timeframe: str | None = None,  # noqa: ARG002
     ) -> None:
+        if self._index_rebuild_task is not None and not self._index_rebuild_task.done():
+            message = (
+                "The /lore command is temporarily disabled while the message index is being "
+                "rebuilt. Check back soon!"
+            )
+        elif self._index_rebuild_error is not None:
+            message = (
+                "The /lore command is temporarily disabled because the message index needs "
+                "recovery. Check logs and try again after reindexing completes."
+            )
+        else:
+            message = (
+                "The /lore command is temporarily disabled while the message index is being "
+                "built. Check back soon!"
+            )
         await interaction.response.send_message(
-            "The /lore command is temporarily disabled while the message index is being built. "
-            "Check back soon!",
+            message,
             ephemeral=True,
         )
+
+    async def _ensure_message_chunk_index(self) -> None:
+        if self._ingestion_service is None:
+            return
+
+        try:
+            expected_count = await self.bot.repository.count_message_chunk_metas()
+            if expected_count == 0:
+                logger.info("No stored lore chunks found; skipping vector index rebuild")
+                return
+
+            if await self._message_index_is_healthy(expected_count):
+                logger.info("Lore message index is healthy", chunks=expected_count)
+                return
+
+            logger.warning(
+                "Lore message index is unhealthy; rebuilding from stored chunks",
+                expected_chunks=expected_count,
+            )
+            rebuilt = await self._ingestion_service.rebuild_vector_index()
+            logger.info("Lore message index rebuilt", indexed=rebuilt)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._index_rebuild_error = str(exc)
+            logger.exception("Failed to rebuild lore message index", error=str(exc))
+
+    async def _message_index_is_healthy(self, expected_count: int) -> bool:
+        indexed_count = await self._vector_store.message_chunk_doc_count()
+        if indexed_count != expected_count:
+            logger.warning(
+                "Lore message index count mismatch",
+                expected=expected_count,
+                indexed=indexed_count,
+            )
+            return False
+
+        sample_batch = await self.bot.repository.get_message_chunk_metas_batch(limit=1)
+        if not sample_batch:
+            return True
+
+        sample = sample_batch[0]
+        query_embedding = await self._embedding_service.embed_text(sample.text)
+        results = await self._vector_store.search_message_chunks(
+            query_embedding,
+            topk=HEALTH_CHECK_TOPK,
+        )
+        if any(result.chunk_id == sample.id for result in results):
+            return True
+
+        logger.warning(
+            "Lore message index probe failed",
+            sample_chunk_id=sample.id,
+            result_ids=[result.chunk_id for result in results],
+        )
+        return False
 
     @commands.Cog.listener("on_message")
     async def on_message(self, message: discord.Message) -> None:
