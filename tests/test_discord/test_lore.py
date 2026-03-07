@@ -1,9 +1,11 @@
+import asyncio
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import discord
 import pytest
 
+from intelstream.database.vector_store import ChunkSearchResult
 from intelstream.discord.cogs.lore import Lore, _parse_timeframe, _split_message
 
 
@@ -18,6 +20,8 @@ def mock_bot():
     bot.settings.llm_api_key = "test-key"
     bot.settings.summary_model_interactive = "claude-test"
     bot.repository = AsyncMock()
+    bot.repository.count_message_chunk_metas = AsyncMock(return_value=0)
+    bot.repository.get_message_chunk_metas_batch = AsyncMock(return_value=[])
     bot.get_guild = MagicMock(return_value=None)
     bot.guilds = []
     bot.cogs = {}
@@ -34,6 +38,7 @@ def mock_embedding_service():
 @pytest.fixture
 def mock_vector_store():
     store = AsyncMock()
+    store.message_chunk_doc_count = AsyncMock(return_value=0)
     store.search_message_chunks = AsyncMock(return_value=[])
     return store
 
@@ -43,6 +48,7 @@ def lore_cog(mock_bot, mock_embedding_service, mock_vector_store):
     cog = Lore(mock_bot, mock_embedding_service, mock_vector_store)
     cog._ingestion_service = MagicMock()
     cog._ingestion_service.is_running = False
+    cog._ingestion_service.rebuild_vector_index = AsyncMock(return_value=0)
     cog._llm_client = AsyncMock()
     cog._llm_client.complete = AsyncMock(return_value="Here is the lore about that topic.")
     cog._chunker = MagicMock()
@@ -153,6 +159,59 @@ class TestLoreCogLoadWithoutApiKey:
         assert cog._llm_client is None
         assert cog._ingestion_service is not None
         assert cog._chunker is not None
+        if cog._index_rebuild_task is not None:
+            await cog._index_rebuild_task
+
+
+class TestIndexHealth:
+    async def test_message_index_healthy(self, lore_cog, mock_bot, mock_vector_store):
+        mock_bot.repository.get_message_chunk_metas_batch.return_value = [
+            MagicMock(id="chunk-1", text="sample chunk text")
+        ]
+        mock_vector_store.message_chunk_doc_count.return_value = 1
+        mock_vector_store.search_message_chunks.return_value = [
+            ChunkSearchResult(chunk_id="chunk-1", score=1.0)
+        ]
+
+        result = await lore_cog._message_index_is_healthy(expected_count=1)
+
+        assert result is True
+
+    async def test_message_index_unhealthy_on_count_mismatch(
+        self, lore_cog, mock_vector_store
+    ):
+        mock_vector_store.message_chunk_doc_count.return_value = 0
+
+        result = await lore_cog._message_index_is_healthy(expected_count=2)
+
+        assert result is False
+        mock_vector_store.search_message_chunks.assert_not_called()
+
+    async def test_ensure_message_chunk_index_rebuilds_unhealthy_index(
+        self, lore_cog, mock_bot, mock_vector_store
+    ):
+        lore_cog._ingestion_service = MagicMock()
+        lore_cog._ingestion_service.rebuild_vector_index = AsyncMock(return_value=3)
+        mock_bot.repository.count_message_chunk_metas.return_value = 3
+        mock_vector_store.message_chunk_doc_count.return_value = 0
+
+        await lore_cog._ensure_message_chunk_index()
+
+        lore_cog._ingestion_service.rebuild_vector_index.assert_awaited_once()
+
+    async def test_command_mentions_rebuild_in_progress(self, lore_cog, mock_interaction):
+        lore_cog._index_rebuild_task = asyncio.create_task(asyncio.sleep(0.1))
+
+        try:
+            await lore_cog.lore.callback(lore_cog, mock_interaction, "test query")
+        finally:
+            lore_cog._index_rebuild_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await lore_cog._index_rebuild_task
+
+        mock_interaction.response.send_message.assert_called_once()
+        msg = mock_interaction.response.send_message.call_args[0][0].lower()
+        assert "rebuilt" in msg or "rebuild" in msg
 
 
 class TestAutoStartIngestion:

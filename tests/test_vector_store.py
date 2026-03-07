@@ -71,6 +71,14 @@ class TestUpsertAndSearch:
         results = await vector_store.search_articles([1.0, 0.0, 0.0, 0.0], topk=5)
         assert results == []
 
+    async def test_message_chunk_doc_count(self, vector_store):
+        assert await vector_store.message_chunk_doc_count() == 0
+
+        await vector_store.upsert_message_chunk("chunk-1", [1.0, 0.0, 0.0, 0.0])
+        await vector_store.upsert_message_chunk("chunk-2", [0.0, 1.0, 0.0, 0.0])
+
+        assert await vector_store.message_chunk_doc_count() == 2
+
 
 class TestUpsertBatch:
     async def test_batch_upsert(self, vector_store):
@@ -96,6 +104,18 @@ class TestDelete:
 
         results = await vector_store.search_articles([1.0, 0.0, 0.0, 0.0], topk=1)
         assert len(results) == 0
+
+
+class TestRecreateCollections:
+    async def test_recreate_message_chunks_collection(self, vector_store):
+        await vector_store.upsert_message_chunk("chunk-1", [1.0, 0.0, 0.0, 0.0])
+        assert await vector_store.message_chunk_doc_count() == 1
+
+        await vector_store.recreate_message_chunks_collection()
+
+        assert await vector_store.message_chunk_doc_count() == 0
+        results = await vector_store.search_message_chunks([1.0, 0.0, 0.0, 0.0], topk=1)
+        assert results == []
 
 
 class TestNotInitialized:
