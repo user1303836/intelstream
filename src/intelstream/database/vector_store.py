@@ -68,6 +68,9 @@ class VectorStore:
             )
             logger.info("Opened existing message_chunks vector collection")
 
+    async def _optimize(self, collection: zvec.Collection) -> None:
+        await asyncio.to_thread(collection.optimize)
+
     async def upsert_article(self, content_item_id: str, embedding: list[float]) -> None:
         import zvec
 
@@ -78,6 +81,7 @@ class VectorStore:
             vectors={"embedding": embedding},
         )
         await asyncio.to_thread(self._articles.upsert, [doc])
+        await self._optimize(self._articles)
 
     async def upsert_articles_batch(self, items: list[tuple[str, list[float]]]) -> None:
         import zvec
@@ -88,6 +92,7 @@ class VectorStore:
             return
         docs = [zvec.Doc(id=item_id, vectors={"embedding": emb}) for item_id, emb in items]
         await asyncio.to_thread(self._articles.upsert, docs)
+        await self._optimize(self._articles)
 
     async def search_articles(
         self, query_embedding: list[float], topk: int = 5
@@ -118,6 +123,7 @@ class VectorStore:
             vectors={"embedding": embedding},
         )
         await asyncio.to_thread(self._message_chunks.upsert, [doc])
+        await self._optimize(self._message_chunks)
 
     async def upsert_message_chunks_batch(self, items: list[tuple[str, list[float]]]) -> None:
         import zvec
@@ -128,6 +134,7 @@ class VectorStore:
             return
         docs = [zvec.Doc(id=cid, vectors={"embedding": emb}) for cid, emb in items]
         await asyncio.to_thread(self._message_chunks.upsert, docs)
+        await self._optimize(self._message_chunks)
 
     async def search_message_chunks(
         self, query_embedding: list[float], topk: int = 30
@@ -151,8 +158,10 @@ class VectorStore:
 
     async def close(self) -> None:
         if self._articles is not None:
+            await self._optimize(self._articles)
             await asyncio.to_thread(self._articles.flush)
             self._articles = None
         if self._message_chunks is not None:
+            await self._optimize(self._message_chunks)
             await asyncio.to_thread(self._message_chunks.flush)
             self._message_chunks = None
