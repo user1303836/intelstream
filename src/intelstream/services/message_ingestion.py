@@ -206,7 +206,7 @@ class MessageIngestionService:
         embeddings = await self._embedding_service.embed_batch(texts)
 
         metas: list[MessageChunkMeta] = []
-        vector_items: list[tuple[str, list[float]]] = []
+        vector_items_by_guild: dict[str, list[tuple[str, list[float]]]] = {}
 
         for chunk, embedding in zip(chunks, embeddings, strict=True):
             meta = MessageChunkMeta(
@@ -223,10 +223,11 @@ class MessageIngestionService:
                 text=chunk.text,
             )
             metas.append(meta)
-            vector_items.append((meta.id, embedding))
+            vector_items_by_guild.setdefault(meta.guild_id, []).append((meta.id, embedding))
 
         await self._repository.add_message_chunk_metas_batch(metas)
-        await self._vector_store.upsert_message_chunks_batch(vector_items)
+        for guild_id, vector_items in vector_items_by_guild.items():
+            await self._vector_store.upsert_message_chunks_batch(guild_id, vector_items)
 
         total_messages = sum(len(c.messages) for c in chunks)
         logger.info(
@@ -237,12 +238,12 @@ class MessageIngestionService:
 
         return len(metas)
 
-    async def rebuild_vector_index(self, batch_size: int = EMBED_BATCH_SIZE) -> int:
-        total_chunks = await self._repository.count_message_chunk_metas()
-        await self._vector_store.recreate_message_chunks_collection()
+    async def rebuild_vector_index(self, guild_id: str, batch_size: int = EMBED_BATCH_SIZE) -> int:
+        total_chunks = await self._repository.count_message_chunk_metas(guild_id=guild_id)
+        await self._vector_store.recreate_message_chunks_collection(guild_id)
 
         if total_chunks == 0:
-            logger.info("No stored message chunks to reindex")
+            logger.info("No stored message chunks to reindex", guild_id=guild_id)
             return 0
 
         indexed = 0
@@ -252,6 +253,7 @@ class MessageIngestionService:
             metas = await self._repository.get_message_chunk_metas_batch(
                 offset=offset,
                 limit=batch_size,
+                guild_id=guild_id,
             )
             if not metas:
                 break
@@ -260,7 +262,7 @@ class MessageIngestionService:
             vector_items = [
                 (meta.id, embedding) for meta, embedding in zip(metas, embeddings, strict=True)
             ]
-            await self._vector_store.upsert_message_chunks_batch(vector_items)
+            await self._vector_store.upsert_message_chunks_batch(guild_id, vector_items)
 
             indexed += len(metas)
             offset += len(metas)
@@ -268,11 +270,17 @@ class MessageIngestionService:
             if indexed == total_chunks or indexed % (batch_size * 10) == 0:
                 logger.info(
                     "Lore vector index rebuild progress",
+                    guild_id=guild_id,
                     indexed=indexed,
                     total=total_chunks,
                 )
 
-        logger.info("Lore vector index rebuild complete", indexed=indexed, total=total_chunks)
+        logger.info(
+            "Lore vector index rebuild complete",
+            guild_id=guild_id,
+            indexed=indexed,
+            total=total_chunks,
+        )
         return indexed
 
     async def ingest_channel(

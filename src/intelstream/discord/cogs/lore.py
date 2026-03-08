@@ -173,44 +173,64 @@ class Lore(commands.Cog):
             return
 
         try:
-            expected_count = await self.bot.repository.count_message_chunk_metas()
-            if expected_count == 0:
+            guild_ids = await self.bot.repository.get_message_chunk_guild_ids()
+            if not guild_ids:
                 logger.info("No stored lore chunks found; skipping vector index rebuild")
                 return
 
-            if await self._message_index_is_healthy(expected_count):
-                logger.info("Lore message index is healthy", chunks=expected_count)
-                return
+            for guild_id in guild_ids:
+                expected_count = await self.bot.repository.count_message_chunk_metas(
+                    guild_id=guild_id
+                )
+                if expected_count == 0:
+                    continue
 
-            logger.warning(
-                "Lore message index is unhealthy; rebuilding from stored chunks",
-                expected_chunks=expected_count,
-            )
-            rebuilt = await self._ingestion_service.rebuild_vector_index()
-            logger.info("Lore message index rebuilt", indexed=rebuilt)
+                if await self._message_index_is_healthy(guild_id, expected_count):
+                    logger.info(
+                        "Lore message index is healthy",
+                        guild_id=guild_id,
+                        chunks=expected_count,
+                    )
+                    continue
+
+                logger.warning(
+                    "Lore message index is unhealthy; rebuilding from stored chunks",
+                    guild_id=guild_id,
+                    expected_chunks=expected_count,
+                )
+                rebuilt = await self._ingestion_service.rebuild_vector_index(guild_id)
+                logger.info(
+                    "Lore message index rebuilt",
+                    guild_id=guild_id,
+                    indexed=rebuilt,
+                )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             self._index_rebuild_error = str(exc)
             logger.exception("Failed to rebuild lore message index", error=str(exc))
 
-    async def _message_index_is_healthy(self, expected_count: int) -> bool:
-        indexed_count = await self._vector_store.message_chunk_doc_count()
+    async def _message_index_is_healthy(self, guild_id: str, expected_count: int) -> bool:
+        indexed_count = await self._vector_store.message_chunk_doc_count(guild_id)
         if indexed_count != expected_count:
             logger.warning(
                 "Lore message index count mismatch",
+                guild_id=guild_id,
                 expected=expected_count,
                 indexed=indexed_count,
             )
             return False
 
-        sample_batch = await self.bot.repository.get_message_chunk_metas_batch(limit=1)
+        sample_batch = await self.bot.repository.get_message_chunk_metas_batch(
+            limit=1, guild_id=guild_id
+        )
         if not sample_batch:
             return True
 
         sample = sample_batch[0]
         query_embedding = await self._embedding_service.embed_text(sample.text)
         results = await self._vector_store.search_message_chunks(
+            guild_id,
             query_embedding,
             topk=HEALTH_CHECK_TOPK,
         )
@@ -219,6 +239,7 @@ class Lore(commands.Cog):
 
         logger.warning(
             "Lore message index probe failed",
+            guild_id=guild_id,
             sample_chunk_id=sample.id,
             result_ids=[result.chunk_id for result in results],
         )
@@ -321,4 +342,3 @@ class Lore(commands.Cog):
     async def auto_start_ingestion(self) -> None:
         for guild in self.bot.guilds:
             await self.start_ingestion_for_guild(guild)
-            break
