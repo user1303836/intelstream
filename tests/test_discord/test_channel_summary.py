@@ -170,9 +170,7 @@ class TestSummaryCommand:
         messages = [_make_message(f"msg {i}", f"user{i}") for i in range(6)]
         target_channel.history = MagicMock(return_value=_async_iter(messages))
 
-        await cog.summary.callback(
-            cog, mock_interaction, count=200, channel=target_channel
-        )
+        await cog.summary.callback(cog, mock_interaction, count=200, channel=target_channel)
 
         target_channel.history.assert_called_once()
         sent_text = mock_interaction.followup.send.call_args.args[0]
@@ -183,19 +181,14 @@ class TestSummaryCommand:
         channel = mock_interaction.channel
         channel.history = MagicMock(return_value=_async_iter(messages))
 
-        cog._summarizer.summarize_chat = AsyncMock(
-            side_effect=SummarizationError("API error")
-        )
+        cog._summarizer.summarize_chat = AsyncMock(side_effect=SummarizationError("API error"))
 
         await cog.summary.callback(cog, mock_interaction, count=200, channel=None)
 
         mock_interaction.followup.send.assert_called_once()
         sent_kwargs = mock_interaction.followup.send.call_args.kwargs
         assert sent_kwargs.get("ephemeral") is True
-        assert (
-            "Failed to generate summary"
-            in mock_interaction.followup.send.call_args.args[0]
-        )
+        assert "Failed to generate summary" in mock_interaction.followup.send.call_args.args[0]
 
     async def test_summary_filters_empty_messages(self, cog, mock_interaction):
         messages = [
