@@ -34,20 +34,12 @@ class Settings(BaseSettings):
         description="LLM provider for summarization: anthropic, openai, gemini, or kimi",
     )
 
-    anthropic_api_key: str | None = Field(
-        default=None, description="Anthropic API key for Claude"
-    )
+    anthropic_api_key: str | None = Field(default=None, description="Anthropic API key for Claude")
     openai_api_key: str | None = Field(default=None, description="OpenAI API key")
-    gemini_api_key: str | None = Field(
-        default=None, description="Google Gemini API key"
-    )
-    kimi_api_key: str | None = Field(
-        default=None, description="Kimi (Moonshot AI) API key"
-    )
+    gemini_api_key: str | None = Field(default=None, description="Google Gemini API key")
+    kimi_api_key: str | None = Field(default=None, description="Kimi (Moonshot AI) API key")
 
-    youtube_api_key: str | None = Field(
-        default=None, description="YouTube Data API key (optional)"
-    )
+    youtube_api_key: str | None = Field(default=None, description="YouTube Data API key (optional)")
 
     twitter_bearer_token: str | None = Field(
         default=None,

@@ -254,7 +254,7 @@ class TestAutoStartIngestion:
         await lore_cog.start_ingestion_for_guild(guild)
         lore_cog._ingestion_service.start_backfill.assert_not_called()
 
-    async def test_auto_start_uses_all_guilds(self, lore_cog, mock_bot):
+    async def test_auto_start_uses_first_guild(self, lore_cog, mock_bot):
         guild1 = MagicMock(spec=discord.Guild)
         guild1.id = 111
         guild1.name = "Test Server 1"
@@ -265,9 +265,7 @@ class TestAutoStartIngestion:
         mock_bot.repository.get_ingestion_progress_for_guild.return_value = []
 
         await lore_cog.auto_start_ingestion()
-        assert lore_cog._ingestion_service.start_backfill.call_count == 2
-        lore_cog._ingestion_service.start_backfill.assert_any_call(guild1)
-        lore_cog._ingestion_service.start_backfill.assert_any_call(guild2)
+        lore_cog._ingestion_service.start_backfill.assert_called_once_with(guild1)
 
     async def test_auto_start_no_guilds(self, lore_cog, mock_bot):
         mock_bot.guilds = []

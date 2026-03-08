@@ -45,42 +45,23 @@ def mock_interaction():
 
 class TestDetectUrlType:
     def test_detect_youtube_com(self, summarize_cog):
-        assert (
-            summarize_cog.detect_url_type("https://www.youtube.com/watch?v=abc123")
-            == "youtube"
-        )
-        assert (
-            summarize_cog.detect_url_type("https://youtube.com/watch?v=abc123")
-            == "youtube"
-        )
+        assert summarize_cog.detect_url_type("https://www.youtube.com/watch?v=abc123") == "youtube"
+        assert summarize_cog.detect_url_type("https://youtube.com/watch?v=abc123") == "youtube"
 
     def test_detect_youtu_be(self, summarize_cog):
         assert summarize_cog.detect_url_type("https://youtu.be/abc123") == "youtube"
 
     def test_detect_substack(self, summarize_cog):
-        assert (
-            summarize_cog.detect_url_type("https://example.substack.com/p/article")
-            == "substack"
-        )
-        assert (
-            summarize_cog.detect_url_type("https://newsletter.substack.com/p/post")
-            == "substack"
-        )
+        assert summarize_cog.detect_url_type("https://example.substack.com/p/article") == "substack"
+        assert summarize_cog.detect_url_type("https://newsletter.substack.com/p/post") == "substack"
 
     def test_detect_twitter(self, summarize_cog):
-        assert (
-            summarize_cog.detect_url_type("https://twitter.com/user/status/123")
-            == "twitter"
-        )
-        assert (
-            summarize_cog.detect_url_type("https://x.com/user/status/123") == "twitter"
-        )
+        assert summarize_cog.detect_url_type("https://twitter.com/user/status/123") == "twitter"
+        assert summarize_cog.detect_url_type("https://x.com/user/status/123") == "twitter"
 
     def test_detect_generic_web(self, summarize_cog):
         assert summarize_cog.detect_url_type("https://example.com/article") == "web"
-        assert (
-            summarize_cog.detect_url_type("https://nytimes.com/2024/article") == "web"
-        )
+        assert summarize_cog.detect_url_type("https://nytimes.com/2024/article") == "web"
         assert summarize_cog.detect_url_type("https://blog.example.org/post") == "web"
 
 
@@ -222,9 +203,7 @@ class TestCreateSummaryEmbed:
 
 class TestSummarizeCommand:
     async def test_rejects_invalid_url(self, summarize_cog, mock_interaction):
-        await summarize_cog.summarize.callback(
-            summarize_cog, mock_interaction, "not-a-url"
-        )
+        await summarize_cog.summarize.callback(summarize_cog, mock_interaction, "not-a-url")
 
         mock_interaction.followup.send.assert_called_once()
         call_args = mock_interaction.followup.send.call_args
@@ -372,9 +351,7 @@ class TestSummarizeCommand:
             content="This is enough content for summarization. " * 10,
         )
 
-        summarize_cog._summarizer.summarize = AsyncMock(
-            side_effect=Exception("API Error")
-        )
+        summarize_cog._summarizer.summarize = AsyncMock(side_effect=Exception("API Error"))
 
         with patch.object(
             summarize_cog, "_fetch_web_content", AsyncMock(return_value=mock_content)
@@ -414,9 +391,7 @@ class TestCogLifecycle:
 
 
 class TestSummarizeCooldown:
-    async def test_cooldown_error_sends_retry_message(
-        self, summarize_cog, mock_interaction
-    ):
+    async def test_cooldown_error_sends_retry_message(self, summarize_cog, mock_interaction):
         from discord import app_commands
 
         mock_interaction.response.send_message = AsyncMock()
@@ -448,9 +423,7 @@ class TestSummarizeCooldown:
         assert "45s" in call_args[0][0]
         assert "m " not in call_args[0][0]
 
-    async def test_non_cooldown_error_is_reraised(
-        self, summarize_cog, mock_interaction
-    ):
+    async def test_non_cooldown_error_is_reraised(self, summarize_cog, mock_interaction):
         from discord import app_commands
 
         error = app_commands.MissingPermissions(["manage_guild"])

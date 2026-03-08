@@ -342,3 +342,4 @@ class Lore(commands.Cog):
     async def auto_start_ingestion(self) -> None:
         for guild in self.bot.guilds:
             await self.start_ingestion_for_guild(guild)
+            break

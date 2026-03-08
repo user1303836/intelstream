@@ -40,6 +40,7 @@ class VectorStore:
     async def initialize(self) -> None:
         await asyncio.to_thread(os.makedirs, self._data_dir, exist_ok=True)
         self._articles = await self._open_or_create_collection(self._ARTICLES_COLLECTION)
+        await asyncio.to_thread(self._warn_if_legacy_message_chunk_collection_present)
 
     def _collection_path(self, collection_name: str) -> str:
         return str(Path(self._data_dir) / collection_name)
@@ -54,6 +55,19 @@ class VectorStore:
 
     def _message_chunk_collection_path(self, guild_id: str) -> str:
         return str(Path(self._data_dir) / self._MESSAGE_CHUNKS_COLLECTION / guild_id)
+
+    def _warn_if_legacy_message_chunk_collection_present(self) -> None:
+        legacy_root = Path(self._collection_path(self._MESSAGE_CHUNKS_COLLECTION))
+        if not legacy_root.exists():
+            return
+
+        legacy_files = [entry.name for entry in legacy_root.iterdir() if entry.is_file()]
+        if legacy_files:
+            logger.warning(
+                "Detected legacy global lore vector collection files; they are no longer used",
+                path=str(legacy_root),
+                files=sorted(legacy_files),
+            )
 
     def _build_schema(self, collection_name: str) -> zvec.CollectionSchema:
         import zvec

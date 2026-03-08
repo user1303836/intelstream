@@ -159,9 +159,7 @@ class TestContentPostingCogUnload:
 
 
 class TestContentLoop:
-    async def test_content_loop_skips_when_not_initialized(
-        self, _patch_cog_deps, mock_bot
-    ):
+    async def test_content_loop_skips_when_not_initialized(self, _patch_cog_deps, mock_bot):
         cog = ContentPosting(mock_bot)
         cog._initialized = False
 
@@ -202,9 +200,7 @@ class TestContentLoop:
         deps["poster"].post_unposted_items.assert_any_call(111)
         deps["poster"].post_unposted_items.assert_any_call(222)
 
-    async def test_content_loop_notifies_owner_on_error(
-        self, _patch_cog_deps, mock_bot
-    ):
+    async def test_content_loop_notifies_owner_on_error(self, _patch_cog_deps, mock_bot):
         deps = _patch_cog_deps
         deps["pipeline"].run_cycle = AsyncMock(side_effect=Exception("Test error"))
 
@@ -217,14 +213,10 @@ class TestContentLoop:
         call_args = mock_bot.notify_owner.call_args[0][0]
         assert "Test error" in call_args
 
-    async def test_content_loop_continues_on_guild_error(
-        self, _patch_cog_deps, mock_bot
-    ):
+    async def test_content_loop_continues_on_guild_error(self, _patch_cog_deps, mock_bot):
         deps = _patch_cog_deps
         deps["pipeline"].run_cycle = AsyncMock(return_value=(5, 3))
-        deps["poster"].post_unposted_items = AsyncMock(
-            side_effect=[Exception("Guild 1 error"), 2]
-        )
+        deps["poster"].post_unposted_items = AsyncMock(side_effect=[Exception("Guild 1 error"), 2])
 
         guild1 = MagicMock(spec=discord.Guild)
         guild1.id = 111
@@ -245,9 +237,7 @@ class TestContentLoop:
 
 
 class TestContentLoopErrorHandler:
-    async def test_error_handler_notifies_owner_on_first_error(
-        self, _patch_cog_deps, mock_bot
-    ):
+    async def test_error_handler_notifies_owner_on_first_error(self, _patch_cog_deps, mock_bot):
         cog = ContentPosting(mock_bot)
         await cog.cog_load()
 
@@ -272,9 +262,7 @@ class TestContentLoopErrorHandler:
 
 
 class TestContentLoopBackoff:
-    async def test_backoff_increments_consecutive_failures(
-        self, _patch_cog_deps, mock_bot
-    ):
+    async def test_backoff_increments_consecutive_failures(self, _patch_cog_deps, mock_bot):
         deps = _patch_cog_deps
         deps["pipeline"].run_cycle = AsyncMock(side_effect=Exception("Test error"))
 
@@ -299,9 +287,7 @@ class TestContentLoopBackoff:
 
         assert cog._consecutive_failures == 0
 
-    async def test_circuit_breaker_notifies_and_retries_hourly(
-        self, _patch_cog_deps, mock_bot
-    ):
+    async def test_circuit_breaker_notifies_and_retries_hourly(self, _patch_cog_deps, mock_bot):
         deps = _patch_cog_deps
         deps["pipeline"].run_cycle = AsyncMock(side_effect=Exception("Still failing"))
 
@@ -330,9 +316,7 @@ class TestContentLoopBackoff:
         assert cog._consecutive_failures == 0
         assert cog.content_loop.minutes == cog._base_interval
 
-    async def test_apply_backoff_keeps_base_on_first_failure(
-        self, _patch_cog_deps, mock_bot
-    ):
+    async def test_apply_backoff_keeps_base_on_first_failure(self, _patch_cog_deps, mock_bot):
         cog = ContentPosting(mock_bot)
         await cog.cog_load()
         cog._consecutive_failures = 1
@@ -341,9 +325,7 @@ class TestContentLoopBackoff:
 
         assert cog.content_loop.minutes == cog._base_interval
 
-    async def test_apply_backoff_doubles_on_second_failure(
-        self, _patch_cog_deps, mock_bot
-    ):
+    async def test_apply_backoff_doubles_on_second_failure(self, _patch_cog_deps, mock_bot):
         cog = ContentPosting(mock_bot)
         await cog.cog_load()
         cog._consecutive_failures = 2
@@ -352,9 +334,7 @@ class TestContentLoopBackoff:
 
         assert cog.content_loop.minutes == cog._base_interval * 2
 
-    async def test_apply_backoff_caps_at_max_multiplier(
-        self, _patch_cog_deps, mock_bot
-    ):
+    async def test_apply_backoff_caps_at_max_multiplier(self, _patch_cog_deps, mock_bot):
         cog = ContentPosting(mock_bot)
         await cog.cog_load()
         cog._consecutive_failures = 4
@@ -364,9 +344,7 @@ class TestContentLoopBackoff:
         max_interval = cog._base_interval * ContentPosting.MAX_BACKOFF_MULTIPLIER
         assert cog.content_loop.minutes == max_interval
 
-    async def test_reset_backoff_restores_base_interval(
-        self, _patch_cog_deps, mock_bot
-    ):
+    async def test_reset_backoff_restores_base_interval(self, _patch_cog_deps, mock_bot):
         cog = ContentPosting(mock_bot)
         await cog.cog_load()
         cog._consecutive_failures = 3
@@ -377,9 +355,7 @@ class TestContentLoopBackoff:
         assert cog._consecutive_failures == 0
         assert cog.content_loop.minutes == cog._base_interval
 
-    async def test_only_notifies_owner_on_first_failure(
-        self, _patch_cog_deps, mock_bot
-    ):
+    async def test_only_notifies_owner_on_first_failure(self, _patch_cog_deps, mock_bot):
         deps = _patch_cog_deps
         deps["pipeline"].run_cycle = AsyncMock(side_effect=Exception("Test error"))
 
