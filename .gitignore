@@ -62,3 +62,12 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+.entire/*
+bun.lock
+claude_*.md
+node_modules/*
+package.json
+smithers*
+tree*.md
+workflow.tsx

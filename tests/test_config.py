@@ -28,7 +28,9 @@ class TestSettings:
         assert settings.default_poll_interval_minutes == 5
         assert settings.log_level == "INFO"
 
-    def test_settings_with_optional_youtube(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_settings_with_optional_youtube(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
         monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
         monkeypatch.setenv("DISCORD_CHANNEL_ID", "987654321")
@@ -40,7 +42,9 @@ class TestSettings:
 
         assert settings.youtube_api_key == "yt-api-key"
 
-    def test_settings_poll_interval_bounds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_settings_poll_interval_bounds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
         monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
         monkeypatch.setenv("DISCORD_CHANNEL_ID", "987654321")
@@ -99,7 +103,9 @@ class TestSettings:
         assert "youtube_api_key=None" in repr_str
         assert "openai_api_key=None" in repr_str
 
-    def test_empty_discord_bot_token_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_empty_discord_bot_token_rejected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "")
         monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
         monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
@@ -131,7 +137,9 @@ class TestSettings:
         settings = Settings(_env_file=None)
         assert settings.llm_api_key == "sk-openai-test"
 
-    def test_llm_api_key_raises_when_key_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_llm_api_key_raises_when_key_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
         monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
         monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
@@ -141,7 +149,9 @@ class TestSettings:
         with pytest.raises(ValidationError, match="No API key configured"):
             Settings(_env_file=None)
 
-    def test_invalid_llm_provider_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_invalid_llm_provider_rejected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
         monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
         monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
@@ -151,7 +161,9 @@ class TestSettings:
         with pytest.raises(ValidationError):
             Settings(_env_file=None)
 
-    def test_valid_llm_providers_accepted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_valid_llm_providers_accepted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
         monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
         monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
@@ -169,7 +181,9 @@ class TestSettings:
             assert settings.llm_api_key == key_val
             monkeypatch.delenv(key_env, raising=False)
 
-    def test_missing_api_key_fails_at_construction(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_missing_api_key_fails_at_construction(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
         monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
         monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
@@ -204,8 +218,8 @@ class TestProviderAwareModelDefaults:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
 
         settings = Settings(_env_file=None)
-        assert settings.summary_model == "claude-3-5-haiku-20241022"
-        assert settings.summary_model_interactive == "claude-sonnet-4-20250514"
+        assert settings.summary_model == "claude-haiku-4-5-20251001"
+        assert settings.summary_model_interactive == "claude-sonnet-4-6"
 
     def test_openai_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._base_env(monkeypatch)
@@ -247,7 +261,9 @@ class TestProviderAwareModelDefaults:
         assert settings.summary_model == "my-custom-model"
         assert settings.summary_model_interactive == "my-custom-interactive"
 
-    def test_partial_override_uses_default_for_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_partial_override_uses_default_for_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         self._base_env(monkeypatch)
         monkeypatch.setenv("LLM_PROVIDER", "openai")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
@@ -285,7 +301,9 @@ class TestGetPollInterval:
         assert settings.get_poll_interval(SourceType.YOUTUBE) == 10
         assert settings.get_poll_interval(SourceType.RSS) == 10
 
-    def test_type_specific_overrides_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_type_specific_overrides_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         self._base_env(monkeypatch)
         monkeypatch.setenv("DEFAULT_POLL_INTERVAL_MINUTES", "5")
         monkeypatch.setenv("TWITTER_POLL_INTERVAL_MINUTES", "20")
@@ -311,7 +329,9 @@ class TestGetDatabaseDirectory:
         assert result == Path("./data")
 
     def test_returns_parent_for_absolute_path(self) -> None:
-        result = get_database_directory("sqlite+aiosqlite:////home/user/data/intelstream.db")
+        result = get_database_directory(
+            "sqlite+aiosqlite:////home/user/data/intelstream.db"
+        )
         assert result == Path("/home/user/data")
 
     def test_returns_none_for_memory_database(self) -> None:

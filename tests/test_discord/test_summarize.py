@@ -16,7 +16,7 @@ def mock_bot():
     bot.settings.llm_api_key = "test-api-key"
     bot.settings.youtube_api_key = "test-youtube-key"
     bot.settings.http_timeout_seconds = 30.0
-    bot.settings.summary_model_interactive = "claude-sonnet-4-20250514"
+    bot.settings.summary_model_interactive = "claude-sonnet-4-6"
     bot.settings.summary_max_tokens = 2048
     bot.settings.summary_max_input_length = 100000
     return bot
@@ -45,23 +45,42 @@ def mock_interaction():
 
 class TestDetectUrlType:
     def test_detect_youtube_com(self, summarize_cog):
-        assert summarize_cog.detect_url_type("https://www.youtube.com/watch?v=abc123") == "youtube"
-        assert summarize_cog.detect_url_type("https://youtube.com/watch?v=abc123") == "youtube"
+        assert (
+            summarize_cog.detect_url_type("https://www.youtube.com/watch?v=abc123")
+            == "youtube"
+        )
+        assert (
+            summarize_cog.detect_url_type("https://youtube.com/watch?v=abc123")
+            == "youtube"
+        )
 
     def test_detect_youtu_be(self, summarize_cog):
         assert summarize_cog.detect_url_type("https://youtu.be/abc123") == "youtube"
 
     def test_detect_substack(self, summarize_cog):
-        assert summarize_cog.detect_url_type("https://example.substack.com/p/article") == "substack"
-        assert summarize_cog.detect_url_type("https://newsletter.substack.com/p/post") == "substack"
+        assert (
+            summarize_cog.detect_url_type("https://example.substack.com/p/article")
+            == "substack"
+        )
+        assert (
+            summarize_cog.detect_url_type("https://newsletter.substack.com/p/post")
+            == "substack"
+        )
 
     def test_detect_twitter(self, summarize_cog):
-        assert summarize_cog.detect_url_type("https://twitter.com/user/status/123") == "twitter"
-        assert summarize_cog.detect_url_type("https://x.com/user/status/123") == "twitter"
+        assert (
+            summarize_cog.detect_url_type("https://twitter.com/user/status/123")
+            == "twitter"
+        )
+        assert (
+            summarize_cog.detect_url_type("https://x.com/user/status/123") == "twitter"
+        )
 
     def test_detect_generic_web(self, summarize_cog):
         assert summarize_cog.detect_url_type("https://example.com/article") == "web"
-        assert summarize_cog.detect_url_type("https://nytimes.com/2024/article") == "web"
+        assert (
+            summarize_cog.detect_url_type("https://nytimes.com/2024/article") == "web"
+        )
         assert summarize_cog.detect_url_type("https://blog.example.org/post") == "web"
 
 
@@ -203,7 +222,9 @@ class TestCreateSummaryEmbed:
 
 class TestSummarizeCommand:
     async def test_rejects_invalid_url(self, summarize_cog, mock_interaction):
-        await summarize_cog.summarize.callback(summarize_cog, mock_interaction, "not-a-url")
+        await summarize_cog.summarize.callback(
+            summarize_cog, mock_interaction, "not-a-url"
+        )
 
         mock_interaction.followup.send.assert_called_once()
         call_args = mock_interaction.followup.send.call_args
@@ -232,7 +253,9 @@ class TestSummarizeCommand:
 
     async def test_handles_fetch_error(self, summarize_cog, mock_interaction):
         with patch.object(
-            summarize_cog, "_fetch_web_content", AsyncMock(side_effect=WebFetchError("Test error"))
+            summarize_cog,
+            "_fetch_web_content",
+            AsyncMock(side_effect=WebFetchError("Test error")),
         ):
             await summarize_cog.summarize.callback(
                 summarize_cog, mock_interaction, "https://example.com/article"
@@ -311,7 +334,9 @@ class TestSummarizeCommand:
         )
 
         with patch.object(
-            summarize_cog, "_fetch_youtube_content", AsyncMock(return_value=mock_content)
+            summarize_cog,
+            "_fetch_youtube_content",
+            AsyncMock(return_value=mock_content),
         ) as mock_fetch:
             await summarize_cog.summarize.callback(
                 summarize_cog, mock_interaction, "https://youtube.com/watch?v=test"
@@ -328,10 +353,14 @@ class TestSummarizeCommand:
         )
 
         with patch.object(
-            summarize_cog, "_fetch_substack_content", AsyncMock(return_value=mock_content)
+            summarize_cog,
+            "_fetch_substack_content",
+            AsyncMock(return_value=mock_content),
         ) as mock_fetch:
             await summarize_cog.summarize.callback(
-                summarize_cog, mock_interaction, "https://example.substack.com/p/article"
+                summarize_cog,
+                mock_interaction,
+                "https://example.substack.com/p/article",
             )
 
             mock_fetch.assert_called_once_with("https://example.substack.com/p/article")
@@ -343,7 +372,9 @@ class TestSummarizeCommand:
             content="This is enough content for summarization. " * 10,
         )
 
-        summarize_cog._summarizer.summarize = AsyncMock(side_effect=Exception("API Error"))
+        summarize_cog._summarizer.summarize = AsyncMock(
+            side_effect=Exception("API Error")
+        )
 
         with patch.object(
             summarize_cog, "_fetch_web_content", AsyncMock(return_value=mock_content)
@@ -383,7 +414,9 @@ class TestCogLifecycle:
 
 
 class TestSummarizeCooldown:
-    async def test_cooldown_error_sends_retry_message(self, summarize_cog, mock_interaction):
+    async def test_cooldown_error_sends_retry_message(
+        self, summarize_cog, mock_interaction
+    ):
         from discord import app_commands
 
         mock_interaction.response.send_message = AsyncMock()
@@ -415,7 +448,9 @@ class TestSummarizeCooldown:
         assert "45s" in call_args[0][0]
         assert "m " not in call_args[0][0]
 
-    async def test_non_cooldown_error_is_reraised(self, summarize_cog, mock_interaction):
+    async def test_non_cooldown_error_is_reraised(
+        self, summarize_cog, mock_interaction
+    ):
         from discord import app_commands
 
         error = app_commands.MissingPermissions(["manage_guild"])

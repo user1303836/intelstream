@@ -34,15 +34,24 @@ class Settings(BaseSettings):
         description="LLM provider for summarization: anthropic, openai, gemini, or kimi",
     )
 
-    anthropic_api_key: str | None = Field(default=None, description="Anthropic API key for Claude")
+    anthropic_api_key: str | None = Field(
+        default=None, description="Anthropic API key for Claude"
+    )
     openai_api_key: str | None = Field(default=None, description="OpenAI API key")
-    gemini_api_key: str | None = Field(default=None, description="Google Gemini API key")
-    kimi_api_key: str | None = Field(default=None, description="Kimi (Moonshot AI) API key")
+    gemini_api_key: str | None = Field(
+        default=None, description="Google Gemini API key"
+    )
+    kimi_api_key: str | None = Field(
+        default=None, description="Kimi (Moonshot AI) API key"
+    )
 
-    youtube_api_key: str | None = Field(default=None, description="YouTube Data API key (optional)")
+    youtube_api_key: str | None = Field(
+        default=None, description="YouTube Data API key (optional)"
+    )
 
     twitter_bearer_token: str | None = Field(
-        default=None, description="X API v2 Bearer Token for Twitter monitoring (optional)"
+        default=None,
+        description="X API v2 Bearer Token for Twitter monitoring (optional)",
     )
 
     github_token: str | None = Field(
@@ -279,7 +288,7 @@ class Settings(BaseSettings):
         return key
 
     _PROVIDER_MODEL_DEFAULTS: dict[str, tuple[str, str]] = {
-        "anthropic": ("claude-3-5-haiku-20241022", "claude-sonnet-4-20250514"),
+        "anthropic": ("claude-haiku-4-5-20251001", "claude-sonnet-4-6"),
         "openai": ("gpt-4o-mini", "gpt-4o"),
         "gemini": ("gemini-2.0-flash", "gemini-2.5-pro-preview-06-05"),
         "kimi": ("moonshot-v1-8k", "moonshot-v1-32k"),
