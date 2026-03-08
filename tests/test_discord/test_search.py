@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import discord
@@ -13,6 +14,8 @@ def mock_bot():
     bot.settings = MagicMock()
     bot.settings.search_result_limit = 5
     bot.repository = AsyncMock()
+    bot.repository.count_summarized_content_items = AsyncMock(return_value=0)
+    bot.repository.get_summarized_content_items = AsyncMock(return_value=[])
     return bot
 
 
@@ -29,6 +32,8 @@ def mock_vector_store():
     store = AsyncMock()
     store.search_articles = AsyncMock(return_value=[])
     store.upsert_articles_batch = AsyncMock()
+    store.article_doc_count = AsyncMock(return_value=0)
+    store.recreate_articles_collection = AsyncMock()
     return store
 
 
@@ -42,6 +47,7 @@ def mock_interaction():
     interaction = MagicMock(spec=discord.Interaction)
     interaction.response = MagicMock()
     interaction.response.defer = AsyncMock()
+    interaction.response.send_message = AsyncMock()
     interaction.followup = MagicMock()
     interaction.followup.send = AsyncMock()
     interaction.user = MagicMock()
@@ -97,6 +103,20 @@ class TestSearch:
         await search_cog.search.callback(search_cog, mock_interaction, "test query")
         mock_embedding_service.embed_text.assert_called_once_with("test query")
 
+    async def test_search_mentions_rebuild_in_progress(self, search_cog, mock_interaction):
+        search_cog._index_rebuild_task = asyncio.create_task(asyncio.sleep(0.1))
+
+        try:
+            await search_cog.search.callback(search_cog, mock_interaction, "test query")
+        finally:
+            search_cog._index_rebuild_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await search_cog._index_rebuild_task
+
+        mock_interaction.response.send_message.assert_called_once()
+        msg = mock_interaction.response.send_message.call_args[0][0].lower()
+        assert "rebuilt" in msg or "rebuild" in msg
+
 
 class TestIndex:
     async def test_index_empty(self, search_cog, mock_interaction, mock_bot):
@@ -122,14 +142,28 @@ class TestIndex:
             [item1, item2],
             [],
         ]
+        mock_bot.repository.count_summarized_content_items.return_value = 2
 
         await search_cog.index.callback(search_cog, mock_interaction)
 
+        mock_bot.repository.count_summarized_content_items.assert_called_once()
+        mock_vector_store.recreate_articles_collection.assert_called_once()
         mock_embedding_service.embed_batch.assert_called_once_with(
             ["Title 1 Summary 1", "Title 2 Summary 2"]
         )
         mock_vector_store.upsert_articles_batch.assert_called_once()
         assert "2" in mock_interaction.followup.send.call_args.args[0]
+
+    async def test_ensure_article_index_rebuilds_unhealthy_index(
+        self, search_cog, mock_bot, mock_vector_store
+    ):
+        search_cog._rebuild_article_index = AsyncMock(return_value=3)
+        mock_bot.repository.count_summarized_content_items.return_value = 3
+        mock_vector_store.article_doc_count.return_value = 0
+
+        await search_cog._ensure_article_index()
+
+        search_cog._rebuild_article_index.assert_awaited_once()
 
 
 class TestTruncate:

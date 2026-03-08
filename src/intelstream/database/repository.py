@@ -321,6 +321,16 @@ class Repository:
             )
             return list(result.scalars().all())
 
+    async def count_summarized_content_items(self) -> int:
+        async with self.session() as session:
+            result = await session.execute(
+                select(func.count())
+                .select_from(ContentItem)
+                .where(ContentItem.summary.isnot(None))
+                .where(ContentItem.summary != "")
+            )
+            return int(result.scalar_one())
+
     async def content_item_exists(self, external_id: str) -> bool:
         async with self.session() as session:
             result = await session.execute(
