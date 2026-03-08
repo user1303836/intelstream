@@ -183,6 +183,7 @@ class IntelStreamBot(commands.Bot):
             self.vector_store = VectorStore(
                 data_dir=self.settings.zvec_data_dir,
                 dimensions=self.settings.embedding_dimensions,
+                model_name=self.settings.embedding_model,
             )
             await self.vector_store.initialize()
 

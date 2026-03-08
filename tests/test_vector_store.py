@@ -20,7 +20,7 @@ pytestmark = pytest.mark.skipif(not _can_import_zvec(), reason="zvec native libr
 
 @pytest.fixture
 async def vector_store(tmp_path):
-    store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4)
+    store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
     await store.initialize()
     yield store
     await store.close()
@@ -28,23 +28,53 @@ async def vector_store(tmp_path):
 
 class TestInitialize:
     async def test_creates_directory(self, tmp_path):
-        store = VectorStore(data_dir=str(tmp_path / "new_dir"), dimensions=4)
+        store = VectorStore(data_dir=str(tmp_path / "new_dir"), dimensions=4, model_name="model-a")
         await store.initialize()
         assert (tmp_path / "new_dir").exists()
         await store.close()
 
     async def test_reopens_existing_collection(self, tmp_path):
         data_dir = str(tmp_path / "reopen_test")
-        store1 = VectorStore(data_dir=data_dir, dimensions=4)
+        store1 = VectorStore(data_dir=data_dir, dimensions=4, model_name="model-a")
         await store1.initialize()
         await store1.upsert_article("doc1", [0.1, 0.2, 0.3, 0.4])
         await store1.close()
 
-        store2 = VectorStore(data_dir=data_dir, dimensions=4)
+        store2 = VectorStore(data_dir=data_dir, dimensions=4, model_name="model-a")
         await store2.initialize()
         results = await store2.search_articles([0.1, 0.2, 0.3, 0.4], topk=1)
         assert len(results) == 1
         assert results[0].content_item_id == "doc1"
+        await store2.close()
+
+    async def test_recreates_articles_collection_on_dimension_mismatch(self, tmp_path):
+        data_dir = str(tmp_path / "dimension_mismatch")
+        store1 = VectorStore(data_dir=data_dir, dimensions=4, model_name="model-a")
+        await store1.initialize()
+        await store1.upsert_article("doc1", [0.1, 0.2, 0.3, 0.4])
+        await store1.close()
+
+        store2 = VectorStore(data_dir=data_dir, dimensions=3, model_name="model-a")
+        await store2.initialize()
+
+        assert await store2.article_doc_count() == 0
+        results = await store2.search_articles([0.1, 0.2, 0.3], topk=1)
+        assert results == []
+        await store2.close()
+
+    async def test_recreates_articles_collection_on_model_mismatch(self, tmp_path):
+        data_dir = str(tmp_path / "model_mismatch")
+        store1 = VectorStore(data_dir=data_dir, dimensions=4, model_name="model-a")
+        await store1.initialize()
+        await store1.upsert_article("doc1", [0.1, 0.2, 0.3, 0.4])
+        await store1.close()
+
+        store2 = VectorStore(data_dir=data_dir, dimensions=4, model_name="model-b")
+        await store2.initialize()
+
+        assert await store2.article_doc_count() == 0
+        results = await store2.search_articles([0.1, 0.2, 0.3, 0.4], topk=1)
+        assert results == []
         await store2.close()
 
 
@@ -125,6 +155,16 @@ class TestDelete:
 
 
 class TestRecreateCollections:
+    async def test_recreate_articles_collection(self, vector_store):
+        await vector_store.upsert_article("item-1", [1.0, 0.0, 0.0, 0.0])
+        assert await vector_store.article_doc_count() == 1
+
+        await vector_store.recreate_articles_collection()
+
+        assert await vector_store.article_doc_count() == 0
+        results = await vector_store.search_articles([1.0, 0.0, 0.0, 0.0], topk=1)
+        assert results == []
+
     async def test_recreate_message_chunks_collection(self, vector_store):
         await vector_store.upsert_message_chunk("guild-1", "chunk-1", [1.0, 0.0, 0.0, 0.0])
         assert await vector_store.message_chunk_doc_count("guild-1") == 1
@@ -138,16 +178,16 @@ class TestRecreateCollections:
 
 class TestNotInitialized:
     async def test_upsert_raises(self):
-        store = VectorStore(data_dir="/tmp/noinit", dimensions=4)
+        store = VectorStore(data_dir="/tmp/noinit", dimensions=4, model_name="model-a")
         with pytest.raises(RuntimeError, match="not initialized"):
             await store.upsert_article("x", [1.0, 0.0, 0.0, 0.0])
 
     async def test_search_raises(self):
-        store = VectorStore(data_dir="/tmp/noinit", dimensions=4)
+        store = VectorStore(data_dir="/tmp/noinit", dimensions=4, model_name="model-a")
         with pytest.raises(RuntimeError, match="not initialized"):
             await store.search_articles([1.0, 0.0, 0.0, 0.0])
 
     async def test_delete_raises(self):
-        store = VectorStore(data_dir="/tmp/noinit", dimensions=4)
+        store = VectorStore(data_dir="/tmp/noinit", dimensions=4, model_name="model-a")
         with pytest.raises(RuntimeError, match="not initialized"):
             await store.delete_article("x")
