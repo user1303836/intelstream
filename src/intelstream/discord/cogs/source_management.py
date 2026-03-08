@@ -26,6 +26,7 @@ logger = structlog.get_logger()
 
 
 _TWITTER_USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
+_ARXIV_CATEGORY_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 
 
 def _is_valid_twitter_username(username: str) -> bool:
@@ -34,6 +35,45 @@ def _is_valid_twitter_username(username: str) -> bool:
 
 class InvalidSourceURLError(ValueError):
     pass
+
+
+def _parse_arxiv_identifier(value: str) -> str:
+    candidate = value.strip()
+    if not candidate:
+        raise InvalidSourceURLError("Arxiv category cannot be empty.")
+
+    if candidate.startswith(("arxiv.org/", "www.arxiv.org/")):
+        candidate = f"https://{candidate}"
+
+    parsed = urlparse(candidate)
+    identifier = candidate
+
+    if parsed.scheme or parsed.netloc:
+        host = parsed.netloc.lower()
+        if host not in ("arxiv.org", "www.arxiv.org"):
+            raise InvalidSourceURLError(f"Invalid Arxiv URL: {value}. Expected arxiv.org domain.")
+
+        path = parsed.path.rstrip("/")
+        if path.startswith("/list/"):
+            parts = [part for part in path.split("/") if part]
+            if len(parts) < 2:
+                raise InvalidSourceURLError(
+                    f"Invalid Arxiv URL: {value}. Could not extract category."
+                )
+            identifier = parts[1]
+        elif path.startswith("/rss/"):
+            identifier = path.split("/rss/", 1)[1].strip("/")
+        else:
+            raise InvalidSourceURLError(
+                f"Invalid Arxiv URL: {value}. Expected an arxiv.org list or RSS URL."
+            )
+
+    if not identifier or not _ARXIV_CATEGORY_RE.fullmatch(identifier):
+        raise InvalidSourceURLError(
+            f"Invalid Arxiv category: {value}. Expected format like cs.AI or stat.ML."
+        )
+
+    return identifier
 
 
 def parse_source_identifier(source_type: SourceType, url: str) -> tuple[str, str | None]:
@@ -86,9 +126,7 @@ def parse_source_identifier(source_type: SourceType, url: str) -> tuple[str, str
         return identifier, url
 
     elif source_type == SourceType.ARXIV:
-        identifier = url.strip()
-        if not identifier:
-            raise InvalidSourceURLError("Arxiv category cannot be empty.")
+        identifier = _parse_arxiv_identifier(url)
         feed_url = f"https://arxiv.org/rss/{identifier}"
         return identifier, feed_url
 
@@ -248,7 +286,14 @@ class SourceManagement(commands.Cog):
             )
             return
 
-        safe, error_msg = is_safe_url(url)
+        try:
+            identifier, feed_url = parse_source_identifier(stype, url)
+        except InvalidSourceURLError as e:
+            await interaction.followup.send(str(e), ephemeral=True)
+            return
+
+        validation_url = feed_url if stype == SourceType.ARXIV and feed_url else url
+        safe, error_msg = is_safe_url(validation_url)
         if not safe:
             await interaction.followup.send(f"URL not allowed: {error_msg}", ephemeral=True)
             return
@@ -297,12 +342,6 @@ class SourceManagement(commands.Cog):
                     ephemeral=True,
                 )
                 return
-
-        try:
-            identifier, feed_url = parse_source_identifier(stype, url)
-        except InvalidSourceURLError as e:
-            await interaction.followup.send(str(e), ephemeral=True)
-            return
 
         existing = await self.bot.repository.get_source_by_identifier(identifier)
         if existing:
