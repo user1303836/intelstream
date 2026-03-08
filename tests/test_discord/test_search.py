@@ -90,6 +90,8 @@ class TestSearch:
         embed = call_kwargs.kwargs.get("embed")
         assert embed is not None
         assert len(embed.fields) == 2
+        assert "Similarity score: 0.95" in embed.fields[0].value
+        assert "Relevance:" not in embed.fields[0].value
 
     async def test_search_embeds_query(self, search_cog, mock_interaction, mock_embedding_service):
         await search_cog.search.callback(search_cog, mock_interaction, "test query")

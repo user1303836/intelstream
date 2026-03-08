@@ -72,12 +72,11 @@ class Search(commands.Cog):
 
             title = _truncate(item.title, 100)
             preview = _truncate(item.summary or "", MAX_SUMMARY_PREVIEW)
-            score_pct = f"{result.score * 100:.0f}%"
 
             value_parts = []
             if item.original_url:
                 value_parts.append(f"[Link]({item.original_url})")
-            value_parts.append(f"Relevance: {score_pct}")
+            value_parts.append(f"Similarity score: {result.score:.2f}")
             if preview:
                 value_parts.append(preview)
 
