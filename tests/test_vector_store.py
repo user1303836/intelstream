@@ -72,12 +72,30 @@ class TestUpsertAndSearch:
         assert results == []
 
     async def test_message_chunk_doc_count(self, vector_store):
-        assert await vector_store.message_chunk_doc_count() == 0
+        assert await vector_store.message_chunk_doc_count("guild-1") == 0
 
-        await vector_store.upsert_message_chunk("chunk-1", [1.0, 0.0, 0.0, 0.0])
-        await vector_store.upsert_message_chunk("chunk-2", [0.0, 1.0, 0.0, 0.0])
+        await vector_store.upsert_message_chunk("guild-1", "chunk-1", [1.0, 0.0, 0.0, 0.0])
+        await vector_store.upsert_message_chunk("guild-1", "chunk-2", [0.0, 1.0, 0.0, 0.0])
 
-        assert await vector_store.message_chunk_doc_count() == 2
+        assert await vector_store.message_chunk_doc_count("guild-1") == 2
+
+    async def test_message_chunk_collections_are_guild_scoped(self, vector_store):
+        await vector_store.upsert_message_chunk("guild-1", "chunk-1", [1.0, 0.0, 0.0, 0.0])
+        await vector_store.upsert_message_chunk("guild-2", "chunk-2", [0.0, 1.0, 0.0, 0.0])
+
+        guild_1_results = await vector_store.search_message_chunks(
+            "guild-1",
+            [1.0, 0.0, 0.0, 0.0],
+            topk=5,
+        )
+        guild_2_results = await vector_store.search_message_chunks(
+            "guild-2",
+            [1.0, 0.0, 0.0, 0.0],
+            topk=5,
+        )
+
+        assert [result.chunk_id for result in guild_1_results] == ["chunk-1"]
+        assert [result.chunk_id for result in guild_2_results] == ["chunk-2"]
 
 
 class TestUpsertBatch:
@@ -108,13 +126,13 @@ class TestDelete:
 
 class TestRecreateCollections:
     async def test_recreate_message_chunks_collection(self, vector_store):
-        await vector_store.upsert_message_chunk("chunk-1", [1.0, 0.0, 0.0, 0.0])
-        assert await vector_store.message_chunk_doc_count() == 1
+        await vector_store.upsert_message_chunk("guild-1", "chunk-1", [1.0, 0.0, 0.0, 0.0])
+        assert await vector_store.message_chunk_doc_count("guild-1") == 1
 
-        await vector_store.recreate_message_chunks_collection()
+        await vector_store.recreate_message_chunks_collection("guild-1")
 
-        assert await vector_store.message_chunk_doc_count() == 0
-        results = await vector_store.search_message_chunks([1.0, 0.0, 0.0, 0.0], topk=1)
+        assert await vector_store.message_chunk_doc_count("guild-1") == 0
+        results = await vector_store.search_message_chunks("guild-1", [1.0, 0.0, 0.0, 0.0], topk=1)
         assert results == []
 
 

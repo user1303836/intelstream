@@ -21,6 +21,7 @@ def mock_bot():
     bot.settings.summary_model_interactive = "claude-test"
     bot.repository = AsyncMock()
     bot.repository.count_message_chunk_metas = AsyncMock(return_value=0)
+    bot.repository.get_message_chunk_guild_ids = AsyncMock(return_value=[])
     bot.repository.get_message_chunk_metas_batch = AsyncMock(return_value=[])
     bot.get_guild = MagicMock(return_value=None)
     bot.guilds = []
@@ -173,14 +174,14 @@ class TestIndexHealth:
             ChunkSearchResult(chunk_id="chunk-1", score=1.0)
         ]
 
-        result = await lore_cog._message_index_is_healthy(expected_count=1)
+        result = await lore_cog._message_index_is_healthy("guild-1", expected_count=1)
 
         assert result is True
 
     async def test_message_index_unhealthy_on_count_mismatch(self, lore_cog, mock_vector_store):
         mock_vector_store.message_chunk_doc_count.return_value = 0
 
-        result = await lore_cog._message_index_is_healthy(expected_count=2)
+        result = await lore_cog._message_index_is_healthy("guild-1", expected_count=2)
 
         assert result is False
         mock_vector_store.search_message_chunks.assert_not_called()
@@ -190,12 +191,13 @@ class TestIndexHealth:
     ):
         lore_cog._ingestion_service = MagicMock()
         lore_cog._ingestion_service.rebuild_vector_index = AsyncMock(return_value=3)
+        mock_bot.repository.get_message_chunk_guild_ids.return_value = ["guild-1"]
         mock_bot.repository.count_message_chunk_metas.return_value = 3
         mock_vector_store.message_chunk_doc_count.return_value = 0
 
         await lore_cog._ensure_message_chunk_index()
 
-        lore_cog._ingestion_service.rebuild_vector_index.assert_awaited_once()
+        lore_cog._ingestion_service.rebuild_vector_index.assert_awaited_once_with("guild-1")
 
     async def test_command_mentions_rebuild_in_progress(self, lore_cog, mock_interaction):
         lore_cog._index_rebuild_task = asyncio.create_task(asyncio.sleep(0.1))
@@ -253,14 +255,17 @@ class TestAutoStartIngestion:
         lore_cog._ingestion_service.start_backfill.assert_not_called()
 
     async def test_auto_start_uses_first_guild(self, lore_cog, mock_bot):
-        guild = MagicMock(spec=discord.Guild)
-        guild.id = 111
-        guild.name = "Test Server"
-        mock_bot.guilds = [guild]
+        guild1 = MagicMock(spec=discord.Guild)
+        guild1.id = 111
+        guild1.name = "Test Server 1"
+        guild2 = MagicMock(spec=discord.Guild)
+        guild2.id = 222
+        guild2.name = "Test Server 2"
+        mock_bot.guilds = [guild1, guild2]
         mock_bot.repository.get_ingestion_progress_for_guild.return_value = []
 
         await lore_cog.auto_start_ingestion()
-        lore_cog._ingestion_service.start_backfill.assert_called_once_with(guild)
+        lore_cog._ingestion_service.start_backfill.assert_called_once_with(guild1)
 
     async def test_auto_start_no_guilds(self, lore_cog, mock_bot):
         mock_bot.guilds = []

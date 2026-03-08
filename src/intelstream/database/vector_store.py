@@ -35,14 +35,12 @@ class VectorStore:
         self._data_dir = data_dir
         self._dimensions = dimensions
         self._articles: zvec.Collection | None = None
-        self._message_chunks: zvec.Collection | None = None
+        self._message_chunks: dict[str, zvec.Collection] = {}
 
     async def initialize(self) -> None:
         await asyncio.to_thread(os.makedirs, self._data_dir, exist_ok=True)
         self._articles = await self._open_or_create_collection(self._ARTICLES_COLLECTION)
-        self._message_chunks = await self._open_or_create_collection(
-            self._MESSAGE_CHUNKS_COLLECTION
-        )
+        await asyncio.to_thread(self._warn_if_legacy_message_chunk_collection_present)
 
     def _collection_path(self, collection_name: str) -> str:
         return str(Path(self._data_dir) / collection_name)
@@ -50,9 +48,26 @@ class VectorStore:
     def _collection_attr_name(self, collection_name: str) -> str:
         if collection_name == self._ARTICLES_COLLECTION:
             return "_articles"
-        if collection_name == self._MESSAGE_CHUNKS_COLLECTION:
-            return "_message_chunks"
         raise ValueError(f"Unknown collection name: {collection_name}")
+
+    def _message_chunk_collection_name(self, guild_id: str) -> str:
+        return f"{self._MESSAGE_CHUNKS_COLLECTION}_{guild_id}"
+
+    def _message_chunk_collection_path(self, guild_id: str) -> str:
+        return str(Path(self._data_dir) / self._MESSAGE_CHUNKS_COLLECTION / guild_id)
+
+    def _warn_if_legacy_message_chunk_collection_present(self) -> None:
+        legacy_root = Path(self._collection_path(self._MESSAGE_CHUNKS_COLLECTION))
+        if not legacy_root.exists():
+            return
+
+        legacy_files = [entry.name for entry in legacy_root.iterdir() if entry.is_file()]
+        if legacy_files:
+            logger.warning(
+                "Detected legacy global lore vector collection files; they are no longer used",
+                path=str(legacy_root),
+                files=sorted(legacy_files),
+            )
 
     def _build_schema(self, collection_name: str) -> zvec.CollectionSchema:
         import zvec
@@ -62,10 +77,12 @@ class VectorStore:
             vectors=zvec.VectorSchema("embedding", zvec.DataType.VECTOR_FP32, self._dimensions),
         )
 
-    async def _open_or_create_collection(self, collection_name: str) -> zvec.Collection:
+    async def _open_or_create_collection(
+        self, collection_name: str, path: str | None = None
+    ) -> zvec.Collection:
         import zvec
 
-        path = self._collection_path(collection_name)
+        path = path or self._collection_path(collection_name)
         try:
             collection = await asyncio.to_thread(
                 zvec.create_and_open,
@@ -105,6 +122,48 @@ class VectorStore:
 
         recreated = await self._open_or_create_collection(collection_name)
         setattr(self, attr_name, recreated)
+        return recreated
+
+    async def _message_chunk_collection(
+        self, guild_id: str, *, create: bool
+    ) -> zvec.Collection | None:
+        collection = self._message_chunks.get(guild_id)
+        if collection is not None:
+            return collection
+
+        path = self._message_chunk_collection_path(guild_id)
+        if not create and not await asyncio.to_thread(os.path.exists, path):
+            return None
+
+        collection = await self._open_or_create_collection(
+            self._message_chunk_collection_name(guild_id),
+            path=path,
+        )
+        self._message_chunks[guild_id] = collection
+        return collection
+
+    async def _recreate_message_chunk_collection(self, guild_id: str) -> zvec.Collection:
+        collection = self._message_chunks.pop(guild_id, None)
+        path = self._message_chunk_collection_path(guild_id)
+
+        if collection is not None:
+            try:
+                await asyncio.to_thread(collection.destroy)
+            except Exception:
+                logger.warning(
+                    "Failed to destroy vector collection cleanly, removing files manually",
+                    collection=self._message_chunk_collection_name(guild_id),
+                    path=path,
+                )
+
+        if await asyncio.to_thread(os.path.exists, path):
+            await asyncio.to_thread(shutil.rmtree, path, True)
+
+        recreated = await self._open_or_create_collection(
+            self._message_chunk_collection_name(guild_id),
+            path=path,
+        )
+        self._message_chunks[guild_id] = recreated
         return recreated
 
     async def _doc_count(self, collection: zvec.Collection | None) -> int:
@@ -155,57 +214,68 @@ class VectorStore:
     async def article_doc_count(self) -> int:
         return await self._doc_count(self._articles)
 
-    async def upsert_message_chunk(self, chunk_id: str, embedding: list[float]) -> None:
+    async def upsert_message_chunk(
+        self, guild_id: str, chunk_id: str, embedding: list[float]
+    ) -> None:
         import zvec
 
-        if self._message_chunks is None:
+        collection = await self._message_chunk_collection(guild_id, create=True)
+        if collection is None:
             raise RuntimeError("VectorStore not initialized")
         doc = zvec.Doc(
             id=chunk_id,
             vectors={"embedding": embedding},
         )
-        await asyncio.to_thread(self._message_chunks.upsert, [doc])
+        await asyncio.to_thread(collection.upsert, [doc])
 
-    async def upsert_message_chunks_batch(self, items: list[tuple[str, list[float]]]) -> None:
+    async def upsert_message_chunks_batch(
+        self, guild_id: str, items: list[tuple[str, list[float]]]
+    ) -> None:
         import zvec
 
-        if self._message_chunks is None:
+        collection = await self._message_chunk_collection(guild_id, create=True)
+        if collection is None:
             raise RuntimeError("VectorStore not initialized")
         if not items:
             return
         docs = [zvec.Doc(id=cid, vectors={"embedding": emb}) for cid, emb in items]
-        await asyncio.to_thread(self._message_chunks.upsert, docs)
+        await asyncio.to_thread(collection.upsert, docs)
 
     async def search_message_chunks(
-        self, query_embedding: list[float], topk: int = 30
+        self, guild_id: str, query_embedding: list[float], topk: int = 30
     ) -> list[ChunkSearchResult]:
         import zvec
 
-        if self._message_chunks is None:
-            raise RuntimeError("VectorStore not initialized")
+        collection = await self._message_chunk_collection(guild_id, create=False)
+        if collection is None:
+            return []
         results: Any = await asyncio.to_thread(
-            self._message_chunks.query,
+            collection.query,
             zvec.VectorQuery("embedding", vector=query_embedding),
             topk=topk,
         )
         return [ChunkSearchResult(chunk_id=r.id, score=r.score) for r in results]
 
-    async def delete_message_chunks_by_ids(self, chunk_ids: list[str]) -> None:
-        if self._message_chunks is None:
-            raise RuntimeError("VectorStore not initialized")
+    async def delete_message_chunks_by_ids(self, guild_id: str, chunk_ids: list[str]) -> None:
+        collection = await self._message_chunk_collection(guild_id, create=False)
+        if collection is None:
+            return
         for chunk_id in chunk_ids:
-            await asyncio.to_thread(self._message_chunks.delete, chunk_id)
+            await asyncio.to_thread(collection.delete, chunk_id)
 
-    async def message_chunk_doc_count(self) -> int:
-        return await self._doc_count(self._message_chunks)
+    async def message_chunk_doc_count(self, guild_id: str) -> int:
+        collection = await self._message_chunk_collection(guild_id, create=False)
+        if collection is None:
+            return 0
+        return await self._doc_count(collection)
 
-    async def recreate_message_chunks_collection(self) -> None:
-        await self._recreate_collection(self._MESSAGE_CHUNKS_COLLECTION)
+    async def recreate_message_chunks_collection(self, guild_id: str) -> None:
+        await self._recreate_message_chunk_collection(guild_id)
 
     async def close(self) -> None:
         if self._articles is not None:
             await asyncio.to_thread(self._articles.flush)
             self._articles = None
-        if self._message_chunks is not None:
-            await asyncio.to_thread(self._message_chunks.flush)
-            self._message_chunks = None
+        for collection in self._message_chunks.values():
+            await asyncio.to_thread(collection.flush)
+        self._message_chunks.clear()

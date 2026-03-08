@@ -938,22 +938,39 @@ class Repository:
             session.add_all(chunks)
             await session.commit()
 
-    async def count_message_chunk_metas(self) -> int:
+    async def count_message_chunk_metas(self, guild_id: str | None = None) -> int:
         async with self.session() as session:
-            result = await session.execute(select(func.count()).select_from(MessageChunkMeta))
+            query = select(func.count()).select_from(MessageChunkMeta)
+            if guild_id is not None:
+                query = query.where(MessageChunkMeta.guild_id == guild_id)
+            result = await session.execute(query)
             return int(result.scalar_one())
 
     async def get_message_chunk_metas_batch(
-        self, offset: int = 0, limit: int = 100
+        self,
+        offset: int = 0,
+        limit: int = 100,
+        guild_id: str | None = None,
     ) -> list[MessageChunkMeta]:
         async with self.session() as session:
+            query = select(MessageChunkMeta)
+            if guild_id is not None:
+                query = query.where(MessageChunkMeta.guild_id == guild_id)
             result = await session.execute(
-                select(MessageChunkMeta)
-                .order_by(MessageChunkMeta.start_timestamp.asc(), MessageChunkMeta.id.asc())
+                query.order_by(MessageChunkMeta.start_timestamp.asc(), MessageChunkMeta.id.asc())
                 .offset(offset)
                 .limit(limit)
             )
             return list(result.scalars().all())
+
+    async def get_message_chunk_guild_ids(self) -> list[str]:
+        async with self.session() as session:
+            result = await session.execute(
+                select(MessageChunkMeta.guild_id)
+                .distinct()
+                .order_by(MessageChunkMeta.guild_id.asc())
+            )
+            return [str(guild_id) for guild_id in result.scalars().all()]
 
     async def get_message_chunk_metas_by_ids(self, chunk_ids: list[str]) -> list[MessageChunkMeta]:
         if not chunk_ids:

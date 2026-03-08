@@ -295,6 +295,7 @@ class TestMessageIngestionService:
         embedding_service.embed_batch.assert_called_once()
         repository.add_message_chunk_metas_batch.assert_called_once()
         vector_store.upsert_message_chunks_batch.assert_called_once()
+        assert vector_store.upsert_message_chunks_batch.call_args.args[0] == "111"
 
         metas = repository.add_message_chunk_metas_batch.call_args[0][0]
         assert len(metas) == 1
@@ -323,23 +324,32 @@ class TestMessageIngestionService:
             ]
         )
 
-        result = await service.rebuild_vector_index(batch_size=2)
+        result = await service.rebuild_vector_index("guild-1", batch_size=2)
 
         assert result == 3
-        vector_store.recreate_message_chunks_collection.assert_called_once()
+        vector_store.recreate_message_chunks_collection.assert_called_once_with("guild-1")
         assert vector_store.upsert_message_chunks_batch.await_count == 2
-        repository.get_message_chunk_metas_batch.assert_any_call(offset=0, limit=2)
-        repository.get_message_chunk_metas_batch.assert_any_call(offset=2, limit=2)
+        repository.count_message_chunk_metas.assert_called_once_with(guild_id="guild-1")
+        repository.get_message_chunk_metas_batch.assert_any_call(
+            offset=0,
+            limit=2,
+            guild_id="guild-1",
+        )
+        repository.get_message_chunk_metas_batch.assert_any_call(
+            offset=2,
+            limit=2,
+            guild_id="guild-1",
+        )
 
     async def test_rebuild_vector_index_empty(self, service, mock_deps):
         repository, embedding_service, vector_store = mock_deps
         repository.count_message_chunk_metas = AsyncMock(return_value=0)
         repository.get_message_chunk_metas_batch = AsyncMock(return_value=[])
 
-        result = await service.rebuild_vector_index()
+        result = await service.rebuild_vector_index("guild-1")
 
         assert result == 0
-        vector_store.recreate_message_chunks_collection.assert_called_once()
+        vector_store.recreate_message_chunks_collection.assert_called_once_with("guild-1")
         embedding_service.embed_batch.assert_not_called()
         vector_store.upsert_message_chunks_batch.assert_not_called()
 
