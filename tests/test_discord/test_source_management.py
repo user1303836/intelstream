@@ -101,6 +101,39 @@ class TestParseSourceIdentifier:
         with pytest.raises(InvalidSourceURLError, match="cannot be empty"):
             parse_source_identifier(SourceType.ARXIV, "   ")
 
+    def test_parse_arxiv_category(self):
+        identifier, feed_url = parse_source_identifier(SourceType.ARXIV, "cs.AI")
+        assert identifier == "cs.AI"
+        assert feed_url == "https://arxiv.org/rss/cs.AI"
+
+    def test_parse_arxiv_list_url(self):
+        identifier, feed_url = parse_source_identifier(
+            SourceType.ARXIV,
+            "https://arxiv.org/list/cs.AI/",
+        )
+        assert identifier == "cs.AI"
+        assert feed_url == "https://arxiv.org/rss/cs.AI"
+
+    def test_parse_arxiv_recent_list_url(self):
+        identifier, feed_url = parse_source_identifier(
+            SourceType.ARXIV,
+            "https://arxiv.org/list/cs.AI/recent",
+        )
+        assert identifier == "cs.AI"
+        assert feed_url == "https://arxiv.org/rss/cs.AI"
+
+    def test_parse_arxiv_rss_url(self):
+        identifier, feed_url = parse_source_identifier(
+            SourceType.ARXIV,
+            "https://arxiv.org/rss/stat.ML",
+        )
+        assert identifier == "stat.ML"
+        assert feed_url == "https://arxiv.org/rss/stat.ML"
+
+    def test_parse_arxiv_wrong_domain(self):
+        with pytest.raises(InvalidSourceURLError, match=r"Expected arxiv\.org domain"):
+            parse_source_identifier(SourceType.ARXIV, "https://example.com/list/cs.AI/")
+
     def test_parse_page_no_host(self):
         with pytest.raises(InvalidSourceURLError, match="No host found"):
             parse_source_identifier(SourceType.PAGE, "not-a-url")
@@ -365,6 +398,76 @@ class TestSourceManagementAdd:
         mock_bot.repository.add_source.assert_called_once()
         call_kwargs = mock_bot.repository.add_source.call_args.kwargs
         assert call_kwargs["skip_summary"] is False
+
+    async def test_add_arxiv_source_with_category_identifier(self, source_management, mock_bot):
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = MagicMock()
+        interaction.response.defer = AsyncMock()
+        interaction.followup = MagicMock()
+        interaction.followup.send = AsyncMock()
+        interaction.user = MagicMock()
+        interaction.user.id = 123
+        interaction.guild_id = 456
+        interaction.channel_id = 789
+
+        source_type_choice = MagicMock()
+        source_type_choice.value = "arxiv"
+        source_type_choice.name = "Arxiv"
+
+        mock_bot.repository.get_source_by_identifier = AsyncMock(return_value=None)
+        mock_bot.repository.get_source_by_name = AsyncMock(return_value=None)
+
+        mock_source = MagicMock()
+        mock_source.id = "new-source-id"
+        mock_bot.repository.add_source = AsyncMock(return_value=mock_source)
+
+        await source_management.source_add.callback(
+            source_management,
+            interaction,
+            source_type=source_type_choice,
+            name="arxiv_cs.AI",
+            url="cs.AI",
+        )
+
+        mock_bot.repository.add_source.assert_called_once()
+        call_kwargs = mock_bot.repository.add_source.call_args.kwargs
+        assert call_kwargs["identifier"] == "cs.AI"
+        assert call_kwargs["feed_url"] == "https://arxiv.org/rss/cs.AI"
+
+    async def test_add_arxiv_source_with_list_url(self, source_management, mock_bot):
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = MagicMock()
+        interaction.response.defer = AsyncMock()
+        interaction.followup = MagicMock()
+        interaction.followup.send = AsyncMock()
+        interaction.user = MagicMock()
+        interaction.user.id = 123
+        interaction.guild_id = 456
+        interaction.channel_id = 789
+
+        source_type_choice = MagicMock()
+        source_type_choice.value = "arxiv"
+        source_type_choice.name = "Arxiv"
+
+        mock_bot.repository.get_source_by_identifier = AsyncMock(return_value=None)
+        mock_bot.repository.get_source_by_name = AsyncMock(return_value=None)
+
+        mock_source = MagicMock()
+        mock_source.id = "new-source-id"
+        mock_bot.repository.add_source = AsyncMock(return_value=mock_source)
+
+        await source_management.source_add.callback(
+            source_management,
+            interaction,
+            source_type=source_type_choice,
+            name="arxiv_cs.AI",
+            url="https://arxiv.org/list/cs.AI/",
+        )
+
+        mock_bot.repository.add_source.assert_called_once()
+        call_kwargs = mock_bot.repository.add_source.call_args.kwargs
+        assert call_kwargs["identifier"] == "cs.AI"
+        assert call_kwargs["feed_url"] == "https://arxiv.org/rss/cs.AI"
 
 
 class TestSourceManagementList:
