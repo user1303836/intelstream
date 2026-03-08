@@ -450,15 +450,19 @@ class TestSourceManagementRemove:
         mock_source.is_active = True
         mock_bot.repository.get_source_by_name = AsyncMock(return_value=mock_source)
         mock_bot.repository.get_content_count_for_source = AsyncMock(return_value=0)
-        mock_bot.repository.delete_source = AsyncMock(return_value=True)
+        mock_bot.repository.set_source_active = AsyncMock(return_value=mock_source)
 
         await source_management.source_remove.callback(
             source_management, interaction, name="Test Source"
         )
 
-        mock_bot.repository.delete_source.assert_called_once_with("test-identifier")
+        mock_bot.repository.set_source_active.assert_called_once_with(
+            "test-identifier",
+            False,
+            pause_reason=PauseReason.USER_PAUSED,
+        )
         msg = interaction.edit_original_response.call_args.kwargs["content"]
-        assert "removed" in msg
+        assert "archived" in msg
 
     @patch("intelstream.discord.cogs.source_management.ConfirmSourceRemoveView")
     async def test_remove_source_with_content(self, mock_view_cls, source_management, mock_bot):
@@ -480,7 +484,7 @@ class TestSourceManagementRemove:
         mock_source.is_active = True
         mock_bot.repository.get_source_by_name = AsyncMock(return_value=mock_source)
         mock_bot.repository.get_content_count_for_source = AsyncMock(return_value=42)
-        mock_bot.repository.delete_source = AsyncMock(return_value=True)
+        mock_bot.repository.set_source_active = AsyncMock(return_value=mock_source)
 
         await source_management.source_remove.callback(
             source_management, interaction, name="Test Source"
@@ -488,7 +492,7 @@ class TestSourceManagementRemove:
 
         msg = interaction.edit_original_response.call_args.kwargs["content"]
         assert "42 content items" in msg
-        assert "/source toggle" in msg
+        assert "kept" in msg
 
     @patch("intelstream.discord.cogs.source_management.ConfirmSourceRemoveView")
     async def test_remove_source_cancelled(self, mock_view_cls, source_management, mock_bot):
@@ -515,7 +519,7 @@ class TestSourceManagementRemove:
             source_management, interaction, name="Test Source"
         )
 
-        mock_bot.repository.delete_source.assert_not_called()
+        mock_bot.repository.set_source_active.assert_not_called()
         msg = interaction.edit_original_response.call_args.kwargs["content"]
         assert "cancelled" in msg
 
@@ -532,7 +536,7 @@ class TestSourceManagementRemove:
             source_management, interaction, name="Unknown"
         )
 
-        mock_bot.repository.delete_source.assert_not_called()
+        mock_bot.repository.set_source_active.assert_not_called()
         call_args = interaction.followup.send.call_args
         assert "No source found" in call_args[0][0]
 
@@ -563,7 +567,7 @@ class TestSourceManagementRemove:
 
         call_kwargs = interaction.followup.send.call_args.kwargs
         embed = call_kwargs["embed"]
-        assert embed.title == "Confirm Source Removal"
+        assert embed.title == "Stop Monitoring Source"
         assert "My RSS" in embed.description
         field_names = [f.name for f in embed.fields]
         assert "Type" in field_names

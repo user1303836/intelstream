@@ -437,15 +437,16 @@ class SourceManagement(commands.Cog):
 
         status = "Active" if source.is_active else "Paused"
         embed = discord.Embed(
-            title="Confirm Source Removal",
-            description=f"Are you sure you want to remove **{name}**?",
+            title="Stop Monitoring Source",
+            description=(
+                f"Stop monitoring **{name}**? Existing content will be kept and remain searchable."
+            ),
             color=discord.Color.red(),
         )
         embed.add_field(name="Type", value=source.type.value, inline=True)
         embed.add_field(name="Status", value=status, inline=True)
         embed.add_field(name="Content Items", value=str(content_count), inline=True)
-        if content_count > 0:
-            embed.set_footer(text="All content items will be permanently deleted.")
+        embed.set_footer(text="This source can be resumed later with /source toggle.")
 
         view = ConfirmSourceRemoveView()
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
@@ -453,35 +454,38 @@ class SourceManagement(commands.Cog):
 
         if timed_out or not view.confirmed:
             await interaction.edit_original_response(
-                content="Source removal cancelled.", embed=None, view=None
+                content="Source archive cancelled.", embed=None, view=None
             )
             return
 
         try:
-            await self.bot.repository.delete_source(source.identifier)
+            await self.bot.repository.set_source_active(
+                source.identifier,
+                False,
+                pause_reason=PauseReason.USER_PAUSED,
+            )
             logger.info(
-                "Source removed",
+                "Source archived",
                 name=name,
                 identifier=source.identifier,
                 user_id=interaction.user.id,
-                content_items_deleted=content_count,
+                content_items_preserved=content_count,
             )
-            if content_count > 0:
-                msg = (
-                    f"Source **{name}** and {content_count} content item"
-                    f"{'s' if content_count != 1 else ''} "
-                    f"have been removed. Use `/source toggle` next time to disable without deleting."
-                )
-            else:
-                msg = f"Source **{name}** has been removed."
+            msg = (
+                f"Source **{name}** has been archived and will no longer be polled. "
+                f"Existing {content_count} content item{'s' if content_count != 1 else ''} "
+                "were kept."
+            )
             await interaction.edit_original_response(content=msg, embed=None, view=None)
         except SourceNotFoundError:
             await interaction.edit_original_response(
-                content=f"Source **{name}** was already removed.", embed=None, view=None
+                content=f"Source **{name}** was already archived or removed.",
+                embed=None,
+                view=None,
             )
         except DatabaseConnectionError:
             await interaction.edit_original_response(
-                content=f"Failed to remove source **{name}** due to a database error.",
+                content=f"Failed to archive source **{name}** due to a database error.",
                 embed=None,
                 view=None,
             )
