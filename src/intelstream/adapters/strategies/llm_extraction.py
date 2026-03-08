@@ -80,14 +80,8 @@ class LLMExtractionStrategy(DiscoveryStrategy):
                 if isinstance(posts_data, list):
                     posts = []
                     for p in posts_data:
-                        if (
-                            isinstance(p, dict)
-                            and isinstance(p.get("url"), str)
-                            and p.get("url")
-                        ):
-                            posts.append(
-                                DiscoveredPost(url=p["url"], title=p.get("title", ""))
-                            )
+                        if isinstance(p, dict) and isinstance(p.get("url"), str) and p.get("url"):
+                            posts.append(DiscoveredPost(url=p["url"], title=p.get("title", "")))
                     if posts:
                         logger.debug(
                             "Using cached LLM extraction",
@@ -131,12 +125,7 @@ class LLMExtractionStrategy(DiscoveryStrategy):
         ):
             tag.decompose()
 
-        main = (
-            soup.find("main")
-            or soup.find("article")
-            or soup.find(id="content")
-            or soup.body
-        )
+        main = soup.find("main") or soup.find("article") or soup.find(id="content") or soup.body
 
         if main:
             text = " ".join(main.get_text().split())
@@ -150,16 +139,10 @@ class LLMExtractionStrategy(DiscoveryStrategy):
         }
         try:
             if self._http_client:
-                response = await self._http_client.get(
-                    url, headers=headers, follow_redirects=True
-                )
+                response = await self._http_client.get(url, headers=headers, follow_redirects=True)
             else:
-                async with httpx.AsyncClient(
-                    timeout=get_settings().http_timeout_seconds
-                ) as client:
-                    response = await client.get(
-                        url, headers=headers, follow_redirects=True
-                    )
+                async with httpx.AsyncClient(timeout=get_settings().http_timeout_seconds) as client:
+                    response = await client.get(url, headers=headers, follow_redirects=True)
             response.raise_for_status()
             return response.text
         except httpx.HTTPError as e:
@@ -169,9 +152,7 @@ class LLMExtractionStrategy(DiscoveryStrategy):
     def _clean_html(self, html: str) -> str:
         soup = BeautifulSoup(html, "lxml")
 
-        for tag in soup.find_all(
-            ["script", "style", "noscript", "svg", "path", "iframe"]
-        ):
+        for tag in soup.find_all(["script", "style", "noscript", "svg", "path", "iframe"]):
             tag.decompose()
 
         for tag in soup.find_all(True):
@@ -286,7 +267,5 @@ class LLMExtractionStrategy(DiscoveryStrategy):
             if result is not None:
                 return result
 
-        logger.warning(
-            "Failed to extract JSON from LLM response", response_preview=text[:200]
-        )
+        logger.warning("Failed to extract JSON from LLM response", response_preview=text[:200])
         return []

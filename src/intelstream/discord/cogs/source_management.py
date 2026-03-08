@@ -479,7 +479,9 @@ class SourceManagement(commands.Cog):
             await interaction.edit_original_response(content=msg, embed=None, view=None)
         except SourceNotFoundError:
             await interaction.edit_original_response(
-                content=f"Source **{name}** was already removed.", embed=None, view=None
+                content=f"Source **{name}** was already archived or removed.",
+                embed=None,
+                view=None,
             )
         except DatabaseConnectionError:
             await interaction.edit_original_response(

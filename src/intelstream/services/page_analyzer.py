@@ -121,9 +121,7 @@ class PageAnalyzer:
 
         validation_result = self._validate_profile(html, profile)
         if not validation_result["valid"]:
-            raise PageAnalysisError(
-                f"Profile validation failed: {validation_result['reason']}"
-            )
+            raise PageAnalysisError(f"Profile validation failed: {validation_result['reason']}")
 
         logger.info(
             "Page analysis complete",
@@ -141,24 +139,16 @@ class PageAnalyzer:
 
         try:
             if self._http_client:
-                response = await self._http_client.get(
-                    url, headers=headers, follow_redirects=True
-                )
+                response = await self._http_client.get(url, headers=headers, follow_redirects=True)
             else:
-                async with httpx.AsyncClient(
-                    timeout=get_settings().http_timeout_seconds
-                ) as client:
-                    response = await client.get(
-                        url, headers=headers, follow_redirects=True
-                    )
+                async with httpx.AsyncClient(timeout=get_settings().http_timeout_seconds) as client:
+                    response = await client.get(url, headers=headers, follow_redirects=True)
 
             response.raise_for_status()
             return response.text
 
         except httpx.HTTPStatusError as e:
-            raise PageAnalysisError(
-                f"Failed to fetch page: HTTP {e.response.status_code}"
-            ) from e
+            raise PageAnalysisError(f"Failed to fetch page: HTTP {e.response.status_code}") from e
         except httpx.RequestError as e:
             raise PageAnalysisError(f"Failed to fetch page: {e}") from e
 
@@ -255,9 +245,7 @@ Respond with ONLY a JSON object, no markdown formatting."""
             logger.error("Anthropic API error during page analysis", error=str(e))
             raise PageAnalysisError(f"LLM API error: {e}") from e
 
-    def _validate_profile(
-        self, html: str, profile: ExtractionProfile
-    ) -> dict[str, Any]:
+    def _validate_profile(self, html: str, profile: ExtractionProfile) -> dict[str, Any]:
         soup = BeautifulSoup(html, "lxml")
 
         try:
