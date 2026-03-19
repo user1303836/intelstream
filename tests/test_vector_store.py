@@ -34,6 +34,19 @@ class TestInitialize:
         assert (tmp_path / "new_dir").exists()
         await store.close()
 
+    async def test_defers_article_collection_open_until_first_use(self, tmp_path):
+        store = VectorStore(
+            data_dir=str(tmp_path / "lazy_open"), dimensions=4, model_name="model-a"
+        )
+        await store.initialize()
+
+        assert store._articles is None
+
+        await store.upsert_article("doc1", [0.1, 0.2, 0.3, 0.4])
+        assert store._articles is not None
+
+        await store.close()
+
     async def test_reopens_existing_collection(self, tmp_path):
         data_dir = str(tmp_path / "reopen_test")
         store1 = VectorStore(data_dir=data_dir, dimensions=4, model_name="model-a")
@@ -163,6 +176,7 @@ class TestUpsertBatch:
 
     async def test_article_chunk_batch_upsert_splits_large_batches(self, tmp_path):
         store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+        store._initialized = True
         store._articles = MagicMock()
 
         items = [

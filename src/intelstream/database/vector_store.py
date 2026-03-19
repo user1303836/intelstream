@@ -73,15 +73,13 @@ class VectorStore:
         self._data_dir = data_dir
         self._dimensions = dimensions
         self._model_name = model_name
+        self._initialized = False
         self._articles: zvec.Collection | None = None
         self._message_chunks: dict[str, zvec.Collection] = {}
 
     async def initialize(self) -> None:
         await asyncio.to_thread(os.makedirs, self._data_dir, exist_ok=True)
-        self._articles = await self._open_or_create_collection(
-            self._ARTICLES_COLLECTION,
-            validate_metadata=True,
-        )
+        self._initialized = True
         await asyncio.to_thread(self._warn_if_legacy_message_chunk_collection_present)
 
     def _collection_path(self, collection_name: str) -> str:
@@ -286,6 +284,7 @@ class VectorStore:
             return collection
 
     async def _recreate_collection(self, collection_name: str) -> zvec.Collection:
+        self._require_initialized()
         attr_name = self._collection_attr_name(collection_name)
         collection = getattr(self, attr_name)
         await self._destroy_collection_at_path(collection_name, collection)
@@ -298,9 +297,30 @@ class VectorStore:
         setattr(self, attr_name, recreated)
         return recreated
 
+    def _require_initialized(self) -> None:
+        if not self._initialized:
+            raise RuntimeError("VectorStore not initialized")
+
+    async def _article_collection(self, *, create: bool) -> zvec.Collection | None:
+        self._require_initialized()
+
+        if self._articles is not None:
+            return self._articles
+
+        path = self._collection_path(self._ARTICLES_COLLECTION)
+        if not create and not await asyncio.to_thread(os.path.exists, path):
+            return None
+
+        self._articles = await self._open_or_create_collection(
+            self._ARTICLES_COLLECTION,
+            validate_metadata=True,
+        )
+        return self._articles
+
     async def _message_chunk_collection(
         self, guild_id: str, *, create: bool
     ) -> zvec.Collection | None:
+        self._require_initialized()
         collection = self._message_chunks.get(guild_id)
         if collection is not None:
             return collection
@@ -317,6 +337,7 @@ class VectorStore:
         return collection
 
     async def _recreate_message_chunk_collection(self, guild_id: str) -> zvec.Collection:
+        self._require_initialized()
         collection = self._message_chunks.pop(guild_id, None)
         path = self._message_chunk_collection_path(guild_id)
 
@@ -363,7 +384,8 @@ class VectorStore:
     async def upsert_article_chunks_batch(self, items: list[ArticleChunkVector]) -> None:
         import zvec
 
-        if self._articles is None:
+        collection = await self._article_collection(create=True)
+        if collection is None:
             raise RuntimeError("VectorStore not initialized")
         if not items:
             return
@@ -381,17 +403,18 @@ class VectorStore:
                 )
                 for item in batch
             ]
-            await asyncio.to_thread(self._articles.upsert, docs)
+            await asyncio.to_thread(collection.upsert, docs)
 
     async def search_article_chunks(
         self, query_embedding: list[float], topk: int = 20
     ) -> list[ArticleChunkSearchResult]:
         import zvec
 
-        if self._articles is None:
-            raise RuntimeError("VectorStore not initialized")
+        collection = await self._article_collection(create=False)
+        if collection is None:
+            return []
         results: Any = await asyncio.to_thread(
-            self._articles.query,
+            collection.query,
             zvec.VectorQuery(_VECTOR_FIELD_NAME, vector=query_embedding),
             topk=topk,
             output_fields=[
@@ -417,13 +440,17 @@ class VectorStore:
         return chunk_results
 
     async def delete_article_chunks(self, chunk_ids: list[str]) -> None:
-        if self._articles is None:
-            raise RuntimeError("VectorStore not initialized")
+        collection = await self._article_collection(create=False)
+        if collection is None:
+            return
         for chunk_id in chunk_ids:
-            await asyncio.to_thread(self._articles.delete, chunk_id)
+            await asyncio.to_thread(collection.delete, chunk_id)
 
     async def article_chunk_doc_count(self) -> int:
-        return await self._doc_count(self._articles)
+        collection = await self._article_collection(create=False)
+        if collection is None:
+            return 0
+        return await self._doc_count(collection)
 
     async def recreate_article_chunks_collection(self) -> None:
         await self._recreate_collection(self._ARTICLES_COLLECTION)
@@ -537,3 +564,4 @@ class VectorStore:
         for collection in self._message_chunks.values():
             await asyncio.to_thread(collection.flush)
         self._message_chunks.clear()
+        self._initialized = False
