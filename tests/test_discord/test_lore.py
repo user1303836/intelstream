@@ -199,6 +199,25 @@ class TestIndexHealth:
 
         lore_cog._ingestion_service.rebuild_vector_index.assert_awaited_once_with("guild-1")
 
+    async def test_ensure_message_chunk_index_retries_after_failure(
+        self, lore_cog, mock_bot, mock_vector_store, monkeypatch
+    ):
+        lore_cog._ingestion_service = MagicMock()
+        lore_cog._ingestion_service.rebuild_vector_index = AsyncMock(
+            side_effect=[RuntimeError("locked"), 3]
+        )
+        mock_bot.repository.get_message_chunk_guild_ids.return_value = ["guild-1"]
+        mock_bot.repository.count_message_chunk_metas.return_value = 3
+        mock_vector_store.message_chunk_doc_count.return_value = 0
+        sleep_mock = AsyncMock()
+        monkeypatch.setattr("intelstream.discord.cogs.lore.asyncio.sleep", sleep_mock)
+
+        await lore_cog._ensure_message_chunk_index()
+
+        assert lore_cog._ingestion_service.rebuild_vector_index.await_count == 2
+        sleep_mock.assert_awaited_once()
+        assert lore_cog._index_rebuild_error is None
+
     async def test_command_mentions_rebuild_in_progress(self, lore_cog, mock_interaction):
         lore_cog._index_rebuild_task = asyncio.create_task(asyncio.sleep(0.1))
 
@@ -212,6 +231,17 @@ class TestIndexHealth:
         mock_interaction.response.send_message.assert_called_once()
         msg = mock_interaction.response.send_message.call_args[0][0].lower()
         assert "rebuilt" in msg or "rebuild" in msg
+
+    async def test_command_restarts_recovery_after_error(self, lore_cog, mock_interaction):
+        lore_cog._index_rebuild_error = "RuntimeError: boom"
+        lore_cog._start_index_rebuild = MagicMock()
+
+        await lore_cog.lore.callback(lore_cog, mock_interaction, "test query")
+
+        lore_cog._start_index_rebuild.assert_called_once_with()
+        mock_interaction.response.send_message.assert_called_once()
+        msg = mock_interaction.response.send_message.call_args[0][0].lower()
+        assert "recovers" in msg or "recover" in msg
 
 
 class TestAutoStartIngestion:

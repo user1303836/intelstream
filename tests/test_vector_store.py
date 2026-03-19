@@ -1,9 +1,10 @@
 import subprocess
 import sys
+from unittest.mock import MagicMock
 
 import pytest
 
-from intelstream.database.vector_store import VectorStore
+from intelstream.database.vector_store import ArticleChunkVector, VectorStore
 
 
 def _can_import_zvec() -> bool:
@@ -159,6 +160,28 @@ class TestUpsertBatch:
 
     async def test_batch_upsert_empty(self, vector_store):
         await vector_store.upsert_articles_batch([])
+
+    async def test_article_chunk_batch_upsert_splits_large_batches(self, tmp_path):
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+        store._articles = MagicMock()
+
+        items = [
+            ArticleChunkVector(
+                chunk_id=f"item-{index:04d}",
+                content_item_id=f"item-{index:04d}",
+                chunk_index=index,
+                text="chunk text",
+                search_text="title\n\nchunk text",
+                embedding=[1.0, 0.0, 0.0, 0.0],
+            )
+            for index in range(300)
+        ]
+
+        await store.upsert_article_chunks_batch(items)
+
+        assert store._articles.upsert.call_count == 2
+        assert len(store._articles.upsert.call_args_list[0].args[0]) == 256
+        assert len(store._articles.upsert.call_args_list[1].args[0]) == 44
 
 
 class TestDelete:

@@ -37,6 +37,8 @@ LORE_SYSTEM_PROMPT = (
 BUFFER_FLUSH_MINUTES = 5
 MAX_DISCORD_MESSAGE_LENGTH = 2000
 HEALTH_CHECK_TOPK = 10
+INDEX_RECOVERY_MAX_ATTEMPTS = 3
+INDEX_RECOVERY_BASE_DELAY_SECONDS = 2.0
 
 
 def _parse_timeframe(timeframe: str) -> tuple[datetime | None, datetime | None]:
@@ -117,10 +119,7 @@ class Lore(commands.Cog):
             max_messages=self.bot.settings.lore_chunk_max_messages,
         )
         self._flush_buffers.start()
-        self._index_rebuild_task = asyncio.create_task(
-            self._ensure_message_chunk_index(),
-            name="lore-index-rebuild",
-        )
+        self._start_index_rebuild()
         logger.info("Lore cog loaded")
 
     async def cog_unload(self) -> None:
@@ -155,9 +154,10 @@ class Lore(commands.Cog):
                 "rebuilt. Check back soon!"
             )
         elif self._index_rebuild_error is not None:
+            self._start_index_rebuild()
             message = (
-                "The /lore command is temporarily disabled because the message index needs "
-                "recovery. Check logs and try again after reindexing completes."
+                "The /lore command is temporarily disabled while the message index recovers. "
+                "Check back soon."
             )
         else:
             message = (
@@ -173,43 +173,64 @@ class Lore(commands.Cog):
         if self._ingestion_service is None:
             return
 
-        try:
-            guild_ids = await self.bot.repository.get_message_chunk_guild_ids()
-            if not guild_ids:
-                logger.info("No stored lore chunks found; skipping vector index rebuild")
-                return
+        for attempt in range(1, INDEX_RECOVERY_MAX_ATTEMPTS + 1):
+            try:
+                guild_ids = await self.bot.repository.get_message_chunk_guild_ids()
+                if not guild_ids:
+                    self._index_rebuild_error = None
+                    logger.info("No stored lore chunks found; skipping vector index rebuild")
+                    return
 
-            for guild_id in guild_ids:
-                expected_count = await self.bot.repository.count_message_chunk_metas(
-                    guild_id=guild_id
-                )
-                if expected_count == 0:
-                    continue
-
-                if await self._message_index_is_healthy(guild_id, expected_count):
-                    logger.info(
-                        "Lore message index is healthy",
-                        guild_id=guild_id,
-                        chunks=expected_count,
+                for guild_id in guild_ids:
+                    expected_count = await self.bot.repository.count_message_chunk_metas(
+                        guild_id=guild_id
                     )
-                    continue
+                    if expected_count == 0:
+                        continue
 
+                    if await self._message_index_is_healthy(guild_id, expected_count):
+                        logger.info(
+                            "Lore message index is healthy",
+                            guild_id=guild_id,
+                            chunks=expected_count,
+                        )
+                        continue
+
+                    logger.warning(
+                        "Lore message index is unhealthy; rebuilding from stored chunks",
+                        attempt=attempt,
+                        guild_id=guild_id,
+                        expected_chunks=expected_count,
+                    )
+                    rebuilt = await self._ingestion_service.rebuild_vector_index(guild_id)
+                    logger.info(
+                        "Lore message index rebuilt",
+                        guild_id=guild_id,
+                        indexed=rebuilt,
+                    )
+
+                self._index_rebuild_error = None
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._index_rebuild_error = f"{type(exc).__name__}: {exc}"
+                logger.error(
+                    "Failed to rebuild lore message index",
+                    attempt=attempt,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
+                if attempt >= INDEX_RECOVERY_MAX_ATTEMPTS:
+                    return
+
+                delay_seconds = INDEX_RECOVERY_BASE_DELAY_SECONDS * attempt
                 logger.warning(
-                    "Lore message index is unhealthy; rebuilding from stored chunks",
-                    guild_id=guild_id,
-                    expected_chunks=expected_count,
+                    "Retrying lore message index rebuild",
+                    attempt=attempt + 1,
+                    delay_seconds=delay_seconds,
                 )
-                rebuilt = await self._ingestion_service.rebuild_vector_index(guild_id)
-                logger.info(
-                    "Lore message index rebuilt",
-                    guild_id=guild_id,
-                    indexed=rebuilt,
-                )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            self._index_rebuild_error = str(exc)
-            logger.exception("Failed to rebuild lore message index", error=str(exc))
+                await asyncio.sleep(delay_seconds)
 
     async def _message_index_is_healthy(self, guild_id: str, expected_count: int) -> bool:
         indexed_count = await self._vector_store.message_chunk_doc_count(guild_id)
@@ -320,6 +341,14 @@ class Lore(commands.Cog):
         keys = list(self._message_buffers.keys())
         for key in keys:
             await self._flush_buffer(key)
+
+    def _start_index_rebuild(self) -> None:
+        if self._index_rebuild_task is not None and not self._index_rebuild_task.done():
+            return
+        self._index_rebuild_task = asyncio.create_task(
+            self._ensure_message_chunk_index(),
+            name="lore-index-rebuild",
+        )
 
     async def start_ingestion_for_guild(self, guild: discord.Guild) -> None:
         if not self._ingestion_service:

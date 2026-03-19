@@ -12,6 +12,7 @@ class EmbeddingService:
     def __init__(self, model_name: str = "all-MiniLM-L6-v2") -> None:
         self._model_name = model_name
         self._model: SentenceTransformer | None = None
+        self._encode_lock = asyncio.Lock()
 
     async def initialize(self) -> None:
         self._model = await asyncio.to_thread(SentenceTransformer, self._model_name)
@@ -20,7 +21,12 @@ class EmbeddingService:
     async def embed_text(self, text: str) -> list[float]:
         if self._model is None:
             raise RuntimeError("EmbeddingService not initialized")
-        embedding = await asyncio.to_thread(self._model.encode, text)
+        async with self._encode_lock:
+            embedding = await asyncio.to_thread(
+                self._model.encode,
+                text,
+                show_progress_bar=False,
+            )
         return embedding.tolist()
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
@@ -28,5 +34,10 @@ class EmbeddingService:
             raise RuntimeError("EmbeddingService not initialized")
         if not texts:
             return []
-        embeddings = await asyncio.to_thread(self._model.encode, texts)
+        async with self._encode_lock:
+            embeddings = await asyncio.to_thread(
+                self._model.encode,
+                texts,
+                show_progress_bar=False,
+            )
         return embeddings.tolist()  # type: ignore[no-any-return]

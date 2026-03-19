@@ -21,6 +21,11 @@ _ARTICLE_CONTENT_ITEM_ID_FIELD = "content_item_id"
 _ARTICLE_CHUNK_INDEX_FIELD = "chunk_index"
 _ARTICLE_TEXT_FIELD = "text"
 _ARTICLE_SEARCH_TEXT_FIELD = "search_text"
+_UPSERT_BATCH_SIZE = 256
+
+
+def _batched[T](items: list[T], batch_size: int) -> list[list[T]]:
+    return [items[index : index + batch_size] for index in range(0, len(items), batch_size)]
 
 
 @dataclass
@@ -362,20 +367,21 @@ class VectorStore:
             raise RuntimeError("VectorStore not initialized")
         if not items:
             return
-        docs = [
-            zvec.Doc(
-                id=item.chunk_id,
-                vectors={_VECTOR_FIELD_NAME: item.embedding},
-                fields={
-                    _ARTICLE_CONTENT_ITEM_ID_FIELD: item.content_item_id,
-                    _ARTICLE_CHUNK_INDEX_FIELD: item.chunk_index,
-                    _ARTICLE_TEXT_FIELD: item.text,
-                    _ARTICLE_SEARCH_TEXT_FIELD: item.search_text,
-                },
-            )
-            for item in items
-        ]
-        await asyncio.to_thread(self._articles.upsert, docs)
+        for batch in _batched(items, _UPSERT_BATCH_SIZE):
+            docs = [
+                zvec.Doc(
+                    id=item.chunk_id,
+                    vectors={_VECTOR_FIELD_NAME: item.embedding},
+                    fields={
+                        _ARTICLE_CONTENT_ITEM_ID_FIELD: item.content_item_id,
+                        _ARTICLE_CHUNK_INDEX_FIELD: item.chunk_index,
+                        _ARTICLE_TEXT_FIELD: item.text,
+                        _ARTICLE_SEARCH_TEXT_FIELD: item.search_text,
+                    },
+                )
+                for item in batch
+            ]
+            await asyncio.to_thread(self._articles.upsert, docs)
 
     async def search_article_chunks(
         self, query_embedding: list[float], topk: int = 20
@@ -489,8 +495,9 @@ class VectorStore:
             raise RuntimeError("VectorStore not initialized")
         if not items:
             return
-        docs = [zvec.Doc(id=cid, vectors={_VECTOR_FIELD_NAME: emb}) for cid, emb in items]
-        await asyncio.to_thread(collection.upsert, docs)
+        for batch in _batched(items, _UPSERT_BATCH_SIZE):
+            docs = [zvec.Doc(id=cid, vectors={_VECTOR_FIELD_NAME: emb}) for cid, emb in batch]
+            await asyncio.to_thread(collection.upsert, docs)
 
     async def search_message_chunks(
         self, guild_id: str, query_embedding: list[float], topk: int = 30

@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 import structlog
-from sqlalchemy import exists, func, select, text
+from sqlalchemy import delete, exists, func, insert, select, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
@@ -54,7 +54,11 @@ class Repository:
         if not database_url.startswith("sqlite"):
             db_type = database_url.split("://")[0] if "://" in database_url else database_url
             raise ValueError(f"Only SQLite databases are supported. Got: {db_type}")
-        self._engine = create_async_engine(database_url, echo=False)
+        self._engine = create_async_engine(
+            database_url,
+            echo=False,
+            connect_args={"timeout": 30},
+        )
         self._session_factory: async_sessionmaker[AsyncSession] = async_sessionmaker(
             self._engine, class_=AsyncSession, expire_on_commit=False
         )
@@ -336,7 +340,20 @@ class Repository:
         if not chunks:
             return
         async with self.session() as session:
-            session.add_all(chunks)
+            embedded_at = datetime.now(UTC)
+            await session.execute(
+                insert(ArticleChunkMeta),
+                [
+                    {
+                        "id": chunk.id,
+                        "content_item_id": chunk.content_item_id,
+                        "chunk_index": chunk.chunk_index,
+                        "text": chunk.text,
+                        "embedded_at": chunk.embedded_at or embedded_at,
+                    }
+                    for chunk in chunks
+                ],
+            )
             await session.commit()
 
     async def count_article_chunk_metas(self) -> int:
@@ -365,23 +382,24 @@ class Repository:
     async def delete_article_chunk_metas_for_content_item(self, content_item_id: str) -> list[str]:
         async with self.session() as session:
             result = await session.execute(
-                select(ArticleChunkMeta).where(ArticleChunkMeta.content_item_id == content_item_id)
+                select(ArticleChunkMeta.id).where(
+                    ArticleChunkMeta.content_item_id == content_item_id
+                )
             )
-            chunks = list(result.scalars().all())
-            chunk_ids = [chunk.id for chunk in chunks]
-            for chunk in chunks:
-                await session.delete(chunk)
+            chunk_ids = list(result.scalars().all())
+            await session.execute(
+                delete(ArticleChunkMeta).where(ArticleChunkMeta.content_item_id == content_item_id)
+            )
             await session.commit()
             return chunk_ids
 
     async def delete_all_article_chunk_metas(self) -> int:
         async with self.session() as session:
-            result = await session.execute(select(ArticleChunkMeta))
-            chunks = list(result.scalars().all())
-            for chunk in chunks:
-                await session.delete(chunk)
+            result = await session.execute(select(func.count()).select_from(ArticleChunkMeta))
+            deleted = int(result.scalar_one())
+            await session.execute(delete(ArticleChunkMeta))
             await session.commit()
-            return len(chunks)
+            return deleted
 
     async def content_item_exists(self, external_id: str) -> bool:
         async with self.session() as session:

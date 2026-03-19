@@ -161,6 +161,17 @@ class TestSearch:
         msg = mock_interaction.response.send_message.call_args[0][0].lower()
         assert "rebuilt" in msg or "rebuild" in msg
 
+    async def test_search_restarts_recovery_after_error(self, search_cog, mock_interaction):
+        search_cog._index_rebuild_error = "RuntimeError: boom"
+        search_cog._start_index_rebuild = MagicMock()
+
+        await search_cog.search.callback(search_cog, mock_interaction, "test query")
+
+        search_cog._start_index_rebuild.assert_called_once_with()
+        mock_interaction.response.send_message.assert_called_once()
+        msg = mock_interaction.response.send_message.call_args[0][0].lower()
+        assert "recovers" in msg or "recover" in msg
+
 
 class TestIndex:
     async def test_index_empty(self, search_cog, mock_interaction, mock_bot):
@@ -209,6 +220,21 @@ class TestIndex:
         await search_cog._ensure_article_index()
 
         search_cog._rebuild_article_index.assert_awaited_once()
+
+    async def test_ensure_article_index_retries_after_failure(
+        self, search_cog, mock_bot, monkeypatch
+    ):
+        search_cog._article_index_is_healthy = AsyncMock(return_value=False)
+        search_cog._rebuild_article_index = AsyncMock(side_effect=[RuntimeError("locked"), (3, 9)])
+        mock_bot.repository.count_summarized_content_items.return_value = 3
+        sleep_mock = AsyncMock()
+        monkeypatch.setattr("intelstream.discord.cogs.search.asyncio.sleep", sleep_mock)
+
+        await search_cog._ensure_article_index()
+
+        assert search_cog._rebuild_article_index.await_count == 2
+        sleep_mock.assert_awaited_once()
+        assert search_cog._index_rebuild_error is None
 
 
 class TestTruncate:

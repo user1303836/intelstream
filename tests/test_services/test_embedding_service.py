@@ -25,7 +25,7 @@ class TestEmbedText:
         result = await service.embed_text("hello world")
         assert isinstance(result, list)
         assert all(isinstance(x, float) for x in result)
-        mock_model.encode.assert_called_once_with("hello world")
+        mock_model.encode.assert_called_once_with("hello world", show_progress_bar=False)
 
     async def test_raises_if_not_initialized(self):
         svc = EmbeddingService()
@@ -45,7 +45,7 @@ class TestEmbedBatch:
         assert isinstance(result, list)
         assert len(result) == 2
         assert all(isinstance(row, list) for row in result)
-        mock_model.encode.assert_called_once_with(["hello", "world"])
+        mock_model.encode.assert_called_once_with(["hello", "world"], show_progress_bar=False)
 
     async def test_empty_input_returns_empty(self, service, mock_model):
         result = await service.embed_batch([])
