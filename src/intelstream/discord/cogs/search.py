@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -34,6 +35,14 @@ INDEX_BATCH_SIZE = 50
 HEALTH_CHECK_TOPK = 10
 INDEX_RECOVERY_MAX_ATTEMPTS = 3
 INDEX_RECOVERY_BASE_DELAY_SECONDS = 2.0
+
+
+@dataclass(frozen=True)
+class ArticleIndexStatus:
+    expected_articles: int
+    indexed_articles: int
+    stored_chunks: int
+    vector_chunks: int
 
 
 class Search(commands.Cog):
@@ -206,7 +215,16 @@ class Search(commands.Cog):
                     logger.info("No summarized content found; skipping article index rebuild")
                     return
 
-                if await self._article_index_is_healthy(expected_count):
+                status = await self._get_article_index_status(expected_count)
+                logger.info(
+                    "Article search index status",
+                    expected_articles=status.expected_articles,
+                    indexed_articles=status.indexed_articles,
+                    stored_chunks=status.stored_chunks,
+                    vector_chunks=status.vector_chunks,
+                )
+
+                if await self._article_index_is_healthy(status):
                     self._index_rebuild_error = None
                     logger.info("Article search index is healthy", items=expected_count)
                     return
@@ -241,23 +259,28 @@ class Search(commands.Cog):
                 )
                 await asyncio.sleep(delay_seconds)
 
-    async def _article_index_is_healthy(self, expected_count: int) -> bool:
-        indexed_article_count = await self.bot.repository.count_article_chunk_items()
-        if indexed_article_count != expected_count:
+    async def _get_article_index_status(self, expected_count: int) -> ArticleIndexStatus:
+        return ArticleIndexStatus(
+            expected_articles=expected_count,
+            indexed_articles=await self.bot.repository.count_article_chunk_items(),
+            stored_chunks=await self.bot.repository.count_article_chunk_metas(),
+            vector_chunks=await self._vector_store.article_chunk_doc_count(),
+        )
+
+    async def _article_index_is_healthy(self, status: ArticleIndexStatus) -> bool:
+        if status.indexed_articles != status.expected_articles:
             logger.warning(
                 "Article search index article count mismatch",
-                expected=expected_count,
-                indexed=indexed_article_count,
+                expected=status.expected_articles,
+                indexed=status.indexed_articles,
             )
             return False
 
-        stored_chunk_count = await self.bot.repository.count_article_chunk_metas()
-        vector_chunk_count = await self._vector_store.article_chunk_doc_count()
-        if stored_chunk_count != vector_chunk_count:
+        if status.stored_chunks != status.vector_chunks:
             logger.warning(
                 "Article search index chunk count mismatch",
-                stored=stored_chunk_count,
-                indexed=vector_chunk_count,
+                stored=status.stored_chunks,
+                indexed=status.vector_chunks,
             )
             return False
 
