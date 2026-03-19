@@ -32,6 +32,8 @@ MAX_SUMMARY_PREVIEW = 150
 MAX_MATCH_PREVIEW = 220
 INDEX_BATCH_SIZE = 50
 HEALTH_CHECK_TOPK = 10
+INDEX_RECOVERY_MAX_ATTEMPTS = 3
+INDEX_RECOVERY_BASE_DELAY_SECONDS = 2.0
 
 
 class Search(commands.Cog):
@@ -60,10 +62,7 @@ class Search(commands.Cog):
         )
 
     async def cog_load(self) -> None:
-        self._index_rebuild_task = asyncio.create_task(
-            self._ensure_article_index(),
-            name="article-index-rebuild",
-        )
+        self._start_index_rebuild()
         logger.info("Search cog loaded")
 
     async def cog_unload(self) -> None:
@@ -88,8 +87,9 @@ class Search(commands.Cog):
             return
 
         if self._index_rebuild_error is not None:
+            self._start_index_rebuild()
             await interaction.response.send_message(
-                "Search is temporarily unavailable because the article index needs recovery.",
+                "Search is temporarily unavailable while the article index recovers. Try again in a moment.",
                 ephemeral=True,
             )
             return
@@ -198,27 +198,48 @@ class Search(commands.Cog):
             raise error
 
     async def _ensure_article_index(self) -> None:
-        try:
-            expected_count = await self.bot.repository.count_summarized_content_items()
-            if expected_count == 0:
-                logger.info("No summarized content found; skipping article index rebuild")
-                return
+        for attempt in range(1, INDEX_RECOVERY_MAX_ATTEMPTS + 1):
+            try:
+                expected_count = await self.bot.repository.count_summarized_content_items()
+                if expected_count == 0:
+                    self._index_rebuild_error = None
+                    logger.info("No summarized content found; skipping article index rebuild")
+                    return
 
-            if await self._article_index_is_healthy(expected_count):
-                logger.info("Article search index is healthy", items=expected_count)
-                return
+                if await self._article_index_is_healthy(expected_count):
+                    self._index_rebuild_error = None
+                    logger.info("Article search index is healthy", items=expected_count)
+                    return
 
-            logger.warning(
-                "Article search index is unhealthy; rebuilding from summarized content",
-                expected_items=expected_count,
-            )
-            rebuilt = await self._rebuild_article_index()
-            logger.info("Article search index rebuilt", indexed=rebuilt)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            self._index_rebuild_error = str(exc)
-            logger.exception("Failed to rebuild article search index", error=str(exc))
+                logger.warning(
+                    "Article search index is unhealthy; rebuilding from summarized content",
+                    attempt=attempt,
+                    expected_items=expected_count,
+                )
+                rebuilt = await self._rebuild_article_index()
+                self._index_rebuild_error = None
+                logger.info("Article search index rebuilt", indexed=rebuilt)
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._index_rebuild_error = f"{type(exc).__name__}: {exc}"
+                logger.error(
+                    "Failed to rebuild article search index",
+                    attempt=attempt,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
+                if attempt >= INDEX_RECOVERY_MAX_ATTEMPTS:
+                    return
+
+                delay_seconds = INDEX_RECOVERY_BASE_DELAY_SECONDS * attempt
+                logger.warning(
+                    "Retrying article search index rebuild",
+                    attempt=attempt + 1,
+                    delay_seconds=delay_seconds,
+                )
+                await asyncio.sleep(delay_seconds)
 
     async def _article_index_is_healthy(self, expected_count: int) -> bool:
         indexed_article_count = await self.bot.repository.count_article_chunk_items()
@@ -383,6 +404,14 @@ class Search(commands.Cog):
             for hit in hits
             if (item := items_by_id.get(hit.content_item_id)) is not None
         ]
+
+    def _start_index_rebuild(self) -> None:
+        if self._index_rebuild_task is not None and not self._index_rebuild_task.done():
+            return
+        self._index_rebuild_task = asyncio.create_task(
+            self._ensure_article_index(),
+            name="article-index-rebuild",
+        )
 
 
 def _truncate(text: str, max_len: int) -> str:
