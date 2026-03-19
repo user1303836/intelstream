@@ -88,6 +88,9 @@ class VectorStore:
     def _collection_metadata_path(self, collection_name: str, path: str | None = None) -> Path:
         return Path(path or self._collection_path(collection_name)) / _METADATA_FILENAME
 
+    def _collection_metadata_exists(self, collection_name: str, path: str | None = None) -> bool:
+        return self._collection_metadata_path(collection_name, path).exists()
+
     def _collection_attr_name(self, collection_name: str) -> str:
         if collection_name == self._ARTICLES_COLLECTION:
             return "_articles"
@@ -310,6 +313,16 @@ class VectorStore:
         path = self._collection_path(self._ARTICLES_COLLECTION)
         if not create and not await asyncio.to_thread(os.path.exists, path):
             return None
+        if not create and not await asyncio.to_thread(
+            self._collection_metadata_exists,
+            self._ARTICLES_COLLECTION,
+            path,
+        ):
+            logger.warning(
+                "Article vector collection metadata missing; treating collection as unavailable",
+                path=path,
+            )
+            return None
 
         self._articles = await self._open_or_create_collection(
             self._ARTICLES_COLLECTION,
@@ -328,10 +341,23 @@ class VectorStore:
         path = self._message_chunk_collection_path(guild_id)
         if not create and not await asyncio.to_thread(os.path.exists, path):
             return None
+        collection_name = self._message_chunk_collection_name(guild_id)
+        if not create and not await asyncio.to_thread(
+            self._collection_metadata_exists,
+            collection_name,
+            path,
+        ):
+            logger.warning(
+                "Lore vector collection metadata missing; treating collection as unavailable",
+                guild_id=guild_id,
+                path=path,
+            )
+            return None
 
         collection = await self._open_or_create_collection(
-            self._message_chunk_collection_name(guild_id),
+            collection_name,
             path=path,
+            validate_metadata=True,
         )
         self._message_chunks[guild_id] = collection
         return collection
@@ -350,6 +376,7 @@ class VectorStore:
         recreated = await self._open_or_create_collection(
             self._message_chunk_collection_name(guild_id),
             path=path,
+            validate_metadata=True,
         )
         self._message_chunks[guild_id] = recreated
         return recreated

@@ -47,6 +47,31 @@ class TestInitialize:
 
         await store.close()
 
+    async def test_missing_article_metadata_treated_as_unavailable(self, tmp_path):
+        collection_dir = tmp_path / "vectors" / "article_chunks"
+        collection_dir.mkdir(parents=True)
+        (collection_dir / "manifest.0").write_text("placeholder")
+
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+        await store.initialize()
+
+        assert await store.article_doc_count() == 0
+        assert store._articles is None
+
+        await store.close()
+
+    async def test_missing_message_metadata_treated_as_unavailable(self, tmp_path):
+        collection_dir = tmp_path / "vectors" / "message_chunks" / "guild-1"
+        collection_dir.mkdir(parents=True)
+        (collection_dir / "manifest.0").write_text("placeholder")
+
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+        await store.initialize()
+
+        assert await store.message_chunk_doc_count("guild-1") == 0
+
+        await store.close()
+
     async def test_reopens_existing_collection(self, tmp_path):
         data_dir = str(tmp_path / "reopen_test")
         store1 = VectorStore(data_dir=data_dir, dimensions=4, model_name="model-a")
@@ -122,6 +147,10 @@ class TestUpsertAndSearch:
         await vector_store.upsert_message_chunk("guild-1", "chunk-2", [0.0, 1.0, 0.0, 0.0])
 
         assert await vector_store.message_chunk_doc_count("guild-1") == 2
+        assert vector_store._collection_metadata_path(
+            vector_store._message_chunk_collection_name("guild-1"),
+            vector_store._message_chunk_collection_path("guild-1"),
+        ).exists()
 
     async def test_message_chunk_collections_are_guild_scoped(self, vector_store):
         await vector_store.upsert_message_chunk("guild-1", "chunk-1", [1.0, 0.0, 0.0, 0.0])
