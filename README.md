@@ -25,7 +25,7 @@ Monitor newsletters, YouTube channels, RSS feeds, research papers, blogs, Twitte
 - **On-demand summarization** — `/summarize` any URL instantly
 - **Channel summaries** — `/summary` to recap recent channel messages
 - **Server lore** — `/lore query` to search your server's message history with semantic search
-- **Semantic search** — `/search` to find past articles by meaning, not just keywords
+- **Semantic search** — `/search` to find past articles by meaning, using chunked retrieval plus reranking
 - **Message forwarding** — Route announcement channels into organized threads
 - **Multi-channel routing** — Different sources post to different channels
 - **Per-source polling** — Fine-tune intervals from 1 minute to 24 hours per source type
@@ -223,6 +223,23 @@ Override per source type (each defaults to `DEFAULT_POLL_INTERVAL_MINUTES`, rang
 | `SUMMARY_MAX_INPUT_LENGTH` | `100000` | Max input length before truncation (1000-500000) |
 | `DISCORD_MAX_MESSAGE_LENGTH` | `2000` | Max Discord message length (500-2000) |
 
+### Search & Retrieval
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Sentence-transformers model used for semantic search embeddings |
+| `EMBEDDING_DIMENSIONS` | `384` | Embedding vector dimensions (must match the embedding model) |
+| `SEARCH_RESULT_LIMIT` | `5` | Number of final article results shown to users |
+| `ARTICLE_CHUNK_SIZE_CHARS` | `1200` | Target chunk size when indexing article bodies |
+| `ARTICLE_CHUNK_OVERLAP_CHARS` | `200` | Overlap between indexed article chunks |
+| `ARTICLE_SEARCH_CANDIDATE_LIMIT` | `24` | Number of chunk candidates retrieved before reranking |
+| `ARTICLE_SEARCH_MIN_RELEVANCE_SCORE` | `0.35` | Minimum reranked relevance required to show a result |
+| `ARTICLE_SEARCH_RERANKER_ENABLED` | `true` | Enable local cross-encoder reranking for `/search` |
+| `ARTICLE_SEARCH_RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L6-v2` | Cross-encoder model used to rerank chunk candidates |
+| `LORE_CHUNK_GAP_MINUTES` | `10` | Time gap that forces a new lore chunk |
+| `LORE_CHUNK_MAX_MESSAGES` | `20` | Maximum messages per lore chunk |
+| `LORE_SEARCH_RESULTS` | `15` | Number of lore chunks retrieved per lore query |
+
 ### Advanced
 
 | Variable | Default | Description |
@@ -285,6 +302,31 @@ Sources (Substack, YouTube, RSS, ...)
 uv run pytest                # Run all tests
 uv run pytest -x             # Stop on first failure
 uv run pytest -k "youtube"   # Run tests matching pattern
+```
+
+### Search Evaluation
+
+Create a small JSON file of real queries and expected `content_item_id` values, then run:
+
+```bash
+uv run python scripts/eval_article_search.py path/to/eval_cases.json
+```
+
+Each case should provide a `query` plus either `expected_content_item_id` or `expected_ids`, for example:
+
+```json
+[
+  {
+    "label": "policy post",
+    "query": "What did we post about frontier model regulation?",
+    "expected_content_item_id": "8f3d7c0e-..."
+  },
+  {
+    "label": "training writeup",
+    "query": "article about data quality problems during training",
+    "expected_ids": ["1d2c3b4a-...", "5e6f7a8b-..."]
+  }
+]
 ```
 
 ### Linting & Type Checking

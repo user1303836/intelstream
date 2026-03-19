@@ -25,6 +25,7 @@ EMOJI_ONLY_PATTERN = re.compile(
     r"\U0000FE00-\U0000FE0F\U0001F900-\U0001F9FF\u200d]+[\s]*)+$"
 )
 URL_ONLY_PATTERN = re.compile(r"^https?://\S+$")
+TIMESTAMP_PREFIX_PATTERN = re.compile(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\s*")
 
 CHECKPOINT_INTERVAL = 1000
 YIELD_INTERVAL = 500
@@ -78,6 +79,13 @@ class Chunk:
         for m in self.messages:
             ts = m.created_at.strftime("%Y-%m-%d %H:%M")
             lines.append(f"[{ts}] {m.author_name}: {m.content}")
+        return "\n".join(lines)
+
+    @property
+    def embedding_text(self) -> str:
+        lines = [
+            f"{m.author_name}: {m.content.strip()}" for m in self.messages if m.content.strip()
+        ]
         return "\n".join(lines)
 
     @property
@@ -202,7 +210,7 @@ class MessageIngestionService:
 
         from intelstream.database.models import MessageChunkMeta
 
-        texts = [c.text for c in chunks]
+        texts = [c.embedding_text for c in chunks]
         embeddings = await self._embedding_service.embed_batch(texts)
 
         metas: list[MessageChunkMeta] = []
@@ -258,7 +266,9 @@ class MessageIngestionService:
             if not metas:
                 break
 
-            embeddings = await self._embedding_service.embed_batch([meta.text for meta in metas])
+            embeddings = await self._embedding_service.embed_batch(
+                [clean_message_chunk_text(meta.text) for meta in metas]
+            )
             vector_items = [
                 (meta.id, embedding) for meta, embedding in zip(metas, embeddings, strict=True)
             ]
@@ -502,3 +512,12 @@ class MessageIngestionService:
 
     def stop_backfill(self) -> None:
         self._paused = True
+
+
+def clean_message_chunk_text(text: str) -> str:
+    lines = []
+    for line in text.splitlines():
+        cleaned = TIMESTAMP_PREFIX_PATTERN.sub("", line).strip()
+        if cleaned:
+            lines.append(cleaned)
+    return "\n".join(lines)

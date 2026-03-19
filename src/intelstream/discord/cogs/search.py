@@ -10,6 +10,17 @@ import structlog
 from discord import app_commands
 from discord.ext import commands
 
+from intelstream.database.models import ArticleChunkMeta, ContentItem
+from intelstream.database.vector_store import ArticleChunkVector
+from intelstream.services.article_search import (
+    ArticleChunker,
+    ArticleIndexChunk,
+    ArticleReranker,
+    ArticleSearchHit,
+    aggregate_article_hits,
+    build_article_chunk_id,
+)
+
 if TYPE_CHECKING:
     from intelstream.bot import IntelStreamBot
     from intelstream.database.vector_store import VectorStore
@@ -17,7 +28,8 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-MAX_SUMMARY_PREVIEW = 200
+MAX_SUMMARY_PREVIEW = 150
+MAX_MATCH_PREVIEW = 220
 INDEX_BATCH_SIZE = 50
 HEALTH_CHECK_TOPK = 10
 
@@ -34,6 +46,18 @@ class Search(commands.Cog):
         self._vector_store = vector_store
         self._index_rebuild_task: asyncio.Task[None] | None = None
         self._index_rebuild_error: str | None = None
+        self._article_chunker = ArticleChunker(
+            chunk_size_chars=_int_setting(self.bot.settings, "article_chunk_size_chars", 1200),
+            overlap_chars=_int_setting(self.bot.settings, "article_chunk_overlap_chars", 200),
+        )
+        self._reranker = ArticleReranker(
+            enabled=_bool_setting(self.bot.settings, "article_search_reranker_enabled", True),
+            model_name=_str_setting(
+                self.bot.settings,
+                "article_search_reranker_model",
+                "cross-encoder/ms-marco-MiniLM-L6-v2",
+            ),
+        )
 
     async def cog_load(self) -> None:
         self._index_rebuild_task = asyncio.create_task(
@@ -78,58 +102,47 @@ class Search(commands.Cog):
             query=query,
         )
 
-        query_embedding = await self._embedding_service.embed_text(query)
-
-        topk = self.bot.settings.search_result_limit
-        results = await self._vector_store.search_articles(query_embedding, topk=topk)
-
+        results = await self._search_articles(query)
         if not results:
             await interaction.followup.send(
-                "No results found. The search index may be empty.", ephemeral=True
-            )
-            return
-
-        item_ids = [r.content_item_id for r in results]
-        items = await self.bot.repository.get_content_items_by_ids(item_ids)
-        items_by_id = {item.id: item for item in items}
-
-        embed = discord.Embed(
-            title=f'Search: "{_truncate(query, 80)}"',
-            color=discord.Color.blue(),
-            timestamp=datetime.now(UTC),
-        )
-        rendered_results = 0
-
-        for result in results:
-            item = items_by_id.get(result.content_item_id)
-            if item is None:
-                continue
-
-            title = _truncate(item.title, 100)
-            preview = _truncate(item.summary or "", MAX_SUMMARY_PREVIEW)
-
-            value_parts = []
-            if item.original_url:
-                value_parts.append(f"[Link]({item.original_url})")
-            value_parts.append(f"Similarity score: {result.score:.2f}")
-            if preview:
-                value_parts.append(preview)
-
-            embed.add_field(
-                name=title,
-                value="\n".join(value_parts),
-                inline=False,
-            )
-            rendered_results += 1
-
-        if rendered_results == 0:
-            await interaction.followup.send(
-                "No results found. The search index may need rebuilding.",
+                "No strong matches found. Try broader wording or a more specific query.",
                 ephemeral=True,
             )
             return
 
-        embed.set_footer(text=f"{rendered_results} results")
+        embed = discord.Embed(
+            title="Search Results",
+            description=(
+                f'Query: "{_truncate(_clean_preview(query), 120)}"\n'
+                f"Showing the strongest semantic matches across indexed article excerpts."
+            ),
+            color=discord.Color.blurple(),
+            timestamp=datetime.now(UTC),
+        )
+
+        for index, (item, hit) in enumerate(results, start=1):
+            title = _truncate(item.title, 100)
+            summary = _truncate(_clean_preview(item.summary or ""), MAX_SUMMARY_PREVIEW)
+            snippet = _truncate(_clean_preview(hit.best_chunk_text), MAX_MATCH_PREVIEW)
+
+            meta_parts = []
+            if item.original_url:
+                meta_parts.append(f"[Open article]({item.original_url})")
+            meta_parts.append(f"Relevance {round(hit.score * 100)}%")
+            meta_parts.append(_supporting_excerpt_label(hit.supporting_chunks))
+
+            value_parts = [" • ".join(meta_parts)]
+            if snippet:
+                value_parts.append(f"Best match: {snippet}")
+            if summary and summary != snippet:
+                value_parts.append(f"Summary: {summary}")
+            embed.add_field(
+                name=f"{index}. {title}",
+                value="\n".join(value_parts),
+                inline=False,
+            )
+
+        embed.set_footer(text=f"{len(results)} result(s)")
         await interaction.followup.send(embed=embed)
 
     @app_commands.command(
@@ -148,13 +161,18 @@ class Search(commands.Cog):
             )
             return
 
-        total_indexed = await self._rebuild_article_index()
+        indexed_articles, indexed_chunks = await self._rebuild_article_index()
         self._index_rebuild_error = None
 
         await interaction.followup.send(
-            f"Indexed {total_indexed} articles for search.", ephemeral=True
+            f"Indexed {indexed_articles} articles across {indexed_chunks} semantic chunks.",
+            ephemeral=True,
         )
-        logger.info("Index complete", total_indexed=total_indexed)
+        logger.info(
+            "Index complete",
+            indexed_articles=indexed_articles,
+            indexed_chunks=indexed_chunks,
+        )
 
     @search.error
     async def search_error(
@@ -203,12 +221,22 @@ class Search(commands.Cog):
             logger.exception("Failed to rebuild article search index", error=str(exc))
 
     async def _article_index_is_healthy(self, expected_count: int) -> bool:
-        indexed_count = await self._vector_store.article_doc_count()
-        if indexed_count != expected_count:
+        indexed_article_count = await self.bot.repository.count_article_chunk_items()
+        if indexed_article_count != expected_count:
             logger.warning(
-                "Article search index count mismatch",
+                "Article search index article count mismatch",
                 expected=expected_count,
-                indexed=indexed_count,
+                indexed=indexed_article_count,
+            )
+            return False
+
+        stored_chunk_count = await self.bot.repository.count_article_chunk_metas()
+        vector_chunk_count = await self._vector_store.article_chunk_doc_count()
+        if stored_chunk_count != vector_chunk_count:
+            logger.warning(
+                "Article search index chunk count mismatch",
+                stored=stored_chunk_count,
+                indexed=vector_chunk_count,
             )
             return False
 
@@ -217,12 +245,21 @@ class Search(commands.Cog):
             return True
 
         sample = sample_batch[0]
-        query_embedding = await self._embedding_service.embed_text(
-            f"{sample.title} {sample.summary}"
+        sample_chunks = self._article_chunker.build_chunks(
+            title=sample.title,
+            raw_content=sample.raw_content,
+            summary=sample.summary,
         )
-        results = await self._vector_store.search_articles(
-            query_embedding,
-            topk=HEALTH_CHECK_TOPK,
+        if not sample_chunks:
+            logger.warning(
+                "Article search index probe skipped; sample item had no chunks",
+                sample_item_id=sample.id,
+            )
+            return False
+
+        query_embedding = await self._embedding_service.embed_text(sample_chunks[0].search_text)
+        results = await self._vector_store.search_article_chunks(
+            query_embedding, topk=HEALTH_CHECK_TOPK
         )
         if any(result.content_item_id == sample.id for result in results):
             return True
@@ -234,15 +271,17 @@ class Search(commands.Cog):
         )
         return False
 
-    async def _rebuild_article_index(self, batch_size: int = INDEX_BATCH_SIZE) -> int:
+    async def _rebuild_article_index(self, batch_size: int = INDEX_BATCH_SIZE) -> tuple[int, int]:
         total_items = await self.bot.repository.count_summarized_content_items()
-        await self._vector_store.recreate_articles_collection()
+        await self._vector_store.recreate_article_chunks_collection()
+        await self.bot.repository.delete_all_article_chunk_metas()
 
         if total_items == 0:
             logger.info("No summarized content to index")
-            return 0
+            return (0, 0)
 
-        indexed = 0
+        indexed_articles = 0
+        indexed_chunks = 0
         offset = 0
 
         while True:
@@ -253,25 +292,140 @@ class Search(commands.Cog):
             if not items:
                 break
 
-            texts = [f"{item.title} {item.summary}" for item in items]
-            embeddings = await self._embedding_service.embed_batch(texts)
-            batch = [(item.id, emb) for item, emb in zip(items, embeddings, strict=True)]
-            await self._vector_store.upsert_articles_batch(batch)
+            pending_chunks: list[tuple[ContentItem, ArticleIndexChunk]] = []
+            for item in items:
+                for chunk in self._article_chunker.build_chunks(
+                    title=item.title,
+                    raw_content=item.raw_content,
+                    summary=item.summary,
+                ):
+                    pending_chunks.append((item, chunk))
 
-            indexed += len(items)
+            if pending_chunks:
+                embeddings = await self._embedding_service.embed_batch(
+                    [chunk.search_text for _, chunk in pending_chunks]
+                )
+                metas: list[ArticleChunkMeta] = []
+                vector_items: list[ArticleChunkVector] = []
+                batch_article_ids: set[str] = set()
+
+                for (item, chunk), embedding in zip(pending_chunks, embeddings, strict=True):
+                    chunk_id = build_article_chunk_id(item.id, chunk.chunk_index)
+                    metas.append(
+                        ArticleChunkMeta(
+                            id=chunk_id,
+                            content_item_id=item.id,
+                            chunk_index=chunk.chunk_index,
+                            text=chunk.text,
+                        )
+                    )
+                    vector_items.append(
+                        ArticleChunkVector(
+                            chunk_id=chunk_id,
+                            content_item_id=item.id,
+                            chunk_index=chunk.chunk_index,
+                            text=chunk.text,
+                            search_text=chunk.search_text,
+                            embedding=embedding,
+                        )
+                    )
+                    batch_article_ids.add(item.id)
+
+                await self.bot.repository.add_article_chunk_metas_batch(metas)
+                await self._vector_store.upsert_article_chunks_batch(vector_items)
+                indexed_articles += len(batch_article_ids)
+                indexed_chunks += len(metas)
+
             offset += len(items)
 
-            if indexed == total_items or indexed % (batch_size * 10) == 0:
+            if indexed_articles == total_items or offset % (batch_size * 10) == 0:
                 logger.info(
                     "Article index rebuild progress",
-                    indexed=indexed,
-                    total=total_items,
+                    indexed_articles=indexed_articles,
+                    indexed_chunks=indexed_chunks,
+                    total_articles=total_items,
                 )
 
-        return indexed
+        return indexed_articles, indexed_chunks
+
+    async def _search_articles(self, query: str) -> list[tuple[ContentItem, ArticleSearchHit]]:
+        query_embedding = await self._embedding_service.embed_text(query)
+        candidate_limit = max(
+            _int_setting(self.bot.settings, "article_search_candidate_limit", 24),
+            self.bot.settings.search_result_limit,
+        )
+        candidates = await self._vector_store.search_article_chunks(
+            query_embedding,
+            topk=candidate_limit,
+        )
+        if not candidates:
+            return []
+
+        ranked_chunks = await self._reranker.rerank(query, candidates)
+        hits = aggregate_article_hits(
+            ranked_chunks,
+            limit=self.bot.settings.search_result_limit,
+            min_relevance_score=_float_setting(
+                self.bot.settings,
+                "article_search_min_relevance_score",
+                0.35,
+            ),
+        )
+        if not hits:
+            return []
+
+        items = await self.bot.repository.get_content_items_by_ids(
+            [hit.content_item_id for hit in hits]
+        )
+        items_by_id = {item.id: item for item in items}
+        return [
+            (item, hit)
+            for hit in hits
+            if (item := items_by_id.get(hit.content_item_id)) is not None
+        ]
 
 
 def _truncate(text: str, max_len: int) -> str:
     if len(text) <= max_len:
         return text
     return text[: max_len - 3] + "..."
+
+
+def _clean_preview(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _supporting_excerpt_label(count: int) -> str:
+    if count == 1:
+        return "1 matching excerpt"
+    return f"{count} matching excerpts"
+
+
+def _int_setting(settings: object, name: str, default: int) -> int:
+    value = getattr(settings, name, default)
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    return default
+
+
+def _float_setting(settings: object, name: str, default: float) -> float:
+    value = getattr(settings, name, default)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return default
+
+
+def _bool_setting(settings: object, name: str, default: bool) -> bool:
+    value = getattr(settings, name, default)
+    if isinstance(value, bool):
+        return value
+    return default
+
+
+def _str_setting(settings: object, name: str, default: str) -> str:
+    value = getattr(settings, name, default)
+    if isinstance(value, str):
+        return value
+    return default

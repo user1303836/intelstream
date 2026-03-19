@@ -127,6 +127,22 @@ class TestUpsertAndSearch:
         assert [result.chunk_id for result in guild_1_results] == ["chunk-1"]
         assert [result.chunk_id for result in guild_2_results] == ["chunk-2"]
 
+    async def test_article_chunk_search_returns_metadata(self, vector_store):
+        await vector_store.upsert_article_chunk(
+            chunk_id="item-1__0000",
+            content_item_id="item-1",
+            chunk_index=0,
+            text="Chunk text",
+            search_text="Title\n\nChunk text",
+            embedding=[1.0, 0.0, 0.0, 0.0],
+        )
+
+        results = await vector_store.search_article_chunks([1.0, 0.0, 0.0, 0.0], topk=1)
+
+        assert len(results) == 1
+        assert results[0].content_item_id == "item-1"
+        assert results[0].text == "Chunk text"
+
 
 class TestUpsertBatch:
     async def test_batch_upsert(self, vector_store):

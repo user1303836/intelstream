@@ -16,6 +16,7 @@ from intelstream.services.message_ingestion import (
     MessageChunker,
     MessageIngestionService,
     RawMessage,
+    clean_message_chunk_text,
     discord_message_to_raw,
 )
 
@@ -228,7 +229,9 @@ class Lore(commands.Cog):
             return True
 
         sample = sample_batch[0]
-        query_embedding = await self._embedding_service.embed_text(sample.text)
+        query_embedding = await self._embedding_service.embed_text(
+            clean_message_chunk_text(sample.text)
+        )
         results = await self._vector_store.search_message_chunks(
             guild_id,
             query_embedding,
