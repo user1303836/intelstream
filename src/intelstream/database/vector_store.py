@@ -17,6 +17,10 @@ logger = structlog.get_logger(__name__)
 
 _VECTOR_FIELD_NAME = "embedding"
 _METADATA_FILENAME = "intelstream-index.json"
+_ARTICLE_CONTENT_ITEM_ID_FIELD = "content_item_id"
+_ARTICLE_CHUNK_INDEX_FIELD = "chunk_index"
+_ARTICLE_TEXT_FIELD = "text"
+_ARTICLE_SEARCH_TEXT_FIELD = "search_text"
 
 
 @dataclass
@@ -31,8 +35,28 @@ class ChunkSearchResult:
     score: float
 
 
+@dataclass
+class ArticleChunkVector:
+    chunk_id: str
+    content_item_id: str
+    chunk_index: int
+    text: str
+    search_text: str
+    embedding: list[float]
+
+
+@dataclass
+class ArticleChunkSearchResult:
+    chunk_id: str
+    content_item_id: str
+    chunk_index: int
+    text: str
+    search_text: str
+    score: float
+
+
 class VectorStore:
-    _ARTICLES_COLLECTION = "articles"
+    _ARTICLES_COLLECTION = "article_chunks"
     _MESSAGE_CHUNKS_COLLECTION = "message_chunks"
 
     def __init__(
@@ -88,8 +112,17 @@ class VectorStore:
     def _build_schema(self, collection_name: str) -> zvec.CollectionSchema:
         import zvec
 
+        fields = None
+        if collection_name == self._ARTICLES_COLLECTION:
+            fields = [
+                zvec.FieldSchema(_ARTICLE_CONTENT_ITEM_ID_FIELD, zvec.DataType.STRING),
+                zvec.FieldSchema(_ARTICLE_CHUNK_INDEX_FIELD, zvec.DataType.INT32),
+                zvec.FieldSchema(_ARTICLE_TEXT_FIELD, zvec.DataType.STRING),
+                zvec.FieldSchema(_ARTICLE_SEARCH_TEXT_FIELD, zvec.DataType.STRING),
+            ]
         return zvec.CollectionSchema(
             name=collection_name,
+            fields=fields,
             vectors=zvec.VectorSchema(
                 _VECTOR_FIELD_NAME,
                 zvec.DataType.VECTOR_FP32,
@@ -300,30 +333,53 @@ class VectorStore:
             raise RuntimeError("VectorStore not initialized")
         return await asyncio.to_thread(lambda: int(collection.stats.doc_count))
 
-    async def upsert_article(self, content_item_id: str, embedding: list[float]) -> None:
-        import zvec
-
-        if self._articles is None:
-            raise RuntimeError("VectorStore not initialized")
-        doc = zvec.Doc(
-            id=content_item_id,
-            vectors={_VECTOR_FIELD_NAME: embedding},
+    async def upsert_article_chunk(
+        self,
+        chunk_id: str,
+        content_item_id: str,
+        chunk_index: int,
+        text: str,
+        search_text: str,
+        embedding: list[float],
+    ) -> None:
+        await self.upsert_article_chunks_batch(
+            [
+                ArticleChunkVector(
+                    chunk_id=chunk_id,
+                    content_item_id=content_item_id,
+                    chunk_index=chunk_index,
+                    text=text,
+                    search_text=search_text,
+                    embedding=embedding,
+                )
+            ]
         )
-        await asyncio.to_thread(self._articles.upsert, [doc])
 
-    async def upsert_articles_batch(self, items: list[tuple[str, list[float]]]) -> None:
+    async def upsert_article_chunks_batch(self, items: list[ArticleChunkVector]) -> None:
         import zvec
 
         if self._articles is None:
             raise RuntimeError("VectorStore not initialized")
         if not items:
             return
-        docs = [zvec.Doc(id=item_id, vectors={_VECTOR_FIELD_NAME: emb}) for item_id, emb in items]
+        docs = [
+            zvec.Doc(
+                id=item.chunk_id,
+                vectors={_VECTOR_FIELD_NAME: item.embedding},
+                fields={
+                    _ARTICLE_CONTENT_ITEM_ID_FIELD: item.content_item_id,
+                    _ARTICLE_CHUNK_INDEX_FIELD: item.chunk_index,
+                    _ARTICLE_TEXT_FIELD: item.text,
+                    _ARTICLE_SEARCH_TEXT_FIELD: item.search_text,
+                },
+            )
+            for item in items
+        ]
         await asyncio.to_thread(self._articles.upsert, docs)
 
-    async def search_articles(
-        self, query_embedding: list[float], topk: int = 5
-    ) -> list[SearchResult]:
+    async def search_article_chunks(
+        self, query_embedding: list[float], topk: int = 20
+    ) -> list[ArticleChunkSearchResult]:
         import zvec
 
         if self._articles is None:
@@ -332,19 +388,82 @@ class VectorStore:
             self._articles.query,
             zvec.VectorQuery(_VECTOR_FIELD_NAME, vector=query_embedding),
             topk=topk,
+            output_fields=[
+                _ARTICLE_CONTENT_ITEM_ID_FIELD,
+                _ARTICLE_CHUNK_INDEX_FIELD,
+                _ARTICLE_TEXT_FIELD,
+                _ARTICLE_SEARCH_TEXT_FIELD,
+            ],
         )
-        return [SearchResult(content_item_id=r.id, score=r.score) for r in results]
+        chunk_results: list[ArticleChunkSearchResult] = []
+        for result in results:
+            fields = dict(result.fields or {})
+            chunk_results.append(
+                ArticleChunkSearchResult(
+                    chunk_id=result.id,
+                    content_item_id=str(fields.get(_ARTICLE_CONTENT_ITEM_ID_FIELD, "")),
+                    chunk_index=int(fields.get(_ARTICLE_CHUNK_INDEX_FIELD, 0)),
+                    text=str(fields.get(_ARTICLE_TEXT_FIELD, "")),
+                    search_text=str(fields.get(_ARTICLE_SEARCH_TEXT_FIELD, "")),
+                    score=float(result.score),
+                )
+            )
+        return chunk_results
 
-    async def delete_article(self, content_item_id: str) -> None:
+    async def delete_article_chunks(self, chunk_ids: list[str]) -> None:
         if self._articles is None:
             raise RuntimeError("VectorStore not initialized")
-        await asyncio.to_thread(self._articles.delete, content_item_id)
+        for chunk_id in chunk_ids:
+            await asyncio.to_thread(self._articles.delete, chunk_id)
 
-    async def article_doc_count(self) -> int:
+    async def article_chunk_doc_count(self) -> int:
         return await self._doc_count(self._articles)
 
-    async def recreate_articles_collection(self) -> None:
+    async def recreate_article_chunks_collection(self) -> None:
         await self._recreate_collection(self._ARTICLES_COLLECTION)
+
+    async def upsert_article(self, content_item_id: str, embedding: list[float]) -> None:
+        await self.upsert_article_chunk(
+            chunk_id=content_item_id,
+            content_item_id=content_item_id,
+            chunk_index=0,
+            text="",
+            search_text="",
+            embedding=embedding,
+        )
+
+    async def upsert_articles_batch(self, items: list[tuple[str, list[float]]]) -> None:
+        await self.upsert_article_chunks_batch(
+            [
+                ArticleChunkVector(
+                    chunk_id=item_id,
+                    content_item_id=item_id,
+                    chunk_index=0,
+                    text="",
+                    search_text="",
+                    embedding=embedding,
+                )
+                for item_id, embedding in items
+            ]
+        )
+
+    async def search_articles(
+        self, query_embedding: list[float], topk: int = 5
+    ) -> list[SearchResult]:
+        results = await self.search_article_chunks(query_embedding, topk=topk)
+        return [
+            SearchResult(content_item_id=result.content_item_id, score=result.score)
+            for result in results
+        ]
+
+    async def delete_article(self, content_item_id: str) -> None:
+        await self.delete_article_chunks([content_item_id])
+
+    async def article_doc_count(self) -> int:
+        return await self.article_chunk_doc_count()
+
+    async def recreate_articles_collection(self) -> None:
+        await self.recreate_article_chunks_collection()
 
     async def upsert_message_chunk(
         self, guild_id: str, chunk_id: str, embedding: list[float]

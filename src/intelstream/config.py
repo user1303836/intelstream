@@ -219,6 +219,38 @@ class Settings(BaseSettings):
         le=25,
         description="Max search results per query",
     )
+    article_chunk_size_chars: int = Field(
+        default=1200,
+        ge=200,
+        le=4000,
+        description="Target article chunk size used for semantic search indexing",
+    )
+    article_chunk_overlap_chars: int = Field(
+        default=200,
+        ge=0,
+        le=1000,
+        description="Overlap between indexed article chunks",
+    )
+    article_search_candidate_limit: int = Field(
+        default=24,
+        ge=5,
+        le=100,
+        description="Number of article chunks to retrieve before reranking",
+    )
+    article_search_min_relevance_score: float = Field(
+        default=0.35,
+        ge=0.0,
+        le=1.0,
+        description="Minimum article relevance score required to show a search result",
+    )
+    article_search_reranker_enabled: bool = Field(
+        default=True,
+        description="Enable local cross-encoder reranking for article search results",
+    )
+    article_search_reranker_model: str = Field(
+        default="cross-encoder/ms-marco-MiniLM-L6-v2",
+        description="Cross-encoder model used to rerank article search results",
+    )
     zvec_data_dir: str = Field(
         default="data/vectors",
         description="Directory for zvec vector data files",

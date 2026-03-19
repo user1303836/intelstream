@@ -18,8 +18,10 @@ from intelstream.adapters.twitter import TwitterAdapter
 from intelstream.adapters.youtube import YouTubeAdapter
 from intelstream.config import Settings
 from intelstream.database.exceptions import DuplicateContentError
-from intelstream.database.models import ContentItem, Source, SourceType
+from intelstream.database.models import ArticleChunkMeta, ContentItem, Source, SourceType
 from intelstream.database.repository import Repository
+from intelstream.database.vector_store import ArticleChunkVector
+from intelstream.services.article_search import ArticleChunker, build_article_chunk_id
 from intelstream.services.summarizer import SummarizationError, SummarizationService
 
 if TYPE_CHECKING:
@@ -45,6 +47,10 @@ class ContentPipeline:
         self._get_search_services = get_search_services
         self._http_client: httpx.AsyncClient | None = None
         self._adapters: dict[SourceType, BaseAdapter] = {}
+        self._article_chunker = ArticleChunker(
+            chunk_size_chars=getattr(self._settings, "article_chunk_size_chars", 1200),
+            overlap_chars=getattr(self._settings, "article_chunk_overlap_chars", 200),
+        )
 
     async def initialize(self) -> None:
         self._http_client = httpx.AsyncClient(timeout=self._settings.http_timeout_seconds)
@@ -350,7 +356,7 @@ class ContentPipeline:
                 summarized_count += 1
                 item_elapsed = round(time.monotonic() - item_start, 2)
 
-                await self._embed_item(item.id, item.title, summary)
+                await self._embed_item(item.id, item.title, summary, item.raw_content)
 
                 logger.info(
                     "Item summarized",
@@ -387,16 +393,61 @@ class ContentPipeline:
         )
         return summarized_count
 
-    async def _embed_item(self, item_id: str, title: str, summary: str) -> None:
+    async def _embed_item(
+        self,
+        item_id: str,
+        title: str,
+        summary: str,
+        raw_content: str | None,
+    ) -> None:
         if self._get_search_services is None:
             return
         embedding_service, vector_store = self._get_search_services()
         if embedding_service is None or vector_store is None:
             return
         try:
-            text = f"{title} {summary}"
-            embedding = await embedding_service.embed_text(text)
-            await vector_store.upsert_article(item_id, embedding)
+            chunks = self._article_chunker.build_chunks(
+                title=title,
+                raw_content=raw_content,
+                summary=summary,
+            )
+            if not chunks:
+                return
+
+            if len(chunks) == 1:
+                embeddings = [await embedding_service.embed_text(chunks[0].search_text)]
+            else:
+                embeddings = await embedding_service.embed_batch(
+                    [chunk.search_text for chunk in chunks]
+                )
+            stale_chunk_ids = await self._repository.delete_article_chunk_metas_for_content_item(
+                item_id
+            )
+            if stale_chunk_ids:
+                await vector_store.delete_article_chunks(stale_chunk_ids)
+
+            metas = [
+                ArticleChunkMeta(
+                    id=build_article_chunk_id(item_id, chunk.chunk_index),
+                    content_item_id=item_id,
+                    chunk_index=chunk.chunk_index,
+                    text=chunk.text,
+                )
+                for chunk in chunks
+            ]
+            vector_items = [
+                ArticleChunkVector(
+                    chunk_id=meta.id,
+                    content_item_id=item_id,
+                    chunk_index=chunk.chunk_index,
+                    text=chunk.text,
+                    search_text=chunk.search_text,
+                    embedding=embedding,
+                )
+                for meta, chunk, embedding in zip(metas, chunks, embeddings, strict=True)
+            ]
+            await self._repository.add_article_chunk_metas_batch(metas)
+            await vector_store.upsert_article_chunks_batch(vector_items)
         except Exception as e:
             logger.warning("Failed to embed item", item_id=item_id, error=str(e))
 

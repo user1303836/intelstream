@@ -1082,3 +1082,50 @@ class TestExtractionCacheCleanup:
 
         entry = await repository.get_extraction_cache("https://example.com/fresh")
         assert entry is not None
+
+
+class TestArticleChunkMetaOperations:
+    async def test_add_count_and_delete_article_chunk_metas(self, repository: Repository) -> None:
+        source = await repository.add_source(
+            source_type=SourceType.SUBSTACK,
+            name="Search Source",
+            identifier="search-source",
+        )
+        content = await repository.add_content_item(
+            source_id=source.id,
+            external_id="article-123",
+            title="Indexed Article",
+            original_url="https://example.com/article-123",
+            author="Author",
+            published_at=datetime.now(UTC),
+            raw_content="Full article content.",
+        )
+
+        from intelstream.database.models import ArticleChunkMeta
+
+        await repository.add_article_chunk_metas_batch(
+            [
+                ArticleChunkMeta(
+                    id=f"{content.id}__0000",
+                    content_item_id=content.id,
+                    chunk_index=0,
+                    text="Chunk one",
+                ),
+                ArticleChunkMeta(
+                    id=f"{content.id}__0001",
+                    content_item_id=content.id,
+                    chunk_index=1,
+                    text="Chunk two",
+                ),
+            ]
+        )
+
+        assert await repository.count_article_chunk_items() == 1
+        assert await repository.count_article_chunk_metas() == 2
+
+        chunks = await repository.get_article_chunk_metas_for_content_item(content.id)
+        assert [chunk.chunk_index for chunk in chunks] == [0, 1]
+
+        deleted_ids = await repository.delete_article_chunk_metas_for_content_item(content.id)
+        assert deleted_ids == [f"{content.id}__0000", f"{content.id}__0001"]
+        assert await repository.count_article_chunk_metas() == 0

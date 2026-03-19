@@ -986,11 +986,10 @@ class TestEmbedItem:
 
         assert result == 1
         mock_embedding.embed_text.assert_called_once_with(
-            f"{sample_content_item.title} This is the summary."
+            f"{sample_content_item.title}\n\n{sample_content_item.raw_content}"
         )
-        mock_vector_store.upsert_article.assert_called_once_with(
-            sample_content_item.id, [0.1, 0.2, 0.3]
-        )
+        mock_repository.add_article_chunk_metas_batch.assert_called_once()
+        mock_vector_store.upsert_article_chunks_batch.assert_called_once()
 
     async def test_embedding_failure_does_not_block_summarization(
         self,

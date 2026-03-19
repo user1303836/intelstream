@@ -84,6 +84,32 @@ class ContentItem(Base):
         return f"<ContentItem(title={self.title!r}, source_id={self.source_id!r})>"
 
 
+class ArticleChunkMeta(Base):
+    __tablename__ = "article_chunk_meta"
+    __table_args__ = (
+        UniqueConstraint(
+            "content_item_id", "chunk_index", name="uq_article_chunk_content_item_chunk"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    content_item_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("content_items.id"),
+        nullable=False,
+        index=True,
+    )
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    embedded_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
+
+    def __repr__(self) -> str:
+        return (
+            f"<ArticleChunkMeta(content_item_id={self.content_item_id!r}, "
+            f"chunk_index={self.chunk_index})>"
+        )
+
+
 class DiscordConfig(Base):
     __tablename__ = "discord_config"
 

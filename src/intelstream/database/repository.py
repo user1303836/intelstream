@@ -17,6 +17,7 @@ from intelstream.database.exceptions import (
     SourceNotFoundError,
 )
 from intelstream.database.models import (
+    ArticleChunkMeta,
     Base,
     ContentItem,
     DiscordConfig,
@@ -330,6 +331,57 @@ class Repository:
                 .where(ContentItem.summary != "")
             )
             return int(result.scalar_one())
+
+    async def add_article_chunk_metas_batch(self, chunks: list[ArticleChunkMeta]) -> None:
+        if not chunks:
+            return
+        async with self.session() as session:
+            session.add_all(chunks)
+            await session.commit()
+
+    async def count_article_chunk_metas(self) -> int:
+        async with self.session() as session:
+            result = await session.execute(select(func.count()).select_from(ArticleChunkMeta))
+            return int(result.scalar_one())
+
+    async def count_article_chunk_items(self) -> int:
+        async with self.session() as session:
+            result = await session.execute(
+                select(func.count(func.distinct(ArticleChunkMeta.content_item_id)))
+            )
+            return int(result.scalar_one())
+
+    async def get_article_chunk_metas_for_content_item(
+        self, content_item_id: str
+    ) -> list[ArticleChunkMeta]:
+        async with self.session() as session:
+            result = await session.execute(
+                select(ArticleChunkMeta)
+                .where(ArticleChunkMeta.content_item_id == content_item_id)
+                .order_by(ArticleChunkMeta.chunk_index.asc())
+            )
+            return list(result.scalars().all())
+
+    async def delete_article_chunk_metas_for_content_item(self, content_item_id: str) -> list[str]:
+        async with self.session() as session:
+            result = await session.execute(
+                select(ArticleChunkMeta).where(ArticleChunkMeta.content_item_id == content_item_id)
+            )
+            chunks = list(result.scalars().all())
+            chunk_ids = [chunk.id for chunk in chunks]
+            for chunk in chunks:
+                await session.delete(chunk)
+            await session.commit()
+            return chunk_ids
+
+    async def delete_all_article_chunk_metas(self) -> int:
+        async with self.session() as session:
+            result = await session.execute(select(ArticleChunkMeta))
+            chunks = list(result.scalars().all())
+            for chunk in chunks:
+                await session.delete(chunk)
+            await session.commit()
+            return len(chunks)
 
     async def content_item_exists(self, external_id: str) -> bool:
         async with self.session() as session:
