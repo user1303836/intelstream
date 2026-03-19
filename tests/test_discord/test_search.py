@@ -5,6 +5,7 @@ import discord
 import pytest
 
 from intelstream.database.vector_store import ArticleChunkSearchResult
+from intelstream.discord.cogs import search as search_module
 from intelstream.discord.cogs.search import Search, _truncate
 from intelstream.services.article_search import RankedArticleChunk
 
@@ -235,6 +236,27 @@ class TestIndex:
         assert search_cog._rebuild_article_index.await_count == 2
         sleep_mock.assert_awaited_once()
         assert search_cog._index_rebuild_error is None
+
+    async def test_ensure_article_index_logs_status(
+        self, search_cog, mock_bot, mock_vector_store, monkeypatch
+    ):
+        mock_bot.repository.count_summarized_content_items.return_value = 3
+        mock_bot.repository.count_article_chunk_items.return_value = 2
+        mock_bot.repository.count_article_chunk_metas.return_value = 9
+        mock_vector_store.article_chunk_doc_count.return_value = 8
+        search_cog._article_index_is_healthy = AsyncMock(return_value=True)
+        fake_logger = MagicMock()
+        monkeypatch.setattr(search_module, "logger", fake_logger)
+
+        await search_cog._ensure_article_index()
+
+        fake_logger.info.assert_any_call(
+            "Article search index status",
+            expected_articles=3,
+            indexed_articles=2,
+            stored_chunks=9,
+            vector_chunks=8,
+        )
 
 
 class TestTruncate:
