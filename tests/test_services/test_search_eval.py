@@ -25,6 +25,14 @@ class TestLoadEvalCases:
         assert cases[0].expected_ids == ("item-1",)
         assert cases[1].expected_ids == ("item-2", "item-3")
 
+    def test_trims_legacy_expected_content_item_id(self, tmp_path):
+        path = tmp_path / "eval.json"
+        path.write_text(json.dumps([{"query": "query", "expected_content_item_id": " item-1 "}]))
+
+        [case] = load_eval_cases(path)
+
+        assert case.expected_ids == ("item-1",)
+
     def test_trims_query_expected_ids_and_optional_label(self, tmp_path):
         path = tmp_path / "eval.json"
         path.write_text(
@@ -124,6 +132,17 @@ class TestEvaluateCase:
         assert result.reciprocal_rank == 0.0
         assert result.to_dict()["label"] == "case"
 
+    def test_coerces_returned_ids_to_strings_before_matching(self):
+        result = evaluate_case(
+            case=SearchEvalCase(query="query", expected_ids=("42",)),
+            returned_ids=["item-9", 42],
+        )
+
+        assert result.hit is True
+        assert result.matched_id == "42"
+        assert result.rank == 2
+        assert result.returned_ids == ("item-9", "42")
+
 
 class TestSummarizeResults:
     def test_summarizes_hits_and_mrr(self):
@@ -141,6 +160,28 @@ class TestSummarizeResults:
         assert summary.hits == 1
         assert summary.hit_rate == 0.5
         assert summary.mean_reciprocal_rank == 0.5
+
+    def test_to_dict_serializes_nested_results(self):
+        result = evaluate_case(
+            SearchEvalCase(query="query", expected_ids=("item-1",), label="smoke"),
+            ["item-1"],
+        )
+
+        summary_dict = summarize_results([result]).to_dict()
+
+        assert summary_dict["cases"] == 1
+        assert summary_dict["results"] == [
+            {
+                "query": "query",
+                "expected_ids": ("item-1",),
+                "returned_ids": ("item-1",),
+                "hit": True,
+                "matched_id": "item-1",
+                "rank": 1,
+                "reciprocal_rank": 1.0,
+                "label": "smoke",
+            }
+        ]
 
     def test_empty_results_summary_has_zero_rates(self):
         summary = summarize_results([])
