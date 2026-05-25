@@ -85,6 +85,10 @@ class TestIsTrivial:
     def test_emoji_only(self):
         assert _is_trivial("\U0001f600") is True
 
+    @pytest.mark.parametrize("emoji", ["<:party:123456789>", "<a:dance:987654321>"])
+    def test_discord_custom_emoji_only(self, emoji):
+        assert _is_trivial(emoji) is True
+
     def test_normal_text(self):
         assert _is_trivial("This is a normal message") is False
 
@@ -193,6 +197,20 @@ class TestChunk:
         assert chunk.authors == ["alice", "bob"]
         assert "alice: first" in chunk.text
         assert "bob: second" in chunk.text
+
+    def test_embedding_text_strips_content_and_skips_blank_lines(self):
+        chunk = Chunk(
+            messages=[
+                _make_raw(content="  first message  ", author_name="alice"),
+                _make_raw(content="   ", author_name="ignored"),
+                _make_raw(content="\nsecond message\n", author_name="bob"),
+            ],
+            guild_id="1",
+            channel_id="2",
+            channel_name="test",
+        )
+
+        assert chunk.embedding_text == "alice: first message\nbob: second message"
 
     def test_meaningful_count(self):
         chunk = Chunk(
@@ -306,6 +324,33 @@ class TestMessageChunker:
         assert len(result) == 2
         assert len(result[0].messages) == 5
         assert len(result[1].messages) == 5
+
+    def test_time_gap_at_threshold_stays_in_same_chunk(self):
+        chunker = MessageChunker(gap_minutes=10, max_messages=100)
+        base = datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
+        messages = [
+            _make_raw(
+                id=1,
+                content="First meaningful message with enough words",
+                created_at=base,
+            ),
+            _make_raw(
+                id=2,
+                content="Second meaningful message with enough words",
+                created_at=base + timedelta(minutes=10),
+            ),
+            _make_raw(
+                id=3,
+                content="Third meaningful message with enough words",
+                created_at=base + timedelta(minutes=20),
+            ),
+        ]
+
+        result = chunker.chunk_messages(messages, "1", "2", "test")
+
+        assert len(result) == 1
+        assert result[0].start_message_id == "1"
+        assert result[0].end_message_id == "3"
 
     def test_max_messages_split(self):
         chunker = MessageChunker(gap_minutes=60, max_messages=5)

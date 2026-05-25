@@ -138,6 +138,19 @@ class TestParseFeedDate:
 
         assert result == datetime(2024, 2, 20, 14, 0, 0, tzinfo=UTC)
 
+    def test_invalid_published_parsed_falls_back_to_published_string(self) -> None:
+        entry = MagicMock()
+        entry.get.side_effect = lambda k: {
+            "published_parsed": (2024, 13, 45, 25, 61, 99),
+            "published": "Tue, 16 Jan 2024 08:00:00 GMT",
+        }.get(k)
+        entry.published_parsed = (2024, 13, 45, 25, 61, 99)
+        entry.published = "Tue, 16 Jan 2024 08:00:00 GMT"
+
+        result = parse_feed_date(entry)
+
+        assert result == datetime(2024, 1, 16, 8, 0, 0, tzinfo=UTC)
+
     def test_invalid_updated_parsed_falls_back_to_updated_string(self) -> None:
         entry = MagicMock()
         entry.get.side_effect = lambda k: {
