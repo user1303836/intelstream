@@ -10,7 +10,7 @@ from intelstream.database.exceptions import (
     DuplicateSourceError,
     SourceNotFoundError,
 )
-from intelstream.database.models import SourceType
+from intelstream.database.models import MessageChunkMeta, PauseReason, SourceType
 from intelstream.database.repository import Repository
 
 
@@ -213,6 +213,89 @@ class TestSourceOperations:
         with pytest.raises(SourceNotFoundError):
             await repository.delete_source("nonexistent")
 
+    async def test_source_lookup_helpers(self, repository: Repository) -> None:
+        source_a = await repository.add_source(
+            source_type=SourceType.RSS,
+            name="Lookup A",
+            identifier="lookup-a",
+        )
+        source_b = await repository.add_source(
+            source_type=SourceType.YOUTUBE,
+            name="Lookup B",
+            identifier="lookup-b",
+        )
+
+        by_id = await repository.get_source_by_id(source_a.id)
+        assert by_id is not None
+        assert by_id.id == source_a.id
+        assert await repository.get_source_by_id("missing") is None
+
+        sources = await repository.get_sources_by_ids({source_b.id, source_a.id, "missing"})
+        assert set(sources) == {source_a.id, source_b.id}
+        assert sources[source_a.id].identifier == "lookup-a"
+        assert await repository.get_sources_by_ids(set()) == {}
+
+        by_name = await repository.get_source_by_name("Lookup B")
+        assert by_name is not None
+        assert by_name.id == source_b.id
+        assert await repository.get_source_by_name("Missing") is None
+
+    async def test_update_source_polling_and_pause_reason(self, repository: Repository) -> None:
+        source = await repository.add_source(
+            source_type=SourceType.RSS,
+            name="Pollable",
+            identifier="pollable",
+        )
+
+        assert await repository.update_source_last_polled(source.id) is True
+        updated = await repository.get_source_by_identifier("pollable")
+        assert updated is not None
+        assert updated.last_polled_at is not None
+        assert await repository.update_source_last_polled("missing") is False
+
+        paused = await repository.set_source_active(
+            "pollable",
+            False,
+            pause_reason=PauseReason.CONSECUTIVE_FAILURES,
+        )
+        assert paused.is_active is False
+        assert paused.pause_reason == PauseReason.CONSECUTIVE_FAILURES.value
+
+        resumed = await repository.set_source_active("pollable", True)
+        assert resumed.is_active is True
+        assert resumed.pause_reason == PauseReason.NONE.value
+
+    async def test_source_strategy_hash_and_failure_helpers(self, repository: Repository) -> None:
+        source = await repository.add_source(
+            source_type=SourceType.BLOG,
+            name="Smart Blog",
+            identifier="smart-blog",
+        )
+
+        assert await repository.update_source_discovery_strategy(
+            source.id,
+            "rss",
+            feed_url="https://example.com/feed",
+            url_pattern="/posts/*",
+        )
+        assert await repository.update_source_discovery_strategy("missing", "rss") is False
+        assert await repository.update_source_content_hash(source.id, "abc123") is True
+        assert await repository.update_source_content_hash("missing", "abc123") is False
+
+        assert await repository.increment_failure_count(source.id) == 1
+        assert await repository.increment_failure_count(source.id) == 2
+        assert await repository.increment_failure_count("missing") == 0
+        assert await repository.reset_failure_count(source.id) is True
+        assert await repository.reset_failure_count("missing") is False
+
+        updated = await repository.get_source_by_id(source.id)
+        assert updated is not None
+        assert updated.discovery_strategy == "rss"
+        assert updated.feed_url == "https://example.com/feed"
+        assert updated.url_pattern == "/posts/*"
+        assert updated.last_content_hash == "abc123"
+        assert updated.consecutive_failures == 0
+
 
 class TestContentItemOperations:
     async def test_add_content_item(self, repository: Repository) -> None:
@@ -346,6 +429,75 @@ class TestContentItemOperations:
         unposted = await repository.get_unposted_content_items()
         assert len(unposted) == 1
         assert unposted[0].external_id == "post-2"
+
+    async def test_content_lookup_count_and_known_urls(self, repository: Repository) -> None:
+        source = await repository.add_source(
+            source_type=SourceType.RSS,
+            name="Lookup Source",
+            identifier="lookup-source",
+        )
+        first = await repository.add_content_item(
+            source_id=source.id,
+            external_id="first",
+            title="First",
+            original_url="https://example.com/first",
+            author="Author",
+            published_at=datetime(2024, 1, 1),
+        )
+        second = await repository.add_content_item(
+            source_id=source.id,
+            external_id="second",
+            title="Second",
+            original_url="https://example.com/second",
+            author="Author",
+            published_at=datetime(2024, 1, 2),
+        )
+
+        assert await repository.get_content_count_for_source(source.id) == 2
+        assert await repository.get_known_urls_for_source(source.id) == {
+            "https://example.com/first",
+            "https://example.com/second",
+        }
+
+        ordered = await repository.get_content_items_by_ids([second.id, "missing", first.id])
+        assert [item.id for item in ordered] == [second.id, first.id]
+        assert await repository.get_content_items_by_ids([]) == []
+
+    async def test_summarized_content_items_exclude_empty_summaries(
+        self, repository: Repository
+    ) -> None:
+        source = await repository.add_source(
+            source_type=SourceType.SUBSTACK,
+            name="Summary Source",
+            identifier="summary-source",
+        )
+        summarized = await repository.add_content_item(
+            source_id=source.id,
+            external_id="summarized",
+            title="Summarized",
+            original_url="https://example.com/summarized",
+            author="Author",
+            published_at=datetime(2024, 1, 1),
+        )
+        empty_summary = await repository.add_content_item(
+            source_id=source.id,
+            external_id="empty-summary",
+            title="Empty",
+            original_url="https://example.com/empty",
+            author="Author",
+            published_at=datetime(2024, 1, 2),
+        )
+
+        await repository.update_content_item_summary(summarized.id, "Useful summary")
+        await repository.update_content_item_summary(empty_summary.id, "")
+
+        assert await repository.count_summarized_content_items() == 1
+        items = await repository.get_summarized_content_items(offset=0, limit=10)
+        assert [item.external_id for item in items] == ["summarized"]
+
+    async def test_missing_content_updates_return_false(self, repository: Repository) -> None:
+        assert await repository.update_content_item_summary("missing", "summary") is False
+        assert await repository.mark_content_item_posted("missing", "message-id") is False
 
 
 class TestFirstPostingOperations:
@@ -557,6 +709,83 @@ class TestFirstPostingOperations:
         item1 = await repository.get_content_item_by_external_id("already-posted")
         assert item1 is not None
         assert item1.discord_message_id == "real-msg-123"
+
+    async def test_content_stats_filter_by_guild(self, repository: Repository) -> None:
+        source_a = await repository.add_source(
+            source_type=SourceType.RSS,
+            name="Guild A",
+            identifier="guild-a-source",
+            guild_id="guild-a",
+        )
+        source_b = await repository.add_source(
+            source_type=SourceType.RSS,
+            name="Guild B",
+            identifier="guild-b-source",
+            guild_id="guild-b",
+        )
+        posted = await repository.add_content_item(
+            source_id=source_a.id,
+            external_id="posted",
+            title="Posted",
+            original_url="https://example.com/posted",
+            author="Author",
+            published_at=datetime(2024, 1, 1),
+        )
+        await repository.add_content_item(
+            source_id=source_b.id,
+            external_id="unposted",
+            title="Unposted",
+            original_url="https://example.com/unposted",
+            author="Author",
+            published_at=datetime(2024, 1, 2),
+        )
+        await repository.mark_content_item_posted(posted.id, "message-1")
+
+        assert await repository.get_content_stats() == {
+            "total_fetched": 2,
+            "total_posted": 1,
+        }
+        assert await repository.get_content_stats("guild-a") == {
+            "total_fetched": 1,
+            "total_posted": 1,
+        }
+        assert await repository.get_content_stats("missing") == {
+            "total_fetched": 0,
+            "total_posted": 0,
+        }
+
+    async def test_get_last_posted_content_ignores_backfilled_items(
+        self, repository: Repository
+    ) -> None:
+        source = await repository.add_source(
+            source_type=SourceType.RSS,
+            name="Guild Source",
+            identifier="guild-source",
+            guild_id="guild-a",
+        )
+        real_post = await repository.add_content_item(
+            source_id=source.id,
+            external_id="real-post",
+            title="Real Post",
+            original_url="https://example.com/real",
+            author="Author",
+            published_at=datetime(2024, 1, 1),
+        )
+        backfilled = await repository.add_content_item(
+            source_id=source.id,
+            external_id="backfilled-post",
+            title="Backfilled Post",
+            original_url="https://example.com/backfilled",
+            author="Author",
+            published_at=datetime(2024, 1, 2),
+        )
+        await repository.mark_content_item_posted(real_post.id, "message-real")
+        await repository.mark_content_item_posted(backfilled.id, "backfilled")
+
+        latest = await repository.get_last_posted_content("guild-a")
+        assert latest is not None
+        assert latest.external_id == "real-post"
+        assert await repository.get_last_posted_content("missing") is None
 
 
 class TestDiscordConfigOperations:
@@ -1032,8 +1261,58 @@ class TestGitHubRepoOperations:
         assert found is not None
         assert found.is_active is True
 
+    async def test_get_github_repos_for_guild(self, repository: Repository) -> None:
+        await repository.add_github_repo(
+            guild_id="guild-123",
+            channel_id="channel-1",
+            owner="owner1",
+            repo="repo1",
+        )
+        await repository.add_github_repo(
+            guild_id="guild-123",
+            channel_id="channel-2",
+            owner="owner2",
+            repo="repo2",
+        )
+        await repository.add_github_repo(
+            guild_id="other-guild",
+            channel_id="channel-3",
+            owner="owner3",
+            repo="repo3",
+        )
+
+        repos = await repository.get_github_repos_for_guild("guild-123")
+
+        assert {repo.owner for repo in repos} == {"owner1", "owner2"}
+
+    async def test_github_repo_missing_updates_return_false_or_zero(
+        self, repository: Repository
+    ) -> None:
+        assert await repository.update_github_repo_state("missing", last_commit_sha="sha") is False
+        assert await repository.increment_github_failure("missing") == 0
+        assert await repository.reset_github_failure("missing") is False
+        assert await repository.set_github_repo_active("missing", False) is False
+
 
 class TestExtractionCacheCleanup:
+    async def test_set_extraction_cache_updates_existing_entry(
+        self, repository: Repository
+    ) -> None:
+        first = await repository.set_extraction_cache(
+            url="https://example.com/page",
+            content_hash="hash1",
+            posts_json='[{"title": "old"}]',
+        )
+        second = await repository.set_extraction_cache(
+            url="https://example.com/page",
+            content_hash="hash2",
+            posts_json='[{"title": "new"}]',
+        )
+
+        assert second.id == first.id
+        assert second.content_hash == "hash2"
+        assert second.posts_json == '[{"title": "new"}]'
+
     async def test_cleanup_removes_old_entries(self, repository: Repository) -> None:
         await repository.set_extraction_cache(
             url="https://example.com/old",
@@ -1129,3 +1408,180 @@ class TestArticleChunkMetaOperations:
         deleted_ids = await repository.delete_article_chunk_metas_for_content_item(content.id)
         assert deleted_ids == [f"{content.id}__0000", f"{content.id}__0001"]
         assert await repository.count_article_chunk_metas() == 0
+
+    async def test_delete_all_article_chunk_metas(self, repository: Repository) -> None:
+        source = await repository.add_source(
+            source_type=SourceType.RSS,
+            name="Bulk Delete Source",
+            identifier="bulk-delete-source",
+        )
+        content = await repository.add_content_item(
+            source_id=source.id,
+            external_id="bulk-article",
+            title="Bulk Article",
+            original_url="https://example.com/bulk",
+            author="Author",
+            published_at=datetime.now(UTC),
+        )
+
+        from intelstream.database.models import ArticleChunkMeta
+
+        await repository.add_article_chunk_metas_batch([])
+        await repository.add_article_chunk_metas_batch(
+            [
+                ArticleChunkMeta(
+                    id=f"{content.id}__0000",
+                    content_item_id=content.id,
+                    chunk_index=0,
+                    text="Chunk one",
+                ),
+                ArticleChunkMeta(
+                    id=f"{content.id}__0001",
+                    content_item_id=content.id,
+                    chunk_index=1,
+                    text="Chunk two",
+                ),
+            ]
+        )
+
+        assert await repository.delete_all_article_chunk_metas() == 2
+        assert await repository.delete_all_article_chunk_metas() == 0
+        assert await repository.get_article_chunk_metas_for_content_item(content.id) == []
+
+
+class TestMessageChunkMetaOperations:
+    async def test_message_chunk_queries_and_delete_by_channel(
+        self, repository: Repository
+    ) -> None:
+        base_time = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
+        chunk_a = MessageChunkMeta(
+            id="chunk-a",
+            guild_id="guild-a",
+            channel_id="channel-a",
+            channel_name="general",
+            start_message_id="1",
+            end_message_id="2",
+            start_timestamp=base_time,
+            end_timestamp=base_time + timedelta(minutes=1),
+            authors="alice",
+            message_count=2,
+            text="First chunk",
+        )
+        chunk_b = MessageChunkMeta(
+            id="chunk-b",
+            guild_id="guild-a",
+            channel_id="channel-a",
+            channel_name="general",
+            start_message_id="3",
+            end_message_id="4",
+            start_timestamp=base_time + timedelta(minutes=2),
+            end_timestamp=base_time + timedelta(minutes=3),
+            authors="bob",
+            message_count=2,
+            text="Second chunk",
+        )
+        chunk_c = MessageChunkMeta(
+            id="chunk-c",
+            guild_id="guild-b",
+            channel_id="channel-b",
+            channel_name="random",
+            start_message_id="5",
+            end_message_id="6",
+            start_timestamp=base_time + timedelta(minutes=4),
+            end_timestamp=base_time + timedelta(minutes=5),
+            authors="carol",
+            message_count=2,
+            text="Third chunk",
+        )
+
+        assert await repository.add_message_chunk_meta(chunk_a) == chunk_a
+        await repository.add_message_chunk_metas_batch([chunk_b, chunk_c])
+        await repository.add_message_chunk_metas_batch([])
+
+        assert await repository.count_message_chunk_metas() == 3
+        assert await repository.count_message_chunk_metas("guild-a") == 2
+        assert await repository.get_message_chunk_guild_ids() == ["guild-a", "guild-b"]
+
+        guild_a_chunks = await repository.get_message_chunk_metas_batch(
+            guild_id="guild-a",
+            limit=10,
+        )
+        assert [chunk.id for chunk in guild_a_chunks] == ["chunk-a", "chunk-b"]
+
+        by_ids = await repository.get_message_chunk_metas_by_ids(["chunk-b", "missing", "chunk-a"])
+        assert {chunk.id for chunk in by_ids} == {"chunk-a", "chunk-b"}
+        assert await repository.get_message_chunk_metas_by_ids([]) == []
+
+        channel_chunks = await repository.get_message_chunk_metas_for_channel(
+            "guild-a",
+            "channel-a",
+        )
+        assert [chunk.id for chunk in channel_chunks] == ["chunk-a", "chunk-b"]
+
+        deleted_ids = await repository.delete_message_chunk_metas_for_channel(
+            "guild-a",
+            "channel-a",
+        )
+        assert set(deleted_ids) == {"chunk-a", "chunk-b"}
+        assert await repository.count_message_chunk_metas() == 1
+
+
+class TestIngestionProgressOperations:
+    async def test_create_update_and_query_ingestion_progress(self, repository: Repository) -> None:
+        progress = await repository.get_or_create_ingestion_progress("guild-a", "channel-a")
+        same_progress = await repository.get_or_create_ingestion_progress("guild-a", "channel-a")
+        assert same_progress.id == progress.id
+        assert same_progress.status == "pending"
+
+        assert await repository.update_ingestion_progress("guild-a", "missing") is False
+        assert await repository.update_ingestion_progress(
+            "guild-a",
+            "channel-a",
+            last_message_id="123",
+            total_fetched=25,
+            status="in_progress",
+        )
+
+        [updated] = await repository.get_ingestion_progress_for_guild("guild-a")
+        assert updated.last_message_id == "123"
+        assert updated.total_fetched == 25
+        assert updated.status == "in_progress"
+        assert updated.started_at is not None
+        assert [item.id for item in await repository.get_in_progress_ingestions()] == [updated.id]
+
+        assert await repository.update_ingestion_progress(
+            "guild-a",
+            "channel-a",
+            status="completed",
+        )
+        [completed] = await repository.get_ingestion_progress_for_guild("guild-a")
+        assert completed.completed_at is not None
+        assert await repository.get_in_progress_ingestions() == []
+
+    async def test_paused_ingestions_count_as_in_progress(self, repository: Repository) -> None:
+        await repository.get_or_create_ingestion_progress("guild-a", "channel-a")
+        await repository.update_ingestion_progress("guild-a", "channel-a", status="paused")
+
+        in_progress = await repository.get_in_progress_ingestions()
+
+        assert len(in_progress) == 1
+        assert in_progress[0].status == "paused"
+
+
+class TestSuckBoobsStats:
+    async def test_records_usage_and_pinged_leaderboards(self, repository: Repository) -> None:
+        await repository.record_suck_boobs_usage("guild-a", "user-1", "user-2")
+        await repository.record_suck_boobs_usage("guild-a", "user-1", "user-2")
+        await repository.record_suck_boobs_usage("guild-a", "user-2", "user-1")
+        await repository.record_suck_boobs_usage("guild-b", "user-3", "user-1")
+
+        top_users, top_pinged = await repository.get_suck_boobs_leaderboard("guild-a", limit=2)
+
+        assert [(stat.user_id, stat.times_used) for stat in top_users] == [
+            ("user-1", 2),
+            ("user-2", 1),
+        ]
+        assert [(stat.user_id, stat.times_pinged) for stat in top_pinged] == [
+            ("user-2", 2),
+            ("user-1", 1),
+        ]

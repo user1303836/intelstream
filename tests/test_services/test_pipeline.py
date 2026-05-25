@@ -5,6 +5,7 @@ import pytest
 
 from intelstream.adapters.base import ContentData
 from intelstream.config import Settings
+from intelstream.database.exceptions import DuplicateContentError
 from intelstream.database.models import ContentItem, Source, SourceType
 from intelstream.database.repository import Repository
 from intelstream.services.pipeline import ContentPipeline
@@ -81,6 +82,11 @@ def sample_content_item(sample_source):
 
 
 class TestContentPipelineInitialization:
+    async def test_close_without_initialized_client(self, pipeline: ContentPipeline):
+        await pipeline.close()
+
+        assert pipeline._http_client is None
+
     async def test_initialize_creates_http_client(self, pipeline: ContentPipeline):
         await pipeline.initialize()
 
@@ -596,6 +602,95 @@ class TestFetchAllSources:
 
         await pipeline.close()
 
+    @pytest.mark.parametrize("status_code", [401, 403])
+    async def test_fetch_auth_error_increments_failure_count(
+        self,
+        pipeline: ContentPipeline,
+        mock_repository: AsyncMock,
+        sample_source,
+        status_code: int,
+    ):
+        import httpx
+
+        await pipeline.initialize()
+
+        mock_repository.get_all_sources.return_value = [sample_source]
+
+        mock_response = MagicMock()
+        mock_response.status_code = status_code
+        mock_request = MagicMock()
+
+        with patch.object(
+            pipeline._adapters[SourceType.SUBSTACK],
+            "fetch_latest",
+            new_callable=AsyncMock,
+            side_effect=httpx.HTTPStatusError(
+                "Unauthorized", request=mock_request, response=mock_response
+            ),
+        ):
+            result = await pipeline.fetch_all_sources()
+
+        assert result == 0
+        mock_repository.increment_failure_count.assert_called_once_with(sample_source.id)
+
+        await pipeline.close()
+
+    async def test_fetch_unhandled_http_status_does_not_increment_failure_count(
+        self,
+        pipeline: ContentPipeline,
+        mock_repository: AsyncMock,
+        sample_source,
+    ):
+        import httpx
+
+        await pipeline.initialize()
+
+        mock_repository.get_all_sources.return_value = [sample_source]
+
+        mock_response = MagicMock()
+        mock_response.status_code = 418
+        mock_request = MagicMock()
+
+        with patch.object(
+            pipeline._adapters[SourceType.SUBSTACK],
+            "fetch_latest",
+            new_callable=AsyncMock,
+            side_effect=httpx.HTTPStatusError(
+                "Teapot", request=mock_request, response=mock_response
+            ),
+        ):
+            result = await pipeline.fetch_all_sources()
+
+        assert result == 0
+        mock_repository.increment_failure_count.assert_not_called()
+
+        await pipeline.close()
+
+    async def test_fetch_request_error_increments_failure_count(
+        self,
+        pipeline: ContentPipeline,
+        mock_repository: AsyncMock,
+        sample_source,
+    ):
+        import httpx
+
+        await pipeline.initialize()
+
+        mock_repository.get_all_sources.return_value = [sample_source]
+
+        with patch.object(
+            pipeline._adapters[SourceType.SUBSTACK],
+            "fetch_latest",
+            new_callable=AsyncMock,
+            side_effect=httpx.ConnectError("network down"),
+        ):
+            result = await pipeline.fetch_all_sources()
+
+        assert result == 0
+        mock_repository.increment_failure_count.assert_called_once_with(sample_source.id)
+
+        await pipeline.close()
+
     async def test_fetch_success_resets_failure_count(
         self,
         pipeline: ContentPipeline,
@@ -684,6 +779,31 @@ class TestFetchAllSources:
 
         await pipeline.close()
 
+    async def test_skips_source_not_yet_due_with_naive_last_polled_at(
+        self,
+        pipeline: ContentPipeline,
+        mock_settings: MagicMock,
+        mock_repository: AsyncMock,
+        sample_source,
+    ):
+        await pipeline.initialize()
+
+        sample_source.last_polled_at = datetime(2099, 1, 1, 0, 0, 0)
+        mock_settings.get_poll_interval.return_value = 20
+        mock_repository.get_all_sources.return_value = [sample_source]
+
+        with patch.object(
+            pipeline._adapters[SourceType.SUBSTACK],
+            "fetch_latest",
+            new_callable=AsyncMock,
+        ) as mock_fetch:
+            result = await pipeline.fetch_all_sources()
+
+        assert result == 0
+        mock_fetch.assert_not_called()
+
+        await pipeline.close()
+
     async def test_fetches_source_when_interval_elapsed(
         self,
         pipeline: ContentPipeline,
@@ -739,6 +859,129 @@ class TestFetchAllSources:
 
         assert result == 1
         mock_settings.get_poll_interval.assert_not_called()
+
+        await pipeline.close()
+
+    async def test_fetch_source_page_missing_extraction_profile(
+        self,
+        pipeline: ContentPipeline,
+        mock_repository: AsyncMock,
+    ):
+        page_source = MagicMock(spec=Source)
+        page_source.id = "page-source"
+        page_source.name = "Page Source"
+        page_source.type = SourceType.PAGE
+        page_source.extraction_profile = None
+
+        assert await pipeline._fetch_source(page_source) == 0
+        mock_repository.update_source_last_polled.assert_not_called()
+
+    @pytest.mark.parametrize("profile", ["{", "{}"])
+    async def test_fetch_source_page_invalid_extraction_profile(
+        self,
+        pipeline: ContentPipeline,
+        mock_repository: AsyncMock,
+        profile: str,
+    ):
+        page_source = MagicMock(spec=Source)
+        page_source.id = "page-source"
+        page_source.name = "Page Source"
+        page_source.type = SourceType.PAGE
+        page_source.extraction_profile = profile
+
+        assert await pipeline._fetch_source(page_source) == 0
+        mock_repository.update_source_last_polled.assert_not_called()
+
+    async def test_fetch_source_page_uses_stored_extraction_profile(
+        self,
+        pipeline: ContentPipeline,
+        mock_repository: AsyncMock,
+        sample_content_data,
+    ):
+        page_source = MagicMock(spec=Source)
+        page_source.id = "page-source"
+        page_source.name = "Page Source"
+        page_source.type = SourceType.PAGE
+        page_source.identifier = "https://example.com/news"
+        page_source.feed_url = None
+        page_source.skip_summary = False
+        page_source.last_polled_at = datetime(2024, 1, 1, tzinfo=UTC)
+        page_source.extraction_profile = (
+            '{"site_name":"Example","post_selector":"article",'
+            '"title_selector":"h2","url_selector":"a","url_attribute":"href"}'
+        )
+        mock_repository.content_item_exists.return_value = False
+
+        with patch(
+            "intelstream.adapters.page.PageAdapter.fetch_latest",
+            new_callable=AsyncMock,
+            return_value=[sample_content_data],
+        ) as fetch_latest:
+            result = await pipeline._fetch_source(page_source)
+
+        assert result == 1
+        fetch_latest.assert_awaited_once_with(
+            page_source.identifier,
+            feed_url=None,
+            skip_content=False,
+        )
+        mock_repository.update_source_last_polled.assert_called_once_with(page_source.id)
+
+    async def test_fetch_source_continues_when_add_races_duplicate(
+        self,
+        pipeline: ContentPipeline,
+        mock_repository: AsyncMock,
+        sample_source,
+        sample_content_data,
+    ):
+        await pipeline.initialize()
+
+        mock_repository.content_item_exists.return_value = False
+
+        with (
+            patch.object(
+                pipeline._adapters[SourceType.SUBSTACK],
+                "fetch_latest",
+                new_callable=AsyncMock,
+                return_value=[sample_content_data],
+            ),
+            patch.object(
+                pipeline,
+                "_store_content_item",
+                new_callable=AsyncMock,
+                side_effect=DuplicateContentError("duplicate"),
+            ),
+        ):
+            result = await pipeline._fetch_source(sample_source)
+
+        assert result == 0
+        mock_repository.update_source_last_polled.assert_called_once_with(sample_source.id)
+
+        await pipeline.close()
+
+    async def test_fetch_source_first_poll_without_most_recent_skips_backfill(
+        self,
+        pipeline: ContentPipeline,
+        mock_repository: AsyncMock,
+        sample_source,
+        sample_content_data,
+    ):
+        await pipeline.initialize()
+
+        sample_source.last_polled_at = None
+        mock_repository.content_item_exists.return_value = False
+        mock_repository.get_most_recent_item_for_source.return_value = None
+
+        with patch.object(
+            pipeline._adapters[SourceType.SUBSTACK],
+            "fetch_latest",
+            new_callable=AsyncMock,
+            return_value=[sample_content_data],
+        ):
+            result = await pipeline._fetch_source(sample_source)
+
+        assert result == 1
+        mock_repository.mark_items_as_backfilled.assert_not_called()
 
         await pipeline.close()
 
@@ -1036,6 +1279,144 @@ class TestEmbedItem:
         result = await pipeline.summarize_pending()
 
         assert result == 1
+
+    async def test_embed_item_returns_when_search_service_half_configured(
+        self,
+        mock_settings,
+        mock_repository: AsyncMock,
+    ):
+        mock_vector_store = AsyncMock()
+        pipeline = ContentPipeline(
+            settings=mock_settings,
+            repository=mock_repository,
+            summarizer=None,
+            get_search_services=lambda: (None, mock_vector_store),
+        )
+
+        await pipeline._embed_item("item-1", "Title", "Summary", "Raw")
+
+        mock_repository.delete_article_chunk_metas_for_content_item.assert_not_called()
+        mock_vector_store.upsert_article_chunks_batch.assert_not_called()
+
+    async def test_embed_item_returns_when_chunker_builds_no_chunks(
+        self,
+        mock_settings,
+        mock_repository: AsyncMock,
+    ):
+        mock_embedding = AsyncMock()
+        mock_vector_store = AsyncMock()
+        pipeline = ContentPipeline(
+            settings=mock_settings,
+            repository=mock_repository,
+            summarizer=None,
+            get_search_services=lambda: (mock_embedding, mock_vector_store),
+        )
+        pipeline._article_chunker.build_chunks = MagicMock(return_value=[])
+
+        await pipeline._embed_item("item-1", "Title", "Summary", None)
+
+        mock_embedding.embed_text.assert_not_called()
+        mock_vector_store.upsert_article_chunks_batch.assert_not_called()
+
+    async def test_embed_item_uses_batch_embeddings_and_deletes_stale_chunks(
+        self,
+        mock_settings,
+        mock_repository: AsyncMock,
+    ):
+        chunk_0 = MagicMock(chunk_index=0, text="first", search_text="Title\n\nfirst")
+        chunk_1 = MagicMock(chunk_index=1, text="second", search_text="Title\n\nsecond")
+        mock_embedding = AsyncMock()
+        mock_embedding.embed_batch = AsyncMock(return_value=[[0.1], [0.2]])
+        mock_vector_store = AsyncMock()
+        mock_repository.delete_article_chunk_metas_for_content_item.return_value = [
+            "item-1__0000"
+        ]
+        pipeline = ContentPipeline(
+            settings=mock_settings,
+            repository=mock_repository,
+            summarizer=None,
+            get_search_services=lambda: (mock_embedding, mock_vector_store),
+        )
+        pipeline._article_chunker.build_chunks = MagicMock(return_value=[chunk_0, chunk_1])
+
+        await pipeline._embed_item("item-1", "Title", "Summary", "Raw")
+
+        mock_embedding.embed_batch.assert_awaited_once_with(
+            ["Title\n\nfirst", "Title\n\nsecond"]
+        )
+        mock_vector_store.delete_article_chunks.assert_awaited_once_with(["item-1__0000"])
+        mock_repository.add_article_chunk_metas_batch.assert_awaited_once()
+        mock_vector_store.upsert_article_chunks_batch.assert_awaited_once()
+
+
+class TestFirstPostingBackfill:
+    async def test_backfill_skips_duplicate_source_ids(
+        self,
+        pipeline: ContentPipeline,
+        mock_repository: AsyncMock,
+        sample_content_item,
+    ):
+        duplicate = MagicMock(spec=ContentItem)
+        duplicate.source_id = sample_content_item.source_id
+        duplicate.id = "duplicate-item"
+        mock_repository.has_source_posted_content.return_value = True
+
+        await pipeline._handle_first_posting_backfill([sample_content_item, duplicate])
+
+        mock_repository.has_source_posted_content.assert_awaited_once_with(
+            sample_content_item.source_id
+        )
+
+    async def test_backfill_skips_when_no_most_recent_item(
+        self,
+        pipeline: ContentPipeline,
+        mock_repository: AsyncMock,
+        sample_content_item,
+    ):
+        mock_repository.has_source_posted_content.return_value = False
+        mock_repository.get_most_recent_item_for_source.return_value = None
+
+        await pipeline._handle_first_posting_backfill([sample_content_item])
+
+        mock_repository.mark_items_as_backfilled.assert_not_called()
+
+    async def test_backfill_allows_zero_marked_items(
+        self,
+        pipeline: ContentPipeline,
+        mock_repository: AsyncMock,
+        sample_content_item,
+    ):
+        most_recent = MagicMock(spec=ContentItem)
+        most_recent.id = "most-recent"
+        mock_repository.has_source_posted_content.return_value = False
+        mock_repository.get_most_recent_item_for_source.return_value = most_recent
+        mock_repository.mark_items_as_backfilled.return_value = 0
+
+        await pipeline._handle_first_posting_backfill([sample_content_item])
+
+        mock_repository.mark_items_as_backfilled.assert_awaited_once_with(
+            source_id=sample_content_item.source_id,
+            exclude_item_id=most_recent.id,
+        )
+        mock_repository.get_source_by_id.assert_not_called()
+
+    async def test_backfill_logs_unknown_source_when_source_lookup_missing(
+        self,
+        pipeline: ContentPipeline,
+        mock_repository: AsyncMock,
+        sample_content_item,
+    ):
+        most_recent = MagicMock(spec=ContentItem)
+        most_recent.id = "most-recent"
+        most_recent.title = "Most Recent"
+        mock_repository.has_source_posted_content.return_value = False
+        mock_repository.get_most_recent_item_for_source.return_value = most_recent
+        mock_repository.mark_items_as_backfilled.return_value = 1
+        mock_repository.get_source_by_id.return_value = None
+
+        await pipeline._handle_first_posting_backfill([sample_content_item])
+
+        mock_repository.get_source_by_id.assert_awaited_once_with(sample_content_item.source_id)
 
 
 class TestRunCycle:

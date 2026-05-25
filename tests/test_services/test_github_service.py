@@ -1,3 +1,6 @@
+from datetime import UTC
+from unittest.mock import AsyncMock
+
 import httpx
 import pytest
 import respx
@@ -8,6 +11,29 @@ from intelstream.services.github_service import GitHubAPIError, GitHubService
 @pytest.fixture
 def github_service():
     return GitHubService(token="test-token")
+
+
+class TestGitHubServiceClient:
+    async def test_get_client_lazily_creates_owned_client(self) -> None:
+        service = GitHubService(token="test-token")
+
+        client = await service._get_client()
+
+        assert service._client is client
+        assert service._owns_client is True
+
+        await service.close()
+
+        assert service._client is None
+
+    async def test_close_does_not_close_injected_client(self) -> None:
+        client = AsyncMock(spec=httpx.AsyncClient)
+        service = GitHubService(token="test-token", http_client=client)
+
+        await service.close()
+
+        client.aclose.assert_not_called()
+        assert service._client is client
 
 
 class TestGitHubServiceValidation:
@@ -43,6 +69,31 @@ class TestGitHubServiceValidation:
             await github_service.validate_repo("owner", "repo")
 
         assert exc_info.value.status_code == 401
+        await github_service.close()
+
+    @pytest.mark.parametrize(
+        ("status_code", "message"),
+        [
+            (403, "Rate limit exceeded or access denied"),
+            (500, "server exploded"),
+        ],
+    )
+    @respx.mock
+    async def test_request_normalizes_additional_error_statuses(
+        self,
+        github_service: GitHubService,
+        status_code: int,
+        message: str,
+    ) -> None:
+        respx.get("https://api.github.com/repos/owner/repo").mock(
+            return_value=httpx.Response(status_code, text=message)
+        )
+
+        with pytest.raises(GitHubAPIError) as exc_info:
+            await github_service.validate_repo("owner", "repo")
+
+        assert exc_info.value.status_code == status_code
+        assert exc_info.value.message == message
         await github_service.close()
 
 
@@ -117,6 +168,41 @@ class TestGitHubServiceCommits:
         assert events[0].sha == "new123"
         await github_service.close()
 
+    async def test_fetch_commits_returns_empty_for_non_list_response(
+        self, github_service: GitHubService
+    ) -> None:
+        github_service._request = AsyncMock(return_value={"message": "unexpected"})
+
+        assert await github_service.fetch_new_commits("owner", "repo") == []
+
+    @respx.mock
+    async def test_fetch_commits_uses_committer_author_fallback(
+        self, github_service: GitHubService
+    ) -> None:
+        respx.get("https://api.github.com/repos/owner/repo/commits").mock(
+            return_value=httpx.Response(
+                200,
+                json=[
+                    {
+                        "sha": "abc123",
+                        "commit": {
+                            "message": "Commit from detached identity",
+                            "author": {"name": "Committer Name", "date": ""},
+                        },
+                        "author": None,
+                        "html_url": "",
+                    }
+                ],
+            )
+        )
+
+        events = await github_service.fetch_new_commits("owner", "repo")
+
+        assert events[0].author == "Committer Name"
+        assert events[0].description is None
+        assert events[0].created_at.tzinfo == UTC
+        await github_service.close()
+
 
 class TestGitHubServicePRs:
     @respx.mock
@@ -172,6 +258,54 @@ class TestGitHubServicePRs:
 
         assert len(events) == 1
         assert events[0].state == "merged"
+        await github_service.close()
+
+    async def test_fetch_prs_returns_empty_for_non_list_response(
+        self, github_service: GitHubService
+    ) -> None:
+        github_service._request = AsyncMock(return_value={"message": "unexpected"})
+
+        assert await github_service.fetch_new_prs("owner", "repo") == []
+
+    @respx.mock
+    async def test_fetch_prs_stops_at_since_number_and_uses_defaults(
+        self, github_service: GitHubService
+    ) -> None:
+        prs_response = [
+            {
+                "number": 44,
+                "title": "New PR",
+                "body": None,
+                "state": "open",
+                "merged_at": None,
+                "head": {},
+                "html_url": "",
+                "created_at": "not-a-date",
+            },
+            {
+                "number": 43,
+                "title": "Old PR",
+                "body": "old",
+                "state": "open",
+                "merged_at": None,
+                "head": {},
+                "user": {"login": "old", "avatar_url": ""},
+                "html_url": "",
+                "created_at": "2024-01-15T10:30:00Z",
+            },
+        ]
+
+        respx.get("https://api.github.com/repos/owner/repo/pulls").mock(
+            return_value=httpx.Response(200, json=prs_response)
+        )
+
+        events = await github_service.fetch_new_prs("owner", "repo", since_number=43)
+
+        assert len(events) == 1
+        assert events[0].number == 44
+        assert events[0].author == "Unknown"
+        assert events[0].description is None
+        assert events[0].created_at.tzinfo == UTC
         await github_service.close()
 
 
@@ -235,3 +369,66 @@ class TestGitHubServiceIssues:
         assert len(events) == 1
         assert events[0].number == 10
         await github_service.close()
+
+    async def test_fetch_issues_returns_empty_for_non_list_response(
+        self, github_service: GitHubService
+    ) -> None:
+        github_service._request = AsyncMock(return_value={"message": "unexpected"})
+
+        assert await github_service.fetch_new_issues("owner", "repo") == []
+
+    @respx.mock
+    async def test_fetch_issues_stops_at_since_number_and_uses_defaults(
+        self, github_service: GitHubService
+    ) -> None:
+        issues_response = [
+            {
+                "number": 12,
+                "title": "New issue",
+                "body": "X" * 600,
+                "html_url": "",
+                "created_at": "",
+            },
+            {
+                "number": 11,
+                "title": "Old issue",
+                "body": "old",
+                "state": "closed",
+                "user": {"login": "old", "avatar_url": ""},
+                "html_url": "",
+                "created_at": "2024-01-15T10:30:00Z",
+            },
+        ]
+
+        respx.get("https://api.github.com/repos/owner/repo/issues").mock(
+            return_value=httpx.Response(200, json=issues_response)
+        )
+
+        events = await github_service.fetch_new_issues("owner", "repo", since_number=11)
+
+        assert len(events) == 1
+        assert events[0].number == 12
+        assert events[0].author == "Unknown"
+        assert events[0].state == "open"
+        assert events[0].description is not None
+        assert events[0].description.endswith("...")
+        assert events[0].created_at.tzinfo == UTC
+        await github_service.close()
+
+
+class TestGitHubServiceHelpers:
+    def test_parse_datetime_returns_now_for_empty_and_invalid_values(
+        self, github_service: GitHubService
+    ) -> None:
+        assert github_service._parse_datetime("").tzinfo == UTC
+        assert github_service._parse_datetime("not-a-date").tzinfo == UTC
+
+    @pytest.mark.parametrize("text", [None, ""])
+    def test_truncate_returns_none_for_empty_values(
+        self, github_service: GitHubService, text: str | None
+    ) -> None:
+        assert github_service._truncate(text, 10) is None
+
+    def test_truncate_short_and_long_values(self, github_service: GitHubService) -> None:
+        assert github_service._truncate("short", 10) == "short"
+        assert github_service._truncate("abcdefghijk", 10) == "abcdefg..."

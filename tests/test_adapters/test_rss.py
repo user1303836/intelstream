@@ -1,9 +1,11 @@
 from datetime import UTC, datetime
 
+import feedparser
 import httpx
 import pytest
 import respx
 
+from intelstream.adapters.base import ContentData
 from intelstream.adapters.rss import RSSAdapter
 
 SAMPLE_ATOM_FEED = """<?xml version="1.0" encoding="utf-8"?>
@@ -108,6 +110,19 @@ class TestRSSAdapter:
                 await adapter.fetch_latest("https://notfound.com/feed")
 
     @respx.mock
+    async def test_fetch_latest_request_error(self) -> None:
+        request = httpx.Request("GET", "https://offline.com/feed")
+        respx.get("https://offline.com/feed").mock(
+            side_effect=httpx.ConnectError("network unreachable", request=request)
+        )
+
+        async with httpx.AsyncClient() as client:
+            adapter = RSSAdapter(http_client=client)
+
+            with pytest.raises(httpx.ConnectError, match="network unreachable"):
+                await adapter.fetch_latest("https://offline.com/feed")
+
+    @respx.mock
     async def test_fetch_invalid_feed(self) -> None:
         respx.get("https://invalid.com/feed").mock(
             return_value=httpx.Response(200, text="<not valid xml>")
@@ -132,6 +147,60 @@ class TestRSSAdapter:
             )
 
         assert len(items) == 1
+
+    @respx.mock
+    async def test_fetch_latest_without_injected_client(self) -> None:
+        respx.get("https://rssblog.com/internal-client-feed").mock(
+            return_value=httpx.Response(200, text=SAMPLE_RSS_FEED)
+        )
+
+        adapter = RSSAdapter()
+        items = await adapter.fetch_latest("https://rssblog.com/internal-client-feed")
+
+        assert len(items) == 1
+        assert items[0].title == "RSS Article"
+
+    @respx.mock
+    async def test_fetch_latest_continues_after_entry_parse_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        two_item_feed = """<?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0">
+          <channel>
+            <title>Recovering Feed</title>
+            <item><title>Bad</title><link>https://example.com/bad</link></item>
+            <item><title>Good</title><link>https://example.com/good</link></item>
+          </channel>
+        </rss>
+        """
+        respx.get("https://example.com/feed").mock(
+            return_value=httpx.Response(200, text=two_item_feed)
+        )
+        recovered = ContentData(
+            external_id="good",
+            title="Good",
+            original_url="https://example.com/good",
+            author="Author",
+            published_at=datetime(2024, 1, 1, tzinfo=UTC),
+        )
+        adapter = RSSAdapter()
+        calls = 0
+
+        def fake_parse_entry(
+            _entry: feedparser.FeedParserDict,
+            _feed: feedparser.FeedParserDict,
+        ) -> ContentData:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise ValueError("bad entry")
+            return recovered
+
+        monkeypatch.setattr(adapter, "_parse_entry", fake_parse_entry)
+
+        items = await adapter.fetch_latest("https://example.com/feed")
+
+        assert items == [recovered]
 
     async def test_source_type(self) -> None:
         adapter = RSSAdapter()
@@ -161,3 +230,135 @@ class TestRSSAdapter:
 
         assert len(items) == 1
         assert items[0].author == "Feed Title as Author"
+
+    def test_extract_author_joins_multiple_entry_authors(self) -> None:
+        entry = feedparser.FeedParserDict(
+            {
+                "authors": [
+                    feedparser.FeedParserDict({"name": "Author One"}),
+                    feedparser.FeedParserDict({"name": "Author Two"}),
+                ]
+            }
+        )
+        feed = feedparser.FeedParserDict({"feed": feedparser.FeedParserDict()})
+
+        assert RSSAdapter()._extract_author(entry, feed) == "Author One, Author Two"
+
+    def test_extract_author_prefers_author_detail_name(self) -> None:
+        entry = feedparser.FeedParserDict(
+            {"author_detail": feedparser.FeedParserDict({"name": "Detail Author"})}
+        )
+        feed = feedparser.FeedParserDict({"feed": feedparser.FeedParserDict()})
+
+        assert RSSAdapter()._extract_author(entry, feed) == "Detail Author"
+
+    def test_extract_author_ignores_authors_without_names(self) -> None:
+        entry = feedparser.FeedParserDict(
+            {"authors": [feedparser.FeedParserDict({}), feedparser.FeedParserDict({"name": ""})]}
+        )
+        feed = feedparser.FeedParserDict({"feed": feedparser.FeedParserDict()})
+
+        assert RSSAdapter()._extract_author(entry, feed) == "Unknown Author"
+
+    def test_parse_entry_falls_back_to_unknown_author(self) -> None:
+        adapter = RSSAdapter()
+        feed = feedparser.parse(
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <rss version="2.0">
+              <channel>
+                <item>
+                  <title>Untitled Publisher</title>
+                  <link>https://example.com/post</link>
+                </item>
+              </channel>
+            </rss>
+            """
+        )
+
+        item = adapter._parse_entry(feed.entries[0], feed)
+
+        assert item.author == "Unknown Author"
+
+    def test_extract_content_uses_first_non_empty_value_for_unknown_type(self) -> None:
+        entry = feedparser.FeedParserDict(
+            {"content": [{"type": "application/xhtml+xml", "value": "<section>Body</section>"}]}
+        )
+
+        assert RSSAdapter()._extract_content(entry) == "<section>Body</section>"
+
+    def test_extract_content_returns_none_for_empty_preferred_content(self) -> None:
+        entry = feedparser.FeedParserDict({"content": [{"type": "text/html", "value": ""}]})
+
+        assert RSSAdapter()._extract_content(entry) is None
+
+    def test_extract_content_uses_summary_detail(self) -> None:
+        entry = feedparser.FeedParserDict(
+            {"summary_detail": feedparser.FeedParserDict({"value": "Summary detail"})}
+        )
+
+        assert RSSAdapter()._extract_content(entry) == "Summary detail"
+
+    def test_extract_content_uses_summary_then_description(self) -> None:
+        adapter = RSSAdapter()
+        assert adapter._extract_content(feedparser.FeedParserDict({"summary": "Summary"})) == "Summary"
+        assert (
+            adapter._extract_content(feedparser.FeedParserDict({"description": "Description"}))
+            == "Description"
+        )
+
+    def test_extract_content_returns_none_when_missing(self) -> None:
+        assert RSSAdapter()._extract_content(feedparser.FeedParserDict()) is None
+
+    def test_extract_thumbnail_uses_media_content_image(self) -> None:
+        entry = feedparser.FeedParserDict(
+            {"media_content": [{"medium": "image", "url": "https://example.com/media.jpg"}]}
+        )
+
+        assert RSSAdapter()._extract_thumbnail(entry) == "https://example.com/media.jpg"
+
+    def test_extract_thumbnail_uses_media_content_image_type(self) -> None:
+        entry = feedparser.FeedParserDict(
+            {"media_content": [{"type": "image/jpeg", "url": "https://example.com/type.jpg"}]}
+        )
+
+        assert RSSAdapter()._extract_thumbnail(entry) == "https://example.com/type.jpg"
+
+    def test_extract_thumbnail_returns_none_for_image_media_without_url(self) -> None:
+        entry = feedparser.FeedParserDict({"media_content": [{"medium": "image"}]})
+
+        assert RSSAdapter()._extract_thumbnail(entry) is None
+
+    def test_extract_thumbnail_uses_media_thumbnail(self) -> None:
+        entry = feedparser.FeedParserDict(
+            {"media_thumbnail": [{"url": "https://example.com/thumb.jpg"}]}
+        )
+
+        assert RSSAdapter()._extract_thumbnail(entry) == "https://example.com/thumb.jpg"
+
+    def test_extract_thumbnail_uses_image_enclosure_href_and_url(self) -> None:
+        class Entry(dict):
+            def __getattr__(self, name: str) -> object:
+                return self[name]
+
+        adapter = RSSAdapter()
+        href_entry = Entry(
+            {"enclosures": [{"type": "image/png", "href": "https://example.com/href.png"}]}
+        )
+        url_entry = Entry(
+            {"enclosures": [{"type": "image/png", "url": "https://example.com/url.png"}]}
+        )
+
+        assert adapter._extract_thumbnail(href_entry) == "https://example.com/href.png"
+        assert adapter._extract_thumbnail(url_entry) == "https://example.com/url.png"
+
+    def test_extract_thumbnail_uses_link_image_fallback(self) -> None:
+        entry = feedparser.FeedParserDict(
+            {
+                "links": [
+                    {"type": "text/html", "href": "ignored"},
+                    {"type": "image/png", "href": "https://example.com/card.png"},
+                ]
+            }
+        )
+
+        assert RSSAdapter()._extract_thumbnail(entry) == "https://example.com/card.png"

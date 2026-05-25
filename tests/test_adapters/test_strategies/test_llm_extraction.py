@@ -1,6 +1,7 @@
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import anthropic
 import httpx
 import pytest
 import respx
@@ -298,3 +299,137 @@ class TestLLMExtractionStrategy:
         assert len(result.posts) == 1
         assert result.posts[0].url == "https://example.com/valid"
         mock_anthropic_client.messages.create.assert_not_called()
+
+    @respx.mock
+    async def test_discover_ignores_invalid_cache_json_and_refreshes(
+        self, llm_strategy: LLMExtractionStrategy, mock_repository, mock_anthropic_client
+    ):
+        html = "<html><body>Content</body></html>"
+        cached = MagicMock(spec=ExtractionCache)
+        cached.content_hash = llm_strategy._get_content_hash(html)
+        cached.posts_json = "{not json"
+        mock_repository.get_extraction_cache.return_value = cached
+        llm_response = MagicMock()
+        llm_response.content = [
+            MagicMock(text='[{"url": "https://example.com/fresh", "title": "Fresh"}]')
+        ]
+        mock_anthropic_client.messages.create.return_value = llm_response
+        respx.get("https://example.com/").mock(return_value=httpx.Response(200, text=html))
+
+        result = await llm_strategy.discover("https://example.com/")
+
+        assert result is not None
+        assert result.posts[0].url == "https://example.com/fresh"
+        mock_repository.set_extraction_cache.assert_awaited_once()
+
+    @respx.mock
+    async def test_discover_ignores_cache_without_valid_posts(
+        self, llm_strategy: LLMExtractionStrategy, mock_repository, mock_anthropic_client
+    ):
+        html = "<html><body>Content</body></html>"
+        cached = MagicMock(spec=ExtractionCache)
+        cached.content_hash = llm_strategy._get_content_hash(html)
+        cached.posts_json = json.dumps([{"url": "", "title": "Empty"}])
+        mock_repository.get_extraction_cache.return_value = cached
+        llm_response = MagicMock()
+        llm_response.content = [
+            MagicMock(text='[{"url": "https://example.com/fresh", "title": "Fresh"}]')
+        ]
+        mock_anthropic_client.messages.create.return_value = llm_response
+        respx.get("https://example.com/").mock(return_value=httpx.Response(200, text=html))
+
+        result = await llm_strategy.discover("https://example.com/")
+
+        assert result is not None
+        assert result.posts[0].url == "https://example.com/fresh"
+
+    async def test_discover_caches_empty_result_after_timeout(
+        self, llm_strategy: LLMExtractionStrategy, mock_repository
+    ):
+        class TimeoutContext:
+            async def __aenter__(self) -> None:
+                raise TimeoutError
+
+            async def __aexit__(self, *_args: object) -> bool:
+                return False
+
+        with (
+            patch.object(llm_strategy, "_fetch_html", AsyncMock(return_value="<html>slow</html>")),
+            patch("intelstream.adapters.strategies.llm_extraction.asyncio.timeout") as timeout,
+        ):
+            timeout.return_value = TimeoutContext()
+            result = await llm_strategy.discover("https://example.com/")
+
+        assert result is None
+        mock_repository.set_extraction_cache.assert_awaited_once()
+        assert mock_repository.set_extraction_cache.call_args.args[2] == "[]"
+
+    def test_get_content_hash_falls_back_to_raw_html(self, llm_strategy: LLMExtractionStrategy):
+        assert llm_strategy._get_content_hash("") == (
+            "e3b0c44298fc1c149afbf4c8996fb924"
+            "27ae41e4649b934ca495991b7852b855"
+        )
+
+    def test_clean_html_truncates_at_recent_closing_tag(self, llm_strategy: LLMExtractionStrategy):
+        settings = MagicMock()
+        settings.max_html_length = 40
+        html = "<html><body><p>First</p><p>Second paragraph keeps going</p></body></html>"
+
+        with patch(
+            "intelstream.adapters.strategies.llm_extraction.get_settings",
+            return_value=settings,
+        ):
+            cleaned = llm_strategy._clean_html(html)
+
+        assert len(cleaned) <= 40
+        assert cleaned.endswith(">")
+
+    def test_clean_html_truncates_before_open_tag_when_no_recent_close(
+        self, llm_strategy: LLMExtractionStrategy
+    ):
+        settings = MagicMock()
+        settings.max_html_length = 1200
+        html = "<html><body><p>short</p>" + ("x" * 1100) + "<article" + ("y" * 200)
+
+        with patch(
+            "intelstream.adapters.strategies.llm_extraction.get_settings",
+            return_value=settings,
+        ):
+            cleaned = llm_strategy._clean_html(html)
+
+        assert "<article" not in cleaned
+
+    async def test_extract_with_llm_skips_ssrf_blocked_urls(
+        self, llm_strategy: LLMExtractionStrategy, mock_anthropic_client
+    ):
+        response = MagicMock()
+        response.content = [
+            MagicMock(
+                text=json.dumps(
+                    [
+                        {"url": "http://localhost/admin", "title": "Blocked"},
+                        {"url": "/safe", "title": "Safe"},
+                    ]
+                )
+            )
+        ]
+        mock_anthropic_client.messages.create.return_value = response
+
+        posts = await llm_strategy._extract_with_llm(
+            "<html><body>Posts</body></html>",
+            "https://example.com/blog",
+        )
+
+        assert [post.url for post in posts] == ["https://example.com/safe"]
+
+    async def test_extract_with_llm_handles_api_error(
+        self, llm_strategy: LLMExtractionStrategy, mock_anthropic_client
+    ):
+        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        mock_anthropic_client.messages.create.side_effect = anthropic.APIError(
+            "api failed",
+            request,
+            body=None,
+        )
+
+        assert await llm_strategy._extract_with_llm("<html></html>", "https://example.com") == []
