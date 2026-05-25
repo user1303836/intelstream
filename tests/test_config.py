@@ -40,6 +40,34 @@ class TestSettings:
 
         assert settings.youtube_api_key == "yt-api-key"
 
+    def test_settings_accepts_lowercase_env_and_optional_legacy_channel(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for key in (
+            "DISCORD_BOT_TOKEN",
+            "DISCORD_GUILD_ID",
+            "DISCORD_CHANNEL_ID",
+            "DISCORD_OWNER_ID",
+            "ANTHROPIC_API_KEY",
+            "LLM_PROVIDER",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        monkeypatch.setenv("discord_bot_token", "test_token")
+        monkeypatch.setenv("discord_guild_id", "123456789")
+        monkeypatch.setenv("discord_owner_id", "111222333")
+        monkeypatch.setenv("anthropic_api_key", "sk-ant-test")
+        monkeypatch.setenv("llm_provider", "anthropic")
+
+        settings = Settings(_env_file=None)
+
+        assert settings.discord_bot_token == "test_token"
+        assert settings.discord_guild_id == 123456789
+        assert settings.discord_channel_id is None
+        assert settings.discord_owner_id == 111222333
+        assert settings.llm_provider == "anthropic"
+        assert settings.llm_api_key == "sk-ant-test"
+
     def test_settings_poll_interval_bounds(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
         monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
@@ -47,6 +75,29 @@ class TestSettings:
         monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         monkeypatch.setenv("DEFAULT_POLL_INTERVAL_MINUTES", "0")
+
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None)
+
+    @pytest.mark.parametrize(
+        ("env_name", "env_value"),
+        [
+            ("GITHUB_POLL_INTERVAL_MINUTES", "61"),
+            ("CONTENT_POLL_INTERVAL_MINUTES", "0"),
+            ("DISCORD_MAX_MESSAGE_LENGTH", "2001"),
+            ("ARTICLE_SEARCH_MIN_RELEVANCE_SCORE", "1.1"),
+            ("ARTICLE_CHUNK_OVERLAP_CHARS", "1001"),
+            ("LORE_CHUNK_MAX_MESSAGES", "4"),
+        ],
+    )
+    def test_numeric_bounds_reject_invalid_feature_knobs(
+        self, monkeypatch: pytest.MonkeyPatch, env_name: str, env_value: str
+    ) -> None:
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
+        monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
+        monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv(env_name, env_value)
 
         with pytest.raises(ValidationError):
             Settings(_env_file=None)
