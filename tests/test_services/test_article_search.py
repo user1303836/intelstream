@@ -208,6 +208,35 @@ class TestArticleReranker:
         assert first.model_name == "rerank-model"
         assert created_models == [first]
 
+    async def test_get_model_returns_model_set_while_waiting_for_lock(self):
+        reranker = ArticleReranker(enabled=True, model_name="unused")
+        model = object()
+
+        class LockThatSetsModel:
+            async def __aenter__(self):
+                reranker._model = model
+
+            async def __aexit__(self, *_args: object) -> None:
+                return None
+
+        reranker._lock = LockThatSetsModel()  # type: ignore[assignment]
+
+        assert await reranker._get_model() is model
+
+    async def test_get_model_returns_none_when_load_failed_while_waiting_for_lock(self):
+        reranker = ArticleReranker(enabled=True, model_name="unused")
+
+        class LockThatMarksLoadFailed:
+            async def __aenter__(self):
+                reranker._load_failed = True
+
+            async def __aexit__(self, *_args: object) -> None:
+                return None
+
+        reranker._lock = LockThatMarksLoadFailed()  # type: ignore[assignment]
+
+        assert await reranker._get_model() is None
+
 
 class TestBuildArticleChunkId:
     def test_pads_chunk_index(self):

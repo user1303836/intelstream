@@ -390,6 +390,24 @@ class TestContentValidation:
     def test_validate_rejects_whitespace_only_text(self, extractor: ContentExtractor):
         assert extractor._validate_content(" " * (MIN_CONTENT_LENGTH + 10)) is False
 
+    def test_validate_rejects_text_without_split_words(self, extractor: ContentExtractor):
+        class TextWithoutWords(str):
+            def lower(self):
+                return self
+
+            def split(self):
+                return []
+
+        text = TextWithoutWords(
+            "This sentence makes the string long enough for validation. "
+            "This second sentence keeps the sentence count above the minimum. "
+            "This third sentence ensures the word extraction branch is reached. "
+            "Additional detail pushes the total content beyond the minimum length check. "
+            "A final sentence keeps the fixture realistic while still returning no split words."
+        )
+
+        assert extractor._validate_content(text) is False
+
     def test_validate_rejects_too_few_sentences(self, extractor: ContentExtractor):
         text = "A" * (MIN_CONTENT_LENGTH + 50) + ". Second sentence."
         assert len(text) >= MIN_CONTENT_LENGTH
