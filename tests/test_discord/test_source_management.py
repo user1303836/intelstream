@@ -226,6 +226,46 @@ class TestSourceManagementAdd:
         call_kwargs = interaction.followup.send.call_args.kwargs
         assert "embed" in call_kwargs
 
+    async def test_add_source_uses_selected_channel(
+        self, source_management: SourceManagement, mock_bot: MagicMock
+    ) -> None:
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = MagicMock()
+        interaction.response.defer = AsyncMock()
+        interaction.followup = MagicMock()
+        interaction.followup.send = AsyncMock()
+        interaction.user = MagicMock()
+        interaction.user.id = 123
+        interaction.guild_id = 456
+        interaction.channel_id = 789
+
+        target_channel = MagicMock(spec=discord.TextChannel)
+        target_channel.id = 999
+
+        source_type_choice = MagicMock()
+        source_type_choice.value = "substack"
+        source_type_choice.name = "Substack"
+
+        mock_bot.repository.get_source_by_identifier = AsyncMock(return_value=None)
+        mock_bot.repository.get_source_by_name = AsyncMock(return_value=None)
+
+        mock_source = MagicMock()
+        mock_source.id = "new-source-id"
+        mock_bot.repository.add_source = AsyncMock(return_value=mock_source)
+
+        await source_management.source_add.callback(
+            source_management,
+            interaction,
+            source_type=source_type_choice,
+            name="Test Newsletter",
+            url="https://test.substack.com",
+            channel=target_channel,
+        )
+
+        mock_bot.repository.add_source.assert_called_once()
+        call_kwargs = mock_bot.repository.add_source.call_args.kwargs
+        assert call_kwargs["channel_id"] == "999"
+
     async def test_add_source_duplicate_identifier(self, source_management, mock_bot):
         interaction = MagicMock(spec=discord.Interaction)
         interaction.response = MagicMock()

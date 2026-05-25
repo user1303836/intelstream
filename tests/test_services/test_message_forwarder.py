@@ -210,6 +210,39 @@ class TestForwardMessage:
         assert result == mock_forwarded
         mock_destination.send.assert_called_once()
 
+    async def test_forward_message_closes_files_after_successful_send(
+        self, forwarder: MessageForwarder, mock_bot: MagicMock
+    ) -> None:
+        mock_file = MagicMock(spec=discord.File)
+        mock_attachment = MagicMock()
+        mock_attachment.size = 1000
+        mock_attachment.to_file = AsyncMock(return_value=mock_file)
+
+        mock_destination = MagicMock(spec=discord.TextChannel)
+        mock_destination.guild = MagicMock()
+        mock_destination.guild.filesize_limit = 8_000_000
+        mock_forwarded = MagicMock(spec=discord.Message)
+        mock_destination.send = AsyncMock(return_value=mock_forwarded)
+
+        mock_bot.get_channel = MagicMock(return_value=mock_destination)
+
+        message = MagicMock(spec=discord.Message)
+        message.channel = MagicMock()
+        message.channel.id = 111
+        message.channel.name = "source"
+        message.id = 222
+        message.author = MagicMock()
+        message.author.bot = False
+        message.content = "Test message"
+        message.embeds = []
+        message.attachments = [mock_attachment]
+
+        result = await forwarder.forward_message(message, 333, "channel")
+
+        assert result == mock_forwarded
+        assert mock_destination.send.call_args.kwargs["files"] == [mock_file]
+        mock_file.close.assert_called_once()
+
     async def test_forward_message_destination_not_found(self, forwarder, mock_bot):
         mock_bot.get_channel = MagicMock(return_value=None)
         mock_bot.guilds = []
