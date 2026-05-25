@@ -343,6 +343,28 @@ class TestLLMExtractionStrategy:
         assert result is not None
         assert result.posts[0].url == "https://example.com/fresh"
 
+    @respx.mock
+    async def test_discover_ignores_non_list_cache_and_refreshes(
+        self, llm_strategy: LLMExtractionStrategy, mock_repository, mock_anthropic_client
+    ):
+        html = "<html><body>Content</body></html>"
+        cached = MagicMock(spec=ExtractionCache)
+        cached.content_hash = llm_strategy._get_content_hash(html)
+        cached.posts_json = json.dumps({"url": "https://example.com/not-a-list"})
+        mock_repository.get_extraction_cache.return_value = cached
+        llm_response = MagicMock()
+        llm_response.content = [
+            MagicMock(text='[{"url": "https://example.com/fresh", "title": "Fresh"}]')
+        ]
+        mock_anthropic_client.messages.create.return_value = llm_response
+        respx.get("https://example.com/").mock(return_value=httpx.Response(200, text=html))
+
+        result = await llm_strategy.discover("https://example.com/")
+
+        assert result is not None
+        assert result.posts[0].url == "https://example.com/fresh"
+        mock_repository.set_extraction_cache.assert_awaited_once()
+
     async def test_discover_caches_empty_result_after_timeout(
         self, llm_strategy: LLMExtractionStrategy, mock_repository
     ):
@@ -369,6 +391,62 @@ class TestLLMExtractionStrategy:
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         )
 
+    def test_get_content_hash_strips_navigation_and_script_tags(
+        self, llm_strategy: LLMExtractionStrategy
+    ):
+        with_noise = llm_strategy._get_content_hash(
+            """
+            <html>
+                <body>
+                    <nav>Menu</nav>
+                    <script>analytics()</script>
+                    <main>Useful Article Text</main>
+                </body>
+            </html>
+            """
+        )
+        without_noise = llm_strategy._get_content_hash("<main>Useful Article Text</main>")
+
+        assert with_noise == without_noise
+
+    async def test_fetch_html_uses_injected_http_client(self, mock_repository):
+        client = MagicMock()
+        client.get = AsyncMock(
+            return_value=httpx.Response(
+                200,
+                text="<html>ok</html>",
+                request=httpx.Request("GET", "https://example.com/"),
+            )
+        )
+        strategy = LLMExtractionStrategy(
+            anthropic_client=MagicMock(),
+            repository=mock_repository,
+            http_client=client,
+        )
+
+        result = await strategy._fetch_html("https://example.com/")
+
+        assert result == "<html>ok</html>"
+        client.get.assert_awaited_once()
+
+    def test_clean_html_removes_noise_tags_and_unneeded_attrs(
+        self, llm_strategy: LLMExtractionStrategy
+    ):
+        html = """
+        <main data-extra="remove" href="/kept">
+            <svg><path d="M0 0" /></svg>
+            <article onclick="remove()" class="post" data-href="/post">Post</article>
+        </main>
+        """
+
+        cleaned = llm_strategy._clean_html(html)
+
+        assert "<svg" not in cleaned
+        assert "onclick" not in cleaned
+        assert "data-extra" not in cleaned
+        assert 'class="post"' in cleaned
+        assert 'data-href="/post"' in cleaned
+
     def test_clean_html_truncates_at_recent_closing_tag(self, llm_strategy: LLMExtractionStrategy):
         settings = MagicMock()
         settings.max_html_length = 40
@@ -382,6 +460,21 @@ class TestLLMExtractionStrategy:
 
         assert len(cleaned) <= 40
         assert cleaned.endswith(">")
+
+    def test_clean_html_truncates_to_previous_tag_when_close_is_stale(
+        self, llm_strategy: LLMExtractionStrategy
+    ):
+        settings = MagicMock()
+        settings.max_html_length = 1100
+        html = "<html><body>" + ("x" * 1200) + "<span>tail</span></body></html>"
+
+        with patch(
+            "intelstream.adapters.strategies.llm_extraction.get_settings",
+            return_value=settings,
+        ):
+            cleaned = llm_strategy._clean_html(html)
+
+        assert cleaned == "<html>"
 
     def test_clean_html_truncates_before_open_tag_when_no_recent_close(
         self, llm_strategy: LLMExtractionStrategy
