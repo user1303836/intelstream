@@ -157,6 +157,28 @@ class TestScoreCommand:
         assert "Known User: 4" in embed.fields[0].value
         assert "Unknown (20): 7" in embed.fields[1].value
 
+    async def test_score_renders_unknown_user_and_known_pinged_member(self):
+        bot = MagicMock()
+        bot.repository.get_suck_boobs_leaderboard = AsyncMock(
+            return_value=(
+                [SimpleNamespace(user_id="10", times_used=4)],
+                [SimpleNamespace(user_id="20", times_pinged=7)],
+            )
+        )
+        cog = SuckBoobs(bot)
+        interaction = make_interaction()
+        member = MagicMock(spec=discord.Member)
+        member.display_name = "Known Pinged"
+        interaction.guild.fetch_member = AsyncMock(
+            side_effect=[discord.DiscordException("missing"), member]
+        )
+
+        await cog.suck_boobs_score.callback(cog, interaction)
+
+        embed = interaction.followup.send.await_args.kwargs["embed"]
+        assert "Unknown (10): 4" in embed.fields[0].value
+        assert "Known Pinged: 7" in embed.fields[1].value
+
 
 class TestSetup:
     async def test_setup_registers_cog(self):

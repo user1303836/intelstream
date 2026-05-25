@@ -9,6 +9,7 @@ from intelstream.discord.cogs.github import (
     ConfirmGitHubRemoveView,
     GitHubCommands,
     parse_github_url,
+    setup,
 )
 from intelstream.services.github_service import GitHubAPIError
 
@@ -119,6 +120,28 @@ class TestParseGitHubUrl:
         assert result == ("owner", "repo")
 
 
+class TestConfirmGitHubRemoveView:
+    async def test_confirm_button_marks_view_confirmed(self) -> None:
+        view = ConfirmGitHubRemoveView()
+        interaction = make_interaction()
+
+        await view.children[0].callback(interaction)
+
+        assert view.confirmed is True
+        assert view.is_finished() is True
+        interaction.response.defer.assert_awaited_once()
+
+    async def test_cancel_button_marks_view_cancelled(self) -> None:
+        view = ConfirmGitHubRemoveView()
+        interaction = make_interaction()
+
+        await view.children[1].callback(interaction)
+
+        assert view.confirmed is False
+        assert view.is_finished() is True
+        interaction.response.defer.assert_awaited_once()
+
+
 class TestGitHubAutocomplete:
     def _make_repo(self, owner: str, repo: str, is_active: bool) -> MagicMock:
         r = MagicMock()
@@ -215,6 +238,11 @@ class TestGitHubServiceLifecycle:
         await github_commands.cog_unload()
 
         service.close.assert_awaited_once()
+
+    async def test_cog_unload_without_cached_service_noops(self, github_commands):
+        github_commands._github_service = None
+
+        await github_commands.cog_unload()
 
 
 class TestGitHubAdd:
@@ -319,6 +347,28 @@ class TestGitHubAdd:
         embed = interaction.followup.send.call_args.kwargs["embed"]
         assert embed.title == "GitHub Repository Added"
         assert "Commits, Issues" in embed.fields[2].value
+
+    async def test_add_success_can_track_only_prs(self, github_commands, mock_bot):
+        service = MagicMock()
+        service.validate_repo = AsyncMock(return_value=True)
+        github_commands._get_github_service = MagicMock(return_value=service)
+        interaction = make_interaction(channel=make_channel(channel_id=321))
+        mock_bot.repository.get_github_repo = AsyncMock(return_value=None)
+        stored = MagicMock()
+        stored.id = 42
+        mock_bot.repository.add_github_repo = AsyncMock(return_value=stored)
+
+        await github_commands.github_add.callback(
+            github_commands,
+            interaction,
+            repo_url="Org/Repo",
+            track_commits=False,
+            track_prs=True,
+            track_issues=False,
+        )
+
+        embed = interaction.followup.send.call_args.kwargs["embed"]
+        assert embed.fields[2].value == "PRs"
 
 
 class TestGitHubList:
@@ -599,6 +649,26 @@ class TestGitHubToggle:
         mock_bot.repository.set_github_repo_active.assert_awaited_once_with(42, expected_state)
         assert expected_word in interaction.followup.send.call_args.args[0]
 
+    async def test_remove_autocomplete_delegates_to_repo_autocomplete(self, github_commands):
+        interaction = make_interaction(channel=make_channel())
+        choice = app_commands.Choice(name="[ON] org/repo", value="org/repo")
+        github_commands._github_repo_autocomplete = AsyncMock(return_value=[choice])
+
+        choices = await github_commands.github_remove_autocomplete(interaction, "org")
+
+        assert choices == [choice]
+        github_commands._github_repo_autocomplete.assert_awaited_once_with(interaction, "org")
+
+    async def test_toggle_autocomplete_delegates_to_repo_autocomplete(self, github_commands):
+        interaction = make_interaction(channel=make_channel())
+        choice = app_commands.Choice(name="[ON] org/repo", value="org/repo")
+        github_commands._github_repo_autocomplete = AsyncMock(return_value=[choice])
+
+        choices = await github_commands.github_toggle_autocomplete(interaction, "org")
+
+        assert choices == [choice]
+        github_commands._github_repo_autocomplete.assert_awaited_once_with(interaction, "org")
+
 
 class TestGitHubErrorHandlers:
     @pytest.mark.parametrize(
@@ -631,3 +701,15 @@ class TestGitHubErrorHandlers:
 
         with pytest.raises(app_commands.CommandInvokeError):
             await getattr(github_commands, handler_name)(interaction, error)
+
+
+class TestSetup:
+    async def test_setup_registers_cog(self):
+        bot = MagicMock()
+        bot.add_cog = AsyncMock()
+
+        await setup(bot)
+
+        [cog] = bot.add_cog.await_args.args
+        assert isinstance(cog, GitHubCommands)
+        assert cog.bot is bot
