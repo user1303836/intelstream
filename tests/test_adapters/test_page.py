@@ -250,6 +250,21 @@ class TestPageAdapter:
 
         assert adapter._parse_post(soup.select_one("article.post"), "https://example.com") is None
 
+    def test_parse_post_skips_missing_title_element(
+        self, sample_profile: ExtractionProfile
+    ) -> None:
+        soup = BeautifulSoup(
+            """
+            <article class="post">
+              <a class="link" href="/posts/no-title">Read more</a>
+            </article>
+            """,
+            "lxml",
+        )
+        adapter = PageAdapter(extraction_profile=sample_profile)
+
+        assert adapter._parse_post(soup.select_one("article.post"), "https://example.com") is None
+
     def test_parse_post_skips_missing_url_attribute(
         self, sample_profile: ExtractionProfile
     ) -> None:
@@ -316,6 +331,15 @@ class TestPageAdapter:
         adapter = PageAdapter(extraction_profile=sample_profile)
 
         result = adapter._parse_date_string("Published January 15 2024 by Editorial")
+
+        assert result == datetime(2024, 1, 15, tzinfo=UTC)
+
+    def test_parse_date_string_extracts_embedded_abbreviated_month_date(
+        self, sample_profile: ExtractionProfile
+    ) -> None:
+        adapter = PageAdapter(extraction_profile=sample_profile)
+
+        result = adapter._parse_date_string("Published Jan 15 2024 by Editorial")
 
         assert result == datetime(2024, 1, 15, tzinfo=UTC)
 
