@@ -82,6 +82,9 @@ class TestIsTrivial:
     def test_url_only(self):
         assert _is_trivial("https://example.com/page") is True
 
+    def test_emoji_only(self):
+        assert _is_trivial("\U0001f600") is True
+
     def test_normal_text(self):
         assert _is_trivial("This is a normal message") is False
 
@@ -320,6 +323,34 @@ class TestMessageChunker:
         ]
         result = chunker.chunk_messages(messages, "1", "2", "test")
         assert result == []
+
+    def test_discards_current_chunk_before_gap_and_keeps_next_valid_chunk(self):
+        chunker = MessageChunker(gap_minutes=10, max_messages=20)
+        base = datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
+        messages = [
+            _make_raw(id=1, content="short setup", created_at=base),
+            _make_raw(id=2, content="another short setup", created_at=base + timedelta(minutes=1)),
+            _make_raw(
+                id=3,
+                content="Fresh thread with enough detail to keep as a chunk",
+                created_at=base + timedelta(minutes=30),
+            ),
+            _make_raw(
+                id=4,
+                content="Second useful message that belongs to the later thread",
+                created_at=base + timedelta(minutes=31),
+            ),
+            _make_raw(
+                id=5,
+                content="Third useful message that makes the later chunk meaningful",
+                created_at=base + timedelta(minutes=32),
+            ),
+        ]
+
+        result = chunker.chunk_messages(messages, "1", "2", "test")
+
+        assert len(result) == 1
+        assert [msg.id for msg in result[0].messages] == [3, 4, 5]
 
 
 class TestMessageIngestionService:
@@ -583,6 +614,47 @@ class TestMessageIngestionService:
         first_final_chunk = service.store_chunks.await_args_list[-1].args[0][0]
         assert first_final_chunk.start_message_id == "3"
 
+    async def test_ingest_channel_checkpoints_without_chunks_and_logs_progress(
+        self, service, mock_deps
+    ):
+        repository, _, _ = mock_deps
+        repository.get_or_create_ingestion_progress = AsyncMock(return_value=_make_progress())
+        repository.update_ingestion_progress = AsyncMock()
+        messages = [_make_discord_message(i) for i in [1, 2]]
+        raw_messages = [
+            _make_raw(
+                id=i,
+                content=f"Checkpoint message {i} remains buffered",
+                created_at=datetime(2026, 5, 25, 12, i, tzinfo=UTC),
+            )
+            for i in [1, 2]
+        ]
+        channel = FakeHistoryChannel(messages)
+        service.store_chunks = AsyncMock(return_value=0)
+        service._chunker.chunk_messages = MagicMock(return_value=[])
+
+        with (
+            patch("intelstream.services.message_ingestion.CHECKPOINT_INTERVAL", 1),
+            patch("intelstream.services.message_ingestion.LOG_INTERVAL", 1),
+            patch("intelstream.services.message_ingestion.YIELD_INTERVAL", 1000),
+            patch("intelstream.services.message_ingestion.logger.info") as log_info,
+            patch(
+                "intelstream.services.message_ingestion.discord_message_to_raw",
+                side_effect=raw_messages,
+            ),
+        ):
+            await service.ingest_channel(channel, "guild-1")
+
+        service.store_chunks.assert_not_awaited()
+        assert service._chunker.chunk_messages.call_count == 3
+        repository.update_ingestion_progress.assert_any_await(
+            "guild-1",
+            "222",
+            last_message_id="2",
+            total_fetched=2,
+        )
+        assert any(call.args[0] == "Ingestion progress" for call in log_info.call_args_list)
+
     async def test_ingest_channel_yields_periodically(self, service, mock_deps):
         repository, _, _ = mock_deps
         repository.get_or_create_ingestion_progress = AsyncMock(return_value=_make_progress())
@@ -624,6 +696,55 @@ class TestMessageIngestionService:
             status="paused",
             total_fetched=7,
             last_message_id="5",
+        )
+
+    async def test_ingest_channel_records_buffer_last_id_on_error(self, service, mock_deps):
+        repository, _, _ = mock_deps
+        repository.get_or_create_ingestion_progress = AsyncMock(return_value=_make_progress())
+        repository.update_ingestion_progress = AsyncMock()
+        channel = FakeHistoryChannel([_make_discord_message(10)])
+        raw = _make_raw(id=10, content="Buffered message with enough context to store")
+        chunk = Chunk(
+            messages=[raw],
+            guild_id="guild-1",
+            channel_id="222",
+            channel_name="general",
+        )
+        service._chunker.chunk_messages = MagicMock(return_value=[chunk])
+        service.store_chunks = AsyncMock(side_effect=RuntimeError("store failed"))
+
+        with patch(
+            "intelstream.services.message_ingestion.discord_message_to_raw",
+            return_value=raw,
+        ):
+            await service.ingest_channel(channel, "guild-1")
+
+        repository.update_ingestion_progress.assert_any_await(
+            "guild-1",
+            "222",
+            status="paused",
+            total_fetched=1,
+            last_message_id="10",
+        )
+
+    async def test_ingest_channel_records_none_last_id_on_early_error(self, service, mock_deps):
+        repository, _, _ = mock_deps
+        repository.get_or_create_ingestion_progress = AsyncMock(return_value=_make_progress())
+        repository.update_ingestion_progress = AsyncMock()
+        channel = FakeHistoryChannel([_make_discord_message(10)])
+
+        with patch(
+            "intelstream.services.message_ingestion.discord_message_to_raw",
+            side_effect=RuntimeError("convert failed"),
+        ):
+            await service.ingest_channel(channel, "guild-1")
+
+        repository.update_ingestion_progress.assert_any_await(
+            "guild-1",
+            "222",
+            status="paused",
+            total_fetched=0,
+            last_message_id=None,
         )
 
     async def test_run_backfill_filters_sorts_and_ingests_readable_channels(self, service):
