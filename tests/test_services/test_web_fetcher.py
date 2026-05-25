@@ -4,6 +4,7 @@ import httpx
 import pytest
 from bs4 import BeautifulSoup
 
+from intelstream.services import web_fetcher
 from intelstream.services.web_fetcher import MAX_REDIRECTS, WebContent, WebFetcher, WebFetchError
 
 
@@ -323,6 +324,45 @@ class TestWebFetcher:
             with pytest.raises(RuntimeError, match="Client creation failed"):
                 await fetcher.fetch("https://example.com/article")
 
+    async def test_fetch_truncates_oversized_html_before_parsing(self):
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.is_redirect = False
+        mock_response.text = "<html>" + ("x" * 200) + "</html>"
+        mock_response.headers = {"content-type": "text/html"}
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        fetcher = WebFetcher(http_client=mock_client)
+        expected = WebContent(url="https://example.com/article", title="Title", content="content")
+
+        with (
+            patch.object(web_fetcher, "MAX_CONTENT_LENGTH", 25),
+            patch.object(fetcher, "_parse_html", return_value=expected) as parse_html,
+        ):
+            result = await fetcher.fetch("https://example.com/article")
+
+        assert result is expected
+        assert len(parse_html.call_args.args[1]) == 25
+
+    async def test_fetch_closes_owned_client_after_success(self, sample_html):
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.is_redirect = False
+        mock_response.text = sample_html
+        mock_response.headers = {"content-type": "text/html"}
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.aclose = AsyncMock()
+
+        with patch("intelstream.services.web_fetcher.httpx.AsyncClient", return_value=mock_client):
+            result = await WebFetcher().fetch("https://example.com/article")
+
+        assert isinstance(result, WebContent)
+        mock_client.aclose.assert_awaited_once()
+
     async def test_fetch_rejects_localhost_url(self):
         fetcher = WebFetcher()
         with pytest.raises(WebFetchError, match="SSRF"):
@@ -445,6 +485,11 @@ class TestWebFetcherParsingHelpers:
         assert fetcher._extract_content(content_div) == "Div text"
         assert fetcher._extract_content(body_only) == "Body text"
         assert fetcher._extract_content(loose_text) == "Loose text"
+
+    def test_extract_content_returns_document_text_without_body(self):
+        soup = BeautifulSoup("", "lxml")
+
+        assert WebFetcher()._extract_content(soup) == ""
 
     def test_extract_author_uses_article_author_meta(self):
         soup = BeautifulSoup(

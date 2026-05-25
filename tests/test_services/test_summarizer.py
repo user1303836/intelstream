@@ -336,3 +336,15 @@ class TestSummarizeChat:
 
         with pytest.raises(SummarizationError, match="API error"):
             await summarizer.summarize_chat(messages_text="test", message_count=1)
+
+    async def test_summarize_chat_rate_limit_retries_then_fails(self, mock_client):
+        mock_client.complete = AsyncMock(side_effect=LLMRateLimitError("Rate limited"))
+        summarizer = SummarizationService(client=mock_client)
+        summarizer.summarize_chat.retry.wait = lambda *_a, **_kw: 0  # type: ignore[union-attr]
+
+        from tenacity import RetryError
+
+        with pytest.raises(RetryError):
+            await summarizer.summarize_chat(messages_text="test messages", message_count=2)
+
+        assert mock_client.complete.call_count == 3
