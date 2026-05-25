@@ -192,6 +192,33 @@ class TestDownloadAttachments:
         first_attachment.to_file.assert_awaited_once()
         second_attachment.to_file.assert_not_called()
 
+    async def test_download_attachments_only_reads_first_ten_attachments(self, forwarder):
+        attachments = []
+        files = []
+        for index in range(12):
+            mock_file = MagicMock(spec=discord.File)
+            attachment = MagicMock()
+            attachment.filename = f"file-{index}.txt"
+            attachment.size = 1000
+            attachment.to_file = AsyncMock(return_value=mock_file)
+            attachments.append(attachment)
+            files.append(mock_file)
+
+        message = MagicMock(spec=discord.Message)
+        message.attachments = attachments
+
+        destination = MagicMock(spec=discord.TextChannel)
+        destination.guild = MagicMock()
+        destination.guild.filesize_limit = 8_000_000
+
+        result = await forwarder._download_attachments(message, destination)
+
+        assert result == files[:10]
+        for attachment in attachments[:10]:
+            attachment.to_file.assert_awaited_once()
+        for attachment in attachments[10:]:
+            attachment.to_file.assert_not_called()
+
     async def test_download_attachments_http_error(self, forwarder):
         mock_attachment = MagicMock()
         mock_attachment.size = 1000
@@ -435,6 +462,32 @@ class TestForwardMessage:
         assert call_kwargs["embeds"] == [mock_embed]
         assert "content" not in call_kwargs
         assert "files" not in call_kwargs
+
+    async def test_forward_embed_only_message_caps_embeds_at_discord_limit(
+        self, forwarder, mock_bot
+    ):
+        mock_destination = MagicMock(spec=discord.TextChannel)
+        mock_destination.guild = MagicMock()
+        mock_destination.guild.filesize_limit = 8_000_000
+        mock_forwarded = MagicMock(spec=discord.Message)
+        mock_destination.send = AsyncMock(return_value=mock_forwarded)
+
+        mock_bot.get_channel = MagicMock(return_value=mock_destination)
+
+        embeds = [MagicMock(spec=discord.Embed) for _ in range(12)]
+        message = MagicMock(spec=discord.Message)
+        message.channel = MagicMock()
+        message.channel.id = 111
+        message.id = 222
+        message.content = ""
+        message.embeds = embeds
+        message.attachments = []
+
+        result = await forwarder.forward_message(message, 333, "channel")
+
+        assert result == mock_forwarded
+        call_kwargs = mock_destination.send.call_args.kwargs
+        assert call_kwargs["embeds"] == embeds[:10]
 
     async def test_forward_empty_message_returns_none(self, forwarder, mock_bot):
         """Messages with no content, no attachments, and no embeds are skipped."""
