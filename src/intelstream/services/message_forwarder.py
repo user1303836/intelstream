@@ -66,9 +66,8 @@ class MessageForwarder:
                             content=content,
                             files=files,
                         )
-                except Exception:
+                finally:
                     self._close_files(files)
-                    raise
 
                 logger.info(
                     "Message forwarded",
