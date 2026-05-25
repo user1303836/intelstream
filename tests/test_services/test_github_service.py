@@ -14,6 +14,16 @@ def github_service():
 
 
 class TestGitHubServiceClient:
+    def test_headers_include_auth_and_github_api_contract(self) -> None:
+        service = GitHubService(token="secret-token")
+
+        headers = service._headers()
+
+        assert headers["Authorization"] == "Bearer secret-token"
+        assert headers["Accept"] == "application/vnd.github+json"
+        assert headers["X-GitHub-Api-Version"] == "2022-11-28"
+        assert headers["User-Agent"] == "intelstream-bot"
+
     async def test_get_client_reuses_injected_client(self) -> None:
         client = AsyncMock(spec=httpx.AsyncClient)
         service = GitHubService(token="test-token", http_client=client)
@@ -208,6 +218,35 @@ class TestGitHubServiceCommits:
         assert events[0].author == "Committer Name"
         assert events[0].description is None
         assert events[0].created_at.tzinfo == UTC
+        await github_service.close()
+
+    @respx.mock
+    async def test_fetch_commits_uses_limit_and_truncates_long_title(
+        self, github_service: GitHubService
+    ) -> None:
+        long_subject = "x" * 300
+        route = respx.get("https://api.github.com/repos/owner/repo/commits").mock(
+            return_value=httpx.Response(
+                200,
+                json=[
+                    {
+                        "sha": "long123",
+                        "commit": {
+                            "message": f"{long_subject}\n\nDetailed body",
+                            "author": {"name": "Author", "date": "2024-01-15T10:30:00Z"},
+                        },
+                        "author": {"login": "author", "avatar_url": ""},
+                        "html_url": "",
+                    }
+                ],
+            )
+        )
+
+        [event] = await github_service.fetch_new_commits("owner", "repo", limit=3)
+
+        assert route.calls.last.request.url.params["per_page"] == "3"
+        assert event.title == long_subject[:256]
+        assert event.description == f"{long_subject}\n\nDetailed body"
         await github_service.close()
 
 
@@ -424,6 +463,16 @@ class TestGitHubServiceIssues:
 
 
 class TestGitHubServiceHelpers:
+    def test_parse_datetime_accepts_zulu_timestamp(self, github_service: GitHubService) -> None:
+        parsed = github_service._parse_datetime("2024-01-15T10:30:00Z")
+
+        assert parsed.year == 2024
+        assert parsed.month == 1
+        assert parsed.day == 15
+        assert parsed.hour == 10
+        assert parsed.minute == 30
+        assert parsed.tzinfo == UTC
+
     def test_parse_datetime_returns_now_for_empty_and_invalid_values(
         self, github_service: GitHubService
     ) -> None:
