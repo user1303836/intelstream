@@ -433,6 +433,15 @@ class TestIndex:
         with pytest.raises(asyncio.CancelledError):
             await search_cog._ensure_article_index()
 
+    async def test_ensure_article_index_allows_zero_recovery_attempts(
+        self, search_cog, mock_bot, monkeypatch
+    ):
+        monkeypatch.setattr(search_module, "INDEX_RECOVERY_MAX_ATTEMPTS", 0)
+
+        await search_cog._ensure_article_index()
+
+        mock_bot.repository.count_summarized_content_items.assert_not_called()
+
     async def test_article_index_unhealthy_when_article_counts_mismatch(self, search_cog):
         status = ArticleIndexStatus(
             expected_articles=2,

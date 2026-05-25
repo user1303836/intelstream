@@ -3,9 +3,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from intelstream.database.exceptions import (
+    DatabaseConnectionError,
     DuplicateContentError,
     DuplicateSourceError,
     SourceNotFoundError,
@@ -299,6 +301,33 @@ class TestSourceOperations:
         all_sources = await repository.get_all_sources()
         assert len(all_sources) == 3
 
+    async def test_get_sources_for_guild_returns_active_sources_only(
+        self, repository: Repository
+    ) -> None:
+        active = await repository.add_source(
+            source_type=SourceType.RSS,
+            name="Guild Active",
+            identifier="guild-active",
+            guild_id="guild-a",
+        )
+        inactive = await repository.add_source(
+            source_type=SourceType.RSS,
+            name="Guild Inactive",
+            identifier="guild-inactive",
+            guild_id="guild-a",
+        )
+        await repository.add_source(
+            source_type=SourceType.RSS,
+            name="Other Guild",
+            identifier="other-guild",
+            guild_id="guild-b",
+        )
+        await repository.set_source_active(inactive.identifier, False)
+
+        sources = await repository.get_sources_for_guild("guild-a")
+
+        assert [source.id for source in sources] == [active.id]
+
     async def test_set_source_active(self, repository: Repository) -> None:
         await repository.add_source(
             source_type=SourceType.RSS,
@@ -316,6 +345,27 @@ class TestSourceOperations:
         all_sources = await repository.get_all_sources(active_only=False)
         assert len(all_sources) == 1
 
+    async def test_set_source_active_missing_source_raises(self, repository: Repository) -> None:
+        with pytest.raises(SourceNotFoundError):
+            await repository.set_source_active("missing-source", True)
+
+    async def test_set_source_active_wraps_operational_error(
+        self, repository: Repository, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        await repository.add_source(
+            source_type=SourceType.RSS,
+            name="Operational",
+            identifier="operational",
+        )
+
+        async def fail_commit(*_args: object, **_kwargs: object) -> None:
+            raise OperationalError("commit", {}, Exception("database locked"))
+
+        monkeypatch.setattr("sqlalchemy.ext.asyncio.AsyncSession.commit", fail_commit)
+
+        with pytest.raises(DatabaseConnectionError, match="Failed to update source"):
+            await repository.set_source_active("operational", False)
+
     async def test_delete_source(self, repository: Repository) -> None:
         await repository.add_source(
             source_type=SourceType.SUBSTACK,
@@ -332,6 +382,23 @@ class TestSourceOperations:
     async def test_delete_source_not_found(self, repository: Repository) -> None:
         with pytest.raises(SourceNotFoundError):
             await repository.delete_source("nonexistent")
+
+    async def test_delete_source_wraps_operational_error(
+        self, repository: Repository, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        await repository.add_source(
+            source_type=SourceType.SUBSTACK,
+            name="Delete Error",
+            identifier="delete-error",
+        )
+
+        async def fail_commit(*_args: object, **_kwargs: object) -> None:
+            raise OperationalError("commit", {}, Exception("database locked"))
+
+        monkeypatch.setattr("sqlalchemy.ext.asyncio.AsyncSession.commit", fail_commit)
+
+        with pytest.raises(DatabaseConnectionError, match="Failed to delete source"):
+            await repository.delete_source("delete-error")
 
     async def test_source_lookup_helpers(self, repository: Repository) -> None:
         source_a = await repository.add_source(
@@ -398,6 +465,7 @@ class TestSourceOperations:
             feed_url="https://example.com/feed",
             url_pattern="/posts/*",
         )
+        assert await repository.update_source_discovery_strategy(source.id, "sitemap") is True
         assert await repository.update_source_discovery_strategy("missing", "rss") is False
         assert await repository.update_source_content_hash(source.id, "abc123") is True
         assert await repository.update_source_content_hash("missing", "abc123") is False
@@ -406,11 +474,12 @@ class TestSourceOperations:
         assert await repository.increment_failure_count(source.id) == 2
         assert await repository.increment_failure_count("missing") == 0
         assert await repository.reset_failure_count(source.id) is True
+        assert await repository.reset_failure_count(source.id) is True
         assert await repository.reset_failure_count("missing") is False
 
         updated = await repository.get_source_by_id(source.id)
         assert updated is not None
-        assert updated.discovery_strategy == "rss"
+        assert updated.discovery_strategy == "sitemap"
         assert updated.feed_url == "https://example.com/feed"
         assert updated.url_pattern == "/posts/*"
         assert updated.last_content_hash == "abc123"
@@ -549,6 +618,38 @@ class TestContentItemOperations:
         unposted = await repository.get_unposted_content_items()
         assert len(unposted) == 1
         assert unposted[0].external_id == "post-2"
+
+    async def test_get_unsummarized_and_latest_content_items(self, repository: Repository) -> None:
+        source = await repository.add_source(
+            source_type=SourceType.RSS,
+            name="Queue Source",
+            identifier="queue-source",
+        )
+        old_item = await repository.add_content_item(
+            source_id=source.id,
+            external_id="old-item",
+            title="Old Item",
+            original_url="https://example.com/old",
+            author="Author",
+            published_at=datetime(2024, 1, 1),
+        )
+        latest_item = await repository.add_content_item(
+            source_id=source.id,
+            external_id="latest-item",
+            title="Latest Item",
+            original_url="https://example.com/latest",
+            author="Author",
+            published_at=datetime(2024, 1, 2),
+        )
+        await repository.update_content_item_summary(old_item.id, "Already summarized")
+
+        unsummarized = await repository.get_unsummarized_content_items()
+        latest = await repository.get_latest_content_for_source(source.id)
+
+        assert [item.id for item in unsummarized] == [latest_item.id]
+        assert latest is not None
+        assert latest.id == latest_item.id
+        assert await repository.get_latest_content_for_source("missing-source") is None
 
     async def test_content_lookup_count_and_known_urls(self, repository: Repository) -> None:
         source = await repository.add_source(
@@ -905,6 +1006,9 @@ class TestFirstPostingOperations:
         latest = await repository.get_last_posted_content("guild-a")
         assert latest is not None
         assert latest.external_id == "real-post"
+        global_latest = await repository.get_last_posted_content()
+        assert global_latest is not None
+        assert global_latest.external_id == "real-post"
         assert await repository.get_last_posted_content("missing") is None
 
 
@@ -959,6 +1063,43 @@ class TestDiscordConfigOperations:
         assert results[0].id == results[1].id == results[2].id
 
         await repository.close()
+
+    async def test_get_or_create_discord_config_raises_after_retry_exhaustion(
+        self, repository: Repository, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class EmptyResult:
+            def scalar_one_or_none(self) -> None:
+                return None
+
+        class AlwaysConflictingSession:
+            def __init__(self) -> None:
+                self.rollbacks = 0
+
+            async def __aenter__(self) -> "AlwaysConflictingSession":
+                return self
+
+            async def __aexit__(self, *_args: object) -> None:
+                return None
+
+            async def execute(self, *_args: object, **_kwargs: object) -> EmptyResult:
+                return EmptyResult()
+
+            def add(self, _config: DiscordConfig) -> None:
+                return None
+
+            async def commit(self) -> None:
+                raise IntegrityError("insert", {}, Exception("conflict"))
+
+            async def rollback(self) -> None:
+                self.rollbacks += 1
+
+        session = AlwaysConflictingSession()
+        monkeypatch.setattr(repository, "session", lambda: session)
+
+        with pytest.raises(RuntimeError, match="Failed to get or create discord config"):
+            await repository.get_or_create_discord_config("guild-a", "channel-a")
+
+        assert session.rollbacks == 3
 
 
 class TestMigrations:
@@ -1147,6 +1288,7 @@ class TestForwardingRuleOperations:
 
         await repository.increment_forwarding_count(rule.id)
         await repository.increment_forwarding_count(rule.id)
+        assert await repository.increment_forwarding_count("missing-rule") is False
 
         rules = await repository.get_forwarding_rules_for_source("source-456")
         assert len(rules) == 1
@@ -1340,6 +1482,7 @@ class TestGitHubRepoOperations:
         assert found.last_pr_number == 42
         assert found.last_issue_number == 10
         assert found.last_polled_at is not None
+        assert await repository.update_github_repo_state(repo.id) is True
 
     async def test_increment_and_reset_github_failure(self, repository: Repository) -> None:
         repo = await repository.add_github_repo(
@@ -1360,6 +1503,7 @@ class TestGitHubRepoOperations:
         found = await repository.get_github_repo("guild-123", "owner", "repo")
         assert found is not None
         assert found.consecutive_failures == 0
+        assert await repository.reset_github_failure(repo.id) is True
 
     async def test_set_github_repo_active(self, repository: Repository) -> None:
         repo = await repository.add_github_repo(
@@ -1627,6 +1771,8 @@ class TestMessageChunkMetaOperations:
             limit=10,
         )
         assert [chunk.id for chunk in guild_a_chunks] == ["chunk-a", "chunk-b"]
+        all_chunks = await repository.get_message_chunk_metas_batch(limit=10)
+        assert [chunk.id for chunk in all_chunks] == ["chunk-a", "chunk-b", "chunk-c"]
 
         by_ids = await repository.get_message_chunk_metas_by_ids(["chunk-b", "missing", "chunk-a"])
         assert {chunk.id for chunk in by_ids} == {"chunk-a", "chunk-b"}
@@ -1672,6 +1818,15 @@ class TestIngestionProgressOperations:
         assert await repository.update_ingestion_progress(
             "guild-a",
             "channel-a",
+            total_fetched=26,
+        )
+        [without_status_change] = await repository.get_ingestion_progress_for_guild("guild-a")
+        assert without_status_change.total_fetched == 26
+        assert without_status_change.status == "in_progress"
+
+        assert await repository.update_ingestion_progress(
+            "guild-a",
+            "channel-a",
             status="completed",
         )
         [completed] = await repository.get_ingestion_progress_for_guild("guild-a")
@@ -1686,6 +1841,60 @@ class TestIngestionProgressOperations:
 
         assert len(in_progress) == 1
         assert in_progress[0].status == "paused"
+
+    async def test_get_or_create_ingestion_progress_recovers_from_integrity_race(
+        self, repository: Repository, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        recovered = IngestionProgress(guild_id="guild-a", channel_id="channel-a")
+
+        class MissingProgressResult:
+            def scalar_one_or_none(self) -> None:
+                return None
+
+        class RecoveredProgressResult:
+            def scalar_one(self) -> IngestionProgress:
+                return recovered
+
+        class RacingSession:
+            def __init__(self) -> None:
+                self.execute_count = 0
+                self.rolled_back = False
+                self.refreshed: IngestionProgress | None = None
+
+            async def __aenter__(self) -> "RacingSession":
+                return self
+
+            async def __aexit__(self, *_args: object) -> None:
+                return None
+
+            async def execute(
+                self, *_args: object, **_kwargs: object
+            ) -> MissingProgressResult | RecoveredProgressResult:
+                self.execute_count += 1
+                if self.execute_count == 1:
+                    return MissingProgressResult()
+                return RecoveredProgressResult()
+
+            def add(self, _progress: IngestionProgress) -> None:
+                return None
+
+            async def commit(self) -> None:
+                raise IntegrityError("insert", {}, Exception("conflict"))
+
+            async def rollback(self) -> None:
+                self.rolled_back = True
+
+            async def refresh(self, progress: IngestionProgress) -> None:
+                self.refreshed = progress
+
+        session = RacingSession()
+        monkeypatch.setattr(repository, "session", lambda: session)
+
+        progress = await repository.get_or_create_ingestion_progress("guild-a", "channel-a")
+
+        assert progress is recovered
+        assert session.rolled_back is True
+        assert session.refreshed is recovered
 
 
 class TestSuckBoobsStats:
