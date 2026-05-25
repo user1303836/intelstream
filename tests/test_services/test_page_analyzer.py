@@ -113,6 +113,21 @@ class TestPageAnalyzer:
         with pytest.raises(PageAnalysisError, match="network down"):
             await analyzer._fetch_html("https://example.com/blog")
 
+    async def test_fetch_html_uses_browser_user_agent_and_follows_redirects(self) -> None:
+        mock_http_client = MagicMock(spec=httpx.AsyncClient)
+        mock_response = MagicMock()
+        mock_response.text = "<html></html>"
+        mock_response.raise_for_status = MagicMock()
+        mock_http_client.get = AsyncMock(return_value=mock_response)
+        analyzer = PageAnalyzer(api_key="test-key", http_client=mock_http_client)
+
+        result = await analyzer._fetch_html("https://example.com/blog")
+
+        assert result == "<html></html>"
+        call_kwargs = mock_http_client.get.await_args.kwargs
+        assert "Mozilla/5.0" in call_kwargs["headers"]["User-Agent"]
+        assert call_kwargs["follow_redirects"] is True
+
     async def test_analyze_llm_returns_error(self, sample_html: str) -> None:
         mock_http_client = MagicMock(spec=httpx.AsyncClient)
         mock_response = MagicMock()
@@ -387,6 +402,27 @@ class TestPageAnalyzer:
         )
 
         assert result["site_name"] == "Test Blog"
+
+    async def test_extract_profile_sanitizes_control_characters_from_url(
+        self, valid_llm_response: dict
+    ) -> None:
+        mock_anthropic_response = MagicMock()
+        mock_text_block = MagicMock()
+        mock_text_block.text = json.dumps(valid_llm_response)
+        mock_anthropic_response.content = [mock_text_block]
+
+        analyzer = PageAnalyzer(api_key="test-key")
+        analyzer._client.messages.create = AsyncMock(return_value=mock_anthropic_response)
+
+        await analyzer._extract_profile_with_llm(
+            "https://example.com/\x00blog\x7f",
+            "<html></html>",
+        )
+
+        user_prompt = analyzer._client.messages.create.await_args.kwargs["messages"][0]["content"]
+        assert "URL: https://example.com/blog" in user_prompt
+        assert "\x00" not in user_prompt
+        assert "\x7f" not in user_prompt
 
     def test_validate_profile_invalid_post_selector(self, sample_html: str) -> None:
         profile = ExtractionProfile(
