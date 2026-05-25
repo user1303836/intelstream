@@ -135,6 +135,16 @@ class TestGitHubPollingInit:
         http_client.aclose.assert_awaited_once()
         assert cog._initialized is False
 
+    async def test_cog_unload_without_resources_only_marks_uninitialized(self, mock_bot):
+        cog = GitHubPolling(mock_bot)
+        cog._initialized = True
+
+        with patch.object(cog.github_loop, "cancel") as cancel:
+            await cog.cog_unload()
+
+        cancel.assert_called_once_with()
+        assert cog._initialized is False
+
 
 class TestGitHubLoopBackoff:
     async def test_loop_returns_when_not_initialized(self, mock_bot):
@@ -490,6 +500,45 @@ class TestProcessRepo:
         cog._service.fetch_new_commits.assert_not_called()
         cog._service.fetch_new_prs.assert_awaited_once_with("org", "repo", 1)
         cog._service.fetch_new_issues.assert_not_called()
+
+    async def test_process_repo_skips_pr_fetch_when_tracking_disabled(self, mock_bot):
+        cog = _make_cog(mock_bot)
+        repo = _make_repo(track_commits=False, track_prs=False, track_issues=False)
+        cog._service.fetch_new_commits = AsyncMock(return_value=[])
+        cog._service.fetch_new_prs = AsyncMock(return_value=[])
+        cog._service.fetch_new_issues = AsyncMock(return_value=[])
+        mock_bot.repository.update_github_repo_state = AsyncMock()
+        mock_bot.repository.reset_github_failure = AsyncMock()
+
+        posted = await cog._process_repo(repo)
+
+        assert posted == 0
+        cog._service.fetch_new_commits.assert_not_called()
+        cog._service.fetch_new_prs.assert_not_called()
+        cog._service.fetch_new_issues.assert_not_called()
+
+    async def test_process_repo_keeps_highest_pr_number_when_events_descend(self, mock_bot):
+        cog = _make_cog(mock_bot)
+        repo = _make_repo(track_commits=False, track_prs=True, track_issues=False)
+        pr_high = _make_event("pull_request", number=8)
+        pr_low = _make_event("pull_request", number=3)
+        cog._service.fetch_new_commits = AsyncMock(return_value=[])
+        cog._service.fetch_new_prs = AsyncMock(return_value=[pr_high, pr_low])
+        cog._service.fetch_new_issues = AsyncMock(return_value=[])
+        cog._poster.post_events = AsyncMock()
+        mock_bot.get_channel = MagicMock(return_value=_make_text_channel())
+        mock_bot.repository.update_github_repo_state = AsyncMock()
+        mock_bot.repository.reset_github_failure = AsyncMock()
+
+        posted = await cog._process_repo(repo)
+
+        assert posted == 2
+        mock_bot.repository.update_github_repo_state.assert_awaited_once_with(
+            42,
+            last_commit_sha=None,
+            last_pr_number=8,
+            last_issue_number=None,
+        )
 
 
 class TestHandleFailure:

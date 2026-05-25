@@ -115,6 +115,26 @@ class TestForwardAdd:
         call_args = interaction.followup.send.call_args
         assert "already exists" in call_args[0][0]
 
+    async def test_forward_add_ignores_existing_rule_for_different_destination(self, cog, mock_bot):
+        interaction = make_interaction()
+        interaction.guild.me = MagicMock()
+        source = make_channel(111, "#source")
+        destination = make_channel(222, "#dest")
+        permissions = MagicMock()
+        permissions.send_messages = True
+        destination.permissions_for = MagicMock(return_value=permissions)
+        existing_rule = MagicMock()
+        existing_rule.destination_channel_id = "333"
+        mock_bot.repository.get_forwarding_rules_for_source = AsyncMock(
+            return_value=[existing_rule]
+        )
+        mock_bot.repository.add_forwarding_rule = AsyncMock()
+
+        await cog.forward_add.callback(cog, interaction, source=source, destination=destination)
+
+        mock_bot.repository.add_forwarding_rule.assert_awaited_once()
+        assert "Forwarding configured" in interaction.followup.send.await_args.args[0]
+
     async def test_forward_add_bot_no_permission(self, cog, mock_bot):
         interaction = MagicMock(spec=discord.Interaction)
         interaction.response = MagicMock()
