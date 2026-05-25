@@ -268,6 +268,16 @@ class TestSubstackAdapter:
 
         assert SubstackAdapter()._extract_thumbnail(entry) == "https://example.com/media.png"
 
+    def test_extract_thumbnail_skips_non_image_media_content(self) -> None:
+        entry = feedparser.FeedParserDict(
+            {
+                "media_content": [{"medium": "video", "url": "https://example.com/video.mp4"}],
+                "media_thumbnail": [{"url": "https://example.com/thumb.jpg"}],
+            }
+        )
+
+        assert SubstackAdapter()._extract_thumbnail(entry) == "https://example.com/thumb.jpg"
+
     def test_extract_thumbnail_returns_none_when_image_media_has_no_url(self) -> None:
         entry = feedparser.FeedParserDict({"media_content": [{"medium": "image"}]})
 
@@ -314,6 +324,13 @@ class TestSubstackAdapter:
         )
 
         assert SubstackAdapter()._extract_thumbnail(entry) == "https://example.com/hero.jpg"
+
+    def test_extract_thumbnail_returns_none_when_enclosures_have_no_images(self) -> None:
+        entry = AttrEntry(
+            {"enclosures": [{"type": "application/pdf", "url": "https://example.com/paper.pdf"}]}
+        )
+
+        assert SubstackAdapter()._extract_thumbnail(entry) is None
 
     def test_extract_thumbnail_returns_none_when_image_enclosure_has_no_url(self) -> None:
         entry = AttrEntry({"enclosures": [{"type": "image/jpeg"}]})

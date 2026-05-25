@@ -67,6 +67,18 @@ class TestYouTubeAdapter:
 
         assert channel_id == "UChandleurl1234567890123"
 
+    async def test_extract_channel_id_from_empty_handle_url_raises(self) -> None:
+        adapter = YouTubeAdapter(api_key="test-key")
+
+        with pytest.raises(ValueError, match="Could not extract channel ID"):
+            await adapter._extract_channel_id_from_url("https://www.youtube.com/@")
+
+    async def test_extract_channel_id_from_empty_custom_url_raises(self) -> None:
+        adapter = YouTubeAdapter(api_key="test-key")
+
+        with pytest.raises(ValueError, match="Could not extract channel ID"):
+            await adapter._extract_channel_id_from_url("https://www.youtube.com/c/")
+
     async def test_resolve_channel_id_not_found_raises(self) -> None:
         self.mock_youtube.channels().list().execute.return_value = {"items": []}
         self.mock_youtube.search().list().execute.return_value = {"items": []}
@@ -503,6 +515,27 @@ class TestYouTubeAdapter:
 
         assert adapter._fetch_transcript_sync("video123") == "Translated"
         transcript.translate.assert_called_once_with("en")
+
+    @patch("intelstream.adapters.youtube.YouTubeTranscriptApi")
+    def test_fetch_transcript_sync_uses_first_available_english_transcript(
+        self, mock_transcript_api: MagicMock
+    ) -> None:
+        transcript = MagicMock()
+        transcript.language_code = "en"
+        transcript.fetch.return_value = [MagicMock(text="Already English")]
+        transcript_list = MagicMock()
+        transcript_list.find_manually_created_transcript.side_effect = NoTranscriptFound(
+            "video123", ["en"], transcript_list
+        )
+        transcript_list.find_generated_transcript.side_effect = NoTranscriptFound(
+            "video123", ["en"], transcript_list
+        )
+        transcript_list.__iter__.return_value = iter([transcript])
+        mock_transcript_api.return_value.list.return_value = transcript_list
+        adapter = YouTubeAdapter(api_key="test-key")
+
+        assert adapter._fetch_transcript_sync("video123") == "Already English"
+        transcript.translate.assert_not_called()
 
     @patch("intelstream.adapters.youtube.YouTubeTranscriptApi")
     def test_fetch_transcript_sync_returns_none_without_any_transcripts(

@@ -269,6 +269,35 @@ class TestTwitterAdapter:
 
         assert result is None
 
+    def test_get_quoted_tweet_text_skips_missing_expanded_quote(self) -> None:
+        adapter = TwitterAdapter(bearer_token="test-token")
+
+        result = adapter._get_quoted_tweet_text(
+            {
+                "referenced_tweets": [
+                    {"type": "quoted", "id": "missing"},
+                    {"type": "quoted", "id": "present"},
+                ]
+            },
+            {"present": {"text": "expanded quote"}},
+        )
+
+        assert result == "expanded quote"
+
+    def test_get_thumbnail_url_skips_media_without_url(self) -> None:
+        adapter = TwitterAdapter(bearer_token="test-token")
+
+        result = adapter._get_thumbnail_url(
+            {"attachments": {"media_keys": ["empty", "video"]}},
+            {
+                "empty": {},
+                "video": {"preview_image_url": "https://pbs.twimg.com/media/video.jpg"},
+            },
+            profile_pic="https://pbs.twimg.com/profile.jpg",
+        )
+
+        assert result == "https://pbs.twimg.com/media/video.jpg"
+
     @respx.mock
     async def test_fetch_sends_correct_auth_header(self) -> None:
         user_route = respx.get("https://api.x.com/2/users/by/username/testuser").mock(
