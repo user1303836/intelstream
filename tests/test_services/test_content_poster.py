@@ -573,6 +573,19 @@ class TestTruncateSummaryAtBullet:
         assert len(result) <= 50
         assert TRUNCATION_NOTICE.strip() in result
 
+    def test_fallback_truncation_when_split_produces_no_lines(self):
+        class SplitlessSummary(str):
+            def __len__(self) -> int:
+                return 200
+
+            def split(self, *_args: object, **_kwargs: object) -> list[str]:
+                return []
+
+        result = truncate_summary_at_bullet(SplitlessSummary("A" * 200), 50)
+
+        assert len(result) <= 50
+        assert TRUNCATION_NOTICE.strip() in result
+
     def test_handles_empty_summary(self):
         result = truncate_summary_at_bullet("", 100)
         assert result == ""

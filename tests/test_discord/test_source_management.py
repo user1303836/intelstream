@@ -1,5 +1,6 @@
 import json
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
@@ -68,6 +69,10 @@ class TestParseSourceIdentifier:
         )
         assert identifier == "newsletter.example.com"
         assert feed_url == "https://newsletter.example.com/feed"
+
+    def test_parse_substack_no_host(self):
+        with pytest.raises(InvalidSourceURLError, match="No host found"):
+            parse_source_identifier(SourceType.SUBSTACK, "not-a-url")
 
     def test_parse_youtube_handle(self):
         identifier, feed_url = parse_source_identifier(
@@ -167,6 +172,22 @@ class TestParseSourceIdentifier:
         with pytest.raises(InvalidSourceURLError, match=r"Expected an arxiv\.org list or RSS URL"):
             parse_source_identifier(SourceType.ARXIV, "https://arxiv.org/list/")
 
+    def test_parse_arxiv_list_url_with_unextractable_category(self):
+        class PersistentListPath(str):
+            def rstrip(self, _chars: str | None = None) -> str:
+                return self
+
+        parsed = SimpleNamespace(
+            scheme="https",
+            netloc="arxiv.org",
+            path=PersistentListPath("/list/"),
+        )
+        with (
+            patch("intelstream.discord.cogs.source_management.urlparse", return_value=parsed),
+            pytest.raises(InvalidSourceURLError, match="Could not extract category"),
+        ):
+            parse_source_identifier(SourceType.ARXIV, "https://arxiv.org/list/")
+
     def test_parse_arxiv_unexpected_path(self):
         with pytest.raises(InvalidSourceURLError, match=r"Expected an arxiv\.org list or RSS URL"):
             parse_source_identifier(SourceType.ARXIV, "https://arxiv.org/abs/1234.5678")
@@ -239,6 +260,32 @@ class TestParseSourceIdentifier:
     def test_parse_twitter_wrong_domain(self):
         with pytest.raises(InvalidSourceURLError, match=r"Expected twitter\.com or x\.com"):
             parse_source_identifier(SourceType.TWITTER, "https://example.com/user")
+
+    def test_parse_unknown_source_type_returns_url(self):
+        identifier, feed_url = parse_source_identifier(object(), "raw-source")
+
+        assert identifier == "raw-source"
+        assert feed_url is None
+
+
+class TestConfirmSourceRemoveView:
+    async def test_confirm_button_marks_confirmed_and_defers(self):
+        view = ConfirmSourceRemoveView()
+        interaction = make_interaction()
+
+        await view.children[0].callback(interaction)
+
+        assert view.confirmed is True
+        interaction.response.defer.assert_awaited_once()
+
+    async def test_cancel_button_marks_rejected_and_defers(self):
+        view = ConfirmSourceRemoveView()
+        interaction = make_interaction()
+
+        await view.children[1].callback(interaction)
+
+        assert view.confirmed is False
+        interaction.response.defer.assert_awaited_once()
 
 
 class TestSourceManagementAdd:
@@ -614,6 +661,23 @@ class TestSourceManagementAdd:
         mock_bot.repository.add_source.assert_not_called()
         assert "not available" in interaction.followup.send.call_args.args[0]
 
+    async def test_add_source_without_interaction_channel(self, source_management, mock_bot):
+        interaction = make_interaction()
+        interaction.channel_id = None
+        source_type_choice = MagicMock()
+        source_type_choice.value = "rss"
+
+        await source_management.source_add.callback(
+            source_management,
+            interaction,
+            source_type=source_type_choice,
+            name="Feed",
+            url="https://example.com/feed.xml",
+        )
+
+        mock_bot.repository.add_source.assert_not_called()
+        assert "Could not determine target channel" in interaction.followup.send.call_args.args[0]
+
     async def test_add_invalid_url_reports_parse_error(self, source_management, mock_bot):
         interaction = make_interaction()
         source_type_choice = MagicMock()
@@ -721,6 +785,38 @@ class TestSourceManagementAdd:
 
         mock_bot.repository.add_source.assert_not_called()
         assert "Failed to analyze page structure" in interaction.followup.send.call_args.args[0]
+
+    async def test_add_page_rechecks_anthropic_key_before_analysis(
+        self, source_management, mock_bot
+    ):
+        class SettingsWithClearedAnthropicKey:
+            default_poll_interval_minutes = 5
+            twitter_bearer_token = "test-twitter-token"
+            youtube_api_key = "test-api-key"
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            @property
+            def anthropic_api_key(self) -> str | None:
+                self.calls += 1
+                return "anthropic-key" if self.calls == 1 else None
+
+        mock_bot.settings = SettingsWithClearedAnthropicKey()
+        interaction = make_interaction()
+        source_type_choice = MagicMock()
+        source_type_choice.value = "page"
+
+        await source_management.source_add.callback(
+            source_management,
+            interaction,
+            source_type=source_type_choice,
+            name="Page",
+            url="https://example.com/news",
+        )
+
+        mock_bot.repository.add_source.assert_not_called()
+        assert "require ANTHROPIC_API_KEY" in interaction.followup.send.call_args.args[0]
 
     async def test_add_blog_uses_discovered_metadata(self, source_management, mock_bot):
         mock_bot.settings.anthropic_api_key = "anthropic-key"
@@ -1445,6 +1541,29 @@ class TestSourceAutocomplete:
         choices = await source_management._source_name_autocomplete(interaction, "")
 
         assert "(rss)" in choices[0].name
+
+    async def test_command_autocomplete_wrappers_delegate(self, source_management, mock_bot):
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.channel_id = 789
+        sources = [self._make_source("My Feed", SourceType.RSS, True)]
+        mock_bot.repository.get_all_sources = AsyncMock(return_value=sources)
+
+        remove_choices = await source_management.source_remove_autocomplete(
+            interaction,
+            "feed",
+        )
+        info_choices = await source_management.source_info_autocomplete(
+            interaction,
+            "feed",
+        )
+        toggle_choices = await source_management.source_toggle_autocomplete(
+            interaction,
+            "feed",
+        )
+
+        assert [choice.value for choice in remove_choices] == ["My Feed"]
+        assert [choice.value for choice in info_choices] == ["My Feed"]
+        assert [choice.value for choice in toggle_choices] == ["My Feed"]
 
 
 class TestSourceManagementLifecycle:

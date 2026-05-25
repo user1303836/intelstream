@@ -96,6 +96,13 @@ class TestArticleChunker:
 
         assert chunker._chunk_text("abcdef") == ["abcde"]
 
+    def test_chunk_text_returns_empty_when_long_unit_produces_no_segments(self, monkeypatch):
+        chunker = ArticleChunker(chunk_size_chars=5, overlap_chars=0)
+
+        monkeypatch.setattr(chunker, "_split_long_unit", lambda _unit: [])
+
+        assert chunker._chunk_text("abcdef") == []
+
     def test_build_overlap_returns_empty_for_no_units_or_disabled_overlap(self):
         assert ArticleChunker(overlap_chars=10)._build_overlap([]) == []
         assert ArticleChunker(overlap_chars=0)._build_overlap(["first"]) == []
@@ -109,6 +116,19 @@ class TestArticleChunker:
         chunker = ArticleChunker(chunk_size_chars=10, overlap_chars=0)
 
         assert chunker._split_long_unit("   ") == []
+
+    def test_split_long_unit_handles_truthy_empty_word_container(self):
+        chunker = ArticleChunker(chunk_size_chars=10, overlap_chars=0)
+
+        class TruthyEmptyWords(list[str]):
+            def __bool__(self) -> bool:
+                return True
+
+        class OddUnit(str):
+            def split(self, *_args: object, **_kwargs: object) -> list[str]:
+                return TruthyEmptyWords()
+
+        assert chunker._split_long_unit(OddUnit("ignored")) == []
 
 
 class TestArticleReranker:

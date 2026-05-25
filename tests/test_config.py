@@ -204,6 +204,17 @@ class TestSettings:
         with pytest.raises(ValidationError, match="SQLite database path cannot be empty"):
             Settings(_env_file=None)
 
+    def test_non_sqlite_database_url_accepted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
+        monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
+        monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://user:pass@localhost/db")
+
+        settings = Settings(_env_file=None)
+
+        assert settings.database_url == "postgresql+asyncpg://user:pass@localhost/db"
+
     def test_summarization_delay_minimum(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
         monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
@@ -281,6 +292,22 @@ class TestProviderAwareModelDefaults:
         settings = Settings(_env_file=None)
         assert settings.summary_model == "my-custom-model"
         assert settings.summary_model_interactive == "gpt-4o"
+
+    def test_unknown_provider_default_lookup_leaves_models_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._base_env(monkeypatch)
+        monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        settings = Settings(_env_file=None)
+        settings.llm_provider = "unknown"  # type: ignore[assignment]
+        settings.summary_model = ""
+        settings.summary_model_interactive = ""
+
+        settings.set_provider_model_defaults()
+
+        assert settings.summary_model == ""
+        assert settings.summary_model_interactive == ""
 
 
 class TestGetPollInterval:

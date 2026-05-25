@@ -194,6 +194,31 @@ class TestInternals:
 
         assert not collection_dir.exists()
 
+    async def test_destroy_collection_removes_files_without_open_collection(self, tmp_path):
+        collection_dir = tmp_path / "vectors" / "article_chunks"
+        collection_dir.mkdir(parents=True)
+        (collection_dir / "manifest.0").write_text("data")
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+
+        await store._destroy_collection_at_path(
+            "article_chunks",
+            None,
+            str(collection_dir),
+        )
+
+        assert not collection_dir.exists()
+
+    async def test_open_or_create_new_collection_without_metadata_validation(self, tmp_path):
+        created = MagicMock()
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+        store._write_collection_metadata = MagicMock()
+
+        with patch("zvec.create_and_open", return_value=created):
+            result = await store._open_or_create_collection("article_chunks")
+
+        assert result is created
+        store._write_collection_metadata.assert_not_called()
+
     async def test_open_or_create_opens_existing_without_metadata_validation(self, tmp_path):
         import zvec
 

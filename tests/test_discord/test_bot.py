@@ -266,6 +266,43 @@ class TestIntelStreamBot:
 
         await commands.Bot.close(bot)
 
+    async def test_setup_hook_migrates_zero_sources_without_logging_branch(
+        self, mock_settings: Settings
+    ) -> None:
+        repository = MagicMock()
+        repository.initialize = AsyncMock()
+        repository.migrate_sources_to_channel = AsyncMock(return_value=0)
+        bot = IntelStreamBot(mock_settings, repository)
+        bot.add_cog = AsyncMock()
+        bot._setup_search = AsyncMock()
+        bot.tree.copy_global_to = MagicMock()
+        bot.tree.sync = AsyncMock()
+
+        with (
+            patch("intelstream.bot.get_database_directory", return_value=None),
+            patch("intelstream.discord.cogs.SourceManagement", return_value="source-cog"),
+            patch("intelstream.discord.cogs.ConfigManagement", return_value="config-cog"),
+            patch("intelstream.discord.cogs.ContentPosting", return_value="posting-cog"),
+            patch("intelstream.discord.cogs.Summarize", return_value="summarize-cog"),
+            patch("intelstream.discord.cogs.ChannelSummary", return_value="summary-cog"),
+            patch("intelstream.discord.cogs.SuckBoobs", return_value="suck-cog"),
+            patch("intelstream.discord.cogs.github.GitHubCommands", return_value="github-cog"),
+            patch(
+                "intelstream.discord.cogs.github_polling.GitHubPolling",
+                return_value="github-polling-cog",
+            ),
+            patch(
+                "intelstream.discord.cogs.message_forwarding.MessageForwarding",
+                return_value="forward-cog",
+            ),
+        ):
+            await bot.setup_hook()
+
+        repository.migrate_sources_to_channel.assert_awaited_once()
+        bot._setup_search.assert_awaited_once()
+
+        await commands.Bot.close(bot)
+
     async def test_on_ready_sets_owner_and_starts_lore_ingestion(
         self, mock_settings: Settings
     ) -> None:
@@ -307,6 +344,22 @@ class TestIntelStreamBot:
         assert bot.start_time is not None
         assert bot._owner is None
         lore_cog.auto_start_ingestion.assert_awaited_once()
+
+    async def test_on_ready_without_lore_cog_only_sets_owner(self, mock_settings: Settings) -> None:
+        bot = MagicMock()
+        bot.user = MagicMock()
+        bot.user.id = 555
+        bot.settings = mock_settings
+        owner = MagicMock(spec=discord.User)
+        bot.fetch_user = AsyncMock(return_value=owner)
+        bot.cogs = {}
+        bot._owner = None
+        bot.start_time = None
+
+        await IntelStreamBot.on_ready(bot)
+
+        assert bot.start_time is not None
+        assert bot._owner is owner
 
     async def test_on_error_notifies_owner(self) -> None:
         bot = MagicMock()
@@ -363,6 +416,22 @@ class TestIntelStreamBot:
         ):
             await bot.close()
 
+        repository.close.assert_awaited_once()
+        super_close.assert_awaited_once()
+
+    async def test_close_logs_vector_error_and_repository_timeout(
+        self, mock_settings: Settings
+    ) -> None:
+        repository = MagicMock()
+        repository.close = AsyncMock(side_effect=TimeoutError())
+        bot = IntelStreamBot(mock_settings, repository)
+        bot.vector_store = MagicMock()
+        bot.vector_store.close = AsyncMock(side_effect=RuntimeError("vector failed"))
+
+        with patch.object(commands.Bot, "close", AsyncMock()) as super_close:
+            await bot.close()
+
+        bot.vector_store.close.assert_awaited_once()
         repository.close.assert_awaited_once()
         super_close.assert_awaited_once()
 
@@ -501,6 +570,17 @@ class TestRestrictedCommandTreeErrorHandler:
 
         mock_self._send_error_response.assert_called_once()
         args = mock_self._send_error_response.call_args[0]
+        assert args[0] == mock_interaction
+        assert "unexpected error" in args[1]
+
+    async def test_handles_direct_app_command_error(self, mock_interaction: MagicMock) -> None:
+        error = app_commands.AppCommandError("direct error")
+        mock_self = MagicMock()
+        mock_self._send_error_response = AsyncMock()
+
+        await RestrictedCommandTree.on_error(mock_self, mock_interaction, error)
+
+        args = mock_self._send_error_response.call_args.args
         assert args[0] == mock_interaction
         assert "unexpected error" in args[1]
 
@@ -702,6 +782,35 @@ class TestCoreCommandsCommands:
         assert all(field.name != "Configured Sources" for field in embed.fields)
         repository.get_forwarding_rules_for_guild.assert_not_called()
         repository.get_discord_config.assert_not_called()
+
+    async def test_status_single_source_and_rule_has_no_overflow_rows(self) -> None:
+        bot = MagicMock()
+        bot.latency = 0
+        bot.start_time = datetime.now(UTC)
+        bot.settings.content_poll_interval_minutes = 5
+        repository = AsyncMock()
+        repository.get_all_sources = AsyncMock(return_value=[self._make_source(1)])
+        repository.get_content_stats = AsyncMock(
+            return_value={"total_fetched": 1, "total_posted": 1}
+        )
+        repository.get_last_posted_content = AsyncMock(return_value=None)
+        repository.get_forwarding_rules_for_guild = AsyncMock(return_value=[self._make_rule(1)])
+        repository.get_discord_config = AsyncMock(return_value=None)
+        bot.repository = repository
+        core = CoreCommands(bot)
+        interaction = make_command_interaction()
+
+        await core.status.callback(core, interaction)
+
+        embed = interaction.response.send_message.await_args.kwargs["embed"]
+        configured = next(
+            field.value for field in embed.fields if field.name == "Configured Sources"
+        )
+        forwarding = next(
+            field.value for field in embed.fields if field.name.startswith("Forwarding")
+        )
+        assert "*... and" not in configured
+        assert "*... and" not in forwarding
 
     async def test_ping_sends_latency(self) -> None:
         bot = MagicMock(spec=IntelStreamBot)

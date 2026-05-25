@@ -171,6 +171,16 @@ class TestSplitMessage:
         assert len(parts[0]) == 2000
         assert len(parts[1]) == 1000
 
+    def test_string_like_false_value_returns_no_parts(self):
+        class FalseLongText(str):
+            def __len__(self) -> int:
+                return 3000
+
+            def __bool__(self) -> bool:
+                return False
+
+        assert _split_message(FalseLongText("content"), max_len=2000) == []
+
 
 class TestLoreQuery:
     async def test_command_temporarily_disabled(self, lore_cog, mock_interaction):
@@ -216,6 +226,18 @@ class TestLoreCogUnload:
         lore_cog._ingestion_service.stop_backfill.assert_called_once_with()
         lore_cog._flush_all_buffers.assert_awaited_once()
         lore_cog._llm_client.close.assert_awaited_once()
+
+    async def test_cog_unload_without_optional_resources_only_flushes(self, lore_cog):
+        lore_cog._index_rebuild_task = None
+        lore_cog._ingestion_service = None
+        lore_cog._llm_client = None
+        lore_cog._flush_all_buffers = AsyncMock()
+
+        with patch.object(lore_cog._flush_buffers, "cancel") as cancel:
+            await lore_cog.cog_unload()
+
+        cancel.assert_called_once_with()
+        lore_cog._flush_all_buffers.assert_awaited_once()
 
 
 class TestIndexHealth:
@@ -275,6 +297,15 @@ class TestIndexHealth:
 
         with pytest.raises(asyncio.CancelledError):
             await lore_cog._ensure_message_chunk_index()
+
+    async def test_ensure_message_chunk_index_allows_zero_recovery_attempts(
+        self, lore_cog, mock_bot, monkeypatch
+    ):
+        monkeypatch.setattr("intelstream.discord.cogs.lore.INDEX_RECOVERY_MAX_ATTEMPTS", 0)
+
+        await lore_cog._ensure_message_chunk_index()
+
+        mock_bot.repository.get_message_chunk_guild_ids.assert_not_called()
 
     async def test_message_index_healthy(self, lore_cog, mock_bot, mock_vector_store):
         mock_bot.repository.get_message_chunk_metas_batch.return_value = [
@@ -549,6 +580,31 @@ class TestFlushBuffers:
         lore_cog._chunker.chunk_messages.assert_called_once_with([raw], "111", "222", "general")
         lore_cog._ingestion_service.store_chunks.assert_awaited_once_with([chunk])
         assert "111:222" not in lore_cog._message_buffers
+
+    async def test_flush_buffer_uses_empty_channel_name_for_non_text_channel(
+        self, lore_cog, mock_bot
+    ):
+        raw = make_raw_message(1)
+        lore_cog._message_buffers["111:222"] = [raw]
+        guild = MagicMock(spec=discord.Guild)
+        guild.get_channel.return_value = MagicMock(spec=discord.VoiceChannel)
+        mock_bot.get_guild.return_value = guild
+        chunk = MagicMock()
+        lore_cog._chunker.chunk_messages.return_value = [chunk]
+        lore_cog._ingestion_service.store_chunks = AsyncMock(return_value=1)
+
+        await lore_cog._flush_buffer("111:222")
+
+        lore_cog._chunker.chunk_messages.assert_called_once_with([raw], "111", "222", "")
+
+    async def test_flush_buffer_does_not_log_when_no_chunks_stored(self, lore_cog):
+        lore_cog._message_buffers["111:222"] = [make_raw_message(1)]
+        lore_cog._chunker.chunk_messages.return_value = [MagicMock()]
+        lore_cog._ingestion_service.store_chunks = AsyncMock(return_value=0)
+
+        await lore_cog._flush_buffer("111:222")
+
+        lore_cog._ingestion_service.store_chunks.assert_awaited_once()
 
     async def test_flush_buffer_skips_store_without_chunks_or_ingestion_service(self, lore_cog):
         lore_cog._message_buffers["111:222"] = [make_raw_message(1)]
