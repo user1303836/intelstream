@@ -1344,6 +1344,31 @@ class TestEmbedItem:
         mock_repository.add_article_chunk_metas_batch.assert_awaited_once()
         mock_vector_store.upsert_article_chunks_batch.assert_awaited_once()
 
+    async def test_embed_item_skips_stale_vector_delete_when_none_removed(
+        self,
+        mock_settings,
+        mock_repository: AsyncMock,
+    ):
+        chunk = MagicMock(chunk_index=0, text="first", search_text="Title\n\nfirst")
+        mock_embedding = AsyncMock()
+        mock_embedding.embed_text = AsyncMock(return_value=[0.1])
+        mock_vector_store = AsyncMock()
+        mock_repository.delete_article_chunk_metas_for_content_item.return_value = []
+        pipeline = ContentPipeline(
+            settings=mock_settings,
+            repository=mock_repository,
+            summarizer=None,
+            get_search_services=lambda: (mock_embedding, mock_vector_store),
+        )
+        pipeline._article_chunker.build_chunks = MagicMock(return_value=[chunk])
+
+        await pipeline._embed_item("item-1", "Title", "Summary", "Raw")
+
+        mock_embedding.embed_text.assert_awaited_once_with("Title\n\nfirst")
+        mock_vector_store.delete_article_chunks.assert_not_awaited()
+        mock_repository.add_article_chunk_metas_batch.assert_awaited_once()
+        mock_vector_store.upsert_article_chunks_batch.assert_awaited_once()
+
 
 class TestFirstPostingBackfill:
     async def test_backfill_skips_duplicate_source_ids(

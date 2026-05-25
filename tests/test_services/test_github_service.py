@@ -14,6 +14,13 @@ def github_service():
 
 
 class TestGitHubServiceClient:
+    async def test_get_client_reuses_injected_client(self) -> None:
+        client = AsyncMock(spec=httpx.AsyncClient)
+        service = GitHubService(token="test-token", http_client=client)
+
+        assert await service._get_client() is client
+        assert service._owns_client is False
+
     async def test_get_client_lazily_creates_owned_client(self) -> None:
         service = GitHubService(token="test-token")
 

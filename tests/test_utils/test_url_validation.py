@@ -13,6 +13,14 @@ from intelstream.utils.url_validation import (
 
 
 class TestUrlValidationHelpers:
+    def test_obfuscated_decimal_parse_error_is_not_blocked_as_obfuscated(self, monkeypatch):
+        def fake_int(_value: str) -> int:
+            raise ValueError("not parseable")
+
+        monkeypatch.setattr(url_validation_module, "int", fake_int, raising=False)
+
+        assert _is_obfuscated_ip("12345678") is False
+
     def test_obfuscated_decimal_outside_ipv4_range_is_not_blocked_as_obfuscated(self):
         assert _is_obfuscated_ip("9999999999") is False
 
