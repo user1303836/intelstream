@@ -246,6 +246,24 @@ class TestGitHubLoopBackoff:
 
         mock_bot.notify_owner.assert_called_once()
 
+    async def test_loop_processes_successes_and_failures(self, mock_bot):
+        repo_ok = _make_repo()
+        repo_failed = _make_repo()
+        repo_failed.id = 43
+        repo_failed.repo = "broken"
+        mock_bot.repository.get_all_github_repos = AsyncMock(return_value=[repo_ok, repo_failed])
+        cog = _make_cog(mock_bot)
+        cog._process_repo = AsyncMock(side_effect=[2, RuntimeError("boom")])
+        cog._handle_failure = AsyncMock()
+
+        await cog.github_loop()
+
+        assert cog._process_repo.await_count == 2
+        cog._handle_failure.assert_awaited_once()
+        assert cog._handle_failure.await_args.args[0] is repo_failed
+        assert isinstance(cog._handle_failure.await_args.args[1], RuntimeError)
+        assert cog._consecutive_failures == 0
+
 
 class TestGitHubLoopErrorHandler:
     async def test_before_loop_waits_for_bot_ready(self, mock_bot):
@@ -374,6 +392,71 @@ class TestProcessRepo:
         )
         mock_bot.repository.reset_github_failure.assert_awaited_once_with(42)
 
+    async def test_process_repo_tolerates_pr_github_api_error(self, mock_bot):
+        cog = _make_cog(mock_bot)
+        repo = _make_repo()
+        commit = _make_event("commit", sha="new-sha")
+        issue = _make_event("issue", number=11)
+        cog._service.fetch_new_commits = AsyncMock(return_value=[commit])
+        cog._service.fetch_new_prs = AsyncMock(side_effect=GitHubAPIError(500, "pr error"))
+        cog._service.fetch_new_issues = AsyncMock(return_value=[issue])
+        cog._poster.post_events = AsyncMock()
+        mock_bot.get_channel = MagicMock(return_value=_make_text_channel())
+        mock_bot.repository.update_github_repo_state = AsyncMock()
+        mock_bot.repository.reset_github_failure = AsyncMock()
+
+        posted = await cog._process_repo(repo)
+
+        assert posted == 2
+        mock_bot.repository.update_github_repo_state.assert_awaited_once_with(
+            42,
+            last_commit_sha="new-sha",
+            last_pr_number=None,
+            last_issue_number=11,
+        )
+
+    async def test_process_repo_posts_to_thread_channel(self, mock_bot):
+        cog = _make_cog(mock_bot)
+        repo = _make_repo()
+        commit = _make_event("commit", sha="new-sha")
+        cog._service.fetch_new_commits = AsyncMock(return_value=[commit])
+        cog._service.fetch_new_prs = AsyncMock(return_value=[])
+        cog._service.fetch_new_issues = AsyncMock(return_value=[])
+        cog._poster.post_events = AsyncMock()
+        thread = MagicMock(spec=discord.Thread)
+        mock_bot.get_channel = MagicMock(return_value=thread)
+        mock_bot.repository.update_github_repo_state = AsyncMock()
+        mock_bot.repository.reset_github_failure = AsyncMock()
+
+        posted = await cog._process_repo(repo)
+
+        assert posted == 1
+        cog._poster.post_events.assert_awaited_once_with(thread, [commit])
+
+    async def test_process_repo_updates_none_for_events_without_identifiers(self, mock_bot):
+        cog = _make_cog(mock_bot)
+        repo = _make_repo()
+        commit_without_sha = _make_event("commit")
+        pr_without_number = _make_event("pull_request")
+        issue_without_number = _make_event("issue")
+        cog._service.fetch_new_commits = AsyncMock(return_value=[commit_without_sha])
+        cog._service.fetch_new_prs = AsyncMock(return_value=[pr_without_number])
+        cog._service.fetch_new_issues = AsyncMock(return_value=[issue_without_number])
+        cog._poster.post_events = AsyncMock()
+        mock_bot.get_channel = MagicMock(return_value=_make_text_channel())
+        mock_bot.repository.update_github_repo_state = AsyncMock()
+        mock_bot.repository.reset_github_failure = AsyncMock()
+
+        posted = await cog._process_repo(repo)
+
+        assert posted == 3
+        mock_bot.repository.update_github_repo_state.assert_awaited_once_with(
+            42,
+            last_commit_sha=None,
+            last_pr_number=None,
+            last_issue_number=None,
+        )
+
     async def test_process_repo_skips_post_when_channel_missing(self, mock_bot):
         cog = _make_cog(mock_bot)
         repo = _make_repo()
@@ -433,3 +516,14 @@ class TestHandleFailure:
         mock_bot.repository.set_github_repo_active.assert_awaited_once_with(42, False)
         mock_bot.notify_owner.assert_awaited_once()
         assert "disabled after 5 consecutive failures" in mock_bot.notify_owner.await_args.args[0]
+
+
+async def test_setup_adds_github_polling_cog(mock_bot):
+    from intelstream.discord.cogs.github_polling import setup
+
+    mock_bot.add_cog = AsyncMock()
+
+    await setup(mock_bot)
+
+    mock_bot.add_cog.assert_awaited_once()
+    assert isinstance(mock_bot.add_cog.await_args.args[0], GitHubPolling)
