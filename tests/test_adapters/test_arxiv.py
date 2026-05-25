@@ -407,6 +407,11 @@ class TestHtmlContentExtraction:
         content = adapter._extract_paper_content("<html><body></body></html>")
         assert content is None
 
+    def test_extract_paper_content_empty_document(self) -> None:
+        adapter = ArxivAdapter()
+
+        assert adapter._extract_paper_content("") is None
+
     def test_extract_paper_content_no_article_falls_back_to_body(self) -> None:
         adapter = ArxivAdapter()
         html = """<html><body>

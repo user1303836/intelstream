@@ -105,6 +105,14 @@ class TestPageAnalyzer:
         with pytest.raises(PageAnalysisError, match="Failed to fetch page"):
             await analyzer.analyze("https://example.com/blog")
 
+    async def test_fetch_html_wraps_request_error(self) -> None:
+        mock_http_client = MagicMock(spec=httpx.AsyncClient)
+        mock_http_client.get = AsyncMock(side_effect=httpx.ConnectError("network down"))
+        analyzer = PageAnalyzer(api_key="test-key", http_client=mock_http_client)
+
+        with pytest.raises(PageAnalysisError, match="network down"):
+            await analyzer._fetch_html("https://example.com/blog")
+
     async def test_analyze_llm_returns_error(self, sample_html: str) -> None:
         mock_http_client = MagicMock(spec=httpx.AsyncClient)
         mock_response = MagicMock()
@@ -276,6 +284,17 @@ class TestPageAnalyzer:
         assert 'datetime="2024-01-15"' in cleaned
         assert "data-tracking" not in cleaned
 
+    def test_clean_html_truncates_long_html(self) -> None:
+        html = "<html><body>" + ("x" * 200) + "</body></html>"
+        analyzer = PageAnalyzer(api_key="test-key")
+        settings = MagicMock()
+        settings.max_html_length = 50
+
+        with patch("intelstream.services.page_analyzer.get_settings", return_value=settings):
+            cleaned = analyzer._clean_html(html)
+
+        assert len(cleaned) == 50
+
     def test_validate_profile_valid(self, sample_html: str) -> None:
         profile = ExtractionProfile(
             site_name="Test",
@@ -348,6 +367,27 @@ class TestPageAnalyzer:
 
         assert profile.site_name == "Test Blog"
 
+    async def test_extract_profile_ignores_content_blocks_without_text(
+        self, valid_llm_response: dict
+    ) -> None:
+        class EmptyBlock:
+            pass
+
+        mock_anthropic_response = MagicMock()
+        mock_text_block = MagicMock()
+        mock_text_block.text = json.dumps(valid_llm_response)
+        mock_anthropic_response.content = [EmptyBlock(), mock_text_block]
+
+        analyzer = PageAnalyzer(api_key="test-key")
+        analyzer._client.messages.create = AsyncMock(return_value=mock_anthropic_response)
+
+        result = await analyzer._extract_profile_with_llm(
+            "https://example.com/blog",
+            "<html></html>",
+        )
+
+        assert result["site_name"] == "Test Blog"
+
     def test_validate_profile_invalid_post_selector(self, sample_html: str) -> None:
         profile = ExtractionProfile(
             site_name="Test",
@@ -361,6 +401,31 @@ class TestPageAnalyzer:
 
         assert result["valid"] is False
         assert "Invalid CSS selector" in result["reason"]
+
+    def test_validate_profile_rejects_posts_with_links_missing_url_attribute(self) -> None:
+        html = """
+        <html>
+        <body>
+            <article class="post">
+                <h2 class="title">Title</h2>
+                <a class="post-link">Read</a>
+            </article>
+        </body>
+        </html>
+        """
+        profile = ExtractionProfile(
+            site_name="Test",
+            post_selector="article.post",
+            title_selector="h2.title",
+            url_selector="a.post-link",
+            url_attribute="href",
+        )
+        analyzer = PageAnalyzer(api_key="test-key")
+
+        result = analyzer._validate_profile(html, profile)
+
+        assert result["valid"] is False
+        assert "Could not extract" in result["reason"]
 
     def test_validate_profile_invalid_title_selector(self, sample_html: str) -> None:
         profile = ExtractionProfile(
