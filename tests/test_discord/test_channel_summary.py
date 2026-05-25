@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 import pytest
-from discord import MessageType
+from discord import MessageType, app_commands
 
 from intelstream.discord.cogs.channel_summary import ChannelSummary
 from intelstream.services.summarizer import SummarizationError
@@ -66,6 +66,7 @@ def mock_interaction():
     interaction = MagicMock(spec=discord.Interaction)
     interaction.response = MagicMock()
     interaction.response.defer = AsyncMock()
+    interaction.response.send_message = AsyncMock()
     interaction.followup = MagicMock()
     interaction.followup.send = AsyncMock()
     interaction.user = MagicMock()
@@ -241,6 +242,16 @@ class TestSummaryCommand:
         assert len(sent_text) <= 2000
         assert sent_text.endswith("...")
 
+    async def test_summary_rejects_non_text_channel(self, cog, mock_interaction):
+        mock_interaction.channel = MagicMock(spec=discord.VoiceChannel)
+
+        await cog.summary.callback(cog, mock_interaction, count=200, channel=None)
+
+        cog._summarizer.summarize_chat.assert_not_called()
+        mock_interaction.followup.send.assert_called_once_with(
+            "This command can only be used in text channels.", ephemeral=True
+        )
+
 
 class TestFormatMessages:
     def test_format_basic_messages(self, cog):
@@ -276,6 +287,16 @@ class TestFormatMessages:
 
         result = cog._format_messages([msg])
         assert "1 embed(s)" in result
+
+    def test_format_with_only_attachments_and_embeds(self, cog):
+        attachment = MagicMock()
+        attachment.filename = "notes.txt"
+        embed = MagicMock()
+        msg = _make_message("", "alice", attachments=[attachment], embeds=[embed])
+
+        result = cog._format_messages([msg])
+
+        assert "alice: [1 attachment(s): notes.txt] [1 embed(s)]" in result
 
 
 class TestCogLoad:
@@ -318,6 +339,42 @@ class TestCogUnload:
         await cog.cog_unload()
 
         mock_summarizer.close.assert_called_once()
+
+    async def test_cog_unload_allows_missing_summarizer(self, mock_bot):
+        cog = ChannelSummary(mock_bot)
+
+        await cog.cog_unload()
+
+        assert cog._summarizer is None
+
+
+class TestSummaryError:
+    async def test_summary_error_reports_cooldown_retry_seconds(self, cog, mock_interaction):
+        error = app_commands.CommandOnCooldown(app_commands.Cooldown(1, 60.0), retry_after=12.9)
+
+        await cog.summary_error(mock_interaction, error)
+
+        mock_interaction.response.send_message.assert_awaited_once_with(
+            "This command is on cooldown. Try again in 12s.",
+            ephemeral=True,
+        )
+
+    async def test_summary_error_reraises_unknown_errors(self, cog, mock_interaction):
+        error = app_commands.AppCommandError("boom")
+
+        with pytest.raises(app_commands.AppCommandError, match="boom"):
+            await cog.summary_error(mock_interaction, error)
+
+
+async def test_setup_adds_channel_summary_cog(mock_bot):
+    from intelstream.discord.cogs.channel_summary import setup
+
+    mock_bot.add_cog = AsyncMock()
+
+    await setup(mock_bot)
+
+    mock_bot.add_cog.assert_awaited_once()
+    assert isinstance(mock_bot.add_cog.await_args.args[0], ChannelSummary)
 
 
 class _async_iter:

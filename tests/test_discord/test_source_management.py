@@ -1,8 +1,17 @@
+import json
+from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 import pytest
+from discord import app_commands
 
+from intelstream.database.exceptions import (
+    DatabaseConnectionError,
+    DuplicateSourceError,
+    SourceNotFoundError,
+)
 from intelstream.database.models import PauseReason, SourceType
 from intelstream.discord.cogs.source_management import (
     ConfirmSourceRemoveView,
@@ -10,6 +19,7 @@ from intelstream.discord.cogs.source_management import (
     SourceManagement,
     parse_source_identifier,
 )
+from intelstream.services.page_analyzer import PageAnalysisError
 
 
 @pytest.fixture
@@ -28,6 +38,21 @@ def source_management(mock_bot):
     return SourceManagement(mock_bot)
 
 
+def make_interaction() -> MagicMock:
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.response = MagicMock()
+    interaction.response.defer = AsyncMock()
+    interaction.response.send_message = AsyncMock()
+    interaction.followup = MagicMock()
+    interaction.followup.send = AsyncMock()
+    interaction.edit_original_response = AsyncMock()
+    interaction.user = MagicMock()
+    interaction.user.id = 123
+    interaction.guild_id = 456
+    interaction.channel_id = 789
+    return interaction
+
+
 class TestParseSourceIdentifier:
     def test_parse_substack_url(self):
         identifier, feed_url = parse_source_identifier(
@@ -44,6 +69,10 @@ class TestParseSourceIdentifier:
         )
         assert identifier == "newsletter.example.com"
         assert feed_url == "https://newsletter.example.com/feed"
+
+    def test_parse_substack_no_host(self):
+        with pytest.raises(InvalidSourceURLError, match="No host found"):
+            parse_source_identifier(SourceType.SUBSTACK, "not-a-url")
 
     def test_parse_youtube_handle(self):
         identifier, feed_url = parse_source_identifier(
@@ -122,6 +151,11 @@ class TestParseSourceIdentifier:
         assert identifier == "cs.AI"
         assert feed_url == "https://arxiv.org/rss/cs.AI"
 
+    def test_parse_arxiv_url_without_scheme(self):
+        identifier, feed_url = parse_source_identifier(SourceType.ARXIV, "arxiv.org/rss/cs.AI")
+        assert identifier == "cs.AI"
+        assert feed_url == "https://arxiv.org/rss/cs.AI"
+
     def test_parse_arxiv_rss_url(self):
         identifier, feed_url = parse_source_identifier(
             SourceType.ARXIV,
@@ -134,13 +168,55 @@ class TestParseSourceIdentifier:
         with pytest.raises(InvalidSourceURLError, match=r"Expected arxiv\.org domain"):
             parse_source_identifier(SourceType.ARXIV, "https://example.com/list/cs.AI/")
 
+    def test_parse_arxiv_list_url_without_category(self):
+        with pytest.raises(InvalidSourceURLError, match=r"Expected an arxiv\.org list or RSS URL"):
+            parse_source_identifier(SourceType.ARXIV, "https://arxiv.org/list/")
+
+    def test_parse_arxiv_list_url_with_unextractable_category(self):
+        class PersistentListPath(str):
+            def rstrip(self, _chars: str | None = None) -> str:
+                return self
+
+        parsed = SimpleNamespace(
+            scheme="https",
+            netloc="arxiv.org",
+            path=PersistentListPath("/list/"),
+        )
+        with (
+            patch("intelstream.discord.cogs.source_management.urlparse", return_value=parsed),
+            pytest.raises(InvalidSourceURLError, match="Could not extract category"),
+        ):
+            parse_source_identifier(SourceType.ARXIV, "https://arxiv.org/list/")
+
+    def test_parse_arxiv_unexpected_path(self):
+        with pytest.raises(InvalidSourceURLError, match=r"Expected an arxiv\.org list or RSS URL"):
+            parse_source_identifier(SourceType.ARXIV, "https://arxiv.org/abs/1234.5678")
+
+    def test_parse_arxiv_invalid_category(self):
+        with pytest.raises(InvalidSourceURLError, match="Invalid Arxiv category"):
+            parse_source_identifier(SourceType.ARXIV, "cs AI!")
+
     def test_parse_page_no_host(self):
         with pytest.raises(InvalidSourceURLError, match="No host found"):
             parse_source_identifier(SourceType.PAGE, "not-a-url")
 
+    def test_parse_page_trims_trailing_slash(self):
+        identifier, feed_url = parse_source_identifier(
+            SourceType.PAGE, "https://example.com/articles/"
+        )
+        assert identifier == "example.com/articles"
+        assert feed_url == "https://example.com/articles/"
+
     def test_parse_blog_no_host(self):
         with pytest.raises(InvalidSourceURLError, match="No host found"):
             parse_source_identifier(SourceType.BLOG, "not-a-url")
+
+    def test_parse_blog_trims_trailing_slash(self):
+        identifier, feed_url = parse_source_identifier(
+            SourceType.BLOG, "https://blog.example.com/posts/"
+        )
+        assert identifier == "blog.example.com/posts"
+        assert feed_url is None
 
     def test_parse_twitter_url(self):
         identifier, feed_url = parse_source_identifier(
@@ -184,6 +260,32 @@ class TestParseSourceIdentifier:
     def test_parse_twitter_wrong_domain(self):
         with pytest.raises(InvalidSourceURLError, match=r"Expected twitter\.com or x\.com"):
             parse_source_identifier(SourceType.TWITTER, "https://example.com/user")
+
+    def test_parse_unknown_source_type_returns_url(self):
+        identifier, feed_url = parse_source_identifier(object(), "raw-source")
+
+        assert identifier == "raw-source"
+        assert feed_url is None
+
+
+class TestConfirmSourceRemoveView:
+    async def test_confirm_button_marks_confirmed_and_defers(self):
+        view = ConfirmSourceRemoveView()
+        interaction = make_interaction()
+
+        await view.children[0].callback(interaction)
+
+        assert view.confirmed is True
+        interaction.response.defer.assert_awaited_once()
+
+    async def test_cancel_button_marks_rejected_and_defers(self):
+        view = ConfirmSourceRemoveView()
+        interaction = make_interaction()
+
+        await view.children[1].callback(interaction)
+
+        assert view.confirmed is False
+        interaction.response.defer.assert_awaited_once()
 
 
 class TestSourceManagementAdd:
@@ -509,6 +611,292 @@ class TestSourceManagementAdd:
         assert call_kwargs["identifier"] == "cs.AI"
         assert call_kwargs["feed_url"] == "https://arxiv.org/rss/cs.AI"
 
+    async def test_add_invalid_source_type(self, source_management, mock_bot):
+        interaction = make_interaction()
+        source_type_choice = MagicMock()
+        source_type_choice.value = "bad-type"
+
+        await source_management.source_add.callback(
+            source_management,
+            interaction,
+            source_type=source_type_choice,
+            name="Bad",
+            url="https://example.com/feed",
+        )
+
+        mock_bot.repository.add_source.assert_not_called()
+        assert "Invalid source type" in interaction.followup.send.call_args.args[0]
+
+    async def test_add_page_without_anthropic_key(self, source_management, mock_bot):
+        mock_bot.settings.anthropic_api_key = None
+        interaction = make_interaction()
+        source_type_choice = MagicMock()
+        source_type_choice.value = "page"
+
+        await source_management.source_add.callback(
+            source_management,
+            interaction,
+            source_type=source_type_choice,
+            name="Page",
+            url="https://example.com/news",
+        )
+
+        mock_bot.repository.add_source.assert_not_called()
+        assert "not available" in interaction.followup.send.call_args.args[0]
+
+    async def test_add_blog_without_anthropic_key(self, source_management, mock_bot):
+        mock_bot.settings.anthropic_api_key = None
+        interaction = make_interaction()
+        source_type_choice = MagicMock()
+        source_type_choice.value = "blog"
+
+        await source_management.source_add.callback(
+            source_management,
+            interaction,
+            source_type=source_type_choice,
+            name="Blog",
+            url="https://blog.example.com",
+        )
+
+        mock_bot.repository.add_source.assert_not_called()
+        assert "not available" in interaction.followup.send.call_args.args[0]
+
+    async def test_add_source_without_interaction_channel(self, source_management, mock_bot):
+        interaction = make_interaction()
+        interaction.channel_id = None
+        source_type_choice = MagicMock()
+        source_type_choice.value = "rss"
+
+        await source_management.source_add.callback(
+            source_management,
+            interaction,
+            source_type=source_type_choice,
+            name="Feed",
+            url="https://example.com/feed.xml",
+        )
+
+        mock_bot.repository.add_source.assert_not_called()
+        assert "Could not determine target channel" in interaction.followup.send.call_args.args[0]
+
+    async def test_add_invalid_url_reports_parse_error(self, source_management, mock_bot):
+        interaction = make_interaction()
+        source_type_choice = MagicMock()
+        source_type_choice.value = "rss"
+
+        await source_management.source_add.callback(
+            source_management,
+            interaction,
+            source_type=source_type_choice,
+            name="Feed",
+            url="not-a-url",
+        )
+
+        mock_bot.repository.add_source.assert_not_called()
+        assert "Invalid RSS URL" in interaction.followup.send.call_args.args[0]
+
+    async def test_add_rejects_unsafe_url(self, source_management, mock_bot):
+        interaction = make_interaction()
+        source_type_choice = MagicMock()
+        source_type_choice.value = "rss"
+        source_type_choice.name = "RSS"
+
+        with patch(
+            "intelstream.discord.cogs.source_management.is_safe_url",
+            return_value=(False, "private address"),
+        ):
+            await source_management.source_add.callback(
+                source_management,
+                interaction,
+                source_type=source_type_choice,
+                name="Feed",
+                url="https://example.com/feed.xml",
+            )
+
+        mock_bot.repository.add_source.assert_not_called()
+        assert "URL not allowed" in interaction.followup.send.call_args.args[0]
+
+    async def test_add_handles_repository_duplicate_race(self, source_management, mock_bot):
+        interaction = make_interaction()
+        source_type_choice = MagicMock()
+        source_type_choice.value = "rss"
+        source_type_choice.name = "RSS"
+        mock_bot.repository.get_source_by_identifier = AsyncMock(return_value=None)
+        mock_bot.repository.get_source_by_name = AsyncMock(return_value=None)
+        mock_bot.repository.add_source = AsyncMock(side_effect=DuplicateSourceError("dupe"))
+
+        await source_management.source_add.callback(
+            source_management,
+            interaction,
+            source_type=source_type_choice,
+            name="Feed",
+            url="https://example.com/feed.xml",
+        )
+
+        assert "already exists" in interaction.followup.send.call_args.args[0]
+
+    async def test_add_page_stores_analyzed_extraction_profile(self, source_management, mock_bot):
+        mock_bot.settings.anthropic_api_key = "anthropic-key"
+        interaction = make_interaction()
+        source_type_choice = MagicMock()
+        source_type_choice.value = "page"
+        source_type_choice.name = "Page"
+        profile = MagicMock()
+        profile.to_dict.return_value = {"post_selector": "article"}
+        analyzer = MagicMock()
+        analyzer.analyze = AsyncMock(return_value=profile)
+        mock_source = MagicMock()
+        mock_source.id = "source-id"
+        mock_bot.repository.get_source_by_identifier = AsyncMock(return_value=None)
+        mock_bot.repository.get_source_by_name = AsyncMock(return_value=None)
+        mock_bot.repository.add_source = AsyncMock(return_value=mock_source)
+
+        with patch(
+            "intelstream.discord.cogs.source_management.PageAnalyzer", return_value=analyzer
+        ):
+            await source_management.source_add.callback(
+                source_management,
+                interaction,
+                source_type=source_type_choice,
+                name="Page",
+                url="https://example.com/news",
+            )
+
+        call_kwargs = mock_bot.repository.add_source.call_args.kwargs
+        assert json.loads(call_kwargs["extraction_profile"]) == {"post_selector": "article"}
+
+    async def test_add_page_reports_analysis_error(self, source_management, mock_bot):
+        mock_bot.settings.anthropic_api_key = "anthropic-key"
+        interaction = make_interaction()
+        source_type_choice = MagicMock()
+        source_type_choice.value = "page"
+        analyzer = MagicMock()
+        analyzer.analyze = AsyncMock(side_effect=PageAnalysisError("no posts"))
+
+        with patch(
+            "intelstream.discord.cogs.source_management.PageAnalyzer", return_value=analyzer
+        ):
+            await source_management.source_add.callback(
+                source_management,
+                interaction,
+                source_type=source_type_choice,
+                name="Page",
+                url="https://example.com/news",
+            )
+
+        mock_bot.repository.add_source.assert_not_called()
+        assert "Failed to analyze page structure" in interaction.followup.send.call_args.args[0]
+
+    async def test_add_page_rechecks_anthropic_key_before_analysis(
+        self, source_management, mock_bot
+    ):
+        class SettingsWithClearedAnthropicKey:
+            default_poll_interval_minutes = 5
+            twitter_bearer_token = "test-twitter-token"
+            youtube_api_key = "test-api-key"
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            @property
+            def anthropic_api_key(self) -> str | None:
+                self.calls += 1
+                return "anthropic-key" if self.calls == 1 else None
+
+        mock_bot.settings = SettingsWithClearedAnthropicKey()
+        interaction = make_interaction()
+        source_type_choice = MagicMock()
+        source_type_choice.value = "page"
+
+        await source_management.source_add.callback(
+            source_management,
+            interaction,
+            source_type=source_type_choice,
+            name="Page",
+            url="https://example.com/news",
+        )
+
+        mock_bot.repository.add_source.assert_not_called()
+        assert "require ANTHROPIC_API_KEY" in interaction.followup.send.call_args.args[0]
+
+    async def test_add_blog_uses_discovered_metadata(self, source_management, mock_bot):
+        mock_bot.settings.anthropic_api_key = "anthropic-key"
+        interaction = make_interaction()
+        source_type_choice = MagicMock()
+        source_type_choice.value = "blog"
+        source_type_choice.name = "Blog"
+        result = MagicMock()
+        result.success = True
+        result.strategy = "rss"
+        result.feed_url = "https://blog.example.com/feed"
+        result.url_pattern = "/posts/*"
+        result.post_count = 12
+        adapter = MagicMock()
+        adapter.analyze_site = AsyncMock(return_value=result)
+        mock_source = MagicMock()
+        mock_source.id = "source-id"
+        mock_bot.repository.get_source_by_identifier = AsyncMock(return_value=None)
+        mock_bot.repository.get_source_by_name = AsyncMock(return_value=None)
+        mock_bot.repository.add_source = AsyncMock(return_value=mock_source)
+
+        with (
+            patch.object(source_management, "_get_anthropic_client", return_value=MagicMock()),
+            patch(
+                "intelstream.discord.cogs.source_management.is_safe_url",
+                return_value=(True, None),
+            ),
+            patch(
+                "intelstream.discord.cogs.source_management.SmartBlogAdapter",
+                return_value=adapter,
+            ),
+        ):
+            await source_management.source_add.callback(
+                source_management,
+                interaction,
+                source_type=source_type_choice,
+                name="Blog",
+                url="https://blog.example.com",
+            )
+
+        call_kwargs = mock_bot.repository.add_source.call_args.kwargs
+        assert call_kwargs["feed_url"] == "https://blog.example.com/feed"
+        assert call_kwargs["discovery_strategy"] == "rss"
+        assert call_kwargs["url_pattern"] == "/posts/*"
+        embed = interaction.followup.send.call_args.kwargs["embed"]
+        assert any(field.name == "Discovery Strategy" for field in embed.fields)
+
+    async def test_add_blog_reports_analysis_failure(self, source_management, mock_bot):
+        mock_bot.settings.anthropic_api_key = "anthropic-key"
+        interaction = make_interaction()
+        source_type_choice = MagicMock()
+        source_type_choice.value = "blog"
+        result = MagicMock()
+        result.success = False
+        result.error = "no strategy"
+        adapter = MagicMock()
+        adapter.analyze_site = AsyncMock(return_value=result)
+
+        with (
+            patch.object(source_management, "_get_anthropic_client", return_value=MagicMock()),
+            patch(
+                "intelstream.discord.cogs.source_management.is_safe_url",
+                return_value=(True, None),
+            ),
+            patch(
+                "intelstream.discord.cogs.source_management.SmartBlogAdapter",
+                return_value=adapter,
+            ),
+        ):
+            await source_management.source_add.callback(
+                source_management,
+                interaction,
+                source_type=source_type_choice,
+                name="Blog",
+                url="https://blog.example.com",
+            )
+
+        mock_bot.repository.add_source.assert_not_called()
+        assert "Failed to analyze blog" in interaction.followup.send.call_args.args[0]
+
 
 class TestSourceManagementList:
     async def test_list_sources_empty(self, source_management, mock_bot):
@@ -559,6 +947,36 @@ class TestSourceManagementList:
         embed = call_kwargs["embed"]
         assert len(embed.fields) == 2
 
+    async def test_list_sources_formats_failure_pause_and_last_poll(
+        self, source_management, mock_bot
+    ):
+        interaction = make_interaction()
+
+        failed_source = MagicMock()
+        failed_source.name = "Failed"
+        failed_source.type = SourceType.RSS
+        failed_source.is_active = False
+        failed_source.pause_reason = PauseReason.CONSECUTIVE_FAILURES.value
+        failed_source.consecutive_failures = 4
+        failed_source.last_polled_at = datetime(2026, 1, 2, 3, 4, tzinfo=UTC)
+
+        paused_source = MagicMock()
+        paused_source.name = "Paused"
+        paused_source.type = SourceType.BLOG
+        paused_source.is_active = False
+        paused_source.pause_reason = PauseReason.NONE.value
+        paused_source.consecutive_failures = 0
+        paused_source.last_polled_at = None
+
+        mock_bot.repository.get_all_sources = AsyncMock(return_value=[failed_source, paused_source])
+
+        await source_management.source_list.callback(source_management, interaction)
+
+        embed = interaction.followup.send.call_args.kwargs["embed"]
+        assert "Disabled: 4 consecutive failures" in embed.fields[0].value
+        assert "2026-01-02 03:04 UTC" in embed.fields[0].value
+        assert "**Status:** Paused" in embed.fields[1].value
+
 
 class TestSourceManagementRemove:
     def _make_confirmed_view(self) -> MagicMock:
@@ -571,6 +989,12 @@ class TestSourceManagementRemove:
         view = MagicMock(spec=ConfirmSourceRemoveView)
         view.confirmed = False
         view.wait = AsyncMock(return_value=False)
+        return view
+
+    def _make_timed_out_view(self) -> MagicMock:
+        view = MagicMock(spec=ConfirmSourceRemoveView)
+        view.confirmed = None
+        view.wait = AsyncMock(return_value=True)
         return view
 
     @patch("intelstream.discord.cogs.source_management.ConfirmSourceRemoveView")
@@ -665,6 +1089,72 @@ class TestSourceManagementRemove:
         mock_bot.repository.set_source_active.assert_not_called()
         msg = interaction.edit_original_response.call_args.kwargs["content"]
         assert "cancelled" in msg
+
+    @patch("intelstream.discord.cogs.source_management.ConfirmSourceRemoveView")
+    async def test_remove_source_timeout_cancels(self, mock_view_cls, source_management, mock_bot):
+        mock_view_cls.return_value = self._make_timed_out_view()
+        interaction = make_interaction()
+        mock_source = MagicMock()
+        mock_source.identifier = "test-identifier"
+        mock_source.id = "source-id-1"
+        mock_source.type = SourceType.SUBSTACK
+        mock_source.is_active = True
+        mock_bot.repository.get_source_by_name = AsyncMock(return_value=mock_source)
+        mock_bot.repository.get_content_count_for_source = AsyncMock(return_value=0)
+
+        await source_management.source_remove.callback(
+            source_management, interaction, name="Test Source"
+        )
+
+        mock_bot.repository.set_source_active.assert_not_called()
+        msg = interaction.edit_original_response.call_args.kwargs["content"]
+        assert "cancelled" in msg
+
+    @patch("intelstream.discord.cogs.source_management.ConfirmSourceRemoveView")
+    async def test_remove_source_handles_source_not_found_during_archive(
+        self, mock_view_cls, source_management, mock_bot
+    ):
+        mock_view_cls.return_value = self._make_confirmed_view()
+        interaction = make_interaction()
+        mock_source = MagicMock()
+        mock_source.identifier = "test-identifier"
+        mock_source.id = "source-id-1"
+        mock_source.type = SourceType.SUBSTACK
+        mock_source.is_active = True
+        mock_bot.repository.get_source_by_name = AsyncMock(return_value=mock_source)
+        mock_bot.repository.get_content_count_for_source = AsyncMock(return_value=0)
+        mock_bot.repository.set_source_active = AsyncMock(side_effect=SourceNotFoundError("gone"))
+
+        await source_management.source_remove.callback(
+            source_management, interaction, name="Test Source"
+        )
+
+        msg = interaction.edit_original_response.call_args.kwargs["content"]
+        assert "already archived or removed" in msg
+
+    @patch("intelstream.discord.cogs.source_management.ConfirmSourceRemoveView")
+    async def test_remove_source_handles_database_error(
+        self, mock_view_cls, source_management, mock_bot
+    ):
+        mock_view_cls.return_value = self._make_confirmed_view()
+        interaction = make_interaction()
+        mock_source = MagicMock()
+        mock_source.identifier = "test-identifier"
+        mock_source.id = "source-id-1"
+        mock_source.type = SourceType.SUBSTACK
+        mock_source.is_active = True
+        mock_bot.repository.get_source_by_name = AsyncMock(return_value=mock_source)
+        mock_bot.repository.get_content_count_for_source = AsyncMock(return_value=0)
+        mock_bot.repository.set_source_active = AsyncMock(
+            side_effect=DatabaseConnectionError("db down")
+        )
+
+        await source_management.source_remove.callback(
+            source_management, interaction, name="Test Source"
+        )
+
+        msg = interaction.edit_original_response.call_args.kwargs["content"]
+        assert "database error" in msg
 
     async def test_remove_source_not_found(self, source_management, mock_bot):
         interaction = MagicMock(spec=discord.Interaction)
@@ -844,6 +1334,32 @@ class TestSourceManagementInfo:
         assert "URL Pattern" in field_names
         assert "Feed URL" not in field_names
 
+    async def test_info_generic_paused_source_with_last_poll(self, source_management, mock_bot):
+        interaction = make_interaction()
+        mock_source = MagicMock()
+        mock_source.name = "Paused Source"
+        mock_source.type = SourceType.RSS
+        mock_source.identifier = "example.com/feed"
+        mock_source.is_active = False
+        mock_source.pause_reason = PauseReason.NONE.value
+        mock_source.feed_url = None
+        mock_source.discovery_strategy = None
+        mock_source.url_pattern = None
+        mock_source.consecutive_failures = 0
+        mock_source.skip_summary = False
+        mock_source.last_polled_at = datetime(2026, 1, 2, 3, 4, tzinfo=UTC)
+        mock_bot.repository.get_source_by_name = AsyncMock(return_value=mock_source)
+
+        await source_management.source_info.callback(
+            source_management, interaction, name="Paused Source"
+        )
+
+        embed = interaction.followup.send.call_args.kwargs["embed"]
+        status_field = next(f for f in embed.fields if f.name == "Status")
+        last_poll_field = next(f for f in embed.fields if f.name == "Last Poll")
+        assert status_field.value == "Paused"
+        assert last_poll_field.value == "2026-01-02 03:04 UTC"
+
 
 class TestSourceManagementToggle:
     async def test_toggle_source_enable(self, source_management, mock_bot):
@@ -918,6 +1434,36 @@ class TestSourceManagementToggle:
         mock_bot.repository.set_source_active.assert_not_called()
         call_args = interaction.followup.send.call_args
         assert "No source found" in call_args[0][0]
+
+    async def test_toggle_handles_source_not_found_during_update(self, source_management, mock_bot):
+        interaction = make_interaction()
+        mock_source = MagicMock()
+        mock_source.identifier = "test-identifier"
+        mock_source.is_active = False
+        mock_bot.repository.get_source_by_name = AsyncMock(return_value=mock_source)
+        mock_bot.repository.set_source_active = AsyncMock(side_effect=SourceNotFoundError("gone"))
+
+        await source_management.source_toggle.callback(
+            source_management, interaction, name="Test Source"
+        )
+
+        assert "no longer exists" in interaction.followup.send.call_args.args[0]
+
+    async def test_toggle_handles_database_error(self, source_management, mock_bot):
+        interaction = make_interaction()
+        mock_source = MagicMock()
+        mock_source.identifier = "test-identifier"
+        mock_source.is_active = True
+        mock_bot.repository.get_source_by_name = AsyncMock(return_value=mock_source)
+        mock_bot.repository.set_source_active = AsyncMock(
+            side_effect=DatabaseConnectionError("db down")
+        )
+
+        await source_management.source_toggle.callback(
+            source_management, interaction, name="Test Source"
+        )
+
+        assert "database error" in interaction.followup.send.call_args.args[0]
 
 
 class TestSourceAutocomplete:
@@ -995,3 +1541,100 @@ class TestSourceAutocomplete:
         choices = await source_management._source_name_autocomplete(interaction, "")
 
         assert "(rss)" in choices[0].name
+
+    async def test_command_autocomplete_wrappers_delegate(self, source_management, mock_bot):
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.channel_id = 789
+        sources = [self._make_source("My Feed", SourceType.RSS, True)]
+        mock_bot.repository.get_all_sources = AsyncMock(return_value=sources)
+
+        remove_choices = await source_management.source_remove_autocomplete(
+            interaction,
+            "feed",
+        )
+        info_choices = await source_management.source_info_autocomplete(
+            interaction,
+            "feed",
+        )
+        toggle_choices = await source_management.source_toggle_autocomplete(
+            interaction,
+            "feed",
+        )
+
+        assert [choice.value for choice in remove_choices] == ["My Feed"]
+        assert [choice.value for choice in info_choices] == ["My Feed"]
+        assert [choice.value for choice in toggle_choices] == ["My Feed"]
+
+
+class TestSourceManagementLifecycle:
+    def test_get_anthropic_client_is_cached(self, source_management, mock_bot):
+        mock_bot.settings.anthropic_api_key = "anthropic-key"
+        with patch("intelstream.discord.cogs.source_management.anthropic.AsyncAnthropic") as cls:
+            first = source_management._get_anthropic_client()
+            second = source_management._get_anthropic_client()
+
+        assert first is second
+        cls.assert_called_once_with(api_key="anthropic-key")
+
+    async def test_setup_adds_cog(self, mock_bot):
+        from intelstream.discord.cogs.source_management import setup
+
+        mock_bot.add_cog = AsyncMock()
+
+        await setup(mock_bot)
+
+        mock_bot.add_cog.assert_awaited_once()
+        assert isinstance(mock_bot.add_cog.call_args.args[0], SourceManagement)
+
+
+class TestSourceManagementErrors:
+    async def test_source_add_missing_permissions_message(self, source_management):
+        interaction = make_interaction()
+
+        await source_management.source_add_error(
+            interaction,
+            app_commands.MissingPermissions(["manage_guild"]),
+        )
+
+        assert "Manage Server" in interaction.response.send_message.call_args.args[0]
+
+    async def test_source_add_non_permission_error_is_reraised(self, source_management):
+        interaction = make_interaction()
+        error = app_commands.AppCommandError("boom")
+
+        with pytest.raises(app_commands.AppCommandError):
+            await source_management.source_add_error(interaction, error)
+
+    async def test_source_remove_missing_permissions_message(self, source_management):
+        interaction = make_interaction()
+
+        await source_management.source_remove_error(
+            interaction,
+            app_commands.MissingPermissions(["manage_guild"]),
+        )
+
+        assert "remove sources" in interaction.response.send_message.call_args.args[0]
+
+    async def test_source_remove_non_permission_error_is_reraised(self, source_management):
+        interaction = make_interaction()
+        error = app_commands.AppCommandError("boom")
+
+        with pytest.raises(app_commands.AppCommandError):
+            await source_management.source_remove_error(interaction, error)
+
+    async def test_source_toggle_missing_permissions_message(self, source_management):
+        interaction = make_interaction()
+
+        await source_management.source_toggle_error(
+            interaction,
+            app_commands.MissingPermissions(["manage_guild"]),
+        )
+
+        assert "toggle sources" in interaction.response.send_message.call_args.args[0]
+
+    async def test_source_toggle_non_permission_error_is_reraised(self, source_management):
+        interaction = make_interaction()
+        error = app_commands.AppCommandError("boom")
+
+        with pytest.raises(app_commands.AppCommandError):
+            await source_management.source_toggle_error(interaction, error)

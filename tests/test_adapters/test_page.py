@@ -3,7 +3,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from bs4 import BeautifulSoup
 
+from intelstream.adapters.base import ContentData
 from intelstream.adapters.page import PageAdapter
 from intelstream.services.page_analyzer import ExtractionProfile
 
@@ -137,6 +139,16 @@ class TestPageAdapter:
         with pytest.raises(httpx.HTTPStatusError):
             await adapter.fetch_latest("https://example.com/blog")
 
+    async def test_fetch_latest_handles_request_error(
+        self, sample_profile: ExtractionProfile
+    ) -> None:
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(side_effect=httpx.ConnectError("offline", request=MagicMock()))
+        adapter = PageAdapter(extraction_profile=sample_profile, http_client=mock_client)
+
+        with pytest.raises(httpx.ConnectError, match="offline"):
+            await adapter.fetch_latest("https://example.com/blog")
+
     async def test_fetch_latest_without_http_client(
         self, sample_profile: ExtractionProfile, sample_html: str
     ) -> None:
@@ -201,6 +213,74 @@ class TestPageAdapter:
         assert len(items) == 1
         assert items[0].title == "Valid Title"
 
+    def test_extract_posts_continues_after_parse_error(
+        self, sample_profile: ExtractionProfile, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        html = """
+        <article class="post"><h2 class="title">Bad</h2></article>
+        <article class="post"><h2 class="title">Good</h2></article>
+        """
+        adapter = PageAdapter(extraction_profile=sample_profile)
+        recovered = ContentData(
+            external_id="good",
+            title="Good",
+            original_url="https://example.com/good",
+            author="Author",
+            published_at=datetime(2024, 1, 1, tzinfo=UTC),
+        )
+        calls = 0
+
+        def fake_parse_post(_post: object, _base_url: str) -> ContentData:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise ValueError("bad post")
+            return recovered
+
+        monkeypatch.setattr(adapter, "_parse_post", fake_parse_post)
+
+        assert adapter._extract_posts(html, "https://example.com") == [recovered]
+
+    def test_parse_post_skips_missing_url_element(self, sample_profile: ExtractionProfile) -> None:
+        soup = BeautifulSoup(
+            '<article class="post"><h2 class="title">No URL</h2></article>',
+            "lxml",
+        )
+        adapter = PageAdapter(extraction_profile=sample_profile)
+
+        assert adapter._parse_post(soup.select_one("article.post"), "https://example.com") is None
+
+    def test_parse_post_skips_missing_title_element(
+        self, sample_profile: ExtractionProfile
+    ) -> None:
+        soup = BeautifulSoup(
+            """
+            <article class="post">
+              <a class="link" href="/posts/no-title">Read more</a>
+            </article>
+            """,
+            "lxml",
+        )
+        adapter = PageAdapter(extraction_profile=sample_profile)
+
+        assert adapter._parse_post(soup.select_one("article.post"), "https://example.com") is None
+
+    def test_parse_post_skips_missing_url_attribute(
+        self, sample_profile: ExtractionProfile
+    ) -> None:
+        soup = BeautifulSoup(
+            """
+            <article class="post">
+              <h2 class="title">No Href</h2>
+              <a class="link">Read more</a>
+            </article>
+            """,
+            "lxml",
+        )
+        adapter = PageAdapter(extraction_profile=sample_profile)
+
+        assert adapter._parse_post(soup.select_one("article.post"), "https://example.com") is None
+
     def test_parse_date_string_iso_format(self, sample_profile: ExtractionProfile) -> None:
         adapter = PageAdapter(extraction_profile=sample_profile)
         result = adapter._parse_date_string("2024-01-15T12:00:00Z")
@@ -227,10 +307,140 @@ class TestPageAdapter:
         assert result.month == 1
         assert result.day == 15
 
+    def test_parse_date_string_day_first_formats(self, sample_profile: ExtractionProfile) -> None:
+        adapter = PageAdapter(extraction_profile=sample_profile)
+
+        full_month = adapter._parse_date_string("15 January 2024")
+        short_month = adapter._parse_date_string("15 Jan 2024")
+
+        assert full_month == datetime(2024, 1, 15, tzinfo=UTC)
+        assert short_month == datetime(2024, 1, 15, tzinfo=UTC)
+
+    def test_parse_date_string_numeric_formats(self, sample_profile: ExtractionProfile) -> None:
+        adapter = PageAdapter(extraction_profile=sample_profile)
+
+        us_date = adapter._parse_date_string("01/15/2024")
+        day_first = adapter._parse_date_string("15/01/2024")
+
+        assert us_date == datetime(2024, 1, 15, tzinfo=UTC)
+        assert day_first == datetime(2024, 1, 15, tzinfo=UTC)
+
+    def test_parse_date_string_extracts_embedded_month_date(
+        self, sample_profile: ExtractionProfile
+    ) -> None:
+        adapter = PageAdapter(extraction_profile=sample_profile)
+
+        result = adapter._parse_date_string("Published January 15 2024 by Editorial")
+
+        assert result == datetime(2024, 1, 15, tzinfo=UTC)
+
+    def test_parse_date_string_extracts_embedded_abbreviated_month_date(
+        self, sample_profile: ExtractionProfile
+    ) -> None:
+        adapter = PageAdapter(extraction_profile=sample_profile)
+
+        result = adapter._parse_date_string("Published Jan 15 2024 by Editorial")
+
+        assert result == datetime(2024, 1, 15, tzinfo=UTC)
+
+    def test_parse_date_string_invalid_embedded_month_returns_now(
+        self, sample_profile: ExtractionProfile
+    ) -> None:
+        adapter = PageAdapter(extraction_profile=sample_profile)
+
+        result = adapter._parse_date_string("Published Notamonth 15 2024")
+
+        assert (datetime.now(UTC) - result).total_seconds() < 5
+
     def test_parse_date_string_invalid_returns_now(self, sample_profile: ExtractionProfile) -> None:
         adapter = PageAdapter(extraction_profile=sample_profile)
         result = adapter._parse_date_string("not a date")
         assert (datetime.now(UTC) - result).total_seconds() < 5
+
+    def test_extract_date_returns_now_without_selector(
+        self, sample_profile: ExtractionProfile
+    ) -> None:
+        profile = ExtractionProfile.from_dict(
+            {
+                **sample_profile.to_dict(),
+                "date_selector": None,
+            }
+        )
+        adapter = PageAdapter(extraction_profile=profile)
+        soup = BeautifulSoup('<article class="post"></article>', "lxml")
+
+        result = adapter._extract_date(soup.select_one("article.post"))
+
+        assert (datetime.now(UTC) - result).total_seconds() < 5
+
+    def test_extract_date_returns_now_when_selector_missing(
+        self, sample_profile: ExtractionProfile
+    ) -> None:
+        adapter = PageAdapter(extraction_profile=sample_profile)
+        soup = BeautifulSoup('<article class="post"></article>', "lxml")
+
+        result = adapter._extract_date(soup.select_one("article.post"))
+
+        assert (datetime.now(UTC) - result).total_seconds() < 5
+
+    def test_extract_date_returns_now_when_attribute_missing(
+        self, sample_profile: ExtractionProfile
+    ) -> None:
+        adapter = PageAdapter(extraction_profile=sample_profile)
+        soup = BeautifulSoup(
+            '<article class="post"><time></time></article>',
+            "lxml",
+        )
+
+        result = adapter._extract_date(soup.select_one("article.post"))
+
+        assert (datetime.now(UTC) - result).total_seconds() < 5
+
+    def test_extract_date_uses_text_when_no_date_attribute(
+        self, sample_profile: ExtractionProfile
+    ) -> None:
+        profile = ExtractionProfile.from_dict(
+            {
+                **sample_profile.to_dict(),
+                "date_attribute": None,
+            }
+        )
+        adapter = PageAdapter(extraction_profile=profile)
+        soup = BeautifulSoup(
+            '<article class="post"><time>January 15, 2024</time></article>',
+            "lxml",
+        )
+
+        assert adapter._extract_date(soup.select_one("article.post")) == datetime(
+            2024, 1, 15, tzinfo=UTC
+        )
+
+    def test_extract_author_returns_none_for_missing_or_empty_author(
+        self, sample_profile: ExtractionProfile
+    ) -> None:
+        adapter = PageAdapter(extraction_profile=sample_profile)
+        no_author = BeautifulSoup('<article class="post"></article>', "lxml")
+        empty_author = BeautifulSoup(
+            '<article class="post"><span class="author">  </span></article>',
+            "lxml",
+        )
+
+        assert adapter._extract_author(no_author.select_one("article.post")) is None
+        assert adapter._extract_author(empty_author.select_one("article.post")) is None
+
+    def test_extract_author_returns_none_without_selector(
+        self, sample_profile: ExtractionProfile
+    ) -> None:
+        profile = ExtractionProfile.from_dict(
+            {
+                **sample_profile.to_dict(),
+                "author_selector": None,
+            }
+        )
+        adapter = PageAdapter(extraction_profile=profile)
+        soup = BeautifulSoup('<article class="post"></article>', "lxml")
+
+        assert adapter._extract_author(soup.select_one("article.post")) is None
 
 
 class TestExtractionProfile:

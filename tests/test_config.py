@@ -40,6 +40,34 @@ class TestSettings:
 
         assert settings.youtube_api_key == "yt-api-key"
 
+    def test_settings_accepts_lowercase_env_and_optional_legacy_channel(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for key in (
+            "DISCORD_BOT_TOKEN",
+            "DISCORD_GUILD_ID",
+            "DISCORD_CHANNEL_ID",
+            "DISCORD_OWNER_ID",
+            "ANTHROPIC_API_KEY",
+            "LLM_PROVIDER",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        monkeypatch.setenv("discord_bot_token", "test_token")
+        monkeypatch.setenv("discord_guild_id", "123456789")
+        monkeypatch.setenv("discord_owner_id", "111222333")
+        monkeypatch.setenv("anthropic_api_key", "sk-ant-test")
+        monkeypatch.setenv("llm_provider", "anthropic")
+
+        settings = Settings(_env_file=None)
+
+        assert settings.discord_bot_token == "test_token"
+        assert settings.discord_guild_id == 123456789
+        assert settings.discord_channel_id is None
+        assert settings.discord_owner_id == 111222333
+        assert settings.llm_provider == "anthropic"
+        assert settings.llm_api_key == "sk-ant-test"
+
     def test_settings_poll_interval_bounds(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
         monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
@@ -47,6 +75,29 @@ class TestSettings:
         monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         monkeypatch.setenv("DEFAULT_POLL_INTERVAL_MINUTES", "0")
+
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None)
+
+    @pytest.mark.parametrize(
+        ("env_name", "env_value"),
+        [
+            ("GITHUB_POLL_INTERVAL_MINUTES", "61"),
+            ("CONTENT_POLL_INTERVAL_MINUTES", "0"),
+            ("DISCORD_MAX_MESSAGE_LENGTH", "2001"),
+            ("ARTICLE_SEARCH_MIN_RELEVANCE_SCORE", "1.1"),
+            ("ARTICLE_CHUNK_OVERLAP_CHARS", "1001"),
+            ("LORE_CHUNK_MAX_MESSAGES", "4"),
+        ],
+    )
+    def test_numeric_bounds_reject_invalid_feature_knobs(
+        self, monkeypatch: pytest.MonkeyPatch, env_name: str, env_value: str
+    ) -> None:
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
+        monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
+        monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv(env_name, env_value)
 
         with pytest.raises(ValidationError):
             Settings(_env_file=None)
@@ -131,6 +182,21 @@ class TestSettings:
         settings = Settings(_env_file=None)
         assert settings.llm_api_key == "sk-openai-test"
 
+    def test_llm_api_key_raises_if_configured_key_is_later_cleared(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
+        monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
+        monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
+        monkeypatch.setenv("LLM_PROVIDER", "openai")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+
+        settings = Settings(_env_file=None)
+        settings.openai_api_key = None
+
+        with pytest.raises(ValueError, match="No API key configured"):
+            _ = settings.llm_api_key
+
     def test_llm_api_key_raises_when_key_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
         monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
@@ -178,6 +244,27 @@ class TestSettings:
 
         with pytest.raises(ValidationError, match="No API key configured"):
             Settings(_env_file=None)
+
+    def test_empty_sqlite_database_url_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
+        monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
+        monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///")
+
+        with pytest.raises(ValidationError, match="SQLite database path cannot be empty"):
+            Settings(_env_file=None)
+
+    def test_non_sqlite_database_url_accepted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
+        monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
+        monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://user:pass@localhost/db")
+
+        settings = Settings(_env_file=None)
+
+        assert settings.database_url == "postgresql+asyncpg://user:pass@localhost/db"
 
     def test_summarization_delay_minimum(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
@@ -256,6 +343,22 @@ class TestProviderAwareModelDefaults:
         settings = Settings(_env_file=None)
         assert settings.summary_model == "my-custom-model"
         assert settings.summary_model_interactive == "gpt-4o"
+
+    def test_unknown_provider_default_lookup_leaves_models_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._base_env(monkeypatch)
+        monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        settings = Settings(_env_file=None)
+        settings.llm_provider = "unknown"  # type: ignore[assignment]
+        settings.summary_model = ""
+        settings.summary_model_interactive = ""
+
+        settings.set_provider_model_defaults()
+
+        assert settings.summary_model == ""
+        assert settings.summary_model_interactive == ""
 
 
 class TestGetPollInterval:

@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import discord
 import pytest
@@ -150,6 +150,37 @@ class TestContentPosterFormatMessage:
 
         assert "*Unknown | Test*" in message
 
+    def test_format_message_handles_overhead_longer_than_limit(self, sample_content_item):
+        poster = ContentPoster(MagicMock(), max_message_length=80)
+        sample_content_item.title = "A very long title " * 12
+        sample_content_item.summary = "Short summary"
+
+        message = poster.format_message(
+            content_item=sample_content_item,
+            source_type=SourceType.RSS,
+            source_name="Very long source name " * 6,
+        )
+
+        assert TRUNCATION_NOTICE.strip() in message
+        assert "RSS" in message
+
+    def test_format_message_adds_notice_when_second_pass_truncates(self, sample_content_item):
+        poster = ContentPoster(MagicMock(), max_message_length=120)
+        sample_content_item.summary = "Original summary that is too long" * 20
+
+        with patch(
+            "intelstream.services.content_poster.truncate_summary_at_bullet",
+            return_value="A" * 200,
+        ):
+            message = poster.format_message(
+                content_item=sample_content_item,
+                source_type=SourceType.RSS,
+                source_name="Test RSS",
+            )
+
+        assert len(message) <= 120
+        assert TRUNCATION_NOTICE.strip() in message
+
 
 class TestContentPosterPostContent:
     async def test_post_content_sends_message(self, content_poster, sample_content_item):
@@ -287,6 +318,54 @@ class TestContentPosterPostUnpostedItems:
             discord_message_id="789",
         )
 
+    async def test_posts_multiple_items_with_one_source_lookup(
+        self, content_poster, mock_bot, sample_content_item
+    ):
+        second_item = MagicMock(spec=ContentItem)
+        second_item.id = "second-item-id"
+        second_item.title = "Second Article"
+        second_item.summary = "Second summary"
+        second_item.original_url = "https://example.com/second"
+        second_item.author = "Second Author"
+        second_item.source_id = sample_content_item.source_id
+
+        first_message = MagicMock(spec=discord.Message)
+        first_message.id = 101
+        second_message = MagicMock(spec=discord.Message)
+        second_message.id = 202
+        mock_channel = MagicMock(spec=discord.TextChannel)
+        mock_channel.send = AsyncMock(side_effect=[first_message, second_message])
+        mock_bot.get_channel = MagicMock(return_value=mock_channel)
+
+        mock_bot.repository.get_unposted_content_items = AsyncMock(
+            return_value=[sample_content_item, second_item]
+        )
+
+        mock_source = MagicMock()
+        mock_source.type = SourceType.SUBSTACK
+        mock_source.name = "Shared Source"
+        mock_source.skip_summary = False
+        mock_source.guild_id = "123"
+        mock_source.channel_id = "456"
+        mock_bot.repository.get_sources_by_ids = AsyncMock(
+            return_value={sample_content_item.source_id: mock_source}
+        )
+        mock_bot.repository.mark_content_item_posted = AsyncMock()
+
+        result = await content_poster.post_unposted_items(guild_id=123)
+
+        assert result == 2
+        mock_bot.repository.get_sources_by_ids.assert_awaited_once_with(
+            {sample_content_item.source_id}
+        )
+        assert mock_channel.send.await_count == 2
+        mock_bot.repository.mark_content_item_posted.assert_has_awaits(
+            [
+                call(content_id=sample_content_item.id, discord_message_id="101"),
+                call(content_id=second_item.id, discord_message_id="202"),
+            ]
+        )
+
     async def test_falls_back_to_guild_config_when_no_source_channel(
         self, content_poster, mock_bot, sample_content_item
     ):
@@ -320,6 +399,58 @@ class TestContentPosterPostUnpostedItems:
 
         assert result == 1
         mock_bot.get_channel.assert_called_with(999)
+
+    async def test_skips_when_guild_config_inactive(
+        self, content_poster, mock_bot, sample_content_item
+    ):
+        mock_config = MagicMock()
+        mock_config.is_active = False
+        mock_bot.repository.get_discord_config = AsyncMock(return_value=mock_config)
+        mock_bot.repository.get_unposted_content_items = AsyncMock(
+            return_value=[sample_content_item]
+        )
+
+        mock_source = MagicMock()
+        mock_source.type = SourceType.SUBSTACK
+        mock_source.name = "Test Source"
+        mock_source.skip_summary = False
+        mock_source.guild_id = None
+        mock_source.channel_id = None
+        mock_bot.repository.get_sources_by_ids = AsyncMock(
+            return_value={sample_content_item.source_id: mock_source}
+        )
+
+        result = await content_poster.post_unposted_items(guild_id=123)
+
+        assert result == 0
+        mock_bot.get_channel.assert_not_called()
+
+    async def test_posts_to_thread_channel(self, content_poster, mock_bot, sample_content_item):
+        mock_channel = MagicMock(spec=discord.Thread)
+        mock_message = MagicMock(spec=discord.Message)
+        mock_message.id = 789
+        mock_channel.send = AsyncMock(return_value=mock_message)
+        mock_bot.get_channel = MagicMock(return_value=mock_channel)
+        mock_bot.repository.get_unposted_content_items = AsyncMock(
+            return_value=[sample_content_item]
+        )
+
+        mock_source = MagicMock()
+        mock_source.type = SourceType.RSS
+        mock_source.name = "Thread Source"
+        mock_source.skip_summary = False
+        mock_source.guild_id = "123"
+        mock_source.channel_id = "456"
+        mock_bot.repository.get_sources_by_ids = AsyncMock(
+            return_value={sample_content_item.source_id: mock_source}
+        )
+        mock_bot.repository.mark_content_item_posted = AsyncMock()
+
+        result = await content_poster.post_unposted_items(guild_id=123)
+
+        assert result == 1
+        mock_channel.send.assert_awaited_once()
+        mock_bot.repository.mark_content_item_posted.assert_awaited_once()
 
     async def test_skips_item_from_different_guild(
         self, content_poster, mock_bot, sample_content_item
@@ -415,6 +546,31 @@ class TestContentPosterPostUnpostedItems:
 
         assert result == 0
 
+    async def test_continues_on_unexpected_posting_error(
+        self, content_poster, mock_bot, sample_content_item
+    ):
+        sample_content_item.original_url = None
+        mock_bot.repository.get_unposted_content_items = AsyncMock(
+            return_value=[sample_content_item]
+        )
+
+        mock_source = MagicMock()
+        mock_source.type = SourceType.YOUTUBE
+        mock_source.name = "URL Only Source"
+        mock_source.skip_summary = True
+        mock_source.guild_id = "123"
+        mock_source.channel_id = "456"
+        mock_bot.repository.get_sources_by_ids = AsyncMock(
+            return_value={sample_content_item.source_id: mock_source}
+        )
+        mock_bot.get_channel = MagicMock(return_value=MagicMock(spec=discord.TextChannel))
+        mock_bot.repository.mark_content_item_posted = AsyncMock()
+
+        result = await content_poster.post_unposted_items(guild_id=123)
+
+        assert result == 0
+        mock_bot.repository.mark_content_item_posted.assert_not_awaited()
+
     async def test_skips_item_when_source_not_found(
         self, content_poster, mock_bot, sample_content_item
     ):
@@ -462,6 +618,19 @@ class TestTruncateSummaryAtBullet:
     def test_fallback_truncation_when_no_lines_fit(self):
         summary = "A" * 200
         result = truncate_summary_at_bullet(summary, 50)
+        assert len(result) <= 50
+        assert TRUNCATION_NOTICE.strip() in result
+
+    def test_fallback_truncation_when_split_produces_no_lines(self):
+        class SplitlessSummary(str):
+            def __len__(self) -> int:
+                return 200
+
+            def split(self, *_args: object, **_kwargs: object) -> list[str]:
+                return []
+
+        result = truncate_summary_at_bullet(SplitlessSummary("A" * 200), 50)
+
         assert len(result) <= 50
         assert TRUNCATION_NOTICE.strip() in result
 

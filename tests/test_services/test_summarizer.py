@@ -30,6 +30,11 @@ def summarizer(mock_client):
 
 
 class TestSummarizationService:
+    async def test_close_delegates_to_client(self, summarizer: SummarizationService, mock_client):
+        await summarizer.close()
+
+        mock_client.close.assert_awaited_once()
+
     async def test_summarize_success(self, summarizer: SummarizationService, mock_client):
         result = await summarizer.summarize(
             content="This is the article content.",
@@ -200,6 +205,17 @@ class TestSummarizationService:
         assert "blog post" in prompt
         assert "from Blog Author" in prompt
 
+    def test_build_prompt_twitter(self, summarizer: SummarizationService):
+        prompt = summarizer._build_prompt(
+            content="Tweet content",
+            title="Tweet",
+            source_type="twitter",
+            author="Poster",
+        )
+
+        assert "tweet" in prompt
+        assert "from Poster" in prompt
+
     def test_build_prompt_has_content_delimiters(self, summarizer: SummarizationService):
         prompt = summarizer._build_prompt(
             content="User supplied content here",
@@ -312,6 +328,14 @@ class TestSummarizeChat:
         call_kwargs = mock_client.complete.call_args.kwargs
         assert "42 messages" in call_kwargs["user_message"]
 
+    async def test_summarize_chat_passes_max_tokens(self, mock_client):
+        summarizer = SummarizationService(client=mock_client, max_tokens=1024)
+
+        await summarizer.summarize_chat(messages_text="test messages", message_count=2)
+
+        call_kwargs = mock_client.complete.call_args.kwargs
+        assert call_kwargs["max_tokens"] == 1024
+
     async def test_summarize_chat_empty_raises_error(self, summarizer: SummarizationService):
         with pytest.raises(SummarizationError, match="Cannot summarize empty messages"):
             await summarizer.summarize_chat(messages_text="", message_count=0)
@@ -336,3 +360,15 @@ class TestSummarizeChat:
 
         with pytest.raises(SummarizationError, match="API error"):
             await summarizer.summarize_chat(messages_text="test", message_count=1)
+
+    async def test_summarize_chat_rate_limit_retries_then_fails(self, mock_client):
+        mock_client.complete = AsyncMock(side_effect=LLMRateLimitError("Rate limited"))
+        summarizer = SummarizationService(client=mock_client)
+        summarizer.summarize_chat.retry.wait = lambda *_a, **_kw: 0  # type: ignore[union-attr]
+
+        from tenacity import RetryError
+
+        with pytest.raises(RetryError):
+            await summarizer.summarize_chat(messages_text="test messages", message_count=2)
+
+        assert mock_client.complete.call_count == 3

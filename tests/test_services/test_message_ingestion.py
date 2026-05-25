@@ -1,6 +1,8 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import discord
 import pytest
 
 from intelstream.services.message_ingestion import (
@@ -11,6 +13,8 @@ from intelstream.services.message_ingestion import (
     _is_trivial,
     _should_discard_chunk,
     _should_skip_message,
+    clean_message_chunk_text,
+    discord_message_to_raw,
 )
 
 
@@ -32,6 +36,42 @@ def _make_raw(
     )
 
 
+class FakeHistoryChannel:
+    def __init__(self, messages: list[MagicMock], *, channel_id: int = 222) -> None:
+        self.id = channel_id
+        self.name = "general"
+        self.messages = messages
+        self.history_kwargs: dict[str, object] | None = None
+
+    def history(self, **kwargs):
+        self.history_kwargs = kwargs
+
+        async def _iter_messages():
+            for msg in self.messages:
+                yield msg
+
+        return _iter_messages()
+
+
+def _make_discord_message(message_id: int = 1) -> MagicMock:
+    msg = MagicMock(spec=discord.Message)
+    msg.id = message_id
+    return msg
+
+
+def _make_progress(
+    *,
+    status: str = "pending",
+    last_message_id: str | None = None,
+    total_fetched: int | None = 0,
+) -> MagicMock:
+    progress = MagicMock()
+    progress.status = status
+    progress.last_message_id = last_message_id
+    progress.total_fetched = total_fetched
+    return progress
+
+
 class TestIsTrivial:
     def test_empty_string(self):
         assert _is_trivial("") is True
@@ -41,6 +81,13 @@ class TestIsTrivial:
 
     def test_url_only(self):
         assert _is_trivial("https://example.com/page") is True
+
+    def test_emoji_only(self):
+        assert _is_trivial("\U0001f600") is True
+
+    @pytest.mark.parametrize("emoji", ["<:party:123456789>", "<a:dance:987654321>"])
+    def test_discord_custom_emoji_only(self, emoji):
+        assert _is_trivial(emoji) is True
 
     def test_normal_text(self):
         assert _is_trivial("This is a normal message") is False
@@ -151,6 +198,20 @@ class TestChunk:
         assert "alice: first" in chunk.text
         assert "bob: second" in chunk.text
 
+    def test_embedding_text_strips_content_and_skips_blank_lines(self):
+        chunk = Chunk(
+            messages=[
+                _make_raw(content="  first message  ", author_name="alice"),
+                _make_raw(content="   ", author_name="ignored"),
+                _make_raw(content="\nsecond message\n", author_name="bob"),
+            ],
+            guild_id="1",
+            channel_id="2",
+            channel_name="test",
+        )
+
+        assert chunk.embedding_text == "alice: first message\nbob: second message"
+
     def test_meaningful_count(self):
         chunk = Chunk(
             messages=[
@@ -164,6 +225,45 @@ class TestChunk:
             channel_name="test",
         )
         assert chunk.meaningful_count == 2
+
+
+class TestDiscordMessageToRaw:
+    def test_converts_naive_created_at_to_utc(self):
+        msg = MagicMock(spec=discord.Message)
+        msg.id = 123
+        msg.content = "hello"
+        msg.author.display_name = "Alice"
+        msg.author.bot = False
+        msg.created_at = datetime(2026, 5, 25, 12, 0)
+        msg.type = discord.MessageType.default
+
+        raw = discord_message_to_raw(msg)
+
+        assert raw.id == 123
+        assert raw.created_at.tzinfo == UTC
+        assert raw.author_name == "Alice"
+        assert raw.is_system is False
+
+    def test_marks_non_default_message_types_as_system(self):
+        msg = MagicMock(spec=discord.Message)
+        msg.id = 123
+        msg.content = None
+        msg.author.display_name = "Alice"
+        msg.author.bot = False
+        msg.created_at = datetime(2026, 5, 25, 12, 0, tzinfo=UTC)
+        msg.type = discord.MessageType.pins_add
+
+        raw = discord_message_to_raw(msg)
+
+        assert raw.content == ""
+        assert raw.is_system is True
+
+
+class TestCleanMessageChunkText:
+    def test_removes_timestamp_prefixes_and_blank_lines(self):
+        text = "\n[2026-05-25 12:00] Alice: hello\n   \nBob: no timestamp\n"
+
+        assert clean_message_chunk_text(text) == "Alice: hello\nBob: no timestamp"
 
 
 class TestMessageChunker:
@@ -225,6 +325,33 @@ class TestMessageChunker:
         assert len(result[0].messages) == 5
         assert len(result[1].messages) == 5
 
+    def test_time_gap_at_threshold_stays_in_same_chunk(self):
+        chunker = MessageChunker(gap_minutes=10, max_messages=100)
+        base = datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
+        messages = [
+            _make_raw(
+                id=1,
+                content="First meaningful message with enough words",
+                created_at=base,
+            ),
+            _make_raw(
+                id=2,
+                content="Second meaningful message with enough words",
+                created_at=base + timedelta(minutes=10),
+            ),
+            _make_raw(
+                id=3,
+                content="Third meaningful message with enough words",
+                created_at=base + timedelta(minutes=20),
+            ),
+        ]
+
+        result = chunker.chunk_messages(messages, "1", "2", "test")
+
+        assert len(result) == 1
+        assert result[0].start_message_id == "1"
+        assert result[0].end_message_id == "3"
+
     def test_max_messages_split(self):
         chunker = MessageChunker(gap_minutes=60, max_messages=5)
         messages = self._make_messages(12, gap_minutes=1)
@@ -241,6 +368,34 @@ class TestMessageChunker:
         ]
         result = chunker.chunk_messages(messages, "1", "2", "test")
         assert result == []
+
+    def test_discards_current_chunk_before_gap_and_keeps_next_valid_chunk(self):
+        chunker = MessageChunker(gap_minutes=10, max_messages=20)
+        base = datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
+        messages = [
+            _make_raw(id=1, content="short setup", created_at=base),
+            _make_raw(id=2, content="another short setup", created_at=base + timedelta(minutes=1)),
+            _make_raw(
+                id=3,
+                content="Fresh thread with enough detail to keep as a chunk",
+                created_at=base + timedelta(minutes=30),
+            ),
+            _make_raw(
+                id=4,
+                content="Second useful message that belongs to the later thread",
+                created_at=base + timedelta(minutes=31),
+            ),
+            _make_raw(
+                id=5,
+                content="Third useful message that makes the later chunk meaningful",
+                created_at=base + timedelta(minutes=32),
+            ),
+        ]
+
+        result = chunker.chunk_messages(messages, "1", "2", "test")
+
+        assert len(result) == 1
+        assert [msg.id for msg in result[0].messages] == [3, 4, 5]
 
 
 class TestMessageIngestionService:
@@ -362,3 +517,379 @@ class TestMessageIngestionService:
         assert service.is_paused is True
         service.resume()
         assert service.is_paused is False
+
+    async def test_ingest_channel_skips_completed_progress(self, service, mock_deps):
+        repository, _, _ = mock_deps
+        repository.get_or_create_ingestion_progress = AsyncMock(
+            return_value=_make_progress(status="completed", total_fetched=5)
+        )
+        channel = FakeHistoryChannel([])
+
+        await service.ingest_channel(channel, "guild-1")
+
+        repository.update_ingestion_progress.assert_not_called()
+        assert channel.history_kwargs is None
+
+    async def test_ingest_channel_completes_and_stores_final_buffer(self, service, mock_deps):
+        repository, _, _ = mock_deps
+        repository.get_or_create_ingestion_progress = AsyncMock(return_value=_make_progress())
+        repository.update_ingestion_progress = AsyncMock()
+        messages = [_make_discord_message(i) for i in [1, 2, 3]]
+        raw_messages = [
+            _make_raw(
+                id=i,
+                content=f"Message {i} has enough content to keep this chunk",
+                created_at=datetime(2026, 5, 25, 12, i, tzinfo=UTC),
+            )
+            for i in [1, 2, 3]
+        ]
+        channel = FakeHistoryChannel(messages)
+        service.store_chunks = AsyncMock(return_value=1)
+
+        with patch(
+            "intelstream.services.message_ingestion.discord_message_to_raw",
+            side_effect=raw_messages,
+        ):
+            await service.ingest_channel(channel, "guild-1", channel_index=1, total_channels=2)
+
+        service.store_chunks.assert_awaited_once()
+        stored_chunks = service.store_chunks.await_args.args[0]
+        assert len(stored_chunks) == 1
+        assert stored_chunks[0].start_message_id == "1"
+        assert stored_chunks[0].end_message_id == "3"
+        repository.update_ingestion_progress.assert_any_await(
+            "guild-1",
+            "222",
+            status="completed",
+            total_fetched=3,
+            last_message_id="3",
+        )
+
+    async def test_ingest_channel_resumes_after_last_message_id(self, service, mock_deps):
+        repository, _, _ = mock_deps
+        repository.get_or_create_ingestion_progress = AsyncMock(
+            return_value=_make_progress(last_message_id="99", total_fetched=4)
+        )
+        repository.update_ingestion_progress = AsyncMock()
+        channel = FakeHistoryChannel([])
+
+        await service.ingest_channel(channel, "guild-1")
+
+        assert channel.history_kwargs is not None
+        after = channel.history_kwargs["after"]
+        assert isinstance(after, discord.Object)
+        assert after.id == 99
+        repository.update_ingestion_progress.assert_any_await(
+            "guild-1",
+            "222",
+            status="completed",
+            total_fetched=4,
+            last_message_id="99",
+        )
+
+    async def test_ingest_channel_pauses_before_processing_next_message(self, service, mock_deps):
+        repository, _, _ = mock_deps
+        repository.get_or_create_ingestion_progress = AsyncMock(return_value=_make_progress())
+        repository.update_ingestion_progress = AsyncMock()
+        channel = FakeHistoryChannel([_make_discord_message(10)])
+        service.pause()
+        service.store_chunks = AsyncMock()
+
+        await service.ingest_channel(channel, "guild-1")
+
+        service.store_chunks.assert_not_called()
+        repository.update_ingestion_progress.assert_any_await(
+            "guild-1",
+            "222",
+            status="paused",
+            last_message_id="10",
+            total_fetched=0,
+        )
+
+    async def test_ingest_channel_checkpoints_and_keeps_leftover_buffer(self, service, mock_deps):
+        repository, _, _ = mock_deps
+        repository.get_or_create_ingestion_progress = AsyncMock(return_value=_make_progress())
+        repository.update_ingestion_progress = AsyncMock()
+        messages = [_make_discord_message(i) for i in [1, 2, 3]]
+        raw_messages = [
+            _make_raw(
+                id=i,
+                content=f"Checkpoint message {i} has enough useful text",
+                created_at=datetime(2026, 5, 25, 12, i, tzinfo=UTC),
+            )
+            for i in [1, 2, 3]
+        ]
+        channel = FakeHistoryChannel(messages)
+        service.store_chunks = AsyncMock(return_value=1)
+        checkpoint_chunks = [
+            Chunk(
+                messages=raw_messages[:2],
+                guild_id="guild-1",
+                channel_id="222",
+                channel_name="general",
+            )
+        ]
+        final_chunks = [
+            Chunk(
+                messages=raw_messages[2:],
+                guild_id="guild-1",
+                channel_id="222",
+                channel_name="general",
+            )
+        ]
+        service._chunker.chunk_messages = MagicMock(side_effect=[checkpoint_chunks, final_chunks])
+
+        with (
+            patch("intelstream.services.message_ingestion.CHECKPOINT_INTERVAL", 2),
+            patch("intelstream.services.message_ingestion.YIELD_INTERVAL", 1000),
+            patch(
+                "intelstream.services.message_ingestion.discord_message_to_raw",
+                side_effect=raw_messages,
+            ),
+        ):
+            await service.ingest_channel(channel, "guild-1")
+
+        assert service.store_chunks.await_count == 2
+        repository.update_ingestion_progress.assert_any_await(
+            "guild-1",
+            "222",
+            last_message_id="2",
+            total_fetched=2,
+        )
+        first_final_chunk = service.store_chunks.await_args_list[-1].args[0][0]
+        assert first_final_chunk.start_message_id == "3"
+
+    async def test_ingest_channel_checkpoints_without_chunks_and_logs_progress(
+        self, service, mock_deps
+    ):
+        repository, _, _ = mock_deps
+        repository.get_or_create_ingestion_progress = AsyncMock(return_value=_make_progress())
+        repository.update_ingestion_progress = AsyncMock()
+        messages = [_make_discord_message(i) for i in [1, 2]]
+        raw_messages = [
+            _make_raw(
+                id=i,
+                content=f"Checkpoint message {i} remains buffered",
+                created_at=datetime(2026, 5, 25, 12, i, tzinfo=UTC),
+            )
+            for i in [1, 2]
+        ]
+        channel = FakeHistoryChannel(messages)
+        service.store_chunks = AsyncMock(return_value=0)
+        service._chunker.chunk_messages = MagicMock(return_value=[])
+
+        with (
+            patch("intelstream.services.message_ingestion.CHECKPOINT_INTERVAL", 1),
+            patch("intelstream.services.message_ingestion.LOG_INTERVAL", 1),
+            patch("intelstream.services.message_ingestion.YIELD_INTERVAL", 1000),
+            patch("intelstream.services.message_ingestion.logger.info") as log_info,
+            patch(
+                "intelstream.services.message_ingestion.discord_message_to_raw",
+                side_effect=raw_messages,
+            ),
+        ):
+            await service.ingest_channel(channel, "guild-1")
+
+        service.store_chunks.assert_not_awaited()
+        assert service._chunker.chunk_messages.call_count == 3
+        repository.update_ingestion_progress.assert_any_await(
+            "guild-1",
+            "222",
+            last_message_id="2",
+            total_fetched=2,
+        )
+        assert any(call.args[0] == "Ingestion progress" for call in log_info.call_args_list)
+
+    async def test_ingest_channel_yields_periodically(self, service, mock_deps):
+        repository, _, _ = mock_deps
+        repository.get_or_create_ingestion_progress = AsyncMock(return_value=_make_progress())
+        repository.update_ingestion_progress = AsyncMock()
+        messages = [_make_discord_message(i) for i in [1, 2, 3]]
+        raw_messages = [_make_raw(id=i, content=f"Message {i} with enough text") for i in [1, 2, 3]]
+        channel = FakeHistoryChannel(messages)
+        service.store_chunks = AsyncMock(return_value=0)
+
+        with (
+            patch("intelstream.services.message_ingestion.YIELD_INTERVAL", 2),
+            patch("intelstream.services.message_ingestion.asyncio.sleep", AsyncMock()) as sleep,
+            patch(
+                "intelstream.services.message_ingestion.discord_message_to_raw",
+                side_effect=raw_messages,
+            ),
+        ):
+            await service.ingest_channel(channel, "guild-1")
+
+        sleep.assert_awaited_once_with(0.1)
+
+    async def test_ingest_channel_records_pause_state_on_error(self, service, mock_deps):
+        repository, _, _ = mock_deps
+        repository.get_or_create_ingestion_progress = AsyncMock(
+            return_value=_make_progress(last_message_id="5", total_fetched=7)
+        )
+        repository.update_ingestion_progress = AsyncMock()
+        channel = FakeHistoryChannel([_make_discord_message(10)])
+
+        with patch(
+            "intelstream.services.message_ingestion.discord_message_to_raw",
+            side_effect=RuntimeError("convert failed"),
+        ):
+            await service.ingest_channel(channel, "guild-1")
+
+        repository.update_ingestion_progress.assert_any_await(
+            "guild-1",
+            "222",
+            status="paused",
+            total_fetched=7,
+            last_message_id="5",
+        )
+
+    async def test_ingest_channel_records_buffer_last_id_on_error(self, service, mock_deps):
+        repository, _, _ = mock_deps
+        repository.get_or_create_ingestion_progress = AsyncMock(return_value=_make_progress())
+        repository.update_ingestion_progress = AsyncMock()
+        channel = FakeHistoryChannel([_make_discord_message(10)])
+        raw = _make_raw(id=10, content="Buffered message with enough context to store")
+        chunk = Chunk(
+            messages=[raw],
+            guild_id="guild-1",
+            channel_id="222",
+            channel_name="general",
+        )
+        service._chunker.chunk_messages = MagicMock(return_value=[chunk])
+        service.store_chunks = AsyncMock(side_effect=RuntimeError("store failed"))
+
+        with patch(
+            "intelstream.services.message_ingestion.discord_message_to_raw",
+            return_value=raw,
+        ):
+            await service.ingest_channel(channel, "guild-1")
+
+        repository.update_ingestion_progress.assert_any_await(
+            "guild-1",
+            "222",
+            status="paused",
+            total_fetched=1,
+            last_message_id="10",
+        )
+
+    async def test_ingest_channel_records_none_last_id_on_early_error(self, service, mock_deps):
+        repository, _, _ = mock_deps
+        repository.get_or_create_ingestion_progress = AsyncMock(return_value=_make_progress())
+        repository.update_ingestion_progress = AsyncMock()
+        channel = FakeHistoryChannel([_make_discord_message(10)])
+
+        with patch(
+            "intelstream.services.message_ingestion.discord_message_to_raw",
+            side_effect=RuntimeError("convert failed"),
+        ):
+            await service.ingest_channel(channel, "guild-1")
+
+        repository.update_ingestion_progress.assert_any_await(
+            "guild-1",
+            "222",
+            status="paused",
+            total_fetched=0,
+            last_message_id=None,
+        )
+
+    async def test_run_backfill_filters_sorts_and_ingests_readable_channels(self, service):
+        guild = MagicMock(spec=discord.Guild)
+        guild.id = 123
+        guild.name = "Guild"
+        guild.me = MagicMock()
+
+        def make_channel(name: str, last_message_id: int | None, readable: bool) -> MagicMock:
+            channel = MagicMock(spec=discord.TextChannel)
+            channel.name = name
+            channel.last_message_id = last_message_id
+            channel.permissions_for.return_value.read_message_history = readable
+            return channel
+
+        older = make_channel("older", 10, True)
+        newest = make_channel("newest", 30, True)
+        unreadable = make_channel("secret", 999, False)
+        none_last = make_channel("none", None, True)
+        guild.text_channels = [older, unreadable, newest, none_last]
+        service.ingest_channel = AsyncMock()
+
+        await service.run_backfill(guild)
+
+        assert [call.args[0].name for call in service.ingest_channel.await_args_list] == [
+            "newest",
+            "older",
+            "none",
+        ]
+        assert all(call.args[1] == "123" for call in service.ingest_channel.await_args_list)
+
+    async def test_run_backfill_stops_when_paused_between_channels(self, service):
+        guild = MagicMock(spec=discord.Guild)
+        guild.id = 123
+        guild.name = "Guild"
+        guild.me = MagicMock()
+        channels = []
+        for name in ["first", "second"]:
+            channel = MagicMock(spec=discord.TextChannel)
+            channel.name = name
+            channel.last_message_id = 1
+            channel.permissions_for.return_value.read_message_history = True
+            channels.append(channel)
+        guild.text_channels = channels
+
+        async def ingest_and_pause(*_args, **_kwargs):
+            service.pause()
+
+        service.ingest_channel = AsyncMock(side_effect=ingest_and_pause)
+
+        await service.run_backfill(guild)
+
+        service.ingest_channel.assert_awaited_once()
+
+    def test_start_backfill_creates_named_task(self, service):
+        guild = MagicMock(spec=discord.Guild)
+        guild.id = 123
+        task = MagicMock(spec=asyncio.Task)
+        task.done.return_value = False
+        service._paused = True
+
+        def fake_create_task(coro, *, name: str):
+            coro.close()
+            fake_create_task.name = name
+            return task
+
+        fake_create_task.name = ""
+
+        with patch(
+            "intelstream.services.message_ingestion.asyncio.create_task",
+            side_effect=fake_create_task,
+        ) as create_task:
+            service.start_backfill(guild)
+
+        assert service._paused is False
+        assert service._backfill_task is task
+        create_task.assert_called_once()
+        assert fake_create_task.name == "lore-backfill-123"
+
+    def test_start_backfill_noops_when_task_already_running(self, service):
+        task = MagicMock(spec=asyncio.Task)
+        task.done.return_value = False
+        service._backfill_task = task
+        guild = MagicMock(spec=discord.Guild)
+
+        with patch("intelstream.services.message_ingestion.asyncio.create_task") as create_task:
+            service.start_backfill(guild)
+
+        create_task.assert_not_called()
+
+    async def test_run_backfill_safe_swallows_errors(self, service):
+        guild = MagicMock(spec=discord.Guild)
+        guild.name = "Guild"
+        service.run_backfill = AsyncMock(side_effect=RuntimeError("boom"))
+
+        await service._run_backfill_safe(guild)
+
+        service.run_backfill.assert_awaited_once_with(guild)
+
+    def test_stop_backfill_sets_paused(self, service):
+        service.stop_backfill()
+
+        assert service.is_paused is True
