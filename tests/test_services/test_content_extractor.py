@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -31,6 +31,16 @@ class TestContentExtractor:
         result = await extractor.extract("http://localhost/admin")
 
         assert result.text == ""
+
+    async def test_extract_rejects_ssrf_blocked_url_before_fetching(self):
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock()
+        extractor = ContentExtractor(http_client=mock_client)
+
+        result = await extractor.extract("http://localhost/admin")
+
+        assert result.text == ""
+        mock_client.get.assert_not_called()
 
     @respx.mock
     async def test_extract_article_content(self, extractor: ContentExtractor):
@@ -691,6 +701,13 @@ class TestLargestTextBlock:
         soup = BeautifulSoup("<html><body><div>Body fallback text</div></body></html>", "lxml")
 
         assert extractor._extract_largest_text_block(soup) == "Body fallback text"
+
+    def test_extract_largest_text_block_truncates_body_fallback(self, extractor: ContentExtractor):
+        soup = BeautifulSoup(f"<html><body>{'x' * 12000}</body></html>", "lxml")
+
+        text = extractor._extract_largest_text_block(soup)
+
+        assert text == "x" * 10000
 
     def test_extract_largest_text_block_without_body_uses_document_text(
         self, extractor: ContentExtractor
