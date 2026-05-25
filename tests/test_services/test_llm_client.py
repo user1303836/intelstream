@@ -321,6 +321,23 @@ class TestGeminiLLMClientSafetyFilter:
         assert result == "Hello world"
 
     @pytest.mark.asyncio
+    async def test_request_includes_system_instruction_and_max_tokens(self) -> None:
+        with patch("google.genai.Client"):
+            client = GeminiLLMClient(api_key="test-key", model="gemini-pro")
+
+        mock_response = MagicMock()
+        type(mock_response).text = PropertyMock(return_value="ok")
+        client._client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+
+        await client.complete("system prompt", "user prompt", 321)
+
+        call_kwargs = client._client.aio.models.generate_content.await_args.kwargs
+        assert call_kwargs["model"] == "gemini-pro"
+        assert call_kwargs["contents"] == "user prompt"
+        assert call_kwargs["config"].system_instruction == "system prompt"
+        assert call_kwargs["config"].max_output_tokens == 321
+
+    @pytest.mark.asyncio
     async def test_resource_exhausted_error_is_rate_limit(self) -> None:
         class ResourceExhaustedError(Exception):
             pass
