@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import discord
 import pytest
@@ -316,6 +316,54 @@ class TestContentPosterPostUnpostedItems:
         mock_bot.repository.mark_content_item_posted.assert_called_once_with(
             content_id=sample_content_item.id,
             discord_message_id="789",
+        )
+
+    async def test_posts_multiple_items_with_one_source_lookup(
+        self, content_poster, mock_bot, sample_content_item
+    ):
+        second_item = MagicMock(spec=ContentItem)
+        second_item.id = "second-item-id"
+        second_item.title = "Second Article"
+        second_item.summary = "Second summary"
+        second_item.original_url = "https://example.com/second"
+        second_item.author = "Second Author"
+        second_item.source_id = sample_content_item.source_id
+
+        first_message = MagicMock(spec=discord.Message)
+        first_message.id = 101
+        second_message = MagicMock(spec=discord.Message)
+        second_message.id = 202
+        mock_channel = MagicMock(spec=discord.TextChannel)
+        mock_channel.send = AsyncMock(side_effect=[first_message, second_message])
+        mock_bot.get_channel = MagicMock(return_value=mock_channel)
+
+        mock_bot.repository.get_unposted_content_items = AsyncMock(
+            return_value=[sample_content_item, second_item]
+        )
+
+        mock_source = MagicMock()
+        mock_source.type = SourceType.SUBSTACK
+        mock_source.name = "Shared Source"
+        mock_source.skip_summary = False
+        mock_source.guild_id = "123"
+        mock_source.channel_id = "456"
+        mock_bot.repository.get_sources_by_ids = AsyncMock(
+            return_value={sample_content_item.source_id: mock_source}
+        )
+        mock_bot.repository.mark_content_item_posted = AsyncMock()
+
+        result = await content_poster.post_unposted_items(guild_id=123)
+
+        assert result == 2
+        mock_bot.repository.get_sources_by_ids.assert_awaited_once_with(
+            {sample_content_item.source_id}
+        )
+        assert mock_channel.send.await_count == 2
+        mock_bot.repository.mark_content_item_posted.assert_has_awaits(
+            [
+                call(content_id=sample_content_item.id, discord_message_id="101"),
+                call(content_id=second_item.id, discord_message_id="202"),
+            ]
         )
 
     async def test_falls_back_to_guild_config_when_no_source_channel(
