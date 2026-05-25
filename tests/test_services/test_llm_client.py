@@ -36,6 +36,27 @@ class TestCreateLLMClient:
         assert client == client_cls.return_value
         client_cls.assert_called_once_with(api_key="key", model="claude")
 
+    def test_anthropic_provider_enum_creates_anthropic_client(self) -> None:
+        with patch("anthropic.AsyncAnthropic") as anthropic_cls:
+            client = create_llm_client(LLMProvider.ANTHROPIC, api_key="key", model="claude")
+
+        assert isinstance(client, AnthropicLLMClient)
+        anthropic_cls.assert_called_once_with(api_key="key")
+
+    def test_openai_provider_enum_creates_openai_client(self) -> None:
+        with patch("openai.AsyncOpenAI") as openai_cls:
+            client = create_llm_client(LLMProvider.OPENAI, api_key="key", model="gpt-4o")
+
+        assert isinstance(client, OpenAILLMClient)
+        openai_cls.assert_called_once_with(api_key="key")
+
+    def test_gemini_provider_enum_creates_gemini_client(self) -> None:
+        with patch("google.genai.Client") as gemini_cls:
+            client = create_llm_client(LLMProvider.GEMINI, api_key="key", model="gemini-pro")
+
+        assert isinstance(client, GeminiLLMClient)
+        gemini_cls.assert_called_once_with(api_key="key")
+
     def test_kimi_uses_moonshot_openai_base_url(self) -> None:
         with patch("openai.AsyncOpenAI") as openai_cls:
             client = create_llm_client(LLMProvider.KIMI, api_key="key", model="moonshot")
