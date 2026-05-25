@@ -491,6 +491,51 @@ class TestLLMExtractionStrategy:
 
         assert "<article" not in cleaned
 
+    def test_clean_html_keeps_truncated_prefix_when_no_previous_open_tag(
+        self, llm_strategy: LLMExtractionStrategy
+    ):
+        class FakeSoup:
+            def find_all(self, *_args: object, **_kwargs: object) -> list[object]:
+                return []
+
+            def __str__(self) -> str:
+                return "<" + ("x" * 1200)
+
+        settings = MagicMock()
+        settings.max_html_length = 1100
+
+        with (
+            patch(
+                "intelstream.adapters.strategies.llm_extraction.BeautifulSoup",
+                return_value=FakeSoup(),
+            ),
+            patch(
+                "intelstream.adapters.strategies.llm_extraction.get_settings",
+                return_value=settings,
+            ),
+        ):
+            cleaned = llm_strategy._clean_html("<html></html>")
+
+        assert cleaned == "<" + ("x" * 1099)
+
+    async def test_extract_with_llm_ignores_blocks_without_text(
+        self, llm_strategy: LLMExtractionStrategy, mock_anthropic_client
+    ):
+        response = MagicMock()
+        response.content = [
+            object(),
+            MagicMock(text='[{"url": "https://example.com/post", "title": "Post"}]'),
+        ]
+        mock_anthropic_client.messages.create.return_value = response
+
+        posts = await llm_strategy._extract_with_llm(
+            "<html><body>Posts</body></html>",
+            "https://example.com/blog",
+        )
+
+        assert len(posts) == 1
+        assert posts[0].url == "https://example.com/post"
+
     async def test_extract_with_llm_skips_ssrf_blocked_urls(
         self, llm_strategy: LLMExtractionStrategy, mock_anthropic_client
     ):
@@ -513,6 +558,25 @@ class TestLLMExtractionStrategy:
         )
 
         assert [post.url for post in posts] == ["https://example.com/safe"]
+
+    def test_extract_json_falls_back_from_invalid_markdown_to_embedded_array(
+        self, llm_strategy: LLMExtractionStrategy
+    ):
+        text = (
+            '```json\n{"url": "https://example.com/not-a-list"}\n```\n'
+            'Fallback [{"url": "https://example.com/array", "title": "Array"}]'
+        )
+
+        result = llm_strategy._extract_json_from_response(text)
+
+        assert result == [{"url": "https://example.com/array", "title": "Array"}]
+
+    def test_extract_json_returns_empty_for_invalid_embedded_array(
+        self, llm_strategy: LLMExtractionStrategy
+    ):
+        result = llm_strategy._extract_json_from_response("Noisy [not json] response")
+
+        assert result == []
 
     async def test_extract_with_llm_handles_api_error(
         self, llm_strategy: LLMExtractionStrategy, mock_anthropic_client
