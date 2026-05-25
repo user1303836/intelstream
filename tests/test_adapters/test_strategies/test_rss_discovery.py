@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -228,6 +229,25 @@ class TestRSSDiscoveryStrategy:
 
         assert result == "https://example.com/safe-feed.xml"
 
+    def test_find_rss_in_html_skips_irrelevant_missing_and_blocked_links(self, rss_strategy):
+        html = """
+        <html><head>
+          <link rel="alternate" type="text/html" href="/not-a-feed">
+          <link rel="alternate" type="application/rss+xml">
+          <link rel="feed">
+          <link rel="feed" href="http://127.0.0.1/rss">
+          <link rel="feed" href="/safe-feed.xml">
+        </head></html>
+        """
+
+        with patch(
+            "intelstream.adapters.strategies.rss_discovery.validate_url_for_ssrf",
+            side_effect=[SSRFError("blocked"), None],
+        ):
+            result = rss_strategy._find_rss_in_html(html, "https://example.com")
+
+        assert result == "https://example.com/safe-feed.xml"
+
     async def test_probe_rss_paths_accepts_feed_validated_by_body(self):
         client = MagicMock()
         client.head = AsyncMock(
@@ -240,6 +260,20 @@ class TestRSSDiscoveryStrategy:
 
         assert result == "https://example.com/feed"
         strategy._is_valid_feed.assert_awaited_once_with("https://example.com/feed")
+
+    async def test_probe_rss_paths_rejects_200_non_feed_responses(self):
+        client = MagicMock()
+        client.head = AsyncMock(
+            return_value=httpx.Response(200, headers={"content-type": "text/html"})
+        )
+        strategy = RSSDiscoveryStrategy(http_client=client)
+        strategy._is_valid_feed = AsyncMock(return_value=False)
+
+        result = await strategy._probe_rss_paths("https://example.com")
+
+        assert result is None
+        assert client.head.await_count == 10
+        assert strategy._is_valid_feed.await_count == 10
 
     async def test_probe_rss_paths_ignores_http_errors(self):
         client = MagicMock()
@@ -264,6 +298,29 @@ class TestRSSDiscoveryStrategy:
         assert await strategy._is_valid_feed("https://example.com/feed") is False
         assert await strategy._is_valid_feed("https://example.com/feed") is False
 
+    @respx.mock
+    async def test_is_valid_feed_with_default_client_accepts_feed_with_entries(self):
+        rss_content = """<?xml version="1.0"?>
+        <rss version="2.0">
+          <channel>
+            <item>
+              <title>Post</title>
+              <link>https://example.com/post</link>
+            </item>
+          </channel>
+        </rss>
+        """
+        respx.get("https://example.com/feed").mock(
+            return_value=httpx.Response(
+                200,
+                text=rss_content,
+                headers={"content-type": "text/xml"},
+            )
+        )
+        strategy = RSSDiscoveryStrategy()
+
+        assert await strategy._is_valid_feed("https://example.com/feed") is True
+
     async def test_is_valid_feed_handles_http_error(self):
         client = MagicMock()
         client.get = AsyncMock(side_effect=httpx.ConnectError("offline"))
@@ -282,7 +339,11 @@ class TestRSSDiscoveryStrategy:
         )
         strategy = RSSDiscoveryStrategy(http_client=client)
 
-        assert await strategy._parse_feed("https://example.com/feed") is None
+        with patch(
+            "intelstream.adapters.strategies.rss_discovery.feedparser.parse",
+            return_value=SimpleNamespace(bozo=True, entries=[]),
+        ):
+            assert await strategy._parse_feed("https://example.com/feed") is None
 
     async def test_parse_feed_skips_entries_without_links(self):
         rss_content = """<?xml version="1.0"?>
