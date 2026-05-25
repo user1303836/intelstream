@@ -116,9 +116,7 @@ class TestCommitFormatting:
 
         assert embed.description is None
 
-    def test_format_commit_without_avatar_sets_author_name_only(
-        self, poster: GitHubPoster
-    ) -> None:
+    def test_format_commit_without_avatar_sets_author_name_only(self, poster: GitHubPoster) -> None:
         event = make_commit_event(author="testuser")
         event.author_avatar_url = ""
 
@@ -158,9 +156,7 @@ class TestPRFormatting:
         assert embed.color == GitHubPoster.COLORS["pull_request"]
         assert any(field.value == "draft" for field in embed.fields)
 
-    def test_format_pr_long_title_without_description_or_avatar(
-        self, poster: GitHubPoster
-    ) -> None:
+    def test_format_pr_long_title_without_description_or_avatar(self, poster: GitHubPoster) -> None:
         event = make_pr_event(title="A" * 300, state=None)
         event.description = None
         event.author_avatar_url = ""

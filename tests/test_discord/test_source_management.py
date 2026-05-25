@@ -651,9 +651,7 @@ class TestSourceManagementAdd:
         mock_bot.repository.add_source.assert_not_called()
         assert "URL not allowed" in interaction.followup.send.call_args.args[0]
 
-    async def test_add_handles_repository_duplicate_race(
-        self, source_management, mock_bot
-    ):
+    async def test_add_handles_repository_duplicate_race(self, source_management, mock_bot):
         interaction = make_interaction()
         source_type_choice = MagicMock()
         source_type_choice.value = "rss"
@@ -672,9 +670,7 @@ class TestSourceManagementAdd:
 
         assert "already exists" in interaction.followup.send.call_args.args[0]
 
-    async def test_add_page_stores_analyzed_extraction_profile(
-        self, source_management, mock_bot
-    ):
+    async def test_add_page_stores_analyzed_extraction_profile(self, source_management, mock_bot):
         mock_bot.settings.anthropic_api_key = "anthropic-key"
         interaction = make_interaction()
         source_type_choice = MagicMock()
@@ -690,7 +686,9 @@ class TestSourceManagementAdd:
         mock_bot.repository.get_source_by_name = AsyncMock(return_value=None)
         mock_bot.repository.add_source = AsyncMock(return_value=mock_source)
 
-        with patch("intelstream.discord.cogs.source_management.PageAnalyzer", return_value=analyzer):
+        with patch(
+            "intelstream.discord.cogs.source_management.PageAnalyzer", return_value=analyzer
+        ):
             await source_management.source_add.callback(
                 source_management,
                 interaction,
@@ -710,7 +708,9 @@ class TestSourceManagementAdd:
         analyzer = MagicMock()
         analyzer.analyze = AsyncMock(side_effect=PageAnalysisError("no posts"))
 
-        with patch("intelstream.discord.cogs.source_management.PageAnalyzer", return_value=analyzer):
+        with patch(
+            "intelstream.discord.cogs.source_management.PageAnalyzer", return_value=analyzer
+        ):
             await source_management.source_add.callback(
                 source_management,
                 interaction,
@@ -872,9 +872,7 @@ class TestSourceManagementList:
         paused_source.consecutive_failures = 0
         paused_source.last_polled_at = None
 
-        mock_bot.repository.get_all_sources = AsyncMock(
-            return_value=[failed_source, paused_source]
-        )
+        mock_bot.repository.get_all_sources = AsyncMock(return_value=[failed_source, paused_source])
 
         await source_management.source_list.callback(source_management, interaction)
 
@@ -1341,9 +1339,7 @@ class TestSourceManagementToggle:
         call_args = interaction.followup.send.call_args
         assert "No source found" in call_args[0][0]
 
-    async def test_toggle_handles_source_not_found_during_update(
-        self, source_management, mock_bot
-    ):
+    async def test_toggle_handles_source_not_found_during_update(self, source_management, mock_bot):
         interaction = make_interaction()
         mock_source = MagicMock()
         mock_source.identifier = "test-identifier"

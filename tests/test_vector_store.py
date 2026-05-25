@@ -405,10 +405,7 @@ class TestUpsertBatch:
         store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
         store._initialized = True
         store._message_chunks["guild-1"] = MagicMock()
-        items = [
-            (f"chunk-{index:04d}", [1.0, 0.0, 0.0, 0.0])
-            for index in range(300)
-        ]
+        items = [(f"chunk-{index:04d}", [1.0, 0.0, 0.0, 0.0]) for index in range(300)]
 
         await store.upsert_message_chunks_batch("guild-1", items)
 

@@ -314,9 +314,7 @@ class TestIntelStreamBot:
 
         await IntelStreamBot.on_error(bot, "on_message")
 
-        bot.notify_owner.assert_awaited_once_with(
-            "Error in on_message. Check logs for details."
-        )
+        bot.notify_owner.assert_awaited_once_with("Error in on_message. Check logs for details.")
 
     async def test_close_unloads_cogs_and_closes_resources(self, mock_settings: Settings) -> None:
         repository = MagicMock()
@@ -577,9 +575,7 @@ class TestCoreCommandsHelpers:
             (timedelta(days=3), "d ago"),
         ],
     )
-    def test_format_relative_time_ranges(
-        self, delta: timedelta, expected_suffix: str
-    ) -> None:
+    def test_format_relative_time_ranges(self, delta: timedelta, expected_suffix: str) -> None:
         bot = MagicMock(spec=IntelStreamBot)
         core = CoreCommands(bot)
 
@@ -644,10 +640,7 @@ class TestCoreCommandsCommands:
         bot.start_time = datetime.now(UTC) - timedelta(minutes=5)
         bot.settings.content_poll_interval_minutes = 7
         repository = AsyncMock()
-        sources = [
-            self._make_source(i, failures=1 if i == 0 else 0)
-            for i in range(9)
-        ]
+        sources = [self._make_source(i, failures=1 if i == 0 else 0) for i in range(9)]
         sources[1].is_active = False
         sources[1].pause_reason = PauseReason.USER_PAUSED.value
         repository.get_all_sources = AsyncMock(return_value=sources)
@@ -675,9 +668,13 @@ class TestCoreCommandsCommands:
         assert "Configured Sources" in field_names
         assert "Forwarding Rules (3 active)" in field_names
         assert "Default Output" in field_names
-        configured = next(field.value for field in embed.fields if field.name == "Configured Sources")
+        configured = next(
+            field.value for field in embed.fields if field.name == "Configured Sources"
+        )
         assert "*... and 1 more*" in configured
-        forwarding = next(field.value for field in embed.fields if field.name.startswith("Forwarding"))
+        forwarding = next(
+            field.value for field in embed.fields if field.name.startswith("Forwarding")
+        )
         assert "*... and 1 more*" in forwarding
         repository.get_content_stats.assert_awaited_once_with(str(interaction.guild_id))
 

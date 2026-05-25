@@ -306,9 +306,7 @@ class TestConfigManagementShow:
 
 
 class TestConfigManagementErrors:
-    async def test_config_channel_error_handles_missing_permissions(
-        self, config_management
-    ):
+    async def test_config_channel_error_handles_missing_permissions(self, config_management):
         interaction = MagicMock(spec=discord.Interaction)
         interaction.response = MagicMock()
         interaction.response.send_message = AsyncMock()

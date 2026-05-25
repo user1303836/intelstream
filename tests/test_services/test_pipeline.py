@@ -1328,9 +1328,7 @@ class TestEmbedItem:
         mock_embedding = AsyncMock()
         mock_embedding.embed_batch = AsyncMock(return_value=[[0.1], [0.2]])
         mock_vector_store = AsyncMock()
-        mock_repository.delete_article_chunk_metas_for_content_item.return_value = [
-            "item-1__0000"
-        ]
+        mock_repository.delete_article_chunk_metas_for_content_item.return_value = ["item-1__0000"]
         pipeline = ContentPipeline(
             settings=mock_settings,
             repository=mock_repository,
@@ -1341,9 +1339,7 @@ class TestEmbedItem:
 
         await pipeline._embed_item("item-1", "Title", "Summary", "Raw")
 
-        mock_embedding.embed_batch.assert_awaited_once_with(
-            ["Title\n\nfirst", "Title\n\nsecond"]
-        )
+        mock_embedding.embed_batch.assert_awaited_once_with(["Title\n\nfirst", "Title\n\nsecond"])
         mock_vector_store.delete_article_chunks.assert_awaited_once_with(["item-1__0000"])
         mock_repository.add_article_chunk_metas_batch.assert_awaited_once()
         mock_vector_store.upsert_article_chunks_batch.assert_awaited_once()

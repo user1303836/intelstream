@@ -222,9 +222,7 @@ class TestGitHubAdd:
         mock_bot.settings.github_token = None
         interaction = make_interaction(channel=make_channel())
 
-        await github_commands.github_add.callback(
-            github_commands, interaction, repo_url="org/repo"
-        )
+        await github_commands.github_add.callback(github_commands, interaction, repo_url="org/repo")
 
         call_args = interaction.followup.send.call_args
         assert "No GitHub token" in call_args.args[0]
@@ -244,9 +242,7 @@ class TestGitHubAdd:
         github_commands._get_github_service = MagicMock(return_value=MagicMock())
         interaction = make_interaction(channel=None)
 
-        await github_commands.github_add.callback(
-            github_commands, interaction, repo_url="org/repo"
-        )
+        await github_commands.github_add.callback(github_commands, interaction, repo_url="org/repo")
 
         assert "target channel" in interaction.followup.send.call_args.args[0]
 
@@ -254,9 +250,7 @@ class TestGitHubAdd:
         github_commands._get_github_service = MagicMock(return_value=MagicMock())
         interaction = make_interaction(guild_id=None, channel=make_channel())
 
-        await github_commands.github_add.callback(
-            github_commands, interaction, repo_url="org/repo"
-        )
+        await github_commands.github_add.callback(github_commands, interaction, repo_url="org/repo")
 
         assert "only be used in a server" in interaction.followup.send.call_args.args[0]
 
@@ -267,9 +261,7 @@ class TestGitHubAdd:
         existing.channel_id = "999"
         mock_bot.repository.get_github_repo = AsyncMock(return_value=existing)
 
-        await github_commands.github_add.callback(
-            github_commands, interaction, repo_url="org/repo"
-        )
+        await github_commands.github_add.callback(github_commands, interaction, repo_url="org/repo")
 
         assert "already being monitored" in interaction.followup.send.call_args.args[0]
 
@@ -280,9 +272,7 @@ class TestGitHubAdd:
         interaction = make_interaction(channel=make_channel())
         mock_bot.repository.get_github_repo = AsyncMock(return_value=None)
 
-        await github_commands.github_add.callback(
-            github_commands, interaction, repo_url="org/repo"
-        )
+        await github_commands.github_add.callback(github_commands, interaction, repo_url="org/repo")
 
         assert "not found or is not accessible" in interaction.followup.send.call_args.args[0]
 
@@ -293,9 +283,7 @@ class TestGitHubAdd:
         interaction = make_interaction(channel=make_channel())
         mock_bot.repository.get_github_repo = AsyncMock(return_value=None)
 
-        await github_commands.github_add.callback(
-            github_commands, interaction, repo_url="org/repo"
-        )
+        await github_commands.github_add.callback(github_commands, interaction, repo_url="org/repo")
 
         assert "rate limited" in interaction.followup.send.call_args.args[0]
 

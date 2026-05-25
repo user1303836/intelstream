@@ -143,9 +143,7 @@ class TestPageAdapter:
         self, sample_profile: ExtractionProfile
     ) -> None:
         mock_client = MagicMock(spec=httpx.AsyncClient)
-        mock_client.get = AsyncMock(
-            side_effect=httpx.ConnectError("offline", request=MagicMock())
-        )
+        mock_client.get = AsyncMock(side_effect=httpx.ConnectError("offline", request=MagicMock()))
         adapter = PageAdapter(extraction_profile=sample_profile, http_client=mock_client)
 
         with pytest.raises(httpx.ConnectError, match="offline"):

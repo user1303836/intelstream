@@ -143,9 +143,7 @@ class TestSmartBlogAdapterAnalysis:
             assert result.success is False
             assert "Unable to find blog posts" in result.error
 
-    async def test_analyze_site_continues_after_strategy_exception(
-        self, adapter: SmartBlogAdapter
-    ):
+    async def test_analyze_site_continues_after_strategy_exception(self, adapter: SmartBlogAdapter):
         with (
             patch.object(adapter._strategies[0], "discover", new_callable=AsyncMock) as mock_rss,
             patch.object(

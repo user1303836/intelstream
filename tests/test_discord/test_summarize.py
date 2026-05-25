@@ -235,9 +235,7 @@ class TestFetchYoutubeContent:
         mock_bot.settings.youtube_api_key = None
 
         with pytest.raises(WebFetchError, match="API key"):
-            await summarize_cog._fetch_youtube_content(
-                "https://youtube.com/watch?v=dQw4w9WgXcQ"
-            )
+            await summarize_cog._fetch_youtube_content("https://youtube.com/watch?v=dQw4w9WgXcQ")
 
     async def test_fetch_youtube_reports_missing_video(self, summarize_cog):
         with (
@@ -248,9 +246,7 @@ class TestFetchYoutubeContent:
             ),
             pytest.raises(WebFetchError, match="Video not found"),
         ):
-            await summarize_cog._fetch_youtube_content(
-                "https://youtube.com/watch?v=dQw4w9WgXcQ"
-            )
+            await summarize_cog._fetch_youtube_content("https://youtube.com/watch?v=dQw4w9WgXcQ")
 
     async def test_fetch_youtube_uses_description_when_transcript_missing(self, summarize_cog):
         response = {
@@ -469,9 +465,7 @@ class TestFetchSubstackContent:
         assert content.content == "Article body"
         assert content.author == "Author"
 
-    async def test_fetch_substack_matches_url_containment_and_empty_content(
-        self, summarize_cog
-    ):
+    async def test_fetch_substack_matches_url_containment_and_empty_content(self, summarize_cog):
         miss = MagicMock()
         miss.original_url = "https://example.substack.com/p/other"
         hit = MagicMock()
@@ -500,9 +494,7 @@ class TestFetchSubstackContent:
             patch("intelstream.discord.cogs.summarize.SubstackAdapter", return_value=adapter),
             pytest.raises(WebFetchError, match="Could not find the article"),
         ):
-            await summarize_cog._fetch_substack_content(
-                "https://example.substack.com/p/missing"
-            )
+            await summarize_cog._fetch_substack_content("https://example.substack.com/p/missing")
 
 
 class TestFetchWebContent:
@@ -755,7 +747,9 @@ class TestSummarizeCommand:
             model="claude-sonnet-4-6",
         )
         summarization_service.assert_called_once()
-        assert mock_interaction.followup.send.call_args.kwargs["embed"].description == "Lazy summary"
+        assert (
+            mock_interaction.followup.send.call_args.kwargs["embed"].description == "Lazy summary"
+        )
 
 
 class TestCogLifecycle:

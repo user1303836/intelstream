@@ -201,9 +201,7 @@ class TestLoreCogLoadWithoutApiKey:
 
 
 class TestLoreCogUnload:
-    async def test_cog_unload_cancels_rebuild_stops_backfill_flushes_and_closes_llm(
-        self, lore_cog
-    ):
+    async def test_cog_unload_cancels_rebuild_stops_backfill_flushes_and_closes_llm(self, lore_cog):
         lore_cog._index_rebuild_task = asyncio.create_task(asyncio.sleep(10))
         lore_cog._ingestion_service.is_running = True
         lore_cog._ingestion_service.stop_backfill = MagicMock()
@@ -230,9 +228,7 @@ class TestIndexHealth:
 
         mock_bot.repository.get_message_chunk_guild_ids.assert_not_called()
 
-    async def test_ensure_message_chunk_index_clears_error_when_no_chunks(
-        self, lore_cog, mock_bot
-    ):
+    async def test_ensure_message_chunk_index_clears_error_when_no_chunks(self, lore_cog, mock_bot):
         lore_cog._index_rebuild_error = "stale"
         mock_bot.repository.get_message_chunk_guild_ids.return_value = []
 
@@ -240,9 +236,7 @@ class TestIndexHealth:
 
         assert lore_cog._index_rebuild_error is None
 
-    async def test_ensure_message_chunk_index_skips_empty_guild(
-        self, lore_cog, mock_bot
-    ):
+    async def test_ensure_message_chunk_index_skips_empty_guild(self, lore_cog, mock_bot):
         mock_bot.repository.get_message_chunk_guild_ids.return_value = ["guild-1"]
         mock_bot.repository.count_message_chunk_metas.return_value = 0
 
@@ -250,9 +244,7 @@ class TestIndexHealth:
 
         lore_cog._ingestion_service.rebuild_vector_index.assert_not_called()
 
-    async def test_ensure_message_chunk_index_skips_healthy_index(
-        self, lore_cog, mock_bot
-    ):
+    async def test_ensure_message_chunk_index_skips_healthy_index(self, lore_cog, mock_bot):
         mock_bot.repository.get_message_chunk_guild_ids.return_value = ["guild-1"]
         mock_bot.repository.count_message_chunk_metas.return_value = 3
         lore_cog._message_index_is_healthy = AsyncMock(return_value=True)
@@ -276,9 +268,7 @@ class TestIndexHealth:
         assert sleep.await_count == 2
         assert lore_cog._index_rebuild_error == "RuntimeError: db locked"
 
-    async def test_ensure_message_chunk_index_reraises_cancellation(
-        self, lore_cog, mock_bot
-    ):
+    async def test_ensure_message_chunk_index_reraises_cancellation(self, lore_cog, mock_bot):
         mock_bot.repository.get_message_chunk_guild_ids = AsyncMock(
             side_effect=asyncio.CancelledError
         )
@@ -556,9 +546,7 @@ class TestFlushBuffers:
 
         await lore_cog._flush_buffer("111:222")
 
-        lore_cog._chunker.chunk_messages.assert_called_once_with(
-            [raw], "111", "222", "general"
-        )
+        lore_cog._chunker.chunk_messages.assert_called_once_with([raw], "111", "222", "general")
         lore_cog._ingestion_service.store_chunks.assert_awaited_once_with([chunk])
         assert "111:222" not in lore_cog._message_buffers
 

@@ -546,10 +546,20 @@ class TestMessageIngestionService:
         channel = FakeHistoryChannel(messages)
         service.store_chunks = AsyncMock(return_value=1)
         checkpoint_chunks = [
-            Chunk(messages=raw_messages[:2], guild_id="guild-1", channel_id="222", channel_name="general")
+            Chunk(
+                messages=raw_messages[:2],
+                guild_id="guild-1",
+                channel_id="222",
+                channel_name="general",
+            )
         ]
         final_chunks = [
-            Chunk(messages=raw_messages[2:], guild_id="guild-1", channel_id="222", channel_name="general")
+            Chunk(
+                messages=raw_messages[2:],
+                guild_id="guild-1",
+                channel_id="222",
+                channel_name="general",
+            )
         ]
         service._chunker.chunk_messages = MagicMock(side_effect=[checkpoint_chunks, final_chunks])
 

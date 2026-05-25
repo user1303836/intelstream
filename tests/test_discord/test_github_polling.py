@@ -355,13 +355,9 @@ class TestProcessRepo:
         cog = _make_cog(mock_bot)
         repo = _make_repo()
         pr = _make_event("pull_request", number=5)
-        cog._service.fetch_new_commits = AsyncMock(
-            side_effect=GitHubAPIError(500, "commit error")
-        )
+        cog._service.fetch_new_commits = AsyncMock(side_effect=GitHubAPIError(500, "commit error"))
         cog._service.fetch_new_prs = AsyncMock(return_value=[pr])
-        cog._service.fetch_new_issues = AsyncMock(
-            side_effect=GitHubAPIError(500, "issue error")
-        )
+        cog._service.fetch_new_issues = AsyncMock(side_effect=GitHubAPIError(500, "issue error"))
         cog._poster.post_events = AsyncMock()
         mock_bot.get_channel = MagicMock(return_value=_make_text_channel())
         mock_bot.repository.update_github_repo_state = AsyncMock()

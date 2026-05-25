@@ -300,7 +300,9 @@ class TestRSSAdapter:
 
     def test_extract_content_uses_summary_then_description(self) -> None:
         adapter = RSSAdapter()
-        assert adapter._extract_content(feedparser.FeedParserDict({"summary": "Summary"})) == "Summary"
+        assert (
+            adapter._extract_content(feedparser.FeedParserDict({"summary": "Summary"})) == "Summary"
+        )
         assert (
             adapter._extract_content(feedparser.FeedParserDict({"description": "Description"}))
             == "Description"

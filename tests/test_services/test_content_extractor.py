@@ -181,9 +181,7 @@ class TestContentExtractor:
         assert result.published_at is None
 
     @respx.mock
-    async def test_extract_uses_recall_trafilatura_result(
-        self, extractor: ContentExtractor
-    ):
+    async def test_extract_uses_recall_trafilatura_result(self, extractor: ContentExtractor):
         respx.get("https://example.com/article").mock(
             return_value=httpx.Response(200, text="<html><body>Article</body></html>")
         )
@@ -561,9 +559,7 @@ class TestMetadataFallbacks:
 
         assert extractor._extract_author(soup) == "Jane Doe"
 
-    def test_extract_author_falls_back_when_author_meta_is_empty(
-        self, extractor: ContentExtractor
-    ):
+    def test_extract_author_falls_back_when_author_meta_is_empty(self, extractor: ContentExtractor):
         soup = BeautifulSoup(
             """
             <html><head>

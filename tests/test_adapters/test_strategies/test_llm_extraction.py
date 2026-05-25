@@ -366,8 +366,7 @@ class TestLLMExtractionStrategy:
 
     def test_get_content_hash_falls_back_to_raw_html(self, llm_strategy: LLMExtractionStrategy):
         assert llm_strategy._get_content_hash("") == (
-            "e3b0c44298fc1c149afbf4c8996fb924"
-            "27ae41e4649b934ca495991b7852b855"
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         )
 
     def test_clean_html_truncates_at_recent_closing_tag(self, llm_strategy: LLMExtractionStrategy):

@@ -399,9 +399,7 @@ class TestIndex:
 
         assert await search_cog._article_index_is_healthy(status) is True
 
-    async def test_article_index_unhealthy_when_sample_has_no_chunks(
-        self, search_cog, mock_bot
-    ):
+    async def test_article_index_unhealthy_when_sample_has_no_chunks(self, search_cog, mock_bot):
         status = ArticleIndexStatus(
             expected_articles=1,
             indexed_articles=1,
@@ -417,7 +415,9 @@ class TestIndex:
 
         assert await search_cog._article_index_is_healthy(status) is False
 
-    async def test_article_index_probe_matches_sample(self, search_cog, mock_bot, mock_vector_store):
+    async def test_article_index_probe_matches_sample(
+        self, search_cog, mock_bot, mock_vector_store
+    ):
         status = ArticleIndexStatus(
             expected_articles=1,
             indexed_articles=1,
@@ -523,9 +523,7 @@ class TestIndex:
 
 
 class TestSearchErrors:
-    async def test_search_cooldown_error_sends_retry_message(
-        self, search_cog, mock_interaction
-    ):
+    async def test_search_cooldown_error_sends_retry_message(self, search_cog, mock_interaction):
         error = app_commands.CommandOnCooldown(
             app_commands.Cooldown(rate=5, per=60.0), retry_after=12.8
         )

@@ -264,9 +264,7 @@ class TestForwardList:
         mock_bot.repository.get_forwarding_rules_for_guild.assert_not_called()
         assert "server" in interaction.followup.send.call_args.args[0]
 
-    async def test_forward_list_resolves_destination_thread_from_guilds(
-        self, cog, mock_bot
-    ):
+    async def test_forward_list_resolves_destination_thread_from_guilds(self, cog, mock_bot):
         interaction = make_interaction()
         mock_rule = MagicMock()
         mock_rule.source_channel_id = "111"
@@ -280,7 +278,9 @@ class TestForwardList:
         guild.get_thread = MagicMock(return_value=thread)
         mock_bot.guilds = [guild]
         mock_bot.repository.get_forwarding_rules_for_guild = AsyncMock(return_value=[mock_rule])
-        mock_bot.get_channel = MagicMock(side_effect=lambda channel_id: source if channel_id == 111 else None)
+        mock_bot.get_channel = MagicMock(
+            side_effect=lambda channel_id: source if channel_id == 111 else None
+        )
 
         await cog.forward_list.callback(cog, interaction)
 
@@ -288,9 +288,7 @@ class TestForwardList:
         assert "#source -> #thread" in message
         assert "paused" in message
 
-    async def test_forward_list_uses_unknown_names_when_channels_missing(
-        self, cog, mock_bot
-    ):
+    async def test_forward_list_uses_unknown_names_when_channels_missing(self, cog, mock_bot):
         interaction = make_interaction()
         mock_rule = MagicMock()
         mock_rule.source_channel_id = "111"
@@ -672,9 +670,7 @@ class TestCacheRefresh:
 
         assert "111" not in cog._rules_cache
 
-    async def test_refresh_cache_groups_multiple_active_rules_for_same_source(
-        self, cog, mock_bot
-    ):
+    async def test_refresh_cache_groups_multiple_active_rules_for_same_source(self, cog, mock_bot):
         rule_1 = MagicMock()
         rule_1.source_channel_id = "111"
         rule_1.is_active = True
