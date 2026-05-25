@@ -1,4 +1,5 @@
 import gzip
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -72,7 +73,8 @@ class TestSitemapDiscoveryStrategy:
             return_value=httpx.Response(200, text=sitemap)
         )
 
-        result = await sitemap_strategy.discover("https://example.com/research")
+        with patch("intelstream.adapters.strategies.sitemap_discovery.validate_url_for_ssrf"):
+            result = await sitemap_strategy.discover("https://example.com/research")
 
         assert result is not None
         assert len(result.posts) == 1
@@ -123,7 +125,8 @@ class TestSitemapDiscoveryStrategy:
             return_value=httpx.Response(200, text=posts_sitemap)
         )
 
-        result = await sitemap_strategy.discover("https://example.com/articles")
+        with patch("intelstream.adapters.strategies.sitemap_discovery.validate_url_for_ssrf"):
+            result = await sitemap_strategy.discover("https://example.com/articles")
 
         assert result is not None
         assert len(result.posts) == 2
@@ -204,6 +207,28 @@ class TestSitemapDiscoveryStrategy:
         result = await sitemap_strategy.discover("https://example.com/random-path")
 
         assert result is None
+
+    async def test_discover_ignores_non_string_urls_and_non_datetime_lastmod(self):
+        strategy = SitemapDiscoveryStrategy()
+        published = datetime(2026, 5, 25, 12, 0, tzinfo=UTC)
+        strategy._find_sitemap = AsyncMock(return_value="https://example.com/sitemap.xml")
+        strategy._parse_sitemap = AsyncMock(
+            return_value=[
+                {"url": "https://example.com/blog/dated", "lastmod": published},
+                {"url": "https://example.com/blog/raw-date", "lastmod": "2026-05-25"},
+                {"url": 123, "lastmod": published},
+            ]
+        )
+
+        result = await strategy.discover("https://example.com/blog", url_pattern="/blog/")
+
+        assert result is not None
+        assert [post.url for post in result.posts] == [
+            "https://example.com/blog/dated",
+            "https://example.com/blog/raw-date",
+        ]
+        assert result.posts[0].published_at == published
+        assert result.posts[1].published_at is None
 
     @respx.mock
     async def test_rejects_oversized_compressed_sitemap(
@@ -403,6 +428,83 @@ class TestSitemapDiscoveryStrategy:
         assert result == [{"url": "https://example.com/blog/post", "lastmod": None}]
         strategy._parse_sitemap.assert_awaited_once_with("https://example.com/public.xml")
 
+    async def test_parse_sitemap_index_namespaced_honors_sub_sitemap_limit(self):
+        root = ElementTree.fromstring(
+            """<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+                <sitemap><loc>https://example.com/one.xml</loc></sitemap>
+                <sitemap><loc>https://example.com/two.xml</loc></sitemap>
+                <sitemap><loc>https://example.com/three.xml</loc></sitemap>
+            </sitemapindex>"""
+        )
+        strategy = SitemapDiscoveryStrategy()
+        strategy._parse_sitemap = AsyncMock(
+            side_effect=[
+                [{"url": "https://example.com/blog/one", "lastmod": None}],
+                [{"url": "https://example.com/blog/two", "lastmod": None}],
+            ]
+        )
+
+        with (
+            patch("intelstream.adapters.strategies.sitemap_discovery.validate_url_for_ssrf"),
+            patch.object(sitemap_discovery, "MAX_SUB_SITEMAPS", 2),
+        ):
+            result = await strategy._parse_sitemap_index(root)
+
+        assert [item["url"] for item in result] == [
+            "https://example.com/blog/one",
+            "https://example.com/blog/two",
+        ]
+        assert strategy._parse_sitemap.await_count == 2
+
+    async def test_parse_sitemap_index_truncates_after_max_urls(self):
+        root = ElementTree.fromstring(
+            """<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+                <sitemap><loc>https://example.com/posts.xml</loc></sitemap>
+                <sitemap><loc>https://example.com/more.xml</loc></sitemap>
+            </sitemapindex>"""
+        )
+        strategy = SitemapDiscoveryStrategy()
+        strategy._parse_sitemap = AsyncMock(
+            return_value=[
+                {"url": "https://example.com/blog/one", "lastmod": None},
+                {"url": "https://example.com/blog/two", "lastmod": None},
+                {"url": "https://example.com/blog/three", "lastmod": None},
+            ]
+        )
+
+        with (
+            patch("intelstream.adapters.strategies.sitemap_discovery.validate_url_for_ssrf"),
+            patch.object(sitemap_discovery, "MAX_SITEMAP_URLS", 2),
+        ):
+            result = await strategy._parse_sitemap_index(root)
+
+        assert [item["url"] for item in result] == [
+            "https://example.com/blog/one",
+            "https://example.com/blog/two",
+        ]
+        strategy._parse_sitemap.assert_awaited_once_with("https://example.com/posts.xml")
+
+    def test_parse_urlset_handles_namespaced_urls(self, sitemap_strategy):
+        root = ElementTree.fromstring(
+            """<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+                <url>
+                    <loc>https://example.com/research/paper</loc>
+                    <lastmod>2026-05-25T12:30:00+00:00</lastmod>
+                </url>
+                <url><loc>https://example.com/research/no-date</loc></url>
+            </urlset>"""
+        )
+
+        result = sitemap_strategy._parse_urlset(root)
+
+        assert result == [
+            {
+                "url": "https://example.com/research/paper",
+                "lastmod": datetime(2026, 5, 25, 12, 30, tzinfo=UTC),
+            },
+            {"url": "https://example.com/research/no-date", "lastmod": None},
+        ]
+
     def test_parse_urlset_handles_non_namespaced_urls_and_invalid_lastmod(self, sitemap_strategy):
         root = ElementTree.fromstring(
             """<urlset>
@@ -425,6 +527,12 @@ class TestSitemapDiscoveryStrategy:
 
         assert parsed is not None
         assert parsed.tzinfo is not None
+
+    def test_parse_lastmod_handles_date_only_and_explicit_zulu(self, sitemap_strategy):
+        assert sitemap_strategy._parse_lastmod("2026-05-25") == datetime(2026, 5, 25, tzinfo=UTC)
+        assert sitemap_strategy._parse_lastmod("2026-05-25T12:30:00Z") == datetime(
+            2026, 5, 25, 12, 30, tzinfo=UTC
+        )
 
     def test_infer_pattern_from_repeated_sitemap_urls(self, sitemap_strategy):
         all_urls = [
