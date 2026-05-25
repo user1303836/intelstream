@@ -1,10 +1,12 @@
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
 import respx
 
 from intelstream.adapters.arxiv import ArxivAdapter
+from intelstream.adapters.base import ContentData
 
 SAMPLE_ARXIV_FEED = """<?xml version='1.0' encoding='UTF-8'?>
 <rss xmlns:arxiv="http://arxiv.org/schemas/atom"
@@ -282,6 +284,64 @@ class TestArxivAdapter:
 
         assert len(items) == 2
 
+    @respx.mock
+    async def test_fetch_latest_continues_after_entry_parse_error(self) -> None:
+        respx.get("https://arxiv.org/rss/cs.AI").mock(
+            return_value=httpx.Response(200, text=SAMPLE_ARXIV_FEED)
+        )
+        recovered_item = ContentData(
+            external_id="arxiv:recovered",
+            title="Recovered",
+            original_url="https://arxiv.org/abs/recovered",
+            author="Author",
+            published_at=None,
+            raw_content="Recovered abstract",
+            thumbnail_url=None,
+        )
+
+        async with httpx.AsyncClient() as client:
+            adapter = ArxivAdapter(http_client=client)
+            with patch.object(
+                adapter,
+                "_parse_entry",
+                new_callable=AsyncMock,
+                side_effect=[RuntimeError("bad entry"), recovered_item],
+            ):
+                items = await adapter.fetch_latest("cs.AI")
+
+        assert items == [recovered_item]
+
+    @respx.mock
+    async def test_fetch_latest_request_error(self) -> None:
+        respx.get("https://arxiv.org/rss/cs.AI").mock(
+            side_effect=httpx.ConnectError("network down")
+        )
+
+        async with httpx.AsyncClient() as client:
+            adapter = ArxivAdapter(http_client=client)
+
+            with pytest.raises(httpx.ConnectError):
+                await adapter.fetch_latest("cs.AI")
+
+    async def test_parse_entry_with_non_arxiv_id_skips_html_fetch(self) -> None:
+        adapter = ArxivAdapter()
+        entry = MockEntry(
+            {
+                "id": "custom-id",
+                "link": "https://example.com/papers/custom-id",
+                "title": "Custom Paper",
+                "author": "Fallback Author",
+                "description": "Abstract: Custom abstract text.",
+            }
+        )
+
+        with patch.object(adapter, "_fetch_html_content", new_callable=AsyncMock) as fetch_html:
+            item = await adapter._parse_entry(entry)
+
+        assert item.external_id == "custom-id"
+        assert item.raw_content == "Custom abstract text."
+        fetch_html.assert_not_called()
+
 
 class MockEntry(dict[str, Any]):
     def __getattr__(self, name: str) -> Any:
@@ -306,6 +366,12 @@ class TestArxivIdExtraction:
         entry = MockEntry({"link": "https://example.com", "id": "oai:arXiv.org:2401.12345v3"})
         arxiv_id = adapter._extract_arxiv_id(entry)
         assert arxiv_id == "arxiv:2401.12345"
+
+    def test_extract_falls_back_to_link_when_id_missing(self) -> None:
+        adapter = ArxivAdapter()
+        entry = MockEntry({"link": "https://example.com/paper", "id": ""})
+
+        assert adapter._extract_arxiv_id(entry) == "https://example.com/paper"
 
 
 class TestTitleCleaning:
@@ -351,6 +417,72 @@ class TestHtmlContentExtraction:
         assert content is not None
         assert "paragraph" in content
 
+    def test_extract_paper_content_falls_back_to_main(self) -> None:
+        adapter = ArxivAdapter()
+        html = """<html><body>
+            <main>
+              <section>
+                <p>This main paragraph has enough content to be extracted cleanly.</p>
+              </section>
+            </main>
+        </body></html>"""
+
+        content = adapter._extract_paper_content(html)
+
+        assert content == "This main paragraph has enough content to be extracted cleanly."
+
+    def test_extract_paper_content_removes_chrome_and_sections_without_headings(self) -> None:
+        adapter = ArxivAdapter()
+        html = """<html><body>
+            <header>Site header should be removed.</header>
+            <article>
+              <section>
+                <p>This section has no heading but still contains article content.</p>
+              </section>
+              <div><h2>Appendix</h2><p>This appendix paragraph should be removed.</p></div>
+            </article>
+        </body></html>"""
+
+        content = adapter._extract_paper_content(html)
+
+        assert content == "This section has no heading but still contains article content."
+
+    @respx.mock
+    async def test_fetch_html_content_without_injected_client_handles_404(self) -> None:
+        respx.get("https://arxiv.org/html/2401.00001").mock(return_value=httpx.Response(404))
+
+        adapter = ArxivAdapter()
+
+        assert await adapter._fetch_html_content("2401.00001") is None
+
+    @respx.mock
+    async def test_fetch_html_content_returns_none_for_empty_extraction(self) -> None:
+        respx.get("https://arxiv.org/html/2401.00002").mock(
+            return_value=httpx.Response(200, text="<html><body><p>short</p></body></html>")
+        )
+
+        async with httpx.AsyncClient() as client:
+            adapter = ArxivAdapter(http_client=client)
+            assert await adapter._fetch_html_content("2401.00002") is None
+
+    @respx.mock
+    async def test_fetch_html_content_handles_http_status_error(self) -> None:
+        respx.get("https://arxiv.org/html/2401.00003").mock(return_value=httpx.Response(503))
+
+        async with httpx.AsyncClient() as client:
+            adapter = ArxivAdapter(http_client=client)
+            assert await adapter._fetch_html_content("2401.00003") is None
+
+    @respx.mock
+    async def test_fetch_html_content_handles_request_error(self) -> None:
+        respx.get("https://arxiv.org/html/2401.00004").mock(
+            side_effect=httpx.ConnectError("network down")
+        )
+
+        async with httpx.AsyncClient() as client:
+            adapter = ArxivAdapter(http_client=client)
+            assert await adapter._fetch_html_content("2401.00004") is None
+
 
 class TestAbstractExtraction:
     def test_extract_abstract_from_description(self) -> None:
@@ -378,3 +510,30 @@ class TestAbstractExtraction:
         entry = MockEntry({"summary": None, "description": None})
         abstract = adapter._extract_abstract(entry)
         assert abstract is None
+
+
+class TestAuthorExtraction:
+    def test_extract_authors_uses_object_name_attribute(self) -> None:
+        adapter = ArxivAdapter()
+        author = type("Author", (), {"name": "Object Author"})()
+        entry = MockEntry({"authors": [author]})
+
+        assert adapter._extract_authors(entry) == "Object Author"
+
+    def test_extract_authors_falls_back_to_dc_creator(self) -> None:
+        adapter = ArxivAdapter()
+        entry = MockEntry({"authors": [], "dc_creator": "DC Creator"})
+
+        assert adapter._extract_authors(entry) == "DC Creator"
+
+    def test_extract_authors_returns_unknown_when_no_candidates(self) -> None:
+        adapter = ArxivAdapter()
+        entry = MockEntry({"authors": [{"email": "missing-name@example.com"}]})
+
+        assert adapter._extract_authors(entry) == "Unknown Authors"
+
+    def test_extract_abstract_uses_description_when_summary_missing(self) -> None:
+        adapter = ArxivAdapter()
+        entry = MockEntry({"description": "Abstract: Description fallback."})
+
+        assert adapter._extract_abstract(entry) == "Description fallback."

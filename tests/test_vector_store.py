@@ -1,6 +1,6 @@
 import subprocess
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -116,6 +116,154 @@ class TestInitialize:
         assert results == []
         await store2.close()
 
+    async def test_initialize_warns_when_legacy_message_collection_files_exist(self, tmp_path):
+        legacy_root = tmp_path / "vectors" / "message_chunks"
+        legacy_root.mkdir(parents=True)
+        (legacy_root / "manifest.0").write_text("legacy")
+        (legacy_root / "guild-1").mkdir()
+
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+
+        with patch("intelstream.database.vector_store.logger.warning") as warning:
+            await store.initialize()
+
+        warning.assert_called_once()
+        assert warning.call_args.kwargs["files"] == ["manifest.0"]
+        await store.close()
+
+
+class TestInternals:
+    def test_unknown_collection_attr_name_raises(self, tmp_path):
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+
+        with pytest.raises(ValueError, match="Unknown collection name"):
+            store._collection_attr_name("unknown")
+
+    def test_read_collection_metadata_returns_none_when_missing(self, tmp_path):
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+
+        assert store._read_collection_metadata("article_chunks") is None
+
+    def test_read_collection_metadata_rejects_non_object_json(self, tmp_path):
+        collection_dir = tmp_path / "vectors" / "article_chunks"
+        collection_dir.mkdir(parents=True)
+        (collection_dir / "intelstream-index.json").write_text("[]")
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+
+        assert store._read_collection_metadata("article_chunks") is None
+
+    def test_read_collection_metadata_rejects_invalid_json(self, tmp_path):
+        collection_dir = tmp_path / "vectors" / "article_chunks"
+        collection_dir.mkdir(parents=True)
+        (collection_dir / "intelstream-index.json").write_text("{")
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+
+        assert store._read_collection_metadata("article_chunks") is None
+
+    async def test_collection_needs_recreate_allows_missing_metadata(self, tmp_path):
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+        store._collection_dimension = MagicMock(return_value=4)
+        store._read_collection_metadata = MagicMock(return_value=None)
+
+        assert await store._collection_needs_recreate("article_chunks", MagicMock()) is None
+
+    async def test_collection_needs_recreate_detects_stored_dimension_mismatch(self, tmp_path):
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+        store._collection_dimension = MagicMock(return_value=4)
+        store._read_collection_metadata = MagicMock(
+            return_value={"dimensions": 3, "model_name": "model-a"}
+        )
+
+        reason = await store._collection_needs_recreate("article_chunks", MagicMock())
+
+        assert reason == "stored metadata dimensions mismatch (3 != 4)"
+
+    async def test_destroy_collection_falls_back_to_removing_files(self, tmp_path):
+        collection_dir = tmp_path / "vectors" / "article_chunks"
+        collection_dir.mkdir(parents=True)
+        (collection_dir / "manifest.0").write_text("data")
+        collection = MagicMock()
+        collection.destroy.side_effect = RuntimeError("destroy failed")
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+
+        await store._destroy_collection_at_path(
+            "article_chunks",
+            collection,
+            str(collection_dir),
+        )
+
+        assert not collection_dir.exists()
+
+    async def test_open_or_create_opens_existing_without_metadata_validation(self, tmp_path):
+        import zvec
+
+        opened = MagicMock()
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+
+        with (
+            patch("zvec.create_and_open", side_effect=RuntimeError("exists")),
+            patch("zvec.open", return_value=opened) as open_collection,
+        ):
+            result = await store._open_or_create_collection(
+                "message_chunks_guild-1",
+                path=str(tmp_path / "vectors" / "message_chunks" / "guild-1"),
+            )
+
+        assert result is opened
+        open_collection.assert_called_once()
+        assert isinstance(open_collection.call_args.kwargs["option"], zvec.CollectionOption)
+
+    async def test_open_or_create_rewrites_metadata_for_existing_compatible_collection(
+        self, tmp_path
+    ):
+        opened = MagicMock()
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+        store._collection_needs_recreate = AsyncMock(return_value=None)
+        store._write_collection_metadata = MagicMock()
+
+        with (
+            patch("zvec.create_and_open", side_effect=RuntimeError("exists")),
+            patch("zvec.open", return_value=opened),
+        ):
+            result = await store._open_or_create_collection(
+                "article_chunks",
+                validate_metadata=True,
+            )
+
+        assert result is opened
+        store._collection_needs_recreate.assert_awaited_once()
+        store._write_collection_metadata.assert_called_once()
+
+    async def test_open_or_create_recreates_incompatible_existing_collection(self, tmp_path):
+        opened = MagicMock()
+        recreated = MagicMock()
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+        store._collection_needs_recreate = AsyncMock(return_value="model mismatch")
+        store._destroy_collection_at_path = AsyncMock()
+        store._write_collection_metadata = MagicMock()
+
+        with (
+            patch(
+                "zvec.create_and_open",
+                side_effect=[RuntimeError("exists"), recreated],
+            ),
+            patch("zvec.open", return_value=opened),
+        ):
+            result = await store._open_or_create_collection(
+                "article_chunks",
+                validate_metadata=True,
+            )
+
+        assert result is recreated
+        store._destroy_collection_at_path.assert_awaited_once()
+        store._write_collection_metadata.assert_called_once()
+
+    async def test_doc_count_raises_for_missing_collection(self, tmp_path):
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+
+        with pytest.raises(RuntimeError, match="not initialized"):
+            await store._doc_count(None)
+
 
 class TestUpsertAndSearch:
     async def test_upsert_and_search(self, vector_store):
@@ -186,6 +334,14 @@ class TestUpsertAndSearch:
         assert results[0].content_item_id == "item-1"
         assert results[0].text == "Chunk text"
 
+    async def test_search_message_chunks_returns_empty_when_collection_absent(self, tmp_path):
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+        await store.initialize()
+
+        assert await store.search_message_chunks("guild-1", [1.0, 0.0, 0.0, 0.0]) == []
+
+        await store.close()
+
 
 class TestUpsertBatch:
     async def test_batch_upsert(self, vector_store):
@@ -202,6 +358,16 @@ class TestUpsertBatch:
 
     async def test_batch_upsert_empty(self, vector_store):
         await vector_store.upsert_articles_batch([])
+
+    async def test_upsert_article_chunks_raises_when_collection_creation_returns_none(
+        self, tmp_path
+    ):
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+        store._initialized = True
+        store._article_collection = AsyncMock(return_value=None)
+
+        with pytest.raises(RuntimeError, match="not initialized"):
+            await store.upsert_article_chunks_batch([])
 
     async def test_article_chunk_batch_upsert_splits_large_batches(self, tmp_path):
         store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
@@ -226,6 +392,51 @@ class TestUpsertBatch:
         assert len(store._articles.upsert.call_args_list[0].args[0]) == 256
         assert len(store._articles.upsert.call_args_list[1].args[0]) == 44
 
+    async def test_message_chunk_batch_upsert_empty_does_not_write(self, tmp_path):
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+        store._initialized = True
+        store._message_chunks["guild-1"] = MagicMock()
+
+        await store.upsert_message_chunks_batch("guild-1", [])
+
+        store._message_chunks["guild-1"].upsert.assert_not_called()
+
+    async def test_message_chunk_batch_upsert_splits_large_batches(self, tmp_path):
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+        store._initialized = True
+        store._message_chunks["guild-1"] = MagicMock()
+        items = [
+            (f"chunk-{index:04d}", [1.0, 0.0, 0.0, 0.0])
+            for index in range(300)
+        ]
+
+        await store.upsert_message_chunks_batch("guild-1", items)
+
+        collection = store._message_chunks["guild-1"]
+        assert collection.upsert.call_count == 2
+        assert len(collection.upsert.call_args_list[0].args[0]) == 256
+        assert len(collection.upsert.call_args_list[1].args[0]) == 44
+
+    async def test_upsert_message_chunk_raises_when_collection_creation_returns_none(
+        self, tmp_path
+    ):
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+        store._initialized = True
+        store._message_chunk_collection = AsyncMock(return_value=None)
+
+        with pytest.raises(RuntimeError, match="not initialized"):
+            await store.upsert_message_chunk("guild-1", "chunk-1", [1.0, 0.0, 0.0, 0.0])
+
+    async def test_upsert_message_chunks_batch_raises_when_collection_creation_returns_none(
+        self, tmp_path
+    ):
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+        store._initialized = True
+        store._message_chunk_collection = AsyncMock(return_value=None)
+
+        with pytest.raises(RuntimeError, match="not initialized"):
+            await store.upsert_message_chunks_batch("guild-1", [])
+
 
 class TestDelete:
     async def test_delete_article(self, vector_store):
@@ -234,6 +445,35 @@ class TestDelete:
 
         results = await vector_store.search_articles([1.0, 0.0, 0.0, 0.0], topk=1)
         assert len(results) == 0
+
+    async def test_delete_article_chunks_noops_when_collection_absent(self, tmp_path):
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+        await store.initialize()
+
+        await store.delete_article_chunks(["missing"])
+
+        await store.close()
+
+    async def test_delete_message_chunks_noops_when_collection_absent(self, tmp_path):
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+        await store.initialize()
+
+        await store.delete_message_chunks_by_ids("guild-1", ["missing"])
+
+        await store.close()
+
+    async def test_delete_message_chunks_deletes_each_id(self, tmp_path):
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+        store._initialized = True
+        collection = MagicMock()
+        store._message_chunks["guild-1"] = collection
+
+        await store.delete_message_chunks_by_ids("guild-1", ["chunk-1", "chunk-2"])
+
+        assert [call.args[0] for call in collection.delete.call_args_list] == [
+            "chunk-1",
+            "chunk-2",
+        ]
 
 
 class TestRecreateCollections:

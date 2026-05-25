@@ -3,10 +3,21 @@ from unittest.mock import AsyncMock, MagicMock
 
 import discord
 import pytest
+from discord import app_commands
 
 from intelstream.database.vector_store import ArticleChunkSearchResult
 from intelstream.discord.cogs import search as search_module
-from intelstream.discord.cogs.search import Search, _truncate
+from intelstream.discord.cogs.search import (
+    ArticleIndexStatus,
+    Search,
+    _bool_setting,
+    _clean_preview,
+    _float_setting,
+    _int_setting,
+    _str_setting,
+    _supporting_excerpt_label,
+    _truncate,
+)
 from intelstream.services.article_search import RankedArticleChunk
 
 
@@ -173,6 +184,72 @@ class TestSearch:
         msg = mock_interaction.response.send_message.call_args[0][0].lower()
         assert "recovers" in msg or "recover" in msg
 
+    async def test_search_embed_omits_empty_url_snippet_and_duplicate_summary(
+        self, search_cog, mock_interaction, mock_bot
+    ):
+        mock_result = ArticleChunkSearchResult(
+            chunk_id="item-1__0000",
+            content_item_id="item-1",
+            chunk_index=0,
+            text="Same preview",
+            search_text="Title\n\nSame preview",
+            score=0.7,
+        )
+        search_cog._vector_store.search_article_chunks.return_value = [mock_result]
+        search_cog._reranker.rerank = AsyncMock(
+            return_value=[
+                RankedArticleChunk(
+                    chunk_id="item-1__0000",
+                    content_item_id="item-1",
+                    chunk_index=0,
+                    text="Same preview",
+                    vector_score=0.7,
+                    relevance_score=0.7,
+                )
+            ]
+        )
+
+        item = MagicMock()
+        item.id = "item-1"
+        item.title = "Article without URL"
+        item.summary = "Same preview"
+        item.original_url = ""
+        mock_bot.repository.get_content_items_by_ids.return_value = [item]
+
+        await search_cog.search.callback(search_cog, mock_interaction, "query")
+
+        embed = mock_interaction.followup.send.call_args.kwargs["embed"]
+        assert "Open article" not in embed.fields[0].value
+        assert "Summary:" not in embed.fields[0].value
+
+
+class TestSearchLifecycle:
+    async def test_cog_load_starts_background_rebuild(self, search_cog):
+        search_cog._start_index_rebuild = MagicMock()
+
+        await search_cog.cog_load()
+
+        search_cog._start_index_rebuild.assert_called_once_with()
+
+    async def test_cog_unload_cancels_background_rebuild(self, search_cog):
+        search_cog._index_rebuild_task = asyncio.create_task(asyncio.sleep(10))
+
+        await search_cog.cog_unload()
+
+        assert search_cog._index_rebuild_task.cancelled()
+
+    async def test_start_index_rebuild_is_noop_when_task_running(self, search_cog):
+        task = asyncio.create_task(asyncio.sleep(10))
+        search_cog._index_rebuild_task = task
+
+        try:
+            search_cog._start_index_rebuild()
+            assert search_cog._index_rebuild_task is task
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
 
 class TestIndex:
     async def test_index_empty(self, search_cog, mock_interaction, mock_bot):
@@ -180,6 +257,19 @@ class TestIndex:
         await search_cog.index.callback(search_cog, mock_interaction)
         mock_interaction.followup.send.assert_called_once()
         assert "0" in mock_interaction.followup.send.call_args.args[0]
+
+    async def test_index_reports_rebuild_already_running(self, search_cog, mock_interaction):
+        search_cog._index_rebuild_task = asyncio.create_task(asyncio.sleep(10))
+
+        try:
+            await search_cog.index.callback(search_cog, mock_interaction)
+        finally:
+            search_cog._index_rebuild_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await search_cog._index_rebuild_task
+
+        msg = mock_interaction.followup.send.call_args.args[0]
+        assert "already" in msg
 
     async def test_index_processes_items(
         self, search_cog, mock_interaction, mock_bot, mock_embedding_service, mock_vector_store
@@ -258,6 +348,215 @@ class TestIndex:
             vector_chunks=8,
         )
 
+    async def test_ensure_article_index_gives_up_after_max_failures(
+        self, search_cog, mock_bot, monkeypatch
+    ):
+        search_cog._get_article_index_status = AsyncMock(side_effect=RuntimeError("locked"))
+        mock_bot.repository.count_summarized_content_items.return_value = 3
+        sleep_mock = AsyncMock()
+        monkeypatch.setattr("intelstream.discord.cogs.search.asyncio.sleep", sleep_mock)
+
+        await search_cog._ensure_article_index()
+
+        assert search_cog._get_article_index_status.await_count == 3
+        assert search_cog._index_rebuild_error == "RuntimeError: locked"
+
+    async def test_ensure_article_index_propagates_cancelled_error(self, search_cog, mock_bot):
+        search_cog._get_article_index_status = AsyncMock(side_effect=asyncio.CancelledError)
+        mock_bot.repository.count_summarized_content_items.return_value = 3
+
+        with pytest.raises(asyncio.CancelledError):
+            await search_cog._ensure_article_index()
+
+    async def test_article_index_unhealthy_when_article_counts_mismatch(self, search_cog):
+        status = ArticleIndexStatus(
+            expected_articles=2,
+            indexed_articles=1,
+            stored_chunks=3,
+            vector_chunks=3,
+        )
+
+        assert await search_cog._article_index_is_healthy(status) is False
+
+    async def test_article_index_unhealthy_when_chunk_counts_mismatch(self, search_cog):
+        status = ArticleIndexStatus(
+            expected_articles=2,
+            indexed_articles=2,
+            stored_chunks=3,
+            vector_chunks=2,
+        )
+
+        assert await search_cog._article_index_is_healthy(status) is False
+
+    async def test_article_index_healthy_when_no_sample_available(self, search_cog, mock_bot):
+        status = ArticleIndexStatus(
+            expected_articles=2,
+            indexed_articles=2,
+            stored_chunks=3,
+            vector_chunks=3,
+        )
+        mock_bot.repository.get_summarized_content_items.return_value = []
+
+        assert await search_cog._article_index_is_healthy(status) is True
+
+    async def test_article_index_unhealthy_when_sample_has_no_chunks(
+        self, search_cog, mock_bot
+    ):
+        status = ArticleIndexStatus(
+            expected_articles=1,
+            indexed_articles=1,
+            stored_chunks=0,
+            vector_chunks=0,
+        )
+        sample = MagicMock()
+        sample.id = "item-empty"
+        sample.title = ""
+        sample.raw_content = ""
+        sample.summary = ""
+        mock_bot.repository.get_summarized_content_items.return_value = [sample]
+
+        assert await search_cog._article_index_is_healthy(status) is False
+
+    async def test_article_index_probe_matches_sample(self, search_cog, mock_bot, mock_vector_store):
+        status = ArticleIndexStatus(
+            expected_articles=1,
+            indexed_articles=1,
+            stored_chunks=1,
+            vector_chunks=1,
+        )
+        sample = MagicMock()
+        sample.id = "item-1"
+        sample.title = "Probe"
+        sample.raw_content = "Probe body"
+        sample.summary = None
+        mock_bot.repository.get_summarized_content_items.return_value = [sample]
+        mock_vector_store.search_article_chunks.return_value = [
+            ArticleChunkSearchResult(
+                chunk_id="item-1__0000",
+                content_item_id="item-1",
+                chunk_index=0,
+                text="Probe body",
+                search_text="Probe\n\nProbe body",
+                score=0.9,
+            )
+        ]
+
+        assert await search_cog._article_index_is_healthy(status) is True
+
+    async def test_article_index_probe_misses_sample(self, search_cog, mock_bot, mock_vector_store):
+        status = ArticleIndexStatus(
+            expected_articles=1,
+            indexed_articles=1,
+            stored_chunks=1,
+            vector_chunks=1,
+        )
+        sample = MagicMock()
+        sample.id = "item-1"
+        sample.title = "Probe"
+        sample.raw_content = "Probe body"
+        sample.summary = None
+        mock_bot.repository.get_summarized_content_items.return_value = [sample]
+        mock_vector_store.search_article_chunks.return_value = [
+            ArticleChunkSearchResult(
+                chunk_id="other__0000",
+                content_item_id="other",
+                chunk_index=0,
+                text="Other body",
+                search_text="Other\n\nOther body",
+                score=0.9,
+            )
+        ]
+
+        assert await search_cog._article_index_is_healthy(status) is False
+
+    async def test_rebuild_article_index_skips_items_without_chunks(
+        self, search_cog, mock_bot, mock_embedding_service, mock_vector_store
+    ):
+        item = MagicMock()
+        item.id = "empty-item"
+        item.title = ""
+        item.raw_content = ""
+        item.summary = ""
+        mock_bot.repository.count_summarized_content_items.return_value = 1
+        mock_bot.repository.get_summarized_content_items.side_effect = [[item], []]
+
+        assert await search_cog._rebuild_article_index(batch_size=1) == (0, 0)
+        mock_embedding_service.embed_batch.assert_not_called()
+        mock_bot.repository.add_article_chunk_metas_batch.assert_not_called()
+        mock_vector_store.upsert_article_chunks_batch.assert_not_called()
+
+    async def test_search_articles_uses_result_limit_as_candidate_floor(
+        self, search_cog, mock_bot, mock_vector_store
+    ):
+        mock_bot.settings.article_search_candidate_limit = 1
+        mock_bot.settings.search_result_limit = 3
+        mock_bot.settings.article_search_min_relevance_score = 0.1
+        mock_vector_store.search_article_chunks.return_value = [
+            ArticleChunkSearchResult(
+                chunk_id="item-1__0000",
+                content_item_id="item-1",
+                chunk_index=0,
+                text="Chunk",
+                search_text="Title\n\nChunk",
+                score=0.9,
+            )
+        ]
+        search_cog._reranker.rerank = AsyncMock(
+            return_value=[
+                RankedArticleChunk(
+                    chunk_id="item-1__0000",
+                    content_item_id="item-1",
+                    chunk_index=0,
+                    text="Chunk",
+                    vector_score=0.9,
+                    relevance_score=0.9,
+                )
+            ]
+        )
+        mock_bot.repository.get_content_items_by_ids.return_value = []
+
+        assert await search_cog._search_articles("query") == []
+        mock_vector_store.search_article_chunks.assert_called_once_with(
+            [0.1, 0.2, 0.3],
+            topk=3,
+        )
+
+
+class TestSearchErrors:
+    async def test_search_cooldown_error_sends_retry_message(
+        self, search_cog, mock_interaction
+    ):
+        error = app_commands.CommandOnCooldown(
+            app_commands.Cooldown(rate=5, per=60.0), retry_after=12.8
+        )
+
+        await search_cog.search_error(mock_interaction, error)
+
+        msg = mock_interaction.response.send_message.call_args.args[0]
+        assert "12s" in msg
+
+    async def test_search_non_cooldown_error_is_reraised(self, search_cog, mock_interaction):
+        error = app_commands.MissingPermissions(["administrator"])
+
+        with pytest.raises(app_commands.MissingPermissions):
+            await search_cog.search_error(mock_interaction, error)
+
+    async def test_index_missing_permissions_error_sends_message(
+        self, search_cog, mock_interaction
+    ):
+        error = app_commands.MissingPermissions(["administrator"])
+
+        await search_cog.index_error(mock_interaction, error)
+
+        msg = mock_interaction.response.send_message.call_args.args[0]
+        assert "Administrator permissions required" in msg
+
+    async def test_index_non_permission_error_is_reraised(self, search_cog, mock_interaction):
+        error = app_commands.AppCommandError("boom")
+
+        with pytest.raises(app_commands.AppCommandError):
+            await search_cog.index_error(mock_interaction, error)
+
 
 class TestTruncate:
     def test_short_text(self):
@@ -271,3 +570,36 @@ class TestTruncate:
 
     def test_empty_text(self):
         assert _truncate("", 10) == ""
+
+
+class TestHelpers:
+    def test_clean_preview_collapses_whitespace(self):
+        assert _clean_preview("  hello\n\nworld\tagain ") == "hello world again"
+
+    def test_supporting_excerpt_label_pluralizes(self):
+        assert _supporting_excerpt_label(1) == "1 matching excerpt"
+        assert _supporting_excerpt_label(2) == "2 matching excerpts"
+
+    def test_setting_helpers_use_defaults_for_wrong_types(self):
+        settings = MagicMock()
+        settings.size = True
+        settings.score = False
+        settings.enabled = "yes"
+        settings.model = 123
+
+        assert _int_setting(settings, "size", 10) == 10
+        assert _float_setting(settings, "score", 0.5) == 0.5
+        assert _bool_setting(settings, "enabled", False) is False
+        assert _str_setting(settings, "model", "default") == "default"
+
+    def test_setting_helpers_accept_expected_types(self):
+        settings = MagicMock()
+        settings.size = 8
+        settings.score = 1
+        settings.enabled = False
+        settings.model = "reranker"
+
+        assert _int_setting(settings, "size", 10) == 8
+        assert _float_setting(settings, "score", 0.5) == 1.0
+        assert _bool_setting(settings, "enabled", True) is False
+        assert _str_setting(settings, "model", "default") == "reranker"

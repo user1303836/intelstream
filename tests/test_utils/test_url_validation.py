@@ -1,6 +1,46 @@
+import socket
+
 import pytest
 
-from intelstream.utils.url_validation import SSRFError, is_safe_url, validate_url_for_ssrf
+from intelstream.utils import url_validation as url_validation_module
+from intelstream.utils.url_validation import (
+    SSRFError,
+    _is_obfuscated_ip,
+    _is_private_ip,
+    is_safe_url,
+    validate_url_for_ssrf,
+)
+
+
+class TestUrlValidationHelpers:
+    def test_obfuscated_decimal_outside_ipv4_range_is_not_blocked_as_obfuscated(self):
+        assert _is_obfuscated_ip("9999999999") is False
+
+    def test_private_ip_accepts_bracketed_literal(self):
+        assert _is_private_ip("[10.0.0.1]") is True
+
+    def test_private_ip_ignores_invalid_bracketed_literal(self):
+        assert _is_private_ip("[not-an-ip]") is False
+
+    def test_private_ip_checks_ipv4_mapped_inner_value_after_parse_failure(self, monkeypatch):
+        real_ip_address = url_validation_module.ipaddress.ip_address
+
+        def fake_ip_address(value: str):
+            if value == "::ffff:127.0.0.1":
+                raise ValueError
+            return real_ip_address(value)
+
+        monkeypatch.setattr(url_validation_module.ipaddress, "ip_address", fake_ip_address)
+
+        assert _is_private_ip("[::ffff:127.0.0.1]") is True
+
+    def test_private_ip_ignores_invalid_ipv4_mapped_inner_value(self, monkeypatch):
+        def fake_ip_address(_value: str):
+            raise ValueError
+
+        monkeypatch.setattr(url_validation_module.ipaddress, "ip_address", fake_ip_address)
+
+        assert _is_private_ip("[::ffff:not-an-ip]") is False
 
 
 class TestValidateUrlForSsrf:
@@ -42,6 +82,10 @@ class TestValidateUrlForSsrf:
         with pytest.raises(SSRFError, match="localhost"):
             validate_url_for_ssrf("http://[::1]/admin")
 
+    def test_rejects_ipv4_mapped_ipv6_loopback(self):
+        with pytest.raises(SSRFError, match="private"):
+            validate_url_for_ssrf("http://[::ffff:127.0.0.1]/admin")
+
     def test_rejects_zero_address(self):
         with pytest.raises(SSRFError, match="localhost"):
             validate_url_for_ssrf("http://0.0.0.0/admin")
@@ -74,6 +118,32 @@ class TestValidateUrlForSsrf:
         with pytest.raises(SSRFError, match="hostname"):
             validate_url_for_ssrf("http:///path")
 
+    def test_rejects_hostname_that_resolves_to_private_ip(self, monkeypatch):
+        def fake_getaddrinfo(*_args, **_kwargs):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.42", 443))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+        with pytest.raises(SSRFError, match=r"10\.0\.0\.42"):
+            validate_url_for_ssrf("https://public.example/article")
+
+    def test_allows_hostname_that_resolves_to_public_ip(self, monkeypatch):
+        def fake_getaddrinfo(*_args, **_kwargs):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+        validate_url_for_ssrf("https://example.com/article")
+
+    def test_rejects_unresolvable_hostname(self, monkeypatch):
+        def fake_getaddrinfo(*_args, **_kwargs):
+            raise socket.gaierror("no address")
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+        with pytest.raises(SSRFError, match="Could not resolve hostname"):
+            validate_url_for_ssrf("https://missing.example/article")
+
 
 class TestIsSafeUrl:
     def test_returns_true_for_safe_url(self):
@@ -95,3 +165,14 @@ class TestIsSafeUrl:
         safe, error = is_safe_url("http://169.254.169.254/latest/meta-data/")
         assert safe is False
         assert "private" in error.lower()
+
+    def test_returns_false_for_dns_resolution_failure(self, monkeypatch):
+        def fake_getaddrinfo(*_args, **_kwargs):
+            raise socket.gaierror("temporary failure")
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+        safe, error = is_safe_url("https://missing.example/")
+
+        assert safe is False
+        assert error == "Could not resolve hostname"

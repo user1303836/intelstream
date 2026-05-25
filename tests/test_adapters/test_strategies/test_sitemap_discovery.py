@@ -1,12 +1,14 @@
 import gzip
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 import respx
+from defusedxml import ElementTree
 
 from intelstream.adapters.strategies import sitemap_discovery
 from intelstream.adapters.strategies.sitemap_discovery import SitemapDiscoveryStrategy
+from intelstream.utils.url_validation import SSRFError
 
 
 @pytest.fixture
@@ -307,3 +309,128 @@ class TestSitemapDiscoveryStrategy:
         assert result is not None
         assert len(result.posts) == 1
         assert result.posts[0].url == "https://example.com/blog/post"
+
+    async def test_check_robots_txt_ignores_non_200_and_http_error(self):
+        client = MagicMock()
+        client.get = AsyncMock(
+            side_effect=[
+                httpx.Response(404, text="missing"),
+                httpx.ConnectError("offline"),
+            ]
+        )
+        strategy = SitemapDiscoveryStrategy(http_client=client)
+
+        assert await strategy._check_robots_txt("https://example.com") is None
+        assert await strategy._check_robots_txt("https://example.com") is None
+
+    async def test_check_robots_txt_skips_ssrf_blocked_sitemap(self):
+        client = MagicMock()
+        client.get = AsyncMock(
+            return_value=httpx.Response(
+                200,
+                text="Sitemap: http://127.0.0.1/sitemap.xml",
+            )
+        )
+        strategy = SitemapDiscoveryStrategy(http_client=client)
+
+        with patch(
+            "intelstream.adapters.strategies.sitemap_discovery.validate_url_for_ssrf",
+            side_effect=SSRFError("blocked"),
+        ):
+            assert await strategy._check_robots_txt("https://example.com") is None
+
+    async def test_is_valid_sitemap_accepts_sitemap_index_and_rejects_failures(self):
+        client = MagicMock()
+        client.get = AsyncMock(
+            side_effect=[
+                httpx.Response(200, text="<sitemapindex></sitemapindex>"),
+                httpx.Response(500, text="error"),
+                httpx.ConnectError("offline"),
+            ]
+        )
+        strategy = SitemapDiscoveryStrategy(http_client=client)
+
+        assert await strategy._is_valid_sitemap("https://example.com/sitemap.xml") is True
+        assert await strategy._is_valid_sitemap("https://example.com/sitemap.xml") is False
+        assert await strategy._is_valid_sitemap("https://example.com/sitemap.xml") is False
+
+    async def test_parse_sitemap_handles_bad_gzip_and_invalid_xml(self):
+        client = MagicMock()
+        client.get = AsyncMock(
+            side_effect=[
+                httpx.Response(
+                    200,
+                    content=b"\x1f\x8bnot-a-real-gzip",
+                    request=httpx.Request("GET", "https://example.com/sitemap.xml.gz"),
+                ),
+                httpx.Response(
+                    200,
+                    text="<urlset><url>",
+                    request=httpx.Request("GET", "https://example.com/sitemap.xml"),
+                ),
+            ]
+        )
+        strategy = SitemapDiscoveryStrategy(http_client=client)
+
+        assert await strategy._parse_sitemap("https://example.com/sitemap.xml.gz") == []
+        assert await strategy._parse_sitemap("https://example.com/sitemap.xml") == []
+
+    async def test_parse_sitemap_handles_http_error(self):
+        client = MagicMock()
+        client.get = AsyncMock(side_effect=httpx.ConnectError("offline"))
+        strategy = SitemapDiscoveryStrategy(http_client=client)
+
+        assert await strategy._parse_sitemap("https://example.com/sitemap.xml") == []
+
+    async def test_parse_sitemap_index_non_namespaced_skips_blocked_children(self):
+        root = ElementTree.fromstring(
+            """<sitemapindex>
+                <sitemap><loc>http://127.0.0.1/private.xml</loc></sitemap>
+                <sitemap><loc>https://example.com/public.xml</loc></sitemap>
+            </sitemapindex>"""
+        )
+        strategy = SitemapDiscoveryStrategy()
+        strategy._parse_sitemap = AsyncMock(
+            return_value=[{"url": "https://example.com/blog/post", "lastmod": None}]
+        )
+
+        with patch(
+            "intelstream.adapters.strategies.sitemap_discovery.validate_url_for_ssrf",
+            side_effect=[SSRFError("blocked"), None],
+        ):
+            result = await strategy._parse_sitemap_index(root)
+
+        assert result == [{"url": "https://example.com/blog/post", "lastmod": None}]
+        strategy._parse_sitemap.assert_awaited_once_with("https://example.com/public.xml")
+
+    def test_parse_urlset_handles_non_namespaced_urls_and_invalid_lastmod(self, sitemap_strategy):
+        root = ElementTree.fromstring(
+            """<urlset>
+                <url>
+                    <loc>https://example.com/blog/post</loc>
+                    <lastmod>not-a-date</lastmod>
+                </url>
+                <url><lastmod>2026-05-25</lastmod></url>
+            </urlset>"""
+        )
+
+        result = sitemap_strategy._parse_urlset(root)
+
+        assert result == [{"url": "https://example.com/blog/post", "lastmod": None}]
+
+    def test_parse_lastmod_handles_none_and_naive_datetime(self, sitemap_strategy):
+        assert sitemap_strategy._parse_lastmod(None) is None
+
+        parsed = sitemap_strategy._parse_lastmod("2026-05-25T12:30:00")
+
+        assert parsed is not None
+        assert parsed.tzinfo is not None
+
+    def test_infer_pattern_from_repeated_sitemap_urls(self, sitemap_strategy):
+        all_urls = [
+            {"url": "https://example.com/insights/one", "lastmod": None},
+            {"url": "https://example.com/Insights/two", "lastmod": None},
+            {"url": "https://example.com/about", "lastmod": None},
+        ]
+
+        assert sitemap_strategy._infer_pattern("https://example.com/", all_urls) == "/insights/"

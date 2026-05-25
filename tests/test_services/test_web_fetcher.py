@@ -2,8 +2,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from bs4 import BeautifulSoup
 
-from intelstream.services.web_fetcher import WebContent, WebFetcher, WebFetchError
+from intelstream.services.web_fetcher import MAX_REDIRECTS, WebContent, WebFetcher, WebFetchError
 
 
 @pytest.fixture
@@ -360,6 +361,34 @@ class TestWebFetcher:
         with pytest.raises(WebFetchError, match="Redirect blocked by SSRF"):
             await fetcher.fetch("https://evil.com/redirect")
 
+    async def test_fetch_raises_on_redirect_without_target(self):
+        redirect_response = MagicMock(spec=httpx.Response)
+        redirect_response.is_redirect = True
+        redirect_response.next_request = None
+
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=redirect_response)
+
+        fetcher = WebFetcher(http_client=mock_client)
+        with pytest.raises(WebFetchError, match="Redirect without a target URL"):
+            await fetcher.fetch("https://example.com/redirect", skip_ssrf_check=True)
+
+    async def test_fetch_raises_after_too_many_redirects(self):
+        redirect_response = MagicMock(spec=httpx.Response)
+        redirect_response.is_redirect = True
+        mock_next_request = MagicMock()
+        mock_next_request.url = "https://example.com/again"
+        redirect_response.next_request = mock_next_request
+
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=redirect_response)
+
+        fetcher = WebFetcher(http_client=mock_client)
+        with pytest.raises(WebFetchError, match="Too many redirects"):
+            await fetcher.fetch("https://example.com/redirect", skip_ssrf_check=True)
+
+        assert mock_client.get.await_count == MAX_REDIRECTS
+
     async def test_fetch_follows_safe_redirect(self, sample_html):
         redirect_response = MagicMock(spec=httpx.Response)
         redirect_response.is_redirect = True
@@ -381,3 +410,67 @@ class TestWebFetcher:
 
         assert isinstance(result, WebContent)
         assert mock_client.get.call_count == 2
+
+
+class TestWebFetcherParsingHelpers:
+    def test_extract_title_prefers_twitter_title_after_og_title(self):
+        soup = BeautifulSoup(
+            """
+            <html><head>
+              <meta name="twitter:title" content="Twitter Title">
+              <title>Title Tag</title>
+            </head></html>
+            """,
+            "lxml",
+        )
+
+        assert WebFetcher()._extract_title(soup) == "Twitter Title"
+
+    def test_extract_title_falls_back_to_h1_then_untitled(self):
+        fetcher = WebFetcher()
+
+        assert fetcher._extract_title(BeautifulSoup("<h1>Heading</h1>", "lxml")) == "Heading"
+        assert fetcher._extract_title(BeautifulSoup("<p>No title</p>", "lxml")) == "Untitled"
+
+    def test_extract_content_uses_content_div_then_body_then_document(self):
+        fetcher = WebFetcher()
+
+        content_div = BeautifulSoup(
+            '<html><body><div class="post-content">Div text</div><p>Body text</p></body></html>',
+            "lxml",
+        )
+        body_only = BeautifulSoup("<html><body><p>Body text</p></body></html>", "lxml")
+        loose_text = BeautifulSoup("<span>Loose text</span>", "lxml")
+
+        assert fetcher._extract_content(content_div) == "Div text"
+        assert fetcher._extract_content(body_only) == "Body text"
+        assert fetcher._extract_content(loose_text) == "Loose text"
+
+    def test_extract_author_uses_article_author_meta(self):
+        soup = BeautifulSoup(
+            '<meta property="article:author" content="Editorial Team">',
+            "lxml",
+        )
+
+        assert WebFetcher()._extract_author(soup) == "Editorial Team"
+
+    def test_extract_published_date_uses_time_when_meta_missing(self):
+        soup = BeautifulSoup('<time datetime="2024-02-03T04:05:06Z">date</time>', "lxml")
+
+        published = WebFetcher()._extract_published_date(soup)
+
+        assert published is not None
+        assert published.year == 2024
+        assert published.month == 2
+        assert published.day == 3
+
+    def test_extract_published_date_ignores_invalid_dates(self):
+        soup = BeautifulSoup(
+            """
+            <html><head><meta property="article:published_time" content="bad"></head>
+            <body><time datetime="also-bad">date</time></body></html>
+            """,
+            "lxml",
+        )
+
+        assert WebFetcher()._extract_published_date(soup) is None
