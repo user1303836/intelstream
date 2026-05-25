@@ -131,6 +131,21 @@ class TestSettings:
         settings = Settings(_env_file=None)
         assert settings.llm_api_key == "sk-openai-test"
 
+    def test_llm_api_key_raises_if_configured_key_is_later_cleared(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
+        monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
+        monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
+        monkeypatch.setenv("LLM_PROVIDER", "openai")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+
+        settings = Settings(_env_file=None)
+        settings.openai_api_key = None
+
+        with pytest.raises(ValueError, match="No API key configured"):
+            _ = settings.llm_api_key
+
     def test_llm_api_key_raises_when_key_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
         monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
@@ -177,6 +192,16 @@ class TestSettings:
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
         with pytest.raises(ValidationError, match="No API key configured"):
+            Settings(_env_file=None)
+
+    def test_empty_sqlite_database_url_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
+        monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
+        monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///")
+
+        with pytest.raises(ValidationError, match="SQLite database path cannot be empty"):
             Settings(_env_file=None)
 
     def test_summarization_delay_minimum(self, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 import pytest
@@ -163,6 +163,23 @@ class TestContentPosterFormatMessage:
 
         assert TRUNCATION_NOTICE.strip() in message
         assert "RSS" in message
+
+    def test_format_message_adds_notice_when_second_pass_truncates(self, sample_content_item):
+        poster = ContentPoster(MagicMock(), max_message_length=120)
+        sample_content_item.summary = "Original summary that is too long" * 20
+
+        with patch(
+            "intelstream.services.content_poster.truncate_summary_at_bullet",
+            return_value="A" * 200,
+        ):
+            message = poster.format_message(
+                content_item=sample_content_item,
+                source_type=SourceType.RSS,
+                source_name="Test RSS",
+            )
+
+        assert len(message) <= 120
+        assert TRUNCATION_NOTICE.strip() in message
 
 
 class TestContentPosterPostContent:
