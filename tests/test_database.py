@@ -619,6 +619,68 @@ class TestContentItemOperations:
         assert len(unposted) == 1
         assert unposted[0].external_id == "post-2"
 
+    async def test_get_unposted_content_items_orders_by_published_at_and_limits(
+        self, repository: Repository
+    ) -> None:
+        source = await repository.add_source(
+            source_type=SourceType.RSS,
+            name="Ordered Queue",
+            identifier="ordered-queue",
+        )
+        newest = await repository.add_content_item(
+            source_id=source.id,
+            external_id="newest-unposted",
+            title="Newest",
+            original_url="https://example.com/newest",
+            author="Author",
+            published_at=datetime(2024, 1, 3),
+        )
+        oldest = await repository.add_content_item(
+            source_id=source.id,
+            external_id="oldest-unposted",
+            title="Oldest",
+            original_url="https://example.com/oldest",
+            author="Author",
+            published_at=datetime(2024, 1, 1),
+        )
+        middle = await repository.add_content_item(
+            source_id=source.id,
+            external_id="middle-unposted",
+            title="Middle",
+            original_url="https://example.com/middle",
+            author="Author",
+            published_at=datetime(2024, 1, 2),
+        )
+        unsummarized = await repository.add_content_item(
+            source_id=source.id,
+            external_id="unsummarized-older",
+            title="Unsummarized",
+            original_url="https://example.com/unsummarized",
+            author="Author",
+            published_at=datetime(2023, 12, 31),
+        )
+        already_posted = await repository.add_content_item(
+            source_id=source.id,
+            external_id="already-posted-older",
+            title="Already Posted",
+            original_url="https://example.com/posted",
+            author="Author",
+            published_at=datetime(2023, 12, 30),
+        )
+
+        for content in (newest, oldest, middle, already_posted):
+            await repository.update_content_item_summary(content.id, f"Summary for {content.title}")
+        await repository.mark_content_item_posted(already_posted.id, "message-1")
+
+        unposted = await repository.get_unposted_content_items(limit=2)
+
+        assert [item.external_id for item in unposted] == [
+            "oldest-unposted",
+            "middle-unposted",
+        ]
+        assert unsummarized.id not in {item.id for item in unposted}
+        assert already_posted.id not in {item.id for item in unposted}
+
     async def test_get_unsummarized_and_latest_content_items(self, repository: Repository) -> None:
         source = await repository.add_source(
             source_type=SourceType.RSS,
@@ -715,6 +777,66 @@ class TestContentItemOperations:
         assert await repository.count_summarized_content_items() == 1
         items = await repository.get_summarized_content_items(offset=0, limit=10)
         assert [item.external_id for item in items] == ["summarized"]
+
+    async def test_get_summarized_content_items_paginates_by_created_at(
+        self, repository: Repository
+    ) -> None:
+        source = await repository.add_source(
+            source_type=SourceType.RSS,
+            name="Paged Summaries",
+            identifier="paged-summaries",
+        )
+        first = await repository.add_content_item(
+            source_id=source.id,
+            external_id="first-summary",
+            title="First",
+            original_url="https://example.com/first-summary",
+            author="Author",
+            published_at=datetime(2024, 1, 1),
+        )
+        second = await repository.add_content_item(
+            source_id=source.id,
+            external_id="second-summary",
+            title="Second",
+            original_url="https://example.com/second-summary",
+            author="Author",
+            published_at=datetime(2024, 1, 2),
+        )
+        third = await repository.add_content_item(
+            source_id=source.id,
+            external_id="third-summary",
+            title="Third",
+            original_url="https://example.com/third-summary",
+            author="Author",
+            published_at=datetime(2024, 1, 3),
+        )
+        unsummarized = await repository.add_content_item(
+            source_id=source.id,
+            external_id="unsummarized-summary-page",
+            title="Unsummarized",
+            original_url="https://example.com/unsummarized-summary-page",
+            author="Author",
+            published_at=datetime(2024, 1, 4),
+        )
+
+        for content in (first, second, third):
+            await repository.update_content_item_summary(content.id, f"Summary for {content.title}")
+
+        async with repository.session() as session:
+            for item_id, created_at in (
+                (first.id, datetime(2024, 1, 1, tzinfo=UTC)),
+                (second.id, datetime(2024, 1, 2, tzinfo=UTC)),
+                (third.id, datetime(2024, 1, 3, tzinfo=UTC)),
+                (unsummarized.id, datetime(2023, 12, 31, tzinfo=UTC)),
+            ):
+                result = await session.execute(select(ContentItem).where(ContentItem.id == item_id))
+                item = result.scalar_one()
+                item.created_at = created_at
+            await session.commit()
+
+        page = await repository.get_summarized_content_items(offset=1, limit=1)
+
+        assert [item.external_id for item in page] == ["second-summary"]
 
     async def test_missing_content_updates_return_false(self, repository: Repository) -> None:
         assert await repository.update_content_item_summary("missing", "summary") is False
@@ -1672,6 +1794,62 @@ class TestArticleChunkMetaOperations:
         deleted_ids = await repository.delete_article_chunk_metas_for_content_item(content.id)
         assert deleted_ids == [f"{content.id}__0000", f"{content.id}__0001"]
         assert await repository.count_article_chunk_metas() == 0
+
+    async def test_article_chunk_unique_constraint_is_per_content_item(
+        self, repository: Repository
+    ) -> None:
+        source = await repository.add_source(
+            source_type=SourceType.RSS,
+            name="Unique Chunk Source",
+            identifier="unique-chunk-source",
+        )
+        first = await repository.add_content_item(
+            source_id=source.id,
+            external_id="unique-article-one",
+            title="First Article",
+            original_url="https://example.com/unique-one",
+            author="Author",
+            published_at=datetime.now(UTC),
+        )
+        second = await repository.add_content_item(
+            source_id=source.id,
+            external_id="unique-article-two",
+            title="Second Article",
+            original_url="https://example.com/unique-two",
+            author="Author",
+            published_at=datetime.now(UTC),
+        )
+
+        await repository.add_article_chunk_metas_batch(
+            [
+                ArticleChunkMeta(
+                    id=f"{first.id}__0000",
+                    content_item_id=first.id,
+                    chunk_index=0,
+                    text="First article chunk",
+                ),
+                ArticleChunkMeta(
+                    id=f"{second.id}__0000",
+                    content_item_id=second.id,
+                    chunk_index=0,
+                    text="Second article chunk",
+                ),
+            ]
+        )
+
+        with pytest.raises(IntegrityError):
+            await repository.add_article_chunk_metas_batch(
+                [
+                    ArticleChunkMeta(
+                        id=f"{first.id}__duplicate",
+                        content_item_id=first.id,
+                        chunk_index=0,
+                        text="Duplicate first article chunk",
+                    )
+                ]
+            )
+
+        assert await repository.count_article_chunk_metas() == 2
 
     async def test_delete_all_article_chunk_metas(self, repository: Repository) -> None:
         source = await repository.add_source(

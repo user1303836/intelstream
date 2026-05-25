@@ -62,6 +62,16 @@ class TestValidateUrlForSsrf:
         with pytest.raises(SSRFError, match="localhost"):
             validate_url_for_ssrf("http://localhost/admin")
 
+    @pytest.mark.parametrize("hostname", ["LOCALHOST", "localhost."])
+    def test_rejects_localhost_variants_without_dns_lookup(self, hostname, monkeypatch):
+        def fake_getaddrinfo(*_args, **_kwargs):
+            raise AssertionError("blocked hosts should not require DNS resolution")
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+        with pytest.raises(SSRFError, match="localhost"):
+            validate_url_for_ssrf(f"http://{hostname}/admin")
+
     def test_rejects_127_0_0_1(self):
         with pytest.raises(SSRFError, match="localhost"):
             validate_url_for_ssrf("http://127.0.0.1/admin")
@@ -93,6 +103,10 @@ class TestValidateUrlForSsrf:
     def test_rejects_ipv4_mapped_ipv6_loopback(self):
         with pytest.raises(SSRFError, match="private"):
             validate_url_for_ssrf("http://[::ffff:127.0.0.1]/admin")
+
+    def test_rejects_ipv6_unique_local_address(self):
+        with pytest.raises(SSRFError, match="private"):
+            validate_url_for_ssrf("http://[fd00::1]/admin")
 
     def test_rejects_zero_address(self):
         with pytest.raises(SSRFError, match="localhost"):
@@ -134,6 +148,18 @@ class TestValidateUrlForSsrf:
 
         with pytest.raises(SSRFError, match=r"10\.0\.0\.42"):
             validate_url_for_ssrf("https://public.example/article")
+
+    def test_rejects_hostname_when_any_resolved_address_is_private(self, monkeypatch):
+        def fake_getaddrinfo(*_args, **_kwargs):
+            return [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("172.16.0.9", 443)),
+            ]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+        with pytest.raises(SSRFError, match=r"172\.16\.0\.9"):
+            validate_url_for_ssrf("https://mixed.example/article")
 
     def test_allows_hostname_that_resolves_to_public_ip(self, monkeypatch):
         def fake_getaddrinfo(*_args, **_kwargs):
