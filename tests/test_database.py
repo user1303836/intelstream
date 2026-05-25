@@ -10,7 +10,20 @@ from intelstream.database.exceptions import (
     DuplicateSourceError,
     SourceNotFoundError,
 )
-from intelstream.database.models import MessageChunkMeta, PauseReason, SourceType
+from intelstream.database.models import (
+    ArticleChunkMeta,
+    ContentItem,
+    DiscordConfig,
+    ExtractionCache,
+    ForwardingRule,
+    GitHubRepo,
+    IngestionProgress,
+    MessageChunkMeta,
+    PauseReason,
+    Source,
+    SourceType,
+    SuckBoobsStats,
+)
 from intelstream.database.repository import Repository
 
 
@@ -20,6 +33,113 @@ async def repository():
     await repo.initialize()
     yield repo
     await repo.close()
+
+
+class TestModelReprs:
+    def test_source_repr(self) -> None:
+        source = Source(name="Feed", type=SourceType.RSS, identifier="feed")
+
+        assert repr(source) == "<Source(name='Feed', type='rss')>"
+
+    def test_content_item_repr(self) -> None:
+        item = ContentItem(
+            source_id="source-1",
+            external_id="external-1",
+            title="Article",
+            original_url="https://example.com/article",
+            author="Author",
+            published_at=datetime(2024, 1, 1, tzinfo=UTC),
+        )
+
+        assert repr(item) == "<ContentItem(title='Article', source_id='source-1')>"
+
+    def test_article_chunk_meta_repr(self) -> None:
+        chunk = ArticleChunkMeta(
+            id="chunk-1",
+            content_item_id="content-1",
+            chunk_index=2,
+            text="Chunk text",
+        )
+
+        assert repr(chunk) == ("<ArticleChunkMeta(content_item_id='content-1', chunk_index=2)>")
+
+    def test_discord_config_repr(self) -> None:
+        config = DiscordConfig(guild_id="guild-1", channel_id="channel-1")
+
+        assert repr(config) == ("<DiscordConfig(guild_id='guild-1', channel_id='channel-1')>")
+
+    def test_extraction_cache_repr(self) -> None:
+        cached_at = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
+        cache = ExtractionCache(
+            url="https://example.com",
+            content_hash="hash",
+            posts_json="[]",
+            cached_at=cached_at,
+        )
+
+        assert repr(cache) == (
+            f"<ExtractionCache(url='https://example.com', cached_at={cached_at!r})>"
+        )
+
+    def test_forwarding_rule_repr(self) -> None:
+        rule = ForwardingRule(
+            guild_id="guild-1",
+            source_channel_id="source-channel",
+            source_type="all",
+            destination_channel_id="dest-channel",
+            destination_type="channel",
+        )
+
+        assert repr(rule) == ("<ForwardingRule(source='source-channel', dest='dest-channel')>")
+
+    def test_suck_boobs_stats_repr(self) -> None:
+        stats = SuckBoobsStats(
+            guild_id="guild-1",
+            user_id="user-1",
+            times_used=3,
+            times_pinged=4,
+        )
+
+        assert repr(stats) == "<SuckBoobsStats(user_id='user-1', used=3, pinged=4)>"
+
+    def test_message_chunk_meta_repr(self) -> None:
+        now = datetime(2024, 1, 1, tzinfo=UTC)
+        meta = MessageChunkMeta(
+            id="chunk-1",
+            guild_id="guild-1",
+            channel_id="channel-1",
+            channel_name="general",
+            start_message_id="message-1",
+            end_message_id="message-2",
+            start_timestamp=now,
+            end_timestamp=now,
+            authors="Alice",
+            message_count=5,
+            text="hello",
+        )
+
+        assert repr(meta) == "<MessageChunkMeta(id='chunk-1', channel='general', msgs=5)>"
+
+    def test_ingestion_progress_repr(self) -> None:
+        progress = IngestionProgress(
+            guild_id="guild-1",
+            channel_id="channel-1",
+            status="completed",
+        )
+
+        assert repr(progress) == (
+            "<IngestionProgress(guild='guild-1', channel='channel-1', status='completed')>"
+        )
+
+    def test_github_repo_repr(self) -> None:
+        repo = GitHubRepo(
+            guild_id="guild-1",
+            channel_id="channel-1",
+            owner="owner",
+            repo="project",
+        )
+
+        assert repr(repo) == "<GitHubRepo(owner='owner', repo='project')>"
 
 
 class TestRepositoryInitialization:
