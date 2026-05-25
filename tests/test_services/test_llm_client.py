@@ -71,6 +71,14 @@ class TestCreateLLMClient:
         with pytest.raises(ValueError, match="not-a-provider"):
             create_llm_client("not-a-provider", api_key="key", model="model")
 
+    def test_rejects_unknown_provider_object(self) -> None:
+        class UnknownProvider:
+            def __str__(self) -> str:
+                return "custom-provider"
+
+        with pytest.raises(ValueError, match="custom-provider"):
+            create_llm_client(UnknownProvider(), api_key="key", model="model")  # type: ignore[arg-type]
+
 
 class TestAnthropicLLMClient:
     @pytest.mark.asyncio

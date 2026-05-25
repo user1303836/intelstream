@@ -1,3 +1,4 @@
+import runpy
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -78,3 +79,16 @@ class TestMainEntrypoint:
             main_module.main()
 
         sys_exit.assert_called_once_with(1)
+
+    def test_module_execution_invokes_main(self) -> None:
+        settings = SimpleNamespace(log_level="INFO")
+        main_path = main_module.__file__
+
+        with (
+            patch("intelstream.config.get_settings", return_value=settings),
+            patch("intelstream.bot.run_bot", new=MagicMock(return_value="run-bot-result")),
+            patch("asyncio.run") as asyncio_run,
+        ):
+            runpy.run_path(main_path, run_name="__main__")
+
+        asyncio_run.assert_called_once_with("run-bot-result")
