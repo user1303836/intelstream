@@ -222,6 +222,44 @@ class TestSearch:
         assert "Open article" not in embed.fields[0].value
         assert "Summary:" not in embed.fields[0].value
 
+    async def test_search_embed_omits_blank_best_match(
+        self, search_cog, mock_interaction, mock_bot
+    ):
+        mock_result = ArticleChunkSearchResult(
+            chunk_id="item-1__0000",
+            content_item_id="item-1",
+            chunk_index=0,
+            text="   ",
+            search_text="Title",
+            score=0.7,
+        )
+        search_cog._vector_store.search_article_chunks.return_value = [mock_result]
+        search_cog._reranker.rerank = AsyncMock(
+            return_value=[
+                RankedArticleChunk(
+                    chunk_id="item-1__0000",
+                    content_item_id="item-1",
+                    chunk_index=0,
+                    text="   ",
+                    vector_score=0.7,
+                    relevance_score=0.7,
+                )
+            ]
+        )
+
+        item = MagicMock()
+        item.id = "item-1"
+        item.title = "Article with summary"
+        item.summary = "Useful summary"
+        item.original_url = "https://example.com/article"
+        mock_bot.repository.get_content_items_by_ids.return_value = [item]
+
+        await search_cog.search.callback(search_cog, mock_interaction, "query")
+
+        embed = mock_interaction.followup.send.call_args.kwargs["embed"]
+        assert "Best match:" not in embed.fields[0].value
+        assert "Summary: Useful summary" in embed.fields[0].value
+
 
 class TestSearchLifecycle:
     async def test_cog_load_starts_background_rebuild(self, search_cog):
@@ -238,6 +276,13 @@ class TestSearchLifecycle:
 
         assert search_cog._index_rebuild_task.cancelled()
 
+    async def test_cog_unload_without_background_rebuild(self, search_cog):
+        search_cog._index_rebuild_task = None
+
+        await search_cog.cog_unload()
+
+        assert search_cog._index_rebuild_task is None
+
     async def test_start_index_rebuild_is_noop_when_task_running(self, search_cog):
         task = asyncio.create_task(asyncio.sleep(10))
         search_cog._index_rebuild_task = task
@@ -249,6 +294,17 @@ class TestSearchLifecycle:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
+
+    async def test_start_index_rebuild_creates_named_task(self, search_cog):
+        search_cog._ensure_article_index = AsyncMock()
+
+        search_cog._start_index_rebuild()
+        task = search_cog._index_rebuild_task
+        assert task is not None
+        assert task.get_name() == "article-index-rebuild"
+
+        await task
+        search_cog._ensure_article_index.assert_awaited_once_with()
 
 
 class TestIndex:
@@ -311,6 +367,15 @@ class TestIndex:
         await search_cog._ensure_article_index()
 
         search_cog._rebuild_article_index.assert_awaited_once()
+
+    async def test_ensure_article_index_skips_when_no_summarized_content(self, search_cog):
+        search_cog._get_article_index_status = AsyncMock()
+        search_cog._index_rebuild_error = "RuntimeError: stale"
+
+        await search_cog._ensure_article_index()
+
+        assert search_cog._index_rebuild_error is None
+        search_cog._get_article_index_status.assert_not_awaited()
 
     async def test_ensure_article_index_retries_after_failure(
         self, search_cog, mock_bot, monkeypatch
@@ -520,6 +585,36 @@ class TestIndex:
             [0.1, 0.2, 0.3],
             topk=3,
         )
+
+    async def test_search_articles_returns_empty_when_scores_below_threshold(
+        self, search_cog, mock_bot, mock_vector_store
+    ):
+        mock_vector_store.search_article_chunks.return_value = [
+            ArticleChunkSearchResult(
+                chunk_id="item-1__0000",
+                content_item_id="item-1",
+                chunk_index=0,
+                text="Chunk",
+                search_text="Title\n\nChunk",
+                score=0.9,
+            )
+        ]
+        search_cog._reranker.rerank = AsyncMock(
+            return_value=[
+                RankedArticleChunk(
+                    chunk_id="item-1__0000",
+                    content_item_id="item-1",
+                    chunk_index=0,
+                    text="Chunk",
+                    vector_score=0.9,
+                    relevance_score=0.1,
+                )
+            ]
+        )
+        mock_bot.repository.get_content_items_by_ids = AsyncMock()
+
+        assert await search_cog._search_articles("query") == []
+        mock_bot.repository.get_content_items_by_ids.assert_not_awaited()
 
 
 class TestSearchErrors:
