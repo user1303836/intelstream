@@ -59,6 +59,16 @@ SAMPLE_RSS_MULTIPLE_AUTHORS = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
+class AttributeEntry(dict):
+    def __getattr__(self, name: str) -> object:
+        return self[name]
+
+
+class TruthyEmptyList(list[object]):
+    def __bool__(self) -> bool:
+        return True
+
+
 class TestRSSAdapter:
     async def test_get_feed_url_returns_identifier(self) -> None:
         adapter = RSSAdapter()
@@ -286,6 +296,28 @@ class TestRSSAdapter:
 
         assert RSSAdapter()._extract_content(entry) == "<section>Body</section>"
 
+    def test_extract_content_falls_through_empty_content_list(self) -> None:
+        entry = feedparser.FeedParserDict(
+            {
+                "content": TruthyEmptyList(),
+                "summary_detail": feedparser.FeedParserDict({"value": "Summary detail"}),
+            }
+        )
+
+        assert RSSAdapter()._extract_content(entry) == "Summary detail"
+
+    def test_extract_content_skips_empty_unknown_content_value(self) -> None:
+        entry = feedparser.FeedParserDict(
+            {
+                "content": [
+                    {"type": "application/xhtml+xml", "value": ""},
+                    {"type": "text/plain", "value": "Plain body"},
+                ]
+            }
+        )
+
+        assert RSSAdapter()._extract_content(entry) == "Plain body"
+
     def test_extract_content_returns_none_for_empty_preferred_content(self) -> None:
         entry = feedparser.FeedParserDict({"content": [{"type": "text/html", "value": ""}]})
 
@@ -325,6 +357,16 @@ class TestRSSAdapter:
 
         assert RSSAdapter()._extract_thumbnail(entry) == "https://example.com/type.jpg"
 
+    def test_extract_thumbnail_skips_non_image_media_content(self) -> None:
+        entry = feedparser.FeedParserDict(
+            {
+                "media_content": [{"medium": "video", "url": "https://example.com/video.mp4"}],
+                "media_thumbnail": [{"url": "https://example.com/thumb.jpg"}],
+            }
+        )
+
+        assert RSSAdapter()._extract_thumbnail(entry) == "https://example.com/thumb.jpg"
+
     def test_extract_thumbnail_returns_none_for_image_media_without_url(self) -> None:
         entry = feedparser.FeedParserDict({"media_content": [{"medium": "image"}]})
 
@@ -337,21 +379,57 @@ class TestRSSAdapter:
 
         assert RSSAdapter()._extract_thumbnail(entry) == "https://example.com/thumb.jpg"
 
-    def test_extract_thumbnail_uses_image_enclosure_href_and_url(self) -> None:
-        class Entry(dict):
-            def __getattr__(self, name: str) -> object:
-                return self[name]
+    def test_extract_thumbnail_skips_empty_media_thumbnail_url(self) -> None:
+        entry = AttributeEntry(
+            {
+                "media_thumbnail": [{"url": ""}],
+                "enclosures": [{"type": "image/png", "url": "https://example.com/enclosed.png"}],
+            }
+        )
 
+        assert RSSAdapter()._extract_thumbnail(entry) == "https://example.com/enclosed.png"
+
+    def test_extract_thumbnail_falls_through_empty_media_thumbnail_list(self) -> None:
+        entry = AttributeEntry(
+            {
+                "media_thumbnail": TruthyEmptyList(),
+                "enclosures": [{"type": "image/png", "url": "https://example.com/enclosed.png"}],
+            }
+        )
+
+        assert RSSAdapter()._extract_thumbnail(entry) == "https://example.com/enclosed.png"
+
+    def test_extract_thumbnail_uses_image_enclosure_href_and_url(self) -> None:
         adapter = RSSAdapter()
-        href_entry = Entry(
+        href_entry = AttributeEntry(
             {"enclosures": [{"type": "image/png", "href": "https://example.com/href.png"}]}
         )
-        url_entry = Entry(
+        url_entry = AttributeEntry(
             {"enclosures": [{"type": "image/png", "url": "https://example.com/url.png"}]}
         )
 
         assert adapter._extract_thumbnail(href_entry) == "https://example.com/href.png"
         assert adapter._extract_thumbnail(url_entry) == "https://example.com/url.png"
+
+    def test_extract_thumbnail_skips_non_image_enclosure(self) -> None:
+        entry = AttributeEntry(
+            {
+                "enclosures": [{"type": "text/html", "href": "https://example.com/page"}],
+                "links": [{"type": "image/png", "href": "https://example.com/card.png"}],
+            }
+        )
+
+        assert RSSAdapter()._extract_thumbnail(entry) == "https://example.com/card.png"
+
+    def test_extract_thumbnail_falls_through_empty_enclosures_list(self) -> None:
+        entry = AttributeEntry(
+            {
+                "enclosures": TruthyEmptyList(),
+                "links": [{"type": "image/png", "href": "https://example.com/card.png"}],
+            }
+        )
+
+        assert RSSAdapter()._extract_thumbnail(entry) == "https://example.com/card.png"
 
     def test_extract_thumbnail_uses_link_image_fallback(self) -> None:
         entry = feedparser.FeedParserDict(
@@ -364,3 +442,13 @@ class TestRSSAdapter:
         )
 
         assert RSSAdapter()._extract_thumbnail(entry) == "https://example.com/card.png"
+
+    def test_extract_thumbnail_returns_none_when_links_are_not_images(self) -> None:
+        entry = AttributeEntry(
+            {"links": [{"type": "text/html", "href": "https://example.com/page"}]}
+        )
+
+        assert RSSAdapter()._extract_thumbnail(entry) is None
+
+    def test_extract_thumbnail_returns_none_when_no_thumbnail_fields(self) -> None:
+        assert RSSAdapter()._extract_thumbnail(AttributeEntry()) is None

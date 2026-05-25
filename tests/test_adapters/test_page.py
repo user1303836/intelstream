@@ -343,6 +343,15 @@ class TestPageAdapter:
 
         assert result == datetime(2024, 1, 15, tzinfo=UTC)
 
+    def test_parse_date_string_invalid_embedded_month_returns_now(
+        self, sample_profile: ExtractionProfile
+    ) -> None:
+        adapter = PageAdapter(extraction_profile=sample_profile)
+
+        result = adapter._parse_date_string("Published Notamonth 15 2024")
+
+        assert (datetime.now(UTC) - result).total_seconds() < 5
+
     def test_parse_date_string_invalid_returns_now(self, sample_profile: ExtractionProfile) -> None:
         adapter = PageAdapter(extraction_profile=sample_profile)
         result = adapter._parse_date_string("not a date")

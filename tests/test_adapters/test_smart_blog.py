@@ -429,6 +429,49 @@ class TestSmartBlogAdapterFallback:
             assert result is not None
             mock_rss.assert_called_once()
 
+    async def test_discover_with_fallback_without_cached_strategy_uses_first_success(
+        self, adapter: SmartBlogAdapter, mock_repository, sample_source
+    ):
+        with patch.object(adapter._strategies[0], "discover", new_callable=AsyncMock) as mock_rss:
+            mock_rss.return_value = DiscoveryResult(
+                posts=[DiscoveredPost(url="https://example.com/post", title="Post")],
+                feed_url="https://example.com/feed",
+            )
+
+            result = await adapter._discover_with_fallback(
+                url="https://example.com/",
+                cached_strategy=None,
+                url_pattern=None,
+                source=sample_source,
+            )
+
+        assert result is not None
+        mock_repository.update_source_discovery_strategy.assert_awaited_once_with(
+            source_id=sample_source.id,
+            discovery_strategy="rss",
+            feed_url="https://example.com/feed",
+            url_pattern=None,
+        )
+
+    async def test_discover_with_fallback_ignores_unknown_cached_strategy(
+        self, adapter: SmartBlogAdapter, mock_repository, sample_source
+    ):
+        with patch.object(adapter._strategies[0], "discover", new_callable=AsyncMock) as mock_rss:
+            mock_rss.return_value = DiscoveryResult(
+                posts=[DiscoveredPost(url="https://example.com/post", title="Post")]
+            )
+
+            result = await adapter._discover_with_fallback(
+                url="https://example.com/",
+                cached_strategy="missing",
+                url_pattern="/posts/*",
+                source=sample_source,
+            )
+
+        assert result is not None
+        mock_rss.assert_awaited_once_with("https://example.com/", url_pattern="/posts/*")
+        mock_repository.update_source_discovery_strategy.assert_awaited_once()
+
     async def test_discover_with_fallback_tries_other_strategies(
         self, adapter: SmartBlogAdapter, mock_repository, sample_source
     ):
@@ -500,6 +543,28 @@ class TestSmartBlogAdapterFallback:
             )
 
         assert result is None
+        mock_repository.update_source_discovery_strategy.assert_not_called()
+
+    async def test_discover_with_fallback_can_return_without_strategy_update(
+        self, adapter: SmartBlogAdapter, mock_repository, sample_source
+    ):
+        strategy = MagicMock()
+        strategy.name = None
+        strategy.discover = AsyncMock(
+            return_value=DiscoveryResult(
+                posts=[DiscoveredPost(url="https://example.com/post", title="Post")]
+            )
+        )
+        adapter._strategies = [strategy]
+
+        result = await adapter._discover_with_fallback(
+            url="https://example.com/",
+            cached_strategy=None,
+            url_pattern=None,
+            source=sample_source,
+        )
+
+        assert result is not None
         mock_repository.update_source_discovery_strategy.assert_not_called()
 
     def test_get_strategy_by_name_returns_none_for_unknown(self, adapter: SmartBlogAdapter):
