@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -31,6 +32,38 @@ class TestEmbedText:
         svc = EmbeddingService()
         with pytest.raises(RuntimeError, match="not initialized"):
             await svc.embed_text("hello")
+
+    async def test_serializes_concurrent_encode_calls(self, service, monkeypatch):
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        started_texts: list[str] = []
+
+        async def fake_to_thread(_func, text, *, show_progress_bar):
+            assert show_progress_bar is False
+            started_texts.append(text)
+            if text == "first":
+                first_started.set()
+                await release_first.wait()
+                return np.array([1.0])
+            return np.array([2.0])
+
+        monkeypatch.setattr(
+            "intelstream.services.embedding_service.asyncio.to_thread",
+            fake_to_thread,
+        )
+
+        first_task = asyncio.create_task(service.embed_text("first"))
+        await first_started.wait()
+        second_task = asyncio.create_task(service.embed_text("second"))
+
+        await asyncio.sleep(0)
+        assert started_texts == ["first"]
+
+        release_first.set()
+        results = await asyncio.gather(first_task, second_task)
+
+        assert results == [[1.0], [2.0]]
+        assert started_texts == ["first", "second"]
 
 
 class TestEmbedBatch:

@@ -2,8 +2,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import discord
 import pytest
+from discord import app_commands
 
-from intelstream.discord.cogs.message_forwarding import MessageForwarding
+from intelstream.discord.cogs.message_forwarding import MessageForwarding, setup
 
 
 @pytest.fixture
@@ -20,6 +21,27 @@ def mock_bot():
 @pytest.fixture
 def cog(mock_bot):
     return MessageForwarding(mock_bot)
+
+
+def make_interaction(*, in_guild: bool = True) -> MagicMock:
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.response = MagicMock()
+    interaction.response.defer = AsyncMock()
+    interaction.response.send_message = AsyncMock()
+    interaction.followup = MagicMock()
+    interaction.followup.send = AsyncMock()
+    interaction.user = MagicMock()
+    interaction.user.id = 123
+    interaction.guild_id = 456
+    interaction.guild = MagicMock(spec=discord.Guild) if in_guild else None
+    return interaction
+
+
+def make_channel(channel_id: int, mention: str = "#channel") -> MagicMock:
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = channel_id
+    channel.mention = mention
+    return channel
 
 
 class TestForwardAdd:
@@ -92,6 +114,26 @@ class TestForwardAdd:
         mock_bot.repository.add_forwarding_rule.assert_not_called()
         call_args = interaction.followup.send.call_args
         assert "already exists" in call_args[0][0]
+
+    async def test_forward_add_ignores_existing_rule_for_different_destination(self, cog, mock_bot):
+        interaction = make_interaction()
+        interaction.guild.me = MagicMock()
+        source = make_channel(111, "#source")
+        destination = make_channel(222, "#dest")
+        permissions = MagicMock()
+        permissions.send_messages = True
+        destination.permissions_for = MagicMock(return_value=permissions)
+        existing_rule = MagicMock()
+        existing_rule.destination_channel_id = "333"
+        mock_bot.repository.get_forwarding_rules_for_source = AsyncMock(
+            return_value=[existing_rule]
+        )
+        mock_bot.repository.add_forwarding_rule = AsyncMock()
+
+        await cog.forward_add.callback(cog, interaction, source=source, destination=destination)
+
+        mock_bot.repository.add_forwarding_rule.assert_awaited_once()
+        assert "Forwarding configured" in interaction.followup.send.await_args.args[0]
 
     async def test_forward_add_bot_no_permission(self, cog, mock_bot):
         interaction = MagicMock(spec=discord.Interaction)
@@ -234,6 +276,57 @@ class TestForwardList:
         call_args = interaction.followup.send.call_args
         assert "No forwarding rules" in call_args[0][0]
 
+    async def test_forward_list_not_in_guild(self, cog, mock_bot):
+        interaction = make_interaction(in_guild=False)
+
+        await cog.forward_list.callback(cog, interaction)
+
+        mock_bot.repository.get_forwarding_rules_for_guild.assert_not_called()
+        assert "server" in interaction.followup.send.call_args.args[0]
+
+    async def test_forward_list_resolves_destination_thread_from_guilds(self, cog, mock_bot):
+        interaction = make_interaction()
+        mock_rule = MagicMock()
+        mock_rule.source_channel_id = "111"
+        mock_rule.destination_channel_id = "222"
+        mock_rule.is_active = False
+        mock_rule.messages_forwarded = 7
+        source = make_channel(111, "#source")
+        thread = MagicMock(spec=discord.Thread)
+        thread.mention = "#thread"
+        guild = MagicMock()
+        guild.get_thread = MagicMock(return_value=thread)
+        mock_bot.guilds = [guild]
+        mock_bot.repository.get_forwarding_rules_for_guild = AsyncMock(return_value=[mock_rule])
+        mock_bot.get_channel = MagicMock(
+            side_effect=lambda channel_id: source if channel_id == 111 else None
+        )
+
+        await cog.forward_list.callback(cog, interaction)
+
+        message = interaction.followup.send.call_args.args[0]
+        assert "#source -> #thread" in message
+        assert "paused" in message
+
+    async def test_forward_list_uses_unknown_names_when_channels_missing(self, cog, mock_bot):
+        interaction = make_interaction()
+        mock_rule = MagicMock()
+        mock_rule.source_channel_id = "111"
+        mock_rule.destination_channel_id = "222"
+        mock_rule.is_active = True
+        mock_rule.messages_forwarded = 0
+        guild = MagicMock()
+        guild.get_thread = MagicMock(return_value=None)
+        mock_bot.guilds = [guild]
+        mock_bot.repository.get_forwarding_rules_for_guild = AsyncMock(return_value=[mock_rule])
+        mock_bot.get_channel = MagicMock(return_value=None)
+
+        await cog.forward_list.callback(cog, interaction)
+
+        message = interaction.followup.send.call_args.args[0]
+        assert "Unknown (111)" in message
+        assert "Unknown (222)" in message
+
 
 class TestForwardRemove:
     async def test_forward_remove_success(self, cog, mock_bot):
@@ -296,6 +389,16 @@ class TestForwardRemove:
 
         call_args = interaction.followup.send.call_args
         assert "No forwarding rule found" in call_args[0][0]
+
+    async def test_forward_remove_not_in_guild(self, cog, mock_bot):
+        interaction = make_interaction(in_guild=False)
+        source = make_channel(111, "#source")
+        dest = make_channel(222, "#dest")
+
+        await cog.forward_remove.callback(cog, interaction, source=source, destination=dest)
+
+        mock_bot.repository.delete_forwarding_rule.assert_not_called()
+        assert "server" in interaction.followup.send.call_args.args[0]
 
 
 class TestForwardPauseResume:
@@ -397,6 +500,36 @@ class TestForwardPauseResume:
         call_args = interaction.followup.send.call_args
         assert "No forwarding rule found" in call_args[0][0]
 
+    async def test_forward_pause_not_in_guild(self, cog, mock_bot):
+        interaction = make_interaction(in_guild=False)
+        source = make_channel(111, "#source")
+        dest = make_channel(222, "#dest")
+
+        await cog.forward_pause.callback(cog, interaction, source=source, destination=dest)
+
+        mock_bot.repository.set_forwarding_rule_active.assert_not_called()
+        assert "server" in interaction.followup.send.call_args.args[0]
+
+    async def test_forward_resume_not_in_guild(self, cog, mock_bot):
+        interaction = make_interaction(in_guild=False)
+        source = make_channel(111, "#source")
+        dest = make_channel(222, "#dest")
+
+        await cog.forward_resume.callback(cog, interaction, source=source, destination=dest)
+
+        mock_bot.repository.set_forwarding_rule_active.assert_not_called()
+        assert "server" in interaction.followup.send.call_args.args[0]
+
+    async def test_forward_resume_not_found(self, cog, mock_bot):
+        interaction = make_interaction()
+        source = make_channel(111, "#source")
+        dest = make_channel(222, "#dest")
+        mock_bot.repository.set_forwarding_rule_active = AsyncMock(return_value=False)
+
+        await cog.forward_resume.callback(cog, interaction, source=source, destination=dest)
+
+        assert "No forwarding rule found" in interaction.followup.send.call_args.args[0]
+
 
 class TestOnMessage:
     async def test_on_message_forwards_to_matching_rule(self, cog, mock_bot):
@@ -492,8 +625,40 @@ class TestOnMessage:
 
         mock_bot.repository.increment_forwarding_count.assert_not_called()
 
+    async def test_on_message_forwards_to_all_matching_rules(self, cog, mock_bot):
+        rule_1 = MagicMock()
+        rule_1.id = "rule-1"
+        rule_1.destination_channel_id = "222"
+        rule_1.destination_type = "channel"
+        rule_2 = MagicMock()
+        rule_2.id = "rule-2"
+        rule_2.destination_channel_id = "333"
+        rule_2.destination_type = "thread"
+        cog._rules_cache = {"111": [rule_1, rule_2]}
+        cog.forwarder.forward_message = AsyncMock(side_effect=[MagicMock(), MagicMock()])
+        mock_bot.repository.increment_forwarding_count = AsyncMock()
+
+        message = MagicMock(spec=discord.Message)
+        message.author = MagicMock()
+        message.guild = MagicMock()
+        message.channel = MagicMock()
+        message.channel.id = 111
+
+        await cog.on_message(message)
+
+        assert cog.forwarder.forward_message.await_count == 2
+        mock_bot.repository.increment_forwarding_count.assert_any_await("rule-1")
+        mock_bot.repository.increment_forwarding_count.assert_any_await("rule-2")
+
 
 class TestCacheRefresh:
+    async def test_on_ready_refreshes_cache(self, cog):
+        cog._refresh_cache = AsyncMock()
+
+        await cog.on_ready()
+
+        cog._refresh_cache.assert_awaited_once()
+
     async def test_refresh_cache_loads_active_rules(self, cog, mock_bot):
         mock_rule = MagicMock()
         mock_rule.source_channel_id = "111"
@@ -524,3 +689,101 @@ class TestCacheRefresh:
         await cog._refresh_cache()
 
         assert "111" not in cog._rules_cache
+
+    async def test_refresh_cache_groups_multiple_active_rules_for_same_source(self, cog, mock_bot):
+        rule_1 = MagicMock()
+        rule_1.source_channel_id = "111"
+        rule_1.is_active = True
+        rule_2 = MagicMock()
+        rule_2.source_channel_id = "111"
+        rule_2.is_active = True
+        mock_guild = MagicMock()
+        mock_guild.id = 456
+        mock_bot.guilds = [mock_guild]
+        mock_bot.repository.get_forwarding_rules_for_guild = AsyncMock(
+            return_value=[rule_1, rule_2]
+        )
+
+        await cog._refresh_cache()
+
+        assert cog._rules_cache["111"] == [rule_1, rule_2]
+
+
+class TestForwardingErrors:
+    async def test_forward_add_missing_permissions_message(self, cog):
+        interaction = make_interaction()
+
+        await cog.forward_add_error(
+            interaction,
+            app_commands.MissingPermissions(["manage_guild"]),
+        )
+
+        assert "add forwarding rules" in interaction.response.send_message.call_args.args[0]
+
+    async def test_forward_add_non_permission_error_is_reraised(self, cog):
+        interaction = make_interaction()
+        error = app_commands.AppCommandError("boom")
+
+        with pytest.raises(app_commands.AppCommandError):
+            await cog.forward_add_error(interaction, error)
+
+    async def test_forward_remove_missing_permissions_message(self, cog):
+        interaction = make_interaction()
+
+        await cog.forward_remove_error(
+            interaction,
+            app_commands.MissingPermissions(["manage_guild"]),
+        )
+
+        assert "remove forwarding rules" in interaction.response.send_message.call_args.args[0]
+
+    async def test_forward_remove_non_permission_error_is_reraised(self, cog):
+        interaction = make_interaction()
+        error = app_commands.AppCommandError("boom")
+
+        with pytest.raises(app_commands.AppCommandError):
+            await cog.forward_remove_error(interaction, error)
+
+    async def test_forward_pause_missing_permissions_message(self, cog):
+        interaction = make_interaction()
+
+        await cog.forward_pause_error(
+            interaction,
+            app_commands.MissingPermissions(["manage_guild"]),
+        )
+
+        assert "pause forwarding rules" in interaction.response.send_message.call_args.args[0]
+
+    async def test_forward_pause_non_permission_error_is_reraised(self, cog):
+        interaction = make_interaction()
+        error = app_commands.AppCommandError("boom")
+
+        with pytest.raises(app_commands.AppCommandError):
+            await cog.forward_pause_error(interaction, error)
+
+    async def test_forward_resume_missing_permissions_message(self, cog):
+        interaction = make_interaction()
+
+        await cog.forward_resume_error(
+            interaction,
+            app_commands.MissingPermissions(["manage_guild"]),
+        )
+
+        assert "resume forwarding rules" in interaction.response.send_message.call_args.args[0]
+
+    async def test_forward_resume_non_permission_error_is_reraised(self, cog):
+        interaction = make_interaction()
+        error = app_commands.AppCommandError("boom")
+
+        with pytest.raises(app_commands.AppCommandError):
+            await cog.forward_resume_error(interaction, error)
+
+
+class TestSetup:
+    async def test_setup_adds_message_forwarding_cog(self, mock_bot):
+        mock_bot.add_cog = AsyncMock()
+
+        await setup(mock_bot)
+
+        mock_bot.add_cog.assert_awaited_once()
+        assert isinstance(mock_bot.add_cog.call_args.args[0], MessageForwarding)

@@ -215,8 +215,9 @@ class SourceManagement(commands.Cog):
     @app_commands.describe(
         source_type="Type of source to add",
         name="Display name for this source",
-        url="URL of the source (Substack, YouTube, RSS, Twitter/X account, or blog page)",
+        url="URL of the source, or Arxiv category code",
         summarize="Whether to summarize content before posting (default: True)",
+        channel="Channel or thread where this source should post (defaults to current)",
     )
     @app_commands.choices(
         source_type=[
@@ -238,6 +239,7 @@ class SourceManagement(commands.Cog):
         name: str,
         url: str,
         summarize: bool = True,
+        channel: discord.TextChannel | discord.Thread | None = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
 
@@ -285,6 +287,12 @@ class SourceManagement(commands.Cog):
                 ephemeral=True,
             )
             return
+
+        target_channel_raw_id = channel.id if channel else interaction.channel_id
+        if target_channel_raw_id is None:
+            await interaction.followup.send("Could not determine target channel.", ephemeral=True)
+            return
+        target_channel_id = str(target_channel_raw_id)
 
         try:
             identifier, feed_url = parse_source_identifier(stype, url)
@@ -372,7 +380,7 @@ class SourceManagement(commands.Cog):
                 discovery_strategy=discovery_strategy,
                 url_pattern=discovered_url_pattern,
                 guild_id=str(interaction.guild_id) if interaction.guild_id else None,
-                channel_id=str(interaction.channel_id),
+                channel_id=target_channel_id,
                 skip_summary=not summarize,
             )
         except DuplicateSourceError:
@@ -397,6 +405,7 @@ class SourceManagement(commands.Cog):
         )
         embed.add_field(name="Name", value=name, inline=True)
         embed.add_field(name="Type", value=source_type.name, inline=True)
+        embed.add_field(name="Channel", value=f"<#{target_channel_id}>", inline=True)
         embed.add_field(name="Identifier", value=identifier, inline=False)
         if final_feed_url:
             embed.add_field(name="Feed URL", value=final_feed_url, inline=False)

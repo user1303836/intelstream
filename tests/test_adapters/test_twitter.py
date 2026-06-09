@@ -187,6 +187,47 @@ class TestTwitterAdapter:
 
         assert len(items) == 0
 
+    @respx.mock
+    async def test_fetch_latest_user_lookup_without_data_returns_empty(self) -> None:
+        respx.get("https://api.x.com/2/users/by/username/testuser").mock(
+            return_value=httpx.Response(200, json={})
+        )
+
+        async with httpx.AsyncClient() as client:
+            adapter = TwitterAdapter(bearer_token="test-token", http_client=client)
+            items = await adapter.fetch_latest("testuser")
+
+        assert items == []
+
+    @respx.mock
+    async def test_fetch_latest_continues_after_tweet_parse_error(self) -> None:
+        response_with_bad_tweet = {
+            "data": [
+                {"text": "Missing ID", "author_id": "2244994945"},
+                {
+                    "id": "12345",
+                    "text": "Valid tweet after bad one",
+                    "created_at": "2024-12-10T07:00:30.000Z",
+                    "author_id": "2244994945",
+                },
+            ],
+            "includes": SAMPLE_TWEETS_RESPONSE["includes"],
+            "meta": {"result_count": 2},
+        }
+        respx.get("https://api.x.com/2/users/by/username/testuser").mock(
+            return_value=httpx.Response(200, json=SAMPLE_USER_RESPONSE)
+        )
+        respx.get("https://api.x.com/2/users/2244994945/tweets").mock(
+            return_value=httpx.Response(200, json=response_with_bad_tweet)
+        )
+
+        async with httpx.AsyncClient() as client:
+            adapter = TwitterAdapter(bearer_token="test-token", http_client=client)
+            items = await adapter.fetch_latest("testuser")
+
+        assert len(items) == 1
+        assert items[0].external_id == "12345"
+
     def test_make_title_short_text(self) -> None:
         adapter = TwitterAdapter(bearer_token="test-token")
         assert adapter._make_title("Short tweet") == "Short tweet"
@@ -217,6 +258,45 @@ class TestTwitterAdapter:
         adapter = TwitterAdapter(bearer_token="test-token")
         result = adapter._parse_iso_date("not-a-date")
         assert result.tzinfo is not None
+
+    def test_get_quoted_tweet_text_ignores_non_quote_references(self) -> None:
+        adapter = TwitterAdapter(bearer_token="test-token")
+
+        result = adapter._get_quoted_tweet_text(
+            {"referenced_tweets": [{"type": "replied_to", "id": "99999"}]},
+            {"99999": {"text": "reply text"}},
+        )
+
+        assert result is None
+
+    def test_get_quoted_tweet_text_skips_missing_expanded_quote(self) -> None:
+        adapter = TwitterAdapter(bearer_token="test-token")
+
+        result = adapter._get_quoted_tweet_text(
+            {
+                "referenced_tweets": [
+                    {"type": "quoted", "id": "missing"},
+                    {"type": "quoted", "id": "present"},
+                ]
+            },
+            {"present": {"text": "expanded quote"}},
+        )
+
+        assert result == "expanded quote"
+
+    def test_get_thumbnail_url_skips_media_without_url(self) -> None:
+        adapter = TwitterAdapter(bearer_token="test-token")
+
+        result = adapter._get_thumbnail_url(
+            {"attachments": {"media_keys": ["empty", "video"]}},
+            {
+                "empty": {},
+                "video": {"preview_image_url": "https://pbs.twimg.com/media/video.jpg"},
+            },
+            profile_pic="https://pbs.twimg.com/profile.jpg",
+        )
+
+        assert result == "https://pbs.twimg.com/media/video.jpg"
 
     @respx.mock
     async def test_fetch_sends_correct_auth_header(self) -> None:

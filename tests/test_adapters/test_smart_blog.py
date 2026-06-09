@@ -5,7 +5,8 @@ import httpx
 import pytest
 import respx
 
-from intelstream.adapters.smart_blog import SmartBlogAdapter
+from intelstream.adapters.base import ContentData
+from intelstream.adapters.smart_blog import UNKNOWN_DATE, AnalysisResult, SmartBlogAdapter
 from intelstream.adapters.strategies.base import DiscoveredPost, DiscoveryResult
 from intelstream.database.models import Source, SourceType
 from intelstream.database.repository import Repository
@@ -142,6 +143,31 @@ class TestSmartBlogAdapterAnalysis:
             assert result.success is False
             assert "Unable to find blog posts" in result.error
 
+    async def test_analyze_site_continues_after_strategy_exception(self, adapter: SmartBlogAdapter):
+        with (
+            patch.object(adapter._strategies[0], "discover", new_callable=AsyncMock) as mock_rss,
+            patch.object(
+                adapter._strategies[1], "discover", new_callable=AsyncMock
+            ) as mock_sitemap,
+        ):
+            mock_rss.side_effect = RuntimeError("rss failed")
+            mock_sitemap.return_value = DiscoveryResult(
+                posts=[
+                    DiscoveredPost(url="https://example.com/post-1", title="Post 1"),
+                    DiscoveredPost(url="https://example.com/post-2", title="Post 2"),
+                ],
+                url_pattern="/post-*",
+            )
+
+            result = await adapter.analyze_site("https://example.com/")
+
+            assert result.success is True
+            assert result.strategy == "sitemap"
+            assert result.sample_posts == [
+                "https://example.com/post-1",
+                "https://example.com/post-2",
+            ]
+
 
 class TestSmartBlogAdapterFetchLatest:
     async def test_fetch_latest_source_not_found(self, adapter: SmartBlogAdapter, mock_repository):
@@ -165,6 +191,28 @@ class TestSmartBlogAdapterFetchLatest:
 
             assert result == []
 
+    async def test_fetch_latest_rss_success_resets_failure_count(
+        self, adapter: SmartBlogAdapter, mock_repository, sample_source
+    ):
+        mock_repository.get_source_by_identifier.return_value = sample_source
+        item = ContentData(
+            external_id="post",
+            title="Post",
+            original_url="https://example.com/post",
+            author="Author",
+            published_at=datetime(2024, 1, 1, tzinfo=UTC),
+        )
+
+        with patch("intelstream.adapters.rss.RSSAdapter") as MockRSS:
+            mock_rss_adapter = MagicMock()
+            mock_rss_adapter.fetch_latest = AsyncMock(return_value=[item])
+            MockRSS.return_value = mock_rss_adapter
+
+            result = await adapter.fetch_latest(sample_source.identifier)
+
+        assert result == [item]
+        mock_repository.reset_failure_count.assert_awaited_with(sample_source.id)
+
     async def test_fetch_latest_increments_failure_on_empty_result(
         self, adapter: SmartBlogAdapter, mock_repository, sample_source
     ):
@@ -180,6 +228,61 @@ class TestSmartBlogAdapterFetchLatest:
             await adapter.fetch_latest(sample_source.identifier)
 
             mock_repository.increment_failure_count.assert_called_once_with(sample_source.id)
+
+    async def test_fetch_latest_reanalyzes_after_failure_threshold(
+        self, adapter: SmartBlogAdapter, mock_repository, sample_source
+    ):
+        sample_source.discovery_strategy = "sitemap"
+        sample_source.feed_url = None
+        mock_repository.get_source_by_identifier.return_value = sample_source
+        mock_repository.increment_failure_count.return_value = 3
+        settings = MagicMock()
+        settings.max_consecutive_failures = 3
+
+        with (
+            patch.object(adapter, "_discover_with_fallback", new_callable=AsyncMock) as discover,
+            patch.object(adapter, "analyze_site", new_callable=AsyncMock) as analyze,
+            patch("intelstream.adapters.smart_blog.get_settings", return_value=settings),
+        ):
+            discover.return_value = None
+            analyze.return_value = AnalysisResult(
+                success=True,
+                strategy="rss",
+                feed_url="https://example.com/feed",
+                url_pattern=None,
+            )
+
+            assert await adapter.fetch_latest(sample_source.identifier) == []
+
+        mock_repository.update_source_discovery_strategy.assert_awaited_once_with(
+            source_id=sample_source.id,
+            discovery_strategy="rss",
+            feed_url="https://example.com/feed",
+            url_pattern=None,
+        )
+        mock_repository.reset_failure_count.assert_awaited_with(sample_source.id)
+
+    async def test_fetch_latest_reanalysis_failure_does_not_update_strategy(
+        self, adapter: SmartBlogAdapter, mock_repository, sample_source
+    ):
+        sample_source.discovery_strategy = "sitemap"
+        sample_source.feed_url = None
+        mock_repository.get_source_by_identifier.return_value = sample_source
+        mock_repository.increment_failure_count.return_value = 3
+        settings = MagicMock()
+        settings.max_consecutive_failures = 3
+
+        with (
+            patch.object(adapter, "_discover_with_fallback", new_callable=AsyncMock) as discover,
+            patch.object(adapter, "analyze_site", new_callable=AsyncMock) as analyze,
+            patch("intelstream.adapters.smart_blog.get_settings", return_value=settings),
+        ):
+            discover.return_value = DiscoveryResult(posts=[])
+            analyze.return_value = AnalysisResult(success=False, error="no posts")
+
+            assert await adapter.fetch_latest(sample_source.identifier) == []
+
+        mock_repository.update_source_discovery_strategy.assert_not_called()
 
     async def test_fetch_latest_resets_failure_on_success(
         self, adapter: SmartBlogAdapter, mock_repository, sample_source
@@ -254,6 +357,58 @@ class TestSmartBlogAdapterFetchLatest:
             assert len(result) == 1
             assert result[0].original_url == "https://example.com/new"
 
+    async def test_fetch_latest_returns_empty_when_all_posts_known(
+        self, adapter: SmartBlogAdapter, mock_repository, sample_source
+    ):
+        sample_source.discovery_strategy = "sitemap"
+        sample_source.feed_url = None
+        mock_repository.get_source_by_identifier.return_value = sample_source
+        mock_repository.content_item_exists = AsyncMock(return_value=True)
+        discovery_result = DiscoveryResult(
+            posts=[DiscoveredPost(url="https://example.com/old", title="Old")]
+        )
+
+        with patch.object(
+            adapter, "_discover_with_fallback", new_callable=AsyncMock
+        ) as mock_discover:
+            mock_discover.return_value = discovery_result
+
+            assert await adapter.fetch_latest(sample_source.identifier) == []
+
+    async def test_fetch_latest_uses_extraction_fallbacks_and_skips_failed_posts(
+        self, adapter: SmartBlogAdapter, mock_repository, sample_source
+    ):
+        sample_source.discovery_strategy = "sitemap"
+        sample_source.feed_url = None
+        sample_source.identifier = "https://www.example.com/blog"
+        mock_repository.get_source_by_identifier.return_value = sample_source
+        discovery_result = DiscoveryResult(
+            posts=[
+                DiscoveredPost(url="https://example.com/fail", title="Fail"),
+                DiscoveredPost(url="https://example.com/ok", title=None, published_at=None),
+            ]
+        )
+        extracted = MagicMock(text="", title="", author="", published_at=None)
+
+        with (
+            patch.object(
+                adapter, "_discover_with_fallback", new_callable=AsyncMock
+            ) as mock_discover,
+            patch.object(
+                adapter._content_extractor, "extract", new_callable=AsyncMock
+            ) as mock_extract,
+        ):
+            mock_discover.return_value = discovery_result
+            mock_extract.side_effect = [RuntimeError("extract failed"), extracted]
+
+            result = await adapter.fetch_latest(sample_source.identifier)
+
+        assert len(result) == 1
+        assert result[0].title == "Untitled"
+        assert result[0].author == "Example"
+        assert result[0].published_at == UNKNOWN_DATE
+        assert result[0].raw_content is None
+
 
 class TestSmartBlogAdapterFallback:
     async def test_discover_with_fallback_tries_cached_strategy_first(
@@ -273,6 +428,49 @@ class TestSmartBlogAdapterFallback:
 
             assert result is not None
             mock_rss.assert_called_once()
+
+    async def test_discover_with_fallback_without_cached_strategy_uses_first_success(
+        self, adapter: SmartBlogAdapter, mock_repository, sample_source
+    ):
+        with patch.object(adapter._strategies[0], "discover", new_callable=AsyncMock) as mock_rss:
+            mock_rss.return_value = DiscoveryResult(
+                posts=[DiscoveredPost(url="https://example.com/post", title="Post")],
+                feed_url="https://example.com/feed",
+            )
+
+            result = await adapter._discover_with_fallback(
+                url="https://example.com/",
+                cached_strategy=None,
+                url_pattern=None,
+                source=sample_source,
+            )
+
+        assert result is not None
+        mock_repository.update_source_discovery_strategy.assert_awaited_once_with(
+            source_id=sample_source.id,
+            discovery_strategy="rss",
+            feed_url="https://example.com/feed",
+            url_pattern=None,
+        )
+
+    async def test_discover_with_fallback_ignores_unknown_cached_strategy(
+        self, adapter: SmartBlogAdapter, mock_repository, sample_source
+    ):
+        with patch.object(adapter._strategies[0], "discover", new_callable=AsyncMock) as mock_rss:
+            mock_rss.return_value = DiscoveryResult(
+                posts=[DiscoveredPost(url="https://example.com/post", title="Post")]
+            )
+
+            result = await adapter._discover_with_fallback(
+                url="https://example.com/",
+                cached_strategy="missing",
+                url_pattern="/posts/*",
+                source=sample_source,
+            )
+
+        assert result is not None
+        mock_rss.assert_awaited_once_with("https://example.com/", url_pattern="/posts/*")
+        mock_repository.update_source_discovery_strategy.assert_awaited_once()
 
     async def test_discover_with_fallback_tries_other_strategies(
         self, adapter: SmartBlogAdapter, mock_repository, sample_source
@@ -298,7 +496,82 @@ class TestSmartBlogAdapterFallback:
             assert result is not None
             mock_repository.update_source_discovery_strategy.assert_called_once()
 
+    async def test_discover_with_fallback_continues_after_cached_strategy_error(
+        self, adapter: SmartBlogAdapter, mock_repository, sample_source
+    ):
+        with (
+            patch.object(adapter._strategies[0], "discover", new_callable=AsyncMock) as mock_rss,
+            patch.object(
+                adapter._strategies[1], "discover", new_callable=AsyncMock
+            ) as mock_sitemap,
+        ):
+            mock_rss.side_effect = RuntimeError("rss failed")
+            mock_sitemap.return_value = DiscoveryResult(
+                posts=[DiscoveredPost(url="https://example.com/post", title="Post")]
+            )
+
+            result = await adapter._discover_with_fallback(
+                url="https://example.com/",
+                cached_strategy="rss",
+                url_pattern="/posts/*",
+                source=sample_source,
+            )
+
+        assert result is not None
+        mock_sitemap.assert_awaited_once_with("https://example.com/", url_pattern="/posts/*")
+        mock_repository.update_source_discovery_strategy.assert_awaited_once()
+
+    async def test_discover_with_fallback_returns_none_after_empty_and_failed_strategies(
+        self, adapter: SmartBlogAdapter, mock_repository, sample_source
+    ):
+        with (
+            patch.object(adapter._strategies[0], "discover", new_callable=AsyncMock) as mock_rss,
+            patch.object(
+                adapter._strategies[1], "discover", new_callable=AsyncMock
+            ) as mock_sitemap,
+            patch.object(adapter._strategies[2], "discover", new_callable=AsyncMock) as mock_llm,
+        ):
+            mock_rss.return_value = DiscoveryResult(posts=[])
+            mock_sitemap.return_value = None
+            mock_llm.side_effect = RuntimeError("llm failed")
+
+            result = await adapter._discover_with_fallback(
+                url="https://example.com/",
+                cached_strategy="rss",
+                url_pattern=None,
+                source=sample_source,
+            )
+
+        assert result is None
+        mock_repository.update_source_discovery_strategy.assert_not_called()
+
+    async def test_discover_with_fallback_can_return_without_strategy_update(
+        self, adapter: SmartBlogAdapter, mock_repository, sample_source
+    ):
+        strategy = MagicMock()
+        strategy.name = None
+        strategy.discover = AsyncMock(
+            return_value=DiscoveryResult(
+                posts=[DiscoveredPost(url="https://example.com/post", title="Post")]
+            )
+        )
+        adapter._strategies = [strategy]
+
+        result = await adapter._discover_with_fallback(
+            url="https://example.com/",
+            cached_strategy=None,
+            url_pattern=None,
+            source=sample_source,
+        )
+
+        assert result is not None
+        mock_repository.update_source_discovery_strategy.assert_not_called()
+
+    def test_get_strategy_by_name_returns_none_for_unknown(self, adapter: SmartBlogAdapter):
+        assert adapter._get_strategy_by_name("missing") is None
+
     async def test_get_site_name_extracts_domain(self, adapter: SmartBlogAdapter):
         assert adapter._get_site_name("https://www.example.com/blog") == "Example"
         assert adapter._get_site_name("https://blog.openai.com/") == "Openai"
         assert adapter._get_site_name("https://anthropic.com/research") == "Anthropic"
+        assert adapter._get_site_name("http://localhost") == "Localhost"

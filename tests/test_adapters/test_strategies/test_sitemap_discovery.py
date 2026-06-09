@@ -1,12 +1,15 @@
 import gzip
-from unittest.mock import patch
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 import respx
+from defusedxml import ElementTree
 
 from intelstream.adapters.strategies import sitemap_discovery
 from intelstream.adapters.strategies.sitemap_discovery import SitemapDiscoveryStrategy
+from intelstream.utils.url_validation import SSRFError
 
 
 @pytest.fixture
@@ -70,7 +73,8 @@ class TestSitemapDiscoveryStrategy:
             return_value=httpx.Response(200, text=sitemap)
         )
 
-        result = await sitemap_strategy.discover("https://example.com/research")
+        with patch("intelstream.adapters.strategies.sitemap_discovery.validate_url_for_ssrf"):
+            result = await sitemap_strategy.discover("https://example.com/research")
 
         assert result is not None
         assert len(result.posts) == 1
@@ -121,7 +125,8 @@ class TestSitemapDiscoveryStrategy:
             return_value=httpx.Response(200, text=posts_sitemap)
         )
 
-        result = await sitemap_strategy.discover("https://example.com/articles")
+        with patch("intelstream.adapters.strategies.sitemap_discovery.validate_url_for_ssrf"):
+            result = await sitemap_strategy.discover("https://example.com/articles")
 
         assert result is not None
         assert len(result.posts) == 2
@@ -202,6 +207,65 @@ class TestSitemapDiscoveryStrategy:
         result = await sitemap_strategy.discover("https://example.com/random-path")
 
         assert result is None
+
+    async def test_discover_returns_none_when_provided_pattern_has_no_matches(self):
+        strategy = SitemapDiscoveryStrategy()
+        strategy._find_sitemap = AsyncMock(return_value="https://example.com/sitemap.xml")
+        strategy._parse_sitemap = AsyncMock(
+            return_value=[
+                {"url": "https://example.com/about", "lastmod": None},
+                {"url": "https://example.com/contact", "lastmod": None},
+            ]
+        )
+
+        result = await strategy.discover("https://example.com/blog", url_pattern="/blog/")
+
+        assert result is None
+
+    async def test_discover_ignores_non_string_urls_and_non_datetime_lastmod(self):
+        strategy = SitemapDiscoveryStrategy()
+        published = datetime(2026, 5, 25, 12, 0, tzinfo=UTC)
+        strategy._find_sitemap = AsyncMock(return_value="https://example.com/sitemap.xml")
+        strategy._parse_sitemap = AsyncMock(
+            return_value=[
+                {"url": "https://example.com/blog/dated", "lastmod": published},
+                {"url": "https://example.com/blog/raw-date", "lastmod": "2026-05-25"},
+                {"url": 123, "lastmod": published},
+            ]
+        )
+
+        result = await strategy.discover("https://example.com/blog", url_pattern="/blog/")
+
+        assert result is not None
+        assert [post.url for post in result.posts] == [
+            "https://example.com/blog/dated",
+            "https://example.com/blog/raw-date",
+        ]
+        assert result.posts[0].published_at == published
+        assert result.posts[1].published_at is None
+
+    async def test_discover_skips_url_value_that_changes_after_filtering(self):
+        class FlakyUrlItem(dict):
+            def __init__(self) -> None:
+                super().__init__(lastmod=None)
+                self.url_reads = 0
+
+            def __getitem__(self, key: str) -> object:
+                if key == "url":
+                    self.url_reads += 1
+                    if self.url_reads <= 2:
+                        return "https://example.com/blog/post"
+                    return 123
+                return super().__getitem__(key)
+
+        strategy = SitemapDiscoveryStrategy()
+        strategy._find_sitemap = AsyncMock(return_value="https://example.com/sitemap.xml")
+        strategy._parse_sitemap = AsyncMock(return_value=[FlakyUrlItem()])
+
+        result = await strategy.discover("https://example.com/blog", url_pattern="/blog/")
+
+        assert result is not None
+        assert result.posts == []
 
     @respx.mock
     async def test_rejects_oversized_compressed_sitemap(
@@ -307,3 +371,395 @@ class TestSitemapDiscoveryStrategy:
         assert result is not None
         assert len(result.posts) == 1
         assert result.posts[0].url == "https://example.com/blog/post"
+
+    async def test_check_robots_txt_ignores_non_200_and_http_error(self):
+        client = MagicMock()
+        client.get = AsyncMock(
+            side_effect=[
+                httpx.Response(404, text="missing"),
+                httpx.ConnectError("offline"),
+            ]
+        )
+        strategy = SitemapDiscoveryStrategy(http_client=client)
+
+        assert await strategy._check_robots_txt("https://example.com") is None
+        assert await strategy._check_robots_txt("https://example.com") is None
+
+    async def test_check_robots_txt_skips_ssrf_blocked_sitemap(self):
+        client = MagicMock()
+        client.get = AsyncMock(
+            return_value=httpx.Response(
+                200,
+                text="Sitemap: http://127.0.0.1/sitemap.xml",
+            )
+        )
+        strategy = SitemapDiscoveryStrategy(http_client=client)
+
+        with patch(
+            "intelstream.adapters.strategies.sitemap_discovery.validate_url_for_ssrf",
+            side_effect=SSRFError("blocked"),
+        ):
+            assert await strategy._check_robots_txt("https://example.com") is None
+
+    async def test_check_robots_txt_returns_none_without_sitemap_directive(self):
+        client = MagicMock()
+        client.get = AsyncMock(
+            return_value=httpx.Response(
+                200,
+                text="User-agent: *\nAllow: /",
+            )
+        )
+        strategy = SitemapDiscoveryStrategy(http_client=client)
+
+        assert await strategy._check_robots_txt("https://example.com") is None
+
+    async def test_is_valid_sitemap_accepts_sitemap_index_and_rejects_failures(self):
+        client = MagicMock()
+        client.get = AsyncMock(
+            side_effect=[
+                httpx.Response(200, text="<sitemapindex></sitemapindex>"),
+                httpx.Response(500, text="error"),
+                httpx.ConnectError("offline"),
+            ]
+        )
+        strategy = SitemapDiscoveryStrategy(http_client=client)
+
+        assert await strategy._is_valid_sitemap("https://example.com/sitemap.xml") is True
+        assert await strategy._is_valid_sitemap("https://example.com/sitemap.xml") is False
+        assert await strategy._is_valid_sitemap("https://example.com/sitemap.xml") is False
+
+    async def test_parse_sitemap_handles_bad_gzip_and_invalid_xml(self):
+        client = MagicMock()
+        client.get = AsyncMock(
+            side_effect=[
+                httpx.Response(
+                    200,
+                    content=b"\x1f\x8bnot-a-real-gzip",
+                    request=httpx.Request("GET", "https://example.com/sitemap.xml.gz"),
+                ),
+                httpx.Response(
+                    200,
+                    text="<urlset><url>",
+                    request=httpx.Request("GET", "https://example.com/sitemap.xml"),
+                ),
+            ]
+        )
+        strategy = SitemapDiscoveryStrategy(http_client=client)
+
+        assert await strategy._parse_sitemap("https://example.com/sitemap.xml.gz") == []
+        assert await strategy._parse_sitemap("https://example.com/sitemap.xml") == []
+
+    async def test_parse_sitemap_accepts_valid_gzipped_sitemap(self):
+        xml = b"""<?xml version="1.0"?>
+        <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+            <url><loc>https://example.com/blog/post</loc></url>
+        </urlset>
+        """
+        client = MagicMock()
+        client.get = AsyncMock(
+            return_value=httpx.Response(
+                200,
+                content=gzip.compress(xml),
+                request=httpx.Request("GET", "https://example.com/sitemap.xml.gz"),
+            )
+        )
+        strategy = SitemapDiscoveryStrategy(http_client=client)
+
+        assert await strategy._parse_sitemap("https://example.com/sitemap.xml.gz") == [
+            {"url": "https://example.com/blog/post", "lastmod": None}
+        ]
+
+    async def test_parse_sitemap_rejects_direct_oversized_compressed_payload(self):
+        gzipped = gzip.compress(
+            b"<urlset><url><loc>https://example.com/blog/post</loc></url></urlset>"
+        )
+        client = MagicMock()
+        client.get = AsyncMock(
+            return_value=httpx.Response(
+                200,
+                content=gzipped,
+                request=httpx.Request("GET", "https://example.com/sitemap.xml.gz"),
+            )
+        )
+        strategy = SitemapDiscoveryStrategy(http_client=client)
+
+        with patch.object(sitemap_discovery, "MAX_COMPRESSED_SIZE", len(gzipped) - 1):
+            result = await strategy._parse_sitemap("https://example.com/sitemap.xml.gz")
+
+        assert result == []
+
+    async def test_parse_sitemap_rejects_direct_oversized_decompressed_payload(self):
+        xml = b"<urlset><url><loc>https://example.com/blog/post</loc></url></urlset>"
+        client = MagicMock()
+        client.get = AsyncMock(
+            return_value=httpx.Response(
+                200,
+                content=gzip.compress(xml),
+                request=httpx.Request("GET", "https://example.com/sitemap.xml.gz"),
+            )
+        )
+        strategy = SitemapDiscoveryStrategy(http_client=client)
+
+        with patch.object(sitemap_discovery, "MAX_DECOMPRESSED_SIZE", len(xml) - 1):
+            result = await strategy._parse_sitemap("https://example.com/sitemap.xml.gz")
+
+        assert result == []
+
+    async def test_parse_sitemap_handles_http_error(self):
+        client = MagicMock()
+        client.get = AsyncMock(side_effect=httpx.ConnectError("offline"))
+        strategy = SitemapDiscoveryStrategy(http_client=client)
+
+        assert await strategy._parse_sitemap("https://example.com/sitemap.xml") == []
+
+    async def test_parse_sitemap_index_non_namespaced_skips_blocked_children(self):
+        root = ElementTree.fromstring(
+            """<sitemapindex>
+                <sitemap><loc>http://127.0.0.1/private.xml</loc></sitemap>
+                <sitemap><loc>https://example.com/public.xml</loc></sitemap>
+            </sitemapindex>"""
+        )
+        strategy = SitemapDiscoveryStrategy()
+        strategy._parse_sitemap = AsyncMock(
+            return_value=[{"url": "https://example.com/blog/post", "lastmod": None}]
+        )
+
+        with patch(
+            "intelstream.adapters.strategies.sitemap_discovery.validate_url_for_ssrf",
+            side_effect=[SSRFError("blocked"), None],
+        ):
+            result = await strategy._parse_sitemap_index(root)
+
+        assert result == [{"url": "https://example.com/blog/post", "lastmod": None}]
+        strategy._parse_sitemap.assert_awaited_once_with("https://example.com/public.xml")
+
+    async def test_parse_sitemap_index_namespaced_skips_blocked_children(self):
+        root = ElementTree.fromstring(
+            """<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+                <sitemap><loc>http://127.0.0.1/private.xml</loc></sitemap>
+                <sitemap><loc>https://example.com/public.xml</loc></sitemap>
+            </sitemapindex>"""
+        )
+        strategy = SitemapDiscoveryStrategy()
+        strategy._parse_sitemap = AsyncMock(
+            return_value=[{"url": "https://example.com/blog/post", "lastmod": None}]
+        )
+
+        with patch(
+            "intelstream.adapters.strategies.sitemap_discovery.validate_url_for_ssrf",
+            side_effect=[SSRFError("blocked"), None],
+        ):
+            result = await strategy._parse_sitemap_index(root)
+
+        assert result == [{"url": "https://example.com/blog/post", "lastmod": None}]
+        strategy._parse_sitemap.assert_awaited_once_with("https://example.com/public.xml")
+
+    async def test_parse_sitemap_index_namespaced_skips_entries_without_loc(self):
+        root = ElementTree.fromstring(
+            """<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+                <sitemap></sitemap>
+                <sitemap><loc></loc></sitemap>
+                <sitemap><loc>https://example.com/public.xml</loc></sitemap>
+            </sitemapindex>"""
+        )
+        strategy = SitemapDiscoveryStrategy()
+        strategy._parse_sitemap = AsyncMock(
+            return_value=[{"url": "https://example.com/blog/post", "lastmod": None}]
+        )
+
+        with patch("intelstream.adapters.strategies.sitemap_discovery.validate_url_for_ssrf"):
+            result = await strategy._parse_sitemap_index(root)
+
+        assert result == [{"url": "https://example.com/blog/post", "lastmod": None}]
+        strategy._parse_sitemap.assert_awaited_once_with("https://example.com/public.xml")
+
+    async def test_parse_sitemap_index_namespaced_honors_sub_sitemap_limit(self):
+        root = ElementTree.fromstring(
+            """<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+                <sitemap><loc>https://example.com/one.xml</loc></sitemap>
+                <sitemap><loc>https://example.com/two.xml</loc></sitemap>
+                <sitemap><loc>https://example.com/three.xml</loc></sitemap>
+            </sitemapindex>"""
+        )
+        strategy = SitemapDiscoveryStrategy()
+        strategy._parse_sitemap = AsyncMock(
+            side_effect=[
+                [{"url": "https://example.com/blog/one", "lastmod": None}],
+                [{"url": "https://example.com/blog/two", "lastmod": None}],
+            ]
+        )
+
+        with (
+            patch("intelstream.adapters.strategies.sitemap_discovery.validate_url_for_ssrf"),
+            patch.object(sitemap_discovery, "MAX_SUB_SITEMAPS", 2),
+        ):
+            result = await strategy._parse_sitemap_index(root)
+
+        assert [item["url"] for item in result] == [
+            "https://example.com/blog/one",
+            "https://example.com/blog/two",
+        ]
+        assert strategy._parse_sitemap.await_count == 2
+
+    async def test_parse_sitemap_index_truncates_after_max_urls(self):
+        root = ElementTree.fromstring(
+            """<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+                <sitemap><loc>https://example.com/posts.xml</loc></sitemap>
+                <sitemap><loc>https://example.com/more.xml</loc></sitemap>
+            </sitemapindex>"""
+        )
+        strategy = SitemapDiscoveryStrategy()
+        strategy._parse_sitemap = AsyncMock(
+            return_value=[
+                {"url": "https://example.com/blog/one", "lastmod": None},
+                {"url": "https://example.com/blog/two", "lastmod": None},
+                {"url": "https://example.com/blog/three", "lastmod": None},
+            ]
+        )
+
+        with (
+            patch("intelstream.adapters.strategies.sitemap_discovery.validate_url_for_ssrf"),
+            patch.object(sitemap_discovery, "MAX_SITEMAP_URLS", 2),
+        ):
+            result = await strategy._parse_sitemap_index(root)
+
+        assert [item["url"] for item in result] == [
+            "https://example.com/blog/one",
+            "https://example.com/blog/two",
+        ]
+        strategy._parse_sitemap.assert_awaited_once_with("https://example.com/posts.xml")
+
+    async def test_parse_sitemap_index_non_namespaced_honors_zero_sub_sitemap_limit(self):
+        root = ElementTree.fromstring(
+            """<sitemapindex>
+                <sitemap><loc>https://example.com/posts.xml</loc></sitemap>
+            </sitemapindex>"""
+        )
+        strategy = SitemapDiscoveryStrategy()
+        strategy._parse_sitemap = AsyncMock()
+
+        with patch.object(sitemap_discovery, "MAX_SUB_SITEMAPS", 0):
+            result = await strategy._parse_sitemap_index(root)
+
+        assert result == []
+        strategy._parse_sitemap.assert_not_called()
+
+    async def test_parse_sitemap_index_non_namespaced_skips_entries_without_loc(self):
+        root = ElementTree.fromstring(
+            """<sitemapindex>
+                <sitemap></sitemap>
+                <sitemap><loc></loc></sitemap>
+                <sitemap><loc>https://example.com/posts.xml</loc></sitemap>
+            </sitemapindex>"""
+        )
+        strategy = SitemapDiscoveryStrategy()
+        strategy._parse_sitemap = AsyncMock(
+            return_value=[{"url": "https://example.com/blog/post", "lastmod": None}]
+        )
+
+        with patch("intelstream.adapters.strategies.sitemap_discovery.validate_url_for_ssrf"):
+            result = await strategy._parse_sitemap_index(root)
+
+        assert result == [{"url": "https://example.com/blog/post", "lastmod": None}]
+        strategy._parse_sitemap.assert_awaited_once_with("https://example.com/posts.xml")
+
+    async def test_parse_sitemap_index_non_namespaced_truncates_after_max_urls(self):
+        root = ElementTree.fromstring(
+            """<sitemapindex>
+                <sitemap><loc>https://example.com/posts.xml</loc></sitemap>
+                <sitemap><loc>https://example.com/more.xml</loc></sitemap>
+            </sitemapindex>"""
+        )
+        strategy = SitemapDiscoveryStrategy()
+        strategy._parse_sitemap = AsyncMock(
+            return_value=[
+                {"url": "https://example.com/blog/one", "lastmod": None},
+                {"url": "https://example.com/blog/two", "lastmod": None},
+                {"url": "https://example.com/blog/three", "lastmod": None},
+            ]
+        )
+
+        with (
+            patch("intelstream.adapters.strategies.sitemap_discovery.validate_url_for_ssrf"),
+            patch.object(sitemap_discovery, "MAX_SITEMAP_URLS", 2),
+        ):
+            result = await strategy._parse_sitemap_index(root)
+
+        assert [item["url"] for item in result] == [
+            "https://example.com/blog/one",
+            "https://example.com/blog/two",
+        ]
+        strategy._parse_sitemap.assert_awaited_once_with("https://example.com/posts.xml")
+
+    def test_parse_urlset_handles_namespaced_urls(self, sitemap_strategy):
+        root = ElementTree.fromstring(
+            """<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+                <url><lastmod>2026-05-24</lastmod></url>
+                <url>
+                    <loc>https://example.com/research/paper</loc>
+                    <lastmod>2026-05-25T12:30:00+00:00</lastmod>
+                </url>
+                <url><loc>https://example.com/research/no-date</loc></url>
+            </urlset>"""
+        )
+
+        result = sitemap_strategy._parse_urlset(root)
+
+        assert result == [
+            {
+                "url": "https://example.com/research/paper",
+                "lastmod": datetime(2026, 5, 25, 12, 30, tzinfo=UTC),
+            },
+            {"url": "https://example.com/research/no-date", "lastmod": None},
+        ]
+
+    def test_parse_urlset_handles_non_namespaced_urls_and_invalid_lastmod(self, sitemap_strategy):
+        root = ElementTree.fromstring(
+            """<urlset>
+                <url>
+                    <loc>https://example.com/blog/post</loc>
+                    <lastmod>not-a-date</lastmod>
+                </url>
+                <url><lastmod>2026-05-25</lastmod></url>
+            </urlset>"""
+        )
+
+        result = sitemap_strategy._parse_urlset(root)
+
+        assert result == [{"url": "https://example.com/blog/post", "lastmod": None}]
+
+    def test_parse_lastmod_handles_none_and_naive_datetime(self, sitemap_strategy):
+        assert sitemap_strategy._parse_lastmod(None) is None
+
+        parsed = sitemap_strategy._parse_lastmod("2026-05-25T12:30:00")
+
+        assert parsed is not None
+        assert parsed.tzinfo is not None
+
+    def test_parse_lastmod_handles_date_only_and_explicit_zulu(self, sitemap_strategy):
+        assert sitemap_strategy._parse_lastmod("2026-05-25") == datetime(2026, 5, 25, tzinfo=UTC)
+        assert sitemap_strategy._parse_lastmod("2026-05-25T12:30:00Z") == datetime(
+            2026, 5, 25, 12, 30, tzinfo=UTC
+        )
+
+    def test_infer_pattern_from_repeated_sitemap_urls(self, sitemap_strategy):
+        all_urls = [
+            {"url": "https://example.com/insights/one", "lastmod": None},
+            {"url": "https://example.com/Insights/two", "lastmod": None},
+            {"url": "https://example.com/about", "lastmod": None},
+        ]
+
+        assert sitemap_strategy._infer_pattern("https://example.com/", all_urls) == "/insights/"
+
+    def test_infer_pattern_handles_misleading_string_subclasses(self, sitemap_strategy):
+        class MisleadingUrl(str):
+            def lower(self) -> str:
+                return "https://example.com/blog/from-lower"
+
+        all_urls = [
+            {"url": MisleadingUrl("https://example.com/actual-one"), "lastmod": None},
+            {"url": "https://example.com/about", "lastmod": None},
+            {"url": MisleadingUrl("https://example.com/actual-two"), "lastmod": None},
+        ]
+
+        assert sitemap_strategy._infer_pattern("https://example.com/", all_urls) is None

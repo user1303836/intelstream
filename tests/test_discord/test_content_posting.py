@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
@@ -157,6 +158,51 @@ class TestContentPostingCogUnload:
 
         deps["summarizer"].close.assert_called_once()
 
+    async def test_cog_unload_allows_missing_pipeline_and_summarizer(self, mock_bot):
+        cog = ContentPosting(mock_bot)
+
+        await cog.cog_unload()
+
+        assert cog._initialized is False
+
+    async def test_cog_unload_handles_pending_loop_task(self, mock_bot):
+        cog = ContentPosting(mock_bot)
+        pending_task = asyncio.create_task(asyncio.sleep(60))
+
+        async def fake_wait(tasks, **kwargs):
+            assert tasks == [pending_task]
+            assert kwargs["timeout"] == 5.0
+            pending_task.cancel()
+            return set(), {pending_task}
+
+        with (
+            patch.object(cog.content_loop, "get_task", return_value=pending_task),
+            patch("intelstream.discord.cogs.content_posting.asyncio.wait", side_effect=fake_wait),
+        ):
+            await cog.cog_unload()
+
+        assert pending_task.cancelled()
+
+    async def test_cog_unload_logs_pipeline_close_timeout(self, mock_bot):
+        cog = ContentPosting(mock_bot)
+        pipeline = MagicMock()
+        pipeline.close = AsyncMock(side_effect=TimeoutError)
+        cog._pipeline = pipeline
+
+        await cog.cog_unload()
+
+        pipeline.close.assert_awaited_once()
+
+    async def test_cog_unload_logs_pipeline_close_error(self, mock_bot):
+        cog = ContentPosting(mock_bot)
+        pipeline = MagicMock()
+        pipeline.close = AsyncMock(side_effect=RuntimeError("close failed"))
+        cog._pipeline = pipeline
+
+        await cog.cog_unload()
+
+        pipeline.close.assert_awaited_once()
+
 
 class TestContentLoop:
     async def test_content_loop_skips_when_not_initialized(self, _patch_cog_deps, mock_bot):
@@ -234,6 +280,13 @@ class TestContentLoop:
         await cog.content_loop()
 
         assert deps["poster"].post_unposted_items.call_count == 2
+
+    async def test_before_content_loop_waits_for_bot_ready(self, mock_bot):
+        cog = ContentPosting(mock_bot)
+
+        await cog.before_content_loop()
+
+        mock_bot.wait_until_ready.assert_awaited_once()
 
 
 class TestContentLoopErrorHandler:
@@ -367,3 +420,26 @@ class TestContentLoopBackoff:
         await cog.content_loop()
 
         mock_bot.notify_owner.assert_called_once()
+
+    async def test_apply_backoff_ignores_failures_beyond_circuit_breaker(
+        self, _patch_cog_deps, mock_bot
+    ):
+        cog = ContentPosting(mock_bot)
+        await cog.cog_load()
+        cog._consecutive_failures = ContentPosting.MAX_CONSECUTIVE_FAILURES + 1
+        cog.content_loop.change_interval(minutes=123)
+
+        cog._apply_backoff()
+
+        assert cog.content_loop.minutes == 123
+
+
+async def test_setup_adds_content_posting_cog(mock_bot):
+    from intelstream.discord.cogs.content_posting import setup
+
+    mock_bot.add_cog = AsyncMock()
+
+    await setup(mock_bot)
+
+    mock_bot.add_cog.assert_awaited_once()
+    assert isinstance(mock_bot.add_cog.await_args.args[0], ContentPosting)

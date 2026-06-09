@@ -1,3 +1,5 @@
+import socket
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
@@ -16,6 +18,40 @@ def mock_settings_env(monkeypatch):
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def deterministic_public_dns(monkeypatch):
+    def fake_getaddrinfo(
+        host,
+        port,
+        family=socket.AF_UNSPEC,
+        type=0,
+        proto=0,
+        flags=0,
+    ):
+        _ = (host, flags)
+        if family == socket.AF_INET6:
+            return [
+                (
+                    socket.AF_INET6,
+                    type or socket.SOCK_STREAM,
+                    proto or 6,
+                    "",
+                    ("2606:2800:220:1:248:1893:25c8:1946", port or 0, 0, 0),
+                )
+            ]
+        return [
+            (
+                socket.AF_INET,
+                type or socket.SOCK_STREAM,
+                proto or 6,
+                "",
+                ("93.184.216.34", port or 0),
+            )
+        ]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
 
 
 @pytest.fixture
