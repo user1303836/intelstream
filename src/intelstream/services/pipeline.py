@@ -46,6 +46,7 @@ class ContentPipeline:
         self._summarizer = summarizer
         self._get_search_services = get_search_services
         self._http_client: httpx.AsyncClient | None = None
+        self._owned_anthropic_clients: list[anthropic.AsyncAnthropic] = []
         self._adapters: dict[SourceType, BaseAdapter] = {}
         self._article_chunker = ArticleChunker(
             chunk_size_chars=getattr(self._settings, "article_chunk_size_chars", 1200),
@@ -60,6 +61,9 @@ class ContentPipeline:
     async def close(self) -> None:
         if self._http_client:
             await self._http_client.aclose()
+        for client in self._owned_anthropic_clients:
+            await client.close()
+        self._owned_anthropic_clients.clear()
         logger.debug("Content pipeline closed")
 
     def _create_adapters(self) -> dict[SourceType, BaseAdapter]:
@@ -83,6 +87,7 @@ class ContentPipeline:
 
         if self._settings.anthropic_api_key and self._settings.anthropic_api_key.strip():
             anthropic_client = anthropic.AsyncAnthropic(api_key=self._settings.anthropic_api_key)
+            self._owned_anthropic_clients.append(anthropic_client)
             adapters[SourceType.BLOG] = SmartBlogAdapter(
                 anthropic_client=anthropic_client,
                 repository=self._repository,
@@ -318,9 +323,12 @@ class ContentPipeline:
         logger.info("Summarizing pending items", count=len(items))
         summarize_start = time.monotonic()
         summarized_count = 0
+        sources_by_id = await self._repository.get_sources_by_ids(
+            {item.source_id for item in items}
+        )
 
         for item in items:
-            source = await self._repository.get_source_by_id(item.source_id)
+            source = sources_by_id.get(item.source_id)
             source_name = source.name if source else "unknown"
             source_type = source.type.value if source else "unknown"
 

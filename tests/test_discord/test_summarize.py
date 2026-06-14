@@ -1,8 +1,11 @@
+import asyncio
+import time
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
+import httpx
 import pytest
 from youtube_transcript_api._errors import (
     NoTranscriptFound,
@@ -335,6 +338,28 @@ class TestFetchYoutubeTranscript:
         assert result == "Manual transcript"
         transcript_list.find_manually_created_transcript.assert_called_once_with(["en"])
 
+    async def test_fetch_transcript_does_not_block_event_loop_with_slow_api(self, summarize_cog):
+        transcript = MagicMock()
+        transcript.fetch.return_value = [SimpleNamespace(text="Slow transcript")]
+        transcript_list = MagicMock()
+        transcript_list.find_manually_created_transcript.return_value = transcript
+
+        class SlowApi:
+            def list(self, _video_id):
+                time.sleep(0.2)
+                return transcript_list
+
+        with patch(
+            "intelstream.discord.cogs.summarize.YouTubeTranscriptApi", return_value=SlowApi()
+        ):
+            start = time.monotonic()
+            task = asyncio.create_task(summarize_cog._fetch_youtube_transcript("video-id"))
+            await asyncio.sleep(0)
+            elapsed = time.monotonic() - start
+
+            assert elapsed < 0.15
+            assert await task == "Slow transcript"
+
     async def test_fetch_transcript_falls_back_to_generated_transcript(self, summarize_cog):
         generated = MagicMock()
         generated.fetch.return_value = [SimpleNamespace(text="Generated transcript")]
@@ -436,6 +461,20 @@ class TestFetchYoutubeTranscript:
         api.list.side_effect = RuntimeError("boom")
 
         with patch("intelstream.discord.cogs.summarize.YouTubeTranscriptApi", return_value=api):
+            assert await summarize_cog._fetch_youtube_transcript("video-id") is None
+
+    async def test_fetch_transcript_returns_none_on_timeout(self, summarize_cog):
+        class SlowApi:
+            def list(self, _video_id):
+                time.sleep(0.05)
+                return MagicMock()
+
+        with (
+            patch(
+                "intelstream.discord.cogs.summarize.YouTubeTranscriptApi", return_value=SlowApi()
+            ),
+            patch("intelstream.discord.cogs.summarize.YOUTUBE_TRANSCRIPT_TIMEOUT_SECONDS", 0.01),
+        ):
             assert await summarize_cog._fetch_youtube_transcript("video-id") is None
 
 
@@ -640,6 +679,87 @@ class TestSummarizeCommand:
         embed = call_kwargs["embed"]
         assert embed.title == "Test Article"
         assert embed.description == "This is a test summary."
+
+    async def test_web_summarization_follows_safe_redirect_without_client_auto_follow(
+        self, summarize_cog, mock_interaction
+    ):
+        final_html = """
+        <html>
+        <head><title>Final Article</title></head>
+        <body><article><p>Final public content for summarization with enough detail to pass the content length checks and prove the redirected response body is summarized.</p></article></body>
+        </html>
+        """
+        requested_urls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requested_urls.append(str(request.url))
+            if str(request.url) == "https://example.com/article":
+                return httpx.Response(
+                    302,
+                    headers={"location": "https://example.com/final"},
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                text=final_html,
+                request=request,
+            )
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            follow_redirects=True,
+        ) as client:
+            summarize_cog._http_client = client
+            await summarize_cog.summarize.callback(
+                summarize_cog,
+                mock_interaction,
+                "https://example.com/article",
+            )
+
+        assert requested_urls == [
+            "https://example.com/article",
+            "https://example.com/final",
+        ]
+        summarize_cog._summarizer.summarize.assert_awaited_once()
+        assert (
+            "Final public content"
+            in summarize_cog._summarizer.summarize.await_args.kwargs["content"]
+        )
+        embed = mock_interaction.followup.send.call_args.kwargs["embed"]
+        assert embed.title == "Final Article"
+
+    async def test_web_summarization_rejects_private_redirect_before_fetch(
+        self, summarize_cog, mock_interaction
+    ):
+        requested_urls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requested_urls.append(str(request.url))
+            if str(request.url) != "https://evil.example/redirect":
+                raise AssertionError(f"unexpected fetch: {request.url}")
+            return httpx.Response(
+                302,
+                headers={"location": "http://127.0.0.1/admin"},
+                request=request,
+            )
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            follow_redirects=True,
+        ) as client:
+            summarize_cog._http_client = client
+            await summarize_cog.summarize.callback(
+                summarize_cog,
+                mock_interaction,
+                "https://evil.example/redirect",
+            )
+
+        assert requested_urls == ["https://evil.example/redirect"]
+        summarize_cog._summarizer.summarize.assert_not_awaited()
+        call_args = mock_interaction.followup.send.call_args
+        assert "Redirect blocked by SSRF" in call_args.args[0]
+        assert call_args.kwargs["ephemeral"] is True
 
     async def test_defers_response(self, summarize_cog, mock_interaction):
         mock_content = WebContent(
