@@ -612,16 +612,17 @@ class Repository:
     async def cleanup_extraction_cache(self, max_age_days: int = 7) -> int:
         cutoff = datetime.now(UTC) - timedelta(days=max_age_days)
         async with self.session() as session:
+            expired = ExtractionCache.cached_at < cutoff
             result = await session.execute(
-                select(ExtractionCache).where(ExtractionCache.cached_at < cutoff)
+                select(func.count()).select_from(ExtractionCache).where(expired)
             )
-            entries = list(result.scalars().all())
-            for entry in entries:
-                await session.delete(entry)
+            removed = int(result.scalar_one())
+            if removed:
+                await session.execute(delete(ExtractionCache).where(expired))
             await session.commit()
-            if entries:
-                logger.info("Cleaned up extraction cache", removed=len(entries))
-            return len(entries)
+            if removed:
+                logger.info("Cleaned up extraction cache", removed=removed)
+            return removed
 
     async def get_known_urls_for_source(self, source_id: str) -> set[str]:
         async with self.session() as session:

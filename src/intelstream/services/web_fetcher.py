@@ -54,7 +54,7 @@ class WebFetcher:
 
             current_url = url
             for _ in range(MAX_REDIRECTS):
-                response = await client.get(current_url)
+                response = await client.get(current_url, follow_redirects=False)
 
                 if response.is_redirect:
                     redirect_url = str(response.next_request.url) if response.next_request else None

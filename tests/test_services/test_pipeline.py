@@ -169,6 +169,47 @@ class TestContentPipelineInitialization:
 
         assert http_client.is_closed
 
+    async def test_close_closes_owned_anthropic_client_once(
+        self,
+        pipeline: ContentPipeline,
+    ):
+        anthropic_client = MagicMock()
+        anthropic_client.close = AsyncMock()
+
+        with patch(
+            "intelstream.services.pipeline.anthropic.AsyncAnthropic",
+            return_value=anthropic_client,
+        ):
+            await pipeline.initialize()
+
+        await pipeline.close()
+        await pipeline.close()
+
+        anthropic_client.close.assert_awaited_once()
+
+    async def test_close_does_not_create_anthropic_client_when_absent(
+        self,
+        mock_repository,
+        mock_summarizer,
+    ):
+        settings = MagicMock(spec=Settings)
+        settings.youtube_api_key = "test-key"
+        settings.anthropic_api_key = None
+        settings.twitter_bearer_token = None
+        settings.http_timeout_seconds = 30.0
+        settings.summarization_delay_seconds = 0.5
+        settings.fetch_delay_seconds = 0.0
+
+        pipeline = ContentPipeline(
+            settings=settings, repository=mock_repository, summarizer=mock_summarizer
+        )
+
+        with patch("intelstream.services.pipeline.anthropic.AsyncAnthropic") as cls:
+            await pipeline.initialize()
+            await pipeline.close()
+
+        cls.assert_not_called()
+
 
 class TestCreateAdaptersWithoutAnthropicKey:
     async def test_no_blog_adapter_without_anthropic_key(self, mock_repository, mock_summarizer):
@@ -998,7 +1039,7 @@ class TestSummarizePending:
         await pipeline.initialize()
 
         mock_repository.get_unsummarized_content_items.return_value = [sample_content_item]
-        mock_repository.get_source_by_id.return_value = sample_source
+        mock_repository.get_sources_by_ids.return_value = {sample_source.id: sample_source}
         mock_repository.has_source_posted_content.return_value = True
         mock_summarizer.summarize.return_value = "This is the summary."
 
@@ -1041,12 +1082,13 @@ class TestSummarizePending:
         item_without_content.raw_content = None
 
         skip_source = MagicMock(spec=Source)
+        skip_source.id = "source-456"
         skip_source.name = "Skip Source"
         skip_source.type = SourceType.BLOG
         skip_source.skip_summary = True
 
         mock_repository.get_unsummarized_content_items.return_value = [item_without_content]
-        mock_repository.get_source_by_id.return_value = skip_source
+        mock_repository.get_sources_by_ids.return_value = {skip_source.id: skip_source}
         mock_repository.has_source_posted_content.return_value = True
 
         result = await pipeline.summarize_pending()
@@ -1072,12 +1114,13 @@ class TestSummarizePending:
         item_without_content.raw_content = None
 
         source = MagicMock(spec=Source)
+        source.id = "source-789"
         source.name = "Blog Source"
         source.type = SourceType.BLOG
         source.skip_summary = False
 
         mock_repository.get_unsummarized_content_items.return_value = [item_without_content]
-        mock_repository.get_source_by_id.return_value = source
+        mock_repository.get_sources_by_ids.return_value = {source.id: source}
         mock_repository.has_source_posted_content.return_value = True
 
         result = await pipeline.summarize_pending()
@@ -1099,7 +1142,7 @@ class TestSummarizePending:
         await pipeline.initialize()
 
         mock_repository.get_unsummarized_content_items.return_value = [sample_content_item]
-        mock_repository.get_source_by_id.return_value = sample_source
+        mock_repository.get_sources_by_ids.return_value = {sample_source.id: sample_source}
         mock_repository.has_source_posted_content.return_value = True
         mock_summarizer.summarize.side_effect = SummarizationError("API error")
 
@@ -1121,7 +1164,7 @@ class TestSummarizePending:
         await pipeline.initialize()
 
         mock_repository.get_unsummarized_content_items.return_value = [sample_content_item]
-        mock_repository.get_source_by_id.return_value = sample_source
+        mock_repository.get_sources_by_ids.return_value = {sample_source.id: sample_source}
         mock_repository.has_source_posted_content.return_value = True
         mock_summarizer.summarize.side_effect = RuntimeError("Unexpected")
 
@@ -1141,7 +1184,7 @@ class TestSummarizePending:
         await pipeline.initialize()
 
         mock_repository.get_unsummarized_content_items.return_value = [sample_content_item]
-        mock_repository.get_source_by_id.return_value = None
+        mock_repository.get_sources_by_ids.return_value = {}
         mock_repository.has_source_posted_content.return_value = True
         mock_summarizer.summarize.return_value = "Summary"
 
@@ -1186,6 +1229,7 @@ class TestSummarizePending:
         mock_repository.get_most_recent_item_for_source.return_value = new_item
         mock_repository.mark_items_as_backfilled.return_value = 1
         mock_repository.get_source_by_id.return_value = sample_source
+        mock_repository.get_sources_by_ids.return_value = {sample_source.id: sample_source}
         mock_summarizer.summarize.return_value = "Summary"
 
         result = await pipeline.summarize_pending()
@@ -1196,6 +1240,79 @@ class TestSummarizePending:
         )
 
         assert result == 1
+
+        await pipeline.close()
+
+    async def test_summarize_pending_batches_source_lookup_and_preserves_item_order(
+        self,
+        pipeline: ContentPipeline,
+        mock_repository: AsyncMock,
+        mock_summarizer: AsyncMock,
+    ):
+        await pipeline.initialize()
+        pipeline._settings.summarization_delay_seconds = 0.0
+
+        source_a = MagicMock(spec=Source)
+        source_a.id = "source-a"
+        source_a.name = "Source A"
+        source_a.type = SourceType.SUBSTACK
+        source_a.skip_summary = False
+
+        source_b = MagicMock(spec=Source)
+        source_b.id = "source-b"
+        source_b.name = "Source B"
+        source_b.type = SourceType.BLOG
+        source_b.skip_summary = False
+
+        item_1 = MagicMock(spec=ContentItem)
+        item_1.id = "item-1"
+        item_1.source_id = source_a.id
+        item_1.title = "First"
+        item_1.author = "Author 1"
+        item_1.raw_content = "First raw content"
+
+        item_2 = MagicMock(spec=ContentItem)
+        item_2.id = "item-2"
+        item_2.source_id = source_a.id
+        item_2.title = "Second"
+        item_2.author = "Author 2"
+        item_2.raw_content = "Second raw content"
+
+        item_3 = MagicMock(spec=ContentItem)
+        item_3.id = "item-3"
+        item_3.source_id = source_b.id
+        item_3.title = "Third"
+        item_3.author = "Author 3"
+        item_3.raw_content = "Third raw content"
+
+        mock_repository.get_unsummarized_content_items.return_value = [item_1, item_2, item_3]
+        mock_repository.has_source_posted_content.return_value = True
+        mock_repository.get_sources_by_ids.return_value = {
+            source_a.id: source_a,
+            source_b.id: source_b,
+        }
+        mock_summarizer.summarize.side_effect = ["Summary 1", "Summary 2", "Summary 3"]
+
+        result = await pipeline.summarize_pending()
+
+        assert result == 3
+        mock_repository.get_sources_by_ids.assert_awaited_once_with({source_a.id, source_b.id})
+        mock_repository.get_source_by_id.assert_not_awaited()
+        assert [call.kwargs["title"] for call in mock_summarizer.summarize.await_args_list] == [
+            "First",
+            "Second",
+            "Third",
+        ]
+        assert [
+            call.kwargs["source_type"] for call in mock_summarizer.summarize.await_args_list
+        ] == ["substack", "substack", "blog"]
+        assert [
+            call.args for call in mock_repository.update_content_item_summary.await_args_list
+        ] == [
+            ("item-1", "Summary 1"),
+            ("item-2", "Summary 2"),
+            ("item-3", "Summary 3"),
+        ]
 
         await pipeline.close()
 
@@ -1221,7 +1338,7 @@ class TestEmbedItem:
         )
 
         mock_repository.get_unsummarized_content_items.return_value = [sample_content_item]
-        mock_repository.get_source_by_id.return_value = sample_source
+        mock_repository.get_sources_by_ids.return_value = {sample_source.id: sample_source}
         mock_repository.has_source_posted_content.return_value = True
         mock_summarizer.summarize.return_value = "This is the summary."
 
@@ -1254,7 +1371,7 @@ class TestEmbedItem:
         )
 
         mock_repository.get_unsummarized_content_items.return_value = [sample_content_item]
-        mock_repository.get_source_by_id.return_value = sample_source
+        mock_repository.get_sources_by_ids.return_value = {sample_source.id: sample_source}
         mock_repository.has_source_posted_content.return_value = True
         mock_summarizer.summarize.return_value = "Summary"
 
@@ -1272,7 +1389,7 @@ class TestEmbedItem:
         sample_source,
     ):
         mock_repository.get_unsummarized_content_items.return_value = [sample_content_item]
-        mock_repository.get_source_by_id.return_value = sample_source
+        mock_repository.get_sources_by_ids.return_value = {sample_source.id: sample_source}
         mock_repository.has_source_posted_content.return_value = True
         mock_summarizer.summarize.return_value = "Summary"
 

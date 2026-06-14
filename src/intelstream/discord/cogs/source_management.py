@@ -183,13 +183,21 @@ class SourceManagement(commands.Cog):
     def __init__(self, bot: "IntelStreamBot") -> None:
         self.bot = bot
         self._anthropic_client: anthropic.AsyncAnthropic | None = None
+        self._owns_anthropic_client = False
 
     def _get_anthropic_client(self) -> anthropic.AsyncAnthropic:
         if self._anthropic_client is None:
             self._anthropic_client = anthropic.AsyncAnthropic(
                 api_key=self.bot.settings.anthropic_api_key
             )
+            self._owns_anthropic_client = True
         return self._anthropic_client
+
+    async def cog_unload(self) -> None:
+        if self._anthropic_client is not None and self._owns_anthropic_client:
+            await self._anthropic_client.close()
+            self._anthropic_client = None
+            self._owns_anthropic_client = False
 
     async def _source_name_autocomplete(
         self,

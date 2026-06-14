@@ -1576,6 +1576,36 @@ class TestSourceManagementLifecycle:
         assert first is second
         cls.assert_called_once_with(api_key="anthropic-key")
 
+    async def test_cog_unload_closes_owned_anthropic_client_once(self, source_management, mock_bot):
+        mock_bot.settings.anthropic_api_key = "anthropic-key"
+        client = MagicMock()
+        client.close = AsyncMock()
+
+        with patch(
+            "intelstream.discord.cogs.source_management.anthropic.AsyncAnthropic",
+            return_value=client,
+        ):
+            source_management._get_anthropic_client()
+
+        await source_management.cog_unload()
+        await source_management.cog_unload()
+
+        client.close.assert_awaited_once()
+
+    async def test_cog_unload_does_not_close_external_anthropic_client(self, source_management):
+        client = MagicMock()
+        client.close = AsyncMock()
+        source_management._anthropic_client = client
+
+        await source_management.cog_unload()
+
+        client.close.assert_not_called()
+
+    async def test_cog_unload_noops_without_anthropic_client(self, source_management):
+        await source_management.cog_unload()
+
+        assert source_management._anthropic_client is None
+
     async def test_setup_adds_cog(self, mock_bot):
         from intelstream.discord.cogs.source_management import setup
 

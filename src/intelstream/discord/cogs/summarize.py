@@ -49,6 +49,7 @@ SOURCE_TYPE_ICONS = {
 
 MAX_EMBED_DESCRIPTION = 4096
 MAX_EMBED_TITLE = 256
+YOUTUBE_TRANSCRIPT_TIMEOUT_SECONDS = 30.0
 
 
 class Summarize(commands.Cog):
@@ -201,6 +202,21 @@ class Summarize(commands.Cog):
 
     async def _fetch_youtube_transcript(self, video_id: str) -> str | None:
         try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self._fetch_youtube_transcript_sync, video_id),
+                timeout=YOUTUBE_TRANSCRIPT_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning("Transcript fetch timed out", video_id=video_id)
+            return None
+        except (TranscriptsDisabled, VideoUnavailable):
+            return None
+        except Exception as e:
+            logger.warning("Failed to fetch transcript", video_id=video_id, error=str(e))
+            return None
+
+    def _fetch_youtube_transcript_sync(self, video_id: str) -> str | None:
+        try:
             ytt_api = YouTubeTranscriptApi()
             transcript_list = ytt_api.list(video_id)
 
@@ -222,9 +238,6 @@ class Summarize(commands.Cog):
             return " ".join(str(entry.text) for entry in entries)
 
         except (TranscriptsDisabled, VideoUnavailable):
-            return None
-        except Exception as e:
-            logger.warning("Failed to fetch transcript", video_id=video_id, error=str(e))
             return None
 
     async def _fetch_substack_content(self, url: str) -> WebContent:
