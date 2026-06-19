@@ -300,8 +300,8 @@ class TestProviderAwareModelDefaults:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
 
         settings = Settings(_env_file=None)
-        assert settings.summary_model == "gpt-4o-mini"
-        assert settings.summary_model_interactive == "gpt-4o"
+        assert settings.summary_model == "gpt-5.4-mini"
+        assert settings.summary_model_interactive == "gpt-5.4"
 
     def test_gemini_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._base_env(monkeypatch)
@@ -309,8 +309,8 @@ class TestProviderAwareModelDefaults:
         monkeypatch.setenv("GEMINI_API_KEY", "gemini-test")
 
         settings = Settings(_env_file=None)
-        assert settings.summary_model == "gemini-2.0-flash"
-        assert settings.summary_model_interactive == "gemini-2.5-pro-preview-06-05"
+        assert settings.summary_model == "gemini-3.5-flash"
+        assert settings.summary_model_interactive == "gemini-3.1-pro-preview"
 
     def test_kimi_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._base_env(monkeypatch)
@@ -342,7 +342,7 @@ class TestProviderAwareModelDefaults:
 
         settings = Settings(_env_file=None)
         assert settings.summary_model == "my-custom-model"
-        assert settings.summary_model_interactive == "gpt-4o"
+        assert settings.summary_model_interactive == "gpt-5.4"
 
     def test_unknown_provider_default_lookup_leaves_models_unchanged(
         self, monkeypatch: pytest.MonkeyPatch

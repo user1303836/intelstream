@@ -313,8 +313,8 @@ class Settings(BaseSettings):
 
     _PROVIDER_MODEL_DEFAULTS: dict[str, tuple[str, str]] = {
         "anthropic": ("claude-haiku-4-5-20251001", "claude-sonnet-4-6"),
-        "openai": ("gpt-4o-mini", "gpt-4o"),
-        "gemini": ("gemini-2.0-flash", "gemini-2.5-pro-preview-06-05"),
+        "openai": ("gpt-5.4-mini", "gpt-5.4"),
+        "gemini": ("gemini-3.5-flash", "gemini-3.1-pro-preview"),
         "kimi": ("moonshot-v1-8k", "moonshot-v1-32k"),
     }
 

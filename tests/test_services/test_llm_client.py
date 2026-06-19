@@ -16,6 +16,10 @@ from intelstream.services.llm_client import (
     create_llm_client,
 )
 
+OPENAI_TEST_MODEL = "openai-test-model"
+GEMINI_TEST_MODEL = "gemini-test-model"
+KIMI_TEST_MODEL = "moonshot-v1-8k"
+
 
 class TestBaseLLMClient:
     @pytest.mark.asyncio
@@ -45,21 +49,29 @@ class TestCreateLLMClient:
 
     def test_openai_provider_enum_creates_openai_client(self) -> None:
         with patch("openai.AsyncOpenAI") as openai_cls:
-            client = create_llm_client(LLMProvider.OPENAI, api_key="key", model="gpt-4o")
+            client = create_llm_client(
+                LLMProvider.OPENAI,
+                api_key="key",
+                model=OPENAI_TEST_MODEL,
+            )
 
         assert isinstance(client, OpenAILLMClient)
         openai_cls.assert_called_once_with(api_key="key")
 
     def test_gemini_provider_enum_creates_gemini_client(self) -> None:
         with patch("google.genai.Client") as gemini_cls:
-            client = create_llm_client(LLMProvider.GEMINI, api_key="key", model="gemini-pro")
+            client = create_llm_client(
+                LLMProvider.GEMINI,
+                api_key="key",
+                model=GEMINI_TEST_MODEL,
+            )
 
         assert isinstance(client, GeminiLLMClient)
         gemini_cls.assert_called_once_with(api_key="key")
 
     def test_kimi_uses_moonshot_openai_base_url(self) -> None:
         with patch("openai.AsyncOpenAI") as openai_cls:
-            client = create_llm_client(LLMProvider.KIMI, api_key="key", model="moonshot")
+            client = create_llm_client(LLMProvider.KIMI, api_key="key", model=KIMI_TEST_MODEL)
 
         assert isinstance(client, OpenAILLMClient)
         openai_cls.assert_called_once_with(
@@ -176,7 +188,7 @@ class TestOpenAILLMClientEmptyChoices:
     @pytest.mark.asyncio
     async def test_empty_choices_raises_llm_error(self) -> None:
         with patch("openai.AsyncOpenAI"):
-            client = OpenAILLMClient(api_key="test-key", model="gpt-4")
+            client = OpenAILLMClient(api_key="test-key", model=OPENAI_TEST_MODEL)
 
         mock_response = MagicMock()
         mock_response.choices = []
@@ -188,7 +200,7 @@ class TestOpenAILLMClientEmptyChoices:
     @pytest.mark.asyncio
     async def test_none_content_raises_llm_error(self) -> None:
         with patch("openai.AsyncOpenAI"):
-            client = OpenAILLMClient(api_key="test-key", model="gpt-4")
+            client = OpenAILLMClient(api_key="test-key", model=OPENAI_TEST_MODEL)
 
         mock_choice = MagicMock()
         mock_choice.message.content = None
@@ -202,7 +214,7 @@ class TestOpenAILLMClientEmptyChoices:
     @pytest.mark.asyncio
     async def test_valid_response_returns_content(self) -> None:
         with patch("openai.AsyncOpenAI"):
-            client = OpenAILLMClient(api_key="test-key", model="gpt-4")
+            client = OpenAILLMClient(api_key="test-key", model=OPENAI_TEST_MODEL)
 
         mock_choice = MagicMock()
         mock_choice.message.content = "  Hello world  "
@@ -216,7 +228,7 @@ class TestOpenAILLMClientEmptyChoices:
     @pytest.mark.asyncio
     async def test_request_includes_system_and_user_messages(self) -> None:
         with patch("openai.AsyncOpenAI"):
-            client = OpenAILLMClient(api_key="test-key", model="gpt-4")
+            client = OpenAILLMClient(api_key="test-key", model=OPENAI_TEST_MODEL)
 
         mock_choice = MagicMock()
         mock_choice.message.content = "ok"
@@ -227,7 +239,7 @@ class TestOpenAILLMClientEmptyChoices:
         await client.complete("system prompt", "user prompt", 321)
 
         client._client.chat.completions.create.assert_awaited_once_with(
-            model="gpt-4",
+            model=OPENAI_TEST_MODEL,
             max_tokens=321,
             messages=[
                 {"role": "system", "content": "system prompt"},
@@ -241,7 +253,7 @@ class TestOpenAILLMClientEmptyChoices:
             pass
 
         with patch("openai.AsyncOpenAI"):
-            client = OpenAILLMClient(api_key="test-key", model="gpt-4")
+            client = OpenAILLMClient(api_key="test-key", model=OPENAI_TEST_MODEL)
 
         client._client.chat.completions.create = AsyncMock(
             side_effect=FakeRateLimitError("limited")
@@ -259,7 +271,7 @@ class TestOpenAILLMClientEmptyChoices:
             pass
 
         with patch("openai.AsyncOpenAI"):
-            client = OpenAILLMClient(api_key="test-key", model="gpt-4")
+            client = OpenAILLMClient(api_key="test-key", model=OPENAI_TEST_MODEL)
 
         client._client.chat.completions.create = AsyncMock(side_effect=FakeAPIError("bad"))
 
@@ -272,7 +284,7 @@ class TestOpenAILLMClientEmptyChoices:
     @pytest.mark.asyncio
     async def test_close_closes_underlying_client(self) -> None:
         with patch("openai.AsyncOpenAI"):
-            client = OpenAILLMClient(api_key="test-key", model="gpt-4")
+            client = OpenAILLMClient(api_key="test-key", model=OPENAI_TEST_MODEL)
 
         client._client.close = AsyncMock()
 
@@ -285,7 +297,7 @@ class TestGeminiLLMClientSafetyFilter:
     @pytest.mark.asyncio
     async def test_safety_blocked_raises_llm_error(self) -> None:
         with patch("google.genai.Client"):
-            client = GeminiLLMClient(api_key="test-key", model="gemini-pro")
+            client = GeminiLLMClient(api_key="test-key", model=GEMINI_TEST_MODEL)
 
         mock_response = MagicMock()
         type(mock_response).text = PropertyMock(
@@ -299,7 +311,7 @@ class TestGeminiLLMClientSafetyFilter:
     @pytest.mark.asyncio
     async def test_empty_text_raises_llm_error(self) -> None:
         with patch("google.genai.Client"):
-            client = GeminiLLMClient(api_key="test-key", model="gemini-pro")
+            client = GeminiLLMClient(api_key="test-key", model=GEMINI_TEST_MODEL)
 
         mock_response = MagicMock()
         type(mock_response).text = PropertyMock(return_value="")
@@ -311,7 +323,7 @@ class TestGeminiLLMClientSafetyFilter:
     @pytest.mark.asyncio
     async def test_valid_response_returns_text(self) -> None:
         with patch("google.genai.Client"):
-            client = GeminiLLMClient(api_key="test-key", model="gemini-pro")
+            client = GeminiLLMClient(api_key="test-key", model=GEMINI_TEST_MODEL)
 
         mock_response = MagicMock()
         type(mock_response).text = PropertyMock(return_value="  Hello world  ")
@@ -323,7 +335,7 @@ class TestGeminiLLMClientSafetyFilter:
     @pytest.mark.asyncio
     async def test_request_includes_system_instruction_and_max_tokens(self) -> None:
         with patch("google.genai.Client"):
-            client = GeminiLLMClient(api_key="test-key", model="gemini-pro")
+            client = GeminiLLMClient(api_key="test-key", model=GEMINI_TEST_MODEL)
 
         mock_response = MagicMock()
         type(mock_response).text = PropertyMock(return_value="ok")
@@ -332,7 +344,7 @@ class TestGeminiLLMClientSafetyFilter:
         await client.complete("system prompt", "user prompt", 321)
 
         call_kwargs = client._client.aio.models.generate_content.await_args.kwargs
-        assert call_kwargs["model"] == "gemini-pro"
+        assert call_kwargs["model"] == GEMINI_TEST_MODEL
         assert call_kwargs["contents"] == "user prompt"
         assert call_kwargs["config"].system_instruction == "system prompt"
         assert call_kwargs["config"].max_output_tokens == 321
@@ -343,7 +355,7 @@ class TestGeminiLLMClientSafetyFilter:
             pass
 
         with patch("google.genai.Client"):
-            client = GeminiLLMClient(api_key="test-key", model="gemini-pro")
+            client = GeminiLLMClient(api_key="test-key", model=GEMINI_TEST_MODEL)
 
         client._client.aio.models.generate_content = AsyncMock(
             side_effect=ResourceExhaustedError("quota exhausted")
@@ -355,7 +367,7 @@ class TestGeminiLLMClientSafetyFilter:
     @pytest.mark.asyncio
     async def test_429_error_is_rate_limit(self) -> None:
         with patch("google.genai.Client"):
-            client = GeminiLLMClient(api_key="test-key", model="gemini-pro")
+            client = GeminiLLMClient(api_key="test-key", model=GEMINI_TEST_MODEL)
 
         client._client.aio.models.generate_content = AsyncMock(side_effect=RuntimeError("429"))
 
@@ -365,7 +377,7 @@ class TestGeminiLLMClientSafetyFilter:
     @pytest.mark.asyncio
     async def test_generic_error_is_normalized(self) -> None:
         with patch("google.genai.Client"):
-            client = GeminiLLMClient(api_key="test-key", model="gemini-pro")
+            client = GeminiLLMClient(api_key="test-key", model=GEMINI_TEST_MODEL)
 
         client._client.aio.models.generate_content = AsyncMock(
             side_effect=RuntimeError("backend down")

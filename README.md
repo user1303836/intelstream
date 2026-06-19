@@ -155,11 +155,12 @@ Do not commit `.env`. It is ignored by `.gitignore`; `.env.example` is the safe 
 | Provider | API key variable | Background model default | Interactive model default |
 | --- | --- | --- | --- |
 | Anthropic | `ANTHROPIC_API_KEY` | `claude-haiku-4-5-20251001` | `claude-sonnet-4-6` |
-| OpenAI | `OPENAI_API_KEY` | `gpt-4o-mini` | `gpt-4o` |
-| Gemini | `GEMINI_API_KEY` | `gemini-2.0-flash` | `gemini-2.5-pro-preview-06-05` |
+| OpenAI | `OPENAI_API_KEY` | `gpt-5.4-mini` | `gpt-5.4` |
+| Gemini | `GEMINI_API_KEY` | `gemini-3.5-flash` | `gemini-3.1-pro-preview` |
 | Kimi/Moonshot | `KIMI_API_KEY` | `moonshot-v1-8k` | `moonshot-v1-32k` |
 
 `SUMMARY_MODEL` and `SUMMARY_MODEL_INTERACTIVE` override these defaults. Kimi uses the OpenAI-compatible Moonshot endpoint in `llm_client.py`.
+The OpenAI defaults use `gpt-5.4-mini` for budget-aware background summaries and `gpt-5.4` for interactive work. Reserve `gpt-5.5` for premium or high-headroom workflows.
 
 Important: Blog and Page source setup uses Anthropic-specific analyzers. Set `ANTHROPIC_API_KEY` if you plan to add `Blog` or `Page` sources, even when `LLM_PROVIDER` is not `anthropic`.
 
