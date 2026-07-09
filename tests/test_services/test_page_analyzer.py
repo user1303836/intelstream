@@ -12,6 +12,18 @@ from intelstream.services.page_analyzer import (
 )
 
 
+@pytest.fixture(autouse=True)
+def adapt_legacy_http_client_mocks():
+    async def request(client, method, url, **kwargs):
+        kwargs.pop("validate_ssrf", None)
+        kwargs.pop("max_response_bytes", None)
+        kwargs.pop("max_redirects", None)
+        return await getattr(client, method.lower())(url, follow_redirects=False, **kwargs)
+
+    with patch("intelstream.services.page_analyzer.safe_request", side_effect=request):
+        yield
+
+
 @pytest.fixture
 def sample_html() -> str:
     return """
@@ -56,6 +68,29 @@ def valid_llm_response() -> dict:
 
 
 class TestPageAnalyzer:
+    async def test_close_closes_owned_anthropic_client_once(self) -> None:
+        client = MagicMock()
+        client.close = AsyncMock()
+        with patch(
+            "intelstream.services.page_analyzer.anthropic.AsyncAnthropic",
+            return_value=client,
+        ):
+            analyzer = PageAnalyzer(api_key="test-key")
+
+        await analyzer.close()
+        await analyzer.close()
+
+        client.close.assert_awaited_once_with()
+
+    async def test_close_does_not_close_shared_anthropic_client(self) -> None:
+        client = MagicMock()
+        client.close = AsyncMock()
+        analyzer = PageAnalyzer(anthropic_client=client)
+
+        await analyzer.close()
+
+        client.close.assert_not_awaited()
+
     async def test_analyze_rejects_invalid_url_format(self) -> None:
         analyzer = PageAnalyzer(api_key="test-key")
 
@@ -126,7 +161,7 @@ class TestPageAnalyzer:
         assert result == "<html></html>"
         call_kwargs = mock_http_client.get.await_args.kwargs
         assert "Mozilla/5.0" in call_kwargs["headers"]["User-Agent"]
-        assert call_kwargs["follow_redirects"] is True
+        assert call_kwargs["follow_redirects"] is False
 
     async def test_analyze_llm_returns_error(self, sample_html: str) -> None:
         mock_http_client = MagicMock(spec=httpx.AsyncClient)

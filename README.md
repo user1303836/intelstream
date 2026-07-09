@@ -316,7 +316,7 @@ The first GitHub poll initializes state without posting historical events. Later
 | `/forward pause source:#channel destination:#thread` | Administrator command default; Manage Server runtime check | Disable a rule. |
 | `/forward resume source:#channel destination:#thread` | Administrator command default; Manage Server runtime check | Enable a paused rule. |
 
-Forwarding preserves message text and up to 10 attachments, subject to Discord file-size limits and a 25 MB total attachment cap. If a message has content, embeds are not copied so Discord can generate native previews. Embed-only messages forward up to Discord's 10-embed limit.
+Forwarding preserves message text and up to 10 attachments, subject to Discord file-size limits and a 25 MB total attachment cap. Forwarded text cannot trigger user, role, or `@everyone` notifications. If a message has content, embeds are not copied so Discord can generate native previews. Embed-only messages forward up to Discord's 10-embed limit.
 
 ### Status And Other Commands
 
@@ -341,7 +341,7 @@ Remove `SuckBoobs` from `IntelStreamBot.setup_hook()` if that cog is not appropr
 | `Twitter` | `https://x.com/username` or `https://twitter.com/username` | `TWITTER_BEARER_TOKEN` | Uses X API v2, excludes retweets/replies, fetches 5 tweets per poll, includes quoted tweet text when available. |
 | `Page` | `https://example.com/articles` | `ANTHROPIC_API_KEY` | Anthropic analyzes the listing page and stores CSS selectors in the source extraction profile. |
 
-URL entry points use SSRF validation that rejects localhost, private IPs, link-local addresses, non-HTTP schemes, obfuscated IP forms, and hostnames resolving to private IPs.
+URL fetches use SSRF validation that rejects localhost, private IPs, link-local addresses, non-HTTP schemes, obfuscated IP forms, and hostnames resolving to private IPs. Redirects are followed manually and every hop is revalidated; decoded response bodies and sitemap decompression are size-limited before parsing.
 
 ## Feature Behavior
 

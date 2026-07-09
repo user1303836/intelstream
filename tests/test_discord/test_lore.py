@@ -214,7 +214,7 @@ class TestLoreCogUnload:
     async def test_cog_unload_cancels_rebuild_stops_backfill_flushes_and_closes_llm(self, lore_cog):
         lore_cog._index_rebuild_task = asyncio.create_task(asyncio.sleep(10))
         lore_cog._ingestion_service.is_running = True
-        lore_cog._ingestion_service.stop_backfill = MagicMock()
+        lore_cog._ingestion_service.stop_backfill = AsyncMock()
         lore_cog._flush_all_buffers = AsyncMock()
         lore_cog._llm_client.close = AsyncMock()
 
@@ -223,7 +223,7 @@ class TestLoreCogUnload:
 
         cancel.assert_called_once_with()
         assert lore_cog._index_rebuild_task.cancelled()
-        lore_cog._ingestion_service.stop_backfill.assert_called_once_with()
+        lore_cog._ingestion_service.stop_backfill.assert_awaited_once_with()
         lore_cog._flush_all_buffers.assert_awaited_once()
         lore_cog._llm_client.close.assert_awaited_once()
 
@@ -605,6 +605,23 @@ class TestFlushBuffers:
         await lore_cog._flush_buffer("111:222")
 
         lore_cog._ingestion_service.store_chunks.assert_awaited_once()
+
+    async def test_flush_buffer_restores_messages_when_storage_fails(self, lore_cog):
+        raw = make_raw_message(1)
+        newer = make_raw_message(2)
+        lore_cog._message_buffers["111:222"] = [raw]
+        lore_cog._chunker.chunk_messages.return_value = [MagicMock()]
+
+        async def fail_after_new_message(_chunks):
+            lore_cog._message_buffers["111:222"] = [newer]
+            raise RuntimeError("vector store unavailable")
+
+        lore_cog._ingestion_service.store_chunks = AsyncMock(side_effect=fail_after_new_message)
+
+        with pytest.raises(RuntimeError, match="vector store unavailable"):
+            await lore_cog._flush_buffer("111:222")
+
+        assert lore_cog._message_buffers["111:222"] == [raw, newer]
 
     async def test_flush_buffer_skips_store_without_chunks_or_ingestion_service(self, lore_cog):
         lore_cog._message_buffers["111:222"] = [make_raw_message(1)]

@@ -23,6 +23,7 @@ from intelstream.database.repository import Repository
 from intelstream.database.vector_store import ArticleChunkVector
 from intelstream.services.article_search import ArticleChunker, build_article_chunk_id
 from intelstream.services.summarizer import SummarizationError, SummarizationService
+from intelstream.utils.safe_http import SafeHTTPError
 
 if TYPE_CHECKING:
     from intelstream.database.vector_store import VectorStore
@@ -188,6 +189,15 @@ class ContentPipeline:
                     source_name=source.name,
                     source_type=source.type.value,
                     error=type(e).__name__,
+                )
+                await self._repository.increment_failure_count(source.id)
+                sources_failed += 1
+            except SafeHTTPError as e:
+                logger.warning(
+                    "Unsafe source response blocked",
+                    source_name=source.name,
+                    source_type=source.type.value,
+                    error=str(e),
                 )
                 await self._repository.increment_failure_count(source.id)
                 sources_failed += 1

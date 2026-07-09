@@ -161,7 +161,7 @@ class TestContentPosterFormatMessage:
             source_name="Very long source name " * 6,
         )
 
-        assert TRUNCATION_NOTICE.strip() in message
+        assert len(message) <= 80
         assert "RSS" in message
 
     def test_format_message_adds_notice_when_second_pass_truncates(self, sample_content_item):
@@ -200,6 +200,9 @@ class TestContentPosterPostContent:
         call_kwargs = mock_channel.send.call_args.kwargs
         assert "content" in call_kwargs
         assert isinstance(call_kwargs["content"], str)
+        assert call_kwargs["allowed_mentions"].everyone is False
+        assert call_kwargs["allowed_mentions"].users is False
+        assert call_kwargs["allowed_mentions"].roles is False
         assert result == mock_message
 
     async def test_post_content_message_contains_item_info(
@@ -364,6 +367,51 @@ class TestContentPosterPostUnpostedItems:
                 call(content_id=sample_content_item.id, discord_message_id="101"),
                 call(content_id=second_item.id, discord_message_id="202"),
             ]
+        )
+
+    async def test_scans_past_unpostable_first_page(
+        self, content_poster, mock_bot, sample_content_item
+    ):
+        blocked_items = []
+        for index in range(10):
+            item = MagicMock(spec=ContentItem)
+            item.id = f"blocked-{index}"
+            item.source_id = "blocked-source"
+            item.published_at = datetime(2024, 1, index + 1, tzinfo=UTC)
+            blocked_items.append(item)
+
+        blocked_source = MagicMock()
+        blocked_source.guild_id = "999"
+        eligible_source = MagicMock()
+        eligible_source.guild_id = "123"
+        eligible_source.channel_id = "456"
+        eligible_source.type = SourceType.RSS
+        eligible_source.name = "Eligible"
+        eligible_source.skip_summary = False
+
+        message = MagicMock(spec=discord.Message)
+        message.id = 777
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.send = AsyncMock(return_value=message)
+        mock_bot.get_channel = MagicMock(return_value=channel)
+        mock_bot.repository.get_unposted_content_items = AsyncMock(
+            side_effect=[blocked_items, [sample_content_item]]
+        )
+        mock_bot.repository.get_sources_by_ids = AsyncMock(
+            side_effect=[
+                {"blocked-source": blocked_source},
+                {sample_content_item.source_id: eligible_source},
+            ]
+        )
+        mock_bot.repository.mark_content_item_posted = AsyncMock()
+
+        result = await content_poster.post_unposted_items(guild_id=123)
+
+        assert result == 1
+        assert mock_bot.repository.get_unposted_content_items.await_count == 2
+        mock_bot.repository.mark_content_item_posted.assert_awaited_once_with(
+            content_id=sample_content_item.id,
+            discord_message_id="777",
         )
 
     async def test_falls_back_to_guild_config_when_no_source_channel(

@@ -122,4 +122,4 @@ exclude_lines = [
 
 [tool.bandit]
 exclude_dirs = ["tests", "design"]
-skips = ["B101"]  # Skip assert warnings (used appropriately in production code)
+skips = ["B101"]

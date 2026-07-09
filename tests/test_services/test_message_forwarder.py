@@ -16,7 +16,7 @@ def mock_bot():
 
 @pytest.fixture
 def forwarder(mock_bot):
-    return MessageForwarder(mock_bot)
+    return MessageForwarder(mock_bot, max_concurrent_forwards=5)
 
 
 class TestBuildForwardedContent:
@@ -288,6 +288,10 @@ class TestForwardMessage:
 
         assert result == mock_forwarded
         mock_destination.send.assert_called_once()
+        allowed_mentions = mock_destination.send.call_args.kwargs["allowed_mentions"]
+        assert allowed_mentions.everyone is False
+        assert allowed_mentions.users is False
+        assert allowed_mentions.roles is False
 
     async def test_forward_message_closes_files_after_successful_send(
         self, forwarder: MessageForwarder, mock_bot: MagicMock

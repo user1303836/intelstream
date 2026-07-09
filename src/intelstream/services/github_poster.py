@@ -8,6 +8,10 @@ from intelstream.services.github_service import GitHubEvent
 logger = structlog.get_logger()
 
 
+class GitHubPostError(Exception):
+    """Raised when a GitHub event cannot be delivered to Discord."""
+
+
 class GitHubPoster:
     COLORS: ClassVar[dict[str, discord.Color]] = {
         "commit": discord.Color.from_rgb(110, 118, 129),
@@ -167,4 +171,7 @@ class GitHubPoster:
                     repo=event.repo_full_name,
                     error=str(e),
                 )
+                raise GitHubPostError(
+                    f"Failed to post {event.event_type} event for {event.repo_full_name}"
+                ) from e
         return posted_messages

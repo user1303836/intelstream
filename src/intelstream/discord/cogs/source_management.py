@@ -349,7 +349,7 @@ class SourceManagement(commands.Cog):
                 )
                 return
             try:
-                analyzer = PageAnalyzer(api_key=self.bot.settings.anthropic_api_key)
+                analyzer = PageAnalyzer(anthropic_client=self._get_anthropic_client())
                 profile = await analyzer.analyze(url)
                 extraction_profile_json = json.dumps(profile.to_dict())
             except PageAnalysisError as e:

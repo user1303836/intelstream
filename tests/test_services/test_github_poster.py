@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import discord
 import pytest
 
-from intelstream.services.github_poster import GitHubPoster
+from intelstream.services.github_poster import GitHubPoster, GitHubPostError
 from intelstream.services.github_service import GitHubEvent
 
 
@@ -279,7 +279,7 @@ class TestPostingEvents:
         assert "Oldest" in sent_titles[0]
         assert "Newest" in sent_titles[1]
 
-    async def test_post_events_continues_after_http_exception(self, poster: GitHubPoster) -> None:
+    async def test_post_events_stops_after_http_exception(self, poster: GitHubPoster) -> None:
         mock_response = MagicMock()
         mock_response.status = 500
         channel = MagicMock(spec=discord.abc.Messageable)
@@ -287,10 +287,10 @@ class TestPostingEvents:
             side_effect=[discord.HTTPException(mock_response, "Server error"), "posted"]
         )
 
-        posted = await poster.post_events(
-            channel,
-            [make_commit_event(sha="second123456"), make_commit_event(sha="first123456")],
-        )
+        with pytest.raises(GitHubPostError, match="Failed to post commit event"):
+            await poster.post_events(
+                channel,
+                [make_commit_event(sha="second123456"), make_commit_event(sha="first123456")],
+            )
 
-        assert posted == ["posted"]
-        assert channel.send.await_count == 2
+        assert channel.send.await_count == 1

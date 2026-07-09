@@ -22,6 +22,7 @@ from intelstream.adapters.strategies.base import (
 )
 from intelstream.config import get_settings
 from intelstream.database.repository import Repository
+from intelstream.utils.safe_http import SafeHTTPError, safe_request
 from intelstream.utils.url_validation import SSRFError, validate_url_for_ssrf
 
 logger = structlog.get_logger()
@@ -139,13 +140,13 @@ class LLMExtractionStrategy(DiscoveryStrategy):
         }
         try:
             if self._http_client:
-                response = await self._http_client.get(url, headers=headers, follow_redirects=True)
+                response = await safe_request(self._http_client, "GET", url, headers=headers)
             else:
                 async with httpx.AsyncClient(timeout=get_settings().http_timeout_seconds) as client:
-                    response = await client.get(url, headers=headers, follow_redirects=True)
+                    response = await safe_request(client, "GET", url, headers=headers)
             response.raise_for_status()
             return response.text
-        except httpx.HTTPError as e:
+        except (httpx.HTTPError, SafeHTTPError) as e:
             logger.debug("Failed to fetch HTML", url=url, error=str(e))
             return None
 

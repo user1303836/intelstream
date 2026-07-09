@@ -10,6 +10,18 @@ from intelstream.adapters.page import PageAdapter
 from intelstream.services.page_analyzer import ExtractionProfile
 
 
+@pytest.fixture(autouse=True)
+def adapt_legacy_http_client_mocks():
+    async def request(client, method, url, **kwargs):
+        kwargs.pop("validate_ssrf", None)
+        kwargs.pop("max_response_bytes", None)
+        kwargs.pop("max_redirects", None)
+        return await getattr(client, method.lower())(url, follow_redirects=False, **kwargs)
+
+    with patch("intelstream.adapters.page.safe_request", side_effect=request):
+        yield
+
+
 @pytest.fixture
 def sample_profile() -> ExtractionProfile:
     return ExtractionProfile(

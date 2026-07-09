@@ -173,14 +173,20 @@ class GitHubPolling(commands.Cog):
         )
 
         events: list[GitHubEvent] = []
+        attempted_fetches = 0
+        successful_fetches = 0
+        first_fetch_error: GitHubAPIError | None = None
 
         if repo.track_commits:
+            attempted_fetches += 1
             try:
                 commits = await self._service.fetch_new_commits(
                     repo.owner, repo.repo, repo.last_commit_sha
                 )
                 events.extend(commits)
+                successful_fetches += 1
             except GitHubAPIError as e:
+                first_fetch_error = first_fetch_error or e
                 logger.warning(
                     "Failed to fetch commits",
                     owner=repo.owner,
@@ -189,10 +195,13 @@ class GitHubPolling(commands.Cog):
                 )
 
         if repo.track_prs:
+            attempted_fetches += 1
             try:
                 prs = await self._service.fetch_new_prs(repo.owner, repo.repo, repo.last_pr_number)
                 events.extend(prs)
+                successful_fetches += 1
             except GitHubAPIError as e:
+                first_fetch_error = first_fetch_error or e
                 logger.warning(
                     "Failed to fetch PRs",
                     owner=repo.owner,
@@ -201,18 +210,24 @@ class GitHubPolling(commands.Cog):
                 )
 
         if repo.track_issues:
+            attempted_fetches += 1
             try:
                 issues = await self._service.fetch_new_issues(
                     repo.owner, repo.repo, repo.last_issue_number
                 )
                 events.extend(issues)
+                successful_fetches += 1
             except GitHubAPIError as e:
+                first_fetch_error = first_fetch_error or e
                 logger.warning(
                     "Failed to fetch issues",
                     owner=repo.owner,
                     repo=repo.repo,
                     error=e.message,
                 )
+
+        if attempted_fetches and successful_fetches == 0 and first_fetch_error is not None:
+            raise first_fetch_error
 
         if events and not is_first_poll:
             channel = self.bot.get_channel(int(repo.channel_id))
@@ -225,11 +240,9 @@ class GitHubPolling(commands.Cog):
                     event_count=len(events),
                 )
             else:
-                logger.warning(
-                    "Channel not found for GitHub repo",
-                    channel_id=repo.channel_id,
-                    owner=repo.owner,
-                    repo=repo.repo,
+                raise RuntimeError(
+                    f"Discord channel {repo.channel_id} not found for "
+                    f"GitHub repo {repo.owner}/{repo.repo}"
                 )
         elif is_first_poll:
             logger.info(

@@ -13,6 +13,7 @@ from intelstream.adapters.strategies.base import (
 )
 from intelstream.config import get_settings
 from intelstream.utils.feed_utils import parse_feed_date
+from intelstream.utils.safe_http import SafeHTTPError, safe_request
 from intelstream.utils.url_validation import SSRFError, validate_url_for_ssrf
 
 logger = structlog.get_logger()
@@ -73,13 +74,13 @@ class RSSDiscoveryStrategy(DiscoveryStrategy):
         }
         try:
             if self._client:
-                response = await self._client.get(url, headers=headers, follow_redirects=True)
+                response = await safe_request(self._client, "GET", url, headers=headers)
             else:
                 async with httpx.AsyncClient(timeout=get_settings().http_timeout_seconds) as client:
-                    response = await client.get(url, headers=headers, follow_redirects=True)
+                    response = await safe_request(client, "GET", url, headers=headers)
             response.raise_for_status()
             return response.text
-        except httpx.HTTPError as e:
+        except (httpx.HTTPError, SafeHTTPError) as e:
             logger.debug("Failed to fetch HTML", url=url, error=str(e))
             return None
 
@@ -121,16 +122,12 @@ class RSSDiscoveryStrategy(DiscoveryStrategy):
             probe_url = urljoin(base_url, path)
             try:
                 if self._client:
-                    response = await self._client.head(
-                        probe_url, headers=headers, follow_redirects=True
-                    )
+                    response = await safe_request(self._client, "HEAD", probe_url, headers=headers)
                 else:
                     async with httpx.AsyncClient(
                         timeout=get_settings().http_timeout_seconds
                     ) as client:
-                        response = await client.head(
-                            probe_url, headers=headers, follow_redirects=True
-                        )
+                        response = await safe_request(client, "HEAD", probe_url, headers=headers)
 
                 if response.status_code == 200:
                     content_type = response.headers.get("content-type", "").lower()
@@ -138,7 +135,7 @@ class RSSDiscoveryStrategy(DiscoveryStrategy):
                         t in content_type for t in ["xml", "rss", "atom", "text/plain"]
                     ) or await self._is_valid_feed(probe_url):
                         return probe_url
-            except httpx.HTTPError:
+            except (httpx.HTTPError, SafeHTTPError):
                 pass
             return None
 
@@ -152,10 +149,10 @@ class RSSDiscoveryStrategy(DiscoveryStrategy):
     async def _is_valid_feed(self, url: str) -> bool:
         try:
             if self._client:
-                response = await self._client.get(url, follow_redirects=True)
+                response = await safe_request(self._client, "GET", url)
             else:
                 async with httpx.AsyncClient(timeout=get_settings().http_timeout_seconds) as client:
-                    response = await client.get(url, follow_redirects=True)
+                    response = await safe_request(client, "GET", url)
 
             if response.status_code != 200:
                 return False
@@ -167,16 +164,16 @@ class RSSDiscoveryStrategy(DiscoveryStrategy):
             feed = feedparser.parse(response.text)
             return len(feed.entries) > 0
 
-        except httpx.HTTPError:
+        except (httpx.HTTPError, SafeHTTPError):
             return False
 
     async def _parse_feed(self, rss_url: str) -> list[DiscoveredPost] | None:
         try:
             if self._client:
-                response = await self._client.get(rss_url, follow_redirects=True)
+                response = await safe_request(self._client, "GET", rss_url)
             else:
                 async with httpx.AsyncClient(timeout=get_settings().http_timeout_seconds) as client:
-                    response = await client.get(rss_url, follow_redirects=True)
+                    response = await safe_request(client, "GET", rss_url)
 
             response.raise_for_status()
             feed = feedparser.parse(response.text)
@@ -197,6 +194,6 @@ class RSSDiscoveryStrategy(DiscoveryStrategy):
 
             return posts if posts else None
 
-        except httpx.HTTPError as e:
+        except (httpx.HTTPError, SafeHTTPError) as e:
             logger.debug("Failed to parse RSS feed", rss_url=rss_url, error=str(e))
             return None

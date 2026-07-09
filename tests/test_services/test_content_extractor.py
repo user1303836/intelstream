@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -301,10 +302,11 @@ class TestContentExtractor:
             def __init__(self) -> None:
                 self.calls = []
 
-            async def get(self, url: str, **kwargs):
-                self.calls.append((url, kwargs))
+            @asynccontextmanager
+            async def stream(self, method: str, url: str, **kwargs):
+                self.calls.append((method, url, kwargs))
                 request = httpx.Request("GET", url)
-                return httpx.Response(200, request=request, text="<html>Fetched</html>")
+                yield httpx.Response(200, request=request, text="<html>Fetched</html>")
 
         client = FakeClient()
         extractor = ContentExtractor(http_client=client)
@@ -314,12 +316,13 @@ class TestContentExtractor:
         assert html == "<html>Fetched</html>"
         assert client.calls == [
             (
+                "GET",
                 "https://example.com/injected",
                 {
                     "headers": {
                         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
                     },
-                    "follow_redirects": True,
+                    "follow_redirects": False,
                 },
             )
         ]

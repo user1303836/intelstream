@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup, Tag
 
 from intelstream.adapters.base import BaseAdapter, ContentData
 from intelstream.services.page_analyzer import ExtractionProfile
+from intelstream.utils.safe_http import safe_request
 
 logger = structlog.get_logger()
 
@@ -73,10 +74,10 @@ class PageAdapter(BaseAdapter):
         }
 
         if self._client:
-            response = await self._client.get(url, headers=headers, follow_redirects=True)
+            response = await safe_request(self._client, "GET", url, headers=headers)
         else:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url, headers=headers, follow_redirects=True)
+                response = await safe_request(client, "GET", url, headers=headers)
 
         response.raise_for_status()
         return response.text

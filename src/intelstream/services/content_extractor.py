@@ -9,6 +9,7 @@ import trafilatura
 from bs4 import BeautifulSoup, Tag
 
 from intelstream.config import get_settings
+from intelstream.utils.safe_http import SafeHTTPError, safe_request
 from intelstream.utils.url_validation import SSRFError, validate_url_for_ssrf
 
 logger = structlog.get_logger()
@@ -182,13 +183,13 @@ class ContentExtractor:
         }
         try:
             if self._client:
-                response = await self._client.get(url, headers=headers, follow_redirects=True)
+                response = await safe_request(self._client, "GET", url, headers=headers)
             else:
                 async with httpx.AsyncClient(timeout=get_settings().http_timeout_seconds) as client:
-                    response = await client.get(url, headers=headers, follow_redirects=True)
+                    response = await safe_request(client, "GET", url, headers=headers)
             response.raise_for_status()
             return response.text
-        except httpx.HTTPError as e:
+        except (httpx.HTTPError, SafeHTTPError) as e:
             logger.warning("Failed to fetch content", url=url, error=str(e))
             return None
 

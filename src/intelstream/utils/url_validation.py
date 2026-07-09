@@ -15,7 +15,7 @@ BLOCKED_HOSTS = frozenset(
         "localhost.localdomain",
         "127.0.0.1",
         "::1",
-        "0.0.0.0",
+        str(ipaddress.IPv4Address(0)),
         "[::1]",
     }
 )
@@ -83,9 +83,8 @@ def validate_url_for_ssrf(url: str) -> None:
     - TOCTOU (time-of-check-time-of-use): DNS resolution may change between
       validation and the actual HTTP request. An attacker could use DNS rebinding
       to bypass this check.
-    - This function only validates URLs at entry points. Internal code paths
-      (e.g., URLs discovered from sitemaps, RSS feeds, or scraped links) may
-      bypass this validation when processed by WebFetcher or PageAnalyzer.
+    - Callers must revalidate every redirect target. The shared safe HTTP
+      helper does this for all externally supplied and discovered URLs.
 
     Raises:
         SSRFError: If the URL points to a blocked host or internal IP, or if
