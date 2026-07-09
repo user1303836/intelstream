@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 import structlog
-from sqlalchemy import delete, exists, func, insert, select, text
+from sqlalchemy import and_, delete, exists, func, insert, or_, select, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
@@ -408,14 +408,31 @@ class Repository:
             )
             return result.scalar_one()
 
-    async def get_unposted_content_items(self, limit: int = 10) -> list[ContentItem]:
+    async def get_unposted_content_items(
+        self,
+        limit: int = 10,
+        *,
+        after_published_at: datetime | None = None,
+        after_id: str | None = None,
+    ) -> list[ContentItem]:
         async with self.session() as session:
-            result = await session.execute(
+            query = (
                 select(ContentItem)
                 .where(ContentItem.posted_to_discord == False)  # noqa: E712
                 .where(ContentItem.summary.isnot(None))
-                .order_by(ContentItem.published_at.asc())
-                .limit(limit)
+            )
+            if after_published_at is not None and after_id is not None:
+                query = query.where(
+                    or_(
+                        ContentItem.published_at > after_published_at,
+                        and_(
+                            ContentItem.published_at == after_published_at,
+                            ContentItem.id > after_id,
+                        ),
+                    )
+                )
+            result = await session.execute(
+                query.order_by(ContentItem.published_at.asc(), ContentItem.id.asc()).limit(limit)
             )
             return list(result.scalars().all())
 

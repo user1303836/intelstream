@@ -681,6 +681,14 @@ class TestContentItemOperations:
         assert unsummarized.id not in {item.id for item in unposted}
         assert already_posted.id not in {item.id for item in unposted}
 
+        next_page = await repository.get_unposted_content_items(
+            limit=2,
+            after_published_at=middle.published_at,
+            after_id=middle.id,
+        )
+
+        assert [item.external_id for item in next_page] == ["newest-unposted"]
+
     async def test_get_unsummarized_and_latest_content_items(self, repository: Repository) -> None:
         source = await repository.add_source(
             source_type=SourceType.RSS,

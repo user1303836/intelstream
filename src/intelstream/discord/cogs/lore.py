@@ -129,7 +129,7 @@ class Lore(commands.Cog):
             with suppress(asyncio.CancelledError):
                 await self._index_rebuild_task
         if self._ingestion_service and self._ingestion_service.is_running:
-            self._ingestion_service.stop_backfill()
+            await self._ingestion_service.stop_backfill()
         await self._flush_all_buffers()
         if self._llm_client:
             await self._llm_client.close()
@@ -328,7 +328,12 @@ class Lore(commands.Cog):
         assert self._chunker is not None
         chunks = self._chunker.chunk_messages(buf, guild_id, channel_id, channel_name)
         if chunks and self._ingestion_service:
-            stored = await self._ingestion_service.store_chunks(chunks)
+            try:
+                stored = await self._ingestion_service.store_chunks(chunks)
+            except Exception:
+                newer_messages = self._message_buffers.pop(channel_key, [])
+                self._message_buffers[channel_key] = [*buf, *newer_messages]
+                raise
             if stored > 0:
                 logger.info(
                     "Real-time lore flush",

@@ -6,6 +6,7 @@ import structlog
 
 from intelstream.adapters.base import BaseAdapter, ContentData
 from intelstream.utils.feed_utils import parse_feed_date
+from intelstream.utils.safe_http import safe_request
 
 logger = structlog.get_logger()
 
@@ -33,12 +34,12 @@ class RSSAdapter(BaseAdapter):
 
         try:
             if self._client:
-                response = await self._client.get(url, follow_redirects=True)
+                response = await safe_request(self._client, "GET", url)
                 response.raise_for_status()
                 content = response.text
             else:
                 async with httpx.AsyncClient(timeout=30.0) as client:
-                    response = await client.get(url, follow_redirects=True)
+                    response = await safe_request(client, "GET", url)
                     response.raise_for_status()
                     content = response.text
 

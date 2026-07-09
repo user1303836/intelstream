@@ -5,6 +5,7 @@ import discord
 import pytest
 
 from intelstream.discord.cogs.github_polling import GitHubPolling
+from intelstream.services.github_poster import GitHubPostError
 from intelstream.services.github_service import GitHubAPIError, GitHubEvent
 
 
@@ -425,6 +426,40 @@ class TestProcessRepo:
             last_issue_number=11,
         )
 
+    async def test_process_repo_raises_when_every_enabled_fetch_fails(self, mock_bot):
+        cog = _make_cog(mock_bot)
+        repo = _make_repo()
+        error = GitHubAPIError(401, "expired token")
+        cog._service.fetch_new_commits = AsyncMock(side_effect=error)
+        cog._service.fetch_new_prs = AsyncMock(side_effect=error)
+        cog._service.fetch_new_issues = AsyncMock(side_effect=error)
+        mock_bot.repository.update_github_repo_state = AsyncMock()
+        mock_bot.repository.reset_github_failure = AsyncMock()
+
+        with pytest.raises(GitHubAPIError, match="expired token"):
+            await cog._process_repo(repo)
+
+        mock_bot.repository.update_github_repo_state.assert_not_awaited()
+        mock_bot.repository.reset_github_failure.assert_not_awaited()
+
+    async def test_process_repo_does_not_advance_state_when_discord_post_fails(self, mock_bot):
+        cog = _make_cog(mock_bot)
+        repo = _make_repo()
+        commit = _make_event("commit", sha="new-sha")
+        cog._service.fetch_new_commits = AsyncMock(return_value=[commit])
+        cog._service.fetch_new_prs = AsyncMock(return_value=[])
+        cog._service.fetch_new_issues = AsyncMock(return_value=[])
+        cog._poster.post_events = AsyncMock(side_effect=GitHubPostError("send failed"))
+        mock_bot.get_channel = MagicMock(return_value=_make_text_channel())
+        mock_bot.repository.update_github_repo_state = AsyncMock()
+        mock_bot.repository.reset_github_failure = AsyncMock()
+
+        with pytest.raises(GitHubPostError, match="send failed"):
+            await cog._process_repo(repo)
+
+        mock_bot.repository.update_github_repo_state.assert_not_awaited()
+        mock_bot.repository.reset_github_failure.assert_not_awaited()
+
     async def test_process_repo_posts_to_thread_channel(self, mock_bot):
         cog = _make_cog(mock_bot)
         repo = _make_repo()
@@ -479,11 +514,12 @@ class TestProcessRepo:
         mock_bot.repository.update_github_repo_state = AsyncMock()
         mock_bot.repository.reset_github_failure = AsyncMock()
 
-        posted = await cog._process_repo(repo)
+        with pytest.raises(RuntimeError, match="channel 987 not found"):
+            await cog._process_repo(repo)
 
-        assert posted == 1
         cog._poster.post_events.assert_not_awaited()
-        mock_bot.repository.reset_github_failure.assert_awaited_once_with(42)
+        mock_bot.repository.update_github_repo_state.assert_not_awaited()
+        mock_bot.repository.reset_github_failure.assert_not_awaited()
 
     async def test_process_repo_respects_tracking_flags(self, mock_bot):
         cog = _make_cog(mock_bot)

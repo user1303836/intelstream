@@ -100,8 +100,6 @@ jobs:
 
       - name: Run pip-audit
         run: uv run pip-audit
-        continue-on-error: true
 
       - name: Run bandit security linter
         run: uv run bandit -r src/ -c pyproject.toml
-        continue-on-error: true

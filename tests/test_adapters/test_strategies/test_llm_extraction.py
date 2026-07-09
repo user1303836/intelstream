@@ -589,3 +589,15 @@ class TestLLMExtractionStrategy:
         )
 
         assert await llm_strategy._extract_with_llm("<html></html>", "https://example.com") == []
+
+
+@pytest.fixture(autouse=True)
+def adapt_legacy_http_client_mocks():
+    async def request(client, method, url, **kwargs):
+        kwargs.pop("validate_ssrf", None)
+        kwargs.pop("max_response_bytes", None)
+        kwargs.pop("max_redirects", None)
+        return await getattr(client, method.lower())(url, follow_redirects=False, **kwargs)
+
+    with patch("intelstream.adapters.strategies.llm_extraction.safe_request", side_effect=request):
+        yield

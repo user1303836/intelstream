@@ -9,6 +9,18 @@ from intelstream.adapters.strategies.rss_discovery import RSSDiscoveryStrategy
 from intelstream.utils.url_validation import SSRFError
 
 
+@pytest.fixture(autouse=True)
+def adapt_legacy_http_client_mocks():
+    async def request(client, method, url, **kwargs):
+        kwargs.pop("validate_ssrf", None)
+        kwargs.pop("max_response_bytes", None)
+        kwargs.pop("max_redirects", None)
+        return await getattr(client, method.lower())(url, follow_redirects=False, **kwargs)
+
+    with patch("intelstream.adapters.strategies.rss_discovery.safe_request", side_effect=request):
+        yield
+
+
 @pytest.fixture
 def rss_strategy():
     return RSSDiscoveryStrategy()

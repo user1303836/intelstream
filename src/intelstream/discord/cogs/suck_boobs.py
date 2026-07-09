@@ -22,7 +22,7 @@ class SuckBoobs(commands.Cog):
         eligible = [m for m in members if not getattr(m, "bot", False) and m.id != exclude_id]
         if not eligible:
             return None
-        return random.choice(eligible)
+        return random.choice(eligible)  # nosec B311
 
     @app_commands.command(name="suck_boobs", description="Suck someone's boobs")
     async def suck_boobs(self, interaction: discord.Interaction) -> None:
@@ -57,7 +57,7 @@ class SuckBoobs(commands.Cog):
         )
 
         # 1/20 chance (5%)
-        if random.randint(1, 20) == 1:
+        if random.randint(1, 20) == 1:  # nosec B311
             await interaction.response.send_message(
                 f"{interaction.user.display_name} lost all self-control! Instead of the boob, they bypassed it entirely "
                 f"and started violently gobbling on <@{target.id}>'s dick like it's their last meal on Earth. "

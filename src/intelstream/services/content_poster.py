@@ -21,6 +21,7 @@ SOURCE_TYPE_LABELS: dict[SourceType, str] = {
 }
 
 TRUNCATION_NOTICE = "\n\n*[Summary truncated]*"
+POST_BATCH_SIZE = 10
 
 
 def truncate_summary_at_bullet(summary: str, max_length: int) -> str:
@@ -29,8 +30,12 @@ def truncate_summary_at_bullet(summary: str, max_length: int) -> str:
     Tries to keep complete bullet points (lines starting with - or *)
     rather than cutting mid-sentence.
     """
+    if max_length <= 0:
+        return ""
     if len(summary) <= max_length:
         return summary
+    if max_length <= len(TRUNCATION_NOTICE):
+        return TRUNCATION_NOTICE[:max_length]
 
     truncate_target = max_length - len(TRUNCATION_NOTICE)
 
@@ -102,6 +107,17 @@ class ContentPoster:
         header = "\n".join(header_parts)
         overhead = len(header) + len(footer)
 
+        if overhead + len(TRUNCATION_NOTICE) > self._max_message_length:
+            source_limit = min(80, max(0, self._max_message_length // 5))
+            compact_source = _truncate_text(source_name, source_limit)
+            footer = f"\n*{source_label} | {compact_source}*"
+            title_limit = max(
+                1,
+                self._max_message_length - len(footer) - len(TRUNCATION_NOTICE) - len("****\n\n"),
+            )
+            header = f"**{_truncate_text(title, title_limit)}**\n\n"
+            overhead = len(header) + len(footer)
+
         summary = content_item.summary or "No summary available."
 
         available_for_summary = self._max_message_length - overhead
@@ -145,7 +161,10 @@ class ContentPoster:
             content = content_item.original_url
         else:
             content = self.format_message(content_item, source_type, source_name)
-        message = await channel.send(content=content)
+        message = await channel.send(
+            content=content,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
         logger.info(
             "Posted content to Discord",
@@ -157,93 +176,115 @@ class ContentPoster:
         return message
 
     async def post_unposted_items(self, guild_id: int) -> int:
-        items = await self._bot.repository.get_unposted_content_items()
-
-        if not items:
-            logger.debug("No unposted content items to post")
-            return 0
-
-        source_ids = {item.source_id for item in items}
-        sources_map = await self._bot.repository.get_sources_by_ids(source_ids)
-
         posted_count = 0
+        after_published_at = None
+        after_id = None
 
-        for item in items:
-            try:
+        while posted_count < POST_BATCH_SIZE:
+            items = await self._bot.repository.get_unposted_content_items(
+                limit=POST_BATCH_SIZE,
+                after_published_at=after_published_at,
+                after_id=after_id,
+            )
+            if not items:
+                break
+
+            source_ids = {item.source_id for item in items}
+            sources_map = await self._bot.repository.get_sources_by_ids(source_ids)
+
+            for item in items:
                 source = sources_map.get(item.source_id)
-                if source is None:
-                    logger.warning("Source not found for content item", item_id=item.id)
-                    continue
+                try:
+                    if source is None:
+                        logger.warning("Source not found for content item", item_id=item.id)
+                        continue
 
-                # Skip sources belonging to a different guild.
-                # Sources without guild_id are legacy/global and can post to any guild.
-                if source.guild_id and str(guild_id) != source.guild_id:
-                    logger.debug(
-                        "Skipping item, guild mismatch",
-                        item_id=item.id,
-                        source_guild_id=source.guild_id,
-                        current_guild_id=guild_id,
-                    )
-                    continue
-
-                if not source.channel_id:
-                    config = await self._bot.repository.get_discord_config(str(guild_id))
-                    if config is None or not config.is_active:
+                    if source.guild_id and str(guild_id) != source.guild_id:
                         logger.debug(
-                            "No channel for source and no guild config",
-                            source_id=source.id,
-                            guild_id=guild_id,
+                            "Skipping item, guild mismatch",
+                            item_id=item.id,
+                            source_guild_id=source.guild_id,
+                            current_guild_id=guild_id,
                         )
                         continue
-                    channel_id = config.channel_id
-                else:
-                    channel_id = source.channel_id
 
-                channel = self._bot.get_channel(int(channel_id))
-                if channel is None or not isinstance(
-                    channel, (discord.TextChannel, discord.Thread)
-                ):
-                    logger.warning(
-                        "Could not find channel for source",
-                        source_id=source.id,
-                        channel_id=channel_id,
+                    if not source.channel_id:
+                        config = await self._bot.repository.get_discord_config(str(guild_id))
+                        if config is None or not config.is_active:
+                            logger.debug(
+                                "No channel for source and no guild config",
+                                source_id=source.id,
+                                guild_id=guild_id,
+                            )
+                            continue
+                        channel_id = config.channel_id
+                    else:
+                        channel_id = source.channel_id
+
+                    channel = self._bot.get_channel(int(channel_id))
+                    if channel is None or not isinstance(
+                        channel, (discord.TextChannel, discord.Thread)
+                    ):
+                        logger.warning(
+                            "Could not find channel for source",
+                            source_id=source.id,
+                            channel_id=channel_id,
+                        )
+                        continue
+
+                    message = await self.post_content(
+                        channel=channel,
+                        content_item=item,
+                        source_type=source.type,
+                        source_name=source.name,
+                        skip_summary=source.skip_summary,
                     )
-                    continue
 
-                message = await self.post_content(
-                    channel=channel,
-                    content_item=item,
-                    source_type=source.type,
-                    source_name=source.name,
-                    skip_summary=source.skip_summary,
-                )
+                    await self._bot.repository.mark_content_item_posted(
+                        content_id=item.id,
+                        discord_message_id=str(message.id),
+                    )
 
-                await self._bot.repository.mark_content_item_posted(
-                    content_id=item.id,
-                    discord_message_id=str(message.id),
-                )
+                    posted_count += 1
 
-                posted_count += 1
+                except discord.HTTPException as e:
+                    logger.error(
+                        "Failed to post content item",
+                        item_id=item.id,
+                        title=item.title,
+                        source_name=source.name if source else "unknown",
+                        error=str(e),
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Unexpected error posting content item",
+                        item_id=item.id,
+                        title=item.title,
+                        source_name=source.name if source else "unknown",
+                        error=str(e),
+                    )
 
-            except discord.HTTPException as e:
-                logger.error(
-                    "Failed to post content item",
-                    item_id=item.id,
-                    title=item.title,
-                    source_name=source.name if source else "unknown",
-                    error=str(e),
-                )
-            except Exception as e:
-                logger.error(
-                    "Unexpected error posting content item",
-                    item_id=item.id,
-                    title=item.title,
-                    source_name=source.name if source else "unknown",
-                    error=str(e),
-                )
+                if posted_count >= POST_BATCH_SIZE:
+                    break
+
+            last_item = items[-1]
+            after_published_at = last_item.published_at
+            after_id = last_item.id
+            if len(items) < POST_BATCH_SIZE:
+                break
 
         if posted_count > 0:
             logger.info("Posted unposted items", count=posted_count, guild_id=guild_id)
         else:
             logger.debug("No items to post for guild", guild_id=guild_id)
         return posted_count
+
+
+def _truncate_text(text: str, max_length: int) -> str:
+    if max_length <= 0:
+        return ""
+    if len(text) <= max_length:
+        return text
+    if max_length <= 3:
+        return text[:max_length]
+    return text[: max_length - 3] + "..."

@@ -11,6 +11,7 @@ from intelstream.discord.cogs.message_forwarding import MessageForwarding, setup
 def mock_bot():
     bot = MagicMock()
     bot.repository = MagicMock()
+    bot.settings.max_concurrent_forwards = 5
     bot.guilds = []
     bot.user = MagicMock()
     bot.user.id = 999

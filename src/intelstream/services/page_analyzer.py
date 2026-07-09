@@ -17,6 +17,7 @@ from tenacity import (
 )
 
 from intelstream.config import get_settings
+from intelstream.utils.safe_http import SafeHTTPError, safe_request
 
 logger = structlog.get_logger()
 
@@ -95,13 +96,22 @@ IMPORTANT:
 class PageAnalyzer:
     def __init__(
         self,
-        api_key: str,
+        api_key: str | None = None,
         http_client: httpx.AsyncClient | None = None,
         model: str = DEFAULT_MODEL,
+        anthropic_client: anthropic.AsyncAnthropic | None = None,
     ) -> None:
-        self._client = anthropic.AsyncAnthropic(api_key=api_key)
+        if anthropic_client is None and not api_key:
+            raise ValueError("api_key is required when anthropic_client is not provided")
+        self._client = anthropic_client or anthropic.AsyncAnthropic(api_key=api_key)
+        self._owns_client = anthropic_client is None
         self._http_client = http_client
         self._model = model
+
+    async def close(self) -> None:
+        if self._owns_client:
+            await self._client.close()
+            self._owns_client = False
 
     async def analyze(self, url: str) -> ExtractionProfile:
         parsed_url = urlparse(url)
@@ -139,10 +149,10 @@ class PageAnalyzer:
 
         try:
             if self._http_client:
-                response = await self._http_client.get(url, headers=headers, follow_redirects=True)
+                response = await safe_request(self._http_client, "GET", url, headers=headers)
             else:
                 async with httpx.AsyncClient(timeout=get_settings().http_timeout_seconds) as client:
-                    response = await client.get(url, headers=headers, follow_redirects=True)
+                    response = await safe_request(client, "GET", url, headers=headers)
 
             response.raise_for_status()
             return response.text
@@ -151,6 +161,8 @@ class PageAnalyzer:
             raise PageAnalysisError(f"Failed to fetch page: HTTP {e.response.status_code}") from e
         except httpx.RequestError as e:
             raise PageAnalysisError(f"Failed to fetch page: {e}") from e
+        except SafeHTTPError as e:
+            raise PageAnalysisError(f"Failed to fetch page safely: {e}") from e
 
     def _clean_html(self, html: str) -> str:
         soup = BeautifulSoup(html, "lxml")

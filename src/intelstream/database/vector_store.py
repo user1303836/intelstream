@@ -6,11 +6,13 @@ import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     import zvec
 
 logger = structlog.get_logger(__name__)
@@ -440,9 +442,10 @@ class VectorStore:
         collection = await self._article_collection(create=False)
         if collection is None:
             return []
+        vector_query = cast("Callable[..., Any]", zvec.VectorQuery)
         results: Any = await asyncio.to_thread(
             collection.query,
-            zvec.VectorQuery(_VECTOR_FIELD_NAME, vector=query_embedding),
+            vector_query(_VECTOR_FIELD_NAME, vector=query_embedding),
             topk=topk,
             output_fields=[
                 _ARTICLE_CONTENT_ITEM_ID_FIELD,
@@ -561,9 +564,10 @@ class VectorStore:
         collection = await self._message_chunk_collection(guild_id, create=False)
         if collection is None:
             return []
+        vector_query = cast("Callable[..., Any]", zvec.VectorQuery)
         results: Any = await asyncio.to_thread(
             collection.query,
-            zvec.VectorQuery(_VECTOR_FIELD_NAME, vector=query_embedding),
+            vector_query(_VECTOR_FIELD_NAME, vector=query_embedding),
             topk=topk,
         )
         return [ChunkSearchResult(chunk_id=r.id, score=r.score) for r in results]

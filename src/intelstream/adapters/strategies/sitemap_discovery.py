@@ -1,8 +1,9 @@
 import gzip
 import re
 from datetime import UTC, datetime
+from io import BytesIO
+from typing import Any
 from urllib.parse import urljoin, urlparse
-from xml.etree.ElementTree import Element, ParseError
 
 import httpx
 import structlog
@@ -14,6 +15,7 @@ from intelstream.adapters.strategies.base import (
     DiscoveryStrategy,
 )
 from intelstream.config import get_settings
+from intelstream.utils.safe_http import SafeHTTPError, safe_request
 from intelstream.utils.url_validation import SSRFError, validate_url_for_ssrf
 
 logger = structlog.get_logger()
@@ -117,10 +119,10 @@ class SitemapDiscoveryStrategy(DiscoveryStrategy):
         robots_url = urljoin(base_url, "/robots.txt")
         try:
             if self._client:
-                response = await self._client.get(robots_url, follow_redirects=True)
+                response = await safe_request(self._client, "GET", robots_url)
             else:
                 async with httpx.AsyncClient(timeout=get_settings().http_timeout_seconds) as client:
-                    response = await client.get(robots_url, follow_redirects=True)
+                    response = await safe_request(client, "GET", robots_url)
 
             if response.status_code != 200:
                 return None
@@ -139,7 +141,7 @@ class SitemapDiscoveryStrategy(DiscoveryStrategy):
                         return None
                     return sitemap_url
 
-        except httpx.HTTPError:
+        except (httpx.HTTPError, SafeHTTPError):
             pass
 
         return None
@@ -147,10 +149,10 @@ class SitemapDiscoveryStrategy(DiscoveryStrategy):
     async def _is_valid_sitemap(self, url: str) -> bool:
         try:
             if self._client:
-                response = await self._client.get(url, follow_redirects=True)
+                response = await safe_request(self._client, "GET", url)
             else:
                 async with httpx.AsyncClient(timeout=get_settings().http_timeout_seconds) as client:
-                    response = await client.get(url, follow_redirects=True)
+                    response = await safe_request(client, "GET", url)
 
             if response.status_code != 200:
                 return False
@@ -158,16 +160,26 @@ class SitemapDiscoveryStrategy(DiscoveryStrategy):
             content = response.text[:500]
             return "<urlset" in content or "<sitemapindex" in content
 
-        except httpx.HTTPError:
+        except (httpx.HTTPError, SafeHTTPError):
             return False
 
     async def _parse_sitemap(self, sitemap_url: str) -> list[dict[str, str | datetime | None]]:
         try:
             if self._client:
-                response = await self._client.get(sitemap_url, follow_redirects=True)
+                response = await safe_request(
+                    self._client,
+                    "GET",
+                    sitemap_url,
+                    max_response_bytes=MAX_DECOMPRESSED_SIZE,
+                )
             else:
                 async with httpx.AsyncClient(timeout=get_settings().http_timeout_seconds) as client:
-                    response = await client.get(sitemap_url, follow_redirects=True)
+                    response = await safe_request(
+                        client,
+                        "GET",
+                        sitemap_url,
+                        max_response_bytes=MAX_DECOMPRESSED_SIZE,
+                    )
 
             response.raise_for_status()
 
@@ -182,15 +194,15 @@ class SitemapDiscoveryStrategy(DiscoveryStrategy):
                         limit=MAX_COMPRESSED_SIZE,
                     )
                     return []
-                content = gzip.decompress(content)
-                if len(content) > MAX_DECOMPRESSED_SIZE:
+                decompressed = _decompress_gzip_limited(content, MAX_DECOMPRESSED_SIZE)
+                if decompressed is None:
                     logger.warning(
                         "Decompressed sitemap too large",
                         url=sitemap_url,
-                        size=len(content),
                         limit=MAX_DECOMPRESSED_SIZE,
                     )
                     return []
+                content = decompressed
                 xml_text = content.decode("utf-8")
             else:
                 if len(content) > MAX_DECOMPRESSED_SIZE:
@@ -210,11 +222,17 @@ class SitemapDiscoveryStrategy(DiscoveryStrategy):
 
             return self._parse_urlset(root)
 
-        except (httpx.HTTPError, ParseError, gzip.BadGzipFile) as e:
+        except (
+            httpx.HTTPError,
+            SafeHTTPError,
+            ElementTree.ParseError,
+            gzip.BadGzipFile,
+            EOFError,
+        ) as e:
             logger.debug("Failed to parse sitemap", url=sitemap_url, error=str(e))
             return []
 
-    async def _parse_sitemap_index(self, root: Element) -> list[dict[str, str | datetime | None]]:
+    async def _parse_sitemap_index(self, root: Any) -> list[dict[str, str | datetime | None]]:
         all_urls: list[dict[str, str | datetime | None]] = []
         sitemap_count = 0
 
@@ -252,7 +270,7 @@ class SitemapDiscoveryStrategy(DiscoveryStrategy):
 
         return all_urls[:MAX_SITEMAP_URLS]
 
-    def _parse_urlset(self, root: Element) -> list[dict[str, str | datetime | None]]:
+    def _parse_urlset(self, root: Any) -> list[dict[str, str | datetime | None]]:
         urls: list[dict[str, str | datetime | None]] = []
 
         for url_elem in root.findall("sm:url", SITEMAP_NS):
@@ -322,3 +340,11 @@ class SitemapDiscoveryStrategy(DiscoveryStrategy):
                             return f"/{match.group(1)}/"
 
         return None
+
+
+def _decompress_gzip_limited(content: bytes, max_size: int) -> bytes | None:
+    with gzip.GzipFile(fileobj=BytesIO(content)) as compressed:
+        decompressed = compressed.read(max_size + 1)
+    if len(decompressed) > max_size:
+        return None
+    return decompressed

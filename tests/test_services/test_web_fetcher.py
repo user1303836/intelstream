@@ -6,6 +6,8 @@ from bs4 import BeautifulSoup
 
 from intelstream.services import web_fetcher
 from intelstream.services.web_fetcher import MAX_REDIRECTS, WebContent, WebFetcher, WebFetchError
+from intelstream.utils.safe_http import SafeHTTPError
+from intelstream.utils.url_validation import SSRFError, validate_url_for_ssrf
 
 
 @pytest.fixture
@@ -42,6 +44,38 @@ def minimal_html():
     <body><p>Too short</p></body>
     </html>
     """
+
+
+@pytest.fixture(autouse=True)
+def adapt_legacy_client_mocks():
+    async def request(client, _method, url, *, validate_ssrf=True, **_kwargs):
+        if validate_ssrf:
+            try:
+                validate_url_for_ssrf(url)
+            except SSRFError as exc:
+                raise SafeHTTPError(f"URL blocked by SSRF protection: {exc}") from exc
+
+        current_url = url
+        redirects_followed = 0
+        while True:
+            response = await client.get(current_url, follow_redirects=False)
+            if not response.is_redirect:
+                return response
+            if redirects_followed >= MAX_REDIRECTS:
+                raise SafeHTTPError("Too many redirects")
+            if response.next_request is None:
+                raise SafeHTTPError("Redirect without a target URL")
+            redirect_url = str(response.next_request.url)
+            if validate_ssrf:
+                try:
+                    validate_url_for_ssrf(redirect_url)
+                except SSRFError as exc:
+                    raise SafeHTTPError(f"Redirect blocked by SSRF protection: {exc}") from exc
+            current_url = redirect_url
+            redirects_followed += 1
+
+    with patch.object(web_fetcher, "safe_request", side_effect=request):
+        yield
 
 
 class TestWebFetcher:
@@ -427,7 +461,7 @@ class TestWebFetcher:
         with pytest.raises(WebFetchError, match="Too many redirects"):
             await fetcher.fetch("https://example.com/redirect", skip_ssrf_check=True)
 
-        assert mock_client.get.await_count == MAX_REDIRECTS
+        assert mock_client.get.await_count == MAX_REDIRECTS + 1
 
     async def test_fetch_follows_safe_redirect(self, sample_html):
         redirect_response = MagicMock(spec=httpx.Response)

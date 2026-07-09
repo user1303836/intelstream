@@ -5,12 +5,13 @@ import httpx
 import structlog
 from bs4 import BeautifulSoup, Tag
 
-from intelstream.utils.url_validation import SSRFError, validate_url_for_ssrf
+from intelstream.utils.safe_http import DEFAULT_MAX_REDIRECTS, SafeHTTPError, safe_request
 
 logger = structlog.get_logger()
 
 DEFAULT_TIMEOUT = 30.0
 MAX_CONTENT_LENGTH = 100000
+MAX_REDIRECTS = DEFAULT_MAX_REDIRECTS
 
 
 @dataclass
@@ -27,21 +28,12 @@ class WebFetchError(Exception):
     pass
 
 
-MAX_REDIRECTS = 10
-
-
 class WebFetcher:
     def __init__(self, http_client: httpx.AsyncClient | None = None) -> None:
         self._client = http_client
         self._owns_client = http_client is None
 
     async def fetch(self, url: str, skip_ssrf_check: bool = False) -> WebContent:
-        if not skip_ssrf_check:
-            try:
-                validate_url_for_ssrf(url)
-            except SSRFError as e:
-                raise WebFetchError(f"URL blocked by SSRF protection: {e}") from e
-
         client = None
         try:
             client = self._client or httpx.AsyncClient(
@@ -51,29 +43,13 @@ class WebFetcher:
                     "User-Agent": "Mozilla/5.0 (compatible; IntelStream/1.0; +https://github.com/intelstream)"
                 },
             )
-
-            current_url = url
-            for _ in range(MAX_REDIRECTS):
-                response = await client.get(current_url, follow_redirects=False)
-
-                if response.is_redirect:
-                    redirect_url = str(response.next_request.url) if response.next_request else None
-                    if not redirect_url:
-                        raise WebFetchError("Redirect without a target URL")
-
-                    if not skip_ssrf_check:
-                        try:
-                            validate_url_for_ssrf(redirect_url)
-                        except SSRFError as e:
-                            raise WebFetchError(f"Redirect blocked by SSRF protection: {e}") from e
-
-                    current_url = redirect_url
-                    continue
-
-                response.raise_for_status()
-                break
-            else:
-                raise WebFetchError("Too many redirects")
+            response = await safe_request(
+                client,
+                "GET",
+                url,
+                validate_ssrf=not skip_ssrf_check,
+            )
+            response.raise_for_status()
 
             content_type = response.headers.get("content-type", "")
             if "text/html" not in content_type:
@@ -91,6 +67,8 @@ class WebFetcher:
         except httpx.RequestError as e:
             logger.warning("Request error fetching URL", url=url, error=str(e))
             raise WebFetchError(f"Failed to fetch URL: {e}") from e
+        except SafeHTTPError as e:
+            raise WebFetchError(str(e)) from e
         finally:
             if self._owns_client and client is not None:
                 await client.aclose()

@@ -64,6 +64,15 @@ class ChannelSummary(commands.Cog):
             )
             return
 
+        if isinstance(interaction.user, discord.Member):
+            permissions = target_channel.permissions_for(interaction.user)
+            if not permissions.view_channel or not permissions.read_message_history:
+                await interaction.followup.send(
+                    "You don't have permission to read that channel's history.",
+                    ephemeral=True,
+                )
+                return
+
         logger.info(
             "summary command invoked",
             user_id=interaction.user.id,
@@ -113,7 +122,10 @@ class ChannelSummary(commands.Cog):
         if len(full_text) > 2000:
             full_text = full_text[:1997] + "..."
 
-        await interaction.followup.send(full_text)
+        await interaction.followup.send(
+            full_text,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     def _format_messages(self, messages: list[discord.Message]) -> str:
         lines: list[str] = []

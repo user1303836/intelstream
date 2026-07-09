@@ -4,22 +4,15 @@ from asyncio import Semaphore
 import discord
 import structlog
 
-from intelstream.config import get_settings
-
 logger = structlog.get_logger()
 
 MAX_TOTAL_ATTACHMENT_SIZE = 25 * 1024 * 1024  # 25MB total limit
 
 
 class MessageForwarder:
-    def __init__(self, bot: discord.Client, max_concurrent_forwards: int | None = None) -> None:
+    def __init__(self, bot: discord.Client, max_concurrent_forwards: int) -> None:
         self.bot = bot
-        limit = (
-            max_concurrent_forwards
-            if max_concurrent_forwards is not None
-            else get_settings().max_concurrent_forwards
-        )
-        self._semaphore = Semaphore(limit)
+        self._semaphore = Semaphore(max_concurrent_forwards)
 
     async def forward_message(
         self,
@@ -60,11 +53,13 @@ class MessageForwarder:
                     if not content and not files and message.embeds:
                         forwarded = await destination.send(
                             embeds=message.embeds[:10],
+                            allowed_mentions=discord.AllowedMentions.none(),
                         )
                     else:
                         forwarded = await destination.send(
                             content=content,
                             files=files,
+                            allowed_mentions=discord.AllowedMentions.none(),
                         )
                 finally:
                     self._close_files(files)

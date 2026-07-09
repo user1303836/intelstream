@@ -252,6 +252,25 @@ class TestSummaryCommand:
             "This command can only be used in text channels.", ephemeral=True
         )
 
+    async def test_summary_rejects_channel_user_cannot_read(self, cog, mock_interaction):
+        member = MagicMock(spec=discord.Member)
+        member.id = 12345
+        mock_interaction.user = member
+        target_channel = MagicMock(spec=discord.TextChannel)
+        permissions = MagicMock()
+        permissions.view_channel = False
+        permissions.read_message_history = False
+        target_channel.permissions_for.return_value = permissions
+
+        await cog.summary.callback(cog, mock_interaction, count=200, channel=target_channel)
+
+        target_channel.history.assert_not_called()
+        cog._summarizer.summarize_chat.assert_not_called()
+        mock_interaction.followup.send.assert_awaited_once_with(
+            "You don't have permission to read that channel's history.",
+            ephemeral=True,
+        )
+
 
 class TestFormatMessages:
     def test_format_basic_messages(self, cog):

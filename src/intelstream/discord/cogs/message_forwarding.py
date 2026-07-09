@@ -22,7 +22,7 @@ class MessageForwarding(commands.Cog):
 
     def __init__(self, bot: "IntelStreamBot") -> None:
         self.bot = bot
-        self.forwarder = MessageForwarder(bot)
+        self.forwarder = MessageForwarder(bot, bot.settings.max_concurrent_forwards)
         self._rules_cache: dict[str, list[Any]] = {}
         self._cache_lock = asyncio.Lock()
 

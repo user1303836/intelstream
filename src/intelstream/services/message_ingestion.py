@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -334,9 +335,12 @@ class MessageIngestionService:
 
         buffer: list[RawMessage] = []
         total_fetched = progress.total_fetched or 0
+        checkpoint_message_id = progress.last_message_id
+        checkpoint_total_fetched = total_fetched
         chunks_stored = 0
         messages_since_checkpoint = 0
         latest_message_date: str | None = None
+        last_seen_message_id = progress.last_message_id
 
         try:
             async for msg in channel.history(
@@ -349,8 +353,8 @@ class MessageIngestionService:
                         guild_id,
                         channel_id,
                         status="paused",
-                        last_message_id=str(msg.id),
-                        total_fetched=total_fetched,
+                        last_message_id=checkpoint_message_id,
+                        total_fetched=checkpoint_total_fetched,
                     )
                     logger.info(
                         "Ingestion paused",
@@ -365,6 +369,7 @@ class MessageIngestionService:
                 buffer.append(raw)
                 total_fetched += 1
                 messages_since_checkpoint += 1
+                last_seen_message_id = str(raw.id)
                 latest_message_date = raw.created_at.strftime("%Y-%m-%d")
 
                 if messages_since_checkpoint >= CHECKPOINT_INTERVAL:
@@ -372,29 +377,25 @@ class MessageIngestionService:
                         buffer, guild_id, channel_id, channel_name
                     )
                     if chunks:
-                        leftover_start = 0
-                        for chunk in chunks:
-                            leftover_start = max(
-                                leftover_start,
-                                next(
-                                    (
-                                        i
-                                        for i, m in enumerate(buffer)
-                                        if m.id == chunk.messages[-1].id
-                                    ),
-                                    0,
-                                )
-                                + 1,
-                            )
+                        buffer_indexes = {message.id: index for index, message in enumerate(buffer)}
+                        leftover_start = max(
+                            buffer_indexes[chunk.messages[-1].id] + 1 for chunk in chunks
+                        )
                         await self.store_chunks(chunks)
                         chunks_stored += len(chunks)
+                        checkpoint_message_id = str(buffer[leftover_start - 1].id)
+                        checkpoint_total_fetched = total_fetched - len(buffer) + leftover_start
                         buffer = buffer[leftover_start:]
+                    else:
+                        checkpoint_message_id = last_seen_message_id
+                        checkpoint_total_fetched = total_fetched
+                        buffer.clear()
 
                     await self._repository.update_ingestion_progress(
                         guild_id,
                         channel_id,
-                        last_message_id=str(msg.id),
-                        total_fetched=total_fetched,
+                        last_message_id=checkpoint_message_id,
+                        total_fetched=checkpoint_total_fetched,
                     )
                     messages_since_checkpoint = 0
 
@@ -422,7 +423,7 @@ class MessageIngestionService:
                 channel_id,
                 status="completed",
                 total_fetched=total_fetched,
-                last_message_id=str(buffer[-1].id) if buffer else progress.last_message_id,
+                last_message_id=last_seen_message_id,
             )
             logger.info(
                 "Channel ingestion complete",
@@ -442,18 +443,12 @@ class MessageIngestionService:
                 chunks=chunks_stored,
                 latest_date=latest_message_date,
             )
-            if buffer:
-                last_id = str(buffer[-1].id)
-            elif progress.last_message_id:
-                last_id = progress.last_message_id
-            else:
-                last_id = None
             await self._repository.update_ingestion_progress(
                 guild_id,
                 channel_id,
                 status="paused",
-                total_fetched=total_fetched,
-                last_message_id=last_id,
+                total_fetched=checkpoint_total_fetched,
+                last_message_id=checkpoint_message_id,
             )
 
     async def run_backfill(
@@ -510,8 +505,17 @@ class MessageIngestionService:
         except Exception:
             logger.exception("Backfill task crashed", guild=guild.name)
 
-    def stop_backfill(self) -> None:
+    async def stop_backfill(self) -> None:
         self._paused = True
+        task = self._backfill_task
+        if task is None or task.done():
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+        except TimeoutError:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 def clean_message_chunk_text(text: str) -> str:

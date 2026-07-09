@@ -602,7 +602,7 @@ class TestMessageIngestionService:
             "guild-1",
             "222",
             status="paused",
-            last_message_id="10",
+            last_message_id=None,
             total_fetched=0,
         )
 
@@ -691,7 +691,7 @@ class TestMessageIngestionService:
             await service.ingest_channel(channel, "guild-1")
 
         service.store_chunks.assert_not_awaited()
-        assert service._chunker.chunk_messages.call_count == 3
+        assert service._chunker.chunk_messages.call_count == 2
         repository.update_ingestion_progress.assert_any_await(
             "guild-1",
             "222",
@@ -768,8 +768,8 @@ class TestMessageIngestionService:
             "guild-1",
             "222",
             status="paused",
-            total_fetched=1,
-            last_message_id="10",
+            total_fetched=0,
+            last_message_id=None,
         )
 
     async def test_ingest_channel_records_none_last_id_on_early_error(self, service, mock_deps):
@@ -889,7 +889,17 @@ class TestMessageIngestionService:
 
         service.run_backfill.assert_awaited_once_with(guild)
 
-    def test_stop_backfill_sets_paused(self, service):
-        service.stop_backfill()
+    async def test_stop_backfill_sets_paused(self, service):
+        await service.stop_backfill()
 
         assert service.is_paused is True
+
+    async def test_stop_backfill_waits_for_running_task(self, service):
+        finish = asyncio.Event()
+
+        service._backfill_task = asyncio.create_task(finish.wait())
+        asyncio.get_running_loop().call_soon(finish.set)
+
+        await service.stop_backfill()
+
+        assert service._backfill_task.done()

@@ -40,4 +40,4 @@ class EmbeddingService:
                 texts,
                 show_progress_bar=False,
             )
-        return embeddings.tolist()  # type: ignore[no-any-return]
+        return embeddings.tolist()
