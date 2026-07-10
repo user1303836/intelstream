@@ -87,7 +87,7 @@ class TestSitemapDiscoveryStrategy:
             return_value=httpx.Response(200, text=sitemap)
         )
 
-        with patch("intelstream.adapters.strategies.sitemap_discovery.validate_url_for_ssrf"):
+        with patch("intelstream.adapters.strategies.sitemap_discovery.async_validate_url_for_ssrf"):
             result = await sitemap_strategy.discover("https://example.com/research")
 
         assert result is not None
@@ -139,7 +139,7 @@ class TestSitemapDiscoveryStrategy:
             return_value=httpx.Response(200, text=posts_sitemap)
         )
 
-        with patch("intelstream.adapters.strategies.sitemap_discovery.validate_url_for_ssrf"):
+        with patch("intelstream.adapters.strategies.sitemap_discovery.async_validate_url_for_ssrf"):
             result = await sitemap_strategy.discover("https://example.com/articles")
 
         assert result is not None
@@ -410,7 +410,7 @@ class TestSitemapDiscoveryStrategy:
         strategy = SitemapDiscoveryStrategy(http_client=client)
 
         with patch(
-            "intelstream.adapters.strategies.sitemap_discovery.validate_url_for_ssrf",
+            "intelstream.adapters.strategies.sitemap_discovery.async_validate_url_for_ssrf",
             side_effect=SSRFError("blocked"),
         ):
             assert await strategy._check_robots_txt("https://example.com") is None
@@ -539,7 +539,7 @@ class TestSitemapDiscoveryStrategy:
         )
 
         with patch(
-            "intelstream.adapters.strategies.sitemap_discovery.validate_url_for_ssrf",
+            "intelstream.adapters.strategies.sitemap_discovery.async_validate_url_for_ssrf",
             side_effect=[SSRFError("blocked"), None],
         ):
             result = await strategy._parse_sitemap_index(root)
@@ -560,7 +560,7 @@ class TestSitemapDiscoveryStrategy:
         )
 
         with patch(
-            "intelstream.adapters.strategies.sitemap_discovery.validate_url_for_ssrf",
+            "intelstream.adapters.strategies.sitemap_discovery.async_validate_url_for_ssrf",
             side_effect=[SSRFError("blocked"), None],
         ):
             result = await strategy._parse_sitemap_index(root)
@@ -581,7 +581,7 @@ class TestSitemapDiscoveryStrategy:
             return_value=[{"url": "https://example.com/blog/post", "lastmod": None}]
         )
 
-        with patch("intelstream.adapters.strategies.sitemap_discovery.validate_url_for_ssrf"):
+        with patch("intelstream.adapters.strategies.sitemap_discovery.async_validate_url_for_ssrf"):
             result = await strategy._parse_sitemap_index(root)
 
         assert result == [{"url": "https://example.com/blog/post", "lastmod": None}]
@@ -604,7 +604,7 @@ class TestSitemapDiscoveryStrategy:
         )
 
         with (
-            patch("intelstream.adapters.strategies.sitemap_discovery.validate_url_for_ssrf"),
+            patch("intelstream.adapters.strategies.sitemap_discovery.async_validate_url_for_ssrf"),
             patch.object(sitemap_discovery, "MAX_SUB_SITEMAPS", 2),
         ):
             result = await strategy._parse_sitemap_index(root)
@@ -632,7 +632,7 @@ class TestSitemapDiscoveryStrategy:
         )
 
         with (
-            patch("intelstream.adapters.strategies.sitemap_discovery.validate_url_for_ssrf"),
+            patch("intelstream.adapters.strategies.sitemap_discovery.async_validate_url_for_ssrf"),
             patch.object(sitemap_discovery, "MAX_SITEMAP_URLS", 2),
         ):
             result = await strategy._parse_sitemap_index(root)
@@ -671,7 +671,7 @@ class TestSitemapDiscoveryStrategy:
             return_value=[{"url": "https://example.com/blog/post", "lastmod": None}]
         )
 
-        with patch("intelstream.adapters.strategies.sitemap_discovery.validate_url_for_ssrf"):
+        with patch("intelstream.adapters.strategies.sitemap_discovery.async_validate_url_for_ssrf"):
             result = await strategy._parse_sitemap_index(root)
 
         assert result == [{"url": "https://example.com/blog/post", "lastmod": None}]
@@ -694,7 +694,7 @@ class TestSitemapDiscoveryStrategy:
         )
 
         with (
-            patch("intelstream.adapters.strategies.sitemap_discovery.validate_url_for_ssrf"),
+            patch("intelstream.adapters.strategies.sitemap_discovery.async_validate_url_for_ssrf"),
             patch.object(sitemap_discovery, "MAX_SITEMAP_URLS", 2),
         ):
             result = await strategy._parse_sitemap_index(root)

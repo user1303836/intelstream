@@ -32,3 +32,7 @@ class BaseAdapter(ABC):
     @abstractmethod
     async def get_feed_url(self, identifier: str) -> str:
         pass
+
+    async def close(self) -> None:
+        """Release resources owned by the adapter."""
+        return None

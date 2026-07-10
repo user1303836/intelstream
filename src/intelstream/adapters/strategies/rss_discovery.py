@@ -14,7 +14,7 @@ from intelstream.adapters.strategies.base import (
 from intelstream.config import get_settings
 from intelstream.utils.feed_utils import parse_feed_date
 from intelstream.utils.safe_http import SafeHTTPError, safe_request
-from intelstream.utils.url_validation import SSRFError, validate_url_for_ssrf
+from intelstream.utils.url_validation import SSRFError, async_validate_url_for_ssrf
 
 logger = structlog.get_logger()
 
@@ -52,7 +52,7 @@ class RSSDiscoveryStrategy(DiscoveryStrategy):
         if not html:
             return None
 
-        rss_url = self._find_rss_in_html(html, base_url)
+        rss_url = await self._find_rss_in_html(html, base_url)
 
         if not rss_url:
             rss_url = await self._probe_rss_paths(base_url)
@@ -84,7 +84,7 @@ class RSSDiscoveryStrategy(DiscoveryStrategy):
             logger.debug("Failed to fetch HTML", url=url, error=str(e))
             return None
 
-    def _find_rss_in_html(self, html: str, base_url: str) -> str | None:
+    async def _find_rss_in_html(self, html: str, base_url: str) -> str | None:
         soup = BeautifulSoup(html, "lxml")
 
         for link in soup.find_all("link", rel="alternate"):
@@ -94,7 +94,7 @@ class RSSDiscoveryStrategy(DiscoveryStrategy):
                 if href:
                     feed_url = urljoin(base_url, str(href))
                     try:
-                        validate_url_for_ssrf(feed_url)
+                        await async_validate_url_for_ssrf(feed_url)
                         return feed_url
                     except SSRFError:
                         logger.warning("Skipping RSS URL blocked by SSRF protection", url=feed_url)
@@ -105,7 +105,7 @@ class RSSDiscoveryStrategy(DiscoveryStrategy):
             if href:
                 feed_url = urljoin(base_url, str(href))
                 try:
-                    validate_url_for_ssrf(feed_url)
+                    await async_validate_url_for_ssrf(feed_url)
                     return feed_url
                 except SSRFError:
                     logger.warning("Skipping RSS URL blocked by SSRF protection", url=feed_url)

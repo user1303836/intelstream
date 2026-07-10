@@ -92,6 +92,10 @@ class TestCommand:
         message = interaction.response.send_message.await_args.args[0]
         assert "Caller" in message
         assert "<@2>" in message
+        allowed_mentions = interaction.response.send_message.await_args.kwargs["allowed_mentions"]
+        assert allowed_mentions.users == [target]
+        assert allowed_mentions.everyone is False
+        assert allowed_mentions.roles is False
 
     async def test_rare_response_still_records_usage(self):
         bot = MagicMock()
@@ -107,6 +111,9 @@ class TestCommand:
 
         bot.repository.record_suck_boobs_usage.assert_awaited_once()
         assert "<@2>" in interaction.response.send_message.await_args.args[0]
+        assert interaction.response.send_message.await_args.kwargs["allowed_mentions"].users == [
+            target
+        ]
 
 
 class TestScoreCommand:

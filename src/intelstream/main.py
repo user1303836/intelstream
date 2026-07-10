@@ -6,17 +6,20 @@ import structlog
 
 from intelstream.bot import run_bot
 from intelstream.config import get_settings
+from intelstream.utils.log_safety import sanitize_log_urls
 
 
 def configure_logging(log_level: str) -> None:
+    stdout_is_tty = getattr(sys.stdout, "isatty", lambda: False)()
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
+            sanitize_log_urls,
             structlog.processors.add_log_level,
             structlog.processors.StackInfoRenderer(),
             structlog.dev.set_exc_info,
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.dev.ConsoleRenderer(),
+            structlog.processors.TimeStamper(fmt="iso", utc=True),
+            structlog.dev.ConsoleRenderer(colors=stdout_is_tty),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(getattr(logging, log_level.upper())),
         context_class=dict,
@@ -41,7 +44,7 @@ def main() -> None:
     configure_logging(settings.log_level)
 
     logger = structlog.get_logger()
-    logger.info("Starting IntelStream bot")
+    logger.info("Starting IntelStream bot", **settings.startup_log_context())
 
     try:
         asyncio.run(run_bot(settings))

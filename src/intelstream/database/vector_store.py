@@ -6,13 +6,11 @@ import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     import zvec
 
 logger = structlog.get_logger(__name__)
@@ -24,6 +22,7 @@ _ARTICLE_CHUNK_INDEX_FIELD = "chunk_index"
 _ARTICLE_TEXT_FIELD = "text"
 _ARTICLE_SEARCH_TEXT_FIELD = "search_text"
 _UPSERT_BATCH_SIZE = 256
+_DELETE_BATCH_SIZE = 256
 
 
 def _batched[T](items: list[T], batch_size: int) -> list[list[T]]:
@@ -442,10 +441,9 @@ class VectorStore:
         collection = await self._article_collection(create=False)
         if collection is None:
             return []
-        vector_query = cast("Callable[..., Any]", zvec.VectorQuery)
         results: Any = await asyncio.to_thread(
             collection.query,
-            vector_query(_VECTOR_FIELD_NAME, vector=query_embedding),
+            zvec.Query(_VECTOR_FIELD_NAME, vector=query_embedding),
             topk=topk,
             output_fields=[
                 _ARTICLE_CONTENT_ITEM_ID_FIELD,
@@ -470,11 +468,13 @@ class VectorStore:
         return chunk_results
 
     async def delete_article_chunks(self, chunk_ids: list[str]) -> None:
+        if not chunk_ids:
+            return
         collection = await self._article_collection(create=False)
         if collection is None:
             return
-        for chunk_id in chunk_ids:
-            await asyncio.to_thread(collection.delete, chunk_id)
+        for batch in _batched(chunk_ids, _DELETE_BATCH_SIZE):
+            await asyncio.to_thread(collection.delete, batch)
 
     async def article_chunk_doc_count(self) -> int:
         collection = await self._article_collection(create=False)
@@ -564,20 +564,21 @@ class VectorStore:
         collection = await self._message_chunk_collection(guild_id, create=False)
         if collection is None:
             return []
-        vector_query = cast("Callable[..., Any]", zvec.VectorQuery)
         results: Any = await asyncio.to_thread(
             collection.query,
-            vector_query(_VECTOR_FIELD_NAME, vector=query_embedding),
+            zvec.Query(_VECTOR_FIELD_NAME, vector=query_embedding),
             topk=topk,
         )
         return [ChunkSearchResult(chunk_id=r.id, score=r.score) for r in results]
 
     async def delete_message_chunks_by_ids(self, guild_id: str, chunk_ids: list[str]) -> None:
+        if not chunk_ids:
+            return
         collection = await self._message_chunk_collection(guild_id, create=False)
         if collection is None:
             return
-        for chunk_id in chunk_ids:
-            await asyncio.to_thread(collection.delete, chunk_id)
+        for batch in _batched(chunk_ids, _DELETE_BATCH_SIZE):
+            await asyncio.to_thread(collection.delete, batch)
 
     async def message_chunk_doc_count(self, guild_id: str) -> int:
         collection = await self._message_chunk_collection(guild_id, create=False)

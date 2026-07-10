@@ -33,7 +33,10 @@ def make_command_interaction(guild_id: int | None = 123456789) -> MagicMock:
     interaction.user.id = 12345
     interaction.guild_id = guild_id
     interaction.response = MagicMock()
+    interaction.response.defer = AsyncMock()
     interaction.response.send_message = AsyncMock()
+    interaction.followup = MagicMock()
+    interaction.followup.send = AsyncMock()
     return interaction
 
 
@@ -51,6 +54,7 @@ class TestIntelStreamBot:
         bot = await create_bot(mock_settings)
 
         assert bot.intents.message_content is True
+        assert bot.allowed_mentions.to_dict() == discord.AllowedMentions.none().to_dict()
 
         await bot.repository.close()
 
@@ -319,10 +323,13 @@ class TestIntelStreamBot:
         bot.start_time = None
 
         await IntelStreamBot.on_ready(bot)
+        first_start_time = bot.start_time
+        await IntelStreamBot.on_ready(bot)
 
-        assert bot.start_time is not None
+        assert bot.start_time is first_start_time
         assert bot._owner is owner
-        lore_cog.auto_start_ingestion.assert_awaited_once()
+        assert lore_cog.auto_start_ingestion.await_count == 2
+        bot.fetch_user.assert_awaited_once_with(mock_settings.discord_owner_id)
 
     async def test_on_ready_handles_missing_owner_and_lore_start_failure(
         self, mock_settings: Settings
@@ -360,6 +367,26 @@ class TestIntelStreamBot:
 
         assert bot.start_time is not None
         assert bot._owner is owner
+
+    async def test_on_ready_retries_lore_start_after_transient_failure(
+        self, mock_settings: Settings
+    ) -> None:
+        bot = MagicMock()
+        bot.user = None
+        bot.settings = mock_settings
+        bot.fetch_user = AsyncMock(return_value=MagicMock(spec=discord.User))
+        lore_cog = MagicMock()
+        lore_cog.auto_start_ingestion = AsyncMock(
+            side_effect=[RuntimeError("temporary failure"), None]
+        )
+        bot.cogs = {"Lore": lore_cog}
+        bot._owner = MagicMock(spec=discord.User)
+        bot.start_time = None
+
+        await IntelStreamBot.on_ready(bot)
+        await IntelStreamBot.on_ready(bot)
+
+        assert lore_cog.auto_start_ingestion.await_count == 2
 
     async def test_on_error_notifies_owner(self) -> None:
         bot = MagicMock()
@@ -443,7 +470,7 @@ class TestIntelStreamBot:
         with patch("intelstream.bot.create_bot", AsyncMock(return_value=bot)):
             await run_bot(mock_settings)
 
-        bot.start.assert_awaited_once_with(mock_settings.discord_bot_token)
+        bot.start.assert_awaited_once_with(mock_settings.discord_token)
         bot.close.assert_awaited_once()
 
     async def test_run_bot_closes_bot_when_start_fails(self, mock_settings: Settings) -> None:
@@ -493,6 +520,23 @@ class TestRestrictedCommandTreeInteractionCheck:
 
         assert allowed is True
         interaction.response.send_message.assert_not_called()
+
+        await bot.repository.close()
+
+    async def test_allows_commands_in_thread_under_allowed_channel(
+        self, mock_settings: Settings
+    ) -> None:
+        bot = await create_bot(mock_settings)
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.channel_id = mock_settings.discord_channel_id + 1
+        interaction.channel = MagicMock(spec=discord.Thread)
+        interaction.channel.parent_id = mock_settings.discord_channel_id
+        interaction.response.send_message = AsyncMock()
+
+        allowed = await bot.tree.interaction_check(interaction)
+
+        assert allowed is True
+        interaction.response.send_message.assert_not_awaited()
 
         await bot.repository.close()
 
@@ -696,11 +740,13 @@ class TestCoreCommandsCommands:
         is_active: bool = True,
         failures: int = 0,
         channel_id: str | None = "222",
+        guild_id: str = "123456789",
     ) -> MagicMock:
         source = MagicMock()
         source.name = f"Source {index}"
         source.type = SourceType.RSS
         source.channel_id = channel_id
+        source.guild_id = guild_id
         source.is_active = is_active
         source.consecutive_failures = failures
         source.pause_reason = PauseReason.NONE.value
@@ -740,7 +786,8 @@ class TestCoreCommandsCommands:
 
         await core.status.callback(core, interaction)
 
-        embed = interaction.response.send_message.await_args.kwargs["embed"]
+        interaction.response.defer.assert_awaited_once_with()
+        embed = interaction.followup.send.await_args.kwargs["embed"]
         assert embed.title == "IntelStream Status"
         field_names = [field.name for field in embed.fields]
         assert "System" in field_names
@@ -777,7 +824,8 @@ class TestCoreCommandsCommands:
 
         await core.status.callback(core, interaction)
 
-        embed = interaction.response.send_message.await_args.kwargs["embed"]
+        interaction.response.defer.assert_awaited_once_with()
+        embed = interaction.followup.send.await_args.kwargs["embed"]
         assert embed.title == "IntelStream Status"
         assert all(field.name != "Configured Sources" for field in embed.fields)
         repository.get_forwarding_rules_for_guild.assert_not_called()
@@ -802,7 +850,7 @@ class TestCoreCommandsCommands:
 
         await core.status.callback(core, interaction)
 
-        embed = interaction.response.send_message.await_args.kwargs["embed"]
+        embed = interaction.followup.send.await_args.kwargs["embed"]
         configured = next(
             field.value for field in embed.fields if field.name == "Configured Sources"
         )
@@ -811,6 +859,63 @@ class TestCoreCommandsCommands:
         )
         assert "*... and" not in configured
         assert "*... and" not in forwarding
+
+    async def test_status_filters_sources_to_interaction_guild(self) -> None:
+        bot = MagicMock()
+        bot.latency = 0
+        bot.start_time = datetime.now(UTC)
+        bot.settings.content_poll_interval_minutes = 5
+        repository = AsyncMock()
+        repository.get_all_sources = AsyncMock(
+            return_value=[self._make_source(1), self._make_source(2, guild_id="other-guild")]
+        )
+        repository.get_content_stats = AsyncMock(
+            return_value={"total_fetched": 1, "total_posted": 1}
+        )
+        repository.get_last_posted_content = AsyncMock(return_value=None)
+        repository.get_forwarding_rules_for_guild = AsyncMock(return_value=[])
+        repository.get_discord_config = AsyncMock(return_value=None)
+        bot.repository = repository
+        core = CoreCommands(bot)
+        interaction = make_command_interaction()
+
+        await core.status.callback(core, interaction)
+
+        embed = interaction.followup.send.await_args.kwargs["embed"]
+        configured = next(
+            field.value for field in embed.fields if field.name == "Configured Sources"
+        )
+        assert "Source 1" in configured
+        assert "Source 2" not in configured
+
+    async def test_status_bounds_long_source_field(self) -> None:
+        bot = MagicMock()
+        bot.latency = 0
+        bot.start_time = datetime.now(UTC)
+        bot.settings.content_poll_interval_minutes = 5
+        repository = AsyncMock()
+        sources = [self._make_source(i) for i in range(8)]
+        for source in sources:
+            source.name = "x" * 255
+        repository.get_all_sources = AsyncMock(return_value=sources)
+        repository.get_content_stats = AsyncMock(
+            return_value={"total_fetched": 1, "total_posted": 1}
+        )
+        repository.get_last_posted_content = AsyncMock(return_value=None)
+        repository.get_forwarding_rules_for_guild = AsyncMock(return_value=[])
+        repository.get_discord_config = AsyncMock(return_value=None)
+        bot.repository = repository
+        core = CoreCommands(bot)
+        interaction = make_command_interaction()
+
+        await core.status.callback(core, interaction)
+
+        embed = interaction.followup.send.await_args.kwargs["embed"]
+        configured = next(
+            field.value for field in embed.fields if field.name == "Configured Sources"
+        )
+        assert len(configured) <= 1024
+        assert "more" in configured
 
     async def test_ping_sends_latency(self) -> None:
         bot = MagicMock(spec=IntelStreamBot)

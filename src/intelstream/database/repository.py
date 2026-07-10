@@ -1,8 +1,9 @@
 from datetime import UTC, datetime, timedelta
 
 import structlog
-from sqlalchemy import and_, delete, exists, func, insert, or_, select, text
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy import and_, delete, exists, func, insert, or_, select, text, update
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError, IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
     AsyncSession,
@@ -45,15 +46,31 @@ SOURCES_MIGRATIONS: list[tuple[str, str]] = [
     ("skip_summary", "BOOLEAN DEFAULT 0"),
 ]
 
+CONTENT_ITEM_INDEX_MIGRATIONS: tuple[str, ...] = (
+    "CREATE INDEX IF NOT EXISTS ix_content_items_source_published "
+    "ON content_items (source_id, published_at)",
+    "CREATE INDEX IF NOT EXISTS ix_content_items_unsummarized_created "
+    "ON content_items (created_at) WHERE summary IS NULL",
+    "CREATE INDEX IF NOT EXISTS ix_content_items_unposted_published "
+    "ON content_items (published_at, id) "
+    "WHERE posted_to_discord = 0 AND summary IS NOT NULL",
+)
+
 MIN_POLL_INTERVAL_MINUTES = 1
-MAX_POLL_INTERVAL_MINUTES = 60
+MAX_POLL_INTERVAL_MINUTES = 1440
+SQLITE_IN_BATCH_SIZE = 900
 
 
 class Repository:
     def __init__(self, database_url: str) -> None:
-        if not database_url.startswith("sqlite"):
-            db_type = database_url.split("://")[0] if "://" in database_url else database_url
-            raise ValueError(f"Only SQLite databases are supported. Got: {db_type}")
+        try:
+            url = make_url(database_url)
+        except ArgumentError as e:
+            raise ValueError("Invalid database URL") from e
+        if url.get_backend_name() != "sqlite":
+            raise ValueError(f"Only SQLite databases are supported. Got: {url.get_backend_name()}")
+        if url.drivername != "sqlite+aiosqlite":
+            raise ValueError("SQLite database URLs must use the sqlite+aiosqlite async driver")
         self._engine = create_async_engine(
             database_url,
             echo=False,
@@ -68,6 +85,7 @@ class Repository:
         async with self._engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             await self._migrate_sources_table(conn)
+            await self._migrate_content_item_indexes(conn)
         logger.info("Database initialization complete")
 
     async def _migrate_sources_table(self, conn: AsyncConnection) -> None:
@@ -80,6 +98,10 @@ class Repository:
                 await conn.execute(
                     text(f"ALTER TABLE sources ADD COLUMN {column_name} {column_type}")
                 )
+
+    async def _migrate_content_item_indexes(self, conn: AsyncConnection) -> None:
+        for statement in CONTENT_ITEM_INDEX_MIGRATIONS:
+            await conn.execute(text(statement))
 
     async def migrate_sources_to_channel(self, guild_id: str, channel_id: str) -> int:
         """Assign existing sources without a channel to the specified guild and channel."""
@@ -175,7 +197,10 @@ class Repository:
             return result.scalar_one_or_none()
 
     async def get_all_sources(
-        self, active_only: bool = True, channel_id: str | None = None
+        self,
+        active_only: bool = True,
+        channel_id: str | None = None,
+        guild_id: str | None = None,
     ) -> list[Source]:
         async with self.session() as session:
             query = select(Source)
@@ -183,8 +208,33 @@ class Repository:
                 query = query.where(Source.is_active == True)  # noqa: E712
             if channel_id is not None:
                 query = query.where(Source.channel_id == channel_id)
+            if guild_id is not None:
+                query = query.where(Source.guild_id == guild_id)
             result = await session.execute(query)
             return list(result.scalars().all())
+
+    async def sync_source_poll_intervals(self, intervals: dict[SourceType, int]) -> int:
+        """Persist configured per-type intervals without rewriting unchanged rows."""
+        updated = 0
+        async with self.session() as session:
+            for source_type, interval in intervals.items():
+                if not MIN_POLL_INTERVAL_MINUTES <= interval <= MAX_POLL_INTERVAL_MINUTES:
+                    raise ValueError(
+                        "poll_interval_minutes must be between "
+                        f"{MIN_POLL_INTERVAL_MINUTES} and {MAX_POLL_INTERVAL_MINUTES}, "
+                        f"got {interval}"
+                    )
+                result = await session.execute(
+                    update(Source)
+                    .where(
+                        Source.type == source_type,
+                        Source.poll_interval_minutes != interval,
+                    )
+                    .values(poll_interval_minutes=interval)
+                )
+                updated += int(getattr(result, "rowcount", 0) or 0)
+            await session.commit()
+        return updated
 
     async def update_source_last_polled(self, source_id: str) -> bool:
         async with self.session() as session:
@@ -408,6 +458,21 @@ class Repository:
             )
             return result.scalar_one()
 
+    async def get_existing_external_ids(self, external_ids: set[str]) -> set[str]:
+        if not external_ids:
+            return set()
+
+        identifiers = list(external_ids)
+        existing: set[str] = set()
+        async with self.session() as session:
+            for start in range(0, len(identifiers), SQLITE_IN_BATCH_SIZE):
+                batch = identifiers[start : start + SQLITE_IN_BATCH_SIZE]
+                result = await session.execute(
+                    select(ContentItem.external_id).where(ContentItem.external_id.in_(batch))
+                )
+                existing.update(result.scalars().all())
+        return existing
+
     async def get_unposted_content_items(
         self,
         limit: int = 10,
@@ -477,24 +542,19 @@ class Repository:
         self, source_id: str, exclude_item_id: str | None = None
     ) -> int:
         async with self.session() as session:
-            query = (
-                select(ContentItem)
+            statement = (
+                update(ContentItem)
                 .where(ContentItem.source_id == source_id)
                 .where(ContentItem.posted_to_discord == False)  # noqa: E712
                 .where(ContentItem.summary.is_(None))
+                .values(posted_to_discord=True, discord_message_id="backfilled")
             )
             if exclude_item_id:
-                query = query.where(ContentItem.id != exclude_item_id)
+                statement = statement.where(ContentItem.id != exclude_item_id)
 
-            result = await session.execute(query)
-            items = list(result.scalars().all())
-
-            for item in items:
-                item.posted_to_discord = True
-                item.discord_message_id = "backfilled"
-
+            result = await session.execute(statement)
             await session.commit()
-            return len(items)
+            return int(getattr(result, "rowcount", 0) or 0)
 
     async def update_content_item_summary(self, content_id: str, summary: str) -> bool:
         async with self.session() as session:

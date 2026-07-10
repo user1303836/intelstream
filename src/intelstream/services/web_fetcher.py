@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -5,6 +6,7 @@ import httpx
 import structlog
 from bs4 import BeautifulSoup, Tag
 
+from intelstream.utils.log_safety import safe_url_for_log
 from intelstream.utils.safe_http import DEFAULT_MAX_REDIRECTS, SafeHTTPError, safe_request
 
 logger = structlog.get_logger()
@@ -59,13 +61,17 @@ class WebFetcher:
             if len(html) > MAX_CONTENT_LENGTH:
                 html = html[:MAX_CONTENT_LENGTH]
 
-            return self._parse_html(url, html)
+            return await asyncio.to_thread(self._parse_html, url, html)
 
         except httpx.HTTPStatusError as e:
-            logger.warning("HTTP error fetching URL", url=url, status=e.response.status_code)
+            logger.warning(
+                "HTTP error fetching URL",
+                url=safe_url_for_log(url),
+                status=e.response.status_code,
+            )
             raise WebFetchError(f"Failed to fetch URL: HTTP {e.response.status_code}") from e
         except httpx.RequestError as e:
-            logger.warning("Request error fetching URL", url=url, error=str(e))
+            logger.warning("Request error fetching URL", url=safe_url_for_log(url), error=str(e))
             raise WebFetchError(f"Failed to fetch URL: {e}") from e
         except SafeHTTPError as e:
             raise WebFetchError(str(e)) from e

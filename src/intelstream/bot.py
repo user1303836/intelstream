@@ -17,6 +17,31 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+MAX_EMBED_FIELD_VALUE_LENGTH = 1024
+MAX_STATUS_SOURCES = 8
+
+
+def _bounded_status_lines(
+    lines: list[str],
+    *,
+    max_items: int = MAX_STATUS_SOURCES,
+    max_length: int = MAX_EMBED_FIELD_VALUE_LENGTH,
+) -> str:
+    displayed = lines[:max_items]
+    while displayed:
+        omitted = len(lines) - len(displayed)
+        rendered = list(displayed)
+        if omitted:
+            rendered.append(f"*... and {omitted} more*")
+        value = "\n".join(rendered)
+        if len(value) <= max_length:
+            return value
+        displayed.pop()
+
+    if lines:
+        return f"*... and {len(lines)} more*"[:max_length]
+    return ""
+
 
 class RestrictedCommandTree(app_commands.CommandTree):
     def __init__(self, bot: "IntelStreamBot", *args: Any, **kwargs: Any) -> None:
@@ -27,7 +52,15 @@ class RestrictedCommandTree(app_commands.CommandTree):
             return False
         bot = self.client
         allowed_channel_id = bot.settings.discord_channel_id
-        if allowed_channel_id is not None and interaction.channel_id != allowed_channel_id:
+        channel = interaction.channel
+        is_allowed_thread = (
+            isinstance(channel, discord.Thread) and channel.parent_id == allowed_channel_id
+        )
+        if (
+            allowed_channel_id is not None
+            and interaction.channel_id != allowed_channel_id
+            and not is_allowed_thread
+        ):
             await interaction.response.send_message(
                 f"Commands can only be used in <#{allowed_channel_id}>",
                 ephemeral=True,
@@ -107,11 +140,12 @@ class IntelStreamBot(commands.Bot):
             intents=intents,
             help_command=None,
             tree_cls=RestrictedCommandTree,
+            allowed_mentions=discord.AllowedMentions.none(),
         )
 
         self.settings = settings
         self.repository = repository
-        self.start_time: datetime | None = None
+        self.start_time: datetime | None = datetime.now(UTC)
         self._owner: discord.User | None = None
         self.embedding_service: EmbeddingService | None = None
         self.vector_store: VectorStore | None = None
@@ -191,33 +225,35 @@ class IntelStreamBot(commands.Bot):
             await self.add_cog(Lore(self, self.embedding_service, self.vector_store))
             logger.info("Search services initialized")
         except Exception as e:
-            logger.error("Failed to initialize search services", error=str(e))
+            logger.exception("Failed to initialize search services", error=str(e))
             self.embedding_service = None
             self.vector_store = None
 
     async def on_ready(self) -> None:
-        self.start_time = datetime.now(UTC)
+        if self.start_time is None:
+            self.start_time = datetime.now(UTC)
         logger.info(
             "Logged in",
             user=str(self.user),
             user_id=self.user.id if self.user else None,
         )
 
-        try:
-            self._owner = await self.fetch_user(self.settings.discord_owner_id)
-            logger.info("Owner set", owner=str(self._owner))
-        except discord.NotFound:
-            logger.warning(
-                "Could not find owner",
-                owner_id=self.settings.discord_owner_id,
-            )
+        if self._owner is None:
+            try:
+                self._owner = await self.fetch_user(self.settings.discord_owner_id)
+                logger.info("Owner set", owner=str(self._owner))
+            except discord.NotFound:
+                logger.warning(
+                    "Could not find owner",
+                    owner_id=self.settings.discord_owner_id,
+                )
 
         lore_cog = self.cogs.get("Lore")
         if lore_cog is not None and hasattr(lore_cog, "auto_start_ingestion"):
             try:
                 await lore_cog.auto_start_ingestion()
             except Exception as e:
-                logger.error("Failed to auto-start lore ingestion", error=str(e))
+                logger.exception("Failed to auto-start lore ingestion", error=str(e))
 
     async def on_error(self, event_method: str, *_args: Any, **_kwargs: Any) -> None:
         logger.exception("Error in event handler", event_method=event_method)
@@ -256,7 +292,7 @@ class IntelStreamBot(commands.Bot):
                 except TimeoutError:
                     logger.error("Cog unload timed out", cog=cog_name)
                 except Exception as e:
-                    logger.error("Error unloading cog", cog=cog_name, error=str(e))
+                    logger.exception("Error unloading cog", cog=cog_name, error=str(e))
 
         try:
             await asyncio.wait_for(unload_all_cogs(), timeout=30.0)
@@ -269,14 +305,14 @@ class IntelStreamBot(commands.Bot):
             except TimeoutError:
                 logger.error("Vector store close timed out")
             except Exception as e:
-                logger.error("Error closing vector store", error=str(e))
+                logger.exception("Error closing vector store", error=str(e))
 
         try:
             await asyncio.wait_for(self.repository.close(), timeout=5.0)
         except TimeoutError:
             logger.error("Repository close timed out")
         except Exception as e:
-            logger.error("Error closing repository", error=str(e))
+            logger.exception("Error closing repository", error=str(e))
         finally:
             await super().close()
 
@@ -325,6 +361,8 @@ class CoreCommands(commands.Cog):
 
     @app_commands.command(name="status", description="Show bot status and information")
     async def status(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+
         logger.debug(
             "status command invoked",
             user_id=interaction.user.id,
@@ -333,23 +371,35 @@ class CoreCommands(commands.Cog):
 
         guild_id = str(interaction.guild_id) if interaction.guild_id else None
 
-        sources = await self.bot.repository.get_all_sources(active_only=False)
+        if guild_id:
+            (
+                all_sources,
+                content_stats,
+                last_posted,
+                forwarding_rules,
+                default_config,
+            ) = await asyncio.gather(
+                self.bot.repository.get_all_sources(active_only=False, guild_id=guild_id),
+                self.bot.repository.get_content_stats(guild_id),
+                self.bot.repository.get_last_posted_content(guild_id),
+                self.bot.repository.get_forwarding_rules_for_guild(guild_id),
+                self.bot.repository.get_discord_config(guild_id),
+            )
+            sources = [source for source in all_sources if source.guild_id == guild_id]
+        else:
+            content_stats, last_posted = await asyncio.gather(
+                self.bot.repository.get_content_stats(None),
+                self.bot.repository.get_last_posted_content(None),
+            )
+            sources = []
+            forwarding_rules = []
+            default_config = None
+
         active_sources = [s for s in sources if s.is_active]
         failing_sources = [
             s for s in sources if s.consecutive_failures and s.consecutive_failures > 0
         ]
-
-        content_stats = await self.bot.repository.get_content_stats(guild_id)
-        last_posted = await self.bot.repository.get_last_posted_content(guild_id)
-
-        forwarding_rules = []
-        if guild_id:
-            forwarding_rules = await self.bot.repository.get_forwarding_rules_for_guild(guild_id)
         active_rules = [r for r in forwarding_rules if r.is_active]
-
-        default_config = None
-        if guild_id:
-            default_config = await self.bot.repository.get_discord_config(guild_id)
 
         embed = discord.Embed(
             title="IntelStream Status",
@@ -382,8 +432,8 @@ class CoreCommands(commands.Cog):
         embed.add_field(name="Sources", value=source_summary, inline=True)
 
         if sources:
-            source_list = []
-            for source in sources[:8]:
+            source_list: list[str] = []
+            for source in sources:
                 icon = self._get_source_status_icon(source)
                 channel_mention = f"<#{source.channel_id}>" if source.channel_id else "No channel"
 
@@ -395,12 +445,9 @@ class CoreCommands(commands.Cog):
                     f"`{icon}` **{source.name}** ({source.type.value}) -> {channel_mention}{failure_note}"
                 )
 
-            if len(sources) > 8:
-                source_list.append(f"*... and {len(sources) - 8} more*")
-
             embed.add_field(
                 name="Configured Sources",
-                value="\n".join(source_list),
+                value=_bounded_status_lines(source_list),
                 inline=False,
             )
 
@@ -431,7 +478,7 @@ class CoreCommands(commands.Cog):
 
         embed.set_footer(text="IntelStream")
 
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="ping", description="Check if the bot is responsive")
     async def ping(self, interaction: discord.Interaction) -> None:
@@ -453,6 +500,6 @@ async def create_bot(settings: Settings) -> IntelStreamBot:
 async def run_bot(settings: Settings) -> None:
     bot = await create_bot(settings)
     try:
-        await bot.start(settings.discord_bot_token)
+        await bot.start(settings.discord_token)
     finally:
         await bot.close()

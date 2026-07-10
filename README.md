@@ -64,7 +64,7 @@ Start from the tracked example file:
 cp .env.example .env
 ```
 
-Then replace the placeholders you need. Remove or comment out `DISCORD_CHANNEL_ID` unless you intentionally want legacy command restriction to a single channel.
+Then replace the required placeholders. Leave `DISCORD_CHANNEL_ID` commented unless you intentionally want legacy command restriction to a single channel; uncomment optional integrations only when you configure them.
 
 Minimum Anthropic-based configuration:
 
@@ -136,17 +136,17 @@ To get IDs, enable Developer Mode in Discord, then right-click the server or use
 
 ## Configuration
 
-Configuration is loaded with `pydantic-settings` from environment variables and `.env`. Names are case-insensitive and unknown variables are ignored.
+Configuration is loaded with `pydantic-settings` from environment variables and `.env`. Names are case-insensitive and unknown variables are ignored. Credential values are trimmed, blank credentials are rejected, and secret values remain masked in settings representations and serialization.
 
-Do not commit `.env`. It is ignored by `.gitignore`; `.env.example` is the safe template.
+Do not commit `.env`. It is ignored by `.gitignore`; `.env.example` is the copy-safe template and lists every supported runtime setting. Optional values are commented out until you need them.
 
 ### Required Runtime Variables
 
 | Variable | Required | Default | Notes |
 | --- | --- | --- | --- |
 | `DISCORD_BOT_TOKEN` | Yes | None | Discord bot token. Empty strings are rejected. |
-| `DISCORD_GUILD_ID` | Yes | None | Guild where slash commands are synced. |
-| `DISCORD_OWNER_ID` | Yes | None | User ID for owner notifications. |
+| `DISCORD_GUILD_ID` | Yes | None | Positive guild ID where slash commands are synced. |
+| `DISCORD_OWNER_ID` | Yes | None | Positive user ID for owner notifications. |
 | `LLM_PROVIDER` | No | `anthropic` | One of `anthropic`, `openai`, `gemini`, or `kimi`. |
 | Provider API key | Yes | None | Must match `LLM_PROVIDER`; see the next table. |
 
@@ -192,7 +192,7 @@ Important: Blog and Page source setup uses Anthropic-specific analyzers. Set `AN
 | `YOUTUBE_MAX_RESULTS` | `5` | 1-50 | Videos fetched per YouTube poll. |
 | `MAX_CONCURRENT_FORWARDS` | `5` | 1-20 | Semaphore limit for forwarding. |
 
-The source table stores `poll_interval_minutes`, but the active fetch path currently uses the environment-driven per-source-type intervals above.
+At pipeline startup, the effective environment-driven intervals above are synchronized to each source's stored `poll_interval_minutes`. The fetch path then uses those stored values for due-time checks, so configuration changes take effect after restart without adding delay for sources that are not due.
 
 ### Summarization And HTTP
 
@@ -214,7 +214,7 @@ The source table stores `poll_interval_minutes`, but the active fetch path curre
 | `ZVEC_DATA_DIR` | `data/vectors` | path | Local vector collection directory. |
 | `SEARCH_RESULT_LIMIT` | `5` | 1-25 | Final article results returned. |
 | `ARTICLE_CHUNK_SIZE_CHARS` | `1200` | 200-4000 | Article chunk target size. |
-| `ARTICLE_CHUNK_OVERLAP_CHARS` | `200` | 0-1000 | Chunk overlap. |
+| `ARTICLE_CHUNK_OVERLAP_CHARS` | `200` | 0-1000 | Chunk overlap; must also be smaller than `ARTICLE_CHUNK_SIZE_CHARS`. |
 | `ARTICLE_SEARCH_CANDIDATE_LIMIT` | `24` | 5-100 | Vector candidates before reranking. |
 | `ARTICLE_SEARCH_MIN_RELEVANCE_SCORE` | `0.35` | 0.0-1.0 | Result cutoff. |
 | `ARTICLE_SEARCH_RERANKER_ENABLED` | `true` | bool | Uses a cross-encoder when available. |
@@ -229,9 +229,11 @@ Changing `EMBEDDING_MODEL` usually requires changing `EMBEDDING_DIMENSIONS`. The
 
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `DATABASE_URL` | `sqlite+aiosqlite:///./data/intelstream.db` | Runtime repository supports SQLite only, even though `Settings` can parse other URLs. |
+| `DATABASE_URL` | `sqlite+aiosqlite:///./data/intelstream.db` | SQLite with the async `aiosqlite` driver is required; unsupported URLs fail during configuration loading. |
 | `DISCORD_CHANNEL_ID` | unset | Legacy default channel and command restriction. When set, commands are allowed only in that channel and legacy sources without channels are migrated to it. |
 | `LOG_LEVEL` | `INFO` | One of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
+
+Log timestamps are emitted in UTC. Human-friendly ANSI colors are used only when standard output is attached to a terminal, so redirected logs remain plain text. The startup record includes the selected models, polling cadence, search state, and enabled optional integrations without including credentials.
 
 ## Commands
 
@@ -460,7 +462,7 @@ Use a separate local database:
 DATABASE_URL=sqlite+aiosqlite:///./data/dev-intelstream.db uv run intelstream
 ```
 
-For a long-running deployment, run the command under your process manager of choice and persist both `data/intelstream.db` and `data/vectors/`. There is no Dockerfile or migration tool in the current repository; SQLite tables are created at startup and selected `sources` columns are migrated opportunistically.
+For a long-running deployment, run the command under your process manager of choice and persist both `data/intelstream.db` and `data/vectors/`. There is no Dockerfile or standalone migration tool in the current repository; SQLite tables, selected `sources` columns, and content-query indexes are reconciled at startup.
 
 ## Development
 

@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import re
 from dataclasses import dataclass
@@ -9,8 +10,8 @@ import trafilatura
 from bs4 import BeautifulSoup, Tag
 
 from intelstream.config import get_settings
+from intelstream.utils.log_safety import safe_url_for_log
 from intelstream.utils.safe_http import SafeHTTPError, safe_request
-from intelstream.utils.url_validation import SSRFError, validate_url_for_ssrf
 
 logger = structlog.get_logger()
 
@@ -61,16 +62,12 @@ class ContentExtractor:
         self._client = http_client
 
     async def extract(self, url: str) -> ExtractedContent:
-        try:
-            validate_url_for_ssrf(url)
-        except SSRFError:
-            logger.warning("Skipping URL blocked by SSRF protection", url=url)
-            return ExtractedContent(text="")
-
         html = await self._fetch_html(url)
         if not html:
             return ExtractedContent(text="")
+        return await asyncio.to_thread(self._extract_html, html, url)
 
+    def _extract_html(self, html: str, url: str) -> ExtractedContent:
         result = trafilatura.extract(
             html,
             include_comments=False,
@@ -146,7 +143,7 @@ class ContentExtractor:
                 published_at=self._extract_date(soup),
             )
 
-        logger.warning("Content extraction failed validation", url=url)
+        logger.warning("Content extraction failed validation", url=safe_url_for_log(url))
         return ExtractedContent(
             text="",
             title=self._extract_title(soup),
@@ -190,7 +187,7 @@ class ContentExtractor:
             response.raise_for_status()
             return response.text
         except (httpx.HTTPError, SafeHTTPError) as e:
-            logger.warning("Failed to fetch content", url=url, error=str(e))
+            logger.warning("Failed to fetch content", url=safe_url_for_log(url), error=str(e))
             return None
 
     def _extract_title(self, soup: BeautifulSoup) -> str | None:

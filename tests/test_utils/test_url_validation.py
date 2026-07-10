@@ -1,4 +1,5 @@
 import socket
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -7,6 +8,8 @@ from intelstream.utils.url_validation import (
     SSRFError,
     _is_obfuscated_ip,
     _is_private_ip,
+    async_is_safe_url,
+    async_validate_url_for_ssrf,
     is_safe_url,
     validate_url_for_ssrf,
 )
@@ -210,3 +213,29 @@ class TestIsSafeUrl:
 
         assert safe is False
         assert error == "Could not resolve hostname"
+
+
+class TestAsyncUrlValidation:
+    async def test_uses_async_resolver(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        loop = MagicMock()
+        loop.getaddrinfo = AsyncMock(
+            return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+        )
+        monkeypatch.setattr(url_validation_module.asyncio, "get_running_loop", lambda: loop)
+
+        await async_validate_url_for_ssrf("https://example.com/article")
+
+        loop.getaddrinfo.assert_awaited_once()
+
+    async def test_blocks_localhost_without_async_dns_lookup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        loop = MagicMock()
+        loop.getaddrinfo = AsyncMock(side_effect=AssertionError("DNS should not be called"))
+        monkeypatch.setattr(url_validation_module.asyncio, "get_running_loop", lambda: loop)
+
+        safe, error = await async_is_safe_url("http://localhost/admin")
+
+        assert safe is False
+        assert "localhost" in error.lower()
+        loop.getaddrinfo.assert_not_awaited()

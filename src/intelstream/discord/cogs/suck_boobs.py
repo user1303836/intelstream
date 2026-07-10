@@ -55,17 +55,25 @@ class SuckBoobs(commands.Cog):
             target_id=target.id,
             guild_id=interaction.guild_id,
         )
+        target_mention = discord.AllowedMentions(
+            everyone=False,
+            roles=False,
+            users=[target],
+            replied_user=False,
+        )
 
         # 1/20 chance (5%)
         if random.randint(1, 20) == 1:  # nosec B311
             await interaction.response.send_message(
                 f"{interaction.user.display_name} lost all self-control! Instead of the boob, they bypassed it entirely "
                 f"and started violently gobbling on <@{target.id}>'s dick like it's their last meal on Earth. "
-                f"Have some shame, you starving animal!"
+                f"Have some shame, you starving animal!",
+                allowed_mentions=target_mention,
             )
         else:
             await interaction.response.send_message(
-                f"🍼 {interaction.user.display_name} sucks <@{target.id}>'s boobs 🥛😳"
+                f"🍼 {interaction.user.display_name} sucks <@{target.id}>'s boobs 🥛😳",
+                allowed_mentions=target_mention,
             )
 
     @app_commands.command(name="suck_boobs_score", description="Show the suck_boobs leaderboard")

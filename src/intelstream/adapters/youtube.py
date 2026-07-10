@@ -28,7 +28,10 @@ class YouTubeAdapter(BaseAdapter):
     def __init__(self, api_key: str, http_client: httpx.AsyncClient | None = None) -> None:
         self._api_key = api_key
         self._client = http_client
-        self._youtube: Any = build("youtube", "v3", developerKey=api_key)
+        self._youtube: Any | None = None
+        self._youtube_lock = asyncio.Lock()
+        self._channel_id_cache: dict[str, str] = {}
+        self._uploads_playlist_cache: dict[str, str] = {}
 
     @property
     def source_type(self) -> str:
@@ -37,6 +40,24 @@ class YouTubeAdapter(BaseAdapter):
     async def get_feed_url(self, identifier: str) -> str:
         channel_id = await self._resolve_channel_id(identifier)
         return f"https://www.youtube.com/channel/{channel_id}"
+
+    async def close(self) -> None:
+        youtube = self._youtube
+        self._youtube = None
+        if youtube is not None:
+            await asyncio.to_thread(youtube.close)
+
+    async def _get_youtube(self) -> Any:
+        if self._youtube is None:
+            async with self._youtube_lock:
+                if self._youtube is None:
+                    self._youtube = await asyncio.to_thread(
+                        build,
+                        "youtube",
+                        "v3",
+                        developerKey=self._api_key,
+                    )
+        return self._youtube
 
     async def fetch_latest(
         self,
@@ -88,17 +109,21 @@ class YouTubeAdapter(BaseAdapter):
 
     async def _resolve_channel_id(self, identifier: str) -> str:
         identifier = identifier.strip()
+        cached = self._channel_id_cache.get(identifier)
+        if cached is not None:
+            return cached
 
         if CHANNEL_ID_PATTERN.match(identifier):
-            return identifier
+            channel_id = identifier
+        elif identifier.startswith(("https://", "http://")):
+            channel_id = await self._extract_channel_id_from_url(identifier)
+        elif HANDLE_PATTERN.match(identifier) or not identifier.startswith("UC"):
+            channel_id = await self._get_channel_id_by_handle_or_username(identifier)
+        else:
+            channel_id = identifier
 
-        if identifier.startswith("https://") or identifier.startswith("http://"):
-            return await self._extract_channel_id_from_url(identifier)
-
-        if HANDLE_PATTERN.match(identifier) or not identifier.startswith("UC"):
-            return await self._get_channel_id_by_handle_or_username(identifier)
-
-        return identifier
+        self._channel_id_cache[identifier] = channel_id
+        return channel_id
 
     async def _extract_channel_id_from_url(self, url: str) -> str:
         if "/channel/" in url:
@@ -121,22 +146,21 @@ class YouTubeAdapter(BaseAdapter):
 
     async def _get_channel_id_by_handle_or_username(self, identifier: str) -> str:
         identifier = identifier.lstrip("@")
+        youtube = await self._get_youtube()
 
-        request = self._youtube.channels().list(part="id", forHandle=identifier)
+        request = youtube.channels().list(part="id", forHandle=identifier)
         response: dict[str, Any] = await asyncio.to_thread(request.execute)
 
         if response.get("items"):
             return str(response["items"][0]["id"])
 
-        request = self._youtube.channels().list(part="id", forUsername=identifier)
+        request = youtube.channels().list(part="id", forUsername=identifier)
         response = await asyncio.to_thread(request.execute)
 
         if response.get("items"):
             return str(response["items"][0]["id"])
 
-        request = self._youtube.search().list(
-            part="snippet", q=identifier, type="channel", maxResults=1
-        )
+        request = youtube.search().list(part="snippet", q=identifier, type="channel", maxResults=1)
         response = await asyncio.to_thread(request.execute)
 
         if response.get("items"):
@@ -145,18 +169,26 @@ class YouTubeAdapter(BaseAdapter):
         raise ValueError(f"Could not find YouTube channel: {identifier}")
 
     async def _get_uploads_playlist_id(self, channel_id: str) -> str:
-        request = self._youtube.channels().list(part="contentDetails", id=channel_id)
+        cached = self._uploads_playlist_cache.get(channel_id)
+        if cached is not None:
+            return cached
+
+        youtube = await self._get_youtube()
+        request = youtube.channels().list(part="contentDetails", id=channel_id)
         response: dict[str, Any] = await asyncio.to_thread(request.execute)
 
         if not response.get("items"):
             raise ValueError(f"Channel not found: {channel_id}")
 
-        return str(response["items"][0]["contentDetails"]["relatedPlaylists"]["uploads"])
+        playlist_id = str(response["items"][0]["contentDetails"]["relatedPlaylists"]["uploads"])
+        self._uploads_playlist_cache[channel_id] = playlist_id
+        return playlist_id
 
     async def _get_playlist_videos(
         self, playlist_id: str, max_results: int
     ) -> list[dict[str, Any]]:
-        request = self._youtube.playlistItems().list(
+        youtube = await self._get_youtube()
+        request = youtube.playlistItems().list(
             part="snippet,contentDetails",
             playlistId=playlist_id,
             maxResults=max_results,

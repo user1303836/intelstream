@@ -6,6 +6,7 @@ import structlog
 from discord import app_commands
 from discord.ext import commands
 
+from intelstream.config import reveal_secret
 from intelstream.services.github_service import GitHubAPIError, GitHubService
 
 if TYPE_CHECKING:
@@ -17,6 +18,16 @@ GITHUB_URL_PATTERN = re.compile(
     r"^(?:https?://)?(?:www\.)?github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$"
 )
 OWNER_REPO_PATTERN = re.compile(r"^([^/]+)/([^/]+)$")
+MAX_EMBED_FIELDS = 25
+MAX_EMBED_FIELD_NAME_LENGTH = 256
+MAX_EMBED_TOTAL_TEXT_LENGTH = 6000
+MAX_EMBED_FOOTER_RESERVE = 100
+
+
+def _truncate_embed_field_name(value: str) -> str:
+    if len(value) <= MAX_EMBED_FIELD_NAME_LENGTH:
+        return value
+    return value[: MAX_EMBED_FIELD_NAME_LENGTH - 3] + "..."
 
 
 def parse_github_url(url: str) -> tuple[str, str] | None:
@@ -65,10 +76,11 @@ class GitHubCommands(commands.Cog):
         self._github_service: GitHubService | None = None
 
     def _get_github_service(self) -> GitHubService | None:
-        if not self.bot.settings.github_token:
+        token = reveal_secret(self.bot.settings.github_token)
+        if token is None:
             return None
         if self._github_service is None:
-            self._github_service = GitHubService(token=self.bot.settings.github_token)
+            self._github_service = GitHubService(token=token)
         return self._github_service
 
     async def cog_unload(self) -> None:
@@ -243,7 +255,9 @@ class GitHubCommands(commands.Cog):
             color=discord.Color.blue(),
         )
 
-        for repo in repos:
+        displayed_repos = []
+        embed_text_length = len(embed.title or "")
+        for repo in repos[:MAX_EMBED_FIELDS]:
             status = "Active" if repo.is_active else "Paused"
             if repo.consecutive_failures > 0:
                 status = f"Failing ({repo.consecutive_failures} errors)"
@@ -262,11 +276,23 @@ class GitHubCommands(commands.Cog):
                 else "Never"
             )
 
-            embed.add_field(
-                name=f"{'[ON]' if repo.is_active else '[OFF]'} {repo.owner}/{repo.repo}",
-                value=f"**Status:** {status}\n**Tracking:** {', '.join(tracking)}\n**Last Poll:** {last_poll}",
-                inline=True,
+            field_name = _truncate_embed_field_name(
+                f"{'[ON]' if repo.is_active else '[OFF]'} {repo.owner}/{repo.repo}"
             )
+            field_value = (
+                f"**Status:** {status}\n**Tracking:** {', '.join(tracking)}\n"
+                f"**Last Poll:** {last_poll}"
+            )
+            if (
+                embed_text_length + len(field_name) + len(field_value)
+                > MAX_EMBED_TOTAL_TEXT_LENGTH - MAX_EMBED_FOOTER_RESERVE
+            ):
+                break
+            embed.add_field(name=field_name, value=field_value, inline=True)
+            displayed_repos.append(repo)
+            embed_text_length += len(field_name) + len(field_value)
+
+        embed.set_footer(text=f"Showing {len(displayed_repos)} of {len(repos)} repositories")
 
         await interaction.followup.send(embed=embed)
 
@@ -360,7 +386,10 @@ class GitHubCommands(commands.Cog):
     ) -> list[app_commands.Choice[str]]:
         return await self._github_repo_autocomplete(interaction, current)
 
-    @github_group.command(name="toggle", description="Enable or disable GitHub repo monitoring")
+    @github_group.command(
+        name="toggle",
+        description="Pause or resume GitHub repository monitoring",
+    )
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.describe(repo="Repository name (owner/repo format)")

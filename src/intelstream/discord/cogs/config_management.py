@@ -17,13 +17,16 @@ class ConfigManagement(commands.Cog):
 
     config_group = app_commands.Group(
         name="config",
-        description="Configure bot settings",
+        description="Configure fallback bot settings",
         default_permissions=discord.Permissions(manage_guild=True),
     )
 
-    @config_group.command(name="channel", description="Set the channel for content posts")
+    @config_group.command(
+        name="channel",
+        description="Set the fallback channel for sources without one",
+    )
     @app_commands.checks.has_permissions(manage_guild=True)
-    @app_commands.describe(channel="The channel where content summaries will be posted")
+    @app_commands.describe(channel="Fallback channel for sources without a channel")
     async def config_channel(
         self,
         interaction: discord.Interaction,
@@ -123,8 +126,9 @@ class ConfigManagement(commands.Cog):
                 inline=False,
             )
 
-        sources = await self.bot.repository.get_all_sources(active_only=False)
-        guild_sources = [s for s in sources if s.guild_id == str(interaction.guild.id)]
+        guild_sources = await self.bot.repository.get_all_sources(
+            active_only=False, guild_id=str(interaction.guild.id)
+        )
         active_count = sum(1 for s in guild_sources if s.is_active)
 
         embed.add_field(

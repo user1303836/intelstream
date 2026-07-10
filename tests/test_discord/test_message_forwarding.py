@@ -328,6 +328,25 @@ class TestForwardList:
         assert "Unknown (111)" in message
         assert "Unknown (222)" in message
 
+    async def test_forward_list_bounds_long_output_and_reports_omissions(self, cog, mock_bot):
+        interaction = make_interaction()
+        rules = []
+        for index in range(100):
+            rule = MagicMock()
+            rule.source_channel_id = str(10_000_000_000_000_000 + index)
+            rule.destination_channel_id = str(20_000_000_000_000_000 + index)
+            rule.is_active = True
+            rule.messages_forwarded = index
+            rules.append(rule)
+        mock_bot.repository.get_forwarding_rules_for_guild = AsyncMock(return_value=rules)
+        mock_bot.get_channel = MagicMock(return_value=None)
+
+        await cog.forward_list.callback(cog, interaction)
+
+        message = interaction.followup.send.call_args.args[0]
+        assert len(message) < 2000
+        assert "more forwarding rules" in message
+
 
 class TestForwardRemove:
     async def test_forward_remove_success(self, cog, mock_bot):
@@ -708,6 +727,19 @@ class TestCacheRefresh:
         await cog._refresh_cache()
 
         assert cog._rules_cache["111"] == [rule_1, rule_2]
+
+
+def test_forward_commands_default_to_manage_guild_permission(cog):
+    for command in (
+        cog.forward_add,
+        cog.forward_list,
+        cog.forward_remove,
+        cog.forward_pause,
+        cog.forward_resume,
+    ):
+        assert command.default_permissions is not None
+        assert command.default_permissions.manage_guild is True
+        assert command.default_permissions.administrator is False
 
 
 class TestForwardingErrors:

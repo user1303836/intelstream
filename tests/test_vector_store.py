@@ -484,7 +484,20 @@ class TestDelete:
 
         await store.close()
 
-    async def test_delete_message_chunks_deletes_each_id(self, tmp_path):
+    async def test_delete_article_chunks_batches_ids(self, tmp_path):
+        store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
+        store._initialized = True
+        store._articles = MagicMock()
+        chunk_ids = [f"chunk-{index}" for index in range(300)]
+
+        await store.delete_article_chunks(chunk_ids)
+
+        assert [call.args[0] for call in store._articles.delete.call_args_list] == [
+            chunk_ids[:256],
+            chunk_ids[256:],
+        ]
+
+    async def test_delete_message_chunks_batches_ids(self, tmp_path):
         store = VectorStore(data_dir=str(tmp_path / "vectors"), dimensions=4, model_name="model-a")
         store._initialized = True
         collection = MagicMock()
@@ -492,10 +505,7 @@ class TestDelete:
 
         await store.delete_message_chunks_by_ids("guild-1", ["chunk-1", "chunk-2"])
 
-        assert [call.args[0] for call in collection.delete.call_args_list] == [
-            "chunk-1",
-            "chunk-2",
-        ]
+        collection.delete.assert_called_once_with(["chunk-1", "chunk-2"])
 
 
 class TestRecreateCollections:

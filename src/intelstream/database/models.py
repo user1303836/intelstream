@@ -2,7 +2,18 @@ import enum
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -63,6 +74,20 @@ class Source(Base):
 
 class ContentItem(Base):
     __tablename__ = "content_items"
+    __table_args__ = (
+        Index("ix_content_items_source_published", "source_id", "published_at"),
+        Index(
+            "ix_content_items_unsummarized_created",
+            "created_at",
+            sqlite_where=text("summary IS NULL"),
+        ),
+        Index(
+            "ix_content_items_unposted_published",
+            "published_at",
+            "id",
+            sqlite_where=text("posted_to_discord = 0 AND summary IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     source_id: Mapped[str] = mapped_column(String(36), ForeignKey("sources.id"), nullable=False)

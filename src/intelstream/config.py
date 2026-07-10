@@ -4,8 +4,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 
 if TYPE_CHECKING:
     from intelstream.database.models import SourceType
@@ -19,14 +21,15 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    discord_bot_token: str = Field(min_length=1, description="Discord bot token")
-    discord_guild_id: int = Field(description="Discord guild (server) ID")
+    discord_bot_token: SecretStr = Field(description="Discord bot token")
+    discord_guild_id: int = Field(gt=0, description="Discord guild (server) ID")
     discord_channel_id: int | None = Field(
         default=None,
+        gt=0,
         description="Default Discord channel ID for posting summaries (legacy, now per-source)",
     )
     discord_owner_id: int = Field(
-        description="Discord user ID of the bot owner for DM notifications"
+        gt=0, description="Discord user ID of the bot owner for DM notifications"
     )
 
     llm_provider: Literal["anthropic", "openai", "gemini", "kimi"] = Field(
@@ -34,19 +37,23 @@ class Settings(BaseSettings):
         description="LLM provider for summarization: anthropic, openai, gemini, or kimi",
     )
 
-    anthropic_api_key: str | None = Field(default=None, description="Anthropic API key for Claude")
-    openai_api_key: str | None = Field(default=None, description="OpenAI API key")
-    gemini_api_key: str | None = Field(default=None, description="Google Gemini API key")
-    kimi_api_key: str | None = Field(default=None, description="Kimi (Moonshot AI) API key")
+    anthropic_api_key: SecretStr | None = Field(
+        default=None, description="Anthropic API key for Claude"
+    )
+    openai_api_key: SecretStr | None = Field(default=None, description="OpenAI API key")
+    gemini_api_key: SecretStr | None = Field(default=None, description="Google Gemini API key")
+    kimi_api_key: SecretStr | None = Field(default=None, description="Kimi (Moonshot AI) API key")
 
-    youtube_api_key: str | None = Field(default=None, description="YouTube Data API key (optional)")
+    youtube_api_key: SecretStr | None = Field(
+        default=None, description="YouTube Data API key (optional)"
+    )
 
-    twitter_bearer_token: str | None = Field(
+    twitter_bearer_token: SecretStr | None = Field(
         default=None,
         description="X API v2 Bearer Token for Twitter monitoring (optional)",
     )
 
-    github_token: str | None = Field(
+    github_token: SecretStr | None = Field(
         default=None, description="GitHub Personal Access Token (optional)"
     )
 
@@ -309,7 +316,12 @@ class Settings(BaseSettings):
                 f"Set the corresponding environment variable "
                 f"(e.g., ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, KIMI_API_KEY)."
             )
-        return key
+        return key.get_secret_value()
+
+    @property
+    def discord_token(self) -> str:
+        """Return the Discord token for the client connection seam."""
+        return self.discord_bot_token.get_secret_value()
 
     _PROVIDER_MODEL_DEFAULTS: dict[str, tuple[str, str]] = {
         "anthropic": ("claude-haiku-4-5-20251001", "claude-sonnet-4-6"),
@@ -345,29 +357,82 @@ class Settings(BaseSettings):
             )
         return self
 
+    @field_validator(
+        "discord_bot_token",
+        "anthropic_api_key",
+        "openai_api_key",
+        "gemini_api_key",
+        "kimi_api_key",
+        "youtube_api_key",
+        "twitter_bearer_token",
+        "github_token",
+        mode="before",
+    )
+    @classmethod
+    def strip_and_validate_credentials(cls, value: object) -> object:
+        """Normalize configured credentials and reject blank values."""
+        if value is None:
+            return None
+        raw_value = value.get_secret_value() if isinstance(value, SecretStr) else str(value)
+        normalized = raw_value.strip()
+        if not normalized:
+            raise ValueError("Credential values cannot be empty or whitespace-only")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_article_chunk_overlap(self) -> Settings:
+        if self.article_chunk_overlap_chars >= self.article_chunk_size_chars:
+            raise ValueError(
+                "ARTICLE_CHUNK_OVERLAP_CHARS must be smaller than ARTICLE_CHUNK_SIZE_CHARS"
+            )
+        return self
+
     @field_validator("database_url")
     @classmethod
     def validate_database_url(cls, v: str) -> str:
-        if v.startswith("sqlite"):
-            db_path = v.split("///")[-1]
-            if db_path == "":
-                raise ValueError("SQLite database path cannot be empty")
+        try:
+            url = make_url(v)
+        except ArgumentError as e:
+            raise ValueError("Invalid database URL") from e
+        if url.get_backend_name() != "sqlite":
+            raise ValueError(f"Only SQLite databases are supported, got {url.get_backend_name()!r}")
+        if url.drivername != "sqlite+aiosqlite":
+            raise ValueError("SQLite database URLs must use the sqlite+aiosqlite async driver")
+        if not url.database:
+            raise ValueError("SQLite database path cannot be empty")
         return v
+
+    def startup_log_context(self) -> dict[str, object]:
+        """Return operational startup fields that are safe to write to logs."""
+        return {
+            "guild_id": self.discord_guild_id,
+            "legacy_channel_restriction": self.discord_channel_id is not None,
+            "llm_provider": self.llm_provider,
+            "summary_model": self.summary_model,
+            "summary_model_interactive": self.summary_model_interactive,
+            "content_poll_interval_minutes": self.content_poll_interval_minutes,
+            "search_enabled": self.search_enabled,
+            "embedding_model": self.embedding_model if self.search_enabled else None,
+            "youtube_enabled": self.youtube_api_key is not None,
+            "twitter_enabled": self.twitter_bearer_token is not None,
+            "github_enabled": self.github_token is not None,
+            "database_backend": make_url(self.database_url).get_backend_name(),
+        }
 
     def __repr__(self) -> str:
         return (
             f"Settings("
-            f"discord_bot_token='*****', "
+            f"discord_bot_token={self.discord_bot_token!r}, "
             f"discord_guild_id={self.discord_guild_id}, "
             f"discord_owner_id={self.discord_owner_id}, "
             f"llm_provider={self.llm_provider!r}, "
-            f"anthropic_api_key={'*****' if self.anthropic_api_key else None}, "
-            f"openai_api_key={'*****' if self.openai_api_key else None}, "
-            f"gemini_api_key={'*****' if self.gemini_api_key else None}, "
-            f"kimi_api_key={'*****' if self.kimi_api_key else None}, "
-            f"youtube_api_key={'*****' if self.youtube_api_key else None}, "
-            f"twitter_bearer_token={'*****' if self.twitter_bearer_token else None}, "
-            f"github_token={'*****' if self.github_token else None}, "
+            f"anthropic_api_key={self.anthropic_api_key!r}, "
+            f"openai_api_key={self.openai_api_key!r}, "
+            f"gemini_api_key={self.gemini_api_key!r}, "
+            f"kimi_api_key={self.kimi_api_key!r}, "
+            f"youtube_api_key={self.youtube_api_key!r}, "
+            f"twitter_bearer_token={self.twitter_bearer_token!r}, "
+            f"github_token={self.github_token!r}, "
             f"database_url={self.database_url!r}, "
             f"log_level={self.log_level!r}"
             f")"
@@ -379,16 +444,26 @@ def get_settings() -> Settings:
     return Settings()
 
 
+def reveal_secret(value: SecretStr | str | None) -> str | None:
+    """Explicitly unwrap an optional credential at an external client seam."""
+    if value is None:
+        return None
+    raw_value = value.get_secret_value() if isinstance(value, SecretStr) else value
+    normalized = raw_value.strip()
+    return normalized or None
+
+
 def get_database_directory(database_url: str) -> Path | None:
     """Extract the parent directory path from a SQLite database URL.
 
     Returns None for non-SQLite databases or :memory: databases.
     """
-    if not database_url.startswith("sqlite"):
+    try:
+        url = make_url(database_url)
+    except ArgumentError:
         return None
-
-    db_path = database_url.split("///")[-1]
-    if db_path == ":memory:" or not db_path:
+    if url.get_backend_name() != "sqlite":
         return None
-
-    return Path(db_path).parent
+    if url.database in (None, "", ":memory:"):
+        return None
+    return Path(url.database).parent

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import discord
 import httpx
 import pytest
+from googleapiclient.discovery import build
 from youtube_transcript_api._errors import (
     NoTranscriptFound,
     TranscriptsDisabled,
@@ -38,6 +39,16 @@ def summarize_cog(mock_bot):
     cog._summarizer.summarize = AsyncMock(return_value="This is a test summary.")
     cog._http_client = MagicMock()
     return cog
+
+
+def make_youtube_resource(response):
+    request = MagicMock()
+    request.execute.return_value = response
+    videos = MagicMock()
+    videos.list.return_value = request
+    resource = MagicMock()
+    resource.videos.return_value = videos
+    return resource
 
 
 @pytest.fixture
@@ -73,9 +84,31 @@ class TestDetectUrlType:
         assert summarize_cog.detect_url_type("https://nytimes.com/2024/article") == "web"
         assert summarize_cog.detect_url_type("https://blog.example.org/post") == "web"
 
-    def test_is_substack_url(self, summarize_cog):
-        assert summarize_cog._is_substack_url("https://example.substack.com/p/post") is True
-        assert summarize_cog._is_substack_url("https://example.com/p/post") is False
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://youtube.com.evil.example/watch?v=abc123",
+            "https://substack.com.evil.example/p/article",
+            "https://twitter.com.evil.example/user/status/123",
+            "https://x.com.evil.example/user/status/123",
+        ],
+    )
+    def test_detect_lookalike_domains_as_generic_web(self, summarize_cog, url):
+        assert summarize_cog.detect_url_type(url) == "web"
+
+    def test_detect_supported_subdomains_and_trailing_dot(self, summarize_cog):
+        assert (
+            summarize_cog.detect_url_type("https://music.youtube.com/watch?v=abc123") == "youtube"
+        )
+        assert (
+            summarize_cog.detect_url_type("https://example.substack.com./p/article") == "substack"
+        )
+
+
+def test_summarize_description_limits_scope_to_public_supported_pages(summarize_cog):
+    assert (
+        summarize_cog.summarize.description == "Summarize a public YouTube, Substack, or web page"
+    )
 
 
 class TestExtractYoutubeVideoId:
@@ -241,11 +274,12 @@ class TestFetchYoutubeContent:
             await summarize_cog._fetch_youtube_content("https://youtube.com/watch?v=dQw4w9WgXcQ")
 
     async def test_fetch_youtube_reports_missing_video(self, summarize_cog):
+        youtube = make_youtube_resource({"items": []})
         with (
-            patch("intelstream.discord.cogs.summarize.build"),
-            patch(
-                "intelstream.discord.cogs.summarize.asyncio.to_thread",
-                AsyncMock(return_value={"items": []}),
+            patch.object(
+                summarize_cog,
+                "_get_youtube_client",
+                AsyncMock(return_value=youtube),
             ),
             pytest.raises(WebFetchError, match="Video not found"),
         ):
@@ -269,11 +303,12 @@ class TestFetchYoutubeContent:
             ]
         }
 
+        youtube = make_youtube_resource(response)
         with (
-            patch("intelstream.discord.cogs.summarize.build") as build,
-            patch(
-                "intelstream.discord.cogs.summarize.asyncio.to_thread",
-                AsyncMock(return_value=response),
+            patch.object(
+                summarize_cog,
+                "_get_youtube_client",
+                AsyncMock(return_value=youtube),
             ),
             patch.object(summarize_cog, "_fetch_youtube_transcript", AsyncMock(return_value=None)),
         ):
@@ -281,8 +316,9 @@ class TestFetchYoutubeContent:
                 "https://youtube.com/watch?v=dQw4w9WgXcQ"
             )
 
-        build.assert_called_once_with("youtube", "v3", developerKey="test-youtube-key")
+        youtube.videos.return_value.list.assert_called_once_with(part="snippet", id="dQw4w9WgXcQ")
         assert content.title == "Video Title"
+        assert content.url == "https://youtube.com/watch?v=dQw4w9WgXcQ"
         assert content.author == "Channel"
         assert content.content == "Description fallback"
         assert content.thumbnail_url == "https://example.com/high.jpg"
@@ -301,11 +337,12 @@ class TestFetchYoutubeContent:
             ]
         }
 
+        youtube = make_youtube_resource(response)
         with (
-            patch("intelstream.discord.cogs.summarize.build"),
-            patch(
-                "intelstream.discord.cogs.summarize.asyncio.to_thread",
-                AsyncMock(return_value=response),
+            patch.object(
+                summarize_cog,
+                "_get_youtube_client",
+                AsyncMock(return_value=youtube),
             ),
             patch.object(
                 summarize_cog,
@@ -318,6 +355,48 @@ class TestFetchYoutubeContent:
             )
 
         assert content.content == "Transcript text"
+
+    async def test_fetch_youtube_serializes_cached_client_requests(self, summarize_cog):
+        response = {
+            "items": [
+                {
+                    "snippet": {
+                        "title": "Video",
+                        "description": "Description",
+                        "thumbnails": {},
+                    }
+                }
+            ]
+        }
+        summarize_cog._youtube = make_youtube_resource(response)
+        active_requests = 0
+        max_active_requests = 0
+
+        async def execute_off_thread(_function, *_args, **_kwargs):
+            nonlocal active_requests, max_active_requests
+            active_requests += 1
+            max_active_requests = max(max_active_requests, active_requests)
+            await asyncio.sleep(0)
+            active_requests -= 1
+            return response
+
+        with (
+            patch(
+                "intelstream.discord.cogs.summarize.asyncio.to_thread",
+                side_effect=execute_off_thread,
+            ),
+            patch.object(
+                summarize_cog,
+                "_fetch_youtube_transcript",
+                AsyncMock(return_value="Transcript"),
+            ),
+        ):
+            await asyncio.gather(
+                summarize_cog._fetch_youtube_content("https://youtube.com/watch?v=dQw4w9WgXcQ"),
+                summarize_cog._fetch_youtube_content("https://youtube.com/watch?v=dQw4w9WgXcQ"),
+            )
+
+        assert max_active_requests == 1
 
 
 class TestFetchYoutubeTranscript:
@@ -571,7 +650,7 @@ class TestSummarizeCommand:
 
     async def test_rejects_unsafe_url(self, summarize_cog, mock_interaction):
         with patch(
-            "intelstream.discord.cogs.summarize.is_safe_url",
+            "intelstream.discord.cogs.summarize.async_is_safe_url",
             return_value=(False, "private network target"),
         ):
             await summarize_cog.summarize.callback(
@@ -873,6 +952,36 @@ class TestSummarizeCommand:
 
 
 class TestCogLifecycle:
+    async def test_youtube_client_is_built_off_thread_and_cached(self, mock_bot):
+        cog = Summarize(mock_bot)
+        resource = MagicMock()
+
+        with patch(
+            "intelstream.discord.cogs.summarize.asyncio.to_thread",
+            AsyncMock(return_value=resource),
+        ) as to_thread:
+            first = await cog._get_youtube_client("youtube-key")
+            second = await cog._get_youtube_client("youtube-key")
+
+        assert first is resource
+        assert second is resource
+        to_thread.assert_awaited_once_with(
+            build,
+            "youtube",
+            "v3",
+            developerKey="youtube-key",
+        )
+
+    async def test_cog_unload_closes_youtube_client(self, mock_bot):
+        cog = Summarize(mock_bot)
+        resource = MagicMock()
+        cog._youtube = resource
+
+        await cog.cog_unload()
+
+        resource.close.assert_called_once_with()
+        assert cog._youtube is None
+
     async def test_cog_load_initializes_http_client(self, mock_bot):
         cog = Summarize(mock_bot)
         assert cog._http_client is None

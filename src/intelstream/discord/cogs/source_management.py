@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 from typing import TYPE_CHECKING
@@ -10,6 +11,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from intelstream.adapters.smart_blog import SmartBlogAdapter
+from intelstream.config import reveal_secret
 from intelstream.database.exceptions import (
     DatabaseConnectionError,
     DuplicateSourceError,
@@ -17,7 +19,8 @@ from intelstream.database.exceptions import (
 )
 from intelstream.database.models import PauseReason, SourceType
 from intelstream.services.page_analyzer import PageAnalysisError, PageAnalyzer
-from intelstream.utils.url_validation import is_safe_url
+from intelstream.utils.log_safety import safe_url_for_log
+from intelstream.utils.url_validation import async_is_safe_url
 
 if TYPE_CHECKING:
     from intelstream.bot import IntelStreamBot
@@ -27,6 +30,23 @@ logger = structlog.get_logger()
 
 _TWITTER_USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
 _ARXIV_CATEGORY_RE = re.compile(r"^[A-Za-z0-9.-]+$")
+MAX_EMBED_FIELDS = 25
+MAX_EMBED_FIELD_NAME_LENGTH = 256
+MAX_EMBED_FIELD_VALUE_LENGTH = 1024
+MAX_EMBED_TOTAL_TEXT_LENGTH = 6000
+MAX_EMBED_FOOTER_RESERVE = 100
+
+
+def _truncate_embed_field_name(value: str) -> str:
+    if len(value) <= MAX_EMBED_FIELD_NAME_LENGTH:
+        return value
+    return value[: MAX_EMBED_FIELD_NAME_LENGTH - 3] + "..."
+
+
+def _truncate_embed_field_value(value: str) -> str:
+    if len(value) <= MAX_EMBED_FIELD_VALUE_LENGTH:
+        return value
+    return value[: MAX_EMBED_FIELD_VALUE_LENGTH - 3] + "..."
 
 
 def _is_valid_twitter_username(username: str) -> bool:
@@ -96,7 +116,8 @@ def parse_source_identifier(source_type: SourceType, url: str) -> tuple[str, str
         return identifier, feed_url
 
     elif source_type == SourceType.YOUTUBE:
-        if "youtube.com" in parsed.netloc:
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if host == "youtube.com" or host.endswith(".youtube.com"):
             path = parsed.path
             if path.startswith("/@"):
                 identifier = path[2:]
@@ -187,9 +208,10 @@ class SourceManagement(commands.Cog):
 
     def _get_anthropic_client(self) -> anthropic.AsyncAnthropic:
         if self._anthropic_client is None:
-            self._anthropic_client = anthropic.AsyncAnthropic(
-                api_key=self.bot.settings.anthropic_api_key
-            )
+            api_key = reveal_secret(self.bot.settings.anthropic_api_key)
+            if api_key is None:
+                raise RuntimeError("Anthropic API key is not configured")
+            self._anthropic_client = anthropic.AsyncAnthropic(api_key=api_key)
             self._owns_anthropic_client = True
         return self._anthropic_client
 
@@ -257,7 +279,7 @@ class SourceManagement(commands.Cog):
             guild_id=str(interaction.guild_id) if interaction.guild_id else None,
             source_type=source_type.value,
             name=name,
-            url=url,
+            url=safe_url_for_log(url),
         )
 
         try:
@@ -309,9 +331,27 @@ class SourceManagement(commands.Cog):
             return
 
         validation_url = feed_url if stype == SourceType.ARXIV and feed_url else url
-        safe, error_msg = is_safe_url(validation_url)
+        safe, error_msg = await async_is_safe_url(validation_url)
         if not safe:
             await interaction.followup.send(f"URL not allowed: {error_msg}", ephemeral=True)
+            return
+
+        existing, existing_name = await asyncio.gather(
+            self.bot.repository.get_source_by_identifier(identifier),
+            self.bot.repository.get_source_by_name(name),
+        )
+        if existing:
+            await interaction.followup.send(
+                f"A source with identifier `{identifier}` already exists: **{existing.name}**",
+                ephemeral=True,
+            )
+            return
+
+        if existing_name:
+            await interaction.followup.send(
+                f"A source with name **{name}** already exists.",
+                ephemeral=True,
+            )
             return
 
         discovery_strategy: str | None = None
@@ -335,7 +375,7 @@ class SourceManagement(commands.Cog):
             discovered_url_pattern = result.url_pattern
             logger.info(
                 "Blog analysis complete",
-                url=url,
+                url=safe_url_for_log(url),
                 strategy=result.strategy,
                 post_count=result.post_count,
             )
@@ -359,22 +399,6 @@ class SourceManagement(commands.Cog):
                 )
                 return
 
-        existing = await self.bot.repository.get_source_by_identifier(identifier)
-        if existing:
-            await interaction.followup.send(
-                f"A source with identifier `{identifier}` already exists: **{existing.name}**",
-                ephemeral=True,
-            )
-            return
-
-        existing_name = await self.bot.repository.get_source_by_name(name)
-        if existing_name:
-            await interaction.followup.send(
-                f"A source with name **{name}** already exists.",
-                ephemeral=True,
-            )
-            return
-
         final_feed_url = discovered_feed_url if discovered_feed_url else feed_url
 
         try:
@@ -383,7 +407,7 @@ class SourceManagement(commands.Cog):
                 name=name,
                 identifier=identifier,
                 feed_url=final_feed_url,
-                poll_interval_minutes=self.bot.settings.default_poll_interval_minutes,
+                poll_interval_minutes=self.bot.settings.get_poll_interval(stype),
                 extraction_profile=extraction_profile_json,
                 discovery_strategy=discovery_strategy,
                 url_pattern=discovered_url_pattern,
@@ -411,12 +435,18 @@ class SourceManagement(commands.Cog):
             title="Source Added",
             color=discord.Color.green(),
         )
-        embed.add_field(name="Name", value=name, inline=True)
+        embed.add_field(name="Name", value=_truncate_embed_field_value(name), inline=True)
         embed.add_field(name="Type", value=source_type.name, inline=True)
         embed.add_field(name="Channel", value=f"<#{target_channel_id}>", inline=True)
-        embed.add_field(name="Identifier", value=identifier, inline=False)
+        embed.add_field(
+            name="Identifier", value=_truncate_embed_field_value(identifier), inline=False
+        )
         if final_feed_url:
-            embed.add_field(name="Feed URL", value=final_feed_url, inline=False)
+            embed.add_field(
+                name="Feed URL",
+                value=_truncate_embed_field_value(final_feed_url),
+                inline=False,
+            )
         if not summarize:
             embed.add_field(name="Summarize", value="Off", inline=True)
         if discovery_strategy:
@@ -449,7 +479,9 @@ class SourceManagement(commands.Cog):
             color=discord.Color.blue(),
         )
 
-        for source in sources:
+        displayed_sources = []
+        embed_text_length = len(embed.title or "")
+        for source in sources[:MAX_EMBED_FIELDS]:
             if source.is_active:
                 status = "Active"
             elif source.pause_reason == PauseReason.USER_PAUSED.value:
@@ -463,15 +495,29 @@ class SourceManagement(commands.Cog):
                 if source.last_polled_at
                 else "Never"
             )
-            embed.add_field(
-                name=f"{'[ON]' if source.is_active else '[OFF]'} {source.name}",
-                value=f"**Type:** {source.type.value}\n**Status:** {status}\n**Last Poll:** {last_poll}",
-                inline=True,
+            field_name = _truncate_embed_field_name(
+                f"{'[ON]' if source.is_active else '[OFF]'} {source.name}"
             )
+            field_value = (
+                f"**Type:** {source.type.value}\n**Status:** {status}\n**Last Poll:** {last_poll}"
+            )
+            if (
+                embed_text_length + len(field_name) + len(field_value)
+                > MAX_EMBED_TOTAL_TEXT_LENGTH - MAX_EMBED_FOOTER_RESERVE
+            ):
+                break
+            embed.add_field(name=field_name, value=field_value, inline=True)
+            displayed_sources.append(source)
+            embed_text_length += len(field_name) + len(field_value)
+
+        embed.set_footer(text=f"Showing {len(displayed_sources)} of {len(sources)} sources")
 
         await interaction.followup.send(embed=embed)
 
-    @source_group.command(name="remove", description="Remove a content source")
+    @source_group.command(
+        name="remove",
+        description="Archive a content source and stop polling it",
+    )
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.describe(name="Name of the source to remove")
@@ -607,7 +653,10 @@ class SourceManagement(commands.Cog):
     ) -> list[app_commands.Choice[str]]:
         return await self._source_name_autocomplete(interaction, current)
 
-    @source_group.command(name="toggle", description="Enable or disable a content source")
+    @source_group.command(
+        name="toggle",
+        description="Pause or resume polling for a content source",
+    )
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.describe(name="Name of the source to toggle")

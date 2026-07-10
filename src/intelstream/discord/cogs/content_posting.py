@@ -88,7 +88,7 @@ class ContentPosting(commands.Cog):
         except TimeoutError:
             logger.error("Pipeline close timed out during cog unload")
         except Exception as e:
-            logger.error("Error closing pipeline during cog unload", error=str(e))
+            logger.exception("Error closing pipeline during cog unload", error=str(e))
 
         if self._summarizer:
             await self._summarizer.close()
@@ -124,7 +124,7 @@ class ContentPosting(commands.Cog):
                     posted = await self._poster.post_unposted_items(guild.id)
                     total_posted += posted
                 except Exception as e:
-                    logger.error(
+                    logger.exception(
                         "Error posting to guild",
                         guild_id=guild.id,
                         error=str(e),

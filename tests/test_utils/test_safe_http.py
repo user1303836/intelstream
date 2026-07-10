@@ -17,7 +17,7 @@ async def test_safe_request_follows_relative_redirect_and_reads_body() -> None:
         return httpx.Response(200, text="finished")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        with patch("intelstream.utils.safe_http.validate_url_for_ssrf"):
+        with patch("intelstream.utils.safe_http.async_validate_url_for_ssrf"):
             response = await safe_request(client, "GET", "https://example.com/start")
 
     assert response.text == "finished"
@@ -36,7 +36,7 @@ async def test_safe_request_blocks_private_redirect_before_second_request() -> N
             raise SSRFError("private address")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        with patch("intelstream.utils.safe_http.validate_url_for_ssrf", side_effect=validate):
+        with patch("intelstream.utils.safe_http.async_validate_url_for_ssrf", side_effect=validate):
             with pytest.raises(SafeHTTPError, match="Redirect blocked"):
                 await safe_request(client, "GET", "https://example.com/start")
 
@@ -53,7 +53,7 @@ async def test_safe_request_rejects_content_length_over_limit_without_reading() 
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         with (
-            patch("intelstream.utils.safe_http.validate_url_for_ssrf"),
+            patch("intelstream.utils.safe_http.async_validate_url_for_ssrf"),
             pytest.raises(SafeHTTPError, match="10 byte limit"),
         ):
             await safe_request(
@@ -70,7 +70,7 @@ async def test_safe_request_rejects_streamed_body_over_limit() -> None:
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         with (
-            patch("intelstream.utils.safe_http.validate_url_for_ssrf"),
+            patch("intelstream.utils.safe_http.async_validate_url_for_ssrf"),
             pytest.raises(SafeHTTPError, match="10 byte limit"),
         ):
             await safe_request(
@@ -87,7 +87,7 @@ async def test_safe_request_enforces_redirect_limit() -> None:
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         with (
-            patch("intelstream.utils.safe_http.validate_url_for_ssrf"),
+            patch("intelstream.utils.safe_http.async_validate_url_for_ssrf"),
             pytest.raises(SafeHTTPError, match="Too many redirects"),
         ):
             await safe_request(

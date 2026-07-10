@@ -153,6 +153,10 @@ class TestRepositoryInitialization:
         with pytest.raises(ValueError, match="Only SQLite databases are supported"):
             Repository("mysql+aiomysql://localhost/test")
 
+    def test_rejects_synchronous_sqlite_driver(self) -> None:
+        with pytest.raises(ValueError, match=r"sqlite\+aiosqlite async driver"):
+            Repository("sqlite:///test.db")
+
     async def test_accepts_sqlite_database_url(self) -> None:
         repo = Repository("sqlite+aiosqlite:///:memory:")
         assert repo is not None
@@ -206,7 +210,7 @@ class TestSourceOperations:
                 source_type=SourceType.SUBSTACK,
                 name="Test",
                 identifier="test-high",
-                poll_interval_minutes=61,
+                poll_interval_minutes=1441,
             )
 
     async def test_add_duplicate_source_raises_error(self, repository: Repository) -> None:
@@ -238,9 +242,9 @@ class TestSourceOperations:
             source_type=SourceType.SUBSTACK,
             name="Max Interval",
             identifier="test-max",
-            poll_interval_minutes=60,
+            poll_interval_minutes=1440,
         )
-        assert source_max.poll_interval_minutes == 60
+        assert source_max.poll_interval_minutes == 1440
 
     async def test_get_source_by_identifier(self, repository: Repository) -> None:
         await repository.add_source(
@@ -300,6 +304,52 @@ class TestSourceOperations:
 
         all_sources = await repository.get_all_sources()
         assert len(all_sources) == 3
+
+    async def test_get_all_sources_filtered_by_guild(self, repository: Repository) -> None:
+        await repository.add_source(
+            source_type=SourceType.RSS,
+            name="Guild A Source",
+            identifier="guild-a-source",
+            guild_id="guild-a",
+        )
+        await repository.add_source(
+            source_type=SourceType.RSS,
+            name="Guild B Source",
+            identifier="guild-b-source",
+            guild_id="guild-b",
+        )
+
+        sources = await repository.get_all_sources(guild_id="guild-a")
+
+        assert [source.name for source in sources] == ["Guild A Source"]
+
+    async def test_sync_source_poll_intervals_updates_only_changed_types(
+        self, repository: Repository
+    ) -> None:
+        rss = await repository.add_source(
+            source_type=SourceType.RSS,
+            name="RSS Source",
+            identifier="rss-source",
+            poll_interval_minutes=10,
+        )
+        youtube = await repository.add_source(
+            source_type=SourceType.YOUTUBE,
+            name="YouTube Source",
+            identifier="youtube-source",
+            poll_interval_minutes=15,
+        )
+
+        updated = await repository.sync_source_poll_intervals(
+            {SourceType.RSS: 30, SourceType.YOUTUBE: 15}
+        )
+
+        assert updated == 1
+        refreshed_rss = await repository.get_source_by_id(rss.id)
+        refreshed_youtube = await repository.get_source_by_id(youtube.id)
+        assert refreshed_rss is not None
+        assert refreshed_rss.poll_interval_minutes == 30
+        assert refreshed_youtube is not None
+        assert refreshed_youtube.poll_interval_minutes == 15
 
     async def test_get_sources_for_guild_returns_active_sources_only(
         self, repository: Repository
@@ -526,6 +576,29 @@ class TestContentItemOperations:
 
         assert await repository.content_item_exists("video123") is True
         assert await repository.content_item_exists("nonexistent") is False
+
+    async def test_get_existing_external_ids_returns_only_matches(
+        self, repository: Repository
+    ) -> None:
+        source = await repository.add_source(
+            source_type=SourceType.RSS,
+            name="Bulk Existing IDs",
+            identifier="bulk-existing-ids",
+        )
+        for external_id in ("post-1", "post-2"):
+            await repository.add_content_item(
+                source_id=source.id,
+                external_id=external_id,
+                title=external_id,
+                original_url=f"https://example.com/{external_id}",
+                author="Author",
+                published_at=datetime.now(UTC),
+            )
+
+        requested_ids = {f"missing-{index}" for index in range(1_000)}
+        requested_ids.update({"post-1", "post-2"})
+        assert await repository.get_existing_external_ids(requested_ids) == {"post-1", "post-2"}
+        assert await repository.get_existing_external_ids(set()) == set()
 
     async def test_add_duplicate_content_raises_error(self, repository: Repository) -> None:
         source = await repository.add_source(
@@ -1233,6 +1306,42 @@ class TestDiscordConfigOperations:
 
 
 class TestMigrations:
+    async def test_migrate_adds_content_item_workload_indexes(self, tmp_path) -> None:
+        db_path = tmp_path / "legacy-content.db"
+        db_url = f"sqlite+aiosqlite:///{db_path}"
+        engine = create_async_engine(db_url, echo=False)
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("""
+                CREATE TABLE content_items (
+                    id VARCHAR(36) PRIMARY KEY,
+                    source_id VARCHAR(36) NOT NULL,
+                    external_id VARCHAR(512) NOT NULL UNIQUE,
+                    published_at DATETIME NOT NULL,
+                    summary TEXT,
+                    posted_to_discord BOOLEAN DEFAULT 0,
+                    created_at DATETIME
+                )
+            """)
+            )
+        await engine.dispose()
+
+        repo = Repository(db_url)
+        await repo.initialize()
+        await repo.initialize()
+
+        async with repo._engine.begin() as conn:
+            result = await conn.execute(text("PRAGMA index_list(content_items)"))
+            indexes = {row[1] for row in result.fetchall()}
+
+        assert {
+            "ix_content_items_source_published",
+            "ix_content_items_unsummarized_created",
+            "ix_content_items_unposted_published",
+        } <= indexes
+
+        await repo.close()
+
     async def test_migrate_adds_missing_columns_to_sources(self, tmp_path) -> None:
         db_path = tmp_path / "test.db"
         db_url = f"sqlite+aiosqlite:///{db_path}"

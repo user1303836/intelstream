@@ -42,6 +42,7 @@ async def test_base_adapter_super_methods_are_noops() -> None:
     assert adapter.source_type is None
     assert await adapter.fetch_latest("identifier", feed_url="feed", skip_content=True) is None
     assert await adapter.get_feed_url("identifier") is None
+    assert await adapter.close() is None
 
 
 def test_content_data_defaults() -> None:
