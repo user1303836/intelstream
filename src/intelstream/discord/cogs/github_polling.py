@@ -5,6 +5,7 @@ import httpx
 import structlog
 from discord.ext import commands, tasks
 
+from intelstream.config import reveal_secret
 from intelstream.database.models import GitHubRepo
 from intelstream.services.github_poster import GitHubPoster
 from intelstream.services.github_service import GitHubAPIError, GitHubEvent, GitHubService
@@ -29,13 +30,14 @@ class GitHubPolling(commands.Cog):
         self._base_interval: int = 5
 
     async def cog_load(self) -> None:
-        if not self.bot.settings.github_token:
+        token = reveal_secret(self.bot.settings.github_token)
+        if token is None:
             logger.info("GitHub token not configured, polling disabled")
             return
 
         self._http_client = httpx.AsyncClient(timeout=30.0)
         self._service = GitHubService(
-            token=self.bot.settings.github_token,
+            token=token,
             http_client=self._http_client,
         )
         self._poster = GitHubPoster()
@@ -93,7 +95,7 @@ class GitHubPolling(commands.Cog):
                     repos_polled += 1
                     total_events += events_posted
                 except Exception as e:
-                    logger.error(
+                    logger.exception(
                         "Error processing GitHub repo",
                         owner=repo.owner,
                         repo=repo.repo,

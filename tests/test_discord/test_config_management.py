@@ -327,6 +327,14 @@ class TestConfigManagementErrors:
             await config_management.config_channel_error(interaction, error)
 
 
+def test_config_descriptions_explain_fallback_behavior(config_management):
+    assert config_management.config_group.description == "Configure fallback bot settings"
+    assert (
+        config_management.config_channel.description
+        == "Set the fallback channel for sources without one"
+    )
+
+
 class TestSetup:
     async def test_setup_adds_config_management_cog(self, mock_bot):
         mock_bot.add_cog = AsyncMock()

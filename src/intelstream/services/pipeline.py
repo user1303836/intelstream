@@ -16,7 +16,7 @@ from intelstream.adapters.smart_blog import SmartBlogAdapter
 from intelstream.adapters.substack import SubstackAdapter
 from intelstream.adapters.twitter import TwitterAdapter
 from intelstream.adapters.youtube import YouTubeAdapter
-from intelstream.config import Settings
+from intelstream.config import Settings, reveal_secret
 from intelstream.database.exceptions import DuplicateContentError
 from intelstream.database.models import ArticleChunkMeta, ContentItem, Source, SourceType
 from intelstream.database.repository import Repository
@@ -55,13 +55,27 @@ class ContentPipeline:
         )
 
     async def initialize(self) -> None:
+        configured_intervals = {
+            source_type: self._settings.get_poll_interval(source_type) for source_type in SourceType
+        }
+        updated_sources = await self._repository.sync_source_poll_intervals(configured_intervals)
         self._http_client = httpx.AsyncClient(timeout=self._settings.http_timeout_seconds)
         self._adapters = self._create_adapters()
-        logger.debug("Content pipeline initialized")
+        logger.debug(
+            "Content pipeline initialized",
+            source_intervals_updated=updated_sources,
+        )
 
     async def close(self) -> None:
+        for adapter in self._adapters.values():
+            try:
+                await adapter.close()
+            except Exception:
+                logger.exception("Failed to close content adapter", adapter=adapter.source_type)
+        self._adapters.clear()
         if self._http_client:
             await self._http_client.aclose()
+            self._http_client = None
         for client in self._owned_anthropic_clients:
             await client.close()
         self._owned_anthropic_clients.clear()
@@ -74,20 +88,23 @@ class ContentPipeline:
             SourceType.ARXIV: ArxivAdapter(http_client=self._http_client),
         }
 
-        if self._settings.youtube_api_key:
+        youtube_api_key = reveal_secret(self._settings.youtube_api_key)
+        if youtube_api_key:
             adapters[SourceType.YOUTUBE] = YouTubeAdapter(
-                api_key=self._settings.youtube_api_key,
+                api_key=youtube_api_key,
                 http_client=self._http_client,
             )
 
-        if self._settings.twitter_bearer_token:
+        twitter_bearer_token = reveal_secret(self._settings.twitter_bearer_token)
+        if twitter_bearer_token:
             adapters[SourceType.TWITTER] = TwitterAdapter(
-                bearer_token=self._settings.twitter_bearer_token,
+                bearer_token=twitter_bearer_token,
                 http_client=self._http_client,
             )
 
-        if self._settings.anthropic_api_key and self._settings.anthropic_api_key.strip():
-            anthropic_client = anthropic.AsyncAnthropic(api_key=self._settings.anthropic_api_key)
+        anthropic_api_key = reveal_secret(self._settings.anthropic_api_key)
+        if anthropic_api_key:
+            anthropic_client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
             self._owned_anthropic_clients.append(anthropic_client)
             adapters[SourceType.BLOG] = SmartBlogAdapter(
                 anthropic_client=anthropic_client,
@@ -111,15 +128,16 @@ class ContentPipeline:
         sources_skipped = 0
         sources_failed = 0
         fetch_delay = self._settings.fetch_delay_seconds
+        now = datetime.now(UTC)
+        due_sources: list[Source] = []
 
-        for i, source in enumerate(sources):
+        for source in sources:
             if source.last_polled_at is not None:
-                interval = self._settings.get_poll_interval(source.type)
                 last_polled = source.last_polled_at
                 if last_polled.tzinfo is None:
                     last_polled = last_polled.replace(tzinfo=UTC)
-                next_poll_at = last_polled + timedelta(minutes=interval)
-                if datetime.now(UTC) < next_poll_at:
+                next_poll_at = last_polled + timedelta(minutes=source.poll_interval_minutes)
+                if now < next_poll_at:
                     logger.debug(
                         "Skipping source, not due yet",
                         source_name=source.name,
@@ -128,7 +146,9 @@ class ContentPipeline:
                     )
                     sources_skipped += 1
                     continue
+            due_sources.append(source)
 
+        for i, source in enumerate(due_sources):
             fetch_succeeded = False
             try:
                 new_items = await self._fetch_source(source)
@@ -213,7 +233,7 @@ class ContentPipeline:
             if fetch_succeeded:
                 await self._repository.reset_failure_count(source.id)
 
-            if fetch_delay > 0 and i < len(sources) - 1:
+            if fetch_delay > 0 and i < len(due_sources) - 1:
                 await asyncio.sleep(fetch_delay)
 
         await self._repository.cleanup_extraction_cache()
@@ -268,14 +288,21 @@ class ContentPipeline:
         is_first_poll = source.last_polled_at is None
 
         new_count = 0
+        existing_ids = (
+            await self._repository.get_existing_external_ids({item.external_id for item in items})
+            if items
+            else set()
+        )
+        seen_ids = set(existing_ids)
         for item in items:
-            if not await self._repository.content_item_exists(item.external_id):
-                try:
-                    await self._store_content_item(source, item)
-                    new_count += 1
-                except DuplicateContentError:
-                    logger.debug("Content item already exists", external_id=item.external_id)
-                    continue
+            if item.external_id in seen_ids:
+                continue
+            try:
+                await self._store_content_item(source, item)
+                new_count += 1
+            except DuplicateContentError:
+                logger.debug("Content item already exists", external_id=item.external_id)
+            seen_ids.add(item.external_id)
 
         if is_first_poll and new_count > 0:
             most_recent = await self._repository.get_most_recent_item_for_source(source.id)
@@ -337,7 +364,7 @@ class ContentPipeline:
             {item.source_id for item in items}
         )
 
-        for item in items:
+        for item_index, item in enumerate(items):
             source = sources_by_id.get(item.source_id)
             source_name = source.name if source else "unknown"
             source_type = source.type.value if source else "unknown"
@@ -393,7 +420,7 @@ class ContentPipeline:
                     error=str(e),
                 )
             except Exception as e:
-                logger.error(
+                logger.exception(
                     "Unexpected error during summarization",
                     item_id=item.id,
                     title=item.title,
@@ -401,7 +428,8 @@ class ContentPipeline:
                     error=str(e),
                 )
 
-            await asyncio.sleep(self._settings.summarization_delay_seconds)
+            if item_index < len(items) - 1 and self._settings.summarization_delay_seconds > 0:
+                await asyncio.sleep(self._settings.summarization_delay_seconds)
 
         elapsed = round(time.monotonic() - summarize_start, 2)
         logger.info(
@@ -467,7 +495,7 @@ class ContentPipeline:
             await self._repository.add_article_chunk_metas_batch(metas)
             await vector_store.upsert_article_chunks_batch(vector_items)
         except Exception as e:
-            logger.warning("Failed to embed item", item_id=item_id, error=str(e))
+            logger.exception("Failed to embed item", item_id=item_id, error=str(e))
 
     async def _handle_first_posting_backfill(self, items: list[ContentItem]) -> None:
         processed_sources: set[str] = set()

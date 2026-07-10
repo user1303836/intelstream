@@ -42,10 +42,10 @@ class ChannelSummary(commands.Cog):
 
     @app_commands.command(
         name="summary",
-        description="Summarize recent messages in a channel",
+        description="Summarize recent non-bot messages from a text channel",
     )
     @app_commands.describe(
-        count="Number of messages to summarize (default: 200, max: 500)",
+        count="Recent messages to scan (default: 200, max: 500)",
         channel="Channel to summarize (defaults to current channel)",
     )
     @app_commands.checks.cooldown(rate=1, per=60.0, key=lambda i: i.channel_id)
@@ -55,9 +55,13 @@ class ChannelSummary(commands.Cog):
         count: app_commands.Range[int, 10, MAX_MESSAGE_COUNT] = DEFAULT_MESSAGE_COUNT,
         channel: discord.TextChannel | None = None,
     ) -> None:
-        await interaction.response.defer()
-
         target_channel = channel or interaction.channel
+        is_cross_channel = (
+            isinstance(target_channel, discord.TextChannel)
+            and target_channel.id != interaction.channel_id
+        )
+        await interaction.response.defer(ephemeral=is_cross_channel)
+
         if not isinstance(target_channel, discord.TextChannel):
             await interaction.followup.send(
                 "This command can only be used in text channels.", ephemeral=True
@@ -107,7 +111,7 @@ class ChannelSummary(commands.Cog):
                 message_count=len(messages),
             )
         except Exception as e:
-            logger.error("Failed to generate channel summary", error=str(e))
+            logger.exception("Failed to generate channel summary", error=str(e))
             await interaction.followup.send(
                 "Failed to generate summary. Please try again later.", ephemeral=True
             )
@@ -124,6 +128,7 @@ class ChannelSummary(commands.Cog):
 
         await interaction.followup.send(
             full_text,
+            ephemeral=is_cross_channel,
             allowed_mentions=discord.AllowedMentions.none(),
         )
 

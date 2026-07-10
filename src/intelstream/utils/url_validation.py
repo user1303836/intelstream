@@ -1,6 +1,9 @@
+import asyncio
 import ipaddress
 import re
 import socket
+from collections.abc import Iterable
+from typing import Any
 from urllib.parse import urlparse
 
 
@@ -75,21 +78,7 @@ def _is_private_ip(ip_str: str) -> bool:
     return False
 
 
-def validate_url_for_ssrf(url: str) -> None:
-    """
-    Validate a URL to prevent SSRF attacks.
-
-    WARNING: This validation has inherent limitations:
-    - TOCTOU (time-of-check-time-of-use): DNS resolution may change between
-      validation and the actual HTTP request. An attacker could use DNS rebinding
-      to bypass this check.
-    - Callers must revalidate every redirect target. The shared safe HTTP
-      helper does this for all externally supplied and discovered URLs.
-
-    Raises:
-        SSRFError: If the URL points to a blocked host or internal IP, or if
-            the hostname cannot be resolved.
-    """
+def _validate_url_without_dns(url: str) -> str:
     parsed = urlparse(url)
 
     if parsed.scheme not in ("http", "https"):
@@ -110,12 +99,51 @@ def validate_url_for_ssrf(url: str) -> None:
     if _is_private_ip(hostname_lower):
         raise SSRFError("URLs pointing to private IP addresses are not allowed")
 
+    return hostname
+
+
+def _validate_resolved_addresses(resolved_ips: Iterable[tuple[Any, ...]]) -> None:
+    for resolved in resolved_ips:
+        sockaddr = resolved[-1]
+        ip_str = str(sockaddr[0])
+        if _is_private_ip(ip_str):
+            raise SSRFError(f"URL resolves to a private IP address ({ip_str})")
+
+
+def validate_url_for_ssrf(url: str) -> None:
+    """
+    Validate a URL to prevent SSRF attacks.
+
+    WARNING: This validation has inherent limitations:
+    - TOCTOU (time-of-check-time-of-use): DNS resolution may change between
+      validation and the actual HTTP request. An attacker could use DNS rebinding
+      to bypass this check.
+    - Callers must revalidate every redirect target. The shared safe HTTP
+      helper does this for all externally supplied and discovered URLs.
+
+    Raises:
+        SSRFError: If the URL points to a blocked host or internal IP, or if
+            the hostname cannot be resolved.
+    """
+    hostname = _validate_url_without_dns(url)
     try:
         resolved_ips = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
-        for _, _, _, _, sockaddr in resolved_ips:
-            ip_str = str(sockaddr[0])
-            if _is_private_ip(ip_str):
-                raise SSRFError(f"URL resolves to a private IP address ({ip_str})")
+        _validate_resolved_addresses(resolved_ips)
+    except socket.gaierror as e:
+        raise SSRFError("Could not resolve hostname") from e
+
+
+async def async_validate_url_for_ssrf(url: str) -> None:
+    """Validate a URL without blocking the event loop during DNS resolution."""
+    hostname = _validate_url_without_dns(url)
+    try:
+        resolved_ips = await asyncio.get_running_loop().getaddrinfo(
+            hostname,
+            None,
+            family=socket.AF_UNSPEC,
+            type=socket.SOCK_STREAM,
+        )
+        _validate_resolved_addresses(resolved_ips)
     except socket.gaierror as e:
         raise SSRFError("Could not resolve hostname") from e
 
@@ -132,6 +160,15 @@ def is_safe_url(url: str) -> tuple[bool, str]:
     """
     try:
         validate_url_for_ssrf(url)
+        return True, ""
+    except SSRFError as e:
+        return False, str(e)
+
+
+async def async_is_safe_url(url: str) -> tuple[bool, str]:
+    """Async variant of is_safe_url for Discord and HTTP request paths."""
+    try:
+        await async_validate_url_for_ssrf(url)
         return True, ""
     except SSRFError as e:
         return False, str(e)

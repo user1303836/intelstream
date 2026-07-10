@@ -225,7 +225,7 @@ class TestRSSDiscoveryStrategy:
         assert result is None
         client.get.assert_awaited_once()
 
-    def test_find_rss_in_html_skips_ssrf_blocked_links(self, rss_strategy):
+    async def test_find_rss_in_html_skips_ssrf_blocked_links(self, rss_strategy):
         html = """
         <html><head>
           <link rel="alternate" type="application/rss+xml" href="http://127.0.0.1/rss">
@@ -234,14 +234,14 @@ class TestRSSDiscoveryStrategy:
         """
 
         with patch(
-            "intelstream.adapters.strategies.rss_discovery.validate_url_for_ssrf",
+            "intelstream.adapters.strategies.rss_discovery.async_validate_url_for_ssrf",
             side_effect=[SSRFError("blocked"), None],
         ):
-            result = rss_strategy._find_rss_in_html(html, "https://example.com")
+            result = await rss_strategy._find_rss_in_html(html, "https://example.com")
 
         assert result == "https://example.com/safe-feed.xml"
 
-    def test_find_rss_in_html_skips_irrelevant_missing_and_blocked_links(self, rss_strategy):
+    async def test_find_rss_in_html_skips_irrelevant_missing_and_blocked_links(self, rss_strategy):
         html = """
         <html><head>
           <link rel="alternate" type="text/html" href="/not-a-feed">
@@ -253,10 +253,10 @@ class TestRSSDiscoveryStrategy:
         """
 
         with patch(
-            "intelstream.adapters.strategies.rss_discovery.validate_url_for_ssrf",
+            "intelstream.adapters.strategies.rss_discovery.async_validate_url_for_ssrf",
             side_effect=[SSRFError("blocked"), None],
         ):
-            result = rss_strategy._find_rss_in_html(html, "https://example.com")
+            result = await rss_strategy._find_rss_in_html(html, "https://example.com")
 
         assert result == "https://example.com/safe-feed.xml"
 

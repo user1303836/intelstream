@@ -5,7 +5,7 @@ from urllib.parse import urljoin
 
 import httpx
 
-from intelstream.utils.url_validation import SSRFError, validate_url_for_ssrf
+from intelstream.utils.url_validation import SSRFError, async_validate_url_for_ssrf
 
 DEFAULT_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 DEFAULT_MAX_REDIRECTS = 10
@@ -31,7 +31,7 @@ async def safe_request(
         raise ValueError("max_redirects cannot be negative")
 
     if validate_ssrf:
-        _validate_url(url)
+        await _validate_url(url)
 
     current_url = url
     redirects_followed = 0
@@ -44,7 +44,7 @@ async def safe_request(
 
                 redirect_url = _redirect_url(response)
                 if validate_ssrf:
-                    _validate_url(redirect_url, redirect=True)
+                    await _validate_url(redirect_url, redirect=True)
                 current_url = redirect_url
                 redirects_followed += 1
                 continue
@@ -75,9 +75,9 @@ async def _stream_response(
         yield response
 
 
-def _validate_url(url: str, *, redirect: bool = False) -> None:
+async def _validate_url(url: str, *, redirect: bool = False) -> None:
     try:
-        validate_url_for_ssrf(url)
+        await async_validate_url_for_ssrf(url)
     except SSRFError as exc:
         prefix = "Redirect" if redirect else "URL"
         raise SafeHTTPError(f"{prefix} blocked by SSRF protection: {exc}") from exc
@@ -104,7 +104,7 @@ async def _read_limited(response: httpx.Response, max_response_bytes: int) -> by
 
     content = bytearray()
     async for chunk in response.aiter_bytes():
-        content.extend(chunk)
-        if len(content) > max_response_bytes:
+        if len(content) + len(chunk) > max_response_bytes:
             raise SafeHTTPError(f"Response exceeds {max_response_bytes} byte limit")
+        content.extend(chunk)
     return bytes(content)

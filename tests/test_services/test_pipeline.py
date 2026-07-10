@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -27,7 +27,9 @@ def mock_settings():
 
 @pytest.fixture
 def mock_repository():
-    return AsyncMock(spec=Repository)
+    repository = AsyncMock(spec=Repository)
+    repository.get_existing_external_ids.return_value = set()
+    return repository
 
 
 @pytest.fixture
@@ -54,6 +56,7 @@ def sample_source():
     source.feed_url = "https://test.substack.com/feed"
     source.skip_summary = False
     source.last_polled_at = None
+    source.poll_interval_minutes = 5
     return source
 
 
@@ -93,6 +96,27 @@ class TestContentPipelineInitialization:
         assert pipeline._http_client is not None
         assert pipeline._adapters is not None
 
+        await pipeline.close()
+
+    async def test_initialize_synchronizes_configured_source_intervals(
+        self,
+        pipeline: ContentPipeline,
+        mock_settings: MagicMock,
+        mock_repository: AsyncMock,
+    ):
+        mock_settings.get_poll_interval.side_effect = lambda source_type: {
+            SourceType.RSS: 30,
+            SourceType.YOUTUBE: 60,
+        }.get(source_type, 5)
+
+        await pipeline.initialize()
+
+        mock_repository.sync_source_poll_intervals.assert_awaited_once_with(
+            {
+                source_type: mock_settings.get_poll_interval(source_type)
+                for source_type in SourceType
+            }
+        )
         await pipeline.close()
 
     async def test_initialize_creates_adapters(self, pipeline: ContentPipeline):
@@ -168,6 +192,18 @@ class TestContentPipelineInitialization:
         await pipeline.close()
 
         assert http_client.is_closed
+
+    async def test_close_releases_each_adapter_once(self, pipeline: ContentPipeline):
+        await pipeline.initialize()
+        adapters = list(pipeline._adapters.values())
+        for adapter in adapters:
+            adapter.close = AsyncMock()
+
+        await pipeline.close()
+        await pipeline.close()
+
+        for adapter in adapters:
+            adapter.close.assert_awaited_once()
 
     async def test_close_closes_owned_anthropic_client_once(
         self,
@@ -261,7 +297,7 @@ class TestFetchAllSources:
         await pipeline.initialize()
 
         mock_repository.get_all_sources.return_value = [sample_source]
-        mock_repository.content_item_exists.return_value = False
+        mock_repository.get_existing_external_ids.return_value = set()
         mock_repository.get_most_recent_item_for_source.return_value = MagicMock(
             spec=ContentItem, id="item-1", title="Test"
         )
@@ -291,7 +327,7 @@ class TestFetchAllSources:
         await pipeline.initialize()
 
         mock_repository.get_all_sources.return_value = [sample_source]
-        mock_repository.content_item_exists.return_value = True
+        mock_repository.get_existing_external_ids.return_value = {sample_content_data.external_id}
 
         with patch.object(
             pipeline._adapters[SourceType.SUBSTACK],
@@ -372,7 +408,7 @@ class TestFetchAllSources:
         ]
 
         mock_repository.get_all_sources.return_value = [sample_source]
-        mock_repository.content_item_exists.return_value = False
+        mock_repository.get_existing_external_ids.return_value = set()
         mock_repository.get_most_recent_item_for_source.return_value = most_recent
         mock_repository.mark_items_as_backfilled.return_value = 4
 
@@ -386,6 +422,10 @@ class TestFetchAllSources:
 
         assert result == 5
         assert mock_repository.add_content_item.call_count == 5
+        mock_repository.get_existing_external_ids.assert_awaited_once_with(
+            {item.external_id for item in items}
+        )
+        mock_repository.content_item_exists.assert_not_awaited()
         mock_repository.get_most_recent_item_for_source.assert_called_once_with(sample_source.id)
         mock_repository.mark_items_as_backfilled.assert_called_once_with(
             source_id=sample_source.id,
@@ -411,7 +451,7 @@ class TestFetchAllSources:
         most_recent.title = "Test Article"
 
         mock_repository.get_all_sources.return_value = [sample_source]
-        mock_repository.content_item_exists.return_value = False
+        mock_repository.get_existing_external_ids.return_value = set()
         mock_repository.get_most_recent_item_for_source.return_value = most_recent
         mock_repository.mark_items_as_backfilled.return_value = 0
 
@@ -454,7 +494,7 @@ class TestFetchAllSources:
         ]
 
         mock_repository.get_all_sources.return_value = [sample_source]
-        mock_repository.content_item_exists.return_value = False
+        mock_repository.get_existing_external_ids.return_value = set()
 
         with patch.object(
             pipeline._adapters[SourceType.SUBSTACK],
@@ -507,7 +547,7 @@ class TestFetchAllSources:
         source2.skip_summary = False
 
         mock_repository.get_all_sources.return_value = [source1, source2]
-        mock_repository.content_item_exists.return_value = True
+        mock_repository.get_existing_external_ids.return_value = set()
 
         with (
             patch.object(
@@ -522,6 +562,43 @@ class TestFetchAllSources:
         ):
             await pipeline.fetch_all_sources()
             mock_sleep.assert_called_once_with(0.1)
+
+        await pipeline.close()
+
+    async def test_fetch_delay_ignores_sources_filtered_as_not_due(
+        self,
+        pipeline: ContentPipeline,
+        mock_repository: AsyncMock,
+        sample_source,
+    ):
+        await pipeline.initialize()
+
+        not_due = MagicMock(spec=Source)
+        not_due.id = "source-not-due"
+        not_due.name = "Not Due"
+        not_due.type = SourceType.SUBSTACK
+        not_due.identifier = "not-due"
+        not_due.feed_url = "https://not-due.substack.com/feed"
+        not_due.skip_summary = False
+        not_due.last_polled_at = datetime.now(UTC)
+        not_due.poll_interval_minutes = 60
+        mock_repository.get_all_sources.return_value = [sample_source, not_due]
+
+        with (
+            patch.object(
+                pipeline._adapters[SourceType.SUBSTACK],
+                "fetch_latest",
+                new_callable=AsyncMock,
+                return_value=[],
+            ) as mock_fetch,
+            patch(
+                "intelstream.services.pipeline.asyncio.sleep", new_callable=AsyncMock
+            ) as mock_sleep,
+        ):
+            await pipeline.fetch_all_sources()
+
+        mock_fetch.assert_awaited_once()
+        mock_sleep.assert_not_awaited()
 
         await pipeline.close()
 
@@ -742,7 +819,7 @@ class TestFetchAllSources:
         await pipeline.initialize()
 
         mock_repository.get_all_sources.return_value = [sample_source]
-        mock_repository.content_item_exists.return_value = False
+        mock_repository.get_existing_external_ids.return_value = set()
         mock_repository.get_most_recent_item_for_source.return_value = MagicMock(
             spec=ContentItem, id="item-1", title="Test"
         )
@@ -773,7 +850,7 @@ class TestFetchAllSources:
         sample_source.skip_summary = True
 
         mock_repository.get_all_sources.return_value = [sample_source]
-        mock_repository.content_item_exists.return_value = False
+        mock_repository.get_existing_external_ids.return_value = set()
         mock_repository.get_most_recent_item_for_source.return_value = MagicMock(
             spec=ContentItem, id="item-1", title="Test"
         )
@@ -803,9 +880,10 @@ class TestFetchAllSources:
         sample_source,
     ):
         await pipeline.initialize()
+        mock_settings.get_poll_interval.reset_mock()
 
-        sample_source.last_polled_at = datetime(2099, 1, 1, 0, 0, 0, tzinfo=UTC)
-        mock_settings.get_poll_interval.return_value = 20
+        sample_source.last_polled_at = datetime.now(UTC) - timedelta(minutes=10)
+        sample_source.poll_interval_minutes = 20
         mock_repository.get_all_sources.return_value = [sample_source]
 
         with patch.object(
@@ -817,6 +895,7 @@ class TestFetchAllSources:
 
         assert result == 0
         mock_fetch.assert_not_called()
+        mock_settings.get_poll_interval.assert_not_called()
 
         await pipeline.close()
 
@@ -828,9 +907,10 @@ class TestFetchAllSources:
         sample_source,
     ):
         await pipeline.initialize()
+        mock_settings.get_poll_interval.reset_mock()
 
         sample_source.last_polled_at = datetime(2099, 1, 1, 0, 0, 0)
-        mock_settings.get_poll_interval.return_value = 20
+        sample_source.poll_interval_minutes = 20
         mock_repository.get_all_sources.return_value = [sample_source]
 
         with patch.object(
@@ -842,6 +922,7 @@ class TestFetchAllSources:
 
         assert result == 0
         mock_fetch.assert_not_called()
+        mock_settings.get_poll_interval.assert_not_called()
 
         await pipeline.close()
 
@@ -854,11 +935,12 @@ class TestFetchAllSources:
         sample_content_data,
     ):
         await pipeline.initialize()
+        mock_settings.get_poll_interval.reset_mock()
 
         sample_source.last_polled_at = datetime(2000, 1, 1, 0, 0, 0, tzinfo=UTC)
-        mock_settings.get_poll_interval.return_value = 5
+        sample_source.poll_interval_minutes = 5
         mock_repository.get_all_sources.return_value = [sample_source]
-        mock_repository.content_item_exists.return_value = False
+        mock_repository.get_existing_external_ids.return_value = set()
 
         with patch.object(
             pipeline._adapters[SourceType.SUBSTACK],
@@ -869,6 +951,7 @@ class TestFetchAllSources:
             result = await pipeline.fetch_all_sources()
 
         assert result == 1
+        mock_settings.get_poll_interval.assert_not_called()
 
         await pipeline.close()
 
@@ -881,10 +964,11 @@ class TestFetchAllSources:
         sample_content_data,
     ):
         await pipeline.initialize()
+        mock_settings.get_poll_interval.reset_mock()
 
         sample_source.last_polled_at = None
         mock_repository.get_all_sources.return_value = [sample_source]
-        mock_repository.content_item_exists.return_value = False
+        mock_repository.get_existing_external_ids.return_value = set()
         mock_repository.get_most_recent_item_for_source.return_value = MagicMock(
             spec=ContentItem, id="item-1", title="Test"
         )
@@ -951,7 +1035,7 @@ class TestFetchAllSources:
             '{"site_name":"Example","post_selector":"article",'
             '"title_selector":"h2","url_selector":"a","url_attribute":"href"}'
         )
-        mock_repository.content_item_exists.return_value = False
+        mock_repository.get_existing_external_ids.return_value = set()
 
         with patch(
             "intelstream.adapters.page.PageAdapter.fetch_latest",
@@ -977,7 +1061,7 @@ class TestFetchAllSources:
     ):
         await pipeline.initialize()
 
-        mock_repository.content_item_exists.return_value = False
+        mock_repository.get_existing_external_ids.return_value = set()
 
         with (
             patch.object(
@@ -1010,7 +1094,7 @@ class TestFetchAllSources:
         await pipeline.initialize()
 
         sample_source.last_polled_at = None
-        mock_repository.content_item_exists.return_value = False
+        mock_repository.get_existing_external_ids.return_value = set()
         mock_repository.get_most_recent_item_for_source.return_value = None
 
         with patch.object(
@@ -1043,7 +1127,10 @@ class TestSummarizePending:
         mock_repository.has_source_posted_content.return_value = True
         mock_summarizer.summarize.return_value = "This is the summary."
 
-        result = await pipeline.summarize_pending(max_items=5)
+        with patch(
+            "intelstream.services.pipeline.asyncio.sleep", new_callable=AsyncMock
+        ) as mock_sleep:
+            result = await pipeline.summarize_pending(max_items=5)
 
         assert result == 1
         mock_summarizer.summarize.assert_called_once_with(
@@ -1055,6 +1142,41 @@ class TestSummarizePending:
         mock_repository.update_content_item_summary.assert_called_once_with(
             sample_content_item.id, "This is the summary."
         )
+        mock_sleep.assert_not_awaited()
+
+        await pipeline.close()
+
+    async def test_summarize_pending_delays_only_between_items(
+        self,
+        pipeline: ContentPipeline,
+        mock_repository: AsyncMock,
+        mock_summarizer: AsyncMock,
+        sample_content_item,
+        sample_source,
+    ):
+        await pipeline.initialize()
+
+        second_item = MagicMock(spec=ContentItem)
+        second_item.id = "item-456"
+        second_item.source_id = sample_source.id
+        second_item.title = "Second Article"
+        second_item.author = "Second Author"
+        second_item.raw_content = "Second article content."
+        mock_repository.get_unsummarized_content_items.return_value = [
+            sample_content_item,
+            second_item,
+        ]
+        mock_repository.get_sources_by_ids.return_value = {sample_source.id: sample_source}
+        mock_repository.has_source_posted_content.return_value = True
+        mock_summarizer.summarize.side_effect = ["First summary", "Second summary"]
+
+        with patch(
+            "intelstream.services.pipeline.asyncio.sleep", new_callable=AsyncMock
+        ) as mock_sleep:
+            result = await pipeline.summarize_pending()
+
+        assert result == 2
+        mock_sleep.assert_awaited_once_with(0.5)
 
         await pipeline.close()
 

@@ -256,7 +256,7 @@ class ContentPoster:
                         error=str(e),
                     )
                 except Exception as e:
-                    logger.error(
+                    logger.exception(
                         "Unexpected error posting content item",
                         item_id=item.id,
                         title=item.title,

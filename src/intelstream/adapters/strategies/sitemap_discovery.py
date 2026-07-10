@@ -16,7 +16,7 @@ from intelstream.adapters.strategies.base import (
 )
 from intelstream.config import get_settings
 from intelstream.utils.safe_http import SafeHTTPError, safe_request
-from intelstream.utils.url_validation import SSRFError, validate_url_for_ssrf
+from intelstream.utils.url_validation import SSRFError, async_validate_url_for_ssrf
 
 logger = structlog.get_logger()
 
@@ -132,7 +132,7 @@ class SitemapDiscoveryStrategy(DiscoveryStrategy):
                 if line.lower().startswith("sitemap:"):
                     sitemap_url = line.split(":", 1)[1].strip()
                     try:
-                        validate_url_for_ssrf(sitemap_url)
+                        await async_validate_url_for_ssrf(sitemap_url)
                     except SSRFError:
                         logger.warning(
                             "Skipping sitemap URL blocked by SSRF protection",
@@ -242,7 +242,7 @@ class SitemapDiscoveryStrategy(DiscoveryStrategy):
             loc = sitemap.find("sm:loc", SITEMAP_NS)
             if loc is not None and loc.text:
                 try:
-                    validate_url_for_ssrf(loc.text)
+                    await async_validate_url_for_ssrf(loc.text)
                 except SSRFError:
                     logger.warning("Skipping sub-sitemap blocked by SSRF protection", url=loc.text)
                     continue
@@ -258,7 +258,7 @@ class SitemapDiscoveryStrategy(DiscoveryStrategy):
             loc = sitemap.find("loc")
             if loc is not None and loc.text:
                 try:
-                    validate_url_for_ssrf(loc.text)
+                    await async_validate_url_for_ssrf(loc.text)
                 except SSRFError:
                     logger.warning("Skipping sub-sitemap blocked by SSRF protection", url=loc.text)
                     continue

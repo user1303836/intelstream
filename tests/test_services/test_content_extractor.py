@@ -1,3 +1,4 @@
+import threading
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -10,6 +11,7 @@ from bs4 import BeautifulSoup
 from intelstream.services.content_extractor import (
     MIN_CONTENT_LENGTH,
     ContentExtractor,
+    ExtractedContent,
 )
 
 
@@ -28,6 +30,22 @@ def valid_article_text() -> str:
 
 
 class TestContentExtractor:
+    async def test_extract_offloads_html_parsing(self, extractor: ContentExtractor) -> None:
+        event_loop_thread = threading.get_ident()
+        worker_threads: list[int] = []
+        extractor._fetch_html = AsyncMock(return_value="<html></html>")
+
+        def parse(_html: str, _url: str) -> ExtractedContent:
+            worker_threads.append(threading.get_ident())
+            return ExtractedContent(text="parsed")
+
+        extractor._extract_html = MagicMock(side_effect=parse)
+
+        result = await extractor.extract("https://example.com/article")
+
+        assert result.text == "parsed"
+        assert worker_threads and worker_threads[0] != event_loop_thread
+
     async def test_extract_rejects_ssrf_blocked_url(self, extractor: ContentExtractor):
         result = await extractor.extract("http://localhost/admin")
 

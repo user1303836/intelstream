@@ -14,7 +14,7 @@ class TestYouTubeAdapter:
     def setup_method(self) -> None:
         self.mock_youtube = MagicMock()
         self.patcher = patch("intelstream.adapters.youtube.build", return_value=self.mock_youtube)
-        self.patcher.start()
+        self.mock_build = self.patcher.start()
 
     def teardown_method(self) -> None:
         self.patcher.stop()
@@ -22,6 +22,36 @@ class TestYouTubeAdapter:
     async def test_source_type(self) -> None:
         adapter = YouTubeAdapter(api_key="test-key")
         assert adapter.source_type == "youtube"
+        self.mock_build.assert_not_called()
+
+    async def test_google_client_is_lazy_reused_and_closed(self) -> None:
+        adapter = YouTubeAdapter(api_key="test-key")
+
+        first = await adapter._get_youtube()
+        second = await adapter._get_youtube()
+        await adapter.close()
+
+        assert first is self.mock_youtube
+        assert second is self.mock_youtube
+        self.mock_build.assert_called_once_with("youtube", "v3", developerKey="test-key")
+        self.mock_youtube.close.assert_called_once_with()
+
+    async def test_resolved_channel_and_playlist_ids_are_cached(self) -> None:
+        self.mock_youtube.channels().list().execute.side_effect = [
+            {"items": [{"id": "UCtest123456789012345"}]},
+            {"items": [{"contentDetails": {"relatedPlaylists": {"uploads": "UUuploads"}}}]},
+        ]
+        self.mock_youtube.channels().list.reset_mock()
+        adapter = YouTubeAdapter(api_key="test-key")
+
+        first_channel = await adapter._resolve_channel_id("@testchannel")
+        second_channel = await adapter._resolve_channel_id("@testchannel")
+        first_playlist = await adapter._get_uploads_playlist_id(first_channel)
+        second_playlist = await adapter._get_uploads_playlist_id(first_channel)
+
+        assert first_channel == second_channel == "UCtest123456789012345"
+        assert first_playlist == second_playlist == "UUuploads"
+        assert self.mock_youtube.channels().list.call_count == 2
 
     async def test_get_feed_url_returns_channel_url(self) -> None:
         self.mock_youtube.channels().list().execute.return_value = {

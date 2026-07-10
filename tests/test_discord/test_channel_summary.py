@@ -174,8 +174,10 @@ class TestSummaryCommand:
         await cog.summary.callback(cog, mock_interaction, count=200, channel=target_channel)
 
         target_channel.history.assert_called_once()
+        mock_interaction.response.defer.assert_awaited_once_with(ephemeral=True)
         sent_text = mock_interaction.followup.send.call_args.args[0]
         assert "<#88888>" in sent_text
+        assert mock_interaction.followup.send.call_args.kwargs["ephemeral"] is True
 
     async def test_summary_handles_summarization_failure(self, cog, mock_interaction):
         messages = [_make_message(f"msg {i}", f"user{i}") for i in range(10)]
@@ -383,6 +385,14 @@ class TestSummaryError:
 
         with pytest.raises(app_commands.AppCommandError, match="boom"):
             await cog.summary_error(mock_interaction, error)
+
+
+def test_summary_command_description_explains_scan_behavior(cog):
+    assert cog.summary.description == "Summarize recent non-bot messages from a text channel"
+    count_parameter = next(
+        parameter for parameter in cog.summary.parameters if parameter.name == "count"
+    )
+    assert count_parameter.description == "Recent messages to scan (default: 200, max: 500)"
 
 
 async def test_setup_adds_channel_summary_cog(mock_bot):

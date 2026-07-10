@@ -13,6 +13,8 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
+MAX_FORWARD_LIST_LENGTH = 1900
+
 
 class MessageForwarding(commands.Cog):
     forward_group = app_commands.Group(
@@ -95,7 +97,7 @@ class MessageForwarding(commands.Cog):
         source="Source channel or thread to forward FROM",
         destination="Destination channel or thread to forward TO",
     )
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def forward_add(
         self,
@@ -164,7 +166,7 @@ class MessageForwarding(commands.Cog):
         )
 
     @forward_group.command(name="list", description="List all forwarding rules")
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.default_permissions(manage_guild=True)
     async def forward_list(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
 
@@ -187,6 +189,7 @@ class MessageForwarding(commands.Cog):
             return
 
         lines = ["**Forwarding Rules:**", ""]
+        shown = 0
         for i, rule in enumerate(rules, 1):
             source = self.bot.get_channel(int(rule.source_channel_id))
             dest = self.bot.get_channel(int(rule.destination_channel_id))
@@ -209,9 +212,25 @@ class MessageForwarding(commands.Cog):
             )
             status = "active" if rule.is_active else "paused"
 
-            lines.append(
+            line = (
                 f"{i}. {source_name} -> {dest_name} ({status}, {rule.messages_forwarded} forwarded)"
             )
+            if len("\n".join([*lines, line])) > MAX_FORWARD_LIST_LENGTH:
+                break
+            lines.append(line)
+            shown += 1
+
+        if shown < len(rules):
+            omitted = len(rules) - shown
+            note = f"*... {omitted} more forwarding rule{'s' if omitted != 1 else ''} not shown.*"
+            while shown > 0 and len("\n".join([*lines, note])) > MAX_FORWARD_LIST_LENGTH:
+                lines.pop()
+                shown -= 1
+                omitted += 1
+                note = (
+                    f"*... {omitted} more forwarding rule{'s' if omitted != 1 else ''} not shown.*"
+                )
+            lines.append(note)
 
         await interaction.followup.send("\n".join(lines), ephemeral=True)
 
@@ -220,7 +239,7 @@ class MessageForwarding(commands.Cog):
         source="Source channel to stop forwarding from",
         destination="Destination channel/thread to stop forwarding to",
     )
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def forward_remove(
         self,
@@ -265,7 +284,7 @@ class MessageForwarding(commands.Cog):
         source="Source channel to pause forwarding from",
         destination="Destination channel/thread to pause forwarding to",
     )
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def forward_pause(
         self,
@@ -311,7 +330,7 @@ class MessageForwarding(commands.Cog):
         source="Source channel to resume forwarding from",
         destination="Destination channel/thread to resume forwarding to",
     )
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def forward_resume(
         self,

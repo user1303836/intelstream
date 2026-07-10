@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from intelstream.config import Settings, get_database_directory
+from intelstream.config import Settings, get_database_directory, reveal_secret
 from intelstream.database.models import SourceType
 
 
@@ -19,11 +19,12 @@ class TestSettings:
 
         settings = Settings(_env_file=None)
 
-        assert settings.discord_bot_token == "test_token"
+        assert settings.discord_bot_token.get_secret_value() == "test_token"
         assert settings.discord_guild_id == 123456789
         assert settings.discord_channel_id == 987654321
         assert settings.discord_owner_id == 111222333
-        assert settings.anthropic_api_key == "sk-ant-test"
+        assert settings.anthropic_api_key is not None
+        assert settings.anthropic_api_key.get_secret_value() == "sk-ant-test"
         assert settings.youtube_api_key is None
         assert settings.default_poll_interval_minutes == 5
         assert settings.log_level == "INFO"
@@ -38,7 +39,8 @@ class TestSettings:
 
         settings = Settings(_env_file=None)
 
-        assert settings.youtube_api_key == "yt-api-key"
+        assert settings.youtube_api_key is not None
+        assert settings.youtube_api_key.get_secret_value() == "yt-api-key"
 
     def test_settings_accepts_lowercase_env_and_optional_legacy_channel(
         self, monkeypatch: pytest.MonkeyPatch
@@ -61,7 +63,7 @@ class TestSettings:
 
         settings = Settings(_env_file=None)
 
-        assert settings.discord_bot_token == "test_token"
+        assert settings.discord_bot_token.get_secret_value() == "test_token"
         assert settings.discord_guild_id == 123456789
         assert settings.discord_channel_id is None
         assert settings.discord_owner_id == 111222333
@@ -136,6 +138,17 @@ class TestSettings:
         assert "discord_owner_id=111222333" in repr_str
         assert "llm_provider=" in repr_str
 
+        settings_str = str(settings)
+        serialized = settings.model_dump(mode="json")
+        for secret in (
+            "secret-discord-token-12345",
+            "sk-ant-secret-key-67890",
+            "sk-openai-secret",
+            "yt-secret-api-key",
+        ):
+            assert secret not in settings_str
+            assert secret not in repr(serialized)
+
     def test_repr_handles_none_keys(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
         monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
@@ -167,7 +180,7 @@ class TestSettings:
         monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "")
 
-        with pytest.raises(ValidationError, match="No API key configured"):
+        with pytest.raises(ValidationError, match="cannot be empty or whitespace-only"):
             Settings(_env_file=None)
 
     def test_llm_api_key_returns_correct_provider_key(
@@ -181,6 +194,19 @@ class TestSettings:
 
         settings = Settings(_env_file=None)
         assert settings.llm_api_key == "sk-openai-test"
+
+    def test_explicit_secret_accessors_return_raw_values(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "discord-token")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-token")
+
+        settings = Settings(_env_file=None)
+
+        assert settings.discord_token == "discord-token"
+        assert reveal_secret(settings.anthropic_api_key) == "anthropic-token"
+        assert reveal_secret("  legacy-test-token  ") == "legacy-test-token"
+        assert reveal_secret(None) is None
 
     def test_llm_api_key_raises_if_configured_key_is_later_cleared(
         self, monkeypatch: pytest.MonkeyPatch
@@ -255,16 +281,106 @@ class TestSettings:
         with pytest.raises(ValidationError, match="SQLite database path cannot be empty"):
             Settings(_env_file=None)
 
-    def test_non_sqlite_database_url_accepted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_non_sqlite_database_url_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
         monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
         monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://user:pass@localhost/db")
 
+        with pytest.raises(ValidationError, match="Only SQLite databases are supported"):
+            Settings(_env_file=None)
+
+    @pytest.mark.parametrize(
+        "database_url",
+        ["sqlite:///./data/intelstream.db", "sqlite+pysqlite:///./data/intelstream.db"],
+    )
+    def test_synchronous_sqlite_driver_rejected(
+        self, monkeypatch: pytest.MonkeyPatch, database_url: str
+    ) -> None:
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
+        monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
+        monkeypatch.setenv("DISCORD_OWNER_ID", "111222333")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("DATABASE_URL", database_url)
+
+        with pytest.raises(ValidationError, match=r"sqlite\+aiosqlite async driver"):
+            Settings(_env_file=None)
+
+    @pytest.mark.parametrize(
+        ("env_name", "env_value"),
+        [
+            ("DISCORD_BOT_TOKEN", "   "),
+            ("ANTHROPIC_API_KEY", "\t"),
+            ("YOUTUBE_API_KEY", "\n"),
+        ],
+    )
+    def test_whitespace_credentials_are_rejected(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        env_name: str,
+        env_value: str,
+    ) -> None:
+        monkeypatch.setenv(env_name, env_value)
+
+        with pytest.raises(ValidationError, match="cannot be empty or whitespace-only"):
+            Settings(_env_file=None)
+
+    def test_credentials_are_trimmed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "  discord-token  ")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "  anthropic-key  ")
+
         settings = Settings(_env_file=None)
 
-        assert settings.database_url == "postgresql+asyncpg://user:pass@localhost/db"
+        assert settings.discord_bot_token.get_secret_value() == "discord-token"
+        assert settings.llm_api_key == "anthropic-key"
+
+    @pytest.mark.parametrize(
+        "env_name",
+        ["DISCORD_GUILD_ID", "DISCORD_CHANNEL_ID", "DISCORD_OWNER_ID"],
+    )
+    @pytest.mark.parametrize("env_value", ["0", "-1"])
+    def test_discord_ids_must_be_positive(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        env_name: str,
+        env_value: str,
+    ) -> None:
+        monkeypatch.setenv(env_name, env_value)
+
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None)
+
+    def test_article_chunk_overlap_must_be_smaller_than_chunk_size(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ARTICLE_CHUNK_SIZE_CHARS", "500")
+        monkeypatch.setenv("ARTICLE_CHUNK_OVERLAP_CHARS", "500")
+
+        with pytest.raises(ValidationError, match="must be smaller"):
+            Settings(_env_file=None)
+
+    def test_startup_log_context_contains_no_credentials(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        secrets = {
+            "DISCORD_BOT_TOKEN": "discord-startup-secret",
+            "ANTHROPIC_API_KEY": "anthropic-startup-secret",
+            "YOUTUBE_API_KEY": "youtube-startup-secret",
+            "TWITTER_BEARER_TOKEN": "twitter-startup-secret",
+            "GITHUB_TOKEN": "github-startup-secret",
+        }
+        for name, value in secrets.items():
+            monkeypatch.setenv(name, value)
+
+        context = Settings(_env_file=None).startup_log_context()
+        rendered = repr(context)
+
+        assert context["database_backend"] == "sqlite"
+        assert context["youtube_enabled"] is True
+        assert context["twitter_enabled"] is True
+        assert context["github_enabled"] is True
+        assert not any(secret in rendered for secret in secrets.values())
 
     def test_summarization_delay_minimum(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
@@ -432,3 +548,62 @@ class TestGetDatabaseDirectory:
     def test_returns_current_dir_for_db_in_root(self) -> None:
         result = get_database_directory("sqlite+aiosqlite:///mydb.db")
         assert result == Path()
+
+    def test_handles_sqlite_query_parameters(self) -> None:
+        result = get_database_directory(
+            "sqlite+aiosqlite:////home/user/data/intelstream.db?mode=rwc&uri=true"
+        )
+        assert result == Path("/home/user/data")
+
+    def test_returns_none_for_malformed_url(self) -> None:
+        assert get_database_directory("://not-a-database-url") is None
+
+
+class TestEnvironmentExample:
+    def test_example_documents_every_setting_and_loads_after_required_values_are_set(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        example_path = Path(__file__).parents[1] / ".env.example"
+        example = example_path.read_text()
+
+        documented_names = {
+            line.lstrip("# ").split("=", 1)[0]
+            for line in example.splitlines()
+            if "=" in line and line.lstrip("# ").split("=", 1)[0].isupper()
+        }
+        expected_names = {field_name.upper() for field_name in Settings.model_fields}
+        assert documented_names == expected_names
+
+        configured = (
+            example.replace(
+                "DISCORD_BOT_TOKEN=replace_with_discord_bot_token",
+                "DISCORD_BOT_TOKEN=test-discord-token",
+            )
+            .replace(
+                "DISCORD_GUILD_ID=replace_with_discord_server_id",
+                "DISCORD_GUILD_ID=123456789",
+            )
+            .replace(
+                "DISCORD_OWNER_ID=replace_with_discord_user_id",
+                "DISCORD_OWNER_ID=987654321",
+            )
+            .replace(
+                "ANTHROPIC_API_KEY=replace_with_anthropic_api_key",
+                "ANTHROPIC_API_KEY=test-anthropic-key",
+            )
+        )
+        env_path = tmp_path / ".env"
+        env_path.write_text(configured)
+
+        for field_name in Settings.model_fields:
+            monkeypatch.delenv(field_name.upper(), raising=False)
+
+        settings = Settings(_env_file=env_path)
+
+        assert settings.discord_bot_token.get_secret_value() == "test-discord-token"
+        assert settings.discord_channel_id is None
+        assert settings.youtube_api_key is None
+        assert settings.twitter_bearer_token is None
+        assert settings.github_token is None

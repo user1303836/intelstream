@@ -26,8 +26,11 @@ from intelstream.services.page_analyzer import PageAnalysisError
 def mock_bot():
     bot = MagicMock()
     bot.repository = MagicMock()
+    bot.repository.get_source_by_identifier = AsyncMock(return_value=None)
+    bot.repository.get_source_by_name = AsyncMock(return_value=None)
     bot.settings = MagicMock()
     bot.settings.default_poll_interval_minutes = 5
+    bot.settings.get_poll_interval = MagicMock(return_value=5)
     bot.settings.youtube_api_key = "test-api-key"
     bot.settings.twitter_bearer_token = "test-twitter-token"
     return bot
@@ -324,6 +327,8 @@ class TestSourceManagementAdd:
         call_kwargs = mock_bot.repository.add_source.call_args.kwargs
         assert call_kwargs["guild_id"] == "456"
         assert call_kwargs["channel_id"] == "789"
+        assert call_kwargs["poll_interval_minutes"] == 5
+        mock_bot.settings.get_poll_interval.assert_called_once_with(SourceType.SUBSTACK)
         interaction.followup.send.assert_called_once()
         call_kwargs = interaction.followup.send.call_args.kwargs
         assert "embed" in call_kwargs
@@ -391,9 +396,41 @@ class TestSourceManagementAdd:
         )
 
         mock_bot.repository.add_source.assert_not_called()
+        mock_bot.repository.get_source_by_identifier.assert_awaited_once_with("test")
+        mock_bot.repository.get_source_by_name.assert_awaited_once_with("Test Newsletter")
         interaction.followup.send.assert_called_once()
         call_args = interaction.followup.send.call_args
         assert "already exists" in call_args[0][0]
+
+    async def test_add_duplicate_blog_skips_expensive_analysis(self, source_management, mock_bot):
+        mock_bot.settings.anthropic_api_key = "anthropic-key"
+        interaction = make_interaction()
+        source_type_choice = MagicMock(value="blog", name="Blog")
+        existing_source = MagicMock(name="Existing Blog")
+        mock_bot.repository.get_source_by_identifier = AsyncMock(return_value=existing_source)
+        adapter = MagicMock()
+        adapter.analyze_site = AsyncMock()
+
+        with (
+            patch(
+                "intelstream.discord.cogs.source_management.async_is_safe_url",
+                return_value=(True, ""),
+            ),
+            patch(
+                "intelstream.discord.cogs.source_management.SmartBlogAdapter",
+                return_value=adapter,
+            ),
+        ):
+            await source_management.source_add.callback(
+                source_management,
+                interaction,
+                source_type=source_type_choice,
+                name="Existing Blog",
+                url="https://blog.example.com",
+            )
+
+        adapter.analyze_site.assert_not_awaited()
+        mock_bot.repository.add_source.assert_not_called()
 
     async def test_add_source_duplicate_name(self, source_management, mock_bot):
         interaction = MagicMock(spec=discord.Interaction)
@@ -701,7 +738,7 @@ class TestSourceManagementAdd:
         source_type_choice.name = "RSS"
 
         with patch(
-            "intelstream.discord.cogs.source_management.is_safe_url",
+            "intelstream.discord.cogs.source_management.async_is_safe_url",
             return_value=(False, "private address"),
         ):
             await source_management.source_add.callback(
@@ -841,7 +878,7 @@ class TestSourceManagementAdd:
         with (
             patch.object(source_management, "_get_anthropic_client", return_value=MagicMock()),
             patch(
-                "intelstream.discord.cogs.source_management.is_safe_url",
+                "intelstream.discord.cogs.source_management.async_is_safe_url",
                 return_value=(True, None),
             ),
             patch(
@@ -878,7 +915,7 @@ class TestSourceManagementAdd:
         with (
             patch.object(source_management, "_get_anthropic_client", return_value=MagicMock()),
             patch(
-                "intelstream.discord.cogs.source_management.is_safe_url",
+                "intelstream.discord.cogs.source_management.async_is_safe_url",
                 return_value=(True, None),
             ),
             patch(
@@ -976,6 +1013,34 @@ class TestSourceManagementList:
         assert "Disabled: 4 consecutive failures" in embed.fields[0].value
         assert "2026-01-02 03:04 UTC" in embed.fields[0].value
         assert "**Status:** Paused" in embed.fields[1].value
+
+    async def test_list_sources_caps_embed_fields_and_reports_total(
+        self, source_management, mock_bot
+    ):
+        interaction = make_interaction()
+        sources = []
+        for index in range(30):
+            source = MagicMock()
+            source.name = f"Source {index} " + ("x" * 255)
+            source.type = SourceType.RSS
+            source.is_active = True
+            source.pause_reason = PauseReason.NONE.value
+            source.last_polled_at = None
+            sources.append(source)
+        mock_bot.repository.get_all_sources = AsyncMock(return_value=sources)
+
+        await source_management.source_list.callback(source_management, interaction)
+
+        embed = interaction.followup.send.call_args.kwargs["embed"]
+        assert 0 < len(embed.fields) < 25
+        assert all(len(field.name) <= 256 for field in embed.fields)
+        total_text = (
+            len(embed.title or "")
+            + len(embed.footer.text or "")
+            + sum(len(field.name) + len(field.value) for field in embed.fields)
+        )
+        assert total_text <= 6000
+        assert embed.footer.text == f"Showing {len(embed.fields)} of 30 sources"
 
 
 class TestSourceManagementRemove:
@@ -1615,6 +1680,17 @@ class TestSourceManagementLifecycle:
 
         mock_bot.add_cog.assert_awaited_once()
         assert isinstance(mock_bot.add_cog.call_args.args[0], SourceManagement)
+
+
+def test_source_management_descriptions_match_archive_and_pause_behavior(source_management):
+    assert (
+        source_management.source_remove.description
+        == "Archive a content source and stop polling it"
+    )
+    assert (
+        source_management.source_toggle.description
+        == "Pause or resume polling for a content source"
+    )
 
 
 class TestSourceManagementErrors:

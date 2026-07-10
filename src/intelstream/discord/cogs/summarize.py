@@ -2,7 +2,7 @@ import asyncio
 import contextlib
 import re
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import discord
@@ -19,10 +19,12 @@ from youtube_transcript_api._errors import (
 )
 
 from intelstream.adapters.substack import SubstackAdapter
+from intelstream.config import reveal_secret
 from intelstream.services.llm_client import create_llm_client
 from intelstream.services.summarizer import SummarizationService
 from intelstream.services.web_fetcher import WebContent, WebFetcher, WebFetchError
-from intelstream.utils.url_validation import is_safe_url
+from intelstream.utils.log_safety import safe_url_for_log
+from intelstream.utils.url_validation import async_is_safe_url
 
 if TYPE_CHECKING:
     from intelstream.bot import IntelStreamBot
@@ -52,11 +54,19 @@ MAX_EMBED_TITLE = 256
 YOUTUBE_TRANSCRIPT_TIMEOUT_SECONDS = 30.0
 
 
+def _hostname_matches(hostname: str, domain: str) -> bool:
+    normalized = hostname.lower().rstrip(".")
+    return normalized == domain or normalized.endswith(f".{domain}")
+
+
 class Summarize(commands.Cog):
     def __init__(self, bot: "IntelStreamBot") -> None:
         self.bot = bot
         self._http_client: httpx.AsyncClient | None = None
         self._summarizer: SummarizationService | None = None
+        self._youtube: Any | None = None
+        self._youtube_lock = asyncio.Lock()
+        self._youtube_request_lock = asyncio.Lock()
 
     async def cog_load(self) -> None:
         self._http_client = httpx.AsyncClient(
@@ -81,27 +91,40 @@ class Summarize(commands.Cog):
             await self._summarizer.close()
         if self._http_client:
             await self._http_client.aclose()
+        if self._youtube is not None:
+            close = getattr(self._youtube, "close", None)
+            if callable(close):
+                await asyncio.to_thread(close)
+            self._youtube = None
         logger.info("Summarize cog unloaded")
+
+    async def _get_youtube_client(self, api_key: str) -> Any:
+        if self._youtube is not None:
+            return self._youtube
+        async with self._youtube_lock:
+            if self._youtube is None:
+                self._youtube = await asyncio.to_thread(
+                    build,
+                    "youtube",
+                    "v3",
+                    developerKey=api_key,
+                )
+        return self._youtube
 
     def detect_url_type(self, url: str) -> str:
         parsed = urlparse(url)
-        domain = parsed.netloc.lower()
+        hostname = parsed.hostname or ""
 
-        if "youtube.com" in domain or "youtu.be" in domain:
+        if _hostname_matches(hostname, "youtube.com") or _hostname_matches(hostname, "youtu.be"):
             return "youtube"
 
-        if "substack.com" in domain:
+        if _hostname_matches(hostname, "substack.com"):
             return "substack"
 
-        if "twitter.com" in domain or "x.com" in domain:
+        if _hostname_matches(hostname, "twitter.com") or _hostname_matches(hostname, "x.com"):
             return "twitter"
 
         return "web"
-
-    def _is_substack_url(self, url: str) -> bool:
-        parsed = urlparse(url)
-        domain = parsed.netloc.lower()
-        return "substack.com" in domain
 
     def _extract_youtube_video_id(self, url: str) -> str | None:
         for pattern in YOUTUBE_VIDEO_PATTERNS:
@@ -155,14 +178,15 @@ class Summarize(commands.Cog):
         if not video_id:
             raise WebFetchError("Could not extract video ID from URL")
 
-        api_key = self.bot.settings.youtube_api_key
+        api_key = reveal_secret(self.bot.settings.youtube_api_key)
         if not api_key:
             raise WebFetchError("YouTube API key not configured")
 
-        youtube = build("youtube", "v3", developerKey=api_key)
+        youtube = await self._get_youtube_client(api_key)
 
-        request = youtube.videos().list(part="snippet", id=video_id)
-        response = await asyncio.to_thread(request.execute)
+        async with self._youtube_request_lock:
+            request = youtube.videos().list(part="snippet", id=video_id)
+            response = await asyncio.to_thread(request.execute)
 
         if not response.get("items"):
             raise WebFetchError("Video not found")
@@ -274,9 +298,9 @@ class Summarize(commands.Cog):
 
     @app_commands.command(
         name="summarize",
-        description="Get an AI summary of any URL (YouTube, Substack, or web page)",
+        description="Summarize a public YouTube, Substack, or web page",
     )
-    @app_commands.describe(url="URL to summarize (YouTube video, Substack article, or any webpage)")
+    @app_commands.describe(url="Public HTTP(S) URL for a supported video, article, or web page")
     @app_commands.checks.cooldown(rate=10, per=300.0)
     async def summarize(self, interaction: discord.Interaction, url: str) -> None:
         await interaction.response.defer()
@@ -285,7 +309,7 @@ class Summarize(commands.Cog):
             "summarize command invoked",
             user_id=interaction.user.id,
             guild_id=str(interaction.guild_id) if interaction.guild_id else None,
-            url=url,
+            url=safe_url_for_log(url),
         )
 
         parsed = urlparse(url)
@@ -293,11 +317,11 @@ class Summarize(commands.Cog):
             await interaction.followup.send("Please provide a valid URL.", ephemeral=True)
             return
 
-        if not parsed.scheme.startswith("http"):
+        if parsed.scheme.lower() not in {"http", "https"}:
             await interaction.followup.send("Please provide an HTTP or HTTPS URL.", ephemeral=True)
             return
 
-        safe, error_msg = is_safe_url(url)
+        safe, error_msg = await async_is_safe_url(url)
         if not safe:
             await interaction.followup.send(f"URL not allowed: {error_msg}", ephemeral=True)
             return
@@ -323,7 +347,7 @@ class Summarize(commands.Cog):
             await interaction.followup.send(str(e), ephemeral=True)
             return
         except Exception as e:
-            logger.error("Failed to fetch content", url=url, error=str(e))
+            logger.exception("Failed to fetch content", url=safe_url_for_log(url), error=str(e))
             await interaction.followup.send(
                 "Could not fetch content from that URL. The page may be behind a paywall or require login.",
                 ephemeral=True,
@@ -357,7 +381,7 @@ class Summarize(commands.Cog):
             )
 
         except Exception as e:
-            logger.error("Failed to generate summary", url=url, error=str(e))
+            logger.exception("Failed to generate summary", url=safe_url_for_log(url), error=str(e))
             await interaction.followup.send(
                 "Failed to generate summary. Please try again.", ephemeral=True
             )
@@ -377,7 +401,7 @@ class Summarize(commands.Cog):
 
         logger.info(
             "Summarized content",
-            url=url,
+            url=safe_url_for_log(url),
             source_type=source_type,
             user_id=interaction.user.id,
         )

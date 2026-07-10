@@ -433,6 +433,36 @@ class TestGitHubList:
         assert "Failing (3 errors)" in values
         assert "Never" in values
 
+    async def test_list_caps_embed_fields_and_reports_total(self, github_commands, mock_bot):
+        channel = make_channel(channel_id=321, name="dev")
+        interaction = make_interaction(channel=channel)
+        repos = []
+        for index in range(30):
+            repo = MagicMock()
+            repo.owner = "o" * 255
+            repo.repo = f"repo-{index}-" + ("r" * 255)
+            repo.is_active = True
+            repo.consecutive_failures = 0
+            repo.track_commits = True
+            repo.track_prs = False
+            repo.track_issues = False
+            repo.last_polled_at = None
+            repos.append(repo)
+        mock_bot.repository.get_github_repos_for_channel = AsyncMock(return_value=repos)
+
+        await github_commands.github_list.callback(github_commands, interaction)
+
+        embed = interaction.followup.send.call_args.kwargs["embed"]
+        assert 0 < len(embed.fields) < 25
+        assert all(len(field.name) <= 256 for field in embed.fields)
+        total_text = (
+            len(embed.title or "")
+            + len(embed.footer.text or "")
+            + sum(len(field.name) + len(field.value) for field in embed.fields)
+        )
+        assert total_text <= 6000
+        assert embed.footer.text == f"Showing {len(embed.fields)} of 30 repositories"
+
 
 class TestGitHubRemoveConfirmation:
     def _make_confirmed_view(self) -> MagicMock:
@@ -668,6 +698,12 @@ class TestGitHubToggle:
 
         assert choices == [choice]
         github_commands._github_repo_autocomplete.assert_awaited_once_with(interaction, "org")
+
+
+def test_github_toggle_description_matches_pause_behavior(github_commands):
+    assert (
+        github_commands.github_toggle.description == "Pause or resume GitHub repository monitoring"
+    )
 
 
 class TestGitHubErrorHandlers:
