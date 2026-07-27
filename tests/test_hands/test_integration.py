@@ -130,8 +130,10 @@ async def test_real_auth_two_websockets_reconnect_and_authoritative_elo(tmp_path
         async with aiohttp.ClientSession() as client:
             credentials: dict[str, dict[str, object]] = {}
             for label in ("one", "two"):
-                bootstrap = await client.get(
-                    f"{base}/api/hands/bootstrap?instance_id={INSTANCE}", headers=headers
+                bootstrap = await client.post(
+                    f"{base}/api/hands/bootstrap",
+                    json={"instance_id": INSTANCE},
+                    headers=headers,
                 )
                 bootstrap_payload = await bootstrap.json()
                 assert bootstrap_payload["simulation"]["tick_rate"] == 30

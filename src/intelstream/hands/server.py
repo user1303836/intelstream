@@ -386,7 +386,7 @@ class HandsServer:
         self._app.add_routes(
             [
                 web.get("/healthz", self._health),
-                web.get("/api/hands/bootstrap", self._bootstrap),
+                web.post("/api/hands/bootstrap", self._bootstrap),
                 web.post("/api/hands/token", self._token),
                 web.get("/api/hands/ws", self._websocket),
                 web.get("/", self._index),
@@ -559,19 +559,20 @@ class HandsServer:
 
     async def _bootstrap(self, request: web.Request) -> web.Response:
         self._require_origin(request)
-        if len(request.query.getall("instance_id", [])) != 1 or len(request.query) != 1:
-            raise web.HTTPBadRequest(text="invalid request")
         caller = self._caller_key(request)
         if not await self._admit_scoped(
             self._bootstrap_limit, self._bootstrap_caller_limit, caller
         ):
             return _json_response({"error": "rate_limited"}, status=429)
+        if request.content_type != "application/json":
+            raise web.HTTPUnsupportedMediaType(text="application/json required")
+        payload = _strict_object(await request.read(), fields={"instance_id"})
         if not await self._try_acquire_scoped(
             self._upstream_slots, self._upstream_caller_slots, caller
         ):
             return _json_response({"error": "service_busy"}, status=503)
         try:
-            state, _activity = await self.auth.begin(request.query["instance_id"])
+            state, _activity = await self.auth.begin(payload["instance_id"])
         except HandsAuthError as exc:
             status = 503 if exc.code == "service_busy" else 401
             return _json_response({"error": exc.code}, status=status)

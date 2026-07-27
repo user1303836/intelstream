@@ -141,6 +141,20 @@ async def start_server(
     return server, fake_auth, f"http://127.0.0.1:{server.bound_port}"
 
 
+async def post_bootstrap(
+    client: aiohttp.ClientSession,
+    base: str,
+    instance_id: str,
+    *,
+    headers: dict[str, str] | None = None,
+) -> aiohttp.ClientResponse:
+    return await client.post(
+        f"{base}/api/hands/bootstrap",
+        json={"instance_id": instance_id},
+        headers=headers,
+    )
+
+
 async def test_health_static_security_and_safe_resolution(
     repository: Repository, tmp_path: Path
 ) -> None:
@@ -176,16 +190,31 @@ async def test_bootstrap_token_origin_schema_media_and_no_store(repository: Repo
     server, auth, base = await start_server(repository)
     headers = {"Origin": ORIGIN}
     async with aiohttp.ClientSession() as client:
-        rejected = await client.get(f"{base}/api/hands/bootstrap?instance_id=instance")
+        rejected = await post_bootstrap(client, base, "instance")
         assert rejected.status == 403
-        extra = await client.get(
-            f"{base}/api/hands/bootstrap?instance_id=instance&user_id=forged",
+        legacy_get = await client.get(
+            f"{base}/api/hands/bootstrap?instance_id=instance", headers=headers
+        )
+        assert legacy_get.status == 404
+        bootstrap_media = await client.post(
+            f"{base}/api/hands/bootstrap",
+            data='{"instance_id":"instance"}',
+            headers={**headers, "Content-Type": "text/plain"},
+        )
+        assert bootstrap_media.status == 415
+        extra = await client.post(
+            f"{base}/api/hands/bootstrap",
+            json={"instance_id": "instance", "user_id": "forged"},
             headers=headers,
         )
         assert extra.status == 400
-        bootstrap = await client.get(
-            f"{base}/api/hands/bootstrap?instance_id=instance", headers=headers
+        duplicate = await client.post(
+            f"{base}/api/hands/bootstrap",
+            data='{"instance_id":"instance","instance_id":"forged"}',
+            headers={**headers, "Content-Type": "application/json"},
         )
+        assert duplicate.status == 400
+        bootstrap = await post_bootstrap(client, base, "instance", headers=headers)
         assert await bootstrap.json() == {
             "client_id": APP,
             "protocol": 1,
@@ -240,13 +269,17 @@ async def test_bootstrap_token_origin_schema_media_and_no_store(repository: Repo
 async def test_dev_mode_allows_only_local_origins(repository: Repository) -> None:
     server, _auth, base = await start_server(repository, dev_mode=True)
     async with aiohttp.ClientSession() as client:
-        local = await client.get(
-            f"{base}/api/hands/bootstrap?instance_id=instance",
+        local = await post_bootstrap(
+            client,
+            base,
+            "instance",
             headers={"Origin": "http://localhost:5173"},
         )
         assert local.status == 200
-        spoofed = await client.get(
-            f"{base}/api/hands/bootstrap?instance_id=instance",
+        spoofed = await post_bootstrap(
+            client,
+            base,
+            "instance",
             headers={"Origin": "http://localhost.evil.test:5173"},
         )
         assert spoofed.status == 403
@@ -458,27 +491,16 @@ async def test_public_semaphore_acquisition_rejects_capacity_and_releases() -> N
     semaphore.release()
 
 
-async def test_duplicate_bootstrap_query_and_http_admission_limits(
-    repository: Repository,
-) -> None:
+async def test_bootstrap_http_admission_limits(repository: Repository) -> None:
     server, _auth, base = await start_server(
         repository,
         admission=AdmissionConfig(request_limit=1, request_window_seconds=60),
     )
     headers = {"Origin": ORIGIN}
     async with aiohttp.ClientSession() as client:
-        duplicate = await client.get(
-            f"{base}/api/hands/bootstrap?instance_id=one&instance_id=two",
-            headers=headers,
-        )
-        assert duplicate.status == 400
-        first = await client.get(
-            f"{base}/api/hands/bootstrap?instance_id=instance", headers=headers
-        )
+        first = await post_bootstrap(client, base, "instance", headers=headers)
         assert first.status == 200
-        limited = await client.get(
-            f"{base}/api/hands/bootstrap?instance_id=instance", headers=headers
-        )
+        limited = await post_bootstrap(client, base, "instance", headers=headers)
         assert limited.status == 429
         assert (
             sum(len(requests) for requests in server._bootstrap_caller_limit._requests.values())
@@ -499,12 +521,16 @@ async def test_http_admission_is_per_caller_and_forwarded_headers_require_trust(
         ),
     )
     async with aiohttp.ClientSession() as client:
-        first = await client.get(
-            f"{direct_base}/api/hands/bootstrap?instance_id=one",
+        first = await post_bootstrap(
+            client,
+            direct_base,
+            "one",
             headers={"Origin": ORIGIN, "X-Forwarded-For": "203.0.113.1"},
         )
-        spoofed = await client.get(
-            f"{direct_base}/api/hands/bootstrap?instance_id=two",
+        spoofed = await post_bootstrap(
+            client,
+            direct_base,
+            "two",
             headers={"Origin": ORIGIN, "X-Forwarded-For": "203.0.113.2"},
         )
         assert first.status == 200
@@ -521,26 +547,34 @@ async def test_http_admission_is_per_caller_and_forwarded_headers_require_trust(
         ),
     )
     async with aiohttp.ClientSession() as client:
-        first = await client.get(
-            f"{trusted_base}/api/hands/bootstrap?instance_id=one",
+        first = await post_bootstrap(
+            client,
+            trusted_base,
+            "one",
             headers={
                 "Origin": ORIGIN,
                 "X-Forwarded-For": "198.51.100.9, 203.0.113.10",
             },
         )
-        forged_left = await client.get(
-            f"{trusted_base}/api/hands/bootstrap?instance_id=two",
+        forged_left = await post_bootstrap(
+            client,
+            trusted_base,
+            "two",
             headers={
                 "Origin": ORIGIN,
                 "X-Forwarded-For": "192.0.2.99, 203.0.113.10",
             },
         )
-        other = await client.get(
-            f"{trusted_base}/api/hands/bootstrap?instance_id=three",
+        other = await post_bootstrap(
+            client,
+            trusted_base,
+            "three",
             headers={"Origin": ORIGIN, "X-Forwarded-For": "203.0.113.11"},
         )
-        malformed = await client.get(
-            f"{trusted_base}/api/hands/bootstrap?instance_id=four",
+        malformed = await post_bootstrap(
+            client,
+            trusted_base,
+            "four",
             headers={"Origin": ORIGIN, "X-Forwarded-For": "not-an-ip"},
         )
         assert first.status == 200
@@ -574,8 +608,10 @@ async def test_per_caller_window_capacity_purges_expired_callers(
     async with aiohttp.ClientSession() as client:
 
         async def bootstrap(caller: str, instance: str) -> int:
-            response = await client.get(
-                f"{base}/api/hands/bootstrap?instance_id={instance}",
+            response = await post_bootstrap(
+                client,
+                base,
+                instance,
                 headers={"Origin": ORIGIN, "X-Forwarded-For": caller},
             )
             return response.status
@@ -622,19 +658,25 @@ async def test_per_caller_upstream_concurrency_does_not_block_other_callers(
     )
     async with aiohttp.ClientSession() as client:
         first = asyncio.create_task(
-            client.get(
-                f"{base}/api/hands/bootstrap?instance_id=one",
+            post_bootstrap(
+                client,
+                base,
+                "one",
                 headers={"Origin": ORIGIN, "X-Forwarded-For": "203.0.113.1"},
             )
         )
         await auth.first_entered.wait()
-        same = await client.get(
-            f"{base}/api/hands/bootstrap?instance_id=same",
+        same = await post_bootstrap(
+            client,
+            base,
+            "same",
             headers={"Origin": ORIGIN, "X-Forwarded-For": "203.0.113.1"},
         )
         other = asyncio.create_task(
-            client.get(
-                f"{base}/api/hands/bootstrap?instance_id=other",
+            post_bootstrap(
+                client,
+                base,
+                "other",
                 headers={"Origin": ORIGIN, "X-Forwarded-For": "203.0.113.2"},
             )
         )
@@ -708,10 +750,10 @@ async def test_concurrent_upstream_and_websocket_auth_are_bounded(
     headers = {"Origin": ORIGIN}
     async with aiohttp.ClientSession() as client:
         first_request = asyncio.create_task(
-            client.get(f"{base}/api/hands/bootstrap?instance_id=instance", headers=headers)
+            post_bootstrap(client, base, "instance", headers=headers)
         )
         await auth.entered.wait()
-        busy = await client.get(f"{base}/api/hands/bootstrap?instance_id=instance", headers=headers)
+        busy = await post_bootstrap(client, base, "instance", headers=headers)
         assert busy.status == 503
         auth.release.set()
         first = await first_request
