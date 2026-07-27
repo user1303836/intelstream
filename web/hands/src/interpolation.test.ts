@@ -1,0 +1,7 @@
+import { EventDeduplicator, SnapshotBuffer } from "./interpolation";
+import { snapshot } from "./test/fixtures";
+describe("authoritative interpolation", () => {
+  it("orders ticks, interpolates presentation geometry, and rejects stale state", () => { const buffer = new SnapshotBuffer(); const a = snapshot(10), b = { ...snapshot(12), fighters: [{ ...snapshot(12).fighters[0], x: 100 }, snapshot(12).fighters[1]] as const }; expect(buffer.push(a)).toBe(true); expect(buffer.push(a)).toBe(false); expect(buffer.push(b)).toBe(true); expect(buffer.sample(11)?.fighters[0].x).toBe(0); });
+  it("snaps across phase and knockdown discontinuities", () => { const buffer = new SnapshotBuffer(); buffer.push(snapshot(10)); const b = { ...snapshot(12), phase: "knockdown" as const }; buffer.push(b); expect(buffer.sample(11)).toBe(b); });
+  it("deduplicates monotonic cosmetic events", () => { const events = [{ event_id: 2, tick: 1, kind: "hit", actor_id: null, target_id: null, amount: 1, detail: "", blood: 0, direction: 0 }, { event_id: 1, tick: 1, kind: "block", actor_id: null, target_id: null, amount: 0, detail: "", blood: 0, direction: 0 }, { event_id: 2, tick: 1, kind: "hit", actor_id: null, target_id: null, amount: 1, detail: "", blood: 0, direction: 0 }]; const dedupe = new EventDeduplicator(); expect(dedupe.accept(events).map((e) => e.event_id)).toEqual([1, 2]); expect(dedupe.accept(events)).toEqual([]); });
+});

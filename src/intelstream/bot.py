@@ -51,6 +51,9 @@ class RestrictedCommandTree(app_commands.CommandTree):
         if not isinstance(self.client, IntelStreamBot):
             return False
         bot = self.client
+        command_name = interaction.command.name if interaction.command is not None else None
+        if command_name in {"hands", "hands_scoreboard"}:
+            return True
         allowed_channel_id = bot.settings.discord_channel_id
         channel = interaction.channel
         is_allowed_thread = (
@@ -175,6 +178,7 @@ class IntelStreamBot(commands.Bot):
             ChannelSummary,
             ConfigManagement,
             ContentPosting,
+            Hands,
             SourceManagement,
             SuckBoobs,
             Summarize,
@@ -183,6 +187,7 @@ class IntelStreamBot(commands.Bot):
         from intelstream.discord.cogs.github_polling import GitHubPolling
         from intelstream.discord.cogs.message_forwarding import MessageForwarding
 
+        await self.add_cog(Hands(self))
         await self.add_cog(SourceManagement(self))
         await self.add_cog(ConfigManagement(self))
         await self.add_cog(ContentPosting(self))

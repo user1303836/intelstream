@@ -382,6 +382,87 @@ class TestSettings:
         assert context["github_enabled"] is True
         assert not any(secret in rendered for secret in secrets.values())
 
+    def test_hands_is_disabled_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("HANDS_ENABLED", raising=False)
+        monkeypatch.delenv("DISCORD_CLIENT_SECRET", raising=False)
+
+        settings = Settings(_env_file=None)
+
+        assert settings.hands_enabled is False
+        assert settings.discord_client_secret is None
+        assert settings.hands_host == "127.0.0.1"
+        assert settings.hands_port == 8080
+        assert settings.hands_dev_mode is False
+
+    def test_hands_enabled_requires_client_secret(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HANDS_ENABLED", "true")
+        monkeypatch.delenv("DISCORD_CLIENT_SECRET", raising=False)
+
+        with pytest.raises(ValidationError, match="DISCORD_CLIENT_SECRET is required"):
+            Settings(_env_file=None)
+
+    def test_hands_configuration_is_validated_and_secret_is_masked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HANDS_ENABLED", "true")
+        monkeypatch.setenv("DISCORD_CLIENT_SECRET", "  hands-client-secret  ")
+        monkeypatch.setenv("HANDS_HOST", "0.0.0.0")
+        monkeypatch.setenv("HANDS_PORT", "9443")
+        monkeypatch.setenv("HANDS_DEV_MODE", "true")
+
+        settings = Settings(_env_file=None)
+        rendered = repr(settings)
+        context = settings.startup_log_context()
+
+        assert settings.discord_client_secret is not None
+        assert settings.discord_client_secret.get_secret_value() == "hands-client-secret"
+        assert settings.hands_enabled is True
+        assert settings.hands_host == "0.0.0.0"
+        assert settings.hands_port == 9443
+        assert settings.hands_dev_mode is True
+        assert "hands-client-secret" not in rendered
+        assert "hands-client-secret" not in repr(settings.model_dump(mode="json"))
+        assert "hands-client-secret" not in repr(context)
+        assert context["hands_enabled"] is True
+        assert context["hands_host"] == "0.0.0.0"
+        assert context["hands_port"] == 9443
+        assert context["hands_dev_mode"] is True
+
+    @pytest.mark.parametrize("port", ["0", "65536"])
+    def test_hands_port_bounds(self, monkeypatch: pytest.MonkeyPatch, port: str) -> None:
+        monkeypatch.setenv("HANDS_PORT", port)
+
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None)
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "",
+            "bad host",
+            "https://example.com",
+            "host/path",
+            "example.com:8080",
+            "127.0.0.1:8080",
+            "[::1]",
+        ],
+    )
+    def test_hands_host_rejects_invalid_values(
+        self, monkeypatch: pytest.MonkeyPatch, host: str
+    ) -> None:
+        monkeypatch.setenv("HANDS_HOST", host)
+
+        with pytest.raises(ValidationError, match=r"HANDS_HOST|at least 1 character"):
+            Settings(_env_file=None)
+
+    @pytest.mark.parametrize("host", ["localhost", "example.com", "127.0.0.1", "::1"])
+    def test_hands_host_accepts_bare_host_values(
+        self, monkeypatch: pytest.MonkeyPatch, host: str
+    ) -> None:
+        monkeypatch.setenv("HANDS_HOST", host)
+
+        assert Settings(_env_file=None).hands_host == host
+
     def test_summarization_delay_minimum(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test_token")
         monkeypatch.setenv("DISCORD_GUILD_ID", "123456789")
