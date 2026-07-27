@@ -1,48 +1,384 @@
+import * as THREE from "three";
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
+import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { EventDeduplicator, SnapshotBuffer } from "../interpolation";
 import type { BloodLevel, Settings } from "../settings";
 import type { EngineSnapshot, FinalMessage, PublicPlayer, SimulationInfo } from "../types";
-import { drawFighter, type FighterStyle } from "./fighters";
-import { projectRing, resizeHighDpi, type Viewport } from "./geometry";
+import { BoxerAnimator } from "./animation";
+import { buildArena, type BuiltArena } from "./arena";
+import { buildBoxer, buildReferee, disposeBoxer, type BoxerRig } from "./boxer";
+import { CameraDirector } from "./camera";
+import { Effects3D } from "./effects";
 import { drawHud } from "./hud";
-import { ParticlePool } from "./particles";
-const STYLES: readonly FighterStyle[] = [
-  { skin: "#a96848", trunks: "#173d58", glove: "#56b7c9", accent: "#f2cb72" },
-  { skin: "#74462f", trunks: "#633045", glove: "#df6f68", accent: "#c9e7ec" },
-];
-export class FightRenderer {
-  private readonly buffer = new SnapshotBuffer(); private readonly dedupe = new EventDeduplicator(); private readonly particles = new ParticlePool(); private raf = 0; private previous = performance.now();
-  private players: Readonly<Record<string, PublicPlayer>> = {}; private viewerId: string | null = null; private final: FinalMessage | null = null; private reconnectMs = 0; private bloodLevel: BloodLevel; private destroyed = false;
-  constructor(private readonly canvas: HTMLCanvasElement, private readonly simulation: SimulationInfo, private readonly settings: () => Settings) { this.bloodLevel = settings().blood; this.raf = requestAnimationFrame((time) => this.draw(time)); }
-  setPlayers(players: Readonly<Record<string, PublicPlayer>>, viewerId: string | null): void { this.players = players; this.viewerId = viewerId; }
-  setFinal(final: FinalMessage | null): void { this.final = final; }
-  setReconnect(milliseconds: number): void { this.reconnectMs = milliseconds; }
-  setBloodLevel(level: BloodLevel): void { if (level !== this.bloodLevel) { this.bloodLevel = level; this.particles.clearBlood(); } }
-  setReducedMotion(reduced: boolean): void { if (reduced) this.particles.clearDynamic(); }
-  push(snapshot: EngineSnapshot): void {
-    if (!this.buffer.push(snapshot)) return; const resize = resizeHighDpi(this.canvas); if (resize === null) return;
-    for (const event of this.dedupe.accept(snapshot.events)) { const target = snapshot.fighters.find((fighter) => fighter.player_id === event.target_id) ?? snapshot.fighters.find((fighter) => fighter.player_id === event.actor_id) ?? snapshot.fighters[0]; const origin = projectRing(target.x, target.y, this.simulation, resize.viewport); this.particles.addEvent(event, origin, this.settings().blood, this.settings().reducedMotion); }
+import { buildRing, disposeRing, type BuiltRing } from "./ring";
+import { resizeHighDpi } from "./viewport";
+import { PALETTES, worldMapping, type WorldMapping } from "./world";
+
+function blobShadowTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = 128;
+  canvas.height = 128;
+  const ctx = canvas.getContext("2d");
+  if (ctx !== null) {
+    const gradient = ctx.createRadialGradient(64, 64, 8, 64, 64, 62);
+    gradient.addColorStop(0, "rgba(0,0,0,0.68)");
+    gradient.addColorStop(0.6, "rgba(0,0,0,0.34)");
+    gradient.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 128, 128);
   }
+  return new THREE.CanvasTexture(canvas);
+}
+
+const DEFAULT_SIM: SimulationInfo = { tick_rate: 30, ring_half_width: 500, ring_half_height: 330 };
+
+export class FightRenderer {
+  private readonly renderer: THREE.WebGLRenderer;
+  private readonly scene = new THREE.Scene();
+  private readonly camera: THREE.PerspectiveCamera;
+  private readonly composer: EffectComposer;
+  private readonly ring: BuiltRing;
+  private readonly arena: BuiltArena;
+  private readonly boxers: [BoxerRig, BoxerRig];
+  private readonly referee: BoxerRig;
+  private readonly refereePosition = new THREE.Vector3(0.4, 0, -2.1);
+  private readonly animators: [BoxerAnimator, BoxerAnimator];
+  private readonly effects: Effects3D;
+  private readonly director = new CameraDirector();
+  private readonly mapping: WorldMapping;
+  private readonly buffer = new SnapshotBuffer();
+  private readonly dedupe = new EventDeduplicator();
+  private readonly hudCanvas: HTMLCanvasElement;
+  private readonly blobShadows: THREE.Mesh[] = [];
+  private readonly blobTexture: THREE.CanvasTexture;
+  private readonly lights: THREE.Light[] = [];
+  private keyLight: THREE.SpotLight | null = null;
+  private readonly sizeCheck = new THREE.Vector2();
+  private readonly refereeAway = new THREE.Vector3();
+  private refereeYaw = 0;
+  private raf = 0;
+  private previous = performance.now();
+  private players: Readonly<Record<string, PublicPlayer>> = {};
+  private viewerId: string | null = null;
+  private final: FinalMessage | null = null;
+  private reconnectMs = 0;
+  private destroyed = false;
+  private readonly tmpA = new THREE.Vector3();
+  private readonly tmpB = new THREE.Vector3();
+  private readonly tmpHead = new THREE.Vector3();
+
+  constructor(
+    private readonly canvas: HTMLCanvasElement,
+    private readonly simulation: SimulationInfo = DEFAULT_SIM,
+    private readonly settings: () => Settings,
+  ) {
+    this.mapping = worldMapping(simulation);
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.0;
+    this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+
+    this.scene.background = new THREE.Color("#04060b");
+    this.scene.fog = new THREE.FogExp2("#04060b", 0.042);
+    this.camera = new THREE.PerspectiveCamera(38, 1, 0.1, 80);
+    this.camera.position.set(0, 2.05, 7.6);
+    this.camera.lookAt(0, 1.1, 0);
+
+    this.setupLights();
+    this.ring = buildRing();
+    this.scene.add(this.ring.group);
+    this.arena = buildArena();
+    this.scene.add(this.arena.group);
+    this.effects = new Effects3D(this.scene);
+
+    this.boxers = [buildBoxer(PALETTES[0]), buildBoxer(PALETTES[1])];
+    this.animators = [new BoxerAnimator(this.boxers[0], this.mapping), new BoxerAnimator(this.boxers[1], this.mapping)];
+    this.boxers[0].root.position.set(-0.9, 0, 0);
+    this.boxers[1].root.position.set(0.9, 0, 0);
+    this.boxers[0].root.rotation.y = Math.PI / 2;
+    this.boxers[1].root.rotation.y = -Math.PI / 2;
+    this.scene.add(this.boxers[0].root, this.boxers[1].root);
+
+    this.referee = buildReferee();
+    this.referee.root.position.copy(this.refereePosition);
+    this.referee.shoulderL.rotation.x = -0.42;
+    this.referee.shoulderR.rotation.x = -0.42;
+    this.referee.elbowL.rotation.x = -0.55;
+    this.referee.elbowR.rotation.x = -0.55;
+    this.scene.add(this.referee.root);
+
+    this.blobTexture = blobShadowTexture();
+    const blobGeometry = new THREE.PlaneGeometry(1, 1);
+    for (let i = 0; i < 3; i += 1) {
+      const blob = new THREE.Mesh(blobGeometry, new THREE.MeshBasicMaterial({ map: this.blobTexture, transparent: true, depthWrite: false }));
+      blob.rotation.x = -Math.PI / 2;
+      blob.position.y = 0.006 + i * 0.0004;
+      blob.renderOrder = 1;
+      this.blobShadows.push(blob);
+      this.scene.add(blob);
+    }
+
+    this.composer = new EffectComposer(this.renderer);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    const bloom = new UnrealBloomPass(new THREE.Vector2(1280, 720), 0.32, 0.5, 0.85);
+    this.composer.addPass(bloom);
+    this.composer.addPass(new OutputPass());
+
+    this.hudCanvas = document.createElement("canvas");
+    this.hudCanvas.className = "fight-hud";
+    this.hudCanvas.style.cssText = "position:absolute;inset:0;width:100%;height:100%;pointer-events:none";
+    canvas.insertAdjacentElement("afterend", this.hudCanvas);
+
+    this.effects.setBloodLevel(settings().blood);
+    this.raf = requestAnimationFrame((time) => this.draw(time));
+  }
+
+  setPlayers(players: Readonly<Record<string, PublicPlayer>>, viewerId: string | null): void {
+    this.players = players;
+    this.viewerId = viewerId;
+  }
+
+  setFinal(final: FinalMessage | null): void {
+    this.final = final;
+  }
+
+  setReconnect(milliseconds: number): void {
+    this.reconnectMs = milliseconds;
+  }
+
+  setBloodLevel(level: BloodLevel): void {
+    this.effects.setBloodLevel(level);
+  }
+
+  setReducedMotion(reduced: boolean): void {
+    if (reduced) this.effects.clearDynamic();
+  }
+
+  push(snapshot: EngineSnapshot): void {
+    if (!this.buffer.push(snapshot)) return;
+    for (const event of this.dedupe.accept(snapshot.events)) {
+      const target = snapshot.fighters.find((fighter) => fighter.player_id === event.target_id)
+        ?? snapshot.fighters.find((fighter) => fighter.player_id === event.actor_id)
+        ?? snapshot.fighters[0];
+      this.tmpA.set(this.mapping.x(target.x), 0, this.mapping.z(target.y));
+      this.effects.addEvent(event, this.tmpA, this.settings().reducedMotion);
+      if (event.kind === "knockdown") this.effects.pool(this.tmpA.x + (Math.random() - 0.5) * 0.2, this.tmpA.z + (Math.random() - 0.5) * 0.2, 1);
+      const targetIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.target_id);
+      if (targetIndex >= 0 && ["hit", "counter_hit", "block", "knockdown"].includes(event.kind)) {
+        this.animators[targetIndex]!.impact({
+          direction: event.direction,
+          amount: event.kind === "block" ? event.amount * 0.35 : event.amount,
+          blocked: event.kind === "block",
+        });
+      }
+    }
+  }
+
+  private setupLights(): void {
+    const hemisphere = new THREE.HemisphereLight("#33415e", "#05060a", 0.5);
+    this.scene.add(hemisphere);
+    this.lights.push(hemisphere);
+
+    const ambient = new THREE.AmbientLight("#2b3450", 0.55);
+    this.scene.add(ambient);
+    this.lights.push(ambient);
+
+    const key = new THREE.SpotLight("#fff4e0", 115, 26, 0.68, 0.6, 1.6);
+    key.position.set(0, 7.4, 0.9);
+    key.target.position.set(0, 0, 0);
+    key.castShadow = true;
+    key.shadow.mapSize.set(2048, 2048);
+    key.shadow.bias = -0.0004;
+    key.shadow.camera.near = 3;
+    key.shadow.camera.far = 14;
+    this.keyLight = key;
+    this.scene.add(key, key.target);
+    this.lights.push(key);
+
+    const fills: Array<[string, number, number, number]> = [
+      ["#b9cdff", -6.5, 4.4, -5.2],
+      ["#ffd9b9", 6.2, 4.1, -5.6],
+      ["#9fb8ff", -5.4, 3.6, 6.0],
+      ["#c9d8ff", 5.8, 3.9, 5.7],
+    ];
+    for (const [color, x, y, z] of fills) {
+      const fill = new THREE.SpotLight(color, 60, 30, 0.7, 0.8, 1.8);
+      fill.position.set(x, y, z);
+      fill.target.position.set(0, 1, 0);
+      this.scene.add(fill, fill.target);
+      this.lights.push(fill);
+    }
+
+    const rim = new THREE.DirectionalLight("#dfe9ff", 0.7);
+    rim.position.set(0, 3.4, -6.5);
+    this.scene.add(rim);
+    this.lights.push(rim);
+  }
+
   private draw(time: number): void {
     if (this.destroyed) return;
-    const resized = resizeHighDpi(this.canvas); if (resized !== null) { const dt = Math.min(0.05, Math.max(0, (time - this.previous) / 1000)); this.previous = time; this.particles.update(dt); this.paint(resized.context, resized.viewport, time / 1000); }
+    const dt = Math.min(0.05, Math.max(0.001, (time - this.previous) / 1000));
+    this.previous = time;
+
+    const width = this.canvas.clientWidth;
+    const height = this.canvas.clientHeight;
+    if (width > 0 && height > 0) {
+      this.renderer.getSize(this.sizeCheck);
+      if (this.sizeCheck.x !== width || this.sizeCheck.y !== height) {
+        this.renderer.setSize(width, height, false);
+        this.composer.setSize(width, height);
+        this.camera.aspect = width / height;
+        this.camera.updateProjectionMatrix();
+      }
+    }
+
+    const seconds = time / 1000;
+    const current = this.settings();
+    this.effects.setBloodLevel(current.blood);
+
+    const latest = this.buffer.latest();
+    const snapshot = latest === null ? null : this.buffer.sample(latest.tick - 1);
+    let separation = 1.8;
+    let knockdown = false;
+    if (snapshot !== null) {
+      const [a, b] = snapshot.fighters;
+      this.animators[0].update(a, b, dt, seconds, current.reducedMotion, current.blood);
+      this.animators[1].update(b, a, dt, seconds, current.reducedMotion, current.blood);
+      const ax = this.mapping.x(a.x);
+      const az = this.mapping.z(a.y);
+      const bx = this.mapping.x(b.x);
+      const bz = this.mapping.z(b.y);
+      separation = Math.hypot(ax - bx, az - bz);
+      knockdown = a.is_downed || b.is_downed;
+      this.tmpA.set(ax, 0, az);
+      this.tmpB.set(bx, 0, bz);
+      for (const [index, fighter] of snapshot.fighters.entries()) {
+        const severity = (fighter.trauma.bleeding + fighter.trauma.left_cut + fighter.trauma.right_cut) / 380;
+        if (severity > 0.05 && !fighter.is_downed) {
+          const anchor = index === 0 ? this.tmpA : this.tmpB;
+          this.tmpHead.set(anchor.x, 1.56, anchor.z);
+          this.effects.drip(this.tmpHead, severity, dt, current.reducedMotion);
+        } else if (severity > 0.3 && fighter.is_downed && Math.random() < dt * 0.8) {
+          const anchor = index === 0 ? this.tmpA : this.tmpB;
+          this.effects.pool(anchor.x + (Math.random() - 0.5) * 0.5, anchor.z + (Math.random() - 0.5) * 0.5, 0.8);
+        }
+      }
+    } else {
+      this.tmpA.set(-0.9, 0, 0);
+      this.tmpB.set(0.9, 0, 0);
+    }
+
+    this.arena.update(seconds, dt, current.reducedMotion);
+    this.effects.update(dt);
+    this.updateReferee(dt, seconds, current.reducedMotion);
+    this.updateBlobShadows();
+    const frame = this.director.update(
+      dt,
+      seconds,
+      { x: this.tmpA.x, z: this.tmpA.z },
+      { x: this.tmpB.x, z: this.tmpB.z },
+      separation,
+      knockdown,
+      this.effects.shakeAmount,
+      current.reducedMotion,
+    );
+    this.camera.position.copy(frame.position);
+    this.camera.lookAt(frame.lookAt);
+
+    this.composer.render();
+    this.drawHudOverlay(snapshot);
+
     if (!this.destroyed) this.raf = requestAnimationFrame((next) => this.draw(next));
   }
-  private paint(ctx: CanvasRenderingContext2D, viewport: Viewport, time: number): void {
-    const settings = this.settings(); this.setBloodLevel(settings.blood); if (settings.reducedMotion) this.particles.clearDynamic(); const offset = this.particles.cameraOffset(time, settings.reducedMotion); ctx.save(); ctx.clearRect(0, 0, viewport.width, viewport.height); ctx.translate(offset.x, offset.y);
-    const sky = ctx.createLinearGradient(0, 0, 0, viewport.height); sky.addColorStop(0, "#090d18"); sky.addColorStop(0.55, "#151a27"); sky.addColorStop(1, "#07090d"); ctx.fillStyle = sky; ctx.fillRect(-12, -12, viewport.width + 24, viewport.height + 24);
-    drawCrowd(ctx, viewport, settings.reducedMotion ? 0 : time); drawRing(ctx, viewport); this.particles.drawMarks(ctx);
-    const latest = this.buffer.latest(); const snapshot = latest === null ? null : this.buffer.sample(latest.tick - 1);
-    if (snapshot !== null) {
-      const ordered = snapshot.fighters.map((fighter, index) => ({ fighter, index, point: projectRing(fighter.x, fighter.y, this.simulation, viewport) })).sort((a, b) => a.fighter.y - b.fighter.y);
-      for (const item of ordered) drawFighter(ctx, item.fighter, item.point, snapshot.phase, STYLES[item.index]!, time, settings.reducedMotion, settings.blood);
-      if (!settings.reducedMotion) this.particles.draw(ctx); drawForegroundRopes(ctx, viewport); drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.final, this.reconnectMs, this.simulation.tick_rate);
-      const hurt = Math.max(...snapshot.fighters.map((fighter) => fighter.trauma.head + fighter.trauma.body)); if (hurt > 350) { const vignette = ctx.createRadialGradient(viewport.width / 2, viewport.height / 2, viewport.width * 0.2, viewport.width / 2, viewport.height / 2, viewport.width * 0.7); vignette.addColorStop(0, "rgba(90,0,8,0)"); vignette.addColorStop(1, `rgba(75,0,8,${Math.min(0.28, hurt / 5000)})`); ctx.fillStyle = vignette; ctx.fillRect(0, 0, viewport.width, viewport.height); }
+
+  private updateBlobShadows(): void {
+    const anchors = [this.tmpA, this.tmpB, this.refereePosition];
+    for (const [index, blob] of this.blobShadows.entries()) {
+      const anchor = anchors[index]!;
+      blob.position.x = anchor.x;
+      blob.position.z = anchor.z;
+      const downed = index < 2 && this.buffer.latest()?.fighters[index]?.is_downed === true;
+      blob.scale.set(downed ? 2.1 : 1.25, downed ? 0.9 : 0.85, 1);
     }
-    ctx.restore();
   }
-  destroy(): void { if (this.destroyed) return; this.destroyed = true; cancelAnimationFrame(this.raf); this.raf = 0; this.buffer.clear(); this.dedupe.reset(); this.particles.clear(); }
+
+  private updateReferee(dt: number, time: number, reducedMotion: boolean): void {
+    const midX = (this.tmpA.x + this.tmpB.x) / 2;
+    const midZ = (this.tmpA.z + this.tmpB.z) / 2;
+    const away = this.refereeAway.set(this.refereePosition.x - midX, 0, this.refereePosition.z - midZ);
+    if (away.lengthSq() < 0.01) away.set(0, 0, -1);
+    away.normalize();
+    const targetX = THREE.MathUtils.clamp(midX + away.x * 2.05, -2.4, 2.4);
+    const targetZ = THREE.MathUtils.clamp(midZ + away.z * 2.05, -2.4, 2.4);
+    const rate = 1 - Math.exp(-1.6 * dt);
+    this.refereePosition.x += (targetX - this.refereePosition.x) * rate;
+    this.refereePosition.z += (targetZ - this.refereePosition.z) * rate;
+    for (const fighter of [this.tmpA, this.tmpB]) {
+      const dx = this.refereePosition.x - fighter.x;
+      const dz = this.refereePosition.z - fighter.z;
+      const distance = Math.hypot(dx, dz);
+      if (distance < 1.45 && distance > 0.001) {
+        this.refereePosition.x = fighter.x + (dx / distance) * 1.45;
+        this.refereePosition.z = fighter.z + (dz / distance) * 1.45;
+      }
+    }
+    this.referee.root.position.set(this.refereePosition.x, 0, this.refereePosition.z);
+    const yaw = Math.atan2(midX - this.refereePosition.x, midZ - this.refereePosition.z);
+    let yawDelta = ((yaw - this.refereeYaw + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+    this.refereeYaw += yawDelta * (1 - Math.exp(-3 * dt));
+    this.referee.root.rotation.y = this.refereeYaw;
+    this.referee.hips.position.y = 0.98 + (reducedMotion ? 0 : Math.sin(time * 1.7) * 0.006);
+  }
+
+  private drawHudOverlay(snapshot: EngineSnapshot | null): void {
+    const resized = resizeHighDpi(this.hudCanvas);
+    if (resized === null) return;
+    const { context: ctx, viewport } = resized;
+    ctx.clearRect(0, 0, viewport.width, viewport.height);
+    if (snapshot === null) return;
+    const hurt = Math.max(...snapshot.fighters.map((fighter) => fighter.trauma.head + fighter.trauma.body));
+    if (hurt > 350) {
+      const vignette = ctx.createRadialGradient(viewport.width / 2, viewport.height / 2, viewport.width * 0.2, viewport.width / 2, viewport.height / 2, viewport.width * 0.72);
+      vignette.addColorStop(0, "rgba(90,0,8,0)");
+      vignette.addColorStop(1, `rgba(75,0,8,${Math.min(0.3, hurt / 4600)})`);
+      ctx.fillStyle = vignette;
+      ctx.fillRect(0, 0, viewport.width, viewport.height);
+    }
+    drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.final, this.reconnectMs, this.simulation.tick_rate);
+  }
+
+  destroy(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    cancelAnimationFrame(this.raf);
+    this.raf = 0;
+    this.buffer.clear();
+    this.dedupe.reset();
+    this.effects.dispose();
+    this.arena.dispose();
+    disposeRing(this.ring);
+    for (const boxer of this.boxers) {
+      this.scene.remove(boxer.root);
+      disposeBoxer(boxer);
+    }
+    this.scene.remove(this.referee.root);
+    disposeBoxer(this.referee);
+    for (const light of this.lights) this.scene.remove(light);
+    this.keyLight?.shadow.map?.dispose();
+    this.keyLight?.shadow.dispose();
+    this.renderer.renderLists.dispose();
+    this.composer.dispose();
+    this.renderer.dispose();
+    this.blobTexture.dispose();
+    for (const blob of this.blobShadows) {
+      this.scene.remove(blob);
+      blob.geometry.dispose();
+      (blob.material as THREE.Material).dispose();
+    }
+    this.hudCanvas.remove();
+  }
 }
-function drawCrowd(ctx: CanvasRenderingContext2D, viewport: Viewport, time: number): void { ctx.fillStyle = "#111726"; ctx.fillRect(0, viewport.height * 0.19, viewport.width, viewport.height * 0.24); const count = Math.ceil(viewport.width / 17); for (let i = 0; i < count; i += 1) { const x = i * 17 + 4, y = viewport.height * 0.35 + Math.sin(i * 9.7 + time * 0.7) * 3; ctx.fillStyle = i % 4 === 0 ? "#252d40" : "#1b2231"; ctx.beginPath(); ctx.arc(x, y - 16, 5, 0, Math.PI * 2); ctx.fill(); ctx.fillRect(x - 6, y - 11, 12, 25); } }
-function corners(viewport: Viewport): readonly [{ x: number; y: number }, { x: number; y: number }, { x: number; y: number }, { x: number; y: number }] { return [{ x: viewport.width * 0.225, y: viewport.height * 0.39 }, { x: viewport.width * 0.775, y: viewport.height * 0.39 }, { x: viewport.width * 0.92, y: viewport.height * 0.76 }, { x: viewport.width * 0.08, y: viewport.height * 0.76 }]; }
-function drawRing(ctx: CanvasRenderingContext2D, viewport: Viewport): void { const c = corners(viewport); ctx.fillStyle = "#b8bec2"; ctx.beginPath(); ctx.moveTo(c[0].x, c[0].y); for (const point of c.slice(1)) ctx.lineTo(point.x, point.y); ctx.closePath(); ctx.fill(); ctx.strokeStyle = "rgba(40,49,60,.2)"; ctx.lineWidth = 1; for (let i = 1; i < 9; i += 1) { const y = c[0].y + (c[3].y - c[0].y) * i / 9; ctx.beginPath(); ctx.moveTo(viewport.width * (0.225 - i * 0.016), y); ctx.lineTo(viewport.width * (0.775 + i * 0.016), y); ctx.stroke(); } for (const point of c) { ctx.fillStyle = "#202b38"; ctx.fillRect(point.x - 6, point.y - 75, 12, 82); } ctx.strokeStyle = "#74899a"; ctx.lineWidth = 4; for (let rail = 0; rail < 3; rail += 1) { const lift = 26 + rail * 18; ctx.beginPath(); ctx.moveTo(c[0].x, c[0].y - lift); ctx.lineTo(c[1].x, c[1].y - lift); ctx.stroke(); } }
-function drawForegroundRopes(ctx: CanvasRenderingContext2D, viewport: Viewport): void { const c = corners(viewport); for (let rail = 0; rail < 3; rail += 1) { const lift = 18 + rail * 18; ctx.strokeStyle = rail === 1 ? "#c8d2d8" : "#7f2731"; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(c[3].x, c[3].y - lift); ctx.lineTo(c[2].x, c[2].y - lift); ctx.stroke(); } }
