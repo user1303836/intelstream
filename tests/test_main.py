@@ -1,4 +1,6 @@
 import runpy
+import sys
+from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -46,7 +48,25 @@ class TestConfigureLogging:
         ):
             main_module.configure_logging("INFO")
 
-        renderer.assert_called_once_with(colors=expected_colors)
+        renderer.assert_called_once_with(
+            colors=expected_colors,
+            exception_formatter=main_module.structlog.dev.plain_traceback,
+        )
+
+    def test_exception_formatter_does_not_render_local_values(self) -> None:
+        formatter = main_module.structlog.dev.plain_traceback
+        secret = "".join(("traceback", "-local", "-secret"))
+        try:
+            raise RuntimeError("safe failure")
+        except RuntimeError:
+            exc_info = sys.exc_info()
+
+        output = StringIO()
+        formatter(output, exc_info)
+
+        rendered = output.getvalue()
+        assert "RuntimeError: safe failure" in rendered
+        assert secret not in rendered
 
     def test_timestamp_processor_is_explicitly_utc(self) -> None:
         with (
