@@ -2,6 +2,7 @@ import type { EngineSnapshot, FinalMessage, PublicPlayer } from "../types";
 
 export const HUD_MAX_GUARD = 700;
 export const HUD_MAX_POISE = 600;
+export const HUD_MAX_CONDITIONING = 1000;
 export const scoreTotal = (scores: readonly number[]): number => scores.reduce((sum, score) => sum + score, 0);
 
 const fit = (ctx: CanvasRenderingContext2D, text: string, width: number): string => {
@@ -175,7 +176,7 @@ export function drawHud(
     const detail = `ELO ${player?.rating ?? "—"} · KD ${fighter.knockdowns} · W ${fighter.warnings} · −${fighter.deductions}`;
     const bars: BarSpec[] = [
       { label: `STAMINA ${Math.round(fighter.stamina)}`, value: fighter.stamina, maximum: fighter.maximum_stamina, from: "#ffe08a", to: "#d9a53a" },
-      { label: `HEALTH ${Math.round(fighter.conditioning)}`, value: fighter.conditioning, maximum: fighter.maximum_stamina, from: "#ff8a7a", to: "#b02a20" },
+      { label: `HEALTH ${Math.round(fighter.conditioning)}`, value: fighter.conditioning, maximum: HUD_MAX_CONDITIONING, from: "#ff8a7a", to: "#b02a20" },
       { label: "GUARD", value: fighter.guard, maximum: HUD_MAX_GUARD, from: "#9ec7ff", to: "#3d6fb8" },
       { label: `POISE ${Math.round(fighter.poise)}`, value: fighter.poise, maximum: HUD_MAX_POISE, from: "#e8c890", to: "#8a6a34" },
     ];

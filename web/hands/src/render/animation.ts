@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import type { BloodLevel } from "../settings";
 import type { FighterSnapshot, Hand, Power, PunchClass, Target } from "../types";
 import { aimBone, solveArm, type BoxerRig } from "./boxer";
 import type { WorldMapping } from "./world";
@@ -44,8 +45,17 @@ const smoothstep = (edge0: number, edge1: number, value: number): number => {
 const scratchTarget = new THREE.Vector3();
 const scratchShoulder = new THREE.Vector3();
 const scratchPole = new THREE.Vector3();
-const scratchElbowOut = { elbowWorld: new THREE.Vector3() };
+const scratchElbowOut = { elbowWorld: new THREE.Vector3(), targetWorld: new THREE.Vector3() };
 const scratchGlove = new THREE.Vector3();
+const scratchFinalL = new THREE.Vector3();
+const scratchFinalR = new THREE.Vector3();
+const scratchPunch = new THREE.Vector3();
+const scratchMixed = new THREE.Vector3();
+const scratchWindup = new THREE.Vector3();
+const scratchQuat = new THREE.Quaternion();
+
+const BLOOD_CUT_SCALE: Record<BloodLevel, number> = { full: 1, reduced: 0.45, off: 0 };
+const BLOODED_GLOVE = new THREE.Color(0x5c0a0e);
 
 export class BoxerAnimator {
   private yaw = 0;
@@ -77,7 +87,7 @@ export class BoxerAnimator {
     }
   }
 
-  update(fighter: FighterSnapshot, opponent: FighterSnapshot, dt: number, time: number, reducedMotion: boolean): void {
+  update(fighter: FighterSnapshot, opponent: FighterSnapshot, dt: number, time: number, reducedMotion: boolean, blood: BloodLevel = "full"): void {
     const rig = this.rig;
     const mirror = fighter.stance === "orthodox" ? 1 : -1;
 
@@ -167,47 +177,46 @@ export class BoxerAnimator {
 
     const guardL = fighter.defense === "guard_high" ? GUARD_HIGH_L : fighter.defense === "guard_low" ? GUARD_LOW_L : RELAXED_L;
     const guardR = fighter.defense === "guard_high" ? GUARD_HIGH_R : fighter.defense === "guard_low" ? GUARD_LOW_R : RELAXED_R;
-    let targetL = scratchTarget.copy(guardL);
-    const targetR = new THREE.Vector3().copy(guardR);
-    let finalL = new THREE.Vector3().copy(targetL);
-    if (fighter.is_foul_recovery_target) { finalL.set(0.08, 0.32, 0.2); targetR.set(-0.06, 0.3, 0.18); }
-    if (fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0) { finalL.set(0.16, -0.05, 0.5); targetR.set(-0.16, -0.02, 0.48); }
+    const finalL = scratchFinalL.copy(guardL);
+    const finalR = scratchFinalR.copy(guardR);
+    if (fighter.is_foul_recovery_target) { finalL.set(0.08, 0.32, 0.2); finalR.set(-0.06, 0.3, 0.18); }
+    if (fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0) { finalL.set(0.16, -0.05, 0.5); finalR.set(-0.16, -0.02, 0.48); }
     if (down > 0.03) {
-      finalL.lerp(new THREE.Vector3(0.5, 0.28, -0.1), down);
-      targetR.lerp(new THREE.Vector3(-0.48, 0.3, 0.05), down);
+      finalL.lerp(scratchTarget.set(0.5, 0.28, -0.1), down);
+      finalR.lerp(scratchTarget.set(-0.48, 0.3, 0.05), down);
     } else if (stunned > 0.15) {
-      finalL.lerp(new THREE.Vector3(0.3, -0.25, 0.15), stunned * 0.7);
-      targetR.lerp(new THREE.Vector3(-0.3, -0.22, 0.15), stunned * 0.7);
+      finalL.lerp(scratchTarget.set(0.3, -0.25, 0.15), stunned * 0.7);
+      finalR.lerp(scratchTarget.set(-0.3, -0.22, 0.15), stunned * 0.7);
     }
 
-    if (this.punchT < 1 && this.punchKind !== null) {
+    if (this.punchT < 1 && this.punchKind !== null && down < 0.85) {
       const windup = smoothstep(0, 0.2, this.punchT) * (1 - smoothstep(0.16, 0.45, this.punchT));
-      const extend = smoothstep(0.18, this.punchKind === "jab" ? 0.42 : 0.5, this.punchT) * (1 - smoothstep(0.62, 1, this.punchT));
-      const punch = punchTarget(this.punchKind, this.punchTargetKind, this.punchPower);
+      const extend = smoothstep(0.18, this.punchKind === "jab" ? 0.42 : 0.5, this.punchT) * (1 - smoothstep(0.62, 1, this.punchT)) * (1 - down);
+      const punch = scratchPunch.copy(punchTarget(this.punchKind, this.punchTargetKind, this.punchPower));
       if (this.punchKind === "hook") {
         const sweep = smoothstep(0.18, 0.55, this.punchT);
         punch.x = THREE.MathUtils.lerp(-0.62, -0.1, sweep) * (this.punchHand === "left" ? 1 : -1) * -1;
         punch.z = 0.5 + 0.14 * sweep;
       }
-      const windupOffset = new THREE.Vector3(0, this.punchKind === "uppercut" ? -0.22 : -0.03, -0.16).multiplyScalar(windup);
-      const mixed = (this.punchHand === "left" ? finalL.clone() : targetR.clone()).add(windupOffset).lerp(punch, extend);
-      if (this.punchHand === "left") finalL = mixed;
-      else targetR.copy(mixed);
+      const windupOffset = scratchWindup.set(0, this.punchKind === "uppercut" ? -0.22 : -0.03, -0.16).multiplyScalar(windup);
+      const base = this.punchHand === "left" ? finalL : finalR;
+      const mixed = scratchMixed.copy(base).add(windupOffset).lerp(punch, extend);
+      base.copy(mixed);
     }
 
     finalL.x *= mirror;
-    targetR.x *= mirror;
+    finalR.x *= mirror;
     this.gloveLCurrent.x = smooth(this.gloveLCurrent.x, finalL.x, 22, dt);
     this.gloveLCurrent.y = smooth(this.gloveLCurrent.y, finalL.y, 22, dt);
     this.gloveLCurrent.z = smooth(this.gloveLCurrent.z, finalL.z, 22, dt);
-    this.gloveRCurrent.x = smooth(this.gloveRCurrent.x, targetR.x, 22, dt);
-    this.gloveRCurrent.y = smooth(this.gloveRCurrent.y, targetR.y, 22, dt);
-    this.gloveRCurrent.z = smooth(this.gloveRCurrent.z, targetR.z, 22, dt);
+    this.gloveRCurrent.x = smooth(this.gloveRCurrent.x, finalR.x, 22, dt);
+    this.gloveRCurrent.y = smooth(this.gloveRCurrent.y, finalR.y, 22, dt);
+    this.gloveRCurrent.z = smooth(this.gloveRCurrent.z, finalR.z, 22, dt);
 
     this.solveArmIK(rig.shoulderL, rig.elbowL, rig.gloveL, this.gloveLCurrent, 1, rig);
     this.solveArmIK(rig.shoulderR, rig.elbowR, rig.gloveR, this.gloveRCurrent, -1, rig);
 
-    this.applyTrauma(fighter);
+    this.applyTrauma(fighter, opponent, blood);
   }
 
   private poseLegs(fighter: FighterSnapshot, speed: number, down: number, fallSide: number, mirror: number): void {
@@ -237,20 +246,55 @@ export class BoxerAnimator {
     shoulder.getWorldPosition(scratchShoulder);
     scratchGlove.copy(localTarget);
     rig.chest.localToWorld(scratchGlove);
-    scratchPole.set(0.9 * side, -1, -0.25).applyQuaternion(rig.chest.getWorldQuaternion(new THREE.Quaternion()));
+    scratchPole.set(0.9 * side, -1, -0.25).applyQuaternion(rig.chest.getWorldQuaternion(scratchQuat));
     solveArm(scratchShoulder, scratchGlove, scratchPole, scratchElbowOut);
     aimBone(shoulder, scratchShoulder, scratchElbowOut.elbowWorld);
     shoulder.updateMatrixWorld(true);
-    aimBone(elbow, scratchElbowOut.elbowWorld, scratchGlove);
+    aimBone(elbow, scratchElbowOut.elbowWorld, scratchElbowOut.targetWorld);
   }
 
-  private applyTrauma(fighter: FighterSnapshot): void {
+  private applyTrauma(fighter: FighterSnapshot, opponent: FighterSnapshot, blood: BloodLevel): void {
     const trauma = fighter.trauma;
     const bruise = (value: number): number => Math.min(0.85, value / 170 + trauma.swelling / 420);
+    const cutScale = BLOOD_CUT_SCALE[blood];
     (this.rig.bruiseL.material as THREE.MeshStandardMaterial).opacity = bruise(trauma.left_eye);
     (this.rig.bruiseR.material as THREE.MeshStandardMaterial).opacity = bruise(trauma.right_eye);
-    (this.rig.cutL.material as THREE.MeshStandardMaterial).opacity = Math.min(1, trauma.left_cut / 200 + trauma.bleeding / 600);
-    (this.rig.cutR.material as THREE.MeshStandardMaterial).opacity = Math.min(1, trauma.right_cut / 200 + trauma.bleeding / 600);
+    (this.rig.cutL.material as THREE.MeshStandardMaterial).opacity = Math.min(1, trauma.left_cut / 200 + trauma.bleeding / 600) * cutScale;
+    (this.rig.cutR.material as THREE.MeshStandardMaterial).opacity = Math.min(1, trauma.right_cut / 200 + trauma.bleeding / 600) * cutScale;
+
+    const swellAmount = (value: number): number => Math.min(1.35, value / 260 + trauma.swelling / 560);
+    const swellL = swellAmount(trauma.left_eye);
+    const swellR = swellAmount(trauma.right_eye);
+    this.rig.swellL.scale.setScalar(0.25 + swellL * 1.15);
+    this.rig.swellR.scale.setScalar(0.25 + swellR * 1.15);
+    (this.rig.swellL.material as THREE.MeshStandardMaterial).opacity = Math.min(0.92, swellL * 1.1);
+    (this.rig.swellR.material as THREE.MeshStandardMaterial).opacity = Math.min(0.92, swellR * 1.1);
+    const cheekAmount = Math.min(1, trauma.head / 900 + trauma.swelling / 800);
+    this.rig.cheekL.scale.setScalar(0.2 + cheekAmount * 1.05);
+    this.rig.cheekR.scale.setScalar(0.2 + cheekAmount * 0.95);
+    (this.rig.cheekL.material as THREE.MeshStandardMaterial).opacity = cheekAmount * 0.8;
+    (this.rig.cheekR.material as THREE.MeshStandardMaterial).opacity = cheekAmount * 0.75;
+
+    const dripL = Math.min(1.7, (trauma.left_cut + trauma.bleeding) / 260);
+    const dripR = Math.min(1.7, (trauma.right_cut + trauma.bleeding) / 260);
+    this.rig.streakL.scale.set(1, 0.15 + dripL, 1);
+    this.rig.streakR.scale.set(1, 0.15 + dripR, 1);
+    (this.rig.streakL.material as THREE.MeshStandardMaterial).opacity = Math.min(1, dripL) * cutScale;
+    (this.rig.streakR.material as THREE.MeshStandardMaterial).opacity = Math.min(1, dripR) * cutScale;
+    const noseAmount = Math.min(1.4, trauma.head / 700 + trauma.bleeding / 420);
+    this.rig.noseStreak.scale.set(1, 0.2 + noseAmount, 1);
+    (this.rig.noseStreak.material as THREE.MeshStandardMaterial).opacity = Math.min(1, noseAmount * 0.9) * cutScale;
+    (this.rig.mouthBlood.material as THREE.MeshStandardMaterial).opacity = Math.min(1, trauma.head / 800 + trauma.bleeding / 500) * cutScale;
+
+    const ribAmount = Math.min(1, trauma.body / 750);
+    this.rig.ribL.scale.set(0.5 + ribAmount * 0.35, 1.2 + ribAmount * 0.5, 0.7 + ribAmount * 0.2);
+    this.rig.ribR.scale.set(0.5 + ribAmount * 0.3, 1.2 + ribAmount * 0.4, 0.7 + ribAmount * 0.2);
+    (this.rig.ribL.material as THREE.MeshStandardMaterial).opacity = ribAmount * 0.85;
+    (this.rig.ribR.material as THREE.MeshStandardMaterial).opacity = ribAmount * 0.8;
+
+    const opponentBlood = Math.min(1, (opponent.trauma.bleeding + opponent.trauma.left_cut + opponent.trauma.right_cut) / 620) * cutScale;
+    this.rig.gloveLMaterial.color.copy(this.rig.gloveBaseColor).lerp(BLOODED_GLOVE, opponentBlood * 0.72);
+
     (this.rig.bodyBruise.material as THREE.MeshStandardMaterial).opacity = Math.min(0.7, trauma.body / 950);
     const swell = 1 + Math.min(0.12, trauma.swelling / 2500);
     this.rig.headMesh.scale.set(0.92 * swell, 1.08 * swell, 0.98 * swell);

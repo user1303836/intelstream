@@ -28,8 +28,21 @@ export interface BoxerRig {
   readonly bodyBruise: THREE.Mesh;
   readonly cutL: THREE.Mesh;
   readonly cutR: THREE.Mesh;
+  readonly swellL: THREE.Mesh;
+  readonly swellR: THREE.Mesh;
+  readonly cheekL: THREE.Mesh;
+  readonly cheekR: THREE.Mesh;
+  readonly streakL: THREE.Mesh;
+  readonly streakR: THREE.Mesh;
+  readonly noseStreak: THREE.Mesh;
+  readonly mouthBlood: THREE.Mesh;
+  readonly ribL: THREE.Mesh;
+  readonly ribR: THREE.Mesh;
   readonly gloveLMesh: THREE.Mesh;
   readonly gloveRMesh: THREE.Mesh;
+  readonly gloveLMaterial: THREE.MeshStandardMaterial;
+  readonly gloveRMaterial: THREE.MeshStandardMaterial;
+  readonly gloveBaseColor: THREE.Color;
   readonly materials: readonly THREE.Material[];
   readonly geometries: readonly THREE.BufferGeometry[];
 }
@@ -77,7 +90,17 @@ export function buildBoxer(palette: FighterPalette): BoxerRig {
   const bodyBruiseMat = bruiseMat.clone();
   const cutMat = new THREE.MeshStandardMaterial({ color: 0x7f0d14, roughness: 0.6, transparent: true, opacity: 0, emissive: 0x2a0306 });
   const cutMatR = cutMat.clone();
-  const materials = [skin, skinDark, trunks, trim, gloveMat, gloveTrimMat, hairMat, shoeMat, bruiseMat, bruiseMatR, bodyBruiseMat, cutMat, cutMatR];
+  const swellMat = new THREE.MeshStandardMaterial({ color: 0x6b3572, roughness: 0.75, transparent: true, opacity: 0 });
+  const swellMatR = swellMat.clone();
+  const cheekMat = swellMat.clone();
+  const cheekMatR = swellMat.clone();
+  const streakMat = new THREE.MeshStandardMaterial({ color: 0x8a0f16, roughness: 0.35, transparent: true, opacity: 0, emissive: 0x30040a });
+  const streakMatR = streakMat.clone();
+  const noseStreakMat = streakMat.clone();
+  const mouthMat = streakMat.clone();
+  const ribMat = new THREE.MeshStandardMaterial({ color: 0x5c2450, roughness: 0.85, transparent: true, opacity: 0 });
+  const ribMatR = ribMat.clone();
+  const materials = [skin, skinDark, trunks, trim, gloveMat, gloveTrimMat, hairMat, shoeMat, bruiseMat, bruiseMatR, bodyBruiseMat, cutMat, cutMatR, swellMat, swellMatR, cheekMat, cheekMatR, streakMat, streakMatR, noseStreakMat, mouthMat, ribMat, ribMatR];
 
   const root = new THREE.Group();
   root.name = "boxer";
@@ -204,6 +227,50 @@ export function buildBoxer(palette: FighterPalette): BoxerRig {
   cutR.castShadow = false;
   head.add(cutR);
 
+  const swellL = sphere(0.035, swellMat, geometries, 12, 10);
+  swellL.position.set(0.052, 0.155, 0.088);
+  swellL.castShadow = false;
+  head.add(swellL);
+  const swellR = sphere(0.035, swellMatR, geometries, 12, 10);
+  swellR.position.set(-0.052, 0.155, 0.088);
+  swellR.castShadow = false;
+  head.add(swellR);
+  const cheekL = sphere(0.028, cheekMat, geometries, 10, 8);
+  cheekL.position.set(0.068, 0.095, 0.075);
+  cheekL.castShadow = false;
+  head.add(cheekL);
+  const cheekR = sphere(0.028, cheekMatR, geometries, 10, 8);
+  cheekR.position.set(-0.068, 0.095, 0.075);
+  cheekR.castShadow = false;
+  head.add(cheekR);
+  const streakL = box(0.014, 0.1, 0.006, streakMat, geometries);
+  streakL.position.set(0.052, 0.115, 0.106);
+  streakL.castShadow = false;
+  head.add(streakL);
+  const streakR = box(0.014, 0.1, 0.006, streakMatR, geometries);
+  streakR.position.set(-0.052, 0.115, 0.106);
+  streakR.castShadow = false;
+  head.add(streakR);
+  const noseStreak = box(0.011, 0.07, 0.006, noseStreakMat, geometries);
+  noseStreak.position.set(0.008, 0.075, 0.118);
+  noseStreak.castShadow = false;
+  head.add(noseStreak);
+  const mouthBlood = box(0.03, 0.012, 0.006, mouthMat, geometries);
+  mouthBlood.position.set(0.02, 0.052, 0.104);
+  mouthBlood.castShadow = false;
+  head.add(mouthBlood);
+
+  const ribL = sphere(0.09, ribMat, geometries, 12, 10);
+  ribL.scale.set(0.5, 1.2, 0.7);
+  ribL.position.set(0.16, 0.08, 0.02);
+  ribL.castShadow = false;
+  chest.add(ribL);
+  const ribR = sphere(0.09, ribMatR, geometries, 12, 10);
+  ribR.scale.set(0.5, 1.2, 0.7);
+  ribR.position.set(-0.16, 0.08, 0.02);
+  ribR.castShadow = false;
+  chest.add(ribR);
+
   const buildArm = (side: 1 | -1): { shoulder: THREE.Group; elbow: THREE.Group; glove: THREE.Group; gloveMesh: THREE.Mesh } => {
     const shoulder = new THREE.Group();
     shoulder.name = side === 1 ? "shoulderL" : "shoulderR";
@@ -299,8 +366,21 @@ export function buildBoxer(palette: FighterPalette): BoxerRig {
     bodyBruise,
     cutL,
     cutR,
+    swellL,
+    swellR,
+    cheekL,
+    cheekR,
+    streakL,
+    streakR,
+    noseStreak,
+    mouthBlood,
+    ribL,
+    ribR,
     gloveLMesh: armL.gloveMesh,
     gloveRMesh: armR.gloveMesh,
+    gloveLMaterial: gloveMat,
+    gloveRMaterial: gloveMat,
+    gloveBaseColor: new THREE.Color(palette.glove),
     materials,
     geometries,
   };
@@ -313,9 +393,9 @@ const scratchBend = new THREE.Vector3();
 const scratchElbow = new THREE.Vector3();
 const scratchPole = new THREE.Vector3();
 const downAxis = new THREE.Vector3(0, -1, 0);
-const scratchQuat = new THREE.Vector3();
+const scratchClamped = new THREE.Vector3();
 
-export function solveArm(shoulderWorld: THREE.Vector3, targetWorld: THREE.Vector3, pole: THREE.Vector3, out: { elbowWorld: THREE.Vector3 }): void {
+export function solveArm(shoulderWorld: THREE.Vector3, targetWorld: THREE.Vector3, pole: THREE.Vector3, out: { elbowWorld: THREE.Vector3; targetWorld: THREE.Vector3 }): void {
   const l1 = UPPER_ARM;
   const l2 = FOREARM + 0.06;
   scratchS.copy(shoulderWorld);
@@ -331,14 +411,13 @@ export function solveArm(shoulderWorld: THREE.Vector3, targetWorld: THREE.Vector
   scratchBend.normalize();
   scratchElbow.copy(scratchS).addScaledVector(scratchDir, a).addScaledVector(scratchBend, h);
   out.elbowWorld.copy(scratchElbow);
-  scratchQuat.copy(scratchS).addScaledVector(scratchDir, distance);
-  scratchT.copy(scratchQuat);
+  scratchClamped.copy(scratchS).addScaledVector(scratchDir, distance);
+  out.targetWorld.copy(scratchClamped);
 }
 
 const boneDir = new THREE.Vector3();
 const parentWorldQuat = new THREE.Quaternion();
 const worldQuat = new THREE.Quaternion();
-const identityQuat = new THREE.Quaternion();
 
 export function aimBone(joint: THREE.Object3D, fromWorld: THREE.Vector3, toWorld: THREE.Vector3, twist = 0): void {
   boneDir.subVectors(toWorld, fromWorld);
@@ -415,4 +494,3 @@ export function disposeBoxer(rig: BoxerRig): void {
   for (const material of rig.materials) material.dispose();
 }
 
-export { identityQuat as _identityQuat };

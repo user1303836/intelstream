@@ -10,7 +10,6 @@ export const CANVAS_TOP = 0;
 export interface WorldMapping {
   readonly x: (simX: number) => number;
   readonly z: (simY: number) => number;
-  readonly separation: (simDistance: number) => number;
 }
 
 export function worldMapping(simulation: SimulationInfo): WorldMapping {
@@ -19,7 +18,6 @@ export function worldMapping(simulation: SimulationInfo): WorldMapping {
   return {
     x: (simX) => simX * scaleX,
     z: (simY) => simY * scaleZ,
-    separation: (simDistance) => simDistance * scaleX,
   };
 }
 

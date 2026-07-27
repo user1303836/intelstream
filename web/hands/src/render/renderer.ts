@@ -54,6 +54,10 @@ export class FightRenderer {
   private readonly blobShadows: THREE.Mesh[] = [];
   private readonly blobTexture: THREE.CanvasTexture;
   private readonly lights: THREE.Light[] = [];
+  private keyLight: THREE.SpotLight | null = null;
+  private readonly sizeCheck = new THREE.Vector2();
+  private readonly refereeAway = new THREE.Vector3();
+  private refereeYaw = 0;
   private raf = 0;
   private previous = performance.now();
   private players: Readonly<Record<string, PublicPlayer>> = {};
@@ -63,6 +67,7 @@ export class FightRenderer {
   private destroyed = false;
   private readonly tmpA = new THREE.Vector3();
   private readonly tmpB = new THREE.Vector3();
+  private readonly tmpHead = new THREE.Vector3();
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -161,6 +166,7 @@ export class FightRenderer {
         ?? snapshot.fighters[0];
       this.tmpA.set(this.mapping.x(target.x), 0, this.mapping.z(target.y));
       this.effects.addEvent(event, this.tmpA, this.settings().reducedMotion);
+      if (event.kind === "knockdown") this.effects.pool(this.tmpA.x + (Math.random() - 0.5) * 0.2, this.tmpA.z + (Math.random() - 0.5) * 0.2, 1);
       const targetIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.target_id);
       if (targetIndex >= 0 && ["hit", "counter_hit", "block", "knockdown"].includes(event.kind)) {
         this.animators[targetIndex]!.impact({
@@ -189,6 +195,7 @@ export class FightRenderer {
     key.shadow.bias = -0.0004;
     key.shadow.camera.near = 3;
     key.shadow.camera.far = 14;
+    this.keyLight = key;
     this.scene.add(key, key.target);
     this.lights.push(key);
 
@@ -220,9 +227,8 @@ export class FightRenderer {
     const width = this.canvas.clientWidth;
     const height = this.canvas.clientHeight;
     if (width > 0 && height > 0) {
-      const size = new THREE.Vector2();
-      this.renderer.getSize(size);
-      if (size.x !== width || size.y !== height) {
+      this.renderer.getSize(this.sizeCheck);
+      if (this.sizeCheck.x !== width || this.sizeCheck.y !== height) {
         this.renderer.setSize(width, height, false);
         this.composer.setSize(width, height);
         this.camera.aspect = width / height;
@@ -240,8 +246,8 @@ export class FightRenderer {
     let knockdown = false;
     if (snapshot !== null) {
       const [a, b] = snapshot.fighters;
-      this.animators[0].update(a, b, dt, seconds, current.reducedMotion);
-      this.animators[1].update(b, a, dt, seconds, current.reducedMotion);
+      this.animators[0].update(a, b, dt, seconds, current.reducedMotion, current.blood);
+      this.animators[1].update(b, a, dt, seconds, current.reducedMotion, current.blood);
       const ax = this.mapping.x(a.x);
       const az = this.mapping.z(a.y);
       const bx = this.mapping.x(b.x);
@@ -250,12 +256,23 @@ export class FightRenderer {
       knockdown = a.is_downed || b.is_downed;
       this.tmpA.set(ax, 0, az);
       this.tmpB.set(bx, 0, bz);
+      for (const [index, fighter] of snapshot.fighters.entries()) {
+        const severity = (fighter.trauma.bleeding + fighter.trauma.left_cut + fighter.trauma.right_cut) / 380;
+        if (severity > 0.05 && !fighter.is_downed) {
+          const anchor = index === 0 ? this.tmpA : this.tmpB;
+          this.tmpHead.set(anchor.x, 1.56, anchor.z);
+          this.effects.drip(this.tmpHead, severity, dt, current.reducedMotion);
+        } else if (severity > 0.3 && fighter.is_downed && Math.random() < dt * 0.8) {
+          const anchor = index === 0 ? this.tmpA : this.tmpB;
+          this.effects.pool(anchor.x + (Math.random() - 0.5) * 0.5, anchor.z + (Math.random() - 0.5) * 0.5, 0.8);
+        }
+      }
     } else {
       this.tmpA.set(-0.9, 0, 0);
       this.tmpB.set(0.9, 0, 0);
     }
 
-    this.arena.update(seconds, current.reducedMotion);
+    this.arena.update(seconds, dt, current.reducedMotion);
     this.effects.update(dt);
     this.updateReferee(dt, seconds, current.reducedMotion);
     this.updateBlobShadows();
@@ -292,7 +309,7 @@ export class FightRenderer {
   private updateReferee(dt: number, time: number, reducedMotion: boolean): void {
     const midX = (this.tmpA.x + this.tmpB.x) / 2;
     const midZ = (this.tmpA.z + this.tmpB.z) / 2;
-    const away = new THREE.Vector3(this.refereePosition.x - midX, 0, this.refereePosition.z - midZ);
+    const away = this.refereeAway.set(this.refereePosition.x - midX, 0, this.refereePosition.z - midZ);
     if (away.lengthSq() < 0.01) away.set(0, 0, -1);
     away.normalize();
     const targetX = THREE.MathUtils.clamp(midX + away.x * 2.05, -2.4, 2.4);
@@ -311,7 +328,9 @@ export class FightRenderer {
     }
     this.referee.root.position.set(this.refereePosition.x, 0, this.refereePosition.z);
     const yaw = Math.atan2(midX - this.refereePosition.x, midZ - this.refereePosition.z);
-    this.referee.root.rotation.y += (yaw - this.referee.root.rotation.y) * (1 - Math.exp(-3 * dt));
+    let yawDelta = ((yaw - this.refereeYaw + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+    this.refereeYaw += yawDelta * (1 - Math.exp(-3 * dt));
+    this.referee.root.rotation.y = this.refereeYaw;
     this.referee.hips.position.y = 0.98 + (reducedMotion ? 0 : Math.sin(time * 1.7) * 0.006);
   }
 
@@ -349,6 +368,9 @@ export class FightRenderer {
     this.scene.remove(this.referee.root);
     disposeBoxer(this.referee);
     for (const light of this.lights) this.scene.remove(light);
+    this.keyLight?.shadow.map?.dispose();
+    this.keyLight?.shadow.dispose();
+    this.renderer.renderLists.dispose();
     this.composer.dispose();
     this.renderer.dispose();
     this.blobTexture.dispose();

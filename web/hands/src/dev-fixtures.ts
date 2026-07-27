@@ -7,7 +7,9 @@ const base = (id: string): Draft => ({
   player_id: id, x: 0, y: 0, facing: id === "fixture-one" ? 1 : -1, velocity_x: 0, velocity_y: 0,
   stance: id === "fixture-one" ? "orthodox" : "southpaw", defense: "guard_high",
   stamina: 760, maximum_stamina: 1000, conditioning: 820, guard: 670, poise: 520,
-  trauma: { head: 120, body: 160, left_eye: 110, right_eye: 60, left_cut: 70, right_cut: 20, swelling: 90, bleeding: 40 },
+  trauma: id === "fixture-two"
+    ? { head: 420, body: 640, left_eye: 430, right_eye: 210, left_cut: 330, right_cut: 170, swelling: 280, bleeding: 380 }
+    : { head: 150, body: 260, left_eye: 120, right_eye: 60, left_cut: 90, right_cut: 20, swelling: 100, bleeding: 70 },
   knockdowns: 0, warnings: 0, deductions: 0, stunned_ticks: 0, is_downed: false,
   action: null, action_hand: null, action_target: null, action_power: null, queued_actions: 0,
   clinch_startup_ticks: 0, clinch_ticks: 0, is_foul_recovery_target: false,
@@ -58,7 +60,7 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       defender.defense = Math.floor(t / 6.4) % 2 === 0 ? "guard_high" : "none";
       if (cycle > 0.2 && cycle < 0.3) {
         eventId += 1;
-        events.push({ event_id: eventId, tick, kind: "hit", actor_id: attacker.player_id, target_id: defender.player_id, amount: 140, detail: `${punch}`, blood: 26, direction: attacker.facing });
+        events.push({ event_id: eventId, tick, kind: "hit", actor_id: attacker.player_id, target_id: defender.player_id, amount: 210, detail: `${punch}`, blood: 120, direction: attacker.facing });
         defender.stunned_ticks = 12;
       }
     }

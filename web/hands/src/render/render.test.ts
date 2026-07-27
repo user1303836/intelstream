@@ -43,8 +43,8 @@ describe("scene construction", () => {
 
   it("builds and animates the arena crowd deterministically", () => {
     const arena = buildArena();
-    arena.update(1.5, false);
-    arena.update(2.5, true);
+    arena.update(1.5, 1 / 60, false);
+    arena.update(2.5, 1 / 60, true);
     expect(arena.group.children.length).toBeGreaterThan(5);
     arena.dispose();
   });
@@ -117,6 +117,48 @@ describe("boxer animation", () => {
     expect(JSON.stringify(one)).toBe(serialized);
   });
 
+  it("grows swelling, streaks and rib bruising with trauma and gates blood by setting", () => {
+    const { rig, animator } = make();
+    const two = fighter("two");
+    const hurt = { ...fighter("one"), trauma: { head: 800, body: 700, left_eye: 400, right_eye: 100, left_cut: 300, right_cut: 50, swelling: 300, bleeding: 350 } };
+    animator.update(hurt, two, 1 / 60, 0, false, "full");
+    expect(rig.swellL.scale.x).toBeGreaterThan(1);
+    expect(rig.swellR.scale.x).toBeLessThan(rig.swellL.scale.x);
+    expect((rig.streakL.material as THREE.MeshStandardMaterial).opacity).toBeGreaterThan(0.8);
+    expect((rig.ribL.material as THREE.MeshStandardMaterial).opacity).toBeGreaterThan(0.5);
+    expect((rig.noseStreak.material as THREE.MeshStandardMaterial).opacity).toBeGreaterThan(0.5);
+    animator.update(hurt, two, 1 / 60, 0.1, false, "off");
+    expect((rig.streakL.material as THREE.MeshStandardMaterial).opacity).toBe(0);
+    expect((rig.cutL.material as THREE.MeshStandardMaterial).opacity).toBe(0);
+    expect((rig.mouthBlood.material as THREE.MeshStandardMaterial).opacity).toBe(0);
+    expect((rig.swellL.material as THREE.MeshStandardMaterial).opacity).toBeGreaterThan(0);
+  });
+
+  it("bloodies the attacker's gloves with the opponent's bleeding", () => {
+    const { rig, animator } = make();
+    const one = fighter("one");
+    const bloodied = { ...fighter("two"), trauma: { head: 500, body: 0, left_eye: 0, right_eye: 0, left_cut: 300, right_cut: 200, swelling: 0, bleeding: 500 } };
+    animator.update(one, bloodied, 1 / 60, 0, false, "full");
+    const tinted = rig.gloveLMaterial.color.getHex();
+    animator.update(one, fighter("two"), 1 / 60, 0.1, false, "full");
+    expect(rig.gloveLMaterial.color.getHex()).not.toBe(tinted);
+    expect(tinted).not.toBe(rig.gloveBaseColor.getHex());
+    animator.update(one, bloodied, 1 / 60, 0.2, false, "off");
+    expect(rig.gloveLMaterial.color.getHex()).toBe(rig.gloveBaseColor.getHex());
+  });
+
+  it("retracts a punch when the fighter goes down mid-animation", () => {
+    const { rig, animator } = make();
+    const two = fighter("two");
+    const punching = { ...fighter("one"), action: "straight" as const, action_hand: "right" as const, action_target: "head" as const, action_power: "power" as const };
+    for (let i = 0; i < 8; i += 1) animator.update(punching, two, 1 / 60, i / 60, false);
+    const extendedZ = rig.gloveR.getWorldPosition(new THREE.Vector3()).z - rig.root.position.z;
+    const downed = { ...punching, is_downed: true, action: null };
+    for (let i = 0; i < 120; i += 1) animator.update(downed, two, 1 / 60, 1 + i / 60, false);
+    const downZ = rig.gloveR.getWorldPosition(new THREE.Vector3()).z - rig.root.position.z;
+    expect(downZ).toBeLessThan(extendedZ);
+  });
+
   it("mirrors southpaw glove placement", () => {
     const { rig, animator } = make();
     const one = { ...fighter("one"), stance: "southpaw" as const };
@@ -160,16 +202,42 @@ describe("effects", () => {
     for (let id = 0; id < 40; id += 1) {
       effects.addEvent({ event_id: id, tick: 1, kind: "hit", actor_id: "one", target_id: "two", amount: 900, detail: "", blood: 400, direction: 1 }, origin, false);
     }
-    expect(effects.liveParticles).toBeLessThanOrEqual(700);
+    expect(effects.liveParticles).toBeLessThanOrEqual(900);
+    expect(effects.visibleDecals).toBeGreaterThan(0);
     const shaken = effects.shakeAmount;
     expect(shaken).toBeGreaterThan(0);
     for (let i = 0; i < 600; i += 1) effects.update(1 / 60);
     expect(effects.shakeAmount).toBeLessThan(shaken);
     expect(effects.liveParticles).toBe(0);
     effects.setBloodLevel("off");
+    effects.clearDecals();
     effects.addEvent({ event_id: 999, tick: 1, kind: "hit", actor_id: "one", target_id: "two", amount: 100, detail: "", blood: 100, direction: 1 }, origin, false);
-    const decals = scene.children.filter((child): child is THREE.Mesh => child instanceof THREE.Mesh && child.visible);
-    expect(decals.length).toBe(0);
+    expect(effects.visibleDecals).toBe(0);
+    expect(effects.liveMist).toBe(0);
+    effects.dispose();
+  });
+
+  it("spawns bounded drips, mist and splatter for severe bleeding", () => {
+    const scene = new THREE.Scene();
+    const effects = new Effects3D(scene);
+    effects.setBloodLevel("full");
+    const head = new THREE.Vector3(0, 1.56, 0);
+    for (let i = 0; i < 300; i += 1) {
+      effects.drip(head, 1.2, 1 / 30, false);
+      effects.update(1 / 60);
+    }
+    expect(effects.liveParticles).toBeLessThanOrEqual(900);
+    effects.addEvent({ event_id: 5, tick: 1, kind: "knockdown", actor_id: "one", target_id: "two", amount: 500, detail: "", blood: 300, direction: 1 }, new THREE.Vector3(), false);
+    expect(effects.liveMist).toBeGreaterThan(0);
+    effects.pool(0, 0, 1);
+    effects.splatter(0, 0, 1);
+    expect(effects.visibleDecals).toBeGreaterThan(2);
+    effects.setBloodLevel("off");
+    const before = effects.liveParticles;
+    effects.drip(head, 1.2, 1, false);
+    expect(effects.liveParticles).toBe(before);
+    effects.pool(0.1, 0.1, 1);
+    expect(effects.visibleDecals).toBe(0);
     effects.dispose();
   });
 });

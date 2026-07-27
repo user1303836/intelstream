@@ -2,7 +2,7 @@ import * as THREE from "three";
 
 export interface BuiltArena {
   readonly group: THREE.Group;
-  readonly update: (time: number, reducedMotion: boolean) => void;
+  readonly update: (time: number, dt: number, reducedMotion: boolean) => void;
   readonly dispose: () => void;
 }
 
@@ -171,7 +171,12 @@ export function buildArena(): BuiltArena {
 
   let flashTimer = 0;
   let flashOn = 0;
-  const update = (time: number, reducedMotion: boolean): void => {
+  const crowdMatrix = new THREE.Matrix4();
+  const crowdPosition = new THREE.Vector3();
+  const crowdQuaternion = new THREE.Quaternion();
+  const crowdScale = new THREE.Vector3();
+  const yAxis = new THREE.Vector3(0, 1, 0);
+  const update = (time: number, dt: number, reducedMotion: boolean): void => {
     if (!reducedMotion) {
       const subset = 90;
       const start = Math.floor((time * 30) % total);
@@ -180,27 +185,29 @@ export function buildArena(): BuiltArena {
         const base = bases[i]!;
         const sway = Math.sin(time * 1.6 + phases[i]!) * 0.05;
         const bounce = Math.abs(Math.sin(time * 2.3 + phases[i]! * 1.7)) * 0.05;
-        matrix.compose(
-          new THREE.Vector3(base.x, base.y + 0.45 * base.scale + bounce, base.z + sway * 0.4),
-          new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), base.yaw + sway),
-          new THREE.Vector3(base.scale, base.scale, base.scale),
+        crowdQuaternion.setFromAxisAngle(yAxis, base.yaw + sway);
+        crowdMatrix.compose(
+          crowdPosition.set(base.x, base.y + 0.45 * base.scale + bounce, base.z + sway * 0.4),
+          crowdQuaternion,
+          crowdScale.set(base.scale, base.scale, base.scale),
         );
-        bodies.setMatrixAt(i, matrix);
-        matrix.compose(
-          new THREE.Vector3(base.x, base.y + 0.95 * base.scale + bounce * 1.2, base.z + sway * 0.5),
-          new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), base.yaw + sway * 1.2),
-          new THREE.Vector3(base.scale, base.scale, base.scale),
+        bodies.setMatrixAt(i, crowdMatrix);
+        crowdQuaternion.setFromAxisAngle(yAxis, base.yaw + sway * 1.2);
+        crowdMatrix.compose(
+          crowdPosition.set(base.x, base.y + 0.95 * base.scale + bounce * 1.2, base.z + sway * 0.5),
+          crowdQuaternion,
+          crowdScale,
         );
-        heads.setMatrixAt(i, matrix);
+        heads.setMatrixAt(i, crowdMatrix);
       }
       bodies.instanceMatrix.needsUpdate = true;
       heads.instanceMatrix.needsUpdate = true;
-      flashTimer -= 1 / 60;
+      flashTimer -= dt;
       if (flashTimer <= 0) {
         flashOn = 0.09 + Math.random() * 0.08;
         flashTimer = 0.25 + Math.random() * 1.6;
       }
-      flashOn = Math.max(0, flashOn - 1 / 60);
+      flashOn = Math.max(0, flashOn - dt);
       flashMat.opacity = flashOn > 0 ? 0.85 : 0;
     }
   };

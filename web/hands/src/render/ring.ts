@@ -54,18 +54,6 @@ function ringCanvasTexture(): THREE.CanvasTexture {
   });
 }
 
-function apronTexture(): THREE.CanvasTexture {
-  return canvasTexture(512, (ctx, size) => {
-    ctx.fillStyle = "#101b33";
-    ctx.fillRect(0, 0, size, size);
-    ctx.fillStyle = "#f1cc72";
-    ctx.font = `800 ${Math.round(size * 0.09)}px Inter, system-ui, sans-serif`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    for (let i = 0; i < 4; i += 1) ctx.fillText("H A N D S", size * (0.125 + i * 0.25), size / 2);
-  });
-}
-
 export function buildRing(): BuiltRing {
   const geometries: THREE.BufferGeometry[] = [];
   const materials: THREE.Material[] = [];
@@ -85,8 +73,6 @@ export function buildRing(): BuiltRing {
   canvasMesh.receiveShadow = true;
   group.add(canvasMesh);
 
-  const apronMap = apronTexture();
-  textures.push(apronMap);
   const apronMat = new THREE.MeshStandardMaterial({ color: "#16233f", roughness: 0.85 });
   materials.push(apronMat);
   const apronGeo = new THREE.RingGeometry(RING_FIGHT_HALF * 0.98, RING_APRON_HALF, 4, 1);
