@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from ipaddress import ip_address, ip_network
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -30,6 +31,35 @@ class Settings(BaseSettings):
     )
     discord_owner_id: int = Field(
         gt=0, description="Discord user ID of the bot owner for DM notifications"
+    )
+    discord_client_secret: SecretStr | None = Field(
+        default=None,
+        description="Discord OAuth client secret used by the Hands Activity",
+    )
+    hands_enabled: bool = Field(
+        default=False,
+        description="Enable the Hands Discord Activity server and commands",
+    )
+    hands_host: str = Field(
+        default="127.0.0.1",
+        min_length=1,
+        max_length=253,
+        description="Host interface for the Hands Activity HTTP server",
+    )
+    hands_port: int = Field(
+        default=8080,
+        ge=1,
+        le=65535,
+        description="Port for the Hands Activity HTTP server",
+    )
+    hands_dev_mode: bool = Field(
+        default=False,
+        description="Allow local development origins for Hands",
+    )
+    hands_trusted_proxy_cidrs: str = Field(
+        default="",
+        max_length=2048,
+        description="Comma-separated proxy CIDRs trusted to append client IP headers for Hands",
     )
 
     llm_provider: Literal["anthropic", "openai", "gemini", "kimi"] = Field(
@@ -359,6 +389,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "discord_bot_token",
+        "discord_client_secret",
         "anthropic_api_key",
         "openai_api_key",
         "gemini_api_key",
@@ -378,6 +409,57 @@ class Settings(BaseSettings):
         if not normalized:
             raise ValueError("Credential values cannot be empty or whitespace-only")
         return normalized
+
+    @field_validator("hands_host")
+    @classmethod
+    def validate_hands_host(cls, value: str) -> str:
+        host = value.strip()
+        if not host or any(character.isspace() for character in host):
+            raise ValueError("HANDS_HOST must be a nonblank host without whitespace")
+        if "://" in host or "/" in host or "\\" in host or host.startswith("["):
+            raise ValueError("HANDS_HOST must be a bare host name or IP address, not a URL")
+        try:
+            ip_address(host)
+        except ValueError:
+            if ":" in host:
+                raise ValueError("HANDS_HOST must not include a port") from None
+            labels = host.rstrip(".").split(".")
+            if any(
+                not label
+                or len(label) > 63
+                or label.startswith("-")
+                or label.endswith("-")
+                or not all(character.isalnum() or character == "-" for character in label)
+                for label in labels
+            ):
+                raise ValueError("HANDS_HOST must be a valid host name or IP address") from None
+        return host
+
+    @field_validator("hands_trusted_proxy_cidrs")
+    @classmethod
+    def validate_hands_trusted_proxy_cidrs(cls, value: str) -> str:
+        if not value.strip():
+            return ""
+        parts = [part.strip() for part in value.split(",")]
+        if len(parts) > 16 or any(not part for part in parts):
+            raise ValueError("HANDS_TRUSTED_PROXY_CIDRS must contain at most 16 CIDRs")
+        try:
+            networks = [ip_network(part, strict=False) for part in parts]
+        except ValueError as exc:
+            raise ValueError("HANDS_TRUSTED_PROXY_CIDRS contains an invalid network") from exc
+        if any(network.prefixlen == 0 for network in networks):
+            raise ValueError("HANDS_TRUSTED_PROXY_CIDRS must not trust the entire internet")
+        return ",".join(str(network) for network in networks)
+
+    @property
+    def hands_trusted_proxies(self) -> tuple[str, ...]:
+        return tuple(filter(None, self.hands_trusted_proxy_cidrs.split(",")))
+
+    @model_validator(mode="after")
+    def validate_hands_configuration(self) -> Settings:
+        if self.hands_enabled and self.discord_client_secret is None:
+            raise ValueError("DISCORD_CLIENT_SECRET is required when HANDS_ENABLED=true")
+        return self
 
     @model_validator(mode="after")
     def validate_article_chunk_overlap(self) -> Settings:
@@ -416,6 +498,11 @@ class Settings(BaseSettings):
             "youtube_enabled": self.youtube_api_key is not None,
             "twitter_enabled": self.twitter_bearer_token is not None,
             "github_enabled": self.github_token is not None,
+            "hands_enabled": self.hands_enabled,
+            "hands_host": self.hands_host,
+            "hands_port": self.hands_port,
+            "hands_dev_mode": self.hands_dev_mode,
+            "hands_trusted_proxy_cidrs": self.hands_trusted_proxy_cidrs,
             "database_backend": make_url(self.database_url).get_backend_name(),
         }
 
@@ -425,6 +512,12 @@ class Settings(BaseSettings):
             f"discord_bot_token={self.discord_bot_token!r}, "
             f"discord_guild_id={self.discord_guild_id}, "
             f"discord_owner_id={self.discord_owner_id}, "
+            f"discord_client_secret={self.discord_client_secret!r}, "
+            f"hands_enabled={self.hands_enabled}, "
+            f"hands_host={self.hands_host!r}, "
+            f"hands_port={self.hands_port}, "
+            f"hands_dev_mode={self.hands_dev_mode}, "
+            f"hands_trusted_proxy_cidrs={self.hands_trusted_proxy_cidrs!r}, "
             f"llm_provider={self.llm_provider!r}, "
             f"anthropic_api_key={self.anthropic_api_key!r}, "
             f"openai_api_key={self.openai_api_key!r}, "

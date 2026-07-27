@@ -196,6 +196,62 @@ class SuckBoobsStats(Base):
         return f"<SuckBoobsStats(user_id={self.user_id!r}, used={self.times_used}, pinged={self.times_pinged})>"
 
 
+class HandsRating(Base):
+    __tablename__ = "hands_ratings"
+    __table_args__ = (
+        UniqueConstraint("guild_id", "user_id", name="uq_hands_rating_guild_user"),
+        Index("ix_hands_ratings_guild_rank", "guild_id", "rating", "bouts", "user_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    guild_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    rating: Mapped[int] = mapped_column(Integer, default=1000, server_default="1000")
+    bouts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    wins: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    losses: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    draws: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    knockouts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    knockdowns: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    current_streak: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    best_rating: Mapped[int] = mapped_column(Integer, default=1000, server_default="1000")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC)
+    )
+
+    def __repr__(self) -> str:
+        return f"<HandsRating(user_id={self.user_id!r}, rating={self.rating}, bouts={self.bouts})>"
+
+
+class HandsMatch(Base):
+    __tablename__ = "hands_matches"
+    __table_args__ = (
+        Index("ix_hands_matches_guild_created", "guild_id", "created_at"),
+        Index("ix_hands_matches_players", "player_one_id", "player_two_id"),
+    )
+
+    match_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    activity_instance_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    guild_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    player_one_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    player_two_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    winner_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    finish_method: Mapped[str] = mapped_column(String(32), nullable=False)
+    round_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    finish_tick: Mapped[int] = mapped_column(Integer, nullable=False)
+    player_one_rating_before: Mapped[int] = mapped_column(Integer, nullable=False)
+    player_one_rating_after: Mapped[int] = mapped_column(Integer, nullable=False)
+    player_two_rating_before: Mapped[int] = mapped_column(Integer, nullable=False)
+    player_two_rating_after: Mapped[int] = mapped_column(Integer, nullable=False)
+    result_json: Mapped[str] = mapped_column(Text, nullable=False)
+    scorecard_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
+
+    def __repr__(self) -> str:
+        return f"<HandsMatch(match_id={self.match_id!r}, finish={self.finish_method!r})>"
+
+
 class MessageChunkMeta(Base):
     __tablename__ = "message_chunk_meta"
 

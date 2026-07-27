@@ -1,0 +1,6 @@
+import { PunchGesture, radialDeadzone } from "./gesture";
+describe("right-stick punch gestures", () => {
+  it.each([[[1, 0.1], "hook"], [[1, 0.5], "jab"], [[0.5, 0.75], "straight"], [[0.2, 0.9], "uppercut"]] as const)("maps peak %j to %s once after center return", ([x, y], punchClass) => { const gesture = new PunchGesture(); expect(gesture.update(x, y, false, false)).toBeNull(); expect(gesture.update(x * 0.95, y * 0.95, false, false)).toBeNull(); expect(gesture.update(0, 0, false, false)).toMatchObject({ kind: "punch", hand: "right", class: punchClass }); expect(gesture.update(0, 0, false, false)).toBeNull(); });
+  it("latches hand/body/power at threshold despite peak jitter", () => { const gesture = new PunchGesture(); gesture.update(-0.8, 0.3, true, true); gesture.update(-0.2, 0.95, false, false); expect(gesture.update(0, 0, false, false)).toEqual({ kind: "punch", hand: "left", class: "uppercut", target: "body", power: "power" }); });
+  it("applies radial deadzone and rescales diagonals", () => { expect(radialDeadzone(0.1, 0.1)).toEqual({ x: 0, y: 0 }); const result = radialDeadzone(0.5, 0.5); expect(Math.hypot(result.x, result.y)).toBeCloseTo((Math.hypot(0.5, 0.5) - 0.18) / 0.82); });
+});

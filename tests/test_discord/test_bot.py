@@ -199,6 +199,7 @@ class TestIntelStreamBot:
 
         with (
             patch("intelstream.bot.get_database_directory", return_value=tmp_path / "db"),
+            patch("intelstream.discord.cogs.Hands", return_value="hands-cog"),
             patch("intelstream.discord.cogs.SourceManagement", return_value="source-cog"),
             patch("intelstream.discord.cogs.ConfigManagement", return_value="config-cog"),
             patch("intelstream.discord.cogs.ContentPosting", return_value="posting-cog"),
@@ -223,7 +224,9 @@ class TestIntelStreamBot:
             channel_id=str(mock_settings.discord_channel_id),
         )
         bot._setup_search.assert_awaited_once()
-        assert len(bot.add_cog.await_args_list) == 10
+        assert len(bot.add_cog.await_args_list) == 11
+        assert isinstance(bot.add_cog.await_args_list[0].args[0], CoreCommands)
+        assert bot.add_cog.await_args_list[1].args[0] == "hands-cog"
         assert (tmp_path / "db").exists()
         bot.tree.copy_global_to.assert_called_once()
         bot.tree.sync.assert_awaited_once()
@@ -247,6 +250,7 @@ class TestIntelStreamBot:
 
         with (
             patch("intelstream.bot.get_database_directory", return_value=None),
+            patch("intelstream.discord.cogs.Hands", return_value="hands-cog"),
             patch("intelstream.discord.cogs.SourceManagement", return_value="source-cog"),
             patch("intelstream.discord.cogs.ConfigManagement", return_value="config-cog"),
             patch("intelstream.discord.cogs.ContentPosting", return_value="posting-cog"),
@@ -284,6 +288,7 @@ class TestIntelStreamBot:
 
         with (
             patch("intelstream.bot.get_database_directory", return_value=None),
+            patch("intelstream.discord.cogs.Hands", return_value="hands-cog"),
             patch("intelstream.discord.cogs.SourceManagement", return_value="source-cog"),
             patch("intelstream.discord.cogs.ConfigManagement", return_value="config-cog"),
             patch("intelstream.discord.cogs.ContentPosting", return_value="posting-cog"),
@@ -508,6 +513,23 @@ class TestRestrictedCommandTreeInteractionCheck:
             ephemeral=True,
         )
 
+        await bot.repository.close()
+
+    @pytest.mark.parametrize("command_name", ["hands", "hands_scoreboard"])
+    async def test_hands_commands_bypass_legacy_channel_restriction(
+        self, mock_settings: Settings, command_name: str
+    ) -> None:
+        bot = await create_bot(mock_settings)
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.command = MagicMock()
+        interaction.command.name = command_name
+        interaction.channel_id = mock_settings.discord_channel_id + 1
+        interaction.response.send_message = AsyncMock()
+
+        allowed = await bot.tree.interaction_check(interaction)
+
+        assert allowed is True
+        interaction.response.send_message.assert_not_awaited()
         await bot.repository.close()
 
     async def test_allows_commands_in_allowed_channel(self, mock_settings: Settings) -> None:

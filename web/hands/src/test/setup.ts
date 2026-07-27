@@ -1,0 +1,15 @@
+import { vi } from "vitest";
+Object.defineProperty(window, "matchMedia", { configurable: true, value: vi.fn((query: string) => ({ matches: false, media: query, onchange: null, addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn() })) });
+Object.defineProperty(document, "hasFocus", { configurable: true, value: () => true });
+const stored = new Map<string, string>();
+const memoryStorage: Storage = { get length() { return stored.size; }, clear: () => stored.clear(), getItem: (key) => stored.get(key) ?? null, key: (index) => [...stored.keys()][index] ?? null, removeItem: (key) => { stored.delete(key); }, setItem: (key, value) => { stored.set(key, String(value)); } };
+Object.defineProperty(window, "localStorage", { configurable: true, writable: true, value: memoryStorage }); Object.defineProperty(globalThis, "localStorage", { configurable: true, writable: true, value: memoryStorage });
+Object.defineProperty(window, "devicePixelRatio", { configurable: true, value: 2 });
+const gradient = { addColorStop: vi.fn() };
+const context = new Proxy({ canvas: document.createElement("canvas"), measureText: (value: string) => ({ width: value.length * 7 }), createLinearGradient: () => gradient, createRadialGradient: () => gradient } as unknown as CanvasRenderingContext2D, { get(target, property) { const value = Reflect.get(target, property); if (value !== undefined) return value; const fn = vi.fn(); Reflect.set(target, property, fn); return fn; }, set(target, property, value) { Reflect.set(target, property, value); return true; } });
+Object.defineProperty(HTMLCanvasElement.prototype, "getContext", { configurable: true, value: () => context });
+Object.defineProperty(HTMLCanvasElement.prototype, "getBoundingClientRect", { configurable: true, value: () => ({ x: 0, y: 0, top: 0, left: 0, right: 800, bottom: 600, width: 800, height: 600, toJSON: () => ({}) }) });
+let rafId = 0; Object.defineProperty(window, "requestAnimationFrame", { configurable: true, writable: true, value: vi.fn(() => ++rafId) }); Object.defineProperty(window, "cancelAnimationFrame", { configurable: true, writable: true, value: vi.fn() });
+Object.defineProperty(globalThis, "requestAnimationFrame", { configurable: true, writable: true, value: window.requestAnimationFrame }); Object.defineProperty(globalThis, "cancelAnimationFrame", { configurable: true, writable: true, value: window.cancelAnimationFrame });
+Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [] });
+afterEach(() => { localStorage.clear(); vi.useRealTimers(); });

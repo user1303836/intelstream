@@ -1,7 +1,10 @@
+import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 
 import structlog
 from sqlalchemy import and_, delete, exists, func, insert, or_, select, text, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError, IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import (
@@ -25,6 +28,8 @@ from intelstream.database.models import (
     ExtractionCache,
     ForwardingRule,
     GitHubRepo,
+    HandsMatch,
+    HandsRating,
     IngestionProgress,
     MessageChunkMeta,
     PauseReason,
@@ -32,6 +37,8 @@ from intelstream.database.models import (
     SourceType,
     SuckBoobsStats,
 )
+from intelstream.hands.rating import DEFAULT_RATING, calculate_elo
+from intelstream.hands.types import FinishMethod, MatchResult
 
 logger = structlog.get_logger()
 
@@ -79,6 +86,7 @@ class Repository:
         self._session_factory: async_sessionmaker[AsyncSession] = async_sessionmaker(
             self._engine, class_=AsyncSession, expire_on_commit=False
         )
+        self._hands_write_lock = asyncio.Lock()
 
     async def initialize(self) -> None:
         logger.info("Initializing database")
@@ -841,6 +849,248 @@ class Repository:
                 await session.commit()
                 return True
             return False
+
+    async def get_or_create_hands_rating(self, guild_id: str, user_id: str) -> HandsRating:
+        async with self._hands_write_lock, self.session() as session:
+            await session.execute(
+                sqlite_insert(HandsRating)
+                .values(
+                    guild_id=guild_id,
+                    user_id=user_id,
+                    rating=DEFAULT_RATING,
+                    best_rating=DEFAULT_RATING,
+                )
+                .on_conflict_do_nothing(index_elements=["guild_id", "user_id"])
+            )
+            await session.commit()
+            result = await session.execute(
+                select(HandsRating)
+                .where(HandsRating.guild_id == guild_id)
+                .where(HandsRating.user_id == user_id)
+            )
+            return result.scalar_one()
+
+    async def get_hands_rating(self, guild_id: str, user_id: str) -> HandsRating | None:
+        async with self.session() as session:
+            result = await session.execute(
+                select(HandsRating)
+                .where(HandsRating.guild_id == guild_id)
+                .where(HandsRating.user_id == user_id)
+            )
+            return result.scalar_one_or_none()
+
+    async def get_hands_leaderboard(self, guild_id: str, limit: int = 10) -> list[HandsRating]:
+        if not 1 <= limit <= 100:
+            raise ValueError("limit must be between 1 and 100")
+        async with self.session() as session:
+            result = await session.execute(
+                select(HandsRating)
+                .where(HandsRating.guild_id == guild_id)
+                .order_by(
+                    HandsRating.rating.desc(),
+                    HandsRating.wins.desc(),
+                    HandsRating.bouts.desc(),
+                    HandsRating.user_id.asc(),
+                )
+                .limit(limit)
+            )
+            return list(result.scalars().all())
+
+    async def get_hands_rank(self, guild_id: str, user_id: str) -> int:
+        rating = await self.get_or_create_hands_rating(guild_id, user_id)
+        async with self.session() as session:
+            ahead = await session.scalar(
+                select(func.count())
+                .select_from(HandsRating)
+                .where(HandsRating.guild_id == guild_id)
+                .where(
+                    or_(
+                        HandsRating.rating > rating.rating,
+                        and_(
+                            HandsRating.rating == rating.rating,
+                            HandsRating.wins > rating.wins,
+                        ),
+                        and_(
+                            HandsRating.rating == rating.rating,
+                            HandsRating.wins == rating.wins,
+                            HandsRating.bouts > rating.bouts,
+                        ),
+                        and_(
+                            HandsRating.rating == rating.rating,
+                            HandsRating.wins == rating.wins,
+                            HandsRating.bouts == rating.bouts,
+                            HandsRating.user_id < rating.user_id,
+                        ),
+                    )
+                )
+            )
+            return int(ahead or 0) + 1
+
+    async def get_hands_match(self, match_id: str) -> HandsMatch | None:
+        async with self.session() as session:
+            result = await session.execute(
+                select(HandsMatch).where(HandsMatch.match_id == match_id)
+            )
+            return result.scalar_one_or_none()
+
+    async def record_hands_match(self, match_result: MatchResult) -> HandsMatch:
+        self._validate_hands_result(match_result)
+        async with self._hands_write_lock:
+            return await self._record_hands_match_locked(match_result)
+
+    async def _record_hands_match_locked(self, match_result: MatchResult) -> HandsMatch:
+        try:
+            async with self.session() as session, session.begin():
+                existing_result = await session.execute(
+                    select(HandsMatch).where(HandsMatch.match_id == match_result.match_id)
+                )
+                existing = existing_result.scalar_one_or_none()
+                if existing is not None:
+                    return existing
+
+                for user_id in (match_result.player_one_id, match_result.player_two_id):
+                    await session.execute(
+                        sqlite_insert(HandsRating)
+                        .values(
+                            guild_id=match_result.guild_id,
+                            user_id=user_id,
+                            rating=DEFAULT_RATING,
+                            best_rating=DEFAULT_RATING,
+                        )
+                        .on_conflict_do_nothing(index_elements=["guild_id", "user_id"])
+                    )
+
+                ratings_result = await session.execute(
+                    select(HandsRating).where(
+                        HandsRating.guild_id == match_result.guild_id,
+                        HandsRating.user_id.in_(
+                            (match_result.player_one_id, match_result.player_two_id)
+                        ),
+                    )
+                )
+                ratings = {rating.user_id: rating for rating in ratings_result.scalars().all()}
+                one = ratings[match_result.player_one_id]
+                two = ratings[match_result.player_two_id]
+                one_score = (
+                    0.5
+                    if match_result.winner_id is None
+                    else (1.0 if match_result.winner_id == one.user_id else 0.0)
+                )
+                elo = calculate_elo(one.rating, two.rating, one_score)
+                scorecard_json = json.dumps(
+                    [
+                        {
+                            "judge": card.judge,
+                            "player_one": list(card.player_one),
+                            "player_two": list(card.player_two),
+                        }
+                        for card in match_result.scorecards
+                    ],
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+                result_json = json.dumps(
+                    {
+                        "player_one_damage": match_result.player_one_damage,
+                        "player_one_knockdowns": match_result.player_one_knockdowns,
+                        "player_two_damage": match_result.player_two_damage,
+                        "player_two_knockdowns": match_result.player_two_knockdowns,
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+                match = HandsMatch(
+                    match_id=match_result.match_id,
+                    activity_instance_id=match_result.activity_instance_id,
+                    guild_id=match_result.guild_id,
+                    player_one_id=one.user_id,
+                    player_two_id=two.user_id,
+                    winner_id=match_result.winner_id,
+                    finish_method=match_result.finish_method.value,
+                    round_number=match_result.round_number,
+                    finish_tick=match_result.tick,
+                    player_one_rating_before=elo.player_one_before,
+                    player_one_rating_after=elo.player_one_after,
+                    player_two_rating_before=elo.player_two_before,
+                    player_two_rating_after=elo.player_two_after,
+                    result_json=result_json,
+                    scorecard_json=scorecard_json,
+                )
+                session.add(match)
+                await session.flush()
+
+                one.rating = elo.player_one_after
+                two.rating = elo.player_two_after
+                one.best_rating = max(one.best_rating, one.rating)
+                two.best_rating = max(two.best_rating, two.rating)
+                one.bouts += 1
+                two.bouts += 1
+                one.knockdowns += match_result.player_two_knockdowns
+                two.knockdowns += match_result.player_one_knockdowns
+                self._apply_hands_outcome(one, two, match_result)
+                return match
+        except IntegrityError:
+            existing = await self.get_hands_match(match_result.match_id)
+            if existing is not None:
+                return existing
+            raise
+
+    @staticmethod
+    def _validate_hands_result(match_result: MatchResult) -> None:
+        bounded_identifiers = (
+            ("match_id", match_result.match_id, 64),
+            ("activity_instance_id", match_result.activity_instance_id, 255),
+            ("guild_id", match_result.guild_id, 36),
+            ("player_one_id", match_result.player_one_id, 36),
+            ("player_two_id", match_result.player_two_id, 36),
+        )
+        for name, value, maximum in bounded_identifiers:
+            if not value or len(value) > maximum:
+                raise ValueError(f"{name} must contain between 1 and {maximum} characters")
+        if match_result.player_one_id == match_result.player_two_id:
+            raise ValueError("a Hands match requires two distinct players")
+        if match_result.winner_id not in (
+            None,
+            match_result.player_one_id,
+            match_result.player_two_id,
+        ):
+            raise ValueError("winner must be one of the match players")
+        if match_result.finish_method is FinishMethod.DRAW and match_result.winner_id is not None:
+            raise ValueError("a draw cannot have a winner")
+        if match_result.finish_method is not FinishMethod.DRAW and match_result.winner_id is None:
+            raise ValueError("only a draw may omit the winner")
+        if match_result.round_number < 1 or match_result.tick < 0:
+            raise ValueError("round and tick values are invalid")
+        if (
+            min(
+                match_result.player_one_knockdowns,
+                match_result.player_two_knockdowns,
+                match_result.player_one_damage,
+                match_result.player_two_damage,
+            )
+            < 0
+        ):
+            raise ValueError("damage and knockdown totals cannot be negative")
+
+    @staticmethod
+    def _apply_hands_outcome(one: HandsRating, two: HandsRating, match_result: MatchResult) -> None:
+        if match_result.winner_id is None:
+            one.draws += 1
+            two.draws += 1
+            one.current_streak = 0
+            two.current_streak = 0
+            return
+        winner, loser = (one, two) if match_result.winner_id == one.user_id else (two, one)
+        winner.wins += 1
+        winner.current_streak += 1
+        loser.losses += 1
+        loser.current_streak = 0
+        if match_result.finish_method in (
+            FinishMethod.KO,
+            FinishMethod.FLASH_KO,
+            FinishMethod.TKO,
+        ):
+            winner.knockouts += 1
 
     async def record_suck_boobs_usage(
         self, guild_id: str, user_id: str, pinged_user_id: str

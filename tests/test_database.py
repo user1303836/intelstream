@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from intelstream.database.exceptions import (
     DatabaseConnectionError,
@@ -19,6 +19,8 @@ from intelstream.database.models import (
     ExtractionCache,
     ForwardingRule,
     GitHubRepo,
+    HandsMatch,
+    HandsRating,
     IngestionProgress,
     MessageChunkMeta,
     PauseReason,
@@ -27,6 +29,7 @@ from intelstream.database.models import (
     SuckBoobsStats,
 )
 from intelstream.database.repository import Repository
+from intelstream.hands.types import FinishMethod, JudgeCard, MatchResult
 
 
 @pytest.fixture
@@ -2209,3 +2212,186 @@ class TestSuckBoobsStats:
             ("user-2", 2),
             ("user-1", 1),
         ]
+
+
+class TestHandsRatings:
+    @staticmethod
+    def result(
+        match_id: str,
+        *,
+        guild_id: str = "guild-a",
+        winner_id: str | None = "user-1",
+        finish_method: FinishMethod = FinishMethod.KO,
+    ) -> MatchResult:
+        return MatchResult(
+            match_id=match_id,
+            activity_instance_id="instance-1",
+            guild_id=guild_id,
+            player_one_id="user-1",
+            player_two_id="user-2",
+            winner_id=winner_id,
+            finish_method=finish_method,
+            round_number=2,
+            tick=1234,
+            scorecards=(JudgeCard("Impact", (10,), (9,)),),
+            player_one_knockdowns=0,
+            player_two_knockdowns=2,
+            player_one_damage=250,
+            player_two_damage=100,
+        )
+
+    async def test_materializes_default_rating_and_rank(self, repository: Repository) -> None:
+        rating = await repository.get_or_create_hands_rating("guild-a", "user-1")
+        same = await repository.get_or_create_hands_rating("guild-a", "user-1")
+
+        assert rating.rating == 1000
+        assert rating.best_rating == 1000
+        assert rating.bouts == 0
+        assert same.id == rating.id
+        assert await repository.get_hands_rank("guild-a", "user-1") == 1
+        assert repr(rating) == "<HandsRating(user_id='user-1', rating=1000, bouts=0)>"
+
+    async def test_records_win_loss_ko_streak_best_and_zero_sum(
+        self, repository: Repository
+    ) -> None:
+        match = await repository.record_hands_match(self.result("match-1"))
+        one = await repository.get_hands_rating("guild-a", "user-1")
+        two = await repository.get_hands_rating("guild-a", "user-2")
+
+        assert one is not None and two is not None
+        assert (one.rating, two.rating) == (1016, 984)
+        assert one.rating + two.rating == 2000
+        assert (one.bouts, one.wins, one.losses, one.knockouts) == (1, 1, 0, 1)
+        assert (two.bouts, two.wins, two.losses, two.knockouts) == (1, 0, 1, 0)
+        assert one.current_streak == 1
+        assert two.current_streak == 0
+        assert one.best_rating == 1016
+        assert one.knockdowns == 2
+        assert match.player_one_rating_before == 1000
+        assert match.player_two_rating_after == 984
+        assert repr(match) == "<HandsMatch(match_id='match-1', finish='ko')>"
+
+    async def test_draws_reset_streak_and_duplicate_match_is_idempotent(
+        self, repository: Repository
+    ) -> None:
+        first = await repository.record_hands_match(self.result("match-1"))
+        duplicate = await repository.record_hands_match(self.result("match-1"))
+        draw = self.result("match-2", winner_id=None, finish_method=FinishMethod.DRAW)
+        await repository.record_hands_match(draw)
+        one = await repository.get_hands_rating("guild-a", "user-1")
+        two = await repository.get_hands_rating("guild-a", "user-2")
+
+        assert duplicate.match_id == first.match_id
+        assert one is not None and two is not None
+        assert one.bouts == two.bouts == 2
+        assert one.draws == two.draws == 1
+        assert one.current_streak == two.current_streak == 0
+        assert one.rating + two.rating == 2000
+
+    async def test_guild_isolation_and_deterministic_tie_ordering(
+        self, repository: Repository
+    ) -> None:
+        for user_id in ("user-3", "user-1", "user-2"):
+            await repository.get_or_create_hands_rating("guild-a", user_id)
+        await repository.get_or_create_hands_rating("guild-b", "user-0")
+
+        board = await repository.get_hands_leaderboard("guild-a")
+
+        assert [rating.user_id for rating in board] == ["user-1", "user-2", "user-3"]
+        assert await repository.get_hands_rank("guild-a", "user-3") == 3
+        assert [rating.user_id for rating in await repository.get_hands_leaderboard("guild-b")] == [
+            "user-0"
+        ]
+
+    async def test_underdog_win_receives_larger_change(self, repository: Repository) -> None:
+        one = await repository.get_or_create_hands_rating("guild-a", "user-1")
+        two = await repository.get_or_create_hands_rating("guild-a", "user-2")
+        async with repository.session() as session:
+            stored_one = await session.get(HandsRating, one.id)
+            stored_two = await session.get(HandsRating, two.id)
+            assert stored_one is not None and stored_two is not None
+            stored_one.rating = 800
+            stored_two.rating = 1200
+            await session.commit()
+
+        match = await repository.record_hands_match(self.result("upset"))
+
+        assert match.player_one_rating_after - match.player_one_rating_before > 16
+        assert match.player_one_rating_after - match.player_one_rating_before == -(
+            match.player_two_rating_after - match.player_two_rating_before
+        )
+
+    async def test_transaction_rolls_back_match_and_both_ratings_on_flush_failure(
+        self, repository: Repository, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        original_flush = AsyncSession.flush
+        calls = 0
+
+        async def fail_match_flush(session: AsyncSession, objects: object | None = None) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise OperationalError("flush", {}, Exception("forced rollback"))
+            await original_flush(session, objects)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(AsyncSession, "flush", fail_match_flush)
+
+        with pytest.raises(OperationalError, match="forced rollback"):
+            await repository.record_hands_match(self.result("rollback"))
+
+        assert await repository.get_hands_match("rollback") is None
+        assert await repository.get_hands_rating("guild-a", "user-1") is None
+        assert await repository.get_hands_rating("guild-a", "user-2") is None
+
+    async def test_rejects_invalid_results_without_writes(self, repository: Repository) -> None:
+        invalid = self.result("invalid", winner_id=None, finish_method=FinishMethod.KO)
+        with pytest.raises(ValueError, match="only a draw"):
+            await repository.record_hands_match(invalid)
+        assert await repository.get_hands_match("invalid") is None
+
+    async def test_new_tables_are_created(self, repository: Repository) -> None:
+        async with repository.session() as session:
+            tables = {
+                row[0]
+                for row in (
+                    await session.execute(
+                        text(
+                            "SELECT name FROM sqlite_master WHERE type='table' "
+                            "AND name LIKE 'hands_%'"
+                        )
+                    )
+                ).all()
+            }
+        assert tables == {HandsMatch.__tablename__, HandsRating.__tablename__}
+
+    async def test_concurrent_duplicate_match_is_exactly_once(self, repository: Repository) -> None:
+        result = self.result("concurrent-duplicate")
+
+        first, second = await asyncio.gather(
+            repository.record_hands_match(result),
+            repository.record_hands_match(result),
+        )
+        one = await repository.get_hands_rating("guild-a", "user-1")
+        two = await repository.get_hands_rating("guild-a", "user-2")
+
+        assert first.match_id == second.match_id == "concurrent-duplicate"
+        assert one is not None and two is not None
+        assert one.bouts == two.bouts == 1
+        assert one.rating + two.rating == 2000
+
+    async def test_concurrent_distinct_matches_preserve_both_updates(
+        self, repository: Repository
+    ) -> None:
+        await asyncio.gather(
+            repository.record_hands_match(self.result("concurrent-one")),
+            repository.record_hands_match(self.result("concurrent-two")),
+        )
+        one = await repository.get_hands_rating("guild-a", "user-1")
+        two = await repository.get_hands_rating("guild-a", "user-2")
+
+        assert one is not None and two is not None
+        assert one.bouts == two.bouts == 2
+        assert one.wins == 2 and two.losses == 2
+        assert one.rating + two.rating == 2000
+        assert await repository.get_hands_match("concurrent-one") is not None
+        assert await repository.get_hands_match("concurrent-two") is not None

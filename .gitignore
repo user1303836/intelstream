@@ -1,4 +1,5 @@
 # Project-specific
+.pi-subagents/
 claude.md
 CLAUDE.md
 claude_notes.md
@@ -66,8 +67,14 @@ Thumbs.db
 .entire/*
 bun.lock
 claude_*.md
-node_modules/*
+node_modules/
+**/node_modules/
+web/hands/.vite/
+web/hands/coverage/
+web/hands/*.tsbuildinfo
 package.json
+!web/hands/package.json
+!web/hands/package-lock.json
 smithers*
 tree*.md
 workflow.tsx

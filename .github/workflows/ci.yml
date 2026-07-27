@@ -103,3 +103,92 @@ jobs:
 
       - name: Run bandit security linter
         run: uv run bandit -r src/ -c pyproject.toml
+
+  hands-frontend:
+    name: Hands Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web/hands
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/hands/package-lock.json
+
+      - name: Install locked frontend dependencies
+        run: npm ci
+
+      - name: Run strict TypeScript check
+        run: npm run typecheck
+
+      - name: Run Vitest
+        run: npm run test:run
+
+      - name: Audit production dependencies
+        run: npm audit --audit-level=high
+
+      - name: Build production Activity
+        run: npm run build
+
+      - name: Verify committed generated bundle
+        working-directory: .
+        run: |
+          git diff --exit-code -- src/intelstream/hands/static
+          test -z "$(git status --porcelain --untracked-files=all -- src/intelstream/hands/static)"
+
+      - name: Scan generated Activity
+        run: npm run scan:build
+
+  hands-packaging:
+    name: Hands Packaging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install development dependencies
+        run: uv sync --extra dev
+
+      - name: Build wheel and source distribution
+        run: uv build
+
+      - name: Inspect wheel bundle
+        run: scripts/check_hands_wheel.py dist/*.whl
+
+      - name: Test static package and wheel checker
+        run: uv run pytest tests/test_hands/test_static_bundle.py tests/test_hands/test_wheel_checker.py
+
+      - name: Install wheel and smoke package resources
+        run: |
+          uv venv "${RUNNER_TEMP}/hands-wheel-venv" --python "${PYTHON_VERSION}"
+          uv pip install --python "${RUNNER_TEMP}/hands-wheel-venv/bin/python" --no-deps dist/*.whl
+          "${RUNNER_TEMP}/hands-wheel-venv/bin/python" - <<'PY'
+          from importlib import resources
+
+          root = resources.files("intelstream.hands").joinpath("static")
+          found = set()
+          pending = [(root, "")]
+          while pending:
+              directory, prefix = pending.pop()
+              for child in directory.iterdir():
+                  name = f"{prefix}{child.name}"
+                  if child.is_dir():
+                      pending.append((child, f"{name}/"))
+                  elif child.is_file():
+                      found.add(name)
+                      assert child.read_bytes(), name
+          assert found == {"index.html", "assets/hands.js", "assets/hands.css"}, found
+          print("Installed wheel exposes exactly three nonempty Hands resources")
+          PY
