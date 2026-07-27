@@ -12,6 +12,17 @@ import { fighter, publicPlayers, snapshot } from "../test/fixtures";
 
 const mapping = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 330 });
 
+describe("world mapping", () => {
+  it("maps sim up (W/stick-up) away from the broadcast camera and sim right to screen right", () => {
+    const map = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 330 });
+    expect(map.z(330)).toBeLessThan(0);
+    expect(map.z(-330)).toBeGreaterThan(0);
+    expect(map.x(500)).toBeGreaterThan(0);
+    expect(map.x(-500)).toBeLessThan(0);
+    expect(Math.abs(map.x(500))).toBeCloseTo(Math.abs(map.z(330)), 5);
+  });
+});
+
 describe("scene construction", () => {
   it("builds a ring with four posts, twelve ropes and a branded canvas", () => {
     const ring = buildRing();
