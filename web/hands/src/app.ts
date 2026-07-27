@@ -1,5 +1,5 @@
 import { AudioFeedback } from "./audio";
-import { safeError } from "./api";
+import { ClientError, safeError } from "./api";
 import { authorizeDiscord, type DiscordSession } from "./discord";
 import { HapticFeedback } from "./haptics";
 import { CONTROL_HELP } from "./input/bindings";
@@ -24,6 +24,7 @@ export class HandsApp {
   private abort = new AbortController();
   private destroyed = false;
   private generation = 0;
+  private reloadOnRetry = false;
 
   private readonly canvas: HTMLCanvasElement;
   private readonly status: HTMLElement;
@@ -33,7 +34,10 @@ export class HandsApp {
   private readonly liveFightStatus: HTMLElement;
   private readonly finalSummary: HTMLElement;
 
-  constructor(private readonly root: HTMLElement) {
+  constructor(
+    private readonly root: HTMLElement,
+    private readonly reloadPage: () => void = () => window.location.reload(),
+  ) {
     root.innerHTML = `<section class="activity" aria-label="Hands boxing activity"><canvas class="fight" aria-label="Authoritative two-player boxing match"></canvas><header class="topbar"><strong>HANDS</strong><span>authoritative two-player boxing</span><button type="button" data-controls aria-expanded="false">Controls</button><button type="button" data-settings aria-expanded="false">Settings</button></header><section class="overlay" data-overlay><p class="status" data-status></p><button type="button" class="primary" data-invite hidden>Invite one opponent</button><button type="button" class="primary" data-retry hidden>Retry securely</button></section><aside class="panel" data-controls-panel hidden aria-label="Controls"><h2>Controls</h2><ul>${CONTROL_HELP.map((item) => `<li>${item}</li>`).join("")}</ul></aside><aside class="panel settings" data-settings-panel hidden aria-label="Accessibility and feedback settings"><h2>Settings</h2><label>Volume <input data-volume type="range" min="0" max="1" step="0.05"></label><label><input data-haptics type="checkbox"> Haptics</label><label><input data-motion type="checkbox"> Reduced motion</label><label>Blood <select data-blood><option value="full">Full</option><option value="reduced">Reduced</option><option value="off">Off</option></select></label></aside><section class="sr-summary" data-fight-summary aria-label="Fight summary"></section><p class="sr-summary" data-fight-status role="status" aria-live="polite" aria-atomic="true"></p><section class="sr-summary" data-final aria-live="polite" aria-label="Final result"></section></section>`;
     this.canvas = root.querySelector<HTMLCanvasElement>("canvas")!;
     this.status = root.querySelector<HTMLElement>("[data-status]")!;
@@ -53,6 +57,7 @@ export class HandsApp {
   }
 
   private resetForAuthorization(): void {
+    this.reloadOnRetry = false;
     this.network?.dispose();
     this.network = null;
     this.session?.destroy();
@@ -105,7 +110,10 @@ export class HandsApp {
       network.start();
       this.setText(this.status, "Connecting to the ring…");
     } catch (error) {
-      if (!this.abort.signal.aborted && generation === this.generation) this.fail(safeError(error));
+      if (!this.abort.signal.aborted && generation === this.generation) {
+        this.reloadOnRetry = error instanceof ClientError && error.reloadRequired;
+        this.fail(safeError(error));
+      }
     }
   }
 
@@ -213,6 +221,10 @@ export class HandsApp {
   };
 
   private readonly onRetry = (): void => {
+    if (this.reloadOnRetry) {
+      this.reloadPage();
+      return;
+    }
     void this.authorize();
   };
 

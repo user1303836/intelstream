@@ -574,10 +574,12 @@ class HandsServer:
         try:
             state, _activity = await self.auth.begin(payload["instance_id"])
         except HandsAuthError as exc:
+            logger.warning("Hands OAuth bootstrap rejected", code=exc.code)
             status = 503 if exc.code == "service_busy" else 401
             return _json_response({"error": exc.code}, status=status)
         finally:
             await self._release_scoped(self._upstream_slots, self._upstream_caller_slots, caller)
+        logger.info("Hands OAuth bootstrap completed")
         return _json_response(
             {
                 "client_id": self.application_id,
@@ -599,6 +601,7 @@ class HandsServer:
         if request.content_type != "application/json":
             raise web.HTTPUnsupportedMediaType(text="application/json required")
         payload = _strict_object(await request.read(), fields={"code", "state"})
+        logger.info("Hands OAuth token request received")
         if not await self._try_acquire_scoped(
             self._upstream_slots, self._upstream_caller_slots, caller
         ):
@@ -609,10 +612,16 @@ class HandsServer:
                 exchange.player.guild_id, exchange.player.user_id
             )
         except HandsAuthError as exc:
+            logger.warning("Hands OAuth exchange rejected", code=exc.code)
             status = 503 if exc.code == "service_busy" else 401
             return _json_response({"error": exc.code}, status=status)
         finally:
             await self._release_scoped(self._upstream_slots, self._upstream_caller_slots, caller)
+        logger.info(
+            "Hands OAuth exchange completed",
+            guild_id=exchange.player.guild_id,
+            user_id=exchange.player.user_id,
+        )
         return _json_response(
             {
                 "access_token": exchange.access_token,

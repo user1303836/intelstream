@@ -5,7 +5,7 @@ import json
 import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import httpx
@@ -13,6 +13,7 @@ import pytest
 from yarl import URL
 
 from intelstream.database.repository import Repository
+from intelstream.hands import server as server_module
 from intelstream.hands.auth import AuthenticatedPlayer, AuthExchange, HandsAuth, HandsAuthError
 from intelstream.hands.engine import EngineConfig
 from intelstream.hands.rooms import HandsRoomManager, RoomConfig, RoomError
@@ -186,7 +187,11 @@ async def test_health_static_security_and_safe_resolution(
     assert auth.closed
 
 
-async def test_bootstrap_token_origin_schema_media_and_no_store(repository: Repository) -> None:
+async def test_bootstrap_token_origin_schema_media_and_no_store(
+    repository: Repository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    safe_logger = MagicMock()
+    monkeypatch.setattr(server_module, "logger", safe_logger)
     server, auth, base = await start_server(repository)
     headers = {"Origin": ORIGIN}
     async with aiohttp.ClientSession() as client:
@@ -263,6 +268,14 @@ async def test_bootstrap_token_origin_schema_media_and_no_store(repository: Repo
         )
         assert invalid.status == 401
         assert await invalid.json() == {"error": "authentication_failed"}
+    safe_logger.info.assert_any_call("Hands OAuth bootstrap completed")
+    safe_logger.info.assert_any_call("Hands OAuth token request received")
+    safe_logger.info.assert_any_call(
+        "Hands OAuth exchange completed", guild_id=GUILD, user_id="one"
+    )
+    safe_logger.warning.assert_any_call(
+        "Hands OAuth exchange rejected", code="authentication_failed"
+    )
     await server.close()
 
 

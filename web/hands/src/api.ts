@@ -3,7 +3,7 @@ import type { BootstrapResponse, TokenResponse } from "./types";
 
 export class ClientError extends Error {
   override name = "ClientError";
-  constructor(readonly code: string) { super(code); }
+  constructor(readonly code: string, readonly reloadRequired = false) { super(code); }
 }
 async function jsonResponse(response: Response, fallback: string): Promise<unknown> {
   if (!response.ok) throw new ClientError(response.status === 429 ? "rate_limited" : fallback);
