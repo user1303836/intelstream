@@ -12,10 +12,12 @@
     "scan:build": "node scripts/scan-build.mjs"
   },
   "dependencies": {
-    "@discord/embedded-app-sdk": "2.5.0"
+    "@discord/embedded-app-sdk": "2.5.0",
+    "three": "^0.185.1"
   },
   "devDependencies": {
     "@types/node": "26.1.1",
+    "@types/three": "^0.185.1",
     "jsdom": "29.1.1",
     "typescript": "7.0.2",
     "vite": "8.1.5",

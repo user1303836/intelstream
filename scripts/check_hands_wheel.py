@@ -37,6 +37,10 @@ REVIEWED_SDK_URL_LITERALS = {
     "https://staging.discord.co",
     "http://localhost:3333",
     "https://pax.discord.com",
+    # Pinned three.js: W3C XHTML namespace identifier (never fetched) and a
+    # JCGT paper citation inside a shader source comment.
+    "http://www.w3.org/1999/xhtml",
+    "https://jcgt.org/published/0007/04/01/",
 }
 STRING_LITERAL = re.compile(
     r"""(?P<quote>["'`])(?P<value>(?:\\.|(?!(?P=quote)).)*)(?P=quote)""",

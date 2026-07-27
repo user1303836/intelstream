@@ -15,6 +15,10 @@ const reviewedSdkUrls = new Set([
   "https://staging.discord.co",
   "http://localhost:3333",
   "https://pax.discord.com",
+  // Pinned three.js: W3C XHTML namespace identifier (never fetched) and a
+  // JCGT paper citation inside a shader source comment.
+  "http://www.w3.org/1999/xhtml",
+  "https://jcgt.org/published/0007/04/01/",
 ]);
 
 const files = [];
