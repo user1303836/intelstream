@@ -12,7 +12,7 @@ from intelstream.hands.auth import AuthenticatedPlayer
 from intelstream.hands.engine import EngineConfig
 from intelstream.hands.protocol import encode_client_input
 from intelstream.hands.rooms import HandsRoomManager, RoomConfig, RoomError
-from intelstream.hands.types import InputCommand
+from intelstream.hands.types import ActionKind, InputCommand, MovementAction
 
 
 @dataclass
@@ -125,6 +125,45 @@ async def test_first_waits_second_starts_and_natural_result_persists_once(
     assert rating_one is not None and rating_two is not None
     assert rating_one.bouts == rating_two.bouts == 1
     assert manager.room_count == 0
+    await manager.close()
+
+
+async def test_repeated_action_spam_is_bounded_without_dropping_connection(
+    repository: Repository,
+) -> None:
+    sleep_release = asyncio.Event()
+
+    async def controlled_sleep(_delay: float) -> None:
+        await sleep_release.wait()
+
+    manager = HandsRoomManager(
+        repository,
+        config=room_config(round_ticks=1000),
+        sleep=controlled_sleep,
+        match_id_factory=lambda: "match-key-spam",
+    )
+    first = await manager.join(player("one"), FakeSocket())
+    await manager.join(player("two"), FakeSocket())
+    engine = first.room.engine
+    assert engine is not None
+    repeated = tuple(MovementAction(ActionKind.SWITCH_STANCE) for _ in range(4))
+
+    for sequence in range(3):
+        await first.room.submit_frame(
+            "one",
+            first.connection,
+            encode_client_input(
+                InputCommand(
+                    sequence=sequence,
+                    client_tick=engine.tick,
+                    actions=repeated,
+                )
+            ),
+        )
+
+    assert first.connection.socket.closed is False
+    assert engine.fighter("one").last_sequence == 2
+    assert len(engine.fighter("one").pending_actions) <= 8
     await manager.close()
 
 

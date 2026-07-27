@@ -28,7 +28,6 @@ export class HandsApp {
 
   private readonly canvas: HTMLCanvasElement;
   private readonly status: HTMLElement;
-  private readonly invite: HTMLButtonElement;
   private readonly retry: HTMLButtonElement;
   private readonly fightSummary: HTMLElement;
   private readonly liveFightStatus: HTMLElement;
@@ -38,15 +37,13 @@ export class HandsApp {
     private readonly root: HTMLElement,
     private readonly reloadPage: () => void = () => window.location.reload(),
   ) {
-    root.innerHTML = `<section class="activity" aria-label="Hands boxing activity"><canvas class="fight" aria-label="Authoritative two-player boxing match"></canvas><header class="topbar"><strong>HANDS</strong><span>authoritative two-player boxing</span><button type="button" data-controls aria-expanded="false">Controls</button><button type="button" data-settings aria-expanded="false">Settings</button></header><section class="overlay" data-overlay><p class="status" data-status></p><button type="button" class="primary" data-invite hidden>Invite one opponent</button><button type="button" class="primary" data-retry hidden>Retry securely</button></section><aside class="panel" data-controls-panel hidden aria-label="Controls"><h2>Controls</h2><ul>${CONTROL_HELP.map((item) => `<li>${item}</li>`).join("")}</ul></aside><aside class="panel settings" data-settings-panel hidden aria-label="Accessibility and feedback settings"><h2>Settings</h2><label>Volume <input data-volume type="range" min="0" max="1" step="0.05"></label><label><input data-haptics type="checkbox"> Haptics</label><label><input data-motion type="checkbox"> Reduced motion</label><label>Blood <select data-blood><option value="full">Full</option><option value="reduced">Reduced</option><option value="off">Off</option></select></label></aside><section class="sr-summary" data-fight-summary aria-label="Fight summary"></section><p class="sr-summary" data-fight-status role="status" aria-live="polite" aria-atomic="true"></p><section class="sr-summary" data-final aria-live="polite" aria-label="Final result"></section></section>`;
+    root.innerHTML = `<section class="activity" aria-label="Hands boxing activity"><canvas class="fight" aria-label="Authoritative two-player boxing match"></canvas><header class="topbar"><strong>HANDS</strong><span>authoritative two-player boxing</span><button type="button" data-controls aria-expanded="false">Controls</button><button type="button" data-settings aria-expanded="false">Settings</button></header><section class="overlay" data-overlay><p class="status" data-status></p><button type="button" class="primary" data-retry hidden>Retry securely</button></section><aside class="panel" data-controls-panel hidden aria-label="Controls"><h2>Controls</h2><ul>${CONTROL_HELP.map((item) => `<li>${item}</li>`).join("")}</ul></aside><aside class="panel settings" data-settings-panel hidden aria-label="Accessibility and feedback settings"><h2>Settings</h2><label>Volume <input data-volume type="range" min="0" max="1" step="0.05"></label><label><input data-haptics type="checkbox"> Haptics</label><label><input data-motion type="checkbox"> Reduced motion</label><label>Blood <select data-blood><option value="full">Full</option><option value="reduced">Reduced</option><option value="off">Off</option></select></label></aside><section class="sr-summary" data-fight-summary aria-label="Fight summary"></section><p class="sr-summary" data-fight-status role="status" aria-live="polite" aria-atomic="true"></p><section class="sr-summary" data-final aria-live="polite" aria-label="Final result"></section></section>`;
     this.canvas = root.querySelector<HTMLCanvasElement>("canvas")!;
     this.status = root.querySelector<HTMLElement>("[data-status]")!;
-    this.invite = root.querySelector<HTMLButtonElement>("[data-invite]")!;
     this.retry = root.querySelector<HTMLButtonElement>("[data-retry]")!;
     this.fightSummary = root.querySelector<HTMLElement>("[data-fight-summary]")!;
     this.liveFightStatus = root.querySelector<HTMLElement>("[data-fight-status]")!;
     this.finalSummary = root.querySelector<HTMLElement>("[data-final]")!;
-    this.invite.addEventListener("click", this.onInvite);
     this.retry.addEventListener("click", this.onRetry);
     this.bindPanels();
     this.syncSettings();
@@ -81,7 +78,6 @@ export class HandsApp {
     this.dispatch({ type: "connecting" });
     this.setText(this.status, "Securing Discord Activity session…");
     this.retry.hidden = true;
-    this.invite.hidden = true;
     try {
       const session = await authorizeDiscord(this.abort.signal);
       if (this.destroyed || generation !== this.generation) {
@@ -159,7 +155,7 @@ export class HandsApp {
       bootstrapping: "Loading…",
       authorizing: "Authorizing with Discord…",
       connecting: "Connecting securely…",
-      waiting: "Waiting for exactly one opponent.",
+      waiting: "Waiting for one opponent to use Play now in this channel.",
       countdown: "Bout countdown.",
       fight: `Round ${this.state.snapshot?.round_number ?? 1} in progress.`,
       knockdown: `Knockdown count ${this.state.snapshot?.fighters.find((fighter) => fighter.player_id === this.state.playerId)?.get_up_count ?? 0}.`,
@@ -177,7 +173,6 @@ export class HandsApp {
         ? "Connection paused."
         : labels[this.state.stage];
     this.setText(this.liveFightStatus, liveStatus);
-    this.invite.hidden = this.state.stage !== "waiting";
     this.retry.hidden = this.state.stage !== "fatal";
     const active = ["countdown", "fight", "knockdown", "foul_recovery"].includes(this.state.stage);
     this.input.setActive(active);
@@ -207,18 +202,6 @@ export class HandsApp {
       : "";
     this.setText(this.fightSummary, `Round ${snapshot.round_number}. ${snapshot.phase.replace("_", " ")}. Clock ${clock}. ${fighters.join(". ")}. ${getUp}`.trim());
   }
-
-  private readonly onInvite = async (): Promise<void> => {
-    if (this.state.stage !== "waiting" || this.session === null || this.invite.disabled) return;
-    this.invite.disabled = true;
-    try {
-      await this.session.invite();
-    } catch {
-      this.setText(this.status, "Invite could not open. You can try again.");
-    } finally {
-      if (this.state.stage === "waiting") this.invite.disabled = false;
-    }
-  };
 
   private readonly onRetry = (): void => {
     if (this.reloadOnRetry) {
@@ -290,7 +273,6 @@ export class HandsApp {
     this.input.destroy();
     this.audio.destroy();
     this.settings.destroy();
-    this.invite.removeEventListener("click", this.onInvite);
     this.retry.removeEventListener("click", this.onRetry);
     this.root.replaceChildren();
   }

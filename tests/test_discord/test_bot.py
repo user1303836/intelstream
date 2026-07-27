@@ -515,14 +515,13 @@ class TestRestrictedCommandTreeInteractionCheck:
 
         await bot.repository.close()
 
-    @pytest.mark.parametrize("command_name", ["hands", "hands_scoreboard"])
-    async def test_hands_commands_bypass_legacy_channel_restriction(
-        self, mock_settings: Settings, command_name: str
+    async def test_hands_scoreboard_bypasses_legacy_channel_restriction(
+        self, mock_settings: Settings
     ) -> None:
         bot = await create_bot(mock_settings)
         interaction = MagicMock(spec=discord.Interaction)
         interaction.command = MagicMock()
-        interaction.command.name = command_name
+        interaction.command.name = "hands_scoreboard"
         interaction.channel_id = mock_settings.discord_channel_id + 1
         interaction.response.send_message = AsyncMock()
 

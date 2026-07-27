@@ -39,7 +39,7 @@ IntelStream is a Python 3.12 Discord bot built with `discord.py`. It polls exter
 | GitHub monitoring | Polls repositories for new commits, pull requests, and issues, then posts Discord embeds. |
 | Message forwarding | Forwards messages from source channels/threads to destination channels/threads. |
 | Health commands | `/status` reports bot, source, content, and forwarding status. `/ping` reports latency. |
-| Hands Activity | `/hands` directly launches an authoritative two-member boxing Activity; `/hands_scoreboard` reports server-persisted ELO and records. |
+| Hands Activity | Discord's `/hands` Entry Point launches an authoritative two-member boxing Activity and posts a native **Play now** message; `/hands_scoreboard` reports server-persisted ELO and records. |
 
 ## Quickstart
 
@@ -241,7 +241,7 @@ Hands is disabled unless `HANDS_ENABLED=true`. It additionally requires `DISCORD
 
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `HANDS_ENABLED` | `false` | Starts the Activity HTTP/WebSocket server and enables `/hands`. |
+| `HANDS_ENABLED` | `false` | When true, starts the Activity server and configures `/hands`; when false, removes the managed Entry Point at startup. |
 | `DISCORD_CLIENT_SECRET` | unset | Required only when Hands is enabled. Server-only OAuth credential; never expose it to Vite or a browser. |
 | `HANDS_HOST` | `127.0.0.1` | Keep this loopback bind behind a same-host reverse proxy. Use `0.0.0.0` only when a container/platform requires it. |
 | `HANDS_PORT` | `8080` | Local HTTP/WebSocket listener port. |
@@ -343,7 +343,7 @@ Forwarding preserves message text and up to 10 attachments, subject to Discord f
 | `/ping` | Show bot latency. |
 | `/suck_boobs` | Novelty command loaded by `SuckBoobs` cog. |
 | `/suck_boobs_score` | Novelty leaderboard stored in `suck_boobs_stats`. |
-| `/hands` | Directly launch the configured guild's two-player Hands Activity. |
+| `/hands` | Launch the guild-only Hands Activity through Discord's native Entry Point and post **Play now** in the channel. |
 | `/hands_scoreboard` | Show the guild's top ten Hands ELO records and the caller's rank. |
 
 Remove `SuckBoobs` from `IntelStreamBot.setup_hook()` if that cog is not appropriate for your server.
@@ -432,13 +432,13 @@ Forwarding destinations can be text channels or threads. Archived destination th
 
 ## Hands Activity
 
-Hands is a guild-only, ranked, exactly-two-player boxing Activity. `/hands` directly launches the Activity in the current Discord voice context; it does not send a deep link. The first authenticated member sees an invite button and waits for exactly one opponent. The button opens Discord's invite dialog, disappears when the second distinct member arrives, and the server rejects a third member with `room_full`. Test this flow with two real members of the configured guild, not two browser identities for one account.
+Hands is a guild-only, ranked, exactly-two-player boxing Activity. `/hands` is a global `PRIMARY_ENTRY_POINT` command restricted to guild installs and guild channels. Discord launches the Activity and automatically posts its native **Play now** message in the channel; another member joins from that message without a DM or in-Activity invite dialog. The server admits exactly two distinct members from the configured guild and rejects a third member with `room_full`. Test this flow with two real members of the configured guild, not two browser identities for one account.
 
 `/hands_scoreboard` displays the guild's top ten plus the caller's rank, W-L-D record, knockouts, streak, bouts, and rating. New fighters start at **1000 ELO**. Completed results are written by the server with **K=32** ELO; draws score 0.5 and the applied integer delta is zero-sum. The browser cannot submit winners, scorecards, damage, identities, seats, or rating changes.
 
 ### Authority, authentication, and reconnects
 
-The Python engine is authoritative at 30 ticks per second. Clients send only bounded movement, held guard, and semantic actions; they interpolate server snapshots and authoritative events. OAuth derives the canonical Discord user, verifies configured-guild membership and the current Activity instance, and then uses short-lived, one-use, HMAC-signed game tickets. OAuth codes, access tokens, state, tickets, the bot token, and the client secret stay out of URLs and logs; only nonsensitive display preferences use browser storage.
+The Python engine is authoritative at 30 ticks per second. Clients send only bounded movement, held guard, and semantic actions; they interpolate server snapshots and authoritative events. OAuth derives the canonical Discord user, verifies configured-guild membership and the current Activity instance, and then uses short-lived, one-use, HMAC-signed game tickets. The SDK requests only `identify` and `guilds.members.read` and uses `prompt: "none"`, so Discord can silently reuse an existing grant after the first consent. OAuth codes, access tokens, state, tickets, the bot token, and the client secret stay out of URLs and logs; only nonsensitive display preferences use browser storage.
 
 A disconnect pauses the bout and shows the connected opponent a live reconnect countdown. Inputs arriving while either seat is disconnected are counted for abuse control but discarded before parsing or changing authoritative sequence/engine state. The disconnected user can reconnect during the server's cumulative 20-second grace period with a rotated one-use ticket and receive current state; if the opponent is still absent, recovery is ordered as welcome, redacted snapshot, then paused state with the remaining opponent grace. The server refreshes the in-memory reconnect ticket before expiry during long waits and bouts; the client keeps only the latest ticket inside its network controller and acknowledges receipt before the server invalidates the older ticket generation. Grace expiry awards a server-side forfeit. A client's own transport drop uses an independent fresh 20-second retry window rather than reusing any opponent countdown it was displaying. If ticket delivery was interrupted, the client performs fresh OAuth. A final message is sent only after the idempotent match/rating transaction succeeds and includes method, winner or draw, all three cards, and before/after ratings.
 
@@ -448,7 +448,7 @@ A disconnect pauses the bout and shows the connected opponent a live reconnect c
 - Each left or right jab, straight, hook, and uppercut has distinct startup, active, recovery, reach, lateral arc, impact, guard/poise damage, stamina cost, and whiff cost. Head/body and normal/power variants change those tradeoffs. Stance determines lead-hand jab speed and rear-straight power.
 - Compatible jab→straight, jab→hook, straight→hook, hook→uppercut, and uppercut→hook chains reduce cost and add impact inside the combo window. Startup/recovery vulnerability, successful evasions, and perfectly timed blocks open counter windows; counters receive an impact/poise bonus.
 - High guard covers head and low guard covers body. Guard absorbs damage until it breaks and regenerates only while sufficiently inactive; a narrow new-guard window is a stronger perfect block. Slips evade the matching straight-line hand, weaving handles hooks, and a pull evades long head jabs/straights. Evasions cost stamina and do not make every punch miss.
-- Stamina governs the current exchange. Fight-long conditioning and body trauma reduce maximum stamina, regeneration, movement/hand speed, guard recovery, and effective output; movement, attacks, power, misses, evasions, clinches, fouls, and damage impose costs. Rest restores bounded stamina/guard/poise but does not erase accumulated fatigue.
+- Stamina governs the current exchange. Fight-long conditioning and body trauma reduce maximum stamina, regeneration, movement/hand speed, guard recovery, and effective output; movement, attacks, power, misses, evasions, clinches, fouls, and damage impose costs. Full-speed movement spends two stamina per simulation tick, while rapid action overflow is bounded and discarded instead of disconnecting the player. Rest restores bounded stamina/guard/poise but does not erase accumulated fatigue.
 - A close-range clinch has vulnerable startup and can be denied or interrupted. A successful finite hold cancels attacks, lets both regain a little stamina while spending conditioning, and ends in referee separation.
 - Low blows and headbutts are deliberate, costly fouls: misses still cost resources; a landed foul causes a recovery pause and warning, warning two deducts a point, and warning three disqualifies the offender.
 - Head/body and left/right eye trauma persist. Hooks intensify eye damage; damaged eyes reduce reach/accuracy. Cuts increase bleeding, bleeding adds head trauma and fatigue, swelling accumulates, and cut/swelling thresholds can cause a doctor stoppage. Blood event amounts are authoritative, while spray, pooling, audio, and shake are cosmetic only.
@@ -557,11 +557,12 @@ For a long-running deployment, run the command under your process manager of cho
 ### Deploying Hands and configuring the Developer Portal
 
 1. In the **same Discord application as the bot**, enable Activities and set the Activity URL mapping for `/` to the public HTTPS origin that serves Hands. The mapping target must be public HTTPS, not the loopback listener.
-2. Configure Activity OAuth for exactly `identify`, `guilds.members.read`, and `applications.commands`. Install the guild app with both `bot` and `applications.commands` scopes, and keep **Server Members Intent** enabled. Message Content Intent remains needed by other IntelStream features.
-3. Verify `DISCORD_GUILD_ID`, the authenticated application/client ID, and `DISCORD_CLIENT_SECRET`. Store the client secret and bot token only in the server environment. Never put either secret—or OAuth codes, access tokens, or game tickets—in a URL, Vite variable, browser/local storage, analytics, or logs.
-4. Run the Python listener on `127.0.0.1:HANDS_PORT`. Put a public TLS reverse proxy on the mapped origin and proxy `/`, `/api/hands/*`, and WebSocket upgrades to that listener. Preserve HTTPS/WSS, Host, and upgrade headers; do not expose the plaintext loopback port publicly. Hands applies global and per-client request/concurrency ceilings using the direct peer address. If the proxy supplies `X-Forwarded-For`, set `HANDS_TRUSTED_PROXY_CIDRS` to only the exact proxy network(s) that connect to Hands (for example `127.0.0.1/32,::1/128` for a loopback proxy), configure the proxy to overwrite or append the real client address, and prevent clients from bypassing that proxy. Forwarded headers from any unlisted peer are ignored; never configure an all-addresses CIDR.
-5. Start `uv run intelstream`, confirm the public `/healthz`, launch `/hands`, and use Discord's invite dialog with two distinct real guild members. Confirm only those two seats start and a third account is rejected. A single process owns in-memory OAuth state, rooms, and reconnect tickets; do not horizontally scale Hands without shared authoritative state/routing.
-6. Complete the violent-content/age-rating/disclosure and originality reviews described above before public distribution.
+2. On the application's **OAuth2** page, add `https://127.0.0.1` under **Redirects** and save it. Discord requires a Redirect URI for Activity authorization even though the Embedded App SDK handles returning to the Activity; this placeholder is the value specified by Discord's Activity guide.
+3. Configure Activity OAuth for exactly `identify` and `guilds.members.read`. Install the guild app with both `bot` and `applications.commands` scopes, and keep **Server Members Intent** enabled. Message Content Intent remains needed by other IntelStream features.
+4. Verify `DISCORD_GUILD_ID`, the authenticated application/client ID, and `DISCORD_CLIENT_SECRET`. Store the client secret and bot token only in the server environment. Never put either secret—or OAuth codes, access tokens, or game tickets—in a URL, Vite variable, browser/local storage, analytics, or logs.
+5. Run the Python listener on `127.0.0.1:HANDS_PORT`. Put a public TLS reverse proxy on the mapped origin and proxy `/`, `/api/hands/*`, and WebSocket upgrades to that listener. Preserve HTTPS/WSS, Host, and upgrade headers; do not expose the plaintext loopback port publicly. Hands applies global and per-client request/concurrency ceilings using the direct peer address. If the proxy supplies `X-Forwarded-For`, set `HANDS_TRUSTED_PROXY_CIDRS` to only the exact proxy network(s) that connect to Hands (for example `127.0.0.1/32,::1/128` for a loopback proxy), configure the proxy to overwrite or append the real client address, and prevent clients from bypassing that proxy. Forwarded headers from any unlisted peer are ignored; never configure an all-addresses CIDR.
+6. Start `uv run intelstream` and confirm the startup configures one guild-only global `hands` Entry Point with Discord handler `DISCORD_LAUNCH_ACTIVITY`. Confirm the public `/healthz`, launch `/hands`, and have a second distinct guild member select **Play now** on Discord's channel message. Confirm only those two seats start and a third account is rejected. A single process owns in-memory OAuth state, rooms, and reconnect tickets; do not horizontally scale Hands without shared authoritative state/routing.
+7. Complete the violent-content/age-rating/disclosure and originality reviews described above before public distribution.
 
 ## Development
 
@@ -689,9 +690,10 @@ Evaluation file format:
 | `/lore` does not answer questions | Current code disables the query command. | This is expected until `lore.py` is completed. |
 | Forwarding misses embeds | Expected for messages with text content. | Embed-only messages are copied; URL messages rely on Discord previews. |
 | SQLite path error | Empty SQLite URL or unsupported database backend. | Use a non-empty `sqlite+aiosqlite:///...` URL. |
-| `/hands` says disabled/unavailable | `HANDS_ENABLED` is false, `DISCORD_CLIENT_SECRET`/application auth is missing, bind failed, or startup did not complete. | Check Hands startup logs, enabled settings, loopback host/port, and the client secret in the server environment. |
+| Hands fails to launch or shows unavailable | `HANDS_ENABLED` is false, `DISCORD_CLIENT_SECRET`/application auth is missing, Entry Point setup or bind failed, or startup did not complete. | Check Hands startup logs, enabled settings, the global `hands` Entry Point, loopback host/port, and the client secret in the server environment. |
 | Hands page fails to load or WebSocket disconnects | Activity `/` mapping, public TLS/WSS proxy, upgrade headers, CSP/origin, or proxy path is wrong. | Map `/` to the public HTTPS origin and proxy `/api/hands/ws` upgrades to `127.0.0.1:HANDS_PORT`; never map Discord to localhost. |
-| Hands OAuth returns invalid activity/member | Wrong guild/application IDs, missing OAuth scopes, Server Members Intent disabled, stale launch, or user not in the Activity. | Verify `identify`, `guilds.members.read`, `applications.commands`, the configured guild, and two real guild members in the same Activity. |
+| Hands shows `authorize_failed` after consent | The application's required OAuth2 Redirect URI is missing or the Activity OAuth configuration is incomplete. | In the same application's OAuth2 settings, add `https://127.0.0.1` under Redirects and save it; verify `identify` and `guilds.members.read`. |
+| Hands OAuth returns invalid activity/member | Wrong guild/application IDs, missing OAuth scopes, Server Members Intent disabled, stale launch, or user not in the Activity. | Verify `identify`, `guilds.members.read`, the configured guild, and two real guild members in the same Activity. |
 | Vite cannot reach Python | The backend port differs or Python is not in development mode. | Set `HANDS_DEV_BACKEND=http://127.0.0.1:8080`, match `HANDS_PORT`, set `HANDS_DEV_MODE=true` locally only, and run both processes. |
 | CI reports generated Hands drift | Frontend source and committed package bundle differ. | With Node 24 run `npm ci`, test, build, scanner, inspect the three generated files, and commit source plus bundle together. |
 | Wheel checker reports missing/wrong assets | A stale build, wrong wheel glob, or package layout changed. | Remove `dist/`, run `uv build`, pass exactly one `.whl` to `scripts/check_hands_wheel.py`, then run the installed-resource smoke. |

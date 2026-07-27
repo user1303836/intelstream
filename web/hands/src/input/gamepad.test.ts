@@ -53,13 +53,13 @@ describe("gamepad semantic parity", () => {
     input.destroy();
   });
 
-  it("caps full-stick locomotion and matches the keyboard diagonal frame", () => {
+  it("caps full-stick locomotion with conventional up and down screen directions", () => {
     let current = pad([], [1, 1, 0, 0]);
     Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [current] });
     const input = new GamepadInput();
     poll(input);
-    expect(input.frame()).toMatchObject({ moveX: 707, moveY: 707 });
-    current = pad([], [-Math.SQRT1_2, Math.SQRT1_2, 0, 0]); poll(input);
+    expect(input.frame()).toMatchObject({ moveX: 707, moveY: -707 });
+    current = pad([], [-Math.SQRT1_2, -Math.SQRT1_2, 0, 0]); poll(input);
     expect(input.frame()).toMatchObject({ moveX: -707, moveY: 707 });
     input.destroy();
   });

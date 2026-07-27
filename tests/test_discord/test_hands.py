@@ -4,9 +4,17 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
+import pytest
 from pydantic import SecretStr
 
-from intelstream.discord.cogs.hands import Hands, setup
+from intelstream.discord.cogs.hands import (
+    HANDS_ENTRY_POINT_DESCRIPTION,
+    HANDS_ENTRY_POINT_HANDLER,
+    HANDS_ENTRY_POINT_NAME,
+    HANDS_ENTRY_POINT_TYPE,
+    Hands,
+    setup,
+)
 
 
 def settings(*, enabled: bool = True):
@@ -33,7 +41,6 @@ def interaction(*, guild_id: int | None = 123):
     value.user.id = 10
     value.response = MagicMock()
     value.response.send_message = AsyncMock()
-    value.response.launch_activity = AsyncMock()
     value.response.defer = AsyncMock()
     value.followup = MagicMock()
     value.followup.send = AsyncMock()
@@ -59,44 +66,36 @@ def bot(*, enabled: bool = True):
     )
     value.repository.get_hands_leaderboard = AsyncMock(return_value=[])
     value.repository.get_hands_rank = AsyncMock(return_value=1)
+    value.http = MagicMock()
+    value.http.get_global_commands = AsyncMock(
+        return_value=[
+            {
+                "id": "1234",
+                "name": "launch",
+                "description": "Launch an activity",
+                "type": HANDS_ENTRY_POINT_TYPE,
+                "handler": HANDS_ENTRY_POINT_HANDLER,
+                "integration_types": [0, 1],
+                "contexts": [0, 1, 2],
+            }
+        ]
+    )
+    value.http.request = AsyncMock(
+        return_value={
+            "id": "1234",
+            "name": HANDS_ENTRY_POINT_NAME,
+            "description": HANDS_ENTRY_POINT_DESCRIPTION,
+            "type": HANDS_ENTRY_POINT_TYPE,
+            "handler": HANDS_ENTRY_POINT_HANDLER,
+            "integration_types": [0],
+            "contexts": [0],
+        }
+    )
     return value
 
 
-async def test_hands_rejects_dm_wrong_guild_disabled_and_unavailable() -> None:
-    for guild_id, enabled, expected in (
-        (None, True, "configured server"),
-        (999, True, "configured server"),
-        (123, False, "not enabled"),
-        (123, True, "unavailable"),
-    ):
-        mock_bot = bot(enabled=enabled)
-        cog = Hands(mock_bot)
-        value = interaction(guild_id=guild_id)
-
-        await cog.hands.callback(cog, value)
-
-        message = value.response.send_message.await_args.args[0]
-        assert expected in message
-        value.response.launch_activity.assert_not_awaited()
-        mock_bot.repository.get_or_create_hands_rating.assert_not_awaited()
-
-
-async def test_hands_launches_immediately_without_database_round_trip() -> None:
-    mock_bot = bot()
-    mock_bot.repository.get_or_create_hands_rating.side_effect = AssertionError(
-        "launch callback must not wait on the database"
-    )
-    cog = Hands(mock_bot)
-    cog.server = MagicMock()
-    cog.server.running = True
-    value = interaction()
-
-    await cog.hands.callback(cog, value)
-
-    mock_bot.repository.get_or_create_hands_rating.assert_not_awaited()
-    value.response.launch_activity.assert_awaited_once_with()
-    value.response.send_message.assert_not_awaited()
-    value.response.defer.assert_not_awaited()
+def test_hands_uses_discord_managed_entry_point_instead_of_bot_launch_command() -> None:
+    assert [command.name for command in Hands.__cog_app_commands__] == ["hands_scoreboard"]
 
 
 async def test_scoreboard_renders_top_ten_and_caller_record_with_safe_names() -> None:
@@ -258,27 +257,104 @@ async def test_cog_lifecycle_starts_enabled_server_and_close_is_awaited() -> Non
     assert kwargs["admission"].trusted_proxy_cidrs == ("127.0.0.1/32",)
     server.start.assert_awaited_once()
     server.close.assert_awaited_once()
+    mock_bot.http.get_global_commands.assert_awaited_once_with(999)
+    route = mock_bot.http.request.await_args.args[0]
+    assert route.method == "PATCH"
+    assert route.url.endswith("/applications/999/commands/1234")
+    assert mock_bot.http.request.await_args.kwargs["json"] == {
+        "name": HANDS_ENTRY_POINT_NAME,
+        "description": HANDS_ENTRY_POINT_DESCRIPTION,
+        "handler": HANDS_ENTRY_POINT_HANDLER,
+        "integration_types": [0],
+        "contexts": [0],
+    }
 
 
-async def test_cog_load_disabled_is_noop_and_start_failure_closes_server() -> None:
-    disabled = Hands(bot(enabled=False))
+async def test_entry_point_configuration_is_idempotent_and_can_create_default() -> None:
+    configured = {
+        "id": "1234",
+        "name": HANDS_ENTRY_POINT_NAME,
+        "description": HANDS_ENTRY_POINT_DESCRIPTION,
+        "type": HANDS_ENTRY_POINT_TYPE,
+        "handler": HANDS_ENTRY_POINT_HANDLER,
+        "integration_types": [0],
+        "contexts": [0],
+    }
+    existing_bot = bot()
+    existing_bot.http.get_global_commands.return_value = [configured]
+    await Hands(existing_bot)._configure_entry_point(999)
+    existing_bot.http.request.assert_not_awaited()
+
+    new_bot = bot()
+    new_bot.http.get_global_commands.return_value = []
+    new_bot.http.request.return_value = configured
+    await Hands(new_bot)._configure_entry_point(999)
+    route = new_bot.http.request.await_args.args[0]
+    assert route.method == "POST"
+    assert route.url.endswith("/applications/999/commands")
+    assert new_bot.http.request.await_args.kwargs["json"] == {
+        "name": HANDS_ENTRY_POINT_NAME,
+        "description": HANDS_ENTRY_POINT_DESCRIPTION,
+        "handler": HANDS_ENTRY_POINT_HANDLER,
+        "integration_types": [0],
+        "contexts": [0],
+        "type": HANDS_ENTRY_POINT_TYPE,
+    }
+
+
+@pytest.mark.parametrize(
+    "commands",
+    [
+        [{"id": "1", "type": 4}, {"id": "2", "type": 4}],
+        [{"id": "1", "name": "hands", "type": 1}],
+        [{"id": "invalid", "type": 4}],
+    ],
+)
+async def test_entry_point_configuration_rejects_ambiguous_commands(
+    commands: list[dict[str, object]],
+) -> None:
+    mock_bot = bot()
+    mock_bot.http.get_global_commands.return_value = commands
+
+    with pytest.raises(RuntimeError):
+        await Hands(mock_bot)._configure_entry_point(999)
+
+    mock_bot.http.request.assert_not_awaited()
+
+
+async def test_disabled_entry_point_cleanup_is_idempotent() -> None:
+    disabled_bot = bot(enabled=False)
+
+    await Hands(disabled_bot).cog_load()
+
+    disabled_bot.http.get_global_commands.assert_awaited_once_with(999)
+    disabled_bot.http.request.assert_not_awaited()
+
+
+async def test_cog_load_disabled_removes_entry_point_and_failures_close_server() -> None:
+    disabled_bot = bot(enabled=False)
+    disabled_bot.http.get_global_commands.return_value[0]["name"] = HANDS_ENTRY_POINT_NAME
+    disabled = Hands(disabled_bot)
     await disabled.cog_load()
     assert disabled.server is None
+    disabled_bot.http.get_global_commands.assert_awaited_once_with(999)
+    route = disabled_bot.http.request.await_args.args[0]
+    assert route.method == "DELETE"
+    assert route.url.endswith("/applications/999/commands/1234")
 
-    mock_bot = bot()
-    server = MagicMock()
-    server.start = AsyncMock(side_effect=OSError("bind failed"))
-    server.close = AsyncMock()
-    with patch("intelstream.discord.cogs.hands.HandsServer", return_value=server):
-        failed = Hands(mock_bot)
-        try:
-            await failed.cog_load()
-        except OSError:
-            pass
-        else:
-            raise AssertionError("expected startup failure")
-    server.close.assert_awaited_once()
-    assert failed.server is None
+    for failure in (OSError("bind failed"), RuntimeError("entry point failed")):
+        mock_bot = bot()
+        server = MagicMock()
+        server.start = AsyncMock(side_effect=failure if isinstance(failure, OSError) else None)
+        server.close = AsyncMock()
+        if isinstance(failure, RuntimeError):
+            mock_bot.http.get_global_commands.side_effect = failure
+        with patch("intelstream.discord.cogs.hands.HandsServer", return_value=server):
+            failed = Hands(mock_bot)
+            with pytest.raises(type(failure), match=str(failure)):
+                await failed.cog_load()
+        server.close.assert_awaited_once()
+        assert failed.server is None
 
 
 async def test_setup_registers_cog() -> None:

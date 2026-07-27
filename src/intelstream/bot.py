@@ -52,7 +52,7 @@ class RestrictedCommandTree(app_commands.CommandTree):
             return False
         bot = self.client
         command_name = interaction.command.name if interaction.command is not None else None
-        if command_name in {"hands", "hands_scoreboard"}:
+        if command_name == "hands_scoreboard":
             return True
         allowed_channel_id = bot.settings.discord_channel_id
         channel = interaction.channel

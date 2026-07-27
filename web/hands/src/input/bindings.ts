@@ -14,7 +14,7 @@ export const ACTION_KEYS: Readonly<Record<string, SemanticAction>> = {
 };
 export const ACTIVE_CODES = new Set([...Object.keys(PUNCH_KEYS), ...Object.keys(ACTION_KEYS), "KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE", "ShiftLeft", "ShiftRight", "AltLeft", "AltRight"]);
 export const CONTROL_HELP = [
-  "Move: W A S D", "High / low guard: Q / E", "Left/right jab: F / J", "Left/right straight: R / U",
+  "Move: W up · S down · A left · D right", "High / low guard: Q / E", "Left/right jab: F / J", "Left/right straight: R / U",
   "Left/right hook: G / H", "Left/right uppercut: T / Y", "Body: Shift · Power: Alt",
   "Slip: Z / X · Weave: C · Pull: V", "Clinch: B · Stance: N · Fouls: 1 / 2", "Get-up rhythm: ← / →",
   "Controller move: left stick. High / low guard: left / right shoulder (independent of punches).",

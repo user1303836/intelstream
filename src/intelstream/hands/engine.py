@@ -338,9 +338,8 @@ class BoxingEngine:
             move_y=command.move_y,
             defense=command.defense,
         )
-        if len(fighter.pending_actions) + len(command.actions) > MAX_PENDING_ACTIONS:
-            return False
-        fighter.pending_actions.extend(command.actions)
+        if len(fighter.pending_actions) + len(command.actions) <= MAX_PENDING_ACTIONS:
+            fighter.pending_actions.extend(command.actions)
         return True
 
     def step(self, inputs: dict[str, InputCommand] | None = None) -> EngineSnapshot:
@@ -860,7 +859,7 @@ class BoxingEngine:
         )
         movement_load = 2 if above_half_speed else int(moving)
         fighter.movement_load = movement_load
-        movement_cost = movement_load * 2
+        movement_cost = movement_load
         fighter.stamina = max(0, fighter.stamina - movement_cost)
         if self.tick % 15 == 0 and movement_load:
             fighter.conditioning = max(0, fighter.conditioning - 1)
