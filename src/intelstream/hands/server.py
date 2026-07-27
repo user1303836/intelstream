@@ -422,23 +422,27 @@ class HandsServer:
                         raise HandsAuthError("invalid_ticket")
                     player = self.auth.verify_ticket(payload["ticket"])
                     rotated_ticket = self.auth.issue_ticket(player)
-                    membership = await self.rooms.join(
-                        player,
-                        websocket,
-                        reconnect_ticket=rotated_ticket,
-                    )
             except TimeoutError:
                 await self._ws_error(websocket, "authentication_timeout", close_code=4003)
                 return websocket
             except HandsAuthError as exc:
                 await self._ws_error(websocket, exc.code, close_code=4003)
                 return websocket
-            except (RoomError, web.HTTPException) as exc:
-                code = exc.code if isinstance(exc, RoomError) else "invalid_request"
-                await self._ws_error(websocket, code, close_code=4004)
+            except web.HTTPException:
+                await self._ws_error(websocket, "invalid_request", close_code=4004)
                 return websocket
             finally:
                 self._ws_auth_slots.release()
+
+            try:
+                membership = await self.rooms.join(
+                    player,
+                    websocket,
+                    reconnect_ticket=rotated_ticket,
+                )
+            except RoomError as exc:
+                await self._ws_error(websocket, exc.code, close_code=4004)
+                return websocket
 
             async for message in websocket:
                 if message.type in (WSMsgType.TEXT, WSMsgType.BINARY):

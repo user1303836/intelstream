@@ -13,7 +13,7 @@ from yarl import URL
 from intelstream.database.repository import Repository
 from intelstream.hands.auth import AuthenticatedPlayer, AuthExchange, HandsAuthError
 from intelstream.hands.engine import EngineConfig
-from intelstream.hands.rooms import HandsRoomManager, RoomConfig
+from intelstream.hands.rooms import HandsRoomManager, RoomConfig, RoomError
 from intelstream.hands.server import AdmissionConfig, HandsServer
 
 if TYPE_CHECKING:
@@ -98,7 +98,7 @@ async def start_server(
     *,
     auth: FakeAuth | None = None,
     dev_mode: bool = False,
-    auth_timeout: float = 0.05,
+    auth_timeout: float = 0.5,
     rooms: HandsRoomManager | None = None,
     admission: AdmissionConfig | None = None,
     static_root: Path | None = None,
@@ -263,7 +263,47 @@ async def test_websocket_requires_ticket_first_without_query_and_times_out(
     await server.close()
 
 
+async def test_authenticated_room_admission_is_not_part_of_first_frame_timeout(
+    repository: Repository,
+) -> None:
+    class DelayedRejectionRooms(MagicRooms):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def join(self, *_args, **_kwargs):
+            self.entered.set()
+            await self.release.wait()
+            raise RoomError("room_full")
+
+    auth = FakeAuth()
+    auth.tickets["valid"] = AuthenticatedPlayer("one", GUILD, "room", "One", None)
+    rooms = DelayedRejectionRooms()
+    server, _auth, base = await start_server(
+        repository,
+        auth=auth,
+        auth_timeout=0.01,
+        rooms=rooms,
+    )
+    async with aiohttp.ClientSession() as client:
+        socket = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
+        await socket.send_json({"version": 1, "type": "authenticate", "ticket": "valid"})
+        await rooms.entered.wait()
+        await asyncio.sleep(0.03)
+        rooms.release.set()
+        error = json.loads((await socket.receive(timeout=1)).data)
+        assert error["code"] == "room_full"
+        await socket.close()
+    await server.close()
+
+
 async def test_two_websockets_start_and_third_is_rejected(repository: Repository) -> None:
+    sleep_release = asyncio.Event()
+
+    async def controlled_sleep(_delay: float) -> None:
+        await sleep_release.wait()
+
     auth = FakeAuth()
     auth.tickets = {
         "one": AuthenticatedPlayer("one", GUILD, "room", "One", None),
@@ -285,6 +325,7 @@ async def test_two_websockets_start_and_third_is_rejected(repository: Repository
                 flash_ko_enabled=False,
             ),
         ),
+        sleep=controlled_sleep,
         match_id_factory=lambda: "server-room",
     )
     server, _auth, base = await start_server(repository, auth=auth, rooms=rooms)

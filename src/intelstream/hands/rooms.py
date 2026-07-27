@@ -86,6 +86,7 @@ class PlayerConnection:
     outbox: asyncio.Queue[tuple[str | None, bool]]
     pending_updates: int = 0
     slow_drop_started: bool = False
+    slow_drop_task: asyncio.Task[None] | None = None
     writer_task: asyncio.Task[None] | None = None
 
 
@@ -192,6 +193,13 @@ class HandsRoom:
                 raise RoomError("room_full")
             if existing is not None and existing.connection is not None:
                 await self._stop_connection(existing.connection, code=4001, reason=b"replaced")
+                final_recovery = self._engine is not None and (
+                    self._engine.result is not None
+                    or self._persistence_task is not None
+                    or self._finished
+                )
+                if final_recovery and not self._accepting_reconnects:
+                    raise RoomError("room_closed")
             connection = self._new_connection(identity.user_id, socket)
             if existing is not None:
                 existing.connection = connection
@@ -262,12 +270,16 @@ class HandsRoom:
                     connection.outbox.task_done()
         except (ConnectionError, RuntimeError, asyncio.CancelledError):
             if not self._closed:
-                self._spawn(self.disconnect(player_id, connection))
+                self._spawn(
+                    self.disconnect(player_id, connection),
+                    name=f"hands-disconnect-{player_id}",
+                )
 
-    def _spawn(self, awaitable: Coroutine[Any, Any, None]) -> None:
-        task: asyncio.Task[None] = asyncio.create_task(awaitable)
+    def _spawn(self, awaitable: Coroutine[Any, Any, None], *, name: str) -> asyncio.Task[None]:
+        task: asyncio.Task[None] = asyncio.create_task(awaitable, name=name)
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
+        return task
 
     @staticmethod
     def _message(message_type: str, **payload: object) -> str:
@@ -296,16 +308,27 @@ class HandsRoom:
             if connection.pending_updates >= self.config.outbound_queue_size:
                 if not connection.slow_drop_started:
                     connection.slow_drop_started = True
-                    self._spawn(self._drop_slow_connection(connection))
+                    connection.slow_drop_task = self._spawn(
+                        self._drop_slow_connection(connection),
+                        name=f"hands-slow-drop-{self.instance_id}",
+                    )
                 return
             connection.pending_updates += 1
         connection.outbox.put_nowait((message, bounded_update))
 
     async def _drop_slow_connection(self, connection: PlayerConnection) -> None:
-        for player_id, slot in self._slots.items():
-            if slot.connection is connection:
-                await self.disconnect(player_id, connection)
+        try:
+            await asyncio.sleep(self.config.tick_interval_seconds)
+            if connection.pending_updates < self.config.outbound_queue_size:
+                connection.slow_drop_started = False
                 return
+            for player_id, slot in self._slots.items():
+                if slot.connection is connection:
+                    await self.disconnect(player_id, connection)
+                    return
+        finally:
+            if connection.slow_drop_task is asyncio.current_task():
+                connection.slow_drop_task = None
 
     def _enqueue_all(self, message: str, *, bounded_update: bool = False) -> None:
         for slot in self._slots.values():
@@ -556,9 +579,15 @@ class HandsRoom:
     async def _stop_connection(
         self, connection: PlayerConnection, *, code: int, reason: bytes
     ) -> None:
+        current = asyncio.current_task()
+        slow_drop_task = connection.slow_drop_task
+        connection.slow_drop_task = None
+        if slow_drop_task is not None and slow_drop_task is not current:
+            slow_drop_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await slow_drop_task
         connection.outbox.put_nowait((None, False))
         writer_task = connection.writer_task
-        current = asyncio.current_task()
         if writer_task is not None and writer_task is not current:
             writer_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
