@@ -81,8 +81,11 @@ async def test_hands_rejects_dm_wrong_guild_disabled_and_unavailable() -> None:
         mock_bot.repository.get_or_create_hands_rating.assert_not_awaited()
 
 
-async def test_hands_materializes_rating_then_launches_exactly_once() -> None:
+async def test_hands_launches_immediately_without_database_round_trip() -> None:
     mock_bot = bot()
+    mock_bot.repository.get_or_create_hands_rating.side_effect = AssertionError(
+        "launch callback must not wait on the database"
+    )
     cog = Hands(mock_bot)
     cog.server = MagicMock()
     cog.server.running = True
@@ -90,7 +93,7 @@ async def test_hands_materializes_rating_then_launches_exactly_once() -> None:
 
     await cog.hands.callback(cog, value)
 
-    mock_bot.repository.get_or_create_hands_rating.assert_awaited_once_with("123", "10")
+    mock_bot.repository.get_or_create_hands_rating.assert_not_awaited()
     value.response.launch_activity.assert_awaited_once_with()
     value.response.send_message.assert_not_awaited()
     value.response.defer.assert_not_awaited()
