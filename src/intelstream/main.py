@@ -19,7 +19,10 @@ def configure_logging(log_level: str) -> None:
             structlog.processors.StackInfoRenderer(),
             structlog.dev.set_exc_info,
             structlog.processors.TimeStamper(fmt="iso", utc=True),
-            structlog.dev.ConsoleRenderer(colors=stdout_is_tty),
+            structlog.dev.ConsoleRenderer(
+                colors=stdout_is_tty,
+                exception_formatter=structlog.dev.plain_traceback,
+            ),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(getattr(logging, log_level.upper())),
         context_class=dict,
