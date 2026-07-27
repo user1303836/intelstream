@@ -123,6 +123,7 @@ export async function authorizeDiscord(
         client_id: boot.client_id,
         response_type: "code",
         state: boot.state,
+        prompt: "none",
         scope: [...OAUTH_SCOPES],
       }),
       signal,
