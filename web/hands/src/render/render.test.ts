@@ -85,12 +85,15 @@ describe("boxer animation", () => {
     for (let i = 0; i < 30; i += 1) animator.update(one, two, 1 / 60, i / 60, false);
     const guardZ = rig.gloveL.getWorldPosition(new THREE.Vector3()).z;
     const punching = { ...one, action: "straight" as const, action_hand: "right" as const, action_target: "head" as const, action_power: "normal" as const };
-    let maxReach = -Infinity;
+    let maxExtension = 0;
     for (let i = 0; i < 30; i += 1) {
       animator.update(i < 20 ? punching : one, two, 1 / 60, 0.5 + i / 60, false);
-      maxReach = Math.max(maxReach, rig.gloveR.getWorldPosition(new THREE.Vector3()).z - rig.root.position.z);
+      const shoulder = rig.shoulderR.getWorldPosition(new THREE.Vector3());
+      const glove = rig.gloveR.getWorldPosition(new THREE.Vector3());
+      maxExtension = Math.max(maxExtension, shoulder.distanceTo(glove));
     }
-    expect(maxReach).toBeGreaterThan(0.45);
+    expect(maxExtension).toBeGreaterThan(0.55);
+    expect(maxExtension).toBeLessThanOrEqual(0.67);
     for (let i = 0; i < 90; i += 1) animator.update(one, two, 1 / 60, 1.5 + i / 60, false);
     const recovered = rig.gloveL.getWorldPosition(new THREE.Vector3()).z;
     expect(Math.abs(recovered - guardZ)).toBeLessThan(0.25);
@@ -170,7 +173,7 @@ describe("boxer animation", () => {
     expect(downZ).toBeLessThan(extendedZ);
   });
 
-  it("freezes the punch during hitstop and rotates the body into a cross", () => {
+  it("freezes the punch during hitstop and rotates the punching shoulder into a cross", () => {
     const { rig, animator } = make();
     const two = fighter("two");
     const punching = { ...fighter("one"), action: "straight" as const, action_hand: "right" as const, action_target: "head" as const, action_power: "normal" as const };
@@ -181,7 +184,13 @@ describe("boxer animation", () => {
     const gloveDuringStop = rig.gloveR.getWorldPosition(new THREE.Vector3()).z;
     expect(Math.abs(gloveDuringStop - gloveBefore)).toBeLessThan(0.05);
     for (let i = 0; i < 20; i += 1) animator.update(punching, two, 1 / 60, 0.3 + i / 60, false);
-    expect(Math.abs(rig.hips.rotation.y)).toBeGreaterThan(0.1);
+    expect(rig.hips.rotation.y).toBeGreaterThan(0.1);
+    expect(rig.spine.rotation.y).toBeGreaterThan(0.1);
+    const southpawRig = buildBoxer(PALETTES[1]);
+    const southpawAnimator = new BoxerAnimator(southpawRig, mapping);
+    const southpawPunch = { ...fighter("two"), stance: "southpaw" as const, action: "straight" as const, action_hand: "right" as const, action_target: "head" as const, action_power: "normal" as const };
+    for (let i = 0; i < 20; i += 1) southpawAnimator.update(southpawPunch, fighter("one"), 1 / 60, i / 60, false);
+    expect(southpawRig.spine.rotation.y).toBeGreaterThan(0.1);
   });
 
   it("drops level for body punches and springs the canvas landing on knockdown", () => {
@@ -196,12 +205,12 @@ describe("boxer animation", () => {
     expect(bodyHeight).toBeLessThan(second.rig.hips.position.y - 0.03);
     const downed = { ...fighter("one"), is_downed: true };
     const third = make();
-    let lowest = Infinity;
+    let maxSpring = 0;
     for (let i = 0; i < 150; i += 1) {
       third.animator.update(downed, two, 1 / 60, i / 60, false);
-      lowest = Math.min(lowest, third.rig.hips.position.y);
+      maxSpring = Math.max(maxSpring, Math.abs(third.animator.landingOffset));
     }
-    expect(lowest).toBeLessThan(0.16);
+    expect(maxSpring).toBeGreaterThan(0.025);
     expect(third.rig.hips.position.y).toBeLessThan(0.35);
   });
 

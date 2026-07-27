@@ -176,8 +176,11 @@ export class FightRenderer {
         });
       }
       const actorIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.actor_id);
-      if (actorIndex >= 0 && ["hit", "counter_hit", "block"].includes(event.kind)) {
-        this.animators[actorIndex]!.landedHit(event.kind === "block");
+      // Engine emits block/perfect_block with the DEFENDER as actor; the
+      // puncher to freeze is the event target for those kinds.
+      const puncherIndex = event.kind === "block" || event.kind === "perfect_block" ? targetIndex : actorIndex;
+      if (puncherIndex >= 0 && ["hit", "counter_hit", "block", "perfect_block", "guard_break"].includes(event.kind)) {
+        this.animators[puncherIndex]!.landedHit(event.kind === "block" || event.kind === "perfect_block");
       }
     }
   }
