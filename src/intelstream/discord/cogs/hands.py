@@ -82,9 +82,6 @@ class Hands(commands.Cog):
                 "Hands is temporarily unavailable.", ephemeral=True
             )
             return
-        await self.bot.repository.get_or_create_hands_rating(
-            str(interaction.guild_id), str(interaction.user.id)
-        )
         logger.info(
             "Launching Hands activity",
             guild_id=interaction.guild_id,
