@@ -403,7 +403,9 @@ async def test_welcome_ticket_is_issued_after_blocking_room_admission(
     await server.close()
 
 
-async def test_two_websockets_start_and_third_is_rejected(repository: Repository) -> None:
+async def test_two_websockets_start_and_third_is_read_only_spectator(
+    repository: Repository,
+) -> None:
     sleep_release = asyncio.Event()
 
     async def controlled_sleep(_delay: float) -> None:
@@ -448,9 +450,19 @@ async def test_two_websockets_start_and_third_is_rejected(repository: Repository
                     seen_ready = json.loads(message.data)["type"] == "ready"
         third = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
         await third.send_json({"version": 1, "type": "authenticate", "ticket": "three"})
-        error = await third.receive(timeout=1)
-        assert json.loads(error.data)["code"] == "room_full"
+        welcome = json.loads((await third.receive(timeout=1)).data)
+        assert welcome["type"] == "welcome"
+        assert welcome["role"] == "spectator"
+        assert "seat" not in welcome
+        snapshot = json.loads((await third.receive(timeout=1)).data)
+        assert snapshot["type"] == "snapshot"
+        assert all(fighter["get_up_prompt"] is None for fighter in snapshot["payload"]["fighters"])
+
+        await third.send_json({})
+        error = json.loads((await third.receive(timeout=1)).data)
+        assert error["code"] == "spectator_read_only"
         await third.close()
+        assert all(not socket.closed for socket in sockets)
         for ws in sockets:
             async with asyncio.timeout(1):
                 await ws.close()

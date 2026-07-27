@@ -1,3 +1,4 @@
+import { SharedActionIntent, pushActionIntent } from "./action-buffer";
 import { PunchGesture, radialDeadzone } from "./gesture";
 import type { HeldDefense, InputFrame, PunchClass, SemanticAction } from "../types";
 
@@ -31,13 +32,19 @@ export class GamepadInput {
     if (event.gamepad.id === this.currentId) this.reset();
   };
 
-  constructor(private readonly maximumQueue = 24) {
+  constructor(private readonly maximumQueue = 1, private readonly sharedActions?: SharedActionIntent) {
     window.addEventListener("gamepaddisconnected", this.disconnect);
     this.raf = requestAnimationFrame(() => this.poll());
   }
 
   private push(action: SemanticAction): void {
-    if (this.queue.length < this.maximumQueue) this.queue.push(action);
+    if (this.sharedActions === undefined) pushActionIntent(this.queue, action, this.maximumQueue);
+    else this.sharedActions.push("gamepad", action);
+  }
+
+  private clearActions(): void {
+    this.queue.length = 0;
+    this.sharedActions?.clear();
   }
 
   private poll(): void {
@@ -57,7 +64,9 @@ export class GamepadInput {
     const move = radialDeadzone(pad.axes[0] ?? 0, pad.axes[1] ?? 0);
     this.moveX = Math.round(move.x * 1000);
     this.moveY = Math.round(-move.y * 1000);
-    this.defense = pressed(pad, 4) ? "guard_high" : pressed(pad, 5) ? "guard_low" : "none";
+    const defense = pressed(pad, 4) ? "guard_high" : pressed(pad, 5) ? "guard_low" : "none";
+    if (defense !== "none" && defense !== this.defense) this.clearActions();
+    this.defense = defense;
 
     const gesture = this.gesture.update(pad.axes[2] ?? 0, pad.axes[3] ?? 0, pressed(pad, 6), pressed(pad, 7));
     if (gesture !== null) this.push(gesture);
@@ -118,7 +127,8 @@ export class GamepadInput {
   }
 
   frame(maxActions = 4): InputFrame {
-    return { moveX: this.moveX, moveY: this.moveY, defense: this.defense, actions: this.queue.splice(0, maxActions) };
+    const actions = this.sharedActions === undefined ? this.queue.splice(0, maxActions) : [];
+    return { moveX: this.moveX, moveY: this.moveY, defense: this.defense, actions };
   }
 
   reset(): void {
@@ -126,6 +136,7 @@ export class GamepadInput {
     this.moveX = this.moveY = 0;
     this.defense = "none";
     this.queue.length = 0;
+    this.sharedActions?.clearSource("gamepad");
     this.previous.clear();
     this.selectorConsumed.clear();
     this.gesture.reset();

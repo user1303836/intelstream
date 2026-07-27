@@ -1,6 +1,6 @@
 import { safeError } from "./api";
 import { decodeServerFrame, encodeInput } from "./protocol";
-import type { InputFrame, ServerMessage } from "./types";
+import type { ConnectionRole, InputFrame, ServerMessage } from "./types";
 
 export function websocketUrl(location: Location = window.location): string {
   const url = new URL("/api/hands/ws", location.origin);
@@ -46,6 +46,7 @@ export class NetworkController {
   private attempts = 0;
   private nextSequence = 0;
   private serverTick = 0;
+  private role: ConnectionRole | null = null;
   private active = false;
   private disposed = false;
   private terminal = false;
@@ -162,7 +163,9 @@ export class NetworkController {
       if (message.reconnect_ticket === undefined) throw new Error("missing_reconnect_ticket");
       this.reconnectTicket = message.reconnect_ticket;
       this.serverTick = message.server_tick;
-      this.nextSequence = Math.max(this.nextSequence, message.next_sequence);
+      this.role = message.role;
+      if (message.role === "fighter") this.nextSequence = Math.max(this.nextSequence, message.next_sequence);
+      else this.stopInputLifecycle();
       this.attempts = 0;
       this.clearTransportReconnect(true);
     } else if (message.type === "ticket") {
@@ -233,7 +236,7 @@ export class NetworkController {
 
   private sendInput(frame: InputFrame): void {
     const socket = this.socket;
-    if (!this.active || this.disposed || this.terminal || socket?.readyState !== OPEN) return;
+    if (this.role !== "fighter" || !this.active || this.disposed || this.terminal || socket?.readyState !== OPEN) return;
     try {
       socket.send(encodeInput(this.nextSequence, this.serverTick, { ...frame, actions: frame.actions.slice(0, 4) }));
       this.nextSequence += 1;

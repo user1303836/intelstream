@@ -711,6 +711,8 @@ class HandsServer:
                             self.auth.activate_ticket(reconnect_ticket, player)
                             ticket_refresh_state.confirm()
                             continue
+                        if membership.role == "spectator":
+                            raise RoomError("spectator_read_only")
                         await membership.room.submit_frame(
                             membership.player_id,
                             membership.connection,

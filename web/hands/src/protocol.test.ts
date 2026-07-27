@@ -4,7 +4,7 @@ import { envelope, publicPlayers, snapshot } from "./test/fixtures";
 describe("strict protocol v1", () => {
   it("decodes every control envelope and a populated final", () => {
     const messages = [
-      { version: 1, type: "welcome", player_id: "one", seat: 1, rating: 1500, players: [publicPlayers[0]], server_tick: 0, next_sequence: 0, reconnect_ticket: "secret-ticket" },
+      { version: 1, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [publicPlayers[0]], server_tick: 0, next_sequence: 0, reconnect_ticket: "secret-ticket" },
       { version: 1, type: "ticket", reconnect_ticket: "refreshed-ticket", refresh_id: "refresh-identifier" },
       { version: 1, type: "waiting", open_seats: 1 }, { version: 1, type: "ready", players: publicPlayers },
       { version: 1, type: "paused", player_id: "two", grace_ms: 20000 }, { version: 1, type: "resumed", player_id: "two" },
@@ -12,6 +12,14 @@ describe("strict protocol v1", () => {
       { version: 1, type: "final", match_id: "m", winner_id: "one", method: "decision", round: 12, scorecards: [{ judge: "A", player_one: [10], player_two: [9] }, { judge: "B", player_one: [9], player_two: [10] }, { judge: "C", player_one: [10], player_two: [9] }], ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } },
     ];
     expect(messages.map((message) => decodeServerFrame(JSON.stringify(message)).type)).toEqual(["welcome", "ticket", "waiting", "ready", "paused", "resumed", "error", "snapshot", "final"]);
+  });
+  it("decodes spectators without granting fighter fields", () => {
+    const spectator = { version: 1, type: "welcome", role: "spectator", player_id: "viewer", players: publicPlayers, server_tick: 40, reconnect_ticket: "spectator-ticket" };
+    expect(decodeServerFrame(JSON.stringify(spectator))).toEqual(spectator);
+    expect(() => decodeServerFrame(JSON.stringify({ ...spectator, seat: 1 }))).toThrow(ProtocolError);
+    expect(() => decodeServerFrame(JSON.stringify({ ...spectator, player_id: "one" }))).toThrow(/spectator/u);
+    const fighterWithoutRole = { version: 1, type: "welcome", player_id: "one", seat: 1, rating: 1500, players: [publicPlayers[0]], server_tick: 0, next_sequence: 0 };
+    expect(() => decodeServerFrame(JSON.stringify(fighterWithoutRole))).toThrow(ProtocolError);
   });
   it("decodes a fully populated embedded result", () => {
     const value = snapshot(); value.events as unknown as unknown[];
@@ -76,7 +84,7 @@ describe("strict protocol v1", () => {
     const base = snapshot();
     const badEvent = { version: 1, type: "snapshot", payload: { ...base, events: [{ event_id: 1, tick: 1, kind: "x".repeat(33), actor_id: null, target_id: null, amount: 10_001, detail: "", blood: 101, direction: 2 }] } };
     expect(() => decodeServerFrame(JSON.stringify(badEvent))).toThrow();
-    const badQueue = { version: 1, type: "snapshot", payload: { ...base, fighters: [{ ...base.fighters[0], queued_actions: 9 }, base.fighters[1]] } };
+    const badQueue = { version: 1, type: "snapshot", payload: { ...base, fighters: [{ ...base.fighters[0], queued_actions: 2 }, base.fighters[1]] } };
     expect(() => decodeServerFrame(JSON.stringify(badQueue))).toThrow();
   });
   it("strictly decodes same-origin API payload schemas", () => {
