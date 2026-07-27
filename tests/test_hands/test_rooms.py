@@ -1000,7 +1000,7 @@ async def test_same_instance_admission_preserves_successful_join_order(
         return await original_get(guild_id, user_id)
 
     repository.get_or_create_hands_rating = delayed_get
-    manager = HandsRoomManager(repository, config=room_config(round_ticks=1000))
+    manager = HandsRoomManager(repository, config=room_config(round_ticks=1_000_000))
     first_task = asyncio.create_task(manager.join(player("first"), FakeSocket()))
     await first_entered.wait()
     second_task = asyncio.create_task(manager.join(player("second"), FakeSocket()))
