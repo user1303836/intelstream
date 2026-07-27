@@ -17,8 +17,8 @@ export function launchInstance(search = window.location.search): string {
   return values[0]!;
 }
 export async function bootstrap(instanceId: string, signal?: AbortSignal): Promise<BootstrapResponse> {
-  const url = new URL("/api/hands/bootstrap", window.location.origin); url.searchParams.set("instance_id", instanceId);
-  try { return decodeBootstrap(await jsonResponse(await fetch(url, { method: "GET", credentials: "same-origin", cache: "no-store", ...(signal === undefined ? {} : { signal }) }), "bootstrap_failed")); }
+  const url = new URL("/api/hands/bootstrap", window.location.origin);
+  try { return decodeBootstrap(await jsonResponse(await fetch(url, { method: "POST", credentials: "same-origin", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ instance_id: instanceId }), ...(signal === undefined ? {} : { signal }) }), "bootstrap_failed")); }
   catch (error) { if (error instanceof ClientError) throw error; if (error instanceof ProtocolError) throw new ClientError("invalid_bootstrap"); throw new ClientError("bootstrap_failed"); }
 }
 export async function exchangeToken(code: string, state: string, signal?: AbortSignal): Promise<TokenResponse> {
