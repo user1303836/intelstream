@@ -30,7 +30,7 @@ const callbacks = (overrides: Partial<{
 });
 
 const welcome = (ticket = "ticket-b") => ({
-  version: 1, type: "welcome", player_id: "one", seat: 1, rating: 1500,
+  version: 1, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500,
   players: [{ id: "one", name: "One", avatar: null, rating: 1500, connected: true }],
   server_tick: 40, next_sequence: 5, reconnect_ticket: ticket,
 });
@@ -82,6 +82,32 @@ describe("same-origin WebSocket controller", () => {
     sockets[1]!.open();
     expect(JSON.parse(sockets[1]!.sent[0]!).ticket).toBe("ticket-b");
     expect(fresh).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("never sends gameplay input for a server-declared spectator", () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket();
+    const getInput = vi.fn(() => ({ moveX: 1000, moveY: 1000, defense: "guard_high" as const, actions: [{ kind: "punch" as const, hand: "left" as const, class: "jab" as const, target: "head" as const, power: "normal" as const }] }));
+    const controller = new NetworkController("ticket", getInput, callbacks(), () => socket);
+    controller.start();
+    socket.open();
+    socket.message({
+      version: 1,
+      type: "welcome",
+      role: "spectator",
+      player_id: "viewer",
+      players: ready.players,
+      server_tick: 40,
+      reconnect_ticket: "spectator-ticket",
+    });
+    socket.message(ready);
+    controller.setActive(true);
+    vi.advanceTimersByTime(200);
+    window.dispatchEvent(new Event("blur"));
+
+    expect(socket.sent.map((frame) => JSON.parse(frame).type)).toEqual(["authenticate"]);
+    expect(getInput).not.toHaveBeenCalled();
     controller.dispose();
   });
 

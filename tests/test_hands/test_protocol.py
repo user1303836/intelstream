@@ -214,8 +214,10 @@ def test_snapshot_encoding_is_required_and_redacted_per_viewer() -> None:
 
     one_payload = json.loads(encode_snapshot(snapshot, viewer_id="one"))["payload"]
     two_payload = json.loads(encode_snapshot(snapshot, viewer_id="two"))["payload"]
+    spectator_payload = json.loads(encode_snapshot(snapshot, viewer_id=None))["payload"]
     one_view = {fighter["player_id"]: fighter for fighter in one_payload["fighters"]}
     two_view = {fighter["player_id"]: fighter for fighter in two_payload["fighters"]}
+    spectator_view = {fighter["player_id"]: fighter for fighter in spectator_payload["fighters"]}
 
     assert one_view["one"]["queued_actions"] == 1
     assert one_view["one"]["clinch_startup_ticks"] == 4
@@ -236,11 +238,23 @@ def test_snapshot_encoding_is_required_and_redacted_per_viewer() -> None:
     assert one_payload["events"] == []
     assert two_payload["events"][0]["kind"] == "get_up_input"
     assert two_payload["events"][0]["detail"] == "timed"
+    assert spectator_view["one"]["queued_actions"] == 0
+    assert spectator_view["two"]["queued_actions"] == 0
+    assert spectator_view["one"]["get_up_prompt"] is None
+    assert spectator_view["two"]["get_up_prompt"] is None
+    assert spectator_view["one"]["get_up_meter"] == 0
+    assert spectator_view["two"]["get_up_meter"] == 0
+    assert spectator_payload["events"] == []
     assert one_payload["checksum"] != snapshot.checksum
     assert two_payload["checksum"] != snapshot.checksum
+    assert spectator_payload["checksum"] != snapshot.checksum
     assert one_payload["checksum"] != two_payload["checksum"]
+    assert spectator_payload["checksum"] not in {
+        one_payload["checksum"],
+        two_payload["checksum"],
+    }
 
     with pytest.raises(ProtocolError, match="not a match player"):
-        snapshot_for_viewer(snapshot, "spectator")
+        snapshot_for_viewer(snapshot, "unknown-player")
     with pytest.raises(TypeError):
         encode_snapshot(snapshot)

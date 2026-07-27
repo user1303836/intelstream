@@ -20,6 +20,7 @@ GUILD = "987654321"
 CHANNEL = "456789123"
 ONE = "111222333"
 TWO = "444555666"
+THREE = "777888999"
 INSTANCE = "bout"
 ORIGIN = f"https://{APP}.discordsays.com"
 
@@ -31,19 +32,30 @@ def discord_handler(request: httpx.Request) -> httpx.Response:
         code = form["code"][0]
         assert form["client_id"] == [APP]
         assert form["client_secret"] == ["secret"]
-        if code not in {"code-one", "code-two"}:
+        if code not in {"code-one", "code-two", "code-three"}:
             return httpx.Response(401, json={})
-        return httpx.Response(200, json={"access_token": f"access-{code[-3:]}"})
+        return httpx.Response(
+            200,
+            json={"access_token": f"access-{code.removeprefix('code-')}"},
+        )
     if path == "/api/v10/users/@me":
         token = request.headers["authorization"]
-        user_id, name = (ONE, "One") if token == "Bearer access-one" else (TWO, "Two")
+        user_id, name = {
+            "Bearer access-one": (ONE, "One"),
+            "Bearer access-two": (TWO, "Two"),
+            "Bearer access-three": (THREE, "Three"),
+        }[token]
         return httpx.Response(
             200,
             json={"id": user_id, "username": name, "global_name": name, "avatar": None},
         )
     if path == f"/api/v10/users/@me/guilds/{GUILD}/member":
         token = request.headers["authorization"]
-        user_id = ONE if token == "Bearer access-one" else TWO
+        user_id = {
+            "Bearer access-one": ONE,
+            "Bearer access-two": TWO,
+            "Bearer access-three": THREE,
+        }[token]
         return httpx.Response(200, json={"nick": None, "user": {"id": user_id}})
     if path == f"/api/v10/applications/{APP}/activity-instances/{INSTANCE}":
         assert request.headers["authorization"] == "Bot bot"
@@ -57,7 +69,7 @@ def discord_handler(request: httpx.Request) -> httpx.Response:
                     "guild_id": GUILD,
                     "channel_id": CHANNEL,
                 },
-                "users": [ONE, TWO],
+                "users": [ONE, TWO, THREE],
             },
         )
     return httpx.Response(404, json={})
@@ -73,7 +85,7 @@ async def wait_for_type(socket: aiohttp.ClientWebSocketResponse, kind: str) -> d
                     return payload
 
 
-async def test_real_auth_two_websockets_reconnect_and_authoritative_elo(tmp_path) -> None:
+async def test_real_auth_spectator_reconnect_and_authoritative_elo(tmp_path) -> None:
     repository = Repository(f"sqlite+aiosqlite:///{tmp_path / 'hands.db'}")
     await repository.initialize()
     rooms = HandsRoomManager(
@@ -129,7 +141,7 @@ async def test_real_auth_two_websockets_reconnect_and_authoritative_elo(tmp_path
     try:
         async with aiohttp.ClientSession() as client:
             credentials: dict[str, dict[str, object]] = {}
-            for label in ("one", "two"):
+            for label in ("one", "two", "three"):
                 bootstrap = await client.post(
                     f"{base}/api/hands/bootstrap",
                     json={"instance_id": INSTANCE},
@@ -164,8 +176,25 @@ async def test_real_auth_two_websockets_reconnect_and_authoritative_elo(tmp_path
             )
             await wait_for_type(two, "welcome")
             await wait_for_type(one, "ready")
-            await one.close()
 
+            spectator = await client.ws_connect(f"{base}/api/hands/ws", headers=headers)
+            await spectator.send_json(
+                {
+                    "version": 1,
+                    "type": "authenticate",
+                    "ticket": credentials["three"]["ticket"],
+                }
+            )
+            spectator_welcome = await wait_for_type(spectator, "welcome")
+            assert spectator_welcome["role"] == "spectator"
+            assert "seat" not in spectator_welcome
+            spectator_snapshot = await wait_for_type(spectator, "snapshot")
+            assert all(
+                fighter["get_up_prompt"] is None and fighter["queued_actions"] == 0
+                for fighter in spectator_snapshot["payload"]["fighters"]
+            )
+
+            await one.close()
             replacement = await client.ws_connect(f"{base}/api/hands/ws", headers=headers)
             await replacement.send_json(
                 {
@@ -196,20 +225,25 @@ async def test_real_auth_two_websockets_reconnect_and_authoritative_elo(tmp_path
                     )
                 )
             )
-            final_one, final_two = await asyncio.gather(
-                wait_for_type(replacement, "final"), wait_for_type(two, "final")
+            final_one, final_two, final_spectator = await asyncio.gather(
+                wait_for_type(replacement, "final"),
+                wait_for_type(two, "final"),
+                wait_for_type(spectator, "final"),
             )
-            assert final_one == final_two
+            assert final_one == final_two == final_spectator
             assert final_one["match_id"] == "integration-match"
             assert set(final_one["ratings"]) == {ONE, TWO}
             await replacement.close()
             await two.close()
+            await spectator.close()
 
         match = await repository.get_hands_match("integration-match")
         one_rating = await repository.get_hands_rating(GUILD, ONE)
         two_rating = await repository.get_hands_rating(GUILD, TWO)
+        spectator_rating = await repository.get_hands_rating(GUILD, THREE)
         assert match is not None
         assert one_rating is not None and two_rating is not None
+        assert spectator_rating is not None and spectator_rating.bouts == 0
         assert one_rating.bouts == two_rating.bouts == 1
         assert one_rating.rating + two_rating.rating == 2000
         assert match.player_one_rating_after == one_rating.rating

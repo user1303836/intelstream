@@ -4,7 +4,12 @@ from math import hypot
 
 import pytest
 
-from intelstream.hands.engine import MAX_PENDING_ACTIONS, BoxingEngine, EngineConfig
+from intelstream.hands.engine import (
+    ACTION_BUFFER_TICKS,
+    MAX_PENDING_ACTIONS,
+    BoxingEngine,
+    EngineConfig,
+)
 from intelstream.hands.protocol import encode_snapshot
 from intelstream.hands.rules import (
     FIGHTER_RADIUS,
@@ -218,7 +223,7 @@ def test_fixed_point_movement_is_equal_over_121_ticks_for_every_diagonal_sign() 
     assert diagonals[(-1, -1)] == tuple(-value for value in diagonals[(1, 1)])
 
 
-def test_cardinal_and_all_diagonal_signs_have_equal_full_speed_fatigue_and_replay() -> None:
+def test_cardinal_and_all_diagonal_signs_have_equal_free_movement_and_replay() -> None:
     vectors = [(1000, 0), (1000, 1000), (-1000, 1000), (1000, -1000), (-1000, -1000)]
     engines = [make_engine(seed=91, round_ticks=2000) for _ in vectors]
     replay = make_engine(seed=91, round_ticks=2000)
@@ -239,14 +244,14 @@ def test_cardinal_and_all_diagonal_signs_have_equal_full_speed_fatigue_and_repla
         for engine in engines
         for fighter in (engine.fighter("one"),)
     }
-    assert resource_states == {(2, 758, 992)}
+    assert resource_states == {(2, 1000, 1000)}
     assert engines[1].snapshot().checksum == replay.snapshot().checksum
     assert encode_snapshot(engines[1].snapshot(), viewer_id="one") == encode_snapshot(
         replay.snapshot(), viewer_id="one"
     )
 
 
-def test_sub_500_movement_has_fatigue_while_zero_input_recovers() -> None:
+def test_sub_500_movement_is_free_while_zero_input_recovers_spent_stamina() -> None:
     moving = make_engine(seed=92, round_ticks=2000)
     mover = moving.fighter("one")
     moving.step({"one": command(1, move_x=499)})
@@ -255,8 +260,8 @@ def test_sub_500_movement_has_fatigue_while_zero_input_recovers() -> None:
 
     assert mover.x > -45
     assert mover.movement_load == 1
-    assert mover.stamina == 980
-    assert mover.conditioning == 999
+    assert mover.stamina == 1000
+    assert mover.conditioning == 1000
 
     stationary = make_engine(seed=93, round_ticks=2000)
     resting = stationary.fighter("one")
@@ -270,7 +275,7 @@ def test_sub_500_movement_has_fatigue_while_zero_input_recovers() -> None:
     assert resting.conditioning == 1000
 
 
-def test_pulsed_full_and_neutral_movement_cannot_exploit_momentum_recovery() -> None:
+def test_pulsed_and_analog_movement_are_both_free_during_momentum() -> None:
     ticks = 90
 
     def move(pulsed: bool) -> tuple[int, int, int, list[int]]:
@@ -291,11 +296,11 @@ def test_pulsed_full_and_neutral_movement_cannot_exploit_momentum_recovery() -> 
 
     assert abs(pulsed_x - analog_x) <= 2
     assert neutral_loads and set(neutral_loads) == {1}
-    assert pulsed_stamina < analog_stamina
-    assert pulsed_conditioning <= analog_conditioning
+    assert pulsed_stamina == analog_stamina == 1000
+    assert pulsed_conditioning == analog_conditioning == 1000
 
 
-def test_momentum_only_frames_cost_stamina_until_true_stationary_recovery() -> None:
+def test_momentum_only_frames_neither_drain_nor_regenerate_until_stationary() -> None:
     engine = make_engine(seed=96, round_ticks=2000)
     fighter = engine.fighter("one")
     fighter.stamina = 700
@@ -308,7 +313,7 @@ def test_momentum_only_frames_cost_stamina_until_true_stationary_recovery() -> N
 
     assert fighter.velocity_fixed_x or fighter.velocity_fixed_y
     assert fighter.movement_load == 2
-    assert fighter.stamina < before_neutral
+    assert fighter.stamina == before_neutral
     moving_frames = 1
     while fighter.velocity_fixed_x or fighter.velocity_fixed_y:
         before = fighter.stamina
@@ -316,7 +321,7 @@ def test_momentum_only_frames_cost_stamina_until_true_stationary_recovery() -> N
         if fighter.velocity_fixed_x or fighter.velocity_fixed_y:
             moving_frames += 1
             assert fighter.movement_load >= 1
-            assert fighter.stamina < before
+            assert fighter.stamina == before
 
     stopped_x = fighter.x
     before_recovery = fighter.stamina
@@ -537,7 +542,14 @@ def test_exchange_stamina_recovers_but_long_term_fatigue_persists_after_rest() -
     engine = make_engine(round_ticks=90, rounds=2, rest_ticks=30)
     one = engine.fighter("one")
     initial_maximum = one.maximum_stamina
-    engine.step({"one": command(1, move_x=1000, move_y=1000)})
+    engine.step(
+        {
+            "one": command(
+                1,
+                action=punch(PunchClass.UPPERCUT, power=Power.POWER),
+            )
+        }
+    )
     while engine.phase is MatchPhase.FIGHT and engine.result is None:
         engine.step()
     assert engine.phase is MatchPhase.REST
@@ -817,58 +829,123 @@ def test_collision_and_referee_separation_stay_inside_rope_center_bounds() -> No
         assert -maximum_y <= fighter.y <= maximum_y
 
 
-def test_batched_actions_queue_in_order_and_safely_drop_overflow() -> None:
+def test_action_buffer_coalesces_spam_and_new_intent_replaces_or_cancels_stale() -> None:
     engine = make_engine(round_ticks=2000)
-    jab = punch(PunchClass.JAB, hand=Hand.LEFT)
-    stance = MovementAction(ActionKind.SWITCH_STANCE)
-
-    engine.step({"one": command(1, actions=(jab, stance))})
-    assert len(engine.fighter("one").pending_actions) == 1
-    advance_until(engine, {"stance"}, limit=40)
-    assert engine.fighter("one").stance is Stance.SOUTHPAW
-    assert [event.kind for event in engine.events].count("punch_start") == 1
-
-    saturated = make_engine(round_ticks=2000)
-    four = tuple(MovementAction(ActionKind.SWITCH_STANCE) for _ in range(4))
-    assert saturated.submit_input("one", command(1, actions=four)) is True
-    assert saturated.submit_input("one", command(2, actions=four)) is True
-    assert len(saturated.fighter("one").pending_actions) == MAX_PENDING_ACTIONS
-    assert saturated.submit_input("one", command(3, actions=(stance,))) is True
-    assert len(saturated.fighter("one").pending_actions) == MAX_PENDING_ACTIONS
-
-
-def test_queued_combo_only_rewards_authored_compatible_chain() -> None:
-    compatible = make_engine(round_ticks=2000)
-    compatible.step(
+    engine.step(
         {
             "one": command(
                 1,
-                actions=(
-                    punch(PunchClass.JAB, hand=Hand.LEFT),
-                    punch(PunchClass.STRAIGHT, hand=Hand.RIGHT),
-                ),
+                action=punch(PunchClass.UPPERCUT, power=Power.POWER),
             )
         }
     )
-    while len([event for event in compatible.events if event.kind == "punch_start"]) < 2:
-        compatible.step()
+    fighter = engine.fighter("one")
+    repeated = punch(PunchClass.JAB, hand=Hand.LEFT)
+
+    for sequence in range(2, 102):
+        assert engine.submit_input("one", command(sequence, action=repeated)) is True
+    assert fighter.pending_actions == [repeated]
+
+    latest = punch(PunchClass.HOOK, hand=Hand.RIGHT)
+    assert engine.submit_input("one", command(102, action=latest)) is True
+    assert fighter.pending_actions == [latest]
+
+    assert (
+        engine.submit_input(
+            "one",
+            command(103, defense=DefensivePose.GUARD_HIGH),
+        )
+        is True
+    )
+    assert fighter.pending_actions == []
+    assert fighter.held_input.defense is DefensivePose.GUARD_HIGH
+
+
+def test_held_guard_heartbeat_preserves_a_new_guarded_follow_up() -> None:
+    engine = make_engine(round_ticks=2000)
+    engine.step(
+        {
+            "one": command(
+                1,
+                action=punch(PunchClass.UPPERCUT, power=Power.POWER),
+            )
+        }
+    )
+    attack = engine.fighter("one").attack
+    assert attack is not None
+    while attack.total_ticks - attack.age > 2:
+        engine.step()
+
+    follow_up = punch(PunchClass.JAB)
+    assert engine.submit_input(
+        "one",
+        command(2, action=follow_up, defense=DefensivePose.GUARD_HIGH),
+    )
+    assert engine.submit_input(
+        "one",
+        command(3, defense=DefensivePose.GUARD_HIGH),
+    )
+    assert engine.fighter("one").pending_actions == [follow_up]
+
+    for _ in range(ACTION_BUFFER_TICKS):
+        engine.step()
+        if [event.kind for event in engine.events].count("punch_start") == 2:
+            break
+    assert [event.kind for event in engine.events].count("punch_start") == 2
+
+
+def test_action_buffer_expires_instead_of_forcing_old_directives() -> None:
+    engine = make_engine(round_ticks=2000)
+    engine.step(
+        {
+            "one": command(
+                1,
+                action=punch(PunchClass.UPPERCUT, power=Power.POWER),
+            )
+        }
+    )
+    assert (
+        engine.submit_input(
+            "one",
+            command(2, action=punch(PunchClass.JAB)),
+        )
+        is True
+    )
+    assert engine.fighter("one").pending_actions
+
+    for _ in range(ACTION_BUFFER_TICKS + 1):
+        engine.step()
+
+    assert engine.fighter("one").pending_actions == []
+    assert [event.kind for event in engine.events].count("punch_start") == 1
+
+
+def test_short_buffered_combo_only_rewards_authored_compatible_chain() -> None:
+    def buffered_chain(first: PunchAction, second: PunchAction) -> BoxingEngine:
+        engine = make_engine(round_ticks=2000)
+        engine.step({"one": command(1, action=first)})
+        attack = engine.fighter("one").attack
+        assert attack is not None
+        while attack.total_ticks - attack.age > 2:
+            engine.step()
+        engine.step({"one": command(2, action=second)})
+        for _ in range(10):
+            if len([event for event in engine.events if event.kind == "punch_start"]) == 2:
+                return engine
+            engine.step()
+        raise AssertionError("buffered follow-up did not start")
+
+    compatible = buffered_chain(
+        punch(PunchClass.JAB, hand=Hand.LEFT),
+        punch(PunchClass.STRAIGHT, hand=Hand.RIGHT),
+    )
     assert compatible.fighter("one").attack is not None
     assert compatible.fighter("one").attack.combo_bonus == 10
 
-    incompatible = make_engine(round_ticks=2000)
-    incompatible.step(
-        {
-            "one": command(
-                1,
-                actions=(
-                    punch(PunchClass.HOOK, hand=Hand.LEFT),
-                    punch(PunchClass.STRAIGHT, hand=Hand.RIGHT),
-                ),
-            )
-        }
+    incompatible = buffered_chain(
+        punch(PunchClass.HOOK, hand=Hand.LEFT),
+        punch(PunchClass.STRAIGHT, hand=Hand.RIGHT),
     )
-    while len([event for event in incompatible.events if event.kind == "punch_start"]) < 2:
-        incompatible.step()
     assert incompatible.fighter("one").attack is not None
     assert incompatible.fighter("one").attack.combo_bonus == 0
 
@@ -890,7 +967,7 @@ def test_stun_cancels_non_simultaneous_attack_instead_of_resuming_it() -> None:
     )
 
 
-def test_clinch_startup_is_interruptible_and_cancels_delayed_attacks() -> None:
+def test_clinch_startup_is_interruptible_and_latest_batch_intent_wins() -> None:
     engine = make_engine(round_ticks=2000)
     engine.step(
         {
@@ -906,8 +983,8 @@ def test_clinch_startup_is_interruptible_and_cancels_delayed_attacks() -> None:
         engine.step()
     assert not any(event.kind == "clinch" for event in engine.events)
 
-    cancellation = make_engine(round_ticks=2000)
-    cancellation.step(
+    latest = make_engine(round_ticks=2000)
+    latest.step(
         {
             "one": command(
                 1,
@@ -915,12 +992,10 @@ def test_clinch_startup_is_interruptible_and_cancels_delayed_attacks() -> None:
             )
         }
     )
-    advance_until(cancellation, {"clinch"}, limit=20)
-    assert cancellation.fighter("one").attack is None
-    advance_until(cancellation, {"referee_break"}, limit=60)
-    for _ in range(30):
-        cancellation.step()
-    assert not any(event.kind == "punch_start" for event in cancellation.events)
+    assert latest.fighter("one").attack is not None
+    assert latest.fighter("one").clinch_startup_ticks == 0
+    assert [event.kind for event in latest.events].count("punch_start") == 1
+    assert not any(event.kind == "clinch" for event in latest.events)
 
 
 def test_checksum_covers_hidden_authority_state_and_snapshot_encoding_is_stable() -> None:
@@ -1147,37 +1222,34 @@ def test_completed_close_round_applies_live_foul_deduction() -> None:
     )
 
 
-def test_sustained_movement_costs_stamina_and_late_round_output_declines_after_rest() -> None:
+def test_sustained_movement_is_free_but_punches_still_spend_resources() -> None:
     mover = make_engine(round_ticks=2000)
+    initial_stamina = mover.fighter("one").stamina
+    initial_conditioning = mover.fighter("one").conditioning
     mover.step({"one": command(1, move_x=1000, move_y=1000)})
-    initial = mover.fighter("one").stamina
     for _ in range(30):
         mover.step()
-    assert mover.fighter("one").stamina < initial
-    mover.step({"one": command(2)})
-    stopped = mover.fighter("one").stamina
-    for _ in range(30):
-        mover.step()
-    assert mover.fighter("one").stamina > stopped
 
-    fatigued = make_engine(round_ticks=300, rounds=2, rest_ticks=30)
-    fatigued.step({"one": command(1, move_x=1000, move_y=1000)})
-    while fatigued.phase is MatchPhase.FIGHT:
-        fatigued.step()
-    while fatigued.phase is MatchPhase.REST:
-        fatigued.step()
-    fatigued.fighter("one").x = -45
-    fatigued.fighter("one").y = 0
-    fatigued.fighter("two").x = 45
-    fatigued.fighter("two").y = 0
-    fatigued.step({"one": command(2, action=punch(PunchClass.STRAIGHT))})
-    advance_until(fatigued, {"hit", "counter_hit"})
-    late_damage = fatigued.fighter("one").damage_dealt
+    assert mover.fighter("one").stamina == initial_stamina
+    assert mover.fighter("one").conditioning == initial_conditioning
 
-    fresh = make_engine(round_ticks=2000)
-    fresh.step({"one": command(1, action=punch(PunchClass.STRAIGHT))})
-    advance_until(fresh, {"hit", "counter_hit"})
-    assert late_damage < fresh.fighter("one").damage_dealt
+    attacker = make_engine(round_ticks=2000)
+    attacker.fighter("one").x = -400
+    attacker.fighter("two").x = 400
+    initial_stamina = attacker.fighter("one").stamina
+    initial_conditioning = attacker.fighter("one").conditioning
+    attacker.step(
+        {
+            "one": command(
+                1,
+                action=punch(PunchClass.UPPERCUT, power=Power.POWER),
+            )
+        }
+    )
+    advance_until(attacker, {"whiff"})
+
+    assert attacker.fighter("one").stamina < initial_stamina
+    assert attacker.fighter("one").conditioning < initial_conditioning
 
 
 def test_swelling_bleeding_same_tick_trades_and_snapshot_payloads_follow_behavior() -> None:
@@ -1263,17 +1335,18 @@ def test_simultaneous_clinch_attempts_resolve_once() -> None:
     assert len([event for event in engine.events if event.kind == "clinch"]) == 1
 
 
-def test_queue_overflow_coalesces_held_controls_and_consumes_sequence() -> None:
+def test_newest_input_replaces_buffer_and_coalesces_held_controls_and_sequence() -> None:
     engine = make_engine(round_ticks=2000)
     queued = tuple(MovementAction(ActionKind.SWITCH_STANCE) for _ in range(MAX_PENDING_ACTIONS))
     assert engine.submit_input("one", InputCommand(1, 1, actions=queued)) is True
+    latest = MovementAction(ActionKind.CLINCH)
     overflow = InputCommand(
         sequence=2,
         client_tick=2,
         move_x=-800,
         move_y=600,
         defense=DefensivePose.GUARD_LOW,
-        actions=(MovementAction(ActionKind.CLINCH),),
+        actions=(latest,),
     )
 
     assert engine.submit_input("one", overflow) is True
@@ -1282,7 +1355,7 @@ def test_queue_overflow_coalesces_held_controls_and_consumes_sequence() -> None:
     assert fighter.held_input.move_x == -800
     assert fighter.held_input.move_y == 600
     assert fighter.held_input.defense is DefensivePose.GUARD_LOW
-    assert tuple(fighter.pending_actions) == queued
+    assert tuple(fighter.pending_actions) == (latest,)
     assert engine.submit_input("one", overflow) is False
 
 

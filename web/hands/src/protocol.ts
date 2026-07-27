@@ -142,7 +142,7 @@ function fighter(value: unknown): FighterSnapshot {
     trauma: trauma(o.trauma), knockdowns: integer(o.knockdowns, "knockdowns", 0, 3), warnings: integer(o.warnings, "warnings", 0, 3), deductions: integer(o.deductions, "deductions", 0, 1),
     stunned_ticks: integer(o.stunned_ticks, "stunned_ticks", 0, 90), is_downed: bool(o.is_downed, "is_downed"),
     action, action_hand: actionHand, action_target: actionTarget, action_power: actionPower,
-    queued_actions: integer(o.queued_actions, "queued_actions", 0, 8), clinch_startup_ticks: integer(o.clinch_startup_ticks, "clinch_startup_ticks", 0, 8), clinch_ticks: integer(o.clinch_ticks, "clinch_ticks", 0, 45),
+    queued_actions: integer(o.queued_actions, "queued_actions", 0, 1), clinch_startup_ticks: integer(o.clinch_startup_ticks, "clinch_startup_ticks", 0, 8), clinch_ticks: integer(o.clinch_ticks, "clinch_ticks", 0, 45),
     is_foul_recovery_target: bool(o.is_foul_recovery_target, "is_foul_recovery_target"), get_up_prompt: prompt,
     get_up_meter: integer(o.get_up_meter, "get_up_meter", 0, 256), get_up_required: getUpRequired, get_up_count: integer(o.get_up_count, "get_up_count", 0, 10),
     get_up_window_start_tick: integer(o.get_up_window_start_tick, "get_up_window_start_tick"), get_up_window_end_tick: integer(o.get_up_window_end_tick, "get_up_window_end_tick"),
@@ -184,7 +184,21 @@ export function decodeServerFrame(frame: string | ArrayBuffer | Uint8Array): Ser
   const o = object(parseStrictJson(frame), "envelope");
   if (o.version !== PROTOCOL_VERSION) throw new ProtocolError("unsupported protocol version");
   const type = string(o.type, "type", 32);
-  if (type === "welcome") { exact(o, ["version", "type", "player_id", "seat", "rating", "players", "server_tick", "next_sequence"], ["reconnect_ticket"]); const playerId = string(o.player_id, "player_id"), decodedPlayers = players(o.players); if (!decodedPlayers.some((player) => player.id === playerId)) throw new ProtocolError("welcome player is absent"); const decoded = { version: 1 as const, type: "welcome" as const, player_id: playerId, seat: integer(o.seat, "seat", 1, 2) as 1 | 2, rating: integer(o.rating, "rating"), players: decodedPlayers, server_tick: integer(o.server_tick, "server_tick"), next_sequence: integer(o.next_sequence, "next_sequence") }; return o.reconnect_ticket === undefined ? decoded : { ...decoded, reconnect_ticket: string(o.reconnect_ticket, "reconnect_ticket", 4096) }; }
+  if (type === "welcome") {
+    const role = oneOf(o.role, ["fighter", "spectator"] as const, "connection role");
+    const playerId = string(o.player_id, "player_id");
+    const reconnect = o.reconnect_ticket === undefined ? {} : { reconnect_ticket: string(o.reconnect_ticket, "reconnect_ticket", 4096) };
+    if (role === "fighter") {
+      exact(o, ["version", "type", "role", "player_id", "seat", "rating", "players", "server_tick", "next_sequence"], ["reconnect_ticket"]);
+      const decodedPlayers = players(o.players);
+      if (!decodedPlayers.some((player) => player.id === playerId)) throw new ProtocolError("welcome fighter is absent");
+      return { version: 1, type, role, player_id: playerId, seat: integer(o.seat, "seat", 1, 2) as 1 | 2, rating: integer(o.rating, "rating"), players: decodedPlayers, server_tick: integer(o.server_tick, "server_tick"), next_sequence: integer(o.next_sequence, "next_sequence"), ...reconnect };
+    }
+    exact(o, ["version", "type", "role", "player_id", "players", "server_tick"], ["reconnect_ticket"]);
+    const decodedPlayers = players(o.players, 2);
+    if (decodedPlayers.some((player) => player.id === playerId)) throw new ProtocolError("spectator cannot be a fighter");
+    return { version: 1, type, role, player_id: playerId, players: [decodedPlayers[0]!, decodedPlayers[1]!], server_tick: integer(o.server_tick, "server_tick"), ...reconnect };
+  }
   if (type === "ticket") { exact(o, ["version", "type", "reconnect_ticket", "refresh_id"]); return { version: 1, type, reconnect_ticket: string(o.reconnect_ticket, "reconnect_ticket", 4096), refresh_id: string(o.refresh_id, "refresh_id", 128, 16) }; }
   if (type === "waiting") { exact(o, ["version", "type", "open_seats"]); if (o.open_seats !== 1) throw new ProtocolError("invalid open seats"); return { version: 1, type, open_seats: 1 }; }
   if (type === "ready") { exact(o, ["version", "type", "players"]); const ps = players(o.players, 2); return { version: 1, type, players: [ps[0]!, ps[1]!] }; }

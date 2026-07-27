@@ -1,10 +1,11 @@
-import type { EngineSnapshot, FinalMessage, PublicPlayer, ServerMessage, SimulationInfo, TokenPlayer } from "./types";
+import type { ConnectionRole, EngineSnapshot, FinalMessage, PublicPlayer, ServerMessage, SimulationInfo, TokenPlayer } from "./types";
 
 export type AppStage = "bootstrapping" | "authorizing" | "connecting" | "waiting" | "countdown" | "fight" | "knockdown" | "foul_recovery" | "rest" | "paused" | "complete" | "fatal";
 export interface GameState {
   readonly stage: AppStage;
   readonly player: TokenPlayer | null;
   readonly playerId: string | null;
+  readonly role: ConnectionRole | null;
   readonly players: Readonly<Record<string, PublicPlayer>>;
   readonly simulation: SimulationInfo | null;
   readonly snapshot: EngineSnapshot | null;
@@ -14,7 +15,7 @@ export interface GameState {
   readonly reconnectMs: number;
   readonly safeError: string | null;
 }
-export const initialState: GameState = { stage: "bootstrapping", player: null, playerId: null, players: {}, simulation: null, snapshot: null, final: null, serverTick: 0, nextSequence: 0, reconnectMs: 0, safeError: null };
+export const initialState: GameState = { stage: "bootstrapping", player: null, playerId: null, role: null, players: {}, simulation: null, snapshot: null, final: null, serverTick: 0, nextSequence: 0, reconnectMs: 0, safeError: null };
 export type StateAction = { type: "bootstrap"; simulation: SimulationInfo } | { type: "authorized"; player: TokenPlayer } | { type: "connecting" } | { type: "message"; message: ServerMessage } | { type: "reconnect-tick"; remainingMs: number } | { type: "fatal"; code: string };
 const mapPlayers = (players: readonly PublicPlayer[]): Readonly<Record<string, PublicPlayer>> => Object.fromEntries(players.map((player) => [player.id, player]));
 
@@ -26,7 +27,7 @@ export function reduceState(state: GameState, action: StateAction): GameState {
   if (action.type === "fatal") return { ...state, stage: "fatal", safeError: action.code, reconnectMs: 0 };
   const message = action.message;
   switch (message.type) {
-    case "welcome": return { ...state, playerId: message.player_id, players: mapPlayers(message.players), serverTick: message.server_tick, nextSequence: message.next_sequence, safeError: null };
+    case "welcome": return { ...state, playerId: message.role === "fighter" ? message.player_id : null, role: message.role, players: mapPlayers(message.players), serverTick: message.server_tick, nextSequence: message.role === "fighter" ? message.next_sequence : 0, safeError: null };
     case "ticket": return state;
     case "waiting": return { ...state, stage: "waiting" };
     case "ready": return { ...state, stage: state.snapshot?.phase ?? "countdown", players: mapPlayers(message.players) };

@@ -59,7 +59,8 @@ CLINCH_STARTUP_TICKS: Final = 8
 CLINCH_TICKS: Final = 45
 FOUL_RECOVERY_TICKS: Final = 60
 COUNT_TICK_INTERVAL: Final = TICKS_PER_SECOND
-MAX_PENDING_ACTIONS: Final = 8
+MAX_PENDING_ACTIONS: Final = 1
+ACTION_BUFFER_TICKS: Final = 6
 GET_UP_PROMPT_TICKS: Final = 12
 GET_UP_WINDOW_START_OFFSET: Final = 3
 GET_UP_WINDOW_END_OFFSET: Final = 8
@@ -161,6 +162,7 @@ class FighterState:
     last_sequence: int = -1
     held_input: InputCommand = field(default_factory=lambda: InputCommand(0, 0))
     pending_actions: list[SemanticAction] = field(default_factory=list)
+    pending_action_expires_tick: int = 0
     performance: RoundPerformance = field(default_factory=RoundPerformance)
     damage_dealt: int = 0
     movement_load: int = 0
@@ -324,6 +326,11 @@ class BoxingEngine:
         except KeyError as exc:
             raise ValueError("unknown player") from exc
 
+    def clear_action_buffers(self) -> None:
+        for fighter in self._fighters.values():
+            fighter.pending_actions.clear()
+            fighter.pending_action_expires_tick = 0
+
     def submit_input(self, player_id: str, command: InputCommand) -> bool:
         fighter = self.fighter(player_id)
         if self.result is not None or self.phase is MatchPhase.COMPLETE:
@@ -331,6 +338,14 @@ class BoxingEngine:
         if command.sequence <= fighter.last_sequence:
             return False
         fighter.last_sequence = command.sequence
+        guard_started = (
+            command.defense
+            in (
+                DefensivePose.GUARD_HIGH,
+                DefensivePose.GUARD_LOW,
+            )
+            and command.defense is not fighter.held_input.defense
+        )
         fighter.held_input = InputCommand(
             sequence=command.sequence,
             client_tick=command.client_tick,
@@ -338,8 +353,16 @@ class BoxingEngine:
             move_y=command.move_y,
             defense=command.defense,
         )
-        if len(fighter.pending_actions) + len(command.actions) <= MAX_PENDING_ACTIONS:
-            fighter.pending_actions.extend(command.actions)
+        if command.actions:
+            recent_actions: list[SemanticAction] = []
+            for action in command.actions:
+                if not recent_actions or action != recent_actions[-1]:
+                    recent_actions.append(action)
+            fighter.pending_actions[:] = recent_actions[-MAX_PENDING_ACTIONS:]
+            fighter.pending_action_expires_tick = self.tick + ACTION_BUFFER_TICKS
+        elif guard_started:
+            fighter.pending_actions.clear()
+            fighter.pending_action_expires_tick = 0
         return True
 
     def step(self, inputs: dict[str, InputCommand] | None = None) -> EngineSnapshot:
@@ -434,6 +457,10 @@ class BoxingEngine:
             if fighter.defense is not fighter.held_input.defense:
                 fighter.defense_started_tick = self.tick
             fighter.defense = fighter.held_input.defense
+
+        if fighter.pending_actions and self.tick > fighter.pending_action_expires_tick:
+            fighter.pending_actions.clear()
+            fighter.pending_action_expires_tick = 0
 
         attack = fighter.attack
         if attack is not None:
@@ -859,10 +886,6 @@ class BoxingEngine:
         )
         movement_load = 2 if above_half_speed else int(moving)
         fighter.movement_load = movement_load
-        movement_cost = movement_load
-        fighter.stamina = max(0, fighter.stamina - movement_cost)
-        if self.tick % 15 == 0 and movement_load:
-            fighter.conditioning = max(0, fighter.conditioning - 1)
         self._update_facing(fighter, opponent)
 
     @staticmethod
@@ -1332,6 +1355,9 @@ class BoxingEngine:
                     "last_sequence": fighter.last_sequence,
                     "held_input": fighter.held_input,
                     "pending_actions": fighter.pending_actions,
+                    "pending_action_expires_tick": (
+                        fighter.pending_action_expires_tick if fighter.pending_actions else 0
+                    ),
                     "performance": fighter.performance,
                     "damage_dealt": fighter.damage_dealt,
                     "movement_load": fighter.movement_load,

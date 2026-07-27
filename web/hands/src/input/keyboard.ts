@@ -1,3 +1,4 @@
+import { SharedActionIntent, pushActionIntent } from "./action-buffer";
 import { ACTION_KEYS, ACTIVE_CODES, PUNCH_KEYS } from "./bindings";
 import type { HeldDefense, InputFrame, SemanticAction } from "../types";
 
@@ -7,6 +8,7 @@ export class KeyboardInput {
   private readonly keydown = (event: KeyboardEvent): void => {
     if (!this.enabled || !ACTIVE_CODES.has(event.code)) return;
     event.preventDefault(); if (event.repeat) return; this.held.add(event.code);
+    if (event.code === "KeyQ" || event.code === "KeyE") this.clearActions();
     const punch = PUNCH_KEYS[event.code];
     if (punch !== undefined) this.push({ kind: "punch", hand: punch[0], class: punch[1], target: this.hasShift() ? "body" : "head", power: this.hasAlt() ? "power" : "normal" });
     else { const action = ACTION_KEYS[event.code]; if (action !== undefined) this.push(action); }
@@ -14,20 +16,21 @@ export class KeyboardInput {
   private readonly keyup = (event: KeyboardEvent): void => { if (ACTIVE_CODES.has(event.code)) { if (this.enabled) event.preventDefault(); this.held.delete(event.code); } };
   private readonly visibility = (): void => { if (document.hidden) this.reset(); };
   private readonly blur = (): void => this.reset();
-  constructor(private readonly target: Window = window, private readonly maximumQueue = 24) {
+  constructor(private readonly target: Window = window, private readonly maximumQueue = 1, private readonly sharedActions?: SharedActionIntent) {
     target.addEventListener("keydown", this.keydown); target.addEventListener("keyup", this.keyup); target.addEventListener("blur", this.blur); document.addEventListener("visibilitychange", this.visibility);
   }
   private hasShift(): boolean { return this.held.has("ShiftLeft") || this.held.has("ShiftRight"); }
   private hasAlt(): boolean { return this.held.has("AltLeft") || this.held.has("AltRight"); }
-  private push(action: SemanticAction): void { if (this.queue.length < this.maximumQueue) this.queue.push(action); }
+  private push(action: SemanticAction): void { if (this.sharedActions === undefined) pushActionIntent(this.queue, action, this.maximumQueue); else this.sharedActions.push("keyboard", action); }
+  private clearActions(): void { this.queue.length = 0; this.sharedActions?.clear(); }
   setEnabled(enabled: boolean): void { this.enabled = enabled; if (!enabled) this.reset(); }
   frame(maxActions = 4): InputFrame {
     let x = (this.held.has("KeyD") ? 1000 : 0) - (this.held.has("KeyA") ? 1000 : 0);
     let y = (this.held.has("KeyW") ? 1000 : 0) - (this.held.has("KeyS") ? 1000 : 0);
     if (x !== 0 && y !== 0) { x = Math.sign(x) * 707; y = Math.sign(y) * 707; }
     const defense: HeldDefense = this.held.has("KeyQ") ? "guard_high" : this.held.has("KeyE") ? "guard_low" : "none";
-    return { moveX: x, moveY: y, defense, actions: this.queue.splice(0, maxActions) };
+    return { moveX: x, moveY: y, defense, actions: this.sharedActions === undefined ? this.queue.splice(0, maxActions) : [] };
   }
-  reset(): void { this.held.clear(); this.queue.length = 0; }
+  reset(): void { this.held.clear(); this.queue.length = 0; this.sharedActions?.clearSource("keyboard"); }
   destroy(): void { this.reset(); this.target.removeEventListener("keydown", this.keydown); this.target.removeEventListener("keyup", this.keyup); this.target.removeEventListener("blur", this.blur); document.removeEventListener("visibilitychange", this.visibility); }
 }

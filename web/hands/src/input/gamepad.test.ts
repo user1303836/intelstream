@@ -64,6 +64,41 @@ describe("gamepad semantic parity", () => {
     input.destroy();
   });
 
+  it("guard start cancels stale intent while a later guarded punch remains responsive", () => {
+    let current = pad([0]);
+    Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [current] });
+    const input = new GamepadInput();
+    poll(input);
+    current = pad(); poll(input);
+    current = pad([4]); poll(input);
+    expect(input.frame()).toMatchObject({ defense: "guard_high", actions: [] });
+    current = pad([4, 0]); poll(input);
+    expect(input.frame().actions).toEqual([{ kind: "punch", hand: "right", class: "jab", target: "head", power: "normal" }]);
+    input.destroy();
+  });
+
+  it("coalesces spam and keeps the newest changed button intent", () => {
+    let current = pad();
+    Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [current] });
+    const repeated = new GamepadInput(1);
+    for (let index = 0; index < 100; index += 1) {
+      current = pad([0]); poll(repeated);
+      current = pad(); poll(repeated);
+    }
+    expect(repeated.frame().actions).toEqual([{ kind: "punch", hand: "right", class: "jab", target: "head", power: "normal" }]);
+    repeated.destroy();
+
+    const changed = new GamepadInput(1);
+    for (const index of [0, 1, 2]) {
+      current = pad([index]); poll(changed);
+      current = pad(); poll(changed);
+    }
+    expect(changed.frame().actions).toEqual([
+      { kind: "punch", hand: "right", class: "hook", target: "head", power: "normal" },
+    ]);
+    changed.destroy();
+  });
+
   it("feature-detects absent and throwing gamepad APIs", () => {
     Object.defineProperty(navigator, "getGamepads", { configurable: true, value: undefined });
     const missing = new GamepadInput();

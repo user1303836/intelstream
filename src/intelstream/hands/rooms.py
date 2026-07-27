@@ -7,7 +7,7 @@ import secrets
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import uuid4
 
 import structlog
@@ -30,6 +30,8 @@ if TYPE_CHECKING:
     from intelstream.hands.types import MatchResult
 
 logger = structlog.get_logger(__name__)
+
+ConnectionRole = Literal["fighter", "spectator"]
 
 
 class SocketLike(Protocol):
@@ -57,6 +59,7 @@ class RoomConfig:
     max_catch_up_ticks: int = 4
     max_inputs_per_second: int = 60
     outbound_queue_size: int = 16
+    max_spectators: int = 20
     engine_config: EngineConfig = field(default_factory=EngineConfig)
 
     def __post_init__(self) -> None:
@@ -78,6 +81,8 @@ class RoomConfig:
             or self.final_delivery_timeout_seconds <= 0
         ):
             raise ValueError("room durations are invalid")
+        if self.max_spectators < 0:
+            raise ValueError("spectator bound must not be negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,12 +112,22 @@ class PlayerSlot:
     grace_remaining: float
     last_sequence: int = -1
     input_times: deque[float] = field(default_factory=deque)
+    reconnect_deadline: float | None = None
+    pre_match_grace_event: asyncio.Event = field(default_factory=asyncio.Event)
+    pre_match_grace_task: asyncio.Task[None] | None = None
+
+
+@dataclass(slots=True)
+class SpectatorSlot:
+    identity: AuthenticatedPlayer
+    connection: PlayerConnection
 
 
 @dataclass(frozen=True, slots=True)
 class RoomMembership:
     room: HandsRoom
     player_id: str
+    role: ConnectionRole
     connection: PlayerConnection
     reconnect_ticket: str | None
 
@@ -122,6 +137,7 @@ class UserRoomReservation:
     room: HandsRoom
     owner: object
     established: bool = False
+    connection: PlayerConnection | None = None
 
 
 class HandsRoom:
@@ -148,6 +164,7 @@ class HandsRoom:
         self._match_id_factory = match_id_factory
         self._seed_factory = seed_factory
         self._slots: dict[str, PlayerSlot] = {}
+        self._spectators: dict[str, SpectatorSlot] = {}
         self._engine: BoxingEngine | None = None
         self._tick_task: asyncio.Task[None] | None = None
         self._persistence_task: asyncio.Task[HandsMatch] | None = None
@@ -158,6 +175,7 @@ class HandsRoom:
         self._accepting_reconnects = True
         self._final_payload: str | None = None
         self._lock = asyncio.Lock()
+        self._admission_lock = asyncio.Lock()
         self._background_tasks: set[asyncio.Task[None]] = set()
 
     @property
@@ -171,6 +189,14 @@ class HandsRoom:
     @property
     def player_ids(self) -> tuple[str, ...]:
         return tuple(self._slots)
+
+    @property
+    def spectator_ids(self) -> tuple[str, ...]:
+        return tuple(self._spectators)
+
+    @property
+    def member_ids(self) -> tuple[str, ...]:
+        return (*self._slots, *self._spectators)
 
     @property
     def finished(self) -> bool:
@@ -190,7 +216,11 @@ class HandsRoom:
         async with self._lock:
             if identity.guild_id != self.guild_id:
                 raise RoomError("invalid_guild")
-            existing = self._slots.get(identity.user_id)
+            existing_fighter = self._slots.get(identity.user_id)
+            existing_spectator = self._spectators.get(identity.user_id)
+            if existing_fighter is not None and existing_spectator is not None:
+                raise RuntimeError("Hands member has conflicting room roles")
+            existing = existing_fighter or existing_spectator
             final_recovery = self._engine is not None and (
                 self._engine.result is not None
                 or self._persistence_task is not None
@@ -202,8 +232,28 @@ class HandsRoom:
                 raise RoomError("room_closed")
             if not final_recovery and (self._finished or self._persistence_task is not None):
                 raise RoomError("room_closed")
-            if existing is None and len(self._slots) >= 2:
-                raise RoomError("room_full")
+            if (
+                not final_recovery
+                and existing_fighter is not None
+                and existing_fighter.connection is None
+                and existing_fighter.reconnect_deadline is not None
+            ):
+                self._refresh_grace(existing_fighter, self._clock())
+                if existing_fighter.grace_remaining <= 0:
+                    raise RoomError("room_closed")
+
+            role: ConnectionRole
+            if existing_fighter is not None:
+                role = "fighter"
+            elif existing_spectator is not None:
+                role = "spectator"
+            elif self._engine is None and len(self._slots) < 2:
+                role = "fighter"
+            else:
+                role = "spectator"
+                if len(self._spectators) >= self.config.max_spectators:
+                    raise RoomError("room_full")
+
             if existing is not None and existing.connection is not None:
                 await self._stop_connection(existing.connection, code=4001, reason=b"replaced")
                 final_recovery = self._engine is not None and (
@@ -215,39 +265,67 @@ class HandsRoom:
                     raise RoomError("room_closed")
             if reconnect_ticket_factory is not None:
                 reconnect_ticket = reconnect_ticket_factory()
-            connection = self._new_connection(identity.user_id, socket)
-            if existing is not None:
-                existing.connection = connection
-                existing.identity = identity
-                slot = existing
+            connection = self._new_connection(identity.user_id, role, socket)
+
+            if role == "fighter":
+                if existing_fighter is not None:
+                    existing_fighter.connection = connection
+                    existing_fighter.identity = identity
+                    existing_fighter.grace_remaining = self.config.reconnect_grace_seconds
+                    existing_fighter.reconnect_deadline = None
+                    existing_fighter.pre_match_grace_event.set()
+                    fighter = existing_fighter
+                else:
+                    fighter = PlayerSlot(
+                        identity=identity,
+                        rating=rating,
+                        connection=connection,
+                        grace_remaining=self.config.reconnect_grace_seconds,
+                    )
+                    self._slots[identity.user_id] = fighter
+                seat = tuple(self._slots).index(identity.user_id) + 1
+                welcome: dict[str, object] = {
+                    "role": role,
+                    "player_id": identity.user_id,
+                    "seat": seat,
+                    "rating": fighter.rating,
+                    "players": self._public_players(),
+                    "server_tick": self._engine.tick if self._engine is not None else 0,
+                    "next_sequence": fighter.last_sequence + 1,
+                }
             else:
-                slot = PlayerSlot(
-                    identity=identity,
-                    rating=rating,
-                    connection=connection,
-                    grace_remaining=self.config.reconnect_grace_seconds,
-                )
-                self._slots[identity.user_id] = slot
-            seat = tuple(self._slots).index(identity.user_id) + 1
-            welcome: dict[str, object] = {
-                "player_id": identity.user_id,
-                "seat": seat,
-                "rating": slot.rating,
-                "players": self._public_players(),
-                "server_tick": self._engine.tick if self._engine is not None else 0,
-                "next_sequence": slot.last_sequence + 1,
-            }
+                if existing_spectator is not None:
+                    existing_spectator.connection = connection
+                    existing_spectator.identity = identity
+                else:
+                    self._spectators[identity.user_id] = SpectatorSlot(identity, connection)
+                welcome = {
+                    "role": role,
+                    "player_id": identity.user_id,
+                    "players": self._public_players(),
+                    "server_tick": self._engine.tick if self._engine is not None else 0,
+                }
+
             if reconnect_ticket is not None:
                 welcome["reconnect_ticket"] = reconnect_ticket
             self._enqueue(connection, self._message("welcome", **welcome))
-            if existing is not None and self._engine is not None:
+            if (existing is not None and self._engine is not None) or role == "spectator":
+                assert self._engine is not None
                 self._enqueue(
                     connection,
-                    encode_snapshot(self._engine.snapshot(), viewer_id=identity.user_id),
+                    encode_snapshot(
+                        self._engine.snapshot(),
+                        viewer_id=identity.user_id if role == "fighter" else None,
+                    ),
                 )
             if self._final_payload is not None:
                 self._enqueue(connection, self._final_payload)
-            elif not final_recovery and existing is not None and self._engine is not None:
+            elif (
+                not final_recovery
+                and role == "fighter"
+                and existing_fighter is not None
+                and self._engine is not None
+            ):
                 disconnected = [
                     current for current in self._slots.values() if current.connection is None
                 ]
@@ -266,13 +344,41 @@ class HandsRoom:
                             grace_ms=max(0, int(opponent.grace_remaining * 1000)),
                         ),
                     )
+            elif not final_recovery and role == "spectator" and self._engine is not None:
+                disconnected = [
+                    current for current in self._slots.values() if current.connection is None
+                ]
+                if disconnected:
+                    opponent = disconnected[0]
+                    self._enqueue(
+                        connection,
+                        self._message(
+                            "paused",
+                            player_id=opponent.identity.user_id,
+                            grace_ms=max(0, int(opponent.grace_remaining * 1000)),
+                        ),
+                    )
             elif not final_recovery and len(self._slots) == 1:
                 self._enqueue(connection, self._message("waiting", open_seats=1))
             elif not final_recovery and self._engine is None:
                 self._start_match()
+                disconnected = [
+                    current for current in self._slots.values() if current.connection is None
+                ]
+                if disconnected:
+                    opponent = disconnected[0]
+                    self._enqueue(
+                        connection,
+                        self._message(
+                            "paused",
+                            player_id=opponent.identity.user_id,
+                            grace_ms=max(0, int(opponent.grace_remaining * 1000)),
+                        ),
+                    )
             return RoomMembership(
                 self,
                 identity.user_id,
+                role,
                 connection,
                 reconnect_ticket,
             )
@@ -285,8 +391,12 @@ class HandsRoom:
         refresh_id: str,
     ) -> None:
         async with self._lock:
-            slot = self._slots.get(player_id)
-            if self._closed or slot is None or slot.connection is not connection:
+            fighter = self._slots.get(player_id)
+            spectator = self._spectators.get(player_id)
+            current = fighter.connection if fighter is not None else None
+            if spectator is not None:
+                current = spectator.connection
+            if self._closed or current is not connection:
                 raise RoomError("connection_replaced")
             connection.latest_ticket_refresh = self._message(
                 "ticket",
@@ -297,16 +407,21 @@ class HandsRoom:
                 connection.ticket_refresh_queued = True
                 connection.outbox.put_nowait(_OutboundMessage(ticket_refresh=True))
 
-    def _new_connection(self, player_id: str, socket: SocketLike) -> PlayerConnection:
+    def _new_connection(
+        self, player_id: str, role: ConnectionRole, socket: SocketLike
+    ) -> PlayerConnection:
         # Finite handshake/final bursts share this ordered queue but do not consume the
         # separately bounded allowance for recurring state updates.
         connection = PlayerConnection(socket=socket, outbox=asyncio.Queue())
         connection.writer_task = asyncio.create_task(
-            self._writer(player_id, connection), name=f"hands-writer-{player_id}"
+            self._writer(player_id, role, connection),
+            name=f"hands-writer-{role}-{player_id}",
         )
         return connection
 
-    async def _writer(self, player_id: str, connection: PlayerConnection) -> None:
+    async def _writer(
+        self, player_id: str, role: ConnectionRole, connection: PlayerConnection
+    ) -> None:
         try:
             while True:
                 outbound = await connection.outbox.get()
@@ -328,8 +443,8 @@ class HandsRoom:
         except (ConnectionError, RuntimeError, asyncio.CancelledError):
             if not self._closed:
                 self._spawn(
-                    self.disconnect(player_id, connection),
-                    name=f"hands-disconnect-{player_id}",
+                    self.disconnect(player_id, role, connection),
+                    name=f"hands-disconnect-{role}-{player_id}",
                 )
 
     def _spawn(self, awaitable: Coroutine[Any, Any, None], *, name: str) -> asyncio.Task[None]:
@@ -375,28 +490,49 @@ class HandsRoom:
             _OutboundMessage(message=message, bounded_update=bounded_update)
         )
 
+    def _connected_members(self) -> list[tuple[str, ConnectionRole, PlayerConnection]]:
+        members: list[tuple[str, ConnectionRole, PlayerConnection]] = [
+            (player_id, "fighter", slot.connection)
+            for player_id, slot in self._slots.items()
+            if slot.connection is not None
+        ]
+        members.extend(
+            (player_id, "spectator", slot.connection)
+            for player_id, slot in self._spectators.items()
+        )
+        return members
+
     async def _drop_slow_connection(self, connection: PlayerConnection) -> None:
         try:
             await asyncio.sleep(self.config.tick_interval_seconds)
             if connection.pending_updates < self.config.outbound_queue_size:
                 connection.slow_drop_started = False
                 return
-            for player_id, slot in self._slots.items():
-                if slot.connection is connection:
-                    await self.disconnect(player_id, connection)
+            for player_id, role, current in self._connected_members():
+                if current is connection:
+                    await self.disconnect(player_id, role, connection)
                     return
         finally:
             if connection.slow_drop_task is asyncio.current_task():
                 connection.slow_drop_task = None
 
     def _enqueue_all(self, message: str, *, bounded_update: bool = False) -> None:
-        for slot in self._slots.values():
-            if slot.connection is not None:
-                self._enqueue(slot.connection, message, bounded_update=bounded_update)
+        for _player_id, _role, connection in self._connected_members():
+            self._enqueue(connection, message, bounded_update=bounded_update)
+
+    @staticmethod
+    def _refresh_grace(slot: PlayerSlot, now: float) -> None:
+        if slot.reconnect_deadline is not None:
+            slot.grace_remaining = max(0.0, slot.reconnect_deadline - now)
 
     def _start_match(self) -> None:
         players = tuple(self._slots)
         assert len(players) == 2
+        now = self._clock()
+        for slot in self._slots.values():
+            if slot.connection is None:
+                self._refresh_grace(slot, now)
+            slot.pre_match_grace_event.set()
         self._engine = BoxingEngine(
             match_id=self._match_id_factory(),
             activity_instance_id=self.instance_id,
@@ -415,6 +551,11 @@ class HandsRoom:
         self, player_id: str, connection: PlayerConnection, frame: str | bytes
     ) -> None:
         async with self._lock:
+            spectator = self._spectators.get(player_id)
+            if spectator is not None:
+                if spectator.connection is not connection:
+                    raise RoomError("connection_replaced")
+                raise RoomError("spectator_read_only")
             if (
                 self._closed
                 or self._finished
@@ -449,17 +590,34 @@ class HandsRoom:
             if not engine.submit_input(player_id, command):
                 raise RoomError("input_queue_full")
 
-    async def disconnect(self, player_id: str, connection: PlayerConnection) -> None:
-        pre_match_abandonment = False
+    async def disconnect(
+        self, player_id: str, role: ConnectionRole, connection: PlayerConnection
+    ) -> None:
         async with self._lock:
+            if role == "spectator":
+                spectator = self._spectators.get(player_id)
+                if spectator is None or spectator.connection is not connection:
+                    return
+                self._spectators.pop(player_id, None)
+                await self._stop_connection(connection, code=1001, reason=b"disconnected")
+                return
+
             slot = self._slots.get(player_id)
             if slot is None or slot.connection is not connection:
                 return
             slot.connection = None
             await self._stop_connection(connection, code=1001, reason=b"disconnected")
+            slot.grace_remaining = self.config.reconnect_grace_seconds
+            slot.reconnect_deadline = self._clock() + self.config.reconnect_grace_seconds
+            if self._engine is not None:
+                self._engine.clear_action_buffers()
             if self._engine is None:
-                self._slots.pop(player_id, None)
-                pre_match_abandonment = True
+                if slot.pre_match_grace_task is None or slot.pre_match_grace_task.done():
+                    slot.pre_match_grace_task = self._spawn(
+                        self._expire_pre_match_fighter(player_id, slot),
+                        name=f"hands-waiting-grace-{player_id}",
+                    )
+                slot.pre_match_grace_event.set()
             elif not self._finished:
                 self._enqueue_all(
                     self._message(
@@ -469,23 +627,76 @@ class HandsRoom:
                     ),
                     bounded_update=True,
                 )
-        if pre_match_abandonment:
-            await self._on_finished(self)
+
+    async def _wait_for_pre_match_change(
+        self,
+        event: asyncio.Event,
+        delay: float,
+    ) -> None:
+        sleeper: asyncio.Future[None] = asyncio.ensure_future(self._sleep(delay))
+        changed = asyncio.create_task(event.wait())
+        try:
+            completed, _pending = await asyncio.wait(
+                (sleeper, changed),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in completed:
+                task.result()
+        finally:
+            sleeper.cancel()
+            changed.cancel()
+            await asyncio.gather(sleeper, changed, return_exceptions=True)
+
+    async def _expire_pre_match_fighter(
+        self,
+        player_id: str,
+        slot: PlayerSlot,
+    ) -> None:
+        current = asyncio.current_task()
+        try:
+            while True:
+                expired = False
+                async with self._lock:
+                    if (
+                        self._closed
+                        or self._engine is not None
+                        or self._slots.get(player_id) is not slot
+                    ):
+                        return
+                    slot.pre_match_grace_event.clear()
+                    delay: float | None = None
+                    if slot.connection is None:
+                        self._refresh_grace(slot, self._clock())
+                        if slot.grace_remaining <= 0:
+                            self._slots.pop(player_id, None)
+                            expired = True
+                        else:
+                            delay = slot.grace_remaining
+                if expired:
+                    await self._on_finished(self)
+                    return
+                if delay is None:
+                    await slot.pre_match_grace_event.wait()
+                else:
+                    await self._wait_for_pre_match_change(
+                        slot.pre_match_grace_event,
+                        delay,
+                    )
+        finally:
+            if slot.pre_match_grace_task is current:
+                slot.pre_match_grace_task = None
 
     async def _run_match(self) -> None:
         assert self._engine is not None
         engine = self._engine
         next_tick = self._clock()
-        last_clock = next_tick
         try:
             while not self._closed and engine.result is None:
                 now = self._clock()
-                elapsed = max(0.0, now - last_clock)
-                last_clock = now
                 disconnected = [slot for slot in self._slots.values() if slot.connection is None]
                 if disconnected:
                     for slot in disconnected:
-                        slot.grace_remaining -= elapsed
+                        self._refresh_grace(slot, now)
                     expired = [slot for slot in disconnected if slot.grace_remaining <= 0]
                     if expired and len(disconnected) == len(self._slots):
                         self._ensure_abandon_task()
@@ -537,6 +748,14 @@ class HandsRoom:
                 self._enqueue(
                     slot.connection,
                     encode_snapshot(snapshot, viewer_id=player_id),
+                    bounded_update=True,
+                )
+        if self._spectators:
+            message = encode_snapshot(snapshot, viewer_id=None)
+            for spectator in self._spectators.values():
+                self._enqueue(
+                    spectator.connection,
+                    message,
                     bounded_update=True,
                 )
 
@@ -600,9 +819,7 @@ class HandsRoom:
         await self._on_finished(self)
 
     async def _drain_outboxes(self) -> None:
-        connections = [
-            slot.connection for slot in self._slots.values() if slot.connection is not None
-        ]
+        connections = [connection for _player_id, _role, connection in self._connected_members()]
         if not connections:
             return
         try:
@@ -667,10 +884,11 @@ class HandsRoom:
             self._closed = True
             self._accepting_reconnects = False
             connections = [
-                slot.connection for slot in self._slots.values() if slot.connection is not None
+                connection for _player_id, _role, connection in self._connected_members()
             ]
             for slot in self._slots.values():
                 slot.connection = None
+            self._spectators.clear()
         for connection in connections:
             await self._stop_connection(connection, code=code, reason=reason)
         tick_task = self._tick_task
@@ -679,6 +897,8 @@ class HandsRoom:
             with contextlib.suppress(asyncio.CancelledError):
                 await tick_task
         background = [task for task in self._background_tasks if task is not asyncio.current_task()]
+        for task in background:
+            task.cancel()
         if background:
             await asyncio.gather(*background, return_exceptions=True)
 
@@ -759,44 +979,46 @@ class HandsRoomManager:
             else:
                 reservation.owner = owner
         try:
-            rating = await self.repository.get_or_create_hands_rating(
-                player.guild_id, player.user_id
-            )
-            async with self._lock:
-                valid = (
-                    not self._closed
-                    and self._rooms.get(player.instance_id) is room
-                    and self._user_rooms.get(player.user_id) is reservation
-                    and reservation.owner is owner
+            async with room._admission_lock:
+                rating = await self.repository.get_or_create_hands_rating(
+                    player.guild_id, player.user_id
                 )
-                if not valid:
-                    rejection = "server_shutting_down" if self._closed else "room_closed"
-                    raise RoomError(rejection)
-                membership = await room.add(
-                    player,
-                    socket,
-                    rating.rating,
-                    reconnect_ticket=reconnect_ticket,
-                    reconnect_ticket_factory=reconnect_ticket_factory,
-                )
-                reservation.established = True
+                async with self._lock:
+                    valid = (
+                        not self._closed
+                        and self._rooms.get(player.instance_id) is room
+                        and self._user_rooms.get(player.user_id) is reservation
+                        and reservation.owner is owner
+                    )
+                    if not valid:
+                        rejection = "server_shutting_down" if self._closed else "room_closed"
+                        raise RoomError(rejection)
+                    membership = await room.add(
+                        player,
+                        socket,
+                        rating.rating,
+                        reconnect_ticket=reconnect_ticket,
+                        reconnect_ticket_factory=reconnect_ticket_factory,
+                    )
+                    reservation.established = True
+                    reservation.connection = membership.connection
         except BaseException:
             async with self._lock:
                 current = self._user_rooms.get(player.user_id)
                 if current is reservation and reservation.owner is owner:
                     if not reservation.established:
                         self._user_rooms.pop(player.user_id, None)
-                    if not room.player_ids and self._rooms.get(player.instance_id) is room:
+                    if not room.member_ids and self._rooms.get(player.instance_id) is room:
                         self._rooms.pop(player.instance_id, None)
             raise
         return membership
 
     async def _room_finished(self, room: HandsRoom) -> None:
         async with self._lock:
-            active_player_ids = set(room.player_ids)
-            if not room.finished and active_player_ids:
+            active_member_ids = set(room.member_ids)
+            if not room.finished and room.player_ids:
                 for player_id, reservation in list(self._user_rooms.items()):
-                    if reservation.room is room and player_id not in active_player_ids:
+                    if reservation.room is room and player_id not in active_member_ids:
                         self._user_rooms.pop(player_id, None)
                 return
             for player_id, reservation in list(self._user_rooms.items()):
@@ -806,14 +1028,24 @@ class HandsRoomManager:
                 self._rooms.pop(room.instance_id, None)
 
     async def leave(self, membership: RoomMembership) -> None:
-        await membership.room.disconnect(membership.player_id, membership.connection)
-        if not membership.room.started:
+        await membership.room.disconnect(
+            membership.player_id,
+            membership.role,
+            membership.connection,
+        )
+        if membership.role == "spectator" or (
+            not membership.room.started and membership.player_id not in membership.room.player_ids
+        ):
             async with self._lock:
                 reservation = self._user_rooms.get(membership.player_id)
-                if reservation is not None and reservation.room is membership.room:
+                if (
+                    reservation is not None
+                    and reservation.room is membership.room
+                    and reservation.connection is membership.connection
+                ):
                     self._user_rooms.pop(membership.player_id, None)
                 if (
-                    not membership.room.player_ids
+                    not membership.room.member_ids
                     and self._rooms.get(membership.room.instance_id) is membership.room
                 ):
                     self._rooms.pop(membership.room.instance_id, None)

@@ -228,8 +228,10 @@ def _json_default(value: object) -> object:
     raise TypeError(f"cannot serialize {type(value).__name__}")
 
 
-def snapshot_for_viewer(snapshot: EngineSnapshot, viewer_id: str) -> EngineSnapshot:
-    if viewer_id not in {fighter.player_id for fighter in snapshot.fighters}:
+def snapshot_for_viewer(snapshot: EngineSnapshot, viewer_id: str | None) -> EngineSnapshot:
+    if viewer_id is not None and viewer_id not in {
+        fighter.player_id for fighter in snapshot.fighters
+    }:
         raise ProtocolError("viewer is not a match player")
     fighters = tuple(
         fighter
@@ -267,7 +269,7 @@ def snapshot_for_viewer(snapshot: EngineSnapshot, viewer_id: str) -> EngineSnaps
     return replace(redacted, checksum=redacted_checksum)
 
 
-def encode_snapshot(snapshot: EngineSnapshot, *, viewer_id: str) -> str:
+def encode_snapshot(snapshot: EngineSnapshot, *, viewer_id: str | None) -> str:
     payload: dict[str, Any] = {
         "version": PROTOCOL_VERSION,
         "type": "snapshot",

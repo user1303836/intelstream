@@ -5,6 +5,7 @@ import { fighter } from "./test/fixtures";
 const mocks = vi.hoisted(() => ({
   sessionDestroy: vi.fn(),
   networkDispose: vi.fn(),
+  networkSetActive: vi.fn(),
   inputDestroy: vi.fn(),
   rendererDestroy: vi.fn(),
   rendererPushes: [] as number[][],
@@ -23,7 +24,7 @@ vi.mock("./network", () => ({
   NetworkController: class {
     constructor(_ticket: string, _input: unknown, callbacks: NetworkCallbacks) { mocks.callbacks = callbacks; }
     start(): void {}
-    setActive(): void {}
+    setActive(active: boolean): void { mocks.networkSetActive(active); }
     dispose(): void { mocks.networkDispose(); }
   },
 }));
@@ -74,7 +75,7 @@ describe("browser lifecycle and accessible overlays", () => {
     const app = new HandsApp(root);
     app.start();
     await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
-    send({ version: 1, type: "welcome", player_id: "one", seat: 1, rating: 1500, players: [players[0]], server_tick: 0, next_sequence: 0, reconnect_ticket: "rotated" });
+    send({ version: 1, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [players[0]], server_tick: 0, next_sequence: 0, reconnect_ticket: "rotated" });
     send({ version: 1, type: "waiting", open_seats: 1 });
     expect(root.querySelector("[data-invite]")).toBeNull();
     expect(root.querySelector("[data-status]")?.textContent).toContain("Play now");
@@ -87,6 +88,31 @@ describe("browser lifecycle and accessible overlays", () => {
     expect(mocks.rendererDestroy).toHaveBeenCalled();
     expect(mocks.sessionDestroy).toHaveBeenCalled();
     expect(root.children).toHaveLength(0);
+  });
+
+  it("renders a persistent read-only spectator mode without private coaching", async () => {
+    history.replaceState({}, "", "/?instance_id=launch");
+    const root = document.createElement("div");
+    const app = new HandsApp(root);
+    app.start();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
+    const controls = root.querySelector<HTMLButtonElement>("[data-controls]")!;
+    controls.click();
+    expect(root.querySelector<HTMLElement>("[data-controls-panel]")!.hidden).toBe(false);
+
+    send({ version: 1, type: "welcome", role: "spectator", player_id: "viewer", players: [...players], server_tick: 30, reconnect_ticket: "spectator-ticket" });
+    const redacted = makeSnapshot(30, "knockdown");
+    send({ version: 1, type: "snapshot", payload: redacted });
+
+    expect(root.querySelector<HTMLElement>("[data-role]")!.hidden).toBe(false);
+    expect(root.querySelector("[data-role]")?.textContent).toContain("SPECTATING");
+    expect(root.querySelector("[data-status]")?.textContent).toContain("Spectating");
+    expect(root.querySelector("[data-fight-status]")?.textContent).toContain("Spectating");
+    expect(root.querySelector("[data-fight-status]")?.textContent).not.toContain("Press");
+    expect(controls.hidden).toBe(true);
+    expect(root.querySelector<HTMLElement>("[data-controls-panel]")!.hidden).toBe(true);
+    expect(mocks.networkSetActive).toHaveBeenLastCalledWith(false);
+    app.destroy();
   });
 
   it("keeps authorization failures visible and reloads before retrying", async () => {
@@ -111,7 +137,7 @@ describe("browser lifecycle and accessible overlays", () => {
     const app = new HandsApp(root);
     app.start();
     await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
-    send({ version: 1, type: "welcome", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 100, next_sequence: 8, reconnect_ticket: "rotated" });
+    send({ version: 1, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 100, next_sequence: 8, reconnect_ticket: "rotated" });
     send({ version: 1, type: "snapshot", payload: makeSnapshot(100) });
     const firstCallbacks = mocks.callbacks!;
     firstCallbacks.onFatal("persistence_failed");
@@ -122,7 +148,7 @@ describe("browser lifecycle and accessible overlays", () => {
     await vi.waitFor(() => expect(mocks.rendererPushes).toHaveLength(2));
     expect(mocks.rendererDestroy).toHaveBeenCalledOnce();
     expect(mocks.sessionDestroy).toHaveBeenCalledOnce();
-    send({ version: 1, type: "welcome", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 1, next_sequence: 0, reconnect_ticket: "new" });
+    send({ version: 1, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 1, next_sequence: 0, reconnect_ticket: "new" });
     send({ version: 1, type: "snapshot", payload: makeSnapshot(1, "countdown") });
     expect(mocks.rendererPushes).toEqual([[100], [1]]);
     expect(root.querySelector("[data-final]")?.textContent).toBe("");
@@ -137,7 +163,7 @@ describe("browser lifecycle and accessible overlays", () => {
     app.start();
     await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
     const longName = "A very long authoritative fighter name that canvas must truncate but semantics retain";
-    send({ version: 1, type: "welcome", player_id: "one", seat: 1, rating: 1500, players: [{ ...players[0], name: longName }, players[1]], server_tick: 1, next_sequence: 0, reconnect_ticket: "new" });
+    send({ version: 1, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [{ ...players[0], name: longName }, players[1]], server_tick: 1, next_sequence: 0, reconnect_ticket: "new" });
     const downed = { ...fighter("one", -100), is_downed: true, get_up_prompt: "get_up_left" as const, get_up_meter: 12, get_up_required: 50, get_up_count: 0 };
     const snapshot = { ...makeSnapshot(2, "knockdown"), fighters: [downed, fighter("two", 100)] as const };
     send({ version: 1, type: "snapshot", payload: snapshot });

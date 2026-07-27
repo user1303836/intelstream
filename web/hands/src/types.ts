@@ -13,6 +13,7 @@ export type ActionKind = "punch" | MovementKind | "foul";
 export type Foul = "low_blow" | "headbutt";
 export type MatchPhase = "countdown" | "fight" | "knockdown" | "foul_recovery" | "rest" | "complete";
 export type FinishMethod = "ko" | "flash_ko" | "tko" | "doctor_stoppage" | "disqualification" | "decision" | "draw" | "forfeit";
+export type ConnectionRole = "fighter" | "spectator";
 
 export interface PunchAction { readonly kind: "punch"; readonly hand: Hand; readonly class: PunchClass; readonly target: Target; readonly power: Power }
 export interface MovementAction { readonly kind: MovementKind }
@@ -46,7 +47,10 @@ export interface MatchResult {
 }
 export interface EngineSnapshot { readonly tick: number; readonly phase: MatchPhase; readonly round_number: number; readonly phase_ticks_remaining: number; readonly fighters: readonly [FighterSnapshot, FighterSnapshot]; readonly events: readonly CombatEvent[]; readonly result: MatchResult | null; readonly checksum: string }
 
-export interface WelcomeMessage { readonly version: 1; readonly type: "welcome"; readonly player_id: string; readonly seat: 1 | 2; readonly rating: number; readonly players: readonly PublicPlayer[]; readonly server_tick: number; readonly next_sequence: number; readonly reconnect_ticket?: string }
+interface WelcomeBase { readonly version: 1; readonly type: "welcome"; readonly player_id: string; readonly players: readonly PublicPlayer[]; readonly server_tick: number; readonly reconnect_ticket?: string }
+export interface FighterWelcomeMessage extends WelcomeBase { readonly role: "fighter"; readonly seat: 1 | 2; readonly rating: number; readonly next_sequence: number }
+export interface SpectatorWelcomeMessage extends WelcomeBase { readonly role: "spectator"; readonly players: readonly [PublicPlayer, PublicPlayer] }
+export type WelcomeMessage = FighterWelcomeMessage | SpectatorWelcomeMessage;
 export interface TicketMessage { readonly version: 1; readonly type: "ticket"; readonly reconnect_ticket: string; readonly refresh_id: string }
 export interface WaitingMessage { readonly version: 1; readonly type: "waiting"; readonly open_seats: 1 }
 export interface ReadyMessage { readonly version: 1; readonly type: "ready"; readonly players: readonly [PublicPlayer, PublicPlayer] }

@@ -39,7 +39,7 @@ IntelStream is a Python 3.12 Discord bot built with `discord.py`. It polls exter
 | GitHub monitoring | Polls repositories for new commits, pull requests, and issues, then posts Discord embeds. |
 | Message forwarding | Forwards messages from source channels/threads to destination channels/threads. |
 | Health commands | `/status` reports bot, source, content, and forwarding status. `/ping` reports latency. |
-| Hands Activity | Discord's `/hands` Entry Point launches an authoritative two-member boxing Activity and posts a native **Play now** message; `/hands_scoreboard` reports server-persisted ELO and records. |
+| Hands Activity | Discord's App Launcher Entry Point launches an authoritative two-fighter boxing Activity with read-only spectators and posts a native **Play now** message; `/hands_scoreboard` reports server-persisted ELO and records. |
 
 ## Quickstart
 
@@ -241,7 +241,7 @@ Hands is disabled unless `HANDS_ENABLED=true`. It additionally requires `DISCORD
 
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `HANDS_ENABLED` | `false` | When true, starts the Activity server and configures `/hands`; when false, removes the managed Entry Point at startup. |
+| `HANDS_ENABLED` | `false` | When true, starts the Activity server and configures its App Launcher Entry Point; when false, removes that managed Entry Point at startup. |
 | `DISCORD_CLIENT_SECRET` | unset | Required only when Hands is enabled. Server-only OAuth credential; never expose it to Vite or a browser. |
 | `HANDS_HOST` | `127.0.0.1` | Keep this loopback bind behind a same-host reverse proxy. Use `0.0.0.0` only when a container/platform requires it. |
 | `HANDS_PORT` | `8080` | Local HTTP/WebSocket listener port. |
@@ -343,8 +343,8 @@ Forwarding preserves message text and up to 10 attachments, subject to Discord f
 | `/ping` | Show bot latency. |
 | `/suck_boobs` | Novelty command loaded by `SuckBoobs` cog. |
 | `/suck_boobs_score` | Novelty leaderboard stored in `suck_boobs_stats`. |
-| `/hands` | Launch the guild-only Hands Activity through Discord's native Entry Point and post **Play now** in the channel. |
 | `/hands_scoreboard` | Show the guild's top ten Hands ELO records and the caller's rank. |
+| App Launcher → BunkerIntel | Launch Hands through Discord's native Entry Point and post **Play now** in the channel. |
 
 Remove `SuckBoobs` from `IntelStreamBot.setup_hook()` if that cog is not appropriate for your server.
 
@@ -432,7 +432,7 @@ Forwarding destinations can be text channels or threads. Archived destination th
 
 ## Hands Activity
 
-Hands is a guild-only, ranked, exactly-two-player boxing Activity. `/hands` is a global `PRIMARY_ENTRY_POINT` command restricted to guild installs and guild channels. Discord launches the Activity and automatically posts its native **Play now** message in the channel; another member joins from that message without a DM or in-Activity invite dialog. The server admits exactly two distinct members from the configured guild and rejects a third member with `room_full`. Test this flow with two real members of the configured guild, not two browser identities for one account.
+Hands is a guild-only, ranked, two-fighter boxing Activity with up to 20 concurrent read-only spectators per fight. Open Discord's **App Launcher** in a guild text or voice channel, search for **BunkerIntel**, and select it; the Entry Point is not a slash command. Discord launches the Activity and automatically posts its native **Play now** message in the channel. The first two distinct authenticated members in the Activity receive immutable fighter seats. Later authenticated guild members in that same Activity instance spectate the safe public fight state without input, seat, result, persistence, or ELO authority. A disconnected spectator is never promoted, while disconnected fighters retain their seats for the normal reconnect grace period.
 
 `/hands_scoreboard` displays the guild's top ten plus the caller's rank, W-L-D record, knockouts, streak, bouts, and rating. New fighters start at **1000 ELO**. Completed results are written by the server with **K=32** ELO; draws score 0.5 and the applied integer delta is zero-sum. The browser cannot submit winners, scorecards, damage, identities, seats, or rating changes.
 
@@ -448,7 +448,8 @@ A disconnect pauses the bout and shows the connected opponent a live reconnect c
 - Each left or right jab, straight, hook, and uppercut has distinct startup, active, recovery, reach, lateral arc, impact, guard/poise damage, stamina cost, and whiff cost. Head/body and normal/power variants change those tradeoffs. Stance determines lead-hand jab speed and rear-straight power.
 - Compatible jab→straight, jab→hook, straight→hook, hook→uppercut, and uppercut→hook chains reduce cost and add impact inside the combo window. Startup/recovery vulnerability, successful evasions, and perfectly timed blocks open counter windows; counters receive an impact/poise bonus.
 - High guard covers head and low guard covers body. Guard absorbs damage until it breaks and regenerates only while sufficiently inactive; a narrow new-guard window is a stronger perfect block. Slips evade the matching straight-line hand, weaving handles hooks, and a pull evades long head jabs/straights. Evasions cost stamina and do not make every punch miss.
-- Stamina governs the current exchange. Fight-long conditioning and body trauma reduce maximum stamina, regeneration, movement/hand speed, guard recovery, and effective output; movement, attacks, power, misses, evasions, clinches, fouls, and damage impose costs. Full-speed movement spends two stamina per simulation tick, while rapid action overflow is bounded and discarded instead of disconnecting the player. Rest restores bounded stamina/guard/poise but does not erase accumulated fatigue.
+- Stamina governs the current exchange. Fight-long conditioning and body trauma reduce maximum stamina, regeneration, movement/hand speed, guard recovery, and effective output; attacks, power, misses, evasions, clinches, fouls, and damage impose costs. Walking and residual movement do not spend stamina or conditioning, but stamina regeneration waits until the fighter actually stops. Rest restores bounded stamina/guard/poise but does not erase accumulated fatigue.
+- Discrete controls use a responsive short intent buffer rather than a command backlog. Repeated identical actions coalesce, only the newest changed intent is retained, newer input replaces stale intent, held guard cancels stale buffered attacks, and unexecuted intent expires after six simulation ticks. Client queues apply the same newest-intent policy, while the Python engine remains authoritative.
 - A close-range clinch has vulnerable startup and can be denied or interrupted. A successful finite hold cancels attacks, lets both regain a little stamina while spending conditioning, and ends in referee separation.
 - Low blows and headbutts are deliberate, costly fouls: misses still cost resources; a landed foul causes a recovery pause and warning, warning two deducts a point, and warning three disqualifies the offender.
 - Head/body and left/right eye trauma persist. Hooks intensify eye damage; damaged eyes reduce reach/accuracy. Cuts increase bleeding, bleeding adds head trauma and fatigue, swelling accumulates, and cut/swelling thresholds can cause a doctor stoppage. Blood event amounts are authoritative, while spray, pooling, audio, and shake are cosmetic only.
@@ -561,7 +562,7 @@ For a long-running deployment, run the command under your process manager of cho
 3. Configure Activity OAuth for exactly `identify` and `guilds.members.read`. Install the guild app with both `bot` and `applications.commands` scopes, and keep **Server Members Intent** enabled. Message Content Intent remains needed by other IntelStream features.
 4. Verify `DISCORD_GUILD_ID`, the authenticated application/client ID, and `DISCORD_CLIENT_SECRET`. Store the client secret and bot token only in the server environment. Never put either secret—or OAuth codes, access tokens, or game tickets—in a URL, Vite variable, browser/local storage, analytics, or logs.
 5. Run the Python listener on `127.0.0.1:HANDS_PORT`. Put a public TLS reverse proxy on the mapped origin and proxy `/`, `/api/hands/*`, and WebSocket upgrades to that listener. Preserve HTTPS/WSS, Host, and upgrade headers; do not expose the plaintext loopback port publicly. Hands applies global and per-client request/concurrency ceilings using the direct peer address. If the proxy supplies `X-Forwarded-For`, set `HANDS_TRUSTED_PROXY_CIDRS` to only the exact proxy network(s) that connect to Hands (for example `127.0.0.1/32,::1/128` for a loopback proxy), configure the proxy to overwrite or append the real client address, and prevent clients from bypassing that proxy. Forwarded headers from any unlisted peer are ignored; never configure an all-addresses CIDR.
-6. Start `uv run intelstream` and confirm the startup configures one guild-only global `hands` Entry Point with Discord handler `DISCORD_LAUNCH_ACTIVITY`. Confirm the public `/healthz`, launch `/hands`, and have a second distinct guild member select **Play now** on Discord's channel message. Confirm only those two seats start and a third account is rejected. A single process owns in-memory OAuth state, rooms, and reconnect tickets; do not horizontally scale Hands without shared authoritative state/routing.
+6. Start `uv run intelstream` and confirm startup configures one guild-only global `hands` Entry Point with Discord handler `DISCORD_LAUNCH_ACTIVITY`. Confirm the public `/healthz`, open Discord's App Launcher, search for BunkerIntel, and launch it. Have a second distinct guild member select **Play now** on Discord's channel message, then have a third member join and confirm they see **SPECTATING · READ ONLY** with no gameplay input. Confirm only the first two seats affect the match and ELO. A single process owns in-memory OAuth state, rooms, spectators, and reconnect tickets; do not horizontally scale Hands without shared authoritative state/routing.
 7. Complete the violent-content/age-rating/disclosure and originality reviews described above before public distribution.
 
 ## Development
@@ -721,7 +722,7 @@ src/intelstream/
 |   |-- content_posting.py     # background content loop
 |   |-- github.py              # /github
 |   |-- github_polling.py      # GitHub background loop
-|   |-- hands.py               # /hands, /hands_scoreboard, Activity server lifecycle
+|   |-- hands.py               # App Launcher Entry Point, /hands_scoreboard, server lifecycle
 |   |-- lore.py                # message ingestion and disabled /lore command
 |   |-- message_forwarding.py  # /forward and listener
 |   |-- search.py              # /search and /index
@@ -733,7 +734,7 @@ src/intelstream/
 |   |-- engine.py              # deterministic authoritative boxing simulation
 |   |-- protocol.py            # strict versioned WebSocket messages
 |   |-- rating.py              # 1000-default, K=32 ELO calculation
-|   |-- rooms.py               # exactly-two matchmaking, reconnect, persistence
+|   |-- rooms.py               # two-fighter rooms, spectators, reconnect, persistence
 |   |-- rules.py               # centralized combat/round tuning
 |   |-- server.py              # aiohttp API, WebSocket, packaged static server
 |   `-- static/                # committed generated HTML/JS/CSS package resources

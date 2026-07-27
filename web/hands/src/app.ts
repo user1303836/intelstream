@@ -28,6 +28,9 @@ export class HandsApp {
 
   private readonly canvas: HTMLCanvasElement;
   private readonly status: HTMLElement;
+  private readonly roleIndicator: HTMLElement;
+  private readonly controlsButton: HTMLButtonElement;
+  private readonly controlsPanel: HTMLElement;
   private readonly retry: HTMLButtonElement;
   private readonly fightSummary: HTMLElement;
   private readonly liveFightStatus: HTMLElement;
@@ -37,9 +40,12 @@ export class HandsApp {
     private readonly root: HTMLElement,
     private readonly reloadPage: () => void = () => window.location.reload(),
   ) {
-    root.innerHTML = `<section class="activity" aria-label="Hands boxing activity"><canvas class="fight" aria-label="Authoritative two-player boxing match"></canvas><header class="topbar"><strong>HANDS</strong><span>authoritative two-player boxing</span><button type="button" data-controls aria-expanded="false">Controls</button><button type="button" data-settings aria-expanded="false">Settings</button></header><section class="overlay" data-overlay><p class="status" data-status></p><button type="button" class="primary" data-retry hidden>Retry securely</button></section><aside class="panel" data-controls-panel hidden aria-label="Controls"><h2>Controls</h2><ul>${CONTROL_HELP.map((item) => `<li>${item}</li>`).join("")}</ul></aside><aside class="panel settings" data-settings-panel hidden aria-label="Accessibility and feedback settings"><h2>Settings</h2><label>Volume <input data-volume type="range" min="0" max="1" step="0.05"></label><label><input data-haptics type="checkbox"> Haptics</label><label><input data-motion type="checkbox"> Reduced motion</label><label>Blood <select data-blood><option value="full">Full</option><option value="reduced">Reduced</option><option value="off">Off</option></select></label></aside><section class="sr-summary" data-fight-summary aria-label="Fight summary"></section><p class="sr-summary" data-fight-status role="status" aria-live="polite" aria-atomic="true"></p><section class="sr-summary" data-final aria-live="polite" aria-label="Final result"></section></section>`;
+    root.innerHTML = `<section class="activity" aria-label="Hands boxing activity"><canvas class="fight" aria-label="Authoritative two-player boxing match"></canvas><header class="topbar"><strong>HANDS</strong><span>authoritative two-player boxing</span><span class="spectator-role" data-role hidden>SPECTATING · READ ONLY</span><button type="button" data-controls aria-expanded="false">Controls</button><button type="button" data-settings aria-expanded="false">Settings</button></header><section class="overlay" data-overlay><p class="status" data-status></p><button type="button" class="primary" data-retry hidden>Retry securely</button></section><aside class="panel" data-controls-panel hidden aria-label="Controls"><h2>Controls</h2><ul>${CONTROL_HELP.map((item) => `<li>${item}</li>`).join("")}</ul></aside><aside class="panel settings" data-settings-panel hidden aria-label="Accessibility and feedback settings"><h2>Settings</h2><label>Volume <input data-volume type="range" min="0" max="1" step="0.05"></label><label><input data-haptics type="checkbox"> Haptics</label><label><input data-motion type="checkbox"> Reduced motion</label><label>Blood <select data-blood><option value="full">Full</option><option value="reduced">Reduced</option><option value="off">Off</option></select></label></aside><section class="sr-summary" data-fight-summary aria-label="Fight summary"></section><p class="sr-summary" data-fight-status role="status" aria-live="polite" aria-atomic="true"></p><section class="sr-summary" data-final aria-live="polite" aria-label="Final result"></section></section>`;
     this.canvas = root.querySelector<HTMLCanvasElement>("canvas")!;
     this.status = root.querySelector<HTMLElement>("[data-status]")!;
+    this.roleIndicator = root.querySelector<HTMLElement>("[data-role]")!;
+    this.controlsButton = root.querySelector<HTMLButtonElement>("[data-controls]")!;
+    this.controlsPanel = root.querySelector<HTMLElement>("[data-controls-panel]")!;
     this.retry = root.querySelector<HTMLButtonElement>("[data-retry]")!;
     this.fightSummary = root.querySelector<HTMLElement>("[data-fight-summary]")!;
     this.liveFightStatus = root.querySelector<HTMLElement>("[data-fight-status]")!;
@@ -165,16 +171,25 @@ export class HandsApp {
       complete: "Bout complete. Scorecards and rating changes are displayed.",
       fatal: `Unable to continue (${this.state.safeError ?? "safe_error"}).`,
     };
-    this.setText(this.status, labels[this.state.stage]);
+    const spectating = this.state.role === "spectator";
+    this.setText(this.status, spectating ? `Spectating — ${labels[this.state.stage]}` : labels[this.state.stage]);
+    this.roleIndicator.hidden = !spectating;
+    this.controlsButton.hidden = spectating;
+    if (spectating) {
+      this.controlsPanel.hidden = true;
+      this.controlsButton.setAttribute("aria-expanded", "false");
+    }
     const viewer = this.state.snapshot?.fighters.find((fighter) => fighter.player_id === this.state.playerId);
-    const liveStatus = this.state.stage === "knockdown" && viewer?.is_downed === true
-      ? `Knockdown. Count ${viewer.get_up_count}. ${viewer.get_up_prompt === null ? "Wait for your private rhythm instruction." : `Press ${viewer.get_up_prompt === "get_up_left" ? "left" : "right"} now.`}`
-      : this.state.stage === "paused"
-        ? "Connection paused."
-        : labels[this.state.stage];
+    const liveStatus = spectating
+      ? `Spectating. ${labels[this.state.stage]}`
+      : this.state.stage === "knockdown" && viewer?.is_downed === true
+        ? `Knockdown. Count ${viewer.get_up_count}. ${viewer.get_up_prompt === null ? "Wait for your private rhythm instruction." : `Press ${viewer.get_up_prompt === "get_up_left" ? "left" : "right"} now.`}`
+        : this.state.stage === "paused"
+          ? "Connection paused."
+          : labels[this.state.stage];
     this.setText(this.liveFightStatus, liveStatus);
     this.retry.hidden = this.state.stage !== "fatal";
-    const active = ["countdown", "fight", "knockdown", "foul_recovery"].includes(this.state.stage);
+    const active = !spectating && ["countdown", "fight", "knockdown", "foul_recovery"].includes(this.state.stage);
     this.input.setActive(active);
     this.network?.setActive(active);
     this.renderFightSummary();
