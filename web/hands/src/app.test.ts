@@ -3,7 +3,6 @@ import type { EngineSnapshot, ServerMessage } from "./types";
 import { fighter } from "./test/fixtures";
 
 const mocks = vi.hoisted(() => ({
-  invite: vi.fn(async () => {}),
   sessionDestroy: vi.fn(),
   networkDispose: vi.fn(),
   inputDestroy: vi.fn(),
@@ -17,7 +16,6 @@ vi.mock("./discord", () => ({
     bootstrap: { client_id: "123", state: "state", protocol: 1, simulation: { tick_rate: 20, ring_half_width: 500, ring_half_height: 330 } },
     player: { id: "one", name: "One", avatar: null, rating: 1500 },
     takeTicket: () => "ticket",
-    invite: mocks.invite,
     destroy: mocks.sessionDestroy,
   })),
 }));
@@ -70,7 +68,7 @@ describe("browser lifecycle and accessible overlays", () => {
     vi.clearAllMocks();
   });
 
-  it("launches, waits/invites, hides invite at exactly two, reports final and cleans up", async () => {
+  it("launches, waits for the channel Play now action, reports final and cleans up", async () => {
     history.replaceState({}, "", "/?instance_id=launch");
     const root = document.createElement("div");
     const app = new HandsApp(root);
@@ -78,12 +76,9 @@ describe("browser lifecycle and accessible overlays", () => {
     await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
     send({ version: 1, type: "welcome", player_id: "one", seat: 1, rating: 1500, players: [players[0]], server_tick: 0, next_sequence: 0, reconnect_ticket: "rotated" });
     send({ version: 1, type: "waiting", open_seats: 1 });
-    const invite = root.querySelector<HTMLButtonElement>("[data-invite]")!;
-    expect(invite.hidden).toBe(false);
-    invite.click();
-    await vi.waitFor(() => expect(mocks.invite).toHaveBeenCalled());
+    expect(root.querySelector("[data-invite]")).toBeNull();
+    expect(root.querySelector("[data-status]")?.textContent).toContain("Play now");
     send({ version: 1, type: "ready", players: [...players] });
-    expect(invite.hidden).toBe(true);
     const cards = ["A", "B", "C"].map((judge) => ({ judge, player_one: [10], player_two: [9] }));
     send({ version: 1, type: "final", match_id: "m", winner_id: "one", method: "decision", round: 1, scorecards: cards, ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } });
     expect(root.querySelector("[data-final]")?.textContent).toContain("A: 10 to 9");
@@ -164,18 +159,4 @@ describe("browser lifecycle and accessible overlays", () => {
     app.destroy();
   });
 
-  it("reports invite failures without leaving the waiting stage", async () => {
-    mocks.invite.mockRejectedValueOnce(new Error("host failure"));
-    history.replaceState({}, "", "/?instance_id=launch");
-    const root = document.createElement("div");
-    const app = new HandsApp(root);
-    app.start();
-    await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
-    send({ version: 1, type: "welcome", player_id: "one", seat: 1, rating: 1500, players: [players[0]], server_tick: 0, next_sequence: 0, reconnect_ticket: "rotated" });
-    send({ version: 1, type: "waiting", open_seats: 1 });
-    root.querySelector<HTMLButtonElement>("[data-invite]")!.click();
-    await vi.waitFor(() => expect(root.querySelector("[data-status]")?.textContent).toContain("Invite could not open"));
-    expect(root.querySelector<HTMLButtonElement>("[data-invite]")!.hidden).toBe(false);
-    app.destroy();
-  });
 });

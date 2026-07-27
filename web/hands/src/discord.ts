@@ -3,13 +3,12 @@ import type { IDiscordSDK } from "@discord/embedded-app-sdk";
 import { bootstrap, exchangeToken, launchInstance, ClientError } from "./api";
 import type { BootstrapResponse, TokenPlayer } from "./types";
 
-export const OAUTH_SCOPES = ["identify", "guilds.members.read", "applications.commands"] as const;
+export const OAUTH_SCOPES = ["identify", "guilds.members.read"] as const;
 export interface DiscordSession {
   readonly sdk: IDiscordSDK;
   readonly bootstrap: BootstrapResponse;
   readonly player: TokenPlayer;
   takeTicket(): string | null;
-  invite(): Promise<void>;
   destroy(): void;
 }
 type SDKFactory = (clientId: string) => IDiscordSDK;
@@ -153,9 +152,6 @@ export async function authorizeDiscord(
         const current = ticket;
         ticket = null;
         return current;
-      },
-      invite: async () => {
-        await sdk.commands.openInviteDialog();
       },
       destroy: () => {
         if (destroyed) return;

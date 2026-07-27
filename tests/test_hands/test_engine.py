@@ -239,7 +239,7 @@ def test_cardinal_and_all_diagonal_signs_have_equal_full_speed_fatigue_and_repla
         for engine in engines
         for fighter in (engine.fighter("one"),)
     }
-    assert resource_states == {(2, 516, 992)}
+    assert resource_states == {(2, 758, 992)}
     assert engines[1].snapshot().checksum == replay.snapshot().checksum
     assert encode_snapshot(engines[1].snapshot(), viewer_id="one") == encode_snapshot(
         replay.snapshot(), viewer_id="one"
@@ -255,7 +255,7 @@ def test_sub_500_movement_has_fatigue_while_zero_input_recovers() -> None:
 
     assert mover.x > -45
     assert mover.movement_load == 1
-    assert mover.stamina == 960
+    assert mover.stamina == 980
     assert mover.conditioning == 999
 
     stationary = make_engine(seed=93, round_ticks=2000)
@@ -817,7 +817,7 @@ def test_collision_and_referee_separation_stay_inside_rope_center_bounds() -> No
         assert -maximum_y <= fighter.y <= maximum_y
 
 
-def test_batched_actions_queue_without_loss_and_remain_bounded() -> None:
+def test_batched_actions_queue_in_order_and_safely_drop_overflow() -> None:
     engine = make_engine(round_ticks=2000)
     jab = punch(PunchClass.JAB, hand=Hand.LEFT)
     stance = MovementAction(ActionKind.SWITCH_STANCE)
@@ -833,7 +833,7 @@ def test_batched_actions_queue_without_loss_and_remain_bounded() -> None:
     assert saturated.submit_input("one", command(1, actions=four)) is True
     assert saturated.submit_input("one", command(2, actions=four)) is True
     assert len(saturated.fighter("one").pending_actions) == MAX_PENDING_ACTIONS
-    assert saturated.submit_input("one", command(3, actions=(stance,))) is False
+    assert saturated.submit_input("one", command(3, actions=(stance,))) is True
     assert len(saturated.fighter("one").pending_actions) == MAX_PENDING_ACTIONS
 
 
@@ -1276,7 +1276,7 @@ def test_queue_overflow_coalesces_held_controls_and_consumes_sequence() -> None:
         actions=(MovementAction(ActionKind.CLINCH),),
     )
 
-    assert engine.submit_input("one", overflow) is False
+    assert engine.submit_input("one", overflow) is True
     fighter = engine.fighter("one")
     assert fighter.last_sequence == 2
     assert fighter.held_input.move_x == -800

@@ -56,7 +56,7 @@ export class GamepadInput {
     this.currentId = pad.id;
     const move = radialDeadzone(pad.axes[0] ?? 0, pad.axes[1] ?? 0);
     this.moveX = Math.round(move.x * 1000);
-    this.moveY = Math.round(move.y * 1000);
+    this.moveY = Math.round(-move.y * 1000);
     this.defense = pressed(pad, 4) ? "guard_high" : pressed(pad, 5) ? "guard_low" : "none";
 
     const gesture = this.gesture.update(pad.axes[2] ?? 0, pad.axes[3] ?? 0, pressed(pad, 6), pressed(pad, 7));

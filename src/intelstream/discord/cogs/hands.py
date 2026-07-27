@@ -7,6 +7,7 @@ import discord
 import structlog
 from discord import app_commands
 from discord.ext import commands
+from discord.http import Route
 
 from intelstream.config import reveal_secret
 from intelstream.hands.server import AdmissionConfig, HandsServer
@@ -17,6 +18,11 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+HANDS_ENTRY_POINT_TYPE = 4
+HANDS_ENTRY_POINT_HANDLER = 2
+HANDS_ENTRY_POINT_NAME = "hands"
+HANDS_ENTRY_POINT_DESCRIPTION = "Start a two-player boxing match"
+
 
 class Hands(commands.Cog):
     def __init__(self, bot: IntelStreamBot) -> None:
@@ -25,14 +31,15 @@ class Hands(commands.Cog):
 
     async def cog_load(self) -> None:
         settings = self.bot.settings
-        if not settings.hands_enabled:
-            return
         application_id = self.bot.application_id
+        if application_id is None:
+            raise RuntimeError("Hands requires an authenticated Discord application")
+        if not settings.hands_enabled:
+            await self._remove_entry_point(application_id)
+            return
         client_secret = reveal_secret(settings.discord_client_secret)
-        if application_id is None or client_secret is None:
-            raise RuntimeError(
-                "Hands requires an authenticated Discord application and client secret"
-            )
+        if client_secret is None:
+            raise RuntimeError("Hands requires a Discord client secret")
         server = HandsServer(
             repository=self.bot.repository,
             application_id=str(application_id),
@@ -48,10 +55,92 @@ class Hands(commands.Cog):
         )
         try:
             await server.start()
+            await self._configure_entry_point(application_id)
         except BaseException:
             await server.close()
             raise
         self.server = server
+
+    async def _remove_entry_point(self, application_id: int) -> None:
+        commands = await self.bot.http.get_global_commands(application_id)
+        entry_points = [
+            command
+            for command in commands
+            if command.get("name") == HANDS_ENTRY_POINT_NAME
+            and command.get("type") == HANDS_ENTRY_POINT_TYPE
+        ]
+        if len(entry_points) > 1:
+            raise RuntimeError("Discord returned multiple Hands Activity Entry Points")
+        if not entry_points:
+            return
+
+        command_id = entry_points[0].get("id")
+        if not isinstance(command_id, str) or not command_id.isdecimal():
+            raise RuntimeError("Discord returned an invalid Hands Activity Entry Point")
+        route = Route(
+            "DELETE",
+            "/applications/{application_id}/commands/{command_id}",
+            application_id=application_id,
+            command_id=command_id,
+        )
+        await self.bot.http.request(route)
+        logger.info("Hands Activity Entry Point removed", command_id=command_id)
+
+    async def _configure_entry_point(self, application_id: int) -> None:
+        commands = await self.bot.http.get_global_commands(application_id)
+        entry_points = [
+            command for command in commands if command.get("type") == HANDS_ENTRY_POINT_TYPE
+        ]
+        if len(entry_points) > 1:
+            raise RuntimeError("Discord returned multiple Activity Entry Point commands")
+        if any(
+            command.get("name") == HANDS_ENTRY_POINT_NAME
+            and command.get("type") != HANDS_ENTRY_POINT_TYPE
+            for command in commands
+        ):
+            raise RuntimeError("A non-Activity global command already uses the Hands name")
+
+        payload: dict[str, object] = {
+            "name": HANDS_ENTRY_POINT_NAME,
+            "description": HANDS_ENTRY_POINT_DESCRIPTION,
+            "handler": HANDS_ENTRY_POINT_HANDLER,
+            "integration_types": [0],
+            "contexts": [0],
+        }
+        entry_point = entry_points[0] if entry_points else None
+        if entry_point is not None and all(
+            entry_point.get(field) == value for field, value in payload.items()
+        ):
+            return
+
+        if entry_point is None:
+            payload["type"] = HANDS_ENTRY_POINT_TYPE
+            route = Route(
+                "POST",
+                "/applications/{application_id}/commands",
+                application_id=application_id,
+            )
+        else:
+            command_id = entry_point.get("id")
+            if not isinstance(command_id, str) or not command_id.isdecimal():
+                raise RuntimeError("Discord returned an invalid Activity Entry Point command")
+            route = Route(
+                "PATCH",
+                "/applications/{application_id}/commands/{command_id}",
+                application_id=application_id,
+                command_id=command_id,
+            )
+
+        configured = await self.bot.http.request(route, json=payload)
+        if not isinstance(configured, dict) or any(
+            configured.get(field) != value
+            for field, value in {
+                **payload,
+                "type": HANDS_ENTRY_POINT_TYPE,
+            }.items()
+        ):
+            raise RuntimeError("Discord did not apply the Hands Activity Entry Point")
+        logger.info("Hands Activity Entry Point configured", command_id=configured.get("id"))
 
     async def cog_unload(self) -> None:
         server = self.server
@@ -64,30 +153,6 @@ class Hands(commands.Cog):
             interaction.guild is not None
             and interaction.guild_id == self.bot.settings.discord_guild_id
         )
-
-    @app_commands.command(name="hands", description="Open a two-player boxing match")
-    async def hands(self, interaction: discord.Interaction) -> None:
-        if not self._valid_guild(interaction):
-            await interaction.response.send_message(
-                "Hands can only be played in its configured server.", ephemeral=True
-            )
-            return
-        if not self.bot.settings.hands_enabled:
-            await interaction.response.send_message(
-                "Hands is not enabled on this server.", ephemeral=True
-            )
-            return
-        if self.server is None or not self.server.running:
-            await interaction.response.send_message(
-                "Hands is temporarily unavailable.", ephemeral=True
-            )
-            return
-        logger.info(
-            "Launching Hands activity",
-            guild_id=interaction.guild_id,
-            user_id=interaction.user.id,
-        )
-        await interaction.response.launch_activity()
 
     @app_commands.command(name="hands_scoreboard", description="Show the Hands ELO rankings")
     async def hands_scoreboard(self, interaction: discord.Interaction) -> None:

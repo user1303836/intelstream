@@ -23,7 +23,7 @@ export class KeyboardInput {
   setEnabled(enabled: boolean): void { this.enabled = enabled; if (!enabled) this.reset(); }
   frame(maxActions = 4): InputFrame {
     let x = (this.held.has("KeyD") ? 1000 : 0) - (this.held.has("KeyA") ? 1000 : 0);
-    let y = (this.held.has("KeyS") ? 1000 : 0) - (this.held.has("KeyW") ? 1000 : 0);
+    let y = (this.held.has("KeyW") ? 1000 : 0) - (this.held.has("KeyS") ? 1000 : 0);
     if (x !== 0 && y !== 0) { x = Math.sign(x) * 707; y = Math.sign(y) * 707; }
     const defense: HeldDefense = this.held.has("KeyQ") ? "guard_high" : this.held.has("KeyE") ? "guard_low" : "none";
     return { moveX: x, moveY: y, defense, actions: this.queue.splice(0, maxActions) };
