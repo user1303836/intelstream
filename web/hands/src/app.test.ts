@@ -43,7 +43,9 @@ vi.mock("./render/renderer", () => ({
   },
 }));
 
+import { ClientError } from "./api";
 import { HandsApp } from "./app";
+import { authorizeDiscord } from "./discord";
 
 const send = (message: ServerMessage): void => { mocks.callbacks?.onMessage(message); };
 const players = [
@@ -90,6 +92,22 @@ describe("browser lifecycle and accessible overlays", () => {
     expect(mocks.rendererDestroy).toHaveBeenCalled();
     expect(mocks.sessionDestroy).toHaveBeenCalled();
     expect(root.children).toHaveLength(0);
+  });
+
+  it("keeps authorization failures visible and reloads before retrying", async () => {
+    vi.mocked(authorizeDiscord).mockRejectedValueOnce(new ClientError("sdk_authenticate_failed", true));
+    history.replaceState({}, "", "/?instance_id=launch");
+    const root = document.createElement("div");
+    const reload = vi.fn();
+    const app = new HandsApp(root, reload);
+    app.start();
+    await vi.waitFor(() => expect(root.querySelector("[data-status]")?.textContent).toBe("Unable to continue (sdk_authenticate_failed)."));
+    const retry = root.querySelector<HTMLButtonElement>("[data-retry]")!;
+    expect(retry.hidden).toBe(false);
+    retry.click();
+    expect(reload).toHaveBeenCalledOnce();
+    expect(mocks.sessionDestroy).not.toHaveBeenCalled();
+    app.destroy();
   });
 
   it("fully resets renderer, snapshot tick history, player/final state and dedupers on fresh authorization", async () => {
