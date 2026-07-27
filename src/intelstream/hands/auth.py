@@ -21,6 +21,7 @@ MAX_CODE_LENGTH = 2048
 MAX_STATE_LENGTH = 128
 MAX_DISPLAY_NAME_LENGTH = 80
 MAX_AVATAR_HASH_LENGTH = 128
+DEFAULT_TICKET_TTL_SECONDS = 300
 SNOWFLAKE_RE = re.compile(r"^[0-9]{1,36}$")
 INSTANCE_RE = re.compile(r"^[A-Za-z0-9_-]{1,255}$")
 AVATAR_RE = re.compile(r"^[A-Za-z0-9_]+$")
@@ -69,6 +70,13 @@ class _OAuthState:
 class _ConsumedTicket:
     expires_at: int
     player_instance: tuple[str, str]
+
+
+@dataclass(slots=True)
+class _TicketGeneration:
+    next_generation: int
+    minimum_generation: int
+    expires_at: int
 
 
 def validate_instance_id(value: object) -> str:
@@ -120,10 +128,11 @@ class HandsAuth:
         monotonic_clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], float] = time.time,
         state_ttl_seconds: float = 180.0,
-        ticket_ttl_seconds: int = 300,
+        ticket_ttl_seconds: int = DEFAULT_TICKET_TTL_SECONDS,
         max_states: int = 1024,
         max_consumed_tickets: int = 4096,
         max_consumed_tickets_per_player_instance: int = 64,
+        max_ticket_generations: int = 4096,
         ticket_secret: bytes | None = None,
     ) -> None:
         if not SNOWFLAKE_RE.fullmatch(application_id) or not SNOWFLAKE_RE.fullmatch(guild_id):
@@ -136,6 +145,7 @@ class HandsAuth:
             or max_states < 1
             or max_consumed_tickets < 1
             or max_consumed_tickets_per_player_instance < 1
+            or max_ticket_generations < 1
         ):
             raise ValueError("authentication bounds must be positive")
         self.application_id = application_id
@@ -149,10 +159,12 @@ class HandsAuth:
         self._max_states = max_states
         self._max_consumed_tickets = max_consumed_tickets
         self._max_consumed_tickets_per_player_instance = max_consumed_tickets_per_player_instance
+        self._max_ticket_generations = max_ticket_generations
         self._states: dict[str, _OAuthState] = {}
         self._state_lock = asyncio.Lock()
         self._consumed_tickets: dict[str, _ConsumedTicket] = {}
         self._consumed_ticket_counts: dict[tuple[str, str], int] = {}
+        self._ticket_generations: dict[tuple[str, str], _TicketGeneration] = {}
         self._ticket_secret = ticket_secret or secrets.token_bytes(32)
         self._owns_client = client is None or close_client
         self._client = client or httpx.AsyncClient(
@@ -162,6 +174,10 @@ class HandsAuth:
         )
         self._closed = False
 
+    @property
+    def ticket_ttl_seconds(self) -> int:
+        return self._ticket_ttl
+
     async def close(self) -> None:
         if self._closed:
             return
@@ -170,6 +186,7 @@ class HandsAuth:
             self._states.clear()
         self._consumed_tickets.clear()
         self._consumed_ticket_counts.clear()
+        self._ticket_generations.clear()
         if self._owns_client:
             await self._client.aclose()
 
@@ -328,6 +345,16 @@ class HandsAuth:
     def issue_ticket(self, player: AuthenticatedPlayer) -> str:
         self._ensure_open()
         now = int(self._wall())
+        self._purge_ticket_state(now)
+        player_instance = (player.user_id, player.instance_id)
+        generation = self._ticket_generations.get(player_instance)
+        if generation is None:
+            if len(self._ticket_generations) >= self._max_ticket_generations:
+                raise HandsAuthError("service_busy")
+            generation = _TicketGeneration(0, 0, now + self._ticket_ttl)
+            self._ticket_generations[player_instance] = generation
+        generation.next_generation += 1
+        generation.expires_at = max(generation.expires_at, now + self._ticket_ttl)
         payload = {
             "v": 1,
             "sub": player.user_id,
@@ -336,6 +363,7 @@ class HandsAuth:
             "name": player.display_name,
             "avatar": player.avatar_hash,
             "nonce": secrets.token_urlsafe(12),
+            "gen": generation.next_generation,
             "iat": now,
             "exp": now + self._ticket_ttl,
         }
@@ -344,6 +372,43 @@ class HandsAuth:
         return f"{encoded}.{signature}"
 
     def verify_ticket(self, ticket: object) -> AuthenticatedPlayer:
+        player, nonce, expires, generation_value = self._decode_ticket(ticket)
+        if nonce in self._consumed_tickets:
+            raise HandsAuthError("invalid_ticket")
+        player_instance = (player.user_id, player.instance_id)
+        if (
+            self._consumed_ticket_counts.get(player_instance, 0)
+            >= self._max_consumed_tickets_per_player_instance
+        ):
+            raise HandsAuthError("rate_limited")
+        if len(self._consumed_tickets) >= self._max_consumed_tickets:
+            raise HandsAuthError("service_busy")
+        self._consumed_tickets[nonce] = _ConsumedTicket(expires, player_instance)
+        self._consumed_ticket_counts[player_instance] = (
+            self._consumed_ticket_counts.get(player_instance, 0) + 1
+        )
+        generation = self._ticket_generations[player_instance]
+        generation.minimum_generation = max(
+            generation.minimum_generation,
+            generation_value,
+        )
+        return player
+
+    def activate_ticket(self, ticket: object, player: AuthenticatedPlayer) -> None:
+        decoded, _nonce, _expires, generation_value = self._decode_ticket(ticket)
+        if (
+            decoded.user_id != player.user_id
+            or decoded.guild_id != player.guild_id
+            or decoded.instance_id != player.instance_id
+        ):
+            raise HandsAuthError("invalid_ticket")
+        generation = self._ticket_generations[(player.user_id, player.instance_id)]
+        generation.minimum_generation = max(
+            generation.minimum_generation,
+            generation_value,
+        )
+
+    def _decode_ticket(self, ticket: object) -> tuple[AuthenticatedPlayer, str, int, int]:
         self._ensure_open()
         if not isinstance(ticket, str) or not 1 <= len(ticket) <= 4096 or ticket.count(".") != 1:
             raise HandsAuthError("invalid_ticket")
@@ -365,6 +430,7 @@ class HandsAuth:
             "name",
             "avatar",
             "nonce",
+            "gen",
             "iat",
             "exp",
         }:
@@ -372,12 +438,16 @@ class HandsAuth:
         now = int(self._wall())
         issued = payload.get("iat")
         expires = payload.get("exp")
+        generation_value = payload.get("gen")
         if (
             payload.get("v") != 1
             or not isinstance(issued, int)
             or isinstance(issued, bool)
             or not isinstance(expires, int)
             or isinstance(expires, bool)
+            or not isinstance(generation_value, int)
+            or isinstance(generation_value, bool)
+            or generation_value < 1
             or issued > now + 30
             or expires <= now
             or expires - issued > self._ticket_ttl
@@ -406,22 +476,31 @@ class HandsAuth:
             or not AVATAR_RE.fullmatch(avatar)
         ):
             raise HandsAuthError("invalid_ticket")
-        self._purge_consumed_tickets(now)
-        if nonce in self._consumed_tickets:
-            raise HandsAuthError("invalid_ticket")
+        self._purge_ticket_state(now)
         player_instance = (user_id, instance_id)
+        generation = self._ticket_generations.get(player_instance)
         if (
-            self._consumed_ticket_counts.get(player_instance, 0)
-            >= self._max_consumed_tickets_per_player_instance
+            generation is None
+            or generation_value < generation.minimum_generation
+            or generation_value > generation.next_generation
         ):
-            raise HandsAuthError("rate_limited")
-        if len(self._consumed_tickets) >= self._max_consumed_tickets:
-            raise HandsAuthError("service_busy")
-        self._consumed_tickets[nonce] = _ConsumedTicket(expires, player_instance)
-        self._consumed_ticket_counts[player_instance] = (
-            self._consumed_ticket_counts.get(player_instance, 0) + 1
+            raise HandsAuthError("invalid_ticket")
+        return (
+            AuthenticatedPlayer(user_id, self.guild_id, instance_id, name, avatar),
+            nonce,
+            expires,
+            generation_value,
         )
-        return AuthenticatedPlayer(user_id, self.guild_id, instance_id, name, avatar)
+
+    def _purge_ticket_state(self, now: int) -> None:
+        self._purge_consumed_tickets(now)
+        expired_players = [
+            player_instance
+            for player_instance, generation in self._ticket_generations.items()
+            if generation.expires_at <= now
+        ]
+        for player_instance in expired_players:
+            self._ticket_generations.pop(player_instance, None)
 
     def _purge_consumed_tickets(self, now: int) -> None:
         expired = [

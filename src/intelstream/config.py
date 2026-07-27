@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from ipaddress import ip_address
+from ipaddress import ip_address, ip_network
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     hands_dev_mode: bool = Field(
         default=False,
         description="Allow local development origins for Hands",
+    )
+    hands_trusted_proxy_cidrs: str = Field(
+        default="",
+        max_length=2048,
+        description="Comma-separated proxy CIDRs trusted to append client IP headers for Hands",
     )
 
     llm_provider: Literal["anthropic", "openai", "gemini", "kimi"] = Field(
@@ -430,6 +435,26 @@ class Settings(BaseSettings):
                 raise ValueError("HANDS_HOST must be a valid host name or IP address") from None
         return host
 
+    @field_validator("hands_trusted_proxy_cidrs")
+    @classmethod
+    def validate_hands_trusted_proxy_cidrs(cls, value: str) -> str:
+        if not value.strip():
+            return ""
+        parts = [part.strip() for part in value.split(",")]
+        if len(parts) > 16 or any(not part for part in parts):
+            raise ValueError("HANDS_TRUSTED_PROXY_CIDRS must contain at most 16 CIDRs")
+        try:
+            networks = [ip_network(part, strict=False) for part in parts]
+        except ValueError as exc:
+            raise ValueError("HANDS_TRUSTED_PROXY_CIDRS contains an invalid network") from exc
+        if any(network.prefixlen == 0 for network in networks):
+            raise ValueError("HANDS_TRUSTED_PROXY_CIDRS must not trust the entire internet")
+        return ",".join(str(network) for network in networks)
+
+    @property
+    def hands_trusted_proxies(self) -> tuple[str, ...]:
+        return tuple(filter(None, self.hands_trusted_proxy_cidrs.split(",")))
+
     @model_validator(mode="after")
     def validate_hands_configuration(self) -> Settings:
         if self.hands_enabled and self.discord_client_secret is None:
@@ -477,6 +502,7 @@ class Settings(BaseSettings):
             "hands_host": self.hands_host,
             "hands_port": self.hands_port,
             "hands_dev_mode": self.hands_dev_mode,
+            "hands_trusted_proxy_cidrs": self.hands_trusted_proxy_cidrs,
             "database_backend": make_url(self.database_url).get_backend_name(),
         }
 
@@ -491,6 +517,7 @@ class Settings(BaseSettings):
             f"hands_host={self.hands_host!r}, "
             f"hands_port={self.hands_port}, "
             f"hands_dev_mode={self.hands_dev_mode}, "
+            f"hands_trusted_proxy_cidrs={self.hands_trusted_proxy_cidrs!r}, "
             f"llm_provider={self.llm_provider!r}, "
             f"anthropic_api_key={self.anthropic_api_key!r}, "
             f"openai_api_key={self.openai_api_key!r}, "

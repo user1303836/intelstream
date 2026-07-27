@@ -9,7 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from intelstream.config import reveal_secret
-from intelstream.hands.server import HandsServer
+from intelstream.hands.server import AdmissionConfig, HandsServer
 
 if TYPE_CHECKING:
     from intelstream.bot import IntelStreamBot
@@ -42,6 +42,9 @@ class Hands(commands.Cog):
             host=settings.hands_host,
             port=settings.hands_port,
             dev_mode=settings.hands_dev_mode,
+            admission=AdmissionConfig(
+                trusted_proxy_cidrs=settings.hands_trusted_proxies,
+            ),
         )
         try:
             await server.start()

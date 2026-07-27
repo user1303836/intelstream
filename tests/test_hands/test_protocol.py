@@ -10,6 +10,7 @@ from intelstream.hands.protocol import (
     encode_client_input,
     encode_snapshot,
     parse_client_input,
+    parse_ticket_ack,
     snapshot_for_viewer,
 )
 from intelstream.hands.types import (
@@ -168,6 +169,19 @@ def test_rejects_oversized_frames_and_action_arrays() -> None:
 def test_rejects_malformed_frames(frame: str | bytes) -> None:
     with pytest.raises(ProtocolError):
         parse_client_input(frame)
+
+
+def test_ticket_ack_is_strict_and_distinct_from_semantic_input() -> None:
+    frame = '{"version":1,"type":"ticket_ack","refresh_id":"refresh-identifier"}'
+    assert parse_ticket_ack(frame) == "refresh-identifier"
+    assert parse_ticket_ack(json.dumps(valid_payload())) is None
+    for malformed in (
+        '{"version":1,"type":"ticket_ack","refresh_id":"short"}',
+        '{"version":1,"type":"ticket_ack","refresh_id":"refresh-identifier","extra":1}',
+        '{"version":1,"type":"ticket_ack","refresh_id":"one","refresh_id":"two"}',
+    ):
+        with pytest.raises(ProtocolError):
+            parse_ticket_ack(malformed)
 
 
 def test_snapshot_encoding_is_required_and_redacted_per_viewer() -> None:

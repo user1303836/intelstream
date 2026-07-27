@@ -27,6 +27,7 @@ export function reduceState(state: GameState, action: StateAction): GameState {
   const message = action.message;
   switch (message.type) {
     case "welcome": return { ...state, playerId: message.player_id, players: mapPlayers(message.players), serverTick: message.server_tick, nextSequence: message.next_sequence, safeError: null };
+    case "ticket": return state;
     case "waiting": return { ...state, stage: "waiting" };
     case "ready": return { ...state, stage: state.snapshot?.phase ?? "countdown", players: mapPlayers(message.players) };
     case "paused": return { ...state, stage: "paused", reconnectMs: message.grace_ms };

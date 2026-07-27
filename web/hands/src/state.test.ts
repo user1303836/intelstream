@@ -10,5 +10,6 @@ describe("authoritative state reducer", () => {
     state = reduceState(state, { type: "message", message: { version: 1, type: "resumed", player_id: "two" } }); expect(state.stage).toBe("fight");
     state = reduceState(state, { type: "message", message: { version: 1, type: "final", match_id: "m", winner_id: null, method: "draw", round: 12, scorecards: [], ratings: { one: { before: 1500, after: 1500 }, two: { before: 1500, after: 1500 } } } }); expect(state.stage).toBe("complete");
   });
+  it("keeps refreshed credentials out of application state", () => expect(reduceState(initialState, { type: "message", message: { version: 1, type: "ticket", reconnect_ticket: "memory-only", refresh_id: "refresh-identifier" } })).toBe(initialState));
   it("fails closed on safe server errors", () => expect(reduceState(initialState, { type: "message", message: { version: 1, type: "error", code: "invalid_input" } }).safeError).toBe("invalid_input"));
 });

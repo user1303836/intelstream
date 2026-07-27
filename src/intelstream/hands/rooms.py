@@ -80,13 +80,22 @@ class RoomConfig:
             raise ValueError("room durations are invalid")
 
 
+@dataclass(frozen=True, slots=True)
+class _OutboundMessage:
+    message: str | None = None
+    bounded_update: bool = False
+    ticket_refresh: bool = False
+
+
 @dataclass(slots=True)
 class PlayerConnection:
     socket: SocketLike
-    outbox: asyncio.Queue[tuple[str | None, bool]]
+    outbox: asyncio.Queue[_OutboundMessage]
     pending_updates: int = 0
     slow_drop_started: bool = False
     slow_drop_task: asyncio.Task[None] | None = None
+    ticket_refresh_queued: bool = False
+    latest_ticket_refresh: str | None = None
     writer_task: asyncio.Task[None] | None = None
 
 
@@ -105,6 +114,7 @@ class RoomMembership:
     room: HandsRoom
     player_id: str
     connection: PlayerConnection
+    reconnect_ticket: str | None
 
 
 @dataclass(slots=True)
@@ -173,7 +183,10 @@ class HandsRoom:
         rating: int,
         *,
         reconnect_ticket: str | None = None,
+        reconnect_ticket_factory: Callable[[], str] | None = None,
     ) -> RoomMembership:
+        if reconnect_ticket is not None and reconnect_ticket_factory is not None:
+            raise ValueError("reconnect ticket and factory are mutually exclusive")
         async with self._lock:
             if identity.guild_id != self.guild_id:
                 raise RoomError("invalid_guild")
@@ -200,6 +213,8 @@ class HandsRoom:
                 )
                 if final_recovery and not self._accepting_reconnects:
                     raise RoomError("room_closed")
+            if reconnect_ticket_factory is not None:
+                reconnect_ticket = reconnect_ticket_factory()
             connection = self._new_connection(identity.user_id, socket)
             if existing is not None:
                 existing.connection = connection
@@ -232,20 +247,55 @@ class HandsRoom:
                 )
             if self._final_payload is not None:
                 self._enqueue(connection, self._final_payload)
-            elif (
-                not final_recovery
-                and existing is not None
-                and self._engine is not None
-                and all(current.connection is not None for current in self._slots.values())
-            ):
-                self._enqueue_all(
-                    self._message("resumed", player_id=identity.user_id), bounded_update=True
-                )
+            elif not final_recovery and existing is not None and self._engine is not None:
+                disconnected = [
+                    current for current in self._slots.values() if current.connection is None
+                ]
+                if not disconnected:
+                    self._enqueue_all(
+                        self._message("resumed", player_id=identity.user_id),
+                        bounded_update=True,
+                    )
+                else:
+                    opponent = disconnected[0]
+                    self._enqueue(
+                        connection,
+                        self._message(
+                            "paused",
+                            player_id=opponent.identity.user_id,
+                            grace_ms=max(0, int(opponent.grace_remaining * 1000)),
+                        ),
+                    )
             elif not final_recovery and len(self._slots) == 1:
                 self._enqueue(connection, self._message("waiting", open_seats=1))
             elif not final_recovery and self._engine is None:
                 self._start_match()
-            return RoomMembership(self, identity.user_id, connection)
+            return RoomMembership(
+                self,
+                identity.user_id,
+                connection,
+                reconnect_ticket,
+            )
+
+    async def refresh_ticket(
+        self,
+        player_id: str,
+        connection: PlayerConnection,
+        reconnect_ticket: str,
+        refresh_id: str,
+    ) -> None:
+        async with self._lock:
+            slot = self._slots.get(player_id)
+            if self._closed or slot is None or slot.connection is not connection:
+                raise RoomError("connection_replaced")
+            connection.latest_ticket_refresh = self._message(
+                "ticket",
+                reconnect_ticket=reconnect_ticket,
+                refresh_id=refresh_id,
+            )
+            if not connection.ticket_refresh_queued:
+                connection.ticket_refresh_queued = True
+                connection.outbox.put_nowait(_OutboundMessage(ticket_refresh=True))
 
     def _new_connection(self, player_id: str, socket: SocketLike) -> PlayerConnection:
         # Finite handshake/final bursts share this ordered queue but do not consume the
@@ -259,13 +309,20 @@ class HandsRoom:
     async def _writer(self, player_id: str, connection: PlayerConnection) -> None:
         try:
             while True:
-                message, bounded_update = await connection.outbox.get()
+                outbound = await connection.outbox.get()
                 try:
-                    if message is None:
+                    message = outbound.message
+                    if outbound.ticket_refresh:
+                        message = connection.latest_ticket_refresh
+                        connection.latest_ticket_refresh = None
+                        connection.ticket_refresh_queued = False
+                        if message is None:
+                            continue
+                    elif message is None:
                         return
                     await connection.socket.send_str(message)
                 finally:
-                    if bounded_update:
+                    if outbound.bounded_update:
                         connection.pending_updates -= 1
                     connection.outbox.task_done()
         except (ConnectionError, RuntimeError, asyncio.CancelledError):
@@ -314,7 +371,9 @@ class HandsRoom:
                     )
                 return
             connection.pending_updates += 1
-        connection.outbox.put_nowait((message, bounded_update))
+        connection.outbox.put_nowait(
+            _OutboundMessage(message=message, bounded_update=bounded_update)
+        )
 
     async def _drop_slow_connection(self, connection: PlayerConnection) -> None:
         try:
@@ -374,6 +433,9 @@ class HandsRoom:
                 slot.input_times.popleft()
             if len(slot.input_times) >= self.config.max_inputs_per_second:
                 raise RoomError("rate_limited")
+            if any(current.connection is None for current in self._slots.values()):
+                slot.input_times.append(now)
+                return
             try:
                 command = parse_client_input(
                     frame,
@@ -586,7 +648,9 @@ class HandsRoom:
             slow_drop_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await slow_drop_task
-        connection.outbox.put_nowait((None, False))
+        connection.latest_ticket_refresh = None
+        connection.ticket_refresh_queued = False
+        connection.outbox.put_nowait(_OutboundMessage())
         writer_task = connection.writer_task
         if writer_task is not None and writer_task is not current:
             writer_task.cancel()
@@ -666,6 +730,7 @@ class HandsRoomManager:
         socket: SocketLike,
         *,
         reconnect_ticket: str | None = None,
+        reconnect_ticket_factory: Callable[[], str] | None = None,
     ) -> RoomMembership:
         owner = object()
         async with self._lock:
@@ -712,6 +777,7 @@ class HandsRoomManager:
                     socket,
                     rating.rating,
                     reconnect_ticket=reconnect_ticket,
+                    reconnect_ticket_factory=reconnect_ticket_factory,
                 )
                 reservation.established = True
         except BaseException:

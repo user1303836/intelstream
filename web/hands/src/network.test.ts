@@ -85,6 +85,30 @@ describe("same-origin WebSocket controller", () => {
     controller.dispose();
   });
 
+  it("uses the latest in-memory ticket refresh without exposing it to app callbacks", () => {
+    vi.useFakeTimers();
+    const sockets: FakeSocket[] = [];
+    const messages: ServerMessage[] = [];
+    const controller = new NetworkController(
+      "ticket-a",
+      () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }),
+      callbacks({ onMessage: (message) => messages.push(message) }),
+      () => { const socket = new FakeSocket(); sockets.push(socket); return socket; },
+      () => Date.now(),
+    );
+    controller.start();
+    sockets[0]!.open();
+    sockets[0]!.message(welcome("ticket-b"));
+    sockets[0]!.message({ version: 1, type: "ticket", reconnect_ticket: "ticket-c", refresh_id: "refresh-identifier" });
+    expect(messages.map((message) => message.type)).toEqual(["welcome"]);
+    expect(JSON.parse(sockets[0]!.sent[1]!)).toEqual({ version: 1, type: "ticket_ack", refresh_id: "refresh-identifier" });
+    sockets[0]!.disconnect();
+    vi.advanceTimersByTime(250);
+    sockets[1]!.open();
+    expect(JSON.parse(sockets[1]!.sent[0]!).ticket).toBe("ticket-c");
+    controller.dispose();
+  });
+
   it("sends exactly one authoritative neutral frame before focus-loss suppression and removes listeners", () => {
     const socket = new FakeSocket();
     const controller = new NetworkController(

@@ -131,6 +131,14 @@ export class NetworkController {
       if (typeof event.data !== "string" && !(event.data instanceof ArrayBuffer)) throw new Error("unsupported_frame");
       const message = decodeServerFrame(event.data);
       this.applyMessage(message);
+      if (message.type === "ticket") {
+        try {
+          socket.send(JSON.stringify({ version: 1, type: "ticket_ack", refresh_id: message.refresh_id }));
+        } catch {
+          this.handleClose(socket);
+        }
+        return;
+      }
       this.callbacks.onMessage(message);
       if (message.type === "error") {
         this.terminate(message.code, socket);
@@ -157,6 +165,8 @@ export class NetworkController {
       this.nextSequence = Math.max(this.nextSequence, message.next_sequence);
       this.attempts = 0;
       this.clearTransportReconnect(true);
+    } else if (message.type === "ticket") {
+      this.reconnectTicket = message.reconnect_ticket;
     } else if (message.type === "snapshot") {
       this.serverTick = Math.max(this.serverTick, message.payload.tick);
       this.active = ["countdown", "fight", "knockdown", "foul_recovery"].includes(message.payload.phase);

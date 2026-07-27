@@ -5,12 +5,13 @@ describe("strict protocol v1", () => {
   it("decodes every control envelope and a populated final", () => {
     const messages = [
       { version: 1, type: "welcome", player_id: "one", seat: 1, rating: 1500, players: [publicPlayers[0]], server_tick: 0, next_sequence: 0, reconnect_ticket: "secret-ticket" },
+      { version: 1, type: "ticket", reconnect_ticket: "refreshed-ticket", refresh_id: "refresh-identifier" },
       { version: 1, type: "waiting", open_seats: 1 }, { version: 1, type: "ready", players: publicPlayers },
       { version: 1, type: "paused", player_id: "two", grace_ms: 20000 }, { version: 1, type: "resumed", player_id: "two" },
       { version: 1, type: "error", code: "room_full" }, envelope(),
       { version: 1, type: "final", match_id: "m", winner_id: "one", method: "decision", round: 12, scorecards: [{ judge: "A", player_one: [10], player_two: [9] }, { judge: "B", player_one: [9], player_two: [10] }, { judge: "C", player_one: [10], player_two: [9] }], ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } },
     ];
-    expect(messages.map((message) => decodeServerFrame(JSON.stringify(message)).type)).toEqual(["welcome", "waiting", "ready", "paused", "resumed", "error", "snapshot", "final"]);
+    expect(messages.map((message) => decodeServerFrame(JSON.stringify(message)).type)).toEqual(["welcome", "ticket", "waiting", "ready", "paused", "resumed", "error", "snapshot", "final"]);
   });
   it("decodes a fully populated embedded result", () => {
     const value = snapshot(); value.events as unknown as unknown[];

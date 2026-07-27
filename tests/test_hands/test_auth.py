@@ -111,6 +111,7 @@ async def test_trusted_exchange_uses_canonical_discord_data_and_one_use_ticket()
     assert activity.instance_id == INSTANCE
     assert activity.guild_id == GUILD
     assert exchange.access_token == "trusted-access"
+    assert auth.ticket_ttl_seconds == 30
     assert exchange.player == AuthenticatedPlayer(
         user_id=USER,
         guild_id=GUILD,
@@ -276,6 +277,24 @@ async def test_ticket_tamper_expiry_and_payload_binding_are_rejected() -> None:
         auth.verify_ticket(ticket)
     with pytest.raises(HandsAuthError, match="invalid_ticket"):
         auth.verify_ticket({"ticket": ticket})
+    await auth.close()
+
+
+async def test_activating_new_ticket_generation_invalidates_older_unconsumed_ticket() -> None:
+    auth = make_auth(Clock(), Clock(2000))
+    player = AuthenticatedPlayer(USER, GUILD, INSTANCE, "One", None)
+    old = auth.issue_ticket(player)
+    refreshed = auth.issue_ticket(player)
+
+    auth.activate_ticket(refreshed, player)
+    with pytest.raises(HandsAuthError, match="invalid_ticket"):
+        auth.verify_ticket(old)
+    assert auth.verify_ticket(refreshed) == player
+    with pytest.raises(HandsAuthError, match="invalid_ticket"):
+        auth.activate_ticket(
+            auth.issue_ticket(player),
+            AuthenticatedPlayer("444555666", GUILD, INSTANCE, "Other", None),
+        )
     await auth.close()
 
 

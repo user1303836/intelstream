@@ -19,6 +19,7 @@ def settings(*, enabled: bool = True):
         hands_host="127.0.0.1",
         hands_port=8080,
         hands_dev_mode=False,
+        hands_trusted_proxies=("127.0.0.1/32",),
     )
 
 
@@ -251,6 +252,7 @@ async def test_cog_lifecycle_starts_enabled_server_and_close_is_awaited() -> Non
     assert kwargs["application_id"] == "999"
     assert kwargs["guild_id"] == "123"
     assert kwargs["client_secret"] == "client-secret"
+    assert kwargs["admission"].trusted_proxy_cidrs == ("127.0.0.1/32",)
     server.start.assert_awaited_once()
     server.close.assert_awaited_once()
 

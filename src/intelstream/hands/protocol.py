@@ -162,6 +162,34 @@ def parse_client_input(
     )
 
 
+def parse_ticket_ack(frame: str | bytes) -> str | None:
+    encoded = frame.encode() if isinstance(frame, str) else frame
+    if len(encoded) > MAX_FRAME_BYTES:
+        raise ProtocolError("input frame is too large")
+    try:
+        raw = json.loads(
+            encoded,
+            parse_constant=_reject_constant,
+            object_pairs_hook=_unique_object,
+        )
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ProtocolError("input frame is not valid JSON") from exc
+    envelope = _object(raw, "envelope")
+    if envelope.get("type") != "ticket_ack":
+        return None
+    _exact_fields(envelope, {"version", "type", "refresh_id"}, "ticket acknowledgement")
+    if envelope.get("version") != PROTOCOL_VERSION:
+        raise ProtocolError("unsupported protocol version")
+    refresh_id = envelope.get("refresh_id")
+    if (
+        not isinstance(refresh_id, str)
+        or not 16 <= len(refresh_id) <= 128
+        or any(character < " " or character == "\x7f" for character in refresh_id)
+    ):
+        raise ProtocolError("invalid ticket refresh identifier")
+    return refresh_id
+
+
 def _action_dict(action: SemanticAction) -> dict[str, object]:
     if isinstance(action, PunchAction):
         return {

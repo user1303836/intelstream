@@ -104,6 +104,8 @@ def test_package_scanner_rejects_server_only_identifier(source: str) -> None:
 
 
 class _Closable:
+    ticket_ttl_seconds = 300
+
     async def close(self) -> None:
         pass
 

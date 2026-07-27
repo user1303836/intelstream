@@ -2,21 +2,24 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
 import aiohttp
+import httpx
 import pytest
 from yarl import URL
 
 from intelstream.database.repository import Repository
-from intelstream.hands.auth import AuthenticatedPlayer, AuthExchange, HandsAuthError
+from intelstream.hands.auth import AuthenticatedPlayer, AuthExchange, HandsAuth, HandsAuthError
 from intelstream.hands.engine import EngineConfig
 from intelstream.hands.rooms import HandsRoomManager, RoomConfig, RoomError
 from intelstream.hands.server import AdmissionConfig, HandsServer
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from pathlib import Path
 
 APP = "123456789"
@@ -26,6 +29,7 @@ ORIGIN = f"https://{APP}.discordsays.com"
 
 class FakeAuth:
     application_id = APP
+    ticket_ttl_seconds = 300
 
     def __init__(self) -> None:
         self.closed = False
@@ -58,6 +62,13 @@ class FakeAuth:
         if player is None:
             raise HandsAuthError("invalid_ticket")
         return player
+
+    def activate_ticket(self, ticket: object, player: AuthenticatedPlayer) -> None:
+        if not isinstance(ticket, str) or self.tickets.get(ticket) != player:
+            raise HandsAuthError("invalid_ticket")
+        for candidate, owner in list(self.tickets.items()):
+            if owner == player and candidate != ticket:
+                self.tickets.pop(candidate, None)
 
     async def close(self) -> None:
         self.closed = True
@@ -99,8 +110,11 @@ async def start_server(
     auth: FakeAuth | None = None,
     dev_mode: bool = False,
     auth_timeout: float = 0.5,
+    ticket_refresh: float | None = None,
+    ticket_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     rooms: HandsRoomManager | None = None,
     admission: AdmissionConfig | None = None,
+    monotonic_clock: Callable[[], float] = time.monotonic,
     static_root: Path | None = None,
 ) -> tuple[HandsServer, FakeAuth, str]:
     fake_auth = auth or FakeAuth()
@@ -116,7 +130,10 @@ async def start_server(
         auth=fake_auth,
         rooms=rooms,
         auth_timeout_seconds=auth_timeout,
+        ticket_refresh_seconds=ticket_refresh,
+        ticket_sleep=ticket_sleep,
         admission=admission,
+        monotonic_clock=monotonic_clock,
         static_root=static_root,
     )
     await server.start()
@@ -298,6 +315,48 @@ async def test_authenticated_room_admission_is_not_part_of_first_frame_timeout(
     await server.close()
 
 
+async def test_welcome_ticket_is_issued_after_blocking_room_admission(
+    repository: Repository,
+) -> None:
+    original_get = repository.get_or_create_hands_rating
+    admission_entered = asyncio.Event()
+    admission_release = asyncio.Event()
+
+    async def delayed_rating(guild_id: str, user_id: str):
+        admission_entered.set()
+        await admission_release.wait()
+        return await original_get(guild_id, user_id)
+
+    repository.get_or_create_hands_rating = delayed_rating
+    now = 1000.0
+
+    class TimedAuth(FakeAuth):
+        def __init__(self) -> None:
+            super().__init__()
+            self.issue_times: list[float] = []
+
+        def issue_ticket(self, player: AuthenticatedPlayer) -> str:
+            self.issue_times.append(now)
+            return super().issue_ticket(player)
+
+    auth = TimedAuth()
+    auth.tickets["valid"] = AuthenticatedPlayer("one", GUILD, "room", "One", None)
+    server, _auth, base = await start_server(repository, auth=auth)
+    async with aiohttp.ClientSession() as client:
+        socket = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
+        await socket.send_json({"version": 1, "type": "authenticate", "ticket": "valid"})
+        await admission_entered.wait()
+        assert auth.ticket_counter == 0
+        now = 2000.0
+        admission_release.set()
+        welcome = json.loads((await socket.receive(timeout=1)).data)
+        assert welcome["type"] == "welcome"
+        assert welcome["reconnect_ticket"] == "rotated-1"
+        assert auth.issue_times == [2000.0]
+        await socket.close()
+    await server.close()
+
+
 async def test_two_websockets_start_and_third_is_rejected(repository: Repository) -> None:
     sleep_release = asyncio.Event()
 
@@ -353,6 +412,43 @@ async def test_two_websockets_start_and_third_is_rejected(repository: Repository
         await server.close()
 
 
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"per_caller_request_limit": 0},
+        {"max_concurrent_upstream_per_caller": 0},
+        {"max_concurrent_ws_auth_per_caller": 0},
+        {"trusted_proxy_cidrs": ("not-a-network",)},
+        {"trusted_proxy_cidrs": ("0.0.0.0/0",)},
+        {"trusted_proxy_cidrs": ("::/0",)},
+    ],
+)
+def test_admission_config_rejects_unbounded_or_invalid_values(
+    kwargs: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError):
+        AdmissionConfig(**kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("refresh", [float("nan"), 0.5, 300.0])
+def test_ticket_refresh_interval_must_be_finite_bounded_and_pre_expiry(
+    refresh: float,
+) -> None:
+    with pytest.raises(ValueError, match="ticket refresh"):
+        HandsServer(
+            repository=object(),  # type: ignore[arg-type]
+            application_id=APP,
+            guild_id=GUILD,
+            client_secret="secret",
+            bot_token="token",
+            host="127.0.0.1",
+            port=0,
+            auth=FakeAuth(),
+            rooms=MagicRooms(),
+            ticket_refresh_seconds=refresh,
+        )
+
+
 async def test_public_semaphore_acquisition_rejects_capacity_and_releases() -> None:
     semaphore = asyncio.Semaphore(1)
     assert await HandsServer._try_acquire(semaphore)
@@ -384,6 +480,202 @@ async def test_duplicate_bootstrap_query_and_http_admission_limits(
             f"{base}/api/hands/bootstrap?instance_id=instance", headers=headers
         )
         assert limited.status == 429
+        assert (
+            sum(len(requests) for requests in server._bootstrap_caller_limit._requests.values())
+            == 1
+        )
+    await server.close()
+
+
+async def test_http_admission_is_per_caller_and_forwarded_headers_require_trust(
+    repository: Repository,
+) -> None:
+    direct, _auth, direct_base = await start_server(
+        repository,
+        admission=AdmissionConfig(
+            request_limit=10,
+            per_caller_request_limit=1,
+            request_window_seconds=60,
+        ),
+    )
+    async with aiohttp.ClientSession() as client:
+        first = await client.get(
+            f"{direct_base}/api/hands/bootstrap?instance_id=one",
+            headers={"Origin": ORIGIN, "X-Forwarded-For": "203.0.113.1"},
+        )
+        spoofed = await client.get(
+            f"{direct_base}/api/hands/bootstrap?instance_id=two",
+            headers={"Origin": ORIGIN, "X-Forwarded-For": "203.0.113.2"},
+        )
+        assert first.status == 200
+        assert spoofed.status == 429
+    await direct.close()
+
+    trusted, _auth, trusted_base = await start_server(
+        repository,
+        admission=AdmissionConfig(
+            request_limit=10,
+            per_caller_request_limit=1,
+            request_window_seconds=60,
+            trusted_proxy_cidrs=("127.0.0.0/8", "::1/128"),
+        ),
+    )
+    async with aiohttp.ClientSession() as client:
+        first = await client.get(
+            f"{trusted_base}/api/hands/bootstrap?instance_id=one",
+            headers={
+                "Origin": ORIGIN,
+                "X-Forwarded-For": "198.51.100.9, 203.0.113.10",
+            },
+        )
+        forged_left = await client.get(
+            f"{trusted_base}/api/hands/bootstrap?instance_id=two",
+            headers={
+                "Origin": ORIGIN,
+                "X-Forwarded-For": "192.0.2.99, 203.0.113.10",
+            },
+        )
+        other = await client.get(
+            f"{trusted_base}/api/hands/bootstrap?instance_id=three",
+            headers={"Origin": ORIGIN, "X-Forwarded-For": "203.0.113.11"},
+        )
+        malformed = await client.get(
+            f"{trusted_base}/api/hands/bootstrap?instance_id=four",
+            headers={"Origin": ORIGIN, "X-Forwarded-For": "not-an-ip"},
+        )
+        assert first.status == 200
+        assert forged_left.status == 429
+        assert other.status == 200
+        assert malformed.status == 400
+    await trusted.close()
+
+
+async def test_per_caller_window_capacity_purges_expired_callers(
+    repository: Repository,
+) -> None:
+    class MutableClock:
+        value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    clock = MutableClock()
+    server, _auth, base = await start_server(
+        repository,
+        admission=AdmissionConfig(
+            request_limit=10,
+            per_caller_request_limit=1,
+            request_window_seconds=10,
+            max_tracked_callers=2,
+            trusted_proxy_cidrs=("127.0.0.0/8", "::1/128"),
+        ),
+        monotonic_clock=clock,
+    )
+    async with aiohttp.ClientSession() as client:
+
+        async def bootstrap(caller: str, instance: str) -> int:
+            response = await client.get(
+                f"{base}/api/hands/bootstrap?instance_id={instance}",
+                headers={"Origin": ORIGIN, "X-Forwarded-For": caller},
+            )
+            return response.status
+
+        assert await bootstrap("203.0.113.1", "one") == 200
+        assert await bootstrap("203.0.113.2", "two") == 200
+        assert await bootstrap("203.0.113.3", "three") == 429
+        assert len(server._bootstrap_caller_limit._requests) == 2
+        clock.value = 11
+        assert await bootstrap("203.0.113.3", "three") == 200
+        assert list(server._bootstrap_caller_limit._requests) == ["203.0.113.3"]
+    await server.close()
+
+
+async def test_per_caller_upstream_concurrency_does_not_block_other_callers(
+    repository: Repository,
+) -> None:
+    class BlockingAuth(FakeAuth):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+            self.first_entered = asyncio.Event()
+            self.second_entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def begin(self, instance_id: object):
+            self.calls += 1
+            (self.first_entered if self.calls == 1 else self.second_entered).set()
+            await self.release.wait()
+            return await super().begin(instance_id)
+
+    auth = BlockingAuth()
+    server, _auth, base = await start_server(
+        repository,
+        auth=auth,
+        admission=AdmissionConfig(
+            request_limit=20,
+            per_caller_request_limit=10,
+            request_window_seconds=60,
+            max_concurrent_upstream=2,
+            max_concurrent_upstream_per_caller=1,
+            trusted_proxy_cidrs=("127.0.0.0/8", "::1/128"),
+        ),
+    )
+    async with aiohttp.ClientSession() as client:
+        first = asyncio.create_task(
+            client.get(
+                f"{base}/api/hands/bootstrap?instance_id=one",
+                headers={"Origin": ORIGIN, "X-Forwarded-For": "203.0.113.1"},
+            )
+        )
+        await auth.first_entered.wait()
+        same = await client.get(
+            f"{base}/api/hands/bootstrap?instance_id=same",
+            headers={"Origin": ORIGIN, "X-Forwarded-For": "203.0.113.1"},
+        )
+        other = asyncio.create_task(
+            client.get(
+                f"{base}/api/hands/bootstrap?instance_id=other",
+                headers={"Origin": ORIGIN, "X-Forwarded-For": "203.0.113.2"},
+            )
+        )
+        await auth.second_entered.wait()
+        assert same.status == 503
+        assert auth.calls == 2
+        auth.release.set()
+        responses = await asyncio.gather(first, other)
+        assert [response.status for response in responses] == [200, 200]
+    await server.close()
+
+
+async def test_per_caller_websocket_auth_slots_release_and_isolate_callers(
+    repository: Repository,
+) -> None:
+    server, _auth, base = await start_server(
+        repository,
+        admission=AdmissionConfig(
+            max_concurrent_ws_auth=3,
+            max_concurrent_ws_auth_per_caller=1,
+            trusted_proxy_cidrs=("127.0.0.0/8", "::1/128"),
+        ),
+    )
+    headers_one = {"Origin": ORIGIN, "X-Forwarded-For": "203.0.113.1"}
+    headers_two = {"Origin": ORIGIN, "X-Forwarded-For": "203.0.113.2"}
+    async with aiohttp.ClientSession() as client:
+        first = await client.ws_connect(f"{base}/api/hands/ws", headers=headers_one)
+        with pytest.raises(aiohttp.WSServerHandshakeError) as caught:
+            await client.ws_connect(f"{base}/api/hands/ws", headers=headers_one)
+        assert caught.value.status == 503
+
+        other = await client.ws_connect(f"{base}/api/hands/ws", headers=headers_two)
+        await other.send_json({"version": 1, "type": "authenticate", "ticket": "bad"})
+        assert json.loads((await other.receive(timeout=1)).data)["code"] == "invalid_ticket"
+        await other.close()
+
+        await first.send_json({"version": 1, "type": "authenticate", "ticket": "bad"})
+        assert json.loads((await first.receive(timeout=1)).data)["code"] == "invalid_ticket"
+        await first.close()
+        replacement = await client.ws_connect(f"{base}/api/hands/ws", headers=headers_one)
+        await replacement.close()
     await server.close()
 
 
@@ -461,6 +753,101 @@ async def test_ticket_replay_does_not_replace_live_socket(repository: Repository
         assert not live.closed
         await live.close()
     await server.close()
+
+
+async def test_refreshed_ticket_survives_original_rotation_expiry(
+    repository: Repository,
+) -> None:
+    wall = 1000.0
+    refresh_wakes: asyncio.Queue[None] = asyncio.Queue()
+
+    def wall_clock() -> float:
+        return wall
+
+    async def ticket_sleep(delay: float) -> None:
+        assert delay == 15
+        await refresh_wakes.get()
+
+    activated = asyncio.Event()
+
+    class ObservableAuth(HandsAuth):
+        def activate_ticket(self, ticket: object, player: AuthenticatedPlayer) -> None:
+            super().activate_ticket(ticket, player)
+            activated.set()
+
+    http_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _request: httpx.Response(500))
+    )
+    auth = ObservableAuth(
+        application_id=APP,
+        guild_id=GUILD,
+        client_secret="secret",
+        bot_token="bot-token",
+        client=http_client,
+        close_client=True,
+        wall_clock=wall_clock,
+        ticket_ttl_seconds=30,
+        ticket_secret=b"ticket-refresh-secret" * 2,
+    )
+    player = AuthenticatedPlayer("111222333", GUILD, "room", "One", None)
+    initial_ticket = auth.issue_ticket(player)
+    server = HandsServer(
+        repository=repository,
+        application_id=APP,
+        guild_id=GUILD,
+        client_secret="secret",
+        bot_token="bot-token",
+        host="127.0.0.1",
+        port=0,
+        auth=auth,
+        ticket_sleep=ticket_sleep,
+    )
+    await server.start()
+    assert server.bound_port is not None
+    base = f"http://127.0.0.1:{server.bound_port}"
+    async with aiohttp.ClientSession() as client:
+        live = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
+        await live.send_json({"version": 1, "type": "authenticate", "ticket": initial_ticket})
+        welcome = json.loads((await live.receive(timeout=1)).data)
+        original_rotation = welcome["reconnect_ticket"]
+
+        wall = 1020.0
+        refresh_wakes.put_nowait(None)
+        while True:
+            refreshed = json.loads((await live.receive(timeout=1)).data)
+            if refreshed["type"] == "ticket":
+                break
+        refreshed_ticket = refreshed["reconnect_ticket"]
+        assert refreshed_ticket != original_rotation
+        await live.send_json(
+            {
+                "version": 1,
+                "type": "ticket_ack",
+                "refresh_id": refreshed["refresh_id"],
+            }
+        )
+        await activated.wait()
+        with pytest.raises(HandsAuthError, match="invalid_ticket"):
+            auth.verify_ticket(original_rotation)
+
+        wall = 1031.0
+        await live.close()
+
+        replacement = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
+        await replacement.send_json(
+            {"version": 1, "type": "authenticate", "ticket": refreshed_ticket}
+        )
+        replacement_welcome = json.loads((await replacement.receive(timeout=1)).data)
+        assert replacement_welcome["type"] == "welcome"
+        await replacement.close()
+    await server.close()
+    assert http_client.is_closed
+    await asyncio.sleep(0)
+    assert not {
+        task.get_name()
+        for task in asyncio.all_tasks()
+        if not task.done() and task.get_name().startswith("hands-ticket-refresh-")
+    }
 
 
 async def test_unexpected_post_upgrade_failure_closes_with_generic_error(

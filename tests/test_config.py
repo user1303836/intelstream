@@ -385,6 +385,7 @@ class TestSettings:
     def test_hands_is_disabled_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("HANDS_ENABLED", raising=False)
         monkeypatch.delenv("DISCORD_CLIENT_SECRET", raising=False)
+        monkeypatch.delenv("HANDS_TRUSTED_PROXY_CIDRS", raising=False)
 
         settings = Settings(_env_file=None)
 
@@ -393,6 +394,7 @@ class TestSettings:
         assert settings.hands_host == "127.0.0.1"
         assert settings.hands_port == 8080
         assert settings.hands_dev_mode is False
+        assert settings.hands_trusted_proxies == ()
 
     def test_hands_enabled_requires_client_secret(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("HANDS_ENABLED", "true")
@@ -409,6 +411,10 @@ class TestSettings:
         monkeypatch.setenv("HANDS_HOST", "0.0.0.0")
         monkeypatch.setenv("HANDS_PORT", "9443")
         monkeypatch.setenv("HANDS_DEV_MODE", "true")
+        monkeypatch.setenv(
+            "HANDS_TRUSTED_PROXY_CIDRS",
+            "127.0.0.1, 10.0.0.9/24",
+        )
 
         settings = Settings(_env_file=None)
         rendered = repr(settings)
@@ -420,6 +426,7 @@ class TestSettings:
         assert settings.hands_host == "0.0.0.0"
         assert settings.hands_port == 9443
         assert settings.hands_dev_mode is True
+        assert settings.hands_trusted_proxies == ("127.0.0.1/32", "10.0.0.0/24")
         assert "hands-client-secret" not in rendered
         assert "hands-client-secret" not in repr(settings.model_dump(mode="json"))
         assert "hands-client-secret" not in repr(context)
@@ -427,6 +434,19 @@ class TestSettings:
         assert context["hands_host"] == "0.0.0.0"
         assert context["hands_port"] == 9443
         assert context["hands_dev_mode"] is True
+        assert context["hands_trusted_proxy_cidrs"] == "127.0.0.1/32,10.0.0.0/24"
+
+    @pytest.mark.parametrize(
+        "trusted",
+        ["not-a-network", "0.0.0.0/0", "127.0.0.1,,::1", ",".join(["::1"] * 17)],
+    )
+    def test_hands_trusted_proxy_cidrs_reject_unsafe_values(
+        self, monkeypatch: pytest.MonkeyPatch, trusted: str
+    ) -> None:
+        monkeypatch.setenv("HANDS_TRUSTED_PROXY_CIDRS", trusted)
+
+        with pytest.raises(ValidationError, match="HANDS_TRUSTED_PROXY_CIDRS"):
+            Settings(_env_file=None)
 
     @pytest.mark.parametrize("port", ["0", "65536"])
     def test_hands_port_bounds(self, monkeypatch: pytest.MonkeyPatch, port: str) -> None:

@@ -47,6 +47,7 @@ export interface MatchResult {
 export interface EngineSnapshot { readonly tick: number; readonly phase: MatchPhase; readonly round_number: number; readonly phase_ticks_remaining: number; readonly fighters: readonly [FighterSnapshot, FighterSnapshot]; readonly events: readonly CombatEvent[]; readonly result: MatchResult | null; readonly checksum: string }
 
 export interface WelcomeMessage { readonly version: 1; readonly type: "welcome"; readonly player_id: string; readonly seat: 1 | 2; readonly rating: number; readonly players: readonly PublicPlayer[]; readonly server_tick: number; readonly next_sequence: number; readonly reconnect_ticket?: string }
+export interface TicketMessage { readonly version: 1; readonly type: "ticket"; readonly reconnect_ticket: string; readonly refresh_id: string }
 export interface WaitingMessage { readonly version: 1; readonly type: "waiting"; readonly open_seats: 1 }
 export interface ReadyMessage { readonly version: 1; readonly type: "ready"; readonly players: readonly [PublicPlayer, PublicPlayer] }
 export interface PausedMessage { readonly version: 1; readonly type: "paused"; readonly player_id: string; readonly grace_ms: number }
@@ -55,7 +56,7 @@ export interface SnapshotMessage { readonly version: 1; readonly type: "snapshot
 export interface RatingDelta { readonly before: number; readonly after: number }
 export interface FinalMessage { readonly version: 1; readonly type: "final"; readonly match_id: string; readonly winner_id: string | null; readonly method: FinishMethod; readonly round: number; readonly scorecards: readonly JudgeCard[]; readonly ratings: Readonly<Record<string, RatingDelta>> }
 export interface ErrorMessage { readonly version: 1; readonly type: "error"; readonly code: string }
-export type ServerMessage = WelcomeMessage | WaitingMessage | ReadyMessage | PausedMessage | ResumedMessage | SnapshotMessage | FinalMessage | ErrorMessage;
+export type ServerMessage = WelcomeMessage | TicketMessage | WaitingMessage | ReadyMessage | PausedMessage | ResumedMessage | SnapshotMessage | FinalMessage | ErrorMessage;
 
 export interface SimulationInfo { readonly tick_rate: number; readonly ring_half_width: number; readonly ring_half_height: number }
 export interface BootstrapResponse { readonly client_id: string; readonly state: string; readonly protocol: 1; readonly simulation: SimulationInfo }
