@@ -60,7 +60,7 @@ def player(user_id: str, instance: str = "instance-1") -> AuthenticatedPlayer:
 
 def room_config(
     *,
-    tick_interval: float = 0.001,
+    tick_interval: float = 0.005,
     round_ticks: int = 2,
     reconnect_grace: float = 0.03,
     result_hold: float = 0.0,
@@ -335,7 +335,7 @@ async def test_post_start_disconnect_forfeits_and_pre_match_abandonment_does_not
 ) -> None:
     manager = HandsRoomManager(
         repository,
-        config=room_config(round_ticks=1000, reconnect_grace=0.015),
+        config=room_config(round_ticks=1_000_000, reconnect_grace=0.015),
         match_id_factory=lambda: "match-forfeit",
     )
     first = await manager.join(player("one"), FakeSocket())
