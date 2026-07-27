@@ -17,7 +17,9 @@ export function worldMapping(simulation: SimulationInfo): WorldMapping {
   const scaleZ = RING_FIGHT_HALF / Math.max(1, simulation.ring_half_height);
   return {
     x: (simX) => simX * scaleX,
-    z: (simY) => simY * scaleZ,
+    // Sim +y is "away" in the input model (W/stick-up); the broadcast camera
+    // sits at world +Z, so world -Z must be away to preserve that feel.
+    z: (simY) => -simY * scaleZ,
   };
 }
 
