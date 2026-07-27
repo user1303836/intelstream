@@ -43,6 +43,7 @@ export interface BoxerRig {
   readonly gloveLMaterial: THREE.MeshStandardMaterial;
   readonly gloveRMaterial: THREE.MeshStandardMaterial;
   readonly gloveBaseColor: THREE.Color;
+  readonly skinMaterial: THREE.MeshPhysicalMaterial;
   readonly materials: readonly THREE.Material[];
   readonly geometries: readonly THREE.BufferGeometry[];
 }
@@ -75,9 +76,38 @@ function box(width: number, height: number, depth: number, material: THREE.Mater
   return mesh;
 }
 
+let sharedSkinBump: THREE.CanvasTexture | null = null;
+
+function skinBumpTexture(): THREE.CanvasTexture {
+  if (sharedSkinBump !== null) return sharedSkinBump;
+  const canvas = document.createElement("canvas");
+  canvas.width = 128;
+  canvas.height = 128;
+  const ctx = canvas.getContext("2d");
+  if (ctx !== null) {
+    ctx.fillStyle = "#808080";
+    ctx.fillRect(0, 0, 128, 128);
+    let seed = 55_444_333;
+    for (let i = 0; i < 2600; i += 1) {
+      seed = (seed * 16_807) % 2_147_483_647;
+      const x = seed % 128;
+      seed = (seed * 16_807) % 2_147_483_647;
+      const y = seed % 128;
+      const shade = 108 + (seed % 40);
+      ctx.fillStyle = `rgb(${shade},${shade},${shade})`;
+      ctx.fillRect(x, y, 1 + (seed % 2), 1);
+    }
+  }
+  sharedSkinBump = new THREE.CanvasTexture(canvas);
+  sharedSkinBump.wrapS = THREE.RepeatWrapping;
+  sharedSkinBump.wrapT = THREE.RepeatWrapping;
+  sharedSkinBump.repeat.set(3, 3);
+  return sharedSkinBump;
+}
+
 export function buildBoxer(palette: FighterPalette): BoxerRig {
   const geometries: THREE.BufferGeometry[] = [];
-  const skin = new THREE.MeshPhysicalMaterial({ color: palette.skin, roughness: 0.58, metalness: 0.02, clearcoat: 0.25, clearcoatRoughness: 0.6 });
+  const skin = new THREE.MeshPhysicalMaterial({ color: palette.skin, roughness: 0.58, metalness: 0.02, clearcoat: 0.25, clearcoatRoughness: 0.6, sheen: 0.3, sheenColor: new THREE.Color(0xd9a98c), sheenRoughness: 0.55, bumpMap: skinBumpTexture(), bumpScale: 0.0015 });
   const skinDark = new THREE.MeshStandardMaterial({ color: palette.skinShadow, roughness: 0.58, metalness: 0.02 });
   const trunks = new THREE.MeshStandardMaterial({ color: palette.trunks, roughness: 0.34, metalness: 0.05 });
   const trim = new THREE.MeshStandardMaterial({ color: palette.trunkTrim, roughness: 0.4, metalness: 0.1 });
@@ -130,22 +160,25 @@ export function buildBoxer(palette: FighterPalette): BoxerRig {
   chest.name = "chest";
   spine.add(chest);
 
-  const chestMesh = capsule(0.16, 0.2, skin, geometries);
-  chestMesh.scale.set(1.3, 1, 0.82);
-  chestMesh.position.y = 0.19;
+  const torsoProfile: Array<[number, number]> = [
+    [0.138, -0.13], [0.146, -0.07], [0.134, 0.0], [0.148, 0.06], [0.172, 0.14],
+    [0.19, 0.22], [0.186, 0.3], [0.152, 0.36], [0.102, 0.42], [0.062, 0.46],
+  ];
+  const torsoGeo = new THREE.LatheGeometry(torsoProfile.map(([r, y]) => new THREE.Vector2(r, y)), 24);
+  geometries.push(torsoGeo);
+  const chestMesh = new THREE.Mesh(torsoGeo, skin);
+  chestMesh.scale.set(1.28, 1, 0.8);
+  chestMesh.castShadow = true;
   chest.add(chestMesh);
-  const abdomen = capsule(0.125, 0.1, skin, geometries);
-  abdomen.scale.set(1.22, 1, 0.8);
-  abdomen.position.y = 0.02;
-  chest.add(abdomen);
   const pecL = sphere(0.062, skin, geometries);
-  pecL.scale.set(1.05, 0.78, 0.6);
-  pecL.position.set(0.085, 0.26, 0.115);
+  pecL.scale.set(1.05, 0.62, 0.42);
+  pecL.position.set(0.085, 0.26, 0.125);
   chest.add(pecL);
   const pecR = pecL.clone();
   pecR.position.x = -0.085;
   chest.add(pecR);
   const deltL = sphere(0.075, skin, geometries);
+  deltL.scale.set(1.05, 1.1, 0.95);
   deltL.position.set(0.215, 0.315, 0);
   chest.add(deltL);
   const deltR = deltL.clone();
@@ -158,6 +191,15 @@ export function buildBoxer(palette: FighterPalette): BoxerRig {
   bodyBruise.castShadow = false;
   chest.add(bodyBruise);
 
+  const trapL = box(0.13, 0.06, 0.1, skin, geometries);
+  trapL.position.set(0.115, 0.4, -0.02);
+  trapL.rotation.z = -0.5;
+  chest.add(trapL);
+  const trapR = box(0.13, 0.06, 0.1, skin, geometries);
+  trapR.position.set(-0.115, 0.4, -0.02);
+  trapR.rotation.z = 0.5;
+  chest.add(trapR);
+
   const head = new THREE.Group();
   head.name = "head";
   head.position.y = 0.44;
@@ -167,9 +209,14 @@ export function buildBoxer(palette: FighterPalette): BoxerRig {
   neck.position.y = 0.02;
   neck.castShadow = true;
   head.add(neck);
-  const headMesh = sphere(0.115, skin, geometries, 22, 18);
-  headMesh.scale.set(0.92, 1.08, 0.98);
-  headMesh.position.y = 0.135;
+  const skullProfile: Array<[number, number]> = [
+    [0.05, 0.02], [0.076, 0.05], [0.096, 0.08], [0.106, 0.13], [0.102, 0.18], [0.072, 0.23], [0.02, 0.26],
+  ];
+  const skullGeo = new THREE.LatheGeometry(skullProfile.map(([r, y]) => new THREE.Vector2(r, y)), 22);
+  geometries.push(skullGeo);
+  const headMesh = new THREE.Mesh(skullGeo, skin);
+  headMesh.scale.set(0.92, 1.05, 0.95);
+  headMesh.castShadow = true;
   head.add(headMesh);
   const jaw = sphere(0.085, skin, geometries, 16, 12);
   jaw.scale.set(0.85, 0.72, 0.9);
@@ -178,6 +225,23 @@ export function buildBoxer(palette: FighterPalette): BoxerRig {
   const nose = box(0.032, 0.045, 0.035, skinDark, geometries);
   nose.position.set(0, 0.12, 0.112);
   head.add(nose);
+  const noseBridge = box(0.022, 0.05, 0.02, skin, geometries);
+  noseBridge.position.set(0, 0.16, 0.104);
+  head.add(noseBridge);
+  const lips = box(0.045, 0.012, 0.012, skinDark, geometries);
+  lips.position.set(0, 0.062, 0.104);
+  head.add(lips);
+  const chin = sphere(0.04, skin, geometries, 12, 10);
+  chin.scale.set(0.9, 0.75, 0.8);
+  chin.position.set(0, 0.035, 0.07);
+  head.add(chin);
+  const cheekboneL = sphere(0.028, skin, geometries, 10, 8);
+  cheekboneL.scale.set(1.1, 0.7, 0.8);
+  cheekboneL.position.set(0.07, 0.11, 0.075);
+  head.add(cheekboneL);
+  const cheekboneR = cheekboneL.clone();
+  cheekboneR.position.x = -0.07;
+  head.add(cheekboneR);
   const browL = box(0.052, 0.016, 0.02, skinDark, geometries);
   browL.position.set(0.048, 0.165, 0.1);
   head.add(browL);
@@ -277,13 +341,17 @@ export function buildBoxer(palette: FighterPalette): BoxerRig {
     shoulder.position.set(0.215 * side, 0.315, 0);
     chest.add(shoulder);
     const upper = capsule(0.056, UPPER_ARM - 0.12, skin, geometries);
+    upper.scale.set(1.16, 1, 1.16);
     upper.position.y = -UPPER_ARM / 2;
     shoulder.add(upper);
     const elbow = new THREE.Group();
     elbow.name = side === 1 ? "elbowL" : "elbowR";
     elbow.position.y = -UPPER_ARM;
     shoulder.add(elbow);
+    const elbowJoint = sphere(0.048, skin, geometries, 12, 10);
+    elbow.add(elbowJoint);
     const fore = capsule(0.048, FOREARM - 0.13, skin, geometries);
+    fore.scale.set(1.1, 1, 0.92);
     fore.position.y = -FOREARM / 2 + 0.01;
     elbow.add(fore);
     const glove = new THREE.Group();
@@ -299,6 +367,12 @@ export function buildBoxer(palette: FighterPalette): BoxerRig {
     gloveMesh.scale.set(1, 1.12, 1.3);
     gloveMesh.position.set(0, -0.05, 0.02);
     glove.add(gloveMesh);
+    const thumb = sphere(0.032, gloveMat, geometries, 10, 8);
+    thumb.position.set(-0.05 * side, -0.045, 0.075);
+    glove.add(thumb);
+    const lace = box(0.05, 0.008, 0.012, gloveTrimMat, geometries);
+    lace.position.set(0, -0.028, 0.1);
+    glove.add(lace);
     return { shoulder, elbow, glove, gloveMesh };
   };
   const armL = buildArm(1);
@@ -310,16 +384,26 @@ export function buildBoxer(palette: FighterPalette): BoxerRig {
     hip.position.set(0.105 * side, -0.02, 0);
     hips.add(hip);
     const thigh = capsule(0.078, 0.24, skin, geometries);
+    thigh.scale.set(1.14, 1, 1.08);
     thigh.position.y = -0.21;
     hip.add(thigh);
     const trunkLeg = capsule(0.092, 0.16, trunks, geometries);
     trunkLeg.position.y = -0.14;
     hip.add(trunkLeg);
+    const hem = new THREE.Mesh(new THREE.CylinderGeometry(0.096, 0.1, 0.03, 14), trim);
+    geometries.push(hem.geometry);
+    hem.position.y = -0.24;
+    hem.castShadow = true;
+    hip.add(hem);
     const knee = new THREE.Group();
     knee.name = side === 1 ? "kneeL" : "kneeR";
     knee.position.y = -0.44;
     hip.add(knee);
+    const kneeJoint = sphere(0.06, skin, geometries, 12, 10);
+    kneeJoint.scale.set(0.95, 1.05, 1);
+    knee.add(kneeJoint);
     const shin = capsule(0.058, 0.24, skin, geometries);
+    shin.scale.set(1.05, 1, 1.12);
     shin.position.y = -0.21;
     knee.add(shin);
     const ankle = new THREE.Group();
@@ -381,6 +465,7 @@ export function buildBoxer(palette: FighterPalette): BoxerRig {
     gloveLMaterial: gloveMat,
     gloveRMaterial: gloveMat,
     gloveBaseColor: new THREE.Color(palette.glove),
+    skinMaterial: skin,
     materials,
     geometries,
   };

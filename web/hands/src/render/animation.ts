@@ -8,10 +8,10 @@ const GUARD_HIGH_L = new THREE.Vector3(0.1, 0.27, 0.27);
 const GUARD_HIGH_R = new THREE.Vector3(-0.09, 0.29, 0.23);
 const GUARD_LOW_L = new THREE.Vector3(0.13, 0.0, 0.26);
 const GUARD_LOW_R = new THREE.Vector3(-0.11, 0.02, 0.22);
-const RELAXED_L = new THREE.Vector3(0.13, 0.1, 0.28);
-const RELAXED_R = new THREE.Vector3(-0.11, 0.14, 0.24);
+const RELAXED_L = new THREE.Vector3(0.15, 0.12, 0.33);
+const RELAXED_R = new THREE.Vector3(-0.11, 0.16, 0.24);
 
-const PUNCH_DURATION: Record<PunchClass, number> = { jab: 0.3, straight: 0.38, hook: 0.44, uppercut: 0.46 };
+const PUNCH_DURATION: Record<PunchClass, number> = { jab: 0.32, straight: 0.4, hook: 0.46, uppercut: 0.5 };
 const HEAD_Y = 0.33;
 const BODY_Y = -0.02;
 
@@ -34,7 +34,7 @@ export interface Impact {
 
 const smooth = (current: number, target: number, rate: number, dt: number): number => current + (target - current) * (1 - Math.exp(-rate * dt));
 const smoothAngle = (current: number, target: number, rate: number, dt: number): number => {
-  let delta = ((target - current + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+  const delta = ((target - current + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
   return current + delta * (1 - Math.exp(-rate * dt));
 };
 const smoothstep = (edge0: number, edge1: number, value: number): number => {
@@ -76,6 +76,20 @@ export class BoxerAnimator {
   private spinePitch = 0;
   private spineTwist = 0;
   private drop = 0;
+  private kinStep = 0;
+  private kinHipYaw = 0;
+  private kinDrop = 0;
+  private kinHeelR = 0;
+  private kinPivotL = 0;
+  private kinHeadTuck = 0;
+  private hitstop = 0;
+  private prevVelocityX = 0;
+  private prevVelocityY = 0;
+  private inertiaPitch = 0;
+  private inertiaRoll = 0;
+  private prevDown = 0;
+  private landingSpring = 0;
+  private landingVelocity = 0;
 
   constructor(private readonly rig: BoxerRig, private readonly mapping: WorldMapping) {}
 
@@ -85,6 +99,10 @@ export class BoxerAnimator {
       this.reactionDirection = impact.direction;
       this.reactionPower = Math.max(this.reactionPower * 0.4, impact.amount);
     }
+  }
+
+  landedHit(blocked: boolean): void {
+    this.hitstop = Math.max(this.hitstop, blocked ? 0.045 : 0.078);
   }
 
   update(fighter: FighterSnapshot, opponent: FighterSnapshot, dt: number, time: number, reducedMotion: boolean, blood: BloodLevel = "full"): void {
@@ -107,71 +125,135 @@ export class BoxerAnimator {
       this.activeAction = fighter.action;
     }
     const duration = this.punchKind === null ? 1 : PUNCH_DURATION[this.punchKind] * (this.punchPower === "power" ? 1.3 : 1);
-    this.punchT = Math.min(1, this.punchT + dt / duration);
+    const punchDt = this.hitstop > 0 ? 0 : dt;
+    this.hitstop = Math.max(0, this.hitstop - dt);
+    this.punchT = Math.min(1, this.punchT + punchDt / duration);
 
     const tired = 1 - fighter.stamina / Math.max(1, fighter.maximum_stamina);
     const speed = Math.hypot(fighter.velocity_x, fighter.velocity_y) * 0.006;
-    this.walkPhase += speed * dt * 4.4;
+    const speedFactor = Math.min(1, speed * 0.55);
+    this.walkPhase += speed * dt * 4.6;
+
+    const accelX = (fighter.velocity_x - this.prevVelocityX) / Math.max(0.001, dt);
+    const accelY = (fighter.velocity_y - this.prevVelocityY) / Math.max(0.001, dt);
+    this.prevVelocityX = fighter.velocity_x;
+    this.prevVelocityY = fighter.velocity_y;
+    const accelForward = (Math.sin(this.yaw) * this.mapping.x(accelX) + Math.cos(this.yaw) * this.mapping.z(accelY)) * 0.12;
+    const accelLateral = (Math.cos(this.yaw) * this.mapping.x(accelX) - Math.sin(this.yaw) * this.mapping.z(accelY)) * 0.12;
+    this.inertiaPitch = smooth(this.inertiaPitch, THREE.MathUtils.clamp(-accelForward, -0.16, 0.16), 6, dt);
+    this.inertiaRoll = smooth(this.inertiaRoll, THREE.MathUtils.clamp(accelLateral, -0.12, 0.12), 6, dt);
 
     const downTarget = fighter.is_downed ? 1 : 0;
     const downRate = fighter.is_downed ? 2.6 : 1.5;
     this.downAmount = smooth(this.downAmount, downTarget, downRate, dt);
     const down = smoothstep(0, 1, this.downAmount);
+    if (down > 0.72 && this.prevDown <= 0.72) this.landingVelocity = -0.55;
+    this.prevDown = down;
+    const springAccel = -this.landingSpring * 90 - this.landingVelocity * 12;
+    this.landingVelocity += springAccel * dt;
+    this.landingSpring = THREE.MathUtils.clamp(this.landingSpring + this.landingVelocity * dt, -0.09, 0.06);
 
     this.reactionT = Math.min(1, this.reactionT + dt / 0.42);
-    const reaction = (1 - smoothstep(0, 1, this.reactionT)) * Math.min(1, this.reactionPower / 220);
+    const reactionPower = Math.min(1, this.reactionPower / 220);
+    const reactionHead = (1 - smoothstep(0, 0.8, this.reactionT)) * reactionPower;
+    const reaction = smoothstep(0, 0.14, this.reactionT) * (1 - smoothstep(0.35, 1, this.reactionT)) * reactionPower;
 
     const stunned = Math.min(1, fighter.stunned_ticks / 45);
     const wobble = reducedMotion ? 0 : Math.sin(time * 8.6) * 0.05 * stunned;
 
-    const bob = reducedMotion || down > 0.5 ? 0 : Math.sin(time * (4.6 - tired * 1.6) + this.walkPhase * 0.5) * (0.014 + tired * 0.012);
+    const idleTempo = 4.4 - tired * 1.4;
+    const stepBounce = reducedMotion || down > 0.5 ? 0 : -Math.abs(Math.sin(time * idleTempo + this.walkPhase * 0.35)) * (0.017 + tired * 0.01);
+    const weightSway = reducedMotion || down > 0.5 ? 0 : Math.sin(time * idleTempo * 0.5) * 0.022;
     const breath = reducedMotion ? 0 : Math.sin(time * (2.2 + tired * 2.6)) * (0.012 + tired * 0.03);
 
-    let dropTarget = 0;
+    let dropTarget = -0.035;
     let rollTarget = 0;
-    let pitchTarget = 0;
-    if (fighter.defense === "weave") { dropTarget = -0.24; rollTarget = 0.34 * mirror; pitchTarget = 0.3; }
-    else if (fighter.defense === "slip_left") { rollTarget = 0.2; pitchTarget = 0.06; }
-    else if (fighter.defense === "slip_right") { rollTarget = -0.2; pitchTarget = 0.06; }
-    else if (fighter.defense === "pull") { pitchTarget = -0.3; }
+    let pitchTarget = 0.09;
+    if (fighter.defense === "weave") { dropTarget = -0.26; rollTarget = 0.34 * mirror; pitchTarget = 0.3; }
+    else if (fighter.defense === "slip_left") { rollTarget = 0.2; pitchTarget = 0.12; }
+    else if (fighter.defense === "slip_right") { rollTarget = -0.2; pitchTarget = 0.12; }
+    else if (fighter.defense === "pull") { pitchTarget = -0.26; }
     if (fighter.is_foul_recovery_target) { dropTarget = -0.18; pitchTarget = 0.42; }
-    if (fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0) { pitchTarget = 0.4; dropTarget = -0.06; }
+    if (fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0) { pitchTarget = 0.4; dropTarget = -0.08; }
     dropTarget -= reaction * 0.05;
     pitchTarget -= reaction * 0.34;
-    rollTarget += wobble;
+    rollTarget += wobble + this.inertiaRoll;
+    pitchTarget += this.inertiaPitch;
     this.drop = smooth(this.drop, dropTarget, 12, dt);
     this.hipsRoll = smooth(this.hipsRoll, rollTarget, 12, dt);
     this.spinePitch = smooth(this.spinePitch, pitchTarget, 11, dt);
 
     let twistTarget = 0;
+    let stepTarget = 0;
+    let hipYawTarget = 0;
+    let kinDropTarget = 0;
+    let heelRTarget = 0;
+    let pivotLTarget = 0;
+    let tuckTarget = 0;
     if (this.punchT < 1 && this.punchKind !== null) {
-      const extend = smoothstep(0.16, 0.5, this.punchT) * (1 - smoothstep(0.6, 1, this.punchT));
-      if (this.punchKind === "straight") twistTarget = -0.42 * extend * (this.punchHand === "left" ? 1 : -1) * mirror;
-      if (this.punchKind === "hook") twistTarget = 0.4 * extend * (this.punchHand === "left" ? 1 : -1) * mirror;
-      if (this.punchKind === "uppercut") twistTarget = -0.2 * extend * (this.punchHand === "left" ? 1 : -1) * mirror;
-      if (this.punchKind === "jab") twistTarget = 0.24 * extend * (this.punchHand === "left" ? 1 : -1) * mirror;
+      const windup = smoothstep(0, 0.2, this.punchT) * (1 - smoothstep(0.16, 0.45, this.punchT));
+      const extend = smoothstep(0.18, this.punchKind === "jab" ? 0.42 : 0.5, this.punchT) * (1 - smoothstep(0.62, 1, this.punchT));
+      const handSign = (this.punchHand === "left" ? 1 : -1) * mirror;
+      const bodyDip = this.punchTargetKind === "body" ? -0.09 * extend : 0;
+      if (this.punchKind === "jab") {
+        twistTarget = 0.2 * extend * handSign;
+        stepTarget = 0.075 * extend;
+        hipYawTarget = 0.1 * extend * handSign;
+        heelRTarget = 0.4 * extend;
+        tuckTarget = 0.14 * extend;
+      } else if (this.punchKind === "straight") {
+        twistTarget = 0.35 * extend * handSign;
+        hipYawTarget = 0.3 * extend * handSign;
+        heelRTarget = 0.5 * extend;
+        stepTarget = 0.05 * extend;
+        tuckTarget = 0.1 * extend;
+      } else if (this.punchKind === "hook") {
+        twistTarget = 0.3 * extend * handSign;
+        hipYawTarget = 0.28 * extend * handSign;
+        pivotLTarget = 0.5 * extend;
+        rollTarget += 0.07 * extend * handSign;
+        tuckTarget = 0.08 * extend;
+      } else {
+        twistTarget = 0.25 * extend * handSign;
+        hipYawTarget = 0.22 * extend * handSign;
+        kinDropTarget = -0.15 * windup + 0.06 * extend;
+        pitchTarget += 0.12 * windup - 0.06 * extend;
+        heelRTarget = 0.35 * extend;
+      }
+      kinDropTarget += bodyDip;
     }
     this.spineTwist = smooth(this.spineTwist, twistTarget, 16, dt);
+    this.kinStep = smooth(this.kinStep, stepTarget, 14, dt);
+    this.kinHipYaw = smooth(this.kinHipYaw, hipYawTarget, 14, dt);
+    this.kinDrop = smooth(this.kinDrop, kinDropTarget, 13, dt);
+    this.kinHeelR = smooth(this.kinHeelR, heelRTarget, 14, dt);
+    this.kinPivotL = smooth(this.kinPivotL, pivotLTarget, 14, dt);
+    this.kinHeadTuck = smooth(this.kinHeadTuck, tuckTarget, 14, dt);
 
-    const blade = 0.34 * mirror;
-    rig.root.position.set(worldX, 0, worldZ);
-    rig.root.rotation.set(0, this.yaw + blade * (1 - down), 0);
+    const blade = 0.5 * mirror;
+    const rootYaw = this.yaw + blade * (1 - down);
+    rig.root.rotation.set(0, rootYaw, 0);
+    const stepForwardX = Math.sin(rootYaw) * this.kinStep * (1 - down);
+    const stepForwardZ = Math.cos(rootYaw) * this.kinStep * (1 - down);
+    rig.root.position.set(worldX + stepForwardX, 0, worldZ + stepForwardZ);
 
     const fallSide = this.reactionDirection >= 0 ? 1 : -1;
-    rig.hips.position.y = 0.98 + bob + this.drop * (1 - down) - down * 0.82;
+    rig.hips.position.y = 0.955 + stepBounce + (this.drop + this.kinDrop) * (1 - down) - down * 0.8 + this.landingSpring;
+    rig.hips.position.x = weightSway * (1 - down);
     rig.hips.rotation.set(
       -down * (Math.PI / 2 - 0.12) + this.spinePitch * 0.35 * (1 - down),
-      0,
-      this.hipsRoll * 0.5 * (1 - down) + down * 0.15 * fallSide,
+      this.kinHipYaw * (1 - down),
+      this.hipsRoll * 0.5 * (1 - down) + weightSway * 0.8 * (1 - down) + down * 0.15 * fallSide,
     );
-    rig.spine.rotation.set(this.spinePitch * (1 - down), this.spineTwist * (1 - down), this.hipsRoll * 0.55 * (1 - down));
+    rig.spine.rotation.set(this.spinePitch * (1 - down), (this.spineTwist + Math.sin(this.walkPhase) * 0.05 * speedFactor) * (1 - down), this.hipsRoll * 0.55 * (1 - down));
 
-    const headPitch = -this.spinePitch * 0.7 - reaction * 0.55 + down * 0.3;
-    const headRoll = -this.hipsRoll * 0.8 + reaction * 0.3 * (this.reactionDirection >= 0 ? -1 : 1);
-    rig.head.rotation.set(headPitch, -this.spineTwist * 0.5, headRoll);
+    const headPitch = 0.1 + this.kinHeadTuck - this.spinePitch * 0.7 - reactionHead * 0.55 + down * 0.3;
+    const headRoll = -this.hipsRoll * 0.8 + reactionHead * 0.3 * (this.reactionDirection >= 0 ? -1 : 1);
+    const headWeave = reducedMotion ? 0 : Math.sin(time * 0.9) * 0.07 + Math.sin(time * 1.7) * 0.03;
+    rig.head.rotation.set(headPitch, -this.spineTwist * 0.5 + headWeave * (1 - down), headRoll);
     rig.chest.scale.set(1 + breath, 1 + breath * 0.5, 1 + breath);
 
-    this.poseLegs(fighter, speed, down, fallSide, mirror);
+    this.poseLegs(fighter, speedFactor, down, fallSide, mirror);
 
     rig.root.updateMatrixWorld(true);
 
@@ -189,6 +271,17 @@ export class BoxerAnimator {
       finalR.lerp(scratchTarget.set(-0.3, -0.22, 0.15), stunned * 0.7);
     }
 
+    if (!reducedMotion && down < 0.1) {
+      const driftPhase = time * 1.9 + this.walkPhase * 0.2;
+      finalL.x += Math.sin(driftPhase) * 0.014;
+      finalL.y += Math.cos(driftPhase * 1.3) * 0.012;
+      finalR.x += Math.cos(driftPhase * 0.8) * 0.012;
+      finalR.y += Math.sin(driftPhase * 1.1) * 0.013;
+      const feintCycle = (time * 0.27 + (mirror > 0 ? 0 : 0.5)) % 1;
+      const feint = smoothstep(0.86, 0.9, feintCycle) * (1 - smoothstep(0.9, 0.97, feintCycle));
+      if (this.punchT >= 1) finalL.z += feint * 0.12;
+    }
+
     if (this.punchT < 1 && this.punchKind !== null && down < 0.85) {
       const windup = smoothstep(0, 0.2, this.punchT) * (1 - smoothstep(0.16, 0.45, this.punchT));
       const extend = smoothstep(0.18, this.punchKind === "jab" ? 0.42 : 0.5, this.punchT) * (1 - smoothstep(0.62, 1, this.punchT)) * (1 - down);
@@ -197,10 +290,18 @@ export class BoxerAnimator {
         const sweep = smoothstep(0.18, 0.55, this.punchT);
         punch.x = THREE.MathUtils.lerp(-0.62, -0.1, sweep) * (this.punchHand === "left" ? 1 : -1) * -1;
         punch.z = 0.5 + 0.14 * sweep;
+      } else if (this.punchKind === "uppercut") {
+        const rise = smoothstep(0.18, 0.55, this.punchT);
+        punch.y = THREE.MathUtils.lerp(-0.2, punch.y, rise);
+        punch.z = THREE.MathUtils.lerp(0.3, punch.z, rise);
       }
       const windupOffset = scratchWindup.set(0, this.punchKind === "uppercut" ? -0.22 : -0.03, -0.16).multiplyScalar(windup);
       const base = this.punchHand === "left" ? finalL : finalR;
       const mixed = scratchMixed.copy(base).add(windupOffset).lerp(punch, extend);
+      if (this.punchPower === "power" && this.punchT > 0.5 && this.punchT < 0.68) {
+        const overshoot = (1 - Math.abs(this.punchT - 0.59) / 0.09) * 0.05;
+        mixed.lerp(punch, overshoot);
+      }
       base.copy(mixed);
     }
 
@@ -219,27 +320,33 @@ export class BoxerAnimator {
     this.applyTrauma(fighter, opponent, blood);
   }
 
-  private poseLegs(fighter: FighterSnapshot, speed: number, down: number, fallSide: number, mirror: number): void {
+  private poseLegs(fighter: FighterSnapshot, speedFactor: number, down: number, fallSide: number, mirror: number): void {
     const rig = this.rig;
-    const swing = Math.min(0.5, speed * 0.35) * (1 - down);
-    const stride = Math.sin(this.walkPhase) * swing;
-    const crouch = -this.drop * 1.4 * (1 - down);
-    const baseL = { hip: -0.18 - crouch * 0.5, knee: 0.26 + crouch, ankle: -0.08 - crouch * 0.5 };
-    const baseR = { hip: 0.14 - crouch * 0.5, knee: 0.3 + crouch, ankle: -0.1 - crouch * 0.5 };
+    const strideAmp = 0.42 * speedFactor * (1 - down);
+    const liftAmp = 0.5 * speedFactor * (1 - down);
+    const crouch = -(this.drop + this.kinDrop) * 1.35 * (1 - down);
+    const phaseL = this.walkPhase;
+    const phaseR = this.walkPhase + Math.PI;
+    const baseL = { hip: -0.2 - crouch * 0.5, knee: 0.34 + crouch, ankle: -0.1 - crouch * 0.5 };
+    const baseR = { hip: 0.15 - crouch * 0.5, knee: 0.38 + crouch, ankle: -0.12 - crouch * 0.5 };
+    const swingL = Math.sin(phaseL) * strideAmp;
+    const swingR = Math.sin(phaseR) * strideAmp;
+    const liftL = Math.max(0, Math.sin(phaseL - Math.PI / 2)) * liftAmp;
+    const liftR = Math.max(0, Math.sin(phaseR - Math.PI / 2)) * liftAmp;
     rig.hipL.rotation.set(
-      THREE.MathUtils.lerp(baseL.hip + stride, -0.5, down),
-      0.3 * mirror * (1 - down),
+      THREE.MathUtils.lerp(baseL.hip + swingL, -0.5, down),
+      0.32 * mirror * (1 - down) + this.kinPivotL * (1 - down),
       THREE.MathUtils.lerp(0, 0.5 * fallSide, down),
     );
-    rig.kneeL.rotation.x = THREE.MathUtils.lerp(baseL.knee - stride * 0.8, 0.7, down);
-    rig.ankleL.rotation.x = THREE.MathUtils.lerp(baseL.ankle, 0.4, down);
+    rig.kneeL.rotation.x = THREE.MathUtils.lerp(baseL.knee + liftL, 0.7, down);
+    rig.ankleL.rotation.x = THREE.MathUtils.lerp(baseL.ankle - swingL * 0.4, 0.4, down);
     rig.hipR.rotation.set(
-      THREE.MathUtils.lerp(baseR.hip - stride, -0.35, down),
-      -0.12 * mirror * (1 - down),
+      THREE.MathUtils.lerp(baseR.hip + swingR, -0.35, down),
+      -0.14 * mirror * (1 - down),
       THREE.MathUtils.lerp(0, 0.35 * fallSide, down),
     );
-    rig.kneeR.rotation.x = THREE.MathUtils.lerp(baseR.knee + stride * 0.8, 0.5, down);
-    rig.ankleR.rotation.x = THREE.MathUtils.lerp(baseR.ankle, 0.4, down);
+    rig.kneeR.rotation.x = THREE.MathUtils.lerp(baseR.knee + liftR, 0.5, down);
+    rig.ankleR.rotation.x = THREE.MathUtils.lerp(baseR.ankle - swingR * 0.4 - this.kinHeelR * (1 - down), 0.4, down);
   }
 
   private solveArmIK(shoulder: THREE.Group, elbow: THREE.Group, glove: THREE.Group, localTarget: THREE.Vector3, side: 1 | -1, rig: BoxerRig): void {
@@ -297,6 +404,12 @@ export class BoxerAnimator {
 
     (this.rig.bodyBruise.material as THREE.MeshStandardMaterial).opacity = Math.min(0.7, trauma.body / 950);
     const swell = 1 + Math.min(0.12, trauma.swelling / 2500);
-    this.rig.headMesh.scale.set(0.92 * swell, 1.08 * swell, 0.98 * swell);
+    this.rig.headMesh.scale.set(0.92 * swell, 1.05 * swell, 0.95 * swell);
+    const skin = this.rig.skinMaterial;
+    skin.clearcoat = 0.25 + tiredSheen(fighter) * 0.4;
   }
+}
+
+function tiredSheen(fighter: FighterSnapshot): number {
+  return 1 - fighter.stamina / Math.max(1, fighter.maximum_stamina);
 }

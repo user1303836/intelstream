@@ -175,6 +175,10 @@ export class FightRenderer {
           blocked: event.kind === "block",
         });
       }
+      const actorIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.actor_id);
+      if (actorIndex >= 0 && ["hit", "counter_hit", "block"].includes(event.kind)) {
+        this.animators[actorIndex]!.landedHit(event.kind === "block");
+      }
     }
   }
 

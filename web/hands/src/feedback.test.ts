@@ -20,9 +20,9 @@ class MockAudioContext {
   constructor() { MockAudioContext.created += 1; }
   createGain(): GainNode { return { gain: audioParam(), connect: vi.fn((target) => target) } as unknown as GainNode; }
   createOscillator(): OscillatorNode { return { type: "sine", frequency: audioParam(), connect: vi.fn((target) => target), start: vi.fn(() => { MockAudioContext.oscillatorStarts += 1; }), stop: vi.fn() } as unknown as OscillatorNode; }
-  createBiquadFilter(): BiquadFilterNode { return { type: "lowpass", frequency: audioParam(), connect: vi.fn((target) => target) } as unknown as BiquadFilterNode; }
+  createBiquadFilter(): BiquadFilterNode { return { type: "lowpass", frequency: audioParam(), Q: audioParam(), connect: vi.fn((target) => target) } as unknown as BiquadFilterNode; }
   createBuffer(_channels: number, length: number): AudioBuffer { return { getChannelData: () => new Float32Array(length) } as unknown as AudioBuffer; }
-  createBufferSource(): AudioBufferSourceNode { return { buffer: null, connect: vi.fn((target) => target), start: vi.fn() } as unknown as AudioBufferSourceNode; }
+  createBufferSource(): AudioBufferSourceNode { return { buffer: null, loop: false, connect: vi.fn((target) => target), start: vi.fn(), stop: vi.fn() } as unknown as AudioBufferSourceNode; }
 }
 
 describe("authoritative audio and haptics", () => {

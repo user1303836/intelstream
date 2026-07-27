@@ -170,6 +170,41 @@ describe("boxer animation", () => {
     expect(downZ).toBeLessThan(extendedZ);
   });
 
+  it("freezes the punch during hitstop and rotates the body into a cross", () => {
+    const { rig, animator } = make();
+    const two = fighter("two");
+    const punching = { ...fighter("one"), action: "straight" as const, action_hand: "right" as const, action_target: "head" as const, action_power: "normal" as const };
+    for (let i = 0; i < 5; i += 1) animator.update(punching, two, 1 / 60, i / 60, false);
+    const gloveBefore = rig.gloveR.getWorldPosition(new THREE.Vector3()).z;
+    animator.landedHit(false);
+    for (let i = 0; i < 3; i += 1) animator.update(punching, two, 1 / 60, 0.1 + i / 60, false);
+    const gloveDuringStop = rig.gloveR.getWorldPosition(new THREE.Vector3()).z;
+    expect(Math.abs(gloveDuringStop - gloveBefore)).toBeLessThan(0.05);
+    for (let i = 0; i < 20; i += 1) animator.update(punching, two, 1 / 60, 0.3 + i / 60, false);
+    expect(Math.abs(rig.hips.rotation.y)).toBeGreaterThan(0.1);
+  });
+
+  it("drops level for body punches and springs the canvas landing on knockdown", () => {
+    const { rig, animator } = make();
+    const two = fighter("two");
+    const bodyPunch = { ...fighter("one"), action: "straight" as const, action_hand: "left" as const, action_target: "body" as const, action_power: "normal" as const };
+    for (let i = 0; i < 14; i += 1) animator.update(bodyPunch, two, 1 / 60, i / 60, false);
+    const bodyHeight = rig.hips.position.y;
+    const headPunch = { ...bodyPunch, action_target: "head" as const };
+    const second = make();
+    for (let i = 0; i < 14; i += 1) second.animator.update(headPunch, two, 1 / 60, i / 60, false);
+    expect(bodyHeight).toBeLessThan(second.rig.hips.position.y - 0.03);
+    const downed = { ...fighter("one"), is_downed: true };
+    const third = make();
+    let lowest = Infinity;
+    for (let i = 0; i < 150; i += 1) {
+      third.animator.update(downed, two, 1 / 60, i / 60, false);
+      lowest = Math.min(lowest, third.rig.hips.position.y);
+    }
+    expect(lowest).toBeLessThan(0.16);
+    expect(third.rig.hips.position.y).toBeLessThan(0.35);
+  });
+
   it("mirrors southpaw glove placement", () => {
     const { rig, animator } = make();
     const one = { ...fighter("one"), stance: "southpaw" as const };
