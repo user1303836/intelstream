@@ -12,7 +12,7 @@ const base = (id: string): Draft => ({
     : { head: 150, body: 260, left_eye: 120, right_eye: 60, left_cut: 90, right_cut: 20, swelling: 100, bleeding: 70 },
   knockdowns: 0, warnings: 0, deductions: 0, stunned_ticks: 0, is_downed: false,
   action: null, action_hand: null, action_target: null, action_power: null, queued_actions: 0,
-  clinch_startup_ticks: 0, clinch_ticks: 0, is_foul_recovery_target: false,
+  clinch_startup_ticks: 0, clinch_ticks: 0, is_foul_recovery_target: false, taunt_ticks: 0,
   get_up_prompt: null, get_up_meter: 0, get_up_required: 0, get_up_count: 0, get_up_window_start_tick: 0, get_up_window_end_tick: 0,
 });
 
@@ -51,7 +51,12 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
     const cycle = t % 3.2;
     const attacker = Math.floor(t / 3.2) % 2 === 0 ? one : two;
     const defender = attacker === one ? two : one;
-    if (cycle < 0.55) {
+    const tauntCycle = t % 12;
+    if (tauntCycle > 7.5 && tauntCycle < 9.5) {
+      one.taunt_ticks = Math.round((9.5 - tauntCycle) * 30);
+      one.action = null;
+    }
+    if (cycle < 0.55 && one.taunt_ticks === 0 && two.taunt_ticks === 0) {
       const punch = PUNCHES[Math.floor(t / 3.2) % PUNCHES.length]!;
       attacker.action = punch;
       attacker.action_hand = Math.floor(t / 3.2) % 3 === 0 ? "right" : "left";

@@ -87,7 +87,7 @@ const targets = ["head", "body"] as const; const powers = ["normal", "power"] as
 const stances = ["orthodox", "southpaw"] as const;
 const defenses = ["none", "guard_high", "guard_low", "slip_left", "slip_right", "weave", "pull"] as const;
 const heldDefenses = ["none", "guard_high", "guard_low"] as const;
-const movementKinds = ["slip_left", "slip_right", "weave", "pull", "clinch", "switch_stance", "get_up_left", "get_up_right"] as const;
+const movementKinds = ["slip_left", "slip_right", "weave", "pull", "clinch", "switch_stance", "get_up_left", "get_up_right", "taunt"] as const;
 const fouls = ["low_blow", "headbutt"] as const;
 const phases = ["countdown", "fight", "knockdown", "foul_recovery", "rest", "complete"] as const;
 const methods = ["ko", "flash_ko", "tko", "doctor_stoppage", "disqualification", "decision", "draw", "forfeit"] as const;
@@ -118,7 +118,7 @@ function fighter(value: unknown): FighterSnapshot {
     "stamina", "maximum_stamina", "conditioning", "guard", "poise", "trauma", "knockdowns",
     "warnings", "deductions", "stunned_ticks", "is_downed", "action", "action_hand",
     "action_target", "action_power", "queued_actions", "clinch_startup_ticks", "clinch_ticks",
-    "is_foul_recovery_target", "get_up_prompt", "get_up_meter", "get_up_required", "get_up_count",
+    "is_foul_recovery_target", "taunt_ticks", "get_up_prompt", "get_up_meter", "get_up_required", "get_up_count",
     "get_up_window_start_tick", "get_up_window_end_tick",
   ]);
   const action = o.action === null ? null : oneOf<PunchClass>(o.action, classes, "action");
@@ -132,7 +132,7 @@ function fighter(value: unknown): FighterSnapshot {
   const getUpRequired = integer(o.get_up_required, "get_up_required", 0, 169);
   const facing = integer(o.facing, "facing", -1, 1);
   if (facing === 0) throw new ProtocolError("invalid facing");
-  if (getUpRequired !== 0 && getUpRequired < 45) throw new ProtocolError("invalid get-up requirement");
+  if (getUpRequired !== 0 && getUpRequired < 34) throw new ProtocolError("invalid get-up requirement");
   return {
     player_id: string(o.player_id, "player_id"), x: integer(o.x, "x", -462, 462), y: integer(o.y, "y", -292, 292),
     facing, velocity_x: integer(o.velocity_x, "velocity_x", -7, 7), velocity_y: integer(o.velocity_y, "velocity_y", -7, 7),
@@ -143,7 +143,7 @@ function fighter(value: unknown): FighterSnapshot {
     stunned_ticks: integer(o.stunned_ticks, "stunned_ticks", 0, 90), is_downed: bool(o.is_downed, "is_downed"),
     action, action_hand: actionHand, action_target: actionTarget, action_power: actionPower,
     queued_actions: integer(o.queued_actions, "queued_actions", 0, 1), clinch_startup_ticks: integer(o.clinch_startup_ticks, "clinch_startup_ticks", 0, 8), clinch_ticks: integer(o.clinch_ticks, "clinch_ticks", 0, 45),
-    is_foul_recovery_target: bool(o.is_foul_recovery_target, "is_foul_recovery_target"), get_up_prompt: prompt,
+    is_foul_recovery_target: bool(o.is_foul_recovery_target, "is_foul_recovery_target"), taunt_ticks: integer(o.taunt_ticks, "taunt_ticks", 0, 60), get_up_prompt: prompt,
     get_up_meter: integer(o.get_up_meter, "get_up_meter", 0, 256), get_up_required: getUpRequired, get_up_count: integer(o.get_up_count, "get_up_count", 0, 10),
     get_up_window_start_tick: integer(o.get_up_window_start_tick, "get_up_window_start_tick"), get_up_window_end_tick: integer(o.get_up_window_end_tick, "get_up_window_end_tick"),
   };

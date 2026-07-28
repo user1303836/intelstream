@@ -1,4 +1,4 @@
-import { CONTROL_HELP } from "./bindings";
+import { ACTION_KEYS, CONTROL_HELP } from "./bindings";
 import { GamepadInput } from "./gamepad";
 
 const button = (pressed = false): GamepadButton => ({ pressed, touched: pressed, value: pressed ? 1 : 0 });
@@ -11,7 +11,8 @@ const poll = (input: GamepadInput): void => { (input as unknown as { poll(): voi
 describe("gamepad semantic parity", () => {
   it("documents delayed slip release, consumed face chords, and immediate get-up exactly", () => {
     expect(CONTROL_HELP).toContain("Controller face hand: hold D-pad left for left hand or D-pad right for right hand, then press a face punch; otherwise punches use the right hand. A direction used for a punch is consumed and does not evade.");
-    expect(CONTROL_HELP).toContain("Controller actions: left stick press clinch · right stick press switch stance · D-pad up weave · D-pad down pull · tap and release D-pad left/right to slip; while down, D-pad left/right performs the private get-up rhythm immediately.");
+    expect(CONTROL_HELP).toContain("Controller actions: left stick press clinch · right stick press switch stance · hold right trigger + right stick press to taunt · D-pad up weave · D-pad down pull · tap and release D-pad left/right to slip; while down, D-pad left/right performs the private get-up rhythm immediately.");
+    expect(ACTION_KEYS.KeyM).toEqual({ kind: "taunt" });
   });
 
   it("face alternatives produce byte-equivalent modified punches", () => {

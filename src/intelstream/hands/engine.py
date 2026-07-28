@@ -61,9 +61,9 @@ FOUL_RECOVERY_TICKS: Final = 60
 COUNT_TICK_INTERVAL: Final = TICKS_PER_SECOND
 MAX_PENDING_ACTIONS: Final = 1
 ACTION_BUFFER_TICKS: Final = 6
-GET_UP_PROMPT_TICKS: Final = 12
 GET_UP_WINDOW_START_OFFSET: Final = 3
-GET_UP_WINDOW_END_OFFSET: Final = 8
+GET_UP_WINDOW_END_OFFSET: Final = 13
+TAUNT_TICKS: Final = 60
 MOVEMENT_FIXED_SCALE: Final = 1000
 
 
@@ -148,6 +148,7 @@ class FighterState:
     counter_ticks: int = 0
     clinch_startup_ticks: int = 0
     clinch_ticks: int = 0
+    taunt_ticks: int = 0
     attack: AttackState | None = None
     last_punch: PunchAction | None = None
     combo_ticks: int = 0
@@ -242,7 +243,7 @@ def _normalize_move_vector(move_x: int, move_y: int) -> tuple[int, int]:
 
 
 def _blend_velocity(current: int, desired: int) -> int:
-    return _symmetric_divide(current * 2 + desired, 3)
+    return _symmetric_divide(current + desired, 2)
 
 
 def _rounded_fixed_velocity(velocity: int) -> int:
@@ -453,6 +454,10 @@ class BoxingEngine:
             fighter.evasion_ticks -= 1
             if fighter.evasion_ticks == 0:
                 fighter.defense = fighter.held_input.defense
+        elif fighter.taunt_ticks > 0:
+            if fighter.defense is not DefensivePose.NONE:
+                fighter.defense = DefensivePose.NONE
+                fighter.defense_started_tick = self.tick
         else:
             if fighter.defense is not fighter.held_input.defense:
                 fighter.defense_started_tick = self.tick
@@ -472,6 +477,10 @@ class BoxingEngine:
                 self._resolve_punch(fighter, opponent, attack)
             if fighter.stunned_ticks > 0 or attack.age >= attack.total_ticks:
                 fighter.attack = None
+            return
+
+        if fighter.taunt_ticks > 0:
+            fighter.taunt_ticks -= 1
             return
 
         if fighter.clinch_startup_ticks > 0:
@@ -613,6 +622,7 @@ class BoxingEngine:
             if defender.guard == 0:
                 defender.stunned_ticks = max(defender.stunned_ticks, 8)
                 defender.stunned_at_tick = self.tick
+                defender.taunt_ticks = 0
                 self._emit("guard_break", attacker.player_id, defender.player_id)
         else:
             attacker.performance.clean_hits += 1
@@ -665,6 +675,7 @@ class BoxingEngine:
         elif action.target is Target.HEAD and damage >= 36:
             defender.stunned_ticks = min(90, 8 + damage // 2)
             defender.stunned_at_tick = self.tick
+            defender.taunt_ticks = 0
             self._emit("stun", attacker.player_id, defender.player_id, amount=damage)
 
     def _apply_head_damage(self, defender: FighterState, action: PunchAction, damage: int) -> None:
@@ -756,6 +767,11 @@ class BoxingEngine:
             fighter.stamina = max(0, fighter.stamina - 12)
             self._emit("stance", fighter.player_id, detail=fighter.stance.value)
             return True
+        if action.kind is ActionKind.TAUNT:
+            fighter.taunt_ticks = TAUNT_TICKS
+            fighter.defense = DefensivePose.NONE
+            self._emit("taunt", fighter.player_id)
+            return True
         if action.kind is ActionKind.CLINCH:
             distance_squared = (fighter.x - opponent.x) ** 2 + (fighter.y - opponent.y) ** 2
             if distance_squared <= 125**2 and fighter.stamina >= 45:
@@ -803,6 +819,7 @@ class BoxingEngine:
         fighter.performance.deductions = fighter.deductions
         opponent.stunned_ticks = 30
         opponent.stunned_at_tick = self.tick
+        opponent.taunt_ticks = 0
         self._emit("foul", fighter.player_id, opponent.player_id, detail=action.foul.value)
         if fighter.warnings == 2:
             fighter.deductions += 1
@@ -855,6 +872,7 @@ class BoxingEngine:
             fighter.attack is not None
             or fighter.evasion_ticks > 0
             or fighter.clinch_startup_ticks > 0
+            or fighter.taunt_ticks > 0
         ):
             move_x = 0
             move_y = 0
@@ -863,8 +881,38 @@ class BoxingEngine:
         desired_fixed_y = move_y * speed
         fighter.velocity_fixed_x = _blend_velocity(fighter.velocity_fixed_x, desired_fixed_x)
         fighter.velocity_fixed_y = _blend_velocity(fighter.velocity_fixed_y, desired_fixed_y)
+        fixed_cap = speed * MOVEMENT_FIXED_SCALE
+        fixed_magnitude_squared = (
+            fighter.velocity_fixed_x * fighter.velocity_fixed_x
+            + fighter.velocity_fixed_y * fighter.velocity_fixed_y
+        )
+        if fixed_magnitude_squared > fixed_cap * fixed_cap:
+            fixed_magnitude = isqrt(fixed_magnitude_squared)
+            fighter.velocity_fixed_x = _symmetric_divide(
+                fighter.velocity_fixed_x * fixed_cap, fixed_magnitude
+            )
+            fighter.velocity_fixed_y = _symmetric_divide(
+                fighter.velocity_fixed_y * fixed_cap, fixed_magnitude
+            )
+            while (
+                fighter.velocity_fixed_x * fighter.velocity_fixed_x
+                + fighter.velocity_fixed_y * fighter.velocity_fixed_y
+                > fixed_cap * fixed_cap
+            ):
+                if abs(fighter.velocity_fixed_x) >= abs(fighter.velocity_fixed_y):
+                    fighter.velocity_fixed_x -= 1 if fighter.velocity_fixed_x > 0 else -1
+                else:
+                    fighter.velocity_fixed_y -= 1 if fighter.velocity_fixed_y > 0 else -1
         fighter.velocity_x = _rounded_fixed_velocity(fighter.velocity_fixed_x)
         fighter.velocity_y = _rounded_fixed_velocity(fighter.velocity_fixed_y)
+        while (
+            fighter.velocity_x * fighter.velocity_x + fighter.velocity_y * fighter.velocity_y
+            > speed * speed
+        ):
+            if abs(fighter.velocity_x) >= abs(fighter.velocity_y):
+                fighter.velocity_x -= 1 if fighter.velocity_x > 0 else -1
+            else:
+                fighter.velocity_y -= 1 if fighter.velocity_y > 0 else -1
         delta_x, fighter.position_remainder_x = _consume_fixed_position(
             fighter.velocity_fixed_x, fighter.position_remainder_x
         )
@@ -945,8 +993,10 @@ class BoxingEngine:
             or fighter.clinch_ticks > 0
             or fighter.clinch_startup_ticks > 0
             or fighter.stunned_ticks > 0
+            or fighter.taunt_ticks > 0
         )
-        regen = 0 if fighter.movement_load else (1 if active else max(1, fighter.fatigue // 25))
+        base = 1 if active else max(1, fighter.fatigue // 25)
+        regen = max(1, base * 3 // 4) if fighter.movement_load else base
         if fighter.defense in (DefensivePose.GUARD_HIGH, DefensivePose.GUARD_LOW):
             regen //= 2
         fighter.stamina = min(fighter.maximum_stamina, fighter.stamina + regen)
@@ -1022,6 +1072,8 @@ class BoxingEngine:
         attacker.pending_actions.clear()
         defender.clinch_startup_ticks = 0
         attacker.clinch_startup_ticks = 0
+        defender.taunt_ticks = 0
+        attacker.taunt_ticks = 0
         defender.defense = DefensivePose.NONE
         defender.get_up_meter = 0
         self._downed_id = defender.player_id
@@ -1035,7 +1087,7 @@ class BoxingEngine:
             self._complete(attacker.player_id, FinishMethod.TKO)
 
     def _get_up_required(self, fighter: FighterState) -> int:
-        return 45 + fighter.knockdowns * 22 + fighter.trauma.head // 24
+        return 34 + fighter.knockdowns * 16 + fighter.trauma.head // 28
 
     def _schedule_get_up_prompt(self, fighter: FighterState) -> None:
         fighter.get_up_prompt = (
@@ -1049,25 +1101,25 @@ class BoxingEngine:
         if action.kind not in (ActionKind.GET_UP_LEFT, ActionKind.GET_UP_RIGHT):
             return
         if fighter.get_up_prompt_resolved:
-            fighter.get_up_meter = max(0, fighter.get_up_meter - 2)
+            fighter.get_up_meter = max(0, fighter.get_up_meter - 1)
             self._emit("get_up_input", fighter.player_id, detail="spam")
             return
         fighter.get_up_prompt_resolved = True
         if action.kind is not fighter.get_up_prompt:
-            fighter.get_up_meter = max(0, fighter.get_up_meter - 7)
+            fighter.get_up_meter = max(0, fighter.get_up_meter - 4)
             self._emit("get_up_input", fighter.player_id, detail="wrong")
             return
         if self.tick < fighter.get_up_window_start_tick:
-            fighter.get_up_meter = max(0, fighter.get_up_meter - 5)
+            fighter.get_up_meter = max(0, fighter.get_up_meter - 3)
             self._emit("get_up_input", fighter.player_id, detail="early")
             return
         if self.tick > fighter.get_up_window_end_tick:
-            fighter.get_up_meter = max(0, fighter.get_up_meter - 5)
+            fighter.get_up_meter = max(0, fighter.get_up_meter - 3)
             self._emit("get_up_input", fighter.player_id, detail="late")
             return
         center = (fighter.get_up_window_start_tick + fighter.get_up_window_end_tick) // 2
-        timing_bonus = max(0, 3 - abs(self.tick - center))
-        gain = max(3, 15 - fighter.knockdowns * 3) + timing_bonus
+        timing_bonus = max(0, 4 - abs(self.tick - center))
+        gain = max(8, 20 - fighter.knockdowns * 2) + timing_bonus
         fighter.get_up_meter += gain
         self._emit("get_up_input", fighter.player_id, amount=gain, detail="timed")
 
@@ -1140,6 +1192,7 @@ class BoxingEngine:
             fighter.pending_actions.clear()
             fighter.clinch_startup_ticks = 0
             fighter.stunned_ticks = 0
+            fighter.taunt_ticks = 0
         self.phase = MatchPhase.FIGHT
         self.phase_ticks_remaining = self.config.round_ticks
         self._emit("bell", detail="round_start")
@@ -1297,6 +1350,7 @@ class BoxingEngine:
             clinch_startup_ticks=fighter.clinch_startup_ticks,
             clinch_ticks=fighter.clinch_ticks,
             is_foul_recovery_target=fighter.player_id == self._foul_recovery_target,
+            taunt_ticks=fighter.taunt_ticks,
             get_up_prompt=fighter.get_up_prompt,
             get_up_meter=fighter.get_up_meter,
             get_up_required=self._get_up_required(fighter),
@@ -1339,6 +1393,7 @@ class BoxingEngine:
                         fighter.clinch_startup_ticks,
                         fighter.clinch_ticks,
                         fighter.combo_ticks,
+                        fighter.taunt_ticks,
                     ],
                     "attack": fighter.attack,
                     "last_punch": fighter.last_punch,

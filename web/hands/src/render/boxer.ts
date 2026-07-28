@@ -38,12 +38,14 @@ export interface BoxerRig {
   readonly mouthBlood: THREE.Mesh;
   readonly ribL: THREE.Mesh;
   readonly ribR: THREE.Mesh;
+  readonly bodyStreak: THREE.Mesh;
   readonly gloveLMesh: THREE.Mesh;
   readonly gloveRMesh: THREE.Mesh;
   readonly gloveLMaterial: THREE.MeshStandardMaterial;
   readonly gloveRMaterial: THREE.MeshStandardMaterial;
   readonly gloveBaseColor: THREE.Color;
   readonly skinMaterial: THREE.MeshPhysicalMaterial;
+  readonly chestDetails: THREE.Object3D[];
   readonly materials: readonly THREE.Material[];
   readonly geometries: readonly THREE.BufferGeometry[];
 }
@@ -130,7 +132,8 @@ export function buildBoxer(palette: FighterPalette): BoxerRig {
   const mouthMat = streakMat.clone();
   const ribMat = new THREE.MeshStandardMaterial({ color: 0x5c2450, roughness: 0.85, transparent: true, opacity: 0 });
   const ribMatR = ribMat.clone();
-  const materials = [skin, skinDark, trunks, trim, gloveMat, gloveTrimMat, hairMat, shoeMat, bruiseMat, bruiseMatR, bodyBruiseMat, cutMat, cutMatR, swellMat, swellMatR, cheekMat, cheekMatR, streakMat, streakMatR, noseStreakMat, mouthMat, ribMat, ribMatR];
+  const bodyStreakMat = streakMat.clone();
+  const materials = [skin, skinDark, trunks, trim, gloveMat, gloveTrimMat, hairMat, shoeMat, bruiseMat, bruiseMatR, bodyBruiseMat, cutMat, cutMatR, swellMat, swellMatR, cheekMat, cheekMatR, streakMat, streakMatR, noseStreakMat, mouthMat, ribMat, ribMatR, bodyStreakMat];
 
   const root = new THREE.Group();
   root.name = "boxer";
@@ -161,7 +164,7 @@ export function buildBoxer(palette: FighterPalette): BoxerRig {
   spine.add(chest);
 
   const torsoProfile: Array<[number, number]> = [
-    [0.138, -0.13], [0.146, -0.07], [0.134, 0.0], [0.148, 0.06], [0.172, 0.14],
+    [0.138, -0.13], [0.146, -0.07], [0.128, 0.0], [0.148, 0.06], [0.172, 0.14],
     [0.19, 0.22], [0.186, 0.3], [0.152, 0.36], [0.102, 0.42], [0.062, 0.46],
   ];
   const torsoGeo = new THREE.LatheGeometry(torsoProfile.map(([r, y]) => new THREE.Vector2(r, y)), 24);
@@ -184,6 +187,7 @@ export function buildBoxer(palette: FighterPalette): BoxerRig {
   const deltR = deltL.clone();
   deltR.position.x = -0.215;
   chest.add(deltR);
+  const chestDetails: THREE.Object3D[] = [pecL, pecR, deltL, deltR];
 
   const bodyBruise = sphere(0.1, bodyBruiseMat, geometries);
   bodyBruise.scale.set(1.05, 1.35, 0.55);
@@ -199,12 +203,13 @@ export function buildBoxer(palette: FighterPalette): BoxerRig {
   trapR.position.set(-0.115, 0.4, -0.02);
   trapR.rotation.z = 0.5;
   chest.add(trapR);
+  chestDetails.push(trapL, trapR);
 
   const head = new THREE.Group();
   head.name = "head";
   head.position.y = 0.44;
   chest.add(head);
-  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.052, 0.062, 0.09, 12), skinDark);
+  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.052, 0.062, 0.11, 12), skinDark);
   geometries.push(neck.geometry);
   neck.position.y = 0.02;
   neck.castShadow = true;
@@ -268,8 +273,8 @@ export function buildBoxer(palette: FighterPalette): BoxerRig {
   hair.position.set(0, 0.165, -0.018);
   head.add(hair);
   const hairline = sphere(0.112, hairMat, geometries, 18, 12);
-  hairline.scale.set(0.9, 0.58, 0.95);
-  hairline.position.set(0, 0.198, 0.012);
+  hairline.scale.set(0.9, 0.58, 0.92);
+  hairline.position.set(0, 0.2, 0.005);
   head.add(hairline);
 
   const bruiseL = sphere(0.042, bruiseMat, geometries, 12, 10);
@@ -334,6 +339,11 @@ export function buildBoxer(palette: FighterPalette): BoxerRig {
   ribR.position.set(-0.16, 0.08, 0.02);
   ribR.castShadow = false;
   chest.add(ribR);
+  const bodyStreak = box(0.05, 0.24, 0.008, bodyStreakMat, geometries);
+  bodyStreak.position.set(0.03, 0.08, 0.155);
+  bodyStreak.rotation.z = 0.12;
+  bodyStreak.castShadow = false;
+  chest.add(bodyStreak);
 
   const buildArm = (side: 1 | -1): { shoulder: THREE.Group; elbow: THREE.Group; glove: THREE.Group; gloveMesh: THREE.Mesh } => {
     const shoulder = new THREE.Group();
@@ -364,7 +374,7 @@ export function buildBoxer(palette: FighterPalette): BoxerRig {
     cuff.castShadow = true;
     glove.add(cuff);
     const gloveMesh = sphere(0.088, gloveMat, geometries, 18, 14);
-    gloveMesh.scale.set(1, 1.12, 1.3);
+    gloveMesh.scale.set(1, 1.12, 1.38);
     gloveMesh.position.set(0, -0.05, 0.02);
     glove.add(gloveMesh);
     const thumb = sphere(0.032, gloveMat, geometries, 10, 8);
@@ -410,9 +420,13 @@ export function buildBoxer(palette: FighterPalette): BoxerRig {
     ankle.name = side === 1 ? "ankleL" : "ankleR";
     ankle.position.y = -0.44;
     knee.add(ankle);
-    const shoe = box(0.095, 0.075, 0.26, shoeMat, geometries);
-    shoe.position.set(0, -0.035, 0.055);
+    const shoe = box(0.1, 0.075, 0.3, shoeMat, geometries);
+    shoe.position.set(0, -0.035, 0.06);
     ankle.add(shoe);
+    const toe = sphere(0.05, shoeMat, geometries, 10, 8);
+    toe.scale.set(0.95, 0.62, 1);
+    toe.position.set(0, -0.055, 0.2);
+    ankle.add(toe);
     const sock = new THREE.Mesh(new THREE.CylinderGeometry(0.052, 0.058, 0.08, 10), shoeMat);
     geometries.push(sock.geometry);
     sock.position.y = 0.01;
@@ -460,12 +474,14 @@ export function buildBoxer(palette: FighterPalette): BoxerRig {
     mouthBlood,
     ribL,
     ribR,
+    bodyStreak,
     gloveLMesh: armL.gloveMesh,
     gloveRMesh: armR.gloveMesh,
     gloveLMaterial: gloveMat,
     gloveRMaterial: gloveMat,
     gloveBaseColor: new THREE.Color(palette.glove),
     skinMaterial: skin,
+    chestDetails,
     materials,
     geometries,
   };
@@ -534,23 +550,28 @@ export function buildReferee(): BoxerRig {
     shoe: 0x101114,
   } satisfies FighterPalette;
   const rig = buildBoxer(palette);
+  for (const detail of rig.chestDetails) detail.visible = false;
   const shirt = new THREE.MeshStandardMaterial({ color: 0xbfc5cf, roughness: 0.72 });
   const pants = new THREE.MeshStandardMaterial({ color: 0x14161c, roughness: 0.7 });
-  const shirtTorso = new THREE.Mesh(new THREE.CapsuleGeometry(0.175, 0.24, 6, 14), shirt);
-  shirtTorso.scale.set(1.28, 1, 0.85);
-  shirtTorso.position.y = 0.15;
+  const shirtProfile: Array<[number, number]> = [
+    [0.155, -0.2], [0.16, -0.13], [0.158, -0.07], [0.148, 0.0], [0.162, 0.06], [0.186, 0.14],
+    [0.204, 0.22], [0.2, 0.3], [0.164, 0.36], [0.11, 0.42], [0.066, 0.46],
+  ];
+  const shirtGeo = new THREE.LatheGeometry(shirtProfile.map(([r, y]) => new THREE.Vector2(r, y)), 24);
+  const shirtTorso = new THREE.Mesh(shirtGeo, shirt);
+  shirtTorso.scale.set(1.28, 1, 0.84);
   shirtTorso.castShadow = true;
   rig.chest.add(shirtTorso);
   const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, 0.05, 12), shirt);
-  collar.position.y = 0.42;
+  collar.position.y = 0.44;
   rig.chest.add(collar);
   const bowtie = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.025, 0.02), pants);
-  bowtie.position.set(0, 0.4, 0.09);
+  bowtie.position.set(0, 0.42, 0.1);
   rig.chest.add(bowtie);
   const addedGeometries: THREE.BufferGeometry[] = [shirtTorso.geometry, collar.geometry, bowtie.geometry];
   for (const shoulder of [rig.shoulderL, rig.shoulderR]) {
-    const sleeve = new THREE.Mesh(new THREE.CapsuleGeometry(0.062, 0.16, 4, 10), shirt);
-    sleeve.position.y = -0.12;
+    const sleeve = new THREE.Mesh(new THREE.CapsuleGeometry(0.066, 0.24, 4, 10), shirt);
+    sleeve.position.y = -0.17;
     sleeve.castShadow = true;
     shoulder.add(sleeve);
     addedGeometries.push(sleeve.geometry);

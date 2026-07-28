@@ -206,8 +206,8 @@ export class Effects3D {
     const blocked = event.kind === "block";
     const origin = { x: targetWorld.x, y: 1.58, z: targetWorld.z };
     const bloodScale = this.bloodScale();
-    const sweatCount = reducedMotion ? 0 : Math.round((blocked ? 6 : 14) + Math.min(18, event.amount / 22));
-    const bloodCount = reducedMotion ? 0 : Math.round(Math.min(46, event.blood / 3.2) * bloodScale);
+    const sweatCount = reducedMotion ? 0 : Math.round((blocked ? 6 : 16) + Math.min(20, event.amount / 20));
+    const bloodCount = reducedMotion ? 0 : Math.round(Math.min(70, event.blood / 2.2) * bloodScale);
     this.shake = Math.min(0.09, this.shake + (blocked ? 0.008 : Math.max(0.012, event.amount / 2600)));
     if (event.kind === "knockdown") this.shake = Math.min(0.14, this.shake + 0.06);
 
@@ -232,20 +232,20 @@ export class Effects3D {
         0.55 + rand() * 0.65);
     }
     if (!reducedMotion && bloodScale > 0 && (event.amount > 190 || event.kind === "knockdown" || event.kind === "counter_hit")) {
-      const puffs = event.kind === "knockdown" ? 5 : 3;
+      const puffs = event.kind === "knockdown" ? 7 : 5;
       for (let i = 0; i < puffs; i += 1) {
-        this.spawnMist(origin.x + (rand() - 0.5) * 0.2, origin.y + (rand() - 0.5) * 0.16, origin.z + (rand() - 0.5) * 0.2, (0.7 + rand() * 0.9) * bloodScale, 0.5 + rand() * 0.4);
+        this.spawnMist(origin.x + (rand() - 0.5) * 0.26, origin.y + (rand() - 0.5) * 0.2, origin.z + (rand() - 0.5) * 0.26, (0.8 + rand() * 1.0) * bloodScale, 0.5 + rand() * 0.45);
       }
     }
-    if (event.blood > 8 && bloodScale > 0) {
-      this.splatter(origin.x + (rand() - 0.5) * 0.5, origin.z + (rand() - 0.5) * 0.5, 0.7 + Math.min(1.4, event.blood / 90) * bloodScale, rand);
+    if (event.blood > 6 && bloodScale > 0) {
+      this.splatter(origin.x + (rand() - 0.5) * 0.6, origin.z + (rand() - 0.5) * 0.6, 0.9 + Math.min(1.8, event.blood / 70) * bloodScale, rand);
     }
   }
 
   drip(headWorld: THREE.Vector3, severity: number, dt: number, reducedMotion: boolean): void {
     const bloodScale = this.bloodScale();
     if (bloodScale === 0 || reducedMotion || severity <= 0.05) return;
-    this.dripAccumulator += dt * Math.min(7, severity * 6) * bloodScale;
+    this.dripAccumulator += dt * Math.min(9, severity * 8) * bloodScale;
     while (this.dripAccumulator >= 1) {
       this.dripAccumulator -= 1;
       this.spawnDroplet(Math.random, headWorld.x + (Math.random() - 0.5) * 0.14, headWorld.y - 0.04, headWorld.z + (Math.random() - 0.5) * 0.1,

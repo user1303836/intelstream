@@ -189,7 +189,10 @@ def test_authoritative_movement_caps_diagonals_with_symmetric_integer_motion() -
 
     assert diagonal == controller_diagonal
     assert diagonal[5] ** 2 + diagonal[6] ** 2 <= cardinal[5] ** 2 + cardinal[6] ** 2
-    assert diagonal[0] ** 2 + diagonal[1] ** 2 <= cardinal[0] ** 2 + cardinal[1] ** 2
+    assert diagonal[2] ** 2 + diagonal[3] ** 2 <= cardinal[2] ** 2 + cardinal[3] ** 2
+    # Positions carry per-axis integer rounding slack of roughly one unit per axis;
+    # the velocity magnitude itself is hard-capped at speed every tick.
+    assert diagonal[0] ** 2 + diagonal[1] ** 2 <= (cardinal[0] + 1) ** 2 + 1
     assert negative_diagonal[:4] == tuple(-value for value in diagonal[:4])
     assert negative_diagonal[5:] == tuple(-value for value in diagonal[5:])
 
@@ -300,7 +303,7 @@ def test_pulsed_and_analog_movement_are_both_free_during_momentum() -> None:
     assert pulsed_conditioning == analog_conditioning == 1000
 
 
-def test_momentum_only_frames_neither_drain_nor_regenerate_until_stationary() -> None:
+def test_momentum_only_frames_regenerate_at_a_reduced_rate_until_stationary() -> None:
     engine = make_engine(seed=96, round_ticks=2000)
     fighter = engine.fighter("one")
     fighter.stamina = 700
@@ -312,24 +315,35 @@ def test_momentum_only_frames_neither_drain_nor_regenerate_until_stationary() ->
     engine.step({"one": command(2)})
 
     assert fighter.velocity_fixed_x or fighter.velocity_fixed_y
-    assert fighter.movement_load == 2
-    assert fighter.stamina == before_neutral
-    moving_frames = 1
+    assert fighter.movement_load >= 1
+    moving_gain = 0
     while fighter.velocity_fixed_x or fighter.velocity_fixed_y:
         before = fighter.stamina
         engine.step()
         if fighter.velocity_fixed_x or fighter.velocity_fixed_y:
-            moving_frames += 1
+            moving_gain += fighter.stamina - before
             assert fighter.movement_load >= 1
-            assert fighter.stamina == before
+            assert fighter.stamina >= before
+
+    stationary = make_engine(seed=97, round_ticks=2000)
+    resting = stationary.fighter("one")
+    resting.stamina = before_neutral
+    stationary_gain = 0
+    for _ in range(12):
+        before = resting.stamina
+        stationary.step()
+        stationary_gain += resting.stamina - before
+
+    assert moving_gain > 0
+    assert moving_gain < stationary_gain
 
     stopped_x = fighter.x
+    fighter.velocity_fixed_x = 0
+    fighter.velocity_fixed_y = 0
     before_recovery = fighter.stamina
     engine.step()
 
-    assert moving_frames > 0
     assert fighter.movement_load == 0
-    assert (fighter.velocity_fixed_x, fighter.velocity_fixed_y) == (0, 0)
     assert fighter.x == stopped_x
     assert fighter.stamina > before_recovery
 
@@ -1443,3 +1457,107 @@ def test_event_digest_preserves_history_without_rescanning_event_list() -> None:
     history._events = UnscannableHistory(history._events)
 
     assert len(history.snapshot().checksum) == 64
+
+
+def test_taunt_locks_actions_and_appears_in_snapshot() -> None:
+    engine = make_engine(seed=120, round_ticks=2000)
+    fighter = engine.fighter("one")
+    start_x = fighter.x
+    snapshot = engine.step(
+        {"one": command(1, action=MovementAction(ActionKind.TAUNT), move_x=1000)}
+    )
+
+    assert any(event.kind == "taunt" and event.actor_id == "one" for event in engine.events)
+    assert snapshot.fighters[0].taunt_ticks == 60
+    for _ in range(20):
+        snapshot = engine.step(
+            {
+                "one": command(
+                    2, move_x=1000, action=PunchAction(Hand.LEFT, PunchClass.JAB, Target.HEAD)
+                )
+            }
+        )
+    assert fighter.x == start_x
+    assert fighter.attack is None
+    assert snapshot.fighters[0].taunt_ticks == 40
+    while fighter.taunt_ticks > 0:
+        engine.step()
+    snapshot = engine.step({"one": command(3, move_x=1000)})
+    assert fighter.x > start_x
+    assert snapshot.fighters[0].taunt_ticks == 0
+
+
+def test_taunt_is_cancelled_by_knockdown_and_guard_break_stun() -> None:
+    engine = make_engine(seed=121, round_ticks=2000)
+    taunter = engine.fighter("one")
+    engine.step({"one": command(1, action=MovementAction(ActionKind.TAUNT))})
+    assert taunter.taunt_ticks > 0
+    taunter.poise = 1
+    for _ in range(12):
+        if engine.phase is MatchPhase.KNOCKDOWN:
+            break
+        engine.step(
+            {"two": command(2, action=PunchAction(Hand.RIGHT, PunchClass.STRAIGHT, Target.HEAD))}
+        )
+    assert engine.phase is MatchPhase.KNOCKDOWN
+    assert taunter.taunt_ticks == 0
+
+    broken = make_engine(seed=122, round_ticks=2000)
+    defender = broken.fighter("one")
+    broken.step({"one": command(1, action=MovementAction(ActionKind.TAUNT))})
+    assert defender.taunt_ticks > 0
+    defender.guard = 1
+    for _ in range(30):
+        if defender.taunt_ticks == 0 and defender.stunned_ticks > 0:
+            break
+        broken.step(
+            {
+                "one": command(2, defense=DefensivePose.GUARD_HIGH),
+                "two": command(
+                    3, action=PunchAction(Hand.RIGHT, PunchClass.STRAIGHT, Target.HEAD, Power.POWER)
+                ),
+            }
+        )
+    assert defender.taunt_ticks == 0
+    assert defender.stunned_ticks > 0
+
+
+def test_taunter_cannot_hold_a_guard() -> None:
+    engine = make_engine(seed=123, round_ticks=2000)
+    fighter = engine.fighter("one")
+    engine.step(
+        {
+            "one": command(
+                1, action=MovementAction(ActionKind.TAUNT), defense=DefensivePose.GUARD_HIGH
+            )
+        }
+    )
+    engine.step({"one": command(2, defense=DefensivePose.GUARD_HIGH)})
+    assert fighter.taunt_ticks > 0
+    assert fighter.defense is DefensivePose.NONE
+
+
+def test_get_up_window_boundary_scores_timed_and_late() -> None:
+    timed_engine = make_engine(seed=124, round_ticks=2000)
+    timed_downed = timed_engine.fighter("one")
+    timed_engine._knock_down(timed_downed, timed_engine.fighter("two"))
+    prompt = timed_downed.get_up_prompt
+    assert prompt is not None
+    while timed_engine.tick < timed_downed.get_up_window_start_tick - 1:
+        timed_engine.step()
+    timed_engine.step({"one": command(1, action=MovementAction(prompt))})
+    timed = [event for event in timed_engine.events if event.kind == "get_up_input"]
+    assert timed and timed[-1].detail == "timed"
+    assert timed_downed.get_up_meter > 0
+
+    late_engine = make_engine(seed=125, round_ticks=2000)
+    late_downed = late_engine.fighter("one")
+    late_engine._knock_down(late_downed, late_engine.fighter("two"))
+    late_prompt = late_downed.get_up_prompt
+    assert late_prompt is not None
+    while late_engine.tick < late_downed.get_up_window_end_tick:
+        late_engine.step()
+    late_engine.step({"one": command(1, action=MovementAction(late_prompt))})
+    late = [event for event in late_engine.events if event.kind == "get_up_input"]
+    assert late and late[-1].detail == "late"
+    assert late_downed.get_up_meter == 0

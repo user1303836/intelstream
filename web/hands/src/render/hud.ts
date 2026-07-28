@@ -192,11 +192,54 @@ export function drawHud(
 
   if (snapshot.phase === "knockdown") {
     const viewer = snapshot.fighters.find((fighter) => fighter.player_id === viewerId);
+    const downed = snapshot.fighters.find((fighter) => fighter.is_downed) ?? viewer;
     const count = Math.max(...snapshot.fighters.map((fighter) => fighter.get_up_count));
-    const subtitle = viewer?.get_up_prompt !== null && viewer?.get_up_prompt !== undefined
-      ? `YOUR RHYTHM: ${viewer.get_up_prompt === "get_up_left" ? "←" : "→"}  ${viewer.get_up_meter}/${viewer.get_up_required}`
-      : "Waiting for the count";
-    centerPanel(ctx, width, height, `COUNT ${count}`, subtitle, -height * 0.18);
+    const panelWidth = 380;
+    const panelHeight = 150;
+    const x = width / 2 - panelWidth / 2;
+    const y = height * 0.24;
+    ctx.fillStyle = "rgba(3,6,12,0.88)";
+    ctx.fillRect(x, y, panelWidth, panelHeight);
+    ctx.strokeStyle = "rgba(246,213,122,0.5)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x + 2, y + 2, panelWidth - 4, panelHeight - 4);
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#ffd77a";
+    ctx.font = "800 30px Inter, system-ui, sans-serif";
+    ctx.fillText(`COUNT ${count}`, width / 2, y + 40);
+    const prompt = viewer?.is_downed === true ? viewer.get_up_prompt : null;
+    if (prompt !== null && prompt !== undefined && viewer !== undefined) {
+      const inWindow = snapshot.tick >= viewer.get_up_window_start_tick && snapshot.tick <= viewer.get_up_window_end_tick;
+      const arrow = prompt === "get_up_left" ? "←" : "→";
+      if (inWindow) {
+        ctx.fillStyle = "#ffe9a8";
+        ctx.font = "900 64px Inter, system-ui, sans-serif";
+        ctx.fillText(arrow, width / 2 - 90, y + 106);
+        ctx.fillStyle = "#7dffa8";
+        ctx.font = "900 34px Inter, system-ui, sans-serif";
+        ctx.fillText("NOW!", width / 2 + 62, y + 100);
+      } else {
+        ctx.fillStyle = "#8fa3c8";
+        ctx.font = "800 30px Inter, system-ui, sans-serif";
+        ctx.fillText(`GET READY ${arrow}`, width / 2, y + 98);
+      }
+      const meterWidth = panelWidth - 60;
+      const ratio = Math.max(0, Math.min(1, viewer.get_up_meter / Math.max(1, viewer.get_up_required)));
+      ctx.fillStyle = "rgba(2,4,9,0.9)";
+      ctx.fillRect(x + 30, y + 120, meterWidth, 16);
+      const meterFill = ctx.createLinearGradient(x + 30, 0, x + 30 + meterWidth, 0);
+      meterFill.addColorStop(0, "#7dffa8");
+      meterFill.addColorStop(1, "#2ea860");
+      ctx.fillStyle = meterFill;
+      ctx.fillRect(x + 30, y + 120, meterWidth * ratio, 16);
+      ctx.strokeStyle = "rgba(210,220,235,0.5)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 29.5, y + 119.5, meterWidth + 1, 17);
+    } else {
+      ctx.fillStyle = "#c8d3e6";
+      ctx.font = "600 14px Inter, system-ui, sans-serif";
+      ctx.fillText(downed !== undefined && downed.player_id === viewerId ? "Waiting for your rhythm instruction…" : "Waiting for the count", width / 2, y + 100);
+    }
   }
   if (snapshot.phase === "foul_recovery") {
     const victim = snapshot.fighters.find((fighter) => fighter.is_foul_recovery_target);

@@ -57,6 +57,7 @@ class ActionKind(StrEnum):
     FOUL = "foul"
     GET_UP_LEFT = "get_up_left"
     GET_UP_RIGHT = "get_up_right"
+    TAUNT = "taunt"
 
 
 class MatchPhase(StrEnum):
@@ -157,6 +158,7 @@ class FighterSnapshot:
     clinch_startup_ticks: int
     clinch_ticks: int
     is_foul_recovery_target: bool
+    taunt_ticks: int
     get_up_prompt: ActionKind | None
     get_up_meter: int
     get_up_required: int
