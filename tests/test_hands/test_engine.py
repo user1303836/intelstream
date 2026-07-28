@@ -1487,10 +1487,77 @@ def test_taunt_locks_actions_and_appears_in_snapshot() -> None:
     assert snapshot.fighters[0].taunt_ticks == 0
 
 
-def test_taunt_is_cancelled_by_stun_and_knockdown() -> None:
+def test_taunt_is_cancelled_by_knockdown_and_guard_break_stun() -> None:
     engine = make_engine(seed=121, round_ticks=2000)
-    fighter = engine.fighter("one")
+    taunter = engine.fighter("one")
     engine.step({"one": command(1, action=MovementAction(ActionKind.TAUNT))})
+    assert taunter.taunt_ticks > 0
+    taunter.poise = 1
+    for _ in range(12):
+        if engine.phase is MatchPhase.KNOCKDOWN:
+            break
+        engine.step(
+            {"two": command(2, action=PunchAction(Hand.RIGHT, PunchClass.STRAIGHT, Target.HEAD))}
+        )
+    assert engine.phase is MatchPhase.KNOCKDOWN
+    assert taunter.taunt_ticks == 0
+
+    broken = make_engine(seed=122, round_ticks=2000)
+    defender = broken.fighter("one")
+    broken.step({"one": command(1, action=MovementAction(ActionKind.TAUNT))})
+    assert defender.taunt_ticks > 0
+    defender.guard = 1
+    for _ in range(30):
+        if defender.taunt_ticks == 0 and defender.stunned_ticks > 0:
+            break
+        broken.step(
+            {
+                "one": command(2, defense=DefensivePose.GUARD_HIGH),
+                "two": command(
+                    3, action=PunchAction(Hand.RIGHT, PunchClass.STRAIGHT, Target.HEAD, Power.POWER)
+                ),
+            }
+        )
+    assert defender.taunt_ticks == 0
+    assert defender.stunned_ticks > 0
+
+
+def test_taunter_cannot_hold_a_guard() -> None:
+    engine = make_engine(seed=123, round_ticks=2000)
+    fighter = engine.fighter("one")
+    engine.step(
+        {
+            "one": command(
+                1, action=MovementAction(ActionKind.TAUNT), defense=DefensivePose.GUARD_HIGH
+            )
+        }
+    )
+    engine.step({"one": command(2, defense=DefensivePose.GUARD_HIGH)})
     assert fighter.taunt_ticks > 0
-    fighter.taunt_ticks = 0
-    assert fighter.taunt_ticks == 0
+    assert fighter.defense is DefensivePose.NONE
+
+
+def test_get_up_window_boundary_scores_timed_and_late() -> None:
+    timed_engine = make_engine(seed=124, round_ticks=2000)
+    timed_downed = timed_engine.fighter("one")
+    timed_engine._knock_down(timed_downed, timed_engine.fighter("two"))
+    prompt = timed_downed.get_up_prompt
+    assert prompt is not None
+    while timed_engine.tick < timed_downed.get_up_window_start_tick - 1:
+        timed_engine.step()
+    timed_engine.step({"one": command(1, action=MovementAction(prompt))})
+    timed = [event for event in timed_engine.events if event.kind == "get_up_input"]
+    assert timed and timed[-1].detail == "timed"
+    assert timed_downed.get_up_meter > 0
+
+    late_engine = make_engine(seed=125, round_ticks=2000)
+    late_downed = late_engine.fighter("one")
+    late_engine._knock_down(late_downed, late_engine.fighter("two"))
+    late_prompt = late_downed.get_up_prompt
+    assert late_prompt is not None
+    while late_engine.tick < late_downed.get_up_window_end_tick:
+        late_engine.step()
+    late_engine.step({"one": command(1, action=MovementAction(late_prompt))})
+    late = [event for event in late_engine.events if event.kind == "get_up_input"]
+    assert late and late[-1].detail == "late"
+    assert late_downed.get_up_meter == 0

@@ -61,7 +61,6 @@ FOUL_RECOVERY_TICKS: Final = 60
 COUNT_TICK_INTERVAL: Final = TICKS_PER_SECOND
 MAX_PENDING_ACTIONS: Final = 1
 ACTION_BUFFER_TICKS: Final = 6
-GET_UP_PROMPT_TICKS: Final = 12
 GET_UP_WINDOW_START_OFFSET: Final = 3
 GET_UP_WINDOW_END_OFFSET: Final = 13
 TAUNT_TICKS: Final = 60
@@ -455,6 +454,10 @@ class BoxingEngine:
             fighter.evasion_ticks -= 1
             if fighter.evasion_ticks == 0:
                 fighter.defense = fighter.held_input.defense
+        elif fighter.taunt_ticks > 0:
+            if fighter.defense is not DefensivePose.NONE:
+                fighter.defense = DefensivePose.NONE
+                fighter.defense_started_tick = self.tick
         else:
             if fighter.defense is not fighter.held_input.defense:
                 fighter.defense_started_tick = self.tick
@@ -619,6 +622,7 @@ class BoxingEngine:
             if defender.guard == 0:
                 defender.stunned_ticks = max(defender.stunned_ticks, 8)
                 defender.stunned_at_tick = self.tick
+                defender.taunt_ticks = 0
                 self._emit("guard_break", attacker.player_id, defender.player_id)
         else:
             attacker.performance.clean_hits += 1
@@ -815,6 +819,7 @@ class BoxingEngine:
         fighter.performance.deductions = fighter.deductions
         opponent.stunned_ticks = 30
         opponent.stunned_at_tick = self.tick
+        opponent.taunt_ticks = 0
         self._emit("foul", fighter.player_id, opponent.player_id, detail=action.foul.value)
         if fighter.warnings == 2:
             fighter.deductions += 1
@@ -876,6 +881,28 @@ class BoxingEngine:
         desired_fixed_y = move_y * speed
         fighter.velocity_fixed_x = _blend_velocity(fighter.velocity_fixed_x, desired_fixed_x)
         fighter.velocity_fixed_y = _blend_velocity(fighter.velocity_fixed_y, desired_fixed_y)
+        fixed_cap = speed * MOVEMENT_FIXED_SCALE
+        fixed_magnitude_squared = (
+            fighter.velocity_fixed_x * fighter.velocity_fixed_x
+            + fighter.velocity_fixed_y * fighter.velocity_fixed_y
+        )
+        if fixed_magnitude_squared > fixed_cap * fixed_cap:
+            fixed_magnitude = isqrt(fixed_magnitude_squared)
+            fighter.velocity_fixed_x = _symmetric_divide(
+                fighter.velocity_fixed_x * fixed_cap, fixed_magnitude
+            )
+            fighter.velocity_fixed_y = _symmetric_divide(
+                fighter.velocity_fixed_y * fixed_cap, fixed_magnitude
+            )
+            while (
+                fighter.velocity_fixed_x * fighter.velocity_fixed_x
+                + fighter.velocity_fixed_y * fighter.velocity_fixed_y
+                > fixed_cap * fixed_cap
+            ):
+                if abs(fighter.velocity_fixed_x) >= abs(fighter.velocity_fixed_y):
+                    fighter.velocity_fixed_x -= 1 if fighter.velocity_fixed_x > 0 else -1
+                else:
+                    fighter.velocity_fixed_y -= 1 if fighter.velocity_fixed_y > 0 else -1
         fighter.velocity_x = _rounded_fixed_velocity(fighter.velocity_fixed_x)
         fighter.velocity_y = _rounded_fixed_velocity(fighter.velocity_fixed_y)
         while (
@@ -1165,6 +1192,7 @@ class BoxingEngine:
             fighter.pending_actions.clear()
             fighter.clinch_startup_ticks = 0
             fighter.stunned_ticks = 0
+            fighter.taunt_ticks = 0
         self.phase = MatchPhase.FIGHT
         self.phase_ticks_remaining = self.config.round_ticks
         self._emit("bell", detail="round_start")
