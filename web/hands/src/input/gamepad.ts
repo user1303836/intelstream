@@ -106,7 +106,7 @@ export class GamepadInput {
       } else if (index === 8) this.push({ kind: "foul", foul: "low_blow" });
       else if (index === 9) this.push({ kind: "foul", foul: "headbutt" });
       else if (index === 10) this.push({ kind: "clinch" });
-      else if (index === 11) this.push({ kind: "switch_stance" });
+      else if (index === 11) this.push({ kind: pressed(pad, 7) ? "taunt" : "switch_stance" });
       else if (index === 12) this.push({ kind: "weave" });
       else if (index === 13) this.push({ kind: "pull" });
     }

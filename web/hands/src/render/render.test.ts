@@ -214,6 +214,63 @@ describe("boxer animation", () => {
     expect(third.rig.hips.position.y).toBeLessThan(0.35);
   });
 
+  it("dances the taunt with overhead swings and hip wiggle", () => {
+    const { rig, animator } = make();
+    const two = fighter("two");
+    const taunting = { ...fighter("one"), taunt_ticks: 45 };
+    let maxGloveY = -Infinity;
+    let maxRoll = 0;
+    for (let i = 0; i < 40; i += 1) {
+      animator.update({ ...taunting, taunt_ticks: 45 - i }, two, 1 / 60, i / 60, false);
+      maxGloveY = Math.max(maxGloveY, rig.gloveL.getWorldPosition(new THREE.Vector3()).y);
+      maxRoll = Math.max(maxRoll, Math.abs(rig.hips.rotation.z));
+    }
+    expect(maxGloveY).toBeGreaterThan(1.55);
+    expect(maxRoll).toBeGreaterThan(0.05);
+  });
+
+  it("differentiates punch silhouettes: hook sweeps wide, jab recovers fastest", () => {
+    const two = fighter("two");
+    const trace = (action: "jab" | "hook"): { maxLateral: number; recoverFrames: number } => {
+      const { rig, animator } = make();
+      const punching = { ...fighter("one"), action, action_hand: "left" as const, action_target: "head" as const, action_power: "normal" as const };
+      let maxLateral = 0;
+      let peakZ = -Infinity;
+      let peakTick = 0;
+      let recoverTick = Infinity;
+      for (let i = 0; i < 60; i += 1) {
+        animator.update(i < 24 ? punching : fighter("one"), two, 1 / 60, i / 60, false);
+        const local = rig.chest.worldToLocal(rig.gloveL.getWorldPosition(new THREE.Vector3()));
+        maxLateral = Math.max(maxLateral, Math.abs(local.x));
+        if (local.z > peakZ) {
+          peakZ = local.z;
+          peakTick = i;
+        } else if (recoverTick === Infinity && peakTick > 0 && i > peakTick && local.z < 0.34) {
+          recoverTick = i;
+        }
+      }
+      return { maxLateral, recoverFrames: recoverTick - peakTick };
+    };
+    const jab = trace("jab");
+    const hook = trace("hook");
+    expect(hook.maxLateral).toBeGreaterThan(jab.maxLateral + 0.1);
+    expect(jab.recoverFrames).toBeLessThan(hook.recoverFrames);
+  });
+
+  it("buckles the knees early in a knockdown before settling flat", () => {
+    const { rig, animator } = make();
+    const two = fighter("two");
+    const downed = { ...fighter("one"), is_downed: true };
+    let earlyKnee = 0;
+    for (let i = 0; i < 18; i += 1) {
+      animator.update(downed, two, 1 / 60, i / 60, false);
+      earlyKnee = Math.max(earlyKnee, rig.kneeL.rotation.x);
+    }
+    expect(earlyKnee).toBeGreaterThan(0.5);
+    for (let i = 0; i < 150; i += 1) animator.update(downed, two, 1 / 60, 1 + i / 60, false);
+    expect(rig.kneeL.rotation.x).toBeLessThan(0.4);
+  });
+
   it("mirrors southpaw glove placement", () => {
     const { rig, animator } = make();
     const one = { ...fighter("one"), stance: "southpaw" as const };
@@ -310,13 +367,18 @@ describe("viewport and broadcast HUD", () => {
     const ctx = mockHudContext(texts);
     const players = Object.fromEntries(publicPlayers.map((p) => [p.id, p]));
     const base = snapshot();
-    const opponentPrompt = { ...base, phase: "knockdown" as const, fighters: [base.fighters[0], { ...base.fighters[1], get_up_prompt: "get_up_left" as const, get_up_count: 4 }] as const };
+    const opponentPrompt = { ...base, phase: "knockdown" as const, fighters: [base.fighters[0], { ...base.fighters[1], is_downed: true, get_up_prompt: "get_up_left" as const, get_up_count: 4 }] as const };
     drawHud(ctx, 800, 600, opponentPrompt, players, "one", null, 0);
-    expect(texts.join(" ")).not.toContain("YOUR RHYTHM");
+    expect(texts.join(" ")).not.toContain("NOW!");
+    expect(texts.join(" ")).not.toContain("GET READY");
     texts.length = 0;
-    const ownPrompt = { ...opponentPrompt, fighters: [{ ...base.fighters[0], get_up_prompt: "get_up_right" as const, get_up_meter: 2, get_up_required: 4 }, opponentPrompt.fighters[1]] as const };
+    const ownPrompt = { ...opponentPrompt, fighters: [{ ...base.fighters[0], is_downed: true, get_up_prompt: "get_up_right" as const, get_up_meter: 2, get_up_required: 4 }, opponentPrompt.fighters[1]] as const };
     drawHud(ctx, 800, 600, ownPrompt, players, "one", null, 0);
-    expect(texts.join(" ")).toContain("YOUR RHYTHM: →  2/4");
+    expect(texts.join(" ")).toContain("GET READY →");
+    texts.length = 0;
+    const inWindow = { ...ownPrompt, fighters: [{ ...base.fighters[0], is_downed: true, get_up_prompt: "get_up_right" as const, get_up_meter: 2, get_up_required: 4, get_up_window_start_tick: 5, get_up_window_end_tick: 15 }, opponentPrompt.fighters[1]] as const };
+    drawHud(ctx, 800, 600, inWindow, players, "one", null, 0);
+    expect(texts.join(" ")).toContain("NOW!");
   });
 
   it("renders broadcast plates, round card and totals", () => {

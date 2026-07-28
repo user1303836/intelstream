@@ -69,7 +69,7 @@ describe("strict protocol v1", () => {
     ["zero facing", "facing", 0], ["velocity x below", "velocity_x", -8], ["velocity x above", "velocity_x", 8],
     ["velocity y below", "velocity_y", -8], ["velocity y above", "velocity_y", 8], ["maximum stamina below", "maximum_stamina", 329],
     ["maximum stamina above", "maximum_stamina", 1001], ["poise below", "poise", -1], ["poise above", "poise", 601],
-    ["get-up gap start", "get_up_required", 1], ["get-up gap end", "get_up_required", 44], ["get-up above", "get_up_required", 170],
+    ["get-up gap start", "get_up_required", 1], ["get-up gap end", "get_up_required", 33], ["get-up above", "get_up_required", 170],
   ])("rejects %s fighter output", (_name, field, value) => {
     const base = snapshot();
     const changed = { ...base.fighters[0], [field]: value };
