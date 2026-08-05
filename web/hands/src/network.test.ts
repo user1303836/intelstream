@@ -30,18 +30,18 @@ const callbacks = (overrides: Partial<{
 });
 
 const welcome = (ticket = "ticket-b") => ({
-  version: 1, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500,
+  version: 2, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500,
   players: [{ id: "one", name: "One", avatar: null, rating: 1500, connected: true }],
   server_tick: 40, next_sequence: 5, reconnect_ticket: ticket,
 });
 const ready = {
-  version: 1, type: "ready", players: [
+  version: 2, type: "ready", players: [
     { id: "one", name: "One", avatar: null, rating: 1500, connected: true },
     { id: "two", name: "Two", avatar: null, rating: 1500, connected: true },
   ],
 };
 const final = {
-  version: 1, type: "final", match_id: "match", winner_id: "one", method: "decision", round: 1,
+  version: 2, type: "final", match_id: "match", winner_id: "one", method: "decision", round: 1,
   scorecards: ["A", "B", "C"].map((judge) => ({ judge, player_one: [10], player_two: [9] })),
   ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } },
 };
@@ -93,7 +93,7 @@ describe("same-origin WebSocket controller", () => {
     controller.start();
     socket.open();
     socket.message({
-      version: 1,
+      version: 2,
       type: "welcome",
       role: "spectator",
       player_id: "viewer",
@@ -125,9 +125,9 @@ describe("same-origin WebSocket controller", () => {
     controller.start();
     sockets[0]!.open();
     sockets[0]!.message(welcome("ticket-b"));
-    sockets[0]!.message({ version: 1, type: "ticket", reconnect_ticket: "ticket-c", refresh_id: "refresh-identifier" });
+    sockets[0]!.message({ version: 2, type: "ticket", reconnect_ticket: "ticket-c", refresh_id: "refresh-identifier" });
     expect(messages.map((message) => message.type)).toEqual(["welcome"]);
-    expect(JSON.parse(sockets[0]!.sent[1]!)).toEqual({ version: 1, type: "ticket_ack", refresh_id: "refresh-identifier" });
+    expect(JSON.parse(sockets[0]!.sent[1]!)).toEqual({ version: 2, type: "ticket_ack", refresh_id: "refresh-identifier" });
     sockets[0]!.disconnect();
     vi.advanceTimersByTime(250);
     sockets[1]!.open();
@@ -168,7 +168,7 @@ describe("same-origin WebSocket controller", () => {
     controller.start();
     socket.open();
     socket.message(welcome());
-    socket.message({ version: 1, type: "error", code });
+    socket.message({ version: 2, type: "error", code });
     expect(fatal).toHaveBeenCalledOnce();
     expect(fatal).toHaveBeenCalledWith(code);
     expect(socket.closed).toBe(true);
@@ -185,7 +185,7 @@ describe("same-origin WebSocket controller", () => {
     const socket = new FakeSocket();
     const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks({ onReconnect: reconnect }), () => socket, () => Date.now());
     controller.start(); socket.open(); socket.message(welcome());
-    socket.message({ version: 1, type: "paused", player_id: "two", grace_ms: 1_000 });
+    socket.message({ version: 2, type: "paused", player_id: "two", grace_ms: 1_000 });
     expect(reconnect).toHaveBeenLastCalledWith(1_000);
     vi.advanceTimersByTime(250); expect(reconnect).toHaveBeenLastCalledWith(750);
     vi.advanceTimersByTime(750); expect(reconnect).toHaveBeenLastCalledWith(0);
@@ -199,9 +199,9 @@ describe("same-origin WebSocket controller", () => {
     const socket = new FakeSocket();
     const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks({ onReconnect: reconnect }), () => socket, () => Date.now());
     controller.start(); socket.open(); socket.message(welcome());
-    socket.message({ version: 1, type: "paused", player_id: "two", grace_ms: 2_000 });
+    socket.message({ version: 2, type: "paused", player_id: "two", grace_ms: 2_000 });
     vi.advanceTimersByTime(250);
-    socket.message({ version: 1, type: "resumed", player_id: "two" });
+    socket.message({ version: 2, type: "resumed", player_id: "two" });
     expect(reconnect).toHaveBeenLastCalledWith(0);
     const calls = reconnect.mock.calls.length;
     vi.advanceTimersByTime(3_000);
@@ -215,7 +215,7 @@ describe("same-origin WebSocket controller", () => {
     const socket = new FakeSocket();
     const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks({ onReconnect: reconnect }), () => socket, () => Date.now());
     controller.start(); socket.open(); socket.message(welcome());
-    socket.message({ version: 1, type: "paused", player_id: "two", grace_ms: 5_000 });
+    socket.message({ version: 2, type: "paused", player_id: "two", grace_ms: 5_000 });
     vi.advanceTimersByTime(4_000);
     socket.disconnect();
     expect(reconnect).toHaveBeenLastCalledWith(20_000);
@@ -229,7 +229,7 @@ describe("same-origin WebSocket controller", () => {
     const finalSocket = new FakeSocket();
     const finalController = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks({ onReconnect: finalReconnect }), () => finalSocket, () => Date.now());
     finalController.start(); finalSocket.open(); finalSocket.message(welcome());
-    finalSocket.message({ version: 1, type: "paused", player_id: "two", grace_ms: 2_000 });
+    finalSocket.message({ version: 2, type: "paused", player_id: "two", grace_ms: 2_000 });
     finalSocket.message(final);
     expect(finalReconnect).toHaveBeenLastCalledWith(0);
     expect(vi.getTimerCount()).toBe(0);
@@ -238,7 +238,7 @@ describe("same-origin WebSocket controller", () => {
     const disposeSocket = new FakeSocket();
     const disposeController = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks({ onReconnect: disposeReconnect }), () => disposeSocket, () => Date.now());
     disposeController.start(); disposeSocket.open(); disposeSocket.message(welcome());
-    disposeSocket.message({ version: 1, type: "paused", player_id: "two", grace_ms: 2_000 });
+    disposeSocket.message({ version: 2, type: "paused", player_id: "two", grace_ms: 2_000 });
     disposeController.dispose();
     expect(disposeReconnect).toHaveBeenLastCalledWith(0);
     expect(vi.getTimerCount()).toBe(0);
@@ -258,9 +258,9 @@ describe("same-origin WebSocket controller", () => {
     controller.start();
     sockets[0]!.open();
     sockets[0]!.message(welcome());
-    sockets[0]!.message({ version: 1, type: "paused", player_id: "two", grace_ms: 5_000 });
+    sockets[0]!.message({ version: 2, type: "paused", player_id: "two", grace_ms: 5_000 });
     now = 5_500;
-    sockets[0]!.message({ version: 1, type: "resumed", player_id: "two" });
+    sockets[0]!.message({ version: 2, type: "resumed", player_id: "two" });
     now = 8_000;
     sockets[0]!.disconnect();
     expect(reconnect).toHaveBeenLastCalledWith(20_000);

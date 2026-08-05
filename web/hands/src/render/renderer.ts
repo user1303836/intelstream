@@ -5,12 +5,13 @@ import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { EventDeduplicator, SnapshotBuffer } from "../interpolation";
 import type { BloodLevel, Settings } from "../settings";
-import type { EngineSnapshot, FinalMessage, PublicPlayer, SimulationInfo } from "../types";
+import type { CombatEvent, EngineSnapshot, FinalMessage, PublicPlayer, SemanticAction, SimulationInfo } from "../types";
 import { BoxerAnimator } from "./animation";
 import { buildArena, type BuiltArena } from "./arena";
 import { buildBoxer, buildReferee, disposeBoxer, type BoxerRig } from "./boxer";
 import { CameraDirector } from "./camera";
 import { Effects3D } from "./effects";
+import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
 import { drawHud } from "./hud";
 import { buildRing, disposeRing, type BuiltRing } from "./ring";
 import { resizeHighDpi } from "./viewport";
@@ -51,6 +52,8 @@ export class FightRenderer {
   private readonly buffer = new SnapshotBuffer();
   private readonly dedupe = new EventDeduplicator();
   private readonly hudCanvas: HTMLCanvasElement;
+  private cameraOverride: { position: THREE.Vector3; lookAt: THREE.Vector3 } | null = null;
+  private readonly manualClock: boolean;
   private readonly blobShadows: THREE.Mesh[] = [];
   private readonly blobTexture: THREE.CanvasTexture;
   private readonly lights: THREE.Light[] = [];
@@ -65,6 +68,13 @@ export class FightRenderer {
   private final: FinalMessage | null = null;
   private reconnectMs = 0;
   private destroyed = false;
+  private graphs: [BoxingGraph, BoxingGraph] | null = null;
+  private glbLoading = false;
+  private graphsReady: Promise<void> = Promise.resolve();
+  private readonly headCache = [new THREE.Vector3(), new THREE.Vector3()];
+  private readonly headCacheValid = [false, false];
+  private readonly pendingContacts: Array<{ event: CombatEvent; contactTick: number; targetIndex: number; actorIndex: number }> = [];
+  onContact: ((event: CombatEvent) => void) | null = null;
   private readonly tmpA = new THREE.Vector3();
   private readonly tmpB = new THREE.Vector3();
   private readonly tmpHead = new THREE.Vector3();
@@ -73,7 +83,9 @@ export class FightRenderer {
     private readonly canvas: HTMLCanvasElement,
     private readonly simulation: SimulationInfo = DEFAULT_SIM,
     private readonly settings: () => Settings,
+    options: { manualClock?: boolean } = {},
   ) {
+    this.manualClock = options.manualClock === true;
     this.mapping = worldMapping(simulation);
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
     this.renderer.shadowMap.enabled = true;
@@ -134,7 +146,55 @@ export class FightRenderer {
     canvas.insertAdjacentElement("afterend", this.hudCanvas);
 
     this.effects.setBloodLevel(settings().blood);
-    this.raf = requestAnimationFrame((time) => this.draw(time));
+    this.ensureGraphs();
+    if (!this.manualClock) this.raf = requestAnimationFrame((time) => this.draw(time));
+  }
+
+  private ensureGraphs(): void {
+    if (this.glbLoading || this.graphs !== null) return;
+    this.glbLoading = true;
+    this.graphsReady = loadBoxerGlb()
+      .then((gltf) => {
+        if (this.destroyed) return;
+        const first = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
+        const second = new SkinnedBoxer(gltf, { skin: 0x6e4128, gear: 0xb91c1c });
+        this.graphs = [new BoxingGraph(first, this.mapping), new BoxingGraph(second, this.mapping)];
+        this.scene.add(first.root, second.root);
+        for (const boxer of this.boxers) {
+          this.scene.remove(boxer.root);
+          disposeBoxer(boxer);
+        }
+      })
+      .catch((error: unknown) => {
+        this.glbLoading = false;
+        console.error("boxer_glb_load_failed", error);
+      });
+  }
+
+  get ready(): Promise<void> {
+    return this.graphsReady;
+  }
+
+  get labRigs(): THREE.Object3D[] {
+    const graphs = this.graphs;
+    if (graphs !== null) return [graphs[0].boxer.root, graphs[1].boxer.root];
+    return this.boxers.map((boxer) => boxer.root);
+  }
+
+  get labScene(): THREE.Scene {
+    return this.scene;
+  }
+
+  get labEffects(): Effects3D {
+    return this.effects;
+  }
+
+  labSetCameraOverride(position: [number, number, number], lookAt: [number, number, number]): void {
+    this.cameraOverride = { position: new THREE.Vector3(...position), lookAt: new THREE.Vector3(...lookAt) };
+  }
+
+  labFrame(virtualSeconds: number, render = true): void {
+    this.draw(virtualSeconds * 1000, true, render);
   }
 
   setPlayers(players: Readonly<Record<string, PublicPlayer>>, viewerId: string | null): void {
@@ -158,6 +218,16 @@ export class FightRenderer {
     if (reduced) this.effects.clearDynamic();
   }
 
+  predictAction(action: SemanticAction): void {
+    const latest = this.buffer.latest();
+    if (latest === null || this.viewerId === null) return;
+    const index = latest.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
+    if (index < 0) return;
+    const graphs = this.graphs;
+    if (graphs !== null) graphs[index]!.predict(action, performance.now() / 1000, this.simulation.tick_rate);
+    else this.animators[index]!.predict(action, performance.now() / 1000, this.simulation.tick_rate);
+  }
+
   push(snapshot: EngineSnapshot): void {
     if (!this.buffer.push(snapshot)) return;
     for (const event of this.dedupe.accept(snapshot.events)) {
@@ -165,23 +235,59 @@ export class FightRenderer {
         ?? snapshot.fighters.find((fighter) => fighter.player_id === event.actor_id)
         ?? snapshot.fighters[0];
       this.tmpA.set(this.mapping.x(target.x), 0, this.mapping.z(target.y));
-      this.effects.addEvent(event, this.tmpA, this.settings().reducedMotion);
       if (event.kind === "knockdown") this.effects.pool(this.tmpA.x + (Math.random() - 0.5) * 0.2, this.tmpA.z + (Math.random() - 0.5) * 0.2, 1);
       const targetIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.target_id);
-      if (targetIndex >= 0 && ["hit", "counter_hit", "block", "knockdown"].includes(event.kind)) {
-        this.animators[targetIndex]!.impact({
-          direction: event.direction,
-          amount: event.kind === "block" ? event.amount * 0.35 : event.amount,
-          blocked: event.kind === "block",
-        });
-      }
       const actorIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.actor_id);
+      if (["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown"].includes(event.kind)) {
+        // Block-family events name the defender as actor; the puncher (whose
+        // contact tick matters) is the event target for those kinds.
+        const puncher = event.kind === "block" || event.kind === "perfect_block"
+          ? (targetIndex >= 0 ? snapshot.fighters[targetIndex]! : null)
+          : (actorIndex >= 0 ? snapshot.fighters[actorIndex]! : null);
+        this.pendingContacts.push({
+          event,
+          contactTick: puncher?.action_contact_tick ?? event.tick,
+          targetIndex,
+          actorIndex,
+        });
+      } else if (event.kind === "bleed") {
+        this.effects.addEvent(event, this.tmpA, this.settings().reducedMotion);
+      }
+      if (snapshot.result !== null) this.fireContacts(Number.MAX_SAFE_INTEGER);
+    }
+  }
+
+  private fireContacts(sampledTick: number): void {
+    for (let index = this.pendingContacts.length - 1; index >= 0; index -= 1) {
+      const pending = this.pendingContacts[index]!;
+      if (pending.contactTick > sampledTick) continue;
+      this.pendingContacts.splice(index, 1);
+      const { event, targetIndex, actorIndex } = pending;
+      const target = this.buffer.latest()?.fighters[targetIndex];
+      if (target !== undefined) {
+        this.tmpA.set(this.mapping.x(target.x), 0, this.mapping.z(target.y));
+        this.effects.addEvent(event, this.tmpA, this.settings().reducedMotion);
+      }
+      const graphs = this.graphs;
+      if (targetIndex >= 0 && ["hit", "counter_hit", "block", "perfect_block", "knockdown"].includes(event.kind)) {
+        const blocked = event.kind === "block" || event.kind === "perfect_block";
+        if (graphs !== null) graphs[targetIndex]!.react(blocked ? "block" : "hit");
+        else {
+          this.animators[targetIndex]!.impact({
+            direction: event.direction,
+            amount: blocked ? event.amount * 0.35 : event.amount,
+            blocked,
+          });
+        }
+      }
       // Engine emits block/perfect_block with the DEFENDER as actor; the
       // puncher to freeze is the event target for those kinds.
       const puncherIndex = event.kind === "block" || event.kind === "perfect_block" ? targetIndex : actorIndex;
       if (puncherIndex >= 0 && ["hit", "counter_hit", "block", "perfect_block", "guard_break"].includes(event.kind)) {
-        this.animators[puncherIndex]!.landedHit(event.kind === "block" || event.kind === "perfect_block");
+        if (graphs !== null) graphs[puncherIndex]!.landedHit(event.kind === "block" || event.kind === "perfect_block");
+        else this.animators[puncherIndex]!.landedHit(event.kind === "block" || event.kind === "perfect_block");
       }
+      this.onContact?.(event);
     }
   }
 
@@ -226,9 +332,9 @@ export class FightRenderer {
     this.lights.push(rim);
   }
 
-  private draw(time: number): void {
+  private draw(time: number, manual = false, render = true): void {
     if (this.destroyed) return;
-    const dt = Math.min(0.05, Math.max(0.001, (time - this.previous) / 1000));
+    const dt = manual ? 1 / 60 : Math.min(0.05, Math.max(0.001, (time - this.previous) / 1000));
     this.previous = time;
 
     const width = this.canvas.clientWidth;
@@ -249,12 +355,29 @@ export class FightRenderer {
 
     const latest = this.buffer.latest();
     const snapshot = latest === null ? null : this.buffer.sample(latest.tick - 1);
+    const sampledTick = latest === null ? 0 : latest.tick - 1;
     let separation = 1.8;
     let knockdown = false;
     if (snapshot !== null) {
       const [a, b] = snapshot.fighters;
-      this.animators[0].update(a, b, dt, seconds, current.reducedMotion, current.blood);
-      this.animators[1].update(b, a, dt, seconds, current.reducedMotion, current.blood);
+      const graphs = this.graphs;
+      if (graphs !== null) {
+        const headA = this.headCacheValid[0] ? this.headCache[0] : undefined;
+        const headB = this.headCacheValid[1] ? this.headCache[1] : undefined;
+        graphs[0].update(a, b, dt, seconds, current.reducedMotion, current.blood, sampledTick, headB);
+        graphs[1].update(b, a, dt, seconds, current.reducedMotion, current.blood, sampledTick, headA);
+        for (const [index, graph] of graphs.entries()) {
+          const headBone = graph.boxer.bone("head");
+          if (headBone !== null) {
+            graph.boxer.root.updateMatrixWorld(true);
+            headBone.getWorldPosition(this.headCache[index]!);
+            this.headCacheValid[index] = true;
+          }
+        }
+      } else {
+        this.animators[0].update(a, b, dt, seconds, current.reducedMotion, current.blood, sampledTick);
+        this.animators[1].update(b, a, dt, seconds, current.reducedMotion, current.blood, sampledTick);
+      }
       const ax = this.mapping.x(a.x);
       const az = this.mapping.z(a.y);
       const bx = this.mapping.x(b.x);
@@ -283,7 +406,8 @@ export class FightRenderer {
     this.effects.update(dt);
     this.updateReferee(dt, seconds, current.reducedMotion);
     this.updateBlobShadows();
-    const frame = this.director.update(
+    this.fireContacts(sampledTick);
+    const frame = this.cameraOverride ?? this.director.update(
       dt,
       seconds,
       { x: this.tmpA.x, z: this.tmpA.z },
@@ -296,10 +420,12 @@ export class FightRenderer {
     this.camera.position.copy(frame.position);
     this.camera.lookAt(frame.lookAt);
 
-    this.composer.render();
-    this.drawHudOverlay(snapshot);
+    if (render) {
+      this.composer.render();
+      this.drawHudOverlay(snapshot);
+    }
 
-    if (!this.destroyed) this.raf = requestAnimationFrame((next) => this.draw(next));
+    if (!this.destroyed && !this.manualClock) this.raf = requestAnimationFrame((next) => this.draw(next));
   }
 
   private updateBlobShadows(): void {
@@ -365,12 +491,20 @@ export class FightRenderer {
     this.raf = 0;
     this.buffer.clear();
     this.dedupe.reset();
+    this.pendingContacts.length = 0;
     this.effects.dispose();
     this.arena.dispose();
     disposeRing(this.ring);
     for (const boxer of this.boxers) {
       this.scene.remove(boxer.root);
       disposeBoxer(boxer);
+    }
+    if (this.graphs !== null) {
+      for (const graph of this.graphs) {
+        this.scene.remove(graph.boxer.root);
+        graph.dispose();
+      }
+      this.graphs = null;
     }
     this.scene.remove(this.referee.root);
     disposeBoxer(this.referee);

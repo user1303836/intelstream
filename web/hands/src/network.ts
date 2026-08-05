@@ -1,6 +1,6 @@
 import { safeError } from "./api";
 import { decodeServerFrame, encodeInput } from "./protocol";
-import type { ConnectionRole, InputFrame, ServerMessage } from "./types";
+import { PROTOCOL_VERSION, type ConnectionRole, type InputFrame, type ServerMessage } from "./types";
 
 export function websocketUrl(location: Location = window.location): string {
   const url = new URL("/api/hands/ws", location.origin);
@@ -115,7 +115,7 @@ export class NetworkController {
     socket.onopen = () => {
       if (this.socket !== socket || this.disposed) return;
       try {
-        socket.send(JSON.stringify({ version: 1, type: "authenticate", ticket }));
+        socket.send(JSON.stringify({ version: PROTOCOL_VERSION, type: "authenticate", ticket }));
         this.reconnectTicket = null;
       } catch {
         this.handleClose(socket);
@@ -134,7 +134,7 @@ export class NetworkController {
       this.applyMessage(message);
       if (message.type === "ticket") {
         try {
-          socket.send(JSON.stringify({ version: 1, type: "ticket_ack", refresh_id: message.refresh_id }));
+          socket.send(JSON.stringify({ version: PROTOCOL_VERSION, type: "ticket_ack", refresh_id: message.refresh_id }));
         } catch {
           this.handleClose(socket);
         }

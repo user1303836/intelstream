@@ -57,7 +57,7 @@ def test_round_trip_every_semantic_action() -> None:
 
 def valid_payload() -> dict[str, object]:
     return {
-        "version": 1,
+        "version": 2,
         "type": "input",
         "sequence": 2,
         "client_tick": 10,
@@ -70,7 +70,7 @@ def valid_payload() -> dict[str, object]:
 @pytest.mark.parametrize(
     ("path", "value"),
     [
-        (("version",), 2),
+        (("version",), 1),
         (("type",), "result"),
         (("sequence",), -1),
         (("client_tick",), -1),
@@ -120,7 +120,7 @@ def test_rejects_unknown_nested_fields_and_malformed_actions() -> None:
 
 def test_rejects_duplicate_fields() -> None:
     frame = (
-        '{"version":1,"type":"input","sequence":1,"sequence":2,'
+        '{"version":2,"type":"input","sequence":1,"sequence":2,'
         '"client_tick":1,"move":{"x":0,"y":0},"defense":"none","actions":[]}'
     )
 
@@ -172,13 +172,13 @@ def test_rejects_malformed_frames(frame: str | bytes) -> None:
 
 
 def test_ticket_ack_is_strict_and_distinct_from_semantic_input() -> None:
-    frame = '{"version":1,"type":"ticket_ack","refresh_id":"refresh-identifier"}'
+    frame = '{"version":2,"type":"ticket_ack","refresh_id":"refresh-identifier"}'
     assert parse_ticket_ack(frame) == "refresh-identifier"
     assert parse_ticket_ack(json.dumps(valid_payload())) is None
     for malformed in (
-        '{"version":1,"type":"ticket_ack","refresh_id":"short"}',
-        '{"version":1,"type":"ticket_ack","refresh_id":"refresh-identifier","extra":1}',
-        '{"version":1,"type":"ticket_ack","refresh_id":"one","refresh_id":"two"}',
+        '{"version":2,"type":"ticket_ack","refresh_id":"short"}',
+        '{"version":2,"type":"ticket_ack","refresh_id":"refresh-identifier","extra":1}',
+        '{"version":2,"type":"ticket_ack","refresh_id":"one","refresh_id":"two"}',
     ):
         with pytest.raises(ProtocolError):
             parse_ticket_ack(malformed)
@@ -258,3 +258,33 @@ def test_snapshot_encoding_is_required_and_redacted_per_viewer() -> None:
         snapshot_for_viewer(snapshot, "unknown-player")
     with pytest.raises(TypeError):
         encode_snapshot(snapshot)
+
+
+def test_client_action_id_validated_and_round_trips() -> None:
+    payload = valid_payload()
+    payload["actions"] = [
+        {
+            "kind": "punch",
+            "hand": "left",
+            "class": "jab",
+            "target": "head",
+            "power": "normal",
+            "id": "c17",
+        }
+    ]
+    command = parse_client_input(json.dumps(payload), server_tick=10)
+    action = command.actions[0]
+    assert isinstance(action, PunchAction)
+    assert action.client_action_id == "c17"
+    encoded = encode_client_input(command)
+    reparsed = parse_client_input(encoded, server_tick=11)
+    assert isinstance(reparsed.actions[0], PunchAction)
+    assert reparsed.actions[0].client_action_id == "c17"
+
+    for bad in ["has space", "emoji\xe9", "x" * 33, ""]:
+        payload = valid_payload()
+        payload["actions"] = [
+            {"kind": "punch", "hand": "left", "class": "jab", "target": "head", "id": bad}
+        ]
+        with pytest.raises(ProtocolError, match="action id"):
+            parse_client_input(json.dumps(payload), server_tick=10)

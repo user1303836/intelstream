@@ -11,6 +11,8 @@ import { SettingsStore, type BloodLevel } from "./settings";
 import { initialState, reduceState, type GameState } from "./state";
 import type { EngineSnapshot, ServerMessage } from "./types";
 
+const CONTACT_FEEDBACK_KINDS = new Set(["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown"]);
+
 export class HandsApp {
   private state: GameState = initialState;
   private readonly settings = new SettingsStore();
@@ -94,6 +96,11 @@ export class HandsApp {
       this.dispatch({ type: "bootstrap", simulation: session.bootstrap.simulation });
       this.dispatch({ type: "authorized", player: session.player });
       this.renderer = new FightRenderer(this.canvas, session.bootstrap.simulation, () => this.settings.current);
+      this.renderer.onContact = (event) => {
+        this.audio.event(event);
+        this.haptics.event(event);
+      };
+      this.input.onAction((action) => this.renderer?.predictAction?.(action));
       const ticket = session.takeTicket();
       if (ticket === null) throw new Error("ticket_unavailable");
       const network = new NetworkController(ticket, () => this.input.frame(), {
@@ -143,6 +150,7 @@ export class HandsApp {
       this.audio.snapshot(snapshot.tick, viewer.stamina, viewer.maximum_stamina, viewer.trauma.head + viewer.trauma.body);
     }
     for (const event of this.feedbackEvents.accept(snapshot.events)) {
+      if (CONTACT_FEEDBACK_KINDS.has(event.kind)) continue;
       this.audio.event(event);
       this.haptics.event(event);
     }

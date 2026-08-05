@@ -117,7 +117,9 @@ function fighter(value: unknown): FighterSnapshot {
     "player_id", "x", "y", "facing", "velocity_x", "velocity_y", "stance", "defense",
     "stamina", "maximum_stamina", "conditioning", "guard", "poise", "trauma", "knockdowns",
     "warnings", "deductions", "stunned_ticks", "is_downed", "action", "action_hand",
-    "action_target", "action_power", "queued_actions", "clinch_startup_ticks", "clinch_ticks",
+    "action_target", "action_power", "action_id", "action_key", "action_start_tick",
+    "action_startup_ticks", "action_active_ticks", "action_recovery_ticks", "action_contact_tick",
+    "queued_actions", "clinch_startup_ticks", "clinch_ticks",
     "is_foul_recovery_target", "taunt_ticks", "get_up_prompt", "get_up_meter", "get_up_required", "get_up_count",
     "get_up_window_start_tick", "get_up_window_end_tick",
   ]);
@@ -126,6 +128,10 @@ function fighter(value: unknown): FighterSnapshot {
   const actionTarget = o.action_target === null ? null : oneOf<Target>(o.action_target, targets, "action target");
   const actionPower = o.action_power === null ? null : oneOf<Power>(o.action_power, powers, "action power");
   if ([action, actionHand, actionTarget, actionPower].some((part) => part === null) && [action, actionHand, actionTarget, actionPower].some((part) => part !== null)) throw new ProtocolError("partial punch action");
+  const actionId = o.action_id === null ? null : string(o.action_id, "action_id", 32);
+  const actionKey = o.action_key === null ? null : string(o.action_key, "action_key", 64);
+  if ([actionId, actionKey].some((part) => part === null) !== [actionId, actionKey].every((part) => part === null)) throw new ProtocolError("partial action instance");
+  if (actionId !== null && action === null) throw new ProtocolError("action instance without class");
   const prompt = o.get_up_prompt === null ? null : oneOf(o.get_up_prompt, ["get_up_left", "get_up_right"] as const, "get-up prompt");
   const maximumStamina = integer(o.maximum_stamina, "maximum_stamina", 330, 1000);
   const stamina = integer(o.stamina, "stamina", 0, maximumStamina);
@@ -142,6 +148,13 @@ function fighter(value: unknown): FighterSnapshot {
     trauma: trauma(o.trauma), knockdowns: integer(o.knockdowns, "knockdowns", 0, 3), warnings: integer(o.warnings, "warnings", 0, 3), deductions: integer(o.deductions, "deductions", 0, 1),
     stunned_ticks: integer(o.stunned_ticks, "stunned_ticks", 0, 90), is_downed: bool(o.is_downed, "is_downed"),
     action, action_hand: actionHand, action_target: actionTarget, action_power: actionPower,
+    action_id: actionId,
+    action_key: actionKey,
+    action_start_tick: integer(o.action_start_tick, "action_start_tick", 0),
+    action_startup_ticks: integer(o.action_startup_ticks, "action_startup_ticks", 0, 40),
+    action_active_ticks: integer(o.action_active_ticks, "action_active_ticks", 0, 10),
+    action_recovery_ticks: integer(o.action_recovery_ticks, "action_recovery_ticks", 0, 40),
+    action_contact_tick: o.action_contact_tick === null ? null : integer(o.action_contact_tick, "action_contact_tick", 0),
     queued_actions: integer(o.queued_actions, "queued_actions", 0, 1), clinch_startup_ticks: integer(o.clinch_startup_ticks, "clinch_startup_ticks", 0, 8), clinch_ticks: integer(o.clinch_ticks, "clinch_ticks", 0, 45),
     is_foul_recovery_target: bool(o.is_foul_recovery_target, "is_foul_recovery_target"), taunt_ticks: integer(o.taunt_ticks, "taunt_ticks", 0, 60), get_up_prompt: prompt,
     get_up_meter: integer(o.get_up_meter, "get_up_meter", 0, 256), get_up_required: getUpRequired, get_up_count: integer(o.get_up_count, "get_up_count", 0, 10),
@@ -149,8 +162,8 @@ function fighter(value: unknown): FighterSnapshot {
   };
 }
 function event(value: unknown): CombatEvent {
-  const o = object(value, "event"); exact(o, ["event_id", "tick", "kind", "actor_id", "target_id", "amount", "detail", "blood", "direction"]);
-  return { event_id: integer(o.event_id, "event_id"), tick: integer(o.tick, "tick"), kind: string(o.kind, "event kind", 32), actor_id: nullableString(o.actor_id, "actor_id"), target_id: nullableString(o.target_id, "target_id"), amount: integer(o.amount, "amount", -10_000, 10_000), detail: string(o.detail, "detail", 96, 0), blood: integer(o.blood, "blood", 0, 100), direction: integer(o.direction, "direction", -1, 1) };
+  const o = object(value, "event"); exact(o, ["event_id", "tick", "kind", "actor_id", "target_id", "amount", "detail", "blood", "direction", "action_id"]);
+  return { event_id: integer(o.event_id, "event_id"), tick: integer(o.tick, "tick"), kind: string(o.kind, "event kind", 32), actor_id: nullableString(o.actor_id, "actor_id"), target_id: nullableString(o.target_id, "target_id"), amount: integer(o.amount, "amount", -10_000, 10_000), detail: string(o.detail, "detail", 96, 0), blood: integer(o.blood, "blood", 0, 100), direction: integer(o.direction, "direction", -1, 1), action_id: o.action_id === null ? null : string(o.action_id, "action_id", 32) };
 }
 function judgeCard(value: unknown): JudgeCard {
   const o = object(value, "judge card"); exact(o, ["judge", "player_one", "player_two"]);
@@ -192,20 +205,20 @@ export function decodeServerFrame(frame: string | ArrayBuffer | Uint8Array): Ser
       exact(o, ["version", "type", "role", "player_id", "seat", "rating", "players", "server_tick", "next_sequence"], ["reconnect_ticket"]);
       const decodedPlayers = players(o.players);
       if (!decodedPlayers.some((player) => player.id === playerId)) throw new ProtocolError("welcome fighter is absent");
-      return { version: 1, type, role, player_id: playerId, seat: integer(o.seat, "seat", 1, 2) as 1 | 2, rating: integer(o.rating, "rating"), players: decodedPlayers, server_tick: integer(o.server_tick, "server_tick"), next_sequence: integer(o.next_sequence, "next_sequence"), ...reconnect };
+      return { version: 2, type, role, player_id: playerId, seat: integer(o.seat, "seat", 1, 2) as 1 | 2, rating: integer(o.rating, "rating"), players: decodedPlayers, server_tick: integer(o.server_tick, "server_tick"), next_sequence: integer(o.next_sequence, "next_sequence"), ...reconnect };
     }
     exact(o, ["version", "type", "role", "player_id", "players", "server_tick"], ["reconnect_ticket"]);
     const decodedPlayers = players(o.players, 2);
     if (decodedPlayers.some((player) => player.id === playerId)) throw new ProtocolError("spectator cannot be a fighter");
-    return { version: 1, type, role, player_id: playerId, players: [decodedPlayers[0]!, decodedPlayers[1]!], server_tick: integer(o.server_tick, "server_tick"), ...reconnect };
+    return { version: 2, type, role, player_id: playerId, players: [decodedPlayers[0]!, decodedPlayers[1]!], server_tick: integer(o.server_tick, "server_tick"), ...reconnect };
   }
-  if (type === "ticket") { exact(o, ["version", "type", "reconnect_ticket", "refresh_id"]); return { version: 1, type, reconnect_ticket: string(o.reconnect_ticket, "reconnect_ticket", 4096), refresh_id: string(o.refresh_id, "refresh_id", 128, 16) }; }
-  if (type === "waiting") { exact(o, ["version", "type", "open_seats"]); if (o.open_seats !== 1) throw new ProtocolError("invalid open seats"); return { version: 1, type, open_seats: 1 }; }
-  if (type === "ready") { exact(o, ["version", "type", "players"]); const ps = players(o.players, 2); return { version: 1, type, players: [ps[0]!, ps[1]!] }; }
-  if (type === "paused") { exact(o, ["version", "type", "player_id", "grace_ms"]); return { version: 1, type, player_id: string(o.player_id, "player_id"), grace_ms: integer(o.grace_ms, "grace_ms", 0, 60_000) }; }
-  if (type === "resumed") { exact(o, ["version", "type", "player_id"]); return { version: 1, type, player_id: string(o.player_id, "player_id") }; }
-  if (type === "snapshot") { exact(o, ["version", "type", "payload"]); return { version: 1, type, payload: snapshot(o.payload) }; }
-  if (type === "error") { exact(o, ["version", "type", "code"]); return { version: 1, type, code: string(o.code, "error code", 80) }; }
+  if (type === "ticket") { exact(o, ["version", "type", "reconnect_ticket", "refresh_id"]); return { version: 2, type, reconnect_ticket: string(o.reconnect_ticket, "reconnect_ticket", 4096), refresh_id: string(o.refresh_id, "refresh_id", 128, 16) }; }
+  if (type === "waiting") { exact(o, ["version", "type", "open_seats"]); if (o.open_seats !== 1) throw new ProtocolError("invalid open seats"); return { version: 2, type, open_seats: 1 }; }
+  if (type === "ready") { exact(o, ["version", "type", "players"]); const ps = players(o.players, 2); return { version: 2, type, players: [ps[0]!, ps[1]!] }; }
+  if (type === "paused") { exact(o, ["version", "type", "player_id", "grace_ms"]); return { version: 2, type, player_id: string(o.player_id, "player_id"), grace_ms: integer(o.grace_ms, "grace_ms", 0, 60_000) }; }
+  if (type === "resumed") { exact(o, ["version", "type", "player_id"]); return { version: 2, type, player_id: string(o.player_id, "player_id") }; }
+  if (type === "snapshot") { exact(o, ["version", "type", "payload"]); return { version: 2, type, payload: snapshot(o.payload) }; }
+  if (type === "error") { exact(o, ["version", "type", "code"]); return { version: 2, type, code: string(o.code, "error code", 80) }; }
   if (type === "final") return decodeFinal(o, type);
   throw new ProtocolError("unsupported server message type");
 }
@@ -216,21 +229,22 @@ function decodeFinal(o: Obj, type: "final"): FinalMessage {
   for (const [id, raw] of entries) { string(id, "rating player id"); const r = object(raw, "rating"); exact(r, ["before", "after"]); ratings[id] = { before: integer(r.before, "before"), after: integer(r.after, "after") }; }
   const winner = nullableString(o.winner_id, "winner_id"); if (winner !== null && !Object.hasOwn(ratings, winner)) throw new ProtocolError("winner absent from ratings");
   const method = oneOf<FinishMethod>(o.method, methods, "finish method"); coherentFinish(winner, method);
-  return { version: 1, type, match_id: string(o.match_id, "match_id"), winner_id: winner, method, round: integer(o.round, "round", 1, 15), scorecards: scorecards(o.scorecards), ratings };
+  return { version: 2, type, match_id: string(o.match_id, "match_id"), winner_id: winner, method, round: integer(o.round, "round", 1, 15), scorecards: scorecards(o.scorecards), ratings };
 }
 
 export function encodeInput(sequence: number, clientTick: number, frame: { moveX: number; moveY: number; defense: HeldDefense; actions: readonly SemanticAction[] }): string {
   const action = (raw: SemanticAction): Record<string, string> => {
-    if (raw.kind === "punch") return { kind: "punch", hand: oneOf<Hand>(raw.hand, hands, "hand"), class: oneOf<PunchClass>(raw.class, classes, "class"), target: oneOf<Target>(raw.target, targets, "target"), power: oneOf<Power>(raw.power, powers, "power") };
-    if (raw.kind === "foul") return { kind: "foul", foul: oneOf<Foul>(raw.foul, fouls, "foul") };
-    return { kind: oneOf<MovementKind>(raw.kind, movementKinds, "action") };
+    const id = raw.id === undefined ? {} : { id: raw.id.slice(0, 32) };
+    if (raw.kind === "punch") return { kind: "punch", hand: oneOf<Hand>(raw.hand, hands, "hand"), class: oneOf<PunchClass>(raw.class, classes, "class"), target: oneOf<Target>(raw.target, targets, "target"), power: oneOf<Power>(raw.power, powers, "power"), ...id };
+    if (raw.kind === "foul") return { kind: "foul", foul: oneOf<Foul>(raw.foul, fouls, "foul"), ...id };
+    return { kind: oneOf<MovementKind>(raw.kind, movementKinds, "action"), ...id };
   };
-  return JSON.stringify({ version: 1, type: "input", sequence: integer(sequence, "sequence"), client_tick: integer(clientTick, "client tick"), move: { x: Math.max(-1000, Math.min(1000, Math.round(Number.isFinite(frame.moveX) ? frame.moveX : 0))), y: Math.max(-1000, Math.min(1000, Math.round(Number.isFinite(frame.moveY) ? frame.moveY : 0))) }, defense: oneOf<HeldDefense>(frame.defense, heldDefenses, "held defense"), actions: frame.actions.slice(0, 4).map(action) });
+  return JSON.stringify({ version: 2, type: "input", sequence: integer(sequence, "sequence"), client_tick: integer(clientTick, "client tick"), move: { x: Math.max(-1000, Math.min(1000, Math.round(Number.isFinite(frame.moveX) ? frame.moveX : 0))), y: Math.max(-1000, Math.min(1000, Math.round(Number.isFinite(frame.moveY) ? frame.moveY : 0))) }, defense: oneOf<HeldDefense>(frame.defense, heldDefenses, "held defense"), actions: frame.actions.slice(0, 4).map(action) });
 }
 
 export function decodeBootstrap(value: unknown): BootstrapResponse {
-  const o = object(value, "bootstrap"); exact(o, ["client_id", "state", "protocol", "simulation"]); if (o.protocol !== 1) throw new ProtocolError("unsupported protocol version"); const s = object(o.simulation, "simulation"); exact(s, ["tick_rate", "ring_half_width", "ring_half_height"]);
-  return { client_id: string(o.client_id, "client_id", 36), state: string(o.state, "state", 128), protocol: 1, simulation: { tick_rate: integer(s.tick_rate, "tick rate", 1, 120), ring_half_width: integer(s.ring_half_width, "ring width", 1), ring_half_height: integer(s.ring_half_height, "ring height", 1) } };
+  const o = object(value, "bootstrap"); exact(o, ["client_id", "state", "protocol", "simulation"]); if (o.protocol !== 2) throw new ProtocolError("unsupported protocol version"); const s = object(o.simulation, "simulation"); exact(s, ["tick_rate", "ring_half_width", "ring_half_height"]);
+  return { client_id: string(o.client_id, "client_id", 36), state: string(o.state, "state", 128), protocol: 2, simulation: { tick_rate: integer(s.tick_rate, "tick rate", 1, 120), ring_half_width: integer(s.ring_half_width, "ring width", 1), ring_half_height: integer(s.ring_half_height, "ring height", 1) } };
 }
 export function decodeToken(value: unknown): TokenResponse {
   const o = object(value, "token response"); exact(o, ["access_token", "ticket", "player"]); const p = object(o.player, "player"); exact(p, ["id", "name", "avatar", "rating"]);

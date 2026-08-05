@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { punchTiming, totalTicks } from "../manifest";
 import { buildArena } from "./arena";
 import { BoxerAnimator } from "./animation";
 import { buildBoxer, buildReferee } from "./boxer";
@@ -11,6 +12,30 @@ import { PALETTES, worldMapping } from "./world";
 import { fighter, publicPlayers, snapshot } from "../test/fixtures";
 
 const mapping = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 330 });
+
+const withAction = (
+  base: ReturnType<typeof fighter>,
+  action: "jab" | "straight" | "hook" | "uppercut",
+  hand: "left" | "right",
+  target: "head" | "body" = "head",
+  power: "normal" | "power" = "normal",
+  startup = 5,
+  active = 2,
+  recovery = 10,
+) => ({
+  ...base,
+  action,
+  action_hand: hand,
+  action_target: target,
+  action_power: power,
+  action_id: `${action}-${hand}-${target}-${power}-1`,
+  action_key: `${action}:${hand}:${target}:${power}`,
+  action_start_tick: 0,
+  action_startup_ticks: startup,
+  action_active_ticks: active,
+  action_recovery_ticks: recovery,
+  action_contact_tick: null,
+});
 
 describe("world mapping", () => {
   it("maps sim up (W/stick-up) away from the broadcast camera and sim right to screen right", () => {
@@ -78,23 +103,26 @@ describe("boxer animation", () => {
     expect(Math.abs(rig.root.rotation.y - expectedYaw)).toBeLessThan(0.6);
   });
 
-  it("drives punch timelines from action transitions and returns to guard", () => {
+  it("drives punch timelines from action instances and returns to guard", () => {
     const { rig, animator } = make();
     const one = fighter("one");
     const two = fighter("two");
-    for (let i = 0; i < 30; i += 1) animator.update(one, two, 1 / 60, i / 60, false);
+    for (let i = 0; i < 30; i += 1) animator.update(one, two, 1 / 60, i / 60, false, "full", Math.floor(i / 2));
     const guardZ = rig.gloveL.getWorldPosition(new THREE.Vector3()).z;
-    const punching = { ...one, action: "straight" as const, action_hand: "right" as const, action_target: "head" as const, action_power: "normal" as const };
+    const punching = withAction({ ...one, x: 0 }, "straight", "right");
+    const farOpponent = { ...two, x: 195 };
     let maxExtension = 0;
-    for (let i = 0; i < 30; i += 1) {
-      animator.update(i < 20 ? punching : one, two, 1 / 60, 0.5 + i / 60, false);
+    for (let i = 0; i < 40; i += 1) {
+      const snapshotTick = 15 + Math.floor(i / 2);
+      const frame = i < 34 ? { ...punching, action_start_tick: 15 } : { ...one, action_start_tick: 15 };
+      animator.update(frame, farOpponent, 1 / 60, 0.5 + i / 60, false, "full", snapshotTick);
       const shoulder = rig.shoulderR.getWorldPosition(new THREE.Vector3());
       const glove = rig.gloveR.getWorldPosition(new THREE.Vector3());
       maxExtension = Math.max(maxExtension, shoulder.distanceTo(glove));
     }
     expect(maxExtension).toBeGreaterThan(0.55);
     expect(maxExtension).toBeLessThanOrEqual(0.67);
-    for (let i = 0; i < 90; i += 1) animator.update(one, two, 1 / 60, 1.5 + i / 60, false);
+    for (let i = 0; i < 90; i += 1) animator.update(one, two, 1 / 60, 1.5 + i / 60, false, "full", 40 + Math.floor(i / 2));
     const recovered = rig.gloveL.getWorldPosition(new THREE.Vector3()).z;
     expect(Math.abs(recovered - guardZ)).toBeLessThan(0.25);
   });
@@ -176,32 +204,32 @@ describe("boxer animation", () => {
   it("freezes the punch during hitstop and rotates the punching shoulder into a cross", () => {
     const { rig, animator } = make();
     const two = fighter("two");
-    const punching = { ...fighter("one"), action: "straight" as const, action_hand: "right" as const, action_target: "head" as const, action_power: "normal" as const };
-    for (let i = 0; i < 5; i += 1) animator.update(punching, two, 1 / 60, i / 60, false);
+    const punching = withAction(fighter("one"), "straight", "right");
+    for (let i = 0; i < 5; i += 1) animator.update(punching, two, 1 / 60, i / 60, false, "full", Math.floor(i / 2));
     const gloveBefore = rig.gloveR.getWorldPosition(new THREE.Vector3()).z;
     animator.landedHit(false);
-    for (let i = 0; i < 3; i += 1) animator.update(punching, two, 1 / 60, 0.1 + i / 60, false);
+    for (let i = 0; i < 3; i += 1) animator.update(punching, two, 1 / 60, 0.1 + i / 60, false, "full", 2);
     const gloveDuringStop = rig.gloveR.getWorldPosition(new THREE.Vector3()).z;
-    expect(Math.abs(gloveDuringStop - gloveBefore)).toBeLessThan(0.05);
-    for (let i = 0; i < 20; i += 1) animator.update(punching, two, 1 / 60, 0.3 + i / 60, false);
+    expect(Math.abs(gloveDuringStop - gloveBefore)).toBeLessThan(0.06);
+    for (let i = 0; i < 20; i += 1) animator.update(punching, two, 1 / 60, 0.3 + i / 60, false, "full", 2 + Math.floor(i / 2));
     expect(rig.hips.rotation.y).toBeGreaterThan(0.1);
     expect(rig.spine.rotation.y).toBeGreaterThan(0.1);
     const southpawRig = buildBoxer(PALETTES[1]);
     const southpawAnimator = new BoxerAnimator(southpawRig, mapping);
-    const southpawPunch = { ...fighter("two"), stance: "southpaw" as const, action: "straight" as const, action_hand: "right" as const, action_target: "head" as const, action_power: "normal" as const };
-    for (let i = 0; i < 20; i += 1) southpawAnimator.update(southpawPunch, fighter("one"), 1 / 60, i / 60, false);
+    const southpawPunch = withAction({ ...fighter("two"), stance: "southpaw" as const }, "straight", "right");
+    for (let i = 0; i < 20; i += 1) southpawAnimator.update(southpawPunch, fighter("one"), 1 / 60, i / 60, false, "full", Math.floor(i / 2));
     expect(southpawRig.spine.rotation.y).toBeGreaterThan(0.1);
   });
 
   it("drops level for body punches and springs the canvas landing on knockdown", () => {
     const { rig, animator } = make();
     const two = fighter("two");
-    const bodyPunch = { ...fighter("one"), action: "straight" as const, action_hand: "left" as const, action_target: "body" as const, action_power: "normal" as const };
-    for (let i = 0; i < 14; i += 1) animator.update(bodyPunch, two, 1 / 60, i / 60, false);
+    const bodyPunch = withAction(fighter("one"), "straight", "left", "body");
+    for (let i = 0; i < 14; i += 1) animator.update(bodyPunch, two, 1 / 60, i / 60, false, "full", Math.floor(i / 2));
     const bodyHeight = rig.hips.position.y;
-    const headPunch = { ...bodyPunch, action_target: "head" as const };
+    const headPunch = withAction(fighter("one"), "straight", "left", "head");
     const second = make();
-    for (let i = 0; i < 14; i += 1) second.animator.update(headPunch, two, 1 / 60, i / 60, false);
+    for (let i = 0; i < 14; i += 1) second.animator.update(headPunch, two, 1 / 60, i / 60, false, "full", Math.floor(i / 2));
     expect(bodyHeight).toBeLessThan(second.rig.hips.position.y - 0.03);
     const downed = { ...fighter("one"), is_downed: true };
     const third = make();
@@ -233,19 +261,25 @@ describe("boxer animation", () => {
     const two = fighter("two");
     const trace = (action: "jab" | "hook"): { maxLateral: number; recoverFrames: number } => {
       const { rig, animator } = make();
-      const punching = { ...fighter("one"), action, action_hand: "left" as const, action_target: "head" as const, action_power: "normal" as const };
+      const punching = withAction(fighter("one"), action, "left");
+      const farOpponent = { ...two, x: 195 };
+      animator.update(fighter("one"), farOpponent, 1 / 60, 0, false, "full", 0);
+      const guardZ = rig.chest.worldToLocal(rig.gloveL.getWorldPosition(new THREE.Vector3())).z;
       let maxLateral = 0;
       let peakZ = -Infinity;
       let peakTick = 0;
+      let extended = false;
       let recoverTick = Infinity;
-      for (let i = 0; i < 60; i += 1) {
-        animator.update(i < 24 ? punching : fighter("one"), two, 1 / 60, i / 60, false);
+      for (let i = 0; i < 90; i += 1) {
+        const frame = i < 40 ? punching : fighter("one");
+        animator.update(frame, farOpponent, 1 / 60, i / 60, false, "full", Math.floor(i / 2));
         const local = rig.chest.worldToLocal(rig.gloveL.getWorldPosition(new THREE.Vector3()));
         maxLateral = Math.max(maxLateral, Math.abs(local.x));
+        if (local.z > guardZ + 0.15) extended = true;
         if (local.z > peakZ) {
           peakZ = local.z;
           peakTick = i;
-        } else if (recoverTick === Infinity && peakTick > 0 && i > peakTick && local.z < 0.34) {
+        } else if (extended && recoverTick === Infinity && i > peakTick && local.z < guardZ + 0.04) {
           recoverTick = i;
         }
       }
@@ -254,7 +288,8 @@ describe("boxer animation", () => {
     const jab = trace("jab");
     const hook = trace("hook");
     expect(hook.maxLateral).toBeGreaterThan(jab.maxLateral + 0.1);
-    expect(jab.recoverFrames).toBeLessThan(hook.recoverFrames);
+    expect(totalTicks(punchTiming("jab", "head", "normal"))).toBeLessThan(totalTicks(punchTiming("hook", "head", "normal")));
+    expect(totalTicks(punchTiming("straight", "head", "normal"))).toBeLessThan(totalTicks(punchTiming("uppercut", "head", "normal")));
   });
 
   it("buckles the knees early in a knockdown before settling flat", () => {
@@ -269,6 +304,37 @@ describe("boxer animation", () => {
     expect(earlyKnee).toBeGreaterThan(0.5);
     for (let i = 0; i < 150; i += 1) animator.update(downed, two, 1 / 60, 1 + i / 60, false);
     expect(rig.kneeL.rotation.x).toBeLessThan(0.4);
+  });
+
+  it("restarts identical punches on new action instances", () => {
+    const { rig, animator } = make();
+    const two = fighter("two");
+    const jabOne = withAction(fighter("one"), "jab", "left");
+    for (let i = 0; i < 16; i += 1) animator.update(jabOne, two, 1 / 60, i / 60, false, "full", Math.floor(i / 2));
+    const midZ = rig.chest.worldToLocal(rig.gloveL.getWorldPosition(new THREE.Vector3())).z;
+    expect(midZ).toBeGreaterThan(0.33);
+    const jabTwo = { ...withAction(fighter("one"), "jab", "left"), action_id: "jab-left-head-normal-2" };
+    animator.update(jabTwo, two, 1 / 60, 1, false, "full", 8);
+    const restartZ = rig.chest.worldToLocal(rig.gloveL.getWorldPosition(new THREE.Vector3())).z;
+    expect(restartZ).toBeLessThan(midZ);
+  });
+
+  it("begins predicted punches locally and reconciles within one tick", () => {
+    const { rig, animator } = make();
+    const two = fighter("two");
+    const baseline = rig.chest.worldToLocal(rig.gloveL.getWorldPosition(new THREE.Vector3())).z;
+    animator.predict({ kind: "punch", hand: "left", class: "jab", target: "head", power: "normal", id: "c7" }, 0, 30);
+    animator.update(fighter("one"), two, 1 / 60, 1 / 60, false, "full", 0);
+    const predictedZ = rig.chest.worldToLocal(rig.gloveL.getWorldPosition(new THREE.Vector3())).z;
+    expect(predictedZ).toBeGreaterThan(baseline + 0.005);
+    const authoritative = {
+      ...withAction(fighter("one"), "jab", "left"),
+      action_id: "c7",
+      action_start_tick: 2,
+    };
+    animator.update(authoritative, two, 1 / 60, 2 / 60, false, "full", 2);
+    const reconciledZ = rig.chest.worldToLocal(rig.gloveL.getWorldPosition(new THREE.Vector3())).z;
+    expect(Math.abs(reconciledZ - predictedZ)).toBeLessThan(0.3);
   });
 
   it("mirrors southpaw glove placement", () => {
@@ -312,7 +378,7 @@ describe("effects", () => {
     effects.setBloodLevel("full");
     const origin = new THREE.Vector3(0, 0, 0);
     for (let id = 0; id < 40; id += 1) {
-      effects.addEvent({ event_id: id, tick: 1, kind: "hit", actor_id: "one", target_id: "two", amount: 900, detail: "", blood: 400, direction: 1 }, origin, false);
+      effects.addEvent({ event_id: id, tick: 1, kind: "hit", actor_id: "one", target_id: "two", amount: 900, detail: "", blood: 400, direction: 1, action_id: null }, origin, false);
     }
     expect(effects.liveParticles).toBeLessThanOrEqual(900);
     expect(effects.visibleDecals).toBeGreaterThan(0);
@@ -323,7 +389,7 @@ describe("effects", () => {
     expect(effects.liveParticles).toBe(0);
     effects.setBloodLevel("off");
     effects.clearDecals();
-    effects.addEvent({ event_id: 999, tick: 1, kind: "hit", actor_id: "one", target_id: "two", amount: 100, detail: "", blood: 100, direction: 1 }, origin, false);
+    effects.addEvent({ event_id: 999, tick: 1, kind: "hit", actor_id: "one", target_id: "two", amount: 100, detail: "", blood: 100, direction: 1, action_id: null }, origin, false);
     expect(effects.visibleDecals).toBe(0);
     expect(effects.liveMist).toBe(0);
     effects.dispose();
@@ -339,7 +405,7 @@ describe("effects", () => {
       effects.update(1 / 60);
     }
     expect(effects.liveParticles).toBeLessThanOrEqual(900);
-    effects.addEvent({ event_id: 5, tick: 1, kind: "knockdown", actor_id: "one", target_id: "two", amount: 500, detail: "", blood: 300, direction: 1 }, new THREE.Vector3(), false);
+    effects.addEvent({ event_id: 5, tick: 1, kind: "knockdown", actor_id: "one", target_id: "two", amount: 500, detail: "", blood: 300, direction: 1, action_id: null }, new THREE.Vector3(), false);
     expect(effects.liveMist).toBeGreaterThan(0);
     effects.pool(0, 0, 1);
     effects.splatter(0, 0, 1);

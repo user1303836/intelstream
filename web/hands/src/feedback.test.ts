@@ -35,11 +35,11 @@ describe("authoritative audio and haptics", () => {
 
   it("creates WebAudio only after an explicit gesture and safely synthesizes events", async () => {
     const feedback = new AudioFeedback(() => settings);
-    feedback.event({ event_id: 1, tick: 1, kind: "hit", actor_id: null, target_id: null, amount: 100, detail: "body", blood: 0, direction: 0 });
+    feedback.event({ event_id: 1, tick: 1, kind: "hit", actor_id: null, target_id: null, amount: 100, detail: "body", blood: 0, direction: 0, action_id: null });
     expect(MockAudioContext.created).toBe(0);
     await feedback.unlock();
     expect(MockAudioContext.created).toBe(1);
-    expect(() => feedback.event({ event_id: 2, tick: 1, kind: "knockdown", actor_id: null, target_id: null, amount: 100, detail: "", blood: 0, direction: 0 })).not.toThrow();
+    expect(() => feedback.event({ event_id: 2, tick: 1, kind: "knockdown", actor_id: null, target_id: null, amount: 100, detail: "", blood: 0, direction: 0, action_id: null })).not.toThrow();
     feedback.destroy();
   });
 
@@ -67,8 +67,8 @@ describe("authoritative audio and haptics", () => {
     });
     Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [{ connected: true, vibrationActuator: { playEffect } }] });
     const haptics = new HapticFeedback(() => settings);
-    haptics.event({ event_id: 1, tick: 1, kind: "knockdown", actor_id: null, target_id: null, amount: 1, detail: "", blood: 0, direction: 0 });
-    haptics.event({ event_id: 2, tick: 1, kind: "bell", actor_id: null, target_id: null, amount: 0, detail: "", blood: 0, direction: 0 });
+    haptics.event({ event_id: 1, tick: 1, kind: "knockdown", actor_id: null, target_id: null, amount: 1, detail: "", blood: 0, direction: 0, action_id: null });
+    haptics.event({ event_id: 2, tick: 1, kind: "bell", actor_id: null, target_id: null, amount: 0, detail: "", blood: 0, direction: 0, action_id: null });
     await Promise.resolve();
     expect(playEffect).toHaveBeenCalledOnce();
   });
@@ -77,15 +77,15 @@ describe("authoritative audio and haptics", () => {
     const playEffect = vi.fn(() => { throw new Error("synchronous host failure"); });
     Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [{ connected: true, vibrationActuator: { playEffect } }] });
     const haptics = new HapticFeedback(() => settings);
-    expect(() => haptics.event({ event_id: 1, tick: 1, kind: "hit", actor_id: null, target_id: null, amount: 1, detail: "", blood: 0, direction: 0 })).not.toThrow();
+    expect(() => haptics.event({ event_id: 1, tick: 1, kind: "hit", actor_id: null, target_id: null, amount: 1, detail: "", blood: 0, direction: 0, action_id: null })).not.toThrow();
     expect(playEffect).toHaveBeenCalledOnce();
   });
 
   it("tolerates absent and throwing gamepad APIs", () => {
     const haptics = new HapticFeedback(() => settings);
     Object.defineProperty(navigator, "getGamepads", { configurable: true, value: undefined });
-    expect(() => haptics.event({ event_id: 1, tick: 1, kind: "hit", actor_id: null, target_id: null, amount: 1, detail: "", blood: 0, direction: 0 })).not.toThrow();
+    expect(() => haptics.event({ event_id: 1, tick: 1, kind: "hit", actor_id: null, target_id: null, amount: 1, detail: "", blood: 0, direction: 0, action_id: null })).not.toThrow();
     Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => { throw new Error("host"); } });
-    expect(() => haptics.event({ event_id: 2, tick: 1, kind: "hit", actor_id: null, target_id: null, amount: 1, detail: "", blood: 0, direction: 0 })).not.toThrow();
+    expect(() => haptics.event({ event_id: 2, tick: 1, kind: "hit", actor_id: null, target_id: null, amount: 1, detail: "", blood: 0, direction: 0, action_id: null })).not.toThrow();
   });
 });

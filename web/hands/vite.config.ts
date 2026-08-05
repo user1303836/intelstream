@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 
@@ -18,9 +19,26 @@ function discordSdkSafeGlobal(): Plugin {
   };
 }
 
+function labReplayStatic(): Plugin {
+  return {
+    name: "hands-lab-replay-static",
+    configureServer(server) {
+      server.middlewares.use("/replays", (req, res, next) => {
+        if (process.env.NODE_ENV === "production") return next();
+        const name = (req.url ?? "").split("?", 1)[0]!.replaceAll("/", "");
+        if (!/^[\w-]+\.json$/.test(name)) return next();
+        const file = fileURLToPath(new URL(`./replays/${name}`, import.meta.url));
+        if (!existsSync(file)) return next();
+        res.setHeader("content-type", "application/json");
+        res.end(readFileSync(file));
+      });
+    },
+  };
+}
+
 export default defineConfig({
   base: "./",
-  plugins: [discordSdkSafeGlobal()],
+  plugins: [discordSdkSafeGlobal(), labReplayStatic()],
   build: {
     outDir: fileURLToPath(new URL("../../src/intelstream/hands/static", import.meta.url)),
     emptyOutDir: true,

@@ -21,7 +21,7 @@ from intelstream.hands.types import (
     Target,
 )
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 MAX_FRAME_BYTES = 4096
 MAX_ACTIONS_PER_INPUT = 4
 MAX_SERVER_FRAME_BYTES = 65_536
@@ -76,23 +76,40 @@ def _enum[T: str](enum_type: type[T], value: object, name: str) -> T:
         raise ProtocolError(f"invalid {name}") from exc
 
 
+def _client_action_id(action: dict[str, object]) -> str | None:
+    raw = action.get("id")
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw or len(raw) > 32:
+        raise ProtocolError("invalid action id")
+    if not all(
+        character.isascii() and (character.isalnum() or character in "-_") for character in raw
+    ):
+        raise ProtocolError("invalid action id")
+    return raw
+
+
 def _parse_action(raw: object) -> SemanticAction:
     action = _object(raw, "action")
     kind = _enum(ActionKind, action.get("kind"), "action kind")
     if kind is ActionKind.PUNCH:
-        _exact_fields(action, {"kind", "hand", "class", "target", "power"}, "punch")
+        _exact_fields(action, {"kind", "hand", "class", "target", "power", "id"}, "punch")
         return PunchAction(
             hand=_enum(Hand, action.get("hand"), "hand"),
             punch_class=_enum(PunchClass, action.get("class"), "punch class"),
             target=_enum(Target, action.get("target"), "target"),
             power=_enum(Power, action.get("power", Power.NORMAL.value), "power"),
+            client_action_id=_client_action_id(action),
         )
     if kind is ActionKind.FOUL:
-        _exact_fields(action, {"kind", "foul"}, "foul")
-        return FoulAction(foul=_enum(Foul, action.get("foul"), "foul"))
+        _exact_fields(action, {"kind", "foul", "id"}, "foul")
+        return FoulAction(
+            foul=_enum(Foul, action.get("foul"), "foul"),
+            client_action_id=_client_action_id(action),
+        )
 
-    _exact_fields(action, {"kind"}, "action")
-    return MovementAction(kind=kind)
+    _exact_fields(action, {"kind", "id"}, "action")
+    return MovementAction(kind=kind, client_action_id=_client_action_id(action))
 
 
 def parse_client_input(
@@ -191,17 +208,22 @@ def parse_ticket_ack(frame: str | bytes) -> str | None:
 
 
 def _action_dict(action: SemanticAction) -> dict[str, object]:
+    result: dict[str, object]
     if isinstance(action, PunchAction):
-        return {
+        result = {
             "kind": action.kind.value,
             "hand": action.hand.value,
             "class": action.punch_class.value,
             "target": action.target.value,
             "power": action.power.value,
         }
-    if isinstance(action, FoulAction):
-        return {"kind": action.kind.value, "foul": action.foul.value}
-    return {"kind": action.kind.value}
+    elif isinstance(action, FoulAction):
+        result = {"kind": action.kind.value, "foul": action.foul.value}
+    else:
+        result = {"kind": action.kind.value}
+    if action.client_action_id is not None:
+        result["id"] = action.client_action_id
+    return result
 
 
 def encode_client_input(command: InputCommand) -> str:
