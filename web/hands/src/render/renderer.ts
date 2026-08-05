@@ -51,6 +51,8 @@ export class FightRenderer {
   private readonly buffer = new SnapshotBuffer();
   private readonly dedupe = new EventDeduplicator();
   private readonly hudCanvas: HTMLCanvasElement;
+  private cameraOverride: { position: THREE.Vector3; lookAt: THREE.Vector3 } | null = null;
+  private readonly manualClock: boolean;
   private readonly blobShadows: THREE.Mesh[] = [];
   private readonly blobTexture: THREE.CanvasTexture;
   private readonly lights: THREE.Light[] = [];
@@ -73,7 +75,9 @@ export class FightRenderer {
     private readonly canvas: HTMLCanvasElement,
     private readonly simulation: SimulationInfo = DEFAULT_SIM,
     private readonly settings: () => Settings,
+    options: { manualClock?: boolean } = {},
   ) {
+    this.manualClock = options.manualClock === true;
     this.mapping = worldMapping(simulation);
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
     this.renderer.shadowMap.enabled = true;
@@ -134,7 +138,27 @@ export class FightRenderer {
     canvas.insertAdjacentElement("afterend", this.hudCanvas);
 
     this.effects.setBloodLevel(settings().blood);
-    this.raf = requestAnimationFrame((time) => this.draw(time));
+    if (!this.manualClock) this.raf = requestAnimationFrame((time) => this.draw(time));
+  }
+
+  get labRigs(): readonly [BoxerRig, BoxerRig] {
+    return this.boxers;
+  }
+
+  get labScene(): THREE.Scene {
+    return this.scene;
+  }
+
+  get labEffects(): Effects3D {
+    return this.effects;
+  }
+
+  labSetCameraOverride(position: [number, number, number], lookAt: [number, number, number]): void {
+    this.cameraOverride = { position: new THREE.Vector3(...position), lookAt: new THREE.Vector3(...lookAt) };
+  }
+
+  labFrame(virtualSeconds: number, render = true): void {
+    this.draw(virtualSeconds * 1000, true, render);
   }
 
   setPlayers(players: Readonly<Record<string, PublicPlayer>>, viewerId: string | null): void {
@@ -226,9 +250,9 @@ export class FightRenderer {
     this.lights.push(rim);
   }
 
-  private draw(time: number): void {
+  private draw(time: number, manual = false, render = true): void {
     if (this.destroyed) return;
-    const dt = Math.min(0.05, Math.max(0.001, (time - this.previous) / 1000));
+    const dt = manual ? 1 / 60 : Math.min(0.05, Math.max(0.001, (time - this.previous) / 1000));
     this.previous = time;
 
     const width = this.canvas.clientWidth;
@@ -283,7 +307,7 @@ export class FightRenderer {
     this.effects.update(dt);
     this.updateReferee(dt, seconds, current.reducedMotion);
     this.updateBlobShadows();
-    const frame = this.director.update(
+    const frame = this.cameraOverride ?? this.director.update(
       dt,
       seconds,
       { x: this.tmpA.x, z: this.tmpA.z },
@@ -296,10 +320,12 @@ export class FightRenderer {
     this.camera.position.copy(frame.position);
     this.camera.lookAt(frame.lookAt);
 
-    this.composer.render();
-    this.drawHudOverlay(snapshot);
+    if (render) {
+      this.composer.render();
+      this.drawHudOverlay(snapshot);
+    }
 
-    if (!this.destroyed) this.raf = requestAnimationFrame((next) => this.draw(next));
+    if (!this.destroyed && !this.manualClock) this.raf = requestAnimationFrame((next) => this.draw(next));
   }
 
   private updateBlobShadows(): void {

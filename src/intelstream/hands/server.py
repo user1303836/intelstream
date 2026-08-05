@@ -11,7 +11,7 @@ from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from importlib import resources
 from ipaddress import IPv4Address, IPv6Address, ip_address, ip_network
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Protocol
 from urllib.parse import urlsplit
 
@@ -383,16 +383,22 @@ class HandsServer:
             client_max_size=MAX_HTTP_BODY_BYTES,
             middlewares=[_security_middleware],
         )
-        self._app.add_routes(
-            [
-                web.get("/healthz", self._health),
-                web.post("/api/hands/bootstrap", self._bootstrap),
-                web.post("/api/hands/token", self._token),
-                web.get("/api/hands/ws", self._websocket),
-                web.get("/", self._index),
-                web.get("/{path:.*}", self._static),
-            ]
-        )
+        routes = [
+            web.get("/healthz", self._health),
+            web.post("/api/hands/bootstrap", self._bootstrap),
+            web.post("/api/hands/token", self._token),
+            web.get("/api/hands/ws", self._websocket),
+            web.get("/", self._index),
+        ]
+        if self.dev_mode:
+            routes.extend(
+                [
+                    web.get("/hands/lab", self._index),
+                    web.get("/hands/replays/{name}", self._lab_replay),
+                ]
+            )
+        routes.append(web.get("/{path:.*}", self._static))
+        self._app.add_routes(routes)
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
         self._closed = False
@@ -787,6 +793,20 @@ class HandsServer:
 
     async def _index(self, _request: web.Request) -> web.Response:
         return self._static_response("index.html")
+
+    async def _lab_replay(self, request: web.Request) -> web.Response:
+        if not self.dev_mode:
+            raise web.HTTPNotFound()
+        name = request.match_info.get("name", "")
+        if not name.endswith(".json") or len(name) > 64:
+            raise web.HTTPNotFound()
+        stem = name[: -len(".json")]
+        if not stem or not all(character.isalnum() or character in "-_" for character in stem):
+            raise web.HTTPNotFound()
+        candidate = Path.cwd() / "web" / "hands" / "replays" / name
+        if not candidate.is_file():
+            raise web.HTTPNotFound()
+        return web.Response(body=candidate.read_bytes(), content_type="application/json")
 
     async def _static(self, request: web.Request) -> web.Response:
         path = request.match_info.get("path", "")
