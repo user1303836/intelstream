@@ -1561,3 +1561,50 @@ def test_get_up_window_boundary_scores_timed_and_late() -> None:
     late = [event for event in late_engine.events if event.kind == "get_up_input"]
     assert late and late[-1].detail == "late"
     assert late_downed.get_up_meter == 0
+
+
+def test_action_instances_echo_ids_and_retain_after_clearing() -> None:
+    engine = make_engine(seed=130, round_ticks=2000)
+    one = engine.fighter("one")
+    snapshot = engine.step(
+        {
+            "one": command(
+                1, action=PunchAction(Hand.LEFT, PunchClass.JAB, Target.HEAD, client_action_id="c1")
+            )
+        }
+    )
+    assert snapshot.fighters[0].action_id == "c1"
+    assert snapshot.fighters[0].action_key == "jab:left:head:normal"
+    assert snapshot.fighters[0].action_start_tick == snapshot.tick
+    assert snapshot.fighters[0].action_startup_ticks >= 2
+    punch_start = [event for event in engine.events if event.kind == "punch_start"]
+    assert punch_start and punch_start[-1].action_id == "c1"
+    contact_tick = None
+    while one.attack is not None:
+        snapshot = engine.step()
+        hit_events = [event for event in snapshot.events if event.kind in ("hit", "block", "whiff")]
+        if hit_events:
+            contact_tick = snapshot.tick
+            assert hit_events[-1].action_id == "c1"
+    assert contact_tick is not None
+    retained = snapshot
+    for _ in range(3):
+        retained = engine.step()
+    assert retained.fighters[0].action_id == "c1"
+    assert retained.fighters[0].action_contact_tick == contact_tick
+    for _ in range(20):
+        retained = engine.step()
+    assert retained.fighters[0].action_id is None
+
+
+def test_identical_class_actions_get_distinct_fallback_ids() -> None:
+    engine = make_engine(seed=131, round_ticks=2000)
+    engine.step({"one": command(1, action=PunchAction(Hand.LEFT, PunchClass.JAB, Target.HEAD))})
+    first = engine.snapshot().fighters[0].action_id
+    one = engine.fighter("one")
+    while one.attack is not None:
+        engine.step()
+    engine.step({"one": command(2, action=PunchAction(Hand.LEFT, PunchClass.JAB, Target.HEAD))})
+    second = engine.snapshot().fighters[0].action_id
+    assert first is not None and second is not None
+    assert first != second

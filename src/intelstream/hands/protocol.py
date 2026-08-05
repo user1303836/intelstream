@@ -82,7 +82,9 @@ def _client_action_id(action: dict[str, object]) -> str | None:
         return None
     if not isinstance(raw, str) or not raw or len(raw) > 32:
         raise ProtocolError("invalid action id")
-    if not all(character.isalnum() or character in "-_" for character in raw):
+    if not all(
+        character.isascii() and (character.isalnum() or character in "-_") for character in raw
+    ):
         raise ProtocolError("invalid action id")
     return raw
 
@@ -206,17 +208,22 @@ def parse_ticket_ack(frame: str | bytes) -> str | None:
 
 
 def _action_dict(action: SemanticAction) -> dict[str, object]:
+    result: dict[str, object]
     if isinstance(action, PunchAction):
-        return {
+        result = {
             "kind": action.kind.value,
             "hand": action.hand.value,
             "class": action.punch_class.value,
             "target": action.target.value,
             "power": action.power.value,
         }
-    if isinstance(action, FoulAction):
-        return {"kind": action.kind.value, "foul": action.foul.value}
-    return {"kind": action.kind.value}
+    elif isinstance(action, FoulAction):
+        result = {"kind": action.kind.value, "foul": action.foul.value}
+    else:
+        result = {"kind": action.kind.value}
+    if action.client_action_id is not None:
+        result["id"] = action.client_action_id
+    return result
 
 
 def encode_client_input(command: InputCommand) -> str:

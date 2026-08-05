@@ -46,6 +46,7 @@ export class SkinnedBoxer {
   readonly bones = new Map<string, THREE.Bone>();
   private readonly skinMaterial: THREE.MeshPhysicalMaterial;
   private readonly gearMaterial: THREE.MeshStandardMaterial;
+  readonly gearBaseColor: THREE.Color;
   private readonly overlays: TraumaOverlays;
 
   constructor(gltf: GLTF, palette: BoxerPaletteColors) {
@@ -53,6 +54,7 @@ export class SkinnedBoxer {
     this.root.add(instance);
     this.skinMaterial = new THREE.MeshPhysicalMaterial({ color: palette.skin, roughness: 0.58, metalness: 0.02, clearcoat: 0.25, clearcoatRoughness: 0.6 });
     this.gearMaterial = new THREE.MeshStandardMaterial({ color: palette.gear, roughness: 0.4 });
+    this.gearBaseColor = new THREE.Color(palette.gear);
     instance.traverse((object) => {
       if (object instanceof THREE.SkinnedMesh) {
         const loaded = Array.isArray(object.material) ? object.material[0] : object.material;
@@ -208,6 +210,7 @@ export function applyTraumaToOverlays(overlays: TraumaOverlays, fighter: Fighter
   void opponentBlood;
 }
 
+const BLOODED_GLOVE_COLOR = new THREE.Color(0x5c0a0e);
 const LOCOMOTION: readonly ClipName[] = ["idle", "move_forward", "move_backward", "move_lateral"];
 const PUNCH_CLIP = (punchClass: PunchClass, hand: Hand): ClipName => `${punchClass}_${hand}` as ClipName;
 
@@ -243,6 +246,19 @@ export class BoxingGraph {
   private readonly scratchB = new THREE.Vector3();
   private readonly scratchC = new THREE.Vector3();
   private readonly scratchQ = new THREE.Quaternion();
+  private readonly aimTarget = new THREE.Vector3();
+  private readonly aimShoulder = new THREE.Vector3();
+  private readonly aimTo = new THREE.Vector3();
+  private readonly aimPole = new THREE.Vector3();
+  private readonly aimBend = new THREE.Vector3();
+  private readonly aimElbow = new THREE.Vector3();
+  private readonly lockAnkle = new THREE.Vector3();
+  private readonly lockPinned = new THREE.Vector3();
+  private readonly lockHip = new THREE.Vector3();
+  private readonly lockTo = new THREE.Vector3();
+  private readonly lockPole = new THREE.Vector3();
+  private readonly lockBend = new THREE.Vector3();
+  private readonly lockKnee = new THREE.Vector3();
 
   constructor(boxer: SkinnedBoxer, private readonly mapping: WorldMapping) {
     this.boxer = boxer;
@@ -265,7 +281,9 @@ export class BoxingGraph {
     this.predictedClip = PUNCH_CLIP(action.class, action.hand);
     const timing = punchTiming(action.class, action.target, action.power);
     this.predictedTotalTicks = totalTicks(timing);
-    if (this.actionId === null) {
+    const inRecovery = this.actionId !== null && this.punchAgeTicks / this.punchTotalTicks > 0.55;
+    if (this.actionId === null || inRecovery) {
+      this.actionId = null;
       this.beginPunch(this.boxer.actions.get(this.predictedClip)!, this.predictedTotalTicks);
       this.punchAgeTicks = 0;
     }
@@ -367,11 +385,16 @@ export class BoxingGraph {
       this.punchAgeTicks += dt * 30 * this.hitstopScale;
       const total = this.punchTotalTicks;
       this.setPunch(this.activePunch, this.punchAgeTicks);
-      if (this.punchAgeTicks >= total && this.actionId === null) {
-        this.completedActionId = null;
+      if (this.punchAgeTicks >= total) {
+        this.completedActionId = this.actionId;
+        this.actionId = null;
         this.activePunch.fadeOut(0.12);
         this.activePunch = null;
       }
+    }
+    if (this.reactionAction !== null && !this.reactionAction.isRunning()) {
+      this.reactionAction.fadeOut(0.1);
+      this.reactionAction = null;
     }
 
     const speed = Math.hypot(fighter.velocity_x, fighter.velocity_y);
@@ -410,6 +433,12 @@ export class BoxingGraph {
     }
 
     if (fighter.is_downed) {
+      if (this.activePunch !== null) {
+        this.activePunch.fadeOut(0.06);
+        this.activePunch = null;
+      }
+      this.actionId = null;
+      this.predictedId = null;
       if (this.downState === "up") {
         this.downState = "falling";
         this.fallAge = 0;
@@ -431,7 +460,10 @@ export class BoxingGraph {
         getup.fadeIn(0.05).play();
       } else {
         this.riseAge += dt;
-        if (this.riseAge > 0.9) this.downState = "up";
+        if (this.riseAge > 0.9) {
+          this.downState = "up";
+          this.boxer.actions.get("getup")!.fadeOut(0.12);
+        }
       }
     }
     if (this.downState === "falling" && this.fallAge > 1.3) this.downState = "down";
@@ -442,7 +474,7 @@ export class BoxingGraph {
     this.lockFeet(fighter, moving);
 
     const opponentBlood = Math.min(1, (opponent.trauma.bleeding + opponent.trauma.left_cut + opponent.trauma.right_cut) / 620) * (blood === "off" ? 0 : blood === "reduced" ? 0.45 : 1);
-    boxer.gloveGear.color.setHex(0x14406b).lerp(new THREE.Color(0x5c0a0e), opponentBlood * 0.85);
+    boxer.gloveGear.color.copy(boxer.gearBaseColor).lerp(BLOODED_GLOVE_COLOR, opponentBlood * 0.85);
     applyTraumaToOverlays(boxer.trauma, fighter, opponentBlood, blood);
     boxer.skin.clearcoat = 0.25 + (1 - fighter.stamina / Math.max(1, fighter.maximum_stamina)) * 0.4;
     void time;
@@ -450,7 +482,7 @@ export class BoxingGraph {
   }
 
   private applyAimCorrection(fighter: FighterSnapshot, opponent: FighterSnapshot): void {
-    if (this.activePunch === null || this.actionId === null) return;
+    if (this.activePunch === null || this.actionId === null || fighter.is_downed) return;
     const punchClass = fighter.action;
     if (punchClass === null) return;
     const timing = punchTiming(punchClass, fighter.action_target ?? "head", fighter.action_power ?? "normal");
@@ -476,18 +508,18 @@ export class BoxingGraph {
     const overshoot = correction.length() - 0.09;
     if (overshoot <= 0.01) return;
     correction.setLength(Math.min(0.42, overshoot));
-    const targetWorld = gloveWorld.clone().add(correction);
-    const shoulderWorld = shoulderBone.getWorldPosition(new THREE.Vector3());
+    const targetWorld = this.aimTarget.copy(gloveWorld).add(correction);
+    const shoulderWorld = shoulderBone.getWorldPosition(this.aimShoulder);
     const upper = 0.3;
-    const fore = 0.36;
-    const to = targetWorld.clone().sub(shoulderWorld);
+    const fore = 0.3;
+    const to = this.aimTo.copy(targetWorld).sub(shoulderWorld);
     const distance = THREE.MathUtils.clamp(to.length(), 0.12, upper + fore - 0.015);
     to.normalize();
     const a = (upper * upper - fore * fore + distance * distance) / (2 * distance);
     const h = Math.sqrt(Math.max(0.0001, upper * upper - a * a));
-    const pole = new THREE.Vector3(0.9 * (gloveName === "gloveL" ? 1 : -1), -1, -0.25).applyQuaternion(this.boxer.root.quaternion);
-    const bend = pole.addScaledVector(to, -pole.dot(to)).normalize();
-    const elbowWorld = shoulderWorld.clone().addScaledVector(to, a).addScaledVector(bend, h);
+    const pole = this.aimPole.set(0.9 * (gloveName === "gloveL" ? 1 : -1), -1, -0.25).applyQuaternion(this.boxer.root.quaternion);
+    const bend = this.aimBend.copy(pole).addScaledVector(to, -pole.dot(to)).normalize();
+    const elbowWorld = this.aimElbow.copy(shoulderWorld).addScaledVector(to, a).addScaledVector(bend, h);
     aimBoneLocal(shoulderBone, shoulderWorld, elbowWorld);
     shoulderBone.updateMatrixWorld(true);
     aimBoneLocal(elbowBone, elbowWorld, targetWorld);
@@ -500,7 +532,7 @@ export class BoxingGraph {
       const hip = this.boxer.bone(`hip${side}`);
       if (ankle === null || knee === null || hip === null) continue;
       this.boxer.root.updateMatrixWorld(true);
-      const world = ankle.getWorldPosition(new THREE.Vector3());
+      const world = ankle.getWorldPosition(this.lockAnkle);
       const key = side === "L" ? "plantedL" : "plantedR";
       let planted = this[key];
       if (moving || fighter.is_downed || world.y > 0.085) {
@@ -518,20 +550,20 @@ export class BoxingGraph {
         continue;
       }
       if (flatDrift < 0.008) continue;
-      const pinned = new THREE.Vector3(planted.x, world.y, planted.z);
-      const hipWorld = hip.getWorldPosition(new THREE.Vector3());
+      const pinned = this.lockPinned.set(planted.x, world.y, planted.z);
+      const hipWorld = hip.getWorldPosition(this.lockHip);
       const thigh = 0.44;
-      const shin = 0.47;
-      const to = pinned.clone().sub(hipWorld);
+      const shin = 0.44;
+      const to = this.lockTo.copy(pinned).sub(hipWorld);
       const distance = THREE.MathUtils.clamp(to.length(), 0.15, thigh + shin - 0.02);
       to.normalize();
       const a = (thigh * thigh - shin * shin + distance * distance) / (2 * distance);
       const h = Math.sqrt(Math.max(0.0001, thigh * thigh - a * a));
-      const pole = new THREE.Vector3(0, 0.2, 1).applyQuaternion(this.boxer.root.quaternion);
-      const bend = pole.addScaledVector(to, -pole.dot(to));
+      const pole = this.lockPole.set(0, 0.2, 1).applyQuaternion(this.boxer.root.quaternion);
+      const bend = this.lockBend.copy(pole).addScaledVector(to, -pole.dot(to));
       if (bend.lengthSq() < 0.0001) bend.set(0, 0, 1);
       bend.normalize();
-      const kneeWorld = hipWorld.clone().addScaledVector(to, a).addScaledVector(bend, h);
+      const kneeWorld = this.lockKnee.copy(hipWorld).addScaledVector(to, a).addScaledVector(bend, h);
       aimBoneLocal(hip, hipWorld, kneeWorld);
       hip.updateMatrixWorld(true);
       aimBoneLocal(knee, kneeWorld, pinned);

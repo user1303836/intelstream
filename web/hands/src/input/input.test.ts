@@ -1,3 +1,4 @@
+import { SharedActionIntent } from "./action-buffer";
 import { InputController } from "./input";
 
 const button = (pressed = false): GamepadButton => ({ pressed, touched: pressed, value: pressed ? 1 : 0 });
@@ -58,5 +59,26 @@ describe("combined input intent", () => {
     window.dispatchEvent(key("keydown", "KeyQ"));
     expect(input.frame()).toMatchObject({ defense: "guard_high", actions: [] });
     input.destroy();
+  });
+});
+
+describe("action instance ids", () => {
+  it("preserves the original id and notification when identical intent coalesces", () => {
+    const buffer = new SharedActionIntent(1);
+    const seen: string[] = [];
+    buffer.setListener((action) => seen.push(action.id ?? ""));
+    buffer.push("keyboard", { kind: "punch", hand: "left", class: "jab", target: "head", power: "normal" });
+    buffer.push("gamepad", { kind: "punch", hand: "left", class: "jab", target: "head", power: "normal" });
+    expect(seen).toEqual(["c1"]);
+    expect(buffer.drain(1)[0]!.id).toBe("c1");
+  });
+
+  it("assigns fresh ids to differing intents and notifies", () => {
+    const buffer = new SharedActionIntent(1);
+    const seen: string[] = [];
+    buffer.setListener((action) => seen.push(action.id ?? ""));
+    buffer.push("keyboard", { kind: "punch", hand: "left", class: "jab", target: "head", power: "normal" });
+    buffer.push("keyboard", { kind: "punch", hand: "right", class: "jab", target: "head", power: "normal" });
+    expect(seen).toEqual(["c1", "c2"]);
   });
 });

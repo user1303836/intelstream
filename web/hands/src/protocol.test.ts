@@ -1,7 +1,7 @@
 import { decodeBootstrap, decodeServerFrame, decodeToken, encodeInput, ProtocolError } from "./protocol";
 import { envelope, publicPlayers, snapshot } from "./test/fixtures";
 
-describe("strict protocol v1", () => {
+describe("strict protocol v2", () => {
   it("decodes every control envelope and a populated final", () => {
     const messages = [
       { version: 2, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [publicPlayers[0]], server_tick: 0, next_sequence: 0, reconnect_ticket: "secret-ticket" },

@@ -393,7 +393,7 @@ class HandsServer:
         if self.dev_mode:
             routes.extend(
                 [
-                    web.get("/hands/lab", self._index),
+                    web.get("/hands/lab", self._lab_redirect),
                     web.get("/hands/replays/{name}", self._lab_replay),
                 ]
             )
@@ -794,6 +794,10 @@ class HandsServer:
     async def _index(self, _request: web.Request) -> web.Response:
         return self._static_response("index.html")
 
+    @staticmethod
+    async def _lab_redirect(_request: web.Request) -> web.Response:
+        raise web.HTTPFound("/?lab=1")
+
     async def _lab_replay(self, request: web.Request) -> web.Response:
         if not self.dev_mode:
             raise web.HTTPNotFound()
@@ -803,8 +807,12 @@ class HandsServer:
         stem = name[: -len(".json")]
         if not stem or not all(character.isalnum() or character in "-_" for character in stem):
             raise web.HTTPNotFound()
-        candidate = Path.cwd() / "web" / "hands" / "replays" / name
-        if not candidate.is_file():
+        candidates = [
+            Path.cwd() / "web" / "hands" / "replays" / name,
+            Path(str(self.static_root)).parents[2] / "web" / "hands" / "replays" / name,
+        ]
+        candidate = next((path for path in candidates if path.is_file()), None)
+        if candidate is None:
             raise web.HTTPNotFound()
         return web.Response(body=candidate.read_bytes(), content_type="application/json")
 

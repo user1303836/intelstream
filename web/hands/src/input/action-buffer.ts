@@ -35,13 +35,14 @@ export class SharedActionIntent {
 
   push(source: ActionSource, action: SemanticAction): void {
     if (this.maximum < 1) return;
-    const identified: SemanticAction = { ...action, id: `c${(this.counter += 1)}` };
     const latest = this.queue.at(-1);
-    if (latest !== undefined && sameAction(latest.action, identified)) {
+    if (latest !== undefined && sameAction(latest.action, action)) {
+      // Coalesced repeat: preserve the original instance id so the running
+      // prediction reconciles with the authoritative echo.
       latest.source = source;
-      latest.action = identified;
       return;
     }
+    const identified: SemanticAction = { ...action, id: `c${(this.counter += 1)}` };
     const overflow = this.queue.length - this.maximum + 1;
     if (overflow > 0) this.queue.splice(0, overflow);
     this.queue.push({ action: identified, source });

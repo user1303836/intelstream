@@ -98,3 +98,9 @@ describe("skinned GLB humanoid and animation graph", () => {
     boxer.dispose();
   });
 });
+
+it("embedded GLB matches its recorded sha256", async () => {
+  const { createHash } = await import("node:crypto");
+  const { BOXER_GLB_BASE64, BOXER_GLB_SHA256 } = await import("../assets/boxer-glb");
+  expect(createHash("sha256").update(BOXER_GLB_BASE64).digest("hex")).toBe(BOXER_GLB_SHA256);
+});

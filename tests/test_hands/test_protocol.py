@@ -258,3 +258,33 @@ def test_snapshot_encoding_is_required_and_redacted_per_viewer() -> None:
         snapshot_for_viewer(snapshot, "unknown-player")
     with pytest.raises(TypeError):
         encode_snapshot(snapshot)
+
+
+def test_client_action_id_validated_and_round_trips() -> None:
+    payload = valid_payload()
+    payload["actions"] = [
+        {
+            "kind": "punch",
+            "hand": "left",
+            "class": "jab",
+            "target": "head",
+            "power": "normal",
+            "id": "c17",
+        }
+    ]
+    command = parse_client_input(json.dumps(payload), server_tick=10)
+    action = command.actions[0]
+    assert isinstance(action, PunchAction)
+    assert action.client_action_id == "c17"
+    encoded = encode_client_input(command)
+    reparsed = parse_client_input(encoded, server_tick=11)
+    assert isinstance(reparsed.actions[0], PunchAction)
+    assert reparsed.actions[0].client_action_id == "c17"
+
+    for bad in ["has space", "emoji\xe9", "x" * 33, ""]:
+        payload = valid_payload()
+        payload["actions"] = [
+            {"kind": "punch", "hand": "left", "class": "jab", "target": "head", "id": bad}
+        ]
+        with pytest.raises(ProtocolError, match="action id"):
+            parse_client_input(json.dumps(payload), server_tick=10)

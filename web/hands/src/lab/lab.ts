@@ -99,7 +99,8 @@ export class LabApp {
   async start(): Promise<void> {
     const params = new URLSearchParams(window.location.search);
     const replayName = params.get("replay") ?? "golden";
-    const response = await fetch(`/replays/${replayName}.json`);
+    let response = await fetch(`/replays/${replayName}.json`);
+    if (!response.ok) response = await fetch(`/hands/replays/${replayName}.json`);
     if (!response.ok) throw new Error(`replay_load_failed:${response.status}`);
     this.replay = (await response.json()) as ReplayDocument;
     await loadBoxerGlb();

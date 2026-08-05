@@ -153,17 +153,22 @@ export class FightRenderer {
   private ensureGraphs(): void {
     if (this.glbLoading || this.graphs !== null) return;
     this.glbLoading = true;
-    this.graphsReady = loadBoxerGlb().then((gltf) => {
-      if (this.destroyed) return;
-      const first = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
-      const second = new SkinnedBoxer(gltf, { skin: 0x6e4128, gear: 0xb91c1c });
-      this.graphs = [new BoxingGraph(first, this.mapping), new BoxingGraph(second, this.mapping)];
-      this.scene.add(first.root, second.root);
-      for (const boxer of this.boxers) {
-        this.scene.remove(boxer.root);
-        disposeBoxer(boxer);
-      }
-    });
+    this.graphsReady = loadBoxerGlb()
+      .then((gltf) => {
+        if (this.destroyed) return;
+        const first = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
+        const second = new SkinnedBoxer(gltf, { skin: 0x6e4128, gear: 0xb91c1c });
+        this.graphs = [new BoxingGraph(first, this.mapping), new BoxingGraph(second, this.mapping)];
+        this.scene.add(first.root, second.root);
+        for (const boxer of this.boxers) {
+          this.scene.remove(boxer.root);
+          disposeBoxer(boxer);
+        }
+      })
+      .catch((error: unknown) => {
+        this.glbLoading = false;
+        console.error("boxer_glb_load_failed", error);
+      });
   }
 
   get ready(): Promise<void> {
@@ -234,14 +239,21 @@ export class FightRenderer {
       const targetIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.target_id);
       const actorIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.actor_id);
       if (["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown"].includes(event.kind)) {
-        const actor = actorIndex >= 0 ? snapshot.fighters[actorIndex]! : null;
+        // Block-family events name the defender as actor; the puncher (whose
+        // contact tick matters) is the event target for those kinds.
+        const puncher = event.kind === "block" || event.kind === "perfect_block"
+          ? (targetIndex >= 0 ? snapshot.fighters[targetIndex]! : null)
+          : (actorIndex >= 0 ? snapshot.fighters[actorIndex]! : null);
         this.pendingContacts.push({
           event,
-          contactTick: actor?.action_contact_tick ?? event.tick,
+          contactTick: puncher?.action_contact_tick ?? event.tick,
           targetIndex,
           actorIndex,
         });
+      } else if (event.kind === "bleed") {
+        this.effects.addEvent(event, this.tmpA, this.settings().reducedMotion);
       }
+      if (snapshot.result !== null) this.fireContacts(Number.MAX_SAFE_INTEGER);
     }
   }
 

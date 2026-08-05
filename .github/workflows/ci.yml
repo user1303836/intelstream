@@ -73,6 +73,9 @@ jobs:
       - name: Run tests
         run: uv run pytest --cov=intelstream --cov-report=xml --cov-report=term-missing
 
+      - name: Verify golden replay determinism
+        run: uv run python scripts/hands_replay.py --check
+
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7
         with:
