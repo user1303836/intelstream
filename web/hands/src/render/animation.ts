@@ -1,6 +1,7 @@
 import * as THREE from "three";
+import { punchTiming, totalTicks } from "../manifest";
 import type { BloodLevel } from "../settings";
-import type { FighterSnapshot, Hand, Power, PunchClass, Target } from "../types";
+import type { FighterSnapshot, Hand, Power, PunchClass, SemanticAction, Target } from "../types";
 import { aimBone, solveArm, type BoxerRig } from "./boxer";
 import type { WorldMapping } from "./world";
 
@@ -11,20 +12,38 @@ const GUARD_LOW_R = new THREE.Vector3(-0.1, 0.04, 0.21);
 const RELAXED_L = new THREE.Vector3(0.14, 0.14, 0.32);
 const RELAXED_R = new THREE.Vector3(-0.09, 0.22, 0.21);
 
-const PUNCH_DURATION: Record<PunchClass, number> = { jab: 0.26, straight: 0.42, hook: 0.5, uppercut: 0.55 };
 const HEAD_Y = 0.33;
 const BODY_Y = -0.02;
 
-function punchEnvelope(kind: PunchClass, t: number): { windup: number; extend: number } {
+interface PhaseEnvelope {
+  readonly windup: number;
+  readonly extend: number;
+}
+
+function punchEnvelope(kind: PunchClass, t: number, startupFrac: number, activeFrac: number): PhaseEnvelope {
+  const contact = startupFrac;
+  const recoverStart = Math.min(0.99, startupFrac + activeFrac);
   switch (kind) {
     case "jab":
-      return { windup: smoothstep(0, 0.12, t) * (1 - smoothstep(0.1, 0.3, t)), extend: smoothstep(0.08, 0.3, t) * (1 - smoothstep(0.42, 0.82, t)) };
+      return {
+        windup: smoothstep(0, contact * 0.5, t) * (1 - smoothstep(contact * 0.5, contact, t)),
+        extend: smoothstep(contact * 0.3, contact, t) * (1 - smoothstep(recoverStart, recoverStart + (1 - recoverStart) * 0.55, t)),
+      };
     case "straight":
-      return { windup: smoothstep(0, 0.2, t) * (1 - smoothstep(0.16, 0.45, t)), extend: smoothstep(0.18, 0.5, t) * (1 - smoothstep(0.68, 1, t)) };
+      return {
+        windup: smoothstep(0, contact * 0.6, t) * (1 - smoothstep(contact * 0.6, contact, t)),
+        extend: smoothstep(contact * 0.45, contact, t) * (1 - smoothstep(recoverStart, recoverStart + (1 - recoverStart) * 0.7, t)),
+      };
     case "hook":
-      return { windup: smoothstep(0, 0.22, t) * (1 - smoothstep(0.18, 0.5, t)), extend: smoothstep(0.2, 0.52, t) * (1 - smoothstep(0.66, 1, t)) };
+      return {
+        windup: smoothstep(0, contact * 0.7, t) * (1 - smoothstep(contact * 0.7, contact, t)),
+        extend: smoothstep(contact * 0.35, contact * 0.85, t) * (1 - smoothstep(recoverStart, recoverStart + (1 - recoverStart) * 0.75, t)),
+      };
     case "uppercut":
-      return { windup: smoothstep(0, 0.26, t) * (1 - smoothstep(0.22, 0.55, t)), extend: smoothstep(0.24, 0.58, t) * (1 - smoothstep(0.7, 1, t)) };
+      return {
+        windup: smoothstep(0, contact * 0.75, t) * (1 - smoothstep(contact * 0.7, contact, t)),
+        extend: smoothstep(contact * 0.5, contact, t) * (1 - smoothstep(recoverStart, recoverStart + (1 - recoverStart) * 0.75, t)),
+      };
   }
 }
 
@@ -65,6 +84,8 @@ const scratchFinalR = new THREE.Vector3();
 const scratchPunch = new THREE.Vector3();
 const scratchMixed = new THREE.Vector3();
 const scratchWindup = new THREE.Vector3();
+const scratchAim = new THREE.Vector3();
+const scratchAimWorld = new THREE.Vector3();
 const scratchQuat = new THREE.Quaternion();
 
 const BLOOD_CUT_SCALE: Record<BloodLevel, number> = { full: 1, reduced: 0.45, off: 0 };
@@ -77,8 +98,22 @@ export class BoxerAnimator {
   private punchHand: Hand = "left";
   private punchTargetKind: Target = "head";
   private punchPower: Power = "normal";
-  private activeAction: PunchClass | null = null;
+  private actionId: string | null = null;
+  private actionStartTick = 0;
+  private actionTotalTicks = 1;
+  private actionStartupFrac = 0.33;
+  private actionActiveFrac = 0.1;
+  private completedActionId: string | null = null;
+  private opponentDrop = 0;
+  private frozenTicks = 0;
+  private lastAgeTicks = 0;
+  private predictedId: string | null = null;
+  private predictedAtSeconds = -1;
+  private predictedTotalTicks = 1;
+  private predictionExpiredTicks = 0;
   private downAmount = 0;
+  private rootX: number | null = null;
+  private rootZ = 0;
   private reactionT = 1;
   private reactionDirection = 1;
   private reactionPower = 0;
@@ -122,29 +157,112 @@ export class BoxerAnimator {
     this.hitstop = Math.max(this.hitstop, blocked ? 0.045 : 0.078);
   }
 
-  update(fighter: FighterSnapshot, opponent: FighterSnapshot, dt: number, time: number, reducedMotion: boolean, blood: BloodLevel = "full"): void {
+  predict(action: SemanticAction, timeSeconds: number, tickRate: number): void {
+    if (action.kind !== "punch") return;
+    if (action.id === undefined) return;
+    this.predictedId = action.id;
+    this.predictedAtSeconds = timeSeconds;
+    this.predictionExpiredTicks = 0;
+    this.punchKind = action.class;
+    this.punchHand = action.hand;
+    this.punchTargetKind = action.target;
+    this.punchPower = action.power;
+    const timing = punchTiming(action.class, action.target, action.power);
+    this.predictedTotalTicks = totalTicks(timing);
+    this.actionStartupFrac = timing.startup / this.predictedTotalTicks;
+    this.actionActiveFrac = timing.active / this.predictedTotalTicks;
+    if (this.actionId === null || this.punchT > 0.45) {
+      this.punchT = 0;
+      this.frozenTicks = 0;
+      this.lastAgeTicks = 0;
+    }
+  }
+
+  private beginAuthoritative(fighter: FighterSnapshot, sampledTick: number, timeSeconds: number): void {
+    const matchedPrediction = this.predictedId !== null && fighter.action_id === this.predictedId;
+    this.actionId = fighter.action_id;
+    this.actionStartTick = fighter.action_start_tick;
+    this.actionTotalTicks = Math.max(
+      1,
+      fighter.action_startup_ticks + fighter.action_active_ticks + fighter.action_recovery_ticks,
+    );
+    this.actionStartupFrac = fighter.action_startup_ticks / this.actionTotalTicks;
+    this.actionActiveFrac = fighter.action_active_ticks / this.actionTotalTicks;
+    this.punchKind = fighter.action;
+    this.punchHand = fighter.action_hand ?? (fighter.stance === "orthodox" ? "left" : "right");
+    this.punchTargetKind = fighter.action_target ?? "head";
+    this.punchPower = fighter.action_power ?? "normal";
+    if (matchedPrediction) {
+      const predictedAgeTicks = (timeSeconds - this.predictedAtSeconds) * 30;
+      const authoritativeAgeTicks = sampledTick - fighter.action_start_tick;
+      const drift = predictedAgeTicks - authoritativeAgeTicks;
+      if (Math.abs(drift) > 1) {
+        this.punchT = Math.max(0, Math.min(1, authoritativeAgeTicks / this.actionTotalTicks));
+        this.frozenTicks = 0;
+      }
+      this.predictedId = null;
+    } else {
+      this.punchT = Math.max(0, Math.min(1, (sampledTick - fighter.action_start_tick) / this.actionTotalTicks));
+      this.frozenTicks = 0;
+      this.lastAgeTicks = this.punchT * this.actionTotalTicks;
+    }
+  }
+
+  update(fighter: FighterSnapshot, opponent: FighterSnapshot, dt: number, time: number, reducedMotion: boolean, blood: BloodLevel = "full", sampledTick = 0): void {
     const rig = this.rig;
     const mirror = fighter.stance === "orthodox" ? 1 : -1;
 
     const worldX = this.mapping.x(fighter.x);
     const worldZ = this.mapping.z(fighter.y);
+    if (this.rootX === null) {
+      this.rootX = worldX;
+      this.rootZ = worldZ;
+    }
+    const maxStep = 0.05;
+    const rootDx = THREE.MathUtils.clamp(worldX - this.rootX, -maxStep, maxStep);
+    const rootDz = THREE.MathUtils.clamp(worldZ - this.rootZ, -maxStep, maxStep);
+    this.rootX += rootDx;
+    this.rootZ += rootDz;
     const targetYaw = Math.atan2(this.mapping.x(opponent.x) - worldX, (this.mapping.z(opponent.y) - worldZ) * 0.45);
     this.yaw = smoothAngle(this.yaw, targetYaw, 7, dt);
 
-    if (fighter.action !== this.activeAction) {
-      if (fighter.action !== null) {
-        this.punchT = 0;
-        this.punchKind = fighter.action;
-        this.punchHand = fighter.action_hand ?? (fighter.stance === "orthodox" ? "left" : "right");
-        this.punchTargetKind = fighter.action_target ?? "head";
-        this.punchPower = fighter.action_power ?? "normal";
-      }
-      this.activeAction = fighter.action;
+    if (fighter.action_id !== null && fighter.action_id !== this.actionId && fighter.action_id !== this.completedActionId) {
+      this.beginAuthoritative(fighter, sampledTick, time);
     }
-    const duration = this.punchKind === null ? 1 : PUNCH_DURATION[this.punchKind] * (this.punchPower === "power" ? 1.3 : 1);
-    const punchDt = this.hitstop > 0 ? 0 : dt;
-    this.hitstop = Math.max(0, this.hitstop - dt);
-    this.punchT = Math.min(1, this.punchT + punchDt / duration);
+    if (fighter.action_id === null) {
+      this.actionId = null;
+      this.completedActionId = null;
+    }
+    if (this.predictedId !== null) {
+      this.predictionExpiredTicks += dt * 30;
+      if (this.predictionExpiredTicks > 10) {
+        this.predictedId = null;
+        this.punchT = 1;
+      }
+    }
+    const playingPrediction = this.predictedId !== null && this.actionId === null;
+    let ageTicks = 0;
+    let totalDuration = 1;
+    if (playingPrediction) {
+      ageTicks = (time - this.predictedAtSeconds) * 30 - this.frozenTicks;
+      totalDuration = this.predictedTotalTicks;
+    } else if (this.actionId !== null) {
+      ageTicks = sampledTick - this.actionStartTick - this.frozenTicks;
+      totalDuration = this.actionTotalTicks;
+    }
+    if (this.hitstop > 0) {
+      this.hitstop = Math.max(0, this.hitstop - dt);
+      this.frozenTicks += dt * 30;
+    }
+    if (playingPrediction || this.actionId !== null) {
+      this.punchT = Math.max(0, Math.min(1, ageTicks / totalDuration));
+      if (this.punchT >= 1 && this.actionId !== null) {
+        this.completedActionId = this.actionId;
+        this.actionId = null;
+      }
+    } else {
+      this.punchT = 1;
+    }
 
     const tired = 1 - fighter.stamina / Math.max(1, fighter.maximum_stamina);
     const speed = Math.hypot(fighter.velocity_x, fighter.velocity_y) * 0.006;
@@ -205,23 +323,25 @@ export class BoxerAnimator {
     let pivotPunchTarget = 0;
     let tuckTarget = 0;
     if (this.punchT < 1 && this.punchKind !== null) {
-      const { windup, extend } = punchEnvelope(this.punchKind, this.punchT);
+      const { windup, extend } = punchEnvelope(this.punchKind, this.punchT, this.actionStartupFrac, this.actionActiveFrac);
       // three.js: rotation.y > 0 brings the anatomical RIGHT shoulder forward.
       // The punching shoulder must rotate through the target line regardless of stance.
       const handTwist = this.punchHand === "left" ? -1 : 1;
       const bodyDip = this.punchTargetKind === "body" ? -0.09 * extend : 0;
       if (this.punchKind === "jab") {
         twistTarget = 0.14 * extend * handTwist;
-        stepTarget = 0.085 * extend;
+        stepTarget = 0.12 * extend;
         hipYawTarget = 0.06 * extend * handTwist;
         heelRearTarget = 0.3 * extend;
         tuckTarget = 0.15 * extend;
+        pitchTarget += 0.14 * extend;
       } else if (this.punchKind === "straight") {
         twistTarget = 0.38 * extend * handTwist;
         hipYawTarget = 0.32 * extend * handTwist;
         heelRearTarget = 0.5 * extend;
-        stepTarget = 0.06 * extend;
+        stepTarget = 0.12 * extend;
         tuckTarget = 0.1 * extend;
+        pitchTarget += 0.16 * extend;
       } else if (this.punchKind === "hook") {
         twistTarget = 0.34 * extend * handTwist;
         hipYawTarget = 0.3 * extend * handTwist;
@@ -253,7 +373,7 @@ export class BoxerAnimator {
     rig.root.rotation.set(0, rootYaw, 0);
     const stepForwardX = Math.sin(rootYaw) * this.kinStep * (1 - down);
     const stepForwardZ = Math.cos(rootYaw) * this.kinStep * (1 - down);
-    rig.root.position.set(worldX + stepForwardX, 0, worldZ + stepForwardZ);
+    rig.root.position.set(this.rootX + stepForwardX, 0, this.rootZ + stepForwardZ);
 
     const fallSide = this.reactionDirection >= 0 ? 1 : -1;
     rig.hips.position.y = 0.955 + stepBounce + (this.drop + this.kinDrop) * (1 - down) - down * 0.8 + this.landingSpring;
@@ -309,18 +429,32 @@ export class BoxerAnimator {
     }
 
     if (this.punchT < 1 && this.punchKind !== null && down < 0.85) {
-      const { windup, extend } = punchEnvelope(this.punchKind, this.punchT);
+      const { windup, extend } = punchEnvelope(this.punchKind, this.punchT, this.actionStartupFrac, this.actionActiveFrac);
       const scaledExtend = extend * (1 - down);
+      const dropTarget = opponent.is_downed ? -1.2 : opponent.defense === "weave" ? -0.24 : -0.03;
+      this.opponentDrop = smooth(this.opponentDrop, dropTarget, 4, dt);
+      scratchAimWorld.set(
+        this.mapping.x(opponent.x),
+        (this.punchTargetKind === "body" ? 1.2 : 1.62) + this.opponentDrop,
+        this.mapping.z(opponent.y),
+      );
+      const aim = rig.chest.worldToLocal(scratchAim.copy(scratchAimWorld));
       const punch = scratchPunch.copy(punchTarget(this.punchKind, this.punchTargetKind, this.punchPower));
-      if (this.punchKind === "hook") {
-        const sweep = smoothstep(0.3, 0.62, this.punchT);
+      if (this.punchKind === "jab" || this.punchKind === "straight") {
+        punch.x = aim.x * 0.92;
+        punch.y = aim.y;
+        punch.z = THREE.MathUtils.clamp(aim.z, 0.4, 0.8);
+      } else if (this.punchKind === "hook") {
+        const sweep = smoothstep(this.actionStartupFrac * 0.85, this.actionStartupFrac + this.actionActiveFrac * 0.75, this.punchT);
         const sideSign = this.punchHand === "left" ? 1 : -1;
-        punch.x = THREE.MathUtils.lerp(0.58 * sideSign, -0.3 * sideSign, sweep);
-        punch.z = 0.34 + 0.3 * Math.sin(sweep * Math.PI * 0.5);
+        punch.x = THREE.MathUtils.lerp(aim.x + 0.42 * sideSign, aim.x - 0.16 * sideSign, sweep);
+        punch.z = aim.z * (0.72 + 0.28 * Math.sin(sweep * Math.PI * 0.5));
+        punch.y = aim.y;
       } else if (this.punchKind === "uppercut") {
-        const rise = smoothstep(0.22, 0.6, this.punchT);
-        punch.y = THREE.MathUtils.lerp(-0.26, punch.y, rise);
-        punch.z = THREE.MathUtils.lerp(0.24, punch.z, rise);
+        const rise = smoothstep(this.actionStartupFrac * 0.7, this.actionStartupFrac + this.actionActiveFrac * 0.5, this.punchT);
+        punch.x = aim.x * 0.9;
+        punch.y = THREE.MathUtils.lerp(-0.26, aim.y + 0.04, rise);
+        punch.z = THREE.MathUtils.lerp(0.24, aim.z * 0.94, rise);
       }
       const windupOffset = scratchWindup.set(0, this.punchKind === "uppercut" ? -0.22 : -0.03, this.punchKind === "jab" ? -0.1 : -0.16).multiplyScalar(windup);
       const base = this.punchHand === "left" ? finalL : finalR;
@@ -329,8 +463,8 @@ export class BoxerAnimator {
       if (this.punchKind === "hook") other.set(-0.05, 0.3, 0.15);
       if (this.punchKind === "uppercut") other.y -= 0.08;
       const mixed = scratchMixed.copy(base).add(windupOffset).lerp(punch, scaledExtend);
-      if (this.punchPower === "power" && this.punchT > 0.5 && this.punchT < 0.68) {
-        const overshoot = (1 - Math.abs(this.punchT - 0.59) / 0.09) * 0.06;
+      if (this.punchPower === "power" && Math.abs(this.punchT - (this.actionStartupFrac + this.actionActiveFrac * 0.5)) < 0.06) {
+        const overshoot = (1 - Math.abs(this.punchT - (this.actionStartupFrac + this.actionActiveFrac * 0.5)) / 0.06) * 0.06;
         mixed.addScaledVector(punch, overshoot * scaledExtend);
       }
       base.copy(mixed);
@@ -350,7 +484,7 @@ export class BoxerAnimator {
 
     finalL.x *= mirror;
     finalR.x *= mirror;
-    const gloveRate = down > 0.05 ? 9 : 26;
+    const gloveRate = down > 0.05 ? 9 : this.punchT < 1 ? 34 : 26;
     this.gloveLCurrent.x = smooth(this.gloveLCurrent.x, finalL.x, gloveRate, dt);
     this.gloveLCurrent.y = smooth(this.gloveLCurrent.y, finalL.y, gloveRate, dt);
     this.gloveLCurrent.z = smooth(this.gloveLCurrent.z, finalL.z, gloveRate, dt);

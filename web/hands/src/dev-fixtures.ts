@@ -11,7 +11,7 @@ const base = (id: string): Draft => ({
     ? { head: 420, body: 640, left_eye: 430, right_eye: 210, left_cut: 330, right_cut: 170, swelling: 280, bleeding: 380 }
     : { head: 150, body: 260, left_eye: 120, right_eye: 60, left_cut: 90, right_cut: 20, swelling: 100, bleeding: 70 },
   knockdowns: 0, warnings: 0, deductions: 0, stunned_ticks: 0, is_downed: false,
-  action: null, action_hand: null, action_target: null, action_power: null, queued_actions: 0,
+  action: null, action_hand: null, action_target: null, action_power: null, action_id: null, action_key: null, action_start_tick: 0, action_startup_ticks: 0, action_active_ticks: 0, action_recovery_ticks: 0, action_contact_tick: null, queued_actions: 0,
   clinch_startup_ticks: 0, clinch_ticks: 0, is_foul_recovery_target: false, taunt_ticks: 0,
   get_up_prompt: null, get_up_meter: 0, get_up_required: 0, get_up_count: 0, get_up_window_start_tick: 0, get_up_window_end_tick: 0,
 });
@@ -65,7 +65,7 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       defender.defense = Math.floor(t / 6.4) % 2 === 0 ? "guard_high" : "none";
       if (cycle > 0.2 && cycle < 0.3) {
         eventId += 1;
-        events.push({ event_id: eventId, tick, kind: "hit", actor_id: attacker.player_id, target_id: defender.player_id, amount: 210, detail: `${punch}`, blood: 120, direction: attacker.facing });
+        events.push({ event_id: eventId, tick, kind: "hit", actor_id: attacker.player_id, target_id: defender.player_id, amount: 210, detail: `${punch}`, blood: 120, direction: attacker.facing, action_id: null });
         defender.stunned_ticks = 12;
       }
     }
@@ -79,7 +79,7 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       one.y = -30;
       if (knockdownCycle > 11 && knockdownCycle < 11.15) {
         eventId += 1;
-        events.push({ event_id: eventId, tick, kind: "knockdown", actor_id: one.player_id, target_id: two.player_id, amount: 420, detail: "knockdown", blood: 60, direction: 1 });
+        events.push({ event_id: eventId, tick, kind: "knockdown", actor_id: one.player_id, target_id: two.player_id, amount: 420, detail: "knockdown", blood: 60, direction: 1, action_id: null });
       }
     }
     const snapshot: EngineSnapshot = {

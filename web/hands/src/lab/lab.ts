@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { HURTBOXES } from "../manifest";
 import { FightRenderer } from "../render/renderer";
 import type { BloodLevel } from "../settings";
 import type { EngineSnapshot } from "../types";
@@ -223,6 +224,7 @@ export class LabApp {
     if (this.replay === null || this.renderer === null) return;
     this.drainLatencyQueue();
     this.renderer.labFrame(this.virtualTick / this.replay.tick_rate, render ?? this.renderOnSeek);
+    this.renderer.labFrame((this.virtualTick + 0.5) / this.replay.tick_rate, render ?? this.renderOnSeek);
     this.updateOverlays();
     const tick = this.replay.ticks[this.virtualTick];
     const phase = tick?.snapshot.payload.phase ?? "";
@@ -316,29 +318,31 @@ export class LabApp {
     };
     for (const entry of this.replay.ticks) {
       const contact = entry.snapshot.payload.events.find((event) => ["hit", "counter_hit", "block"].includes(event.kind));
-      if (contact === undefined || entry.attack_one === null) continue;
-      this.seek(entry.tick, false);
+      const actionHand = entry.snapshot.payload.fighters[0]!.action_hand;
+      if (contact === undefined || actionHand === null) continue;
+      const displayTick = Math.min(entry.tick + 1, this.replay.ticks.length - 1);
+      this.seek(displayTick, false);
       this.renderCurrentTick(false);
-      const glove = this.jointWorld(0, entry.attack_one.hand === "left" ? "gloveL" : "gloveR");
+      const glove = this.jointWorld(0, actionHand === "left" ? "gloveL" : "gloveR");
       const head = this.jointWorld(1, "head");
       const torso = this.jointWorld(1, "chest");
       if (glove !== null && head !== null && torso !== null) {
         metrics.contactAlignment.push({
           tick: entry.tick,
           kind: contact.kind,
-          gloveToHeadMeters: Number(glove.distanceTo(head).toFixed(4)),
-          gloveToTorsoMeters: Number(glove.distanceTo(torso).toFixed(4)),
+          gloveToHeadMeters: Number(Math.max(0, glove.distanceTo(head) - HURTBOXES.head.radius).toFixed(4)),
+          gloveToTorsoMeters: Number(Math.max(0, glove.distanceTo(torso) - HURTBOXES.torso.radius).toFixed(4)),
         });
       }
     }
     this.seek(0, false);
     let previousFeet: THREE.Vector3[] | null = null;
-    let previousRootX = 0;
+    let previousRootX: number | null = null;
     for (const entry of this.replay.ticks) {
       this.seek(entry.tick, false);
       this.renderCurrentTick(false);
       const rootX = this.renderer!.labRigs[0].root.position.x;
-      metrics.maxRootStepMeters = Math.max(metrics.maxRootStepMeters, Math.abs(rootX - previousRootX));
+      if (previousRootX !== null) metrics.maxRootStepMeters = Math.max(metrics.maxRootStepMeters, Math.abs(rootX - previousRootX));
       previousRootX = rootX;
       const fighter = entry.snapshot.payload.fighters[0]!;
       const speed = Math.hypot(fighter.velocity_x, fighter.velocity_y);

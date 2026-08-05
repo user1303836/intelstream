@@ -86,12 +86,14 @@ class PunchAction:
     punch_class: PunchClass
     target: Target
     power: Power = Power.NORMAL
+    client_action_id: str | None = field(default=None, compare=False)
     kind: ActionKind = field(default=ActionKind.PUNCH, init=False)
 
 
 @dataclass(frozen=True, slots=True)
 class MovementAction:
     kind: ActionKind
+    client_action_id: str | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         if self.kind in (ActionKind.PUNCH, ActionKind.FOUL):
@@ -101,6 +103,7 @@ class MovementAction:
 @dataclass(frozen=True, slots=True)
 class FoulAction:
     foul: Foul
+    client_action_id: str | None = field(default=None, compare=False)
     kind: ActionKind = field(default=ActionKind.FOUL, init=False)
 
 
@@ -154,6 +157,13 @@ class FighterSnapshot:
     action_hand: Hand | None
     action_target: Target | None
     action_power: Power | None
+    action_id: str | None
+    action_key: str | None
+    action_start_tick: int
+    action_startup_ticks: int
+    action_active_ticks: int
+    action_recovery_ticks: int
+    action_contact_tick: int | None
     queued_actions: int
     clinch_startup_ticks: int
     clinch_ticks: int
@@ -178,6 +188,7 @@ class CombatEvent:
     detail: str = ""
     blood: int = 0
     direction: int = 0
+    action_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,0 +1,127 @@
+{
+  "format": 1,
+  "tick_rate": 30,
+  "ring": {
+    "half_width": 500,
+    "half_height": 330,
+    "fighter_radius": 38
+  },
+  "limits": {
+    "max_stamina": 1000,
+    "max_conditioning": 1000,
+    "max_guard": 700,
+    "max_poise": 600
+  },
+  "action_buffer_ticks": 6,
+  "hitstop_ms": {
+    "hit": 78,
+    "block": 45
+  },
+  "fatigue_scaling": {
+    "startup_formula": "max(2, startup * 100 // fatigue - lead_jab_bonus)",
+    "recovery_formula": "max(4, recovery * 100 // fatigue)",
+    "lead_jab_bonus": 1,
+    "rear_straight_impact_bonus": 8
+  },
+  "punches": {
+    "jab": {
+      "startup": 4,
+      "active": 2,
+      "recovery": 7,
+      "reach": 150,
+      "lateral_arc": 42,
+      "impact": 34,
+      "stamina_cost": 42,
+      "whiff_cost": 18,
+      "guard_damage": 44,
+      "poise_damage": 35,
+      "combo_window": 7,
+      "startup_vulnerability": 2,
+      "recovery_vulnerability": 3
+    },
+    "straight": {
+      "startup": 6,
+      "active": 2,
+      "recovery": 10,
+      "reach": 168,
+      "lateral_arc": 38,
+      "impact": 52,
+      "stamina_cost": 65,
+      "whiff_cost": 28,
+      "guard_damage": 66,
+      "poise_damage": 58,
+      "combo_window": 8,
+      "startup_vulnerability": 4,
+      "recovery_vulnerability": 5
+    },
+    "hook": {
+      "startup": 7,
+      "active": 3,
+      "recovery": 12,
+      "reach": 126,
+      "lateral_arc": 92,
+      "impact": 64,
+      "stamina_cost": 78,
+      "whiff_cost": 36,
+      "guard_damage": 82,
+      "poise_damage": 72,
+      "combo_window": 9,
+      "startup_vulnerability": 5,
+      "recovery_vulnerability": 7
+    },
+    "uppercut": {
+      "startup": 8,
+      "active": 2,
+      "recovery": 13,
+      "reach": 108,
+      "lateral_arc": 54,
+      "impact": 72,
+      "stamina_cost": 88,
+      "whiff_cost": 44,
+      "guard_damage": 88,
+      "poise_damage": 84,
+      "combo_window": 10,
+      "startup_vulnerability": 6,
+      "recovery_vulnerability": 8
+    }
+  },
+  "variants": {
+    "body": {
+      "startup_add": 1,
+      "reach_min": 80,
+      "reach_sub": 14,
+      "lateral_arc_add": 8,
+      "impact_mul_num": 92,
+      "impact_mul_den": 100,
+      "stamina_cost_add": 4,
+      "whiff_cost_add": 3,
+      "poise_damage_mul_num": 72,
+      "poise_damage_mul_den": 100
+    },
+    "power": {
+      "startup_add": 2,
+      "active_add": 1,
+      "recovery_add": 3,
+      "reach_add": 5,
+      "impact_mul_num": 152,
+      "impact_mul_den": 100,
+      "stamina_cost_mul_num": 155,
+      "stamina_cost_mul_den": 100,
+      "whiff_cost_mul_num": 175,
+      "whiff_cost_mul_den": 100,
+      "guard_damage_mul_num": 145,
+      "guard_damage_mul_den": 100,
+      "poise_damage_mul_num": 145,
+      "poise_damage_mul_den": 100,
+      "startup_vulnerability_add": 2,
+      "recovery_vulnerability_add": 2
+    }
+  },
+  "hurtboxes": {
+    "head": { "radius": 0.13, "length": 0.16, "joint": "head", "offset_y": 0.12 },
+    "torso": { "radius": 0.21, "length": 0.34, "joint": "chest", "offset_y": 0.16 }
+  },
+  "hitbox": {
+    "glove_radius": 0.11
+  }
+}

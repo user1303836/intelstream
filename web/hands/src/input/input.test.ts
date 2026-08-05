@@ -26,13 +26,13 @@ describe("combined input intent", () => {
     window.dispatchEvent(key("keydown", "KeyF"));
     window.dispatchEvent(key("keyup", "KeyF"));
     current = pad([2]); poll(input);
-    expect(input.frame().actions).toEqual([{ kind: "punch", hand: "right", class: "hook", target: "head", power: "normal" }]);
+    expect(input.frame().actions).toEqual([{ kind: "punch", hand: "right", class: "hook", target: "head", power: "normal", id: "c2" }]);
 
     current = pad(); poll(input);
     current = pad([0]); poll(input);
     window.dispatchEvent(key("keydown", "KeyB"));
     window.dispatchEvent(key("keyup", "KeyB"));
-    expect(input.frame().actions).toEqual([{ kind: "clinch" }]);
+    expect(input.frame().actions).toEqual([{ kind: "clinch", id: "c4" }]);
     input.destroy();
   });
 

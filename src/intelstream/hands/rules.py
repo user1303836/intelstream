@@ -1,6 +1,17 @@
+import json
 from dataclasses import dataclass, replace
+from importlib import resources
+from typing import Any
 
 from intelstream.hands.types import Power, PunchClass, Target
+
+
+def _load_manifest() -> dict[str, Any]:
+    resource = resources.files("intelstream.hands").joinpath("combat-manifest.json")
+    return json.loads(resource.read_text())  # type: ignore[no-any-return]
+
+
+_MANIFEST = _load_manifest()
 
 TICKS_PER_SECOND = 30
 RING_HALF_WIDTH = 500
@@ -15,6 +26,25 @@ MAX_STAMINA = 1000
 MAX_CONDITIONING = 1000
 MAX_GUARD = 700
 MAX_POISE = 600
+
+
+def _manifest_check() -> None:
+    ring = _MANIFEST["ring"]
+    limits = _MANIFEST["limits"]
+    expected = {
+        "half_width": RING_HALF_WIDTH,
+        "half_height": RING_HALF_HEIGHT,
+        "fighter_radius": FIGHTER_RADIUS,
+    }
+    if dict(ring) != expected or _MANIFEST["tick_rate"] != TICKS_PER_SECOND:
+        raise RuntimeError("combat-manifest.json ring/tick_rate mismatch with rules.py")
+    if limits["max_stamina"] != MAX_STAMINA or limits["max_conditioning"] != MAX_CONDITIONING:
+        raise RuntimeError("combat-manifest.json limits mismatch with rules.py")
+    if limits["max_guard"] != MAX_GUARD or limits["max_poise"] != MAX_POISE:
+        raise RuntimeError("combat-manifest.json limits mismatch with rules.py")
+
+
+_manifest_check()
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,40 +65,55 @@ class PunchRule:
 
 
 _BASE_PUNCH_RULES: dict[PunchClass, PunchRule] = {
-    PunchClass.JAB: PunchRule(4, 2, 7, 150, 42, 34, 42, 18, 44, 35, 7, 2, 3),
-    PunchClass.STRAIGHT: PunchRule(6, 2, 10, 168, 38, 52, 65, 28, 66, 58, 8, 4, 5),
-    PunchClass.HOOK: PunchRule(7, 3, 12, 126, 92, 64, 78, 36, 82, 72, 9, 5, 7),
-    PunchClass.UPPERCUT: PunchRule(8, 2, 13, 108, 54, 72, 88, 44, 88, 84, 10, 6, 8),
+    PunchClass.JAB: PunchRule(**_MANIFEST["punches"]["jab"]),
+    PunchClass.STRAIGHT: PunchRule(**_MANIFEST["punches"]["straight"]),
+    PunchClass.HOOK: PunchRule(**_MANIFEST["punches"]["hook"]),
+    PunchClass.UPPERCUT: PunchRule(**_MANIFEST["punches"]["uppercut"]),
 }
+
+_VARIANTS = _MANIFEST["variants"]
 
 
 def _punch_variant(base: PunchRule, target: Target, power: Power) -> PunchRule:
     rule = base
     if target is Target.BODY:
+        variant = _VARIANTS["body"]
         rule = replace(
             rule,
-            startup=rule.startup + 1,
-            reach=max(80, rule.reach - 14),
-            lateral_arc=rule.lateral_arc + 8,
-            impact=rule.impact * 92 // 100,
-            stamina_cost=rule.stamina_cost + 4,
-            whiff_cost=rule.whiff_cost + 3,
-            poise_damage=rule.poise_damage * 72 // 100,
+            startup=rule.startup + variant["startup_add"],
+            reach=max(variant["reach_min"], rule.reach - variant["reach_sub"]),
+            lateral_arc=rule.lateral_arc + variant["lateral_arc_add"],
+            impact=rule.impact * variant["impact_mul_num"] // variant["impact_mul_den"],
+            stamina_cost=rule.stamina_cost + variant["stamina_cost_add"],
+            whiff_cost=rule.whiff_cost + variant["whiff_cost_add"],
+            poise_damage=rule.poise_damage
+            * variant["poise_damage_mul_num"]
+            // variant["poise_damage_mul_den"],
         )
     if power is Power.POWER:
+        variant = _VARIANTS["power"]
         rule = replace(
             rule,
-            startup=rule.startup + 2,
-            active=rule.active + 1,
-            recovery=rule.recovery + 3,
-            reach=rule.reach + 5,
-            impact=rule.impact * 152 // 100,
-            stamina_cost=rule.stamina_cost * 155 // 100,
-            whiff_cost=rule.whiff_cost * 175 // 100,
-            guard_damage=rule.guard_damage * 145 // 100,
-            poise_damage=rule.poise_damage * 145 // 100,
-            startup_vulnerability=rule.startup_vulnerability + 2,
-            recovery_vulnerability=rule.recovery_vulnerability + 2,
+            startup=rule.startup + variant["startup_add"],
+            active=rule.active + variant["active_add"],
+            recovery=rule.recovery + variant["recovery_add"],
+            reach=rule.reach + variant["reach_add"],
+            impact=rule.impact * variant["impact_mul_num"] // variant["impact_mul_den"],
+            stamina_cost=rule.stamina_cost
+            * variant["stamina_cost_mul_num"]
+            // variant["stamina_cost_mul_den"],
+            whiff_cost=rule.whiff_cost
+            * variant["whiff_cost_mul_num"]
+            // variant["whiff_cost_mul_den"],
+            guard_damage=rule.guard_damage
+            * variant["guard_damage_mul_num"]
+            // variant["guard_damage_mul_den"],
+            poise_damage=rule.poise_damage
+            * variant["poise_damage_mul_num"]
+            // variant["poise_damage_mul_den"],
+            startup_vulnerability=rule.startup_vulnerability + variant["startup_vulnerability_add"],
+            recovery_vulnerability=rule.recovery_vulnerability
+            + variant["recovery_vulnerability_add"],
         )
     return rule
 

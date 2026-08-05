@@ -222,7 +222,7 @@ async def test_bootstrap_token_origin_schema_media_and_no_store(
         bootstrap = await post_bootstrap(client, base, "instance", headers=headers)
         assert await bootstrap.json() == {
             "client_id": APP,
-            "protocol": 1,
+            "protocol": 2,
             "state": "oauth-state",
             "simulation": {
                 "tick_rate": 30,
@@ -318,7 +318,7 @@ async def test_websocket_requires_ticket_first_without_query_and_times_out(
         await ws.close()
 
         malformed = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
-        await malformed.send_json({"version": 1, "type": "authenticate", "ticket": "bad"})
+        await malformed.send_json({"version": 2, "type": "authenticate", "ticket": "bad"})
         message = await malformed.receive(timeout=1)
         assert json.loads(message.data)["code"] == "invalid_ticket"
         await malformed.close()
@@ -351,7 +351,7 @@ async def test_authenticated_room_admission_is_not_part_of_first_frame_timeout(
     )
     async with aiohttp.ClientSession() as client:
         socket = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
-        await socket.send_json({"version": 1, "type": "authenticate", "ticket": "valid"})
+        await socket.send_json({"version": 2, "type": "authenticate", "ticket": "valid"})
         await rooms.entered.wait()
         await asyncio.sleep(0.03)
         rooms.release.set()
@@ -390,7 +390,7 @@ async def test_welcome_ticket_is_issued_after_blocking_room_admission(
     server, _auth, base = await start_server(repository, auth=auth)
     async with aiohttp.ClientSession() as client:
         socket = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
-        await socket.send_json({"version": 1, "type": "authenticate", "ticket": "valid"})
+        await socket.send_json({"version": 2, "type": "authenticate", "ticket": "valid"})
         await admission_entered.wait()
         assert auth.ticket_counter == 0
         now = 2000.0
@@ -440,7 +440,7 @@ async def test_two_websockets_start_and_third_is_read_only_spectator(
         sockets = []
         for ticket in ("one", "two"):
             ws = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
-            await ws.send_json({"version": 1, "type": "authenticate", "ticket": ticket})
+            await ws.send_json({"version": 2, "type": "authenticate", "ticket": ticket})
             sockets.append(ws)
         async with asyncio.timeout(1):
             seen_ready = False
@@ -449,7 +449,7 @@ async def test_two_websockets_start_and_third_is_read_only_spectator(
                 if message.type == aiohttp.WSMsgType.TEXT:
                     seen_ready = json.loads(message.data)["type"] == "ready"
         third = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
-        await third.send_json({"version": 1, "type": "authenticate", "ticket": "three"})
+        await third.send_json({"version": 2, "type": "authenticate", "ticket": "three"})
         welcome = json.loads((await third.receive(timeout=1)).data)
         assert welcome["type"] == "welcome"
         assert welcome["role"] == "spectator"
@@ -734,11 +734,11 @@ async def test_per_caller_websocket_auth_slots_release_and_isolate_callers(
         assert caught.value.status == 503
 
         other = await client.ws_connect(f"{base}/api/hands/ws", headers=headers_two)
-        await other.send_json({"version": 1, "type": "authenticate", "ticket": "bad"})
+        await other.send_json({"version": 2, "type": "authenticate", "ticket": "bad"})
         assert json.loads((await other.receive(timeout=1)).data)["code"] == "invalid_ticket"
         await other.close()
 
-        await first.send_json({"version": 1, "type": "authenticate", "ticket": "bad"})
+        await first.send_json({"version": 2, "type": "authenticate", "ticket": "bad"})
         assert json.loads((await first.receive(timeout=1)).data)["code"] == "invalid_ticket"
         await first.close()
         replacement = await client.ws_connect(f"{base}/api/hands/ws", headers=headers_one)
@@ -788,13 +788,13 @@ async def test_concurrent_upstream_and_websocket_auth_are_bounded(
         with pytest.raises(aiohttp.WSServerHandshakeError) as caught:
             await client.ws_connect(f"{base}/api/hands/ws", headers=headers)
         assert caught.value.status == 503
-        await first_ws.send_json({"version": 1, "type": "authenticate", "ticket": "bad"})
+        await first_ws.send_json({"version": 2, "type": "authenticate", "ticket": "bad"})
         await first_ws.receive(timeout=1)
         await first_ws.close()
 
         auth.tickets["valid"] = AuthenticatedPlayer("one", GUILD, "room", "One", None)
         available = await client.ws_connect(f"{base}/api/hands/ws", headers=headers)
-        await available.send_json({"version": 1, "type": "authenticate", "ticket": "valid"})
+        await available.send_json({"version": 2, "type": "authenticate", "ticket": "valid"})
         welcome = await available.receive(timeout=1)
         assert json.loads(welcome.data)["type"] == "welcome"
         await available.close()
@@ -807,13 +807,13 @@ async def test_ticket_replay_does_not_replace_live_socket(repository: Repository
     server, _auth, base = await start_server(repository, auth=auth)
     async with aiohttp.ClientSession() as client:
         live = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
-        await live.send_json({"version": 1, "type": "authenticate", "ticket": "one-use"})
+        await live.send_json({"version": 2, "type": "authenticate", "ticket": "one-use"})
         welcome = json.loads((await live.receive(timeout=1)).data)
         assert welcome["type"] == "welcome"
         assert welcome["reconnect_ticket"].startswith("rotated-")
 
         replay = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
-        await replay.send_json({"version": 1, "type": "authenticate", "ticket": "one-use"})
+        await replay.send_json({"version": 2, "type": "authenticate", "ticket": "one-use"})
         error = json.loads((await replay.receive(timeout=1)).data)
         assert error["code"] == "invalid_ticket"
         await replay.close()
@@ -874,7 +874,7 @@ async def test_refreshed_ticket_survives_original_rotation_expiry(
     base = f"http://127.0.0.1:{server.bound_port}"
     async with aiohttp.ClientSession() as client:
         live = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
-        await live.send_json({"version": 1, "type": "authenticate", "ticket": initial_ticket})
+        await live.send_json({"version": 2, "type": "authenticate", "ticket": initial_ticket})
         welcome = json.loads((await live.receive(timeout=1)).data)
         original_rotation = welcome["reconnect_ticket"]
 
@@ -888,7 +888,7 @@ async def test_refreshed_ticket_survives_original_rotation_expiry(
         assert refreshed_ticket != original_rotation
         await live.send_json(
             {
-                "version": 1,
+                "version": 2,
                 "type": "ticket_ack",
                 "refresh_id": refreshed["refresh_id"],
             }
@@ -902,7 +902,7 @@ async def test_refreshed_ticket_survives_original_rotation_expiry(
 
         replacement = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
         await replacement.send_json(
-            {"version": 1, "type": "authenticate", "ticket": refreshed_ticket}
+            {"version": 2, "type": "authenticate", "ticket": refreshed_ticket}
         )
         replacement_welcome = json.loads((await replacement.receive(timeout=1)).data)
         assert replacement_welcome["type"] == "welcome"
@@ -927,9 +927,9 @@ async def test_unexpected_post_upgrade_failure_closes_with_generic_error(
     auth.tickets["valid"] = AuthenticatedPlayer("one", GUILD, "room", "One", None)
     async with aiohttp.ClientSession() as client:
         socket = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
-        await socket.send_json({"version": 1, "type": "authenticate", "ticket": "valid"})
+        await socket.send_json({"version": 2, "type": "authenticate", "ticket": "valid"})
         error = json.loads((await socket.receive(timeout=1)).data)
-        assert error == {"code": "internal_error", "type": "error", "version": 1}
+        assert error == {"code": "internal_error", "type": "error", "version": 2}
         assert socket.closed or (await socket.receive(timeout=1)).type in {
             aiohttp.WSMsgType.CLOSE,
             aiohttp.WSMsgType.CLOSED,

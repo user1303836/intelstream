@@ -38,6 +38,7 @@ from intelstream.hands.types import (
     FighterSnapshot,
     FinishMethod,
     FoulAction,
+    Hand,
     InputCommand,
     JudgeCard,
     MatchPhase,
@@ -105,6 +106,8 @@ class AttackState:
     age: int = 0
     resolved: bool = False
     combo_bonus: int = 0
+    start_tick: int = 0
+    contact_tick: int = 0
 
     @property
     def total_ticks(self) -> int:
@@ -164,6 +167,14 @@ class FighterState:
     held_input: InputCommand = field(default_factory=lambda: InputCommand(0, 0))
     pending_actions: list[SemanticAction] = field(default_factory=list)
     pending_action_expires_tick: int = 0
+    last_action_id: str = ""
+    last_action_key: str = ""
+    last_action_start_tick: int = -1
+    last_action_startup_ticks: int = 0
+    last_action_active_ticks: int = 0
+    last_action_recovery_ticks: int = 0
+    last_action_contact_tick: int = 0
+    last_action_until_tick: int = -1
     performance: RoundPerformance = field(default_factory=RoundPerformance)
     damage_dealt: int = 0
     movement_load: int = 0
@@ -447,7 +458,7 @@ class BoxingEngine:
             fighter.clinch_startup_ticks = 0
             fighter.pending_actions.clear()
             if not imminent_trade:
-                fighter.attack = None
+                self._retain_action(fighter)
                 return
 
         if fighter.evasion_ticks > 0:
@@ -474,9 +485,10 @@ class BoxingEngine:
             active_end = active_start + attack.rule.active
             if active_start <= attack.age < active_end and not attack.resolved:
                 attack.resolved = True
+                attack.contact_tick = self.tick
                 self._resolve_punch(fighter, opponent, attack)
             if fighter.stunned_ticks > 0 or attack.age >= attack.total_ticks:
-                fighter.attack = None
+                self._retain_action(fighter)
             return
 
         if fighter.taunt_ticks > 0:
@@ -546,15 +558,37 @@ class BoxingEngine:
             startup_vulnerability=base_rule.startup_vulnerability,
             recovery_vulnerability=base_rule.recovery_vulnerability,
         )
-        fighter.attack = AttackState(action, rule, combo_bonus=combo_bonus)
+        fighter.attack = AttackState(action, rule, combo_bonus=combo_bonus, start_tick=self.tick)
         fighter.last_punch = action
         fighter.combo_ticks = rule.startup + rule.active + rule.recovery + rule.combo_window
         self._emit(
             "punch_start",
             fighter.player_id,
             detail=f"{action.hand.value}:{action.punch_class.value}:{action.target.value}",
+            action_id=self._action_id(fighter, fighter.attack),
         )
         return True
+
+    @staticmethod
+    def _action_key(action: PunchAction) -> str:
+        return f"{action.punch_class.value}:{action.hand.value}:{action.target.value}:{action.power.value}"
+
+    def _action_id(self, fighter: FighterState, attack: AttackState) -> str:
+        return attack.action.client_action_id or f"{fighter.player_id}@{attack.start_tick}"
+
+    def _retain_action(self, fighter: FighterState) -> None:
+        attack = fighter.attack
+        if attack is None:
+            return
+        fighter.last_action_id = self._action_id(fighter, attack)
+        fighter.last_action_key = self._action_key(attack.action)
+        fighter.last_action_start_tick = attack.start_tick
+        fighter.last_action_startup_ticks = attack.rule.startup
+        fighter.last_action_active_ticks = attack.rule.active
+        fighter.last_action_recovery_ticks = attack.rule.recovery
+        fighter.last_action_contact_tick = attack.contact_tick if attack.resolved else 0
+        fighter.last_action_until_tick = self.tick + 15
+        fighter.attack = None
 
     def _resolve_punch(
         self, attacker: FighterState, defender: FighterState, attack: AttackState
@@ -580,7 +614,13 @@ class BoxingEngine:
         ):
             attacker.stamina = max(0, attacker.stamina - rule.whiff_cost)
             attacker.conditioning = max(0, attacker.conditioning - max(2, rule.whiff_cost // 10))
-            self._emit("whiff", attacker.player_id, defender.player_id, amount=rule.whiff_cost)
+            self._emit(
+                "whiff",
+                attacker.player_id,
+                defender.player_id,
+                amount=rule.whiff_cost,
+                action_id=self._action_id(attacker, attack),
+            )
             return
 
         if self._evades(defender, action, distance_squared, rule.reach, abs(dy)):
@@ -609,21 +649,37 @@ class BoxingEngine:
                 guard_damage //= 3
                 impact //= 8
                 defender.counter_ticks = COUNTER_WINDOW_TICKS
-                self._emit("perfect_block", defender.player_id, attacker.player_id)
+                self._emit(
+                    "perfect_block",
+                    defender.player_id,
+                    attacker.player_id,
+                    action_id=self._action_id(attacker, attack),
+                )
             else:
                 guard_leak = max(
                     18,
                     100 - defender.guard // 12 + (100 - defender.fatigue) // 2,
                 )
                 impact = impact * guard_leak // 100
-                self._emit("block", defender.player_id, attacker.player_id, amount=guard_damage)
+                self._emit(
+                    "block",
+                    defender.player_id,
+                    attacker.player_id,
+                    amount=guard_damage,
+                    action_id=self._action_id(attacker, attack),
+                )
             defender.guard = max(0, defender.guard - guard_damage)
             defender.performance.blocked_hits += 1
             if defender.guard == 0:
                 defender.stunned_ticks = max(defender.stunned_ticks, 8)
                 defender.stunned_at_tick = self.tick
                 defender.taunt_ticks = 0
-                self._emit("guard_break", attacker.player_id, defender.player_id)
+                self._emit(
+                    "guard_break",
+                    attacker.player_id,
+                    defender.player_id,
+                    action_id=self._action_id(attacker, attack),
+                )
         else:
             attacker.performance.clean_hits += 1
 
@@ -649,6 +705,7 @@ class BoxingEngine:
             detail=f"{action.punch_class.value}:{action.target.value}",
             blood=blood,
             direction=attacker.facing,
+            action_id=self._action_id(attacker, attack),
         )
 
         if self._qualifies_for_flash(attacker, defender, action, rule, counter, guarding):
@@ -798,8 +855,8 @@ class BoxingEngine:
         opponent.clinch_startup_ticks = 0
         fighter.clinch_ticks = CLINCH_TICKS
         opponent.clinch_ticks = CLINCH_TICKS
-        fighter.attack = None
-        opponent.attack = None
+        self._retain_action(fighter)
+        self._retain_action(opponent)
         fighter.pending_actions.clear()
         opponent.pending_actions.clear()
         self._emit("clinch", fighter.player_id, opponent.player_id)
@@ -1066,8 +1123,8 @@ class BoxingEngine:
         defender.knockdowns += 1
         attacker.performance.knockdowns += 1
         defender.poise = 0
-        defender.attack = None
-        attacker.attack = None
+        self._retain_action(defender)
+        self._retain_action(attacker)
         defender.pending_actions.clear()
         attacker.pending_actions.clear()
         defender.clinch_startup_ticks = 0
@@ -1193,6 +1250,7 @@ class BoxingEngine:
             fighter.clinch_startup_ticks = 0
             fighter.stunned_ticks = 0
             fighter.taunt_ticks = 0
+            fighter.last_action_until_tick = -1
         self.phase = MatchPhase.FIGHT
         self.phase_ticks_remaining = self.config.round_ticks
         self._emit("bell", detail="round_start")
@@ -1271,6 +1329,7 @@ class BoxingEngine:
         detail: str = "",
         blood: int = 0,
         direction: int = 0,
+        action_id: str | None = None,
     ) -> None:
         self._event_id += 1
         event = CombatEvent(
@@ -1283,6 +1342,7 @@ class BoxingEngine:
             detail=detail[:96],
             blood=max(0, min(100, blood)),
             direction=max(-1, min(1, direction)),
+            action_id=None if action_id is None else action_id[:32],
         )
         event_payload = json.dumps(
             _canonical(event), separators=(",", ":"), sort_keys=True
@@ -1313,6 +1373,45 @@ class BoxingEngine:
 
     def _fighter_snapshot(self, fighter: FighterState) -> FighterSnapshot:
         trauma = fighter.trauma
+        attack = fighter.attack
+        retained = attack is None and self.tick <= fighter.last_action_until_tick
+        if attack is not None:
+            action_id: str | None = self._action_id(fighter, attack)
+            action_key: str | None = self._action_key(attack.action)
+            action_start_tick = attack.start_tick
+            action_startup_ticks = attack.rule.startup
+            action_active_ticks = attack.rule.active
+            action_recovery_ticks = attack.rule.recovery
+            action_contact_tick: int | None = attack.contact_tick if attack.resolved else None
+            action_class: PunchClass | None = attack.action.punch_class
+            action_hand: Hand | None = attack.action.hand
+            action_target: Target | None = attack.action.target
+            action_power: Power | None = attack.action.power
+        elif retained:
+            action_id = fighter.last_action_id
+            action_key = fighter.last_action_key
+            action_start_tick = fighter.last_action_start_tick
+            action_startup_ticks = fighter.last_action_startup_ticks
+            action_active_ticks = fighter.last_action_active_ticks
+            action_recovery_ticks = fighter.last_action_recovery_ticks
+            action_contact_tick = fighter.last_action_contact_tick or None
+            parts = fighter.last_action_key.split(":")
+            action_class = PunchClass(parts[0]) if len(parts) == 4 else None
+            action_hand = Hand(parts[1]) if len(parts) == 4 else None
+            action_target = Target(parts[2]) if len(parts) == 4 else None
+            action_power = Power(parts[3]) if len(parts) == 4 else None
+        else:
+            action_id = None
+            action_key = None
+            action_start_tick = 0
+            action_startup_ticks = 0
+            action_active_ticks = 0
+            action_recovery_ticks = 0
+            action_contact_tick = None
+            action_class = None
+            action_hand = None
+            action_target = None
+            action_power = None
         return FighterSnapshot(
             player_id=fighter.player_id,
             x=fighter.x,
@@ -1342,10 +1441,17 @@ class BoxingEngine:
             deductions=fighter.deductions,
             stunned_ticks=fighter.stunned_ticks,
             is_downed=fighter.player_id == self._downed_id,
-            action=fighter.attack.action.punch_class if fighter.attack else None,
-            action_hand=fighter.attack.action.hand if fighter.attack else None,
-            action_target=fighter.attack.action.target if fighter.attack else None,
-            action_power=fighter.attack.action.power if fighter.attack else None,
+            action=action_class,
+            action_hand=action_hand,
+            action_target=action_target,
+            action_power=action_power,
+            action_id=action_id,
+            action_key=action_key,
+            action_start_tick=action_start_tick,
+            action_startup_ticks=action_startup_ticks,
+            action_active_ticks=action_active_ticks,
+            action_recovery_ticks=action_recovery_ticks,
+            action_contact_tick=action_contact_tick,
             queued_actions=len(fighter.pending_actions),
             clinch_startup_ticks=fighter.clinch_startup_ticks,
             clinch_ticks=fighter.clinch_ticks,
@@ -1394,6 +1500,7 @@ class BoxingEngine:
                         fighter.clinch_ticks,
                         fighter.combo_ticks,
                         fighter.taunt_ticks,
+                        fighter.last_action_until_tick,
                     ],
                     "attack": fighter.attack,
                     "last_punch": fighter.last_punch,
@@ -1406,6 +1513,15 @@ class BoxingEngine:
                         fighter.get_up_window_start_tick,
                         fighter.get_up_window_end_tick,
                         fighter.get_up_prompt_resolved,
+                    ],
+                    "last_action": [
+                        fighter.last_action_id,
+                        fighter.last_action_key,
+                        fighter.last_action_start_tick,
+                        fighter.last_action_startup_ticks,
+                        fighter.last_action_active_ticks,
+                        fighter.last_action_recovery_ticks,
+                        fighter.last_action_contact_tick,
                     ],
                     "last_sequence": fighter.last_sequence,
                     "held_input": fighter.held_input,

@@ -567,7 +567,7 @@ async def test_ticket_refresh_queue_coalesces_and_rejects_replaced_connection(
             "reconnect_ticket": "ticket-99",
             "refresh_id": "refresh-id-000099",
             "type": "ticket",
-            "version": 1,
+            "version": 2,
         }
     ]
 
@@ -765,7 +765,7 @@ async def test_one_of_two_disconnected_players_recovers_into_paused_state(
         "grace_ms": 22_750,
         "player_id": "two",
         "type": "paused",
-        "version": 1,
+        "version": 2,
     }
 
     two_socket = FakeSocket()
@@ -833,7 +833,7 @@ async def test_persistence_failure_errors_closes_and_unregisters(repository: Rep
     assert one.closed and two.closed
     for socket in (one, two):
         errors = [json.loads(message) for message in socket.messages if '"type":"error"' in message]
-        assert errors == [{"code": "persistence_failed", "type": "error", "version": 1}]
+        assert errors == [{"code": "persistence_failed", "type": "error", "version": 2}]
         assert all("database detail" not in message for message in socket.messages)
     await manager.close()
 

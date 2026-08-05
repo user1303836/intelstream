@@ -5,7 +5,7 @@ import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { EventDeduplicator, SnapshotBuffer } from "../interpolation";
 import type { BloodLevel, Settings } from "../settings";
-import type { EngineSnapshot, FinalMessage, PublicPlayer, SimulationInfo } from "../types";
+import type { CombatEvent, EngineSnapshot, FinalMessage, PublicPlayer, SemanticAction, SimulationInfo } from "../types";
 import { BoxerAnimator } from "./animation";
 import { buildArena, type BuiltArena } from "./arena";
 import { buildBoxer, buildReferee, disposeBoxer, type BoxerRig } from "./boxer";
@@ -67,6 +67,8 @@ export class FightRenderer {
   private final: FinalMessage | null = null;
   private reconnectMs = 0;
   private destroyed = false;
+  private readonly pendingContacts: Array<{ event: CombatEvent; contactTick: number; targetIndex: number; actorIndex: number }> = [];
+  onContact: ((event: CombatEvent) => void) | null = null;
   private readonly tmpA = new THREE.Vector3();
   private readonly tmpB = new THREE.Vector3();
   private readonly tmpHead = new THREE.Vector3();
@@ -182,6 +184,14 @@ export class FightRenderer {
     if (reduced) this.effects.clearDynamic();
   }
 
+  predictAction(action: SemanticAction): void {
+    const latest = this.buffer.latest();
+    if (latest === null || this.viewerId === null) return;
+    const index = latest.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
+    if (index < 0) return;
+    this.animators[index]!.predict(action, performance.now() / 1000, this.simulation.tick_rate);
+  }
+
   push(snapshot: EngineSnapshot): void {
     if (!this.buffer.push(snapshot)) return;
     for (const event of this.dedupe.accept(snapshot.events)) {
@@ -189,23 +199,46 @@ export class FightRenderer {
         ?? snapshot.fighters.find((fighter) => fighter.player_id === event.actor_id)
         ?? snapshot.fighters[0];
       this.tmpA.set(this.mapping.x(target.x), 0, this.mapping.z(target.y));
-      this.effects.addEvent(event, this.tmpA, this.settings().reducedMotion);
       if (event.kind === "knockdown") this.effects.pool(this.tmpA.x + (Math.random() - 0.5) * 0.2, this.tmpA.z + (Math.random() - 0.5) * 0.2, 1);
       const targetIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.target_id);
-      if (targetIndex >= 0 && ["hit", "counter_hit", "block", "knockdown"].includes(event.kind)) {
-        this.animators[targetIndex]!.impact({
-          direction: event.direction,
-          amount: event.kind === "block" ? event.amount * 0.35 : event.amount,
-          blocked: event.kind === "block",
+      const actorIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.actor_id);
+      if (["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown"].includes(event.kind)) {
+        const actor = actorIndex >= 0 ? snapshot.fighters[actorIndex]! : null;
+        this.pendingContacts.push({
+          event,
+          contactTick: actor?.action_contact_tick ?? event.tick,
+          targetIndex,
+          actorIndex,
         });
       }
-      const actorIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.actor_id);
+    }
+  }
+
+  private fireContacts(sampledTick: number): void {
+    for (let index = this.pendingContacts.length - 1; index >= 0; index -= 1) {
+      const pending = this.pendingContacts[index]!;
+      if (pending.contactTick > sampledTick) continue;
+      this.pendingContacts.splice(index, 1);
+      const { event, targetIndex, actorIndex } = pending;
+      const target = this.buffer.latest()?.fighters[targetIndex];
+      if (target !== undefined) {
+        this.tmpA.set(this.mapping.x(target.x), 0, this.mapping.z(target.y));
+        this.effects.addEvent(event, this.tmpA, this.settings().reducedMotion);
+      }
+      if (targetIndex >= 0 && ["hit", "counter_hit", "block", "perfect_block", "knockdown"].includes(event.kind)) {
+        this.animators[targetIndex]!.impact({
+          direction: event.direction,
+          amount: event.kind === "block" || event.kind === "perfect_block" ? event.amount * 0.35 : event.amount,
+          blocked: event.kind === "block" || event.kind === "perfect_block",
+        });
+      }
       // Engine emits block/perfect_block with the DEFENDER as actor; the
       // puncher to freeze is the event target for those kinds.
       const puncherIndex = event.kind === "block" || event.kind === "perfect_block" ? targetIndex : actorIndex;
       if (puncherIndex >= 0 && ["hit", "counter_hit", "block", "perfect_block", "guard_break"].includes(event.kind)) {
         this.animators[puncherIndex]!.landedHit(event.kind === "block" || event.kind === "perfect_block");
       }
+      this.onContact?.(event);
     }
   }
 
@@ -273,12 +306,13 @@ export class FightRenderer {
 
     const latest = this.buffer.latest();
     const snapshot = latest === null ? null : this.buffer.sample(latest.tick - 1);
+    const sampledTick = latest === null ? 0 : latest.tick - 1;
     let separation = 1.8;
     let knockdown = false;
     if (snapshot !== null) {
       const [a, b] = snapshot.fighters;
-      this.animators[0].update(a, b, dt, seconds, current.reducedMotion, current.blood);
-      this.animators[1].update(b, a, dt, seconds, current.reducedMotion, current.blood);
+      this.animators[0].update(a, b, dt, seconds, current.reducedMotion, current.blood, sampledTick);
+      this.animators[1].update(b, a, dt, seconds, current.reducedMotion, current.blood, sampledTick);
       const ax = this.mapping.x(a.x);
       const az = this.mapping.z(a.y);
       const bx = this.mapping.x(b.x);
@@ -307,6 +341,7 @@ export class FightRenderer {
     this.effects.update(dt);
     this.updateReferee(dt, seconds, current.reducedMotion);
     this.updateBlobShadows();
+    this.fireContacts(sampledTick);
     const frame = this.cameraOverride ?? this.director.update(
       dt,
       seconds,
@@ -391,6 +426,7 @@ export class FightRenderer {
     this.raf = 0;
     this.buffer.clear();
     this.dedupe.reset();
+    this.pendingContacts.length = 0;
     this.effects.dispose();
     this.arena.dispose();
     disposeRing(this.ring);
