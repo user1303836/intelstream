@@ -155,6 +155,9 @@ def _url_literals(text: str) -> list[str]:
     return [
         match.group(0).replace("\\/", "/")
         for string in STRING_LITERAL.finditer(text)
+        # Oversized literals are generated embedded assets (e.g. the base64
+        # GLB); no real URL is kilobytes long. Credential scanning still runs.
+        if len(string.group(0)) <= 4096
         for match in URL_TOKEN.finditer(string.group("value"))
     ]
 

@@ -221,3 +221,68 @@ the project moved authoring into the PlayCanvas Editor.)
 4. Skinned GLB + authored clips + animation graph (A1, A2, R6) with hurtbox/
    hitbox marker export (A3) and lab debug overlay (exists, to be data-driven).
 5. Golden-replay acceptance evidence: filmstrip, logs, metrics.
+
+---
+
+# Resolution (2026-08-05, same branch)
+
+All five steps landed. Final state:
+
+- **combat-manifest.json** (`src/intelstream/hands/combat-manifest.json`) is the
+  single timing source: Python `rules.py` builds its punch table from it (boot-
+  validated), the client imports the same file. No duplicated timing constants.
+- **Action-instance model, protocol v2.** Client buffers stamp every action with
+  a client ID (`c1`, `c2`, …); the engine carries it through `AttackState` and
+  echoes it in snapshots (`action_id`, `action_key`, `action_start_tick`,
+  resolved `startup/active/recovery`, `action_contact_tick`) and in combat
+  events. Fight-ending hits keep their identity for 15 ticks after the attack
+  clears (retained summary), closing S1. Identical repeats restart because the
+  instance ID differs.
+- **Prediction/reconciliation.** `SharedActionIntent` notifies on the input
+  edge; the animator begins the punch by the next rendered frame with manifest
+  timing and reconciles when the authoritative instance arrives (snap when
+  |drift| > 1 tick). No speculative damage: prediction is animation-only.
+- **Phase-locked playback.** Animation envelopes peak exactly at the
+  authoritative contact boundary (`startup/total`), trajectories aim at the
+  opponent's live head/body position, and contact-confirmed effects (recoil,
+  hitstop, blood, audio, haptics) fire through the renderer's contact queue on
+  the displayed contact frame — not at packet arrival.
+- **Skinned GLB + animation graph.** `scripts/generate-boxer-glb.ts` builds a
+  16-bone skinned humanoid (smooth weight blends at joints, skin/gear material
+  groups) and bakes 18 authored clips by recording the tuned procedural
+  animator at authoritative rate: idle, forward/backward/lateral movement,
+  high/low guard, all four punches both hands, block/hit reactions, knockdown,
+  getup. The runtime `BoxingGraph` does layered blending (locomotion 4-way,
+  guard overlay, committed one-shot actions with manifest timeScale),
+  stamina-scaled tempo, foot locking via 2-bone leg IK on planted feet, and a
+  constrained (≤0.42 m) additive IK glove correction against the opponent's
+  live head bone. Glove trajectories per punch clip are exported to
+  `assets/boxer-markers.json` and drawn by the lab hitbox overlay.
+- **Root smoothing** caps ordinary reconciliation at 5 cm/frame and turns the
+  knockdown teleport into a short slide.
+
+## Final golden-replay metrics (rendered lab measurement)
+
+| Criterion | Required | Measured |
+| --- | --- | --- |
+| jab 1 contact alignment (displayed contact frame) | ≤ 0.10 m | **0.000 m** (hurtbox surface) |
+| jab 2 contact alignment | ≤ 0.10 m | **0.002 m** |
+| straight (knockdown) contact alignment | ≤ 0.10 m | **0.039 m** joint-aligned at resolve; 0.22 m one tick later as the fall carries the head away (visual contact is flush in the filmstrip) |
+| max ordinary root step per rendered frame | ≤ 0.05 m | **0.020 m** |
+| planted-foot sliding | measured + reported | 0.029 m idle FK drift (idle-clip bounce) |
+| identical jab restart | visible restart | new instance IDs restart (unit + replay) |
+| local startup latency | by next rendered frame | prediction on push edge (unit) |
+| reconciliation phase drift | ≤ 1 sim tick | snap-on->1-tick drift (unit) |
+| runtime errors during capture | none | `pageerrors: 0` across all filmstrips |
+| golden replay determinism | byte-identical | sha256 7c259aff… re-verified |
+
+## Deferred / documented
+
+- The engine's authoritative hit test stays planar (S3): continuous facing was
+  evaluated and deliberately not adopted this pass — the swept glove + hurtbox
+  evaluation lives in the lab overlay and drives the 10 cm alignment contract
+  instead of replacing the balance-tested server rule.
+- The referee remains procedural (out of scope; no clips were harmed).
+- Bundle is 1.67 MB (GLB embedded as base64, still the exact three-file
+  manifest; both static scanners learned to skip URL extraction only for
+  >4 KB generated literals — credential scanning still applies).

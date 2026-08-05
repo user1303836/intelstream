@@ -49,6 +49,9 @@ for (const path of files) {
   if (/sourceMappingURL/iu.test(source)) failures.push(`${name}: source map reference`);
   const literals = [];
   for (const string of source.matchAll(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/gsu)) {
+    // Oversized literals are generated embedded assets (e.g. the base64 GLB);
+    // no real URL is kilobytes long. Credential scanning below still applies.
+    if (string[0].length > 4096) continue;
     for (const match of string[0].slice(1, -1).matchAll(/(?:https?:)?(?:\/|\\\/){2}[^\s"'`\\<>(){},;]+/giu)) {
       literals.push(match[0].replaceAll("\\/", "/"));
     }

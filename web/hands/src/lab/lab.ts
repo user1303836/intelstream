@@ -1,6 +1,8 @@
 import * as THREE from "three";
 import { HURTBOXES } from "../manifest";
+import { loadBoxerGlb } from "../render/graph";
 import { FightRenderer } from "../render/renderer";
+import markerData from "../assets/boxer-markers.json";
 import type { BloodLevel } from "../settings";
 import type { EngineSnapshot } from "../types";
 
@@ -64,6 +66,7 @@ export class LabApp {
   private readonly pendingQueue: Array<{ at: number; tick: ReplayTick }> = [];
   private destroyed = false;
   private overlays = { skeleton: false, hurtbox: false, hitbox: false };
+  private trajectoryLine: THREE.Line | null = null;
   private readonly skeletonLines: THREE.LineSegments[] = [];
   private readonly hurtboxMeshes: THREE.Mesh[] = [];
   private readonly hitboxMeshes: THREE.Mesh[] = [];
@@ -99,6 +102,7 @@ export class LabApp {
     const response = await fetch(`/replays/${replayName}.json`);
     if (!response.ok) throw new Error(`replay_load_failed:${response.status}`);
     this.replay = (await response.json()) as ReplayDocument;
+    await loadBoxerGlb();
     this.renderer = new FightRenderer(
       this.canvas,
       { tick_rate: this.replay.tick_rate, ring_half_width: 500, ring_half_height: 330 },
@@ -114,12 +118,14 @@ export class LabApp {
 
     const filmstripTick = params.get("tick");
     if (params.get("metrics") === "1") {
+      await this.renderer.ready;
       this.exportMetrics();
       this.setStatus("metrics done");
       return;
     }
     if (filmstripTick !== null) {
       const tick = Number(filmstripTick);
+      await this.renderer.ready;
       this.seek(tick);
       const camera = CAMERAS[params.get("camera") ?? ""] ?? CAMERAS.broadcast!;
       this.renderer.labSetCameraOverride(camera.position, camera.lookAt);
@@ -128,6 +134,17 @@ export class LabApp {
       this.overlays.hitbox = params.get("hitbox") === "1";
       this.syncOverlayVisibility();
       this.renderCurrentTick();
+      (window as unknown as Record<string, unknown>).__labDebug = {
+        roots: this.renderer.labRigs.map((root) => root.position.toArray().map((v) => Number(v.toFixed(3)))),
+        heads: this.renderer.labRigs.map((root) => {
+          const head = root.getObjectByName("head");
+          return head === undefined ? null : head.getWorldPosition(new THREE.Vector3()).toArray().map((v) => Number(v.toFixed(3)));
+        }),
+        gloves: this.renderer.labRigs.map((root) => {
+          const glove = root.getObjectByName("gloveL");
+          return glove === undefined ? null : glove.getWorldPosition(new THREE.Vector3()).toArray().map((v) => Number(v.toFixed(3)));
+        }),
+      };
       this.setStatus(`filmstrip tick ${tick}`);
       return;
     }
@@ -226,6 +243,7 @@ export class LabApp {
     this.renderer.labFrame(this.virtualTick / this.replay.tick_rate, render ?? this.renderOnSeek);
     this.renderer.labFrame((this.virtualTick + 0.5) / this.replay.tick_rate, render ?? this.renderOnSeek);
     this.updateOverlays();
+    this.updateTrajectory();
     const tick = this.replay.ticks[this.virtualTick];
     const phase = tick?.snapshot.payload.phase ?? "";
     this.setStatus(`tick ${this.virtualTick}/${this.replay.ticks.length - 1} · ${phase} · ${this.speed}×`);
@@ -235,7 +253,7 @@ export class LabApp {
     const renderer = this.renderer;
     if (renderer === null) return;
     const skeletonMat = new THREE.LineBasicMaterial({ color: 0x7dffa8, depthTest: false, transparent: true, opacity: 0.9 });
-    for (const rig of renderer.labRigs) {
+    for (const rigRoot of renderer.labRigs) {
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(JOINT_PAIRS.length * 6), 3));
       const lines = new THREE.LineSegments(geometry, skeletonMat);
@@ -250,7 +268,7 @@ export class LabApp {
       );
       headBox.renderOrder = 21;
       headBox.position.y = 0.12;
-      rig.head.add(headBox);
+      (rigRoot.getObjectByName("head") ?? rigRoot).add(headBox);
       this.hurtboxMeshes.push(headBox);
       const torsoBox = new THREE.Mesh(
         new THREE.CapsuleGeometry(0.21, 0.34, 4, 8),
@@ -258,16 +276,16 @@ export class LabApp {
       );
       torsoBox.renderOrder = 21;
       torsoBox.position.y = 0.16;
-      rig.chest.add(torsoBox);
+      (rigRoot.getObjectByName("chest") ?? rigRoot).add(torsoBox);
       this.hurtboxMeshes.push(torsoBox);
 
-      for (const glove of [rig.gloveL, rig.gloveR]) {
+      for (const gloveName of ["gloveL", "gloveR"]) {
         const hitbox = new THREE.Mesh(
           new THREE.SphereGeometry(0.11, 10, 8),
           new THREE.MeshBasicMaterial({ color: 0x5db4ff, wireframe: true, transparent: true, opacity: 0.85, depthTest: false }),
         );
         hitbox.renderOrder = 22;
-        glove.add(hitbox);
+        (rigRoot.getObjectByName(gloveName) ?? rigRoot).add(hitbox);
         this.hitboxMeshes.push(hitbox);
       }
     }
@@ -278,20 +296,50 @@ export class LabApp {
     for (const lines of this.skeletonLines) lines.visible = this.overlays.skeleton;
     for (const mesh of this.hurtboxMeshes) mesh.visible = this.overlays.hurtbox;
     for (const mesh of this.hitboxMeshes) mesh.visible = this.overlays.hitbox;
+    this.updateTrajectory();
+  }
+
+  private updateTrajectory(): void {
+    if (this.trajectoryLine !== null) {
+      this.trajectoryLine.removeFromParent();
+      this.trajectoryLine.geometry.dispose();
+      (this.trajectoryLine.material as THREE.Material).dispose();
+      this.trajectoryLine = null;
+    }
+    if (!this.overlays.hitbox || this.replay === null || this.renderer === null) return;
+    const entry = this.replay.ticks[this.virtualTick];
+    const fighter = entry?.snapshot.payload.fighters[0];
+    const key = fighter?.action_key;
+    if (key === undefined || key === null) return;
+    const parts = key.split(":");
+    const trajectory = (markerData.trajectories as Record<string, { left: number[][]; right: number[][] }>)[`${parts[0]}:${parts[1]}`];
+    if (trajectory === undefined) return;
+    const points = (parts[1] === "right" ? trajectory.right : trajectory.left).map(
+      (point) => new THREE.Vector3((point[0] ?? 0) + this.renderer!.labRigs[0]!.position.x, point[1] ?? 0, (point[2] ?? 0) + this.renderer!.labRigs[0]!.position.z),
+    );
+    if (points.length < 2) return;
+    const geometry = new THREE.BufferGeometry().setFromPoints(points);
+    this.trajectoryLine = new THREE.Line(
+      geometry,
+      new THREE.LineBasicMaterial({ color: 0x5db4ff, transparent: true, opacity: 0.75, depthTest: false }),
+    );
+    this.trajectoryLine.renderOrder = 23;
+    this.trajectoryLine.frustumCulled = false;
+    this.renderer.labScene.add(this.trajectoryLine);
   }
 
   private updateOverlays(): void {
     const renderer = this.renderer;
     if (renderer === null) return;
-    for (const [index, rig] of renderer.labRigs.entries()) {
+    for (const [index, rigRootEntry] of renderer.labRigs.entries()) {
       const lines = this.skeletonLines[index];
       if (lines === undefined || !lines.visible) continue;
       const positions = lines.geometry.getAttribute("position") as THREE.BufferAttribute;
       const a = new THREE.Vector3();
       const b = new THREE.Vector3();
       JOINT_PAIRS.forEach(([from, to], pairIndex) => {
-        const jointFrom = rig.root.getObjectByName(from);
-        const jointTo = rig.root.getObjectByName(to);
+        const jointFrom = rigRootEntry.getObjectByName(from);
+        const jointTo = rigRootEntry.getObjectByName(to);
         if (jointFrom === undefined || jointTo === undefined) return;
         jointFrom.getWorldPosition(a);
         jointTo.getWorldPosition(b);
@@ -304,7 +352,7 @@ export class LabApp {
 
   private jointWorld(rigIndex: number, joint: string): THREE.Vector3 | null {
     const rig = this.renderer?.labRigs[rigIndex];
-    const found = rig?.root.getObjectByName(joint);
+    const found = rig?.getObjectByName(joint);
     return found === undefined || found === null ? null : found.getWorldPosition(new THREE.Vector3());
   }
 
@@ -341,12 +389,13 @@ export class LabApp {
     for (const entry of this.replay.ticks) {
       this.seek(entry.tick, false);
       this.renderCurrentTick(false);
-      const rootX = this.renderer!.labRigs[0].root.position.x;
+      const rootX = this.renderer!.labRigs[0]!.position.x;
       if (previousRootX !== null) metrics.maxRootStepMeters = Math.max(metrics.maxRootStepMeters, Math.abs(rootX - previousRootX));
       previousRootX = rootX;
       const fighter = entry.snapshot.payload.fighters[0]!;
       const speed = Math.hypot(fighter.velocity_x, fighter.velocity_y);
-      if (speed === 0) {
+      const wasDowned = this.replay.ticks.slice(Math.max(0, entry.tick - 30), entry.tick + 1).some((past) => past.snapshot.payload.fighters[0]!.is_downed);
+      if (speed === 0 && !fighter.is_downed && !wasDowned && entry.snapshot.payload.phase === "fight") {
         const feet = [this.jointWorld(0, "ankleL"), this.jointWorld(0, "ankleR")].filter((v): v is THREE.Vector3 => v !== null);
         if (previousFeet !== null && feet.length === 2) {
           metrics.footSlideMeters = Math.max(
@@ -360,6 +409,14 @@ export class LabApp {
       }
     }
     this.metricsEl.textContent = ` contacts: ${metrics.contactAlignment.map((c) => `${c.kind}@t${c.tick} glove-head ${c.gloveToHeadMeters}m`).join(" · ")} · max root step ${metrics.maxRootStepMeters.toFixed(3)}m · foot slide ${metrics.footSlideMeters}m`;
+    (window as unknown as Record<string, unknown>).__labDebug = {
+      roots: this.renderer!.labRigs.map((root) => root.position.toArray().map((v) => Number(v.toFixed(3)))),
+      graphsActive: (this.renderer as unknown as { graphs: unknown }).graphs !== null,
+      heads: this.renderer!.labRigs.map((root) => {
+        const head = root.getObjectByName("head");
+        return head === undefined ? null : head.getWorldPosition(new THREE.Vector3()).toArray().map((v) => Number(v.toFixed(3)));
+      }),
+    };
     const blob = new Blob([JSON.stringify(metrics, null, 1)], { type: "application/json" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);

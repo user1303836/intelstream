@@ -11,6 +11,7 @@ import { buildArena, type BuiltArena } from "./arena";
 import { buildBoxer, buildReferee, disposeBoxer, type BoxerRig } from "./boxer";
 import { CameraDirector } from "./camera";
 import { Effects3D } from "./effects";
+import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
 import { drawHud } from "./hud";
 import { buildRing, disposeRing, type BuiltRing } from "./ring";
 import { resizeHighDpi } from "./viewport";
@@ -67,6 +68,11 @@ export class FightRenderer {
   private final: FinalMessage | null = null;
   private reconnectMs = 0;
   private destroyed = false;
+  private graphs: [BoxingGraph, BoxingGraph] | null = null;
+  private glbLoading = false;
+  private graphsReady: Promise<void> = Promise.resolve();
+  private readonly headCache = [new THREE.Vector3(), new THREE.Vector3()];
+  private readonly headCacheValid = [false, false];
   private readonly pendingContacts: Array<{ event: CombatEvent; contactTick: number; targetIndex: number; actorIndex: number }> = [];
   onContact: ((event: CombatEvent) => void) | null = null;
   private readonly tmpA = new THREE.Vector3();
@@ -140,11 +146,34 @@ export class FightRenderer {
     canvas.insertAdjacentElement("afterend", this.hudCanvas);
 
     this.effects.setBloodLevel(settings().blood);
+    this.ensureGraphs();
     if (!this.manualClock) this.raf = requestAnimationFrame((time) => this.draw(time));
   }
 
-  get labRigs(): readonly [BoxerRig, BoxerRig] {
-    return this.boxers;
+  private ensureGraphs(): void {
+    if (this.glbLoading || this.graphs !== null) return;
+    this.glbLoading = true;
+    this.graphsReady = loadBoxerGlb().then((gltf) => {
+      if (this.destroyed) return;
+      const first = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
+      const second = new SkinnedBoxer(gltf, { skin: 0x6e4128, gear: 0xb91c1c });
+      this.graphs = [new BoxingGraph(first, this.mapping), new BoxingGraph(second, this.mapping)];
+      this.scene.add(first.root, second.root);
+      for (const boxer of this.boxers) {
+        this.scene.remove(boxer.root);
+        disposeBoxer(boxer);
+      }
+    });
+  }
+
+  get ready(): Promise<void> {
+    return this.graphsReady;
+  }
+
+  get labRigs(): THREE.Object3D[] {
+    const graphs = this.graphs;
+    if (graphs !== null) return [graphs[0].boxer.root, graphs[1].boxer.root];
+    return this.boxers.map((boxer) => boxer.root);
   }
 
   get labScene(): THREE.Scene {
@@ -189,7 +218,9 @@ export class FightRenderer {
     if (latest === null || this.viewerId === null) return;
     const index = latest.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
     if (index < 0) return;
-    this.animators[index]!.predict(action, performance.now() / 1000, this.simulation.tick_rate);
+    const graphs = this.graphs;
+    if (graphs !== null) graphs[index]!.predict(action, performance.now() / 1000, this.simulation.tick_rate);
+    else this.animators[index]!.predict(action, performance.now() / 1000, this.simulation.tick_rate);
   }
 
   push(snapshot: EngineSnapshot): void {
@@ -225,18 +256,24 @@ export class FightRenderer {
         this.tmpA.set(this.mapping.x(target.x), 0, this.mapping.z(target.y));
         this.effects.addEvent(event, this.tmpA, this.settings().reducedMotion);
       }
+      const graphs = this.graphs;
       if (targetIndex >= 0 && ["hit", "counter_hit", "block", "perfect_block", "knockdown"].includes(event.kind)) {
-        this.animators[targetIndex]!.impact({
-          direction: event.direction,
-          amount: event.kind === "block" || event.kind === "perfect_block" ? event.amount * 0.35 : event.amount,
-          blocked: event.kind === "block" || event.kind === "perfect_block",
-        });
+        const blocked = event.kind === "block" || event.kind === "perfect_block";
+        if (graphs !== null) graphs[targetIndex]!.react(blocked ? "block" : "hit");
+        else {
+          this.animators[targetIndex]!.impact({
+            direction: event.direction,
+            amount: blocked ? event.amount * 0.35 : event.amount,
+            blocked,
+          });
+        }
       }
       // Engine emits block/perfect_block with the DEFENDER as actor; the
       // puncher to freeze is the event target for those kinds.
       const puncherIndex = event.kind === "block" || event.kind === "perfect_block" ? targetIndex : actorIndex;
       if (puncherIndex >= 0 && ["hit", "counter_hit", "block", "perfect_block", "guard_break"].includes(event.kind)) {
-        this.animators[puncherIndex]!.landedHit(event.kind === "block" || event.kind === "perfect_block");
+        if (graphs !== null) graphs[puncherIndex]!.landedHit(event.kind === "block" || event.kind === "perfect_block");
+        else this.animators[puncherIndex]!.landedHit(event.kind === "block" || event.kind === "perfect_block");
       }
       this.onContact?.(event);
     }
@@ -311,8 +348,24 @@ export class FightRenderer {
     let knockdown = false;
     if (snapshot !== null) {
       const [a, b] = snapshot.fighters;
-      this.animators[0].update(a, b, dt, seconds, current.reducedMotion, current.blood, sampledTick);
-      this.animators[1].update(b, a, dt, seconds, current.reducedMotion, current.blood, sampledTick);
+      const graphs = this.graphs;
+      if (graphs !== null) {
+        const headA = this.headCacheValid[0] ? this.headCache[0] : undefined;
+        const headB = this.headCacheValid[1] ? this.headCache[1] : undefined;
+        graphs[0].update(a, b, dt, seconds, current.reducedMotion, current.blood, sampledTick, headB);
+        graphs[1].update(b, a, dt, seconds, current.reducedMotion, current.blood, sampledTick, headA);
+        for (const [index, graph] of graphs.entries()) {
+          const headBone = graph.boxer.bone("head");
+          if (headBone !== null) {
+            graph.boxer.root.updateMatrixWorld(true);
+            headBone.getWorldPosition(this.headCache[index]!);
+            this.headCacheValid[index] = true;
+          }
+        }
+      } else {
+        this.animators[0].update(a, b, dt, seconds, current.reducedMotion, current.blood, sampledTick);
+        this.animators[1].update(b, a, dt, seconds, current.reducedMotion, current.blood, sampledTick);
+      }
       const ax = this.mapping.x(a.x);
       const az = this.mapping.z(a.y);
       const bx = this.mapping.x(b.x);
@@ -433,6 +486,13 @@ export class FightRenderer {
     for (const boxer of this.boxers) {
       this.scene.remove(boxer.root);
       disposeBoxer(boxer);
+    }
+    if (this.graphs !== null) {
+      for (const graph of this.graphs) {
+        this.scene.remove(graph.boxer.root);
+        graph.dispose();
+      }
+      this.graphs = null;
     }
     this.scene.remove(this.referee.root);
     disposeBoxer(this.referee);
