@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
-import anthropic
 import httpx
 import structlog
 from bs4 import BeautifulSoup
@@ -17,11 +16,10 @@ from tenacity import (
 )
 
 from intelstream.config import get_settings
+from intelstream.services.llm_client import LLMClient, LLMError, LLMRateLimitError
 from intelstream.utils.safe_http import SafeHTTPError, safe_request
 
 logger = structlog.get_logger()
-
-DEFAULT_MODEL = "claude-sonnet-4-6"
 
 
 @dataclass
@@ -96,22 +94,11 @@ IMPORTANT:
 class PageAnalyzer:
     def __init__(
         self,
-        api_key: str | None = None,
+        llm_client: LLMClient,
         http_client: httpx.AsyncClient | None = None,
-        model: str = DEFAULT_MODEL,
-        anthropic_client: anthropic.AsyncAnthropic | None = None,
     ) -> None:
-        if anthropic_client is None and not api_key:
-            raise ValueError("api_key is required when anthropic_client is not provided")
-        self._client = anthropic_client or anthropic.AsyncAnthropic(api_key=api_key)
-        self._owns_client = anthropic_client is None
+        self._client = llm_client
         self._http_client = http_client
-        self._model = model
-
-    async def close(self) -> None:
-        if self._owns_client:
-            await self._client.close()
-            self._owns_client = False
 
     async def analyze(self, url: str) -> ExtractionProfile:
         parsed_url = urlparse(url)
@@ -192,7 +179,7 @@ class PageAnalyzer:
         return cleaned
 
     @retry(
-        retry=retry_if_exception_type(anthropic.RateLimitError),
+        retry=retry_if_exception_type(LLMRateLimitError),
         wait=wait_exponential(multiplier=1, min=4, max=60),
         stop=stop_after_attempt(3),
     )
@@ -209,19 +196,11 @@ HTML:
 Respond with ONLY a JSON object, no markdown formatting."""
 
         try:
-            message = await self._client.messages.create(
-                model=self._model,
-                max_tokens=1024,
+            response_text = await self._client.complete(
                 system=ANALYSIS_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_prompt}],
+                user_message=user_prompt,
+                max_tokens=1024,
             )
-
-            response_text = ""
-            for block in message.content:
-                if hasattr(block, "text"):
-                    response_text += block.text
-
-            response_text = response_text.strip()
 
             json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
             if json_match:
@@ -253,8 +232,8 @@ Respond with ONLY a JSON object, no markdown formatting."""
 
             return data
 
-        except anthropic.APIError as e:
-            logger.error("Anthropic API error during page analysis", error=str(e))
+        except LLMError as e:
+            logger.error("LLM API error during page analysis", error=str(e))
             raise PageAnalysisError(f"LLM API error: {e}") from e
 
     def _validate_profile(self, html: str, profile: ExtractionProfile) -> dict[str, Any]:

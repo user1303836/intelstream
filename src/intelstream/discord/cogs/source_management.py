@@ -4,20 +4,19 @@ import re
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
-import anthropic
 import discord
 import structlog
 from discord import app_commands
 from discord.ext import commands
 
 from intelstream.adapters.smart_blog import SmartBlogAdapter
-from intelstream.config import reveal_secret
 from intelstream.database.exceptions import (
     DatabaseConnectionError,
     DuplicateSourceError,
     SourceNotFoundError,
 )
 from intelstream.database.models import PauseReason, SourceType
+from intelstream.services.llm_client import LLMClient, create_llm_client
 from intelstream.services.page_analyzer import PageAnalysisError, PageAnalyzer
 from intelstream.utils.log_safety import safe_url_for_log
 from intelstream.utils.url_validation import async_is_safe_url
@@ -203,23 +202,29 @@ class ConfirmSourceRemoveView(discord.ui.View):
 class SourceManagement(commands.Cog):
     def __init__(self, bot: "IntelStreamBot") -> None:
         self.bot = bot
-        self._anthropic_client: anthropic.AsyncAnthropic | None = None
-        self._owns_anthropic_client = False
+        self._llm_clients: dict[str, LLMClient] = {}
 
-    def _get_anthropic_client(self) -> anthropic.AsyncAnthropic:
-        if self._anthropic_client is None:
-            api_key = reveal_secret(self.bot.settings.anthropic_api_key)
-            if api_key is None:
-                raise RuntimeError("Anthropic API key is not configured")
-            self._anthropic_client = anthropic.AsyncAnthropic(api_key=api_key)
-            self._owns_anthropic_client = True
-        return self._anthropic_client
+    def _has_llm_key(self) -> bool:
+        try:
+            return bool(self.bot.settings.llm_api_key)
+        except ValueError:
+            return False
+
+    def _get_llm_client(self, model: str) -> LLMClient:
+        client = self._llm_clients.get(model)
+        if client is None:
+            client = create_llm_client(
+                provider=self.bot.settings.llm_provider,
+                api_key=self.bot.settings.llm_api_key,
+                model=model,
+            )
+            self._llm_clients[model] = client
+        return client
 
     async def cog_unload(self) -> None:
-        if self._anthropic_client is not None and self._owns_anthropic_client:
-            await self._anthropic_client.close()
-            self._anthropic_client = None
-            self._owns_anthropic_client = False
+        for client in self._llm_clients.values():
+            await client.close()
+        self._llm_clients.clear()
 
     async def _source_name_autocomplete(
         self,
@@ -297,16 +302,16 @@ class SourceManagement(commands.Cog):
             )
             return
 
-        if stype == SourceType.PAGE and not self.bot.settings.anthropic_api_key:
+        if stype == SourceType.PAGE and not self._has_llm_key():
             await interaction.followup.send(
-                "Page sources are not available. No Anthropic API key configured.",
+                "Page sources are not available. No LLM API key configured.",
                 ephemeral=True,
             )
             return
 
-        if stype == SourceType.BLOG and not self.bot.settings.anthropic_api_key:
+        if stype == SourceType.BLOG and not self._has_llm_key():
             await interaction.followup.send(
-                "Blog sources are not available. No Anthropic API key configured.",
+                "Blog sources are not available. No LLM API key configured.",
                 ephemeral=True,
             )
             return
@@ -360,7 +365,7 @@ class SourceManagement(commands.Cog):
 
         if stype == SourceType.BLOG:
             adapter = SmartBlogAdapter(
-                anthropic_client=self._get_anthropic_client(),
+                llm_client=self._get_llm_client(self.bot.settings.summary_model),
                 repository=self.bot.repository,
             )
             result = await adapter.analyze_site(url)
@@ -382,14 +387,16 @@ class SourceManagement(commands.Cog):
 
         extraction_profile_json: str | None = None
         if stype == SourceType.PAGE:
-            if not self.bot.settings.anthropic_api_key:
+            if not self._has_llm_key():
                 await interaction.followup.send(
-                    "Page sources require ANTHROPIC_API_KEY to be configured.",
+                    "Page sources require an LLM API key to be configured.",
                     ephemeral=True,
                 )
                 return
             try:
-                analyzer = PageAnalyzer(anthropic_client=self._get_anthropic_client())
+                analyzer = PageAnalyzer(
+                    llm_client=self._get_llm_client(self.bot.settings.summary_model_interactive)
+                )
                 profile = await analyzer.analyze(url)
                 extraction_profile_json = json.dumps(profile.to_dict())
             except PageAnalysisError as e:

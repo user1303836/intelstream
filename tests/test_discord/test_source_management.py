@@ -33,6 +33,8 @@ def mock_bot():
     bot.settings.get_poll_interval = MagicMock(return_value=5)
     bot.settings.youtube_api_key = "test-api-key"
     bot.settings.twitter_bearer_token = "test-twitter-token"
+    bot.settings.llm_provider = "openai"
+    bot.settings.llm_api_key = "test-openai-key"
     return bot
 
 
@@ -403,7 +405,6 @@ class TestSourceManagementAdd:
         assert "already exists" in call_args[0][0]
 
     async def test_add_duplicate_blog_skips_expensive_analysis(self, source_management, mock_bot):
-        mock_bot.settings.anthropic_api_key = "anthropic-key"
         interaction = make_interaction()
         source_type_choice = MagicMock(value="blog", name="Blog")
         existing_source = MagicMock(name="Existing Blog")
@@ -664,8 +665,8 @@ class TestSourceManagementAdd:
         mock_bot.repository.add_source.assert_not_called()
         assert "Invalid source type" in interaction.followup.send.call_args.args[0]
 
-    async def test_add_page_without_anthropic_key(self, source_management, mock_bot):
-        mock_bot.settings.anthropic_api_key = None
+    async def test_add_page_without_llm_key(self, source_management, mock_bot):
+        mock_bot.settings.llm_api_key = None
         interaction = make_interaction()
         source_type_choice = MagicMock()
         source_type_choice.value = "page"
@@ -681,8 +682,8 @@ class TestSourceManagementAdd:
         mock_bot.repository.add_source.assert_not_called()
         assert "not available" in interaction.followup.send.call_args.args[0]
 
-    async def test_add_blog_without_anthropic_key(self, source_management, mock_bot):
-        mock_bot.settings.anthropic_api_key = None
+    async def test_add_blog_without_llm_key(self, source_management, mock_bot):
+        mock_bot.settings.llm_api_key = None
         interaction = make_interaction()
         source_type_choice = MagicMock()
         source_type_choice.value = "blog"
@@ -772,7 +773,6 @@ class TestSourceManagementAdd:
         assert "already exists" in interaction.followup.send.call_args.args[0]
 
     async def test_add_page_stores_analyzed_extraction_profile(self, source_management, mock_bot):
-        mock_bot.settings.anthropic_api_key = "anthropic-key"
         interaction = make_interaction()
         source_type_choice = MagicMock()
         source_type_choice.value = "page"
@@ -802,7 +802,6 @@ class TestSourceManagementAdd:
         assert json.loads(call_kwargs["extraction_profile"]) == {"post_selector": "article"}
 
     async def test_add_page_reports_analysis_error(self, source_management, mock_bot):
-        mock_bot.settings.anthropic_api_key = "anthropic-key"
         interaction = make_interaction()
         source_type_choice = MagicMock()
         source_type_choice.value = "page"
@@ -823,10 +822,8 @@ class TestSourceManagementAdd:
         mock_bot.repository.add_source.assert_not_called()
         assert "Failed to analyze page structure" in interaction.followup.send.call_args.args[0]
 
-    async def test_add_page_rechecks_anthropic_key_before_analysis(
-        self, source_management, mock_bot
-    ):
-        class SettingsWithClearedAnthropicKey:
+    async def test_add_page_rechecks_llm_key_before_analysis(self, source_management, mock_bot):
+        class SettingsWithClearedLLMKey:
             default_poll_interval_minutes = 5
             twitter_bearer_token = "test-twitter-token"
             youtube_api_key = "test-api-key"
@@ -835,11 +832,13 @@ class TestSourceManagementAdd:
                 self.calls = 0
 
             @property
-            def anthropic_api_key(self) -> str | None:
+            def llm_api_key(self) -> str:
                 self.calls += 1
-                return "anthropic-key" if self.calls == 1 else None
+                if self.calls == 1:
+                    return "openai-key"
+                raise ValueError("No API key configured")
 
-        mock_bot.settings = SettingsWithClearedAnthropicKey()
+        mock_bot.settings = SettingsWithClearedLLMKey()
         interaction = make_interaction()
         source_type_choice = MagicMock()
         source_type_choice.value = "page"
@@ -853,10 +852,9 @@ class TestSourceManagementAdd:
         )
 
         mock_bot.repository.add_source.assert_not_called()
-        assert "require ANTHROPIC_API_KEY" in interaction.followup.send.call_args.args[0]
+        assert "require an LLM API key" in interaction.followup.send.call_args.args[0]
 
     async def test_add_blog_uses_discovered_metadata(self, source_management, mock_bot):
-        mock_bot.settings.anthropic_api_key = "anthropic-key"
         interaction = make_interaction()
         source_type_choice = MagicMock()
         source_type_choice.value = "blog"
@@ -876,7 +874,7 @@ class TestSourceManagementAdd:
         mock_bot.repository.add_source = AsyncMock(return_value=mock_source)
 
         with (
-            patch.object(source_management, "_get_anthropic_client", return_value=MagicMock()),
+            patch.object(source_management, "_get_llm_client", return_value=MagicMock()),
             patch(
                 "intelstream.discord.cogs.source_management.async_is_safe_url",
                 return_value=(True, None),
@@ -902,7 +900,6 @@ class TestSourceManagementAdd:
         assert any(field.name == "Discovery Strategy" for field in embed.fields)
 
     async def test_add_blog_reports_analysis_failure(self, source_management, mock_bot):
-        mock_bot.settings.anthropic_api_key = "anthropic-key"
         interaction = make_interaction()
         source_type_choice = MagicMock()
         source_type_choice.value = "blog"
@@ -913,7 +910,7 @@ class TestSourceManagementAdd:
         adapter.analyze_site = AsyncMock(return_value=result)
 
         with (
-            patch.object(source_management, "_get_anthropic_client", return_value=MagicMock()),
+            patch.object(source_management, "_get_llm_client", return_value=MagicMock()),
             patch(
                 "intelstream.discord.cogs.source_management.async_is_safe_url",
                 return_value=(True, None),
@@ -1632,44 +1629,36 @@ class TestSourceAutocomplete:
 
 
 class TestSourceManagementLifecycle:
-    def test_get_anthropic_client_is_cached(self, source_management, mock_bot):
-        mock_bot.settings.anthropic_api_key = "anthropic-key"
-        with patch("intelstream.discord.cogs.source_management.anthropic.AsyncAnthropic") as cls:
-            first = source_management._get_anthropic_client()
-            second = source_management._get_anthropic_client()
+    def test_get_llm_client_is_cached_per_model(self, source_management):
+        with patch("intelstream.discord.cogs.source_management.create_llm_client") as cls:
+            cls.side_effect = [MagicMock(), MagicMock()]
+            first = source_management._get_llm_client("model-a")
+            second = source_management._get_llm_client("model-a")
+            other = source_management._get_llm_client("model-b")
 
         assert first is second
-        cls.assert_called_once_with(api_key="anthropic-key")
+        assert first is not other
+        assert cls.call_count == 2
 
-    async def test_cog_unload_closes_owned_anthropic_client_once(self, source_management, mock_bot):
-        mock_bot.settings.anthropic_api_key = "anthropic-key"
+    async def test_cog_unload_closes_llm_clients_once(self, source_management):
         client = MagicMock()
         client.close = AsyncMock()
 
         with patch(
-            "intelstream.discord.cogs.source_management.anthropic.AsyncAnthropic",
+            "intelstream.discord.cogs.source_management.create_llm_client",
             return_value=client,
         ):
-            source_management._get_anthropic_client()
+            source_management._get_llm_client("model-a")
 
         await source_management.cog_unload()
         await source_management.cog_unload()
 
         client.close.assert_awaited_once()
 
-    async def test_cog_unload_does_not_close_external_anthropic_client(self, source_management):
-        client = MagicMock()
-        client.close = AsyncMock()
-        source_management._anthropic_client = client
-
+    async def test_cog_unload_noops_without_llm_clients(self, source_management):
         await source_management.cog_unload()
 
-        client.close.assert_not_called()
-
-    async def test_cog_unload_noops_without_anthropic_client(self, source_management):
-        await source_management.cog_unload()
-
-        assert source_management._anthropic_client is None
+        assert source_management._llm_clients == {}
 
     async def test_setup_adds_cog(self, mock_bot):
         from intelstream.discord.cogs.source_management import setup

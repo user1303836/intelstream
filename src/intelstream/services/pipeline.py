@@ -5,7 +5,6 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-import anthropic
 import httpx
 import structlog
 
@@ -22,6 +21,7 @@ from intelstream.database.models import ArticleChunkMeta, ContentItem, Source, S
 from intelstream.database.repository import Repository
 from intelstream.database.vector_store import ArticleChunkVector
 from intelstream.services.article_search import ArticleChunker, build_article_chunk_id
+from intelstream.services.llm_client import LLMClient, create_llm_client
 from intelstream.services.summarizer import SummarizationError, SummarizationService
 from intelstream.utils.safe_http import SafeHTTPError
 
@@ -47,7 +47,7 @@ class ContentPipeline:
         self._summarizer = summarizer
         self._get_search_services = get_search_services
         self._http_client: httpx.AsyncClient | None = None
-        self._owned_anthropic_clients: list[anthropic.AsyncAnthropic] = []
+        self._owned_llm_clients: list[LLMClient] = []
         self._adapters: dict[SourceType, BaseAdapter] = {}
         self._article_chunker = ArticleChunker(
             chunk_size_chars=getattr(self._settings, "article_chunk_size_chars", 1200),
@@ -76,9 +76,9 @@ class ContentPipeline:
         if self._http_client:
             await self._http_client.aclose()
             self._http_client = None
-        for client in self._owned_anthropic_clients:
+        for client in self._owned_llm_clients:
             await client.close()
-        self._owned_anthropic_clients.clear()
+        self._owned_llm_clients.clear()
         logger.debug("Content pipeline closed")
 
     def _create_adapters(self) -> dict[SourceType, BaseAdapter]:
@@ -102,18 +102,26 @@ class ContentPipeline:
                 http_client=self._http_client,
             )
 
-        anthropic_api_key = reveal_secret(self._settings.anthropic_api_key)
-        if anthropic_api_key:
-            anthropic_client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
-            self._owned_anthropic_clients.append(anthropic_client)
+        try:
+            llm_api_key = self._settings.llm_api_key
+        except ValueError:
+            llm_api_key = None
+
+        if llm_api_key:
+            extraction_client = create_llm_client(
+                provider=self._settings.llm_provider,
+                api_key=llm_api_key,
+                model=self._settings.summary_model,
+            )
+            self._owned_llm_clients.append(extraction_client)
             adapters[SourceType.BLOG] = SmartBlogAdapter(
-                anthropic_client=anthropic_client,
+                llm_client=extraction_client,
                 repository=self._repository,
                 http_client=self._http_client,
             )
         else:
             logger.warning(
-                "ANTHROPIC_API_KEY not set; Blog and Page source types will be unavailable"
+                "No LLM API key configured; Blog and Page source types will be unavailable"
             )
 
         return adapters

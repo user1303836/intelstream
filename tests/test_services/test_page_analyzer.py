@@ -1,10 +1,10 @@
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import anthropic
 import httpx
 import pytest
 
+from intelstream.services.llm_client import LLMError
 from intelstream.services.page_analyzer import (
     ExtractionProfile,
     PageAnalysisError,
@@ -67,56 +67,38 @@ def valid_llm_response() -> dict:
     }
 
 
+@pytest.fixture
+def mock_llm_client():
+    client = MagicMock()
+    client.complete = AsyncMock()
+    return client
+
+
 class TestPageAnalyzer:
-    async def test_close_closes_owned_anthropic_client_once(self) -> None:
-        client = MagicMock()
-        client.close = AsyncMock()
-        with patch(
-            "intelstream.services.page_analyzer.anthropic.AsyncAnthropic",
-            return_value=client,
-        ):
-            analyzer = PageAnalyzer(api_key="test-key")
-
-        await analyzer.close()
-        await analyzer.close()
-
-        client.close.assert_awaited_once_with()
-
-    async def test_close_does_not_close_shared_anthropic_client(self) -> None:
-        client = MagicMock()
-        client.close = AsyncMock()
-        analyzer = PageAnalyzer(anthropic_client=client)
-
-        await analyzer.close()
-
-        client.close.assert_not_awaited()
-
-    async def test_analyze_rejects_invalid_url_format(self) -> None:
-        analyzer = PageAnalyzer(api_key="test-key")
+    async def test_analyze_rejects_invalid_url_format(self, mock_llm_client) -> None:
+        analyzer = PageAnalyzer(llm_client=mock_llm_client)
 
         with pytest.raises(PageAnalysisError, match="Invalid URL format"):
             await analyzer.analyze("not-a-valid-url")
 
-    async def test_analyze_rejects_non_http_scheme(self) -> None:
-        analyzer = PageAnalyzer(api_key="test-key")
+    async def test_analyze_rejects_non_http_scheme(self, mock_llm_client) -> None:
+        analyzer = PageAnalyzer(llm_client=mock_llm_client)
 
         with pytest.raises(PageAnalysisError, match="must use http or https"):
             await analyzer.analyze("ftp://example.com/blog")
 
-    async def test_analyze_success(self, sample_html: str, valid_llm_response: dict) -> None:
+    async def test_analyze_success(
+        self, sample_html: str, valid_llm_response: dict, mock_llm_client
+    ) -> None:
         mock_http_client = MagicMock(spec=httpx.AsyncClient)
         mock_response = MagicMock()
         mock_response.text = sample_html
         mock_response.raise_for_status = MagicMock()
         mock_http_client.get = AsyncMock(return_value=mock_response)
 
-        mock_anthropic_response = MagicMock()
-        mock_text_block = MagicMock()
-        mock_text_block.text = json.dumps(valid_llm_response)
-        mock_anthropic_response.content = [mock_text_block]
+        mock_llm_client.complete.return_value = json.dumps(valid_llm_response)
 
-        analyzer = PageAnalyzer(api_key="test-key", http_client=mock_http_client)
-        analyzer._client.messages.create = AsyncMock(return_value=mock_anthropic_response)
+        analyzer = PageAnalyzer(llm_client=mock_llm_client, http_client=mock_http_client)
 
         profile = await analyzer.analyze("https://example.com/blog")
 
@@ -124,7 +106,7 @@ class TestPageAnalyzer:
         assert profile.post_selector == "article.post-card"
         assert profile.title_selector == "h3.post-title"
 
-    async def test_analyze_http_error(self) -> None:
+    async def test_analyze_http_error(self, mock_llm_client) -> None:
         mock_http_client = MagicMock(spec=httpx.AsyncClient)
         mock_response = MagicMock()
         mock_response.status_code = 404
@@ -135,26 +117,28 @@ class TestPageAnalyzer:
         )
         mock_http_client.get = AsyncMock(return_value=mock_response)
 
-        analyzer = PageAnalyzer(api_key="test-key", http_client=mock_http_client)
+        analyzer = PageAnalyzer(llm_client=mock_llm_client, http_client=mock_http_client)
 
         with pytest.raises(PageAnalysisError, match="Failed to fetch page"):
             await analyzer.analyze("https://example.com/blog")
 
-    async def test_fetch_html_wraps_request_error(self) -> None:
+    async def test_fetch_html_wraps_request_error(self, mock_llm_client) -> None:
         mock_http_client = MagicMock(spec=httpx.AsyncClient)
         mock_http_client.get = AsyncMock(side_effect=httpx.ConnectError("network down"))
-        analyzer = PageAnalyzer(api_key="test-key", http_client=mock_http_client)
+        analyzer = PageAnalyzer(llm_client=mock_llm_client, http_client=mock_http_client)
 
         with pytest.raises(PageAnalysisError, match="network down"):
             await analyzer._fetch_html("https://example.com/blog")
 
-    async def test_fetch_html_uses_browser_user_agent_and_follows_redirects(self) -> None:
+    async def test_fetch_html_uses_browser_user_agent_and_follows_redirects(
+        self, mock_llm_client
+    ) -> None:
         mock_http_client = MagicMock(spec=httpx.AsyncClient)
         mock_response = MagicMock()
         mock_response.text = "<html></html>"
         mock_response.raise_for_status = MagicMock()
         mock_http_client.get = AsyncMock(return_value=mock_response)
-        analyzer = PageAnalyzer(api_key="test-key", http_client=mock_http_client)
+        analyzer = PageAnalyzer(llm_client=mock_llm_client, http_client=mock_http_client)
 
         result = await analyzer._fetch_html("https://example.com/blog")
 
@@ -163,43 +147,39 @@ class TestPageAnalyzer:
         assert "Mozilla/5.0" in call_kwargs["headers"]["User-Agent"]
         assert call_kwargs["follow_redirects"] is False
 
-    async def test_analyze_llm_returns_error(self, sample_html: str) -> None:
+    async def test_analyze_llm_returns_error(self, sample_html: str, mock_llm_client) -> None:
         mock_http_client = MagicMock(spec=httpx.AsyncClient)
         mock_response = MagicMock()
         mock_response.text = sample_html
         mock_response.raise_for_status = MagicMock()
         mock_http_client.get = AsyncMock(return_value=mock_response)
 
-        mock_anthropic_response = MagicMock()
-        mock_text_block = MagicMock()
-        mock_text_block.text = json.dumps({"error": "Could not identify post listing pattern"})
-        mock_anthropic_response.content = [mock_text_block]
+        mock_llm_client.complete.return_value = json.dumps(
+            {"error": "Could not identify post listing pattern"}
+        )
 
-        analyzer = PageAnalyzer(api_key="test-key", http_client=mock_http_client)
-        analyzer._client.messages.create = AsyncMock(return_value=mock_anthropic_response)
+        analyzer = PageAnalyzer(llm_client=mock_llm_client, http_client=mock_http_client)
 
         with pytest.raises(PageAnalysisError, match="Could not identify"):
             await analyzer.analyze("https://example.com/blog")
 
-    async def test_analyze_llm_invalid_json(self, sample_html: str) -> None:
+    async def test_analyze_llm_invalid_json(self, sample_html: str, mock_llm_client) -> None:
         mock_http_client = MagicMock(spec=httpx.AsyncClient)
         mock_response = MagicMock()
         mock_response.text = sample_html
         mock_response.raise_for_status = MagicMock()
         mock_http_client.get = AsyncMock(return_value=mock_response)
 
-        mock_anthropic_response = MagicMock()
-        mock_text_block = MagicMock()
-        mock_text_block.text = "This is not valid JSON"
-        mock_anthropic_response.content = [mock_text_block]
+        mock_llm_client.complete.return_value = "This is not valid JSON"
 
-        analyzer = PageAnalyzer(api_key="test-key", http_client=mock_http_client)
-        analyzer._client.messages.create = AsyncMock(return_value=mock_anthropic_response)
+        analyzer = PageAnalyzer(llm_client=mock_llm_client, http_client=mock_http_client)
 
         with pytest.raises(PageAnalysisError, match="invalid JSON"):
             await analyzer.analyze("https://example.com/blog")
 
-    async def test_analyze_llm_missing_required_field(self, sample_html: str) -> None:
+    async def test_analyze_llm_missing_required_field(
+        self, sample_html: str, mock_llm_client
+    ) -> None:
         mock_http_client = MagicMock(spec=httpx.AsyncClient)
         mock_response = MagicMock()
         mock_response.text = sample_html
@@ -210,18 +190,16 @@ class TestPageAnalyzer:
             "site_name": "Test Blog",
             "post_selector": "article.post-card",
         }
-        mock_anthropic_response = MagicMock()
-        mock_text_block = MagicMock()
-        mock_text_block.text = json.dumps(incomplete_response)
-        mock_anthropic_response.content = [mock_text_block]
+        mock_llm_client.complete.return_value = json.dumps(incomplete_response)
 
-        analyzer = PageAnalyzer(api_key="test-key", http_client=mock_http_client)
-        analyzer._client.messages.create = AsyncMock(return_value=mock_anthropic_response)
+        analyzer = PageAnalyzer(llm_client=mock_llm_client, http_client=mock_http_client)
 
         with pytest.raises(PageAnalysisError, match="Missing required field"):
             await analyzer.analyze("https://example.com/blog")
 
-    async def test_analyze_validation_fails_no_posts(self, valid_llm_response: dict) -> None:
+    async def test_analyze_validation_fails_no_posts(
+        self, valid_llm_response: dict, mock_llm_client
+    ) -> None:
         html = "<html><body><div>No matching posts</div></body></html>"
 
         mock_http_client = MagicMock(spec=httpx.AsyncClient)
@@ -230,34 +208,28 @@ class TestPageAnalyzer:
         mock_response.raise_for_status = MagicMock()
         mock_http_client.get = AsyncMock(return_value=mock_response)
 
-        mock_anthropic_response = MagicMock()
-        mock_text_block = MagicMock()
-        mock_text_block.text = json.dumps(valid_llm_response)
-        mock_anthropic_response.content = [mock_text_block]
+        mock_llm_client.complete.return_value = json.dumps(valid_llm_response)
 
-        analyzer = PageAnalyzer(api_key="test-key", http_client=mock_http_client)
-        analyzer._client.messages.create = AsyncMock(return_value=mock_anthropic_response)
+        analyzer = PageAnalyzer(llm_client=mock_llm_client, http_client=mock_http_client)
 
         with pytest.raises(PageAnalysisError, match="Profile validation failed"):
             await analyzer.analyze("https://example.com/blog")
 
-    async def test_analyze_api_error(self, sample_html: str) -> None:
+    async def test_analyze_api_error(self, sample_html: str, mock_llm_client) -> None:
         mock_http_client = MagicMock(spec=httpx.AsyncClient)
         mock_response = MagicMock()
         mock_response.text = sample_html
         mock_response.raise_for_status = MagicMock()
         mock_http_client.get = AsyncMock(return_value=mock_response)
 
-        analyzer = PageAnalyzer(api_key="test-key", http_client=mock_http_client)
-        analyzer._client.messages.create = AsyncMock(
-            side_effect=anthropic.APIError(message="API Error", request=MagicMock(), body=None)
-        )
+        analyzer = PageAnalyzer(llm_client=mock_llm_client, http_client=mock_http_client)
+        mock_llm_client.complete.side_effect = LLMError("API Error")
 
         with pytest.raises(PageAnalysisError, match="LLM API error"):
             await analyzer.analyze("https://example.com/blog")
 
     async def test_analyze_without_http_client(
-        self, sample_html: str, valid_llm_response: dict
+        self, sample_html: str, valid_llm_response: dict, mock_llm_client
     ) -> None:
         with patch("intelstream.services.page_analyzer.httpx.AsyncClient") as mock_client_class:
             mock_client = MagicMock()
@@ -269,18 +241,14 @@ class TestPageAnalyzer:
             mock_client.__aexit__ = AsyncMock(return_value=None)
             mock_client_class.return_value = mock_client
 
-            mock_anthropic_response = MagicMock()
-            mock_text_block = MagicMock()
-            mock_text_block.text = json.dumps(valid_llm_response)
-            mock_anthropic_response.content = [mock_text_block]
+            mock_llm_client.complete.return_value = json.dumps(valid_llm_response)
 
-            analyzer = PageAnalyzer(api_key="test-key")
-            analyzer._client.messages.create = AsyncMock(return_value=mock_anthropic_response)
+            analyzer = PageAnalyzer(llm_client=mock_llm_client)
 
             profile = await analyzer.analyze("https://example.com/blog")
             assert profile.site_name == "Test Blog"
 
-    def test_clean_html_removes_scripts(self) -> None:
+    def test_clean_html_removes_scripts(self, mock_llm_client) -> None:
         html = """
         <html>
         <head><script>alert('xss')</script></head>
@@ -292,14 +260,14 @@ class TestPageAnalyzer:
         </body>
         </html>
         """
-        analyzer = PageAnalyzer(api_key="test-key")
+        analyzer = PageAnalyzer(llm_client=mock_llm_client)
         cleaned = analyzer._clean_html(html)
 
         assert "<script>" not in cleaned
         assert "alert" not in cleaned
         assert "console.log" not in cleaned
 
-    def test_clean_html_removes_styles(self) -> None:
+    def test_clean_html_removes_styles(self, mock_llm_client) -> None:
         html = """
         <html>
         <head><style>.hidden { display: none; }</style></head>
@@ -308,13 +276,13 @@ class TestPageAnalyzer:
         </body>
         </html>
         """
-        analyzer = PageAnalyzer(api_key="test-key")
+        analyzer = PageAnalyzer(llm_client=mock_llm_client)
         cleaned = analyzer._clean_html(html)
 
         assert "<style>" not in cleaned
         assert "display: none" not in cleaned
 
-    def test_clean_html_preserves_important_attributes(self) -> None:
+    def test_clean_html_preserves_important_attributes(self, mock_llm_client) -> None:
         html = """
         <html>
         <body>
@@ -325,7 +293,7 @@ class TestPageAnalyzer:
         </body>
         </html>
         """
-        analyzer = PageAnalyzer(api_key="test-key")
+        analyzer = PageAnalyzer(llm_client=mock_llm_client)
         cleaned = analyzer._clean_html(html)
 
         assert 'class="post"' in cleaned
@@ -334,9 +302,9 @@ class TestPageAnalyzer:
         assert 'datetime="2024-01-15"' in cleaned
         assert "data-tracking" not in cleaned
 
-    def test_clean_html_truncates_long_html(self) -> None:
+    def test_clean_html_truncates_long_html(self, mock_llm_client) -> None:
         html = "<html><body>" + ("x" * 200) + "</body></html>"
-        analyzer = PageAnalyzer(api_key="test-key")
+        analyzer = PageAnalyzer(llm_client=mock_llm_client)
         settings = MagicMock()
         settings.max_html_length = 50
 
@@ -345,7 +313,7 @@ class TestPageAnalyzer:
 
         assert len(cleaned) == 50
 
-    def test_validate_profile_valid(self, sample_html: str) -> None:
+    def test_validate_profile_valid(self, sample_html: str, mock_llm_client) -> None:
         profile = ExtractionProfile(
             site_name="Test",
             post_selector="article.post-card",
@@ -353,13 +321,13 @@ class TestPageAnalyzer:
             url_selector="a.post-link",
             url_attribute="href",
         )
-        analyzer = PageAnalyzer(api_key="test-key")
+        analyzer = PageAnalyzer(llm_client=mock_llm_client)
         result = analyzer._validate_profile(sample_html, profile)
 
         assert result["valid"] is True
         assert result["post_count"] == 2
 
-    def test_validate_profile_no_matching_posts(self, sample_html: str) -> None:
+    def test_validate_profile_no_matching_posts(self, sample_html: str, mock_llm_client) -> None:
         profile = ExtractionProfile(
             site_name="Test",
             post_selector="div.nonexistent",
@@ -367,13 +335,13 @@ class TestPageAnalyzer:
             url_selector="a",
             url_attribute="href",
         )
-        analyzer = PageAnalyzer(api_key="test-key")
+        analyzer = PageAnalyzer(llm_client=mock_llm_client)
         result = analyzer._validate_profile(sample_html, profile)
 
         assert result["valid"] is False
         assert "No elements found" in result["reason"]
 
-    def test_validate_profile_cannot_extract_data(self) -> None:
+    def test_validate_profile_cannot_extract_data(self, mock_llm_client) -> None:
         html = """
         <html>
         <body>
@@ -390,14 +358,14 @@ class TestPageAnalyzer:
             url_selector="a.link",
             url_attribute="href",
         )
-        analyzer = PageAnalyzer(api_key="test-key")
+        analyzer = PageAnalyzer(llm_client=mock_llm_client)
         result = analyzer._validate_profile(html, profile)
 
         assert result["valid"] is False
         assert "Could not extract" in result["reason"]
 
     async def test_analyze_extracts_json_from_markdown(
-        self, sample_html: str, valid_llm_response: dict
+        self, sample_html: str, valid_llm_response: dict, mock_llm_client
     ) -> None:
         mock_http_client = MagicMock(spec=httpx.AsyncClient)
         mock_response = MagicMock()
@@ -405,61 +373,34 @@ class TestPageAnalyzer:
         mock_response.raise_for_status = MagicMock()
         mock_http_client.get = AsyncMock(return_value=mock_response)
 
-        mock_anthropic_response = MagicMock()
-        mock_text_block = MagicMock()
-        mock_text_block.text = f"```json\n{json.dumps(valid_llm_response)}\n```"
-        mock_anthropic_response.content = [mock_text_block]
+        mock_llm_client.complete.return_value = f"```json\n{json.dumps(valid_llm_response)}\n```"
 
-        analyzer = PageAnalyzer(api_key="test-key", http_client=mock_http_client)
-        analyzer._client.messages.create = AsyncMock(return_value=mock_anthropic_response)
+        analyzer = PageAnalyzer(llm_client=mock_llm_client, http_client=mock_http_client)
 
         profile = await analyzer.analyze("https://example.com/blog")
 
         assert profile.site_name == "Test Blog"
 
-    async def test_extract_profile_ignores_content_blocks_without_text(
-        self, valid_llm_response: dict
-    ) -> None:
-        class EmptyBlock:
-            pass
-
-        mock_anthropic_response = MagicMock()
-        mock_text_block = MagicMock()
-        mock_text_block.text = json.dumps(valid_llm_response)
-        mock_anthropic_response.content = [EmptyBlock(), mock_text_block]
-
-        analyzer = PageAnalyzer(api_key="test-key")
-        analyzer._client.messages.create = AsyncMock(return_value=mock_anthropic_response)
-
-        result = await analyzer._extract_profile_with_llm(
-            "https://example.com/blog",
-            "<html></html>",
-        )
-
-        assert result["site_name"] == "Test Blog"
-
     async def test_extract_profile_sanitizes_control_characters_from_url(
-        self, valid_llm_response: dict
+        self, valid_llm_response: dict, mock_llm_client
     ) -> None:
-        mock_anthropic_response = MagicMock()
-        mock_text_block = MagicMock()
-        mock_text_block.text = json.dumps(valid_llm_response)
-        mock_anthropic_response.content = [mock_text_block]
+        mock_llm_client.complete.return_value = json.dumps(valid_llm_response)
 
-        analyzer = PageAnalyzer(api_key="test-key")
-        analyzer._client.messages.create = AsyncMock(return_value=mock_anthropic_response)
+        analyzer = PageAnalyzer(llm_client=mock_llm_client)
 
         await analyzer._extract_profile_with_llm(
             "https://example.com/\x00blog\x7f",
             "<html></html>",
         )
 
-        user_prompt = analyzer._client.messages.create.await_args.kwargs["messages"][0]["content"]
+        user_prompt = mock_llm_client.complete.await_args.kwargs["user_message"]
         assert "URL: https://example.com/blog" in user_prompt
         assert "\x00" not in user_prompt
         assert "\x7f" not in user_prompt
 
-    def test_validate_profile_invalid_post_selector(self, sample_html: str) -> None:
+    def test_validate_profile_invalid_post_selector(
+        self, sample_html: str, mock_llm_client
+    ) -> None:
         profile = ExtractionProfile(
             site_name="Test",
             post_selector="[invalid selector syntax",
@@ -467,13 +408,15 @@ class TestPageAnalyzer:
             url_selector="a",
             url_attribute="href",
         )
-        analyzer = PageAnalyzer(api_key="test-key")
+        analyzer = PageAnalyzer(llm_client=mock_llm_client)
         result = analyzer._validate_profile(sample_html, profile)
 
         assert result["valid"] is False
         assert "Invalid CSS selector" in result["reason"]
 
-    def test_validate_profile_rejects_posts_with_links_missing_url_attribute(self) -> None:
+    def test_validate_profile_rejects_posts_with_links_missing_url_attribute(
+        self, mock_llm_client
+    ) -> None:
         html = """
         <html>
         <body>
@@ -491,14 +434,16 @@ class TestPageAnalyzer:
             url_selector="a.post-link",
             url_attribute="href",
         )
-        analyzer = PageAnalyzer(api_key="test-key")
+        analyzer = PageAnalyzer(llm_client=mock_llm_client)
 
         result = analyzer._validate_profile(html, profile)
 
         assert result["valid"] is False
         assert "Could not extract" in result["reason"]
 
-    def test_validate_profile_invalid_title_selector(self, sample_html: str) -> None:
+    def test_validate_profile_invalid_title_selector(
+        self, sample_html: str, mock_llm_client
+    ) -> None:
         profile = ExtractionProfile(
             site_name="Test",
             post_selector="article.post-card",
@@ -506,7 +451,7 @@ class TestPageAnalyzer:
             url_selector="a.post-link",
             url_attribute="href",
         )
-        analyzer = PageAnalyzer(api_key="test-key")
+        analyzer = PageAnalyzer(llm_client=mock_llm_client)
         result = analyzer._validate_profile(sample_html, profile)
 
         assert result["valid"] is False
