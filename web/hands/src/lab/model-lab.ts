@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
-import { BONE_ADAPTER, applyFighterSkin, loadBoxerGlb } from "../render/graph";
+import { BONE_ADAPTER, FIGHTER_MODEL_SCALE, applyFighterSkin, loadBoxerGlb } from "../render/graph";
 
 interface ClipRow {
   readonly name: string;
@@ -13,7 +13,7 @@ export class ModelLab {
   private readonly scene = new THREE.Scene();
   private readonly camera: THREE.PerspectiveCamera;
   private mixer: THREE.AnimationMixer | null = null;
-  private labMaterial: THREE.MeshPhysicalMaterial | null = null;
+  private labMaterials: readonly THREE.Material[] = [];
   private actions = new Map<string, THREE.AnimationAction>();
   private current: THREE.AnimationAction | null = null;
   private skeletonHelper: THREE.SkeletonHelper | null = null;
@@ -42,7 +42,7 @@ export class ModelLab {
 </div>
 <div class="model-row"><input type="range" data-seek min="0" max="1000" value="0" step="1"></div>
 <h2>Transform</h2>
-<div class="model-row"><label>Scale <input type="range" data-scale min="30" max="200" value="78"></label></div>
+<div class="model-row"><label>Scale <input type="range" data-scale min="30" max="200" value="96"></label></div>
 <div class="model-row"><label>Rotate Y <input type="range" data-rotate min="-180" max="180" value="0"></label></div>
 <div class="model-row"><label>Offset X <input type="range" data-offx min="-200" max="200" value="0"></label>
 <label>Z <input type="range" data-offz min="-200" max="200" value="0"></label></div>
@@ -104,7 +104,8 @@ export class ModelLab {
     try {
       const gltf = await loadBoxerGlb();
       this.model = cloneSkeleton(gltf.scene);
-      this.labMaterial = applyFighterSkin(this.model);
+      this.model.scale.setScalar(FIGHTER_MODEL_SCALE);
+      this.labMaterials = applyFighterSkin(this.model, { skin: 0xa9744f, gear: 0x1d4ed8 }).owned;
       this.scene.add(this.model);
       this.model.traverse((object) => {
         if (object instanceof THREE.SkinnedMesh) {
@@ -269,7 +270,7 @@ export class ModelLab {
 
   destroy(): void {
     cancelAnimationFrame(this.raf);
-    this.labMaterial?.dispose();
+    for (const material of this.labMaterials) material.dispose();
     this.renderer.dispose();
     this.root.replaceChildren();
   }

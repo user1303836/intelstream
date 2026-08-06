@@ -88,7 +88,7 @@ const scratchAim = new THREE.Vector3();
 const scratchAimWorld = new THREE.Vector3();
 const scratchQuat = new THREE.Quaternion();
 
-const BLOOD_CUT_SCALE: Record<BloodLevel, number> = { full: 1, reduced: 0.45, off: 0 };
+const BLOOD_CUT_SCALE: Record<BloodLevel, number> = { full: 1, reduced: 0.35, off: 0 };
 const BLOODED_GLOVE = new THREE.Color(0x5c0a0e);
 
 export class BoxerAnimator {
@@ -545,8 +545,13 @@ export class BoxerAnimator {
     const cutScale = BLOOD_CUT_SCALE[blood];
     (this.rig.bruiseL.material as THREE.MeshStandardMaterial).opacity = bruise(trauma.left_eye);
     (this.rig.bruiseR.material as THREE.MeshStandardMaterial).opacity = bruise(trauma.right_eye);
-    (this.rig.cutL.material as THREE.MeshStandardMaterial).opacity = Math.min(1, trauma.left_cut / 200 + trauma.bleeding / 600) * cutScale;
-    (this.rig.cutR.material as THREE.MeshStandardMaterial).opacity = Math.min(1, trauma.right_cut / 200 + trauma.bleeding / 600) * cutScale;
+    const cutL = Math.min(1, trauma.left_cut / 150 + trauma.bleeding / 450);
+    const cutR = Math.min(1, trauma.right_cut / 150 + trauma.bleeding / 450);
+    (this.rig.cutL.material as THREE.MeshStandardMaterial).opacity = cutL * cutScale;
+    (this.rig.cutR.material as THREE.MeshStandardMaterial).opacity = cutR * cutScale;
+    const graphicScale = blood === "full" ? 1.8 : 1;
+    this.rig.cutL.scale.set(1 + cutL * 0.55 * graphicScale, 1 + cutL * 0.7, 1);
+    this.rig.cutR.scale.set(1 + cutR * 0.55 * graphicScale, 1 + cutR * 0.7, 1);
 
     const swellAmount = (value: number): number => Math.min(1.35, value / 260 + trauma.swelling / 560);
     const swellL = swellAmount(trauma.left_eye);
@@ -561,16 +566,18 @@ export class BoxerAnimator {
     (this.rig.cheekL.material as THREE.MeshStandardMaterial).opacity = cheekAmount * 0.8;
     (this.rig.cheekR.material as THREE.MeshStandardMaterial).opacity = cheekAmount * 0.75;
 
-    const dripL = Math.min(1.7, (trauma.left_cut + trauma.bleeding) / 260);
-    const dripR = Math.min(1.7, (trauma.right_cut + trauma.bleeding) / 260);
-    this.rig.streakL.scale.set(1, 0.15 + dripL, 1);
-    this.rig.streakR.scale.set(1, 0.15 + dripR, 1);
+    const dripL = Math.min(1.9, (trauma.left_cut + trauma.bleeding) / 220);
+    const dripR = Math.min(1.9, (trauma.right_cut + trauma.bleeding) / 220);
+    this.rig.streakL.scale.set(graphicScale, 0.15 + dripL * graphicScale, 1);
+    this.rig.streakR.scale.set(graphicScale, 0.15 + dripR * graphicScale, 1);
     (this.rig.streakL.material as THREE.MeshStandardMaterial).opacity = Math.min(1, dripL) * cutScale;
     (this.rig.streakR.material as THREE.MeshStandardMaterial).opacity = Math.min(1, dripR) * cutScale;
-    const noseAmount = Math.min(1.4, trauma.head / 700 + trauma.bleeding / 420);
-    this.rig.noseStreak.scale.set(1, 0.2 + noseAmount, 1);
-    (this.rig.noseStreak.material as THREE.MeshStandardMaterial).opacity = Math.min(1, noseAmount * 0.9) * cutScale;
-    (this.rig.mouthBlood.material as THREE.MeshStandardMaterial).opacity = Math.min(1, trauma.head / 800 + trauma.bleeding / 500) * cutScale;
+    const noseAmount = Math.min(1.6, trauma.head / 600 + trauma.bleeding / 340);
+    this.rig.noseStreak.scale.set(graphicScale, 0.2 + noseAmount * graphicScale, 1);
+    (this.rig.noseStreak.material as THREE.MeshStandardMaterial).opacity = Math.min(1, noseAmount) * cutScale;
+    const mouth = Math.min(1, trauma.head / 650 + trauma.bleeding / 360);
+    this.rig.mouthBlood.scale.set(1 + mouth * graphicScale, 1 + mouth * 0.8, 1);
+    (this.rig.mouthBlood.material as THREE.MeshStandardMaterial).opacity = mouth * cutScale;
 
     const ribAmount = Math.min(1, trauma.body / 750);
     this.rig.ribL.scale.set(0.5 + ribAmount * 0.35, 1.2 + ribAmount * 0.5, 0.7 + ribAmount * 0.2);
@@ -578,11 +585,15 @@ export class BoxerAnimator {
     (this.rig.ribL.material as THREE.MeshStandardMaterial).opacity = ribAmount * 0.85;
     (this.rig.ribR.material as THREE.MeshStandardMaterial).opacity = ribAmount * 0.8;
 
-    const opponentBlood = Math.min(1, (opponent.trauma.bleeding + opponent.trauma.left_cut + opponent.trauma.right_cut) / 620) * cutScale;
-    this.rig.gloveLMaterial.color.copy(this.rig.gloveBaseColor).lerp(BLOODED_GLOVE, opponentBlood * 0.85);
+    const opponentBlood = Math.min(
+      1,
+      (opponent.trauma.bleeding + opponent.trauma.left_cut + opponent.trauma.right_cut) / 620
+        * (blood === "off" ? 0 : blood === "reduced" ? 0.3 : 1.5),
+    );
+    this.rig.gloveLMaterial.color.copy(this.rig.gloveBaseColor).lerp(BLOODED_GLOVE, opponentBlood);
 
-    const smear = Math.min(1.3, trauma.body / 500 + trauma.bleeding / 420);
-    this.rig.bodyStreak.scale.set(1 + smear * 0.4, 0.3 + smear, 1);
+    const smear = Math.min(1.5, trauma.body / 450 + trauma.bleeding / 340);
+    this.rig.bodyStreak.scale.set(1 + smear * 0.55 * graphicScale, 0.3 + smear * graphicScale, 1);
     (this.rig.bodyStreak.material as THREE.MeshStandardMaterial).opacity = Math.min(1, smear) * cutScale;
 
     (this.rig.bodyBruise.material as THREE.MeshStandardMaterial).opacity = Math.min(0.7, trauma.body / 950);

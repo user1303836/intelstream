@@ -1,16 +1,10 @@
 /**
- * Generates the skinned fighter GLB for the Hands 3D presentation by
- * retargeting the tuned procedural boxing motion onto the CC0 KayKit
- * Barbarian armature (assets-src/Barbarian.glb).
- *
- * Method: per canonical bone, the world-space rotation delta from the
- * procedural rig's rest pose is applied to the model's rest pose
- * (rest-pose-offset retarget), then converted to model-local keyframes.
- * Hips translation is retargeted scaled by the rest hip-height ratio.
+ * Generates the skinned HANDS fighter by retargeting the tuned procedural
+ * boxing motion onto the Texel Boxer armature (assets-src/Boxer.glb).
  *
  * Outputs:
  *   web/hands/src/assets/fighter-glb.ts        (base64 GLB with 18 clips)
- *   web/hands/src/assets/fighter-texture.ts    (base64 palette PNG)
+ *   web/hands/src/assets/fighter-textures.ts   (embedded source textures)
  *   web/hands/src/assets/fighter-markers.json  (glove trajectories per punch)
  *
  * Run: npm run generate:fighter   (from web/hands)
@@ -77,25 +71,6 @@ const AIM_BONES: Record<string, string> = {
   kneeR: "ankleR",
 };
 
-const MODEL_PARENT: Record<string, string | null> = {
-  hips: "root",
-  spine: "hips",
-  chest: "spine",
-  head: "chest",
-  upperarml: "chest",
-  lowerarml: "upperarml",
-  wristl: "lowerarml",
-  upperarmr: "chest",
-  lowerarmr: "upperarmr",
-  wristr: "lowerarmr",
-  upperlegl: "hips",
-  lowerlegl: "upperlegl",
-  footl: "lowerlegl",
-  upperlegr: "hips",
-  lowerlegr: "upperlegr",
-  footr: "lowerlegr",
-};
-
 const baseFighter = (): FighterSnapshot => ({
   player_id: "one", x: 0, y: 0, facing: 1, velocity_x: 0, velocity_y: 0,
   stance: "orthodox", defense: "none", stamina: 1000, maximum_stamina: 1000,
@@ -126,10 +101,13 @@ async function loadModel(path: string): Promise<GLTF> {
 interface RetargetContext {
   readonly scene: THREE.Group;
   readonly modelBones: Map<string, THREE.Bone>;
+  readonly modelRestLocal: Map<THREE.Object3D, THREE.Quaternion>;
   readonly modelRestWorld: Map<string, THREE.Quaternion>;
   readonly modelRestDirections: Map<string, THREE.Vector3>;
   readonly oursRestWorld: Map<string, THREE.Quaternion>;
-  readonly modelHipsRest: THREE.Vector3;
+  readonly modelHipsRestLocal: THREE.Vector3;
+  readonly modelHipsRestWorld: THREE.Vector3;
+  readonly modelHipsParentInverse: THREE.Matrix4;
   readonly hipsScale: number;
 }
 
@@ -137,14 +115,17 @@ function buildRetargetContext(model: GLTF): RetargetContext {
   const scene = model.scene;
   scene.updateMatrixWorld(true);
   const modelBones = new Map<string, THREE.Bone>();
+  const modelRestLocal = new Map<THREE.Object3D, THREE.Quaternion>();
   scene.traverse((object) => {
+    modelRestLocal.set(object, object.quaternion.clone());
     if (object instanceof THREE.Bone) modelBones.set(object.name, object);
   });
   const available = [...modelBones.keys()].sort();
   const missing = Object.entries(BONE_ADAPTER).filter(([, target]) => !modelBones.has(target));
   if (missing.length > 0) {
     throw new Error(
-      `Barbarian.glb is missing required bones: ${missing.map(([from, to]) => `${from}→${to}`).join(", ")}\navailable: ${available.join(", ")}`,
+      `Boxer.glb is missing required bones: ${missing.map(([from, to]) => `${from}→${to}`).join(", ")}
+available: ${available.join(", ")}`,
     );
   }
   const ours = buildBoxer(PALETTES[0]);
@@ -156,8 +137,8 @@ function buildRetargetContext(model: GLTF): RetargetContext {
     oursRestWorld.set(name, joint.getWorldQuaternion(new THREE.Quaternion()));
   }
   const modelRestWorld = new Map<string, THREE.Quaternion>();
-  for (const target of Object.values(BONE_ADAPTER)) {
-    modelRestWorld.set(target, modelBones.get(target)!.getWorldQuaternion(new THREE.Quaternion()));
+  for (const [name, bone] of modelBones) {
+    modelRestWorld.set(name, bone.getWorldQuaternion(new THREE.Quaternion()));
   }
   const modelRestDirections = new Map<string, THREE.Vector3>();
   for (const [name, childName] of Object.entries(AIM_BONES)) {
@@ -165,16 +146,21 @@ function buildRetargetContext(model: GLTF): RetargetContext {
     const childPosition = modelBones.get(BONE_ADAPTER[childName]!)!.getWorldPosition(new THREE.Vector3());
     modelRestDirections.set(BONE_ADAPTER[name]!, childPosition.sub(bonePosition).normalize());
   }
-  const modelHipsRest = modelBones.get("hips")!.getWorldPosition(new THREE.Vector3());
+  const modelHips = modelBones.get(BONE_ADAPTER.hips)!;
+  const modelHipsRestWorld = modelHips.getWorldPosition(new THREE.Vector3());
   const oursHipsRest = ours.hips.getWorldPosition(new THREE.Vector3());
+  if (modelHips.parent === null) throw new Error("Boxer.glb hips bone has no parent");
   return {
     scene,
     modelBones,
+    modelRestLocal,
     modelRestWorld,
     modelRestDirections,
     oursRestWorld,
-    modelHipsRest,
-    hipsScale: modelHipsRest.y / oursHipsRest.y,
+    modelHipsRestLocal: modelHips.position.clone(),
+    modelHipsRestWorld,
+    modelHipsParentInverse: modelHips.parent.matrixWorld.clone().invert(),
+    hipsScale: modelHipsRestWorld.y / oursHipsRest.y,
   };
 }
 
@@ -186,20 +172,47 @@ interface BakedClip {
   readonly gloveMarkers: { left: number[][]; right: number[][] };
 }
 
+function currentModelWorldQuaternion(
+  context: RetargetContext,
+  object: THREE.Object3D | null,
+  modelWorld: Map<string, THREE.Quaternion>,
+): THREE.Quaternion {
+  if (object === null) return new THREE.Quaternion();
+  if (object instanceof THREE.Bone) {
+    const animated = modelWorld.get(object.name);
+    if (animated !== undefined) return animated.clone();
+  }
+  return currentModelWorldQuaternion(context, object.parent, modelWorld).multiply(
+    context.modelRestLocal.get(object) ?? object.quaternion,
+  );
+}
+
+function restoreModelPose(context: RetargetContext): void {
+  for (const name of CANONICAL_ORDER) {
+    const bone = context.modelBones.get(BONE_ADAPTER[name]!)!;
+    bone.quaternion.copy(context.modelRestLocal.get(bone)!);
+  }
+  context.modelBones.get(BONE_ADAPTER.hips)!.position.copy(context.modelHipsRestLocal);
+  context.scene.updateMatrixWorld(true);
+}
+
 function bakeRetargetedClip(
   context: RetargetContext,
   name: string,
   frames: number,
   drive: (fighter: FighterSnapshot, frame: number) => FighterSnapshot,
   onFrame?: (animator: BoxerAnimator, frame: number) => void,
+  driveWarmup = true,
+  warmupFrames = 12,
+  dtScale = 1,
 ): BakedClip {
   const rig = buildBoxer(PALETTES[0]);
   const animator = new BoxerAnimator(rig, MAPPING);
   const oursJoints = new Map<string, THREE.Object3D>();
-  for (const name of CANONICAL_ORDER) {
-    oursJoints.set(name, rig.root.getObjectByName(name)!);
+  for (const jointName of CANONICAL_ORDER) {
+    oursJoints.set(jointName, rig.root.getObjectByName(jointName)!);
   }
-  const tracks = new Map<string, number[][]>(CANONICAL_ORDER.map((name) => [name, []]));
+  const tracks = new Map<string, number[][]>(CANONICAL_ORDER.map((jointName) => [jointName, []]));
   const hipsPositions: number[][] = [];
   const gloveMarkers = { left: [] as number[][], right: [] as number[][] };
 
@@ -207,96 +220,176 @@ function bakeRetargetedClip(
   const delta = new THREE.Quaternion();
   const deltaQ = new THREE.Quaternion();
   const targetWorld = new THREE.Quaternion();
-  const parentWorldInverse = new THREE.Quaternion();
   const modelWorld = new Map<string, THREE.Quaternion>();
   const scratchBonePos = new THREE.Vector3();
   const scratchChildPos = new THREE.Vector3();
-
   const oursHipsRestLocal = new THREE.Vector3(0, 0.98, 0);
 
-  for (let frame = -12; frame < frames; frame += 1) {
+  for (let frame = -warmupFrames; frame < frames; frame += 1) {
     const active = Math.max(0, frame);
-    const fighter = drive(baseFighter(), active);
+    const fighter = frame < 0 && !driveWarmup ? baseFighter() : drive(baseFighter(), active);
     if (onFrame !== undefined && frame >= 0) onFrame(animator, frame);
-    animator.update(fighter, OPPONENT, 1 / 30, frame / 30, false, "full", active);
+    animator.update(fighter, OPPONENT, dtScale / 30, (frame * dtScale) / 30, false, "full", active);
     if (frame < 0) continue;
+    // Runtime owns facing and stance yaw; clips contain joint-local motion only.
+    rig.root.quaternion.identity();
     rig.root.updateMatrixWorld(true);
 
     modelWorld.clear();
-    for (const name of CANONICAL_ORDER) {
-      const modelName = BONE_ADAPTER[name]!;
-      const parentModelName = MODEL_PARENT[modelName] ?? null;
-      const parentWorld = parentModelName !== null && modelWorld.has(parentModelName)
-        ? modelWorld.get(parentModelName)!
-        : context.modelRestWorld.get(parentModelName ?? "root") ?? new THREE.Quaternion();
-      const aimChild = AIM_BONES[name];
+    for (const jointName of CANONICAL_ORDER) {
+      const modelName = BONE_ADAPTER[jointName]!;
+      const modelBone = context.modelBones.get(modelName)!;
+      const parentWorld = currentModelWorldQuaternion(context, modelBone.parent, modelWorld);
+      const aimChild = AIM_BONES[jointName];
       if (aimChild !== undefined) {
-        const boneWorld = oursJoints.get(name)!.getWorldPosition(scratchBonePos);
+        const boneWorld = oursJoints.get(jointName)!.getWorldPosition(scratchBonePos);
         const childWorld = oursJoints.get(aimChild)!.getWorldPosition(scratchChildPos);
         const direction = childWorld.sub(boneWorld).normalize();
         const restDirection = context.modelRestDirections.get(modelName)!;
         deltaQ.setFromUnitVectors(restDirection, direction);
         targetWorld.copy(deltaQ).multiply(context.modelRestWorld.get(modelName)!);
       } else {
-        oursJoints.get(name)!.getWorldQuaternion(oursWorld);
-        delta.copy(oursWorld).multiply(context.oursRestWorld.get(name)!.clone().invert());
+        oursJoints.get(jointName)!.getWorldQuaternion(oursWorld);
+        delta.copy(oursWorld).multiply(context.oursRestWorld.get(jointName)!.clone().invert());
         targetWorld.copy(delta).multiply(context.modelRestWorld.get(modelName)!);
       }
       modelWorld.set(modelName, targetWorld.clone());
-      parentWorldInverse.copy(parentWorld).invert();
-      const local = parentWorldInverse.clone().multiply(targetWorld);
-      tracks.get(name)!.push([local.x, local.y, local.z, local.w]);
+      const local = parentWorld.invert().multiply(targetWorld).normalize();
+      tracks.get(jointName)!.push([local.x, local.y, local.z, local.w]);
+      modelBone.quaternion.copy(local);
     }
 
     const hipsDelta = rig.hips.position.clone().sub(oursHipsRestLocal).multiplyScalar(context.hipsScale);
-    const modelHipsLocal = context.modelBones.get("hips")!.position.clone().add(hipsDelta);
-    hipsPositions.push([modelHipsLocal.x, modelHipsLocal.y, modelHipsLocal.z]);
+    const modelHips = context.modelBones.get(BONE_ADAPTER.hips)!;
+    const modelHipsLocal = context.modelHipsRestWorld.clone().add(hipsDelta).applyMatrix4(context.modelHipsParentInverse);
+    modelHips.position.copy(modelHipsLocal);
+    context.scene.updateMatrixWorld(true);
+    for (let pass = 0; pass < 2; pass += 1) {
+      const floor = new THREE.Box3().setFromObject(context.scene, true).min.y;
+      if (!Number.isFinite(floor)) throw new Error(`${name} frame ${frame} has non-finite skinned bounds`);
+      if (Math.abs(floor) < 0.0001) break;
+      const hipsWorld = modelHips.getWorldPosition(new THREE.Vector3()).add(new THREE.Vector3(0, -floor, 0));
+      modelHips.parent!.worldToLocal(hipsWorld);
+      modelHips.position.copy(hipsWorld);
+      context.scene.updateMatrixWorld(true);
+    }
+    hipsPositions.push([modelHips.position.x, modelHips.position.y, modelHips.position.z]);
 
-    // Marker positions: model-space wrist world positions under this pose.
-    const wristL = computeModelWorldPosition(context, modelWorld, "wristl");
-    const wristR = computeModelWorldPosition(context, modelWorld, "wristr");
+    const wristL = context.modelBones.get(BONE_ADAPTER.gloveL)!.getWorldPosition(new THREE.Vector3());
+    const wristR = context.modelBones.get(BONE_ADAPTER.gloveR)!.getWorldPosition(new THREE.Vector3());
     gloveMarkers.left.push([Number(wristL.x.toFixed(4)), Number(wristL.y.toFixed(4)), Number(wristL.z.toFixed(4))]);
     gloveMarkers.right.push([Number(wristR.x.toFixed(4)), Number(wristR.y.toFixed(4)), Number(wristR.z.toFixed(4))]);
   }
+  restoreModelPose(context);
   return { name, frames, tracks, hipsPositions, gloveMarkers };
 }
 
-const MODEL_REST_LOCAL = new Map<string, THREE.Vector3>();
-
-function computeModelWorldPosition(
-  context: RetargetContext,
-  modelWorld: Map<string, THREE.Quaternion>,
-  boneName: string,
-): THREE.Vector3 {
-  const chain: string[] = [];
-  let current: string | null = boneName;
-  while (current !== null) {
-    chain.unshift(current);
-    current = MODEL_PARENT[current] ?? null;
-  }
-  const position = new THREE.Vector3();
-  const orientation = new THREE.Quaternion();
-  for (const link of chain) {
-    const rest = MODEL_REST_LOCAL.get(link) ?? context.modelBones.get(link)!.position;
-    const offset = rest.clone().applyQuaternion(orientation);
-    position.add(offset);
-    const world = modelWorld.get(link);
-    if (world !== undefined) orientation.copy(world);
-    else orientation.copy(context.modelRestWorld.get(link) ?? new THREE.Quaternion());
-  }
-  return position;
+interface SourceGltf {
+  readonly bufferViews?: readonly { readonly buffer?: number; readonly byteOffset?: number; readonly byteLength: number }[];
+  readonly images?: readonly { readonly bufferView?: number; readonly mimeType?: string }[];
+  readonly textures?: readonly { readonly source?: number }[];
+  readonly materials?: readonly {
+    readonly name?: string;
+    readonly pbrMetallicRoughness?: { readonly baseColorTexture?: { readonly index: number } };
+  }[];
 }
 
-function captureRestLocals(context: RetargetContext): void {
-  MODEL_REST_LOCAL.clear();
-  for (const [name, bone] of context.modelBones) MODEL_REST_LOCAL.set(name, bone.position.clone());
+const TEXTURE_SPECS = [
+  { key: "head", material: "MHeadMat0" },
+  { key: "gloves", material: "GlovesMat0" },
+  { key: "body", material: "MBodyMat0" },
+  { key: "shoes", material: "ShoesMat0" },
+  { key: "pants", material: "PantsMat0" },
+] as const;
+
+function embeddedTextureDataUrls(path: string): Record<(typeof TEXTURE_SPECS)[number]["key"], string> {
+  const source = readFileSync(path);
+  const view = new DataView(source.buffer, source.byteOffset, source.byteLength);
+  if (view.getUint32(0, true) !== 0x46546c67 || view.getUint32(4, true) !== 2) {
+    throw new Error(`${path} is not a glTF 2 GLB`);
+  }
+  let offset = 12;
+  let jsonBytes: Buffer | null = null;
+  let binaryBytes: Buffer | null = null;
+  while (offset < source.byteLength) {
+    const length = view.getUint32(offset, true);
+    const type = view.getUint32(offset + 4, true);
+    offset += 8;
+    const chunk = source.subarray(offset, offset + length);
+    if (type === 0x4e4f534a) jsonBytes = chunk;
+    if (type === 0x004e4942) binaryBytes = chunk;
+    offset += length;
+  }
+  if (jsonBytes === null || binaryBytes === null) throw new Error(`${path} has no embedded JSON or binary chunk`);
+  const sourceGltf = JSON.parse(jsonBytes.toString("utf8")) as SourceGltf;
+  const result = {} as Record<(typeof TEXTURE_SPECS)[number]["key"], string>;
+  for (const spec of TEXTURE_SPECS) {
+    const material = sourceGltf.materials?.find((candidate) => candidate.name === spec.material);
+    const textureIndex = material?.pbrMetallicRoughness?.baseColorTexture?.index;
+    const imageIndex = textureIndex === undefined ? undefined : sourceGltf.textures?.[textureIndex]?.source;
+    const image = imageIndex === undefined ? undefined : sourceGltf.images?.[imageIndex];
+    const bufferView = image?.bufferView === undefined ? undefined : sourceGltf.bufferViews?.[image.bufferView];
+    if (image?.mimeType === undefined || bufferView === undefined || (bufferView.buffer ?? 0) !== 0) {
+      throw new Error(`${path} has no embedded base-color image for ${spec.material}`);
+    }
+    const imageBytes = binaryBytes.subarray(
+      bufferView.byteOffset ?? 0,
+      (bufferView.byteOffset ?? 0) + bufferView.byteLength,
+    );
+    result[spec.key] = `data:${image.mimeType};base64,${imageBytes.toString("base64")}`;
+  }
+  return result;
+}
+
+function cleanSkinWeights(scene: THREE.Object3D): void {
+  scene.traverse((object) => {
+    if (!(object instanceof THREE.SkinnedMesh)) return;
+    const joints = object.geometry.getAttribute("skinIndex");
+    const weights = object.geometry.getAttribute("skinWeight");
+    if (joints === undefined || weights === undefined) throw new Error(`${object.name} has no skin weights`);
+    for (let index = 0; index < weights.count; index += 1) {
+      const jointValues = [joints.getX(index), joints.getY(index), joints.getZ(index), joints.getW(index)];
+      const weightValues = [weights.getX(index), weights.getY(index), weights.getZ(index), weights.getW(index)];
+      const combined = new Map<number, number>();
+      for (let component = 0; component < 4; component += 1) {
+        const weight = weightValues[component]!;
+        if (weight > 0) combined.set(jointValues[component]!, (combined.get(jointValues[component]!) ?? 0) + weight);
+      }
+      const influences = [...combined].sort((left, right) => right[1] - left[1]).slice(0, 4);
+      const total = influences.reduce((sum, influence) => sum + influence[1], 0);
+      if (total <= 0) throw new Error(`${object.name} vertex ${index} has no positive skin weights`);
+      while (influences.length < 4) influences.push([0, 0]);
+      joints.setXYZW(index, influences[0]![0], influences[1]![0], influences[2]![0], influences[3]![0]);
+      weights.setXYZW(
+        index,
+        influences[0]![1] / total,
+        influences[1]![1] / total,
+        influences[2]![1] / total,
+        influences[3]![1] / total,
+      );
+    }
+    joints.needsUpdate = true;
+    weights.needsUpdate = true;
+  });
 }
 
 async function main(): Promise<void> {
-  const model = await loadModel("assets-src/Barbarian.glb");
+  const sourcePath = "assets-src/Boxer.glb";
+  const textureDataUrls = embeddedTextureDataUrls(sourcePath);
+  const model = await loadModel(sourcePath);
   const props: THREE.Object3D[] = [];
+  const meshNames = new Map([
+    ["MHeadMat0", "BoxerHead"],
+    ["GlovesMat0", "BoxerGloves"],
+    ["MBodyMat0", "BoxerBody"],
+    ["ShoesMat0", "BoxerShoes"],
+    ["PantsMat0", "BoxerPants"],
+  ]);
   model.scene.traverse((object) => {
     if (object instanceof THREE.Mesh && !(object instanceof THREE.SkinnedMesh)) props.push(object);
+    if (object instanceof THREE.SkinnedMesh && !Array.isArray(object.material)) {
+      object.name = meshNames.get(object.material.name) ?? object.name;
+    }
   });
   console.log(`stripping ${props.length} prop meshes: ${props.map((prop) => prop.name).join(", ")}`);
   for (const prop of props) prop.removeFromParent();
@@ -306,12 +399,14 @@ async function main(): Promise<void> {
       for (const material of materials) {
         const standard = material as THREE.MeshStandardMaterial;
         standard.map = null;
-        standard.color = new THREE.Color(0xffffff);
+        standard.color.setHex(0xffffff);
       }
     }
   });
+  cleanSkinWeights(model.scene);
+  model.scene.userData.attribution = '"Boxer" by Texel, Inc., CC BY 4.0';
+  model.scene.userData.source = "https://sketchfab.com/3d-models/boxer-84767168720948b38728ff78ee6f6090";
   const context = buildRetargetContext(model);
-  captureRestLocals(context);
 
   const clips: BakedClip[] = [];
   clips.push(bakeRetargetedClip(context, "idle", 60, (fighter) => fighter));
@@ -353,8 +448,8 @@ async function main(): Promise<void> {
   clips.push(bakeRetargetedClip(context, "hit_head", 16, (fighter) => fighter, (animator, frame) => {
     if (frame === 0) animator.impact({ direction: 1, amount: 320, blocked: false });
   }));
-  clips.push(bakeRetargetedClip(context, "knockdown", 42, (fighter) => ({ ...fighter, is_downed: true })));
-  clips.push(bakeRetargetedClip(context, "getup", 30, (fighter, frame) => ({ ...fighter, is_downed: frame < 10 })));
+  clips.push(bakeRetargetedClip(context, "knockdown", 42, (fighter) => ({ ...fighter, is_downed: true }), undefined, false));
+  clips.push(bakeRetargetedClip(context, "getup", 30, (fighter, frame) => ({ ...fighter, is_downed: frame < 1 }), undefined, true, 21, 2));
 
   const animationClips = clips.map((clip) => {
     const tracks: THREE.KeyframeTrack[] = [];
@@ -377,15 +472,14 @@ async function main(): Promise<void> {
 
   mkdirSync(OUT_DIR, { recursive: true });
   const base64 = Buffer.from(glb).toString("base64");
-  const sha = createHash("sha256").update(base64).digest("hex");
+  const sha = createHash("sha256").update(Buffer.from(glb)).digest("hex");
   writeFileSync(
     `${OUT_DIR}/fighter-glb.ts`,
-    `// Generated by scripts/generate-fighter-glb.ts from assets-src/Barbarian.glb (CC0, Kay Lousberg).\nexport const FIGHTER_GLB_BASE64 = "${base64}";\nexport const FIGHTER_GLB_SHA256 = "${sha}";\n`,
+    `// Generated from assets-src/Boxer.glb (Texel, Inc., CC BY 4.0).\nexport const FIGHTER_GLB_BASE64 = "${base64}";\nexport const FIGHTER_GLB_SHA256 = "${sha}";\n`,
   );
-  const texture = readFileSync("assets-src/barbarian_texture.png");
   writeFileSync(
-    `${OUT_DIR}/fighter-texture.ts`,
-    `// Generated from assets-src/barbarian_texture.png (CC0, Kay Lousberg).\nexport const FIGHTER_TEXTURE_BASE64 = "${texture.toString("base64")}";\n`,
+    `${OUT_DIR}/fighter-textures.ts`,
+    `// Generated from assets-src/Boxer.glb (Texel, Inc., CC BY 4.0).\nexport const FIGHTER_TEXTURE_DATA_URLS = ${JSON.stringify(textureDataUrls)} as const;\n`,
   );
   writeFileSync(`${OUT_DIR}/fighter-markers.json`, JSON.stringify({ format: 1, trajectories: markerTrajectories }, null, 1) + "\n");
   console.log(`fighter GLB: ${glb.byteLength} bytes, ${animationClips.length} clips, base64 ${base64.length} chars, sha256 ${sha}`);

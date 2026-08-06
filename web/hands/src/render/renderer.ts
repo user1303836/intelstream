@@ -5,7 +5,7 @@ import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { EventDeduplicator, SnapshotBuffer } from "../interpolation";
 import type { BloodLevel, Settings } from "../settings";
-import type { CombatEvent, EngineSnapshot, FinalMessage, PublicPlayer, SemanticAction, SimulationInfo } from "../types";
+import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, MatchResult, PublicPlayer, SemanticAction, SimulationInfo } from "../types";
 import { BoxerAnimator } from "./animation";
 import { buildArena, type BuiltArena } from "./arena";
 import { buildBoxer, buildReferee, disposeBoxer, type BoxerRig } from "./boxer";
@@ -13,6 +13,19 @@ import { CameraDirector } from "./camera";
 import { Effects3D } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
 import { drawHud } from "./hud";
+
+export function isArcadeDecapitationCandidate(
+  event: CombatEvent,
+  target: FighterSnapshot | undefined,
+  result: MatchResult | null,
+): boolean {
+  if (target === undefined || !["hit", "counter_hit"].includes(event.kind) || !event.detail.endsWith(":head")) return false;
+  return target.is_downed || (
+    result?.finish_method === "flash_ko"
+    && result.winner_id !== null
+    && result.winner_id === event.actor_id
+  );
+}
 import { buildRing, disposeRing, type BuiltRing } from "./ring";
 import { resizeHighDpi } from "./viewport";
 import { PALETTES, worldMapping, type WorldMapping } from "./world";
@@ -74,11 +87,24 @@ export class FightRenderer {
   private graphsReady: Promise<void> = Promise.resolve();
   private readonly headCache = [new THREE.Vector3(), new THREE.Vector3()];
   private readonly headCacheValid = [false, false];
-  private readonly pendingContacts: Array<{ event: CombatEvent; contactTick: number; targetIndex: number; actorIndex: number }> = [];
+  private readonly decapitated: [boolean, boolean] = [false, false];
+  private readonly observedDecapitatedDown: [boolean, boolean] = [false, false];
+  private bloodLevel: BloodLevel = "full";
+  private readonly pendingContacts: Array<{
+    event: CombatEvent;
+    contactTick: number;
+    targetIndex: number;
+    actorIndex: number;
+    decapitation: boolean;
+  }> = [];
   onContact: ((event: CombatEvent) => void) | null = null;
   private readonly tmpA = new THREE.Vector3();
   private readonly tmpB = new THREE.Vector3();
   private readonly tmpHead = new THREE.Vector3();
+  private readonly tmpHeadQuaternion = new THREE.Quaternion();
+  private readonly tmpStump = new THREE.Vector3();
+  private readonly tmpStumpOffset = new THREE.Vector3();
+  private readonly tmpStumpQuaternion = new THREE.Quaternion();
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -146,7 +172,8 @@ export class FightRenderer {
     this.hudCanvas.style.cssText = "position:absolute;inset:0;width:100%;height:100%;pointer-events:none";
     canvas.insertAdjacentElement("afterend", this.hudCanvas);
 
-    this.effects.setBloodLevel(settings().blood);
+    this.bloodLevel = settings().blood;
+    this.effects.setBloodLevel(this.bloodLevel);
     this.ensureGraphs();
     if (!this.manualClock) this.raf = requestAnimationFrame((time) => this.draw(time));
   }
@@ -160,6 +187,8 @@ export class FightRenderer {
         if (this.destroyed) return;
         const first = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
         const second = new SkinnedBoxer(gltf, { skin: 0x6e4128, gear: 0xb91c1c });
+        first.setDecapitated(this.decapitated[0]);
+        second.setDecapitated(this.decapitated[1]);
         this.graphs = [new BoxingGraph(first, this.mapping), new BoxingGraph(second, this.mapping)];
         this.scene.add(first.root, second.root);
         for (const boxer of this.boxers) {
@@ -213,11 +242,62 @@ export class FightRenderer {
   }
 
   setBloodLevel(level: BloodLevel): void {
+    if (level !== "full" && this.bloodLevel === "full") this.restoreAllHeads();
+    this.bloodLevel = level;
     this.effects.setBloodLevel(level);
   }
 
   setReducedMotion(reduced: boolean): void {
-    if (reduced) this.effects.clearDynamic();
+    if (reduced) {
+      this.restoreAllHeads();
+      this.effects.clearDynamic();
+    }
+  }
+
+  private setHeadVisible(index: number, visible: boolean): void {
+    const graphs = this.graphs;
+    if (graphs !== null) graphs[index]!.boxer.setDecapitated(!visible);
+    else this.boxers[index]!.head.visible = visible;
+  }
+
+  private restoreHead(index: number): void {
+    if (!this.decapitated[index]) return;
+    this.decapitated[index] = false;
+    this.observedDecapitatedDown[index] = false;
+    this.setHeadVisible(index, true);
+    this.effects.restoreFighter(index);
+  }
+
+  private restoreAllHeads(): void {
+    this.restoreHead(0);
+    this.restoreHead(1);
+    this.effects.clearArcadeGore();
+  }
+
+  private headWorldPose(index: number): { position: THREE.Vector3; quaternion: THREE.Quaternion } | null {
+    const graphs = this.graphs;
+    const head = graphs !== null ? graphs[index]!.boxer.bone("head") : this.boxers[index]!.head;
+    if (head === null) return null;
+    if (graphs !== null) graphs[index]!.boxer.root.updateMatrixWorld(true);
+    else this.boxers[index]!.root.updateMatrixWorld(true);
+    head.getWorldPosition(this.tmpHead);
+    head.getWorldQuaternion(this.tmpHeadQuaternion);
+    return { position: this.tmpHead, quaternion: this.tmpHeadQuaternion };
+  }
+
+  private stumpWorldPose(index: number): { position: THREE.Vector3; quaternion: THREE.Quaternion } | null {
+    const graphs = this.graphs;
+    const anchor = graphs !== null ? graphs[index]!.boxer.bone("Neck_012") : this.boxers[index]!.head;
+    if (anchor === null) return null;
+    if (graphs !== null) graphs[index]!.boxer.root.updateMatrixWorld(true);
+    else this.boxers[index]!.root.updateMatrixWorld(true);
+    anchor.getWorldPosition(this.tmpStump);
+    anchor.getWorldQuaternion(this.tmpStumpQuaternion);
+    if (graphs === null) {
+      this.tmpStumpOffset.set(0, -0.085, 0).applyQuaternion(this.tmpStumpQuaternion);
+      this.tmpStump.add(this.tmpStumpOffset);
+    }
+    return { position: this.tmpStump, quaternion: this.tmpStumpQuaternion };
   }
 
   predictAction(action: SemanticAction): void {
@@ -251,6 +331,7 @@ export class FightRenderer {
           contactTick: puncher?.action_contact_tick ?? event.tick,
           targetIndex,
           actorIndex,
+          decapitation: isArcadeDecapitationCandidate(event, snapshot.fighters[targetIndex], snapshot.result),
         });
       } else if (event.kind === "bleed") {
         this.effects.addEvent(event, this.tmpA, this.settings().reducedMotion);
@@ -264,11 +345,29 @@ export class FightRenderer {
       const pending = this.pendingContacts[index]!;
       if (pending.contactTick > sampledTick) continue;
       this.pendingContacts.splice(index, 1);
-      const { event, targetIndex, actorIndex } = pending;
+      const { event, targetIndex, actorIndex, decapitation } = pending;
       const target = this.buffer.latest()?.fighters[targetIndex];
       if (target !== undefined) {
         this.tmpA.set(this.mapping.x(target.x), 0, this.mapping.z(target.y));
         this.effects.addEvent(event, this.tmpA, this.settings().reducedMotion);
+      }
+      const currentSettings = this.settings();
+      if (
+        decapitation
+        && targetIndex >= 0
+        && !this.decapitated[targetIndex]
+        && currentSettings.blood === "full"
+        && !currentSettings.reducedMotion
+      ) {
+        const pose = this.headWorldPose(targetIndex);
+        if (pose !== null) {
+          this.effects.decapitate(targetIndex, pose.position, pose.quaternion, event.direction, event.event_id);
+          const stumpPose = this.stumpWorldPose(targetIndex);
+          if (stumpPose !== null) this.effects.anchorStump(targetIndex, stumpPose.position, stumpPose.quaternion);
+          this.decapitated[targetIndex] = true;
+          this.observedDecapitatedDown[targetIndex] = false;
+          this.setHeadVisible(targetIndex, false);
+        }
       }
       const graphs = this.graphs;
       if (targetIndex >= 0 && ["hit", "counter_hit", "block", "perfect_block", "knockdown"].includes(event.kind)) {
@@ -360,7 +459,7 @@ export class FightRenderer {
 
     const seconds = time / 1000;
     const current = this.settings();
-    this.effects.setBloodLevel(current.blood);
+    this.setBloodLevel(current.blood);
 
     const latest = this.buffer.latest();
     const snapshot = latest === null ? null : this.buffer.sample(latest.tick - 1);
@@ -369,6 +468,11 @@ export class FightRenderer {
     let knockdown = false;
     if (snapshot !== null) {
       const [a, b] = snapshot.fighters;
+      for (const [index, fighter] of snapshot.fighters.entries()) {
+        if (!this.decapitated[index]) continue;
+        if (fighter.is_downed) this.observedDecapitatedDown[index] = true;
+        else if (this.observedDecapitatedDown[index] && snapshot.result === null) this.restoreHead(index);
+      }
       const graphs = this.graphs;
       if (graphs !== null) {
         const headA = this.headCacheValid[0] ? this.headCache[0] : undefined;
@@ -386,6 +490,11 @@ export class FightRenderer {
       } else {
         this.animators[0].update(a, b, dt, seconds, current.reducedMotion, current.blood, sampledTick);
         this.animators[1].update(b, a, dt, seconds, current.reducedMotion, current.blood, sampledTick);
+      }
+      for (let index = 0; index < this.decapitated.length; index += 1) {
+        if (!this.decapitated[index]) continue;
+        const pose = this.stumpWorldPose(index);
+        if (pose !== null) this.effects.anchorStump(index, pose.position, pose.quaternion);
       }
       const ax = this.mapping.x(a.x);
       const az = this.mapping.z(a.y);

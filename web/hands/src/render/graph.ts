@@ -7,46 +7,99 @@ import type { FighterSnapshot, Hand, Power, PunchClass, SemanticAction, Target }
 import { FIGHTER_GLB_BASE64 } from "../assets/fighter-glb";
 import { BONE_ADAPTER } from "./skeleton";
 export { BONE_ADAPTER };
-import { FIGHTER_TEXTURE_BASE64 } from "../assets/fighter-texture";
+import { FIGHTER_TEXTURE_DATA_URLS } from "../assets/fighter-textures";
 import type { WorldMapping } from "./world";
 
+export const FIGHTER_MODEL_SCALE = 0.96;
 
-const MODEL_SCALE = 0.78;
+type FighterTexture = keyof typeof FIGHTER_TEXTURE_DATA_URLS;
 
+const MATERIAL_TEXTURE: Readonly<Record<string, FighterTexture>> = {
+  MHeadMat0: "head",
+  GlovesMat0: "gloves",
+  MBodyMat0: "body",
+  ShoesMat0: "shoes",
+  PantsMat0: "pants",
+};
+const cachedTextures = new Map<FighterTexture, THREE.Texture>();
+const cachedTextureLoads = new Map<FighterTexture, Promise<THREE.Texture>>();
 let cachedGltf: Promise<GLTF> | null = null;
+
+function configureFighterTexture(texture: THREE.Texture): THREE.Texture {
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.flipY = false;
+  return texture;
+}
+
+function loadFighterTexture(name: FighterTexture): Promise<THREE.Texture> {
+  const existing = cachedTextures.get(name);
+  if (existing !== undefined) return Promise.resolve(existing);
+  const pending = cachedTextureLoads.get(name);
+  if (pending !== undefined) return pending;
+  const load = new THREE.TextureLoader().loadAsync(FIGHTER_TEXTURE_DATA_URLS[name]).then((texture) => {
+    cachedTextures.set(name, configureFighterTexture(texture));
+    return texture;
+  });
+  cachedTextureLoads.set(name, load);
+  return load;
+}
+
+function preloadFighterTextures(): Promise<readonly THREE.Texture[]> {
+  return Promise.all((Object.keys(FIGHTER_TEXTURE_DATA_URLS) as FighterTexture[]).map(loadFighterTexture));
+}
 
 export function loadBoxerGlb(): Promise<GLTF> {
   if (cachedGltf === null) {
     const bytes = Uint8Array.from(atob(FIGHTER_GLB_BASE64), (char) => char.charCodeAt(0));
-    cachedGltf = new Promise((resolve, reject) => {
+    const gltf = new Promise<GLTF>((resolve, reject) => {
       new GLTFLoader().parse(bytes.buffer, "", resolve, (error: unknown) => reject(error instanceof Error ? error : new Error(String(error))));
     });
+    cachedGltf = Promise.all([gltf, preloadFighterTextures()]).then(([loaded]) => loaded);
   }
   return cachedGltf;
 }
 
-let cachedTexture: THREE.Texture | null = null;
-
-function fighterTexture(): THREE.Texture {
-  if (cachedTexture === null) {
-    const texture = new THREE.TextureLoader().load(`data:image/png;base64,${FIGHTER_TEXTURE_BASE64}`);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.flipY = false;
-    cachedTexture = texture;
-  }
-  return cachedTexture;
+function fighterTexture(name: FighterTexture): THREE.Texture {
+  const existing = cachedTextures.get(name);
+  if (existing !== undefined) return existing;
+  const texture = configureFighterTexture(new THREE.TextureLoader().load(FIGHTER_TEXTURE_DATA_URLS[name]));
+  cachedTextures.set(name, texture);
+  return texture;
 }
 
-export function applyFighterSkin(target: THREE.Object3D): THREE.MeshPhysicalMaterial {
-  const material = new THREE.MeshPhysicalMaterial({ map: fighterTexture(), color: new THREE.Color(1.15, 1.1, 1.05), emissive: new THREE.Color(0.16, 0.13, 0.1), roughness: 0.58, metalness: 0.02, clearcoat: 0.25, clearcoatRoughness: 0.6 });
+interface AppliedFighterMaterials {
+  readonly skin: readonly THREE.MeshPhysicalMaterial[];
+  readonly gloves: THREE.MeshStandardMaterial;
+  readonly owned: readonly THREE.Material[];
+}
+
+export function applyFighterSkin(target: THREE.Object3D, palette: BoxerPaletteColors): AppliedFighterMaterials {
+  const skin: THREE.MeshPhysicalMaterial[] = [];
+  const owned: THREE.Material[] = [];
+  let gloves: THREE.MeshStandardMaterial | null = null;
   target.traverse((object) => {
-    if (object instanceof THREE.SkinnedMesh) {
-      object.material = material;
-      object.castShadow = true;
-      object.frustumCulled = false;
-    }
+    if (!(object instanceof THREE.SkinnedMesh) || Array.isArray(object.material)) return;
+    const sourceName = object.material.name;
+    const textureName = MATERIAL_TEXTURE[sourceName];
+    if (textureName === undefined) throw new Error(`fighter GLB has unsupported material ${sourceName}`);
+    const isSkin = sourceName === "MHeadMat0" || sourceName === "MBodyMat0";
+    const color = sourceName === "GlovesMat0" || sourceName === "PantsMat0" ? palette.gear : 0xffffff;
+    const material = isSkin
+      ? new THREE.MeshPhysicalMaterial({ map: fighterTexture(textureName), color, roughness: 0.58, metalness: 0.02, clearcoat: 0.25, clearcoatRoughness: 0.6 })
+      : new THREE.MeshStandardMaterial({ map: fighterTexture(textureName), color, roughness: 0.4, metalness: 0.03 });
+    material.name = sourceName;
+    object.material = material;
+    object.castShadow = true;
+    object.receiveShadow = true;
+    object.frustumCulled = false;
+    owned.push(material);
+    if (material instanceof THREE.MeshPhysicalMaterial) skin.push(material);
+    if (sourceName === "GlovesMat0") gloves = material as THREE.MeshStandardMaterial;
   });
-  return material;
+  if (skin.length !== 2 || gloves === null || owned.length !== 5) {
+    throw new Error(`fighter GLB material contract failed: ${skin.length} skin, ${owned.length} total`);
+  }
+  return { skin, gloves, owned };
 }
 
 export const CLIP_NAMES = [
@@ -76,30 +129,30 @@ export class SkinnedBoxer {
   readonly bones = new Map<string, THREE.Bone>();
   /** Bone-derived measurements in world units (after MODEL_SCALE). */
   readonly metrics: { armUpper: number; armFore: number; legThigh: number; legShin: number; headRestY: number; chestRestY: number; ankleRestY: number };
-  private readonly skinMaterial: THREE.MeshPhysicalMaterial;
+  private readonly skinMaterials: readonly THREE.MeshPhysicalMaterial[];
+  private readonly ownedMaterials: readonly THREE.Material[];
   private readonly gearMaterial: THREE.MeshStandardMaterial;
+  private readonly headMeshes: THREE.SkinnedMesh[] = [];
+  private decapitated = false;
   readonly gearBaseColor: THREE.Color;
   private readonly overlays: TraumaOverlays;
-  private readonly gloveGeometries: THREE.BufferGeometry[] = [];
 
   constructor(gltf: GLTF, palette: BoxerPaletteColors) {
     const instance = cloneSkeleton(gltf.scene);
-    instance.scale.setScalar(MODEL_SCALE);
+    instance.scale.setScalar(FIGHTER_MODEL_SCALE);
     this.root.add(instance);
-    this.skinMaterial = applyFighterSkin(instance);
-    this.gearMaterial = new THREE.MeshStandardMaterial({ color: palette.gear, roughness: 0.32, metalness: 0.05 });
+    const materials = applyFighterSkin(instance, palette);
+    this.skinMaterials = materials.skin;
+    this.ownedMaterials = materials.owned;
+    this.gearMaterial = materials.gloves;
     this.gearBaseColor = new THREE.Color(palette.gear);
     instance.traverse((object) => {
-      if (object instanceof THREE.SkinnedMesh) {
-        object.material = this.skinMaterial;
-        object.castShadow = true;
-        object.receiveShadow = true;
-        object.frustumCulled = false;
-      }
+      if (object instanceof THREE.SkinnedMesh && object.name === "BoxerHead") this.headMeshes.push(object);
       if (object instanceof THREE.Bone) this.bones.set(object.name, object);
     });
     const missing = Object.values(BONE_ADAPTER).filter((name) => !this.bones.has(name));
     if (missing.length > 0) throw new Error(`fighter GLB missing required bones: ${missing.join(", ")}`);
+    if (this.headMeshes.length !== 1) throw new Error(`fighter GLB requires one BoxerHead mesh, found ${this.headMeshes.length}`);
     this.mixer = new THREE.AnimationMixer(instance);
     for (const clip of gltf.animations) {
       const action = this.mixer.clipAction(clip);
@@ -109,30 +162,20 @@ export class SkinnedBoxer {
         action.clampWhenFinished = true;
       }
     }
+    const missingClips = CLIP_NAMES.filter((name) => !this.actions.has(name));
+    if (missingClips.length > 0) throw new Error(`fighter GLB missing clips: ${missingClips.join(", ")}`);
     instance.updateMatrixWorld(true);
     const jointDistance = (from: string, to: string): number =>
-      this.bones.get(from)!.getWorldPosition(new THREE.Vector3()).distanceTo(this.bones.get(to)!.getWorldPosition(new THREE.Vector3()));
+      this.bone(from)!.getWorldPosition(new THREE.Vector3()).distanceTo(this.bone(to)!.getWorldPosition(new THREE.Vector3()));
     this.metrics = {
-      armUpper: jointDistance("upperarml", "lowerarml"),
-      armFore: jointDistance("lowerarml", "wristl"),
-      legThigh: jointDistance("upperlegl", "lowerlegl"),
-      legShin: jointDistance("lowerlegl", "footl"),
-      headRestY: this.bones.get("head")!.getWorldPosition(new THREE.Vector3()).y,
-      chestRestY: this.bones.get("chest")!.getWorldPosition(new THREE.Vector3()).y,
-      ankleRestY: this.bones.get("footl")!.getWorldPosition(new THREE.Vector3()).y,
+      armUpper: jointDistance("shoulderL", "elbowL"),
+      armFore: jointDistance("elbowL", "gloveL"),
+      legThigh: jointDistance("hipL", "kneeL"),
+      legShin: jointDistance("kneeL", "ankleL"),
+      headRestY: this.bone("head")!.getWorldPosition(new THREE.Vector3()).y,
+      chestRestY: this.bone("chest")!.getWorldPosition(new THREE.Vector3()).y,
+      ankleRestY: this.bone("ankleL")!.getWorldPosition(new THREE.Vector3()).y,
     };
-    for (const side of ["L", "R"] as const) {
-      const wrist = this.bone(BONE_ADAPTER[`glove${side}`]!);
-      if (wrist !== null) {
-        const geometry = new THREE.SphereGeometry(0.075, 14, 12);
-        this.gloveGeometries.push(geometry);
-        const glove = new THREE.Mesh(geometry, this.gearMaterial);
-        glove.scale.set(1, 1.15, 1.35);
-        glove.position.set(0, 0.07, 0.03);
-        glove.castShadow = true;
-        wrist.add(glove);
-      }
-    }
     this.overlays = buildTraumaOverlays(this.bone("head")!, this.bone("chest")!);
   }
 
@@ -149,14 +192,26 @@ export class SkinnedBoxer {
   }
 
   get skin(): THREE.MeshPhysicalMaterial {
-    return this.skinMaterial;
+    return this.skinMaterials[0]!;
+  }
+
+  get isDecapitated(): boolean {
+    return this.decapitated;
+  }
+
+  setDecapitated(value: boolean): void {
+    this.decapitated = value;
+    for (const mesh of this.headMeshes) mesh.visible = !value;
+    this.bone("head")!.visible = !value;
+  }
+
+  setSkinClearcoat(value: number): void {
+    for (const material of this.skinMaterials) material.clearcoat = value;
   }
 
   dispose(): void {
     this.mixer.stopAllAction();
-    this.skinMaterial.dispose();
-    this.gearMaterial.dispose();
-    for (const geometry of this.gloveGeometries) geometry.dispose();
+    for (const material of this.ownedMaterials) material.dispose();
     this.overlays.dispose();
   }
 }
@@ -193,8 +248,15 @@ function overlayMesh(geometry: THREE.BufferGeometry, color: number, emissive = 0
 function buildTraumaOverlays(head: THREE.Bone, chest: THREE.Bone): TraumaOverlays {
   const overlays: THREE.Mesh[] = [];
   const add = (mesh: THREE.Mesh, parent: THREE.Bone, position: [number, number, number], scale: [number, number, number] = [1, 1, 1]): THREE.Mesh => {
-    mesh.position.set(position[0] * 1.3, position[1] * 1.25, position[2] * 1.35 + 0.045);
-    mesh.scale.set(...scale);
+    const parentScale = parent.getWorldScale(new THREE.Vector3());
+    const compensation = 1 / Math.max(0.0001, parentScale.x);
+    mesh.position.set(
+      position[0] * 1.3 * compensation,
+      position[1] * 1.25 * compensation,
+      (position[2] * 1.35 + 0.045) * compensation,
+    );
+    mesh.scale.set(scale[0] * compensation, scale[1] * compensation, scale[2] * compensation);
+    mesh.userData.baseScale = compensation;
     parent.add(mesh);
     overlays.push(mesh);
     return mesh;
@@ -231,42 +293,53 @@ function buildTraumaOverlays(head: THREE.Bone, chest: THREE.Bone): TraumaOverlay
 
 export function applyTraumaToOverlays(overlays: TraumaOverlays, fighter: FighterSnapshot, opponentBlood: number, blood: BloodLevel): void {
   const trauma = fighter.trauma;
-  const cutScale = blood === "off" ? 0 : blood === "reduced" ? 0.45 : 1;
+  const cutScale = blood === "off" ? 0 : blood === "reduced" ? 0.35 : 1;
+  const graphicScale = blood === "full" ? 1.8 : 1;
   const mat = (mesh: THREE.Mesh): THREE.MeshStandardMaterial => mesh.material as THREE.MeshStandardMaterial;
+  const scale = (mesh: THREE.Mesh, x: number, y: number, z: number): void => {
+    const base = typeof mesh.userData.baseScale === "number" ? mesh.userData.baseScale : 1;
+    mesh.scale.set(x * base, y * base, z * base);
+  };
   const bruise = (value: number): number => Math.min(0.85, value / 170 + trauma.swelling / 420);
   mat(overlays.bruiseL).opacity = bruise(trauma.left_eye);
   mat(overlays.bruiseR).opacity = bruise(trauma.right_eye);
-  mat(overlays.cutL).opacity = Math.min(1, trauma.left_cut / 200 + trauma.bleeding / 600) * cutScale;
-  mat(overlays.cutR).opacity = Math.min(1, trauma.right_cut / 200 + trauma.bleeding / 600) * cutScale;
+  const cutL = Math.min(1, trauma.left_cut / 150 + trauma.bleeding / 450);
+  const cutR = Math.min(1, trauma.right_cut / 150 + trauma.bleeding / 450);
+  mat(overlays.cutL).opacity = cutL * cutScale;
+  mat(overlays.cutR).opacity = cutR * cutScale;
+  scale(overlays.cutL, 1 + cutL * 0.55 * graphicScale, 1 + cutL * 0.7, 1);
+  scale(overlays.cutR, 1 + cutR * 0.55 * graphicScale, 1 + cutR * 0.7, 1);
   const swellL = Math.min(1.35, trauma.left_eye / 260 + trauma.swelling / 560);
   const swellR = Math.min(1.35, trauma.right_eye / 260 + trauma.swelling / 560);
-  overlays.swellL.scale.setScalar(0.25 + swellL * 1.15);
-  overlays.swellR.scale.setScalar(0.25 + swellR * 1.15);
+  scale(overlays.swellL, 0.25 + swellL * 1.15, 0.25 + swellL * 1.15, 0.25 + swellL * 1.15);
+  scale(overlays.swellR, 0.25 + swellR * 1.15, 0.25 + swellR * 1.15, 0.25 + swellR * 1.15);
   mat(overlays.swellL).opacity = Math.min(0.92, swellL * 1.1);
   mat(overlays.swellR).opacity = Math.min(0.92, swellR * 1.1);
   const cheek = Math.min(1, trauma.head / 900 + trauma.swelling / 800);
-  overlays.cheekL.scale.setScalar(0.2 + cheek * 1.05);
-  overlays.cheekR.scale.setScalar(0.2 + cheek * 0.95);
+  scale(overlays.cheekL, 0.2 + cheek * 1.05, 0.2 + cheek * 1.05, 0.2 + cheek * 1.05);
+  scale(overlays.cheekR, 0.2 + cheek * 0.95, 0.2 + cheek * 0.95, 0.2 + cheek * 0.95);
   mat(overlays.cheekL).opacity = cheek * 0.8;
   mat(overlays.cheekR).opacity = cheek * 0.75;
-  const dripL = Math.min(1.7, (trauma.left_cut + trauma.bleeding) / 260);
-  const dripR = Math.min(1.7, (trauma.right_cut + trauma.bleeding) / 260);
-  overlays.streakL.scale.set(1, 0.15 + dripL, 1);
-  overlays.streakR.scale.set(1, 0.15 + dripR, 1);
+  const dripL = Math.min(1.9, (trauma.left_cut + trauma.bleeding) / 220);
+  const dripR = Math.min(1.9, (trauma.right_cut + trauma.bleeding) / 220);
+  scale(overlays.streakL, graphicScale, 0.15 + dripL * graphicScale, 1);
+  scale(overlays.streakR, graphicScale, 0.15 + dripR * graphicScale, 1);
   mat(overlays.streakL).opacity = Math.min(1, dripL) * cutScale;
   mat(overlays.streakR).opacity = Math.min(1, dripR) * cutScale;
-  const nose = Math.min(1.4, trauma.head / 700 + trauma.bleeding / 420);
-  overlays.noseStreak.scale.set(1, 0.2 + nose, 1);
-  mat(overlays.noseStreak).opacity = Math.min(1, nose * 0.9) * cutScale;
-  mat(overlays.mouthBlood).opacity = Math.min(1, trauma.head / 800 + trauma.bleeding / 500) * cutScale;
+  const nose = Math.min(1.6, trauma.head / 600 + trauma.bleeding / 340);
+  scale(overlays.noseStreak, graphicScale, 0.2 + nose * graphicScale, 1);
+  mat(overlays.noseStreak).opacity = Math.min(1, nose) * cutScale;
+  const mouth = Math.min(1, trauma.head / 650 + trauma.bleeding / 360);
+  scale(overlays.mouthBlood, 1 + mouth * graphicScale, 1 + mouth * 0.8, 1);
+  mat(overlays.mouthBlood).opacity = mouth * cutScale;
   const rib = Math.min(1, trauma.body / 750);
-  overlays.ribL.scale.set(0.5 + rib * 0.35, 1.2 + rib * 0.5, 0.7 + rib * 0.2);
-  overlays.ribR.scale.set(0.5 + rib * 0.3, 1.2 + rib * 0.4, 0.7 + rib * 0.2);
+  scale(overlays.ribL, 0.5 + rib * 0.35, 1.2 + rib * 0.5, 0.7 + rib * 0.2);
+  scale(overlays.ribR, 0.5 + rib * 0.3, 1.2 + rib * 0.4, 0.7 + rib * 0.2);
   mat(overlays.ribL).opacity = rib * 0.85;
   mat(overlays.ribR).opacity = rib * 0.8;
   mat(overlays.bodyBruise).opacity = Math.min(0.7, trauma.body / 950);
-  const smear = Math.min(1.3, trauma.body / 500 + trauma.bleeding / 420);
-  overlays.bodyStreak.scale.set(1 + smear * 0.4, 0.3 + smear, 1);
+  const smear = Math.min(1.5, trauma.body / 450 + trauma.bleeding / 340);
+  scale(overlays.bodyStreak, 1 + smear * 0.55 * graphicScale, 0.3 + smear * graphicScale, 1);
   mat(overlays.bodyStreak).opacity = Math.min(1, smear) * cutScale;
   void opponentBlood;
 }
@@ -534,10 +607,14 @@ export class BoxingGraph {
     this.applyAimCorrection(fighter, opponent);
     this.lockFeet(fighter, moving);
 
-    const opponentBlood = Math.min(1, (opponent.trauma.bleeding + opponent.trauma.left_cut + opponent.trauma.right_cut) / 620) * (blood === "off" ? 0 : blood === "reduced" ? 0.45 : 1);
-    boxer.gloveGear.color.copy(boxer.gearBaseColor).lerp(BLOODED_GLOVE_COLOR, opponentBlood * 0.85);
+    const opponentBlood = Math.min(
+      1,
+      (opponent.trauma.bleeding + opponent.trauma.left_cut + opponent.trauma.right_cut) / 620
+        * (blood === "off" ? 0 : blood === "reduced" ? 0.3 : 1.5),
+    );
+    boxer.gloveGear.color.copy(boxer.gearBaseColor).lerp(BLOODED_GLOVE_COLOR, opponentBlood);
     applyTraumaToOverlays(boxer.trauma, fighter, opponentBlood, blood);
-    boxer.skin.clearcoat = 0.25 + (1 - fighter.stamina / Math.max(1, fighter.maximum_stamina)) * 0.4;
+    boxer.setSkinClearcoat(0.25 + (1 - fighter.stamina / Math.max(1, fighter.maximum_stamina)) * 0.4);
     void time;
     void HURTBOXES;
   }
