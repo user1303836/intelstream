@@ -4,7 +4,6 @@ import json
 import re
 from urllib.parse import urljoin, urlparse
 
-import anthropic
 import httpx
 import structlog
 from bs4 import BeautifulSoup
@@ -22,12 +21,12 @@ from intelstream.adapters.strategies.base import (
 )
 from intelstream.config import get_settings
 from intelstream.database.repository import Repository
+from intelstream.services.llm_client import LLMClient, LLMError, LLMRateLimitError
 from intelstream.utils.safe_http import SafeHTTPError, safe_request
 from intelstream.utils.url_validation import SSRFError, async_validate_url_for_ssrf
 
 logger = structlog.get_logger()
 
-DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 LLM_EXTRACTION_TIMEOUT_SECONDS = 120
 
 EXTRACTION_PROMPT = """Analyze this HTML and extract all blog posts/articles listed on the page.
@@ -49,15 +48,13 @@ HTML:
 class LLMExtractionStrategy(DiscoveryStrategy):
     def __init__(
         self,
-        anthropic_client: anthropic.AsyncAnthropic,
+        llm_client: LLMClient,
         repository: Repository,
         http_client: httpx.AsyncClient | None = None,
-        model: str = DEFAULT_MODEL,
     ) -> None:
-        self._client = anthropic_client
+        self._client = llm_client
         self._repository = repository
         self._http_client = http_client
-        self._model = model
 
     @property
     def name(self) -> str:
@@ -181,7 +178,7 @@ class LLMExtractionStrategy(DiscoveryStrategy):
         return cleaned
 
     @retry(
-        retry=retry_if_exception_type(anthropic.RateLimitError),
+        retry=retry_if_exception_type(LLMRateLimitError),
         wait=wait_exponential(multiplier=1, min=4, max=60),
         stop=stop_after_attempt(3),
     )
@@ -194,18 +191,11 @@ class LLMExtractionStrategy(DiscoveryStrategy):
         prompt = EXTRACTION_PROMPT.format(base_url=base_url, html=cleaned_html)
 
         try:
-            message = await self._client.messages.create(
-                model=self._model,
+            response_text = await self._client.complete(
+                system="",
+                user_message=prompt,
                 max_tokens=4000,
-                messages=[{"role": "user", "content": prompt}],
             )
-
-            response_text = ""
-            for block in message.content:
-                if hasattr(block, "text"):
-                    response_text += block.text
-
-            response_text = response_text.strip()
 
             posts_data = self._extract_json_from_response(response_text)
 
@@ -226,8 +216,8 @@ class LLMExtractionStrategy(DiscoveryStrategy):
 
             return posts
 
-        except anthropic.APIError as e:
-            logger.error("Anthropic API error during extraction", url=url, error=str(e))
+        except LLMError as e:
+            logger.error("LLM API error during extraction", url=url, error=str(e))
             return []
 
     def _extract_json_from_response(self, text: str) -> list[dict[str, str]]:

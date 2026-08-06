@@ -27,17 +27,16 @@ def mock_repository():
 
 
 @pytest.fixture
-def mock_anthropic_client():
+def mock_llm_client():
     client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock()
+    client.complete = AsyncMock()
     return client
 
 
 @pytest.fixture
-def adapter(mock_anthropic_client, mock_repository):
+def adapter(mock_llm_client, mock_repository):
     return SmartBlogAdapter(
-        anthropic_client=mock_anthropic_client,
+        llm_client=mock_llm_client,
         repository=mock_repository,
     )
 

@@ -1,7 +1,6 @@
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import anthropic
 import httpx
 import pytest
 import respx
@@ -9,6 +8,7 @@ import respx
 from intelstream.adapters.strategies.llm_extraction import LLMExtractionStrategy
 from intelstream.database.models import ExtractionCache
 from intelstream.database.repository import Repository
+from intelstream.services.llm_client import LLMError
 
 
 @pytest.fixture
@@ -20,17 +20,16 @@ def mock_repository():
 
 
 @pytest.fixture
-def mock_anthropic_client():
+def mock_llm_client():
     client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock()
+    client.complete = AsyncMock()
     return client
 
 
 @pytest.fixture
-def llm_strategy(mock_anthropic_client, mock_repository):
+def llm_strategy(mock_llm_client, mock_repository):
     return LLMExtractionStrategy(
-        anthropic_client=mock_anthropic_client,
+        llm_client=mock_llm_client,
         repository=mock_repository,
     )
 
@@ -41,7 +40,7 @@ class TestLLMExtractionStrategy:
 
     @respx.mock
     async def test_discover_extracts_posts(
-        self, llm_strategy: LLMExtractionStrategy, mock_anthropic_client
+        self, llm_strategy: LLMExtractionStrategy, mock_llm_client
     ):
         html = """
         <html>
@@ -51,18 +50,12 @@ class TestLLMExtractionStrategy:
         </body>
         </html>
         """
-        llm_response = MagicMock()
-        llm_response.content = [
-            MagicMock(
-                text=json.dumps(
-                    [
-                        {"url": "https://example.com/post/1", "title": "Post 1"},
-                        {"url": "https://example.com/post/2", "title": "Post 2"},
-                    ]
-                )
-            )
-        ]
-        mock_anthropic_client.messages.create.return_value = llm_response
+        mock_llm_client.complete.return_value = json.dumps(
+            [
+                {"url": "https://example.com/post/1", "title": "Post 1"},
+                {"url": "https://example.com/post/2", "title": "Post 2"},
+            ]
+        )
 
         respx.get("https://example.com/blog").mock(return_value=httpx.Response(200, text=html))
 
@@ -75,7 +68,7 @@ class TestLLMExtractionStrategy:
 
     @respx.mock
     async def test_discover_uses_cache(
-        self, llm_strategy: LLMExtractionStrategy, mock_repository, mock_anthropic_client
+        self, llm_strategy: LLMExtractionStrategy, mock_repository, mock_llm_client
     ):
         html = "<html><body>Content</body></html>"
         expected_hash = llm_strategy._get_content_hash(html)
@@ -93,18 +86,16 @@ class TestLLMExtractionStrategy:
         assert result is not None
         assert len(result.posts) == 1
         assert result.posts[0].url == "https://example.com/cached"
-        mock_anthropic_client.messages.create.assert_not_called()
+        mock_llm_client.complete.assert_not_called()
 
     @respx.mock
     async def test_discover_caches_result(
-        self, llm_strategy: LLMExtractionStrategy, mock_repository, mock_anthropic_client
+        self, llm_strategy: LLMExtractionStrategy, mock_repository, mock_llm_client
     ):
         html = "<html><body>Content</body></html>"
-        llm_response = MagicMock()
-        llm_response.content = [
-            MagicMock(text='[{"url": "https://example.com/new", "title": "New"}]')
-        ]
-        mock_anthropic_client.messages.create.return_value = llm_response
+        mock_llm_client.complete.return_value = (
+            '[{"url": "https://example.com/new", "title": "New"}]'
+        )
 
         respx.get("https://example.com/").mock(return_value=httpx.Response(200, text=html))
 
@@ -114,16 +105,12 @@ class TestLLMExtractionStrategy:
 
     @respx.mock
     async def test_discover_handles_json_in_markdown(
-        self, llm_strategy: LLMExtractionStrategy, mock_anthropic_client
+        self, llm_strategy: LLMExtractionStrategy, mock_llm_client
     ):
         html = "<html><body>Content</body></html>"
-        llm_response = MagicMock()
-        llm_response.content = [
-            MagicMock(
-                text='```json\n[{"url": "https://example.com/wrapped", "title": "Wrapped"}]\n```'
-            )
-        ]
-        mock_anthropic_client.messages.create.return_value = llm_response
+        mock_llm_client.complete.return_value = (
+            '```json\n[{"url": "https://example.com/wrapped", "title": "Wrapped"}]\n```'
+        )
 
         respx.get("https://example.com/").mock(return_value=httpx.Response(200, text=html))
 
@@ -135,12 +122,10 @@ class TestLLMExtractionStrategy:
 
     @respx.mock
     async def test_discover_resolves_relative_urls(
-        self, llm_strategy: LLMExtractionStrategy, mock_anthropic_client
+        self, llm_strategy: LLMExtractionStrategy, mock_llm_client
     ):
         html = "<html><body>Content</body></html>"
-        llm_response = MagicMock()
-        llm_response.content = [MagicMock(text='[{"url": "/post/relative", "title": "Relative"}]')]
-        mock_anthropic_client.messages.create.return_value = llm_response
+        mock_llm_client.complete.return_value = '[{"url": "/post/relative", "title": "Relative"}]'
 
         respx.get("https://example.com/blog").mock(return_value=httpx.Response(200, text=html))
 
@@ -151,12 +136,10 @@ class TestLLMExtractionStrategy:
 
     @respx.mock
     async def test_discover_returns_none_on_empty_result(
-        self, llm_strategy: LLMExtractionStrategy, mock_anthropic_client
+        self, llm_strategy: LLMExtractionStrategy, mock_llm_client
     ):
         html = "<html><body>No posts</body></html>"
-        llm_response = MagicMock()
-        llm_response.content = [MagicMock(text="[]")]
-        mock_anthropic_client.messages.create.return_value = llm_response
+        mock_llm_client.complete.return_value = "[]"
 
         respx.get("https://example.com/").mock(return_value=httpx.Response(200, text=html))
 
@@ -174,12 +157,10 @@ class TestLLMExtractionStrategy:
 
     @respx.mock
     async def test_discover_handles_invalid_json(
-        self, llm_strategy: LLMExtractionStrategy, mock_anthropic_client
+        self, llm_strategy: LLMExtractionStrategy, mock_llm_client
     ):
         html = "<html><body>Content</body></html>"
-        llm_response = MagicMock()
-        llm_response.content = [MagicMock(text="This is not JSON")]
-        mock_anthropic_client.messages.create.return_value = llm_response
+        mock_llm_client.complete.return_value = "This is not JSON"
 
         respx.get("https://example.com/").mock(return_value=httpx.Response(200, text=html))
 
@@ -251,7 +232,7 @@ class TestLLMExtractionStrategy:
 
     @respx.mock
     async def test_discover_uses_cache_with_validated_data(
-        self, llm_strategy: LLMExtractionStrategy, mock_repository, mock_anthropic_client
+        self, llm_strategy: LLMExtractionStrategy, mock_repository, mock_llm_client
     ):
         html = "<html><body>Content</body></html>"
         expected_hash = llm_strategy._get_content_hash(html)
@@ -271,11 +252,11 @@ class TestLLMExtractionStrategy:
         assert result is not None
         assert len(result.posts) == 1
         assert result.posts[0].url == "https://example.com/valid"
-        mock_anthropic_client.messages.create.assert_not_called()
+        mock_llm_client.complete.assert_not_called()
 
     @respx.mock
     async def test_discover_filters_empty_urls_from_cache(
-        self, llm_strategy: LLMExtractionStrategy, mock_repository, mock_anthropic_client
+        self, llm_strategy: LLMExtractionStrategy, mock_repository, mock_llm_client
     ):
         html = "<html><body>Content</body></html>"
         expected_hash = llm_strategy._get_content_hash(html)
@@ -298,22 +279,20 @@ class TestLLMExtractionStrategy:
         assert result is not None
         assert len(result.posts) == 1
         assert result.posts[0].url == "https://example.com/valid"
-        mock_anthropic_client.messages.create.assert_not_called()
+        mock_llm_client.complete.assert_not_called()
 
     @respx.mock
     async def test_discover_ignores_invalid_cache_json_and_refreshes(
-        self, llm_strategy: LLMExtractionStrategy, mock_repository, mock_anthropic_client
+        self, llm_strategy: LLMExtractionStrategy, mock_repository, mock_llm_client
     ):
         html = "<html><body>Content</body></html>"
         cached = MagicMock(spec=ExtractionCache)
         cached.content_hash = llm_strategy._get_content_hash(html)
         cached.posts_json = "{not json"
         mock_repository.get_extraction_cache.return_value = cached
-        llm_response = MagicMock()
-        llm_response.content = [
-            MagicMock(text='[{"url": "https://example.com/fresh", "title": "Fresh"}]')
-        ]
-        mock_anthropic_client.messages.create.return_value = llm_response
+        mock_llm_client.complete.return_value = (
+            '[{"url": "https://example.com/fresh", "title": "Fresh"}]'
+        )
         respx.get("https://example.com/").mock(return_value=httpx.Response(200, text=html))
 
         result = await llm_strategy.discover("https://example.com/")
@@ -324,18 +303,16 @@ class TestLLMExtractionStrategy:
 
     @respx.mock
     async def test_discover_ignores_cache_without_valid_posts(
-        self, llm_strategy: LLMExtractionStrategy, mock_repository, mock_anthropic_client
+        self, llm_strategy: LLMExtractionStrategy, mock_repository, mock_llm_client
     ):
         html = "<html><body>Content</body></html>"
         cached = MagicMock(spec=ExtractionCache)
         cached.content_hash = llm_strategy._get_content_hash(html)
         cached.posts_json = json.dumps([{"url": "", "title": "Empty"}])
         mock_repository.get_extraction_cache.return_value = cached
-        llm_response = MagicMock()
-        llm_response.content = [
-            MagicMock(text='[{"url": "https://example.com/fresh", "title": "Fresh"}]')
-        ]
-        mock_anthropic_client.messages.create.return_value = llm_response
+        mock_llm_client.complete.return_value = (
+            '[{"url": "https://example.com/fresh", "title": "Fresh"}]'
+        )
         respx.get("https://example.com/").mock(return_value=httpx.Response(200, text=html))
 
         result = await llm_strategy.discover("https://example.com/")
@@ -345,18 +322,16 @@ class TestLLMExtractionStrategy:
 
     @respx.mock
     async def test_discover_ignores_non_list_cache_and_refreshes(
-        self, llm_strategy: LLMExtractionStrategy, mock_repository, mock_anthropic_client
+        self, llm_strategy: LLMExtractionStrategy, mock_repository, mock_llm_client
     ):
         html = "<html><body>Content</body></html>"
         cached = MagicMock(spec=ExtractionCache)
         cached.content_hash = llm_strategy._get_content_hash(html)
         cached.posts_json = json.dumps({"url": "https://example.com/not-a-list"})
         mock_repository.get_extraction_cache.return_value = cached
-        llm_response = MagicMock()
-        llm_response.content = [
-            MagicMock(text='[{"url": "https://example.com/fresh", "title": "Fresh"}]')
-        ]
-        mock_anthropic_client.messages.create.return_value = llm_response
+        mock_llm_client.complete.return_value = (
+            '[{"url": "https://example.com/fresh", "title": "Fresh"}]'
+        )
         respx.get("https://example.com/").mock(return_value=httpx.Response(200, text=html))
 
         result = await llm_strategy.discover("https://example.com/")
@@ -419,7 +394,7 @@ class TestLLMExtractionStrategy:
             )
         )
         strategy = LLMExtractionStrategy(
-            anthropic_client=MagicMock(),
+            llm_client=MagicMock(),
             repository=mock_repository,
             http_client=client,
         )
@@ -518,39 +493,15 @@ class TestLLMExtractionStrategy:
 
         assert cleaned == "<" + ("x" * 1099)
 
-    async def test_extract_with_llm_ignores_blocks_without_text(
-        self, llm_strategy: LLMExtractionStrategy, mock_anthropic_client
-    ):
-        response = MagicMock()
-        response.content = [
-            object(),
-            MagicMock(text='[{"url": "https://example.com/post", "title": "Post"}]'),
-        ]
-        mock_anthropic_client.messages.create.return_value = response
-
-        posts = await llm_strategy._extract_with_llm(
-            "<html><body>Posts</body></html>",
-            "https://example.com/blog",
-        )
-
-        assert len(posts) == 1
-        assert posts[0].url == "https://example.com/post"
-
     async def test_extract_with_llm_skips_ssrf_blocked_urls(
-        self, llm_strategy: LLMExtractionStrategy, mock_anthropic_client
+        self, llm_strategy: LLMExtractionStrategy, mock_llm_client
     ):
-        response = MagicMock()
-        response.content = [
-            MagicMock(
-                text=json.dumps(
-                    [
-                        {"url": "http://localhost/admin", "title": "Blocked"},
-                        {"url": "/safe", "title": "Safe"},
-                    ]
-                )
-            )
-        ]
-        mock_anthropic_client.messages.create.return_value = response
+        mock_llm_client.complete.return_value = json.dumps(
+            [
+                {"url": "http://localhost/admin", "title": "Blocked"},
+                {"url": "/safe", "title": "Safe"},
+            ]
+        )
 
         posts = await llm_strategy._extract_with_llm(
             "<html><body>Posts</body></html>",
@@ -579,14 +530,9 @@ class TestLLMExtractionStrategy:
         assert result == []
 
     async def test_extract_with_llm_handles_api_error(
-        self, llm_strategy: LLMExtractionStrategy, mock_anthropic_client
+        self, llm_strategy: LLMExtractionStrategy, mock_llm_client
     ):
-        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
-        mock_anthropic_client.messages.create.side_effect = anthropic.APIError(
-            "api failed",
-            request,
-            body=None,
-        )
+        mock_llm_client.complete.side_effect = LLMError("api failed")
 
         assert await llm_strategy._extract_with_llm("<html></html>", "https://example.com") == []
 

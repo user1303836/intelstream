@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-import anthropic
 import httpx
 import structlog
 
@@ -18,6 +17,7 @@ from intelstream.config import get_settings
 from intelstream.database.models import Source
 from intelstream.database.repository import Repository
 from intelstream.services.content_extractor import ContentExtractor
+from intelstream.services.llm_client import LLMClient
 
 logger = structlog.get_logger()
 UNKNOWN_DATE = datetime(1970, 1, 1, tzinfo=UTC)
@@ -37,11 +37,10 @@ class AnalysisResult:
 class SmartBlogAdapter(BaseAdapter):
     def __init__(
         self,
-        anthropic_client: anthropic.AsyncAnthropic,
+        llm_client: LLMClient,
         repository: Repository,
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
-        self._anthropic = anthropic_client
         self._repository = repository
         self._http_client = http_client
         self._content_extractor = ContentExtractor(http_client=http_client)
@@ -49,7 +48,7 @@ class SmartBlogAdapter(BaseAdapter):
             RSSDiscoveryStrategy(http_client=http_client),
             SitemapDiscoveryStrategy(http_client=http_client),
             LLMExtractionStrategy(
-                anthropic_client=anthropic_client,
+                llm_client=llm_client,
                 repository=repository,
                 http_client=http_client,
             ),

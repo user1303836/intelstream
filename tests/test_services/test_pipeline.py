@@ -16,7 +16,9 @@ from intelstream.services.summarizer import SummarizationError, SummarizationSer
 def mock_settings():
     settings = MagicMock(spec=Settings)
     settings.youtube_api_key = "test-youtube-key"
-    settings.anthropic_api_key = "test-anthropic-key"
+    settings.llm_provider = "openai"
+    settings.llm_api_key = "test-openai-key"
+    settings.summary_model = "gpt-5.6-luna"
     settings.twitter_bearer_token = None
     settings.http_timeout_seconds = 30.0
     settings.summarization_delay_seconds = 0.5
@@ -131,7 +133,9 @@ class TestContentPipelineInitialization:
     async def test_initialize_without_youtube_key(self, mock_repository, mock_summarizer):
         settings = MagicMock(spec=Settings)
         settings.youtube_api_key = None
-        settings.anthropic_api_key = "test-anthropic-key"
+        settings.llm_provider = "openai"
+        settings.llm_api_key = "test-openai-key"
+        settings.summary_model = "gpt-5.6-luna"
         settings.twitter_bearer_token = None
         settings.http_timeout_seconds = 30.0
         settings.summarization_delay_seconds = 0.5
@@ -152,7 +156,9 @@ class TestContentPipelineInitialization:
     async def test_initialize_creates_twitter_adapter(self, mock_repository, mock_summarizer):
         settings = MagicMock(spec=Settings)
         settings.youtube_api_key = "test-key"
-        settings.anthropic_api_key = "test-key"
+        settings.llm_provider = "openai"
+        settings.llm_api_key = "test-openai-key"
+        settings.summary_model = "gpt-5.6-luna"
         settings.twitter_bearer_token = "test-twitter-key"
         settings.http_timeout_seconds = 30.0
         settings.summarization_delay_seconds = 0.5
@@ -170,7 +176,9 @@ class TestContentPipelineInitialization:
     async def test_initialize_without_twitter_key(self, mock_repository, mock_summarizer):
         settings = MagicMock(spec=Settings)
         settings.youtube_api_key = "test-key"
-        settings.anthropic_api_key = "test-key"
+        settings.llm_provider = "openai"
+        settings.llm_api_key = "test-openai-key"
+        settings.summary_model = "gpt-5.6-luna"
         settings.twitter_bearer_token = None
         settings.http_timeout_seconds = 30.0
         settings.summarization_delay_seconds = 0.5
@@ -205,32 +213,33 @@ class TestContentPipelineInitialization:
         for adapter in adapters:
             adapter.close.assert_awaited_once()
 
-    async def test_close_closes_owned_anthropic_client_once(
+    async def test_close_closes_owned_llm_client_once(
         self,
         pipeline: ContentPipeline,
     ):
-        anthropic_client = MagicMock()
-        anthropic_client.close = AsyncMock()
+        llm_client = MagicMock()
+        llm_client.close = AsyncMock()
 
         with patch(
-            "intelstream.services.pipeline.anthropic.AsyncAnthropic",
-            return_value=anthropic_client,
+            "intelstream.services.pipeline.create_llm_client",
+            return_value=llm_client,
         ):
             await pipeline.initialize()
 
         await pipeline.close()
         await pipeline.close()
 
-        anthropic_client.close.assert_awaited_once()
+        llm_client.close.assert_awaited_once()
 
-    async def test_close_does_not_create_anthropic_client_when_absent(
+    async def test_close_does_not_create_llm_client_when_unconfigured(
         self,
         mock_repository,
         mock_summarizer,
     ):
         settings = MagicMock(spec=Settings)
         settings.youtube_api_key = "test-key"
-        settings.anthropic_api_key = None
+        settings.llm_provider = "openai"
+        settings.llm_api_key = None
         settings.twitter_bearer_token = None
         settings.http_timeout_seconds = 30.0
         settings.summarization_delay_seconds = 0.5
@@ -240,18 +249,21 @@ class TestContentPipelineInitialization:
             settings=settings, repository=mock_repository, summarizer=mock_summarizer
         )
 
-        with patch("intelstream.services.pipeline.anthropic.AsyncAnthropic") as cls:
+        with patch("intelstream.services.pipeline.create_llm_client") as cls:
             await pipeline.initialize()
+
+            assert SourceType.BLOG not in pipeline._adapters
             await pipeline.close()
 
         cls.assert_not_called()
 
 
-class TestCreateAdaptersWithoutAnthropicKey:
-    async def test_no_blog_adapter_without_anthropic_key(self, mock_repository, mock_summarizer):
+class TestCreateAdaptersWithoutLLMKey:
+    async def test_no_blog_adapter_without_llm_key(self, mock_repository, mock_summarizer):
         settings = MagicMock(spec=Settings)
         settings.youtube_api_key = "test-key"
-        settings.anthropic_api_key = None
+        settings.llm_provider = "openai"
+        settings.llm_api_key = None
         settings.twitter_bearer_token = None
         settings.http_timeout_seconds = 30.0
         settings.summarization_delay_seconds = 0.5
@@ -267,10 +279,11 @@ class TestCreateAdaptersWithoutAnthropicKey:
 
         await pipeline.close()
 
-    async def test_no_blog_adapter_with_empty_anthropic_key(self, mock_repository, mock_summarizer):
+    async def test_no_blog_adapter_with_empty_llm_key(self, mock_repository, mock_summarizer):
         settings = MagicMock(spec=Settings)
         settings.youtube_api_key = "test-key"
-        settings.anthropic_api_key = "  "
+        settings.llm_provider = "openai"
+        settings.llm_api_key = ""
         settings.twitter_bearer_token = None
         settings.http_timeout_seconds = 30.0
         settings.summarization_delay_seconds = 0.5
@@ -517,7 +530,9 @@ class TestFetchAllSources:
         """Verify that fetch_delay_seconds is applied between source fetches."""
         settings = MagicMock(spec=Settings)
         settings.youtube_api_key = "test-key"
-        settings.anthropic_api_key = "test-key"
+        settings.llm_provider = "openai"
+        settings.llm_api_key = "test-openai-key"
+        settings.summary_model = "gpt-5.6-luna"
         settings.twitter_bearer_token = None
         settings.http_timeout_seconds = 30.0
         settings.summarization_delay_seconds = 0.5
