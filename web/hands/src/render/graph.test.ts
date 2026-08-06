@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { BoxingGraph, CLIP_NAMES, SkinnedBoxer, loadBoxerGlb } from "./graph";
+import { BoxingGraph, CLIP_NAMES, SkinnedBoxer, aimBoneLocal, loadBoxerGlb } from "./graph";
 import { worldMapping } from "./world";
 import { fighter } from "../test/fixtures";
 import type { FighterSnapshot } from "../types";
@@ -39,8 +39,8 @@ describe("skinned GLB humanoid and animation graph", () => {
       if (object instanceof THREE.SkinnedMesh) skinned += 1;
       if (object instanceof THREE.Bone) boneNames.add(object.name);
     });
-    expect(skinned).toBe(2);
-    for (const name of ["hips", "spine", "chest", "head", "shoulderL", "elbowL", "gloveL", "hipL", "kneeL", "ankleL"]) {
+    expect(skinned).toBe(6);
+    for (const name of ["hips", "spine", "chest", "head", "upperarml", "lowerarml", "wristl", "upperlegl", "lowerlegl", "footl"]) {
       expect(boneNames.has(name), name).toBe(true);
     }
   });
@@ -99,8 +99,47 @@ describe("skinned GLB humanoid and animation graph", () => {
   });
 });
 
+it("keeps fighters independent: one animating does not move or restyle the other", async () => {
+  const gltf = await loadBoxerGlb();
+  const boxerA = new SkinnedBoxer(gltf, { skin: 0xa9744f, gear: 0x1d4ed8 });
+  const boxerB = new SkinnedBoxer(gltf, { skin: 0x6e4128, gear: 0xb91c1c });
+  const graphA = new BoxingGraph(boxerA, mapping);
+  const graphB = new BoxingGraph(boxerB, mapping);
+  const two = fighter("two");
+  const punching = withAction(fighter("one"), "jab", "shared-1", 0, 3, 2, 8);
+  for (let i = 0; i < 10; i += 1) {
+    graphA.update(punching, two, 1 / 60, i / 60, false, "full", Math.floor(i / 2));
+    graphB.update(fighter("two"), fighter("one"), 1 / 60, i / 60, false, "full", Math.floor(i / 2));
+  }
+  expect(boxerA.actions.get("jab_left")!.isRunning()).toBe(true);
+  expect(boxerB.actions.get("jab_left")!.isRunning()).toBe(false);
+  const headA = boxerA.bone("head")!.getWorldPosition(new THREE.Vector3());
+  const headB = boxerB.bone("head")!.getWorldPosition(new THREE.Vector3());
+  expect(headB.distanceTo(headA)).toBeGreaterThan(0);
+  boxerA.gloveGear.color.setHex(0x101010);
+  expect(boxerB.gloveGear.color.getHex()).toBe(new THREE.Color(0xb91c1c).getHex());
+  boxerA.dispose();
+  boxerB.dispose();
+});
+
 it("embedded GLB matches its recorded sha256", async () => {
   const { createHash } = await import("node:crypto");
-  const { BOXER_GLB_BASE64, BOXER_GLB_SHA256 } = await import("../assets/boxer-glb");
-  expect(createHash("sha256").update(BOXER_GLB_BASE64).digest("hex")).toBe(BOXER_GLB_SHA256);
+  const { FIGHTER_GLB_BASE64, FIGHTER_GLB_SHA256 } = await import("../assets/fighter-glb");
+  expect(createHash("sha256").update(FIGHTER_GLB_BASE64).digest("hex")).toBe(FIGHTER_GLB_SHA256);
+});
+
+it("aiming a bone at its child's current position is a no-op (+Y rig convention)", async () => {
+  const gltf = await loadBoxerGlb();
+  const boxer = new SkinnedBoxer(gltf, { skin: 0xa9744f, gear: 0x1d4ed8 });
+  new BoxingGraph(boxer, mapping);
+  boxer.root.updateMatrixWorld(true);
+  const shoulder = boxer.bone("shoulderL")!;
+  const elbow = boxer.bone("elbowL")!;
+  const elbowBefore = elbow.getWorldPosition(new THREE.Vector3());
+  const shoulderPos = shoulder.getWorldPosition(new THREE.Vector3());
+  aimBoneLocal(shoulder, shoulderPos, elbowBefore.clone());
+  boxer.root.updateMatrixWorld(true);
+  const elbowAfter = elbow.getWorldPosition(new THREE.Vector3());
+  expect(elbowAfter.distanceTo(elbowBefore)).toBeLessThan(0.01);
+  boxer.dispose();
 });

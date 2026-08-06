@@ -9,7 +9,8 @@
     "test": "vitest",
     "test:run": "vitest run",
     "build": "tsc --noEmit && vite build && npm run scan:build",
-    "scan:build": "node scripts/scan-build.mjs"
+    "scan:build": "node scripts/scan-build.mjs",
+    "generate:fighter": "esbuild scripts/generate-fighter-glb.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/generate-fighter-glb.mjs && node node_modules/.cache/generate-fighter-glb.mjs"
   },
   "dependencies": {
     "@discord/embedded-app-sdk": "2.5.0",

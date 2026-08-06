@@ -104,7 +104,7 @@ export function buildArena(): BuiltArena {
   materials.push(trussMat);
   const lampMat = new THREE.MeshStandardMaterial({ color: "#1a2230", emissive: "#dfe9ff", emissiveIntensity: 1.1, roughness: 0.4 });
   materials.push(lampMat);
-  const coneMat = new THREE.MeshBasicMaterial({ color: "#a8c4ff", transparent: true, opacity: 0.014, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+  const coneMat = new THREE.MeshBasicMaterial({ color: "#a8c4ff", transparent: true, opacity: 0.006, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
   materials.push(coneMat);
   const trussGeo = new THREE.BoxGeometry(9, 0.18, 0.18);
   geometries.push(trussGeo);
