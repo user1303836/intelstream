@@ -65,7 +65,7 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       defender.defense = Math.floor(t / 6.4) % 2 === 0 ? "guard_high" : "none";
       if (cycle > 0.2 && cycle < 0.3) {
         eventId += 1;
-        events.push({ event_id: eventId, tick, kind: "hit", actor_id: attacker.player_id, target_id: defender.player_id, amount: 210, detail: `${punch}`, blood: 120, direction: attacker.facing, action_id: null });
+        events.push({ event_id: eventId, tick, kind: "hit", actor_id: attacker.player_id, target_id: defender.player_id, amount: 210, detail: `${attacker.action_hand}:${punch}:${attacker.action_target}`, blood: 100, direction: attacker.facing, action_id: null });
         defender.stunned_ticks = 12;
       }
     }
@@ -78,6 +78,8 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       one.x = -60;
       one.y = -30;
       if (knockdownCycle > 11 && knockdownCycle < 11.15) {
+        eventId += 1;
+        events.push({ event_id: eventId, tick, kind: "counter_hit", actor_id: one.player_id, target_id: two.player_id, amount: 500, detail: "right:uppercut:head", blood: 100, direction: 1, action_id: null });
         eventId += 1;
         events.push({ event_id: eventId, tick, kind: "knockdown", actor_id: one.player_id, target_id: two.player_id, amount: 420, detail: "knockdown", blood: 60, direction: 1, action_id: null });
       }

@@ -69,6 +69,17 @@ describe("browser lifecycle and accessible overlays", () => {
     vi.clearAllMocks();
   });
 
+  it("labels graphic full mode and exposes the required model attribution", () => {
+    const root = document.createElement("div");
+    const app = new HandsApp(root);
+    expect(root.querySelector<HTMLOptionElement>('option[value="full"]')?.textContent).toBe("Full (arcade gore)");
+    const credit = root.querySelector<HTMLElement>(".model-credit");
+    expect(credit?.textContent).toContain("Boxer");
+    expect(credit?.textContent).toContain("Texel, Inc.");
+    expect(credit?.textContent).toContain("CC BY 4.0");
+    app.destroy();
+  });
+
   it("launches, waits for the channel Play now action, reports final and cleans up", async () => {
     history.replaceState({}, "", "/?instance_id=launch");
     const root = document.createElement("div");

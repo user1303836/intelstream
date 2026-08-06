@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import gzip
 import posixpath
 import re
 import sys
@@ -16,6 +17,8 @@ EXPECTED = {
     f"{PREFIX}assets/hands.js",
     f"{PREFIX}assets/hands.css",
 }
+MAX_HANDS_JS_BYTES = 6_000_000
+MAX_HANDS_JS_GZIP_BYTES = 3_200_000
 DYNAMIC_CODE = re.compile(r"(?<![\w$])(?:eval\s*\(|new\s+Function\b|Function\s*\()")
 SOURCE_MAP = re.compile(r"sourceMappingURL", re.IGNORECASE)
 ABSOLUTE_LOCAL_OR_HANDS_ORIGIN = re.compile(
@@ -24,9 +27,9 @@ ABSOLUTE_LOCAL_OR_HANDS_ORIGIN = re.compile(
     r"|[^/\s\"']+/api/hands(?:[/\s?\"']|$))",
     re.IGNORECASE,
 )
-# These are the complete URL literals carried by the reviewed, pinned Discord
-# SDK bundle. They are SDK metadata/allowlist values, not Hands runtime targets.
-REVIEWED_SDK_URL_LITERALS = {
+# These are the complete external URL literals carried by reviewed client code.
+# They are pinned SDK metadata or model attribution, not Hands runtime targets.
+REVIEWED_EXTERNAL_URL_LITERALS = {
     "https://github.com/uuidjs/uuid#getrandomvalues-not-supported",
     "https://discord.com",
     "https://discordapp.com",
@@ -37,6 +40,9 @@ REVIEWED_SDK_URL_LITERALS = {
     "https://staging.discord.co",
     "http://localhost:3333",
     "https://pax.discord.com",
+    # Texel Boxer source and CC BY 4.0 license attribution shown in-app.
+    "https://sketchfab.com/3d-models/boxer-84767168720948b38728ff78ee6f6090",
+    "https://creativecommons.org/licenses/by/4.0/",
     # Pinned three.js: W3C XHTML namespace identifier (never fetched) and a
     # JCGT paper citation inside a shader source comment.
     "http://www.w3.org/1999/xhtml",
@@ -47,6 +53,11 @@ STRING_LITERAL = re.compile(
     re.DOTALL,
 )
 URL_TOKEN = re.compile(r"""(?:https?:)?(?:/|\\/){2}[^\s"'`\\<>(){},;]+""", re.IGNORECASE)
+EXPLICIT_URL_TOKEN = re.compile(r"""https?:(?:/|\\/){2}[^\s"'`\\<>(){},;]+""", re.IGNORECASE)
+NETWORK_URL_TOKEN = re.compile(
+    r"""(?<![:/\\])(?:/|\\/){2}(?:(?:[A-Za-z0-9-]+\.)+[A-Za-z0-9-]+|localhost)(?::[0-9]{1,5})?(?:/|\\/)?[^\s"'`\\<>(){},;]*""",
+    re.IGNORECASE,
+)
 CSS_URL_LITERAL = re.compile(
     r"""(?:url\(|@import\s+)[\s"']*((?:https?:)?//[^\s"')]+)""", re.IGNORECASE
 )
@@ -152,18 +163,28 @@ def _validate_member_paths(entries: list[zipfile.ZipInfo]) -> list[str]:
 
 
 def _url_literals(text: str) -> list[str]:
-    return [
+    literals = {match.group(0).replace("\\/", "/") for match in EXPLICIT_URL_TOKEN.finditer(text)}
+    literals.update(
+        match.group(0).replace("\\/", "/") for match in NETWORK_URL_TOKEN.finditer(text)
+    )
+    literals.update(
         match.group(0).replace("\\/", "/")
         for string in STRING_LITERAL.finditer(text)
         # Oversized literals are generated embedded assets (e.g. the base64
         # GLB); no real URL is kilobytes long. Credential scanning still runs.
         if len(string.group(0)) <= 4096
         for match in URL_TOKEN.finditer(string.group("value"))
-    ]
+    )
+    return sorted(literals)
 
 
 def validate_bundle(contents: dict[str, bytes]) -> list[str]:
     errors: list[str] = []
+    script = contents[f"{PREFIX}assets/hands.js"]
+    if len(script) > MAX_HANDS_JS_BYTES:
+        errors.append(f"assets/hands.js exceeds {MAX_HANDS_JS_BYTES}-byte budget")
+    if len(gzip.compress(script, compresslevel=9, mtime=0)) > MAX_HANDS_JS_GZIP_BYTES:
+        errors.append(f"assets/hands.js exceeds {MAX_HANDS_JS_GZIP_BYTES}-byte gzip budget")
     html = contents[f"{PREFIX}index.html"].decode("utf-8", errors="replace")
     parser = _BundleHTMLParser()
     parser.feed(html)
@@ -177,7 +198,7 @@ def validate_bundle(contents: dict[str, bytes]) -> list[str]:
         if not _relative_reference(reference):
             errors.append(f"index.html contains a non-relative runtime reference: {reference}")
     for literal in parser.attribute_urls:
-        if literal not in REVIEWED_SDK_URL_LITERALS:
+        if literal not in REVIEWED_EXTERNAL_URL_LITERALS:
             errors.append(f"index.html: unreviewed external URL literal: {literal}")
 
     for name, raw in contents.items():
@@ -190,7 +211,7 @@ def validate_bundle(contents: dict[str, bytes]) -> list[str]:
         if name.endswith(".css"):
             literals.extend(match.group(1) for match in CSS_URL_LITERAL.finditer(text))
         for literal in literals:
-            if literal not in REVIEWED_SDK_URL_LITERALS:
+            if literal not in REVIEWED_EXTERNAL_URL_LITERALS:
                 errors.append(f"{name}: unreviewed external URL literal: {literal}")
         if ABSOLUTE_LOCAL_OR_HANDS_ORIGIN.search(text):
             allowed_localhost_only = text.replace("http://localhost:3333", "")

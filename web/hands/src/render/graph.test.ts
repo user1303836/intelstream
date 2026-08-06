@@ -1,5 +1,6 @@
 import * as THREE from "three";
-import { BoxingGraph, CLIP_NAMES, SkinnedBoxer, aimBoneLocal, loadBoxerGlb } from "./graph";
+import { FIGHTER_TEXTURE_DATA_URLS } from "../assets/fighter-textures";
+import { BONE_ADAPTER, BoxingGraph, CLIP_NAMES, FIGHTER_MODEL_SCALE, SkinnedBoxer, aimBoneLocal, loadBoxerGlb } from "./graph";
 import { worldMapping } from "./world";
 import { fighter } from "../test/fixtures";
 import type { FighterSnapshot } from "../types";
@@ -39,10 +40,11 @@ describe("skinned GLB humanoid and animation graph", () => {
       if (object instanceof THREE.SkinnedMesh) skinned += 1;
       if (object instanceof THREE.Bone) boneNames.add(object.name);
     });
-    expect(skinned).toBe(6);
-    for (const name of ["hips", "spine", "chest", "head", "upperarml", "lowerarml", "wristl", "upperlegl", "lowerlegl", "footl"]) {
+    expect(skinned).toBe(5);
+    for (const name of Object.values(BONE_ADAPTER)) {
       expect(boneNames.has(name), name).toBe(true);
     }
+    expect(boneNames.has("Neck_012"), "decapitation stump anchor").toBe(true);
   });
 
   it("drives locomotion blending and committed punch playback with phase locking", async () => {
@@ -122,10 +124,48 @@ it("keeps fighters independent: one animating does not move or restyle the other
   boxerB.dispose();
 });
 
-it("embedded GLB matches its recorded sha256", async () => {
+it("preloads the five mapped textures and keeps every fighter material independent", async () => {
+  const gltf = await loadBoxerGlb();
+  const boxerA = new SkinnedBoxer(gltf, { skin: 0xa9744f, gear: 0x1d4ed8 });
+  const boxerB = new SkinnedBoxer(gltf, { skin: 0x6e4128, gear: 0xb91c1c });
+  const materials = (boxer: SkinnedBoxer): Map<string, THREE.MeshStandardMaterial> => {
+    const found = new Map<string, THREE.MeshStandardMaterial>();
+    boxer.root.traverse((object) => {
+      if (object instanceof THREE.SkinnedMesh && !Array.isArray(object.material)) {
+        found.set(object.name, object.material as THREE.MeshStandardMaterial);
+      }
+    });
+    return found;
+  };
+  const first = materials(boxerA);
+  const second = materials(boxerB);
+  const expected = {
+    BoxerHead: "head",
+    BoxerGloves: "gloves",
+    BoxerBody: "body",
+    BoxerShoes: "shoes",
+    BoxerPants: "pants",
+  } as const;
+  expect(boxerA.root.children[0]!.scale.x).toBe(FIGHTER_MODEL_SCALE);
+  for (const [meshName, textureName] of Object.entries(expected)) {
+    const materialA = first.get(meshName)!;
+    const materialB = second.get(meshName)!;
+    expect(materialA).not.toBe(materialB);
+    expect(materialA.map).toBe(materialB.map);
+    expect(materialA.map?.colorSpace).toBe(THREE.SRGBColorSpace);
+    expect(materialA.map?.flipY).toBe(false);
+    expect((materialA.map?.image as HTMLImageElement).src).toBe(FIGHTER_TEXTURE_DATA_URLS[textureName]);
+  }
+  expect(new Set([...first.values()].map((material) => material.uuid)).size).toBe(5);
+  expect(new Set([...first.values()].map((material) => material.map?.uuid)).size).toBe(5);
+  boxerA.dispose();
+  boxerB.dispose();
+});
+
+it("embedded GLB bytes match their recorded sha256", async () => {
   const { createHash } = await import("node:crypto");
   const { FIGHTER_GLB_BASE64, FIGHTER_GLB_SHA256 } = await import("../assets/fighter-glb");
-  expect(createHash("sha256").update(FIGHTER_GLB_BASE64).digest("hex")).toBe(FIGHTER_GLB_SHA256);
+  expect(createHash("sha256").update(Buffer.from(FIGHTER_GLB_BASE64, "base64")).digest("hex")).toBe(FIGHTER_GLB_SHA256);
 });
 
 it("aiming a bone at its child's current position is a no-op (+Y rig convention)", async () => {
@@ -141,5 +181,63 @@ it("aiming a bone at its child's current position is a no-op (+Y rig convention)
   boxer.root.updateMatrixWorld(true);
   const elbowAfter = elbow.getWorldPosition(new THREE.Vector3());
   expect(elbowAfter.distanceTo(elbowBefore)).toBeLessThan(0.01);
+  boxer.dispose();
+});
+
+
+it("makes imported-fighter wounds graphic in full mode while off preserves non-bloody trauma", async () => {
+  const gltf = await loadBoxerGlb();
+  const boxer = new SkinnedBoxer(gltf, { skin: 0xa9744f, gear: 0x1d4ed8 });
+  const graph = new BoxingGraph(boxer, mapping);
+  const wounded = {
+    ...fighter("one"),
+    trauma: { head: 850, body: 700, left_eye: 280, right_eye: 240, left_cut: 260, right_cut: 220, swelling: 300, bleeding: 300 },
+  };
+  const bloodiedOpponent = {
+    ...fighter("two"),
+    trauma: { ...fighter("two").trauma, left_cut: 260, right_cut: 220, bleeding: 300 },
+  };
+  const material = (mesh: THREE.Mesh): THREE.MeshStandardMaterial => mesh.material as THREE.MeshStandardMaterial;
+
+  graph.update(wounded, bloodiedOpponent, 1 / 60, 0, false, "full", 0);
+  const fullCut = material(boxer.trauma.cutL).opacity;
+  const fullStreakWidth = boxer.trauma.streakL.scale.x;
+  const fullGlove = boxer.gloveGear.color.clone();
+  graph.update(wounded, bloodiedOpponent, 1 / 60, 0.1, false, "reduced", 1);
+  const reducedCut = material(boxer.trauma.cutL).opacity;
+  const reducedStreakWidth = boxer.trauma.streakL.scale.x;
+  expect(fullCut).toBeGreaterThan(reducedCut);
+  expect(reducedCut).toBeGreaterThan(0);
+  expect(fullStreakWidth).toBeGreaterThan(reducedStreakWidth);
+  const colorDistance = (left: THREE.Color, right: THREE.Color): number => Math.abs(left.r - right.r) + Math.abs(left.g - right.g) + Math.abs(left.b - right.b);
+  expect(colorDistance(fullGlove, boxer.gearBaseColor)).toBeGreaterThan(colorDistance(boxer.gloveGear.color, boxer.gearBaseColor));
+
+  graph.update(wounded, bloodiedOpponent, 1 / 60, 0.2, false, "off", 2);
+  for (const overlay of [boxer.trauma.cutL, boxer.trauma.cutR, boxer.trauma.streakL, boxer.trauma.streakR, boxer.trauma.noseStreak, boxer.trauma.mouthBlood, boxer.trauma.bodyStreak]) {
+    expect(material(overlay).opacity).toBe(0);
+  }
+  expect(material(boxer.trauma.bruiseL).opacity).toBeGreaterThan(0);
+  expect(material(boxer.trauma.ribL).opacity).toBeGreaterThan(0);
+  expect(boxer.gloveGear.color.getHex()).toBe(boxer.gearBaseColor.getHex());
+  boxer.dispose();
+});
+
+it("hides and restores only the separable head for arcade decapitation", async () => {
+  const gltf = await loadBoxerGlb();
+  const boxer = new SkinnedBoxer(gltf, { skin: 0xa9744f, gear: 0x1d4ed8 });
+  const meshes = new Map<string, THREE.SkinnedMesh>();
+  boxer.root.traverse((object) => {
+    if (object instanceof THREE.SkinnedMesh) meshes.set(object.name, object);
+  });
+  boxer.setDecapitated(true);
+  expect(boxer.isDecapitated).toBe(true);
+  expect(meshes.get("BoxerHead")!.visible).toBe(false);
+  expect(boxer.bone("head")!.visible).toBe(false);
+  for (const name of ["BoxerBody", "BoxerGloves", "BoxerShoes", "BoxerPants"]) expect(meshes.get(name)!.visible).toBe(true);
+  boxer.mixer.clipAction(THREE.AnimationClip.findByName(gltf.animations, "knockdown")!).play();
+  boxer.mixer.update(0.25);
+  boxer.setDecapitated(false);
+  expect(meshes.get("BoxerHead")!.visible).toBe(true);
+  expect(boxer.bone("head")!.visible).toBe(true);
   boxer.dispose();
 });

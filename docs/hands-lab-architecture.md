@@ -283,29 +283,34 @@ All five steps landed. Final state:
   evaluation lives in the lab overlay and drives the 10 cm alignment contract
   instead of replacing the balance-tested server rule.
 - The referee remains procedural (out of scope; no clips were harmed).
-- Bundle is 1.67 MB (GLB embedded as base64, still the exact three-file
-  manifest; both static scanners learned to skip URL extraction only for
-  >4 KB generated literals — credential scanning still applies).
+- Bundle is 5,624,575 bytes raw and 2,942,823 bytes at gzip level 9 because
+  the required three-file manifest embeds the rig and five textures. Build and
+  wheel checks cap it at 6,000,000 raw / 3,200,000 gzip bytes. Both scanners
+  extract explicit HTTP(S) URLs across nested and oversized templates while
+  retaining protocol-relative checks for ordinary literals.
 
 ---
 
 # Addendum: imported rigged model (2026-08-06)
 
-**Asset**: KayKit Adventurers `Barbarian.glb` (CC0, Kay Lousberg), vendored with
-license in `web/hands/assets-src/`. Inspection: 41-bone armature (dots stripped
-by GLTFLoader: `upperarml`, `wristl`, `footl`…), 76 authored clips (in-place,
-game-ready), T-pose rest, ~1.35 m tall, faces +Z, 6 skinned parts, 1 palette
-texture (1024²), 4,045 triangles, prop meshes (axes/shield/mug/hat/cape)
-stripped at generation.
+**Asset**: Texel, Inc. `Boxer.glb` (CC BY 4.0), vendored with attribution,
+source, checksum, and modification notice in `web/hands/assets-src/Boxer.LICENSE.txt`.
+Inspection: 27-joint smooth-skinned armature, approximately human scale, faces
++Z, five skinned parts (head, gloves, body, shoes, pants), five embedded PNG
+base-color textures, and 23,050 triangles. The single source animation is
+replaced during generation by the HANDS clip set; no compressed-mesh decoder is
+required.
 
 **Generation**: `scripts/generate-fighter-glb.ts` retarget-bakes the project's
-tuned procedural boxing motion onto the Barbarian armature — world-delta
-retarget for torso/head, child-aim retarget for limbs (convention-free), hips
-translation scaled by rest hip ratio. 18 clips at authoritative tick rate.
-Canonical adapter (`BONE_ADAPTER`) maps canonical bones → model bones with a
-hard diagnostic on missing bones. Glove meshes are runtime-attached to the
-wrist bones (corner colors); the skin palette texture is embedded base64 and
-assigned per fighter clone.
+tuned procedural boxing motion onto the Texel armature — world-delta retarget
+for torso/head, child-aim retarget for limbs (convention-free), hierarchy-aware
+local transforms, floor correction, and hips translation scaled by rest hip
+ratio. Baking neutralizes the procedural root so runtime alone owns opponent
+facing and stance yaw. It emits 18 clips at the authoritative tick rate. Canonical adapter
+(`BONE_ADAPTER`) maps canonical bones → model bones with a hard diagnostic on
+missing bones. The model's skinned gloves and pants retain their source textures
+and receive per-corner tinting; all five extracted textures are embedded in the
+client bundle.
 
 **Model lab**: `/hands/model-lab` (dev) / `?model-lab=1` (vite) — clip player
 (play/pause/seek/loop/crossfade), SkeletonHelper, full bone hierarchy print,
@@ -314,17 +319,23 @@ scale/rotation/position controls, and warnings (unnamed clips/bones, missing
 textures, runtime warnings). Same lighting rig as the game.
 
 **Runtime**: `SkinnedBoxer` = SkeletonUtils.clone + per-fighter AnimationMixer +
-independently cloned materials only where appearance differs (gear gloves,
-skin clearcoat), shared geometry/texture. `BoxingGraph` drives locomotion
-blending, committed action playback phase-locked to manifest ticks, reactions,
-knockdown/getup, foot locking, and constrained additive IK — corrections
-applied strictly after `mixer.update()`. Procedural animator preserved behind
-`?procedural=1` and as automatic fallback on GLB load failure.
+five independently cloned role-specific materials, with shared geometry and
+texture objects. `BoxingGraph` drives locomotion blending, committed action
+playback phase-locked to manifest ticks, reactions, knockdown/getup, foot
+locking, and constrained additive IK — corrections applied strictly after
+`mixer.update()`. The procedural animator remains behind `?procedural=1` and as
+automatic fallback on GLB load failure.
 
-**Verified**: independent skeletons/animation/materials per fighter (unit
-tested), cast+receive shadows, authoritative roots preserved, zero console
-errors across captures, SwiftShader software floor avg 59 ms/frame (GPU-bound
-real hardware runs far faster; scene ~10k tris).
+**Verified**: independent skeletons, animation state, materials, and head
+visibility per fighter; cast+receive shadows; authoritative roots preserved;
+all vertices finite and floor-bounded at every keyframe of all 18 clips; all
+punch markers agree with the live glove bones within 1 mm. Each fighter is
+23,050 triangles. Dynamic gore is held to fixed pools (900 droplets, 90 mist
+sprites, 48 gibs, two heads, two stumps, and 48 canvas stains). A same-session
+headless SwiftShader comparison measured 9.35 fps for the imported rig versus
+9.57 fps for procedural fallback (2.3% lower); the full decapitation interval
+measured 8.98 fps (6.2% lower). These software-renderer values are a relative
+regression check, not a hardware frame-rate target.
 
 **Missing clips for existing combat actions** (all currently fall back to
 idle/locomotion): taunt dance, clinch hold, foul-recovery crouch, weave/slip/

@@ -325,8 +325,11 @@ export class LabApp {
     const parts = key.split(":");
     const trajectory = (markerData.trajectories as Record<string, { left: number[][]; right: number[][] }>)[`${parts[0]}:${parts[1]}`];
     if (trajectory === undefined) return;
+    const fighterRoot = this.renderer.labRigs[0]!;
+    const fighterModel = fighterRoot.children[0] ?? fighterRoot;
+    fighterModel.updateMatrixWorld(true);
     const points = (parts[1] === "right" ? trajectory.right : trajectory.left).map(
-      (point) => new THREE.Vector3((point[0] ?? 0) + this.renderer!.labRigs[0]!.position.x, point[1] ?? 0, (point[2] ?? 0) + this.renderer!.labRigs[0]!.position.z),
+      (point) => fighterModel.localToWorld(new THREE.Vector3(point[0] ?? 0, point[1] ?? 0, point[2] ?? 0)),
     );
     if (points.length < 2) return;
     const geometry = new THREE.BufferGeometry().setFromPoints(points);

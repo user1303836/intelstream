@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 from importlib import resources
 from typing import TYPE_CHECKING
 
@@ -8,7 +9,7 @@ import pytest
 from scripts.check_hands_wheel import (
     EXPECTED,
     PREFIX,
-    REVIEWED_SDK_URL_LITERALS,
+    REVIEWED_EXTERNAL_URL_LITERALS,
     validate_bundle,
 )
 
@@ -22,6 +23,8 @@ EXPECTED_RELATIVE = {
     "assets/hands.js",
     "assets/hands.css",
 }
+MAX_HANDS_JS_BYTES = 6_000_000
+MAX_HANDS_JS_GZIP_BYTES = 3_200_000
 
 
 def _files(root: Traversable, prefix: str = "") -> set[str]:
@@ -49,6 +52,9 @@ def test_package_resources_are_exact_nonempty_stable_bundle() -> None:
     bundle = _bundle()
     assert set(bundle) == EXPECTED
     assert all(bundle.values())
+    script = bundle[f"{PREFIX}assets/hands.js"]
+    assert len(script) <= MAX_HANDS_JS_BYTES
+    assert len(gzip.compress(script, compresslevel=9, mtime=0)) <= MAX_HANDS_JS_GZIP_BYTES
 
 
 def test_bundle_has_relative_refs_and_no_executable_or_sensitive_build_content() -> None:
@@ -62,10 +68,10 @@ def _bundle_with_javascript(source: str) -> dict[str, bytes]:
     return bundle
 
 
-def test_package_scanner_accepts_exact_reviewed_sdk_url_allowlist() -> None:
+def test_package_scanner_accepts_exact_reviewed_external_url_allowlist() -> None:
     source = "\n".join(
         f"const sdkUrl{index} = {'SDK metadata: ' + url!r};"
-        for index, url in enumerate(sorted(REVIEWED_SDK_URL_LITERALS))
+        for index, url in enumerate(sorted(REVIEWED_EXTERNAL_URL_LITERALS))
     )
     assert validate_bundle(_bundle_with_javascript(source)) == []
 
@@ -75,6 +81,10 @@ def test_package_scanner_accepts_exact_reviewed_sdk_url_allowlist() -> None:
     [
         "const indirect = 'https://evil.example/steal'; consume(indirect)",
         "const indirect = '//evil.example/steal'; consume(indirect)",
+        "const nested = `outer ${flag ? `https://evil.example/nested` : ''}`;",
+        "const nested = `outer ${flag ? `//evil.example/network` : ''}`;",
+        f"const oversized = `{'a' * 5000}https://evil.example/oversized`;",
+        f"const oversized = `{'a' * 5000}//evil.example/network-oversized`;",
     ],
 )
 def test_package_scanner_rejects_indirect_unreviewed_endpoint(source: str) -> None:

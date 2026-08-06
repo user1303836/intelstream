@@ -1,0 +1,26 @@
+Boxer 3D model
+===============
+
+Title: Boxer
+Creator: Texel, Inc. (https://sketchfab.com/texel)
+Source: https://sketchfab.com/3d-models/boxer-84767168720948b38728ff78ee6f6090
+License: Creative Commons Attribution 4.0 International (CC BY 4.0)
+License URL: https://creativecommons.org/licenses/by/4.0/
+
+Downloaded from the official Sketchfab model page on 2026-08-06.
+Original GLB size: 3,216,472 bytes
+Original GLB SHA-256: 545be2380b259698ca3ae864bba2b00a54aaaf987fd0837b8dde65cc18da3961
+
+Attribution:
+"Boxer" by Texel, Inc., licensed under CC BY 4.0.
+
+Modifications made for IntelStream HANDS:
+- normalized skin weights and removed the source animation;
+- retarget-baked the HANDS boxing animation set;
+- extracted the five embedded base-color textures for runtime loading;
+- applied per-corner gear tinting and runtime trauma/gore effects.
+
+The original model and the modified generated fighter asset may be shared and
+adapted under CC BY 4.0 provided appropriate credit is given, this license is
+linked, and modifications are indicated. No endorsement by Texel, Inc. is
+implied.
