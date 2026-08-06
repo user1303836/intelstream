@@ -4,19 +4,66 @@ import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.j
 import { punchTiming, totalTicks, HURTBOXES } from "../manifest";
 import type { BloodLevel } from "../settings";
 import type { FighterSnapshot, Hand, Power, PunchClass, SemanticAction, Target } from "../types";
-import { BOXER_GLB_BASE64 } from "../assets/boxer-glb";
+import { FIGHTER_GLB_BASE64 } from "../assets/fighter-glb";
+import { FIGHTER_TEXTURE_BASE64 } from "../assets/fighter-texture";
 import type { WorldMapping } from "./world";
+
+/** Canonical bone name → Barbarian armature bone name. */
+export const BONE_ADAPTER: Record<string, string> = {
+  hips: "hips",
+  spine: "spine",
+  chest: "chest",
+  head: "head",
+  shoulderL: "upperarml",
+  elbowL: "lowerarml",
+  gloveL: "wristl",
+  shoulderR: "upperarmr",
+  elbowR: "lowerarmr",
+  gloveR: "wristr",
+  hipL: "upperlegl",
+  kneeL: "lowerlegl",
+  ankleL: "footl",
+  hipR: "upperlegr",
+  kneeR: "lowerlegr",
+  ankleR: "footr",
+};
+
+const MODEL_SCALE = 0.78;
 
 let cachedGltf: Promise<GLTF> | null = null;
 
 export function loadBoxerGlb(): Promise<GLTF> {
   if (cachedGltf === null) {
-    const bytes = Uint8Array.from(atob(BOXER_GLB_BASE64), (char) => char.charCodeAt(0));
+    const bytes = Uint8Array.from(atob(FIGHTER_GLB_BASE64), (char) => char.charCodeAt(0));
     cachedGltf = new Promise((resolve, reject) => {
       new GLTFLoader().parse(bytes.buffer, "", resolve, (error: unknown) => reject(error instanceof Error ? error : new Error(String(error))));
     });
   }
   return cachedGltf;
+}
+
+let cachedTexture: THREE.Texture | null = null;
+
+function fighterTexture(): THREE.Texture {
+  if (cachedTexture === null) {
+    const texture = new THREE.TextureLoader().load(`data:image/png;base64,${FIGHTER_TEXTURE_BASE64}`);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.flipY = false;
+    cachedTexture = texture;
+  }
+  return cachedTexture;
+}
+
+export function applyFighterSkin(target: THREE.Object3D): THREE.MeshPhysicalMaterial {
+  const material = new THREE.MeshPhysicalMaterial({ map: fighterTexture(), color: new THREE.Color(1.15, 1.1, 1.05), emissive: new THREE.Color(0.16, 0.13, 0.1), roughness: 0.58, metalness: 0.02, clearcoat: 0.25, clearcoatRoughness: 0.6 });
+  target.traverse((object) => {
+    if (object instanceof THREE.SkinnedMesh) {
+      object.material = material;
+      object.castShadow = true;
+      object.frustumCulled = false;
+    }
+  });
+  return material;
 }
 
 export const CLIP_NAMES = [
@@ -51,19 +98,21 @@ export class SkinnedBoxer {
 
   constructor(gltf: GLTF, palette: BoxerPaletteColors) {
     const instance = cloneSkeleton(gltf.scene);
+    instance.scale.setScalar(MODEL_SCALE);
     this.root.add(instance);
-    this.skinMaterial = new THREE.MeshPhysicalMaterial({ color: palette.skin, roughness: 0.58, metalness: 0.02, clearcoat: 0.25, clearcoatRoughness: 0.6 });
-    this.gearMaterial = new THREE.MeshStandardMaterial({ color: palette.gear, roughness: 0.4 });
+    this.skinMaterial = applyFighterSkin(instance);
+    this.gearMaterial = new THREE.MeshStandardMaterial({ color: palette.gear, roughness: 0.32, metalness: 0.05 });
     this.gearBaseColor = new THREE.Color(palette.gear);
     instance.traverse((object) => {
       if (object instanceof THREE.SkinnedMesh) {
-        const loaded = Array.isArray(object.material) ? object.material[0] : object.material;
-        object.material = loaded !== undefined && loaded.name === "gear" ? this.gearMaterial : this.skinMaterial;
+        object.material = this.skinMaterial;
         object.castShadow = true;
         object.frustumCulled = false;
       }
       if (object instanceof THREE.Bone) this.bones.set(object.name, object);
     });
+    const missing = Object.values(BONE_ADAPTER).filter((name) => !this.bones.has(name));
+    if (missing.length > 0) throw new Error(`fighter GLB missing required bones: ${missing.join(", ")}`);
     this.mixer = new THREE.AnimationMixer(instance);
     for (const clip of gltf.animations) {
       const action = this.mixer.clipAction(clip);
@@ -73,11 +122,21 @@ export class SkinnedBoxer {
         action.clampWhenFinished = true;
       }
     }
+    for (const side of ["L", "R"] as const) {
+      const wrist = this.bone(BONE_ADAPTER[`glove${side}`]!);
+      if (wrist !== null) {
+        const glove = new THREE.Mesh(new THREE.SphereGeometry(0.075, 14, 12), this.gearMaterial);
+        glove.scale.set(1, 1.15, 1.35);
+        glove.position.set(0, -0.09, 0.03);
+        glove.castShadow = true;
+        wrist.add(glove);
+      }
+    }
     this.overlays = buildTraumaOverlays(this.bone("head")!, this.bone("chest")!);
   }
 
   bone(name: string): THREE.Bone | null {
-    return this.bones.get(name) ?? null;
+    return this.bones.get(BONE_ADAPTER[name] ?? name) ?? null;
   }
 
   get trauma(): TraumaOverlays {
@@ -132,7 +191,7 @@ function overlayMesh(geometry: THREE.BufferGeometry, color: number, emissive = 0
 function buildTraumaOverlays(head: THREE.Bone, chest: THREE.Bone): TraumaOverlays {
   const overlays: THREE.Mesh[] = [];
   const add = (mesh: THREE.Mesh, parent: THREE.Bone, position: [number, number, number], scale: [number, number, number] = [1, 1, 1]): THREE.Mesh => {
-    mesh.position.set(...position);
+    mesh.position.set(position[0] * 1.3, position[1] * 1.25, position[2] * 1.35 + 0.045);
     mesh.scale.set(...scale);
     parent.add(mesh);
     overlays.push(mesh);

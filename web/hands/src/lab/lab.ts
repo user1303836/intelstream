@@ -145,6 +145,16 @@ export class LabApp {
           const glove = root.getObjectByName("gloveL");
           return glove === undefined ? null : glove.getWorldPosition(new THREE.Vector3()).toArray().map((v) => Number(v.toFixed(3)));
         }),
+        material: (() => {
+          let info: unknown = null;
+          this.renderer!.labRigs[0]?.traverse((object) => {
+            if (info === null && object instanceof THREE.SkinnedMesh) {
+              const material = object.material as THREE.MeshPhysicalMaterial;
+              info = { colorHex: material.color.getHexString(), hasMap: material.map !== null, mapImage: (material.map?.image as HTMLImageElement | undefined)?.width ?? "none", mapVersion: material.map?.version, clearcoat: material.clearcoat, opacity: material.opacity };
+            }
+          });
+          return info;
+        })(),
       };
       this.setStatus(`filmstrip tick ${tick}`);
       return;

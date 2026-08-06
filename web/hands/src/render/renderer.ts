@@ -58,6 +58,7 @@ export class FightRenderer {
   private readonly blobTexture: THREE.CanvasTexture;
   private readonly lights: THREE.Light[] = [];
   private keyLight: THREE.SpotLight | null = null;
+  private followSpot: THREE.SpotLight | null = null;
   private readonly sizeCheck = new THREE.Vector2();
   private readonly refereeAway = new THREE.Vector3();
   private refereeYaw = 0;
@@ -87,11 +88,11 @@ export class FightRenderer {
   ) {
     this.manualClock = options.manualClock === true;
     this.mapping = worldMapping(simulation);
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance", preserveDrawingBuffer: true });
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.0;
+    this.renderer.toneMappingExposure = 0.92;
     this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
 
     this.scene.background = new THREE.Color("#04060b");
@@ -152,6 +153,7 @@ export class FightRenderer {
 
   private ensureGraphs(): void {
     if (this.glbLoading || this.graphs !== null) return;
+    if (new URLSearchParams(window.location.search).get("procedural") === "1") return;
     this.glbLoading = true;
     this.graphsReady = loadBoxerGlb()
       .then((gltf) => {
@@ -292,11 +294,11 @@ export class FightRenderer {
   }
 
   private setupLights(): void {
-    const hemisphere = new THREE.HemisphereLight("#33415e", "#05060a", 0.5);
+    const hemisphere = new THREE.HemisphereLight("#5a6a95", "#0c0e16", 1.2);
     this.scene.add(hemisphere);
     this.lights.push(hemisphere);
 
-    const ambient = new THREE.AmbientLight("#2b3450", 0.55);
+    const ambient = new THREE.AmbientLight("#3a4468", 1.05);
     this.scene.add(ambient);
     this.lights.push(ambient);
 
@@ -319,7 +321,7 @@ export class FightRenderer {
       ["#c9d8ff", 5.8, 3.9, 5.7],
     ];
     for (const [color, x, y, z] of fills) {
-      const fill = new THREE.SpotLight(color, 60, 30, 0.7, 0.8, 1.8);
+      const fill = new THREE.SpotLight(color, 105, 30, 0.7, 0.8, 1.8);
       fill.position.set(x, y, z);
       fill.target.position.set(0, 1, 0);
       this.scene.add(fill, fill.target);
@@ -330,6 +332,13 @@ export class FightRenderer {
     rim.position.set(0, 3.4, -6.5);
     this.scene.add(rim);
     this.lights.push(rim);
+
+    const follow = new THREE.SpotLight("#ffe8d0", 55, 22, 0.34, 0.75, 1.5);
+    follow.position.set(0, 5.6, 5.2);
+    follow.target.position.set(0, 1, 0);
+    this.scene.add(follow, follow.target);
+    this.lights.push(follow);
+    this.followSpot = follow;
   }
 
   private draw(time: number, manual = false, render = true): void {
@@ -407,6 +416,9 @@ export class FightRenderer {
     this.updateReferee(dt, seconds, current.reducedMotion);
     this.updateBlobShadows();
     this.fireContacts(sampledTick);
+    if (this.followSpot !== null) {
+      this.followSpot.target.position.set((this.tmpA.x + this.tmpB.x) / 2, 1.0, (this.tmpA.z + this.tmpB.z) / 2);
+    }
     const frame = this.cameraOverride ?? this.director.update(
       dt,
       seconds,

@@ -4,9 +4,13 @@
 <body>
 <script type="module">
 import * as THREE from "three";
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
+import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { loadBoxerGlb, SkinnedBoxer } from "/src/render/graph.ts";
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
 renderer.setSize(innerWidth, innerHeight);
 document.body.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
@@ -22,14 +26,15 @@ camera.lookAt(0, 1, 0);
 const gltf = await loadBoxerGlb();
 const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
 scene.add(boxer.root);
-boxer.actions.get("idle")?.play();
+const clipName = new URLSearchParams(location.search).get("clip") ?? "idle";
+if (clipName !== "none") boxer.actions.get(clipName)?.play();
 const grid = new THREE.GridHelper(4, 8);
 scene.add(grid);
 window.__ready = false;
 const clock = new THREE.Clock();
 function loop() {
   boxer.mixer.update(clock.getDelta());
-  renderer.render(scene, camera);
+  if (composer) composer.render(); else renderer.render(scene, camera);
   window.__ready = true;
   requestAnimationFrame(loop);
 }

@@ -394,6 +394,7 @@ class HandsServer:
             routes.extend(
                 [
                     web.get("/hands/lab", self._lab_redirect),
+                    web.get("/hands/model-lab", self._model_lab_redirect),
                     web.get("/hands/replays/{name}", self._lab_replay),
                 ]
             )
@@ -797,6 +798,10 @@ class HandsServer:
     @staticmethod
     async def _lab_redirect(_request: web.Request) -> web.Response:
         raise web.HTTPFound("/?lab=1")
+
+    @staticmethod
+    async def _model_lab_redirect(_request: web.Request) -> web.Response:
+        raise web.HTTPFound("/?model-lab=1")
 
     async def _lab_replay(self, request: web.Request) -> web.Response:
         if not self.dev_mode:
