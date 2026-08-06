@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 import { BONE_ADAPTER, applyFighterSkin, loadBoxerGlb } from "../render/graph";
 
 interface ClipRow {
@@ -12,6 +13,7 @@ export class ModelLab {
   private readonly scene = new THREE.Scene();
   private readonly camera: THREE.PerspectiveCamera;
   private mixer: THREE.AnimationMixer | null = null;
+  private labMaterial: THREE.MeshPhysicalMaterial | null = null;
   private actions = new Map<string, THREE.AnimationAction>();
   private current: THREE.AnimationAction | null = null;
   private skeletonHelper: THREE.SkeletonHelper | null = null;
@@ -69,8 +71,8 @@ export class ModelLab {
   private setupGameLighting(): void {
     this.scene.background = new THREE.Color("#04060b");
     if (new URLSearchParams(window.location.search).get("fog") === "1") this.scene.fog = new THREE.FogExp2("#04060b", 0.042);
-    this.scene.add(new THREE.HemisphereLight("#33415e", "#05060a", 0.5));
-    this.scene.add(new THREE.AmbientLight("#2b3450", 0.55));
+    this.scene.add(new THREE.HemisphereLight("#5a6a95", "#0c0e16", 1.2));
+    this.scene.add(new THREE.AmbientLight("#3a4468", 1.05));
     const key = new THREE.SpotLight("#fff4e0", 115, 26, 0.68, 0.6, 1.6);
     key.position.set(0, 7.4, 0.9);
     key.castShadow = true;
@@ -83,7 +85,7 @@ export class ModelLab {
       ["#c9d8ff", 5.8, 3.9, 5.7],
     ];
     for (const [color, x, y, z] of fills) {
-      const fill = new THREE.SpotLight(color, 60, 30, 0.7, 0.8, 1.8);
+      const fill = new THREE.SpotLight(color, 105, 30, 0.7, 0.8, 1.8);
       fill.position.set(x, y, z);
       fill.target.position.set(0, 1, 0);
       this.scene.add(fill, fill.target);
@@ -101,8 +103,8 @@ export class ModelLab {
     const status = this.root.querySelector("[data-status]")!;
     try {
       const gltf = await loadBoxerGlb();
-      this.model = gltf.scene;
-      applyFighterSkin(this.model);
+      this.model = cloneSkeleton(gltf.scene);
+      this.labMaterial = applyFighterSkin(this.model);
       this.scene.add(this.model);
       this.model.traverse((object) => {
         if (object instanceof THREE.SkinnedMesh) {
@@ -267,6 +269,7 @@ export class ModelLab {
 
   destroy(): void {
     cancelAnimationFrame(this.raf);
+    this.labMaterial?.dispose();
     this.renderer.dispose();
     this.root.replaceChildren();
   }

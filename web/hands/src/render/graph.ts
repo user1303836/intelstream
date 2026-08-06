@@ -5,28 +5,11 @@ import { punchTiming, totalTicks, HURTBOXES } from "../manifest";
 import type { BloodLevel } from "../settings";
 import type { FighterSnapshot, Hand, Power, PunchClass, SemanticAction, Target } from "../types";
 import { FIGHTER_GLB_BASE64 } from "../assets/fighter-glb";
+import { BONE_ADAPTER } from "./skeleton";
+export { BONE_ADAPTER };
 import { FIGHTER_TEXTURE_BASE64 } from "../assets/fighter-texture";
 import type { WorldMapping } from "./world";
 
-/** Canonical bone name → Barbarian armature bone name. */
-export const BONE_ADAPTER: Record<string, string> = {
-  hips: "hips",
-  spine: "spine",
-  chest: "chest",
-  head: "head",
-  shoulderL: "upperarml",
-  elbowL: "lowerarml",
-  gloveL: "wristl",
-  shoulderR: "upperarmr",
-  elbowR: "lowerarmr",
-  gloveR: "wristr",
-  hipL: "upperlegl",
-  kneeL: "lowerlegl",
-  ankleL: "footl",
-  hipR: "upperlegr",
-  kneeR: "lowerlegr",
-  ankleR: "footr",
-};
 
 const MODEL_SCALE = 0.78;
 
@@ -91,10 +74,13 @@ export class SkinnedBoxer {
   readonly mixer: THREE.AnimationMixer;
   readonly actions = new Map<ClipName, THREE.AnimationAction>();
   readonly bones = new Map<string, THREE.Bone>();
+  /** Bone-derived measurements in world units (after MODEL_SCALE). */
+  readonly metrics: { armUpper: number; armFore: number; legThigh: number; legShin: number; headRestY: number; chestRestY: number; ankleRestY: number };
   private readonly skinMaterial: THREE.MeshPhysicalMaterial;
   private readonly gearMaterial: THREE.MeshStandardMaterial;
   readonly gearBaseColor: THREE.Color;
   private readonly overlays: TraumaOverlays;
+  private readonly gloveGeometries: THREE.BufferGeometry[] = [];
 
   constructor(gltf: GLTF, palette: BoxerPaletteColors) {
     const instance = cloneSkeleton(gltf.scene);
@@ -107,6 +93,7 @@ export class SkinnedBoxer {
       if (object instanceof THREE.SkinnedMesh) {
         object.material = this.skinMaterial;
         object.castShadow = true;
+        object.receiveShadow = true;
         object.frustumCulled = false;
       }
       if (object instanceof THREE.Bone) this.bones.set(object.name, object);
@@ -122,12 +109,26 @@ export class SkinnedBoxer {
         action.clampWhenFinished = true;
       }
     }
+    instance.updateMatrixWorld(true);
+    const jointDistance = (from: string, to: string): number =>
+      this.bones.get(from)!.getWorldPosition(new THREE.Vector3()).distanceTo(this.bones.get(to)!.getWorldPosition(new THREE.Vector3()));
+    this.metrics = {
+      armUpper: jointDistance("upperarml", "lowerarml"),
+      armFore: jointDistance("lowerarml", "wristl"),
+      legThigh: jointDistance("upperlegl", "lowerlegl"),
+      legShin: jointDistance("lowerlegl", "footl"),
+      headRestY: this.bones.get("head")!.getWorldPosition(new THREE.Vector3()).y,
+      chestRestY: this.bones.get("chest")!.getWorldPosition(new THREE.Vector3()).y,
+      ankleRestY: this.bones.get("footl")!.getWorldPosition(new THREE.Vector3()).y,
+    };
     for (const side of ["L", "R"] as const) {
       const wrist = this.bone(BONE_ADAPTER[`glove${side}`]!);
       if (wrist !== null) {
-        const glove = new THREE.Mesh(new THREE.SphereGeometry(0.075, 14, 12), this.gearMaterial);
+        const geometry = new THREE.SphereGeometry(0.075, 14, 12);
+        this.gloveGeometries.push(geometry);
+        const glove = new THREE.Mesh(geometry, this.gearMaterial);
         glove.scale.set(1, 1.15, 1.35);
-        glove.position.set(0, -0.09, 0.03);
+        glove.position.set(0, 0.07, 0.03);
         glove.castShadow = true;
         wrist.add(glove);
       }
@@ -155,6 +156,7 @@ export class SkinnedBoxer {
     this.mixer.stopAllAction();
     this.skinMaterial.dispose();
     this.gearMaterial.dispose();
+    for (const geometry of this.gloveGeometries) geometry.dispose();
     this.overlays.dispose();
   }
 }
@@ -294,7 +296,7 @@ export class BoxingGraph {
   private fallAge = 0;
   private riseAge = 0;
   private opponentDrop = 0;
-  private readonly liveOpponentHead = new THREE.Vector3(0, 1.55, 0);
+  private readonly liveOpponentHead = new THREE.Vector3(0, 0.97, 0);
   private hasLiveHead = false;
   private guardWeight = 0;
   private hitstopScale = 1;
@@ -484,7 +486,7 @@ export class BoxingGraph {
       action.setEffectiveWeight(target);
     }
 
-    const dropTarget = opponent.is_downed ? -1.2 : opponent.defense === "weave" ? -0.24 : -0.03;
+    const dropTarget = opponent.is_downed ? -(this.boxer.metrics.headRestY * 0.88) : opponent.defense === "weave" ? -0.24 : -0.03;
     this.opponentDrop = smooth(this.opponentDrop, dropTarget, 4, dt);
     if (opponentHeadWorld !== undefined) {
       this.liveOpponentHead.copy(opponentHeadWorld);
@@ -548,9 +550,10 @@ export class BoxingGraph {
     const startupFrac = timing.startup / Math.max(1, totalTicks(timing));
     const punchT = this.punchAgeTicks / this.punchTotalTicks;
     if (punchT < startupFrac * 0.45 || punchT > startupFrac + 0.2) return;
+    const metrics = this.boxer.metrics;
     const opponentHead = this.scratchA.set(
       this.mapping.x(opponent.x),
-      (fighter.action_target === "body" ? 1.2 : 1.62) + this.opponentDrop,
+      (fighter.action_target === "body" ? metrics.chestRestY : metrics.headRestY + 0.05) + this.opponentDrop,
       this.mapping.z(opponent.y),
     );
     if (this.hasLiveHead) {
@@ -569,8 +572,8 @@ export class BoxingGraph {
     correction.setLength(Math.min(0.42, overshoot));
     const targetWorld = this.aimTarget.copy(gloveWorld).add(correction);
     const shoulderWorld = shoulderBone.getWorldPosition(this.aimShoulder);
-    const upper = 0.3;
-    const fore = 0.3;
+    const upper = this.boxer.metrics.armUpper;
+    const fore = this.boxer.metrics.armFore;
     const to = this.aimTo.copy(targetWorld).sub(shoulderWorld);
     const distance = THREE.MathUtils.clamp(to.length(), 0.12, upper + fore - 0.015);
     to.normalize();
@@ -594,7 +597,7 @@ export class BoxingGraph {
       const world = ankle.getWorldPosition(this.lockAnkle);
       const key = side === "L" ? "plantedL" : "plantedR";
       let planted = this[key];
-      if (moving || fighter.is_downed || world.y > 0.085) {
+      if (moving || fighter.is_downed || world.y > this.boxer.metrics.ankleRestY * 1.35) {
         this[key] = null;
         continue;
       }
@@ -611,8 +614,8 @@ export class BoxingGraph {
       if (flatDrift < 0.008) continue;
       const pinned = this.lockPinned.set(planted.x, world.y, planted.z);
       const hipWorld = hip.getWorldPosition(this.lockHip);
-      const thigh = 0.44;
-      const shin = 0.44;
+      const thigh = this.boxer.metrics.legThigh;
+      const shin = this.boxer.metrics.legShin;
       const to = this.lockTo.copy(pinned).sub(hipWorld);
       const distance = THREE.MathUtils.clamp(to.length(), 0.15, thigh + shin - 0.02);
       to.normalize();
@@ -634,16 +637,16 @@ export class BoxingGraph {
   }
 }
 
-const aimDown = new THREE.Vector3(0, -1, 0);
+const aimUp = new THREE.Vector3(0, 1, 0);
 const aimDir = new THREE.Vector3();
 const aimQuat = new THREE.Quaternion();
 const aimParentQuat = new THREE.Quaternion();
 
-function aimBoneLocal(joint: THREE.Object3D, fromWorld: THREE.Vector3, toWorld: THREE.Vector3): void {
+export function aimBoneLocal(joint: THREE.Object3D, fromWorld: THREE.Vector3, toWorld: THREE.Vector3): void {
   aimDir.subVectors(toWorld, fromWorld);
   if (aimDir.lengthSq() < 0.000001) return;
   aimDir.normalize();
-  aimQuat.setFromUnitVectors(aimDown, aimDir);
+  aimQuat.setFromUnitVectors(aimUp, aimDir);
   const parent = joint.parent;
   if (parent === null) {
     joint.quaternion.copy(aimQuat);

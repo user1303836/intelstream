@@ -88,7 +88,7 @@ export class FightRenderer {
   ) {
     this.manualClock = options.manualClock === true;
     this.mapping = worldMapping(simulation);
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance", preserveDrawingBuffer: true });
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance", preserveDrawingBuffer: options.manualClock === true });
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -399,7 +399,7 @@ export class FightRenderer {
         const severity = (fighter.trauma.bleeding + fighter.trauma.left_cut + fighter.trauma.right_cut) / 380;
         if (severity > 0.05 && !fighter.is_downed) {
           const anchor = index === 0 ? this.tmpA : this.tmpB;
-          this.tmpHead.set(anchor.x, 1.56, anchor.z);
+          this.tmpHead.set(anchor.x, this.headHeightOf(index), anchor.z);
           this.effects.drip(this.tmpHead, severity, dt, current.reducedMotion);
         } else if (severity > 0.3 && fighter.is_downed && Math.random() < dt * 0.8) {
           const anchor = index === 0 ? this.tmpA : this.tmpB;
@@ -438,6 +438,12 @@ export class FightRenderer {
     }
 
     if (!this.destroyed && !this.manualClock) this.raf = requestAnimationFrame((next) => this.draw(next));
+  }
+
+  private headHeightOf(index: number): number {
+    const graphs = this.graphs;
+    if (graphs !== null) return graphs[index]!.boxer.metrics.headRestY + 0.04;
+    return 1.56;
   }
 
   private updateBlobShadows(): void {

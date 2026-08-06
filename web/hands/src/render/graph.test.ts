@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { BoxingGraph, CLIP_NAMES, SkinnedBoxer, loadBoxerGlb } from "./graph";
+import { BoxingGraph, CLIP_NAMES, SkinnedBoxer, aimBoneLocal, loadBoxerGlb } from "./graph";
 import { worldMapping } from "./world";
 import { fighter } from "../test/fixtures";
 import type { FighterSnapshot } from "../types";
@@ -126,4 +126,20 @@ it("embedded GLB matches its recorded sha256", async () => {
   const { createHash } = await import("node:crypto");
   const { FIGHTER_GLB_BASE64, FIGHTER_GLB_SHA256 } = await import("../assets/fighter-glb");
   expect(createHash("sha256").update(FIGHTER_GLB_BASE64).digest("hex")).toBe(FIGHTER_GLB_SHA256);
+});
+
+it("aiming a bone at its child's current position is a no-op (+Y rig convention)", async () => {
+  const gltf = await loadBoxerGlb();
+  const boxer = new SkinnedBoxer(gltf, { skin: 0xa9744f, gear: 0x1d4ed8 });
+  new BoxingGraph(boxer, mapping);
+  boxer.root.updateMatrixWorld(true);
+  const shoulder = boxer.bone("shoulderL")!;
+  const elbow = boxer.bone("elbowL")!;
+  const elbowBefore = elbow.getWorldPosition(new THREE.Vector3());
+  const shoulderPos = shoulder.getWorldPosition(new THREE.Vector3());
+  aimBoneLocal(shoulder, shoulderPos, elbowBefore.clone());
+  boxer.root.updateMatrixWorld(true);
+  const elbowAfter = elbow.getWorldPosition(new THREE.Vector3());
+  expect(elbowAfter.distanceTo(elbowBefore)).toBeLessThan(0.01);
+  boxer.dispose();
 });

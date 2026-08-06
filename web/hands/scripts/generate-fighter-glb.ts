@@ -21,6 +21,7 @@ import * as THREE from "three";
 import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
 import { GLTFLoader, type GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { BoxerAnimator } from "../src/render/animation";
+import { BONE_ADAPTER } from "../src/render/skeleton";
 import { buildBoxer } from "../src/render/boxer";
 import { PALETTES, worldMapping } from "../src/render/world";
 import { punchTiming, totalTicks } from "../src/manifest";
@@ -55,25 +56,6 @@ globals.document = {
 const OUT_DIR = `${process.cwd()}/src/assets`;
 const MAPPING = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 330 });
 
-/** Canonical rig name → Barbarian bone name. */
-export const BONE_ADAPTER: Record<string, string> = {
-  hips: "hips",
-  spine: "spine",
-  chest: "chest",
-  head: "head",
-  shoulderL: "upperarml",
-  elbowL: "lowerarml",
-  gloveL: "wristl",
-  shoulderR: "upperarmr",
-  elbowR: "lowerarmr",
-  gloveR: "wristr",
-  hipL: "upperlegl",
-  kneeL: "lowerlegl",
-  ankleL: "footl",
-  hipR: "upperlegr",
-  kneeR: "lowerlegr",
-  ankleR: "footr",
-};
 
 const CANONICAL_ORDER = [
   "hips", "spine", "chest", "head",

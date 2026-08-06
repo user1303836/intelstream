@@ -1,8 +1,8 @@
 import * as THREE from "three";
 import { HURTBOXES } from "../manifest";
-import { loadBoxerGlb } from "../render/graph";
+import { BONE_ADAPTER, loadBoxerGlb } from "../render/graph";
 import { FightRenderer } from "../render/renderer";
-import markerData from "../assets/boxer-markers.json";
+import markerData from "../assets/fighter-markers.json";
 import type { BloodLevel } from "../settings";
 import type { EngineSnapshot } from "../types";
 
@@ -138,11 +138,11 @@ export class LabApp {
       (window as unknown as Record<string, unknown>).__labDebug = {
         roots: this.renderer.labRigs.map((root) => root.position.toArray().map((v) => Number(v.toFixed(3)))),
         heads: this.renderer.labRigs.map((root) => {
-          const head = root.getObjectByName("head");
+          const head = root.getObjectByName(BONE_ADAPTER.head ?? "head");
           return head === undefined ? null : head.getWorldPosition(new THREE.Vector3()).toArray().map((v) => Number(v.toFixed(3)));
         }),
         gloves: this.renderer.labRigs.map((root) => {
-          const glove = root.getObjectByName("gloveL");
+          const glove = root.getObjectByName(BONE_ADAPTER.gloveL ?? "gloveL");
           return glove === undefined ? null : glove.getWorldPosition(new THREE.Vector3()).toArray().map((v) => Number(v.toFixed(3)));
         }),
         material: (() => {
@@ -279,7 +279,7 @@ export class LabApp {
       );
       headBox.renderOrder = 21;
       headBox.position.y = 0.12;
-      (rigRoot.getObjectByName("head") ?? rigRoot).add(headBox);
+      (rigRoot.getObjectByName(BONE_ADAPTER.head ?? "head") ?? rigRoot).add(headBox);
       this.hurtboxMeshes.push(headBox);
       const torsoBox = new THREE.Mesh(
         new THREE.CapsuleGeometry(0.21, 0.34, 4, 8),
@@ -287,7 +287,7 @@ export class LabApp {
       );
       torsoBox.renderOrder = 21;
       torsoBox.position.y = 0.16;
-      (rigRoot.getObjectByName("chest") ?? rigRoot).add(torsoBox);
+      (rigRoot.getObjectByName(BONE_ADAPTER.chest ?? "chest") ?? rigRoot).add(torsoBox);
       this.hurtboxMeshes.push(torsoBox);
 
       for (const gloveName of ["gloveL", "gloveR"]) {
@@ -296,7 +296,7 @@ export class LabApp {
           new THREE.MeshBasicMaterial({ color: 0x5db4ff, wireframe: true, transparent: true, opacity: 0.85, depthTest: false }),
         );
         hitbox.renderOrder = 22;
-        (rigRoot.getObjectByName(gloveName) ?? rigRoot).add(hitbox);
+        (rigRoot.getObjectByName(BONE_ADAPTER[gloveName] ?? gloveName) ?? rigRoot).add(hitbox);
         this.hitboxMeshes.push(hitbox);
       }
     }
@@ -363,7 +363,7 @@ export class LabApp {
 
   private jointWorld(rigIndex: number, joint: string): THREE.Vector3 | null {
     const rig = this.renderer?.labRigs[rigIndex];
-    const found = rig?.getObjectByName(joint);
+    const found = rig?.getObjectByName(BONE_ADAPTER[joint] ?? joint);
     return found === undefined || found === null ? null : found.getWorldPosition(new THREE.Vector3());
   }
 
@@ -424,7 +424,7 @@ export class LabApp {
       roots: this.renderer!.labRigs.map((root) => root.position.toArray().map((v) => Number(v.toFixed(3)))),
       graphsActive: (this.renderer as unknown as { graphs: unknown }).graphs !== null,
       heads: this.renderer!.labRigs.map((root) => {
-        const head = root.getObjectByName("head");
+        const head = root.getObjectByName(BONE_ADAPTER.head ?? "head");
         return head === undefined ? null : head.getWorldPosition(new THREE.Vector3()).toArray().map((v) => Number(v.toFixed(3)));
       }),
     };
