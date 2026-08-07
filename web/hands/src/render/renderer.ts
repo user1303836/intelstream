@@ -11,20 +11,133 @@ import { buildArena, type BuiltArena } from "./arena";
 import { buildBoxer, buildReferee, disposeBoxer, type BoxerRig } from "./boxer";
 import { CameraDirector } from "./camera";
 import { Effects3D } from "./effects";
-import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
+import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, type ArcadeDislocation } from "./graph";
 import { drawHud } from "./hud";
 
-export function isArcadeDecapitationCandidate(
+export type ArcadeInjury =
+  | "decapitation"
+  | "dismember_left"
+  | "dismember_right"
+  | "jaw_dislocation"
+  | "shoulder_left"
+  | "shoulder_right";
+
+export function isArcadeInjuryCandidate(
   event: CombatEvent,
   target: FighterSnapshot | undefined,
   result: MatchResult | null,
 ): boolean {
-  if (target === undefined || !["hit", "counter_hit"].includes(event.kind) || !event.detail.endsWith(":head")) return false;
+  const anatomicalTarget = event.detail.endsWith(":head") || event.detail.endsWith(":body");
+  if (target === undefined || !["hit", "counter_hit"].includes(event.kind) || !anatomicalTarget) return false;
   return target.is_downed || (
     result?.finish_method === "flash_ko"
     && result.winner_id !== null
     && result.winner_id === event.actor_id
   );
+}
+
+export function contactParticipants(event: CombatEvent, snapshot: EngineSnapshot): {
+  recipientIndex: number;
+  puncherIndex: number;
+} {
+  const targetIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.target_id);
+  const actorIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.actor_id);
+  const defenderIsActor = event.kind === "block" || event.kind === "perfect_block";
+  return {
+    recipientIndex: defenderIsActor ? actorIndex : targetIndex,
+    puncherIndex: defenderIsActor ? targetIndex : actorIndex,
+  };
+}
+
+export interface ContactPresentation {
+  readonly event: CombatEvent;
+  readonly presentationEvent: CombatEvent;
+  readonly presentImpact: boolean;
+}
+
+const isHit = (event: CombatEvent): boolean => event.kind === "hit" || event.kind === "counter_hit";
+const isBlock = (event: CombatEvent): boolean => event.kind === "block" || event.kind === "perfect_block";
+
+function pairedBlock(event: CombatEvent, events: readonly CombatEvent[]): CombatEvent | undefined {
+  if (!isHit(event) || event.action_id === null) return undefined;
+  return events.find((candidate) => isBlock(candidate)
+    && candidate.action_id === event.action_id
+    && candidate.actor_id === event.target_id
+    && candidate.target_id === event.actor_id);
+}
+
+function pairedHit(event: CombatEvent, events: readonly CombatEvent[]): CombatEvent | undefined {
+  if (!isBlock(event) || event.action_id === null) return undefined;
+  return events.find((candidate) => isHit(candidate)
+    && candidate.action_id === event.action_id
+    && candidate.actor_id === event.target_id
+    && candidate.target_id === event.actor_id);
+}
+
+export function contactPresentationPlan(
+  events: readonly CombatEvent[],
+  snapshot: EngineSnapshot,
+): readonly ContactPresentation[] {
+  return events.map((event, eventIndex) => {
+    const { puncherIndex } = contactParticipants(event, snapshot);
+    const puncher = snapshot.fighters[puncherIndex];
+    const actionParts = puncher?.action_key?.split(":") ?? [];
+    const actionDetail = actionParts.length >= 3 ? `${actionParts[0]}:${actionParts[2]}` : event.detail;
+    const hit = pairedHit(event, events);
+    if (isBlock(event)) {
+      return {
+        event,
+        presentationEvent: {
+          ...event,
+          detail: hit?.detail || actionDetail,
+          direction: hit?.direction ?? puncher?.facing ?? event.direction,
+          blood: hit?.blood ?? event.blood,
+        },
+        presentImpact: true,
+      };
+    }
+    if (pairedBlock(event, events) !== undefined) {
+      return { event, presentationEvent: event, presentImpact: false };
+    }
+    if (event.kind === "knockdown") {
+      const hitEvent = events.slice(0, eventIndex).reverse().find((candidate) => isHit(candidate)
+        && candidate.tick === event.tick
+        && candidate.actor_id === event.actor_id
+        && candidate.target_id === event.target_id);
+      if (hitEvent !== undefined) {
+        return {
+          event,
+          presentationEvent: {
+            ...event,
+            detail: hitEvent.detail,
+            direction: hitEvent.direction,
+            blood: hitEvent.blood,
+            action_id: hitEvent.action_id,
+          },
+          presentImpact: true,
+        };
+      }
+    }
+    return { event, presentationEvent: event, presentImpact: true };
+  });
+}
+
+export function presentationTickFor(snapshot: EngineSnapshot): number {
+  return snapshot.result === null ? snapshot.tick - 1 : snapshot.tick;
+}
+
+export function arcadeInjuryFor(
+  event: CombatEvent,
+  target: FighterSnapshot | undefined,
+  result: MatchResult | null,
+  puncher?: FighterSnapshot,
+): ArcadeInjury | null {
+  if (!isArcadeInjuryCandidate(event, target, result)) return null;
+  const selection = Math.abs(event.event_id);
+  if (event.detail.endsWith(":head")) return selection % 2 === 0 ? "decapitation" : "jaw_dislocation";
+  const hand = puncher?.action_key?.split(":")[1];
+  const recipientSide = hand === "left" ? "right" : hand === "right" ? "left" : Math.floor(selection / 2) % 2 === 0 ? "left" : "right";
+  return selection % 2 === 0 ? `dismember_${recipientSide}` : `shoulder_${recipientSide}`;
 }
 import { buildRing, disposeRing, type BuiltRing } from "./ring";
 import { resizeHighDpi } from "./viewport";
@@ -87,17 +200,22 @@ export class FightRenderer {
   private graphsReady: Promise<void> = Promise.resolve();
   private readonly headCache = [new THREE.Vector3(), new THREE.Vector3()];
   private readonly headCacheValid = [false, false];
-  private readonly decapitated: [boolean, boolean] = [false, false];
-  private readonly observedDecapitatedDown: [boolean, boolean] = [false, false];
+  private readonly arcadeInjuries: [ArcadeInjury | null, ArcadeInjury | null] = [null, null];
+  private readonly observedInjuryDown: [boolean, boolean] = [false, false];
+  private readonly downedPoolAccumulators: [number, number] = [0, 0];
+  private readonly downedPoolCounts: [number, number] = [0, 0];
   private bloodLevel: BloodLevel = "full";
   private readonly pendingContacts: Array<{
     event: CombatEvent;
+    presentationEvent: CombatEvent;
+    presentImpact: boolean;
     contactTick: number;
-    targetIndex: number;
-    actorIndex: number;
-    decapitation: boolean;
+    recipientIndex: number;
+    puncherIndex: number;
+    injury: ArcadeInjury | null;
   }> = [];
   onContact: ((event: CombatEvent) => void) | null = null;
+  onArcadeInjury: ((injury: ArcadeInjury, event: CombatEvent) => void) | null = null;
   private readonly tmpA = new THREE.Vector3();
   private readonly tmpB = new THREE.Vector3();
   private readonly tmpHead = new THREE.Vector3();
@@ -105,6 +223,8 @@ export class FightRenderer {
   private readonly tmpStump = new THREE.Vector3();
   private readonly tmpStumpOffset = new THREE.Vector3();
   private readonly tmpStumpQuaternion = new THREE.Quaternion();
+  private readonly tmpPart = new THREE.Vector3();
+  private readonly tmpPartQuaternion = new THREE.Quaternion();
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -187,9 +307,9 @@ export class FightRenderer {
         if (this.destroyed) return;
         const first = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
         const second = new SkinnedBoxer(gltf, { skin: 0x6e4128, gear: 0xb91c1c });
-        first.setDecapitated(this.decapitated[0]);
-        second.setDecapitated(this.decapitated[1]);
         this.graphs = [new BoxingGraph(first, this.mapping), new BoxingGraph(second, this.mapping)];
+        this.syncInjuryPresentation(0);
+        this.syncInjuryPresentation(1);
         this.scene.add(first.root, second.root);
         for (const boxer of this.boxers) {
           this.scene.remove(boxer.root);
@@ -242,35 +362,52 @@ export class FightRenderer {
   }
 
   setBloodLevel(level: BloodLevel): void {
-    if (level !== "full" && this.bloodLevel === "full") this.restoreAllHeads();
+    if (level !== "full" && this.bloodLevel === "full") this.restoreAllInjuries();
     this.bloodLevel = level;
+    if (level === "off") this.downedPoolAccumulators.fill(0);
     this.effects.setBloodLevel(level);
   }
 
   setReducedMotion(reduced: boolean): void {
     if (reduced) {
-      this.restoreAllHeads();
+      this.restoreAllInjuries();
       this.effects.clearDynamic();
     }
   }
 
-  private setHeadVisible(index: number, visible: boolean): void {
+  private syncInjuryPresentation(index: number): void {
+    const injury = this.arcadeInjuries[index];
     const graphs = this.graphs;
-    if (graphs !== null) graphs[index]!.boxer.setDecapitated(!visible);
-    else this.boxers[index]!.head.visible = visible;
+    if (graphs !== null) {
+      const graph = graphs[index]!;
+      graph.boxer.setDecapitated(injury === "decapitation");
+      graph.boxer.setHandDismembered("left", injury === "dismember_left");
+      graph.boxer.setHandDismembered("right", injury === "dismember_right");
+      const dislocation: ArcadeDislocation | null = injury === "jaw_dislocation"
+        ? "jaw"
+        : injury === "shoulder_left" || injury === "shoulder_right"
+          ? injury
+          : null;
+      graph.setArcadeDislocation(dislocation);
+      return;
+    }
+    const boxer = this.boxers[index]!;
+    boxer.head.visible = injury !== "decapitation";
+    boxer.gloveLMesh.visible = injury !== "dismember_left";
+    boxer.gloveRMesh.visible = injury !== "dismember_right";
   }
 
-  private restoreHead(index: number): void {
-    if (!this.decapitated[index]) return;
-    this.decapitated[index] = false;
-    this.observedDecapitatedDown[index] = false;
-    this.setHeadVisible(index, true);
+  private restoreInjury(index: number): void {
+    if (this.arcadeInjuries[index] === null) return;
+    this.arcadeInjuries[index] = null;
+    this.observedInjuryDown[index] = false;
+    this.syncInjuryPresentation(index);
     this.effects.restoreFighter(index);
   }
 
-  private restoreAllHeads(): void {
-    this.restoreHead(0);
-    this.restoreHead(1);
+  private restoreAllInjuries(): void {
+    this.restoreInjury(0);
+    this.restoreInjury(1);
     this.effects.clearArcadeGore();
   }
 
@@ -282,7 +419,39 @@ export class FightRenderer {
     else this.boxers[index]!.root.updateMatrixWorld(true);
     head.getWorldPosition(this.tmpHead);
     head.getWorldQuaternion(this.tmpHeadQuaternion);
+    this.tmpStumpOffset.set(0, 0.12, 0.02).applyQuaternion(this.tmpHeadQuaternion);
+    this.tmpHead.add(this.tmpStumpOffset);
     return { position: this.tmpHead, quaternion: this.tmpHeadQuaternion };
+  }
+
+  private handWorldPose(
+    index: number,
+    side: "left" | "right",
+  ): { position: THREE.Vector3; quaternion: THREE.Quaternion } | null {
+    const graphs = this.graphs;
+    const hand = graphs !== null
+      ? graphs[index]!.boxer.bone(side === "left" ? "gloveL" : "gloveR")
+      : side === "left" ? this.boxers[index]!.gloveL : this.boxers[index]!.gloveR;
+    if (hand === null) return null;
+    if (graphs !== null) graphs[index]!.boxer.root.updateMatrixWorld(true);
+    else this.boxers[index]!.root.updateMatrixWorld(true);
+    hand.getWorldPosition(this.tmpPart);
+    hand.getWorldQuaternion(this.tmpPartQuaternion);
+    return { position: this.tmpPart, quaternion: this.tmpPartQuaternion };
+  }
+
+  private gearColor(index: number): number {
+    const graphs = this.graphs;
+    return graphs !== null
+      ? graphs[index]!.boxer.gearBaseColor.getHex()
+      : this.boxers[index]!.gloveBaseColor.getHex();
+  }
+
+  private skinColor(index: number): number {
+    const graphs = this.graphs;
+    return graphs !== null
+      ? graphs[index]!.boxer.skinBaseColor.getHex()
+      : this.boxers[index]!.skinMaterial.color.getHex();
   }
 
   private stumpWorldPose(index: number): { position: THREE.Vector3; quaternion: THREE.Quaternion } | null {
@@ -312,79 +481,120 @@ export class FightRenderer {
 
   push(snapshot: EngineSnapshot): void {
     if (!this.buffer.push(snapshot)) return;
-    for (const event of this.dedupe.accept(snapshot.events)) {
-      const target = snapshot.fighters.find((fighter) => fighter.player_id === event.target_id)
-        ?? snapshot.fighters.find((fighter) => fighter.player_id === event.actor_id)
-        ?? snapshot.fighters[0];
-      this.tmpA.set(this.mapping.x(target.x), 0, this.mapping.z(target.y));
-      if (event.kind === "knockdown") this.effects.pool(this.tmpA.x + (Math.random() - 0.5) * 0.2, this.tmpA.z + (Math.random() - 0.5) * 0.2, 1);
+    const accepted = this.dedupe.accept(snapshot.events);
+    for (const { event, presentationEvent, presentImpact } of contactPresentationPlan(accepted, snapshot)) {
       const targetIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.target_id);
       const actorIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.actor_id);
+      const { recipientIndex, puncherIndex } = contactParticipants(event, snapshot);
+      const recipient = snapshot.fighters[recipientIndex]
+        ?? snapshot.fighters[targetIndex]
+        ?? snapshot.fighters[actorIndex]
+        ?? snapshot.fighters[0];
+      this.tmpA.set(this.mapping.x(recipient.x), 0, this.mapping.z(recipient.y));
       if (["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown"].includes(event.kind)) {
-        // Block-family events name the defender as actor; the puncher (whose
-        // contact tick matters) is the event target for those kinds.
-        const puncher = event.kind === "block" || event.kind === "perfect_block"
-          ? (targetIndex >= 0 ? snapshot.fighters[targetIndex]! : null)
-          : (actorIndex >= 0 ? snapshot.fighters[actorIndex]! : null);
+        const puncher = puncherIndex >= 0 ? snapshot.fighters[puncherIndex]! : null;
         this.pendingContacts.push({
           event,
+          presentationEvent,
+          presentImpact,
           contactTick: puncher?.action_contact_tick ?? event.tick,
-          targetIndex,
-          actorIndex,
-          decapitation: isArcadeDecapitationCandidate(event, snapshot.fighters[targetIndex], snapshot.result),
+          recipientIndex,
+          puncherIndex,
+          injury: arcadeInjuryFor(event, snapshot.fighters[recipientIndex], snapshot.result, puncher ?? undefined),
         });
       } else if (event.kind === "bleed") {
         this.effects.addEvent(event, this.tmpA, this.settings().reducedMotion);
       }
-      if (snapshot.result !== null) this.fireContacts(Number.MAX_SAFE_INTEGER);
     }
   }
 
   private fireContacts(sampledTick: number): void {
-    for (let index = this.pendingContacts.length - 1; index >= 0; index -= 1) {
+    for (let index = 0; index < this.pendingContacts.length;) {
       const pending = this.pendingContacts[index]!;
-      if (pending.contactTick > sampledTick) continue;
+      if (pending.contactTick > sampledTick) {
+        index += 1;
+        continue;
+      }
       this.pendingContacts.splice(index, 1);
-      const { event, targetIndex, actorIndex, decapitation } = pending;
-      const target = this.buffer.latest()?.fighters[targetIndex];
-      if (target !== undefined) {
+      const { event, presentationEvent, presentImpact, recipientIndex, puncherIndex, injury } = pending;
+      const target = this.buffer.latest()?.fighters[recipientIndex];
+      if (presentImpact && target !== undefined) {
         this.tmpA.set(this.mapping.x(target.x), 0, this.mapping.z(target.y));
-        this.effects.addEvent(event, this.tmpA, this.settings().reducedMotion);
+        this.effects.addEvent(presentationEvent, this.tmpA, this.settings().reducedMotion);
       }
       const currentSettings = this.settings();
       if (
-        decapitation
-        && targetIndex >= 0
-        && !this.decapitated[targetIndex]
+        injury !== null
+        && recipientIndex >= 0
+        && this.arcadeInjuries[recipientIndex] === null
         && currentSettings.blood === "full"
         && !currentSettings.reducedMotion
       ) {
-        const pose = this.headWorldPose(targetIndex);
-        if (pose !== null) {
-          this.effects.decapitate(targetIndex, pose.position, pose.quaternion, event.direction, event.event_id);
-          const stumpPose = this.stumpWorldPose(targetIndex);
-          if (stumpPose !== null) this.effects.anchorStump(targetIndex, stumpPose.position, stumpPose.quaternion);
-          this.decapitated[targetIndex] = true;
-          this.observedDecapitatedDown[targetIndex] = false;
-          this.setHeadVisible(targetIndex, false);
+        let applied = this.graphs !== null
+          && (injury === "jaw_dislocation" || injury === "shoulder_left" || injury === "shoulder_right");
+        if (injury === "decapitation") {
+          const pose = this.headWorldPose(recipientIndex);
+          if (pose !== null) {
+            this.effects.decapitate(
+              recipientIndex,
+              pose.position,
+              pose.quaternion,
+              event.direction,
+              event.event_id,
+              this.skinColor(recipientIndex),
+            );
+            const stumpPose = this.stumpWorldPose(recipientIndex);
+            if (stumpPose !== null) this.effects.anchorStump(recipientIndex, stumpPose.position, stumpPose.quaternion);
+            applied = true;
+          }
+        } else if (injury === "dismember_left" || injury === "dismember_right") {
+          const side = injury === "dismember_left" ? "left" : "right";
+          const pose = this.handWorldPose(recipientIndex, side);
+          if (pose !== null) {
+            this.effects.dismemberHand(
+              recipientIndex,
+              side,
+              pose.position,
+              pose.quaternion,
+              event.direction,
+              event.event_id,
+              this.gearColor(recipientIndex),
+            );
+            this.effects.anchorHandStump(recipientIndex, side, pose.position, pose.quaternion);
+            applied = true;
+          }
+        }
+        if (applied) {
+          this.arcadeInjuries[recipientIndex] = injury;
+          this.observedInjuryDown[recipientIndex] = false;
+          this.syncInjuryPresentation(recipientIndex);
+          this.onArcadeInjury?.(injury, event);
         }
       }
       const graphs = this.graphs;
-      if (targetIndex >= 0 && ["hit", "counter_hit", "block", "perfect_block", "knockdown"].includes(event.kind)) {
+      if (
+        presentImpact
+        && recipientIndex >= 0
+        && ["hit", "counter_hit", "block", "perfect_block", "knockdown"].includes(event.kind)
+      ) {
         const blocked = event.kind === "block" || event.kind === "perfect_block";
-        if (graphs !== null) graphs[targetIndex]!.react(blocked ? "block" : "hit");
-        else {
-          this.animators[targetIndex]!.impact({
-            direction: event.direction,
+        const targetKind = presentationEvent.detail.endsWith(":body") ? "body" : "head";
+        if (graphs !== null) {
+          graphs[recipientIndex]!.react(blocked ? "block" : "hit", targetKind, presentationEvent.direction);
+        } else {
+          this.animators[recipientIndex]!.impact({
+            direction: presentationEvent.direction,
             amount: blocked ? event.amount * 0.35 : event.amount,
             blocked,
+            target: targetKind,
           });
         }
       }
-      // Engine emits block/perfect_block with the DEFENDER as actor; the
-      // puncher to freeze is the event target for those kinds.
-      const puncherIndex = event.kind === "block" || event.kind === "perfect_block" ? targetIndex : actorIndex;
-      if (puncherIndex >= 0 && ["hit", "counter_hit", "block", "perfect_block", "guard_break"].includes(event.kind)) {
+      if (
+        presentImpact
+        && puncherIndex >= 0
+        && ["hit", "counter_hit", "block", "perfect_block", "guard_break"].includes(event.kind)
+      ) {
         if (graphs !== null) graphs[puncherIndex]!.landedHit(event.kind === "block" || event.kind === "perfect_block");
         else this.animators[puncherIndex]!.landedHit(event.kind === "block" || event.kind === "perfect_block");
       }
@@ -462,16 +672,16 @@ export class FightRenderer {
     this.setBloodLevel(current.blood);
 
     const latest = this.buffer.latest();
-    const snapshot = latest === null ? null : this.buffer.sample(latest.tick - 1);
-    const sampledTick = latest === null ? 0 : latest.tick - 1;
+    const sampledTick = latest === null ? 0 : presentationTickFor(latest);
+    const snapshot = latest === null ? null : this.buffer.sample(sampledTick);
     let separation = 1.8;
     let knockdown = false;
     if (snapshot !== null) {
       const [a, b] = snapshot.fighters;
       for (const [index, fighter] of snapshot.fighters.entries()) {
-        if (!this.decapitated[index]) continue;
-        if (fighter.is_downed) this.observedDecapitatedDown[index] = true;
-        else if (this.observedDecapitatedDown[index] && snapshot.result === null) this.restoreHead(index);
+        if (this.arcadeInjuries[index] === null) continue;
+        if (fighter.is_downed) this.observedInjuryDown[index] = true;
+        else if (this.observedInjuryDown[index] && snapshot.result === null) this.restoreInjury(index);
       }
       const graphs = this.graphs;
       if (graphs !== null) {
@@ -491,10 +701,16 @@ export class FightRenderer {
         this.animators[0].update(a, b, dt, seconds, current.reducedMotion, current.blood, sampledTick);
         this.animators[1].update(b, a, dt, seconds, current.reducedMotion, current.blood, sampledTick);
       }
-      for (let index = 0; index < this.decapitated.length; index += 1) {
-        if (!this.decapitated[index]) continue;
-        const pose = this.stumpWorldPose(index);
-        if (pose !== null) this.effects.anchorStump(index, pose.position, pose.quaternion);
+      for (let index = 0; index < this.arcadeInjuries.length; index += 1) {
+        const injury = this.arcadeInjuries[index];
+        if (injury === "decapitation") {
+          const pose = this.stumpWorldPose(index);
+          if (pose !== null) this.effects.anchorStump(index, pose.position, pose.quaternion);
+        } else if (injury === "dismember_left" || injury === "dismember_right") {
+          const side = injury === "dismember_left" ? "left" : "right";
+          const pose = this.handWorldPose(index, side);
+          if (pose !== null) this.effects.anchorHandStump(index, side, pose.position, pose.quaternion);
+        }
       }
       const ax = this.mapping.x(a.x);
       const az = this.mapping.z(a.y);
@@ -507,12 +723,25 @@ export class FightRenderer {
       for (const [index, fighter] of snapshot.fighters.entries()) {
         const severity = (fighter.trauma.bleeding + fighter.trauma.left_cut + fighter.trauma.right_cut) / 380;
         if (severity > 0.05 && !fighter.is_downed) {
+          this.downedPoolAccumulators[index] = 0;
           const anchor = index === 0 ? this.tmpA : this.tmpB;
           this.tmpHead.set(anchor.x, this.headHeightOf(index), anchor.z);
-          this.effects.drip(this.tmpHead, severity, dt, current.reducedMotion);
-        } else if (severity > 0.3 && fighter.is_downed && Math.random() < dt * 0.8) {
-          const anchor = index === 0 ? this.tmpA : this.tmpB;
-          this.effects.pool(anchor.x + (Math.random() - 0.5) * 0.5, anchor.z + (Math.random() - 0.5) * 0.5, 0.8);
+          this.effects.drip(this.tmpHead, severity, current.reducedMotion, index);
+        } else if (severity > 0.3 && fighter.is_downed && current.blood !== "off") {
+          this.effects.stopDrip(index);
+          this.downedPoolAccumulators[index]! += dt * 0.8;
+          while (this.downedPoolAccumulators[index]! >= 1) {
+            this.downedPoolAccumulators[index]! -= 1;
+            const count = this.downedPoolCounts[index]!;
+            this.downedPoolCounts[index] = count + 1;
+            const angle = count * 2.399_963 + index * Math.PI;
+            const radius = 0.12 + ((count * 0.618_034) % 1) * 0.24;
+            const anchor = index === 0 ? this.tmpA : this.tmpB;
+            this.effects.pool(anchor.x + Math.sin(angle) * radius, anchor.z + Math.cos(angle) * radius, 0.8);
+          }
+        } else {
+          this.effects.stopDrip(index);
+          this.downedPoolAccumulators[index] = 0;
         }
       }
     } else {

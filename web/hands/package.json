@@ -10,7 +10,8 @@
     "test:run": "vitest run",
     "build": "tsc --noEmit && vite build && npm run scan:build",
     "scan:build": "node scripts/scan-build.mjs",
-    "generate:fighter": "esbuild scripts/generate-fighter-glb.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/generate-fighter-glb.mjs && node node_modules/.cache/generate-fighter-glb.mjs"
+    "generate:fighter": "esbuild scripts/generate-fighter-glb.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/generate-fighter-glb.mjs && node node_modules/.cache/generate-fighter-glb.mjs",
+    "generate:audio": "uv run --project ../.. --with numpy==2.5.1 python scripts/generate-injury-sounds.py"
   },
   "dependencies": {
     "@discord/embedded-app-sdk": "2.5.0",

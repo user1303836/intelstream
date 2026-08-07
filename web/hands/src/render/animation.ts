@@ -1,16 +1,16 @@
 import * as THREE from "three";
-import { punchTiming, totalTicks } from "../manifest";
+import { punchTiming, TICK_RATE, totalTicks } from "../manifest";
 import type { BloodLevel } from "../settings";
 import type { FighterSnapshot, Hand, Power, PunchClass, SemanticAction, Target } from "../types";
 import { aimBone, solveArm, type BoxerRig } from "./boxer";
 import type { WorldMapping } from "./world";
 
-const GUARD_HIGH_L = new THREE.Vector3(0.08, 0.29, 0.25);
-const GUARD_HIGH_R = new THREE.Vector3(-0.07, 0.3, 0.21);
-const GUARD_LOW_L = new THREE.Vector3(0.12, 0.02, 0.26);
-const GUARD_LOW_R = new THREE.Vector3(-0.1, 0.04, 0.21);
-const RELAXED_L = new THREE.Vector3(0.14, 0.14, 0.32);
-const RELAXED_R = new THREE.Vector3(-0.09, 0.22, 0.21);
+const GUARD_HIGH_L = new THREE.Vector3(0.13, 0.38, 0.23);
+const GUARD_HIGH_R = new THREE.Vector3(-0.12, 0.4, 0.2);
+const GUARD_LOW_L = new THREE.Vector3(0.18, 0.12, 0.3);
+const GUARD_LOW_R = new THREE.Vector3(-0.17, 0.14, 0.28);
+const RELAXED_L = new THREE.Vector3(0.16, 0.27, 0.3);
+const RELAXED_R = new THREE.Vector3(-0.15, 0.29, 0.26);
 
 const HEAD_Y = 0.33;
 const BODY_Y = -0.02;
@@ -62,6 +62,7 @@ export interface Impact {
   direction: number;
   amount: number;
   blocked: boolean;
+  target?: Target;
 }
 
 const smooth = (current: number, target: number, rate: number, dt: number): number => current + (target - current) * (1 - Math.exp(-rate * dt));
@@ -117,6 +118,7 @@ export class BoxerAnimator {
   private reactionT = 1;
   private reactionDirection = 1;
   private reactionPower = 0;
+  private reactionTarget: Target = "head";
   private walkPhase = 0;
   private readonly gloveLCurrent = new THREE.Vector3().copy(RELAXED_L);
   private readonly gloveRCurrent = new THREE.Vector3().copy(RELAXED_R);
@@ -150,6 +152,7 @@ export class BoxerAnimator {
       this.reactionT = 0;
       this.reactionDirection = impact.direction;
       this.reactionPower = Math.max(this.reactionPower * 0.4, impact.amount);
+      this.reactionTarget = impact.target ?? "head";
     }
   }
 
@@ -265,9 +268,14 @@ export class BoxerAnimator {
     }
 
     const tired = 1 - fighter.stamina / Math.max(1, fighter.maximum_stamina);
-    const speed = Math.hypot(fighter.velocity_x, fighter.velocity_y) * 0.006;
-    const speedFactor = Math.min(1, speed * 0.55);
-    this.walkPhase += speed * dt * 4.6;
+    const fatiguePose = THREE.MathUtils.clamp((tired - 0.1) / 0.9, 0, 1);
+    const velocityWorldX = this.mapping.x(fighter.velocity_x) * TICK_RATE;
+    const velocityWorldZ = this.mapping.z(fighter.velocity_y) * TICK_RATE;
+    const speed = Math.hypot(velocityWorldX, velocityWorldZ);
+    const speedFactor = Math.min(1, speed / 1.1);
+    const forwardMotion = THREE.MathUtils.clamp((fighter.velocity_x * fighter.facing) / 7, -1, 1);
+    const lateralMotion = THREE.MathUtils.clamp(fighter.velocity_y / 7, -1, 1);
+    this.walkPhase += speed * dt * 5.72;
 
     const accelX = (fighter.velocity_x - this.prevVelocityX) / Math.max(0.001, dt);
     const accelY = (fighter.velocity_y - this.prevVelocityY) / Math.max(0.001, dt);
@@ -290,7 +298,8 @@ export class BoxerAnimator {
 
     this.reactionT = Math.min(1, this.reactionT + dt / 0.42);
     const reactionPower = Math.min(1, this.reactionPower / 220);
-    const reactionHead = (1 - smoothstep(0, 0.8, this.reactionT)) * reactionPower;
+    const reactionHead = (1 - smoothstep(0, 0.8, this.reactionT)) * reactionPower
+      * (this.reactionTarget === "head" ? 1 : 0.2);
     const reaction = smoothstep(0, 0.14, this.reactionT) * (1 - smoothstep(0.35, 1, this.reactionT)) * reactionPower;
 
     const stunned = Math.min(1, fighter.stunned_ticks / 45);
@@ -301,17 +310,19 @@ export class BoxerAnimator {
     const weightSway = reducedMotion || down > 0.5 ? 0 : Math.sin(time * idleTempo * 0.5) * 0.022;
     const breath = reducedMotion ? 0 : Math.sin(time * (2.2 + tired * 2.6)) * (0.012 + tired * 0.03);
 
-    let dropTarget = -0.035;
+    let dropTarget = -0.035 - fatiguePose * 0.025;
     let rollTarget = 0;
-    let pitchTarget = 0.09;
+    let pitchTarget = 0.09 + fatiguePose * 0.06;
     if (fighter.defense === "weave") { dropTarget = -0.26; rollTarget = 0.34 * mirror; pitchTarget = 0.3; }
     else if (fighter.defense === "slip_left") { rollTarget = 0.2; pitchTarget = 0.12; }
     else if (fighter.defense === "slip_right") { rollTarget = -0.2; pitchTarget = 0.12; }
     else if (fighter.defense === "pull") { pitchTarget = -0.26; }
     if (fighter.is_foul_recovery_target) { dropTarget = -0.18; pitchTarget = 0.42; }
     if (fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0) { pitchTarget = 0.4; dropTarget = -0.08; }
-    dropTarget -= reaction * 0.05;
-    pitchTarget -= reaction * 0.34;
+    dropTarget -= reaction * (this.reactionTarget === "body" ? 0.12 : 0.05);
+    pitchTarget -= reaction * (this.reactionTarget === "body" ? 0.18 : 0.34);
+    rollTarget += reaction * (this.reactionTarget === "body" ? 0.16 : 0.06)
+      * (this.reactionDirection < 0 ? -1 : 1);
     rollTarget += wobble + this.inertiaRoll;
     pitchTarget += this.inertiaPitch;
 
@@ -391,7 +402,7 @@ export class BoxerAnimator {
     rig.head.rotation.set(headPitch, -this.spineTwist * 0.5 + headWeave * (1 - down), headRoll);
     rig.chest.scale.set(1 + breath, 1 + breath * 0.5, 1 + breath);
 
-    this.poseLegs(fighter, speedFactor, down, fallSide, mirror);
+    this.poseLegs(speedFactor, down, fallSide, mirror, forwardMotion, lateralMotion);
 
     rig.root.updateMatrixWorld(true);
 
@@ -399,6 +410,10 @@ export class BoxerAnimator {
     const guardR = fighter.defense === "guard_high" ? GUARD_HIGH_R : fighter.defense === "guard_low" ? GUARD_LOW_R : RELAXED_R;
     const finalL = scratchFinalL.copy(guardL);
     const finalR = scratchFinalR.copy(guardR);
+    finalL.y -= fatiguePose * 0.065;
+    finalR.y -= fatiguePose * 0.065;
+    finalL.z -= fatiguePose * 0.03;
+    finalR.z -= fatiguePose * 0.03;
     if (fighter.is_foul_recovery_target) { finalL.set(0.08, 0.32, 0.2); finalR.set(-0.06, 0.3, 0.18); }
     if (fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0) { finalL.set(0.16, -0.05, 0.5); finalR.set(-0.16, -0.02, 0.48); }
     if (down > 0.03) {
@@ -447,8 +462,8 @@ export class BoxerAnimator {
       } else if (this.punchKind === "hook") {
         const sweep = smoothstep(this.actionStartupFrac * 0.85, this.actionStartupFrac + this.actionActiveFrac * 0.75, this.punchT);
         const sideSign = this.punchHand === "left" ? 1 : -1;
-        punch.x = THREE.MathUtils.lerp(aim.x + 0.42 * sideSign, aim.x - 0.16 * sideSign, sweep);
-        punch.z = aim.z * (0.72 + 0.28 * Math.sin(sweep * Math.PI * 0.5));
+        punch.x = THREE.MathUtils.lerp(aim.x + 0.3 * sideSign, aim.x - 0.14 * sideSign, sweep);
+        punch.z = Math.min(0.52, aim.z * (0.72 + 0.28 * Math.sin(sweep * Math.PI * 0.5)));
         punch.y = aim.y;
       } else if (this.punchKind === "uppercut") {
         const rise = smoothstep(this.actionStartupFrac * 0.7, this.actionStartupFrac + this.actionActiveFrac * 0.5, this.punchT);
@@ -459,8 +474,9 @@ export class BoxerAnimator {
       const windupOffset = scratchWindup.set(0, this.punchKind === "uppercut" ? -0.22 : -0.03, this.punchKind === "jab" ? -0.1 : -0.16).multiplyScalar(windup);
       const base = this.punchHand === "left" ? finalL : finalR;
       const other = this.punchHand === "left" ? finalR : finalL;
-      if (this.punchKind === "straight") other.set(-0.06, 0.27, 0.17);
-      if (this.punchKind === "hook") other.set(-0.05, 0.3, 0.15);
+      const otherSide = this.punchHand === "left" ? -1 : 1;
+      if (this.punchKind === "straight") other.set(0.11 * otherSide, 0.34, 0.18);
+      if (this.punchKind === "hook") other.set(0.1 * otherSide, 0.36, 0.16);
       if (this.punchKind === "uppercut") other.y -= 0.08;
       const mixed = scratchMixed.copy(base).add(windupOffset).lerp(punch, scaledExtend);
       if (this.punchPower === "power" && Math.abs(this.punchT - (this.actionStartupFrac + this.actionActiveFrac * 0.5)) < 0.06) {
@@ -498,34 +514,46 @@ export class BoxerAnimator {
     this.applyTrauma(fighter, opponent, blood);
   }
 
-  private poseLegs(fighter: FighterSnapshot, speedFactor: number, down: number, fallSide: number, mirror: number): void {
+  private poseLegs(
+    speedFactor: number,
+    down: number,
+    fallSide: number,
+    mirror: number,
+    forwardMotion: number,
+    lateralMotion: number,
+  ): void {
     const rig = this.rig;
-    const strideAmp = 0.42 * speedFactor * (1 - down);
-    const liftAmp = 0.5 * speedFactor * (1 - down);
+    const strideAmp = 0.34 * speedFactor * (1 - down);
+    const liftAmp = 0.38 * speedFactor * (1 - down);
+    const forwardDirection = Math.abs(forwardMotion) > 0.05 ? Math.sign(forwardMotion) : 0;
+    const lateralStride = lateralMotion * speedFactor * (1 - down);
     const crouch = -(this.drop + this.kinDrop) * 1.35 * (1 - down);
     const phaseL = this.walkPhase;
     const phaseR = this.walkPhase + Math.PI;
     const baseL = { hip: -0.2 - crouch * 0.5, knee: 0.34 + crouch, ankle: -0.1 - crouch * 0.5 };
     const baseR = { hip: 0.15 - crouch * 0.5, knee: 0.38 + crouch, ankle: -0.12 - crouch * 0.5 };
-    const swingL = Math.sin(phaseL) * strideAmp;
-    const swingR = Math.sin(phaseR) * strideAmp;
+    const swingL = Math.sin(phaseL) * strideAmp * forwardDirection;
+    const swingR = Math.sin(phaseR) * strideAmp * forwardDirection;
     const liftL = Math.max(0, Math.sin(phaseL - Math.PI / 2)) * liftAmp;
     const liftR = Math.max(0, Math.sin(phaseR - Math.PI / 2)) * liftAmp;
     const buckle = smoothstep(0, 0.3, down) * (1 - smoothstep(0.32, 0.62, down));
+    const lateralPhase = Math.sin(phaseL) * 0.16 * lateralStride;
     rig.hipL.rotation.set(
       THREE.MathUtils.lerp(baseL.hip + swingL, -0.18, down),
       0.32 * mirror * (1 - down) + (this.punchHand === "left" ? this.kinPivotL : 0) * (1 - down),
-      THREE.MathUtils.lerp(0, 0.5 * fallSide, down),
+      THREE.MathUtils.lerp(0.1 * lateralStride + lateralPhase, 0.5 * fallSide, down),
     );
     rig.kneeL.rotation.x = THREE.MathUtils.lerp(baseL.knee + liftL + buckle * 0.85, 0.24, Math.max(down, buckle));
     rig.ankleL.rotation.x = THREE.MathUtils.lerp(baseL.ankle - swingL * 0.4 - (mirror < 0 ? this.kinHeelR : 0) * (1 - down), 0.42, down);
+    rig.ankleL.rotation.z = -0.08 * lateralStride - lateralPhase * 0.45;
     rig.hipR.rotation.set(
       THREE.MathUtils.lerp(baseR.hip + swingR, -0.12, down),
       -0.14 * mirror * (1 - down) + (this.punchHand === "right" ? this.kinPivotL : 0) * (1 - down),
-      THREE.MathUtils.lerp(0, 0.35 * fallSide, down),
+      THREE.MathUtils.lerp(0.1 * lateralStride - lateralPhase, 0.35 * fallSide, down),
     );
     rig.kneeR.rotation.x = THREE.MathUtils.lerp(baseR.knee + liftR + buckle * 0.8, 0.18, Math.max(down, buckle));
     rig.ankleR.rotation.x = THREE.MathUtils.lerp(baseR.ankle - swingR * 0.4 - (mirror > 0 ? this.kinHeelR : 0) * (1 - down), 0.42, down);
+    rig.ankleR.rotation.z = -0.08 * lateralStride + lateralPhase * 0.45;
   }
 
   private solveArmIK(shoulder: THREE.Group, elbow: THREE.Group, glove: THREE.Group, localTarget: THREE.Vector3, side: 1 | -1, rig: BoxerRig): void {
@@ -533,7 +561,14 @@ export class BoxerAnimator {
     scratchGlove.copy(localTarget);
     rig.chest.localToWorld(scratchGlove);
     scratchPole.set(0.9 * side, -1, -0.25).applyQuaternion(rig.chest.getWorldQuaternion(scratchQuat));
-    solveArm(scratchShoulder, scratchGlove, scratchPole, scratchElbowOut);
+    const isPunchingArm = this.punchT < 1
+      && ((side === 1 && this.punchHand === "left") || (side === -1 && this.punchHand === "right"));
+    const maximumReach = isPunchingArm && this.punchKind === "hook"
+      ? 0.56
+      : isPunchingArm && this.punchKind === "uppercut"
+        ? 0.58
+        : undefined;
+    solveArm(scratchShoulder, scratchGlove, scratchPole, scratchElbowOut, maximumReach);
     aimBone(shoulder, scratchShoulder, scratchElbowOut.elbowWorld);
     shoulder.updateMatrixWorld(true);
     aimBone(elbow, scratchElbowOut.elbowWorld, scratchElbowOut.targetWorld);

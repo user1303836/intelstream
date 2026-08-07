@@ -496,13 +496,19 @@ const scratchPole = new THREE.Vector3();
 const downAxis = new THREE.Vector3(0, -1, 0);
 const scratchClamped = new THREE.Vector3();
 
-export function solveArm(shoulderWorld: THREE.Vector3, targetWorld: THREE.Vector3, pole: THREE.Vector3, out: { elbowWorld: THREE.Vector3; targetWorld: THREE.Vector3 }): void {
+export function solveArm(
+  shoulderWorld: THREE.Vector3,
+  targetWorld: THREE.Vector3,
+  pole: THREE.Vector3,
+  out: { elbowWorld: THREE.Vector3; targetWorld: THREE.Vector3 },
+  maximumReach = UPPER_ARM + FOREARM + 0.06 - 0.015,
+): void {
   const l1 = UPPER_ARM;
   const l2 = FOREARM + 0.06;
   scratchS.copy(shoulderWorld);
   scratchT.copy(targetWorld);
   scratchDir.subVectors(scratchT, scratchS);
-  const distance = THREE.MathUtils.clamp(scratchDir.length(), 0.12, l1 + l2 - 0.015);
+  const distance = THREE.MathUtils.clamp(scratchDir.length(), 0.12, maximumReach);
   scratchDir.normalize();
   const a = (l1 * l1 - l2 * l2 + distance * distance) / (2 * distance);
   const h = Math.sqrt(Math.max(0.0001, l1 * l1 - a * a));

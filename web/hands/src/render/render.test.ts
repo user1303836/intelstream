@@ -4,7 +4,7 @@ import { buildArena } from "./arena";
 import { BoxerAnimator } from "./animation";
 import { buildBoxer, buildReferee } from "./boxer";
 import { CameraDirector } from "./camera";
-import { Effects3D } from "./effects";
+import { bloodPatternFor, Effects3D } from "./effects";
 import { drawHud, HUD_MAX_GUARD, HUD_MAX_POISE, scoreTotal } from "./hud";
 import { buildRing } from "./ring";
 import { resizeHighDpi } from "./viewport";
@@ -385,6 +385,30 @@ describe("effects", () => {
     action_id: null,
   });
 
+  it("selects anatomically distinct deterministic blood patterns", () => {
+    expect(bloodPatternFor({ ...severeHit(1), detail: "jab:head" })).toBe("jet");
+    expect(bloodPatternFor({ ...severeHit(2), detail: "right:hook:head" })).toBe("fan");
+    expect(bloodPatternFor({ ...severeHit(3), detail: "uppercut:head" })).toBe("plume");
+    expect(bloodPatternFor({ ...severeHit(4), detail: "straight:body" })).toBe("body_burst");
+    expect(bloodPatternFor({ ...severeHit(5), kind: "bleed", detail: "left_cut" })).toBe("ooze");
+    expect(bloodPatternFor({ ...severeHit(6), kind: "knockdown", detail: "" })).toBe("impact");
+
+    const averageBloodHeight = (detail: string): number => {
+      const effects = new Effects3D(new THREE.Scene());
+      effects.addEvent({ ...severeHit(20), detail }, new THREE.Vector3(), false);
+      effects.update(0.1);
+      const positions = effects.points.geometry.getAttribute("position") as THREE.BufferAttribute;
+      const colors = effects.points.geometry.getAttribute("color") as THREE.BufferAttribute;
+      const heights: number[] = [];
+      for (let index = 0; index < positions.count; index += 1) {
+        if (colors.getY(index) < 0.2 && positions.getY(index) > -10) heights.push(positions.getY(index));
+      }
+      effects.dispose();
+      return heights.reduce((sum, height) => sum + height, 0) / heights.length;
+    };
+    expect(averageBloodHeight("uppercut:head")).toBeGreaterThan(averageBloodHeight("straight:body") + 0.6);
+  });
+
   it("makes full blood dramatically heavier than reduced while off remains bloodless", () => {
     const origin = new THREE.Vector3();
 
@@ -418,6 +442,24 @@ describe("effects", () => {
     expect(off.liveGibs).toBe(0);
     expect(off.visibleDecals).toBe(0);
     off.dispose();
+  });
+
+  it("accumulates ongoing drips independently for both fighters", () => {
+    const effects = new Effects3D(new THREE.Scene());
+    const left = new THREE.Vector3(-1, 1.5, 0);
+    const right = new THREE.Vector3(1, 1.5, 0);
+    for (let frame = 0; frame < 5; frame += 1) {
+      effects.drip(left, 1, false, 0);
+      effects.drip(right, 1, false, 1);
+      effects.update(1 / 60);
+    }
+    expect(effects.liveBloodParticles).toBe(2);
+    const positions = effects.points.geometry.getAttribute("position") as THREE.BufferAttribute;
+    const liveX = Array.from({ length: positions.count }, (_unused, index) => positions.getX(index))
+      .filter((_x, index) => positions.getY(index) > -10);
+    expect(liveX.some((x) => x < 0)).toBe(true);
+    expect(liveX.some((x) => x > 0)).toBe(true);
+    effects.dispose();
   });
 
   it("immediately clears every red effect when blood is turned off while retaining sweat", () => {
@@ -456,8 +498,12 @@ describe("effects", () => {
     const position = new THREE.Vector3(0, 1.55, 0);
     const quaternion = new THREE.Quaternion();
 
-    effects.decapitate(0, position, quaternion, 1, 42);
+    effects.decapitate(0, position, quaternion, 1, 42, 0xb0703f);
     expect(effects.activeHeads).toBe(1);
+    const visibleHead = scene.children.find((child) =>
+      child instanceof THREE.Mesh && child.visible && child.geometry instanceof THREE.SphereGeometry,
+    ) as THREE.Mesh<THREE.SphereGeometry, THREE.MeshStandardMaterial>;
+    expect(visibleHead.material.color.getHex()).toBe(0xb0703f);
     expect(effects.activeStumps).toBe(1);
     expect(effects.liveGibs).toBe(24);
     expect(effects.liveBloodParticles).toBe(120);
@@ -469,8 +515,12 @@ describe("effects", () => {
     expect(effects.liveGibs).toBe(24);
     expect(effects.liveBloodParticles).toBe(120);
 
-    effects.decapitate(1, position, quaternion, -1, 43);
+    effects.decapitate(1, position, quaternion, -1, 43, 0x6e4128);
     expect(effects.activeHeads).toBe(2);
+    const visibleHeadColors = scene.children
+      .filter((child) => child instanceof THREE.Mesh && child.visible && child.geometry instanceof THREE.SphereGeometry)
+      .map((child) => ((child as THREE.Mesh).material as THREE.MeshStandardMaterial).color.getHex());
+    expect(visibleHeadColors).toEqual([0xb0703f, 0x6e4128]);
     expect(effects.activeStumps).toBe(2);
     expect(effects.liveGibs).toBe(48);
     expect(scene.children).toHaveLength(childCount);
@@ -491,6 +541,38 @@ describe("effects", () => {
     effects.decapitate(0, position, quaternion, 1, 44);
     expect(effects.activeHeads).toBe(1);
     expect(scene.children).toHaveLength(childCount);
+    effects.dispose();
+    expect(scene.children).toHaveLength(0);
+  });
+
+  it("uses independent fixed pools for left and right hand dismemberments", () => {
+    const scene = new THREE.Scene();
+    const effects = new Effects3D(scene);
+    const childCount = scene.children.length;
+    const position = new THREE.Vector3(0, 1.3, 0);
+    const quaternion = new THREE.Quaternion();
+    effects.dismemberHand(0, "left", position, quaternion, 1, 60, 0x1d4ed8);
+    expect(effects.activeHands).toBe(1);
+    expect(effects.activeStumps).toBe(1);
+    expect(effects.liveGibs).toBe(16);
+    expect(effects.liveBloodParticles).toBe(80);
+    expect(scene.children).toHaveLength(childCount);
+
+    effects.dismemberHand(0, "left", position, quaternion, 1, 60, 0x1d4ed8);
+    expect(effects.activeHands).toBe(1);
+    expect(effects.liveGibs).toBe(16);
+    effects.dismemberHand(0, "right", position, quaternion, -1, 61, 0x1d4ed8);
+    expect(effects.activeHands).toBe(2);
+    expect(effects.activeStumps).toBe(2);
+    expect(effects.liveGibs).toBe(32);
+    effects.anchorHandStump(0, "left", new THREE.Vector3(0.1, 1.2, 0), quaternion);
+
+    effects.restoreFighter(0);
+    expect(effects.activeHands).toBe(0);
+    expect(effects.activeStumps).toBe(0);
+    effects.setBloodLevel("reduced");
+    effects.dismemberHand(1, "left", position, quaternion, 1, 62, 0xb91c1c);
+    expect(effects.activeHands).toBe(0);
     effects.dispose();
     expect(scene.children).toHaveLength(0);
   });
@@ -540,6 +622,35 @@ describe("effects", () => {
       }
     });
     effects.dispose();
+  });
+
+  it("keeps seeded gore simulation identical at 30 and 60 FPS", () => {
+    const simulate = (dt: number): { head: number[]; gib: number[]; particles: number[]; decals: number } => {
+      const scene = new THREE.Scene();
+      const effects = new Effects3D(scene);
+      effects.decapitate(0, new THREE.Vector3(0, 1.55, 0), new THREE.Quaternion(), 1, 77);
+      for (let elapsed = 0; elapsed < 1 - 1e-9; elapsed += dt) {
+        effects.drip(new THREE.Vector3(-1, 1.5, 0), 1.4, false, 0);
+        effects.drip(new THREE.Vector3(1, 1.45, 0), 0.9, false, 1);
+        effects.update(dt);
+      }
+      const head = scene.children.find((child) =>
+        child instanceof THREE.Mesh && child.visible && child.geometry instanceof THREE.SphereGeometry,
+      )!;
+      const gibMesh = scene.children.find((child) => child instanceof THREE.InstancedMesh) as THREE.InstancedMesh;
+      const matrix = new THREE.Matrix4();
+      gibMesh.getMatrixAt(0, matrix);
+      const gibPosition = new THREE.Vector3().setFromMatrixPosition(matrix);
+      const result = {
+        head: head.position.toArray(),
+        gib: gibPosition.toArray(),
+        particles: Array.from(effects.points.geometry.getAttribute("position").array),
+        decals: effects.visibleDecals,
+      };
+      effects.dispose();
+      return result;
+    };
+    expect(simulate(1 / 30)).toEqual(simulate(1 / 60));
   });
 
   it("never exceeds any fixed pool under repeated production-valid events", () => {
