@@ -100,6 +100,7 @@ export class HandsApp {
         this.audio.event(event);
         this.haptics.event(event);
       };
+      this.renderer.onArcadeInjury = (injury) => this.audio.injury(injury);
       this.input.onAction((action) => this.renderer?.predictAction?.(action));
       const ticket = session.takeTicket();
       if (ticket === null) throw new Error("ticket_unavailable");

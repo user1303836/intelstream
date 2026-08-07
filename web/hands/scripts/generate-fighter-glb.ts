@@ -3,7 +3,7 @@
  * boxing motion onto the Texel Boxer armature (assets-src/Boxer.glb).
  *
  * Outputs:
- *   web/hands/src/assets/fighter-glb.ts        (base64 GLB with 18 clips)
+ *   web/hands/src/assets/fighter-glb.ts        (base64 gzip-compressed GLB)
  *   web/hands/src/assets/fighter-textures.ts   (embedded source textures)
  *   web/hands/src/assets/fighter-markers.json  (glove trajectories per punch)
  *
@@ -11,6 +11,7 @@
  */
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { gzipSync } from "node:zlib";
 import * as THREE from "three";
 import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
 import { GLTFLoader, type GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
@@ -84,7 +85,7 @@ const baseFighter = (): FighterSnapshot => ({
   taunt_ticks: 0, get_up_prompt: null, get_up_meter: 0, get_up_required: 0, get_up_count: 0,
   get_up_window_start_tick: 0, get_up_window_end_tick: 0,
 });
-const OPPONENT: FighterSnapshot = { ...baseFighter(), player_id: "two", x: 0, y: -107, facing: -1 };
+const OPPONENT: FighterSnapshot = { ...baseFighter(), player_id: "two", x: 0, y: -80, facing: -1 };
 
 async function loadModel(path: string): Promise<GLTF> {
   const buffer = readFileSync(path);
@@ -148,7 +149,21 @@ available: ${available.join(", ")}`,
   }
   const modelHips = modelBones.get(BONE_ADAPTER.hips)!;
   const modelHipsRestWorld = modelHips.getWorldPosition(new THREE.Vector3());
-  const oursHipsRest = ours.hips.getWorldPosition(new THREE.Vector3());
+  const segmentLength = (root: THREE.Object3D, from: string, to: string): number =>
+    root.getObjectByName(from)!.getWorldPosition(new THREE.Vector3())
+      .distanceTo(root.getObjectByName(to)!.getWorldPosition(new THREE.Vector3()));
+  const modelLegLength = (
+    segmentLength(scene, BONE_ADAPTER.hipL!, BONE_ADAPTER.kneeL!)
+    + segmentLength(scene, BONE_ADAPTER.kneeL!, BONE_ADAPTER.ankleL!)
+    + segmentLength(scene, BONE_ADAPTER.hipR!, BONE_ADAPTER.kneeR!)
+    + segmentLength(scene, BONE_ADAPTER.kneeR!, BONE_ADAPTER.ankleR!)
+  ) / 2;
+  const oursLegLength = (
+    segmentLength(ours.root, "hipL", "kneeL")
+    + segmentLength(ours.root, "kneeL", "ankleL")
+    + segmentLength(ours.root, "hipR", "kneeR")
+    + segmentLength(ours.root, "kneeR", "ankleR")
+  ) / 2;
   if (modelHips.parent === null) throw new Error("Boxer.glb hips bone has no parent");
   return {
     scene,
@@ -160,7 +175,7 @@ available: ${available.join(", ")}`,
     modelHipsRestLocal: modelHips.position.clone(),
     modelHipsRestWorld,
     modelHipsParentInverse: modelHips.parent.matrixWorld.clone().invert(),
-    hipsScale: modelHipsRestWorld.y / oursHipsRest.y,
+    hipsScale: modelLegLength / oursLegLength,
   };
 }
 
@@ -232,6 +247,8 @@ function bakeRetargetedClip(
     animator.update(fighter, OPPONENT, dtScale / 30, (frame * dtScale) / 30, false, "full", active);
     if (frame < 0) continue;
     // Runtime owns facing and stance yaw; clips contain joint-local motion only.
+    const localRootMotion = rig.root.position.clone().applyQuaternion(rig.root.quaternion.clone().invert());
+    rig.root.position.set(0, 0, 0);
     rig.root.quaternion.identity();
     rig.root.updateMatrixWorld(true);
 
@@ -241,7 +258,9 @@ function bakeRetargetedClip(
       const modelBone = context.modelBones.get(modelName)!;
       const parentWorld = currentModelWorldQuaternion(context, modelBone.parent, modelWorld);
       const aimChild = AIM_BONES[jointName];
-      if (aimChild !== undefined) {
+      if (jointName === "gloveL" || jointName === "gloveR") {
+        targetWorld.copy(parentWorld).multiply(context.modelRestLocal.get(modelBone)!);
+      } else if (aimChild !== undefined) {
         const boneWorld = oursJoints.get(jointName)!.getWorldPosition(scratchBonePos);
         const childWorld = oursJoints.get(aimChild)!.getWorldPosition(scratchChildPos);
         const direction = childWorld.sub(boneWorld).normalize();
@@ -259,7 +278,8 @@ function bakeRetargetedClip(
       modelBone.quaternion.copy(local);
     }
 
-    const hipsDelta = rig.hips.position.clone().sub(oursHipsRestLocal).multiplyScalar(context.hipsScale);
+    const hipsDelta = rig.hips.position.clone().sub(oursHipsRestLocal).add(localRootMotion)
+      .multiplyScalar(context.hipsScale);
     const modelHips = context.modelBones.get(BONE_ADAPTER.hips)!;
     const modelHipsLocal = context.modelHipsRestWorld.clone().add(hipsDelta).applyMatrix4(context.modelHipsParentInverse);
     modelHips.position.copy(modelHipsLocal);
@@ -341,6 +361,45 @@ function embeddedTextureDataUrls(path: string): Record<(typeof TEXTURE_SPECS)[nu
   return result;
 }
 
+function splitGloveMesh(mesh: THREE.SkinnedMesh): readonly [THREE.SkinnedMesh, THREE.SkinnedMesh] {
+  const index = mesh.geometry.getIndex();
+  const skinIndex = mesh.geometry.getAttribute("skinIndex");
+  const skinWeight = mesh.geometry.getAttribute("skinWeight");
+  if (index === null || skinIndex === undefined || skinWeight === undefined) {
+    throw new Error("Boxer gloves require indexed skin weights");
+  }
+  const triangles = { left: [] as number[], right: [] as number[] };
+  const vertexSide = (vertex: number): number => {
+    let score = 0;
+    const indices = [skinIndex.getX(vertex), skinIndex.getY(vertex), skinIndex.getZ(vertex), skinIndex.getW(vertex)];
+    const weights = [skinWeight.getX(vertex), skinWeight.getY(vertex), skinWeight.getZ(vertex), skinWeight.getW(vertex)];
+    for (let component = 0; component < 4; component += 1) {
+      const boneName = mesh.skeleton.bones[indices[component]!]!.name;
+      if (boneName.startsWith("Left")) score += weights[component]!;
+      if (boneName.startsWith("Right")) score -= weights[component]!;
+    }
+    return score;
+  };
+  for (let offset = 0; offset < index.count; offset += 3) {
+    const vertices = [index.getX(offset), index.getX(offset + 1), index.getX(offset + 2)];
+    const side = vertices.reduce((score, vertex) => score + vertexSide(vertex), 0);
+    if (Math.abs(side) < 0.01) throw new Error(`Boxer glove triangle ${offset / 3} has no anatomical side`);
+    triangles[side > 0 ? "left" : "right"].push(...vertices);
+  }
+  const make = (side: "left" | "right"): THREE.SkinnedMesh => {
+    const part = mesh.clone();
+    part.name = side === "left" ? "BoxerGloveLeft" : "BoxerGloveRight";
+    part.geometry = mesh.geometry.clone();
+    part.geometry.setIndex(triangles[side]);
+    return part;
+  };
+  const left = make("left");
+  const right = make("right");
+  mesh.parent!.add(left, right);
+  mesh.removeFromParent();
+  return [left, right];
+}
+
 function cleanSkinWeights(scene: THREE.Object3D): void {
   scene.traverse((object) => {
     if (!(object instanceof THREE.SkinnedMesh)) return;
@@ -380,17 +439,20 @@ async function main(): Promise<void> {
   const props: THREE.Object3D[] = [];
   const meshNames = new Map([
     ["MHeadMat0", "BoxerHead"],
-    ["GlovesMat0", "BoxerGloves"],
     ["MBodyMat0", "BoxerBody"],
     ["ShoesMat0", "BoxerShoes"],
     ["PantsMat0", "BoxerPants"],
   ]);
+  let gloveMesh: THREE.SkinnedMesh | null = null;
   model.scene.traverse((object) => {
     if (object instanceof THREE.Mesh && !(object instanceof THREE.SkinnedMesh)) props.push(object);
     if (object instanceof THREE.SkinnedMesh && !Array.isArray(object.material)) {
-      object.name = meshNames.get(object.material.name) ?? object.name;
+      if (object.material.name === "GlovesMat0") gloveMesh = object;
+      else object.name = meshNames.get(object.material.name) ?? object.name;
     }
   });
+  if (gloveMesh === null) throw new Error("Boxer source has no separable glove mesh");
+  splitGloveMesh(gloveMesh);
   console.log(`stripping ${props.length} prop meshes: ${props.map((prop) => prop.name).join(", ")}`);
   for (const prop of props) prop.removeFromParent();
   model.scene.traverse((object) => {
@@ -410,11 +472,16 @@ async function main(): Promise<void> {
 
   const clips: BakedClip[] = [];
   clips.push(bakeRetargetedClip(context, "idle", 60, (fighter) => fighter));
-  clips.push(bakeRetargetedClip(context, "move_forward", 24, (fighter) => ({ ...fighter, velocity_x: 6 })));
-  clips.push(bakeRetargetedClip(context, "move_backward", 24, (fighter) => ({ ...fighter, velocity_x: -6 })));
-  clips.push(bakeRetargetedClip(context, "move_lateral", 24, (fighter) => ({ ...fighter, velocity_y: 6 })));
+  clips.push(bakeRetargetedClip(context, "move_forward", 31, (fighter) => ({ ...fighter, velocity_x: 6 })));
+  clips.push(bakeRetargetedClip(context, "move_backward", 31, (fighter) => ({ ...fighter, velocity_x: -6 })));
+  clips.push(bakeRetargetedClip(context, "move_lateral_left", 31, (fighter) => ({ ...fighter, velocity_y: -4 })));
+  clips.push(bakeRetargetedClip(context, "move_lateral_right", 31, (fighter) => ({ ...fighter, velocity_y: 4 })));
   clips.push(bakeRetargetedClip(context, "guard_high", 30, (fighter) => ({ ...fighter, defense: "guard_high" })));
   clips.push(bakeRetargetedClip(context, "guard_low", 30, (fighter) => ({ ...fighter, defense: "guard_low" })));
+  clips.push(bakeRetargetedClip(context, "slip_left", 24, (fighter) => ({ ...fighter, defense: "slip_left" })));
+  clips.push(bakeRetargetedClip(context, "slip_right", 24, (fighter) => ({ ...fighter, defense: "slip_right" })));
+  clips.push(bakeRetargetedClip(context, "weave", 30, (fighter) => ({ ...fighter, defense: "weave" })));
+  clips.push(bakeRetargetedClip(context, "pull", 24, (fighter) => ({ ...fighter, defense: "pull" })));
 
   const markerTrajectories: Record<string, { frames: number; left: number[][]; right: number[][] }> = {};
   for (const punchClass of ["jab", "straight", "hook", "uppercut"] as const) {
@@ -442,14 +509,34 @@ async function main(): Promise<void> {
       };
     }
   }
-  clips.push(bakeRetargetedClip(context, "block_head", 14, (fighter) => fighter, (animator, frame) => {
-    if (frame === 0) animator.impact({ direction: 1, amount: 120, blocked: true });
-  }));
-  clips.push(bakeRetargetedClip(context, "hit_head", 16, (fighter) => fighter, (animator, frame) => {
-    if (frame === 0) animator.impact({ direction: 1, amount: 320, blocked: false });
-  }));
+  for (const reaction of ["block", "hit"] as const) {
+    for (const target of ["head", "body"] as const) {
+      for (const side of ["left", "right"] as const) {
+        clips.push(bakeRetargetedClip(context, `${reaction}_${target}_${side}`, reaction === "block" ? 14 : 16, (fighter) => fighter, (animator, frame) => {
+          if (frame === 0) {
+            animator.impact({
+              direction: side === "left" ? -1 : 1,
+              amount: reaction === "block" ? 120 : 320,
+              blocked: reaction === "block",
+              target,
+            });
+          }
+        }));
+      }
+    }
+  }
   clips.push(bakeRetargetedClip(context, "knockdown", 42, (fighter) => ({ ...fighter, is_downed: true }), undefined, false));
   clips.push(bakeRetargetedClip(context, "getup", 30, (fighter, frame) => ({ ...fighter, is_downed: frame < 1 }), undefined, true, 21, 2));
+  clips.push(bakeRetargetedClip(context, "clinch", 30, (fighter) => ({ ...fighter, clinch_ticks: 30 })));
+  clips.push(bakeRetargetedClip(context, "foul_recovery", 30, (fighter) => ({ ...fighter, is_foul_recovery_target: true })));
+  clips.push(bakeRetargetedClip(context, "stunned", 30, (fighter) => ({ ...fighter, stunned_ticks: 45 })));
+  clips.push(bakeRetargetedClip(context, "exhausted", 45, (fighter) => ({ ...fighter, stamina: 60 })));
+  clips.push(bakeRetargetedClip(context, "taunt", 60, (fighter, frame) => ({
+    ...fighter,
+    taunt_ticks: frame >= 6 && frame < 48
+      ? Math.max(1, 60 - Math.round((frame - 6) * 60 / 42))
+      : 0,
+  })));
 
   const animationClips = clips.map((clip) => {
     const tracks: THREE.KeyframeTrack[] = [];
@@ -471,18 +558,19 @@ async function main(): Promise<void> {
   });
 
   mkdirSync(OUT_DIR, { recursive: true });
-  const base64 = Buffer.from(glb).toString("base64");
+  const compressed = gzipSync(Buffer.from(glb), { level: 9 });
+  const base64 = compressed.toString("base64");
   const sha = createHash("sha256").update(Buffer.from(glb)).digest("hex");
   writeFileSync(
     `${OUT_DIR}/fighter-glb.ts`,
-    `// Generated from assets-src/Boxer.glb (Texel, Inc., CC BY 4.0).\nexport const FIGHTER_GLB_BASE64 = "${base64}";\nexport const FIGHTER_GLB_SHA256 = "${sha}";\n`,
+    `// Generated from assets-src/Boxer.glb (Texel, Inc., CC BY 4.0).\nexport const FIGHTER_GLB_GZIP_BASE64 = "${base64}";\nexport const FIGHTER_GLB_SHA256 = "${sha}";\n`,
   );
   writeFileSync(
     `${OUT_DIR}/fighter-textures.ts`,
     `// Generated from assets-src/Boxer.glb (Texel, Inc., CC BY 4.0).\nexport const FIGHTER_TEXTURE_DATA_URLS = ${JSON.stringify(textureDataUrls)} as const;\n`,
   );
   writeFileSync(`${OUT_DIR}/fighter-markers.json`, JSON.stringify({ format: 1, trajectories: markerTrajectories }, null, 1) + "\n");
-  console.log(`fighter GLB: ${glb.byteLength} bytes, ${animationClips.length} clips, base64 ${base64.length} chars, sha256 ${sha}`);
+  console.log(`fighter GLB: ${glb.byteLength} bytes, gzip ${compressed.byteLength} bytes, ${animationClips.length} clips, base64 ${base64.length} chars, sha256 ${sha}`);
 }
 
 await main();

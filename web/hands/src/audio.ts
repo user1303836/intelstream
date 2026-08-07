@@ -1,3 +1,5 @@
+import { INJURY_SOUNDS } from "./assets/injury-sounds";
+import type { ArcadeInjury } from "./render/renderer";
 import type { Settings } from "./settings";
 import type { CombatEvent, FinalMessage, PunchClass } from "./types";
 
@@ -30,6 +32,7 @@ export class AudioFeedback {
   private context: AudioContext | null = null;
   private master: GainNode | null = null;
   private noiseBuffer: AudioBuffer | null = null;
+  private injuryBuffers: ReadonlyMap<ArcadeInjury, AudioBuffer> = new Map();
   private crowdGain: GainNode | null = null;
   private unlocked = false;
   private unlockPromise: Promise<void> | null = null;
@@ -67,14 +70,20 @@ export class AudioFeedback {
   }
 
   private async performUnlock(): Promise<void> {
-    if (this.context === null) {
-      this.context = new AudioContext();
-      this.master = this.context.createGain();
-      this.master.gain.value = Math.min(0.8, Math.max(0, this.settings().volume));
-      this.master.connect(this.context.destination);
+    let context = this.context;
+    if (context === null) {
+      context = new AudioContext();
+      const master = context.createGain();
+      master.gain.value = Math.min(0.8, Math.max(0, this.settings().volume));
+      master.connect(context.destination);
+      this.context = context;
+      this.master = master;
     }
-    if (this.context.state === "suspended") await this.context.resume();
-    if (this.destroyed) return;
+    if (context.state === "suspended") await context.resume();
+    if (this.destroyed || this.context !== context) return;
+    const injuryBuffers = await this.decodeInjuryBuffers(context);
+    if (this.destroyed || this.context !== context) return;
+    this.injuryBuffers = injuryBuffers;
     this.unlocked = true;
     window.removeEventListener("pointerdown", this.unlockListener);
     window.removeEventListener("keydown", this.unlockListener);
@@ -185,6 +194,39 @@ export class AudioFeedback {
       this.tone({ from: 650, duration: 0.5, type: "triangle", gain: 0.14 });
     }, 160);
     this.timers.add(timer);
+  }
+
+  injury(injury: ArcadeInjury): void {
+    const context = this.context;
+    const master = this.master;
+    const buffer = this.injuryBuffers.get(injury);
+    const current = this.settings();
+    if (!this.unlocked || context === null || master === null || buffer === undefined) return;
+    if (current.blood !== "full" || current.reducedMotion) return;
+    const source = context.createBufferSource();
+    const gain = context.createGain();
+    source.buffer = buffer;
+    gain.gain.value = 0.16;
+    source.connect(gain).connect(master);
+    source.start();
+  }
+
+  private async decodeInjuryBuffers(context: AudioContext): Promise<ReadonlyMap<ArcadeInjury, AudioBuffer>> {
+    const decoded = await Promise.all(INJURY_SOUNDS.map(async (sound) => {
+      const encoded = atob(sound.wav);
+      const bytes = new Uint8Array(encoded.length);
+      for (let index = 0; index < encoded.length; index += 1) bytes[index] = encoded.charCodeAt(index);
+      try {
+        return [sound.name, await context.decodeAudioData(bytes.buffer)] as const;
+      } catch {
+        return null;
+      }
+    }));
+    const buffers = new Map<ArcadeInjury, AudioBuffer>();
+    for (const entry of decoded) {
+      if (entry !== null) buffers.set(entry[0], entry[1]);
+    }
+    return buffers;
   }
 
   private tone(spec: ToneSpec): void {
@@ -316,6 +358,7 @@ export class AudioFeedback {
     this.context = null;
     this.master = null;
     this.noiseBuffer = null;
+    this.injuryBuffers = new Map();
     this.crowdGain = null;
     this.unlocked = false;
     if (context !== null) void context.close().catch(() => undefined);
