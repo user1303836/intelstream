@@ -64,6 +64,7 @@ const isBlock = (event: CombatEvent): boolean => event.kind === "block" || event
 const HISTORY_LIMIT = 480;
 const LOW_TIER_SCALE = 0.56;
 const ROUND_CALLOUT_SECONDS = 1.8;
+const FINISH_CLOSE_UP_SECONDS = 1.7;
 const CORNERMAN_APRON_DISTANCE = 3.42;
 // Broadcast finish: a soft vignette and a whisper of grain, applied before tone mapping.
 const BROADCAST_FINISH_SHADER = {
@@ -387,6 +388,9 @@ export class FightRenderer {
   private finalRevealAt = 0;
   private portraitPull = 1;
   private lastPhase: string | null = null;
+  private finishCloseUpUntil = 0;
+  private finishCloseUpIndex = -1;
+  private readonly closeUpPosition = new THREE.Vector3();
   private roundCalloutUntil = 0;
   private roundCalloutRound = 0;
   private readonly tmpCamera = new THREE.Vector3();
@@ -587,9 +591,32 @@ export class FightRenderer {
 
   private presentFinish(final: FinalMessage): void {
     this.referee?.waveOff();
+    const fighters = this.buffer.latest()?.fighters;
+    const loserIndex = fighters?.findIndex((fighter) => fighter.player_id !== final.winner_id && fighter.player_id !== null) ?? -1;
+    if (loserIndex >= 0 && this.headCacheValid[loserIndex] && !this.settings().reducedMotion) {
+      this.finishCloseUpIndex = loserIndex;
+      this.finishCloseUpUntil = this.frameSeconds + FINISH_CLOSE_UP_SECONDS;
+    }
     if (final.winner_id === null) return;
-    const index = this.buffer.latest()?.fighters.findIndex((fighter) => fighter.player_id === final.winner_id) ?? -1;
+    const index = fighters?.findIndex((fighter) => fighter.player_id === final.winner_id) ?? -1;
     if (index >= 0) this.graphs?.[index]?.celebrate();
+  }
+
+  /** A short high three-quarter close-up on the beaten fighter's face before the result panel. */
+  private closeUpFrame(seconds: number): { position: THREE.Vector3; lookAt: THREE.Vector3 } | null {
+    if (seconds >= this.finishCloseUpUntil || this.finishCloseUpIndex < 0 || !this.headCacheValid[this.finishCloseUpIndex]) return null;
+    const head = this.headCache[this.finishCloseUpIndex]!;
+    const drift = (seconds - (this.finishCloseUpUntil - FINISH_CLOSE_UP_SECONDS)) * 0.25 - 0.2;
+    // Shoot from the ring-centre side of the fighter so the ropes stay behind the face.
+    const toCentre = Math.atan2(-head.x, -head.z);
+    const angle = (Math.hypot(head.x, head.z) > 0.4 ? toCentre : 0.9) + drift;
+    this.closeUpPosition.set(
+      THREE.MathUtils.clamp(head.x + Math.sin(angle) * 1.05, -2.8, 2.8),
+      head.y + 0.75,
+      THREE.MathUtils.clamp(head.z + Math.cos(angle) * 1.05, -2.8, 2.8),
+    );
+    this.replayLookAt.copy(head);
+    return { position: this.closeUpPosition, lookAt: this.replayLookAt };
   }
 
   /** Replays the recorded snapshots around the knockdown from a close camera before the result panel. */
@@ -1149,7 +1176,7 @@ export class FightRenderer {
       current.reducedMotion,
     );
     const replaying = this.replay;
-    const frame = this.cameraOverride ?? (replaying !== null && snapshot !== null ? this.replayFrame(snapshot, seconds - replaying.startedAt) : directed);
+    const frame = this.cameraOverride ?? (replaying !== null && snapshot !== null ? this.replayFrame(snapshot, seconds - replaying.startedAt) : (this.closeUpFrame(seconds) ?? directed));
     if (this.cameraOverride === null && this.portraitPull > 1) {
       const distanceScale = this.portraitPull / Math.min(1.3, Math.sqrt(this.portraitPull));
       this.tmpCamera.subVectors(frame.position, frame.lookAt).multiplyScalar(distanceScale);

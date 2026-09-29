@@ -3,6 +3,7 @@ import { punchTiming } from "../manifest";
 import { fighter as baseFighter } from "../test/fixtures";
 import type { FighterSnapshot } from "../types";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
+import { applyHeadTrauma } from "./injury";
 import { STANCE } from "./poser";
 import { worldPosition, worldQuaternion, type CanonicalBone } from "./rig";
 import { worldMapping } from "./world";
@@ -80,6 +81,20 @@ describe("fall direction", () => {
       expect(head.y).toBeLessThan(0.45);
       expect(head.z > hips.z).toBe(faceDown);
     }
+  });
+});
+
+describe("broken nose", () => {
+  it("shifts the nose sideways only under heavy head trauma, toward the less damaged side", () => {
+    const { boxer } = makeGraph();
+    const base = baseFighter("one").trauma;
+    applyHeadTrauma(boxer.headInjury, { ...base, head: 300, left_eye: 200, right_eye: 50 }, "full");
+    expect(boxer.headInjury.uniforms.uInjuryNose.value.w).toBe(0);
+    applyHeadTrauma(boxer.headInjury, { ...base, head: 900, left_eye: 600, right_eye: 100 }, "full");
+    expect(boxer.headInjury.uniforms.uInjuryNose.value.w).toBeLessThan(-0.7);
+    expect(boxer.headInjury.uniforms.uInjuryNose.value.y).toBeCloseTo(117, 0);
+    applyHeadTrauma(boxer.headInjury, { ...base, head: 900, left_eye: 100, right_eye: 600 }, "full");
+    expect(boxer.headInjury.uniforms.uInjuryNose.value.w).toBeGreaterThan(0.7);
   });
 });
 

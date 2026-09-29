@@ -69,6 +69,7 @@ uniform float uInjuryJaw;
 uniform float uInjuryJawLevel;
 uniform vec4 uInjuryImpact;
 uniform vec3 uInjuryImpactPush;
+uniform vec4 uInjuryNose;
 varying vec3 vInjuryPos;
 `;
 
@@ -84,6 +85,9 @@ vInjuryPos = transformed;
     injurySwell += uInjurySwell[i] * w * w;
   }
   transformed += objectNormal * injurySwell;
+  float noseWeight = 1.0 - smoothstep(0.0, 2.6, distance(transformed, uInjuryNose.xyz));
+  transformed.x += uInjuryNose.w * 1.1 * noseWeight * noseWeight;
+  transformed.z -= abs(uInjuryNose.w) * 0.5 * noseWeight * noseWeight;
   float impactDistance = distance(transformed, uInjuryImpact.xyz);
   float impactWeight = 1.0 - smoothstep(0.0, max(uInjuryImpact.w, 0.001), impactDistance);
   transformed += uInjuryImpactPush * (impactWeight * impactWeight);
@@ -179,6 +183,7 @@ export class InjuryShading {
     uInjuryJawLevel: { value: 114.5 },
     uInjuryImpact: { value: new THREE.Vector4(0, -1000, 0, 1) },
     uInjuryImpactPush: { value: new THREE.Vector3() },
+    uInjuryNose: { value: new THREE.Vector4(0, -1000, 0, 0) },
     uInjuryWetness: { value: 1 },
   };
   private readonly index = new Map<string, number>();
@@ -224,6 +229,14 @@ export class InjuryShading {
     const site = this.uniforms.uInjurySite.value[this.slot(name)]!;
     this.uniforms.uInjuryImpact.value.set(site.x, site.y, site.z, radius);
     this.uniforms.uInjuryImpactPush.value.set(push[0], push[1], push[2]);
+  }
+
+  /** Persistent sideways shift of the nose (object-space centimetres) once the bridge has gone. */
+  setNoseShift(shift: number): void {
+    const index = this.index.get("nose");
+    if (index === undefined) return;
+    const site = this.uniforms.uInjurySite.value[index]!;
+    this.uniforms.uInjuryNose.value.set(site.x, site.y, site.z, THREE.MathUtils.clamp(shift, -1.4, 1.4) || 0);
   }
 
   update(dt: number): void {
@@ -280,6 +293,8 @@ export function applyHeadTrauma(shading: InjuryShading, trauma: TraumaSnapshot, 
   shading.set("nose", { bruise: Math.min(1, trauma.head / 800), swell: Math.min(0.8, trauma.head / 1400) * graphic, blood: Math.min(1.4, (Math.max(0, trauma.head - 160) / 520 + trauma.bleeding / 420) * bleed) });
   shading.set("mouth", { bruise: Math.min(0.8, trauma.head / 1100), cut: Math.min(1, Math.max(0, trauma.head - 420) / 700), blood: Math.min(1.2, (Math.max(0, trauma.head - 280) / 650 + trauma.bleeding / 500) * bleed) });
   shading.set("chin", { bruise: Math.min(0.7, trauma.head / 1300) });
+  const noseSide = trauma.left_eye >= trauma.right_eye ? -1 : 1;
+  shading.setNoseShift(noseSide * Math.min(1.1, Math.max(0, trauma.head - 520) / 450) * graphic);
   shading.set("leftJaw", { bruise: Math.min(0.9, trauma.left_eye / 900 + trauma.head / 1600) });
   shading.set("rightJaw", { bruise: Math.min(0.9, trauma.right_eye / 900 + trauma.head / 1600) });
   shading.set("forehead", { bruise: Math.min(0.6, trauma.swelling / 1200), cut: Math.min(1, Math.max(0, trauma.swelling - 520) / 480), blood: Math.min(1.2, Math.max(0, trauma.swelling - 520) / 420) * bleed });
