@@ -166,6 +166,10 @@ export class AudioFeedback {
         this.tone({ from: 520, to: 390, duration: 0.18, type: "triangle", gain: 0.05 });
         this.crowdSwell(0.45);
         break;
+      case "clinch_denied":
+      case "clinch_interrupted":
+        this.noise({ duration: 0.1, frequency: 520, sweepTo: 240, gain: 0.05, type: "bandpass", q: 1 });
+        break;
       case "bleed":
         break;
       case "exhausted":
