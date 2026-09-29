@@ -495,6 +495,17 @@ describe("round stats", () => {
     expect(tracker.get("one")).toEqual({ thrown: 0, landed: 0 });
   });
 
+  it("shows the local fighter's input latency readout", () => {
+    const texts: string[] = [];
+    const ctx = mockHudContext(texts);
+    const players = Object.fromEntries(publicPlayers.map((player) => [player.id, player]));
+    drawHud(ctx, 1280, 720, snapshot(), players, "one", null, 0, 30, null, null, 48.4);
+    expect(texts).toContain("INPUT 48 ms");
+    texts.length = 0;
+    drawHud(ctx, 1280, 720, snapshot(), players, null, null, 0, 30, null, null, 48.4);
+    expect(texts.some((text) => text.startsWith("INPUT"))).toBe(false);
+  });
+
   it("shows the landed counts on the rest panel", () => {
     const texts: string[] = [];
     const ctx = mockHudContext(texts);

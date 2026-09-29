@@ -1240,8 +1240,7 @@ async def test_reconnect_during_result_persistence_gets_snapshot_then_exact_fina
     recovered = await manager.join(player("one"), reconnect_socket)
     await wait_until(lambda: len(reconnect_socket.messages) >= 2)
     assert message_types(reconnect_socket)[:2] == ["welcome", "snapshot"]
-    with pytest.raises(RoomError, match="match_complete"):
-        await recovered.room.submit_frame("one", recovered.connection, "{}")
+    await recovered.room.submit_frame("one", recovered.connection, "{}")
     with pytest.raises(RoomError, match="room_closed"):
         await manager.join(player("three"), FakeSocket())
 
@@ -1298,8 +1297,7 @@ async def test_reconnect_during_result_hold_gets_stored_final_before_close(
         "final",
     ]
     assert recovered_messages[2] == authoritative_final
-    with pytest.raises(RoomError, match="match_complete"):
-        await recovered.room.submit_frame("one", recovered.connection, "{}")
+    await recovered.room.submit_frame("one", recovered.connection, "{}")
     hold_release.set()
     await wait_until(lambda: reconnect_socket.closed)
     assert message_types(reconnect_socket).index("final") < len(reconnect_socket.messages)

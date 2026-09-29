@@ -1,3 +1,4 @@
+import { snapshot } from "./test/fixtures";
 import { NetworkController, websocketUrl } from "./network";
 import type { ServerMessage } from "./types";
 
@@ -82,6 +83,32 @@ describe("same-origin WebSocket controller", () => {
     sockets[1]!.open();
     expect(JSON.parse(sockets[1]!.sent[0]!).ticket).toBe("ticket-b");
     expect(fresh).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("measures input acknowledgement latency from the local fighter's acknowledged sequence", () => {
+    vi.useFakeTimers();
+    history.replaceState({}, "", "/");
+    const socket = new FakeSocket();
+    const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks(), () => socket, () => Date.now());
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message(ready);
+    expect(controller.inputLatencyMs).toBeNull();
+    vi.advanceTimersByTime(40);
+    const sent = JSON.parse(socket.sent.at(-1)!) as { sequence: number };
+    vi.advanceTimersByTime(70);
+    const base = snapshot();
+    const acknowledged = { ...base, tick: 44, fighters: [{ ...base.fighters[0], player_id: welcome().player_id, last_input_sequence: sent.sequence }, base.fighters[1]] as const };
+    socket.message({ version: 3, type: "snapshot", payload: acknowledged });
+    const measured = controller.inputLatencyMs;
+    expect(measured).not.toBeNull();
+    expect(measured!).toBeGreaterThanOrEqual(70);
+    expect(measured!).toBeLessThan(120);
+    vi.advanceTimersByTime(40);
+    socket.message({ version: 3, type: "snapshot", payload: { ...acknowledged, tick: 45 } });
+    expect(controller.inputLatencyMs).toBe(measured);
     controller.dispose();
   });
 

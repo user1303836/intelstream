@@ -3,6 +3,7 @@ import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
+import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { EventDeduplicator, SnapshotBuffer } from "../interpolation";
 import { coarsePointer } from "../input/touch";
 import { predictMovement, type HeldInput } from "../prediction";
@@ -60,6 +61,34 @@ export interface ContactPresentation {
 const isHit = (event: CombatEvent): boolean => event.kind === "hit" || event.kind === "counter_hit";
 const isBlock = (event: CombatEvent): boolean => event.kind === "block" || event.kind === "perfect_block";
 const HISTORY_LIMIT = 480;
+// Broadcast finish: a soft vignette and a whisper of grain, applied before tone mapping.
+const BROADCAST_FINISH_SHADER = {
+  uniforms: { tDiffuse: { value: null }, uTime: { value: 0 }, uVignette: { value: 0.32 }, uGrain: { value: 0.035 } },
+  vertexShader: `
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}`,
+  fragmentShader: `
+uniform sampler2D tDiffuse;
+uniform float uTime;
+uniform float uVignette;
+uniform float uGrain;
+varying vec2 vUv;
+float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7)) + uTime * 43.7) * 43758.5453);
+}
+void main() {
+  vec4 color = texture2D(tDiffuse, vUv);
+  vec2 centered = vUv - 0.5;
+  float falloff = smoothstep(0.35, 0.95, dot(centered, centered) * 2.2);
+  color.rgb *= 1.0 - falloff * uVignette;
+  float grain = (hash(floor(vUv * vec2(960.0, 540.0))) - 0.5) * uGrain;
+  color.rgb += grain * (0.15 + color.rgb);
+  gl_FragColor = color;
+}`,
+};
 const CROWD_EXCITEMENT: Readonly<Record<string, number>> = { hit: 0.18, counter_hit: 0.3, guard_break: 0.25, knockdown: 1, block: 0.04, perfect_block: 0.1 };
 
 function pairedBlock(event: CombatEvent, events: readonly CombatEvent[]): CombatEvent | undefined {
@@ -294,6 +323,8 @@ export class FightRenderer {
   private readonly history: EngineSnapshot[] = [];
   private lastKnockdown: { readonly knockdown: CombatEvent; readonly hit: CombatEvent | null } | null = null;
   private replay: { readonly plan: ReplayPlan; readonly buffer: SnapshotBuffer; readonly startedAt: number; impactFired: boolean } | null = null;
+  private readonly finishPass: ShaderPass;
+  private inputLatencyMs: number | null = null;
   private readonly replayCameraPosition = new THREE.Vector3();
   private readonly replayLookAt = new THREE.Vector3();
   private frameSeconds = 0;
@@ -363,6 +394,8 @@ export class FightRenderer {
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     const bloom = new UnrealBloomPass(new THREE.Vector2(1280, 720), 0.2, 0.45, 1.08);
     this.composer.addPass(bloom);
+    this.finishPass = new ShaderPass(BROADCAST_FINISH_SHADER);
+    this.composer.addPass(this.finishPass);
     this.composer.addPass(new OutputPass());
 
     this.hudCanvas = document.createElement("canvas");
@@ -521,6 +554,10 @@ export class FightRenderer {
     );
     this.replayLookAt.set(midX, 1.28, midZ);
     return { position: this.replayCameraPosition, lookAt: this.replayLookAt };
+  }
+
+  setInputLatency(milliseconds: number | null): void {
+    this.inputLatencyMs = milliseconds;
   }
 
   setReconnect(milliseconds: number): void {
@@ -866,6 +903,7 @@ export class FightRenderer {
 
     const seconds = time / 1000;
     this.frameSeconds = seconds;
+    this.finishPass.uniforms.uTime!.value = seconds % 1000;
     if (manual) this.lastManualTime = time;
     const current = this.settings();
     this.setBloodLevel(current.blood);
@@ -1105,7 +1143,7 @@ export class FightRenderer {
       ctx.fillStyle = vignette;
       ctx.fillRect(0, 0, viewport.width, viewport.height);
     }
-    drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.frameSeconds >= this.finalRevealAt ? this.final : null, this.reconnectMs, this.simulation.tick_rate, this.roundStats, this.replay !== null ? "KNOCKOUT REPLAY" : null);
+    drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.frameSeconds >= this.finalRevealAt ? this.final : null, this.reconnectMs, this.simulation.tick_rate, this.roundStats, this.replay !== null ? "KNOCKOUT REPLAY" : null, this.inputLatencyMs);
   }
 
   destroy(): void {

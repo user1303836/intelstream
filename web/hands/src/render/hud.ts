@@ -206,6 +206,7 @@ export function drawHud(
   tickRate = 30,
   roundStats: RoundStatsTracker | null = null,
   replayLabel: string | null = null,
+  inputLatencyMs: number | null = null,
 ): void {
   ctx.save();
   ctx.textBaseline = "alphabetic";
@@ -234,6 +235,15 @@ export function drawHud(
   const seconds = Math.floor(snapshot.phase_ticks_remaining / tickRate);
   const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
   roundCard(ctx, width / 2, compact ? 54 : height - 84, clock, `ROUND ${snapshot.round_number}`, snapshot.phase.replace("_", " ").toUpperCase());
+  if (inputLatencyMs !== null && snapshot.fighters.some((fighter) => fighter.player_id === viewerId)) {
+    const rounded = Math.round(inputLatencyMs);
+    ctx.save();
+    ctx.textAlign = "right";
+    ctx.font = "700 11px ui-monospace, monospace";
+    ctx.fillStyle = rounded < 90 ? "rgba(170,200,180,0.75)" : rounded < 160 ? "rgba(240,200,110,0.9)" : "rgba(255,110,100,0.95)";
+    ctx.fillText(`INPUT ${rounded} ms`, width - 24, compact ? 128 : 36);
+    ctx.restore();
+  }
   if (replayLabel !== null) {
     const tagY = compact ? 120 : 64;
     ctx.save();

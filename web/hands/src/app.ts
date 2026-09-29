@@ -160,7 +160,13 @@ export class HandsApp {
     this.renderState();
   }
 
+  /** Smoothed input acknowledgement latency of the local fighter, for diagnostics. */
+  get networkStats(): { inputLatencyMs: number | null } {
+    return { inputLatencyMs: this.network?.inputLatencyMs ?? null };
+  }
+
   private receiveSnapshot(snapshot: EngineSnapshot): void {
+    this.renderer?.setInputLatency(this.network?.inputLatencyMs ?? null);
     this.renderer?.push(snapshot);
     const viewer = snapshot.fighters.find((fighter) => fighter.player_id === this.state.playerId);
     this.input.setKnockdown(viewer?.is_downed === true);

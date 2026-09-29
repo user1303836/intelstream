@@ -13,6 +13,7 @@
 const { chromium, devices } = require('playwright');
 const { spawn } = require('node:child_process');
 const http = require('node:http');
+const net = require('node:net');
 
 const base = process.env.E2E_BASE || 'http://localhost:5174';
 const path = require('node:path');
@@ -33,12 +34,30 @@ function healthz() {
   });
 }
 
-async function startServer(args) {
-  const child = spawn('uv', ['run', 'python', 'scripts/hands_e2e_server.py', '--port', String(PORT), ...args], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] });
+/** TCP proxy that delays every chunk in both directions, so websocket frames see real latency. */
+function delayProxy(listenPort, targetPort, delayMs) {
+  const server = net.createServer((client) => {
+    const upstream = net.connect(targetPort, '127.0.0.1');
+    const pipe = (from, to) => {
+      from.on('data', (chunk) => setTimeout(() => { if (!to.destroyed) to.write(chunk); }, delayMs));
+      from.on('end', () => setTimeout(() => to.end(), delayMs));
+      from.on('error', () => to.destroy());
+    };
+    pipe(client, upstream);
+    pipe(upstream, client);
+  });
+  server.listen(listenPort, '127.0.0.1');
+  return server;
+}
+
+async function startServer(args, { oneWayDelayMs = 0 } = {}) {
+  const backendPort = oneWayDelayMs > 0 ? PORT + 1 : PORT;
+  const child = spawn('uv', ['run', 'python', 'scripts/hands_e2e_server.py', '--port', String(backendPort), ...args], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] });
   const log = [];
   child.stdout.on('data', (d) => log.push(String(d)));
   child.stderr.on('data', (d) => log.push(String(d)));
-  for (let i = 0; i < 60; i += 1) { if (await healthz()) return { child, log }; await wait(500); }
+  const proxy = oneWayDelayMs > 0 ? delayProxy(PORT, backendPort, oneWayDelayMs) : null;
+  for (let i = 0; i < 60; i += 1) { if (await healthz()) return { child, log, proxy }; await wait(500); }
   throw new Error('server did not start: ' + log.join(''));
 }
 
@@ -88,16 +107,11 @@ async function main() {
     mash: ['--rounds', '1', '--round-seconds', '40', '--rest-seconds', '5'],
     latency: ['--rounds', '1', '--round-seconds', '45', '--rest-seconds', '5'],
   }[scenario];
-  const server = await startServer(serverArgs);
+  const server = await startServer(serverArgs, { oneWayDelayMs: scenario === 'latency' ? 110 : 0 });
   try {
     const A = await open('Alpha');
     const B = await open('Bravo', { mobile: scenario === 'touch' });
-    if (scenario === 'latency') {
-      const cdp = await B.context.newCDPSession(B.page);
-      await cdp.send('Network.enable');
-      await cdp.send('Network.emulateNetworkConditions', { offline: false, latency: 220, downloadThroughput: 1_500_000, uploadThroughput: 750_000 });
-      note('B on emulated 220 ms latency link');
-    }
+    if (scenario === 'latency') note('both clients behind a TCP proxy adding 110 ms each way (220 ms round trip) to every frame');
     const startedState = await waitFor(A.page, (s) => /countdown|fight/.test(s.summary ?? ''), 60000, 'bout start');
     note('bout started:', startedState !== null);
     await waitFor(A.page, (s) => /\. fight\./.test(s.summary ?? ''), 20000, 'fight phase');
@@ -128,6 +142,7 @@ async function main() {
       }
       await A.page.keyboard.up('Alt');
       note('get-up presses:', promptsPressed);
+      note('input latency A:', JSON.stringify(await A.page.evaluate(() => window.__handsApp?.networkStats ?? null)), 'B:', JSON.stringify(await B.page.evaluate(() => window.__handsApp?.networkStats ?? null)));
       if (final === null) final = await waitFor(B.page, (s) => Boolean(s.final), 120000, 'final');
       note('FINAL:', JSON.stringify(final?.final ?? null));
       await A.page.screenshot({ path: `${out}/e2e-ko-A-final.png` }); await B.page.screenshot({ path: `${out}/e2e-ko-B-final.png` });
@@ -229,16 +244,19 @@ async function main() {
     if (scenario === 'latency') {
       const started = Date.now();
       let step = 0;
+      const stats = (page) => page.evaluate(() => window.__handsApp?.networkStats?.inputLatencyMs ?? null);
       while (Date.now() - started < 25000) {
         await A.page.keyboard.press(['f', 'r', 'g'][step % 3]);
         await B.page.keyboard.press(['j', 'u', 'h'][step % 3]);
         if (step % 4 === 0) { await B.page.keyboard.down('a'); await wait(150); await B.page.keyboard.up('a'); }
         await wait(420);
         step += 1;
+        if (step % 8 === 0) note(`t=${((Date.now() - started) / 1000).toFixed(0)}s input latency A: ${Math.round((await stats(A.page)) ?? -1)} ms  B: ${Math.round((await stats(B.page)) ?? -1)} ms`);
       }
       const sA = await status(A.page); const sB = await status(B.page);
       note('A:', sA.status, '|', sA.summary?.slice(0, 140));
       note('B:', sB.status, '|', sB.summary?.slice(0, 140));
+      note('input latency A:', JSON.stringify(await A.page.evaluate(() => window.__handsApp?.networkStats ?? null)), 'B:', JSON.stringify(await B.page.evaluate(() => window.__handsApp?.networkStats ?? null)));
       await B.page.screenshot({ path: `${out}/e2e-latency-B.png` });
       const final = await waitFor(B.page, (s) => Boolean(s.final), 90000, 'final');
       note('FINAL B:', JSON.stringify(final?.final ?? null).slice(0, 200));
@@ -247,6 +265,7 @@ async function main() {
     report.errors.push(...A.errors, ...B.errors);
   } finally {
     server.child.kill('SIGTERM');
+    server.proxy?.close();
     await browser.close();
   }
   const serverErrors = server.log.join('').split('\n').filter((l) => /error|warning|Traceback/i.test(l) && !/healthz/.test(l));

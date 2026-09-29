@@ -562,7 +562,9 @@ class HandsRoom:
                 or self._persistence_task is not None
                 or (self._engine is not None and self._engine.result is not None)
             ):
-                raise RoomError("match_complete")
+                # Inputs already in flight when the bout ends arrive after the result on any
+                # real connection; dropping them keeps the final on the player's screen.
+                return
             slot = self._slots.get(player_id)
             if slot is None or slot.connection is not connection:
                 raise RoomError("connection_replaced")

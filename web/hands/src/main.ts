@@ -16,6 +16,7 @@ else if (labMode) teardown = runLab(root);
 else if (import.meta.env.DEV && params.get("fixture") === "1") teardown = runDevelopmentFixture(root);
 else if (import.meta.env.DEV && params.get("e2e") === "1") {
   const app = new HandsApp(root, undefined, devAuthorizer);
+  (window as unknown as Record<string, unknown>).__handsApp = app;
   app.start();
   teardown = () => app.destroy();
 } else {
