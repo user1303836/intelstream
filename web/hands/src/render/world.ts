@@ -8,6 +8,8 @@ export const POST_RADIUS = 3.42;
 export const ROPE_LINE = POST_RADIUS * 0.72;
 export const ROPE_HEIGHTS = [0.5, 0.88, 1.26] as const;
 export const CANVAS_TOP = 0;
+/** The arena floor, a metre below the canvas. */
+export const ARENA_FLOOR = -1;
 
 export interface WorldMapping {
   readonly x: (simX: number) => number;

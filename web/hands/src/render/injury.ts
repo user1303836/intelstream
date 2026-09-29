@@ -279,10 +279,6 @@ export class InjuryShading {
     this.uniforms.uInjurySever.value = severed ? NECK_CUT_HEIGHT : UNCUT;
   }
 
-  get severed(): boolean {
-    return this.uniforms.uInjurySever.value < UNCUT;
-  }
-
   /** Shadow pass material for the same mesh, so a severed head casts no shadow from the shoulders. */
   shadowMaterial(): THREE.MeshDepthMaterial {
     const material = new THREE.MeshDepthMaterial();

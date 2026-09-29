@@ -274,3 +274,70 @@ describe("decision ceremony", () => {
     expect(raised.at(-1)).toEqual(["red", "blue"]);
   });
 });
+
+describe("early punches", () => {
+  const anticipate = (FightRenderer.prototype as unknown as { anticipatePunches: (latest: unknown, sampledTick: number) => void }).anticipatePunches;
+  const watch = (replay: unknown = null) => {
+    const calls: { seat: number; id: string | null; lead: number }[] = [];
+    const graph = (seat: number) => ({ anticipate: (ahead: { action_id: string | null }, lead: number) => calls.push({ seat, id: ahead.action_id, lead }) });
+    return { stub: { replay, graphs: [graph(0), graph(1)] }, calls };
+  };
+  const newest = (phase: string, downed = false) => ({
+    ...snapshot(40), phase,
+    fighters: [{ ...fighter("one"), action_id: "a", action_start_tick: 40 }, { ...fighter("two"), action_id: "b", action_start_tick: 39, is_downed: downed }],
+  });
+
+  it("are offered to both fighters with the time the delayed clock needs to reach them", () => {
+    const { stub, calls } = watch();
+    anticipate.call(stub, newest("fight"), 37.5);
+    expect(calls).toEqual([{ seat: 0, id: "a", lead: 2.5 }, { seat: 1, id: "b", lead: 1.5 }]);
+  });
+
+  it("are left alone outside the fight, during the replay, and for a fighter on the canvas", () => {
+    for (const phase of ["countdown", "knockdown", "rest", "complete", "foul_recovery"]) {
+      const { stub, calls } = watch();
+      anticipate.call(stub, newest(phase), 37.5);
+      expect(calls).toEqual([]);
+    }
+    const replaying = watch({ plan: {} });
+    anticipate.call(replaying.stub, newest("fight"), 37.5);
+    expect(replaying.calls).toEqual([]);
+    const downed = watch();
+    anticipate.call(downed.stub, newest("fight", true), 37.5);
+    expect(downed.calls.map((call) => call.seat)).toEqual([0]);
+    const waiting = watch();
+    anticipate.call(waiting.stub, null, 37.5);
+    expect(waiting.calls).toEqual([]);
+  });
+});
+
+describe("ovation", () => {
+  const methods = FightRenderer.prototype as unknown as { setFinal: (final: unknown) => void; cheer: (seconds: number, dt: number) => void };
+  const hall = (frameSeconds: number) => {
+    const excited: number[] = [];
+    return { excited, stub: { frameSeconds, buffer: { latest: () => null }, graphs: null, referee: null, arena: { excite: (amount: number) => excited.push(amount) }, ovationUntil: 0, finalRevealAt: 0, ceremony: null, final: null, ceremonyFor: () => null, endCeremony: () => {} } };
+  };
+  const decision = { version: 3, type: "final", match_id: "m", winner_id: "one", method: "forfeit", round: 3, scorecards: [], ratings: {} };
+
+  it("keeps the crowd up for sixteen seconds after the result and then lets it sit", () => {
+    const { stub, excited } = hall(10);
+    methods.cheer.call(stub, 10, 1 / 60);
+    expect(excited).toEqual([]);
+    methods.setFinal.call(stub, decision);
+    methods.cheer.call(stub, 10.5, 0.5);
+    methods.cheer.call(stub, 25.9, 0.5);
+    expect(excited).toHaveLength(2);
+    expect(excited[0]).toBeGreaterThan(0.5 * 0.3);
+    methods.cheer.call(stub, 26.1, 0.5);
+    methods.cheer.call(stub, 400, 0.5);
+    expect(excited).toHaveLength(2);
+  });
+
+  it("ends when the result is withdrawn", () => {
+    const { stub, excited } = hall(10);
+    methods.setFinal.call(stub, decision);
+    methods.setFinal.call(stub, null);
+    methods.cheer.call(stub, 11, 0.5);
+    expect(excited).toEqual([]);
+  });
+});

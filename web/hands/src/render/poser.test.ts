@@ -464,6 +464,133 @@ describe("own punch prediction", () => {
     expect(starts).toBe(1);
   });
 
+  it("leaves the viewer's own punch alone when the newest snapshot brings the server's copy of it", () => {
+    const { graph } = makeGraph();
+    const idle = facingOpponent(baseFighter("one"));
+    const timing = punchTiming("hook", "head", "normal");
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    graph.predict({ kind: "punch", id: "own-early", class: "hook", hand: "left", target: "head", power: "normal" }, 0, 30, 4);
+    let tick = 100;
+    const startTick = 103;
+    const confirmed = serverPunch(idle, "own-early", "hook", startTick);
+    const ages: number[] = [];
+    let contactAt: number | null = null;
+    let starts = 0;
+    let wasActive = true;
+    for (let frame = 0; frame < 80; frame += 1) {
+      tick += 0.5;
+      if (tick + 2 >= startTick) graph.anticipate(confirmed, startTick - tick);
+      graph.update(tick > startTick - 1 ? confirmed : idle, opponentFor("two"), 1 / 60, tick / 30, false, "full", tick, undefined);
+      if (active(graph) && !wasActive) starts += 1;
+      wasActive = active(graph);
+      if (!active(graph)) break;
+      ages.push(age(graph));
+      if (contactAt === null && age(graph) >= timing.startup) contactAt = tick;
+    }
+    for (let index = 1; index < ages.length; index += 1) expect(ages[index]!).toBeGreaterThanOrEqual(ages[index - 1]!);
+    expect(starts).toBe(0);
+    expect(Math.abs(contactAt! - (startTick + timing.startup))).toBeLessThanOrEqual(1);
+  });
+
+  const followUp = (startTick: number, lead: number): { startedAt: number; progress: number; starts: number } => {
+    const { graph } = makeGraph();
+    const idle = facingOpponent(baseFighter("one"));
+    const jab = punchTiming("jab", "head", "normal");
+    const total = jab.startup + jab.active + jab.recovery;
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    const first = serverPunch(idle, "theirs-first", "jab", 201);
+    const second = serverPunch(idle, "theirs-second", "hook", startTick);
+    let tick = 200;
+    let startedAt = Infinity;
+    let progress = 0;
+    let starts = 0;
+    let previous = "";
+    let wasActive = false;
+    for (let frame = 0; frame < 120; frame += 1) {
+      tick += 0.5;
+      const newest = tick + lead >= startTick ? second : tick + lead >= 201 ? first : idle;
+      const before = age(graph) / total;
+      if (newest !== idle) graph.anticipate(newest, newest.action_start_tick - tick);
+      graph.update(tick > startTick - 1 ? second : tick > 200 ? first : idle, opponentFor("two"), 1 / 60, tick / 30, false, "full", tick, undefined);
+      const shown = active(graph) ? state(graph).punchClass : "";
+      if (shown === "hook" && (previous !== "hook" || !wasActive)) {
+        starts += 1;
+        if (starts === 1) {
+          startedAt = tick;
+          progress = before;
+        }
+      }
+      previous = shown;
+      wasActive = active(graph);
+    }
+    return { startedAt, progress, starts };
+  };
+
+  it("starts a follow-up early once the punch in flight is past half way, and only once", () => {
+    const late = followUp(211, 3);
+    expect(late.startedAt).toBeLessThan(210);
+    expect(late.progress).toBeGreaterThan(0.55);
+    expect(late.starts).toBe(1);
+  });
+
+  it("leaves a follow-up to the server's clock when the punch in flight is not yet half way", () => {
+    // The server cancels the jab's recovery into a hook, and the news of it is five ticks ahead of the screen.
+    const soon = followUp(208, 5);
+    expect(soon.startedAt).toBeGreaterThanOrEqual(207);
+    expect(soon.startedAt).toBeLessThanOrEqual(208.5);
+    expect(soon.starts).toBe(1);
+  });
+
+  it("does not throw the viewer's own punch again when the server's copy arrives after it has finished", () => {
+    const { graph } = makeGraph();
+    const idle = facingOpponent(baseFighter("one"));
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    graph.predict({ kind: "punch", id: "own-late", class: "jab", hand: "left", target: "head", power: "normal" }, 0, 30, 4);
+    let tick = 500;
+    for (let frame = 0; frame < 80 && active(graph); frame += 1) {
+      tick += 0.5;
+      graph.update(idle, opponentFor("two"), 1 / 60, tick / 30, false, "full", tick, undefined);
+    }
+    expect(active(graph)).toBe(false);
+    graph.anticipate(serverPunch(idle, "own-late", "jab", tick + 2), 2);
+    expect(active(graph)).toBe(false);
+  });
+
+  it("finishes an early punch at full speed when the server stops reporting it", () => {
+    const timing = punchTiming("hook", "head", "normal");
+    const total = timing.startup + timing.active + timing.recovery;
+    const endsAt = (early: boolean): number => {
+      const { graph } = makeGraph();
+      const idle = facingOpponent(baseFighter("one"));
+      run(graph, idle, opponentFor("two"), 10, undefined);
+      const startTick = 303;
+      const thrown = serverPunch(idle, "theirs-cleared", "hook", startTick);
+      let tick = 300;
+      for (let frame = 0; frame < 200; frame += 1) {
+        tick += 0.5;
+        if (early && tick + 3 >= startTick && tick < startTick + 4) graph.anticipate(thrown, startTick - tick);
+        graph.update(tick >= startTick && tick < startTick + 4 ? thrown : idle, opponentFor("two"), 1 / 60, tick / 30, false, "full", tick, undefined);
+        if (tick > startTick && !active(graph)) return tick - startTick;
+      }
+      return Infinity;
+    };
+    expect(endsAt(false)).toBeLessThanOrEqual(total);
+    expect(endsAt(true)).toBeLessThanOrEqual(total + 1);
+  });
+
+  it("forgets a punch it started early when the fighter is reset", () => {
+    const { graph } = makeGraph();
+    const idle = facingOpponent(baseFighter("one"));
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    const thrown = serverPunch(idle, "theirs-again", "hook", 403);
+    graph.anticipate(thrown, 2);
+    expect(active(graph)).toBe(true);
+    graph.resetTransient();
+    expect(active(graph)).toBe(false);
+    graph.anticipate(thrown, 2);
+    expect(active(graph)).toBe(true);
+  });
+
   it("plays an opponent's punch on the server's timeline", () => {
     const { graph } = makeGraph();
     const idle = facingOpponent(baseFighter("one"));

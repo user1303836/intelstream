@@ -299,8 +299,6 @@ function segment(from: THREE.Vector3, direction: THREE.Vector3, length: number, 
   return geometry;
 }
 
-export const HAND_LENGTH = 18.6;
-
 /**
  * A relaxed hand in the hand bone's frame, in centimetres: wrist at the origin, fingers along +Y,
  * palm facing +Z. The thumb is on -X for the left hand and +X for the right.

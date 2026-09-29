@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import { SkinnedBoxer, loadBoxerGlb } from "./graph";
 import { SCANNED_LOOK } from "./looks";
-import { CUTMAN_OUTFIT, HAND_LENGTH, REFEREE_OUTFIT, applyOutfitShading, buildCuffGeometry, buildHandGeometry } from "./outfit";
+import { CUTMAN_OUTFIT, REFEREE_OUTFIT, applyOutfitShading, buildCuffGeometry, buildHandGeometry } from "./outfit";
 
 const gltf = await loadBoxerGlb();
 
@@ -26,8 +26,8 @@ describe("official hands", () => {
   it("is hand sized, starts at the wrist and curls toward the palm", () => {
     const box = bounds(buildHandGeometry("left"));
     expect(box.min.y).toBeGreaterThan(-3.5);
-    expect(box.max.y).toBeGreaterThan(HAND_LENGTH - 4);
-    expect(box.max.y).toBeLessThan(HAND_LENGTH + 1);
+    expect(box.max.y).toBeGreaterThan(14.6);
+    expect(box.max.y).toBeLessThan(19.6);
     expect(box.max.x - box.min.x).toBeGreaterThan(9);
     expect(box.max.x - box.min.x).toBeLessThan(15);
     expect(box.max.z).toBeGreaterThan(3);

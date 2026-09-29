@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { CROWD_TIERS, PARAPET_HEIGHT, PARAPET_SETBACK, buildCrowd } from "./crowd";
+import { ARENA_FLOOR } from "./world";
 
 export interface BuiltArena {
   readonly group: THREE.Group;
@@ -11,7 +12,6 @@ export interface BuiltArena {
 }
 
 const EXCITEMENT_DECAY_PER_SECOND = 0.3;
-const ARENA_FLOOR = -1;
 const BOARD_REPEATS = 6;
 const BOARD_SCROLL_PER_SECOND = 0.012;
 
@@ -172,8 +172,12 @@ export function buildArena(): BuiltArena {
   let flashTimer = 0;
   let flashOn = 0;
   let excitement = 0;
+  let still = false;
   const update = (time: number, dt: number, reducedMotion: boolean): void => {
     excitement = Math.max(0, excitement - dt * EXCITEMENT_DECAY_PER_SECOND);
+    // Reduced motion seats the crowd once, rather than leaving it in whatever pose it held.
+    if (reducedMotion && !still) crowd.update(0, 0, true);
+    still = reducedMotion;
     if (!reducedMotion) {
       crowd.update(time, excitement);
       boardTexture.offset.x = (time * BOARD_SCROLL_PER_SECOND) % 1;

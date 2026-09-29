@@ -2,7 +2,7 @@ import * as THREE from "three";
 import type { BloodLevel } from "../settings";
 import type { CombatEvent, Hand } from "../types";
 import { wearCornerColour } from "./gear";
-import { buildChunkGeometry, buildWoundGeometry, woundTexture } from "./gore";
+import { buildChunkGeometry, buildWoundGeometry, closeCut, woundTexture } from "./gore";
 import { LookShading, SCANNED_LOOK, type FighterLook } from "./looks";
 import { CANVAS_TOP, RING_FIGHT_HALF, ROPE_LINE } from "./world";
 
@@ -16,11 +16,10 @@ const GIBS_PER_DECAPITATION = 24;
 const GIBS_PER_HAND = 16;
 const HEAD_RADIUS = 0.12;
 const SEVERED_PART_MARGIN = 0.04;
+/** Inward speed of a part beyond the ropes, per metre it is beyond them. */
+const ROPE_RETURN_RATE = 4;
 /** The neck is close to round where it is cut. */
 export const NECK_WOUND_RADIUS = 0.068;
-/** Where the cut through the neck sits on a severed head, in the head bone's frame, and how it faces. It is set a little way up inside the neck. */
-const HEAD_WOUND_OFFSET = new THREE.Vector3(0.0015, -0.038, 0.013);
-const HEAD_WOUND_TILT = -2.78;
 const HAND_RADIUS = 0.085;
 const MAX_STEP = 0.05;
 const SIMULATION_STEP = 1 / 60;
@@ -41,6 +40,8 @@ export interface BakedPart {
   readonly geometry: THREE.BufferGeometry;
   readonly map: THREE.Texture | null;
   readonly color: number;
+  /** The cut that freed the part, in the part's own frame: its middle, and the flesh that closes it, measured from there. */
+  readonly cut?: { readonly position: THREE.Vector3; readonly flesh: THREE.BufferGeometry };
   /** Whose head it is, so it keeps its hair and beard once it is off. */
   readonly look?: FighterLook;
 }
@@ -73,11 +74,11 @@ interface SeveredHead {
   readonly defaultGeometry: THREE.BufferGeometry;
   readonly defaultScale: THREE.Vector3;
   readonly cap: THREE.Mesh;
-  /** A cap that sits on the lowest point of the part; otherwise it keeps the place it was built with. */
-  readonly capAtBase: boolean;
+  readonly defaultCap: THREE.BufferGeometry;
   /** Hair and beard of a severed head; null for a hand. */
   readonly look: LookShading | null;
   baked: THREE.BufferGeometry | null;
+  bakedFlesh: THREE.BufferGeometry | null;
   readonly radius: number;
   active: boolean;
   moving: boolean;
@@ -90,6 +91,8 @@ interface SeveredHead {
 
 interface Stump {
   readonly mesh: THREE.Mesh;
+  /** The wound shaped to the cut, once the renderer has measured it. */
+  readonly flesh: THREE.BufferGeometry;
   active: boolean;
   fountainLife: number;
   accumulator: number;
@@ -114,6 +117,18 @@ const finite = (value: number, fallback = 0): number => Number.isFinite(value) ?
 const unitY = new THREE.Vector3(0, 1, 0);
 const safeStep = (dt: number): number => Number.isFinite(dt) ? THREE.MathUtils.clamp(dt, 0, MAX_STEP) : 0;
 const IMPACT_KINDS = new Set(["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown", "bleed"]);
+
+/**
+ * One axis of a severed part against the ropes. A part that reaches them from inside bounces off.
+ * One cut off beyond them, on a fighter leaning into the ropes, is drawn back in rather than moved.
+ */
+export function confineToRopes(position: number, velocity: number, from: number, limit: number): { position: number; velocity: number } {
+  const excess = Math.abs(position) - limit;
+  if (excess <= 0) return { position, velocity };
+  const side = Math.sign(position);
+  if (Math.abs(from) <= limit) return { position: side * limit, velocity: velocity * -0.42 };
+  return { position, velocity: -side * Math.max(-side * velocity, excess * ROPE_RETURN_RATE) };
+}
 
 export type BloodPattern = "jet" | "fan" | "plume" | "body_burst" | "ooze" | "impact";
 
@@ -235,6 +250,7 @@ export class Effects3D {
   private readonly stumpMaterial: THREE.MeshStandardMaterial;
   private readonly stumpMap: THREE.CanvasTexture;
   private dropletCloseness = 1;
+  private readonly stumpOutward = new THREE.Vector3();
   private readonly stumps: Stump[] = [];
   private readonly handStumps: Stump[] = [];
   private readonly lastDecapitationEvent = [null, null] as Array<number | null>;
@@ -327,16 +343,14 @@ export class Effects3D {
       headMesh.visible = false;
       scene.add(headMesh);
       const cap = new THREE.Mesh(this.stumpGeometry, this.stumpMaterial);
-      cap.position.copy(HEAD_WOUND_OFFSET);
-      cap.rotation.x = HEAD_WOUND_TILT;
       cap.visible = false;
       headMesh.add(cap);
-      this.heads.push({ mesh: headMesh, defaultGeometry: this.headGeometry, defaultScale: headMesh.scale.clone(), cap, capAtBase: false, look: headLook, baked: null, radius: HEAD_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
+      this.heads.push({ mesh: headMesh, defaultGeometry: this.headGeometry, defaultScale: headMesh.scale.clone(), cap, defaultCap: this.stumpGeometry, look: headLook, baked: null, bakedFlesh: null, radius: HEAD_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
 
       const stumpMesh = new THREE.Mesh(this.stumpGeometry, this.stumpMaterial);
       stumpMesh.visible = false;
       scene.add(stumpMesh);
-      this.stumps.push({ mesh: stumpMesh, active: false, fountainLife: 0, accumulator: 0, seed: 1, direction: 1 });
+      this.stumps.push({ mesh: stumpMesh, flesh: new THREE.BufferGeometry(), active: false, fountainLife: 0, accumulator: 0, seed: 1, direction: 1 });
     }
     for (let index = 0; index < MAX_HANDS; index += 1) {
       const material = new THREE.MeshStandardMaterial({ color: 0x1d4ed8, roughness: 0.38, metalness: 0.03 });
@@ -352,12 +366,12 @@ export class Effects3D {
       cap.position.y = 0.02;
       cap.visible = false;
       handMesh.add(cap);
-      this.hands.push({ mesh: handMesh, defaultGeometry: this.handGeometry, defaultScale: handMesh.scale.clone(), cap, capAtBase: true, look: null, baked: null, radius: HAND_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
+      this.hands.push({ mesh: handMesh, defaultGeometry: this.handGeometry, defaultScale: handMesh.scale.clone(), cap, defaultCap: this.wristStumpGeometry, look: null, baked: null, bakedFlesh: null, radius: HAND_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
 
       const stumpMesh = new THREE.Mesh(this.wristStumpGeometry, this.stumpMaterial);
       stumpMesh.visible = false;
       scene.add(stumpMesh);
-      this.handStumps.push({ mesh: stumpMesh, active: false, fountainLife: 0, accumulator: 0, seed: 1, direction: 1 });
+      this.handStumps.push({ mesh: stumpMesh, flesh: new THREE.BufferGeometry(), active: false, fountainLife: 0, accumulator: 0, seed: 1, direction: 1 });
     }
   }
 
@@ -662,10 +676,12 @@ export class Effects3D {
   }
 
   private applyBakedPart(part: SeveredHead, baked: BakedPart | undefined, fallbackColor: number): void {
-    if (part.baked !== null) {
-      part.baked.dispose();
-      part.baked = null;
-    }
+    part.baked?.dispose();
+    part.bakedFlesh?.dispose();
+    part.baked = null;
+    part.bakedFlesh = null;
+    part.cap.geometry = part.defaultCap;
+    part.cap.quaternion.identity();
     const material = part.mesh.material as THREE.MeshStandardMaterial;
     if (baked !== undefined) {
       part.mesh.geometry = baked.geometry;
@@ -674,9 +690,17 @@ export class Effects3D {
       material.map = baked.map;
       part.look?.set(baked.look ?? SCANNED_LOOK);
       material.color.setHex(baked.color);
-      baked.geometry.computeBoundingBox();
-      const box = baked.geometry.boundingBox;
-      if (part.capAtBase && box !== null) part.cap.position.y = box.min.y + 0.004;
+      if (baked.cut !== undefined) {
+        part.cap.geometry = baked.cut.flesh;
+        part.bakedFlesh = baked.cut.flesh;
+        part.cap.position.copy(baked.cut.position);
+      } else {
+        // A glove is a mesh of its own, open at the wrist: the wound closes its lowest point.
+        baked.geometry.computeBoundingBox();
+        const box = baked.geometry.boundingBox;
+        part.cap.position.set(0, (box?.min.y ?? 0) + 0.004, 0);
+        part.cap.rotation.x = Math.PI;
+      }
       part.cap.visible = true;
     } else {
       part.mesh.geometry = part.defaultGeometry;
@@ -865,12 +889,23 @@ export class Effects3D {
     copyFiniteQuaternion(stump.mesh.quaternion, quaternion);
   }
 
-  anchorStump(fighterIndex: number, position: THREE.Vector3, quaternion: THREE.Quaternion): void {
+  /**
+   * Keeps the wound on the neck. `rim` is the edge of the cut as the skin is posed, both ends of each
+   * edge in turn: with it the wound closes the opening exactly, and without it a disc stands in.
+   */
+  anchorStump(fighterIndex: number, position: THREE.Vector3, quaternion: THREE.Quaternion, rim?: ArrayLike<number>): void {
     if (this.bloodLevel !== "full" || fighterIndex < 0 || fighterIndex >= MAX_HEADS) return;
     const stump = this.stumps[Math.trunc(fighterIndex)]!;
     if (!stump.active) return;
     stump.mesh.position.set(finite(position.x), finite(position.y, 1.5), finite(position.z));
-    copyFiniteQuaternion(stump.mesh.quaternion, quaternion);
+    if (rim === undefined || rim.length < 18) {
+      stump.mesh.geometry = this.stumpGeometry;
+      copyFiniteQuaternion(stump.mesh.quaternion, quaternion);
+      return;
+    }
+    closeCut(stump.flesh, rim, stump.mesh.position, this.stumpOutward.set(0, 1, 0).applyQuaternion(quaternion));
+    stump.mesh.geometry = stump.flesh;
+    stump.mesh.quaternion.identity();
   }
 
   restoreFighter(fighterIndex: number): void {
@@ -1076,6 +1111,8 @@ export class Effects3D {
   private updateDetachedParts(parts: readonly SeveredHead[], dt: number): void {
     for (const part of parts) {
       if (!part.active || !part.moving) continue;
+      const fromX = part.mesh.position.x;
+      const fromZ = part.mesh.position.z;
       part.vy -= 5.8 * dt;
       part.mesh.position.x += part.vx * dt;
       part.mesh.position.y += part.vy * dt;
@@ -1085,14 +1122,12 @@ export class Effects3D {
       part.mesh.rotation.z += part.vrz * dt;
       // The ropes keep a severed part in the ring, where the cameras can reach it.
       const limit = ROPE_LINE - part.radius - SEVERED_PART_MARGIN;
-      if (Math.abs(part.mesh.position.x) > limit) {
-        part.mesh.position.x = Math.sign(part.mesh.position.x) * limit;
-        part.vx *= -0.42;
-      }
-      if (Math.abs(part.mesh.position.z) > limit) {
-        part.mesh.position.z = Math.sign(part.mesh.position.z) * limit;
-        part.vz *= -0.42;
-      }
+      const x = confineToRopes(part.mesh.position.x, part.vx, fromX, limit);
+      const z = confineToRopes(part.mesh.position.z, part.vz, fromZ, limit);
+      part.mesh.position.x = x.position;
+      part.mesh.position.z = z.position;
+      part.vx = x.velocity;
+      part.vz = z.velocity;
       if (part.mesh.position.y <= CANVAS_TOP + part.radius) {
         part.mesh.position.y = CANVAS_TOP + part.radius;
         if (!part.stained && this.bloodLevel === "full") {
@@ -1311,7 +1346,11 @@ export class Effects3D {
     this.dropletGeometry.dispose();
     this.dropletMaterial.dispose();
     for (const map of this.splatMaps) map.dispose();
-    for (const part of [...this.heads, ...this.hands]) part.baked?.dispose();
+    for (const part of [...this.heads, ...this.hands]) {
+      part.baked?.dispose();
+      part.bakedFlesh?.dispose();
+    }
+    for (const stump of [...this.stumps, ...this.handStumps]) stump.flesh.dispose();
     this.mistGeometry.dispose();
     this.mistMaterial.dispose();
     this.mistMap.dispose();

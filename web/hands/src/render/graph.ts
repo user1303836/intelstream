@@ -1294,6 +1294,8 @@ export class BoxingGraph {
     const startup = this.punchTiming.startup;
     const authoritative = this.ownAuthoritativeAge;
     if (authoritative === null) return this.punchAgeTicks < startup ? startup / (startup + this.ownLeadTicks) : 1;
+    // The server has stopped reporting it, for a clinch or the bell: the age it last gave is stale.
+    if (this.actionId !== this.ownActionId) return 1;
     if (this.punchAgeTicks - authoritative <= 0.25) return 1;
     if (this.punchAgeTicks < startup && authoritative < startup) return clamp((startup - this.punchAgeTicks) / (startup - authoritative), 0.25, 1);
     return 0.5;

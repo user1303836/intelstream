@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { describe, expect, it } from "vitest";
-import { CAMERA_PLATFORM_HALF_ANGLE, CAMERA_PLATFORM_REACH, CROWD_TIERS, PARAPET_HEIGHT, PARAPET_SETBACK, buildArmGeometry, buildCrowd, buildStandsGeometry, buildTorsoGeometry, seatSpectators, spectatorPose } from "./crowd";
+import { buildArena } from "./arena";
+import { CAMERA_PLATFORM_HALF_ANGLE, CAMERA_PLATFORM_REACH, CROWD_TIERS, PARAPET_HEIGHT, PARAPET_SETBACK, buildArmGeometry, buildCrowd, buildHairGeometry, buildHeadGeometry, buildStandsGeometry, buildTorsoGeometry, seatSpectators, spectatorPose } from "./crowd";
 
 const seeded = (seed: number): (() => number) => () => {
   seed = Math.imul(seed ^ (seed >>> 15), 1 | seed);
@@ -86,9 +87,35 @@ describe("crowd geometry", () => {
         if (Math.abs(reach - (tier.radius - PARAPET_SETBACK)) < 0.01) top = Math.max(top, position.getY(index));
       }
       expect(top).toBeCloseTo(tier.y + PARAPET_HEIGHT, 5);
-      expect(PARAPET_HEIGHT).toBeLessThan(0.9);
     }
     geometry.dispose();
+  });
+
+  it("hides the lap behind the parapet and shows the chest and head above it", () => {
+    const torso = buildTorsoGeometry();
+    torso.computeBoundingBox();
+    const position = torso.getAttribute("position");
+    let lap = -Infinity;
+    for (let index = 0; index < position.count; index += 1) if (position.getZ(index) > 0.25) lap = Math.max(lap, position.getY(index));
+    for (const tier of CROWD_TIERS) {
+      expect(lap * tier.scale * 0.92).toBeLessThan(PARAPET_HEIGHT + 0.12);
+      expect(torso.boundingBox!.max.y * tier.scale * 0.92).toBeGreaterThan(PARAPET_HEIGHT + 0.35);
+    }
+    torso.dispose();
+  });
+
+  it("draws a spectator in a few hundred triangles", () => {
+    const parts = [buildTorsoGeometry(), buildHeadGeometry(), buildHairGeometry(), buildArmGeometry(), buildArmGeometry()];
+    let triangles = 0;
+    let vertices = 0;
+    for (const part of parts) {
+      expect(part.getIndex()).not.toBeNull();
+      triangles += part.getIndex()!.count / 3;
+      vertices += part.getAttribute("position").count;
+      part.dispose();
+    }
+    expect(triangles).toBeLessThan(500);
+    expect(vertices).toBeLessThan(450);
   });
 
   it("hangs the arm from the shoulder and sits the torso on the seat", () => {
@@ -123,5 +150,44 @@ describe("crowd geometry", () => {
     crowd.update(2, 1);
     expect(moved()).toEqual([true, true]);
     crowd.dispose();
+  });
+});
+
+describe("crowd and reduced motion", () => {
+  const armsUp = (arena: ReturnType<typeof buildArena>): number => {
+    const crowd = arena.group.getObjectByName("crowd")!;
+    const arms = crowd.children.filter((child): child is THREE.InstancedMesh => child instanceof THREE.InstancedMesh)[3]!;
+    const matrix = new THREE.Matrix4();
+    const position = new THREE.Vector3();
+    const turn = new THREE.Quaternion();
+    const size = new THREE.Vector3();
+    let raised = 0;
+    for (let index = 0; index < arms.count; index += 1) {
+      arms.getMatrixAt(index, matrix);
+      matrix.decompose(position, turn, size);
+      if (new THREE.Vector3(0, -0.53, 0).applyQuaternion(turn).y > 0.2) raised += 1;
+    }
+    return raised;
+  };
+
+  it("sits the crowd down when reduced motion is switched on during an ovation", () => {
+    const arena = buildArena();
+    arena.excite(1);
+    arena.update(1, 0, false);
+    arena.update(1, 0, false);
+    expect(armsUp(arena)).toBe(total);
+    arena.update(1.02, 1 / 60, true);
+    expect(armsUp(arena)).toBe(0);
+    arena.dispose();
+  });
+
+  it("reaches everyone within two frames of motion coming back", () => {
+    const arena = buildArena();
+    arena.update(0, 1 / 60, true);
+    arena.excite(1);
+    arena.update(1, 0, false);
+    arena.update(1, 0, false);
+    expect(armsUp(arena)).toBe(total);
+    arena.dispose();
   });
 });
