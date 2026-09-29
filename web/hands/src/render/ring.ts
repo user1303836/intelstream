@@ -257,7 +257,11 @@ export function buildRing(): BuiltRing {
 
   for (const material of nearMaterials) material.transparent = true;
   const setNearRopeOpacity = (opacity: number): void => {
-    for (const material of nearMaterials) material.opacity = THREE.MathUtils.clamp(opacity, 0, 1);
+    for (const material of nearMaterials) {
+      material.opacity = THREE.MathUtils.clamp(opacity, 0, 1);
+      // Faded right out they are not drawn at all, or they would still write depth and catch the bloom.
+      material.visible = material.opacity > 0.03;
+    }
   };
 
   return { group, materials, geometries, textures, setRopeContacts, ropeContacts, setNearRopeOpacity, nearRopeOpacity: () => nearMaterials[0]!.opacity };

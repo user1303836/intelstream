@@ -534,23 +534,38 @@ export function resultCard(
 const CORNER_ACCENTS = ["#4f86d9", "#d9483c"] as const;
 /** Room at the foot of the card for the rematch button, which the page draws over the canvas. */
 export const RESULT_CARD_FOOTER = 62;
-const VERDICT_HEIGHT = 112;
-const JUDGES_HEIGHT = 52;
 const CARD_PADDING = 14;
 
+export interface ResultCardLayout {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+  /** The verdict beside the table rather than above it. */
+  readonly wide: boolean;
+  /** A short screen: everything is set smaller. */
+  readonly dense: boolean;
+  readonly rowHeight: number;
+  readonly verdictHeight: number;
+  readonly judgesHeight: number;
+}
+
 /** The card's place on the screen: along the bottom, so the winner and the crowd stay in view above it. */
-export function resultCardLayout(width: number, height: number, card: ResultCard, fighter: boolean): { x: number; y: number; width: number; height: number; wide: boolean; rowHeight: number } {
+export function resultCardLayout(width: number, height: number, card: ResultCard, fighter: boolean): ResultCardLayout {
+  const dense = height < 480;
   // Side by side where there is the width for it, or no height to stack.
-  const wide = width >= 900 || (width >= 640 && height < 480);
+  const wide = width >= 900 || (width >= 640 && dense);
   const cardWidth = Math.min(width - 24, wide ? 980 : 720);
   const footer = fighter ? RESULT_CARD_FOOTER : CARD_PADDING;
-  const verdict = VERDICT_HEIGHT + (card.judges.length > 0 ? JUDGES_HEIGHT : 0);
+  const verdictHeight = dense ? 86 : 112;
+  const judgesHeight = card.judges.length === 0 ? 0 : dense ? 42 : 52;
+  const verdict = verdictHeight + judgesHeight;
   const rows = card.rows.length + 1;
   const room = height - (width < 640 ? 118 : 70) - 14 - CARD_PADDING - footer - (wide ? 0 : verdict);
-  const rowHeight = Math.max(16, Math.min(28, room / rows));
+  const rowHeight = Math.max(16, Math.min(dense ? 22 : 28, room / rows));
   const body = wide ? Math.max(verdict, rows * rowHeight) : verdict + rows * rowHeight;
   const cardHeight = CARD_PADDING + body + footer;
-  return { x: (width - cardWidth) / 2, y: height - 14 - cardHeight, width: cardWidth, height: cardHeight, wide, rowHeight };
+  return { x: (width - cardWidth) / 2, y: height - 14 - cardHeight, width: cardWidth, height: cardHeight, wide, dense, rowHeight, verdictHeight, judgesHeight };
 }
 
 function drawResultCard(ctx: CanvasRenderingContext2D, width: number, height: number, card: ResultCard, fighter: boolean): void {
@@ -566,26 +581,28 @@ function drawResultCard(ctx: CanvasRenderingContext2D, width: number, height: nu
   const verdictWidth = (layout.wide ? layout.width * 0.42 : layout.width) - 32;
   const verdictCentre = layout.wide ? x + layout.width * 0.21 + 4 : width / 2;
   const top = y + CARD_PADDING;
+  const scale = layout.verdictHeight / 112;
   ctx.fillStyle = "#f6d57a";
-  fitted(ctx, card.headline, verdictCentre, top + 34, verdictWidth, 800, layout.wide || width >= 640 ? 32 : 28, 14);
+  fitted(ctx, card.headline, verdictCentre, top + 34 * scale, verdictWidth, 800, (layout.wide || width >= 640 ? 32 : 28) * scale, 14);
   ctx.fillStyle = "#aebbd0";
-  fitted(ctx, card.detail, verdictCentre, top + 56, verdictWidth, 700, 13, 10);
+  fitted(ctx, card.detail, verdictCentre, top + 56 * scale, verdictWidth, 700, 13 * scale, 9);
   ctx.fillStyle = card.winnerSeat === null ? "#f6f7fb" : CORNER_ACCENTS[card.winnerSeat];
-  fitted(ctx, card.verdict, verdictCentre, top + 92, verdictWidth, 800, 25, 12);
+  fitted(ctx, card.verdict, verdictCentre, top + 92 * scale, verdictWidth, 800, 25 * scale, 12);
   const cell = verdictWidth / Math.max(1, card.judges.length);
+  const judgesTop = top + layout.verdictHeight;
   card.judges.forEach((judge, index) => {
     const centre = verdictCentre - verdictWidth / 2 + cell * (index + 0.5);
     ctx.fillStyle = "rgba(255,255,255,0.06)";
-    ctx.fillRect(centre - cell / 2 + 3, top + VERDICT_HEIGHT, cell - 6, JUDGES_HEIGHT - 8);
+    ctx.fillRect(centre - cell / 2 + 3, judgesTop, cell - 6, layout.judgesHeight - 8);
     ctx.fillStyle = "#8fa3c8";
-    fitted(ctx, judge.label, centre, top + VERDICT_HEIGHT + 16, cell - 14, 700, 10, 7);
+    fitted(ctx, judge.label, centre, judgesTop + layout.judgesHeight * 0.3, cell - 14, 700, 10, 7);
     ctx.fillStyle = "#f6f7fb";
-    fitted(ctx, `${judge.values[0]} – ${judge.values[1]}`, centre, top + VERDICT_HEIGHT + 36, cell - 14, 800, 17, 10);
+    fitted(ctx, `${judge.values[0]} – ${judge.values[1]}`, centre, judgesTop + layout.judgesHeight * 0.7, cell - 14, 800, layout.dense ? 14 : 17, 10);
   });
 
   const tableLeft = layout.wide ? x + layout.width * 0.42 : x + 12;
   const tableWidth = x + layout.width - 12 - tableLeft;
-  const tableTop = layout.wide ? top : top + VERDICT_HEIGHT + (card.judges.length > 0 ? JUDGES_HEIGHT : 0);
+  const tableTop = layout.wide ? top : judgesTop + layout.judgesHeight;
   const label = tableWidth * 0.36;
   const side = (tableWidth - label) / 2;
   const columns = [tableLeft + side / 2, tableLeft + tableWidth - side / 2] as const;

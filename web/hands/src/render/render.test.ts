@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { punchTiming, totalTicks } from "../manifest";
 import { buildArena } from "./arena";
-import { CameraDirector, cornerFrame, cornerPoint, cornerShot, cornerShotProgress, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE } from "./camera";
+import { CameraDirector, ceremonyShot, cornerFrame, cornerPoint, cornerShot, cornerShotProgress, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE } from "./camera";
 import { bloodPatternFor, Effects3D } from "./effects";
 import { decisionLabel, drawHud, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, RESULT_CARD_FOOTER, resultCard, resultCardLayout, RoundClock, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
 import { buildRing, disposeRing, nearRopeOpacityFor, ropePress } from "./ring";
@@ -499,6 +499,10 @@ describe("near ropes", () => {
     });
     ring.setNearRopeOpacity(4);
     expect(ring.nearRopeOpacity()).toBe(1);
+    expect(faded.every((material) => material.visible)).toBe(true);
+    ring.setNearRopeOpacity(0);
+    expect(faded.every((material) => !material.visible)).toBe(true);
+    expect(ring.materials.filter((material) => !material.visible)).toHaveLength(faded.length);
     disposeRing(ring);
   });
 });
@@ -696,6 +700,34 @@ describe("corner shots", () => {
     cornerFrame(0, 2.56, 0, mirrored, lookAt);
     expect(mirrored.x).toBeCloseTo(-position.x);
     expect(mirrored.z).toBeCloseTo(-position.z);
+  });
+});
+
+describe("announcement shot", () => {
+  const visible = (shot: { distance: number; height: number }, fov: number, fromTop: number): number =>
+    shot.height + (0.5 - fromTop) * 2 * shot.distance * Math.tan(THREE.MathUtils.degToRad(fov) / 2);
+
+  it("fits the three from the raised glove to the waist between the top bar and the card", () => {
+    for (const covered of [0.2, 0.35, 0.5]) {
+      const shot = ceremonyShot(16 / 9, 36, covered);
+      expect(visible(shot, 36, 0.09)).toBeCloseTo(2.42, 6);
+      expect(visible(shot, 36, 1 - covered)).toBeCloseTo(0.95, 6);
+    }
+  });
+
+  it("stands further back the more of the screen the card covers", () => {
+    expect(ceremonyShot(16 / 9, 36, 0.5).distance).toBeGreaterThan(ceremonyShot(16 / 9, 36, 0.3).distance);
+  });
+
+  it("stands back far enough on a tall screen to keep all three in the width", () => {
+    const aspect = 390 / 844;
+    const shot = ceremonyShot(aspect, 46.8, 0.45);
+    const span = 2 * shot.distance * Math.tan(THREE.MathUtils.degToRad(46.8) / 2);
+    expect(span * aspect).toBeCloseTo(2.4, 6);
+    expect(visible(shot, 46.8, 0.09)).toBeGreaterThan(2.42);
+    expect(visible(shot, 46.8, 0.55)).toBeLessThan(0.95);
+    const middle = visible(shot, 46.8, 0.09 + (1 - 0.45 - 0.09) / 2);
+    expect(middle).toBeCloseTo((2.42 + 0.95) / 2, 6);
   });
 });
 

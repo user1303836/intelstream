@@ -325,6 +325,8 @@ export class SkinnedBoxer {
 
 export type ReactionKind = "block" | "hit";
 
+export type Verdict = "winner" | "loser" | "level";
+
 interface FootState {
   readonly planted: THREE.Vector3;
   readonly from: THREE.Vector3;
@@ -437,6 +439,15 @@ export class BoxingGraph {
   private breakTime = 0;
   private breakWeight = 0;
   private attending = false;
+  /** Where the referee stands at the announcement (1 = on this fighter's left), or 0 outside it. */
+  private verdictSide = 0;
+  private verdict: Verdict | null = null;
+  private squareWeight = 0;
+  private raisedWeight = 0;
+  private bowedWeight = 0;
+  private readonly wrists: [THREE.Vector3 | null, THREE.Vector3 | null] = [null, null];
+  private readonly wristTargets = [new THREE.Vector3(), new THREE.Vector3()] as const;
+  private readonly wristWeights: [number, number] = [0, 0];
   private attendWeight = 0;
   private countdownTicks: number | null = null;
   private touchWeight = 0;
@@ -526,6 +537,13 @@ export class BoxingGraph {
     this.celebration = 0;
     this.waveTime = 0;
     this.wave = 0;
+    this.verdictSide = 0;
+    this.verdict = null;
+    this.squareWeight = 0;
+    this.raisedWeight = 0;
+    this.bowedWeight = 0;
+    this.wrists.fill(null);
+    this.wristWeights.fill(0);
     this.seated = 0;
     this.stillTime = 0;
     this.rootX = null;
@@ -562,6 +580,26 @@ export class BoxingGraph {
     this.treatTarget.copy(eye);
     if (facing !== undefined) this.treatFacing.copy(facing);
     this.treatSide = side;
+  }
+
+  /**
+   * The announcement of a decision. The fighter stands square to the camera beside the referee, who
+   * is on the side given (1 = the fighter's left); null ends it.
+   */
+  awaitVerdict(side: 1 | -1 | null): void {
+    this.verdictSide = side ?? 0;
+    if (side === null) this.verdict = null;
+  }
+
+  /** The winner's arm on the referee's side goes up, as do both fighters' after a draw; the loser's head goes down. */
+  announce(verdict: Verdict): void {
+    this.verdict = verdict;
+  }
+
+  /** Referee: hold up the wrists at these world positions, one to each side; null lets that arm down. */
+  raise(left: THREE.Vector3 | null, right: THREE.Vector3 | null): void {
+    this.wrists[0] = left === null ? null : this.wristTargets[0].copy(left);
+    this.wrists[1] = right === null ? null : this.wristTargets[1].copy(right);
   }
 
   /** Referee break: both arms push out and apart at chest height to separate a clinch. */
@@ -743,7 +781,7 @@ export class BoxingGraph {
     for (const [index, foot] of this.feet.entries()) {
       const isLead = (index === 0) === (mirror > 0);
       const offset = isLead ? STANCE.leadFoot : STANCE.rearFoot;
-      if (this.referee) desired.set((index === 0 ? 0.16 : -0.16), 0, index === 0 ? 0.02 : -0.02).applyQuaternion(rotate).add(rootPosition);
+      if (this.referee || this.squareWeight > 0.5) desired.set((index === 0 ? 0.16 : -0.16), 0, index === 0 ? 0.02 : -0.02).applyQuaternion(rotate).add(rootPosition);
       else desired.set(offset.x * mirror, 0, offset.z).applyQuaternion(rotate).add(rootPosition);
       desired.y = 0;
       if (!this.feetInitialized) {
@@ -848,6 +886,10 @@ export class BoxingGraph {
     this.breakTime = Math.max(0, this.breakTime - dt);
     this.breakWeight = smooth(this.breakWeight, this.breakTime > 0 && this.downState === "up" ? 1 : 0, 6, dt);
     this.attendWeight = smooth(this.attendWeight, this.attending ? 1 : 0, 2.5, dt);
+    this.squareWeight = smooth(this.squareWeight, this.verdictSide !== 0 ? 1 : 0, 3, dt);
+    this.raisedWeight = smooth(this.raisedWeight, this.verdictSide !== 0 && (this.verdict === "winner" || this.verdict === "level") ? 1 : 0, 3.2, dt);
+    this.bowedWeight = smooth(this.bowedWeight, this.verdictSide !== 0 && this.verdict === "loser" ? 1 : 0, 2.2, dt);
+    for (const index of [0, 1] as const) this.wristWeights[index] = smooth(this.wristWeights[index], this.wrists[index] !== null ? 1 : 0, 3.2, dt);
     this.treatWeight = smooth(this.treatWeight, this.treating ? 1 : 0, 3, dt);
     this.enswell.group.visible = this.treatWeight > 0.4;
     const touching = this.countdownTicks !== null && this.countdownTicks <= TOUCH_GLOVES_START_TICKS && this.countdownTicks >= TOUCH_GLOVES_END_TICKS;
@@ -1056,6 +1098,8 @@ export class BoxingGraph {
     if (this.touchWeight > 0.001 && this.downState === "up") this.applyTouchGlovesPose(this.touchWeight, mirror, leadHand, rearHand);
     if (this.celebration > 0.001 && this.downState === "up") this.applyCelebratePose(this.celebration, time, mirror, leadHand, rearHand, lead, rear);
     if (this.wave > 0.001 && this.downState === "up") this.applyWaveOffPose(this.wave, time, mirror, leadHand, rearHand);
+    if (this.squareWeight > 0.001 && this.downState === "up") this.applyVerdictPose(this.squareWeight, time, mirror, leadHand, rearHand, lead, rear, headRest);
+    if ((this.wristWeights[0] > 0.001 || this.wristWeights[1] > 0.001) && this.downState === "up") this.applyRaisePose(mirror, leadHand, rearHand);
     if (this.breakWeight > 0.001 && this.downState === "up") this.applyBreakPose(this.breakWeight, mirror, leadHand, rearHand);
     if (this.attendWeight > 0.001 && this.downState === "up") this.applyAttendPose(this.attendWeight, time, mirror, leadHand, rearHand);
     if (this.treatWeight > 0.001 && this.downState === "up") this.applyTreatPose(this.treatWeight, time, mirror, leadHand, rearHand, lead, rear);
@@ -1668,6 +1712,64 @@ export class BoxingGraph {
     rearHand.knuckles.lerp(seatedScratch.set(0, 0.3, 1), blend).normalize();
     leadHand.pole.lerp(seatedScratch.set(0.2 * mirror, -1, 0.1), blend).normalize();
     rearHand.pole.lerp(seatedScratch.set(-0.2 * mirror, -1, 0.1), blend).normalize();
+  }
+
+  /** Standing square beside the referee for the decision, then the arm on the referee's side going up or the head going down. */
+  private applyVerdictPose(
+    blend: number,
+    time: number,
+    mirror: number,
+    leadHand: HandTarget,
+    rearHand: HandTarget,
+    lead: FootTarget,
+    rear: FootTarget,
+    headRest: THREE.Vector3,
+  ): void {
+    const torso = this.torso;
+    const lerp = THREE.MathUtils.lerp;
+    const raised = this.raisedWeight;
+    const bowed = this.bowedWeight;
+    const breath = Math.sin(time * 1.9) * 0.008;
+    torso.hips.x = lerp(torso.hips.x, this.verdictSide * 0.02 * raised, blend);
+    torso.hips.y = lerp(torso.hips.y, STANCE.hipsHeight + 0.03 + raised * 0.01 - bowed * 0.015, blend);
+    torso.hips.z = lerp(torso.hips.z, 0, blend);
+    torso.hipsYaw = lerp(torso.hipsYaw, 0, blend);
+    torso.hipsPitch = lerp(torso.hipsPitch, 0, blend);
+    torso.shouldersYaw = lerp(torso.shouldersYaw, 0, blend);
+    torso.spinePitch = lerp(torso.spinePitch, 0.05 - raised * 0.1 + bowed * 0.12, blend);
+    torso.spineRoll = lerp(torso.spineRoll, -this.verdictSide * 0.06 * raised, blend);
+    torso.headYaw = lerp(torso.headYaw, 0, blend);
+    torso.headPitch = lerp(torso.headPitch, 0.04 - raised * 0.2 + bowed * 0.34, blend);
+    lead.toe.lerp(seatedScratch.set(0.12 * mirror, 0, 1), blend).normalize();
+    rear.toe.lerp(seatedScratch.set(-0.12 * mirror, 0, 1), blend).normalize();
+    lead.pole.lerp(seatedScratch.set(0.12 * mirror, 0.3, 1), blend).normalize();
+    rear.pole.lerp(seatedScratch.set(-0.12 * mirror, 0.3, 1), blend).normalize();
+    for (const [hand, side] of [[leadHand, mirror], [rearHand, -mirror]] as const) {
+      const lifted = side === this.verdictSide ? raised : 0;
+      hand.position.lerp(seatedScratch.set(side * (0.27 + lifted * 0.11), lerp(0.88 + breath, headRest.y + 0.44, lifted), lerp(0.12, 0.05, lifted)), blend);
+      hand.knuckles.lerp(seatedScratch.set(side * 0.15, lerp(-0.9, 1, lifted), lerp(0.35, 0, lifted)), blend).normalize();
+      hand.palm.lerp(seatedScratch.set(lerp(-0.9 * side, 0, lifted), 0.1, lerp(0.35, 1, lifted)), blend).normalize();
+      hand.pole.lerp(seatedScratch.set(side * lerp(0.5, 1, lifted), lerp(-0.4, 0.1, lifted), lerp(-0.8, -0.3, lifted)), blend).normalize();
+    }
+  }
+
+  /** Referee: a hand around each wrist it has been given, just below the glove. */
+  private applyRaisePose(mirror: number, leadHand: HandTarget, rearHand: HandTarget): void {
+    const root = this.treatScratch.set(this.rootX ?? 0, 0, this.rootZ);
+    const inverse = this.scratchQ.setFromAxisAngle(worldUpVector, -this.yaw);
+    for (const [index, side] of [[0, 1], [1, -1]] as const) {
+      const wrist = this.wrists[index] ?? this.wristTargets[index];
+      const weight = this.wristWeights[index];
+      if (weight <= 0.001) continue;
+      const hand = side === mirror ? leadHand : rearHand;
+      const held = seatedScratch.copy(wrist).sub(root).applyQuaternion(inverse);
+      held.y -= 0.17;
+      hand.position.lerp(held, weight);
+      hand.knuckles.lerp(seatedScratch.set(0, 1, 0), weight).normalize();
+      hand.palm.lerp(seatedScratch.set(side, 0, 0.2), weight).normalize();
+      hand.pole.lerp(seatedScratch.set(side * 0.6, -0.5, -0.6), weight).normalize();
+    }
+    this.torso.headPitch = THREE.MathUtils.lerp(this.torso.headPitch, -0.05, Math.max(this.wristWeights[0], this.wristWeights[1]));
   }
 
   private applyWaveOffPose(

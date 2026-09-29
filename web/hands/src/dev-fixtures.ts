@@ -148,11 +148,32 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       }
       events.length = 0;
     }
+    const decided = search.get("finish") === "decision" && t >= 3.4;
+    if (decided) {
+      for (const fighter of [one, two]) {
+        fighter.action = null;
+        fighter.velocity_x = fighter.velocity_y = 0;
+        fighter.taunt_ticks = fighter.stunned_ticks = fighter.clinch_ticks = 0;
+        fighter.is_downed = false;
+        fighter.defense = "none";
+      }
+      events.length = 0;
+    }
     const snapshot: EngineSnapshot = {
-      tick, phase: forcedRest ? "rest" : "fight", round_number: 3, phase_ticks_remaining: Math.max(0, 5400 - tick),
+      tick, phase: decided ? "complete" : forcedRest ? "rest" : "fight", round_number: 3, phase_ticks_remaining: decided ? 0 : Math.max(0, 5400 - tick),
       fighters: [{ ...one }, { ...two }], events, result: null, checksum: "a".repeat(64),
     };
     renderer.push(snapshot);
+    if (decided && !finalSent) {
+      finalSent = true;
+      const winner = search.get("winner") === "two" ? two : one;
+      const cards = ["Impact", "Craft", "Generalship"].map((judge) => ({ judge, player_one: winner === one ? [10, 10, 10] : [9, 9, 10], player_two: winner === one ? [9, 9, 10] : [10, 10, 10] }));
+      renderer.setFinal({
+        version: 3, type: "final", match_id: "fixture", winner_id: search.get("winner") === "none" ? null : winner.player_id, method: search.get("winner") === "none" ? "draw" : "decision", round: 3,
+        scorecards: search.get("winner") === "none" ? cards.map((card) => ({ ...card, player_one: [10, 10, 10], player_two: [10, 10, 10] })) : cards,
+        ratings: { [one.player_id]: { before: 1512, after: winner === one ? 1528 : 1496 }, [two.player_id]: { before: 1494, after: winner === one ? 1478 : 1510 } },
+      });
+    }
     if (finisher !== null && t >= 3.4 && !finalSent) {
       finalSent = true;
       renderer.setFinal({ version: 3, type: "final", match_id: "fixture", winner_id: one.player_id, method: "ko", round: 3, scorecards: [], ratings: {} });

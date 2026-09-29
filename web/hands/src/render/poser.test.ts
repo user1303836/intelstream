@@ -475,6 +475,91 @@ describe("own punch prediction", () => {
   });
 });
 
+describe("decision ceremony", () => {
+  const square = (id: string): FighterSnapshot => ({ ...baseFighter(id), x: 0, y: 0, facing_x: 0, facing_y: -1000 });
+  const beside = (): FighterSnapshot => ({ ...baseFighter("other"), x: 204, y: 0, facing_x: 0, facing_y: -1000 });
+  const settle = (prepare: (graph: BoxingGraph) => void, frames = 150): { boxer: SkinnedBoxer; graph: BoxingGraph } => {
+    const made = makeGraph();
+    prepare(made.graph);
+    run(made.graph, square("one"), beside(), frames, undefined);
+    return made;
+  };
+
+  it("stands the fighter square to the camera with the gloves down while the cards are read", () => {
+    const { boxer } = settle((graph) => graph.awaitVerdict(1));
+    const left = bone(boxer, "gloveL");
+    const right = bone(boxer, "gloveR");
+    expect(left.y).toBeLessThan(1.05);
+    expect(right.y).toBeLessThan(1.05);
+    expect(Math.abs(left.y - right.y)).toBeLessThan(0.05);
+    expect(Math.abs(left.z - right.z)).toBeLessThan(0.06);
+    expect(left.x).toBeGreaterThan(0.15);
+    expect(right.x).toBeLessThan(-0.15);
+    expect(Math.abs(bone(boxer, "ankleL").z - bone(boxer, "ankleR").z)).toBeLessThan(0.1);
+  });
+
+  it("raises the winner's arm on the referee's side and leaves the other down", () => {
+    for (const side of [1, -1] as const) {
+      const { boxer } = settle((graph) => {
+        graph.awaitVerdict(side);
+        graph.announce("winner");
+      });
+      const raised = bone(boxer, side === 1 ? "gloveL" : "gloveR");
+      const lowered = bone(boxer, side === 1 ? "gloveR" : "gloveL");
+      expect(raised.y).toBeGreaterThan(bone(boxer, "head").y + 0.2);
+      expect(Math.sign(raised.x)).toBe(side);
+      expect(lowered.y).toBeLessThan(1.05);
+    }
+  });
+
+  it("raises both fighters' arms after a draw and bows the loser's head", () => {
+    const level = settle((graph) => {
+      graph.awaitVerdict(-1);
+      graph.announce("level");
+    });
+    expect(bone(level.boxer, "gloveR").y).toBeGreaterThan(bone(level.boxer, "head").y + 0.2);
+    const waiting = settle((graph) => graph.awaitVerdict(1));
+    const loser = settle((graph) => {
+      graph.awaitVerdict(1);
+      graph.announce("loser");
+    });
+    expect(bone(loser.boxer, "gloveL").y).toBeLessThan(1.05);
+    expect(bone(loser.boxer, "gloveR").y).toBeLessThan(1.05);
+    const chin = (boxer: SkinnedBoxer): number => new THREE.Vector3(0, 0, 1).applyQuaternion(boxer.rig.bones.head.getWorldQuaternion(new THREE.Quaternion())).y;
+    expect(chin(loser.boxer)).toBeLessThan(chin(waiting.boxer) - 0.2);
+  });
+
+  it("puts the referee's hand around the wrist it is given, on that side", () => {
+    const made = new SkinnedBoxer(gltf, { skin: 0xc79b76, gear: 0x1b2230 });
+    const referee = new BoxingGraph(made, mapping, { referee: true });
+    const wrist = new THREE.Vector3(-0.3, 1.9, 0.3);
+    referee.raise(null, wrist);
+    run(referee, square("referee"), { ...square("focus"), y: -300 }, 150, undefined);
+    const hand = bone(made, "gloveR");
+    expect(hand.distanceTo(new THREE.Vector3(-0.3, 1.73, 0.3))).toBeLessThan(0.04);
+    expect(bone(made, "gloveL").y).toBeLessThan(1.05);
+    referee.raise(null, null);
+    run(referee, square("referee"), { ...square("focus"), y: -300 }, 150, undefined);
+    expect(bone(made, "gloveR").y).toBeLessThan(1.05);
+  });
+
+  it("ends with the bout", () => {
+    const { boxer, graph } = settle((made) => {
+      made.awaitVerdict(1);
+      made.announce("winner");
+    });
+    expect(bone(boxer, "gloveL").y).toBeGreaterThan(1.8);
+    graph.awaitVerdict(null);
+    run(graph, facingOpponent(baseFighter("one")), opponentFor("two"), 150, undefined);
+    expect(bone(boxer, "gloveL").y).toBeLessThan(1.7);
+    graph.awaitVerdict(1);
+    graph.announce("winner");
+    graph.resetTransient();
+    run(graph, facingOpponent(baseFighter("one")), opponentFor("two"), 5, undefined);
+    expect(bone(boxer, "gloveL").y).toBeLessThan(1.7);
+  });
+});
+
 describe("infighting", () => {
   const settle = (gapUnits: number): { glove: number; head: THREE.Vector3 } => {
     const { boxer, graph } = makeGraph();
