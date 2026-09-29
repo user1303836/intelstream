@@ -9,7 +9,7 @@
  * $TMPDIR/hands-e2e. Set E2E_GPU=1 to render on the machine's GPU instead of the software renderer
  * (real frame pacing and input latency).
  *
- *   node scripts/hands_e2e_scenarios.js ko|reconnect|rest|spectator|touch|mash|latency|soak|background|rematch|rematchloop|clinch
+ *   node scripts/hands_e2e_scenarios.js ko|reconnect|rest|spectator|touch|mash|latency|soak|background|rematch|rematchloop|clinch|response
  */
 const { chromium, devices } = require('playwright');
 const { spawn } = require('node:child_process');
@@ -115,8 +115,10 @@ async function main() {
     rematch: ['--rounds', '1', '--round-seconds', '25', '--rest-seconds', '5'],
     rematchloop: ['--rounds', '1', '--round-seconds', '20', '--rest-seconds', '5'],
     clinch: ['--rounds', '1', '--round-seconds', '30', '--rest-seconds', '5'],
+    response: ['--rounds', '1', '--round-seconds', '40', '--rest-seconds', '5'],
   }[scenario];
-  const server = await startServer(serverArgs, { oneWayDelayMs: scenario === 'latency' ? 110 : 0 });
+  const responseDelayMs = Number(process.env.E2E_DELAY_MS ?? 60);
+  const server = await startServer(serverArgs, { oneWayDelayMs: scenario === 'latency' ? 110 : scenario === 'response' ? responseDelayMs : 0 });
   try {
     const A = await open('Alpha');
     const B = await open('Bravo', { mobile: scenario === 'touch' });
@@ -342,6 +344,94 @@ async function main() {
         note('growth A: heap', last.a.heapMb - first.a.heapMb, 'MB; geometries', (last.a.gpu?.geometries ?? 0) - (first.a.gpu?.geometries ?? 0), '; textures', (last.a.gpu?.textures ?? 0) - (first.a.gpu?.textures ?? 0), '; programs', (last.a.gpu?.programs ?? 0) - (first.a.gpu?.programs ?? 0));
         note('growth B: heap', last.b.heapMb - first.b.heapMb, 'MB; geometries', (last.b.gpu?.geometries ?? 0) - (first.b.gpu?.geometries ?? 0), '; textures', (last.b.gpu?.textures ?? 0) - (first.b.gpu?.textures ?? 0), '; programs', (last.b.gpu?.programs ?? 0) - (first.b.gpu?.programs ?? 0));
       }
+    }
+
+    if (scenario === 'response') {
+      note(`network delay ${responseDelayMs} ms each way (${responseDelayMs * 2} ms round trip); times are key press to the first rendered frame, within one frame`);
+      const probe = () => {
+        const state = { frames: [], keys: [] };
+        window.__probe = state;
+        const epoch = () => performance.timeOrigin + performance.now();
+        addEventListener('keydown', (event) => { if (!event.repeat) state.keys.push({ code: event.code, at: epoch() }); }, true);
+        const tick = () => {
+          const renderer = window.__handsApp?.renderer;
+          const graphs = renderer?.graphs;
+          const latest = renderer?.buffer?.latest?.();
+          if (graphs && latest) {
+            const Vector3 = graphs[0].boxer.root.position.constructor;
+            const frame = { at: epoch(), viewer: latest.fighters.findIndex((fighter) => fighter.player_id === renderer.viewerId), fighters: [] };
+            for (const graph of graphs) {
+              const left = graph.boxer.rig.bones.gloveL.getWorldPosition(new Vector3());
+              const right = graph.boxer.rig.bones.gloveR.getWorldPosition(new Vector3());
+              frame.fighters.push({ active: graph.punchActive === true, age: graph.punchAgeTicks, x: graph.boxer.root.position.x, z: graph.boxer.root.position.z, left: [left.x, left.y, left.z], right: [right.x, right.y, right.z] });
+            }
+            state.frames.push(frame);
+            if (state.frames.length > 6000) state.frames.shift();
+          }
+          requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      };
+      await A.page.evaluate(probe); await B.page.evaluate(probe);
+      await wait(600);
+      const presses = [];
+      for (const key of ['f', 'f', 'f', 'u', 'u', 'g']) { await wait(1100); await A.page.keyboard.press(key); presses.push(key); }
+      await wait(1200);
+      await A.page.keyboard.down('a'); await wait(500); await A.page.keyboard.up('a');
+      await wait(900);
+      const a = await A.page.evaluate(() => window.__probe);
+      const b = await B.page.evaluate(() => window.__probe);
+      const distance = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]);
+      const frameAt = (frames, at) => frames.findLast((frame) => frame.at <= at) ?? frames[0];
+      const median = (values) => { const sorted = values.filter((v) => v !== null).sort((x, y) => x - y); return sorted.length === 0 ? null : Math.round(sorted[Math.floor(sorted.length / 2)]); };
+      const viewerA = a.frames.at(-1).viewer;
+      const punchKeys = a.keys.filter((key) => ['KeyF', 'KeyU', 'KeyG'].includes(key.code));
+      const local = []; const moved = []; const remote = [];
+      for (const key of punchKeys) {
+        const hand = key.code === 'KeyU' ? 'right' : 'left';
+        const before = frameAt(a.frames, key.at).fighters[viewerA];
+        const started = a.frames.find((frame) => frame.at > key.at && frame.fighters[viewerA].active && frame.fighters[viewerA].age < 6);
+        const glove = a.frames.find((frame) => frame.at > key.at && distance(frame.fighters[viewerA][hand], before[hand]) > 0.03);
+        const seen = b.frames.find((frame) => frame.at > key.at && frame.fighters[viewerA].active && frame.fighters[viewerA].age < 8);
+        local.push(started ? started.at - key.at : null); moved.push(glove ? glove.at - key.at : null); remote.push(seen ? seen.at - key.at : null);
+      }
+      const rewinds = punchKeys.map((key) => {
+        const window = a.frames.filter((frame) => frame.at > key.at && frame.at < key.at + 900 && frame.fighters[viewerA].active);
+        let worst = 0; let at = null;
+        for (let index = 1; index < window.length; index += 1) {
+          const drop = window[index - 1].fighters[viewerA].age - window[index].fighters[viewerA].age;
+          if (drop > worst) { worst = drop; at = Math.round(window[index].at - key.at); }
+        }
+        return { ticks: Number(worst.toFixed(1)), atMs: at };
+      });
+      // Glove-to-hit gap: when the puncher's glove is at full extension versus when the opponent's head reacts on the same screen.
+      const contacts = punchKeys.map((key) => {
+        const hand = key.code === 'KeyU' ? 'right' : 'left';
+        const window = a.frames.filter((frame) => frame.at > key.at && frame.at < key.at + 900);
+        if (window.length === 0) return null;
+        const rest = frameAt(a.frames, key.at).fighters[viewerA][hand];
+        let reach = 0; let extended = null;
+        for (const frame of window) { const d = distance(frame.fighters[viewerA][hand], rest); if (d > reach) { reach = d; extended = frame.at; } }
+        return extended === null ? null : Math.round(extended - key.at);
+      });
+      note('own glove fully extended, ms after the key:', JSON.stringify(contacts), '| median', median(contacts));
+      note('punch keys measured:', punchKeys.length, 'of', presses.length);
+      note('own punch rewinds (ticks the animation jumped back, and when):', JSON.stringify(rewinds));
+      note('own punch starts on screen, ms:', JSON.stringify(local.map((v) => (v === null ? null : Math.round(v)))), '| median', median(local));
+      note('own glove has moved 3 cm, ms:', JSON.stringify(moved.map((v) => (v === null ? null : Math.round(v)))), '| median', median(moved));
+      note('opponent sees the punch start, ms:', JSON.stringify(remote.map((v) => (v === null ? null : Math.round(v)))), '| median', median(remote));
+      const step = a.keys.find((key) => key.code === 'KeyA');
+      if (step) {
+        const before = frameAt(a.frames, step.at).fighters[viewerA];
+        const own = a.frames.find((frame) => frame.at > step.at && Math.hypot(frame.fighters[viewerA].x - before.x, frame.fighters[viewerA].z - before.z) > 0.01);
+        const beforeRemote = frameAt(b.frames, step.at).fighters[viewerA];
+        const other = b.frames.find((frame) => frame.at > step.at && Math.hypot(frame.fighters[viewerA].x - beforeRemote.x, frame.fighters[viewerA].z - beforeRemote.z) > 0.01);
+        note('own step starts on screen, ms:', own ? Math.round(own.at - step.at) : null, '| opponent sees it, ms:', other ? Math.round(other.at - step.at) : null);
+      }
+      const gaps = a.frames.slice(1).map((frame, index) => frame.at - a.frames[index].at);
+      note('frames sampled:', a.frames.length, '| median frame ms:', median(gaps), '| stats', JSON.stringify(await A.page.evaluate(() => window.__handsApp?.networkStats?.inputLatencyMs ?? null)));
+      const final = await waitFor(A.page, (s) => Boolean(s.final), 90000, 'final');
+      note('FINAL:', JSON.stringify(final?.final ?? null).slice(0, 200));
     }
 
     if (scenario === 'clinch') {

@@ -928,7 +928,8 @@ export class FightRenderer {
     if (latest === null || this.viewerId === null) return;
     const index = latest.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
     if (index < 0) return;
-    this.graphs?.[index]?.predict(action, performance.now() / 1000, this.simulation.tick_rate);
+    const leadTicks = ((this.inputLatencyMs ?? 60) / 1000) * this.simulation.tick_rate + this.buffer.interpolationDelayTicks;
+    this.graphs?.[index]?.predict(action, performance.now() / 1000, this.simulation.tick_rate, leadTicks);
   }
 
   push(snapshot: EngineSnapshot): void {
@@ -1329,7 +1330,7 @@ export class FightRenderer {
     const rate = 1 - Math.exp(-14 * dt);
     let target = { dx: 0, dy: 0 };
     if (index >= 0 && held !== null && snapshot.phase === "fight") {
-      target = predictMovement(snapshot.fighters[index]!, held, this.buffer.interpolationDelayTicks + 2);
+      target = predictMovement(snapshot.fighters[index]!, held, this.buffer.interpolationDelayTicks + 2, snapshot.tick);
     }
     this.localOffset.dx += (target.dx - this.localOffset.dx) * rate;
     this.localOffset.dy += (target.dy - this.localOffset.dy) * rate;

@@ -296,6 +296,11 @@ export class BoxingGraph {
   private completedActionId: string | null = null;
   private predictedId: string | null = null;
   private predictionAgeTicks = 0;
+  /** Id of the viewer's own punch while its animation is the one started on the key press. */
+  private ownActionId: string | null = null;
+  /** Ticks the key press led the server's presentation, absorbed by stretching the punch's startup. */
+  private ownLeadTicks = 0;
+  private ownAuthoritativeAge: number | null = null;
   private hitstop = 0;
   private hitstopScale = 1;
   private downState: "up" | "falling" | "down" | "rising" = "up";
@@ -495,7 +500,12 @@ export class BoxingGraph {
     this.refereeCount = count;
   }
 
-  predict(action: SemanticAction, timeSeconds: number, tickRate: number): void {
+  /**
+   * Starts the viewer's own punch on the key press. `leadTicks` estimates how far ahead of the
+   * server's presentation that is (input latency plus the interpolation delay); the startup is
+   * stretched by it so the glove arrives when the hit is shown, and the punch is never pulled back.
+   */
+  predict(action: SemanticAction, timeSeconds: number, tickRate: number, leadTicks = 0): void {
     if (action.kind !== "punch" || action.id === undefined) return;
     void timeSeconds;
     void tickRate;
@@ -513,6 +523,9 @@ export class BoxingGraph {
       this.punchTotalTicks = Math.max(1, totalTicks(timing));
       this.punchAgeTicks = 0;
       this.punchActive = true;
+      this.ownActionId = action.id;
+      this.ownLeadTicks = clamp(leadTicks, 0, MAX_OWN_LEAD_TICKS);
+      this.ownAuthoritativeAge = null;
     }
   }
 
@@ -1013,10 +1026,14 @@ export class BoxingGraph {
         };
         this.punchTotalTicks = Math.max(1, fighter.action_startup_ticks + fighter.action_active_ticks + fighter.action_recovery_ticks);
         const authoritativeAge = Math.max(0, sampledTick - fighter.action_start_tick);
-        if (this.predictedId === fighter.action_id && this.punchActive) {
-          if (Math.abs(this.punchAgeTicks - authoritativeAge) > 1) this.punchAgeTicks = authoritativeAge;
+        if (this.ownActionId === fighter.action_id && this.punchActive) {
+          this.ownAuthoritativeAge = authoritativeAge;
+          if (authoritativeAge - this.punchAgeTicks > 1) this.punchAgeTicks = authoritativeAge;
         } else {
           this.punchAgeTicks = authoritativeAge;
+          this.ownActionId = null;
+          this.ownLeadTicks = 0;
+          this.ownAuthoritativeAge = null;
         }
         this.predictedId = null;
         this.punchActive = true;
@@ -1026,27 +1043,54 @@ export class BoxingGraph {
       this.actionId = null;
       this.completedActionId = null;
     } else if (fighter.action_id === this.actionId && this.punchActive) {
-      // Same instance: re-lock the phase if the render clock drifted more than a tick.
+      // Same instance: re-lock the phase if the render clock drifted more than a tick. The viewer's
+      // own punch started ahead of the server, so it only ever catches up, never goes back.
       const authoritativeAge = Math.max(0, sampledTick - fighter.action_start_tick);
-      if (Math.abs(this.punchAgeTicks - authoritativeAge) > 1.5) this.punchAgeTicks = authoritativeAge;
+      if (this.ownActionId === this.actionId) {
+        this.ownAuthoritativeAge = authoritativeAge;
+        if (authoritativeAge - this.punchAgeTicks > 1.5) this.punchAgeTicks = authoritativeAge;
+      } else if (Math.abs(this.punchAgeTicks - authoritativeAge) > 1.5) {
+        this.punchAgeTicks = authoritativeAge;
+      }
     }
     if (this.predictedId !== null) {
       this.predictionAgeTicks += simDt * 30;
-      if (this.predictionAgeTicks > 10) this.predictedId = null;
+      if (this.predictionAgeTicks > PREDICTION_EXPIRY_TICKS) this.predictedId = null;
     }
     if (this.punchActive) {
-      this.punchAgeTicks += simDt * 30;
+      this.punchAgeTicks += simDt * 30 * this.ownPunchRate();
       if (this.punchAgeTicks >= this.punchTotalTicks) {
         this.completedActionId = this.actionId;
         this.actionId = null;
         this.punchActive = false;
+        this.ownActionId = null;
+        this.ownLeadTicks = 0;
+        this.ownAuthoritativeAge = null;
       }
     }
     if (fighter.is_downed && this.punchActive) {
       this.punchActive = false;
       this.actionId = null;
       this.predictedId = null;
+      this.ownActionId = null;
+      this.ownLeadTicks = 0;
+      this.ownAuthoritativeAge = null;
     }
+  }
+
+  /**
+   * Playback rate of the viewer's own punch. Until the server's version is on screen the startup is
+   * stretched by the estimated lead; once it is, the rate aims the glove at the server's contact
+   * tick, and any lead left after contact is worked off in a slower recovery.
+   */
+  private ownPunchRate(): number {
+    if (this.ownActionId === null) return 1;
+    const startup = this.punchTiming.startup;
+    const authoritative = this.ownAuthoritativeAge;
+    if (authoritative === null) return this.punchAgeTicks < startup ? startup / (startup + this.ownLeadTicks) : 1;
+    if (this.punchAgeTicks - authoritative <= 0.25) return 1;
+    if (this.punchAgeTicks < startup && authoritative < startup) return clamp((startup - this.punchAgeTicks) / (startup - authoritative), 0.25, 1);
+    return 0.5;
   }
 
   /** Punch mechanics. Returns the punching shoulder's shrug. */
@@ -1774,6 +1818,9 @@ function buildStool(): { group: THREE.Group; dispose: () => void } {
 }
 
 const worldUpVector = new THREE.Vector3(0, 1, 0);
+/** Most ticks of latency a predicted punch absorbs by stretching its startup; beyond this the hit is shown late instead. */
+const MAX_OWN_LEAD_TICKS = 6;
+const PREDICTION_EXPIRY_TICKS = 24;
 /** Metres per second the rendered root may move toward the authoritative position; above any walking speed so slow frames never fall behind. */
 const ROOT_FOLLOW_SPEED = 6;
 

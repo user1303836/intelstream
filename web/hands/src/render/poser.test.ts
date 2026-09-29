@@ -230,6 +230,51 @@ describe("cutman", () => {
   });
 });
 
+describe("own punch prediction", () => {
+  const jab = { kind: "punch" as const, id: "own-1", class: "jab" as const, hand: "left" as const, target: "head" as const, power: "normal" as const };
+  const age = (graph: BoxingGraph): number => (graph as unknown as { punchAgeTicks: number }).punchAgeTicks;
+  const active = (graph: BoxingGraph): boolean => (graph as unknown as { punchActive: boolean }).punchActive;
+
+  it("starts on the key press, never jumps back when the server confirms late, and lands on the server's contact tick", () => {
+    const { graph } = makeGraph();
+    const idle = facingOpponent(baseFighter("one"));
+    const timing = punchTiming("jab", "head", "normal");
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    graph.predict(jab, 0, 30, 6);
+    expect(active(graph)).toBe(true);
+    const ages: number[] = [];
+    let tick = 100;
+    const step = (fighter: FighterSnapshot): void => {
+      tick += 0.5;
+      graph.update(fighter, opponentFor("two"), 1 / 60, tick / 30, false, "full", tick, undefined);
+      if (active(graph)) ages.push(age(graph));
+    };
+    for (let frame = 0; frame < 12; frame += 1) step(idle);
+    expect(age(graph)).toBeGreaterThan(1.5);
+    expect(age(graph)).toBeLessThan(timing.startup);
+    const startTick = tick;
+    const confirmed = { ...idle, action: "jab" as const, action_hand: "left" as const, action_target: "head" as const, action_power: "normal" as const, action_id: "own-1", action_key: "jab:left:head:normal", action_start_tick: startTick, action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery };
+    let contactAt: number | null = null;
+    for (let frame = 0; frame < 40 && active(graph); frame += 1) {
+      step(confirmed);
+      if (contactAt === null && age(graph) >= timing.startup) contactAt = tick;
+    }
+    for (let index = 1; index < ages.length; index += 1) expect(ages[index]!).toBeGreaterThanOrEqual(ages[index - 1]!);
+    expect(contactAt).not.toBeNull();
+    expect(Math.abs(contactAt! - (startTick + timing.startup))).toBeLessThanOrEqual(1);
+  });
+
+  it("plays an opponent's punch on the server's timeline", () => {
+    const { graph } = makeGraph();
+    const idle = facingOpponent(baseFighter("one"));
+    const timing = punchTiming("jab", "head", "normal");
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    const thrown = { ...idle, action: "jab" as const, action_hand: "left" as const, action_target: "head" as const, action_power: "normal" as const, action_id: "theirs-1", action_key: "jab:left:head:normal", action_start_tick: 200, action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery };
+    graph.update(thrown, opponentFor("two"), 1 / 60, 0, false, "full", 203, undefined);
+    expect(age(graph)).toBeCloseTo(3 + 0.5, 1);
+  });
+});
+
 describe("clinch hold", () => {
   it("ties up over the arms for the first-sorted fighter and under them for the other, heads to the right", () => {
     const clinched = (id: string): FighterSnapshot => ({ ...facingOpponent(baseFighter(id)), clinch_ticks: 30 });

@@ -1,4 +1,4 @@
-import { fatigueFactor, movementLocked, predictMovement } from "./prediction";
+import { attackTicksRemaining, fatigueFactor, movementLocked, predictMovement } from "./prediction";
 import { fighter } from "./test/fixtures";
 
 describe("local movement prediction", () => {
@@ -36,6 +36,23 @@ describe("local movement prediction", () => {
     }
     expect(movementLocked(still)).toBe(false);
   });
+  it("frees the fighter when the punch ends even though the snapshot still presents it", () => {
+    const still = { ...fighter("one"), conditioning: 1000 };
+    const hook = { ...still, action: "hook" as const, action_start_tick: 100, action_startup_ticks: 7, action_active_ticks: 3, action_recovery_ticks: 12 };
+    const held = { moveX: 1000, moveY: 0, defense: "none" as const };
+    expect(attackTicksRemaining(hook, 110)).toBe(12);
+    expect(attackTicksRemaining(hook, 122)).toBe(0);
+    expect(attackTicksRemaining(hook, 130)).toBe(0);
+    expect(movementLocked(hook, 110)).toBe(true);
+    expect(movementLocked(hook, 122)).toBe(false);
+    expect(predictMovement(hook, held, 4, 110)).toEqual({ dx: 0, dy: 0 });
+    expect(predictMovement(hook, held, 4, 130)).toEqual(predictMovement(still, held, 4));
+    const leaving = predictMovement(hook, held, 4, 120);
+    expect(leaving.dx).toBeGreaterThan(0);
+    expect(leaving.dx).toBeCloseTo(predictMovement(still, held, 2).dx);
+    expect(predictMovement({ ...hook, stunned_ticks: 5 }, held, 4, 130)).toEqual({ dx: 0, dy: 0 });
+  });
+
   it("carries existing velocity forward when the stick is released", () => {
     const moving = { ...fighter("one"), conditioning: 1000, velocity_x: 6 };
     const coast = predictMovement(moving, { moveX: 0, moveY: 0, defense: "none" }, 3);
