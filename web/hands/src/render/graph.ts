@@ -991,10 +991,16 @@ export class BoxingGraph {
       windup = 0;
       extend = 1 - easeOut((age - startup - active) / recovery, 1.9);
     }
-    void phase;
     const e = clamp(extend, 0, 1.1);
+    // The swing follows its arc out to contact; on the way back the glove retracts straight to the
+    // guard instead of retracing the arc (a hook must not swing back out wide).
+    const travel = phase === "recovery" ? 1 : e;
+    const retract = phase === "recovery" ? 1 - e : 0;
 
     const guard = hand.position.clone();
+    const guardKnuckles = hand.knuckles.clone();
+    const guardPalm = hand.palm.clone();
+    const guardPole = hand.pole.clone();
 
     // Torso rotation: lead punches blade further, rear punches square up.
     const blade = STANCE.bladeYaw * mirror;
@@ -1096,7 +1102,7 @@ export class BoxingGraph {
         windupOffset.set(0, -0.01, -0.05 - 0.04 * power);
         break;
     }
-    const start = guard.clone().addScaledVector(windupOffset, Math.max(windup, this.punchClass === "hook" || this.punchClass === "uppercut" ? (1 - e) * 0.6 : 0));
+    const start = guard.clone().addScaledVector(windupOffset, Math.max(windup, this.punchClass === "hook" || this.punchClass === "uppercut" ? (1 - travel) * 0.6 : 0));
     if (this.punchClass === "hook") {
       // Horizontal sweep around the shoulder from the wide windup into the target.
       const radius = Math.max(0.32, Math.min(0.48, contact.distanceTo(shoulderChar)));
@@ -1104,7 +1110,7 @@ export class BoxingGraph {
       const endDir = contact.clone().sub(shoulderChar).setY(0).normalize();
       const angle = Math.acos(clamp(startDir.dot(endDir), -1, 1));
       const turn = new THREE.Vector3().crossVectors(startDir, endDir).y >= 0 ? 1 : -1;
-      const sweep = smoothstep(0, 1, e);
+      const sweep = smoothstep(0, 1, travel);
       const rotated = startDir.clone().applyAxisAngle(worldUpVector, angle * sweep * turn).normalize();
       hand.position.copy(shoulderChar).addScaledVector(rotated, radius * (0.8 + 0.2 * sweep));
       hand.position.y = THREE.MathUtils.lerp(start.y, contact.y, sweep);
@@ -1112,7 +1118,7 @@ export class BoxingGraph {
       hand.knuckles.copy(rotated).applyAxisAngle(worldUpVector, turn * Math.PI / 2).setY(0.05).normalize();
       hand.palm.set(0, -1, 0);
     } else if (this.punchClass === "uppercut") {
-      const rise = smoothstep(0, 1, e);
+      const rise = smoothstep(0, 1, travel);
       const low = start.clone();
       const mid = contact.clone().lerp(low, 0.5);
       mid.y = Math.min(low.y, contact.y) - 0.04;
@@ -1123,12 +1129,19 @@ export class BoxingGraph {
       hand.knuckles.set(0.05 * side * mirror, 0.9, 0.35).normalize();
       hand.palm.set(-0.2 * side * mirror, 0.3, -0.95).normalize();
     } else {
-      hand.position.copy(start).lerp(contact, e);
-      hand.position.y += Math.sin(clamp(e, 0, 1) * Math.PI) * 0.025;
+      hand.position.copy(start).lerp(contact, travel);
+      hand.position.y += Math.sin(clamp(travel, 0, 1) * Math.PI) * 0.025;
       hand.pole.set(0.55 * side * mirror, -0.9, 0.35);
-      const pronate = smoothstep(0.55, 1, e);
+      const pronate = smoothstep(0.55, 1, travel);
       hand.knuckles.copy(dir).lerp(this.scratchC.set(0.1 * side * mirror, 0.55, 0.8), 1 - pronate).normalize();
       hand.palm.set(-0.9 * side * mirror, 0.2, -0.3).lerp(this.scratchC.set(0, -1, 0.1), pronate).normalize();
+    }
+
+    if (retract > 0) {
+      hand.position.lerp(guard, retract);
+      hand.knuckles.lerp(guardKnuckles, retract).normalize();
+      hand.palm.lerp(guardPalm, retract).normalize();
+      hand.pole.lerp(guardPole, retract).normalize();
     }
 
     // Non-punching hand protects the chin.

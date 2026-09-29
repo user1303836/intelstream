@@ -259,6 +259,38 @@ describe("runtime boxing graph", () => {
     expect(contactDistance).toBeGreaterThan(0.08);
   });
 
+  it("retracts a hook straight back to the guard instead of swinging back out wide", () => {
+    const { boxer, graph } = makeGraph();
+    const opponent = opponentFor("two");
+    const head = new THREE.Vector3(0, 1.5, mapping.z(-150));
+    const timing = punchTiming("hook", "head", "normal");
+    const idle = facingOpponent(baseFighter("one"));
+    run(graph, idle, opponent, 30, head);
+    const guard = bone(boxer, "gloveL").clone();
+    const fighter = {
+      ...idle,
+      action: "hook" as const, action_hand: "left" as const, action_target: "head" as const, action_power: "normal" as const, action_id: "h1", action_key: "hook:left:head:normal",
+      action_start_tick: 15, action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery,
+    };
+    let contact = new THREE.Vector3();
+    let midRecovery = new THREE.Vector3();
+    let widest = 0;
+    let tick = 15;
+    const contactTick = 15 + timing.startup + timing.active / 2;
+    const midTick = 15 + timing.startup + timing.active + timing.recovery / 2;
+    for (let frame = 0; frame < 60; frame += 1) {
+      tick += 0.5;
+      graph.update(fighter, opponent, 1 / 60, 2 + frame / 60, false, "full", tick, head);
+      const glove = bone(boxer, "gloveL");
+      if (Math.abs(tick - contactTick) < 0.26) contact = glove.clone();
+      if (Math.abs(tick - midTick) < 0.26) midRecovery = glove.clone();
+      if (tick > 15 + timing.startup + timing.active) widest = Math.max(widest, glove.x);
+    }
+    expect(contact.z).toBeGreaterThan(guard.z + 0.2);
+    expect(midRecovery.distanceTo(guard)).toBeLessThan(midRecovery.distanceTo(contact));
+    expect(widest).toBeLessThan(guard.x + 0.12);
+  });
+
   it("mirrors the southpaw stance across the character's centre line", () => {
     const orthodox = makeGraph();
     const southpaw = makeGraph();
