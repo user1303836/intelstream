@@ -61,6 +61,7 @@ export interface ContactPresentation {
 const isHit = (event: CombatEvent): boolean => event.kind === "hit" || event.kind === "counter_hit";
 const isBlock = (event: CombatEvent): boolean => event.kind === "block" || event.kind === "perfect_block";
 const HISTORY_LIMIT = 480;
+const LOW_TIER_SCALE = 0.56;
 const CORNERMAN_APRON_DISTANCE = 3.42;
 // Broadcast finish: a soft vignette and a whisper of grain, applied before tone mapping.
 const BROADCAST_FINISH_SHADER = {
@@ -265,6 +266,20 @@ function refereeShirtTexture(): THREE.CanvasTexture {
   return texture;
 }
 
+function blankFighter(playerId: string): FighterSnapshot {
+  return {
+    player_id: playerId, x: 0, y: 0, facing: 1, facing_x: 1000, facing_y: 0, velocity_x: 0, velocity_y: 0,
+    stance: "orthodox", defense: "guard_high", stamina: 1000, maximum_stamina: 1000, conditioning: 1000, guard: 700, poise: 600,
+    trauma: { head: 0, body: 0, left_eye: 0, right_eye: 0, left_cut: 0, right_cut: 0, swelling: 0, bleeding: 0 },
+    knockdowns: 0, warnings: 0, deductions: 0, stunned_ticks: 0, is_downed: false,
+    action: null, action_hand: null, action_target: null, action_power: null, action_id: null, action_key: null,
+    action_start_tick: 0, action_startup_ticks: 0, action_active_ticks: 0, action_recovery_ticks: 0, action_contact_tick: null,
+    queued_actions: 0, clinch_startup_ticks: 0, clinch_ticks: 0, is_foul_recovery_target: false, taunt_ticks: 0,
+    get_up_prompt: null, get_up_meter: 0, get_up_required: 0, get_up_count: 0, get_up_window_start_tick: 0, get_up_window_end_tick: 0,
+    last_input_sequence: -1,
+  };
+}
+
 function refereeSnapshot(position: THREE.Vector3, yaw: number, velocity: THREE.Vector3, mapping: WorldMapping): { self: FighterSnapshot; focus: FighterSnapshot } {
   const simX = position.x / mapping.x(1);
   const simY = position.z / mapping.z(1);
@@ -322,6 +337,7 @@ export class FightRenderer {
   private readonly scaler = new ResolutionScaler();
   private readonly basePixelRatio = Math.min(coarsePointer() ? 1.5 : 2, window.devicePixelRatio || 1);
   private players: Readonly<Record<string, PublicPlayer>> = {};
+  private playerOrder: readonly string[] = [];
   private viewerId: string | null = null;
   private final: FinalMessage | null = null;
   private reconnectMs = 0;
@@ -348,6 +364,7 @@ export class FightRenderer {
   private lastKnockdown: { readonly knockdown: CombatEvent; readonly hit: CombatEvent | null } | null = null;
   private replay: { readonly plan: ReplayPlan; readonly buffer: SnapshotBuffer; readonly startedAt: number; impactFired: boolean } | null = null;
   private readonly finishPass: ShaderPass;
+  private readonly bloomPass: UnrealBloomPass;
   private inputLatencyMs: number | null = null;
   private readonly replayCameraPosition = new THREE.Vector3();
   private readonly replayLookAt = new THREE.Vector3();
@@ -417,6 +434,7 @@ export class FightRenderer {
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     const bloom = new UnrealBloomPass(new THREE.Vector2(1280, 720), 0.2, 0.45, 1.08);
+    this.bloomPass = bloom;
     this.composer.addPass(bloom);
     this.finishPass = new ShaderPass(BROADCAST_FINISH_SHADER);
     this.composer.addPass(this.finishPass);
@@ -497,9 +515,29 @@ export class FightRenderer {
     this.draw(virtualSeconds * 1000, true, render);
   }
 
-  setPlayers(players: Readonly<Record<string, PublicPlayer>>, viewerId: string | null): void {
+  setPlayers(players: Readonly<Record<string, PublicPlayer>>, viewerId: string | null, order: readonly string[] = Object.keys(players)): void {
     this.players = players;
     this.viewerId = viewerId;
+    this.playerOrder = order;
+  }
+
+  /** Before the first snapshot the known fighters wait in guard instead of overlapping at the origin. */
+  private updateIdleFighters(dt: number, time: number, sampledTick: number): void {
+    const graphs = this.graphs;
+    if (graphs === null) return;
+    const known = this.playerOrder.filter((id) => this.players[id] !== undefined);
+    const alone = known.length < 2;
+    for (const [index, graph] of graphs.entries()) {
+      const id = this.playerOrder[index] ?? `seat-${index}`;
+      const present = alone ? id === this.viewerId || (this.viewerId === null && index === 0) : true;
+      graph.boxer.root.visible = present;
+      if (!present) continue;
+      const sign = index === 0 ? -1 : 1;
+      const self = { ...blankFighter(id), x: alone ? 0 : sign * 180, y: alone ? -70 : 0, facing: alone ? 1 : -sign, facing_x: alone ? 0 : -sign * 1000, facing_y: alone ? -1000 : 0 };
+      const other = { ...blankFighter(this.playerOrder[1 - index] ?? "opponent"), x: alone ? 0 : -sign * 180, y: alone ? -150 : 0 };
+      graph.setResting(false);
+      graph.update(self, other, dt, time, this.settings().reducedMotion, this.bloodLevel, sampledTick);
+    }
   }
 
   /** A stoppage's result panel waits for the slow-motion fall; decisions show at once. */
@@ -858,6 +896,10 @@ export class FightRenderer {
     const ratio = this.basePixelRatio * this.scaler.scale;
     this.renderer.setPixelRatio(ratio);
     this.composer.setPixelRatio(ratio);
+    // At the bottom of the scale the client is struggling: drop bloom and the key shadow entirely.
+    const low = this.scaler.scale <= LOW_TIER_SCALE;
+    this.bloomPass.enabled = !low;
+    if (this.keyLight !== null) this.keyLight.castShadow = !low;
     const shadowSize = this.scaler.scale < 0.8 ? 1024 : 2048;
     const shadow = this.keyLight?.shadow;
     if (shadow !== undefined && shadow.mapSize.x !== shadowSize) {
@@ -982,6 +1024,8 @@ export class FightRenderer {
       if (graphs !== null) {
         const headA = this.headCacheValid[0] ? this.headCache[0] : undefined;
         const headB = this.headCacheValid[1] ? this.headCache[1] : undefined;
+        graphs[0].boxer.root.visible = true;
+        graphs[1].boxer.root.visible = true;
         graphs[0].setResting(snapshot.phase === "rest");
         graphs[1].setResting(snapshot.phase === "rest");
         graphs[0].update(a, b, dt, seconds, current.reducedMotion, current.blood, sampledTick, headB);
@@ -1042,6 +1086,7 @@ export class FightRenderer {
     } else {
       this.tmpA.set(-0.9, 0, 0);
       this.tmpB.set(0.9, 0, 0);
+      this.updateIdleFighters(dt, seconds, sampledTick);
     }
 
     this.arena.update(seconds, dt, current.reducedMotion);

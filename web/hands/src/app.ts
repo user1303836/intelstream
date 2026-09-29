@@ -221,7 +221,7 @@ export class HandsApp {
       this.audio.result(message);
       this.startRematchCountdown();
     }
-    this.renderer?.setPlayers(this.state.players, this.state.playerId);
+    this.renderer?.setPlayers(this.state.players, this.state.playerId, this.state.playerOrder);
     this.renderer?.setReconnect(this.state.reconnectMs);
     this.renderState();
   }
