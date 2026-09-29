@@ -1437,9 +1437,9 @@ export class FightRenderer {
         graph.dispose();
       }
       this.cutmen = null;
-      for (const shirt of this.cornerShirts) shirt.dispose();
-      this.cornerShirts.length = 0;
     }
+    for (const shirt of this.cornerShirts) shirt.dispose();
+    this.cornerShirts.length = 0;
     this.refereeShirt?.dispose();
     for (const light of this.lights) this.scene.remove(light);
     this.keyLight?.shadow.map?.dispose();
