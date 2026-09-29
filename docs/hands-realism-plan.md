@@ -77,7 +77,7 @@ bell, a shadow-boxing waiting screen, rematches, plain-language failure text and
 diagnostics panel.
 
 Review harnesses: `?model-lab=1&pose=...` (pose lab), `?fixture=1` with `&finisher=head|hand`,
-`&phase=rest`, `&pin=1`, `&platform=mobile`, `?lab=1` (golden replay), and the Discord-free
+`&phase=rest`, `&pin=1|corner`, `&blood=reduced|off`, `&platform=mobile`, `?lab=1` (golden replay), and the Discord-free
 real-stack harness (`scripts/hands_e2e_server.py` plus `scripts/hands_e2e_scenarios.js` with the
 ko, reconnect, rest, spectator, touch, mash, latency, soak, background, rematch, rematchloop and
 clinch scenarios; see the README).

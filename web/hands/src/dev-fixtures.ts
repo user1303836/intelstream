@@ -25,11 +25,14 @@ const PUNCHES = ["jab", "straight", "hook", "uppercut"] as const;
 
 export function runDevelopmentFixture(root: HTMLElement): () => void {
   root.innerHTML = `<section class="activity"><canvas class="fight"></canvas><header class="topbar"><strong>HANDS · DEV FIXTURE</strong><span>Production never enters this harness</span></header></section>`;
+  const bloodParam = new URLSearchParams(window.location.search).get("blood");
+  const blood = bloodParam === "reduced" || bloodParam === "off" ? bloodParam : "full";
   const renderer = new FightRenderer(
     root.querySelector("canvas")!,
     { tick_rate: 30, ring_half_width: 500, ring_half_height: 500 },
-    () => ({ volume: 0, haptics: false, reducedMotion: false, blood: "full" }),
+    () => ({ volume: 0, haptics: false, reducedMotion: false, blood }),
   );
+  renderer.setBloodLevel(blood);
   const players: Record<string, PublicPlayer> = {
     "fixture-one": { id: "fixture-one", name: "Azure Vector", avatar: null, rating: 1512, connected: true },
     "fixture-two": { id: "fixture-two", name: "Crimson Geometry", avatar: null, rating: 1494, connected: true },
