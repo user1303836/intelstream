@@ -1056,6 +1056,9 @@ export class FightRenderer {
         graphs[1].boxer.root.visible = true;
         graphs[0].setResting(snapshot.phase === "rest");
         graphs[1].setResting(snapshot.phase === "rest");
+        const countdown = snapshot.phase === "countdown" ? snapshot.phase_ticks_remaining : null;
+        graphs[0].setCountdown(countdown);
+        graphs[1].setCountdown(countdown);
         graphs[0].update(a, b, dt, seconds, current.reducedMotion, current.blood, sampledTick, headB);
         graphs[1].update(b, a, dt, seconds, current.reducedMotion, current.blood, sampledTick, headA);
         for (const [index, graph] of graphs.entries()) {

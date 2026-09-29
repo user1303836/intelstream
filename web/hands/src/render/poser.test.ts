@@ -116,6 +116,25 @@ describe("transient reset", () => {
   });
 });
 
+describe("glove touch", () => {
+  it("extends both gloves toward the opponent late in the countdown and returns to guard", () => {
+    const { boxer, graph } = makeGraph();
+    const fighter = facingOpponent(baseFighter("one"));
+    const opponent = opponentFor("two");
+    run(graph, fighter, opponent, 30, undefined);
+    const guardLeadZ = bone(boxer, "gloveL").z;
+    const guardRearZ = bone(boxer, "gloveR").z;
+    graph.setCountdown(30);
+    run(graph, fighter, opponent, 60, undefined, 15, 0.5);
+    expect(bone(boxer, "gloveL").z).toBeGreaterThan(guardLeadZ + 0.08);
+    expect(bone(boxer, "gloveR").z).toBeGreaterThan(guardRearZ + 0.28);
+    expect(Math.abs(bone(boxer, "gloveL").x - bone(boxer, "gloveR").x)).toBeLessThan(0.3);
+    graph.setCountdown(5);
+    run(graph, fighter, opponent, 60, undefined, 45, 1.5);
+    expect(bone(boxer, "gloveR").z).toBeLessThan(guardRearZ + 0.1);
+  });
+});
+
 describe("cornerman", () => {
   it("leans in over the rope with both hands forward while attending", () => {
     const boxer = new SkinnedBoxer(gltf, { skin: 0xc79b76, gear: 0x2b4c9e });

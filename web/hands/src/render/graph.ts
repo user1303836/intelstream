@@ -339,6 +339,8 @@ export class BoxingGraph {
   private breakWeight = 0;
   private attending = false;
   private attendWeight = 0;
+  private countdownTicks: number | null = null;
+  private touchWeight = 0;
   /** Pose lab: keep the impact dent at full depth for review. */
   debugHoldImpact = false;
   private readonly feet: [FootState, FootState] = [
@@ -430,6 +432,11 @@ export class BoxingGraph {
   /** Referee wave-off: both arms sweep crossing overhead to call the fight. */
   waveOff(seconds = 2.6): void {
     this.waveTime = seconds;
+  }
+
+  /** Ticks left in the opening countdown, or null outside it; drives the glove touch before the bell. */
+  setCountdown(ticksRemaining: number | null): void {
+    this.countdownTicks = ticksRemaining;
   }
 
   /** Cornerman: lean in over the top rope and work on the seated fighter while attending. */
@@ -663,6 +670,8 @@ export class BoxingGraph {
     this.breakTime = Math.max(0, this.breakTime - dt);
     this.breakWeight = smooth(this.breakWeight, this.breakTime > 0 && this.downState === "up" ? 1 : 0, 6, dt);
     this.attendWeight = smooth(this.attendWeight, this.attending ? 1 : 0, 2.5, dt);
+    const touching = this.countdownTicks !== null && this.countdownTicks <= TOUCH_GLOVES_START_TICKS && this.countdownTicks >= TOUCH_GLOVES_END_TICKS;
+    this.touchWeight = smooth(this.touchWeight, touching ? 1 : 0, 6, dt);
     const stamina = fighter.stamina / Math.max(1, fighter.maximum_stamina);
     this.tired = smooth(this.tired, clamp((0.55 - stamina) / 0.5, 0, 1), 2, dt);
     this.stunAmount = smooth(this.stunAmount, Math.min(1, fighter.stunned_ticks / 24), 8, dt);
@@ -865,6 +874,7 @@ export class BoxingGraph {
     }
 
     // Knockdown overrides everything above.
+    if (this.touchWeight > 0.001 && this.downState === "up") this.applyTouchGlovesPose(this.touchWeight, mirror, leadHand, rearHand);
     if (this.celebration > 0.001 && this.downState === "up") this.applyCelebratePose(this.celebration, time, mirror, leadHand, rearHand, lead, rear);
     if (this.wave > 0.001 && this.downState === "up") this.applyWaveOffPose(this.wave, time, mirror, leadHand, rearHand);
     if (this.breakWeight > 0.001 && this.downState === "up") this.applyBreakPose(this.breakWeight, mirror, leadHand, rearHand);
@@ -1221,6 +1231,29 @@ export class BoxingGraph {
     }
   }
 
+  private applyTouchGlovesPose(
+    blend: number,
+    mirror: number,
+    leadHand: { position: THREE.Vector3; knuckles: THREE.Vector3; palm: THREE.Vector3; pole: THREE.Vector3 },
+    rearHand: { position: THREE.Vector3; knuckles: THREE.Vector3; palm: THREE.Vector3; pole: THREE.Vector3 },
+  ): void {
+    const torso = this.torso;
+    const lerp = THREE.MathUtils.lerp;
+    torso.hips.z = lerp(torso.hips.z, 0.06, blend);
+    torso.hipsYaw = lerp(torso.hipsYaw, torso.hipsYaw * 0.4, blend);
+    torso.shouldersYaw = lerp(torso.shouldersYaw, 0, blend);
+    torso.spinePitch = lerp(torso.spinePitch, 0.12, blend);
+    torso.headPitch = lerp(torso.headPitch, 0.1, blend);
+    leadHand.position.lerp(seatedScratch.set(0.11 * mirror, 1.24, 0.5), blend);
+    rearHand.position.lerp(seatedScratch.set(-0.11 * mirror, 1.22, 0.47), blend);
+    leadHand.palm.lerp(seatedScratch.set(-mirror, 0, 0), blend).normalize();
+    rearHand.palm.lerp(seatedScratch.set(mirror, 0, 0), blend).normalize();
+    leadHand.knuckles.lerp(seatedScratch.set(0, 0.15, 1), blend).normalize();
+    rearHand.knuckles.lerp(seatedScratch.set(0, 0.15, 1), blend).normalize();
+    leadHand.pole.lerp(seatedScratch.set(0.7 * mirror, -0.7, 0), blend).normalize();
+    rearHand.pole.lerp(seatedScratch.set(-0.7 * mirror, -0.7, 0), blend).normalize();
+  }
+
   private applyCelebratePose(
     blend: number,
     time: number,
@@ -1546,6 +1579,8 @@ export class BoxingGraph {
 }
 
 const STOOL_SEAT_HEIGHT = 0.44;
+const TOUCH_GLOVES_START_TICKS = 48;
+const TOUCH_GLOVES_END_TICKS = 14;
 const seatedScratch = new THREE.Vector3();
 
 function buildStool(): { group: THREE.Group; dispose: () => void } {

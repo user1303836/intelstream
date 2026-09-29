@@ -161,6 +161,7 @@ export interface RoundPunchStats {
 /** Punches thrown and landed per fighter in the current round, reset on the round-start bell. */
 export class RoundStatsTracker {
   private readonly stats = new Map<string, RoundPunchStats>();
+  private readonly totals = new Map<string, RoundPunchStats>();
 
   record(event: CombatEvent): void {
     if (event.kind === "bell") {
@@ -168,19 +169,29 @@ export class RoundStatsTracker {
       return;
     }
     if (event.actor_id === null) return;
-    if (event.kind === "punch_start") this.entry(event.actor_id).thrown += 1;
-    else if (event.kind === "hit" || event.kind === "counter_hit") this.entry(event.actor_id).landed += 1;
+    if (event.kind === "punch_start") {
+      this.entry(this.stats, event.actor_id).thrown += 1;
+      this.entry(this.totals, event.actor_id).thrown += 1;
+    } else if (event.kind === "hit" || event.kind === "counter_hit") {
+      this.entry(this.stats, event.actor_id).landed += 1;
+      this.entry(this.totals, event.actor_id).landed += 1;
+    }
   }
 
   get(playerId: string): RoundPunchStats {
     return this.stats.get(playerId) ?? { thrown: 0, landed: 0 };
   }
 
-  private entry(playerId: string): RoundPunchStats {
-    let entry = this.stats.get(playerId);
+  /** Punches over the whole bout, for the result panel. */
+  total(playerId: string): RoundPunchStats {
+    return this.totals.get(playerId) ?? { thrown: 0, landed: 0 };
+  }
+
+  private entry(map: Map<string, RoundPunchStats>, playerId: string): RoundPunchStats {
+    let entry = map.get(playerId);
     if (entry === undefined) {
       entry = { thrown: 0, landed: 0 };
-      this.stats.set(playerId, entry);
+      map.set(playerId, entry);
     }
     return entry;
   }
@@ -370,11 +381,11 @@ export function drawHud(
   if (reconnectMs > 0) {
     centerPanel(ctx, width, height, `OPPONENT RECONNECTING · ${Math.ceil(reconnectMs / 1000)}s`, "The bout is paused");
   }
-  if (final !== null) drawFinal(ctx, width, height, final, players);
+  if (final !== null) drawFinal(ctx, width, height, final, players, snapshot.fighters.map((fighter) => ({ name: players[fighter.player_id]?.name ?? "Fighter", stats: roundStats?.total(fighter.player_id) ?? { thrown: 0, landed: 0 } })));
   ctx.restore();
 }
 
-function drawFinal(ctx: CanvasRenderingContext2D, width: number, height: number, final: FinalMessage, players: Readonly<Record<string, PublicPlayer>>): void {
+function drawFinal(ctx: CanvasRenderingContext2D, width: number, height: number, final: FinalMessage, players: Readonly<Record<string, PublicPlayer>>, punches: readonly { name: string; stats: RoundPunchStats }[] = []): void {
   ctx.fillStyle = "rgba(2,4,9,0.94)";
   ctx.fillRect(width * 0.14, height * 0.13, width * 0.72, height * 0.74);
   ctx.strokeStyle = "rgba(246,213,122,0.5)";
@@ -388,6 +399,12 @@ function drawFinal(ctx: CanvasRenderingContext2D, width: number, height: number,
   ctx.fillStyle = "white";
   ctx.font = "700 18px Inter, system-ui, sans-serif";
   ctx.fillText(fit(ctx, winner, width * 0.6), width / 2, height * 0.27);
+  const thrown = punches.filter(({ stats }) => stats.thrown > 0);
+  if (thrown.length > 0) {
+    ctx.fillStyle = "#c8d3e6";
+    ctx.font = "600 13px Inter, system-ui, sans-serif";
+    ctx.fillText(thrown.map(({ name, stats }) => `${fit(ctx, name, width * 0.2)} ${stats.landed}/${stats.thrown} landed`).join("   ·   "), width / 2, height * 0.32);
+  }
   ctx.font = "12px ui-monospace, monospace";
   final.scorecards.forEach((card, index) => {
     const y = height * 0.37 + index * 36;

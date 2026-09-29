@@ -495,6 +495,23 @@ describe("round stats", () => {
     expect(tracker.get("one")).toEqual({ thrown: 0, landed: 0 });
   });
 
+  it("keeps bout totals across rounds and prints them on the result panel", () => {
+    const tracker = new RoundStatsTracker();
+    tracker.record(event("punch_start", "one"));
+    tracker.record(event("hit", "one"));
+    tracker.record(event("bell", "", "round_start"));
+    tracker.record(event("punch_start", "one"));
+    tracker.record(event("punch_start", "two"));
+    expect(tracker.get("one")).toEqual({ thrown: 1, landed: 0 });
+    expect(tracker.total("one")).toEqual({ thrown: 2, landed: 1 });
+    const texts: string[] = [];
+    const ctx = mockHudContext(texts);
+    const players = Object.fromEntries(publicPlayers.map((player) => [player.id, player]));
+    const final = { version: 3 as const, type: "final" as const, match_id: "m", winner_id: "one", method: "decision" as const, round: 3, scorecards: [], ratings: {} };
+    drawHud(ctx, 1280, 720, { ...snapshot(), phase: "complete" }, players, "one", final, 0, 30, tracker);
+    expect(texts.some((text) => text.includes("One 1/2 landed") && text.includes("Two 0/1 landed"))).toBe(true);
+  });
+
   it("shows the local fighter's input latency readout", () => {
     const texts: string[] = [];
     const ctx = mockHudContext(texts);
