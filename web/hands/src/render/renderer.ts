@@ -12,6 +12,7 @@ import { CameraDirector } from "./camera";
 import { Effects3D, type BakedPart } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, type ArcadeDislocation } from "./graph";
 import { drawHud } from "./hud";
+import { ResolutionScaler } from "./quality";
 
 export type ArcadeInjury =
   | "decapitation"
@@ -56,6 +57,7 @@ export interface ContactPresentation {
 
 const isHit = (event: CombatEvent): boolean => event.kind === "hit" || event.kind === "counter_hit";
 const isBlock = (event: CombatEvent): boolean => event.kind === "block" || event.kind === "perfect_block";
+const CROWD_EXCITEMENT: Readonly<Record<string, number>> = { hit: 0.18, counter_hit: 0.3, guard_break: 0.25, knockdown: 1, block: 0.04, perfect_block: 0.1 };
 
 function pairedBlock(event: CombatEvent, events: readonly CombatEvent[]): CombatEvent | undefined {
   if (!isHit(event) || event.action_id === null) return undefined;
@@ -261,6 +263,8 @@ export class FightRenderer {
   private refereeYaw = 0;
   private raf = 0;
   private previous = performance.now();
+  private readonly scaler = new ResolutionScaler();
+  private readonly basePixelRatio = Math.min(2, window.devicePixelRatio || 1);
   private players: Readonly<Record<string, PublicPlayer>> = {};
   private viewerId: string | null = null;
   private final: FinalMessage | null = null;
@@ -316,7 +320,7 @@ export class FightRenderer {
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.0;
-    this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    this.renderer.setPixelRatio(this.basePixelRatio);
 
     this.scene.background = new THREE.Color("#04060b");
     this.scene.fog = new THREE.FogExp2("#04060b", 0.042);
@@ -561,6 +565,7 @@ export class FightRenderer {
         this.effects.addEvent(presentationEvent, this.tmpA, this.settings().reducedMotion);
       }
       const currentSettings = this.settings();
+      if (presentImpact) this.arena.excite(CROWD_EXCITEMENT[event.kind] ?? 0);
       if (
         presentImpact
         && recipientIndex >= 0
@@ -666,6 +671,23 @@ export class FightRenderer {
     }
   }
 
+  get resolutionScale(): number {
+    return this.scaler.scale;
+  }
+
+  private applyResolutionScale(): void {
+    const ratio = this.basePixelRatio * this.scaler.scale;
+    this.renderer.setPixelRatio(ratio);
+    this.composer.setPixelRatio(ratio);
+    const shadowSize = this.scaler.scale < 0.8 ? 1024 : 2048;
+    const shadow = this.keyLight?.shadow;
+    if (shadow !== undefined && shadow.mapSize.x !== shadowSize) {
+      shadow.mapSize.set(shadowSize, shadowSize);
+      shadow.map?.dispose();
+      shadow.map = null;
+    }
+  }
+
   private setupLights(): void {
     const hemisphere = new THREE.HemisphereLight("#3c4a72", "#07080c", 0.55);
     this.scene.add(hemisphere);
@@ -711,8 +733,10 @@ export class FightRenderer {
 
   private draw(time: number, manual = false, render = true): void {
     if (this.destroyed) return;
-    let dt = manual ? 1 / 60 : Math.min(0.05, Math.max(0.001, (time - this.previous) / 1000));
+    const frameMs = time - this.previous;
+    let dt = manual ? 1 / 60 : Math.min(0.05, Math.max(0.001, frameMs / 1000));
     this.previous = time;
+    if (!manual && this.scaler.record(frameMs)) this.applyResolutionScale();
 
     const width = this.canvas.clientWidth;
     const height = this.canvas.clientHeight;
@@ -737,6 +761,7 @@ export class FightRenderer {
     if (finishing && !this.finishSeen) {
       this.finishSeen = true;
       this.finishSlowMotion = 2.2;
+      this.arena.excite(1);
     }
     if (this.finishSlowMotion > 0 && !current.reducedMotion) {
       this.finishSlowMotion = Math.max(0, this.finishSlowMotion - dt);

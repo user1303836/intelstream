@@ -109,6 +109,7 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       severedHeads: renderer.labEffects.activeHeads,
       severedHands: renderer.labEffects.activeHands,
       rigs: renderer.labRigs.length,
+      resolutionScale: renderer.resolutionScale,
       heads: renderer.labRigs.map((root) => {
         const head = root.getObjectByName("Head_00");
         return head === undefined ? null : Number(head.getWorldPosition(new THREE.Vector3()).y.toFixed(3));
