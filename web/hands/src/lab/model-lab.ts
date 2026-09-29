@@ -28,6 +28,7 @@ const base = (): Draft => ({
 });
 
 const CAMERAS: Record<string, [number, number, number]> = {
+  face: [0.25, 1.55, 1.0],
   front: [0, 1.35, 3.4],
   side: [3.4, 1.3, 0.2],
   "three-quarter": [2.4, 1.5, 2.6],
@@ -64,7 +65,7 @@ export class ModelLab {
     this.camera = new THREE.PerspectiveCamera(38, 1, 0.1, 60);
     const cam = CAMERAS[this.params.get("cam") ?? "three-quarter"] ?? CAMERAS["three-quarter"]!;
     this.camera.position.set(...cam);
-    this.camera.lookAt(0, 1.0, 0);
+    this.camera.lookAt(0, this.params.get("cam") === "face" ? 1.5 : 1.0, 0);
     this.setupLighting();
   }
 
@@ -92,6 +93,10 @@ export class ModelLab {
     const pose = this.params.get("pose") ?? "idle";
     const stance = this.params.get("stance") === "southpaw" ? "southpaw" : "orthodox";
     const fighter: Draft = { ...base(), stance };
+    const trauma = this.params.get("trauma");
+    if (trauma === "light") fighter.trauma = { head: 220, body: 260, left_eye: 190, right_eye: 60, left_cut: 40, right_cut: 0, swelling: 120, bleeding: 60 };
+    if (trauma === "heavy") fighter.trauma = { head: 900, body: 700, left_eye: 720, right_eye: 380, left_cut: 520, right_cut: 190, swelling: 620, bleeding: 520 };
+    if (trauma === "cut") fighter.trauma = { head: 420, body: 120, left_eye: 380, right_eye: 120, left_cut: 300, right_cut: 0, swelling: 260, bleeding: 380 };
     const opponent = { ...base(), player_id: "other", x: 0, y: -150, facing_x: 0, facing_y: 1000 } as FighterSnapshot;
     const tick = Math.floor(seconds * 30);
     const punch = /^(jab|straight|hook|uppercut)_(left|right)(_body)?(_power)?$/.exec(pose);
@@ -155,6 +160,8 @@ export class ModelLab {
         this.skeletonHelper = new THREE.SkeletonHelper(this.boxer.root);
         this.scene.add(this.skeletonHelper);
       }
+      const dislocation = this.params.get("dislocation");
+      if (dislocation === "jaw" || dislocation === "shoulder_left" || dislocation === "shoulder_right") this.graph.setArcadeDislocation(dislocation);
       this.statusEl.textContent = `pose ${this.params.get("pose") ?? "idle"}`;
     } catch (error) {
       this.statusEl.textContent = `load failed: ${String(error).slice(0, 120)}`;

@@ -1,8 +1,8 @@
 import * as THREE from "three";
 
-const BASE_HEIGHT = 1.88;
-const BASE_DISTANCE = 7.15;
-const LOOK_HEIGHT = 1.12;
+const BASE_HEIGHT = 2.05;
+const BASE_DISTANCE = 5.5;
+const LOOK_HEIGHT = 1.05;
 
 export interface CameraFrame {
   readonly position: THREE.Vector3;
@@ -30,8 +30,8 @@ export class CameraDirector {
     const clampedX = THREE.MathUtils.clamp(midX, -1.4, 1.4);
     const clampedZ = THREE.MathUtils.clamp(midZ, -1.1, 1.1);
 
-    const distance = THREE.MathUtils.clamp(BASE_DISTANCE + separation * 0.42 - (knockdown ? 1.1 : 0), 6.4, 9.8);
-    const height = BASE_HEIGHT + separation * 0.1 - (knockdown ? 0.35 : 0);
+    const distance = THREE.MathUtils.clamp(BASE_DISTANCE + separation * 0.6 - (knockdown ? 0.9 : 0), 4.6, 8.4);
+    const height = BASE_HEIGHT + separation * 0.08 - (knockdown ? 0.45 : 0);
     const sway = reducedMotion ? 0 : Math.sin(this.swayPhase * 0.21) * 0.35;
     const drift = reducedMotion ? 0 : Math.sin(this.swayPhase * 0.13) * 0.3;
 
@@ -45,7 +45,7 @@ export class CameraDirector {
     this.current.z += (targetZ - this.current.z) * (1 - Math.exp(-followRate * dt));
 
     this.look.x += (clampedX - this.look.x) * (1 - Math.exp(-3.2 * dt));
-    this.look.y += ((knockdown ? 0.75 : LOOK_HEIGHT) - this.look.y) * (1 - Math.exp(-3.2 * dt));
+    this.look.y += ((knockdown ? 0.7 : LOOK_HEIGHT) - this.look.y) * (1 - Math.exp(-3.2 * dt));
     this.look.z += (clampedZ * 0.6 - this.look.z) * (1 - Math.exp(-3.2 * dt));
 
     if (!reducedMotion && shake > 0.0005) {

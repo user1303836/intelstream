@@ -1,3 +1,4 @@
+import * as THREE from "three";
 import { FightRenderer } from "./render/renderer";
 import type { CombatEvent, EngineSnapshot, FighterSnapshot, PublicPlayer } from "./types";
 
@@ -75,7 +76,8 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
         defender.stunned_ticks = 12;
       }
     }
-    const knockdownCycle = t % 14;
+    const finisher = new URLSearchParams(window.location.search).get("finisher");
+    const knockdownCycle = finisher === null ? t % 14 : (t < 2.5 ? 0 : 12);
     if (knockdownCycle > 11 && knockdownCycle < 13.4) {
       two.is_downed = true;
       two.action = null;
@@ -83,9 +85,11 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       two.y = 40;
       one.x = -60;
       one.y = -30;
-      if (knockdownCycle > 11 && knockdownCycle < 11.15) {
+      const trigger = finisher === null ? knockdownCycle > 11 && knockdownCycle < 11.15 : t >= 2.5 && t < 2.65;
+      if (trigger) {
         eventId += 1;
-        events.push({ event_id: eventId, tick, kind: "counter_hit", actor_id: one.player_id, target_id: two.player_id, amount: 500, detail: "right:uppercut:head", blood: 100, direction: 1, action_id: null });
+        if (finisher !== null && eventId % 2 === 1) eventId += 1;
+        events.push({ event_id: eventId, tick, kind: "counter_hit", actor_id: one.player_id, target_id: two.player_id, amount: 500, detail: finisher === "hand" ? "left:hook:body" : "right:uppercut:head", blood: 100, direction: 1, action_id: null });
         eventId += 1;
         events.push({ event_id: eventId, tick, kind: "knockdown", actor_id: one.player_id, target_id: two.player_id, amount: 420, detail: "knockdown", blood: 60, direction: 1, action_id: null });
       }
@@ -95,6 +99,18 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       fighters: [{ ...one }, { ...two }], events, result: null, checksum: "a".repeat(64),
     };
     renderer.push(snapshot);
+    (window as unknown as Record<string, unknown>).__fixtureDebug = {
+      tick,
+      t: Number(t.toFixed(2)),
+      downed: two.is_downed,
+      severedHeads: renderer.labEffects.activeHeads,
+      severedHands: renderer.labEffects.activeHands,
+      rigs: renderer.labRigs.length,
+      heads: renderer.labRigs.map((root) => {
+        const head = root.getObjectByName("Head_00");
+        return head === undefined ? null : Number(head.getWorldPosition(new THREE.Vector3()).y.toFixed(3));
+      }),
+    };
   }, 100);
 
   return () => {

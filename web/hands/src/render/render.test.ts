@@ -111,8 +111,8 @@ describe("effects", () => {
       const effects = new Effects3D(new THREE.Scene());
       effects.addEvent({ ...severeHit(20), detail }, new THREE.Vector3(), false);
       effects.update(0.1);
-      const positions = effects.points.geometry.getAttribute("position") as THREE.BufferAttribute;
-      const colors = effects.points.geometry.getAttribute("color") as THREE.BufferAttribute;
+      const positions = effects.dropletBuffers.position;
+      const colors = effects.dropletBuffers.color;
       const heights: number[] = [];
       for (let index = 0; index < positions.count; index += 1) {
         if (colors.getY(index) < 0.2 && positions.getY(index) > -10) heights.push(positions.getY(index));
@@ -128,7 +128,7 @@ describe("effects", () => {
 
     const full = new Effects3D(new THREE.Scene());
     full.addEvent(severeHit(1), origin, false);
-    expect(full.liveBloodParticles).toBe(140);
+    expect(full.liveBloodParticles).toBe(110);
     expect(full.liveMist).toBe(10);
     expect(full.liveGibs).toBe(11);
     expect(full.visibleDecals).toBe(12);
@@ -168,7 +168,7 @@ describe("effects", () => {
       effects.update(1 / 60);
     }
     expect(effects.liveBloodParticles).toBe(2);
-    const positions = effects.points.geometry.getAttribute("position") as THREE.BufferAttribute;
+    const positions = effects.dropletBuffers.position;
     const liveX = Array.from({ length: positions.count }, (_unused, index) => positions.getX(index))
       .filter((_x, index) => positions.getY(index) > -10);
     expect(liveX.some((x) => x < 0)).toBe(true);
@@ -215,7 +215,7 @@ describe("effects", () => {
     effects.decapitate(0, position, quaternion, 1, 42, 0xb0703f);
     expect(effects.activeHeads).toBe(1);
     const visibleHead = scene.children.find((child) =>
-      child instanceof THREE.Mesh && child.visible && child.geometry instanceof THREE.SphereGeometry,
+      child instanceof THREE.Mesh && !(child instanceof THREE.InstancedMesh) && child.visible && child.geometry instanceof THREE.SphereGeometry,
     ) as THREE.Mesh<THREE.SphereGeometry, THREE.MeshStandardMaterial>;
     expect(visibleHead.material.color.getHex()).toBe(0xb0703f);
     expect(effects.activeStumps).toBe(1);
@@ -232,7 +232,7 @@ describe("effects", () => {
     effects.decapitate(1, position, quaternion, -1, 43, 0x6e4128);
     expect(effects.activeHeads).toBe(2);
     const visibleHeadColors = scene.children
-      .filter((child) => child instanceof THREE.Mesh && child.visible && child.geometry instanceof THREE.SphereGeometry)
+      .filter((child) => child instanceof THREE.Mesh && !(child instanceof THREE.InstancedMesh) && child.visible && child.geometry instanceof THREE.SphereGeometry)
       .map((child) => ((child as THREE.Mesh).material as THREE.MeshStandardMaterial).color.getHex());
     expect(visibleHeadColors).toEqual([0xb0703f, 0x6e4128]);
     expect(effects.activeStumps).toBe(2);
@@ -349,7 +349,7 @@ describe("effects", () => {
         effects.update(dt);
       }
       const head = scene.children.find((child) =>
-        child instanceof THREE.Mesh && child.visible && child.geometry instanceof THREE.SphereGeometry,
+        child instanceof THREE.Mesh && !(child instanceof THREE.InstancedMesh) && child.visible && child.geometry instanceof THREE.SphereGeometry,
       )!;
       const gibMesh = scene.children.find((child) => child instanceof THREE.InstancedMesh) as THREE.InstancedMesh;
       const matrix = new THREE.Matrix4();
@@ -358,7 +358,7 @@ describe("effects", () => {
       const result = {
         head: head.position.toArray(),
         gib: gibPosition.toArray(),
-        particles: Array.from(effects.points.geometry.getAttribute("position").array),
+        particles: Array.from(effects.dropletBuffers.position.array),
         decals: effects.visibleDecals,
       };
       effects.dispose();

@@ -9,7 +9,7 @@ import type { BloodLevel, Settings } from "../settings";
 import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, Hand, MatchResult, PublicPlayer, PunchClass, SemanticAction, SimulationInfo } from "../types";
 import { buildArena, type BuiltArena } from "./arena";
 import { CameraDirector } from "./camera";
-import { Effects3D } from "./effects";
+import { Effects3D, type BakedPart } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, type ArcadeDislocation } from "./graph";
 import { drawHud } from "./hud";
 
@@ -160,6 +160,38 @@ function blobShadowTexture(): THREE.CanvasTexture {
 
 const DEFAULT_SIM: SimulationInfo = { tick_rate: 30, ring_half_width: 500, ring_half_height: 500 };
 
+/**
+ * Freezes a skinned mesh's current deformed surface into a static geometry
+ * expressed relative to `pivot` so it can fly as a rigid severed part.
+ */
+export function bakeSkinnedPart(mesh: THREE.SkinnedMesh, pivotPosition: THREE.Vector3, pivotQuaternion: THREE.Quaternion): BakedPart {
+  const source = mesh.geometry;
+  const positions = source.getAttribute("position");
+  const baked = new Float32Array(positions.count * 3);
+  const vertex = new THREE.Vector3();
+  const inverse = pivotQuaternion.clone().invert();
+  mesh.updateMatrixWorld(true);
+  for (let index = 0; index < positions.count; index += 1) {
+    vertex.fromBufferAttribute(positions, index);
+    mesh.applyBoneTransform(index, vertex);
+    vertex.applyMatrix4(mesh.matrixWorld).sub(pivotPosition).applyQuaternion(inverse);
+    baked[index * 3] = vertex.x;
+    baked[index * 3 + 1] = vertex.y;
+    baked[index * 3 + 2] = vertex.z;
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(baked, 3));
+  const uv = source.getAttribute("uv");
+  if (uv !== undefined) geometry.setAttribute("uv", uv.clone());
+  const index = source.getIndex();
+  if (index !== null) geometry.setIndex(index.clone());
+  geometry.computeVertexNormals();
+  const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+  const map = material instanceof THREE.MeshStandardMaterial ? material.map : null;
+  const color = material instanceof THREE.MeshStandardMaterial ? material.color.getHex() : 0xffffff;
+  return { geometry, map, color };
+}
+
 function refereeShirtTexture(): THREE.CanvasTexture {
   const canvas = document.createElement("canvas");
   canvas.width = 256;
@@ -280,14 +312,14 @@ export class FightRenderer {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 0.92;
+    this.renderer.toneMappingExposure = 1.0;
     this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
 
     this.scene.background = new THREE.Color("#04060b");
     this.scene.fog = new THREE.FogExp2("#04060b", 0.042);
-    this.camera = new THREE.PerspectiveCamera(38, 1, 0.1, 80);
-    this.camera.position.set(0, 2.05, 7.6);
-    this.camera.lookAt(0, 1.1, 0);
+    this.camera = new THREE.PerspectiveCamera(36, 1, 0.1, 80);
+    this.camera.position.set(0, 2.05, 5.9);
+    this.camera.lookAt(0, 1.05, 0);
 
     this.setupLights();
     this.ring = buildRing();
@@ -309,7 +341,7 @@ export class FightRenderer {
 
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    const bloom = new UnrealBloomPass(new THREE.Vector2(1280, 720), 0.32, 0.5, 0.85);
+    const bloom = new UnrealBloomPass(new THREE.Vector2(1280, 720), 0.2, 0.45, 1.08);
     this.composer.addPass(bloom);
     this.composer.addPass(new OutputPass());
 
@@ -538,6 +570,8 @@ export class FightRenderer {
         if (injury === "decapitation") {
           const pose = this.headWorldPose(recipientIndex);
           if (pose !== null) {
+            const graph = this.graphs?.[recipientIndex];
+            const baked = graph === undefined ? undefined : bakeSkinnedPart(graph.boxer.headMesh, pose.position, pose.quaternion);
             this.effects.decapitate(
               recipientIndex,
               pose.position,
@@ -545,6 +579,7 @@ export class FightRenderer {
               event.direction,
               event.event_id,
               this.skinColor(recipientIndex),
+              baked,
             );
             const stumpPose = this.stumpWorldPose(recipientIndex);
             if (stumpPose !== null) this.effects.anchorStump(recipientIndex, stumpPose.position, stumpPose.quaternion);
@@ -554,6 +589,8 @@ export class FightRenderer {
           const side = injury === "dismember_left" ? "left" : "right";
           const pose = this.handWorldPose(recipientIndex, side);
           if (pose !== null) {
+            const graph = this.graphs?.[recipientIndex];
+            const baked = graph === undefined ? undefined : bakeSkinnedPart(graph.boxer.gloveMesh(side), pose.position, pose.quaternion);
             this.effects.dismemberHand(
               recipientIndex,
               side,
@@ -562,6 +599,7 @@ export class FightRenderer {
               event.direction,
               event.event_id,
               this.gearColor(recipientIndex),
+              baked,
             );
             this.effects.anchorHandStump(recipientIndex, side, pose.position, pose.quaternion);
             applied = true;
@@ -575,6 +613,21 @@ export class FightRenderer {
         }
       }
       const graphs = this.graphs;
+      if (
+        presentImpact
+        && recipientIndex >= 0
+        && ["hit", "counter_hit", "knockdown"].includes(event.kind)
+        && presentationEvent.detail.endsWith(":head")
+        && event.amount >= 260
+        && !currentSettings.reducedMotion
+        && currentSettings.blood !== "off"
+      ) {
+        const pose = this.headWorldPose(recipientIndex);
+        if (pose !== null) {
+          this.tmpB.set(0, -0.07, 0.1).applyQuaternion(pose.quaternion).add(pose.position);
+          this.effects.spawnTeeth(this.tmpB, presentationEvent.direction, event.kind === "knockdown" ? 3 : 1 + Math.floor((event.amount - 260) / 120), event.event_id);
+        }
+      }
       if (
         presentImpact
         && recipientIndex >= 0
@@ -602,17 +655,13 @@ export class FightRenderer {
   }
 
   private setupLights(): void {
-    const hemisphere = new THREE.HemisphereLight("#5a6a95", "#0c0e16", 1.2);
+    const hemisphere = new THREE.HemisphereLight("#3c4a72", "#07080c", 0.55);
     this.scene.add(hemisphere);
     this.lights.push(hemisphere);
 
-    const ambient = new THREE.AmbientLight("#3a4468", 1.05);
-    this.scene.add(ambient);
-    this.lights.push(ambient);
-
-    const key = new THREE.SpotLight("#fff4e0", 115, 26, 0.68, 0.6, 1.6);
-    key.position.set(0, 7.4, 0.9);
-    key.target.position.set(0, 0, 0);
+    const key = new THREE.SpotLight("#fff1dc", 190, 24, 0.56, 0.55, 1.7);
+    key.position.set(0.6, 7.4, 1.2);
+    key.target.position.set(0, 0.6, 0);
     key.castShadow = true;
     key.shadow.mapSize.set(2048, 2048);
     key.shadow.bias = -0.0004;
@@ -622,27 +671,26 @@ export class FightRenderer {
     this.scene.add(key, key.target);
     this.lights.push(key);
 
-    const fills: Array<[string, number, number, number]> = [
-      ["#b9cdff", -6.5, 4.4, -5.2],
-      ["#ffd9b9", 6.2, 4.1, -5.6],
-      ["#9fb8ff", -5.4, 3.6, 6.0],
-      ["#c9d8ff", 5.8, 3.9, 5.7],
+    const secondary = new THREE.SpotLight("#ffe6c8", 95, 24, 0.6, 0.6, 1.7);
+    secondary.position.set(-2.6, 7.0, -2.2);
+    secondary.target.position.set(0, 0.8, 0);
+    this.scene.add(secondary, secondary.target);
+    this.lights.push(secondary);
+
+    const rims: Array<[string, number, number, number]> = [
+      ["#8fa8ff", -5.5, 3.8, -5.4],
+      ["#7f95e8", 5.6, 3.6, -5.6],
     ];
-    for (const [color, x, y, z] of fills) {
-      const fill = new THREE.SpotLight(color, 105, 30, 0.7, 0.8, 1.8);
-      fill.position.set(x, y, z);
-      fill.target.position.set(0, 1, 0);
-      this.scene.add(fill, fill.target);
-      this.lights.push(fill);
+    for (const [color, x, y, z] of rims) {
+      const rim = new THREE.SpotLight(color, 34, 30, 0.72, 0.9, 1.8);
+      rim.position.set(x, y, z);
+      rim.target.position.set(0, 1.2, 0);
+      this.scene.add(rim, rim.target);
+      this.lights.push(rim);
     }
 
-    const rim = new THREE.DirectionalLight("#dfe9ff", 0.7);
-    rim.position.set(0, 3.4, -6.5);
-    this.scene.add(rim);
-    this.lights.push(rim);
-
-    const follow = new THREE.SpotLight("#ffe8d0", 55, 22, 0.34, 0.75, 1.5);
-    follow.position.set(0, 5.6, 5.2);
+    const follow = new THREE.SpotLight("#ffe8d0", 48, 22, 0.32, 0.8, 1.5);
+    follow.position.set(0, 5.8, 5.4);
     follow.target.position.set(0, 1, 0);
     this.scene.add(follow, follow.target);
     this.lights.push(follow);

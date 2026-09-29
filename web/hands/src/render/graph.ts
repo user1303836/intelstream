@@ -8,6 +8,7 @@ import { FIGHTER_GLB_GZIP_BASE64 } from "../assets/fighter-glb";
 import { BONE_ADAPTER } from "./skeleton";
 export { BONE_ADAPTER };
 import { FIGHTER_TEXTURE_DATA_URLS } from "../assets/fighter-textures";
+import { BODY_SITES, HEAD_SITES, InjuryShading, applyBodyTrauma, applyHeadTrauma } from "./injury";
 import { PoseSolver, STANCE, easeIn, easeOut, mirrorX, smoothstep, vec, type FootTarget, type HandTarget, type PoseDescription } from "./poser";
 import { SolvedRig } from "./rig";
 import type { WorldMapping } from "./world";
@@ -79,6 +80,8 @@ interface AppliedFighterMaterials {
   readonly skin: readonly THREE.MeshPhysicalMaterial[];
   readonly gloves: THREE.MeshStandardMaterial;
   readonly owned: readonly THREE.Material[];
+  readonly headInjury: InjuryShading;
+  readonly bodyInjury: InjuryShading;
 }
 
 export function applyFighterSkin(target: THREE.Object3D, palette: BoxerPaletteColors): AppliedFighterMaterials {
@@ -86,6 +89,8 @@ export function applyFighterSkin(target: THREE.Object3D, palette: BoxerPaletteCo
   const owned: THREE.Material[] = [];
   const bySource = new Map<string, THREE.MeshStandardMaterial>();
   let gloves: THREE.MeshStandardMaterial | null = null;
+  let headInjury: InjuryShading | null = null;
+  let bodyInjury: InjuryShading | null = null;
   target.traverse((object) => {
     if (!(object instanceof THREE.SkinnedMesh) || Array.isArray(object.material)) return;
     const sourceName = object.material.name;
@@ -104,16 +109,18 @@ export function applyFighterSkin(target: THREE.Object3D, palette: BoxerPaletteCo
       owned.push(material);
       if (material instanceof THREE.MeshPhysicalMaterial) skin.push(material);
       if (sourceName === "GlovesMat0") gloves = material;
+      if (sourceName === "MHeadMat0") headInjury = new InjuryShading(material, HEAD_SITES);
+      if (sourceName === "MBodyMat0") bodyInjury = new InjuryShading(material, BODY_SITES);
     }
     object.material = material;
     object.castShadow = true;
     object.receiveShadow = true;
     object.frustumCulled = false;
   });
-  if (skin.length !== 2 || gloves === null || owned.length !== 5) {
+  if (skin.length !== 2 || gloves === null || owned.length !== 5 || headInjury === null || bodyInjury === null) {
     throw new Error(`fighter GLB material contract failed: ${skin.length} skin, ${owned.length} total`);
   }
-  return { skin, gloves, owned };
+  return { skin, gloves, owned, headInjury, bodyInjury };
 }
 
 export interface BoxerPaletteColors {
@@ -147,7 +154,8 @@ export class SkinnedBoxer {
   private readonly dismemberedHands: Record<Hand, boolean> = { left: false, right: false };
   readonly gearBaseColor: THREE.Color;
   readonly skinBaseColor: THREE.Color;
-  private readonly overlays: TraumaOverlays;
+  readonly headInjury: InjuryShading;
+  readonly bodyInjury: InjuryShading;
 
   constructor(gltf: GLTF, palette: BoxerPaletteColors) {
     const instance = cloneSkeleton(gltf.scene);
@@ -157,6 +165,8 @@ export class SkinnedBoxer {
     this.skinMaterials = materials.skin;
     this.ownedMaterials = materials.owned;
     this.gearMaterial = materials.gloves;
+    this.headInjury = materials.headInjury;
+    this.bodyInjury = materials.bodyInjury;
     this.gearBaseColor = new THREE.Color(palette.gear);
     this.skinBaseColor = new THREE.Color(palette.skin);
     instance.traverse((object) => {
@@ -185,19 +195,22 @@ export class SkinnedBoxer {
       chestRestY: rigMetrics.chestHeight,
       ankleRestY: rigMetrics.ankleHeight,
     };
-    this.overlays = buildTraumaOverlays(this.bone("head")!, this.bone("chest")!, palette.skin);
   }
 
   bone(name: string): THREE.Bone | null {
     return this.bones.get(BONE_ADAPTER[name] ?? name) ?? null;
   }
 
-  get trauma(): TraumaOverlays {
-    return this.overlays;
-  }
-
   get gloveGear(): THREE.MeshStandardMaterial {
     return this.gearMaterial;
+  }
+
+  get headMesh(): THREE.SkinnedMesh {
+    return this.headMeshes[0]!;
+  }
+
+  gloveMesh(side: Hand): THREE.SkinnedMesh {
+    return this.handMeshes[side][0]!;
   }
 
   get skin(): THREE.MeshPhysicalMaterial {
@@ -229,139 +242,7 @@ export class SkinnedBoxer {
 
   dispose(): void {
     for (const material of this.ownedMaterials) material.dispose();
-    this.overlays.dispose();
   }
-}
-
-export interface TraumaOverlays {
-  readonly bruiseL: THREE.Mesh;
-  readonly bruiseR: THREE.Mesh;
-  readonly swellL: THREE.Mesh;
-  readonly swellR: THREE.Mesh;
-  readonly cutL: THREE.Mesh;
-  readonly cutR: THREE.Mesh;
-  readonly streakL: THREE.Mesh;
-  readonly streakR: THREE.Mesh;
-  readonly noseStreak: THREE.Mesh;
-  readonly mouthBlood: THREE.Mesh;
-  readonly cheekL: THREE.Mesh;
-  readonly cheekR: THREE.Mesh;
-  readonly ribL: THREE.Mesh;
-  readonly ribR: THREE.Mesh;
-  readonly bodyBruise: THREE.Mesh;
-  readonly bodyStreak: THREE.Mesh;
-  readonly jaw: THREE.Mesh;
-  dispose(): void;
-}
-
-function overlayMesh(geometry: THREE.BufferGeometry, color: number, emissive = 0x000000): THREE.Mesh {
-  const mesh = new THREE.Mesh(
-    geometry,
-    new THREE.MeshStandardMaterial({ color, roughness: 0.7, transparent: true, opacity: 0, emissive }),
-  );
-  mesh.castShadow = false;
-  return mesh;
-}
-
-function buildTraumaOverlays(head: THREE.Bone, chest: THREE.Bone, skinColor: number): TraumaOverlays {
-  const overlays: THREE.Mesh[] = [];
-  const add = (mesh: THREE.Mesh, parent: THREE.Bone, position: [number, number, number], scale: [number, number, number] = [1, 1, 1]): THREE.Mesh => {
-    const parentScale = parent.getWorldScale(new THREE.Vector3());
-    const compensation = 1 / Math.max(0.0001, parentScale.x);
-    mesh.position.set(
-      position[0] * 1.3 * compensation,
-      position[1] * 1.25 * compensation,
-      (position[2] * 1.35 + 0.045) * compensation,
-    );
-    mesh.scale.set(scale[0] * compensation, scale[1] * compensation, scale[2] * compensation);
-    mesh.userData.baseScale = compensation;
-    parent.add(mesh);
-    overlays.push(mesh);
-    return mesh;
-  };
-  const bruiseL = add(overlayMesh(new THREE.SphereGeometry(0.042, 12, 10), 0x4a1c56), head, [0.05, 0.15, 0.085], [1, 0.72, 0.5]);
-  const bruiseR = add(overlayMesh(new THREE.SphereGeometry(0.042, 12, 10), 0x4a1c56), head, [-0.05, 0.15, 0.085], [1, 0.72, 0.5]);
-  const swellL = add(overlayMesh(new THREE.SphereGeometry(0.035, 12, 10), 0x6b3572), head, [0.052, 0.155, 0.088]);
-  const swellR = add(overlayMesh(new THREE.SphereGeometry(0.035, 12, 10), 0x6b3572), head, [-0.052, 0.155, 0.088]);
-  const cutL = add(overlayMesh(new THREE.BoxGeometry(0.05, 0.008, 0.01), 0x7f0d14, 0x2a0306), head, [0.05, 0.178, 0.104]);
-  const cutR = add(overlayMesh(new THREE.BoxGeometry(0.05, 0.008, 0.01), 0x7f0d14, 0x2a0306), head, [-0.05, 0.178, 0.104]);
-  const streakL = add(overlayMesh(new THREE.BoxGeometry(0.014, 0.1, 0.006), 0x8a0f16, 0x30040a), head, [0.052, 0.115, 0.106]);
-  const streakR = add(overlayMesh(new THREE.BoxGeometry(0.014, 0.1, 0.006), 0x8a0f16, 0x30040a), head, [-0.052, 0.115, 0.106]);
-  const noseStreak = add(overlayMesh(new THREE.BoxGeometry(0.011, 0.07, 0.006), 0x8a0f16, 0x30040a), head, [0.008, 0.075, 0.118]);
-  const mouthBlood = add(overlayMesh(new THREE.BoxGeometry(0.03, 0.012, 0.006), 0x8a0f16, 0x30040a), head, [0.02, 0.052, 0.104]);
-  const cheekL = add(overlayMesh(new THREE.SphereGeometry(0.028, 10, 8), 0x6b3572), head, [0.068, 0.095, 0.075]);
-  const cheekR = add(overlayMesh(new THREE.SphereGeometry(0.028, 10, 8), 0x6b3572), head, [-0.068, 0.095, 0.075]);
-  const ribL = add(overlayMesh(new THREE.SphereGeometry(0.09, 12, 10), 0x5c2450), chest, [0.16, 0.08, 0.02], [0.5, 1.2, 0.7]);
-  const ribR = add(overlayMesh(new THREE.SphereGeometry(0.09, 12, 10), 0x5c2450), chest, [-0.16, 0.08, 0.02], [0.5, 1.2, 0.7]);
-  const bodyBruise = add(overlayMesh(new THREE.SphereGeometry(0.1, 12, 10), 0x4a1c56), chest, [0.02, 0.05, 0.1], [1.05, 1.35, 0.55]);
-  const bodyStreak = add(overlayMesh(new THREE.BoxGeometry(0.05, 0.24, 0.008), 0x8a0f16, 0x30040a), chest, [0.03, 0.08, 0.155]);
-  bodyStreak.rotation.z = 0.12;
-  const jaw = add(overlayMesh(new THREE.SphereGeometry(0.06, 12, 10), skinColor), head, [0, -0.005, 0.07], [1.3, 0.48, 0.82]);
-  jaw.userData.restPosition = jaw.position.clone();
-  return {
-    bruiseL, bruiseR, swellL, swellR, cutL, cutR, streakL, streakR, noseStreak, mouthBlood,
-    cheekL, cheekR, ribL, ribR, bodyBruise, bodyStreak, jaw,
-    dispose() {
-      for (const mesh of overlays) {
-        mesh.geometry.dispose();
-        (mesh.material as THREE.Material).dispose();
-        mesh.removeFromParent();
-      }
-    },
-  };
-}
-
-export function applyTraumaToOverlays(overlays: TraumaOverlays, fighter: FighterSnapshot, opponentBlood: number, blood: BloodLevel): void {
-  const trauma = fighter.trauma;
-  const cutScale = blood === "off" ? 0 : blood === "reduced" ? 0.35 : 1;
-  const graphicScale = blood === "full" ? 1.8 : 1;
-  const mat = (mesh: THREE.Mesh): THREE.MeshStandardMaterial => mesh.material as THREE.MeshStandardMaterial;
-  const scale = (mesh: THREE.Mesh, x: number, y: number, z: number): void => {
-    const base = typeof mesh.userData.baseScale === "number" ? mesh.userData.baseScale : 1;
-    mesh.scale.set(x * base, y * base, z * base);
-  };
-  const bruise = (value: number): number => Math.min(0.85, value / 170 + trauma.swelling / 420);
-  mat(overlays.bruiseL).opacity = bruise(trauma.left_eye);
-  mat(overlays.bruiseR).opacity = bruise(trauma.right_eye);
-  const cutL = Math.min(1, trauma.left_cut / 150 + trauma.bleeding / 450);
-  const cutR = Math.min(1, trauma.right_cut / 150 + trauma.bleeding / 450);
-  mat(overlays.cutL).opacity = cutL * cutScale;
-  mat(overlays.cutR).opacity = cutR * cutScale;
-  scale(overlays.cutL, 1 + cutL * 0.55 * graphicScale, 1 + cutL * 0.7, 1);
-  scale(overlays.cutR, 1 + cutR * 0.55 * graphicScale, 1 + cutR * 0.7, 1);
-  const swellL = Math.min(1.35, trauma.left_eye / 260 + trauma.swelling / 560);
-  const swellR = Math.min(1.35, trauma.right_eye / 260 + trauma.swelling / 560);
-  scale(overlays.swellL, 0.25 + swellL * 1.15, 0.25 + swellL * 1.15, 0.25 + swellL * 1.15);
-  scale(overlays.swellR, 0.25 + swellR * 1.15, 0.25 + swellR * 1.15, 0.25 + swellR * 1.15);
-  mat(overlays.swellL).opacity = Math.min(0.92, swellL * 1.1);
-  mat(overlays.swellR).opacity = Math.min(0.92, swellR * 1.1);
-  const cheek = Math.min(1, trauma.head / 900 + trauma.swelling / 800);
-  scale(overlays.cheekL, 0.2 + cheek * 1.05, 0.2 + cheek * 1.05, 0.2 + cheek * 1.05);
-  scale(overlays.cheekR, 0.2 + cheek * 0.95, 0.2 + cheek * 0.95, 0.2 + cheek * 0.95);
-  mat(overlays.cheekL).opacity = cheek * 0.8;
-  mat(overlays.cheekR).opacity = cheek * 0.75;
-  const dripL = Math.min(1.9, (trauma.left_cut + trauma.bleeding) / 220);
-  const dripR = Math.min(1.9, (trauma.right_cut + trauma.bleeding) / 220);
-  scale(overlays.streakL, graphicScale, 0.15 + dripL * graphicScale, 1);
-  scale(overlays.streakR, graphicScale, 0.15 + dripR * graphicScale, 1);
-  mat(overlays.streakL).opacity = Math.min(1, dripL) * cutScale;
-  mat(overlays.streakR).opacity = Math.min(1, dripR) * cutScale;
-  const nose = Math.min(1.6, trauma.head / 600 + trauma.bleeding / 340);
-  scale(overlays.noseStreak, graphicScale, 0.2 + nose * graphicScale, 1);
-  mat(overlays.noseStreak).opacity = Math.min(1, nose) * cutScale;
-  const mouth = Math.min(1, trauma.head / 650 + trauma.bleeding / 360);
-  scale(overlays.mouthBlood, 1 + mouth * graphicScale, 1 + mouth * 0.8, 1);
-  mat(overlays.mouthBlood).opacity = mouth * cutScale;
-  const rib = Math.min(1, trauma.body / 750);
-  scale(overlays.ribL, 0.5 + rib * 0.35, 1.2 + rib * 0.5, 0.7 + rib * 0.2);
-  scale(overlays.ribR, 0.5 + rib * 0.3, 1.2 + rib * 0.4, 0.7 + rib * 0.2);
-  mat(overlays.ribL).opacity = rib * 0.85;
-  mat(overlays.ribR).opacity = rib * 0.8;
-  mat(overlays.bodyBruise).opacity = Math.min(0.7, trauma.body / 950);
-  const smear = Math.min(1.5, trauma.body / 450 + trauma.bleeding / 340);
-  scale(overlays.bodyStreak, 1 + smear * 0.55 * graphicScale, 0.3 + smear * graphicScale, 1);
-  mat(overlays.bodyStreak).opacity = Math.min(1, smear) * cutScale;
-  void opponentBlood;
 }
 
 const BLOODED_GLOVE_COLOR = new THREE.Color(0x5c0a0e);
@@ -534,11 +415,7 @@ export class BoxingGraph {
 
   setArcadeDislocation(dislocation: ArcadeDislocation | null): void {
     this.dislocation = dislocation;
-    const jaw = this.boxer.trauma.jaw;
-    const rest = jaw.userData.restPosition as THREE.Vector3;
-    jaw.position.copy(rest);
-    jaw.rotation.set(0, 0, 0);
-    (jaw.material as THREE.MeshStandardMaterial).opacity = dislocation === "jaw" ? 1 : 0;
+    this.boxer.headInjury.setJaw(dislocation === "jaw" ? 1 : 0);
   }
 
   /**
@@ -896,7 +773,8 @@ export class BoxingGraph {
         * (blood === "off" ? 0 : blood === "reduced" ? 0.3 : 1.5),
     );
     boxer.gloveGear.color.copy(boxer.gearBaseColor).lerp(BLOODED_GLOVE_COLOR, opponentBlood);
-    applyTraumaToOverlays(boxer.trauma, fighter, opponentBlood, blood);
+    applyHeadTrauma(boxer.headInjury, fighter.trauma, blood);
+    applyBodyTrauma(boxer.bodyInjury, fighter.trauma, blood);
     boxer.setSkinClearcoat(0.25 + (1 - stamina) * 0.4);
   }
 
@@ -1382,10 +1260,6 @@ export class BoxingGraph {
       head.quaternion.multiply(this.scratchQ.setFromEuler(new THREE.Euler(0.08, 0.2, -0.22)));
       head.updateWorldMatrix(false, true);
     }
-    const jaw = this.boxer.trauma.jaw;
-    const rest = jaw.userData.restPosition as THREE.Vector3;
-    jaw.position.copy(rest).add(this.scratch.set(0.04, -0.04, 0.018));
-    jaw.rotation.set(0.16, 0.08, -0.18);
   }
 
   dispose(): void {
