@@ -147,6 +147,7 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       finalSent = true;
       renderer.setFinal({ version: 3, type: "final", match_id: "fixture", winner_id: one.player_id, method: "ko", round: 3, scorecards: [], ratings: {} });
     }
+    (window as unknown as Record<string, unknown>).__fixtureRenderer = renderer;
     (window as unknown as Record<string, unknown>).__fixtureDebug = {
       tick,
       t: Number(t.toFixed(2)),

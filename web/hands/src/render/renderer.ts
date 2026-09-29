@@ -15,6 +15,7 @@ import { CameraDirector, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE, cornerFrame,
 import { Effects3D, type BakedPart } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, type ArcadeDislocation } from "./graph";
 import { drawHud, finalRevealDelay, RoundStatsTracker, STOPPAGE_METHODS, RoundClock } from "./hud";
+import { NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE } from "./injury";
 import { BLUE_CORNER_OUTFIT, CUTMAN_OUTFIT, RED_CORNER_OUTFIT, REFEREE_OUTFIT } from "./outfit";
 import { ResolutionScaler } from "./quality";
 import { planKnockoutReplay, replayTick, type ReplayPlan } from "./replay";
@@ -203,13 +204,27 @@ function blobShadowTexture(): THREE.CanvasTexture {
   return new THREE.CanvasTexture(canvas);
 }
 
+/** The middle of the neck cut in the neck bone's frame (centimetres), and the forward tilt of the cut. */
+const NECK_WOUND_OFFSET = new THREE.Vector3(0.15, 4.98, 3.85);
+const NECK_WOUND_TILT = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.atan(NECK_CUT_SLOPE) + 0.07);
+
+/** True for the part of the head mesh that leaves with the head. */
+export function aboveNeckCut(bind: THREE.Vector3): boolean {
+  return bind.y > NECK_CUT_HEIGHT - NECK_CUT_SLOPE * (bind.z - NECK_CUT_DEPTH) - 0.3;
+}
+
 const DEFAULT_SIM: SimulationInfo = { tick_rate: 30, ring_half_width: 500, ring_half_height: 500 };
 
 /**
  * Freezes a skinned mesh's current deformed surface into a static geometry
  * expressed relative to `pivot` so it can fly as a rigid severed part.
  */
-export function bakeSkinnedPart(mesh: THREE.SkinnedMesh, pivotPosition: THREE.Vector3, pivotQuaternion: THREE.Quaternion): BakedPart {
+export function bakeSkinnedPart(
+  mesh: THREE.SkinnedMesh,
+  pivotPosition: THREE.Vector3,
+  pivotQuaternion: THREE.Quaternion,
+  keep?: (bind: THREE.Vector3) => boolean,
+): BakedPart {
   const source = mesh.geometry;
   const positions = source.getAttribute("position");
   const baked = new Float32Array(positions.count * 3);
@@ -229,7 +244,16 @@ export function bakeSkinnedPart(mesh: THREE.SkinnedMesh, pivotPosition: THREE.Ve
   const uv = source.getAttribute("uv");
   if (uv !== undefined) geometry.setAttribute("uv", uv.clone());
   const index = source.getIndex();
-  if (index !== null) geometry.setIndex(index.clone());
+  if (index !== null && keep !== undefined) {
+    const kept: number[] = [];
+    const held = new Uint8Array(positions.count);
+    for (let at = 0; at < positions.count; at += 1) held[at] = keep(vertex.fromBufferAttribute(positions, at)) ? 1 : 0;
+    for (let at = 0; at < index.count; at += 3) {
+      const a = index.getX(at), b = index.getX(at + 1), c = index.getX(at + 2);
+      if (held[a] === 1 && held[b] === 1 && held[c] === 1) kept.push(a, b, c);
+    }
+    geometry.setIndex(kept);
+  } else if (index !== null) geometry.setIndex(index.clone());
   geometry.computeVertexNormals();
   const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
   const map = material instanceof THREE.MeshStandardMaterial ? material.map : null;
@@ -516,7 +540,7 @@ export class FightRenderer {
       .then(async (gltf) => {
         if (this.destroyed) return;
         const first = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
-        const second = new SkinnedBoxer(gltf, { skin: 0x6e4128, gear: 0xb91c1c, tint: 0xa9816a });
+        const second = new SkinnedBoxer(gltf, { skin: 0x6e4128, gear: 0xb91c1c, tint: 0xa38a7c });
         this.graphs = [new BoxingGraph(first, this.mapping), new BoxingGraph(second, this.mapping)];
         this.syncInjuryPresentation(0);
         this.syncInjuryPresentation(1);
@@ -800,7 +824,7 @@ export class FightRenderer {
       const pose = this.headWorldPose(index);
       if (pose !== null) {
         const graph = this.graphs?.[index];
-        const baked = graph === undefined ? undefined : bakeSkinnedPart(graph.boxer.headMesh, pose.position, pose.quaternion);
+        const baked = graph === undefined ? undefined : bakeSkinnedPart(graph.boxer.headMesh, pose.position, pose.quaternion, aboveNeckCut);
         this.effects.decapitate(
           index,
           pose.position,
@@ -903,13 +927,14 @@ export class FightRenderer {
     return this.graphs?.[index]?.boxer.skinBaseColor.getHex() ?? 0xb0703f;
   }
 
+  /** The exposed cut through the neck: centred in the neck, facing along the tilted cut. */
   private stumpWorldPose(index: number): { position: THREE.Vector3; quaternion: THREE.Quaternion } | null {
     const graphs = this.graphs;
     const anchor = graphs !== null ? graphs[index]!.boxer.bone("Neck_012") : null;
     if (anchor === null || graphs === null) return null;
     graphs[index]!.boxer.root.updateMatrixWorld(true);
-    anchor.getWorldPosition(this.tmpStump);
-    anchor.getWorldQuaternion(this.tmpStumpQuaternion);
+    anchor.localToWorld(this.tmpStump.copy(NECK_WOUND_OFFSET));
+    anchor.getWorldQuaternion(this.tmpStumpQuaternion).multiply(NECK_WOUND_TILT);
     return { position: this.tmpStump, quaternion: this.tmpStumpQuaternion };
   }
 
@@ -1316,6 +1341,7 @@ export class FightRenderer {
       this.camera.position.copy(frame.position);
       this.camera.lookAt(frame.lookAt);
     }
+    this.effects.setViewDistance(this.camera.position.distanceTo(frame.lookAt));
 
     if (render) {
       this.composer.render();

@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type { BloodLevel } from "../settings";
 import type { CombatEvent, Hand } from "../types";
+import { buildChunkGeometry, buildWoundGeometry, woundTexture } from "./gore";
 import { CANVAS_TOP, RING_FIGHT_HALF } from "./world";
 
 const MAX_DROPLETS = 900;
@@ -12,6 +13,11 @@ const MAX_HANDS = 4;
 const GIBS_PER_DECAPITATION = 24;
 const GIBS_PER_HAND = 16;
 const HEAD_RADIUS = 0.12;
+/** The neck is close to round where it is cut. */
+export const NECK_WOUND_RADIUS = 0.068;
+/** Where the cut through the neck sits on a severed head, in the head bone's frame, and how it faces. It is set a little way up inside the neck. */
+const HEAD_WOUND_OFFSET = new THREE.Vector3(0.0015, -0.038, 0.013);
+const HEAD_WOUND_TILT = -2.78;
 const HAND_RADIUS = 0.085;
 const MAX_STEP = 0.05;
 const SIMULATION_STEP = 1 / 60;
@@ -49,6 +55,8 @@ interface Gib {
   vrx: number; vry: number; vrz: number;
   life: number;
   scale: number;
+  /** Lengthens the chunk along one axis so no two look alike. */
+  stretch: number;
   bounces: number;
   stained: boolean;
   tooth: boolean;
@@ -59,6 +67,8 @@ interface SeveredHead {
   readonly defaultGeometry: THREE.BufferGeometry;
   readonly defaultScale: THREE.Vector3;
   readonly cap: THREE.Mesh;
+  /** A cap that sits on the lowest point of the part; otherwise it keeps the place it was built with. */
+  readonly capAtBase: boolean;
   baked: THREE.BufferGeometry | null;
   readonly radius: number;
   active: boolean;
@@ -194,7 +204,7 @@ export class Effects3D {
   private readonly decalGeometry: THREE.PlaneGeometry;
   private decalIndex = 0;
 
-  private readonly gibGeometry: THREE.IcosahedronGeometry;
+  private readonly gibGeometry: THREE.BufferGeometry;
   private readonly gibMaterial: THREE.MeshStandardMaterial;
   private readonly gibMesh: THREE.InstancedMesh;
   private readonly gibColor = new THREE.Color();
@@ -212,9 +222,11 @@ export class Effects3D {
   private readonly handGeometry: THREE.CapsuleGeometry;
   private readonly handMaterials: THREE.MeshStandardMaterial[] = [];
   private readonly hands: SeveredHead[] = [];
-  private readonly stumpGeometry: THREE.CylinderGeometry;
-  private readonly wristStumpGeometry: THREE.CylinderGeometry;
+  private readonly stumpGeometry: THREE.BufferGeometry;
+  private readonly wristStumpGeometry: THREE.BufferGeometry;
   private readonly stumpMaterial: THREE.MeshStandardMaterial;
+  private readonly stumpMap: THREE.CanvasTexture;
+  private dropletCloseness = 1;
   private readonly stumps: Stump[] = [];
   private readonly handStumps: Stump[] = [];
   private readonly lastDecapitationEvent = [null, null] as Array<number | null>;
@@ -253,12 +265,12 @@ export class Effects3D {
     for (let i = 0; i < 4; i += 1) this.splatMaps.push(splatTexture(0x3a1f_00d1 + i * 977));
 
     this.mistPositions = new Float32Array(MAX_MIST * 3);
-    this.mistColors = new Float32Array(MAX_MIST * 3);
+    this.mistColors = new Float32Array(MAX_MIST * 4).fill(1);
     this.mistGeometry = new THREE.BufferGeometry();
     this.mistGeometry.setAttribute("position", new THREE.BufferAttribute(this.mistPositions, 3));
-    this.mistGeometry.setAttribute("color", new THREE.BufferAttribute(this.mistColors, 3));
+    this.mistGeometry.setAttribute("color", new THREE.BufferAttribute(this.mistColors, 4));
     this.mistMap = mistTexture();
-    this.mistMaterial = new THREE.PointsMaterial({ size: 0.42, map: this.mistMap, transparent: true, opacity: 0.68, depthWrite: false, sizeAttenuation: true });
+    this.mistMaterial = new THREE.PointsMaterial({ size: 0.36, map: this.mistMap, transparent: true, opacity: 0.6, depthWrite: false, sizeAttenuation: true, vertexColors: true });
     this.mistPoints = new THREE.Points(this.mistGeometry, this.mistMaterial);
     this.mistPoints.frustumCulled = false;
     scene.add(this.mistPoints);
@@ -269,7 +281,7 @@ export class Effects3D {
 
     this.decalGeometry = new THREE.PlaneGeometry(0.2, 0.2);
     for (let i = 0; i < MAX_DECALS; i += 1) {
-      const decal = new THREE.Mesh(this.decalGeometry, new THREE.MeshStandardMaterial({ color: 0x6e0d13, map: this.splatMaps[i % this.splatMaps.length]!, alphaMap: this.splatMaps[i % this.splatMaps.length]!, transparent: true, opacity: 0.42, depthWrite: false, roughness: 0.25, metalness: 0 }));
+      const decal = new THREE.Mesh(this.decalGeometry, new THREE.MeshStandardMaterial({ color: 0x6e0d13, map: this.splatMaps[i % this.splatMaps.length]!, alphaMap: this.splatMaps[i % this.splatMaps.length]!, transparent: true, opacity: 0.42, depthWrite: false, roughness: 0.6, metalness: 0 }));
       decal.rotation.x = -Math.PI / 2;
       decal.position.y = CANVAS_TOP + 0.004 + i * 0.00015;
       decal.visible = false;
@@ -277,14 +289,14 @@ export class Effects3D {
       scene.add(decal);
     }
 
-    this.gibGeometry = new THREE.IcosahedronGeometry(0.04, 0);
-    this.gibMaterial = new THREE.MeshStandardMaterial({ color: 0x650a10, roughness: 0.82, metalness: 0 });
+    this.gibGeometry = buildChunkGeometry();
+    this.gibMaterial = new THREE.MeshStandardMaterial({ color: 0x5c0a10, roughness: 0.34, metalness: 0 });
     this.gibMesh = new THREE.InstancedMesh(this.gibGeometry, this.gibMaterial, MAX_GIBS);
     this.gibMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.gibMesh.frustumCulled = false;
     scene.add(this.gibMesh);
     for (let i = 0; i < MAX_GIBS; i += 1) {
-      const gib: Gib = { alive: false, x: 0, y: -50, z: 0, vx: 0, vy: 0, vz: 0, rx: 0, ry: 0, rz: 0, vrx: 0, vry: 0, vrz: 0, life: 0, scale: 0, bounces: 0, stained: false, tooth: false };
+      const gib: Gib = { alive: false, x: 0, y: -50, z: 0, vx: 0, vy: 0, vz: 0, rx: 0, ry: 0, rz: 0, vrx: 0, vry: 0, vrz: 0, life: 0, scale: 0, stretch: 1, bounces: 0, stained: false, tooth: false };
       this.gibs.push(gib);
       this.gibMesh.setColorAt(i, this.gibColor.setHex(0xffffff));
       this.writeGibMatrix(i, gib);
@@ -293,9 +305,10 @@ export class Effects3D {
 
     this.headGeometry = new THREE.SphereGeometry(HEAD_RADIUS, 18, 14);
     this.handGeometry = new THREE.CapsuleGeometry(0.055, 0.09, 6, 12);
-    this.stumpGeometry = new THREE.CylinderGeometry(0.072, 0.09, 0.035, 12);
-    this.wristStumpGeometry = new THREE.CylinderGeometry(0.035, 0.05, 0.03, 10);
-    this.stumpMaterial = new THREE.MeshStandardMaterial({ color: 0x56070c, roughness: 0.88, metalness: 0 });
+    this.stumpGeometry = buildWoundGeometry(NECK_WOUND_RADIUS, NECK_WOUND_RADIUS);
+    this.wristStumpGeometry = buildWoundGeometry(0.038, 0.042, 0.006);
+    this.stumpMap = woundTexture();
+    this.stumpMaterial = new THREE.MeshStandardMaterial({ map: this.stumpMap, roughness: 0.3, metalness: 0 });
     for (let i = 0; i < MAX_HEADS; i += 1) {
       const headMaterial = new THREE.MeshStandardMaterial({ color: 0x8a4d32, roughness: 0.76, metalness: 0 });
       this.headMaterials.push(headMaterial);
@@ -304,12 +317,12 @@ export class Effects3D {
       headMesh.castShadow = true;
       headMesh.visible = false;
       scene.add(headMesh);
-      const cap = new THREE.Mesh(new THREE.CircleGeometry(0.058, 14), this.stumpMaterial);
-      cap.rotation.x = Math.PI / 2;
-      cap.position.y = -0.1;
+      const cap = new THREE.Mesh(this.stumpGeometry, this.stumpMaterial);
+      cap.position.copy(HEAD_WOUND_OFFSET);
+      cap.rotation.x = HEAD_WOUND_TILT;
       cap.visible = false;
       headMesh.add(cap);
-      this.heads.push({ mesh: headMesh, defaultGeometry: this.headGeometry, defaultScale: headMesh.scale.clone(), cap, baked: null, radius: HEAD_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
+      this.heads.push({ mesh: headMesh, defaultGeometry: this.headGeometry, defaultScale: headMesh.scale.clone(), cap, capAtBase: false, baked: null, radius: HEAD_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
 
       const stumpMesh = new THREE.Mesh(this.stumpGeometry, this.stumpMaterial);
       stumpMesh.visible = false;
@@ -324,18 +337,26 @@ export class Effects3D {
       handMesh.castShadow = true;
       handMesh.visible = false;
       scene.add(handMesh);
-      const cap = new THREE.Mesh(new THREE.CircleGeometry(0.04, 12), this.stumpMaterial);
-      cap.rotation.x = Math.PI / 2;
+      const cap = new THREE.Mesh(this.wristStumpGeometry, this.stumpMaterial);
+      cap.rotation.x = Math.PI;
       cap.position.y = 0.02;
       cap.visible = false;
       handMesh.add(cap);
-      this.hands.push({ mesh: handMesh, defaultGeometry: this.handGeometry, defaultScale: handMesh.scale.clone(), cap, baked: null, radius: HAND_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
+      this.hands.push({ mesh: handMesh, defaultGeometry: this.handGeometry, defaultScale: handMesh.scale.clone(), cap, capAtBase: true, baked: null, radius: HAND_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
 
       const stumpMesh = new THREE.Mesh(this.wristStumpGeometry, this.stumpMaterial);
       stumpMesh.visible = false;
       scene.add(stumpMesh);
       this.handStumps.push({ mesh: stumpMesh, active: false, fountainLife: 0, accumulator: 0, seed: 1, direction: 1 });
     }
+  }
+
+  /**
+   * Droplets are drawn oversized so they read from the broadcast camera; a close camera shrinks
+   * them toward their real size. `distance` is from the camera to what it is looking at.
+   */
+  setViewDistance(distance: number): void {
+    this.dropletCloseness = THREE.MathUtils.clamp(finite(distance, 5) / 5, 0.4, 1);
   }
 
   setBloodLevel(level: BloodLevel): void {
@@ -435,7 +456,7 @@ export class Effects3D {
     } else {
       this.dropletQuaternion.identity();
     }
-    const fade = Math.min(1, droplet.life / (droplet.maxLife * 0.3));
+    const fade = Math.min(1, droplet.life / (droplet.maxLife * 0.3)) * this.dropletCloseness;
     this.dropletScale.set(droplet.radius * fade, droplet.radius * stretch * fade, droplet.radius * fade);
     this.dropletMatrix.compose(this.dropletVelocity.set(droplet.x, droplet.y, droplet.z), this.dropletQuaternion, this.dropletScale);
     this.dropletMesh.setMatrixAt(index, this.dropletMatrix);
@@ -455,9 +476,7 @@ export class Effects3D {
     this.mistPositions[index * 3] = mist.x;
     this.mistPositions[index * 3 + 1] = mist.y;
     this.mistPositions[index * 3 + 2] = mist.z;
-    this.mistColors[index * 3] = 0.6 * mist.scale;
-    this.mistColors[index * 3 + 1] = 0.07 * mist.scale;
-    this.mistColors[index * 3 + 2] = 0.08 * mist.scale;
+    this.mistColors[index * 4 + 3] = Math.min(1, mist.scale);
     this.mistGeometry.attributes.position!.needsUpdate = true;
     this.mistGeometry.attributes.color!.needsUpdate = true;
   }
@@ -638,7 +657,7 @@ export class Effects3D {
       material.color.setHex(baked.color);
       baked.geometry.computeBoundingBox();
       const box = baked.geometry.boundingBox;
-      if (box !== null) part.cap.position.y = box.min.y + 0.004;
+      if (part.capAtBase && box !== null) part.cap.position.y = box.min.y + 0.004;
       part.cap.visible = true;
     } else {
       part.mesh.geometry = part.defaultGeometry;
@@ -936,7 +955,10 @@ export class Effects3D {
     const gib = this.gibs[index]!;
     gib.alive = true;
     gib.tooth = tooth;
-    this.gibMesh.setColorAt(index, this.gibColor.setHex(tooth ? 0xf3ead6 : 0xffffff));
+    const shade = 0.55 + rand() * 0.45;
+    if (tooth) this.gibColor.setHex(0xf3ead6);
+    else this.gibColor.setRGB(shade, shade * (0.75 + rand() * 0.25), shade);
+    this.gibMesh.setColorAt(index, this.gibColor);
     if (this.gibMesh.instanceColor !== null) this.gibMesh.instanceColor.needsUpdate = true;
     gib.x = finite(x);
     gib.y = finite(y, 1.5);
@@ -951,7 +973,8 @@ export class Effects3D {
     gib.vry = (rand() - 0.5) * 18;
     gib.vrz = (rand() - 0.5) * 18;
     gib.life = tooth ? 6 : 1.8 + rand() * 1.2;
-    gib.scale = tooth ? 0.22 + rand() * 0.12 : 0.32 + rand() * 0.7;
+    gib.scale = tooth ? 0.22 + rand() * 0.12 : 0.3 + rand() * 0.6;
+    gib.stretch = tooth ? 1 : 0.7 + rand() * 0.9;
     gib.bounces = 0;
     gib.stained = false;
     this.writeGibMatrix(index, gib);
@@ -967,7 +990,7 @@ export class Effects3D {
       this.gibPosition.set(gib.x, gib.y, gib.z);
       this.gibEuler.set(gib.rx, gib.ry, gib.rz);
       this.gibQuaternion.setFromEuler(this.gibEuler);
-      this.gibScale.setScalar(gib.scale);
+      this.gibScale.set(gib.scale * gib.stretch, gib.scale, gib.scale / Math.sqrt(gib.stretch));
     }
     this.gibMatrix.compose(this.gibPosition, this.gibQuaternion, this.gibScale);
     this.gibMesh.setMatrixAt(index, this.gibMatrix);
@@ -1180,13 +1203,10 @@ export class Effects3D {
         continue;
       }
       const progress = 1 - mist.life / mist.maxLife;
-      const fade = Math.max(0, 1 - progress) * 0.7 * mist.scale;
       this.mistPositions[i * 3] = mist.x;
       this.mistPositions[i * 3 + 1] = mist.y + progress * 0.14;
       this.mistPositions[i * 3 + 2] = mist.z;
-      this.mistColors[i * 3] = fade;
-      this.mistColors[i * 3 + 1] = fade * 0.1;
-      this.mistColors[i * 3 + 2] = fade * 0.12;
+      this.mistColors[i * 4 + 3] = Math.max(0, 1 - progress) * Math.min(1, mist.scale);
     }
     if (mistChanged) {
       this.mistGeometry.attributes.position!.needsUpdate = true;
@@ -1270,10 +1290,7 @@ export class Effects3D {
     this.dropletGeometry.dispose();
     this.dropletMaterial.dispose();
     for (const map of this.splatMaps) map.dispose();
-    for (const part of [...this.heads, ...this.hands]) {
-      part.baked?.dispose();
-      part.cap.geometry.dispose();
-    }
+    for (const part of [...this.heads, ...this.hands]) part.baked?.dispose();
     this.mistGeometry.dispose();
     this.mistMaterial.dispose();
     this.mistMap.dispose();
@@ -1286,6 +1303,7 @@ export class Effects3D {
     this.stumpGeometry.dispose();
     this.wristStumpGeometry.dispose();
     this.stumpMaterial.dispose();
+    this.stumpMap.dispose();
     for (const head of this.heads) this.scene.remove(head.mesh);
     for (const hand of this.hands) this.scene.remove(hand.mesh);
     for (const stump of [...this.stumps, ...this.handStumps]) this.scene.remove(stump.mesh);

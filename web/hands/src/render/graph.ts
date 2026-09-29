@@ -194,6 +194,9 @@ export class SkinnedBoxer {
     const missing = Object.values(BONE_ADAPTER).filter((name) => !this.bones.has(name));
     if (missing.length > 0) throw new Error(`fighter GLB missing required bones: ${missing.join(", ")}`);
     if (this.headMeshes.length !== 1) throw new Error(`fighter GLB requires one BoxerHead mesh, found ${this.headMeshes.length}`);
+    const headShadow = this.headInjury.shadowMaterial();
+    this.headMeshes[0]!.customDepthMaterial = headShadow;
+    this.ownedMaterials.push(headShadow);
     for (const side of ["left", "right"] as const) {
       if (this.handMeshes[side].length !== 1) {
         throw new Error(`fighter GLB requires one ${side} glove mesh, found ${this.handMeshes[side].length}`);
@@ -238,9 +241,10 @@ export class SkinnedBoxer {
     return this.decapitated;
   }
 
+  /** Cuts the head off through the neck; the collar of the head mesh stays on the shoulders. */
   setDecapitated(value: boolean): void {
     this.decapitated = value;
-    for (const mesh of this.headMeshes) mesh.visible = !value;
+    this.headInjury.setSevered(value);
     this.bone("head")!.visible = !value;
   }
 

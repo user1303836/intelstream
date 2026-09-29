@@ -55,6 +55,21 @@ export const BODY_SITES: readonly InjurySite[] = [
   { name: "unused3", position: [0, -100, 0], radius: 0, cutHalfLength: 0, bleeds: false },
 ];
 
+/** Height of a cut through the neck in bind space, at the spine. It slopes down toward the throat so the chin stays on the head. */
+export const NECK_CUT_HEIGHT = 112.4;
+export const NECK_CUT_SLOPE = 0.3;
+export const NECK_CUT_DEPTH = -4;
+const UNCUT = 1000;
+
+/** The cut line, shared by the skin and the shadow pass. */
+const SEVER = /* glsl */ `
+uniform float uInjurySever;
+float injuryCutLine(vec3 p) {
+  float around = atan(p.z + 3.6, p.x);
+  return uInjurySever - ${NECK_CUT_SLOPE.toFixed(2)} * (p.z - (${NECK_CUT_DEPTH.toFixed(1)})) + 0.4 * sin(around * 6.0) + 0.22 * sin(around * 13.0 + 1.7);
+}
+`;
+
 export interface InjuryLevels {
   readonly bruise: Float32Array;
   readonly swell: Float32Array;
@@ -106,6 +121,7 @@ uniform float uInjuryBlood[${INJURY_SITE_COUNT}];
 uniform float uInjuryWetness;
 varying vec3 vInjuryPos;
 float injuryWet = 0.0;
+${SEVER}
 
 float injuryHash(float n) { return fract(sin(n) * 43758.5453123); }
 `;
@@ -113,6 +129,13 @@ float injuryHash(float n) { return fract(sin(n) * 43758.5453123); }
 const FRAGMENT_BODY = /* glsl */ `
 {
   vec3 injuryPos = vInjuryPos;
+  if (uInjurySever < ${UNCUT}.0) {
+    float below = injuryCutLine(injuryPos) - injuryPos.y;
+    if (below < 0.0) discard;
+    float torn = 1.0 - smoothstep(0.0, 1.8, below);
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.2, 0.008, 0.012), torn * 0.94);
+    injuryWet = max(injuryWet, torn);
+  }
   vec3 hematomaFresh = vec3(0.31, 0.05, 0.08);
   vec3 hematomaDeep = vec3(0.12, 0.035, 0.13);
   vec3 bloodColor = vec3(0.30, 0.008, 0.012);
@@ -185,6 +208,7 @@ export class InjuryShading {
     uInjuryImpactPush: { value: new THREE.Vector3() },
     uInjuryNose: { value: new THREE.Vector4(0, -1000, 0, 0) },
     uInjuryWetness: { value: 1 },
+    uInjurySever: { value: UNCUT },
   };
   private readonly index = new Map<string, number>();
 
@@ -248,6 +272,32 @@ export class InjuryShading {
 
   get impactDepth(): number {
     return this.uniforms.uInjuryImpactPush.value.length();
+  }
+
+  /** Removes everything above a cut through the neck, leaving a torn, bloodied edge. */
+  setSevered(severed: boolean): void {
+    this.uniforms.uInjurySever.value = severed ? NECK_CUT_HEIGHT : UNCUT;
+  }
+
+  get severed(): boolean {
+    return this.uniforms.uInjurySever.value < UNCUT;
+  }
+
+  /** Shadow pass material for the same mesh, so a severed head casts no shadow from the shoulders. */
+  shadowMaterial(): THREE.MeshDepthMaterial {
+    const material = new THREE.MeshDepthMaterial();
+    const uniforms = { uInjurySever: this.uniforms.uInjurySever };
+    material.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, uniforms);
+      shader.vertexShader = shader.vertexShader
+        .replace("#include <common>", "#include <common>\nvarying vec3 vInjuryPos;")
+        .replace("#include <begin_vertex>", "#include <begin_vertex>\nvInjuryPos = transformed;");
+      shader.fragmentShader = shader.fragmentShader
+        .replace("#include <common>", `#include <common>\nvarying vec3 vInjuryPos;\n${SEVER}`)
+        .replace("#include <clipping_planes_fragment>", `#include <clipping_planes_fragment>\nif (uInjurySever < ${UNCUT}.0 && vInjuryPos.y > injuryCutLine(vInjuryPos)) discard;`);
+    };
+    material.customProgramCacheKey = () => "hands-injury-shadow";
+    return material;
   }
 
   setJaw(amount: number): void {
