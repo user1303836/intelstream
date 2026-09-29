@@ -3,7 +3,7 @@ import { punchTiming, totalTicks } from "../manifest";
 import { buildArena } from "./arena";
 import { CameraDirector } from "./camera";
 import { bloodPatternFor, Effects3D } from "./effects";
-import { drawHud, HUD_MAX_GUARD, HUD_MAX_POISE, scoreTotal } from "./hud";
+import { drawHud, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, HUD_MAX_GUARD, HUD_MAX_POISE, scoreTotal } from "./hud";
 import { buildRing } from "./ring";
 import { resizeHighDpi } from "./viewport";
 import { PALETTES, worldMapping } from "./world";
@@ -450,6 +450,17 @@ describe("viewport and broadcast HUD", () => {
     const state = { ...snapshot(), phase_ticks_remaining: 1205 };
     drawHud(ctx, 800, 600, state, Object.fromEntries(publicPlayers.map((player) => [player.id, player])), "one", null, 0, 20);
     expect(texts).toContain("1:00");
+  });
+});
+
+describe("final reveal", () => {
+  const final = { version: 3 as const, type: "final" as const, match_id: "m", winner_id: "one", method: "ko" as const, round: 1, scorecards: [], ratings: {} };
+  it("holds stoppage results back for the slow-motion fall and shows decisions at once", () => {
+    expect(finalRevealDelay(final)).toBe(FINAL_REVEAL_DELAY_SECONDS);
+    expect(finalRevealDelay({ ...final, method: "tko" })).toBe(FINAL_REVEAL_DELAY_SECONDS);
+    expect(finalRevealDelay({ ...final, method: "flash_ko" })).toBe(FINAL_REVEAL_DELAY_SECONDS);
+    expect(finalRevealDelay({ ...final, method: "decision" })).toBe(0);
+    expect(finalRevealDelay(null)).toBe(0);
   });
 });
 

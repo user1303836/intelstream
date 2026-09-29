@@ -11,7 +11,7 @@ import { buildArena, type BuiltArena } from "./arena";
 import { CameraDirector } from "./camera";
 import { Effects3D, type BakedPart } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, type ArcadeDislocation } from "./graph";
-import { drawHud } from "./hud";
+import { drawHud, finalRevealDelay, STOPPAGE_METHODS } from "./hud";
 import { ResolutionScaler } from "./quality";
 
 export type ArcadeInjury =
@@ -284,6 +284,8 @@ export class FightRenderer {
   private viewerHitFlash = 0;
   private finishSlowMotion = 0;
   private finishSeen = false;
+  private finalRevealAt = 0;
+  private frameSeconds = 0;
   private readonly pendingContacts: Array<{
     event: CombatEvent;
     presentationEvent: CombatEvent;
@@ -417,8 +419,13 @@ export class FightRenderer {
     this.viewerId = viewerId;
   }
 
+  /** A stoppage's result panel waits for the slow-motion fall; decisions show at once. */
   setFinal(final: FinalMessage | null): void {
     this.final = final;
+    this.finalRevealAt = this.frameSeconds + finalRevealDelay(final);
+    if (final === null || final.winner_id === null || !STOPPAGE_METHODS.has(final.method)) return;
+    const index = this.buffer.latest()?.fighters.findIndex((fighter) => fighter.player_id === final.winner_id) ?? -1;
+    if (index >= 0) this.graphs?.[index]?.celebrate();
   }
 
   setReconnect(milliseconds: number): void {
@@ -751,13 +758,14 @@ export class FightRenderer {
     }
 
     const seconds = time / 1000;
+    this.frameSeconds = seconds;
     if (manual) this.lastManualTime = time;
     const current = this.settings();
     this.setBloodLevel(current.blood);
 
     const latest = this.buffer.latest();
     const finishing = latest?.result !== null && latest?.result !== undefined
-      && ["ko", "flash_ko", "tko"].includes(latest.result.finish_method);
+      && STOPPAGE_METHODS.has(latest.result.finish_method);
     if (finishing && !this.finishSeen) {
       this.finishSeen = true;
       this.finishSlowMotion = 2.2;
@@ -966,7 +974,7 @@ export class FightRenderer {
       ctx.fillStyle = vignette;
       ctx.fillRect(0, 0, viewport.width, viewport.height);
     }
-    drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.final, this.reconnectMs, this.simulation.tick_rate);
+    drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.frameSeconds >= this.finalRevealAt ? this.final : null, this.reconnectMs, this.simulation.tick_rate);
   }
 
   destroy(): void {

@@ -330,6 +330,8 @@ export class BoxingGraph {
   private resting = false;
   private seated = 0;
   private stillTime = 0;
+  private celebrateTime = 0;
+  private celebration = 0;
   private readonly feet: [FootState, FootState] = [
     { planted: new THREE.Vector3(), from: new THREE.Vector3(), to: new THREE.Vector3(), progress: 1, stepping: false, duration: 0.2 },
     { planted: new THREE.Vector3(), from: new THREE.Vector3(), to: new THREE.Vector3(), progress: 1, stepping: false, duration: 0.2 },
@@ -381,6 +383,11 @@ export class BoxingGraph {
 
   get stoolVisible(): boolean {
     return this.stool.group.visible;
+  }
+
+  /** Raises both gloves overhead for a stoppage win, then settles back to the guard. */
+  celebrate(seconds = 3.2): void {
+    this.celebrateTime = seconds;
   }
 
   private makeHand(): { position: THREE.Vector3; knuckles: THREE.Vector3; palm: THREE.Vector3; pole: THREE.Vector3 } {
@@ -575,6 +582,8 @@ export class BoxingGraph {
     const wantSeated = this.resting && this.stillTime > 0.2 && this.downState === "up";
     this.seated = smooth(this.seated, wantSeated ? 1 : 0, wantSeated ? 2.2 : 4, dt);
     this.stool.group.visible = this.resting && this.stillTime > 0.05 && this.downState === "up";
+    this.celebrateTime = Math.max(0, this.celebrateTime - dt);
+    this.celebration = smooth(this.celebration, this.celebrateTime > 0 && this.downState === "up" ? 1 : 0, 3.5, dt);
     const stamina = fighter.stamina / Math.max(1, fighter.maximum_stamina);
     this.tired = smooth(this.tired, clamp((0.55 - stamina) / 0.5, 0, 1), 2, dt);
     this.stunAmount = smooth(this.stunAmount, Math.min(1, fighter.stunned_ticks / 24), 8, dt);
@@ -777,6 +786,7 @@ export class BoxingGraph {
     }
 
     // Knockdown overrides everything above.
+    if (this.celebration > 0.001 && this.downState === "up") this.applyCelebratePose(this.celebration, time, mirror, leadHand, rearHand, lead, rear);
     if (this.seated > 0.001 && this.downState === "up") this.applySeatedPose(this.seated, time, mirror, leadHand, rearHand, lead, rear);
     if (this.downState !== "up") this.applyDownPose(mirror, leadHand, rearHand, lead, rear, headRest);
 
@@ -1114,6 +1124,37 @@ export class BoxingGraph {
         this.feetInitialized = false;
       }
     }
+  }
+
+  private applyCelebratePose(
+    blend: number,
+    time: number,
+    mirror: number,
+    leadHand: { position: THREE.Vector3; knuckles: THREE.Vector3; palm: THREE.Vector3; pole: THREE.Vector3 },
+    rearHand: { position: THREE.Vector3; knuckles: THREE.Vector3; palm: THREE.Vector3; pole: THREE.Vector3 },
+    lead: { position: THREE.Vector3; toe: THREE.Vector3; heel: number; pole: THREE.Vector3 },
+    rear: { position: THREE.Vector3; toe: THREE.Vector3; heel: number; pole: THREE.Vector3 },
+  ): void {
+    const torso = this.torso;
+    const lerp = THREE.MathUtils.lerp;
+    const pump = Math.sin(time * 6) * 0.04;
+    torso.hips.y = lerp(torso.hips.y, STANCE.hipsHeight + 0.035 + pump * 0.5, blend);
+    torso.hipsYaw = lerp(torso.hipsYaw, 0, blend);
+    torso.hipsPitch = lerp(torso.hipsPitch, -0.12, blend);
+    torso.hipsRoll = lerp(torso.hipsRoll, 0, blend);
+    torso.shouldersYaw = lerp(torso.shouldersYaw, 0, blend);
+    torso.spinePitch = lerp(torso.spinePitch, -0.1, blend);
+    torso.headPitch = lerp(torso.headPitch, -0.25, blend);
+    leadHand.position.lerp(seatedScratch.set(0.3 * mirror, 1.86 + pump, 0.08), blend);
+    rearHand.position.lerp(seatedScratch.set(-0.3 * mirror, 1.84 + pump, 0.06), blend);
+    leadHand.palm.lerp(seatedScratch.set(0, 0, 1), blend).normalize();
+    rearHand.palm.lerp(seatedScratch.set(0, 0, 1), blend).normalize();
+    leadHand.knuckles.lerp(seatedScratch.set(0.15 * mirror, 1, 0), blend).normalize();
+    rearHand.knuckles.lerp(seatedScratch.set(-0.15 * mirror, 1, 0), blend).normalize();
+    leadHand.pole.lerp(seatedScratch.set(mirror, 0.1, -0.3), blend).normalize();
+    rearHand.pole.lerp(seatedScratch.set(-mirror, 0.1, -0.3), blend).normalize();
+    lead.heel = lerp(lead.heel, 0.45, blend);
+    rear.heel = lerp(rear.heel, 0.45, blend);
   }
 
   private applySeatedPose(

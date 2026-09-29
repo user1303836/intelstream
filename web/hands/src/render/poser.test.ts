@@ -51,6 +51,21 @@ describe("rest corner", () => {
   });
 });
 
+describe("celebration", () => {
+  it("raises both gloves overhead for a stoppage win and settles back afterwards", () => {
+    const { boxer, graph } = makeGraph();
+    const fighter = facingOpponent(baseFighter("one"));
+    const opponent = opponentFor("two");
+    graph.celebrate(1.5);
+    run(graph, fighter, opponent, 60, undefined);
+    expect(bone(boxer, "gloveL").y).toBeGreaterThan(1.7);
+    expect(bone(boxer, "gloveR").y).toBeGreaterThan(1.7);
+    run(graph, fighter, opponent, 180, undefined, 30, 1);
+    expect(bone(boxer, "gloveL").y).toBeLessThan(1.55);
+    expect(bone(boxer, "gloveR").y).toBeLessThan(1.55);
+  });
+});
+
 describe("skinned rig solver", () => {
   it("reproduces the rest limb frames when solving onto rest targets", () => {
     const { boxer } = makeGraph();

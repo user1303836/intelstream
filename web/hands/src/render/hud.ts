@@ -153,6 +153,14 @@ function centerPanel(ctx: CanvasRenderingContext2D, width: number, height: numbe
   ctx.fillText(subtitle, width / 2, y + 58);
 }
 
+export const STOPPAGE_METHODS: ReadonlySet<string> = new Set(["ko", "flash_ko", "tko"]);
+export const FINAL_REVEAL_DELAY_SECONDS = 3.6;
+
+/** Seconds to hold the result panel back so a stoppage's slow-motion fall stays visible. */
+export function finalRevealDelay(final: FinalMessage | null): number {
+  return final !== null && STOPPAGE_METHODS.has(final.method) ? FINAL_REVEAL_DELAY_SECONDS : 0;
+}
+
 export function drawHud(
   ctx: CanvasRenderingContext2D,
   width: number,

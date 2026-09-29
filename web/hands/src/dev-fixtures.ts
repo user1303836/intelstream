@@ -38,6 +38,7 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
 
   let tick = 0;
   let eventId = 0;
+  let finalSent = false;
   const interval = window.setInterval(() => {
     tick += 3;
     const t = tick / 30;
@@ -118,6 +119,10 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       fighters: [{ ...one }, { ...two }], events, result: null, checksum: "a".repeat(64),
     };
     renderer.push(snapshot);
+    if (finisher !== null && t >= 3.4 && !finalSent) {
+      finalSent = true;
+      renderer.setFinal({ version: 3, type: "final", match_id: "fixture", winner_id: one.player_id, method: "ko", round: 3, scorecards: [], ratings: {} });
+    }
     (window as unknown as Record<string, unknown>).__fixtureDebug = {
       tick,
       t: Number(t.toFixed(2)),
