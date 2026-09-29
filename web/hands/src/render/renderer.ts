@@ -15,6 +15,7 @@ import { CameraDirector, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE, cornerFrame,
 import { Effects3D, type BakedPart } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, type ArcadeDislocation } from "./graph";
 import { drawHud, finalRevealDelay, RoundStatsTracker, STOPPAGE_METHODS, RoundClock } from "./hud";
+import { BLUE_CORNER_OUTFIT, CUTMAN_OUTFIT, RED_CORNER_OUTFIT, REFEREE_OUTFIT } from "./outfit";
 import { ResolutionScaler } from "./quality";
 import { planKnockoutReplay, replayTick, type ReplayPlan } from "./replay";
 import { GloveTrail } from "./trails";
@@ -236,44 +237,6 @@ export function bakeSkinnedPart(mesh: THREE.SkinnedMesh, pivotPosition: THREE.Ve
   return { geometry, map, color };
 }
 
-function cornerShirtTexture(color: string): THREE.CanvasTexture {
-  const canvas = document.createElement("canvas");
-  canvas.width = 256;
-  canvas.height = 256;
-  const ctx = canvas.getContext("2d");
-  if (ctx !== null) {
-    ctx.fillStyle = color;
-    ctx.fillRect(0, 0, 256, 256);
-    ctx.fillStyle = "rgba(0,0,0,0.35)";
-    ctx.fillRect(0, 0, 256, 16);
-    ctx.fillStyle = "rgba(255,255,255,0.12)";
-    ctx.fillRect(96, 60, 64, 22);
-  }
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.flipY = false;
-  return texture;
-}
-
-function refereeShirtTexture(): THREE.CanvasTexture {
-  const canvas = document.createElement("canvas");
-  canvas.width = 256;
-  canvas.height = 256;
-  const ctx = canvas.getContext("2d");
-  if (ctx !== null) {
-    ctx.fillStyle = "#9fb4d8";
-    ctx.fillRect(0, 0, 256, 256);
-    ctx.fillStyle = "rgba(255,255,255,0.08)";
-    for (let x = 0; x < 256; x += 8) ctx.fillRect(x, 0, 2, 256);
-    ctx.fillStyle = "#1b2230";
-    ctx.fillRect(0, 0, 256, 18);
-  }
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.flipY = false;
-  return texture;
-}
-
 function blankFighter(playerId: string): FighterSnapshot {
   return {
     player_id: playerId, x: 0, y: 0, facing: 1, facing_x: 1000, facing_y: 0, velocity_x: 0, velocity_y: 0,
@@ -382,7 +345,6 @@ export class FightRenderer {
   private cornermen: [BoxingGraph, BoxingGraph] | null = null;
   private trails: GloveTrail[] = [];
   private readonly trailGlove = new THREE.Vector3();
-  private readonly cornerShirts: THREE.CanvasTexture[] = [];
   private readonly cornermanPosition = new THREE.Vector3();
   private readonly cornermanVelocity = new THREE.Vector3();
   private cutmen: [BoxingGraph, BoxingGraph] | null = null;
@@ -425,7 +387,6 @@ export class FightRenderer {
   private destroyed = false;
   private graphs: [BoxingGraph, BoxingGraph] | null = null;
   private glbLoading = false;
-  private refereeShirt: THREE.CanvasTexture | null = null;
   private graphsReady: Promise<void> = Promise.resolve();
   private readonly headCache = [new THREE.Vector3(), new THREE.Vector3()];
   private readonly headCacheValid = [false, false];
@@ -555,23 +516,17 @@ export class FightRenderer {
       .then(async (gltf) => {
         if (this.destroyed) return;
         const first = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
-        const second = new SkinnedBoxer(gltf, { skin: 0x6e4128, gear: 0xb91c1c });
+        const second = new SkinnedBoxer(gltf, { skin: 0x6e4128, gear: 0xb91c1c, tint: 0xa9816a });
         this.graphs = [new BoxingGraph(first, this.mapping), new BoxingGraph(second, this.mapping)];
         this.syncInjuryPresentation(0);
         this.syncInjuryPresentation(1);
-        this.refereeShirt = refereeShirtTexture();
-        const official = new SkinnedBoxer(gltf, { skin: 0xc79b76, gear: 0x3b57b8, pants: 0x14161c, bodyMap: this.refereeShirt });
+        const official = new SkinnedBoxer(gltf, { skin: 0xc79b76, gear: 0x3b57b8, tint: 0xf2dccb, outfit: REFEREE_OUTFIT });
         this.referee = new BoxingGraph(official, this.mapping, { referee: true });
-        const blueShirt = cornerShirtTexture("#2b4c9e");
-        const redShirt = cornerShirtTexture("#9e2b2b");
-        this.cornerShirts.push(blueShirt, redShirt);
-        const blueCorner = new SkinnedBoxer(gltf, { skin: 0x8a5a3b, gear: 0x1b2230, pants: 0x14161c, bodyMap: blueShirt });
-        const redCorner = new SkinnedBoxer(gltf, { skin: 0xd9a77c, gear: 0x1b2230, pants: 0x14161c, bodyMap: redShirt });
+        const blueCorner = new SkinnedBoxer(gltf, { skin: 0x8a5a3b, gear: 0x1b2230, tint: 0xa98468, outfit: BLUE_CORNER_OUTFIT });
+        const redCorner = new SkinnedBoxer(gltf, { skin: 0xd9a77c, gear: 0x1b2230, tint: 0xffeedd, outfit: RED_CORNER_OUTFIT });
         this.cornermen = [new BoxingGraph(blueCorner, this.mapping, { referee: true }), new BoxingGraph(redCorner, this.mapping, { referee: true })];
-        const whiteShirt = cornerShirtTexture("#e3e4e8");
-        this.cornerShirts.push(whiteShirt);
-        const blueCutman = new SkinnedBoxer(gltf, { skin: 0xb98c66, gear: 0x1b2230, pants: 0x14161c, bodyMap: whiteShirt });
-        const redCutman = new SkinnedBoxer(gltf, { skin: 0x5a3a26, gear: 0x1b2230, pants: 0x14161c, bodyMap: whiteShirt });
+        const blueCutman = new SkinnedBoxer(gltf, { skin: 0xb98c66, gear: 0x1b2230, tint: 0xd8b498, outfit: CUTMAN_OUTFIT });
+        const redCutman = new SkinnedBoxer(gltf, { skin: 0x5a3a26, gear: 0x1b2230, tint: 0x8a6650, outfit: CUTMAN_OUTFIT });
         this.cutmen = [new BoxingGraph(blueCutman, this.mapping, { referee: true }), new BoxingGraph(redCutman, this.mapping, { referee: true })];
         blueCutman.root.visible = false;
         redCutman.root.visible = false;
@@ -1589,9 +1544,6 @@ export class FightRenderer {
       }
       this.cutmen = null;
     }
-    for (const shirt of this.cornerShirts) shirt.dispose();
-    this.cornerShirts.length = 0;
-    this.refereeShirt?.dispose();
     for (const light of this.lights) this.scene.remove(light);
     this.keyLight?.shadow.map?.dispose();
     this.keyLight?.shadow.dispose();

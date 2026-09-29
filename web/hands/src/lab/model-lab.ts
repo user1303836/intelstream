@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "../render/graph";
+import { BLUE_CORNER_OUTFIT, CUTMAN_OUTFIT, RED_CORNER_OUTFIT, REFEREE_OUTFIT, type OfficialOutfit } from "../render/outfit";
 import { GloveTrail } from "../render/trails";
 import { worldMapping } from "../render/world";
 import type { FighterSnapshot, Hand, PunchClass, Target } from "../types";
@@ -11,8 +12,16 @@ import type { FighterSnapshot, Hand, PunchClass, Target } from "../types";
  * weave, pull, jab_left, straight_right, hook_left, uppercut_right, ...,
  * hit_head, hit_body, block, knockdown, getup, stunned, taunt, clinch, seated, celebrate, wave_off, break, touch_gloves, walk),
  * t (seconds into the pose), stance (orthodox|southpaw), cam (front|side|
- * three-quarter|top|back), skeleton (1).
+ * three-quarter|top|back), skeleton (1), outfit (referee|corner_blue|corner_red|cutman) to
+ * show a ring official, whose poses are idle, count, attend, treat, wave_off and break.
  */
+
+const OUTFITS: Readonly<Record<string, { readonly outfit: OfficialOutfit; readonly tint: number }>> = {
+  referee: { outfit: REFEREE_OUTFIT, tint: 0xf2dccb },
+  corner_blue: { outfit: BLUE_CORNER_OUTFIT, tint: 0xa98468 },
+  corner_red: { outfit: RED_CORNER_OUTFIT, tint: 0xffeedd },
+  cutman: { outfit: CUTMAN_OUTFIT, tint: 0xd8b498 },
+};
 
 type Draft = { -readonly [K in keyof FighterSnapshot]: FighterSnapshot[K] };
 
@@ -30,6 +39,7 @@ const base = (): Draft => ({
 
 const CAMERAS: Record<string, [number, number, number]> = {
   face: [0.25, 1.55, 1.0],
+  hand: [0.55, 1.05, 0.75],
   front: [0, 1.35, 3.4],
   side: [3.4, 1.3, 0.2],
   "three-quarter": [2.4, 1.5, 2.6],
@@ -46,6 +56,8 @@ export class ModelLab {
   private boxer: SkinnedBoxer | null = null;
   private trails: GloveTrail[] = [];
   private readonly trailGlove = new THREE.Vector3();
+  private readonly treatEye = new THREE.Vector3(0, 1.22, 0.78);
+  private readonly treatFacing = new THREE.Vector3(0, 0, -1);
   private skeletonHelper: THREE.SkeletonHelper | null = null;
   private raf = 0;
   private previous = performance.now();
@@ -68,7 +80,8 @@ export class ModelLab {
     this.camera = new THREE.PerspectiveCamera(38, 1, 0.1, 60);
     const cam = CAMERAS[this.params.get("cam") ?? "three-quarter"] ?? CAMERAS["three-quarter"]!;
     this.camera.position.set(...cam);
-    this.camera.lookAt(0, this.params.get("cam") === "face" ? 1.5 : 1.0, 0);
+    if (this.params.get("cam") === "hand") this.camera.lookAt(0.27, 0.84, 0.12);
+    else this.camera.lookAt(0, this.params.get("cam") === "face" ? 1.5 : 1.0, 0);
     this.setupLighting();
   }
 
@@ -156,8 +169,9 @@ export class ModelLab {
   async start(): Promise<void> {
     try {
       const gltf = await loadBoxerGlb();
-      this.boxer = new SkinnedBoxer(gltf, { skin: 0xa9744f, gear: 0x1d4ed8 });
-      this.graph = new BoxingGraph(this.boxer, worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }));
+      const official = OUTFITS[this.params.get("outfit") ?? ""];
+      this.boxer = new SkinnedBoxer(gltf, official === undefined ? { skin: 0xa9744f, gear: 0x1d4ed8 } : { skin: 0xa9744f, gear: 0x1b2230, ...official });
+      this.graph = new BoxingGraph(this.boxer, worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }), { referee: official !== undefined });
       this.scene.add(this.boxer.root);
       this.trails = [new GloveTrail(new THREE.Color(0xdbe4ff)), new GloveTrail(new THREE.Color(0xdbe4ff))];
       for (const trail of this.trails) this.scene.add(trail.mesh);
@@ -227,6 +241,9 @@ export class ModelLab {
     if (this.params.get("pose") === "wave_off") graph.waveOff(60);
     if (this.params.get("pose") === "break") graph.breakClinch(60);
     graph.setCountdown(this.params.get("pose") === "touch_gloves" ? 30 : null);
+    graph.setRefereeCount(this.params.get("pose") === "count", 3);
+    graph.attend(this.params.get("pose") === "attend");
+    graph.treat(this.params.get("pose") === "treat" ? this.treatEye : null, this.treatFacing, 1);
     graph.update(fighter, opponent, dt, this.elapsed, false, "full", sampledTick, head);
     for (const [index, bone] of (["gloveL", "gloveR"] as const).entries()) {
       this.boxer!.rig.bones[bone].getWorldPosition(this.trailGlove);

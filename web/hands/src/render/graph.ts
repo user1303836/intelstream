@@ -9,6 +9,7 @@ import { BONE_ADAPTER } from "./skeleton";
 export { BONE_ADAPTER };
 import { FIGHTER_TEXTURE_DATA_URLS } from "../assets/fighter-textures";
 import { BODY_SITES, HEAD_SITES, InjuryShading, applyBodyTrauma, applyHeadTrauma } from "./injury";
+import { applyOutfitShading, buildCuffGeometry, buildHandGeometry, type OfficialOutfit, type OutfitPart } from "./outfit";
 import { PoseSolver, STANCE, easeIn, easeOut, mirrorX, smoothstep, vec, type FootTarget, type HandTarget, type PoseDescription } from "./poser";
 import { SolvedRig } from "./rig";
 import type { WorldMapping } from "./world";
@@ -99,10 +100,14 @@ export function applyFighterSkin(target: THREE.Object3D, palette: BoxerPaletteCo
     let material = bySource.get(sourceName);
     if (material === undefined) {
       const isSkin = sourceName === "MHeadMat0" || sourceName === "MBodyMat0";
-      const color = sourceName === "GlovesMat0" ? palette.gear : sourceName === "PantsMat0" ? (palette.pants ?? palette.gear) : 0xffffff;
-      const map = sourceName === "MBodyMat0" && palette.bodyMap !== undefined ? palette.bodyMap : fighterTexture(textureName);
+      const outfit = palette.outfit;
+      const color = sourceName === "GlovesMat0" ? palette.gear
+        : sourceName === "PantsMat0" ? (outfit?.trousers ?? palette.gear)
+        : sourceName === "ShoesMat0" && outfit !== undefined ? outfit.shoes
+        : isSkin ? (palette.tint ?? 0xffffff) : 0xffffff;
+      const map = fighterTexture(textureName);
       material = isSkin
-        ? new THREE.MeshPhysicalMaterial({ map, color, roughness: sourceName === "MBodyMat0" && palette.bodyMap !== undefined ? 0.85 : 0.58, metalness: 0.02, clearcoat: palette.bodyMap !== undefined && sourceName === "MBodyMat0" ? 0 : 0.25, clearcoatRoughness: 0.6 })
+        ? new THREE.MeshPhysicalMaterial({ map, color, roughness: 0.58, metalness: 0.02, clearcoat: 0.25, clearcoatRoughness: 0.6 })
         : new THREE.MeshStandardMaterial({ map, color, roughness: 0.4, metalness: 0.03 });
       material.name = sourceName;
       bySource.set(sourceName, material);
@@ -111,6 +116,8 @@ export function applyFighterSkin(target: THREE.Object3D, palette: BoxerPaletteCo
       if (sourceName === "GlovesMat0") gloves = material;
       if (sourceName === "MHeadMat0") headInjury = new InjuryShading(material, HEAD_SITES);
       if (sourceName === "MBodyMat0") bodyInjury = new InjuryShading(material, BODY_SITES);
+      const part = OUTFIT_PARTS[sourceName];
+      if (outfit !== undefined && part !== undefined) applyOutfitShading(material, part, outfit);
     }
     object.material = material;
     object.castShadow = true;
@@ -126,9 +133,15 @@ export function applyFighterSkin(target: THREE.Object3D, palette: BoxerPaletteCo
 export interface BoxerPaletteColors {
   readonly skin: number;
   readonly gear: number;
-  readonly pants?: number;
-  readonly bodyMap?: THREE.Texture;
+  /** Multiplies the skin textures; white leaves the scanned skin tone as it is. */
+  readonly tint?: number;
+  /** Dresses the body as a ring official and swaps the gloves for hands. */
+  readonly outfit?: OfficialOutfit;
 }
+
+const OUTFIT_PARTS: Readonly<Record<string, OutfitPart>> = { MHeadMat0: "head", MBodyMat0: "body", ShoesMat0: "shoes", PantsMat0: "pants" };
+/** The lit tone of the scanned face texture in linear light, so bare hands match the face. */
+const SCANNED_SKIN = new THREE.Color().setRGB(0.6, 0.32, 0.19, THREE.LinearSRGBColorSpace);
 
 export type ArcadeDislocation = "jaw" | "shoulder_left" | "shoulder_right";
 
@@ -146,12 +159,14 @@ export class SkinnedBoxer {
   /** Bone-derived measurements in world units (after MODEL_SCALE). */
   readonly metrics: { armUpper: number; armFore: number; legThigh: number; legShin: number; headRestY: number; chestRestY: number; ankleRestY: number };
   private readonly skinMaterials: readonly THREE.MeshPhysicalMaterial[];
-  private readonly ownedMaterials: readonly THREE.Material[];
+  private readonly ownedMaterials: THREE.Material[];
   private readonly gearMaterial: THREE.MeshStandardMaterial;
   private readonly headMeshes: THREE.SkinnedMesh[] = [];
   private readonly handMeshes: Record<Hand, THREE.SkinnedMesh[]> = { left: [], right: [] };
   private decapitated = false;
   private readonly dismemberedHands: Record<Hand, boolean> = { left: false, right: false };
+  private readonly dressed: boolean;
+  private readonly ownedGeometries: THREE.BufferGeometry[] = [];
   readonly gearBaseColor: THREE.Color;
   readonly skinBaseColor: THREE.Color;
   readonly headInjury: InjuryShading;
@@ -163,12 +178,13 @@ export class SkinnedBoxer {
     this.root.add(instance);
     const materials = applyFighterSkin(instance, palette);
     this.skinMaterials = materials.skin;
-    this.ownedMaterials = materials.owned;
+    this.ownedMaterials = [...materials.owned];
     this.gearMaterial = materials.gloves;
     this.headInjury = materials.headInjury;
     this.bodyInjury = materials.bodyInjury;
     this.gearBaseColor = new THREE.Color(palette.gear);
     this.skinBaseColor = new THREE.Color(palette.skin);
+    this.dressed = palette.outfit !== undefined;
     instance.traverse((object) => {
       if (object instanceof THREE.SkinnedMesh && object.name === "BoxerHead") this.headMeshes.push(object);
       if (object instanceof THREE.SkinnedMesh && object.name === "BoxerGloveLeft") this.handMeshes.left.push(object);
@@ -185,6 +201,7 @@ export class SkinnedBoxer {
     }
     this.root.updateMatrixWorld(true);
     this.rig = new SolvedRig(this.root);
+    if (palette.outfit !== undefined) this.addHands(palette.outfit, palette.tint ?? 0xffffff);
     const rigMetrics = this.rig.metrics;
     this.metrics = {
       armUpper: rigMetrics.armL.upper,
@@ -233,7 +250,37 @@ export class SkinnedBoxer {
 
   setHandDismembered(side: Hand, value: boolean): void {
     this.dismemberedHands[side] = value;
-    for (const mesh of this.handMeshes[side]) mesh.visible = !value;
+    for (const mesh of this.handMeshes[side]) mesh.visible = !value && !this.dressed;
+  }
+
+  private addHands(outfit: OfficialOutfit, tint: number): void {
+    const gloved = outfit.gloves !== null;
+    const hand = new THREE.MeshStandardMaterial({
+      color: gloved ? outfit.gloves! : SCANNED_SKIN.clone().multiply(new THREE.Color(tint)),
+      roughness: gloved ? 0.38 : 0.6,
+      metalness: 0.02,
+    });
+    const cuff = gloved ? hand : new THREE.MeshStandardMaterial({ color: new THREE.Color(outfit.shirt).multiplyScalar(0.9), roughness: 0.88, metalness: 0 });
+    this.ownedMaterials.push(hand);
+    if (cuff !== hand) this.ownedMaterials.push(cuff);
+    const cuffGeometry = buildCuffGeometry();
+    this.ownedGeometries.push(cuffGeometry);
+    for (const side of ["left", "right"] as const) {
+      for (const mesh of this.handMeshes[side]) mesh.visible = false;
+      const geometry = buildHandGeometry(side);
+      this.ownedGeometries.push(geometry);
+      const suffix = side === "left" ? "L" : "R";
+      for (const [bone, part, material, name] of [
+        [this.rig.bones[`glove${suffix}`], geometry, hand, `hand-${side}`],
+        [this.rig.bones[`elbow${suffix}`], cuffGeometry, cuff, `cuff-${side}`],
+      ] as const) {
+        const mesh = new THREE.Mesh(part, material);
+        mesh.name = name;
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        bone.add(mesh);
+      }
+    }
   }
 
   setSkinClearcoat(value: number): void {
@@ -242,6 +289,7 @@ export class SkinnedBoxer {
 
   dispose(): void {
     for (const material of this.ownedMaterials) material.dispose();
+    for (const geometry of this.ownedGeometries) geometry.dispose();
   }
 }
 
@@ -1831,15 +1879,15 @@ function buildEnswell(): { group: THREE.Group; dispose: () => void } {
   const group = new THREE.Group();
   group.name = "enswell";
   group.visible = false;
-  const plateGeometry = new THREE.CylinderGeometry(0.03, 0.03, 0.008, 16);
-  const handleGeometry = new THREE.CylinderGeometry(0.008, 0.008, 0.06, 8);
+  const plateGeometry = new THREE.CylinderGeometry(3.2, 3.2, 0.9, 20);
+  const handleGeometry = new THREE.CylinderGeometry(0.8, 0.8, 6, 10);
   const metal = new THREE.MeshStandardMaterial({ color: 0xc8ccd2, roughness: 0.3, metalness: 0.9 });
   const plate = new THREE.Mesh(plateGeometry, metal);
   plate.rotation.x = Math.PI / 2;
-  plate.position.set(0, 0.07, 0.075);
+  plate.position.set(0, 9.5, 3.4);
   group.add(plate);
   const handle = new THREE.Mesh(handleGeometry, metal);
-  handle.position.set(0, 0.035, 0.075);
+  handle.position.set(0, 5.5, 2.4);
   group.add(handle);
   return {
     group,
