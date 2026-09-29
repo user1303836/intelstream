@@ -32,6 +32,8 @@ RECOVERY_CANCEL_PERCENT: int = _MANIFEST["combos"]["recovery_cancel_percent"]
 KNOCKDOWN_NEUTRAL_SEPARATION: int = _MANIFEST["knockdown"]["neutral_separation"]
 REFEREE_WALK_SPEED: int = _MANIFEST["knockdown"]["referee_walk_speed"]
 REST_CORNER_OFFSET: int = _MANIFEST["rest"]["corner_offset"]
+CLINCH_HOLD_DISTANCE: int = _MANIFEST["clinch"]["hold_distance"]
+CLINCH_DRAW_SPEED: int = _MANIFEST["clinch"]["draw_speed"]
 REST_WALK_SPEED: int = _MANIFEST["rest"]["walk_speed"]
 
 

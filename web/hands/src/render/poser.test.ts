@@ -183,6 +183,32 @@ describe("clinch break", () => {
   });
 });
 
+describe("clinch hold", () => {
+  it("ties up over the arms for the first-sorted fighter and under them for the other, heads to the right", () => {
+    const clinched = (id: string): FighterSnapshot => ({ ...facingOpponent(baseFighter(id)), clinch_ticks: 30 });
+    const held = (id: string): FighterSnapshot => ({ ...opponentFor(id), y: -100, clinch_ticks: 30 });
+    const idle = makeGraph();
+    run(idle.graph, facingOpponent(baseFighter("one")), held("two"), 60, undefined);
+    const over = makeGraph();
+    run(over.graph, clinched("one"), held("two"), 60, undefined);
+    const under = makeGraph();
+    run(under.graph, clinched("two"), held("one"), 60, undefined);
+    for (const { boxer } of [over, under]) {
+      const left = bone(boxer, "gloveL");
+      const right = bone(boxer, "gloveR");
+      expect(left.z).toBeGreaterThan(0.35);
+      expect(right.z).toBeGreaterThan(0.35);
+      expect(left.x - right.x).toBeGreaterThan(0.25);
+      expect(bone(idle.boxer, "head").x - bone(boxer, "head").x).toBeGreaterThan(0.08);
+    }
+    expect(bone(over.boxer, "gloveL").y).toBeGreaterThan(1.2);
+    expect(bone(over.boxer, "gloveR").y).toBeGreaterThan(1.15);
+    expect(bone(under.boxer, "gloveL").y).toBeLessThan(1.1);
+    expect(bone(under.boxer, "gloveR").y).toBeLessThan(1.1);
+    expect(bone(over.boxer, "head").y).toBeGreaterThan(bone(under.boxer, "head").y);
+  });
+});
+
 describe("wave-off", () => {
   it("sweeps both gloves across overhead while waving the fight off", () => {
     const { boxer, graph } = makeGraph();

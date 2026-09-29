@@ -9,6 +9,8 @@ from math import isqrt
 from typing import Final
 
 from intelstream.hands.rules import (
+    CLINCH_DRAW_SPEED,
+    CLINCH_HOLD_DISTANCE,
     COMPATIBLE_COMBO_CHAINS,
     COUNTDOWN_TICKS,
     DEFAULT_ROUNDS,
@@ -953,6 +955,8 @@ class BoxingEngine:
         two.stamina = min(two.maximum_stamina, two.stamina + 1)
         one.conditioning = max(0, one.conditioning - (1 if self.tick % 10 == 0 else 0))
         two.conditioning = max(0, two.conditioning - (1 if self.tick % 10 == 0 else 0))
+        if remaining > 0:
+            self._draw_clinch_together(one, two)
         if remaining == 0:
             for fighter in (one, two):
                 fighter.x -= _symmetric_divide(fighter.facing_x * 45, FACING_SCALE)
@@ -961,6 +965,24 @@ class BoxingEngine:
             self._clamp_to_ring(two)
             self._separate_fighters(one, two)
             self._emit("referee_break", one.player_id, two.player_id)
+
+    def _draw_clinch_together(self, one: FighterState, two: FighterState) -> None:
+        dx = two.x - one.x
+        dy = two.y - one.y
+        distance = isqrt(dx * dx + dy * dy)
+        if distance <= CLINCH_HOLD_DISTANCE:
+            return
+        step = min(CLINCH_DRAW_SPEED, (distance - CLINCH_HOLD_DISTANCE) // 2)
+        if step == 0:
+            return
+        move_x = _symmetric_divide(dx * step, distance)
+        move_y = _symmetric_divide(dy * step, distance)
+        one.x += move_x
+        one.y += move_y
+        two.x -= move_x
+        two.y -= move_y
+        self._clamp_to_ring(one)
+        self._clamp_to_ring(two)
 
     def _move_fighter(self, fighter: FighterState, opponent: FighterState) -> None:
         move_x = fighter.held_input.move_x

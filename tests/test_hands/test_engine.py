@@ -13,7 +13,9 @@ from intelstream.hands.engine import (
 )
 from intelstream.hands.protocol import encode_snapshot
 from intelstream.hands.rules import (
+    CLINCH_HOLD_DISTANCE,
     FIGHTER_RADIUS,
+    MINIMUM_SEPARATION,
     PUNCH_RULES,
     REST_CORNER_OFFSET,
     RING_HALF_HEIGHT,
@@ -523,6 +525,28 @@ def test_clinch_has_range_cost_hold_and_referee_break() -> None:
     assert engine.fighter("one").stamina < before
     assert advance_until(engine, {"clinch"}, limit=12) == "clinch"
     assert advance_until(engine, {"referee_break"}, limit=60) == "referee_break"
+
+
+def test_clinch_draws_the_fighters_to_the_hold_distance_before_the_break() -> None:
+    engine = make_engine(round_ticks=2000)
+    engine.fighter("one").x = -50
+    engine.fighter("two").x = 50
+    engine.step({"one": command(1, action=MovementAction(ActionKind.CLINCH))})
+    assert advance_until(engine, {"clinch"}, limit=12) == "clinch"
+
+    distances = []
+    while engine.fighter("one").clinch_ticks > 1:
+        engine.step()
+        one, two = engine.fighter("one"), engine.fighter("two")
+        distances.append(abs(two.x - one.x))
+    assert distances[0] < 100
+    assert min(distances) == CLINCH_HOLD_DISTANCE
+    assert distances[-1] == CLINCH_HOLD_DISTANCE
+    assert engine.fighter("one").x == -engine.fighter("two").x
+
+    assert advance_until(engine, {"referee_break"}, limit=3) == "referee_break"
+    gap = abs(engine.fighter("two").x - engine.fighter("one").x)
+    assert gap >= MINIMUM_SEPARATION
 
 
 def test_out_of_range_clinch_is_denied_and_still_costs_stamina() -> None:

@@ -67,7 +67,14 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       one.taunt_ticks = Math.round((9.5 - tauntCycle) * 30);
       one.action = null;
     }
-    if (cycle < 0.55 && one.taunt_ticks === 0 && two.taunt_ticks === 0) {
+    const closing = tauntCycle > 1.6 && tauntCycle < 5.1;
+    if (closing) {
+      two.x = Math.round(one.x + one.facing_x * 0.06);
+      two.y = Math.round(one.y + one.facing_y * 0.06);
+      one.velocity_x = two.velocity_x = 0;
+      if (tauntCycle > 3.6) one.clinch_ticks = two.clinch_ticks = Math.round((5.1 - tauntCycle) * 30);
+    }
+    if (cycle < 0.55 && one.taunt_ticks === 0 && two.taunt_ticks === 0 && !closing) {
       const punch = PUNCHES[Math.floor(t / 3.2) % PUNCHES.length]!;
       attacker.action = punch;
       attacker.action_hand = Math.floor(t / 3.2) % 3 === 0 ? "right" : "left";

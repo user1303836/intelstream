@@ -168,6 +168,10 @@
     "corner_offset": 420,
     "walk_speed": 5
   },
+  "clinch": {
+    "hold_distance": 60,
+    "draw_speed": 6
+  },
   "hitbox": {
     "glove_radius": 0.11
   }

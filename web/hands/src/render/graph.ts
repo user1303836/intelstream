@@ -354,6 +354,9 @@ export class BoxingGraph {
   private readonly scratchC = new THREE.Vector3();
   private readonly scratchD = new THREE.Vector3();
   private readonly scratchE = new THREE.Vector3();
+  private readonly clinchCentre = new THREE.Vector3();
+  private readonly clinchForward = new THREE.Vector3();
+  private readonly clinchTemp = new THREE.Vector3();
   private readonly scratchQ = new THREE.Quaternion();
   private readonly headWorld = new THREE.Vector3();
   private readonly hand = { L: this.makeHand(), R: this.makeHand() };
@@ -832,14 +835,7 @@ export class BoxingGraph {
     if (this.referee) this.applyRefereePose(mirror, leadHand, rearHand, lead, rear, headRest, time);
 
     // Special states.
-    if (this.clinchWeight > 0.001) {
-      const c = this.clinchWeight;
-      torso.spinePitch += c * 0.3;
-      torso.hips.z += c * 0.06;
-      leadHand.position.lerp(this.scratch.set(0.16 * mirror, headRest.y - 0.25, 0.5), c);
-      rearHand.position.lerp(this.scratch.set(-0.14 * mirror, headRest.y - 0.2, 0.46), c);
-      torso.headPitch += c * 0.25;
-    }
+    if (this.clinchWeight > 0.001) this.applyClinchPose(this.clinchWeight, mirror, fighter, opponent, leadHand, rearHand, headRest);
     if (this.foulWeight > 0.001) {
       const f = this.foulWeight;
       torso.hips.y -= f * 0.16;
@@ -899,6 +895,57 @@ export class BoxingGraph {
     applyHeadTrauma(boxer.headInjury, fighter.trauma, blood);
     applyBodyTrauma(boxer.bodyInjury, fighter.trauma, blood);
     boxer.setSkinClearcoat(0.25 + (1 - stamina) * 0.4);
+  }
+
+  /**
+   * Tie-up: the fighter whose id sorts first hooks over the opponent's arms,
+   * the other digs under them around the ribs. Both lean in over the bladed
+   * chest line and rest the head to their own right, so the skulls pass on
+   * opposite shoulders.
+   */
+  private applyClinchPose(c: number, mirror: number, fighter: FighterSnapshot, opponent: FighterSnapshot, leadHand: HandTarget, rearHand: HandTarget, headRest: THREE.Vector3): void {
+    const torso = this.torso;
+    const over = fighter.player_id < opponent.player_id;
+    const centre = this.clinchCentre
+      .set(this.mapping.x(opponent.x) - (this.rootX ?? 0), 0, this.mapping.z(opponent.y) - this.rootZ)
+      .applyQuaternion(this.scratchQ.setFromAxisAngle(worldUpVector, -this.yaw));
+    if (centre.lengthSq() < 0.04) centre.set(0, 0, 0.5);
+    const forward = this.clinchForward.copy(centre).normalize();
+    const acrossX = forward.z;
+    const acrossZ = -forward.x;
+    torso.spinePitch += c * (over ? 0.28 : 0.42);
+    torso.hips.z += c * (over ? 0.04 : 0.06);
+    torso.hips.y -= c * (over ? 0 : 0.03);
+    torso.headPitch += c * (over ? 0.15 : 0.3);
+    torso.headYaw -= c * 0.3;
+    torso.headOffset.x -= c * 0.05;
+    torso.headOffset.y -= c * (over ? 0.02 : 0.06);
+    const metrics = this.boxer.rig.metrics;
+    const reach = Math.min(metrics.armL.upper + metrics.armL.lower, metrics.armR.upper + metrics.armR.lower) * 0.92;
+    for (const [hand, side] of [[leadHand, mirror], [rearHand, -mirror]] as const) {
+      const wrap = over ? 0.2 : 0.17;
+      const depth = over ? 0.05 : 0.1;
+      const shoulderX = 0.19 * side;
+      const shoulderZ = torso.hips.z + 0.04 + torso.spinePitch * 0.25;
+      const target = this.clinchTemp.set(
+        centre.x + acrossX * wrap * side + forward.x * depth - shoulderX,
+        headRest.y - (over ? 0.24 : 0.5) - (side === mirror ? 0 : 0.05),
+        centre.z + acrossZ * wrap * side + forward.z * depth - shoulderZ,
+      );
+      const rise = target.y - (headRest.y - 0.22);
+      const horizontal = Math.hypot(target.x, target.z);
+      const limit = Math.sqrt(Math.max(0.01, reach * reach - rise * rise));
+      if (horizontal > limit) {
+        target.x *= limit / horizontal;
+        target.z *= limit / horizontal;
+      }
+      target.x += shoulderX;
+      target.z += shoulderZ;
+      hand.position.lerp(target, c);
+      hand.pole.lerp(this.clinchTemp.set(side * 0.85, over ? 0.35 : -0.6, 0.25), c).normalize();
+      hand.knuckles.lerp(this.clinchTemp.set(-acrossX * side * 0.9 + forward.x * 0.3, over ? -0.25 : 0.1, -acrossZ * side * 0.9 + forward.z * 0.3), c).normalize();
+      hand.palm.lerp(this.clinchTemp.set(-forward.x, over ? 0.1 : 0.35, -forward.z), c).normalize();
+    }
   }
 
   /** Character-space head rest position for hand offsets (before torso deltas). */
