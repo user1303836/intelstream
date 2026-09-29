@@ -11,6 +11,7 @@ class FakeSocket {
   onerror: ((event: Event) => void) | null = null;
   sent: string[] = [];
   closed = false;
+  bufferedAmount = 0;
   send(data: string): void { this.sent.push(data); }
   close(): void { this.closed = true; }
   open(): void { this.onopen?.(new Event("open")); }
@@ -336,6 +337,41 @@ describe("edge-triggered action sends", () => {
     now += 20;
     controller.notifyAction();
     expect(socket.sent).toHaveLength(3);
+    controller.dispose();
+    vi.useRealTimers();
+  });
+
+  it("holds its input while the connection is stalled and sends the current state when it clears", () => {
+    vi.useFakeTimers();
+    let now = 1000;
+    const socket = new FakeSocket();
+    let held = 1000;
+    const queued: string[] = ["p1"];
+    const controller = new NetworkController(
+      "ticket",
+      () => ({ moveX: held, moveY: 0, defense: "none" as const, actions: queued.splice(0, 4).map((id) => ({ kind: "punch" as const, hand: "left" as const, class: "jab" as const, target: "head" as const, power: "normal" as const, id })) }),
+      callbacks(),
+      () => socket,
+      () => now,
+    );
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message(ready);
+    controller.setActive(true);
+    const authenticated = socket.sent.length;
+    socket.bufferedAmount = 5000;
+    for (let millisecond = 0; millisecond < 2000; millisecond += 1) { now += 1; vi.advanceTimersByTime(1); }
+    controller.notifyAction();
+    expect(socket.sent.length).toBe(authenticated);
+    held = 0;
+    socket.bufferedAmount = 0;
+    for (let millisecond = 0; millisecond < 40; millisecond += 1) { now += 1; vi.advanceTimersByTime(1); }
+    const frames = socket.sent.slice(authenticated).map((frame) => JSON.parse(frame) as { move: { x: number }; actions: { id: string }[] });
+    expect(frames.length).toBeGreaterThanOrEqual(1);
+    expect(frames.length).toBeLessThanOrEqual(2);
+    expect(frames[0]!.move.x).toBe(0);
+    expect(frames[0]!.actions.map((action) => action.id)).toEqual(["p1"]);
     controller.dispose();
     vi.useRealTimers();
   });

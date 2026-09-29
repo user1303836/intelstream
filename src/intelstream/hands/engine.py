@@ -66,8 +66,27 @@ from intelstream.hands.types import (
 PERFECT_BLOCK_TICKS: Final = 4
 EVASION_TICKS: Final = 10
 COUNTER_WINDOW_TICKS: Final = 18
-CORNER_SEPARATION_STEPS: Final = 12
-CORNER_SEPARATION_STEP: Final = 8
+ROPE_OVERLAP_PASSES: Final = 8
+ROPE_OVERLAP_STEP: Final = 8
+NEUTRAL_WALK_MARGIN: Final = 6
+_COMPASS: Final = (
+    (1000, 0),
+    (924, 383),
+    (707, 707),
+    (383, 924),
+    (0, 1000),
+    (-383, 924),
+    (-707, 707),
+    (-924, 383),
+    (-1000, 0),
+    (-924, -383),
+    (-707, -707),
+    (-383, -924),
+    (0, -1000),
+    (383, -924),
+    (707, -707),
+    (924, -383),
+)
 CLINCH_STARTUP_TICKS: Final = 8
 CLINCH_TICKS: Final = 45
 FOUL_RECOVERY_TICKS: Final = 60
@@ -260,6 +279,24 @@ def _symmetric_divide(numerator: int, denominator: int) -> int:
     return magnitude if numerator >= 0 else -magnitude
 
 
+def _separation_along_axis(across: int) -> int:
+    """Distance to open along one axis so two fighters `across` apart on the other just clear.
+
+    Opening the full separation on one axis regardless of the other threw fighters who met at an
+    angle well apart, so they closed and were thrown apart again for as long as they pressed.
+    """
+    needed = MINIMUM_SEPARATION * MINIMUM_SEPARATION - across * across
+    if needed <= 0:
+        return 0
+    root = isqrt(needed)
+    return root if root * root == needed else root + 1
+
+
+def _away_divide(numerator: int, denominator: int) -> int:
+    magnitude = -(-abs(numerator) // denominator)
+    return magnitude if numerator >= 0 else -magnitude
+
+
 def _normalize_move_vector(move_x: int, move_y: int) -> tuple[int, int]:
     squared_magnitude = move_x * move_x + move_y * move_y
     if squared_magnitude <= 1_000_000:
@@ -293,6 +330,32 @@ def _consume_fixed_position(velocity: int, remainder: int) -> tuple[int, int]:
     total = velocity + remainder
     delta = _symmetric_divide(total, MOVEMENT_FIXED_SCALE)
     return delta, total - delta * MOVEMENT_FIXED_SCALE
+
+
+def _ring_point(x: int, y: int) -> tuple[int, int, bool, bool, bool]:
+    """Nearest point inside the ropes and corner pads.
+
+    Also reports which of the x rope, the y rope and the corner cut stopped the point. At the end
+    of a cut, where it meets a rope, both are reported.
+    """
+    limit_x = RING_HALF_WIDTH - FIGHTER_RADIUS
+    limit_y = RING_HALF_HEIGHT - FIGHTER_RADIUS
+    sign_x = -1 if x < 0 else 1
+    sign_y = -1 if y < 0 else 1
+    reach_x, reach_y = abs(x), abs(y)
+    inside_x, inside_y = min(reach_x, limit_x), min(reach_y, limit_y)
+    if inside_x + inside_y <= RING_CORNER_REACH:
+        return sign_x * inside_x, sign_y * inside_y, reach_x > limit_x, reach_y > limit_y, False
+    excess = reach_x + reach_y - RING_CORNER_REACH
+    if reach_x >= reach_y:
+        cut_x, cut_y = reach_x - (excess + 1) // 2, reach_y - excess // 2
+    else:
+        cut_x, cut_y = reach_x - excess // 2, reach_y - (excess + 1) // 2
+    if cut_y > limit_y:
+        return sign_x * (RING_CORNER_REACH - limit_y), sign_y * limit_y, False, True, True
+    if cut_x > limit_x:
+        return sign_x * limit_x, sign_y * (RING_CORNER_REACH - limit_x), True, False, True
+    return sign_x * cut_x, sign_y * cut_y, False, False, True
 
 
 def _canonical(value: object) -> object:
@@ -1063,42 +1126,48 @@ class BoxingEngine:
 
     @staticmethod
     def _clamp_to_ring(fighter: FighterState) -> None:
-        minimum_x = -RING_HALF_WIDTH + FIGHTER_RADIUS
-        maximum_x = RING_HALF_WIDTH - FIGHTER_RADIUS
-        minimum_y = -RING_HALF_HEIGHT + FIGHTER_RADIUS
-        maximum_y = RING_HALF_HEIGHT - FIGHTER_RADIUS
-        clamped_x = min(maximum_x, max(minimum_x, fighter.x))
-        clamped_y = min(maximum_y, max(minimum_y, fighter.y))
-        if clamped_x != fighter.x:
-            fighter.velocity_x = 0
-            fighter.velocity_fixed_x = 0
-            fighter.position_remainder_x = 0
-        if clamped_y != fighter.y:
-            fighter.velocity_y = 0
-            fighter.velocity_fixed_y = 0
-            fighter.position_remainder_y = 0
-        excess = abs(clamped_x) + abs(clamped_y) - RING_CORNER_REACH
-        if excess > 0:
-            pull_x = (excess + 1) // 2
-            pull_y = excess // 2
-            clamped_x -= pull_x if clamped_x > 0 else -pull_x
-            clamped_y -= pull_y if clamped_y > 0 else -pull_y
+        x, y, rope_x, rope_y, corner = _ring_point(fighter.x, fighter.y)
+        if corner and (rope_x or rope_y):
+            # Wedged where the corner pad meets a rope: nowhere left to slide.
             fighter.velocity_x = fighter.velocity_y = 0
             fighter.velocity_fixed_x = fighter.velocity_fixed_y = 0
             fighter.position_remainder_x = fighter.position_remainder_y = 0
-        fighter.x = clamped_x
-        fighter.y = clamped_y
+        elif corner:
+            # Against the corner pad: lose the speed into it, keep the speed along it.
+            sign_x = -1 if x < 0 else 1
+            sign_y = -1 if y < 0 else 1
+            outward = sign_x * fighter.velocity_fixed_x + sign_y * fighter.velocity_fixed_y
+            if outward > 0:
+                half = (outward + 1) // 2
+                fighter.velocity_fixed_x -= sign_x * half
+                fighter.velocity_fixed_y -= sign_y * half
+            fighter.velocity_x = _rounded_fixed_velocity(fighter.velocity_fixed_x)
+            fighter.velocity_y = _rounded_fixed_velocity(fighter.velocity_fixed_y)
+            fighter.position_remainder_x = fighter.position_remainder_y = 0
+        else:
+            if rope_x:
+                fighter.velocity_x = 0
+                fighter.velocity_fixed_x = 0
+                fighter.position_remainder_x = 0
+            if rope_y:
+                fighter.velocity_y = 0
+                fighter.velocity_fixed_y = 0
+                fighter.position_remainder_y = 0
+        fighter.x = x
+        fighter.y = y
 
     def _separate_fighters(self, one: FighterState, two: FighterState) -> None:
         dx = two.x - one.x
         dy = two.y - one.y
         if dx * dx + dy * dy >= MINIMUM_SEPARATION**2:
             return
+        before = (one.x, one.y, two.x, two.y)
         if abs(dx) >= abs(dy):
             direction = 1 if dx > 0 or (dx == 0 and one.player_id < two.player_id) else -1
             center = (one.x + two.x) // 2
-            one.x = center - direction * (MINIMUM_SEPARATION // 2)
-            two.x = center + direction * (MINIMUM_SEPARATION // 2)
+            apart = _separation_along_axis(dy)
+            one.x = center - direction * (apart // 2)
+            two.x = center + direction * (apart - apart // 2)
             minimum = -RING_HALF_WIDTH + FIGHTER_RADIUS
             maximum = RING_HALF_WIDTH - FIGHTER_RADIUS
             shift = max(0, minimum - min(one.x, two.x)) - max(0, max(one.x, two.x) - maximum)
@@ -1107,26 +1176,59 @@ class BoxingEngine:
         else:
             direction = 1 if dy > 0 or (dy == 0 and one.player_id < two.player_id) else -1
             center = (one.y + two.y) // 2
-            one.y = center - direction * (MINIMUM_SEPARATION // 2)
-            two.y = center + direction * (MINIMUM_SEPARATION // 2)
+            apart = _separation_along_axis(dx)
+            one.y = center - direction * (apart // 2)
+            two.y = center + direction * (apart - apart // 2)
             minimum = -RING_HALF_HEIGHT + FIGHTER_RADIUS
             maximum = RING_HALF_HEIGHT - FIGHTER_RADIUS
             shift = max(0, minimum - min(one.y, two.y)) - max(0, max(one.y, two.y) - maximum)
             one.y += shift
             two.y += shift
+        pushed = (one.x, one.y, two.x, two.y)
         self._clamp_to_ring(one)
         self._clamp_to_ring(two)
-        self._separate_in_corner(one, two)
+        if (one.x, one.y, two.x, two.y) != pushed:
+            # A corner pad refused part of the push. Start again from where they met, so the
+            # same fighter gives way by the same amount every tick they keep pressing.
+            one.x, one.y, two.x, two.y = before
+            self._clamp_to_ring(one)
+            self._clamp_to_ring(two)
+        self._resolve_rope_overlap(one, two)
 
-    def _separate_in_corner(self, one: FighterState, two: FighterState) -> None:
-        for _ in range(CORNER_SEPARATION_STEPS):
+    def _resolve_rope_overlap(self, one: FighterState, two: FighterState) -> None:
+        """Parts two fighters the ropes pushed back together.
+
+        The fighter nearer the ring centre has room, so he gives way along the line between them
+        by exactly the distance that is missing.
+        """
+        for _ in range(ROPE_OVERLAP_PASSES):
+            dx = two.x - one.x
+            dy = two.y - one.y
+            squared = dx * dx + dy * dy
+            if squared >= MINIMUM_SEPARATION**2:
+                return
+            if squared == 0:
+                dx, dy, squared = (1 if one.player_id < two.player_id else -1), 0, 1
+            distance = isqrt(squared)
+            missing = MINIMUM_SEPARATION - distance
+            push_x = _away_divide(dx * missing, distance)
+            push_y = _away_divide(dy * missing, distance)
+            if abs(one.x) + abs(one.y) <= abs(two.x) + abs(two.y):
+                one.x -= push_x
+                one.y -= push_y
+            else:
+                two.x += push_x
+                two.y += push_y
+            self._clamp_to_ring(one)
+            self._clamp_to_ring(two)
+        for _ in range(ROPE_OVERLAP_PASSES):
             dx = two.x - one.x
             dy = two.y - one.y
             if dx * dx + dy * dy >= MINIMUM_SEPARATION**2:
                 return
             inner = one if abs(one.x) + abs(one.y) <= abs(two.x) + abs(two.y) else two
-            inner.x -= CORNER_SEPARATION_STEP if inner.x > 0 else -CORNER_SEPARATION_STEP
-            inner.y -= CORNER_SEPARATION_STEP if inner.y > 0 else -CORNER_SEPARATION_STEP
+            inner.x -= ROPE_OVERLAP_STEP if inner.x > 0 else -ROPE_OVERLAP_STEP
+            inner.y -= ROPE_OVERLAP_STEP if inner.y > 0 else -ROPE_OVERLAP_STEP
             self._clamp_to_ring(one)
             self._clamp_to_ring(two)
 
@@ -1354,6 +1456,7 @@ class BoxingEngine:
         else:
             step_x = _symmetric_divide(dx * FACING_SCALE, distance)
             step_y = _symmetric_divide(dy * FACING_SCALE, distance)
+        step_x, step_y = self._neutral_walk_step(winner, downed, step_x, step_y)
         winner.velocity_fixed_x = step_x * REFEREE_WALK_SPEED
         winner.velocity_fixed_y = step_y * REFEREE_WALK_SPEED
         winner.velocity_x = _rounded_fixed_velocity(winner.velocity_fixed_x)
@@ -1368,6 +1471,65 @@ class BoxingEngine:
         winner.y += delta_y
         self._clamp_to_ring(winner)
         self._update_facing(winner, downed)
+
+    @staticmethod
+    def _neutral_walk_step(
+        winner: FighterState, downed: FighterState, step_x: int, step_y: int
+    ) -> tuple[int, int]:
+        """Direction for the walk to neutral distance.
+
+        Straight away from the downed fighter while the spot that leads to is inside the ropes.
+        A winner with his back to the ropes or a corner walks to the nearest open spot at that
+        distance instead, by a line that does not take him over the man on the canvas.
+        """
+        radius = KNOCKDOWN_NEUTRAL_SEPARATION + NEUTRAL_WALK_MARGIN
+
+        def spot(direction_x: int, direction_y: int) -> tuple[int, int]:
+            return (
+                downed.x + _symmetric_divide(direction_x * radius, FACING_SCALE),
+                downed.y + _symmetric_divide(direction_y * radius, FACING_SCALE),
+            )
+
+        def is_open(point: tuple[int, int]) -> bool:
+            x, y, _, _, _ = _ring_point(point[0], point[1])
+            return (x, y) == point
+
+        def clears_downed(point: tuple[int, int]) -> bool:
+            path_x, path_y = point[0] - winner.x, point[1] - winner.y
+            length_squared = path_x * path_x + path_y * path_y
+            if length_squared == 0:
+                return True
+            along = (downed.x - winner.x) * path_x + (downed.y - winner.y) * path_y
+            along = min(max(along, 0), length_squared)
+            nearest_x = winner.x + _symmetric_divide(path_x * along, length_squared)
+            nearest_y = winner.y + _symmetric_divide(path_y * along, length_squared)
+            gap = (nearest_x - downed.x) ** 2 + (nearest_y - downed.y) ** 2
+            return gap >= (MINIMUM_SEPARATION - NEUTRAL_WALK_MARGIN) ** 2
+
+        if is_open(spot(step_x, step_y)):
+            return step_x, step_y
+        chosen: tuple[int, int] | None = None
+        nearest = 0
+        for clear_path in (True, False):
+            for direction_x, direction_y in _COMPASS:
+                point = spot(direction_x, direction_y)
+                if not is_open(point) or (clear_path and not clears_downed(point)):
+                    continue
+                gap = (point[0] - winner.x) ** 2 + (point[1] - winner.y) ** 2
+                if chosen is None or gap < nearest:
+                    chosen, nearest = point, gap
+            if chosen is not None:
+                break
+        if chosen is None:
+            return step_x, step_y
+        path_x, path_y = chosen[0] - winner.x, chosen[1] - winner.y
+        length = isqrt(path_x * path_x + path_y * path_y)
+        if length == 0:
+            return 0, 0
+        return (
+            _symmetric_divide(path_x * FACING_SCALE, length),
+            _symmetric_divide(path_y * FACING_SCALE, length),
+        )
 
     def _finish_round(self) -> None:
         one = self._fighters[self._player_ids[0]]

@@ -21,6 +21,7 @@ export interface NetworkCallbacks {
 
 interface SocketLike {
   readonly readyState: number;
+  readonly bufferedAmount?: number;
   binaryType: BinaryType;
   onopen: ((event: Event) => void) | null;
   onmessage: ((event: MessageEvent) => void) | null;
@@ -39,6 +40,8 @@ const MIN_EDGE_SEND_GAP_MS = 8;
 const MAX_SENDS_PER_SECOND = 50;
 /** Edge sends share the window with the 30 a second flush, which must always fit so a released key is reported. */
 const MAX_EDGE_SENDS_PER_SECOND = 20;
+/** Bytes still waiting in the socket above which the connection is stalled; frames queued behind it would all land at once. */
+const BACKLOG_BYTES = 2048;
 
 export class NetworkController {
   private socket: SocketLike | null = null;
@@ -297,6 +300,9 @@ export class NetworkController {
   private flushInput(): void {
     if (this.inputSuppressed || document.hidden || !document.hasFocus()) return;
     if (this.sendsInLastSecond() >= MAX_SENDS_PER_SECOND) return;
+    // While the connection is stalled the input stays here, current, instead of joining a queue
+    // of stale frames; presses wait in the input buffer and leave with the next frame that goes.
+    if ((this.socket?.bufferedAmount ?? 0) > BACKLOG_BYTES) return;
     this.sendInput(this.getInput());
   }
 

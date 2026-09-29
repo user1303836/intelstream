@@ -372,6 +372,64 @@ async def test_post_start_disconnect_forfeits_and_pre_match_abandonment_does_not
     await waiting_manager.close()
 
 
+async def test_burst_past_the_input_budget_keeps_the_newest_frame(
+    repository: Repository,
+) -> None:
+    class MutableClock:
+        value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    clock = MutableClock()
+    sleep_entered = asyncio.Event()
+    sleep_release = asyncio.Event()
+
+    async def controlled_sleep(_delay: float) -> None:
+        sleep_entered.set()
+        await sleep_release.wait()
+
+    manager = HandsRoomManager(
+        repository,
+        config=room_config(round_ticks=1000, reconnect_grace=30.0),
+        monotonic_clock=clock,
+        sleep=controlled_sleep,
+        match_id_factory=lambda: "match-burst",
+    )
+    one = await manager.join(player("one"), FakeSocket())
+    await manager.join(player("two"), FakeSocket())
+    await sleep_entered.wait()
+    engine = one.room.engine
+    assert engine is not None
+
+    for sequence in range(1, 6):
+        await one.room.submit_frame(
+            "one",
+            one.connection,
+            encode_client_input(
+                InputCommand(sequence=sequence, client_tick=engine.tick, move_x=1000)
+            ),
+        )
+    for sequence in range(6, 9):
+        await one.room.submit_frame(
+            "one",
+            one.connection,
+            encode_client_input(InputCommand(sequence=sequence, client_tick=engine.tick)),
+        )
+    assert engine.fighter("one").last_sequence == 5
+    assert engine.fighter("one").held_input.move_x == 1000
+
+    clock.value += 0.25
+    one.room._apply_deferred_inputs(clock())
+    assert engine.fighter("one").last_sequence == 8
+    assert engine.fighter("one").held_input.move_x == 0
+
+    one.room._apply_deferred_inputs(clock())
+    assert engine.fighter("one").last_sequence == 8
+    sleep_release.set()
+    await manager.close()
+
+
 async def test_input_protocol_rate_sequence_and_queue_bounds(repository: Repository) -> None:
     manager = HandsRoomManager(
         repository,

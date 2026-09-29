@@ -15,6 +15,7 @@ from intelstream.hands.protocol import encode_snapshot
 from intelstream.hands.rules import (
     CLINCH_HOLD_DISTANCE,
     FIGHTER_RADIUS,
+    KNOCKDOWN_NEUTRAL_SEPARATION,
     MINIMUM_SEPARATION,
     PUNCH_RULES,
     REST_CORNER_OFFSET,
@@ -382,6 +383,136 @@ def test_side_ropes_are_still_reachable_away_from_the_corners() -> None:
         engine.step({"one": command(sequence, move_x=1000)})
 
     assert fighter.x == RING_HALF_WIDTH - FIGHTER_RADIUS
+
+
+def in_ring(fighter: object) -> bool:
+    x, y = fighter.x, fighter.y  # type: ignore[attr-defined]
+    return (
+        abs(x) <= RING_HALF_WIDTH - FIGHTER_RADIUS
+        and abs(y) <= RING_HALF_HEIGHT - FIGHTER_RADIUS
+        and abs(x) + abs(y) <= RING_CORNER_REACH
+    )
+
+
+@pytest.mark.parametrize(
+    ("start", "move_one", "move_two"),
+    [
+        ((341, 215, 315, 334), (1000, 500), (1000, 200)),
+        ((286, -229, 413, -209), (1000, -500), (1000, -500)),
+        ((272, 304, 194, 326), (0, 1000), (707, 707)),
+        ((-351, -314, -206, -413), (-1000, 0), (-1000, 0)),
+    ],
+)
+def test_fighters_pressing_into_a_corner_come_to_rest(
+    start: tuple[int, int, int, int], move_one: tuple[int, int], move_two: tuple[int, int]
+) -> None:
+    engine = make_engine(seed=97, round_ticks=5000)
+    one, two = engine.fighter("one"), engine.fighter("two")
+    one.x, one.y, two.x, two.y = start
+
+    steps = []
+    for sequence in range(1, 261):
+        before = (one.x, one.y, two.x, two.y)
+        engine.step(
+            {
+                "one": command(sequence, move_x=move_one[0], move_y=move_one[1]),
+                "two": command(sequence, move_x=move_two[0], move_y=move_two[1]),
+            }
+        )
+        assert in_ring(one) and in_ring(two)
+        assert (one.x - two.x) ** 2 + (one.y - two.y) ** 2 >= MINIMUM_SEPARATION**2
+        after = (one.x, one.y, two.x, two.y)
+        steps.append(max(abs(a - b) for a, b in zip(after, before, strict=True)))
+
+    assert max(steps[-60:]) <= 3
+
+
+def test_fighters_meeting_at_an_angle_are_not_thrown_apart() -> None:
+    engine = make_engine(seed=98, round_ticks=5000)
+    one, two = engine.fighter("one"), engine.fighter("two")
+    one.x, one.y, two.x, two.y = -60, -50, 60, 50
+
+    largest = 0
+    closest = hypot(two.x - one.x, two.y - one.y)
+    for sequence in range(1, 61):
+        before = (one.x, one.y, two.x, two.y)
+        engine.step(
+            {
+                "one": command(sequence, move_x=707, move_y=600),
+                "two": command(sequence, move_x=-707, move_y=-600),
+            }
+        )
+        after = (one.x, one.y, two.x, two.y)
+        largest = max(largest, *(abs(a - b) for a, b in zip(after, before, strict=True)))
+        closest = min(closest, hypot(two.x - one.x, two.y - one.y))
+
+    assert MINIMUM_SEPARATION <= closest <= MINIMUM_SEPARATION + 2
+    assert largest <= 8
+
+
+def test_sliding_along_a_corner_pad_keeps_its_speed_and_is_the_same_both_ways() -> None:
+    limit = RING_HALF_WIDTH - FIGHTER_RADIUS
+    low = RING_CORNER_REACH - limit
+
+    def slide(start: tuple[int, int], move: tuple[int, int]) -> list[tuple[int, int, int, int]]:
+        engine = make_engine(seed=99, round_ticks=5000)
+        fighter = engine.fighter("one")
+        fighter.x, fighter.y = start
+        engine.fighter("two").x = -300
+        trail = []
+        for sequence in range(1, 21):
+            engine.step({"one": command(sequence, move_x=move[0], move_y=move[1])})
+            trail.append((fighter.x, fighter.y, fighter.velocity_x, fighter.velocity_y))
+        return trail
+
+    up = slide((limit, low), (0, 1000))
+    right = slide((low, limit), (1000, 0))
+    assert [(y, x, vy, vx) for x, y, vx, vy in up] == right
+    assert all(x + y == RING_CORNER_REACH for x, y, _, _ in up)
+    assert up[-1][0] < up[0][0] and up[-1][1] > up[0][1]
+    assert up[-1][2] < 0 < up[-1][3]
+
+    wedged = slide((low, limit), (259, 966))
+    assert {(x, y) for x, y, _, _ in wedged} == {(low, limit)}
+
+
+@pytest.mark.parametrize(
+    ("winner_at", "downed_at"),
+    [((367, 366), (300, 300)), ((333, 400), (265, 328)), ((-440, -293), (-370, -230))],
+)
+def test_cornered_winner_still_reaches_neutral_distance(
+    winner_at: tuple[int, int], downed_at: tuple[int, int]
+) -> None:
+    engine = make_engine(seed=100, round_ticks=5000)
+    winner, downed = engine.fighter("one"), engine.fighter("two")
+    winner.x, winner.y = winner_at
+    downed.x, downed.y = downed_at
+    engine.step()
+    engine._knock_down(downed, winner)
+    assert engine.phase is MatchPhase.KNOCKDOWN
+
+    for _ in range(150):
+        engine.step()
+        assert in_ring(winner)
+        assert hypot(winner.x - downed.x, winner.y - downed.y) >= MINIMUM_SEPARATION - 8
+        if engine.phase is not MatchPhase.KNOCKDOWN:
+            break
+
+    assert hypot(winner.x - downed.x, winner.y - downed.y) >= KNOCKDOWN_NEUTRAL_SEPARATION
+    assert (winner.velocity_x, winner.velocity_y) == (0, 0)
+
+
+def test_clinch_holds_close_whatever_the_angle() -> None:
+    engine = make_engine(round_ticks=2000)
+    engine.fighter("one").x, engine.fighter("one").y = -30, -36
+    engine.fighter("two").x, engine.fighter("two").y = 35, 30
+    engine.step({"one": command(1, action=MovementAction(ActionKind.CLINCH))})
+    assert advance_until(engine, {"clinch"}, limit=12) == "clinch"
+
+    while engine.fighter("one").clinch_ticks > 1:
+        engine.step()
+    one, two = engine.fighter("one"), engine.fighter("two")
+    assert CLINCH_HOLD_DISTANCE <= hypot(two.x - one.x, two.y - one.y) <= CLINCH_HOLD_DISTANCE + 4
 
 
 def test_ring_clamp_resets_fixed_point_momentum_and_position_remainder() -> None:
@@ -924,6 +1055,7 @@ def test_collision_and_referee_separation_stay_inside_rope_center_bounds() -> No
     for fighter in (one, two):
         assert -maximum_x <= fighter.x <= maximum_x
         assert -maximum_y <= fighter.y <= maximum_y
+        assert abs(fighter.x) + abs(fighter.y) <= RING_CORNER_REACH
     assert (one.x - two.x) ** 2 + (one.y - two.y) ** 2 >= 76**2
 
     one.x = maximum_x - 40

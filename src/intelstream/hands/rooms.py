@@ -114,7 +114,9 @@ class PlayerSlot:
     connection: PlayerConnection | None
     grace_remaining: float
     last_sequence: int = -1
-    input_times: deque[float] = field(default_factory=deque)
+    input_budget: float | None = None
+    input_budget_at: float = 0.0
+    deferred_frame: str | bytes | None = None
     frame_times: deque[float] = field(default_factory=deque)
     reconnect_deadline: float | None = None
     pre_match_grace_event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -581,14 +583,14 @@ class HandsRoom:
             if len(slot.frame_times) >= self.config.max_input_frames_per_second:
                 raise RoomError("rate_limited")
             slot.frame_times.append(now)
-            while slot.input_times and slot.input_times[0] <= now - 1.0:
-                slot.input_times.popleft()
-            if len(slot.input_times) >= self.config.max_inputs_per_second:
-                # A stalled connection delivers its backlog in one burst; the excess is ignored
-                # rather than ending the bout. Only a flood far beyond that disconnects.
+            if not self._spend_input_budget(slot, now):
+                # A stalled connection delivers its backlog in one burst. The frames past the
+                # budget are not applied, but the newest is kept and goes in as soon as there is
+                # room, so the player's latest input is never the one that is lost.
+                slot.deferred_frame = frame
                 return
+            slot.deferred_frame = None
             if any(current.connection is None for current in self._slots.values()):
-                slot.input_times.append(now)
                 return
             try:
                 command = parse_client_input(
@@ -598,10 +600,42 @@ class HandsRoom:
                 )
             except ProtocolError as exc:
                 raise RoomError("invalid_input") from exc
-            slot.input_times.append(now)
             slot.last_sequence = command.sequence
             if not engine.submit_input(player_id, command):
                 raise RoomError("input_queue_full")
+
+    def _spend_input_budget(self, slot: PlayerSlot, now: float) -> bool:
+        limit = float(self.config.max_inputs_per_second)
+        if slot.input_budget is None:
+            slot.input_budget = limit
+        else:
+            elapsed = max(0.0, now - slot.input_budget_at)
+            slot.input_budget = min(limit, slot.input_budget + elapsed * limit)
+        slot.input_budget_at = now
+        if slot.input_budget < 1.0:
+            return False
+        slot.input_budget -= 1.0
+        return True
+
+    def _apply_deferred_inputs(self, now: float) -> None:
+        engine = self._engine
+        if engine is None or any(slot.connection is None for slot in self._slots.values()):
+            return
+        for player_id, slot in self._slots.items():
+            frame = slot.deferred_frame
+            if frame is None or not self._spend_input_budget(slot, now):
+                continue
+            slot.deferred_frame = None
+            try:
+                command = parse_client_input(
+                    frame,
+                    last_sequence=slot.last_sequence,
+                    server_tick=engine.tick,
+                )
+            except ProtocolError:
+                continue
+            slot.last_sequence = command.sequence
+            engine.submit_input(player_id, command)
 
     async def disconnect(
         self, player_id: str, role: ConnectionRole, connection: PlayerConnection
@@ -731,6 +765,7 @@ class HandsRoom:
                 if ticks_due > self.config.max_catch_up_ticks:
                     ticks_due = self.config.max_catch_up_ticks
                     next_tick = now - (ticks_due - 1) * interval
+                self._apply_deferred_inputs(now)
                 for _ in range(ticks_due):
                     snapshot = engine.step()
                     next_tick += interval
