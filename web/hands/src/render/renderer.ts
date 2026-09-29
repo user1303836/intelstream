@@ -6,6 +6,7 @@ import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { EventDeduplicator, SnapshotBuffer } from "../interpolation";
 import { coarsePointer } from "../input/touch";
+import { punchTiming } from "../manifest";
 import { predictMovement, type HeldInput } from "../prediction";
 import type { BloodLevel, Settings } from "../settings";
 import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, Hand, MatchResult, PublicPlayer, PunchClass, SemanticAction, SimulationInfo } from "../types";
@@ -280,6 +281,32 @@ function blankFighter(playerId: string): FighterSnapshot {
   };
 }
 
+const SHADOW_BOXING_CYCLE_TICKS = 126;
+const SHADOW_BOXING: readonly { readonly start: number; readonly punchClass: PunchClass; readonly hand: Hand }[] = [
+  { start: 0, punchClass: "jab", hand: "left" },
+  { start: 16, punchClass: "jab", hand: "left" },
+  { start: 33, punchClass: "straight", hand: "right" },
+  { start: 78, punchClass: "hook", hand: "left" },
+];
+
+/** A lone fighter shadow boxes while waiting: a jab-jab-straight then a hook every few seconds. */
+function shadowBoxing(idleTick: number): Partial<FighterSnapshot> {
+  const cycleTick = idleTick % SHADOW_BOXING_CYCLE_TICKS;
+  const cycle = Math.floor(idleTick / SHADOW_BOXING_CYCLE_TICKS);
+  for (const [index, punch] of SHADOW_BOXING.entries()) {
+    const timing = punchTiming(punch.punchClass, "head", "normal");
+    const total = timing.startup + timing.active + timing.recovery;
+    if (cycleTick < punch.start || cycleTick >= punch.start + total) continue;
+    return {
+      action: punch.punchClass, action_hand: punch.hand, action_target: "head", action_power: "normal",
+      action_id: `idle-${cycle}-${index}`, action_key: `${punch.punchClass}:${punch.hand}:head:normal`,
+      action_start_tick: idleTick - (cycleTick - punch.start), action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery,
+      action_contact_tick: idleTick - (cycleTick - punch.start) + timing.startup,
+    };
+  }
+  return {};
+}
+
 function refereeSnapshot(position: THREE.Vector3, yaw: number, velocity: THREE.Vector3, mapping: WorldMapping): { self: FighterSnapshot; focus: FighterSnapshot } {
   const simX = position.x / mapping.x(1);
   const simY = position.z / mapping.z(1);
@@ -533,10 +560,11 @@ export class FightRenderer {
       graph.boxer.root.visible = present;
       if (!present) continue;
       const sign = index === 0 ? -1 : 1;
-      const self = { ...blankFighter(id), x: alone ? 0 : sign * 180, y: alone ? -70 : 0, facing: alone ? 1 : -sign, facing_x: alone ? 0 : -sign * 1000, facing_y: alone ? -1000 : 0 };
+      const idleTick = Math.floor(time * this.simulation.tick_rate);
+      const self = { ...blankFighter(id), x: alone ? 0 : sign * 180, y: alone ? -70 : 0, facing: alone ? 1 : -sign, facing_x: alone ? 0 : -sign * 1000, facing_y: alone ? -1000 : 0, ...(alone ? shadowBoxing(idleTick) : {}) };
       const other = { ...blankFighter(this.playerOrder[1 - index] ?? "opponent"), x: alone ? 0 : -sign * 180, y: alone ? -150 : 0 };
       graph.setResting(false);
-      graph.update(self, other, dt, time, this.settings().reducedMotion, this.bloodLevel, sampledTick);
+      graph.update(self, other, dt, time, this.settings().reducedMotion, this.bloodLevel, alone ? idleTick : sampledTick);
     }
   }
 

@@ -92,10 +92,14 @@ describe("browser lifecycle and accessible overlays", () => {
     send({ version: 3, type: "waiting", open_seats: 1 });
     expect(root.querySelector("[data-invite]")).toBeNull();
     expect(root.querySelector("[data-status]")?.textContent).toContain("Play now");
+    const hint = root.querySelector<HTMLElement>("[data-hint]")!;
+    expect(hint.hidden).toBe(false);
+    expect(hint.textContent).toContain("Jab");
     send({ version: 3, type: "ready", players: [...players] });
     const cards = ["A", "B", "C"].map((judge) => ({ judge, player_one: [10], player_two: [9] }));
     send({ version: 3, type: "final", match_id: "m", winner_id: "one", method: "decision", round: 1, scorecards: cards, ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } });
     expect(root.querySelector("[data-final]")?.textContent).toContain("A: 10 to 9");
+    expect(root.querySelector<HTMLElement>("[data-hint]")!.hidden).toBe(true);
     app.destroy();
     expect(mocks.networkDispose).toHaveBeenCalled();
     expect(mocks.rendererDestroy).toHaveBeenCalled();

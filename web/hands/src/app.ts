@@ -3,6 +3,7 @@ import { ClientError, safeError } from "./api";
 import { authorizeDiscord, type DiscordSession } from "./discord";
 import { HapticFeedback } from "./haptics";
 import { CONTROL_HELP } from "./input/bindings";
+import { coarsePointer } from "./input/touch";
 import { InputController } from "./input/input";
 import { EventDeduplicator } from "./interpolation";
 import { NetworkController } from "./network";
@@ -14,6 +15,8 @@ import type { EngineSnapshot, ServerMessage } from "./types";
 const CONTACT_FEEDBACK_KINDS = new Set(["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown"]);
 // The room keeps the finished bout for its result hold (ten seconds by default); a rejoin inside
 // that window only replays the old final, so the rematch waits it out and retries if it still hits it.
+const CONTROL_HINT_KEYBOARD = "Move WASD · Jab F/J · Straight R/U · Hook G/H · Uppercut T/Y · Guard Q/E · Body Shift · Power Alt";
+const CONTROL_HINT_TOUCH = "Left side: drag to move · Right pads: L/R punches · Hold BODY, POWER or GUARD";
 const REMATCH_HOLD_MS = 11_000;
 const REMATCH_RETRY_MS = 3_000;
 const REMATCH_MAX_ATTEMPTS = 6;
@@ -40,6 +43,7 @@ export class HandsApp {
   private readonly controlsPanel: HTMLElement;
   private readonly retry: HTMLButtonElement;
   private readonly rematchButton: HTMLButtonElement;
+  private readonly hint: HTMLElement;
   private finalReceivedAt = 0;
   private lastFinalMatchId: string | null = null;
   private rematchAttempts = 0;
@@ -54,7 +58,7 @@ export class HandsApp {
     private readonly reloadPage: () => void = () => window.location.reload(),
     private readonly authorizer: (signal: AbortSignal) => Promise<DiscordSession> = authorizeDiscord,
   ) {
-    root.innerHTML = `<section class="activity" aria-label="Hands boxing activity"><canvas class="fight" aria-label="Authoritative two-player boxing match"></canvas><header class="topbar"><strong>HANDS</strong><span>authoritative two-player boxing</span><span class="spectator-role" data-role hidden>SPECTATING · READ ONLY</span><button type="button" data-controls aria-expanded="false">Controls</button><button type="button" data-settings aria-expanded="false">Settings</button></header><section class="overlay" data-overlay><p class="status" data-status></p><button type="button" class="primary" data-retry hidden>Retry securely</button><button type="button" class="primary" data-rematch hidden>Rematch</button></section><aside class="panel" data-controls-panel hidden aria-label="Controls"><h2>Controls</h2><ul>${CONTROL_HELP.map((item) => `<li>${item}</li>`).join("")}</ul></aside><aside class="panel settings" data-settings-panel hidden aria-label="Accessibility and feedback settings"><h2>Settings</h2><label>Volume <input data-volume type="range" min="0" max="1" step="0.05"></label><label><input data-haptics type="checkbox"> Haptics</label><label><input data-motion type="checkbox"> Reduced motion</label><label>Blood <select data-blood><option value="full">Full (arcade gore)</option><option value="reduced">Reduced</option><option value="off">Off</option></select></label><p class="model-credit"><a href="https://sketchfab.com/3d-models/boxer-84767168720948b38728ff78ee6f6090" target="_blank" rel="noreferrer">“Boxer” by Texel, Inc.</a> · <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">CC BY 4.0</a> · modified</p></aside><section class="sr-summary" data-fight-summary aria-label="Fight summary"></section><p class="sr-summary" data-fight-status role="status" aria-live="polite" aria-atomic="true"></p><section class="sr-summary" data-final aria-live="polite" aria-label="Final result"></section></section>`;
+    root.innerHTML = `<section class="activity" aria-label="Hands boxing activity"><canvas class="fight" aria-label="Authoritative two-player boxing match"></canvas><header class="topbar"><strong>HANDS</strong><span>authoritative two-player boxing</span><span class="spectator-role" data-role hidden>SPECTATING · READ ONLY</span><button type="button" data-controls aria-expanded="false">Controls</button><button type="button" data-settings aria-expanded="false">Settings</button></header><section class="overlay" data-overlay><p class="status" data-status></p><p class="hint" data-hint hidden></p><button type="button" class="primary" data-retry hidden>Retry securely</button><button type="button" class="primary" data-rematch hidden>Rematch</button></section><aside class="panel" data-controls-panel hidden aria-label="Controls"><h2>Controls</h2><ul>${CONTROL_HELP.map((item) => `<li>${item}</li>`).join("")}</ul></aside><aside class="panel settings" data-settings-panel hidden aria-label="Accessibility and feedback settings"><h2>Settings</h2><label>Volume <input data-volume type="range" min="0" max="1" step="0.05"></label><label><input data-haptics type="checkbox"> Haptics</label><label><input data-motion type="checkbox"> Reduced motion</label><label>Blood <select data-blood><option value="full">Full (arcade gore)</option><option value="reduced">Reduced</option><option value="off">Off</option></select></label><p class="model-credit"><a href="https://sketchfab.com/3d-models/boxer-84767168720948b38728ff78ee6f6090" target="_blank" rel="noreferrer">“Boxer” by Texel, Inc.</a> · <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">CC BY 4.0</a> · modified</p></aside><section class="sr-summary" data-fight-summary aria-label="Fight summary"></section><p class="sr-summary" data-fight-status role="status" aria-live="polite" aria-atomic="true"></p><section class="sr-summary" data-final aria-live="polite" aria-label="Final result"></section></section>`;
     this.canvas = root.querySelector<HTMLCanvasElement>("canvas")!;
     this.status = root.querySelector<HTMLElement>("[data-status]")!;
     this.roleIndicator = root.querySelector<HTMLElement>("[data-role]")!;
@@ -62,6 +66,7 @@ export class HandsApp {
     this.controlsPanel = root.querySelector<HTMLElement>("[data-controls-panel]")!;
     this.retry = root.querySelector<HTMLButtonElement>("[data-retry]")!;
     this.rematchButton = root.querySelector<HTMLButtonElement>("[data-rematch]")!;
+    this.hint = root.querySelector<HTMLElement>("[data-hint]")!;
     this.rematchButton.addEventListener("click", this.onRematch);
     this.fightSummary = root.querySelector<HTMLElement>("[data-fight-summary]")!;
     this.liveFightStatus = root.querySelector<HTMLElement>("[data-fight-status]")!;
@@ -289,6 +294,9 @@ export class HandsApp {
     this.setText(this.liveFightStatus, liveStatus);
     this.retry.hidden = this.state.stage !== "fatal";
     if (this.state.stage !== "complete") this.rematchButton.hidden = true;
+    const showHint = !spectating && (this.state.stage === "waiting" || this.state.stage === "countdown");
+    this.hint.hidden = !showHint;
+    if (showHint) this.setText(this.hint, coarsePointer() ? CONTROL_HINT_TOUCH : CONTROL_HINT_KEYBOARD);
     const active = !spectating && ["countdown", "fight", "knockdown", "foul_recovery"].includes(this.state.stage);
     this.input.setActive(active);
     this.network?.setActive(active);
