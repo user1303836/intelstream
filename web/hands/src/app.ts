@@ -362,9 +362,23 @@ export class HandsApp {
         this.setText(copy, "Copied");
         window.setTimeout(() => this.setText(copy, "Copy diagnostics"), 1500);
       };
+      const selectFallback = (): void => {
+        const block = this.root.querySelector<HTMLElement>("[data-diagnostics]")!;
+        const selection = window.getSelection();
+        if (selection === null) return;
+        const range = document.createRange();
+        range.selectNodeContents(block);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        this.setText(copy, "Selected. Copy manually");
+        window.setTimeout(() => this.setText(copy, "Copy diagnostics"), 2500);
+      };
       const clipboard = navigator.clipboard;
-      if (clipboard === undefined) return;
-      clipboard.writeText(text).then(done).catch(() => undefined);
+      if (clipboard === undefined || typeof clipboard.writeText !== "function") {
+        selectFallback();
+        return;
+      }
+      clipboard.writeText(text).then(done).catch(selectFallback);
     });
     this.root.querySelector<HTMLInputElement>("[data-volume]")!.addEventListener("input", (event) => {
       this.settings.update({ volume: Number((event.target as HTMLInputElement).value) });

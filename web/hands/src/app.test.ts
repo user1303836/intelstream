@@ -207,6 +207,12 @@ describe("browser lifecycle and accessible overlays", () => {
     root.querySelector<HTMLButtonElement>("[data-copy-diagnostics]")!.click();
     expect(writeText).toHaveBeenCalledOnce();
     expect(writeText).toHaveBeenCalledWith(expect.stringContaining("input latency:"));
+    Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+    document.body.append(root);
+    root.querySelector<HTMLButtonElement>("[data-copy-diagnostics]")!.click();
+    expect(root.querySelector("[data-copy-diagnostics]")?.textContent).toBe("Selected. Copy manually");
+    expect(window.getSelection()?.toString()).toContain("frame:");
+    root.remove();
     app.destroy();
   });
 
