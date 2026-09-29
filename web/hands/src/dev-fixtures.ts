@@ -1,4 +1,6 @@
 import * as THREE from "three";
+import { SharedActionIntent } from "./input/action-buffer";
+import { TouchInput, coarsePointer } from "./input/touch";
 import { FightRenderer } from "./render/renderer";
 import type { CombatEvent, EngineSnapshot, FighterSnapshot, PublicPlayer } from "./types";
 
@@ -32,6 +34,7 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
     "fixture-two": { id: "fixture-two", name: "Crimson Geometry", avatar: null, rating: 1494, connected: true },
   };
   renderer.setPlayers(players, "fixture-one");
+  const touch = coarsePointer() ? new TouchInput(root.querySelector<HTMLElement>(".activity")!, new SharedActionIntent()) : null;
 
   let tick = 0;
   let eventId = 0;
@@ -115,6 +118,7 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
 
   return () => {
     window.clearInterval(interval);
+    touch?.destroy();
     renderer.destroy();
     root.replaceChildren();
   };
