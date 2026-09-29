@@ -8,6 +8,7 @@ import { FIGHTER_GLB_GZIP_BASE64 } from "../assets/fighter-glb";
 import { BONE_ADAPTER } from "./skeleton";
 export { BONE_ADAPTER };
 import { FIGHTER_TEXTURE_DATA_URLS } from "../assets/fighter-textures";
+import { wearCornerColour } from "./gear";
 import { BODY_SITES, HEAD_SITES, InjuryShading, applyBodyTrauma, applyHeadTrauma } from "./injury";
 import { LookShading, SCANNED_LOOK, type FighterLook } from "./looks";
 import { applyOutfitShading, buildCuffGeometry, buildHandGeometry, type OfficialOutfit, type OutfitPart } from "./outfit";
@@ -80,7 +81,7 @@ function fighterTexture(name: FighterTexture): THREE.Texture {
 
 interface AppliedFighterMaterials {
   readonly skin: readonly THREE.MeshPhysicalMaterial[];
-  readonly gloves: THREE.MeshStandardMaterial;
+  readonly gloveBlood: { value: number };
   readonly owned: readonly THREE.Material[];
   readonly headInjury: InjuryShading;
   readonly bodyInjury: InjuryShading;
@@ -90,7 +91,7 @@ export function applyFighterSkin(target: THREE.Object3D, palette: BoxerPaletteCo
   const skin: THREE.MeshPhysicalMaterial[] = [];
   const owned: THREE.Material[] = [];
   const bySource = new Map<string, THREE.MeshStandardMaterial>();
-  let gloves: THREE.MeshStandardMaterial | null = null;
+  let gloveBlood: { value: number } | null = null;
   let headInjury: InjuryShading | null = null;
   let bodyInjury: InjuryShading | null = null;
   target.traverse((object) => {
@@ -114,21 +115,22 @@ export function applyFighterSkin(target: THREE.Object3D, palette: BoxerPaletteCo
       bySource.set(sourceName, material);
       owned.push(material);
       if (material instanceof THREE.MeshPhysicalMaterial) skin.push(material);
-      if (sourceName === "GlovesMat0") gloves = material;
       if (sourceName === "MHeadMat0") headInjury = new InjuryShading(material, HEAD_SITES);
       if (sourceName === "MBodyMat0") bodyInjury = new InjuryShading(material, BODY_SITES);
       const part = OUTFIT_PARTS[sourceName];
       if (outfit !== undefined && part !== undefined) applyOutfitShading(material, part, outfit);
+      else if (sourceName === "PantsMat0") wearCornerColour(material);
+      else if (sourceName === "GlovesMat0") gloveBlood = wearCornerColour(material);
     }
     object.material = material;
     object.castShadow = true;
     object.receiveShadow = true;
     object.frustumCulled = false;
   });
-  if (skin.length !== 2 || gloves === null || owned.length !== 5 || headInjury === null || bodyInjury === null) {
+  if (skin.length !== 2 || gloveBlood === null || owned.length !== 5 || headInjury === null || bodyInjury === null) {
     throw new Error(`fighter GLB material contract failed: ${skin.length} skin, ${owned.length} total`);
   }
-  return { skin, gloves, owned, headInjury, bodyInjury };
+  return { skin, gloveBlood, owned, headInjury, bodyInjury };
 }
 
 export interface BoxerPaletteColors {
@@ -161,7 +163,7 @@ export class SkinnedBoxer {
   readonly metrics: { armUpper: number; armFore: number; legThigh: number; legShin: number; headRestY: number; chestRestY: number; ankleRestY: number };
   private readonly skinMaterials: readonly THREE.MeshPhysicalMaterial[];
   private readonly ownedMaterials: THREE.Material[];
-  private readonly gearMaterial: THREE.MeshStandardMaterial;
+  private readonly gloveBlood: { value: number };
   private readonly headMeshes: THREE.SkinnedMesh[] = [];
   private readonly handMeshes: Record<Hand, THREE.SkinnedMesh[]> = { left: [], right: [] };
   private decapitated = false;
@@ -182,7 +184,7 @@ export class SkinnedBoxer {
     const materials = applyFighterSkin(instance, palette);
     this.skinMaterials = materials.skin;
     this.ownedMaterials = [...materials.owned];
-    this.gearMaterial = materials.gloves;
+    this.gloveBlood = materials.gloveBlood;
     this.headInjury = materials.headInjury;
     this.bodyInjury = materials.bodyInjury;
     this.gearBaseColor = new THREE.Color(palette.gear);
@@ -227,8 +229,13 @@ export class SkinnedBoxer {
     return this.bones.get(BONE_ADAPTER[name] ?? name) ?? null;
   }
 
-  get gloveGear(): THREE.MeshStandardMaterial {
-    return this.gearMaterial;
+  /** How much of the opponent's blood is on the gloves, 0 to 1. */
+  setGloveBlood(amount: number): void {
+    this.gloveBlood.value = clamp(amount, 0, 1);
+  }
+
+  get gloveBloodLevel(): number {
+    return this.gloveBlood.value;
   }
 
   get headMesh(): THREE.SkinnedMesh {
@@ -315,8 +322,6 @@ export class SkinnedBoxer {
     for (const geometry of this.ownedGeometries) geometry.dispose();
   }
 }
-
-const BLOODED_GLOVE_COLOR = new THREE.Color(0x5c0a0e);
 
 export type ReactionKind = "block" | "hit";
 
@@ -1070,7 +1075,7 @@ export class BoxingGraph {
       (opponent.trauma.bleeding + opponent.trauma.left_cut + opponent.trauma.right_cut) / 620
         * (blood === "off" ? 0 : blood === "reduced" ? 0.3 : 1.5),
     );
-    boxer.gloveGear.color.copy(boxer.gearBaseColor).lerp(BLOODED_GLOVE_COLOR, opponentBlood);
+    boxer.setGloveBlood(opponentBlood);
     applyHeadTrauma(boxer.headInjury, fighter.trauma, blood);
     applyBodyTrauma(boxer.bodyInjury, fighter.trauma, blood);
     boxer.setSkinClearcoat(0.25 + (1 - stamina) * 0.4);

@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type { BloodLevel } from "../settings";
 import type { CombatEvent, Hand } from "../types";
+import { wearCornerColour } from "./gear";
 import { buildChunkGeometry, buildWoundGeometry, woundTexture } from "./gore";
 import { LookShading, SCANNED_LOOK, type FighterLook } from "./looks";
 import { CANVAS_TOP, RING_FIGHT_HALF, ROPE_LINE } from "./world";
@@ -339,6 +340,7 @@ export class Effects3D {
     }
     for (let index = 0; index < MAX_HANDS; index += 1) {
       const material = new THREE.MeshStandardMaterial({ color: 0x1d4ed8, roughness: 0.38, metalness: 0.03 });
+      wearCornerColour(material, true);
       this.handMaterials.push(material);
       const handMesh = new THREE.Mesh(this.handGeometry, material);
       handMesh.scale.set(1.15, 1, 1.35);
