@@ -468,6 +468,7 @@ function mockHudContext(texts: string[]): CanvasRenderingContext2D {
     strokeRect: () => {},
     clearRect: () => {},
     fillText: (text: string) => texts.push(text),
+    strokeText: () => undefined,
     measureText: (text: string) => ({ width: text.length * 7 }),
     createLinearGradient: () => gradient,
     createRadialGradient: () => gradient,

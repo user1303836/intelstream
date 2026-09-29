@@ -277,6 +277,9 @@ export class FightRenderer {
   private readonly downedPoolAccumulators: [number, number] = [0, 0];
   private readonly downedPoolCounts: [number, number] = [0, 0];
   private bloodLevel: BloodLevel = "full";
+  private viewerHitFlash = 0;
+  private finishSlowMotion = 0;
+  private finishSeen = false;
   private readonly pendingContacts: Array<{
     event: CombatEvent;
     presentationEvent: CombatEvent;
@@ -559,6 +562,15 @@ export class FightRenderer {
       }
       const currentSettings = this.settings();
       if (
+        presentImpact
+        && recipientIndex >= 0
+        && this.viewerId !== null
+        && this.buffer.latest()?.fighters[recipientIndex]?.player_id === this.viewerId
+        && ["hit", "counter_hit", "knockdown"].includes(event.kind)
+      ) {
+        this.viewerHitFlash = Math.max(this.viewerHitFlash, Math.min(1, 0.35 + event.amount / 400));
+      }
+      if (
         injury !== null
         && recipientIndex >= 0
         && this.arcadeInjuries[recipientIndex] === null
@@ -699,7 +711,7 @@ export class FightRenderer {
 
   private draw(time: number, manual = false, render = true): void {
     if (this.destroyed) return;
-    const dt = manual ? 1 / 60 : Math.min(0.05, Math.max(0.001, (time - this.previous) / 1000));
+    let dt = manual ? 1 / 60 : Math.min(0.05, Math.max(0.001, (time - this.previous) / 1000));
     this.previous = time;
 
     const width = this.canvas.clientWidth;
@@ -720,6 +732,18 @@ export class FightRenderer {
     this.setBloodLevel(current.blood);
 
     const latest = this.buffer.latest();
+    const finishing = latest?.result !== null && latest?.result !== undefined
+      && ["ko", "flash_ko", "tko"].includes(latest.result.finish_method);
+    if (finishing && !this.finishSeen) {
+      this.finishSeen = true;
+      this.finishSlowMotion = 2.2;
+    }
+    if (this.finishSlowMotion > 0 && !current.reducedMotion) {
+      this.finishSlowMotion = Math.max(0, this.finishSlowMotion - dt);
+      const eased = Math.min(1, this.finishSlowMotion / 0.5);
+      dt *= 0.3 + 0.7 * (1 - eased);
+    }
+    this.viewerHitFlash = Math.max(0, this.viewerHitFlash - dt * 3.2);
     const sampledTick = latest === null ? 0 : manual ? presentationTickFor(latest) : this.buffer.renderTick(time);
     const snapshot = latest === null ? null : this.applyLocalPrediction(this.buffer.sample(sampledTick), dt);
     let separation = 1.8;
@@ -900,6 +924,13 @@ export class FightRenderer {
     const { context: ctx, viewport } = resized;
     ctx.clearRect(0, 0, viewport.width, viewport.height);
     if (snapshot === null) return;
+    if (this.viewerHitFlash > 0.01 && !this.settings().reducedMotion) {
+      const flash = ctx.createRadialGradient(viewport.width / 2, viewport.height / 2, viewport.width * 0.12, viewport.width / 2, viewport.height / 2, viewport.width * 0.7);
+      flash.addColorStop(0, `rgba(255,235,225,${(this.viewerHitFlash * 0.18).toFixed(3)})`);
+      flash.addColorStop(1, `rgba(140,0,10,${(this.viewerHitFlash * 0.55).toFixed(3)})`);
+      ctx.fillStyle = flash;
+      ctx.fillRect(0, 0, viewport.width, viewport.height);
+    }
     const hurt = Math.max(...snapshot.fighters.map((fighter) => fighter.trauma.head + fighter.trauma.body));
     if (hurt > 350) {
       const vignette = ctx.createRadialGradient(viewport.width / 2, viewport.height / 2, viewport.width * 0.2, viewport.width / 2, viewport.height / 2, viewport.width * 0.72);

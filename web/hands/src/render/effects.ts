@@ -943,7 +943,7 @@ export class Effects3D {
     gib.vry = (rand() - 0.5) * 18;
     gib.vrz = (rand() - 0.5) * 18;
     gib.life = tooth ? 6 : 1.8 + rand() * 1.2;
-    gib.scale = tooth ? 0.22 + rand() * 0.12 : 0.55 + rand() * 1.2;
+    gib.scale = tooth ? 0.22 + rand() * 0.12 : 0.32 + rand() * 0.7;
     gib.bounces = 0;
     gib.stained = false;
     this.writeGibMatrix(index, gib);

@@ -190,10 +190,26 @@ export function drawHud(
   const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
   roundCard(ctx, width / 2, height - 84, clock, `ROUND ${snapshot.round_number}`, snapshot.phase.replace("_", " ").toUpperCase());
 
+  if (snapshot.phase === "countdown") {
+    centerPanel(ctx, width, height, `ROUND ${snapshot.round_number}`, "Touch gloves. Protect yourself at all times.", -height * 0.12);
+  }
   if (snapshot.phase === "knockdown") {
     const viewer = snapshot.fighters.find((fighter) => fighter.player_id === viewerId);
     const downed = snapshot.fighters.find((fighter) => fighter.is_downed) ?? viewer;
     const count = Math.max(...snapshot.fighters.map((fighter) => fighter.get_up_count));
+    const downedName = players[downed?.player_id ?? ""]?.name ?? "Fighter";
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.font = "900 44px Inter, system-ui, sans-serif";
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = "rgba(0,0,0,0.75)";
+    ctx.strokeText("KNOCKDOWN", width / 2, height * 0.16);
+    ctx.fillStyle = "#ff4d4d";
+    ctx.fillText("KNOCKDOWN", width / 2, height * 0.16);
+    ctx.font = "700 15px Inter, system-ui, sans-serif";
+    ctx.fillStyle = "#e6ecf7";
+    ctx.fillText(`${fit(ctx, downedName.toUpperCase(), width * 0.5)} IS DOWN`, width / 2, height * 0.16 + 24);
+    ctx.restore();
     const panelWidth = 380;
     const panelHeight = 150;
     const x = width / 2 - panelWidth / 2;
