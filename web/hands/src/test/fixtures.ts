@@ -3,3 +3,37 @@ export const fighter = (id: string, x = 0): FighterSnapshot => ({ player_id: id,
 export const snapshot = (tick = 10): EngineSnapshot => ({ tick, phase: "fight", round_number: 1, phase_ticks_remaining: 5000, fighters: [fighter("one", -100), fighter("two", 100)], events: [], result: null, checksum: "a".repeat(64) });
 export const envelope = (tick = 10): Record<string, unknown> => ({ version: 3, type: "snapshot", payload: snapshot(tick) });
 export const publicPlayers = [{ id: "one", name: "One", avatar: null, rating: 1500, connected: true }, { id: "two", name: "Two", avatar: null, rating: 1500, connected: true }] as const;
+
+export interface DrawnPicture { image: unknown; x: number; y: number; width: number; height: number }
+
+export function mockHudContext(texts: string[], drawn?: DrawnPicture[], arcs?: Array<{ x: number; y: number; radius: number }>): CanvasRenderingContext2D {
+  const gradient = { addColorStop: () => {} };
+  return {
+    save: () => {},
+    restore: () => {},
+    beginPath: () => {},
+    closePath: () => {},
+    arc: (x: number, y: number, radius: number) => arcs?.push({ x, y, radius }),
+    clip: () => {},
+    setTransform: () => {},
+    drawImage: (image: unknown, x: number, y: number, width: number, height: number) => drawn?.push({ image, x, y, width, height }),
+    moveTo: () => {},
+    lineTo: () => {},
+    fill: () => {},
+    stroke: () => {},
+    fillRect: () => {},
+    strokeRect: () => {},
+    clearRect: () => {},
+    fillText: (text: string) => texts.push(text),
+    strokeText: () => undefined,
+    measureText: (text: string) => ({ width: text.length * 7 }),
+    createLinearGradient: () => gradient,
+    createRadialGradient: () => gradient,
+    set fillStyle(_value: unknown) {},
+    set strokeStyle(_value: unknown) {},
+    set font(_value: string) {},
+    set lineWidth(_value: number) {},
+    set textAlign(_value: CanvasTextAlign) {},
+    set textBaseline(_value: CanvasTextBaseline) {},
+  } as unknown as CanvasRenderingContext2D;
+}

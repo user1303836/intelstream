@@ -1,4 +1,8 @@
 import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, FinishMethod, PublicPlayer, RatingDelta } from "../types";
+import { monogram } from "./avatars";
+
+/** Hands out a player's picture once it has loaded. */
+export type PictureSource = (player: PublicPlayer) => CanvasImageSource | null;
 
 export const HUD_MAX_GUARD = 700;
 export const HUD_MAX_POISE = 600;
@@ -52,6 +56,43 @@ function broadcastBar(ctx: CanvasRenderingContext2D, x: number, y: number, width
   ctx.fillText(spec.label, mirror ? x + width : x, y - 4);
 }
 
+/** A player's picture in a ring of their corner's colour, or the first letter of their name until there is one. */
+function portrait(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number, picture: CanvasImageSource | null, name: string, accent: string): void {
+  const circle = (): void => {
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.closePath();
+  };
+  ctx.save();
+  circle();
+  ctx.fillStyle = "#0b1220";
+  ctx.fill();
+  if (picture !== null) {
+    ctx.save();
+    ctx.clip();
+    ctx.drawImage(picture, x - radius, y - radius, radius * 2, radius * 2);
+    ctx.restore();
+  } else {
+    ctx.globalAlpha = 0.4;
+    ctx.fillStyle = accent;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#f5f8ff";
+    ctx.textAlign = "center";
+    ctx.font = `800 ${Math.round(radius * 1.1)}px Inter, system-ui, sans-serif`;
+    ctx.fillText(monogram(name), x, y + radius * 0.39);
+  }
+  circle();
+  ctx.lineWidth = Math.max(1.5, radius / 9);
+  ctx.strokeStyle = accent;
+  ctx.stroke();
+  ctx.restore();
+}
+
+export const PLATE_PORTRAIT_RADIUS = 16;
+export const CLOCK_PORTRAIT_RADIUS = 20;
+const ROUND_CARD_WIDTH = 168;
+
 function fighterPlate(
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -62,6 +103,8 @@ function fighterPlate(
   bars: readonly BarSpec[],
   mirror: boolean,
   accent: string,
+  /** Drawn at the plate's outer end when there is the width for it. */
+  picture: CanvasImageSource | null | undefined,
 ): void {
   const height = 62;
   ctx.save();
@@ -86,16 +129,19 @@ function fighterPlate(
   ctx.fillStyle = accent;
   ctx.fillRect(mirror ? x + width - 5 : x, y + 4, 5, height - 8);
 
-  const textX = mirror ? x + width - 20 : x + 20;
+  const inset = picture === undefined ? 20 : 19 + PLATE_PORTRAIT_RADIUS * 2;
+  if (picture !== undefined) portrait(ctx, mirror ? x + width - 11 - PLATE_PORTRAIT_RADIUS : x + 11 + PLATE_PORTRAIT_RADIUS, y + 4 + PLATE_PORTRAIT_RADIUS, PLATE_PORTRAIT_RADIUS, picture, name, accent);
+  const textX = mirror ? x + width - inset : x + inset;
   ctx.textAlign = mirror ? "right" : "left";
   ctx.fillStyle = "#f5f8ff";
   const label = name.toUpperCase();
+  const nameWidth = width - inset - 24;
   const nameSize = fitFontSize((size) => {
     ctx.font = `800 ${size}px Inter, system-ui, sans-serif`;
     return ctx.measureText(label).width;
-  }, width - 44, 16, 11);
+  }, nameWidth, 16, 11);
   ctx.font = `800 ${nameSize}px Inter, system-ui, sans-serif`;
-  ctx.fillText(fit(ctx, label, width - 44), textX, y + 21);
+  ctx.fillText(fit(ctx, label, nameWidth), textX, y + 21);
   ctx.fillStyle = "#93a3bd";
   ctx.font = "600 10px Inter, system-ui, sans-serif";
   ctx.fillText(detail, textX, y + 35);
@@ -110,7 +156,7 @@ function fighterPlate(
 }
 
 function roundCard(ctx: CanvasRenderingContext2D, centerX: number, y: number, clock: string, round: string, phase: string): void {
-  const width = 168;
+  const width = ROUND_CARD_WIDTH;
   const height = 58;
   ctx.save();
   ctx.beginPath();
@@ -279,9 +325,14 @@ export function drawHud(
   inputLatencyMs: number | null = null,
   roundCallout: string | null = null,
   clockTicks: number | null = null,
+  pictures: PictureSource | null = null,
 ): void {
   ctx.save();
   ctx.textBaseline = "alphabetic";
+  const pictureOf = (fighter: FighterSnapshot): CanvasImageSource | null => {
+    const player = players[fighter.player_id];
+    return player === undefined || pictures === null ? null : pictures(player);
+  };
   // Below 640 px the two plates share the bottom edge and the round card moves under the top bar.
   const compact = width < 640;
   const plateWidth = compact ? (width - 56) / 2 : Math.min(300, width * 0.38);
@@ -299,7 +350,10 @@ export function drawHud(
       { label: "GUARD", value: fighter.guard, maximum: HUD_MAX_GUARD, from: "#9ec7ff", to: "#3d6fb8" },
       { label: `POISE ${Math.round(fighter.poise)}`, value: fighter.poise, maximum: HUD_MAX_POISE, from: "#e8c890", to: "#8a6a34" },
     ];
-    fighterPlate(ctx, x, plateY, plateWidth, player?.name ?? "Fighter", detail, bars.slice(0, 2), mirror, index === 0 ? "#3d6fb8" : "#b02a20");
+    const accent = index === 0 ? "#3d6fb8" : "#b02a20";
+    // A narrow plate has no room for a picture, so it goes beside the clock at the top.
+    fighterPlate(ctx, x, plateY, plateWidth, player?.name ?? "Fighter", detail, bars.slice(0, 2), mirror, accent, compact ? undefined : pictureOf(fighter));
+    if (compact) portrait(ctx, width / 2 + (mirror ? 1 : -1) * (ROUND_CARD_WIDTH / 2 + 8 + CLOCK_PORTRAIT_RADIUS), 54 + 29, CLOCK_PORTRAIT_RADIUS, pictureOf(fighter), player?.name ?? "Fighter", accent);
     const miniY = plateY - 12;
     broadcastBar(ctx, mirror ? x + plateWidth - 148 : x + 20, miniY, 64, bars[2]!, mirror);
     broadcastBar(ctx, mirror ? x + plateWidth - 72 : x + 96, miniY, 64, bars[3]!, mirror);
@@ -444,7 +498,7 @@ export function drawHud(
   }
   if (final !== null) {
     const punches = snapshot.fighters.map((fighter) => roundStats?.total(fighter.player_id) ?? { thrown: 0, landed: 0 }) as [RoundPunchStats, RoundPunchStats];
-    drawResultCard(ctx, width, height, resultCard(final, snapshot.fighters, players, punches), snapshot.fighters.some((fighter) => fighter.player_id === viewerId));
+    drawResultCard(ctx, width, height, resultCard(final, snapshot.fighters, players, punches), snapshot.fighters.some((fighter) => fighter.player_id === viewerId), [pictureOf(snapshot.fighters[0]), pictureOf(snapshot.fighters[1])]);
   }
   ctx.restore();
 }
@@ -568,7 +622,7 @@ export function resultCardLayout(width: number, height: number, card: ResultCard
   return { x: (width - cardWidth) / 2, y: height - 14 - cardHeight, width: cardWidth, height: cardHeight, wide, dense, rowHeight, verdictHeight, judgesHeight };
 }
 
-function drawResultCard(ctx: CanvasRenderingContext2D, width: number, height: number, card: ResultCard, fighter: boolean): void {
+function drawResultCard(ctx: CanvasRenderingContext2D, width: number, height: number, card: ResultCard, fighter: boolean, pictures: readonly [CanvasImageSource | null, CanvasImageSource | null]): void {
   const layout = resultCardLayout(width, height, card, fighter);
   const { x, y } = layout;
   ctx.fillStyle = "rgba(3,6,12,0.9)";
@@ -611,11 +665,15 @@ function drawResultCard(ctx: CanvasRenderingContext2D, width: number, height: nu
   let baseline = tableTop + rowHeight * 0.7;
   ctx.fillStyle = "rgba(255,255,255,0.06)";
   ctx.fillRect(tableLeft, tableTop, tableWidth, rowHeight);
+  const face = Math.max(6, rowHeight / 2 - 2);
   for (const seat of [0, 1] as const) {
+    const outward = seat === 0 ? -1 : 1;
     ctx.fillStyle = CORNER_ACCENTS[seat];
     ctx.fillRect(seat === 0 ? tableLeft : tableLeft + tableWidth - 4, tableTop, 4, rowHeight);
+    portrait(ctx, columns[seat] + outward * (side / 2 - 10 - face), tableTop + rowHeight / 2, face, pictures[seat], card.names[seat], CORNER_ACCENTS[seat]);
+    ctx.textAlign = "center";
     ctx.fillStyle = "#f6f7fb";
-    fitted(ctx, card.names[seat], columns[seat], baseline, side - 16, 800, text, 9);
+    fitted(ctx, card.names[seat], columns[seat] - outward * (face + 3), baseline, side - 22 - face * 2, 800, text, 9);
   }
   for (const row of card.rows) {
     baseline += rowHeight;

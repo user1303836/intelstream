@@ -174,6 +174,14 @@ async def test_health_static_security_and_safe_resolution(
         assert "Hands" in body
         assert index.headers["Cache-Control"] == "no-store"
         assert "frame-ancestors" in index.headers["Content-Security-Policy"]
+        policy = dict(
+            directive.strip().split(" ", 1)
+            for directive in index.headers["Content-Security-Policy"].split(";")
+        )
+        assert policy["img-src"] == "'self' data: blob: https://cdn.discordapp.com"
+        assert policy["connect-src"] == "'self'"
+        assert policy["script-src"] == "'self'"
+        assert policy["default-src"] == "'self'"
         assert "client-secret" not in body
 
         asset = await client.get(f"{base}/app.js")

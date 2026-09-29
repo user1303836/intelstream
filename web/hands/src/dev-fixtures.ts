@@ -33,9 +33,11 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
     () => ({ volume: 0, haptics: false, reducedMotion: false, blood }),
   );
   renderer.setBloodLevel(blood);
+  // `avatars=<discord id>:<avatar hash>,<discord id>:<avatar hash>` draws real pictures on the plates.
+  const pictured = (new URLSearchParams(window.location.search).get("avatars") ?? "").split(",").map((entry) => entry.split(":"));
   const players: Record<string, PublicPlayer> = {
-    "fixture-one": { id: "fixture-one", name: "Azure Vector", avatar: null, rating: 1512, connected: true },
-    "fixture-two": { id: "fixture-two", name: "Crimson Geometry", avatar: null, rating: 1494, connected: true },
+    "fixture-one": { id: pictured[0]?.[0] || "fixture-one", name: "Azure Vector", avatar: pictured[0]?.[1] || null, rating: 1512, connected: true },
+    "fixture-two": { id: pictured[1]?.[0] || "fixture-two", name: "Crimson Geometry", avatar: pictured[1]?.[1] || null, rating: 1494, connected: true },
   };
   renderer.setPlayers(players, "fixture-one");
   const touch = coarsePointer() ? new TouchInput(root.querySelector<HTMLElement>(".activity")!, new SharedActionIntent()) : null;

@@ -3,11 +3,11 @@ import { punchTiming, totalTicks } from "../manifest";
 import { buildArena } from "./arena";
 import { CameraDirector, ceremonyShot, cornerFrame, cornerPoint, cornerShot, cornerShotProgress, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE } from "./camera";
 import { bloodPatternFor, Effects3D } from "./effects";
-import { decisionLabel, drawHud, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, RESULT_CARD_FOOTER, resultCard, resultCardLayout, RoundClock, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
+import { CLOCK_PORTRAIT_RADIUS, decisionLabel, drawHud, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, PLATE_PORTRAIT_RADIUS, RESULT_CARD_FOOTER, resultCard, resultCardLayout, RoundClock, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
 import { buildRing, disposeRing, nearRopeOpacityFor, ropeGive, ropePress } from "./ring";
 import { resizeHighDpi } from "./viewport";
 import { PALETTES, ROPE_LINE, worldMapping } from "./world";
-import { fighter, publicPlayers, snapshot } from "../test/fixtures";
+import { fighter, mockHudContext, publicPlayers, snapshot, type DrawnPicture } from "../test/fixtures";
 
 const mapping = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 });
 
@@ -653,34 +653,6 @@ describe("final reveal", () => {
   });
 });
 
-function mockHudContext(texts: string[]): CanvasRenderingContext2D {
-  const gradient = { addColorStop: () => {} };
-  return {
-    save: () => {},
-    restore: () => {},
-    beginPath: () => {},
-    closePath: () => {},
-    moveTo: () => {},
-    lineTo: () => {},
-    fill: () => {},
-    stroke: () => {},
-    fillRect: () => {},
-    strokeRect: () => {},
-    clearRect: () => {},
-    fillText: (text: string) => texts.push(text),
-    strokeText: () => undefined,
-    measureText: (text: string) => ({ width: text.length * 7 }),
-    createLinearGradient: () => gradient,
-    createRadialGradient: () => gradient,
-    set fillStyle(_value: unknown) {},
-    set strokeStyle(_value: unknown) {},
-    set font(_value: string) {},
-    set lineWidth(_value: number) {},
-    set textAlign(_value: CanvasTextAlign) {},
-    set textBaseline(_value: CanvasTextBaseline) {},
-  } as unknown as CanvasRenderingContext2D;
-}
-
 describe("fitFontSize", () => {
   it("returns the largest size that fits and the minimum when nothing does", () => {
     const measure = (size: number) => size * 10;
@@ -795,6 +767,65 @@ describe("compact scoreboard labels", () => {
     expect(texts.some((text) => text.startsWith("STA "))).toBe(true);
     expect(texts.some((text) => text.startsWith("HP "))).toBe(true);
     expect(texts.some((text) => text.startsWith("STAMINA"))).toBe(false);
+  });
+});
+
+describe("players' pictures", () => {
+  const players = { one: { id: "one", name: "alpha", avatar: null, rating: 1500, connected: true }, two: { id: "two", name: "  ~bravo", avatar: null, rating: 1500, connected: true } };
+  const picture = { of: "one" } as unknown as CanvasImageSource;
+  const onlyOne = (player: { id: string }): CanvasImageSource | null => (player.id === "one" ? picture : null);
+
+  it("are drawn on the plates, with the first letter of the name where there is none", () => {
+    const texts: string[] = [];
+    const drawn: DrawnPicture[] = [];
+    const arcs: Array<{ x: number; y: number; radius: number }> = [];
+    drawHud(mockHudContext(texts, drawn, arcs), 1280, 720, snapshot(), players, "one", null, 0, 30, null, null, null, null, null, onlyOne);
+    expect(drawn).toEqual([{ image: picture, x: 35, y: 640, width: PLATE_PORTRAIT_RADIUS * 2, height: PLATE_PORTRAIT_RADIUS * 2 }]);
+    expect(texts).toContain("B");
+    expect(texts).not.toContain("A");
+    const rings = arcs.filter((arc) => arc.radius === PLATE_PORTRAIT_RADIUS);
+    expect(new Set(rings.map((arc) => arc.x))).toEqual(new Set([51, 1280 - 51]));
+    expect(rings.every((arc) => arc.y === 656)).toBe(true);
+  });
+
+  it("are both letters when no pictures are on offer", () => {
+    const texts: string[] = [];
+    const drawn: DrawnPicture[] = [];
+    drawHud(mockHudContext(texts, drawn), 1280, 720, snapshot(), players, "one", null, 0, 30);
+    expect(drawn).toHaveLength(0);
+    expect(texts).toContain("A");
+    expect(texts).toContain("B");
+  });
+
+  it("stand beside the clock where the plates are too narrow for them", () => {
+    const drawn: DrawnPicture[] = [];
+    const arcs: Array<{ x: number; y: number; radius: number }> = [];
+    drawHud(mockHudContext([], drawn, arcs), 390, 844, snapshot(), players, "one", null, 0, 30, null, null, null, null, null, onlyOne);
+    expect(arcs.some((arc) => arc.radius === PLATE_PORTRAIT_RADIUS)).toBe(false);
+    const rings = arcs.filter((arc) => arc.radius === CLOCK_PORTRAIT_RADIUS);
+    expect(new Set(rings.map((arc) => arc.x))).toEqual(new Set([195 - 112, 195 + 112]));
+    expect(rings.every((arc) => arc.y === 83)).toBe(true);
+    expect(drawn).toEqual([{ image: picture, x: 195 - 112 - 20, y: 63, width: 40, height: 40 }]);
+    for (const ring of rings) {
+      expect(ring.x - ring.radius).toBeGreaterThan(0);
+      expect(ring.x + ring.radius).toBeLessThan(390);
+      expect(Math.abs(ring.x - 195) - ring.radius).toBeGreaterThan(84);
+    }
+  });
+
+  it("head the columns of the result card", () => {
+    const texts: string[] = [];
+    const drawn: DrawnPicture[] = [];
+    const final = { version: 3 as const, type: "final" as const, match_id: "m", winner_id: "one", method: "decision" as const, round: 3, scorecards: [], ratings: { one: { before: 1000, after: 1016 }, two: { before: 1000, after: 984 } } };
+    drawHud(mockHudContext(texts, drawn), 1280, 720, { ...snapshot(), phase: "complete" }, players, "one", final, 0, 30, null, null, null, null, null, onlyOne);
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0]!.image).toBe(picture);
+    const layout = resultCardLayout(1280, 720, resultCard(final, snapshot().fighters, players, [{ thrown: 0, landed: 0 }, { thrown: 0, landed: 0 }]), true);
+    expect(drawn[0]!.x).toBeGreaterThan(layout.x + layout.width * 0.42);
+    expect(drawn[0]!.x + drawn[0]!.width).toBeLessThan(layout.x + layout.width * 0.6);
+    expect(drawn[0]!.y).toBeGreaterThanOrEqual(layout.y + 14);
+    expect(drawn[0]!.y + drawn[0]!.height).toBeLessThanOrEqual(layout.y + 14 + layout.rowHeight);
+    expect(texts).toContain("B");
   });
 });
 

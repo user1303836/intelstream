@@ -1,4 +1,6 @@
-import { fighter, snapshot } from "../test/fixtures";
+import { fighter, mockHudContext, snapshot, type DrawnPicture } from "../test/fixtures";
+import { Avatars } from "./avatars";
+import { RoundClock } from "./hud";
 import type { CombatEvent, MatchResult } from "../types";
 import { arcadeInjuryFor, canStartPunch, CEREMONY_MARKS, ceremonyStep, contactParticipants, contactPresentationPlan, FightRenderer, isArcadeInjuryCandidate, presentationTickFor, refereeSpacing, replayCameraSide, replayReattaches, visualSeparation } from "./renderer";
 
@@ -339,5 +341,48 @@ describe("ovation", () => {
     methods.setFinal.call(stub, null);
     methods.cheer.call(stub, 11, 0.5);
     expect(excited).toEqual([]);
+  });
+});
+
+describe("players' pictures", () => {
+  it("come from Discord by way of the renderer, which draws them once they have arrived", () => {
+    const made: Array<{ src: string; naturalWidth: number; onload: (() => void) | null }> = [];
+    const avatars = new Avatars(() => {
+      const image = { src: "", naturalWidth: 0, onload: null };
+      made.push(image);
+      return image as unknown as HTMLImageElement;
+    });
+    const drawn: DrawnPicture[] = [];
+    const context = mockHudContext([], drawn);
+    const self = {
+      hudCanvas: { width: 0, height: 0, getBoundingClientRect: () => ({ width: 1280, height: 720 }), getContext: () => context },
+      hudViewport: { width: 0, height: 0 },
+      viewerHitFlash: 0,
+      settings: () => ({ reducedMotion: false }),
+      players: { one: { id: "123456789012345678", name: "Alpha", avatar: "abc123", rating: 1500, connected: true }, two: { id: "two", name: "Bravo", avatar: null, rating: 1500, connected: true } },
+      viewerId: "one",
+      frameSeconds: 0,
+      finalRevealAt: Infinity,
+      final: null,
+      reconnectMs: 0,
+      simulation: { tick_rate: 30 },
+      roundStats: null,
+      replay: null,
+      inputLatencyMs: null,
+      roundCalloutUntil: 0,
+      roundCalloutRound: 1,
+      roundClock: new RoundClock(),
+      avatars,
+    };
+    const overlay = (FightRenderer.prototype as unknown as { drawHudOverlay(this: unknown, frame: unknown): void }).drawHudOverlay;
+    overlay.call(self, snapshot());
+    expect(self.hudViewport).toEqual({ width: 1280, height: 720 });
+    expect(made.map((image) => image.src)).toEqual(["https://cdn.discordapp.com/avatars/123456789012345678/abc123.png?size=128"]);
+    expect(drawn).toHaveLength(0);
+    made[0]!.naturalWidth = 128;
+    made[0]!.onload!();
+    overlay.call(self, snapshot());
+    expect(drawn.map((picture) => picture.image)).toEqual([made[0]]);
+    expect(made).toHaveLength(1);
   });
 });
