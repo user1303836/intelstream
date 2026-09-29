@@ -401,6 +401,7 @@ export class FightRenderer {
   private readonly finishPass: ShaderPass;
   private readonly bloomPass: UnrealBloomPass;
   private inputLatencyMs: number | null = null;
+  private frameMsAverage = 16.7;
   private readonly replayCameraPosition = new THREE.Vector3();
   private readonly replayLookAt = new THREE.Vector3();
   private frameSeconds = 0;
@@ -951,6 +952,14 @@ export class FightRenderer {
     return this.scaler.scale;
   }
 
+  /** Snapshot for the diagnostics panel: smoothed frame time, render scale, GPU objects and the graphics adapter. */
+  get diagnostics(): { frameMs: number; resolutionScale: number; gpu: { geometries: number; textures: number; programs: number }; graphics: string } {
+    const gl = this.renderer.getContext();
+    const info = gl.getExtension("WEBGL_debug_renderer_info");
+    const graphics = info === null ? gl.getParameter(gl.RENDERER) : gl.getParameter(info.UNMASKED_RENDERER_WEBGL);
+    return { frameMs: this.frameMsAverage, resolutionScale: this.scaler.scale, gpu: this.memoryInfo, graphics: String(graphics) };
+  }
+
   /** Live GPU object counts from three, for leak checks across rematches. */
   get memoryInfo(): { geometries: number; textures: number; programs: number } {
     return { geometries: this.renderer.info.memory.geometries, textures: this.renderer.info.memory.textures, programs: this.renderer.info.programs?.length ?? 0 };
@@ -1022,6 +1031,7 @@ export class FightRenderer {
     let dt = manual ? 1 / 60 : Math.min(0.05, Math.max(0.001, frameMs / 1000));
     this.previous = time;
     if (!manual && this.scaler.record(frameMs)) this.applyResolutionScale();
+    if (!manual && frameMs > 0 && frameMs < 1000) this.frameMsAverage += (frameMs - this.frameMsAverage) * 0.05;
 
     const width = this.canvas.clientWidth;
     const height = this.canvas.clientHeight;

@@ -191,6 +191,25 @@ describe("browser lifecycle and accessible overlays", () => {
     app.destroy();
   });
 
+  it("shows copyable diagnostics in the settings panel", async () => {
+    history.replaceState({}, "", "/?instance_id=launch");
+    const root = document.createElement("div");
+    const app = new HandsApp(root);
+    app.start();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
+    const writeText = vi.fn((_text: string) => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    root.querySelector<HTMLButtonElement>("[data-settings]")!.click();
+    const text = root.querySelector("[data-diagnostics]")?.textContent ?? "";
+    expect(text).toContain("frame:");
+    expect(text).toContain("browser:");
+    expect(text).toContain("last error: none");
+    root.querySelector<HTMLButtonElement>("[data-copy-diagnostics]")!.click();
+    expect(writeText).toHaveBeenCalledOnce();
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining("input latency:"));
+    app.destroy();
+  });
+
   it("fully resets renderer, snapshot tick history, player/final state and dedupers on fresh authorization", async () => {
     history.replaceState({}, "", "/?instance_id=launch");
     const root = document.createElement("div");
