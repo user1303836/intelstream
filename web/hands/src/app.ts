@@ -173,6 +173,7 @@ export class HandsApp {
     if (viewer !== undefined) {
       this.audio.snapshot(snapshot.tick, viewer.stamina, viewer.maximum_stamina, viewer.trauma.head + viewer.trauma.body);
     }
+    this.audio.roundClock(snapshot.phase, snapshot.round_number, snapshot.phase_ticks_remaining, this.state.simulation?.tick_rate ?? 30);
     for (const event of this.feedbackEvents.accept(snapshot.events)) {
       if (CONTACT_FEEDBACK_KINDS.has(event.kind)) continue;
       this.audio.event(event);

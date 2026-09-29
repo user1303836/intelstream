@@ -75,6 +75,22 @@ describe("authoritative audio and haptics", () => {
     feedback.destroy();
   });
 
+  it("cracks the ten-second clapper once per round of the fight phase", async () => {
+    const feedback = new AudioFeedback(() => settings);
+    await feedback.unlock();
+    const before = MockAudioContext.bufferStarts;
+    feedback.roundClock("fight", 1, 3500, 30);
+    feedback.roundClock("rest", 1, 200, 30);
+    expect(MockAudioContext.bufferStarts).toBe(before);
+    feedback.roundClock("fight", 1, 299, 30);
+    expect(MockAudioContext.bufferStarts).toBe(before + 2);
+    feedback.roundClock("fight", 1, 280, 30);
+    expect(MockAudioContext.bufferStarts).toBe(before + 2);
+    feedback.roundClock("fight", 2, 250, 30);
+    expect(MockAudioContext.bufferStarts).toBe(before + 4);
+    feedback.destroy();
+  });
+
   it("shares one unlock promise, starts one crowd bed, and retries after resume rejection", async () => {
     const feedback = new AudioFeedback(() => settings);
     MockAudioContext.failResume = true;

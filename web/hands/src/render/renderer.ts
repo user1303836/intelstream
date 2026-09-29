@@ -671,6 +671,7 @@ export class FightRenderer {
         const hit = accepted.find((candidate) => (candidate.kind === "hit" || candidate.kind === "counter_hit") && candidate.target_id === event.target_id) ?? null;
         this.lastKnockdown = { knockdown: event, hit };
       }
+      if (event.kind === "referee_break") this.referee?.breakClinch();
     }
     for (const { event, presentationEvent, presentImpact } of contactPresentationPlan(accepted, snapshot)) {
       const targetIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.target_id);

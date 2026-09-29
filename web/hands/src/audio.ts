@@ -41,6 +41,7 @@ export class AudioFeedback {
   private readonly timers = new Set<number>();
   private lastBreathTick = -300;
   private lastHeartbeatTick = -300;
+  private clapperRound = 0;
 
   private readonly unlockListener = (): void => {
     void this.unlock().catch(() => undefined);
@@ -172,6 +173,21 @@ export class AudioFeedback {
       default:
         break;
     }
+  }
+
+  /** The ten-second clapper: two wood-block cracks once per round when ten seconds remain. */
+  roundClock(phase: string, roundNumber: number, ticksRemaining: number, tickRate: number): void {
+    if (phase !== "fight" || ticksRemaining > 10 * tickRate || this.clapperRound === roundNumber) return;
+    this.clapperRound = roundNumber;
+    if (!this.unlocked) return;
+    this.noise({ duration: 0.05, frequency: 2600, gain: 0.42, type: "bandpass", q: 1.4 });
+    this.noise({ duration: 0.09, frequency: 700, gain: 0.18, type: "bandpass", q: 0.8 });
+    const timer = window.setTimeout(() => {
+      this.timers.delete(timer);
+      this.noise({ duration: 0.05, frequency: 2400, gain: 0.4, type: "bandpass", q: 1.4 });
+      this.noise({ duration: 0.09, frequency: 660, gain: 0.16, type: "bandpass", q: 0.8 });
+    }, 120);
+    this.timers.add(timer);
   }
 
   snapshot(tick: number, stamina: number, maximumStamina: number, trauma: number): void {

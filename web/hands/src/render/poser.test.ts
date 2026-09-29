@@ -116,6 +116,20 @@ describe("transient reset", () => {
   });
 });
 
+describe("clinch break", () => {
+  it("pushes both gloves out and apart at chest height", () => {
+    const { boxer, graph } = makeGraph();
+    graph.breakClinch(2);
+    run(graph, facingOpponent(baseFighter("one")), opponentFor("two"), 45, undefined);
+    const left = bone(boxer, "gloveL");
+    const right = bone(boxer, "gloveR");
+    expect(Math.abs(left.x - right.x)).toBeGreaterThan(0.7);
+    expect(left.y).toBeGreaterThan(1.05);
+    expect(left.y).toBeLessThan(1.45);
+    expect(left.z).toBeGreaterThan(0.3);
+  });
+});
+
 describe("wave-off", () => {
   it("sweeps both gloves across overhead while waving the fight off", () => {
     const { boxer, graph } = makeGraph();
