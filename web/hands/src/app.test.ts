@@ -40,6 +40,7 @@ vi.mock("./render/renderer", () => ({
     setReducedMotion(): void {}
     push(snapshot: EngineSnapshot): void { this.pushes.push(snapshot.tick); }
     destroy(): void { mocks.rendererDestroy(); }
+    setInputLatency(): void {}
   },
 }));
 
