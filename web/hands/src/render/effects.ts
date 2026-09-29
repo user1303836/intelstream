@@ -2,7 +2,7 @@ import * as THREE from "three";
 import type { BloodLevel } from "../settings";
 import type { CombatEvent, Hand } from "../types";
 import { wearCornerColour } from "./gear";
-import { buildChunkGeometry, buildWoundGeometry, closeCut, woundTexture } from "./gore";
+import { bloodShade, buildChunkGeometry, buildDropletGeometry, buildWoundGeometry, closeCut, dropletShape, woundTexture } from "./gore";
 import { LookShading, SCANNED_LOOK, type FighterLook } from "./looks";
 import { CANVAS_TOP, RING_FIGHT_HALF, ROPE_LINE } from "./world";
 
@@ -18,6 +18,12 @@ const HEAD_RADIUS = 0.12;
 const SEVERED_PART_MARGIN = 0.04;
 /** Inward speed of a part beyond the ropes, per metre it is beyond them. */
 const ROPE_RETURN_RATE = 4;
+const DROPLET_GRAVITY = 9.81;
+/** Of every `STRAND_PERIOD` drops of blood thrown by a blow, one leads a strand and `STRAND_LINKS` trail it. */
+const STRAND_PERIOD = 5;
+const STRAND_LINKS = 2;
+const STRAND_LAG = 0.09;
+const STRAND_THINNING = 0.22;
 /** The neck is close to round where it is cut. */
 export const NECK_WOUND_RADIUS = 0.068;
 const HAND_RADIUS = 0.085;
@@ -204,7 +210,8 @@ export class Effects3D {
   private readonly dropletPositions: Float32Array;
   private readonly dropletColors: Float32Array;
   readonly dropletBuffers: { readonly position: THREE.BufferAttribute; readonly color: THREE.BufferAttribute };
-  private readonly dropletGeometry: THREE.SphereGeometry;
+  private readonly dropletGeometry: THREE.BufferGeometry;
+  private readonly dropletShape = { width: 0, length: 0 };
   private readonly dropletMaterial: THREE.MeshStandardMaterial;
   private readonly dropletMatrix = new THREE.Matrix4();
   private readonly dropletQuaternion = new THREE.Quaternion();
@@ -272,8 +279,8 @@ export class Effects3D {
       position: new THREE.BufferAttribute(this.dropletPositions, 3),
       color: new THREE.BufferAttribute(this.dropletColors, 3),
     };
-    this.dropletGeometry = new THREE.SphereGeometry(1, 7, 5);
-    this.dropletMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.22, metalness: 0.02 });
+    this.dropletGeometry = buildDropletGeometry();
+    this.dropletMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.3, metalness: 0.02 });
     this.dropletMesh = new THREE.InstancedMesh(this.dropletGeometry, this.dropletMaterial, MAX_DROPLETS);
     this.dropletMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.dropletMesh.frustumCulled = false;
@@ -442,7 +449,7 @@ export class Effects3D {
     return [...this.stumps, ...this.handStumps].filter((stump) => stump.active).length;
   }
 
-  private spawnDroplet(x: number, y: number, z: number, vx: number, vy: number, vz: number, color: { r: number; g: number; b: number }, life: number, blood: boolean, radius = blood ? 0.006 + this.ambientRandom() * 0.009 : 0.004 + this.ambientRandom() * 0.004): void {
+  private spawnDroplet(x: number, y: number, z: number, vx: number, vy: number, vz: number, color: { r: number; g: number; b: number }, life: number, blood: boolean, radius = blood ? 0.0035 + this.ambientRandom() ** 3 * 0.0125 : 0.0025 + this.ambientRandom() ** 2 * 0.004): void {
     const index = this.dropletIndex % MAX_DROPLETS;
     this.dropletIndex += 1;
     const droplet = this.droplets[index]!;
@@ -481,7 +488,6 @@ export class Effects3D {
       return;
     }
     const speed = Math.hypot(droplet.vx, droplet.vy, droplet.vz);
-    const stretch = 1 + Math.min(3.2, speed * 0.55);
     if (speed > 1e-4) {
       this.dropletVelocity.set(droplet.vx / speed, droplet.vy / speed, droplet.vz / speed);
       this.dropletQuaternion.setFromUnitVectors(unitY, this.dropletVelocity);
@@ -489,7 +495,8 @@ export class Effects3D {
       this.dropletQuaternion.identity();
     }
     const fade = Math.min(1, droplet.life / (droplet.maxLife * 0.3)) * this.dropletCloseness;
-    this.dropletScale.set(droplet.radius * fade, droplet.radius * stretch * fade, droplet.radius * fade);
+    const shape = dropletShape(droplet.radius * fade, speed, this.dropletShape);
+    this.dropletScale.set(shape.width, shape.length, shape.width);
     this.dropletMatrix.compose(this.dropletVelocity.set(droplet.x, droplet.y, droplet.z), this.dropletQuaternion, this.dropletScale);
     this.dropletMesh.setMatrixAt(index, this.dropletMatrix);
   }
@@ -573,6 +580,7 @@ export class Effects3D {
     const launchDirection = event.direction < 0 ? -1 : 1;
     const origin = { x: finite(targetWorld.x), y: event.detail.endsWith(":body") ? 1.05 : 1.58, z: finite(targetWorld.z) };
     const sweatCount = reducedMotion ? 0 : Math.round((blocked ? 6 : 16) + Math.min(20, Math.max(0, event.amount) / 20));
+    const strand = { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, life: 0, radius: 0, color: bloodShade(0) };
     const bloodCount = reducedMotion || event.blood <= 0 || this.bloodLevel === "off"
       ? 0
       : this.bloodLevel === "reduced"
@@ -597,7 +605,13 @@ export class Effects3D {
       );
     }
     for (let i = 0; i < bloodCount; i += 1) {
-      const arterial = i % 4 === 0;
+      const link = i % STRAND_PERIOD;
+      if (link > 0 && link <= STRAND_LINKS) {
+        const slower = 1 - STRAND_LAG * link;
+        this.spawnDroplet(strand.x, strand.y, strand.z, strand.vx * slower, strand.vy * slower, strand.vz * slower, strand.color, strand.life, true, strand.radius * (1 - STRAND_THINNING * link));
+        continue;
+      }
+      const arterial = link === 0;
       const angle = (rand() - 0.5) * Math.PI;
       const speed = arterial ? 2.2 + rand() * 1.8 : 0.9 + rand() * 1.5;
       let vx = launchDirection * speed;
@@ -629,18 +643,25 @@ export class Effects3D {
         vy = arterial ? 1.3 + rand() * 1.6 : 0.5 + rand() * 1.25;
         vz = (rand() - 0.5) * speed * spread;
       }
-      const shade = rand();
-      this.spawnDroplet(
-        origin.x + (rand() - 0.5) * 0.12,
-        origin.y + (rand() - 0.5) * 0.14,
-        origin.z + (rand() - 0.5) * 0.12,
-        vx,
-        vy,
-        vz,
-        shade < 0.3 ? { r: 0.72, g: 0.055, b: 0.08 } : shade < 0.7 ? { r: 0.5, g: 0.025, b: 0.045 } : { r: 0.3, g: 0.012, b: 0.025 },
-        0.65 + rand() * 0.85,
-        true,
-      );
+      const color = bloodShade(rand());
+      const x = origin.x + (rand() - 0.5) * 0.12;
+      const y = origin.y + (rand() - 0.5) * 0.14;
+      const z = origin.z + (rand() - 0.5) * 0.12;
+      const life = 0.65 + rand() * 0.85;
+      if (!arterial) {
+        this.spawnDroplet(x, y, z, vx, vy, vz, color, life, true);
+        continue;
+      }
+      strand.x = x;
+      strand.y = y;
+      strand.z = z;
+      strand.vx = vx;
+      strand.vy = vy;
+      strand.vz = vz;
+      strand.color = color;
+      strand.life = life;
+      strand.radius = 0.008 + rand() * 0.008;
+      this.spawnDroplet(x, y, z, vx, vy, vz, color, life, true, strand.radius);
     }
     if (!reducedMotion && event.blood > 0 && this.bloodLevel !== "off" && (event.amount > 190 || event.kind === "knockdown" || event.kind === "counter_hit")) {
       const puffs = this.bloodLevel === "reduced" ? (event.kind === "knockdown" ? 3 : 2) : (event.kind === "knockdown" ? 14 : 10);
@@ -780,7 +801,7 @@ export class Effects3D {
         launchDirection * (1.2 + rand() * 2.2) + Math.sin(angle) * speed * 0.35,
         0.7 + rand() * 2.7,
         Math.cos(angle) * speed,
-        shade < 0.5 ? { r: 0.64, g: 0.035, b: 0.055 } : { r: 0.36, g: 0.015, b: 0.03 },
+        bloodShade(shade),
         0.75 + rand() * 1.1,
         true,
       );
@@ -858,7 +879,7 @@ export class Effects3D {
         launchDirection * (0.8 + rand() * 1.7) + Math.sin(angle) * speed * 0.35,
         0.5 + rand() * 2.1,
         Math.cos(angle) * speed,
-        { r: 0.56, g: 0.025, b: 0.045 },
+        bloodShade(rand()),
         0.7 + rand() * 0.9,
         true,
       );
@@ -971,7 +992,7 @@ export class Effects3D {
           (this.ambientRandom() - 0.5) * 0.08,
           -0.25 - this.ambientRandom() * 0.4,
           (this.ambientRandom() - 0.5) * 0.08,
-          { r: 0.5, g: 0.04, b: 0.06 },
+          bloodShade(this.ambientRandom()),
           1.1,
           true,
         );
@@ -999,7 +1020,7 @@ export class Effects3D {
     }
     for (let i = 0; i < 18; i += 1) {
       const angle = rand() * Math.PI * 2;
-      this.spawnDroplet(finite(mouthWorld.x), finite(mouthWorld.y, 1.4), finite(mouthWorld.z), direction * (0.8 + rand() * 1.4) + Math.sin(angle) * 0.5, 0.6 + rand() * 1.3, Math.cos(angle) * 0.5, { r: 0.55, g: 0.02, b: 0.04 }, 0.6 + rand() * 0.6, true);
+      this.spawnDroplet(finite(mouthWorld.x), finite(mouthWorld.y, 1.4), finite(mouthWorld.z), direction * (0.8 + rand() * 1.4) + Math.sin(angle) * 0.5, 0.6 + rand() * 1.3, Math.cos(angle) * 0.5, bloodShade(rand()), 0.6 + rand() * 0.6, true);
     }
   }
 
@@ -1190,7 +1211,7 @@ export class Effects3D {
           stump.direction * (0.35 + first * 0.55),
           1.3 + second * 1.45,
           (third - 0.5) * 0.85,
-          { r: 0.58, g: 0.025, b: 0.045 },
+          bloodShade(first),
           0.65 + third * 0.5,
           true,
         );
@@ -1229,7 +1250,7 @@ export class Effects3D {
         this.writeDropletMatrix(i, droplet);
         continue;
       }
-      droplet.vy -= 4.6 * step;
+      droplet.vy -= DROPLET_GRAVITY * step;
       droplet.x += droplet.vx * step;
       droplet.y += droplet.vy * step;
       droplet.z += droplet.vz * step;

@@ -23,6 +23,47 @@ export function buildChunkGeometry(): THREE.BufferGeometry {
   return geometry;
 }
 
+const DROPLET_TAIL = 2;
+const DROPLET_TAIL_TAPER = 0.45;
+const DROPLET_STRETCH_RATE = 0.6;
+const DROPLET_MAX_STRETCH = 3;
+
+/** A drop in flight, travelling along +Y: a round head of unit radius and a tail that thins out behind it. */
+export function buildDropletGeometry(): THREE.BufferGeometry {
+  const geometry = new THREE.SphereGeometry(1, 8, 6);
+  const position = geometry.getAttribute("position");
+  for (let index = 0; index < position.count; index += 1) {
+    const back = -position.getY(index);
+    if (back <= 0) continue;
+    const thin = 1 - DROPLET_TAIL_TAPER * back;
+    position.setXYZ(index, position.getX(index) * thin, -back * DROPLET_TAIL, position.getZ(index) * thin);
+  }
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+/**
+ * How a drop of `radius` moving at `speed` is drawn: smeared along its path as a camera would catch it,
+ * and thinner the longer the smear, so a fast drop is a streak and not a bigger drop.
+ */
+export function dropletShape(radius: number, speed: number, out: { width: number; length: number }): { width: number; length: number } {
+  const stretch = 1 + Math.min(DROPLET_MAX_STRETCH, Math.max(0, speed) * DROPLET_STRETCH_RATE);
+  out.width = radius / Math.sqrt(stretch);
+  out.length = radius * stretch;
+  return out;
+}
+
+/** Blood in the air, from freshly lit to nearly black. Linear colour. */
+export const BLOOD_SHADES = [
+  { r: 0.4, g: 0.012, b: 0.016 },
+  { r: 0.26, g: 0.006, b: 0.01 },
+  { r: 0.15, g: 0.003, b: 0.006 },
+] as const;
+
+export function bloodShade(pick: number): { r: number; g: number; b: number } {
+  return BLOOD_SHADES[Math.min(BLOOD_SHADES.length - 1, Math.max(0, Math.floor(pick * BLOOD_SHADES.length)))]!;
+}
+
 /**
  * The exposed surface of a cut through a limb or the neck: an ellipse in the XZ plane facing +Y,
  * level with the skin at the rim and rising to uneven flesh in the middle.

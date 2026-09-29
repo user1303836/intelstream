@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import { fighter } from "../test/fixtures";
-import { buildChunkGeometry, buildWoundGeometry, closeCut, cutRim } from "./gore";
+import { BLOOD_SHADES, bloodShade, buildChunkGeometry, buildDropletGeometry, buildWoundGeometry, closeCut, cutRim, dropletShape } from "./gore";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
 import { HEAD_SITES, InjuryShading, NECK_CUT_HEIGHT } from "./injury";
 import { SCANNED_LOOK } from "./looks";
@@ -285,6 +285,111 @@ describe("blood in the air", () => {
     expect(sizes[0]).toBeGreaterThan(0.004);
     expect(sizes[1]! / sizes[0]!).toBeLessThan(0.5);
     expect(sizes[1]! / sizes[0]!).toBeGreaterThan(0.3);
+  });
+
+  it("is a drop with a round head and a tail that thins out behind it", () => {
+    const geometry = buildDropletGeometry();
+    const position = geometry.getAttribute("position");
+    const vertex = new THREE.Vector3();
+    let tail = 0;
+    let widestBehind = 0;
+    for (let index = 0; index < position.count; index += 1) {
+      vertex.fromBufferAttribute(position, index);
+      if (vertex.y >= 0) expect(vertex.length()).toBeLessThan(1.001);
+      tail = Math.min(tail, vertex.y);
+      if (vertex.y < -1) widestBehind = Math.max(widestBehind, Math.hypot(vertex.x, vertex.z));
+    }
+    expect(tail).toBeLessThan(-1.8);
+    expect(widestBehind).toBeGreaterThan(0.1);
+    expect(widestBehind).toBeLessThan(0.62);
+    geometry.dispose();
+  });
+
+  it("is smeared along its path and thinner for it, holding its volume", () => {
+    const still = dropletShape(0.01, 0, { width: 0, length: 0 });
+    expect(still.width).toBeCloseTo(0.01, 6);
+    expect(still.length).toBeCloseTo(0.01, 6);
+    let last = { ...still };
+    for (const speed of [0.5, 1.5, 3, 4.5]) {
+      const shape = dropletShape(0.01, speed, { width: 0, length: 0 });
+      expect(shape.length).toBeGreaterThan(last.length + 0.001);
+      expect(shape.width).toBeLessThan(last.width - 0.0003);
+      expect(shape.width * shape.width * shape.length).toBeCloseTo(1e-6, 9);
+      last = { ...shape };
+    }
+    const fastest = dropletShape(0.01, 40, { width: 0, length: 0 });
+    expect(fastest.length).toBeLessThan(0.045);
+    expect(fastest.width).toBeGreaterThan(0.0045);
+  });
+
+  it("is dark red, never pink", () => {
+    for (const pick of [0, 0.34, 0.67, 0.999, 1, -1]) {
+      const shade = bloodShade(pick);
+      expect(BLOOD_SHADES).toContain(shade);
+      expect(shade.r).toBeLessThan(0.45);
+      expect(shade.g).toBeLessThan(shade.r * 0.05);
+      expect(shade.b).toBeLessThan(shade.r * 0.05);
+    }
+    expect(bloodShade(0).r).toBeGreaterThan(bloodShade(0.999).r * 2);
+  });
+
+  const bloodSlots = (effects: Effects3D): number[] => {
+    const colour = effects.dropletBuffers.color;
+    const position = effects.dropletBuffers.position;
+    const slots: number[] = [];
+    for (let index = 0; index < colour.count; index += 1) if (position.getY(index) > -10 && colour.getY(index) < 0.2) slots.push(index);
+    return slots;
+  };
+  const dropAt = (effects: Effects3D, slot: number): THREE.Vector3 => new THREE.Vector3().fromBufferAttribute(effects.dropletBuffers.position, slot);
+
+  it("leaves in strands: two drops trail each leader along its path, slower and smaller", () => {
+    const effects = new Effects3D(new THREE.Scene());
+    effects.addEvent(hit, new THREE.Vector3(0, 1.5, 0), false);
+    const slots = bloodSlots(effects);
+    expect(slots.length).toBe(110);
+    const origin = slots.map((slot) => dropAt(effects, slot));
+    for (let frame = 0; frame < 9; frame += 1) effects.update(1 / 60);
+    const matrix = new THREE.Matrix4();
+    const size = (slot: number): number => {
+      effects.dropletMesh.getMatrixAt(slot, matrix);
+      const scale = new THREE.Vector3().setFromMatrixScale(matrix);
+      return scale.x * scale.x * scale.y;
+    };
+    let strands = 0;
+    for (let lead = 0; lead + 2 < slots.length; lead += 5) {
+      const head = dropAt(effects, slots[lead]!);
+      const path = head.clone().sub(origin[lead]!);
+      expect(origin[lead + 1]!.distanceTo(origin[lead]!)).toBeLessThan(1e-6);
+      expect(origin[lead + 2]!.distanceTo(origin[lead]!)).toBeLessThan(1e-6);
+      const first = head.clone().sub(dropAt(effects, slots[lead + 1]!));
+      const second = head.clone().sub(dropAt(effects, slots[lead + 2]!));
+      expect(first.length()).toBeGreaterThan(0.01);
+      expect(second.length()).toBeGreaterThan(first.length() * 1.8);
+      expect(first.clone().cross(second).length()).toBeLessThan(1e-5);
+      expect(path.length()).toBeGreaterThan(0.1);
+      expect(size(slots[lead + 1]!)).toBeLessThan(size(slots[lead]!));
+      expect(size(slots[lead + 2]!)).toBeLessThan(size(slots[lead + 1]!));
+      strands += 1;
+    }
+    expect(strands).toBe(22);
+    const free = dropAt(effects, slots[3]!).sub(dropAt(effects, slots[0]!));
+    const trailing = dropAt(effects, slots[1]!).sub(dropAt(effects, slots[0]!));
+    expect(free.clone().cross(trailing).length()).toBeGreaterThan(1e-4);
+    effects.dispose();
+  });
+
+  it("falls as fast as anything else does", () => {
+    const effects = new Effects3D(new THREE.Scene());
+    effects.addEvent(hit, new THREE.Vector3(0, 1.5, 0), false);
+    const slot = bloodSlots(effects)[0]!;
+    const heights: number[] = [];
+    for (let frame = 0; frame < 3; frame += 1) {
+      effects.update(1 / 60);
+      heights.push(dropAt(effects, slot).y);
+    }
+    const fall = heights[2]! - 2 * heights[1]! + heights[0]!;
+    expect(fall * 3600).toBeCloseTo(-9.81, 2);
+    effects.dispose();
   });
 
   it("thins out as the mist hangs, until it is gone", () => {
