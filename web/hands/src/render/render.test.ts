@@ -4,9 +4,9 @@ import { buildArena } from "./arena";
 import { CameraDirector, ceremonyShot, cornerFrame, cornerPoint, cornerShot, cornerShotProgress, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE } from "./camera";
 import { bloodPatternFor, Effects3D } from "./effects";
 import { decisionLabel, drawHud, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, RESULT_CARD_FOOTER, resultCard, resultCardLayout, RoundClock, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
-import { buildRing, disposeRing, nearRopeOpacityFor, ropePress } from "./ring";
+import { buildRing, disposeRing, nearRopeOpacityFor, ropeGive, ropePress } from "./ring";
 import { resizeHighDpi } from "./viewport";
-import { PALETTES, worldMapping } from "./world";
+import { PALETTES, ROPE_LINE, worldMapping } from "./world";
 import { fighter, publicPlayers, snapshot } from "../test/fixtures";
 
 const mapping = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 });
@@ -507,14 +507,36 @@ describe("near ropes", () => {
   });
 });
 
-describe("rope flex", () => {
-  it("presses into the nearest ropes only when a fighter is within reach of them", () => {
+describe("rope give", () => {
+  it("leaves the ropes alone until a fighter's back reaches them", () => {
     expect(ropePress(0, 0)).toEqual({ pressX: 0, pressZ: 0 });
-    expect(ropePress(2.82, 0).pressX).toBeGreaterThan(0.95);
-    expect(ropePress(2.82, 0).pressZ).toBe(0);
-    expect(ropePress(0, -2.82).pressZ).toBeGreaterThan(0.95);
-    expect(ropePress(2.6, 0).pressX).toBeGreaterThan(0.1);
-    expect(ropePress(2.6, 0).pressX).toBeLessThan(0.6);
+    expect(ropePress(ROPE_LINE - 0.21, 0.4)).toEqual({ pressX: 0, pressZ: 0 });
+    expect(ropePress(-(ROPE_LINE - 0.1), 0).pressX).toBeCloseTo(0.1, 9);
+    expect(ropePress(0, -2.82).pressZ).toBeCloseTo(2.82 + 0.2 - ROPE_LINE, 9);
+    expect(ropePress(0, -2.82).pressX).toBe(0);
+  });
+
+  it("keeps the top ropes behind the back of a fighter anywhere the engine lets one stand", () => {
+    for (const x of [2.3, 2.5, 2.7, 2.82]) {
+      for (const along of [-1.6, 0, 1.2]) {
+        for (const height of [0.88, 1.26]) {
+          const rope = ROPE_LINE + ropePress(x, along).pressX * ropeGive(0, along, height);
+          expect(rope).toBeGreaterThanOrEqual(x + 0.2 - 1e-9);
+          const beside = ROPE_LINE + ropePress(x, along).pressX * ropeGive(0.2, along + 0.2, height);
+          expect(beside).toBeGreaterThanOrEqual(x + 0.2 - 1e-9);
+        }
+      }
+    }
+  });
+
+  it("gives less at the bottom rope, nothing at the posts and nothing away from the fighter", () => {
+    expect(ropeGive(0, 0, 0.5)).toBeCloseTo(0.6, 9);
+    expect(ropeGive(0, 0, 1.26)).toBe(1);
+    expect(ropeGive(0, ROPE_LINE, 1.26)).toBe(0);
+    expect(ropeGive(0, -ROPE_LINE, 1.26)).toBe(0);
+    expect(ropeGive(1.2, 0, 1.26)).toBe(0);
+    expect(ropeGive(0.6, 0, 1.26)).toBeGreaterThan(0.3);
+    expect(ropeGive(0.6, 0, 1.26)).toBeLessThan(0.9);
   });
 
   it("writes fighter contacts into the rope shader uniforms and clears them", () => {
@@ -522,7 +544,8 @@ describe("rope flex", () => {
     ring.setRopeContacts({ x: 2.82, z: 0.4 }, null);
     expect(ring.ropeContacts[0].x).toBeCloseTo(2.82);
     expect(ring.ropeContacts[0].y).toBeCloseTo(0.4);
-    expect(ring.ropeContacts[0].z).toBeGreaterThan(0.95);
+    expect(ring.ropeContacts[0].z).toBeCloseTo(2.82 + 0.2 - ROPE_LINE, 9);
+    expect(ring.ropeContacts[0].w).toBe(0);
     expect(ring.ropeContacts[1].toArray()).toEqual([0, 0, 0, 0]);
     ring.setRopeContacts(null, null);
     expect(ring.ropeContacts[0].toArray()).toEqual([0, 0, 0, 0]);

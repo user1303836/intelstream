@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { CANVAS_TOP, CORNER_COLORS, PLATFORM_HALF, POST_RADIUS, RING_APRON_HALF, RING_FIGHT_HALF, ROPE_HEIGHTS } from "./world";
+import { CANVAS_TOP, CORNER_COLORS, PLATFORM_HALF, POST_RADIUS, RING_APRON_HALF, RING_FIGHT_HALF, ROPE_HEIGHTS, ROPE_LINE } from "./world";
 
 export interface BuiltRing {
   readonly group: THREE.Group;
@@ -27,20 +27,37 @@ export interface RopePress {
   readonly pressZ: number;
 }
 
-const ROPE_PRESS_START = 0.6;
-const ROPE_PRESS_FULL = 0.22;
+/** The ropes run behind a fighter's back, this far from the middle of the body. */
+const ROPE_BACK = 0.2;
+/** Along the rope, the give is full across the back and gone this far from the fighter. */
+const ROPE_GIVE_FLAT = 0.22;
+const ROPE_GIVE_REACH = 1.15;
+/** The rope is tied at the post and gives nothing there. */
+const ROPE_TIE = 0.5;
+/** The bottom rope is pushed by the legs, which lean back less than the shoulders. */
+const ROPE_LOW_GIVE = 0.6;
 
 function smoothstep(edge0: number, edge1: number, value: number): number {
   const t = Math.min(1, Math.max(0, (value - edge0) / (edge1 - edge0)));
   return t * t * (3 - 2 * t);
 }
 
-/** How hard a fighter at (x, z) leans into the x-facing and z-facing ropes (0..1 each). */
+/**
+ * How far, in metres, a fighter at (x, z) pushes the ropes on the x and z sides outward. The engine
+ * lets a fighter's middle pass the line of the ropes, so they give way to stay behind the back.
+ */
 export function ropePress(x: number, z: number): RopePress {
   return {
-    pressX: smoothstep(ROPE_PRESS_START, ROPE_PRESS_FULL, RING_FIGHT_HALF - Math.abs(x)),
-    pressZ: smoothstep(ROPE_PRESS_START, ROPE_PRESS_FULL, RING_FIGHT_HALF - Math.abs(z)),
+    pressX: Math.max(0, Math.abs(x) + ROPE_BACK - ROPE_LINE),
+    pressZ: Math.max(0, Math.abs(z) + ROPE_BACK - ROPE_LINE),
   };
+}
+
+/** The share of that push a point of the rope takes: `along` the rope from the fighter, at `position` along the rope and at `height`. */
+export function ropeGive(along: number, position: number, height: number): number {
+  const near = 1 - smoothstep(ROPE_GIVE_FLAT, ROPE_GIVE_REACH, Math.abs(along));
+  const tied = smoothstep(0, ROPE_TIE, ROPE_LINE - Math.abs(position));
+  return near * tied * (ROPE_LOW_GIVE + (1 - ROPE_LOW_GIVE) * smoothstep(0.5, 0.88, height));
 }
 
 const ROPE_FLEX_GLSL = `
@@ -54,11 +71,11 @@ for (int ropeIndex = 0; ropeIndex < 2; ropeIndex += 1) {
   float along = ropeSideX ? contact.y : contact.x;
   float press = ropeSideX ? contact.z : contact.w;
   float sameSide = ropeSideX ? step(0.0, ropeOut.x * contact.x) : step(0.0, ropeOut.z * contact.y);
-  ropeFlex += press * sameSide * (1.0 - smoothstep(0.0, 0.8, abs(ropeAlong - along)));
+  ropeFlex = max(ropeFlex, press * sameSide * (1.0 - smoothstep(${ROPE_GIVE_FLAT.toFixed(2)}, ${ROPE_GIVE_REACH.toFixed(2)}, abs(ropeAlong - along))));
 }
-float ropeAnchor = smoothstep(0.0, 0.7, ${RING_FIGHT_HALF.toFixed(2)} - abs(ropeAlong));
-float ropeHeightWeight = 0.45 + 0.55 * smoothstep(0.4, 1.0, ropeWorld.y);
-transformed += ropeOut * min(1.0, ropeFlex) * 0.22 * ropeHeightWeight * ropeAnchor;
+float ropeTied = smoothstep(0.0, ${ROPE_TIE.toFixed(2)}, ${ROPE_LINE.toFixed(4)} - abs(ropeAlong));
+float ropeHeightWeight = ${ROPE_LOW_GIVE.toFixed(2)} + ${(1 - ROPE_LOW_GIVE).toFixed(2)} * smoothstep(0.5, 0.88, ropeWorld.y);
+transformed += ropeOut * ropeFlex * ropeHeightWeight * ropeTied;
 `;
 
 function canvasTexture(size: number, draw: (ctx: CanvasRenderingContext2D, size: number) => void): THREE.CanvasTexture {
@@ -235,7 +252,8 @@ export function buildRing(): BuiltRing {
         middle,
         new THREE.Vector3(to.x, height, to.z),
       );
-      const ropeGeo = new THREE.TubeGeometry(curve, 24, 0.028, 8, false);
+      // Enough segments for the rope to curve round a fighter's back rather than kink.
+      const ropeGeo = new THREE.TubeGeometry(curve, 72, 0.028, 8, false);
       geometries.push(ropeGeo);
       const rope = new THREE.Mesh(ropeGeo, (side === NEAR_SIDE ? nearMaterials : ropeMats)[ropeIndex]!);
       rope.castShadow = true;
