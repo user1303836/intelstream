@@ -94,13 +94,13 @@ describe("boxer animation", () => {
 
   it("moves the rig to authoritative world positions and faces the opponent", () => {
     const { rig, animator } = make();
-    const one = { ...fighter("one"), x: -200, y: 100 };
-    const two = { ...fighter("two"), x: 200, y: -50 };
+    const one = { ...fighter("one"), x: -200, y: 100, facing_x: 936, facing_y: -351 };
+    const two = { ...fighter("two"), x: 200, y: -50, facing_x: -936, facing_y: 351 };
     for (let i = 0; i < 60; i += 1) animator.update(one, two, 1 / 60, i / 60, false);
     expect(rig.root.position.x).toBeCloseTo(mapping.x(-200), 5);
     expect(rig.root.position.z).toBeCloseTo(mapping.z(100), 5);
-    const expectedYaw = Math.atan2(mapping.x(200) - mapping.x(-200), (mapping.z(-50) - mapping.z(100)) * 0.45);
-    expect(Math.abs(rig.root.rotation.y - expectedYaw)).toBeLessThan(0.6);
+    const expectedYaw = Math.atan2(936, 351) + 0.5;
+    expect(Math.abs(rig.root.rotation.y - expectedYaw)).toBeLessThan(0.05);
   });
 
   it("drives punch timelines from action instances and returns to guard", () => {
@@ -192,7 +192,7 @@ describe("boxer animation", () => {
   it("retracts a punch when the fighter goes down mid-animation", () => {
     const { rig, animator } = make();
     const two = fighter("two");
-    const punching = { ...fighter("one"), action: "straight" as const, action_hand: "right" as const, action_target: "head" as const, action_power: "power" as const };
+    const punching = { ...fighter("one"), facing_x: 0, facing_y: -1000, action: "straight" as const, action_hand: "right" as const, action_target: "head" as const, action_power: "power" as const };
     for (let i = 0; i < 8; i += 1) animator.update(punching, two, 1 / 60, i / 60, false);
     const extendedZ = rig.gloveR.getWorldPosition(new THREE.Vector3()).z - rig.root.position.z;
     const downed = { ...punching, is_downed: true, action: null };
@@ -339,13 +339,13 @@ describe("boxer animation", () => {
 
   it("mirrors southpaw glove placement", () => {
     const { rig, animator } = make();
-    const one = { ...fighter("one"), stance: "southpaw" as const };
+    const one = { ...fighter("one"), facing_x: 0, facing_y: -1000, stance: "southpaw" as const };
     const two = fighter("two");
     for (let i = 0; i < 30; i += 1) animator.update(one, two, 1 / 60, i / 60, false);
     const leftX = rig.gloveL.getWorldPosition(new THREE.Vector3()).x - rig.root.position.x;
     const orthodox = buildBoxer(PALETTES[0]);
     const orthodoxAnimator = new BoxerAnimator(orthodox, mapping);
-    for (let i = 0; i < 30; i += 1) orthodoxAnimator.update(fighter("one"), two, 1 / 60, i / 60, false);
+    for (let i = 0; i < 30; i += 1) orthodoxAnimator.update({ ...fighter("one"), facing_x: 0, facing_y: -1000 }, two, 1 / 60, i / 60, false);
     const orthodoxLeftX = orthodox.gloveL.getWorldPosition(new THREE.Vector3()).x - orthodox.root.position.x;
     expect(Math.sign(leftX)).not.toBe(Math.sign(orthodoxLeftX));
   });

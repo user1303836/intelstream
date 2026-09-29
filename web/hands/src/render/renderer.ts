@@ -4,6 +4,7 @@ import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { EventDeduplicator, SnapshotBuffer } from "../interpolation";
+import { predictMovement, type HeldInput } from "../prediction";
 import type { BloodLevel, Settings } from "../settings";
 import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, MatchResult, PublicPlayer, SemanticAction, SimulationInfo } from "../types";
 import { BoxerAnimator } from "./animation";
@@ -175,7 +176,10 @@ export class FightRenderer {
   private readonly effects: Effects3D;
   private readonly director = new CameraDirector();
   private readonly mapping: WorldMapping;
-  private readonly buffer = new SnapshotBuffer();
+  private readonly buffer: SnapshotBuffer;
+  private readonly localInput: (() => HeldInput | null) | null;
+  private readonly localOffset = { dx: 0, dy: 0 };
+  private lastManualTime = 0;
   private readonly dedupe = new EventDeduplicator();
   private readonly hudCanvas: HTMLCanvasElement;
   private cameraOverride: { position: THREE.Vector3; lookAt: THREE.Vector3 } | null = null;
@@ -230,9 +234,11 @@ export class FightRenderer {
     private readonly canvas: HTMLCanvasElement,
     private readonly simulation: SimulationInfo = DEFAULT_SIM,
     private readonly settings: () => Settings,
-    options: { manualClock?: boolean } = {},
+    options: { manualClock?: boolean; localInput?: () => HeldInput | null } = {},
   ) {
     this.manualClock = options.manualClock === true;
+    this.localInput = options.localInput ?? null;
+    this.buffer = new SnapshotBuffer(8, simulation.tick_rate);
     this.mapping = worldMapping(simulation);
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance", preserveDrawingBuffer: options.manualClock === true });
     this.renderer.shadowMap.enabled = true;
@@ -480,7 +486,7 @@ export class FightRenderer {
   }
 
   push(snapshot: EngineSnapshot): void {
-    if (!this.buffer.push(snapshot)) return;
+    if (!this.buffer.push(snapshot, this.manualClock ? this.lastManualTime : performance.now())) return;
     const accepted = this.dedupe.accept(snapshot.events);
     for (const { event, presentationEvent, presentImpact } of contactPresentationPlan(accepted, snapshot)) {
       const targetIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.target_id);
@@ -668,12 +674,13 @@ export class FightRenderer {
     }
 
     const seconds = time / 1000;
+    if (manual) this.lastManualTime = time;
     const current = this.settings();
     this.setBloodLevel(current.blood);
 
     const latest = this.buffer.latest();
-    const sampledTick = latest === null ? 0 : presentationTickFor(latest);
-    const snapshot = latest === null ? null : this.buffer.sample(sampledTick);
+    const sampledTick = latest === null ? 0 : manual ? presentationTickFor(latest) : this.buffer.renderTick(time);
+    const snapshot = latest === null ? null : this.applyLocalPrediction(this.buffer.sample(sampledTick), dt);
     let separation = 1.8;
     let knockdown = false;
     if (snapshot !== null) {
@@ -776,6 +783,24 @@ export class FightRenderer {
     }
 
     if (!this.destroyed && !this.manualClock) this.raf = requestAnimationFrame((next) => this.draw(next));
+  }
+
+  private applyLocalPrediction(snapshot: EngineSnapshot | null, dt: number): EngineSnapshot | null {
+    if (snapshot === null || this.localInput === null || this.viewerId === null) return snapshot;
+    const index = snapshot.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
+    const held = this.localInput();
+    const rate = 1 - Math.exp(-14 * dt);
+    let target = { dx: 0, dy: 0 };
+    if (index >= 0 && held !== null && snapshot.phase === "fight") {
+      target = predictMovement(snapshot.fighters[index]!, held, this.buffer.interpolationDelayTicks + 2);
+    }
+    this.localOffset.dx += (target.dx - this.localOffset.dx) * rate;
+    this.localOffset.dy += (target.dy - this.localOffset.dy) * rate;
+    if (index < 0 || (Math.abs(this.localOffset.dx) < 0.01 && Math.abs(this.localOffset.dy) < 0.01)) return snapshot;
+    const viewer = snapshot.fighters[index]!;
+    const predicted = { ...viewer, x: viewer.x + this.localOffset.dx, y: viewer.y + this.localOffset.dy };
+    const fighters: [FighterSnapshot, FighterSnapshot] = index === 0 ? [predicted, snapshot.fighters[1]] : [snapshot.fighters[0], predicted];
+    return { ...snapshot, fighters };
   }
 
   private headHeightOf(index: number): number {

@@ -12,14 +12,19 @@ from intelstream.hands.rules import (
     COMPATIBLE_COMBO_CHAINS,
     COUNTDOWN_TICKS,
     DEFAULT_ROUNDS,
+    FACING_SCALE,
+    FACING_TURN_PERCENT,
     FIGHTER_RADIUS,
     JUDGE_PROFILES,
+    KNOCKDOWN_NEUTRAL_SEPARATION,
     MAX_CONDITIONING,
     MAX_GUARD,
     MAX_POISE,
     MAX_STAMINA,
     MINIMUM_SEPARATION,
     PUNCH_RULES,
+    RECOVERY_CANCEL_PERCENT,
+    REFEREE_WALK_SPEED,
     REST_TICKS,
     RING_HALF_HEIGHT,
     RING_HALF_WIDTH,
@@ -105,6 +110,7 @@ class AttackState:
     rule: PunchRule
     age: int = 0
     resolved: bool = False
+    landed: bool = False
     combo_bonus: int = 0
     start_tick: int = 0
     contact_tick: int = 0
@@ -112,6 +118,14 @@ class AttackState:
     @property
     def total_ticks(self) -> int:
         return self.rule.startup + self.rule.active + self.rule.recovery
+
+    @property
+    def cancel_age(self) -> int:
+        return (
+            self.rule.startup
+            + self.rule.active
+            + self.rule.recovery * RECOVERY_CANCEL_PERCENT // 100
+        )
 
 
 @dataclass(slots=True)
@@ -132,6 +146,8 @@ class FighterState:
     y: int
     facing: int
     stance: Stance
+    facing_x: int = 0
+    facing_y: int = 0
     velocity_x: int = 0
     velocity_y: int = 0
     velocity_fixed_x: int = 0
@@ -178,6 +194,10 @@ class FighterState:
     performance: RoundPerformance = field(default_factory=RoundPerformance)
     damage_dealt: int = 0
     movement_load: int = 0
+
+    def __post_init__(self) -> None:
+        if self.facing_x == 0 and self.facing_y == 0:
+            self.facing_x = FACING_SCALE if self.facing >= 0 else -FACING_SCALE
 
     @property
     def maximum_stamina(self) -> int:
@@ -474,7 +494,11 @@ class BoxingEngine:
                 fighter.defense_started_tick = self.tick
             fighter.defense = fighter.held_input.defense
 
-        if fighter.pending_actions and self.tick > fighter.pending_action_expires_tick:
+        if (
+            fighter.pending_actions
+            and fighter.attack is None
+            and self.tick > fighter.pending_action_expires_tick
+        ):
             fighter.pending_actions.clear()
             fighter.pending_action_expires_tick = 0
 
@@ -489,7 +513,10 @@ class BoxingEngine:
                 self._resolve_punch(fighter, opponent, attack)
             if fighter.stunned_ticks > 0 or attack.age >= attack.total_ticks:
                 self._retain_action(fighter)
-            return
+                return
+            if not self._can_cancel_recovery(fighter, attack):
+                return
+            self._retain_action(fighter)
 
         if fighter.taunt_ticks > 0:
             fighter.taunt_ticks -= 1
@@ -515,6 +542,16 @@ class BoxingEngine:
         return (
             not attack.resolved
             and attack.rule.startup <= next_age < attack.rule.startup + attack.rule.active
+        )
+
+    @staticmethod
+    def _can_cancel_recovery(fighter: FighterState, attack: AttackState) -> bool:
+        if not attack.landed or attack.age < attack.cancel_age or not fighter.pending_actions:
+            return False
+        follow_up = fighter.pending_actions[0]
+        return (
+            isinstance(follow_up, PunchAction)
+            and (attack.action.punch_class, follow_up.punch_class) in COMPATIBLE_COMBO_CHAINS
         )
 
     def _start_punch(self, fighter: FighterState, action: PunchAction) -> bool:
@@ -589,6 +626,8 @@ class BoxingEngine:
         fighter.last_action_contact_tick = attack.contact_tick if attack.resolved else 0
         fighter.last_action_until_tick = self.tick + 15
         fighter.attack = None
+        if fighter.pending_actions:
+            fighter.pending_action_expires_tick = self.tick + ACTION_BUFFER_TICKS
 
     def _resolve_punch(
         self, attacker: FighterState, defender: FighterState, attack: AttackState
@@ -604,13 +643,13 @@ class BoxingEngine:
         )
         effective_reach = rule.reach * (100 - vision_penalty) // 100
         effective_arc = rule.lateral_arc * (100 - vision_penalty) // 100
-        forward_distance = dx * attacker.facing
+        forward_distance, lateral_distance = self._facing_components(attacker, dx, dy)
         in_front = forward_distance > FIGHTER_RADIUS // 3
         if (
             not in_front
             or forward_distance > effective_reach
             or distance_squared > effective_reach**2
-            or abs(dy) > effective_arc
+            or lateral_distance > effective_arc
         ):
             attacker.stamina = max(0, attacker.stamina - rule.whiff_cost)
             attacker.conditioning = max(0, attacker.conditioning - max(2, rule.whiff_cost // 10))
@@ -623,7 +662,7 @@ class BoxingEngine:
             )
             return
 
-        if self._evades(defender, action, distance_squared, rule.reach, abs(dy)):
+        if self._evades(defender, action, distance_squared, rule.reach, lateral_distance):
             defender.performance.evasions += 1
             defender.counter_ticks = COUNTER_WINDOW_TICKS
             self._emit(
@@ -636,6 +675,7 @@ class BoxingEngine:
         ) or (action.target is Target.BODY and defender.defense is DefensivePose.GUARD_LOW)
         perfect = guarding and self.tick - defender.defense_started_tick <= PERFECT_BLOCK_TICKS
         counter = attacker.counter_ticks > 0 or self._counter_vulnerable(defender.attack)
+        attack.landed = True
         fatigue = attacker.fatigue
         counter_multiplier = 128 if counter else 100
         impact = (
@@ -912,8 +952,9 @@ class BoxingEngine:
         one.conditioning = max(0, one.conditioning - (1 if self.tick % 10 == 0 else 0))
         two.conditioning = max(0, two.conditioning - (1 if self.tick % 10 == 0 else 0))
         if remaining == 0:
-            one.x -= one.facing * 45
-            two.x -= two.facing * 45
+            for fighter in (one, two):
+                fighter.x -= _symmetric_divide(fighter.facing_x * 45, FACING_SCALE)
+                fighter.y -= _symmetric_divide(fighter.facing_y * 45, FACING_SCALE)
             self._clamp_to_ring(one)
             self._clamp_to_ring(two)
             self._separate_fighters(one, two)
@@ -1041,8 +1082,34 @@ class BoxingEngine:
         self._clamp_to_ring(two)
 
     def _update_facing(self, fighter: FighterState, opponent: FighterState) -> None:
-        if fighter.attack is None and fighter.clinch_startup_ticks == 0:
-            fighter.facing = 1 if opponent.x >= fighter.x else -1
+        if fighter.attack is not None or fighter.clinch_startup_ticks:
+            return
+        dx = opponent.x - fighter.x
+        dy = opponent.y - fighter.y
+        distance = isqrt(dx * dx + dy * dy)
+        if distance == 0:
+            return
+        desired_x = _symmetric_divide(dx * FACING_SCALE, distance)
+        desired_y = _symmetric_divide(dy * FACING_SCALE, distance)
+        fighter.facing_x += _symmetric_divide(
+            (desired_x - fighter.facing_x) * FACING_TURN_PERCENT, 100
+        )
+        fighter.facing_y += _symmetric_divide(
+            (desired_y - fighter.facing_y) * FACING_TURN_PERCENT, 100
+        )
+        length = isqrt(fighter.facing_x**2 + fighter.facing_y**2)
+        if length == 0:
+            fighter.facing_x, fighter.facing_y = desired_x, desired_y
+        else:
+            fighter.facing_x = _symmetric_divide(fighter.facing_x * FACING_SCALE, length)
+            fighter.facing_y = _symmetric_divide(fighter.facing_y * FACING_SCALE, length)
+        fighter.facing = 1 if fighter.facing_x >= 0 else -1
+
+    @staticmethod
+    def _facing_components(fighter: FighterState, dx: int, dy: int) -> tuple[int, int]:
+        forward = _symmetric_divide(dx * fighter.facing_x + dy * fighter.facing_y, FACING_SCALE)
+        lateral = abs(dx * fighter.facing_y - dy * fighter.facing_x) // FACING_SCALE
+        return forward, lateral
 
     def _recover_resources(self, fighter: FighterState) -> None:
         active = (
@@ -1067,7 +1134,10 @@ class BoxingEngine:
         fighter_center = abs(fighter.x) + abs(fighter.y)
         opponent_center = abs(opponent.x) + abs(opponent.y)
         position = 1 if fighter_center + 30 < opponent_center else 0
-        forward_motion = fighter.velocity_x * fighter.facing
+        forward_motion = _symmetric_divide(
+            fighter.velocity_x * fighter.facing_x + fighter.velocity_y * fighter.facing_y,
+            FACING_SCALE,
+        )
         effective_pressure = 1 if forward_motion > 1 and fighter.attack is None else 0
         return position + effective_pressure
 
@@ -1188,6 +1258,7 @@ class BoxingEngine:
         winner.pending_actions.clear()
         self.phase_ticks_remaining -= 1
         self._knockdown_count_ticks += 1
+        self._walk_to_neutral_corner(winner, downed)
         while downed.pending_actions:
             action = downed.pending_actions.pop(0)
             if isinstance(action, MovementAction):
@@ -1200,8 +1271,7 @@ class BoxingEngine:
             downed.poise = MAX_POISE // 2
             downed.stamina = min(downed.maximum_stamina, 350)
             downed.stunned_ticks = 20
-            downed.x = -140 if downed.facing == 1 else 140
-            self._clamp_to_ring(downed)
+            self._separate_fighters(downed, winner)
             self.phase = MatchPhase.FIGHT
             self.phase_ticks_remaining = max(1, self._paused_fight_ticks)
             self._downed_id = None
@@ -1211,6 +1281,36 @@ class BoxingEngine:
             self._complete(winner.player_id, FinishMethod.KO)
         elif self._knockdown_count_ticks % COUNT_TICK_INTERVAL == 0:
             self._emit("count", target_id=downed.player_id, amount=count)
+
+    def _walk_to_neutral_corner(self, winner: FighterState, downed: FighterState) -> None:
+        dx = winner.x - downed.x
+        dy = winner.y - downed.y
+        distance = isqrt(dx * dx + dy * dy)
+        if distance >= KNOCKDOWN_NEUTRAL_SEPARATION:
+            winner.velocity_x = winner.velocity_y = 0
+            winner.velocity_fixed_x = winner.velocity_fixed_y = 0
+            winner.position_remainder_x = winner.position_remainder_y = 0
+            self._update_facing(winner, downed)
+            return
+        if distance == 0:
+            step_x, step_y = winner.facing_x, winner.facing_y
+        else:
+            step_x = _symmetric_divide(dx * FACING_SCALE, distance)
+            step_y = _symmetric_divide(dy * FACING_SCALE, distance)
+        winner.velocity_fixed_x = step_x * REFEREE_WALK_SPEED
+        winner.velocity_fixed_y = step_y * REFEREE_WALK_SPEED
+        winner.velocity_x = _rounded_fixed_velocity(winner.velocity_fixed_x)
+        winner.velocity_y = _rounded_fixed_velocity(winner.velocity_fixed_y)
+        delta_x, winner.position_remainder_x = _consume_fixed_position(
+            winner.velocity_fixed_x, winner.position_remainder_x
+        )
+        delta_y, winner.position_remainder_y = _consume_fixed_position(
+            winner.velocity_fixed_y, winner.position_remainder_y
+        )
+        winner.x += delta_x
+        winner.y += delta_y
+        self._clamp_to_ring(winner)
+        self._update_facing(winner, downed)
 
     def _finish_round(self) -> None:
         one = self._fighters[self._player_ids[0]]
@@ -1417,6 +1517,8 @@ class BoxingEngine:
             x=fighter.x,
             y=fighter.y,
             facing=fighter.facing,
+            facing_x=fighter.facing_x,
+            facing_y=fighter.facing_y,
             velocity_x=fighter.velocity_x,
             velocity_y=fighter.velocity_y,
             stance=fighter.stance,
@@ -1463,6 +1565,7 @@ class BoxingEngine:
             get_up_count=self._knockdown_count_ticks // COUNT_TICK_INTERVAL,
             get_up_window_start_tick=fighter.get_up_window_start_tick,
             get_up_window_end_tick=fighter.get_up_window_end_tick,
+            last_input_sequence=fighter.last_sequence,
         )
 
     def _checksum(self, _fighters: tuple[FighterSnapshot, FighterSnapshot]) -> str:
@@ -1473,7 +1576,7 @@ class BoxingEngine:
                 {
                     "player_id": fighter.player_id,
                     "position": [fighter.x, fighter.y],
-                    "facing": fighter.facing,
+                    "facing": [fighter.facing, fighter.facing_x, fighter.facing_y],
                     "velocity": [fighter.velocity_x, fighter.velocity_y],
                     "movement_fixed": [
                         fighter.velocity_fixed_x,

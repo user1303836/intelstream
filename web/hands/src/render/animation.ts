@@ -226,8 +226,8 @@ export class BoxerAnimator {
     const rootDz = THREE.MathUtils.clamp(worldZ - this.rootZ, -maxStep, maxStep);
     this.rootX += rootDx;
     this.rootZ += rootDz;
-    const targetYaw = Math.atan2(this.mapping.x(opponent.x) - worldX, (this.mapping.z(opponent.y) - worldZ) * 0.45);
-    this.yaw = smoothAngle(this.yaw, targetYaw, 7, dt);
+    const targetYaw = Math.atan2(fighter.facing_x, -fighter.facing_y);
+    this.yaw = smoothAngle(this.yaw, targetYaw, 9, dt);
 
     if (fighter.action_id !== null && fighter.action_id !== this.actionId && fighter.action_id !== this.completedActionId) {
       this.beginAuthoritative(fighter, sampledTick, time);
@@ -273,7 +273,7 @@ export class BoxerAnimator {
     const velocityWorldZ = this.mapping.z(fighter.velocity_y) * TICK_RATE;
     const speed = Math.hypot(velocityWorldX, velocityWorldZ);
     const speedFactor = Math.min(1, speed / 1.1);
-    const forwardMotion = THREE.MathUtils.clamp((fighter.velocity_x * fighter.facing) / 7, -1, 1);
+    const forwardMotion = THREE.MathUtils.clamp((fighter.velocity_x * fighter.facing_x + fighter.velocity_y * fighter.facing_y) / 7000, -1, 1);
     const lateralMotion = THREE.MathUtils.clamp(fighter.velocity_y / 7, -1, 1);
     this.walkPhase += speed * dt * 5.72;
 

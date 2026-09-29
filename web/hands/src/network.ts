@@ -33,6 +33,8 @@ interface SocketLike {
 type SocketFactory = (url: string) => SocketLike;
 const OPEN = 1;
 const NEUTRAL_INPUT: InputFrame = { moveX: 0, moveY: 0, defense: "none", actions: [] };
+const INPUT_FLUSH_MS = 33;
+const MIN_EDGE_SEND_GAP_MS = 8;
 
 export class NetworkController {
   private socket: SocketLike | null = null;
@@ -52,6 +54,7 @@ export class NetworkController {
   private terminal = false;
   private inputSuppressed = false;
   private listenersBound = false;
+  private lastInputSentAt = -Infinity;
 
   constructor(
     ticket: string,
@@ -70,11 +73,17 @@ export class NetworkController {
     window.addEventListener("focus", this.onInputRegain);
     document.addEventListener("visibilitychange", this.onVisibilityChange);
     this.connect();
-    if (!this.disposed && !this.terminal) this.inputTimer = window.setInterval(() => this.flushInput(), 40);
+    if (!this.disposed && !this.terminal) this.inputTimer = window.setInterval(() => this.flushInput(), INPUT_FLUSH_MS);
   }
 
   setActive(active: boolean): void {
     this.active = active;
+  }
+
+  /** Sends the pending input frame on the action edge instead of waiting for the periodic flush. */
+  notifyAction(): void {
+    if (this.now() - this.lastInputSentAt < MIN_EDGE_SEND_GAP_MS) return;
+    this.flushInput();
   }
 
   private readonly onInputLoss = (): void => {
@@ -240,6 +249,7 @@ export class NetworkController {
     try {
       socket.send(encodeInput(this.nextSequence, this.serverTick, { ...frame, actions: frame.actions.slice(0, 4) }));
       this.nextSequence += 1;
+      this.lastInputSentAt = this.now();
     } catch {
       this.handleClose(socket);
     }

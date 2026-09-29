@@ -21,7 +21,7 @@ from intelstream.hands.types import (
     Target,
 )
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 MAX_FRAME_BYTES = 4096
 MAX_ACTIONS_PER_INPUT = 4
 MAX_SERVER_FRAME_BYTES = 65_536
@@ -266,6 +266,7 @@ def snapshot_for_viewer(snapshot: EngineSnapshot, viewer_id: str | None) -> Engi
             get_up_required=0,
             get_up_window_start_tick=0,
             get_up_window_end_tick=0,
+            last_input_sequence=-1,
         )
         for fighter in snapshot.fighters
     )

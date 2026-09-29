@@ -1,5 +1,5 @@
 {
-  "format": 1,
+  "format": 2,
   "tick_rate": 30,
   "ring": {
     "half_width": 500,
@@ -13,6 +13,39 @@
     "max_poise": 600
   },
   "action_buffer_ticks": 6,
+  "facing": {
+    "scale": 1000,
+    "turn_percent_per_tick": 35
+  },
+  "combos": {
+    "recovery_cancel_percent": 50,
+    "chains": [
+      [
+        "jab",
+        "straight"
+      ],
+      [
+        "jab",
+        "hook"
+      ],
+      [
+        "straight",
+        "hook"
+      ],
+      [
+        "hook",
+        "uppercut"
+      ],
+      [
+        "uppercut",
+        "hook"
+      ]
+    ]
+  },
+  "knockdown": {
+    "neutral_separation": 230,
+    "referee_walk_speed": 4
+  },
   "hitstop_ms": {
     "hit": 78,
     "block": 45
@@ -118,8 +151,18 @@
     }
   },
   "hurtboxes": {
-    "head": { "radius": 0.13, "length": 0.16, "joint": "head", "offset_y": 0.12 },
-    "torso": { "radius": 0.21, "length": 0.34, "joint": "chest", "offset_y": 0.16 }
+    "head": {
+      "radius": 0.13,
+      "length": 0.16,
+      "joint": "head",
+      "offset_y": 0.12
+    },
+    "torso": {
+      "radius": 0.21,
+      "length": 0.34,
+      "joint": "chest",
+      "offset_y": 0.16
+    }
   },
   "hitbox": {
     "glove_radius": 0.11

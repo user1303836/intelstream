@@ -574,10 +574,11 @@ export class BoxingGraph {
     const maxStep = 0.05;
     this.rootX += THREE.MathUtils.clamp(worldX - this.rootX, -maxStep, maxStep);
     this.rootZ += THREE.MathUtils.clamp(worldZ - this.rootZ, -maxStep, maxStep);
-    const targetYaw = Math.atan2(this.mapping.x(opponent.x) - worldX, (this.mapping.z(opponent.y) - worldZ) * 0.45);
-    this.yaw = smoothAngle(this.yaw, targetYaw, 7, dt);
+    const targetYaw = Math.atan2(fighter.facing_x, -fighter.facing_y);
+    this.yaw = smoothAngle(this.yaw, targetYaw, 9, dt);
     boxer.root.position.set(this.rootX, 0, this.rootZ);
-    boxer.root.rotation.set(0, this.yaw + 0.5 * mirror, 0);
+    boxer.root.rotation.set(0, this.yaw, 0);
+    void mirror;
 
     const fatigueScale = 0.82 + (fighter.stamina / Math.max(1, fighter.maximum_stamina)) * 0.18;
     this.hitstop = Math.max(0, this.hitstop - dt);
@@ -644,7 +645,8 @@ export class BoxingGraph {
     const worldSpeed = Math.hypot(worldVelocityX, worldVelocityZ);
     const moving = worldSpeed > 0.05;
     const moveWeight = THREE.MathUtils.clamp(worldSpeed / 1.1, 0, 1);
-    const forward = worldVelocityX * fighter.facing;
+    const facingLength = Math.hypot(fighter.facing_x, fighter.facing_y) || 1;
+    const forward = (worldVelocityX * fighter.facing_x - worldVelocityZ * fighter.facing_y) / facingLength;
     const lateral = Math.sign(fighter.velocity_y) * Math.abs(worldVelocityZ);
     const directionTotal = Math.abs(forward) + Math.abs(lateral);
     const targets = {

@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 2 as const;
+export const PROTOCOL_VERSION = 3 as const;
 export const MAX_SERVER_FRAME_BYTES = 65_536;
 
 export type Hand = "left" | "right";
@@ -25,6 +25,7 @@ export interface PublicPlayer { readonly id: string; readonly name: string; read
 export interface TraumaSnapshot { readonly head: number; readonly body: number; readonly left_eye: number; readonly right_eye: number; readonly left_cut: number; readonly right_cut: number; readonly swelling: number; readonly bleeding: number }
 export interface FighterSnapshot {
   readonly player_id: string; readonly x: number; readonly y: number; readonly facing: number;
+  readonly facing_x: number; readonly facing_y: number;
   readonly velocity_x: number; readonly velocity_y: number; readonly stance: Stance; readonly defense: DefensivePose;
   readonly stamina: number; readonly maximum_stamina: number; readonly conditioning: number; readonly guard: number;
   readonly poise: number; readonly trauma: TraumaSnapshot; readonly knockdowns: number; readonly warnings: number;
@@ -44,6 +45,7 @@ export interface FighterSnapshot {
   readonly get_up_prompt: "get_up_left" | "get_up_right" | null;
   readonly get_up_meter: number; readonly get_up_required: number; readonly get_up_count: number;
   readonly get_up_window_start_tick: number; readonly get_up_window_end_tick: number;
+  readonly last_input_sequence: number;
 }
 export interface CombatEvent { readonly event_id: number; readonly tick: number; readonly kind: string; readonly actor_id: string | null; readonly target_id: string | null; readonly amount: number; readonly detail: string; readonly blood: number; readonly direction: number; readonly action_id: string | null }
 export interface JudgeCard { readonly judge: string; readonly player_one: readonly number[]; readonly player_two: readonly number[] }
@@ -56,22 +58,22 @@ export interface MatchResult {
 }
 export interface EngineSnapshot { readonly tick: number; readonly phase: MatchPhase; readonly round_number: number; readonly phase_ticks_remaining: number; readonly fighters: readonly [FighterSnapshot, FighterSnapshot]; readonly events: readonly CombatEvent[]; readonly result: MatchResult | null; readonly checksum: string }
 
-interface WelcomeBase { readonly version: 2; readonly type: "welcome"; readonly player_id: string; readonly players: readonly PublicPlayer[]; readonly server_tick: number; readonly reconnect_ticket?: string }
+interface WelcomeBase { readonly version: 3; readonly type: "welcome"; readonly player_id: string; readonly players: readonly PublicPlayer[]; readonly server_tick: number; readonly reconnect_ticket?: string }
 export interface FighterWelcomeMessage extends WelcomeBase { readonly role: "fighter"; readonly seat: 1 | 2; readonly rating: number; readonly next_sequence: number }
 export interface SpectatorWelcomeMessage extends WelcomeBase { readonly role: "spectator"; readonly players: readonly [PublicPlayer, PublicPlayer] }
 export type WelcomeMessage = FighterWelcomeMessage | SpectatorWelcomeMessage;
-export interface TicketMessage { readonly version: 2; readonly type: "ticket"; readonly reconnect_ticket: string; readonly refresh_id: string }
-export interface WaitingMessage { readonly version: 2; readonly type: "waiting"; readonly open_seats: 1 }
-export interface ReadyMessage { readonly version: 2; readonly type: "ready"; readonly players: readonly [PublicPlayer, PublicPlayer] }
-export interface PausedMessage { readonly version: 2; readonly type: "paused"; readonly player_id: string; readonly grace_ms: number }
-export interface ResumedMessage { readonly version: 2; readonly type: "resumed"; readonly player_id: string }
-export interface SnapshotMessage { readonly version: 2; readonly type: "snapshot"; readonly payload: EngineSnapshot }
+export interface TicketMessage { readonly version: 3; readonly type: "ticket"; readonly reconnect_ticket: string; readonly refresh_id: string }
+export interface WaitingMessage { readonly version: 3; readonly type: "waiting"; readonly open_seats: 1 }
+export interface ReadyMessage { readonly version: 3; readonly type: "ready"; readonly players: readonly [PublicPlayer, PublicPlayer] }
+export interface PausedMessage { readonly version: 3; readonly type: "paused"; readonly player_id: string; readonly grace_ms: number }
+export interface ResumedMessage { readonly version: 3; readonly type: "resumed"; readonly player_id: string }
+export interface SnapshotMessage { readonly version: 3; readonly type: "snapshot"; readonly payload: EngineSnapshot }
 export interface RatingDelta { readonly before: number; readonly after: number }
-export interface FinalMessage { readonly version: 2; readonly type: "final"; readonly match_id: string; readonly winner_id: string | null; readonly method: FinishMethod; readonly round: number; readonly scorecards: readonly JudgeCard[]; readonly ratings: Readonly<Record<string, RatingDelta>> }
-export interface ErrorMessage { readonly version: 2; readonly type: "error"; readonly code: string }
+export interface FinalMessage { readonly version: 3; readonly type: "final"; readonly match_id: string; readonly winner_id: string | null; readonly method: FinishMethod; readonly round: number; readonly scorecards: readonly JudgeCard[]; readonly ratings: Readonly<Record<string, RatingDelta>> }
+export interface ErrorMessage { readonly version: 3; readonly type: "error"; readonly code: string }
 export type ServerMessage = WelcomeMessage | TicketMessage | WaitingMessage | ReadyMessage | PausedMessage | ResumedMessage | SnapshotMessage | FinalMessage | ErrorMessage;
 
 export interface SimulationInfo { readonly tick_rate: number; readonly ring_half_width: number; readonly ring_half_height: number }
-export interface BootstrapResponse { readonly client_id: string; readonly state: string; readonly protocol: 2; readonly simulation: SimulationInfo }
+export interface BootstrapResponse { readonly client_id: string; readonly state: string; readonly protocol: 3; readonly simulation: SimulationInfo }
 export interface TokenPlayer { readonly id: string; readonly name: string; readonly avatar: string | null; readonly rating: number }
 export interface TokenResponse { readonly access_token: string; readonly ticket: string; readonly player: TokenPlayer }

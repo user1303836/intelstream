@@ -95,13 +95,16 @@ export class HandsApp {
       this.session = session;
       this.dispatch({ type: "bootstrap", simulation: session.bootstrap.simulation });
       this.dispatch({ type: "authorized", player: session.player });
-      this.renderer = new FightRenderer(this.canvas, session.bootstrap.simulation, () => this.settings.current);
+      this.renderer = new FightRenderer(this.canvas, session.bootstrap.simulation, () => this.settings.current, { localInput: () => this.input.held() });
       this.renderer.onContact = (event) => {
         this.audio.event(event);
         this.haptics.event(event);
       };
       this.renderer.onArcadeInjury = (injury) => this.audio.injury(injury);
-      this.input.onAction((action) => this.renderer?.predictAction?.(action));
+      this.input.onAction((action) => {
+        this.renderer?.predictAction?.(action);
+        this.network?.notifyAction();
+      });
       const ticket = session.takeTicket();
       if (ticket === null) throw new Error("ticket_unavailable");
       const network = new NetworkController(ticket, () => this.input.frame(), {

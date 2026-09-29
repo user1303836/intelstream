@@ -52,7 +52,7 @@ class RoomError(Exception):
 @dataclass(frozen=True, slots=True)
 class RoomConfig:
     tick_interval_seconds: float = 1 / 30
-    broadcast_every_ticks: int = 2
+    broadcast_every_ticks: int = 1
     reconnect_grace_seconds: float = 20.0
     result_hold_seconds: float = 10.0
     final_delivery_timeout_seconds: float = 1.0

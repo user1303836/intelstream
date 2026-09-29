@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from math import hypot
 
 import pytest
@@ -910,14 +911,8 @@ def test_held_guard_heartbeat_preserves_a_new_guarded_follow_up() -> None:
 
 def test_action_buffer_expires_instead_of_forcing_old_directives() -> None:
     engine = make_engine(round_ticks=2000)
-    engine.step(
-        {
-            "one": command(
-                1,
-                action=punch(PunchClass.UPPERCUT, power=Power.POWER),
-            )
-        }
-    )
+    engine.step({"one": command(1, action=MovementAction(ActionKind.TAUNT))})
+    assert engine.fighter("one").taunt_ticks > 0
     assert (
         engine.submit_input(
             "one",
@@ -931,7 +926,122 @@ def test_action_buffer_expires_instead_of_forcing_old_directives() -> None:
         engine.step()
 
     assert engine.fighter("one").pending_actions == []
-    assert [event.kind for event in engine.events].count("punch_start") == 1
+    assert [event.kind for event in engine.events].count("punch_start") == 0
+
+
+def test_buffered_punch_survives_the_current_attack_and_dispatches_after_it() -> None:
+    engine = make_engine(round_ticks=2000)
+    engine.fighter("one").x = -300
+    engine.fighter("two").x = 300
+    engine.step({"one": command(1, action=punch(PunchClass.UPPERCUT, power=Power.POWER))})
+    attack = engine.fighter("one").attack
+    assert attack is not None
+    total = attack.total_ticks
+    assert total > ACTION_BUFFER_TICKS + 1
+    engine.step()
+    assert engine.submit_input("one", command(2, action=punch(PunchClass.JAB)))
+
+    starts: list[int] = []
+    for _ in range(total + 4):
+        snapshot = engine.step()
+        starts.extend(event.tick for event in snapshot.events if event.kind == "punch_start")
+        if not starts:
+            assert engine.fighter("one").pending_actions, "buffer dropped during the attack"
+
+    assert len(starts) == 1
+    assert starts[0] == 1 + total + 1
+    assert engine.fighter("one").pending_actions == []
+
+
+def test_landed_punch_recovery_cancels_into_a_compatible_follow_up() -> None:
+    def follow_up_start(
+        first: PunchAction, second: PunchAction, *, in_range: bool
+    ) -> tuple[int, int, int]:
+        engine = make_engine(round_ticks=2000)
+        if not in_range:
+            engine.fighter("one").x = -300
+            engine.fighter("two").x = 300
+        engine.step({"one": command(1, action=first)})
+        attack = engine.fighter("one").attack
+        assert attack is not None
+        cancel_age = attack.cancel_age
+        total = attack.total_ticks
+        assert 0 < cancel_age < total
+        engine.step({"one": command(2, action=second)})
+        for _ in range(total + 4):
+            snapshot = engine.step()
+            for event in snapshot.events:
+                if event.kind == "punch_start" and event.detail.split(":")[1] == second.punch_class:
+                    return event.tick - 1, cancel_age, total
+        raise AssertionError("follow-up never started")
+
+    jab = punch(PunchClass.JAB, hand=Hand.LEFT)
+    straight = punch(PunchClass.STRAIGHT)
+    uppercut = punch(PunchClass.UPPERCUT)
+
+    started, cancel_age, total = follow_up_start(jab, straight, in_range=True)
+    assert started == cancel_age < total
+    whiffed, _cancel_age, total = follow_up_start(jab, straight, in_range=False)
+    assert whiffed == total + 1
+    incompatible, _cancel_age, total = follow_up_start(jab, uppercut, in_range=True)
+    assert incompatible == total + 1
+
+
+def test_facing_vector_turns_toward_the_opponent_and_the_hit_test_follows() -> None:
+    engine = make_engine(round_ticks=2000)
+    one = engine.fighter("one")
+    two = engine.fighter("two")
+    one.x = one.y = 0
+    two.x = 0
+    two.y = 100
+    assert (one.facing_x, one.facing_y) == (1000, 0)
+    for _ in range(12):
+        engine.step()
+    assert one.facing_y > 950
+    assert abs(one.facing_x) < 200
+    assert 990_000 <= one.facing_x**2 + one.facing_y**2 <= 1_010_000
+    assert two.facing_y < -950
+
+    engine.step({"one": command(1, action=punch(PunchClass.STRAIGHT))})
+    assert advance_until(engine, {"hit", "counter_hit"}) in {"hit", "counter_hit"}
+
+    snapshot = engine.snapshot()
+    payload = json.loads(encode_snapshot(snapshot, viewer_id="one"))["payload"]
+    assert payload["fighters"][0]["facing_y"] == one.facing_y
+    assert payload["fighters"][0]["last_input_sequence"] == 1
+    assert payload["fighters"][1]["last_input_sequence"] == -1
+
+
+def test_knockdown_walks_the_standing_fighter_to_neutral_distance_without_teleport() -> None:
+    engine = make_engine(round_ticks=2000)
+    defender = engine.fighter("two")
+    attacker = engine.fighter("one")
+    defender.poise = 1
+    engine.step({"one": command(1, action=punch(PunchClass.UPPERCUT, power=Power.POWER))})
+    advance_until(engine, {"knockdown"})
+    downed_at = (defender.x, defender.y)
+    for _ in range(40):
+        engine.step()
+    assert (defender.x, defender.y) == downed_at
+    assert hypot(attacker.x - defender.x, attacker.y - defender.y) >= 230
+    assert attacker.velocity_x == 0 and attacker.velocity_y == 0
+
+    sequence = 2
+    used_window = -1
+    while engine.phase is MatchPhase.KNOCKDOWN and engine.tick < 300:
+        fighter = next(item for item in engine.snapshot().fighters if item.player_id == "two")
+        if (
+            fighter.get_up_prompt is not None
+            and engine.tick >= fighter.get_up_window_start_tick
+            and fighter.get_up_window_end_tick != used_window
+        ):
+            engine.step({"two": command(sequence, action=MovementAction(fighter.get_up_prompt))})
+            used_window = fighter.get_up_window_end_tick
+            sequence += 1
+        else:
+            engine.step()
+    assert engine.phase is MatchPhase.FIGHT
+    assert (defender.x, defender.y) == downed_at
 
 
 def test_short_buffered_combo_only_rewards_authored_compatible_chain() -> None:
@@ -1175,8 +1285,10 @@ def test_counter_vulnerability_slip_sides_and_body_weave_are_skill_based() -> No
     assert advance_until(body, {"evade"}) == "evade"
 
     body_uppercut = make_engine(round_ticks=2000)
-    body_uppercut.fighter("one").y = -10
-    body_uppercut.fighter("two").y = 10
+    body_uppercut.fighter("one").x = -42
+    body_uppercut.fighter("one").y = -15
+    body_uppercut.fighter("two").x = 42
+    body_uppercut.fighter("two").y = 15
     body_uppercut.step(
         {
             "one": command(

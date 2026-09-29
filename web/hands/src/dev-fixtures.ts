@@ -4,7 +4,7 @@ import type { CombatEvent, EngineSnapshot, FighterSnapshot, PublicPlayer } from 
 type Draft = { -readonly [K in keyof FighterSnapshot]: FighterSnapshot[K] };
 
 const base = (id: string): Draft => ({
-  player_id: id, x: 0, y: 0, facing: id === "fixture-one" ? 1 : -1, velocity_x: 0, velocity_y: 0,
+  player_id: id, x: 0, y: 0, facing: id === "fixture-one" ? 1 : -1, facing_x: id === "fixture-one" ? 1000 : -1000, facing_y: 0, velocity_x: 0, velocity_y: 0,
   stance: id === "fixture-one" ? "orthodox" : "southpaw", defense: "guard_high",
   stamina: 760, maximum_stamina: 1000, conditioning: 820, guard: 670, poise: 520,
   trauma: id === "fixture-two"
@@ -14,6 +14,7 @@ const base = (id: string): Draft => ({
   action: null, action_hand: null, action_target: null, action_power: null, action_id: null, action_key: null, action_start_tick: 0, action_startup_ticks: 0, action_active_ticks: 0, action_recovery_ticks: 0, action_contact_tick: null, queued_actions: 0,
   clinch_startup_ticks: 0, clinch_ticks: 0, is_foul_recovery_target: false, taunt_ticks: 0,
   get_up_prompt: null, get_up_meter: 0, get_up_required: 0, get_up_count: 0, get_up_window_start_tick: 0, get_up_window_end_tick: 0,
+  last_input_sequence: -1,
 });
 
 const PUNCHES = ["jab", "straight", "hook", "uppercut"] as const;
@@ -45,6 +46,11 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
     two.y = Math.cos(orbit + 0.35) * 150;
     one.facing = two.x >= one.x ? 1 : -1;
     two.facing = -one.facing;
+    const gap = Math.hypot(two.x - one.x, two.y - one.y) || 1;
+    one.facing_x = Math.round(((two.x - one.x) / gap) * 1000);
+    one.facing_y = Math.round(((two.y - one.y) / gap) * 1000);
+    two.facing_x = -one.facing_x;
+    two.facing_y = -one.facing_y;
     one.velocity_x = Math.cos(orbit) * 48;
     two.velocity_x = Math.cos(orbit + 0.25) * 48;
     const events: CombatEvent[] = [];

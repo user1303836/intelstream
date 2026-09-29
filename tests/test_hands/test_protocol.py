@@ -57,7 +57,7 @@ def test_round_trip_every_semantic_action() -> None:
 
 def valid_payload() -> dict[str, object]:
     return {
-        "version": 2,
+        "version": 3,
         "type": "input",
         "sequence": 2,
         "client_tick": 10,
@@ -120,7 +120,7 @@ def test_rejects_unknown_nested_fields_and_malformed_actions() -> None:
 
 def test_rejects_duplicate_fields() -> None:
     frame = (
-        '{"version":2,"type":"input","sequence":1,"sequence":2,'
+        '{"version":3,"type":"input","sequence":1,"sequence":2,'
         '"client_tick":1,"move":{"x":0,"y":0},"defense":"none","actions":[]}'
     )
 
@@ -172,13 +172,13 @@ def test_rejects_malformed_frames(frame: str | bytes) -> None:
 
 
 def test_ticket_ack_is_strict_and_distinct_from_semantic_input() -> None:
-    frame = '{"version":2,"type":"ticket_ack","refresh_id":"refresh-identifier"}'
+    frame = '{"version":3,"type":"ticket_ack","refresh_id":"refresh-identifier"}'
     assert parse_ticket_ack(frame) == "refresh-identifier"
     assert parse_ticket_ack(json.dumps(valid_payload())) is None
     for malformed in (
-        '{"version":2,"type":"ticket_ack","refresh_id":"short"}',
-        '{"version":2,"type":"ticket_ack","refresh_id":"refresh-identifier","extra":1}',
-        '{"version":2,"type":"ticket_ack","refresh_id":"one","refresh_id":"two"}',
+        '{"version":3,"type":"ticket_ack","refresh_id":"short"}',
+        '{"version":3,"type":"ticket_ack","refresh_id":"refresh-identifier","extra":1}',
+        '{"version":3,"type":"ticket_ack","refresh_id":"one","refresh_id":"two"}',
     ):
         with pytest.raises(ProtocolError):
             parse_ticket_ack(malformed)

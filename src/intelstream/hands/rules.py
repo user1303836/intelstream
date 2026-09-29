@@ -26,6 +26,11 @@ MAX_STAMINA = 1000
 MAX_CONDITIONING = 1000
 MAX_GUARD = 700
 MAX_POISE = 600
+FACING_SCALE: int = _MANIFEST["facing"]["scale"]
+FACING_TURN_PERCENT: int = _MANIFEST["facing"]["turn_percent_per_tick"]
+RECOVERY_CANCEL_PERCENT: int = _MANIFEST["combos"]["recovery_cancel_percent"]
+KNOCKDOWN_NEUTRAL_SEPARATION: int = _MANIFEST["knockdown"]["neutral_separation"]
+REFEREE_WALK_SPEED: int = _MANIFEST["knockdown"]["referee_walk_speed"]
 
 
 def _manifest_check() -> None:
@@ -126,13 +131,7 @@ PUNCH_RULES: dict[tuple[PunchClass, Target, Power], PunchRule] = {
 }
 
 COMPATIBLE_COMBO_CHAINS: frozenset[tuple[PunchClass, PunchClass]] = frozenset(
-    {
-        (PunchClass.JAB, PunchClass.STRAIGHT),
-        (PunchClass.JAB, PunchClass.HOOK),
-        (PunchClass.STRAIGHT, PunchClass.HOOK),
-        (PunchClass.HOOK, PunchClass.UPPERCUT),
-        (PunchClass.UPPERCUT, PunchClass.HOOK),
-    }
+    (PunchClass(first), PunchClass(second)) for first, second in _MANIFEST["combos"]["chains"]
 )
 
 
