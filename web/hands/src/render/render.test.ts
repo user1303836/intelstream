@@ -3,7 +3,7 @@ import { punchTiming, totalTicks } from "../manifest";
 import { buildArena } from "./arena";
 import { CameraDirector } from "./camera";
 import { bloodPatternFor, Effects3D } from "./effects";
-import { drawHud, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, HUD_MAX_GUARD, HUD_MAX_POISE, RoundStatsTracker, scoreTotal } from "./hud";
+import { decisionLabel, drawHud, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, HUD_MAX_GUARD, HUD_MAX_POISE, RoundStatsTracker, scoreTotal } from "./hud";
 import { buildRing, ropePress } from "./ring";
 import { resizeHighDpi } from "./viewport";
 import { PALETTES, worldMapping } from "./world";
@@ -514,6 +514,23 @@ describe("round stats", () => {
     tracker.record(event("hit", "one"));
     drawHud(ctx, 1280, 720, { ...snapshot(), phase: "rest" }, Object.fromEntries(publicPlayers.map((player) => [player.id, player])), "one", null, 0, 30, tracker);
     expect(texts.some((text) => text.includes("One 1/1"))).toBe(true);
+  });
+});
+
+describe("decision label", () => {
+  const card = (one: number[], two: number[], judge = "J") => ({ judge, player_one: one, player_two: two });
+  const final = (method: "decision" | "draw" | "ko" | "tko", scorecards: ReturnType<typeof card>[]) =>
+    ({ version: 3 as const, type: "final" as const, match_id: "m", winner_id: method === "draw" ? null : "one", method, round: 3, scorecards, ratings: {} });
+
+  it("names unanimous, split and majority decisions and draws from the scorecards", () => {
+    expect(decisionLabel(final("decision", [card([10, 10, 10], [9, 9, 9]), card([10, 10, 9], [9, 9, 10]), card([10, 10, 10], [9, 9, 9])]))).toBe("UNANIMOUS DECISION");
+    expect(decisionLabel(final("decision", [card([10, 10, 10], [9, 9, 9]), card([9, 9, 10], [10, 10, 9]), card([10, 10, 10], [9, 9, 9])]))).toBe("SPLIT DECISION");
+    expect(decisionLabel(final("decision", [card([10, 10, 10], [9, 9, 9]), card([10, 9], [9, 10]), card([10, 10, 10], [9, 9, 9])]))).toBe("MAJORITY DECISION");
+    expect(decisionLabel(final("draw", [card([10], [10]), card([10], [10]), card([10], [10])]))).toBe("UNANIMOUS DRAW");
+    expect(decisionLabel(final("draw", [card([10], [9]), card([9], [10]), card([10], [10])]))).toBe("SPLIT DRAW");
+    expect(decisionLabel(final("draw", [card([10], [9]), card([10], [10]), card([10], [10])]))).toBe("MAJORITY DRAW");
+    expect(decisionLabel(final("tko", []))).toBe("TKO");
+    expect(decisionLabel(final("decision", []))).toBe("DECISION");
   });
 });
 

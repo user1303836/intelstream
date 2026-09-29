@@ -186,6 +186,29 @@ export class RoundStatsTracker {
   }
 }
 
+/** Headline for the result panel: decisions and draws say whether the judges were unanimous, split or majority. */
+export function decisionLabel(final: FinalMessage): string {
+  const base = final.method.replaceAll("_", " ").toUpperCase();
+  if (final.method !== "decision" && final.method !== "draw") return base;
+  let one = 0;
+  let two = 0;
+  let even = 0;
+  for (const card of final.scorecards) {
+    const a = scoreTotal(card.player_one);
+    const b = scoreTotal(card.player_two);
+    if (a > b) one += 1;
+    else if (b > a) two += 1;
+    else even += 1;
+  }
+  const cards = final.scorecards.length;
+  if (cards === 0) return base;
+  if (final.method === "draw") return even === cards ? "UNANIMOUS DRAW" : one === two ? "SPLIT DRAW" : "MAJORITY DRAW";
+  const winnerCards = Math.max(one, two);
+  if (winnerCards === cards) return "UNANIMOUS DECISION";
+  if (even > 0) return "MAJORITY DECISION";
+  return "SPLIT DECISION";
+}
+
 export const STOPPAGE_METHODS: ReadonlySet<string> = new Set(["ko", "flash_ko", "tko"]);
 export const FINAL_REVEAL_DELAY_SECONDS = 3.6;
 
@@ -360,7 +383,7 @@ function drawFinal(ctx: CanvasRenderingContext2D, width: number, height: number,
   ctx.textAlign = "center";
   ctx.fillStyle = "#f6d57a";
   ctx.font = "800 26px Inter, system-ui, sans-serif";
-  ctx.fillText(final.method.replaceAll("_", " ").toUpperCase(), width / 2, height * 0.21);
+  ctx.fillText(decisionLabel(final), width / 2, height * 0.21);
   const winner = final.winner_id === null ? "DRAW" : `${players[final.winner_id]?.name ?? "Winner"} WINS`;
   ctx.fillStyle = "white";
   ctx.font = "700 18px Inter, system-ui, sans-serif";
