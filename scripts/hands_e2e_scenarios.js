@@ -8,7 +8,7 @@
  * keyboard or touch input, reads the client's screen-reader status text, and writes screenshots to
  * $TMPDIR/hands-e2e.
  *
- *   node scripts/hands_e2e_scenarios.js ko|reconnect|rest|spectator|touch|mash|latency|soak|background|rematch|rematchloop
+ *   node scripts/hands_e2e_scenarios.js ko|reconnect|rest|spectator|touch|mash|latency|soak|background|rematch|rematchloop|clinch
  */
 const { chromium, devices } = require('playwright');
 const { spawn } = require('node:child_process');
@@ -110,6 +110,7 @@ async function main() {
     background: ['--rounds', '1', '--round-seconds', '60', '--rest-seconds', '5'],
     rematch: ['--rounds', '1', '--round-seconds', '25', '--rest-seconds', '5'],
     rematchloop: ['--rounds', '1', '--round-seconds', '20', '--rest-seconds', '5'],
+    clinch: ['--rounds', '1', '--round-seconds', '30', '--rest-seconds', '5'],
   }[scenario];
   const server = await startServer(serverArgs, { oneWayDelayMs: scenario === 'latency' ? 110 : 0 });
   try {
@@ -335,6 +336,39 @@ async function main() {
         note('growth A: heap', last.a.heapMb - first.a.heapMb, 'MB; geometries', (last.a.gpu?.geometries ?? 0) - (first.a.gpu?.geometries ?? 0), '; textures', (last.a.gpu?.textures ?? 0) - (first.a.gpu?.textures ?? 0), '; programs', (last.a.gpu?.programs ?? 0) - (first.a.gpu?.programs ?? 0));
         note('growth B: heap', last.b.heapMb - first.b.heapMb, 'MB; geometries', (last.b.gpu?.geometries ?? 0) - (first.b.gpu?.geometries ?? 0), '; textures', (last.b.gpu?.textures ?? 0) - (first.b.gpu?.textures ?? 0), '; programs', (last.b.gpu?.programs ?? 0) - (first.b.gpu?.programs ?? 0));
       }
+    }
+
+    if (scenario === 'clinch') {
+      const fighters = (page) => page.evaluate(() => (window.__handsApp?.state?.snapshot?.fighters ?? []).map((f) => ({ id: f.player_id, x: f.x, y: f.y, clinch: f.clinch_ticks })));
+      const gap = (list) => (list.length === 2 ? Math.round(Math.hypot(list[1].x - list[0].x, list[1].y - list[0].y)) : null);
+      let started = Date.now();
+      while (Date.now() - started < 15000) {
+        const g = gap(await fighters(A.page));
+        if (g !== null && g <= 95) break;
+        await A.page.keyboard.down('d'); await B.page.keyboard.down('a'); await wait(150); await A.page.keyboard.up('d'); await B.page.keyboard.up('a');
+      }
+      note('gap before clinch:', gap(await fighters(A.page)));
+      // Page evaluation and screenshots are slow under SwiftShader, so the page records the hold itself.
+      await B.page.evaluate(() => {
+        window.__clinchLog = [];
+        window.__clinchTimer = setInterval(() => {
+          const snapshot = window.__handsApp?.state?.snapshot;
+          const f = snapshot?.fighters ?? [];
+          if (f.length === 2) window.__clinchLog.push({ tick: snapshot.tick, gap: Math.round(Math.hypot(f[1].x - f[0].x, f[1].y - f[0].y)), clinch: f[0].clinch_ticks });
+        }, 40);
+      });
+      await A.page.keyboard.press('b');
+      await wait(650);
+      await A.page.screenshot({ path: `${out}/e2e-clinch-A.png` }); await B.page.screenshot({ path: `${out}/e2e-clinch-B.png` });
+      await wait(2500);
+      const log = await B.page.evaluate(() => { clearInterval(window.__clinchTimer); return window.__clinchLog; });
+      const firstHeld = log.findIndex((s) => s.clinch > 0);
+      const held = log.filter((s) => s.clinch > 0);
+      const afterBreak = firstHeld < 0 ? null : log.slice(firstHeld).find((s) => s.clinch === 0);
+      note('clinch seen:', firstHeld >= 0, '| samples during hold:', held.length, '| gap on entry:', held[0]?.gap, '| min gap:', held.length ? Math.min(...held.map((s) => s.gap)) : null, '| last held gap:', held.at(-1)?.gap, '| gap after break:', afterBreak?.gap ?? null);
+      note('status A:', (await status(A.page)).status, '| B:', (await status(B.page)).status);
+      const final = await waitFor(A.page, (s) => Boolean(s.final), 90000, 'final');
+      note('FINAL:', JSON.stringify(final?.final ?? null).slice(0, 200));
     }
 
     if (scenario === 'soak') {
