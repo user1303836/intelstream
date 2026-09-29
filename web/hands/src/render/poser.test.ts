@@ -116,6 +116,25 @@ describe("transient reset", () => {
   });
 });
 
+describe("cornerman", () => {
+  it("leans in over the rope with both hands forward while attending", () => {
+    const boxer = new SkinnedBoxer(gltf, { skin: 0xc79b76, gear: 0x2b4c9e });
+    const graph = new BoxingGraph(boxer, mapping, { referee: true });
+    const fighter = facingOpponent(baseFighter("one"));
+    const opponent = opponentFor("two");
+    run(graph, fighter, opponent, 30, undefined);
+    const idleHead = bone(boxer, "head").clone();
+    graph.attend(true);
+    run(graph, fighter, opponent, 120, undefined, 15, 0.5);
+    const head = bone(boxer, "head");
+    const left = bone(boxer, "gloveL");
+    expect(head.z).toBeGreaterThan(idleHead.z + 0.12);
+    expect(head.y).toBeLessThan(idleHead.y - 0.08);
+    expect(left.z).toBeGreaterThan(0.45);
+    expect(left.y).toBeGreaterThan(1.1);
+  });
+});
+
 describe("clinch break", () => {
   it("pushes both gloves out and apart at chest height", () => {
     const { boxer, graph } = makeGraph();
