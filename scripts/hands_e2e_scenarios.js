@@ -6,7 +6,8 @@
  * server started with HANDS_DEV_BACKEND=http://127.0.0.1:8091 (override with E2E_BASE), and uv.
  * Each scenario spawns scripts/hands_e2e_server.py on port 8091, drives two headless players with
  * keyboard or touch input, reads the client's screen-reader status text, and writes screenshots to
- * $TMPDIR/hands-e2e.
+ * $TMPDIR/hands-e2e. Set E2E_GPU=1 to render on the machine's GPU instead of the software renderer
+ * (real frame pacing and input latency).
  *
  *   node scripts/hands_e2e_scenarios.js ko|reconnect|rest|spectator|touch|mash|latency|soak|background|rematch|rematchloop|clinch
  */
@@ -84,7 +85,10 @@ async function waitFor(page, predicate, timeoutMs, label) {
 }
 
 async function main() {
-  const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
+  const gpuArgs = process.env.E2E_GPU === '1'
+    ? ['--enable-gpu', '--ignore-gpu-blocklist']
+    : ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'];
+  const browser = await chromium.launch({ args: gpuArgs });
   const instance = `e2e-${scenario}-${Date.now()}`;
   const open = async (name, options = {}) => {
     const context = await browser.newContext(options.mobile ? { ...devices['Pixel 7'], viewport: { width: 844, height: 390 } } : { viewport: { width: 1280, height: 720 } });
