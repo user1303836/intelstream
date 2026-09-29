@@ -7,7 +7,7 @@ import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { EventDeduplicator, SnapshotBuffer } from "../interpolation";
 import { coarsePointer } from "../input/touch";
 import { REST_CORNER_OFFSET, punchTiming } from "../manifest";
-import { predictMovement, type HeldInput } from "../prediction";
+import { canAffordPunch, predictMovement, predictedPunchTiming, type HeldInput } from "../prediction";
 import type { BloodLevel, Settings } from "../settings";
 import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, Hand, MatchResult, PublicPlayer, PunchClass, SemanticAction, SimulationInfo } from "../types";
 import { buildArena, type BuiltArena } from "./arena";
@@ -315,6 +315,30 @@ function shadowBoxing(idleTick: number): Partial<FighterSnapshot> {
 }
 
 const REPLAY_EVENT_ID_OFFSET = 1_000_003;
+const REPLAY_MINIMUM_DISTANCE = 1.6;
+
+/**
+ * Which side of the fighters' line the replay camera shoots from: the broadcast side, unless the
+ * ropes would crowd it there and the other side has more room.
+ */
+export function replayCameraSide(midX: number, midZ: number, nx: number, nz: number, distance: number, limit: number): 1 | -1 {
+  const preferred = nz < 0 ? -1 : 1;
+  const room = (side: number): number => Math.hypot(
+    THREE.MathUtils.clamp(midX + nx * side * distance, -limit, limit) - midX,
+    THREE.MathUtils.clamp(midZ + nz * side * distance, -limit, limit) - midZ,
+  );
+  return room(preferred) >= distance * 0.8 || room(preferred) >= room(-preferred) ? preferred : (-preferred as 1 | -1);
+}
+
+/** Whether the server would start a punch for this fighter now. */
+export function canStartPunch(fighter: FighterSnapshot): boolean {
+  return !fighter.is_downed
+    && fighter.stunned_ticks === 0
+    && fighter.clinch_ticks === 0
+    && fighter.clinch_startup_ticks === 0
+    && fighter.taunt_ticks === 0
+    && !fighter.is_foul_recovery_target;
+}
 
 /** Whether the knockout replay puts this injury back so it can happen again on screen. */
 export function replayReattaches(injury: ArcadeInjury): boolean {
@@ -434,7 +458,7 @@ export class FightRenderer {
   private readonly roundStats = new RoundStatsTracker();
   private readonly history: EngineSnapshot[] = [];
   private lastKnockdown: { readonly knockdown: CombatEvent; readonly hit: CombatEvent | null } | null = null;
-  private replay: { readonly plan: ReplayPlan; readonly buffer: SnapshotBuffer; readonly startedAt: number; impactFired: boolean } | null = null;
+  private replay: { readonly plan: ReplayPlan; readonly buffer: SnapshotBuffer; readonly startedAt: number; impactFired: boolean; side: 1 | -1 | null } | null = null;
   private readonly finishPass: ShaderPass;
   private readonly bloomPass: UnrealBloomPass;
   private inputLatencyMs: number | null = null;
@@ -683,7 +707,7 @@ export class FightRenderer {
   private startReplay(plan: ReplayPlan): void {
     const buffer = new SnapshotBuffer(plan.snapshots.length + 2, this.simulation.tick_rate);
     for (const snapshot of plan.snapshots) buffer.push(snapshot);
-    this.replay = { plan, buffer, startedAt: this.frameSeconds, impactFired: false };
+    this.replay = { plan, buffer, startedAt: this.frameSeconds, impactFired: false, side: null };
     this.replayFollow = 0;
     this.replayFollowAt = 0;
     for (const index of [0, 1] as const) {
@@ -746,19 +770,29 @@ export class FightRenderer {
     const length = Math.hypot(nx, nz) || 1;
     nx /= length;
     nz /= length;
-    if (nz < 0) {
-      nx = -nx;
-      nz = -nz;
-    }
+    const distance = 2.5;
+    const replay = this.replay;
+    // The side is chosen once so the shot never cuts across the fighters mid-replay.
+    if (replay !== null && replay.side === null) replay.side = replayCameraSide(midX, midZ, nx, nz, distance, TIGHT_SHOT_LIMIT);
+    const side = replay?.side ?? (nz < 0 ? -1 : 1);
+    nx *= side;
+    nz *= side;
     const orbit = 0.35 * Math.sin(elapsed * 0.7);
     const dx = nx * Math.cos(orbit) - nz * Math.sin(orbit);
     const dz = nx * Math.sin(orbit) + nz * Math.cos(orbit);
-    const distance = 2.5;
     this.replayCameraPosition.set(
       THREE.MathUtils.clamp(midX + dx * distance, -TIGHT_SHOT_LIMIT, TIGHT_SHOT_LIMIT),
       1.38 - Math.min(0.25, elapsed * 0.05),
       THREE.MathUtils.clamp(midZ + dz * distance, -TIGHT_SHOT_LIMIT, TIGHT_SHOT_LIMIT),
     );
+    // In a corner both sides are short of room; back off toward the ring centre instead of crowding the fighters.
+    const room = Math.hypot(this.replayCameraPosition.x - midX, this.replayCameraPosition.z - midZ);
+    const centre = Math.hypot(midX, midZ);
+    if (room < REPLAY_MINIMUM_DISTANCE && centre > 0.01) {
+      const push = REPLAY_MINIMUM_DISTANCE - room;
+      this.replayCameraPosition.x = THREE.MathUtils.clamp(this.replayCameraPosition.x - (midX / centre) * push, -TIGHT_SHOT_LIMIT, TIGHT_SHOT_LIMIT);
+      this.replayCameraPosition.z = THREE.MathUtils.clamp(this.replayCameraPosition.z - (midZ / centre) * push, -TIGHT_SHOT_LIMIT, TIGHT_SHOT_LIMIT);
+    }
     const headHeight = falling ? THREE.MathUtils.clamp(this.headCache[victim]!.y, 0.45, 1.28) : 1.28;
     this.replayLookAt.set(midX, 1.28 + (headHeight - 1.28) * this.replayFollow, midZ);
     return { position: this.replayCameraPosition, lookAt: this.replayLookAt, tight: true };
@@ -860,7 +894,8 @@ export class FightRenderer {
       const stash = this.replayInjuries[index];
       if (stash === null) continue;
       this.replayInjuries[index] = null;
-      if (this.settings().blood !== "full") continue;
+      const settings = this.settings();
+      if (settings.blood !== "full" || settings.reducedMotion) continue;
       this.applyArcadeInjury(index, stash.injury, { ...stash.event, event_id: stash.event.event_id + REPLAY_EVENT_ID_OFFSET });
     }
   }
@@ -925,11 +960,14 @@ export class FightRenderer {
 
   predictAction(action: SemanticAction): void {
     const latest = this.buffer.latest();
-    if (latest === null || this.viewerId === null) return;
+    if (latest === null || this.viewerId === null || this.replay !== null) return;
     const index = latest.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
     if (index < 0) return;
+    // The server turns a punch down outside the fight phase and while the fighter cannot act or pay for it.
+    const fighter = latest.fighters[index]!;
+    if (action.kind !== "punch" || latest.phase !== "fight" || !canStartPunch(fighter) || !canAffordPunch(fighter, action)) return;
     const leadTicks = ((this.inputLatencyMs ?? 60) / 1000) * this.simulation.tick_rate + this.buffer.interpolationDelayTicks;
-    this.graphs?.[index]?.predict(action, performance.now() / 1000, this.simulation.tick_rate, leadTicks);
+    this.graphs?.[index]?.predict(action, performance.now() / 1000, this.simulation.tick_rate, leadTicks, predictedPunchTiming(fighter, action));
   }
 
   push(snapshot: EngineSnapshot): void {
@@ -1189,6 +1227,8 @@ export class FightRenderer {
         }
       }
     }
+    // Everyone in the ring moves in slow motion with the replayed snapshots.
+    const actorDt = this.replay !== null ? dt * this.replay.plan.speed : dt;
     let separation = 1.8;
     let knockdown = false;
     if (snapshot !== null) {
@@ -1215,8 +1255,8 @@ export class FightRenderer {
         }
         if (snapshot.phase === "rest" && this.lastPhase !== "rest") this.restStartedAt = seconds;
         this.lastPhase = snapshot.phase;
-        graphs[0].update(a, b, dt, seconds, current.reducedMotion, current.blood, sampledTick, headB);
-        graphs[1].update(b, a, dt, seconds, current.reducedMotion, current.blood, sampledTick, headA);
+        graphs[0].update(a, b, actorDt, seconds, current.reducedMotion, current.blood, sampledTick, headB);
+        graphs[1].update(b, a, actorDt, seconds, current.reducedMotion, current.blood, sampledTick, headA);
         for (const [index, graph] of graphs.entries()) {
           const headBone = graph.boxer.bone("head");
           if (headBone !== null) {
@@ -1277,11 +1317,11 @@ export class FightRenderer {
     }
 
     this.arena.update(seconds, dt, current.reducedMotion);
-    this.effects.update(this.replay !== null ? dt * this.replay.plan.speed : dt);
-    this.updateTrails(dt, current.reducedMotion);
-    this.updateReferee(dt, seconds, snapshot, sampledTick);
-    this.updateCornermen(dt, seconds, snapshot, sampledTick);
-    this.updateCutmen(dt, seconds, snapshot, sampledTick);
+    this.effects.update(actorDt);
+    this.updateTrails(actorDt, current.reducedMotion);
+    this.updateReferee(actorDt, seconds, snapshot, sampledTick);
+    this.updateCornermen(actorDt, seconds, snapshot, sampledTick);
+    this.updateCutmen(actorDt, seconds, snapshot, sampledTick);
     this.updateBlobShadows();
     this.fireContacts(sampledTick);
     if (this.followSpot !== null) {
@@ -1329,7 +1369,8 @@ export class FightRenderer {
     const held = this.localInput();
     const rate = 1 - Math.exp(-14 * dt);
     let target = { dx: 0, dy: 0 };
-    if (index >= 0 && held !== null && snapshot.phase === "fight") {
+    // The player's own punch starts here before the server has it, and holds the feet from then on.
+    if (index >= 0 && held !== null && snapshot.phase === "fight" && this.graphs?.[index]?.ownPunchActive !== true) {
       target = predictMovement(snapshot.fighters[index]!, held, this.buffer.interpolationDelayTicks + 2, snapshot.tick);
     }
     this.localOffset.dx += (target.dx - this.localOffset.dx) * rate;

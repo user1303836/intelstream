@@ -20,6 +20,8 @@ const CONTACT_FEEDBACK_KINDS = new Set(["hit", "counter_hit", "block", "perfect_
 const CONTROL_HINT_KEYBOARD = "Move WASD · Jab F/J · Straight R/U · Hook G/H · Uppercut T/Y · Guard Q/E · Body Shift · Power Alt";
 const CONTROL_HINT_TOUCH = "Left side: drag to move · Right pads: L/R punches · Hold BODY, POWER or GUARD";
 const REMATCH_HOLD_MS = 11_000;
+/** How long the finish plays without the overlay while the result is still on its way. */
+const RESULT_WAIT_MS = 4_000;
 const REMATCH_RETRY_MS = 3_000;
 const REMATCH_MAX_ATTEMPTS = 6;
 
@@ -54,6 +56,8 @@ export class HandsApp {
   private rematchTimer: number | null = null;
   private rematchCountdownTimer: number | null = null;
   private resultRevealTimer: number | null = null;
+  private resultWaitTimer: number | null = null;
+  private completeSince: number | null = null;
   private readonly summaryClock = new RoundClock();
   private readonly fightSummary: HTMLElement;
   private readonly liveFightStatus: HTMLElement;
@@ -302,7 +306,21 @@ export class HandsApp {
     this.setText(this.status, spectating ? `Spectating — ${labels[this.state.stage]}` : labels[this.state.stage]);
     this.status.hidden = ["countdown", "fight", "knockdown", "foul_recovery", "rest"].includes(this.state.stage);
     this.overlay.toggleAttribute("data-raised", this.state.snapshot !== null);
-    if (this.state.stage !== "complete") this.overlay.hidden = false;
+    // The engine's last snapshot arrives before the result does; the finish plays without the overlay.
+    if (this.state.stage !== "complete") {
+      this.overlay.hidden = false;
+      this.completeSince = null;
+    } else if (this.state.final === null) {
+      this.completeSince ??= Date.now();
+      const waited = Date.now() - this.completeSince;
+      this.overlay.hidden = waited < RESULT_WAIT_MS;
+      if (this.overlay.hidden && this.resultWaitTimer === null) {
+        this.resultWaitTimer = window.setTimeout(() => {
+          this.resultWaitTimer = null;
+          this.renderState();
+        }, RESULT_WAIT_MS - waited + 50);
+      }
+    }
     this.roleIndicator.hidden = !spectating;
     this.controlsButton.hidden = spectating;
     if (spectating) {
@@ -482,6 +500,7 @@ export class HandsApp {
     this.clearRematchTimers();
     if (this.diagnosticsTimer !== null) window.clearInterval(this.diagnosticsTimer);
     if (this.resultRevealTimer !== null) window.clearInterval(this.resultRevealTimer);
+    if (this.resultWaitTimer !== null) window.clearTimeout(this.resultWaitTimer);
     this.diagnosticsTimer = null;
     this.root.replaceChildren();
   }

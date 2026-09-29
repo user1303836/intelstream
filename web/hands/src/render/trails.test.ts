@@ -28,4 +28,23 @@ describe("glove trail", () => {
     expect(trail.active).toBe(false);
     trail.dispose();
   });
+
+  it("reuses its sample vectors instead of allocating one every frame", () => {
+    const trail = new GloveTrail(new THREE.Color(0xffffff));
+    const camera = new THREE.Vector3(0, 2, 5);
+    const glove = new THREE.Vector3(0, 1.3, 0);
+    const history = (trail as unknown as { history: THREE.Vector3[] }).history;
+    for (let frame = 0; frame < 40; frame += 1) {
+      glove.z += 0.05;
+      trail.update(glove, 1 / 60, camera, true);
+    }
+    const pool = new Set(history);
+    for (let frame = 0; frame < 200; frame += 1) {
+      glove.z += 0.05;
+      trail.update(glove, 1 / 60, camera, true);
+      for (const sample of history) expect(pool.has(sample)).toBe(true);
+    }
+    expect(history.at(-1)!.z).toBeCloseTo(glove.z);
+    trail.dispose();
+  });
 });

@@ -17,6 +17,9 @@ interface ManifestVariant {
   readonly reach_min?: number;
   readonly reach_sub?: number;
   readonly lateral_arc_add?: number;
+  readonly stamina_cost_add?: number;
+  readonly stamina_cost_mul_num?: number;
+  readonly stamina_cost_mul_den?: number;
 }
 
 interface ManifestPunch {
@@ -25,6 +28,7 @@ interface ManifestPunch {
   readonly recovery: number;
   readonly reach: number;
   readonly lateral_arc: number;
+  readonly stamina_cost: number;
 }
 
 const punches = manifestJson.punches as unknown as Record<PunchClass, ManifestPunch>;
@@ -60,6 +64,14 @@ export function punchTiming(punchClass: PunchClass, target: Target, power: Power
     reach += powerVariant.reach_add ?? 0;
   }
   return { startup, active, recovery, reach, lateralArc };
+}
+
+/** Stamina the engine charges to start this punch, before any combo discount. */
+export function punchStaminaCost(punchClass: PunchClass, target: Target, power: Power): number {
+  let cost = punches[punchClass].stamina_cost;
+  if (target === "body") cost += variants.body.stamina_cost_add ?? 0;
+  if (power === "power") cost = Math.floor((cost * (variants.power.stamina_cost_mul_num ?? 1)) / (variants.power.stamina_cost_mul_den ?? 1));
+  return cost;
 }
 
 export function actionKey(punchClass: PunchClass, hand: Hand, target: Target, power: Power): string {

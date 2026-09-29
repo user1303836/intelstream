@@ -294,13 +294,18 @@ export class BoxingGraph {
   private punchTiming: PunchTiming = punchTiming("jab", "head", "normal");
   private actionId: string | null = null;
   private completedActionId: string | null = null;
-  private predictedId: string | null = null;
-  private predictionAgeTicks = 0;
   /** Id of the viewer's own punch while its animation is the one started on the key press. */
   private ownActionId: string | null = null;
   /** Ticks the key press led the server's presentation, absorbed by stretching the punch's startup. */
   private ownLeadTicks = 0;
   private ownAuthoritativeAge: number | null = null;
+  /** Real ticks the own punch has waited for the server, and how long that is expected to take. */
+  private ownWaitedTicks = 0;
+  private ownExpectedTicks = 0;
+  /** The server turned the punch down before it landed, so the glove is coming back the way it went. */
+  private ownPulled = false;
+  /** Own punches already played or cut short here; the server's copy of them is not played again. */
+  private readonly retiredOwnIds: string[] = [];
   private hitstop = 0;
   private hitstopScale = 1;
   private downState: "up" | "falling" | "down" | "rising" = "up";
@@ -445,6 +450,9 @@ export class BoxingGraph {
     this.rootX = null;
     this.yawInitialized = false;
     this.feetInitialized = false;
+    this.retirePunch();
+    this.completedActionId = null;
+    this.retiredOwnIds.length = 0;
   }
 
   /** Referee wave-off: both arms sweep crossing overhead to call the fight. */
@@ -505,28 +513,49 @@ export class BoxingGraph {
    * server's presentation that is (input latency plus the interpolation delay); the startup is
    * stretched by it so the glove arrives when the hit is shown, and the punch is never pulled back.
    */
-  predict(action: SemanticAction, timeSeconds: number, tickRate: number, leadTicks = 0): void {
+  predict(action: SemanticAction, timeSeconds: number, tickRate: number, leadTicks = 0, expected?: PunchTiming): void {
     if (action.kind !== "punch" || action.id === undefined) return;
     void timeSeconds;
     void tickRate;
-    this.predictedId = action.id;
-    this.predictionAgeTicks = 0;
-    const timing = punchTiming(action.class, action.target, action.power);
-    const inRecovery = this.actionId !== null && this.punchAgeTicks / this.punchTotalTicks > 0.55;
-    if (this.actionId === null || inRecovery) {
-      this.actionId = null;
-      this.punchClass = action.class;
-      this.punchHand = action.hand;
-      this.punchTarget = action.target;
-      this.punchPower = action.power;
-      this.punchTiming = timing;
-      this.punchTotalTicks = Math.max(1, totalTicks(timing));
-      this.punchAgeTicks = 0;
-      this.punchActive = true;
-      this.ownActionId = action.id;
-      this.ownLeadTicks = clamp(leadTicks, 0, MAX_OWN_LEAD_TICKS);
-      this.ownAuthoritativeAge = null;
+    // Mid-punch the server queues the press, so it plays on the server's timeline. Late in the
+    // recovery the follow-up cuts in at once.
+    const remaining = this.punchActive ? this.punchTotalTicks - this.punchAgeTicks : 0;
+    if (this.punchActive && this.punchAgeTicks / this.punchTotalTicks <= 0.55) return;
+    this.retirePunch();
+    const timing = expected ?? punchTiming(action.class, action.target, action.power);
+    this.punchClass = action.class;
+    this.punchHand = action.hand;
+    this.punchTarget = action.target;
+    this.punchPower = action.power;
+    this.punchTiming = timing;
+    this.punchTotalTicks = Math.max(1, totalTicks(timing));
+    this.punchAgeTicks = 0;
+    this.punchActive = true;
+    this.ownActionId = action.id;
+    this.ownLeadTicks = clamp(leadTicks, 0, MAX_OWN_LEAD_TICKS);
+    this.ownExpectedTicks = Math.max(0, leadTicks) + remaining;
+  }
+
+  /** True while the viewer's own punch, started on the key press, is playing. */
+  get ownPunchActive(): boolean {
+    return this.punchActive && this.ownActionId !== null;
+  }
+
+  /** Marks the punch being played as done so neither copy of it is started again. */
+  private retirePunch(): void {
+    if (this.actionId !== null) this.completedActionId = this.actionId;
+    if (this.ownActionId !== null) {
+      this.retiredOwnIds.push(this.ownActionId);
+      if (this.retiredOwnIds.length > 6) this.retiredOwnIds.shift();
     }
+    this.actionId = null;
+    this.punchActive = false;
+    this.ownActionId = null;
+    this.ownLeadTicks = 0;
+    this.ownAuthoritativeAge = null;
+    this.ownWaitedTicks = 0;
+    this.ownExpectedTicks = 0;
+    this.ownPulled = false;
   }
 
   landedHit(blocked: boolean): void {
@@ -1009,10 +1038,17 @@ export class BoxingGraph {
   }
 
   private syncAction(fighter: FighterSnapshot, sampledTick: number, simDt: number): void {
-    if (fighter.action_id !== null && fighter.action_id !== this.actionId && fighter.action_id !== this.completedActionId) {
+    if (
+      fighter.action_id !== null
+      && fighter.action_id !== this.actionId
+      && fighter.action_id !== this.completedActionId
+      && !this.retiredOwnIds.includes(fighter.action_id)
+    ) {
       const punchClass = fighter.action;
       if (punchClass !== null) {
         const hand = fighter.action_hand ?? (fighter.stance === "orthodox" ? "left" : "right");
+        const own = this.ownActionId === fighter.action_id && this.punchActive;
+        const predictedTiming = this.punchTiming;
         this.actionId = fighter.action_id;
         this.punchClass = punchClass;
         this.punchHand = hand;
@@ -1026,8 +1062,11 @@ export class BoxingGraph {
         };
         this.punchTotalTicks = Math.max(1, fighter.action_startup_ticks + fighter.action_active_ticks + fighter.action_recovery_ticks);
         const authoritativeAge = Math.max(0, sampledTick - fighter.action_start_tick);
-        if (this.ownActionId === fighter.action_id && this.punchActive) {
+        if (own) {
+          // The server's timing can differ from the predicted one (fatigue); keep the glove where it is.
+          this.punchAgeTicks = remapPunchAge(this.punchAgeTicks, predictedTiming, this.punchTiming);
           this.ownAuthoritativeAge = authoritativeAge;
+          this.ownPulled = false;
           if (authoritativeAge - this.punchAgeTicks > 1) this.punchAgeTicks = authoritativeAge;
         } else {
           this.punchAgeTicks = authoritativeAge;
@@ -1035,7 +1074,7 @@ export class BoxingGraph {
           this.ownLeadTicks = 0;
           this.ownAuthoritativeAge = null;
         }
-        this.predictedId = null;
+        this.ownWaitedTicks = 0;
         this.punchActive = true;
       }
     }
@@ -1053,29 +1092,24 @@ export class BoxingGraph {
         this.punchAgeTicks = authoritativeAge;
       }
     }
-    if (this.predictedId !== null) {
-      this.predictionAgeTicks += simDt * 30;
-      if (this.predictionAgeTicks > PREDICTION_EXPIRY_TICKS) this.predictedId = null;
+    if (this.punchActive && this.ownActionId !== null && this.ownAuthoritativeAge === null && !this.ownPulled) {
+      // No word from the server well past when it was due: it turned the punch down. Before
+      // contact the glove comes back; after it the punch simply finishes.
+      this.ownWaitedTicks += simDt * 30;
+      if (this.ownWaitedTicks > this.ownExpectedTicks * 1.5 + OWN_PUNCH_GRACE_TICKS && this.punchAgeTicks < this.punchTiming.startup) this.ownPulled = true;
     }
-    if (this.punchActive) {
-      this.punchAgeTicks += simDt * 30 * this.ownPunchRate();
-      if (this.punchAgeTicks >= this.punchTotalTicks) {
-        this.completedActionId = this.actionId;
-        this.actionId = null;
-        this.punchActive = false;
+    if (this.punchActive && this.ownPulled) {
+      this.punchAgeTicks -= simDt * 30 * OWN_PUNCH_PULL_RATE;
+      if (this.punchAgeTicks <= 0) {
+        // Not retired: if the server does start it after all, it plays on the server's timeline.
         this.ownActionId = null;
-        this.ownLeadTicks = 0;
-        this.ownAuthoritativeAge = null;
+        this.retirePunch();
       }
+    } else if (this.punchActive) {
+      this.punchAgeTicks += simDt * 30 * this.ownPunchRate();
+      if (this.punchAgeTicks >= this.punchTotalTicks) this.retirePunch();
     }
-    if (fighter.is_downed && this.punchActive) {
-      this.punchActive = false;
-      this.actionId = null;
-      this.predictedId = null;
-      this.ownActionId = null;
-      this.ownLeadTicks = 0;
-      this.ownAuthoritativeAge = null;
-    }
+    if (fighter.is_downed && this.punchActive) this.retirePunch();
   }
 
   /**
@@ -1820,7 +1854,17 @@ function buildStool(): { group: THREE.Group; dispose: () => void } {
 const worldUpVector = new THREE.Vector3(0, 1, 0);
 /** Most ticks of latency a predicted punch absorbs by stretching its startup; beyond this the hit is shown late instead. */
 const MAX_OWN_LEAD_TICKS = 6;
-const PREDICTION_EXPIRY_TICKS = 24;
+const OWN_PUNCH_GRACE_TICKS = 5;
+const OWN_PUNCH_PULL_RATE = 1.5;
+
+/** Age in `to`'s timing at the same progress through the same phase as `age` in `from`'s. */
+export function remapPunchAge(age: number, from: PunchTiming, to: PunchTiming): number {
+  if (age < from.startup) return (age / Math.max(1, from.startup)) * to.startup;
+  const active = age - from.startup;
+  if (active < from.active) return to.startup + (active / Math.max(1, from.active)) * to.active;
+  const recovery = Math.min(1, (active - from.active) / Math.max(1, from.recovery));
+  return to.startup + to.active + recovery * to.recovery;
+}
 /** Metres per second the rendered root may move toward the authoritative position; above any walking speed so slow frames never fall behind. */
 const ROOT_FOLLOW_SPEED = 6;
 

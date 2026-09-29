@@ -47,8 +47,7 @@ export class GloveTrail {
     this.hasLast = true;
     const target = enabled && speed > MIN_SPEED ? Math.min(1, (speed - MIN_SPEED) / 4) : 0;
     this.strength += (target - this.strength) * Math.min(1, dt * 18);
-    if (this.history.length >= SAMPLES) this.history.shift()!.copy(glove);
-    const sample = this.history.length < SAMPLES ? new THREE.Vector3() : this.history.pop()!;
+    const sample = this.history.length >= SAMPLES ? this.history.shift()! : new THREE.Vector3();
     sample.copy(glove);
     this.history.push(sample);
     if (this.strength < 0.02 || this.history.length < 3) {

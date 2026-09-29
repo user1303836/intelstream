@@ -1,6 +1,6 @@
 import { fighter, snapshot } from "../test/fixtures";
 import type { CombatEvent, MatchResult } from "../types";
-import { arcadeInjuryFor, contactParticipants, contactPresentationPlan, isArcadeInjuryCandidate, presentationTickFor, refereeSpacing, replayReattaches } from "./renderer";
+import { arcadeInjuryFor, canStartPunch, contactParticipants, contactPresentationPlan, FightRenderer, isArcadeInjuryCandidate, presentationTickFor, refereeSpacing, replayCameraSide, replayReattaches } from "./renderer";
 
 const event = (kind: string, detail: string): CombatEvent => ({
   event_id: 1,
@@ -117,5 +117,43 @@ describe("knockout replay injuries", () => {
     expect(replayReattaches("dismember_right")).toBe(true);
     expect(replayReattaches("jaw_dislocation")).toBe(false);
     expect(replayReattaches("shoulder_left")).toBe(false);
+  });
+});
+
+describe("replay camera side", () => {
+  it("shoots from the broadcast side with room to spare and switches when the ropes would crowd it", () => {
+    expect(replayCameraSide(0, 0, 0, 1, 2.5, 2.2)).toBe(1);
+    expect(replayCameraSide(0, 0, 0, -1, 2.5, 2.2)).toBe(-1);
+    expect(replayCameraSide(0, 1.2, 0, 1, 2.5, 2.2)).toBe(-1);
+    expect(replayCameraSide(0, 2.4, 0, 1, 2.5, 2.2)).toBe(-1);
+    expect(replayCameraSide(0, -1.5, 0, 1, 2.5, 2.2)).toBe(1);
+  });
+});
+
+describe("punch prediction gate", () => {
+  it("only predicts a punch the server would start", () => {
+    const ready = fighter("one");
+    expect(canStartPunch(ready)).toBe(true);
+    expect(canStartPunch({ ...ready, is_downed: true })).toBe(false);
+    expect(canStartPunch({ ...ready, stunned_ticks: 3 })).toBe(false);
+    expect(canStartPunch({ ...ready, clinch_ticks: 10 })).toBe(false);
+    expect(canStartPunch({ ...ready, taunt_ticks: 10 })).toBe(false);
+    expect(canStartPunch({ ...ready, is_foul_recovery_target: true })).toBe(false);
+  });
+});
+
+describe("replay injuries", () => {
+  it("does not sever again when reduced motion or a lower blood level was chosen during the replay", () => {
+    const event = { event_id: 5, tick: 10, kind: "knockdown", actor_id: "one", target_id: "two", amount: 400, detail: "", blood: 60, direction: 1, action_id: null };
+    const apply = (settings: { blood: string; reducedMotion: boolean }): number => {
+      const applied: unknown[] = [];
+      const stub = { replayInjuries: [{ injury: "decapitation", event }, null], settings: () => settings, applyArcadeInjury: (...args: unknown[]) => { applied.push(args); return true; } };
+      (FightRenderer.prototype as unknown as { reapplyReplayInjuries: () => void }).reapplyReplayInjuries.call(stub);
+      expect(stub.replayInjuries[0]).toBeNull();
+      return applied.length;
+    };
+    expect(apply({ blood: "full", reducedMotion: false })).toBe(1);
+    expect(apply({ blood: "full", reducedMotion: true })).toBe(0);
+    expect(apply({ blood: "reduced", reducedMotion: false })).toBe(0);
   });
 });

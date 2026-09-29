@@ -1,4 +1,5 @@
-import { attackTicksRemaining, fatigueFactor, movementLocked, predictMovement } from "./prediction";
+import { punchStaminaCost } from "./manifest";
+import { attackTicksRemaining, canAffordPunch, fatigueFactor, movementLocked, predictMovement, predictedPunchTiming } from "./prediction";
 import { fighter } from "./test/fixtures";
 
 describe("local movement prediction", () => {
@@ -51,6 +52,26 @@ describe("local movement prediction", () => {
     expect(leaving.dx).toBeGreaterThan(0);
     expect(leaving.dx).toBeCloseTo(predictMovement(still, held, 2).dx);
     expect(predictMovement({ ...hook, stunned_ticks: 5 }, held, 4, 130)).toEqual({ dx: 0, dy: 0 });
+    expect(predictMovement({ ...hook, queued_actions: 1 }, held, 4, 130)).toEqual({ dx: 0, dy: 0 });
+    expect(movementLocked({ ...still, queued_actions: 1 }, 130)).toBe(true);
+  });
+
+  it("predicts the timing and cost the engine will use", () => {
+    const fresh = { ...fighter("one"), conditioning: 1000, stance: "orthodox" as const };
+    const jab = { class: "jab" as const, hand: "left" as const, target: "head" as const, power: "normal" as const };
+    expect(predictedPunchTiming(fresh, jab)).toMatchObject({ startup: 3, active: 2, recovery: 7 });
+    expect(predictedPunchTiming(fresh, { ...jab, hand: "right" })).toMatchObject({ startup: 4, recovery: 7 });
+    expect(predictedPunchTiming({ ...fresh, stance: "southpaw" }, { ...jab, hand: "right" })).toMatchObject({ startup: 3 });
+    const tired = { ...fresh, conditioning: 640 };
+    expect(fatigueFactor(tired.conditioning, 0)).toBe(80);
+    expect(predictedPunchTiming(tired, jab)).toMatchObject({ startup: 4, recovery: 8 });
+    expect(predictedPunchTiming(tired, { ...jab, class: "hook", power: "power" })).toMatchObject({ startup: 11, active: 4, recovery: 18 });
+    expect(punchStaminaCost("jab", "head", "normal")).toBe(42);
+    expect(punchStaminaCost("jab", "body", "normal")).toBe(46);
+    expect(punchStaminaCost("jab", "head", "power")).toBe(65);
+    expect(punchStaminaCost("jab", "body", "power")).toBe(71);
+    expect(canAffordPunch({ ...fresh, stamina: 38 }, jab)).toBe(true);
+    expect(canAffordPunch({ ...fresh, stamina: 36 }, jab)).toBe(false);
   });
 
   it("carries existing velocity forward when the stick is released", () => {

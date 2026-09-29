@@ -1,4 +1,5 @@
-import type { FighterSnapshot, HeldDefense } from "./types";
+import { punchStaminaCost, punchTiming, type PunchTiming } from "./manifest";
+import type { FighterSnapshot, Hand, HeldDefense, Power, PunchClass, Target } from "./types";
 
 export interface HeldInput {
   readonly moveX: number;
@@ -19,6 +20,32 @@ export function fatigueFactor(conditioning: number, bodyTrauma: number): number 
   return Math.max(48, 100 - Math.floor((MAX_CONDITIONING - conditioning) / 18) - Math.floor(bodyTrauma / 35));
 }
 
+export interface PunchIntent {
+  readonly class: PunchClass;
+  readonly hand: Hand;
+  readonly target: Target;
+  readonly power: Power;
+}
+
+/** The timing the engine will give this punch: slower for a tired fighter, a tick quicker for the lead-hand jab. */
+export function predictedPunchTiming(fighter: FighterSnapshot, punch: PunchIntent): PunchTiming {
+  const base = punchTiming(punch.class, punch.target, punch.power);
+  const speed = fatigueFactor(fighter.conditioning, fighter.trauma.body);
+  const lead = fighter.stance === "orthodox" ? "left" : "right";
+  const quick = punch.class === "jab" && punch.hand === lead ? 1 : 0;
+  return {
+    ...base,
+    startup: Math.max(2, Math.floor((base.startup * 100) / speed) - quick),
+    recovery: Math.max(4, Math.floor((base.recovery * 100) / speed)),
+  };
+}
+
+/** False when the fighter cannot pay for the punch even at the combo discount, so the engine will turn it down. */
+export function canAffordPunch(fighter: FighterSnapshot, punch: PunchIntent): boolean {
+  const cost = punchStaminaCost(punch.class, punch.target, punch.power);
+  return fighter.stamina >= Math.max(1, Math.floor((cost * 90) / 100));
+}
+
 /**
  * Ticks until the fighter's punch ends, as of snapshot `tick`. The engine keeps a finished punch in
  * snapshots for a while so clients can present it, so `action` alone does not mean the fighter is
@@ -36,7 +63,9 @@ export function movementLocked(fighter: FighterSnapshot, tick?: number): boolean
 }
 
 function stateLocked(fighter: FighterSnapshot): boolean {
-  return fighter.is_downed
+  // A queued punch starts the tick the current one ends, so the fighter is never free in between.
+  return fighter.queued_actions > 0
+    || fighter.is_downed
     || fighter.stunned_ticks > 0
     || fighter.clinch_ticks > 0
     || fighter.clinch_startup_ticks > 0

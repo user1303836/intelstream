@@ -153,6 +153,24 @@ describe("browser lifecycle and accessible overlays", () => {
     app.destroy();
   });
 
+  it("plays the finish without the overlay while the result is still on its way, but not forever", async () => {
+    const root = document.createElement("main");
+    const app = new HandsApp(root);
+    app.start();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
+    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 100, next_sequence: 8, reconnect_ticket: "rotated" });
+    send({ version: 3, type: "snapshot", payload: makeSnapshot(100) });
+    const overlay = root.querySelector<HTMLElement>("[data-overlay]")!;
+    expect(overlay.hidden).toBe(false);
+    vi.useFakeTimers();
+    send({ version: 3, type: "snapshot", payload: makeSnapshot(101, "complete") });
+    expect(overlay.hidden).toBe(true);
+    vi.advanceTimersByTime(4_200);
+    expect(overlay.hidden).toBe(false);
+    vi.useRealTimers();
+    app.destroy();
+  });
+
   it("keeps the result overlay hidden until the knockout replay has revealed the result", async () => {
     const root = document.createElement("main");
     const app = new HandsApp(root);

@@ -37,7 +37,8 @@ const INPUT_FLUSH_MS = 33;
 const MIN_EDGE_SEND_GAP_MS = 8;
 /** The server accepts 60 inputs a second; staying under it leaves room for frames the network bunches together. */
 const MAX_SENDS_PER_SECOND = 50;
-const MAX_EDGE_SENDS_PER_SECOND = 44;
+/** Edge sends share the window with the 30 a second flush, which must always fit so a released key is reported. */
+const MAX_EDGE_SENDS_PER_SECOND = 20;
 
 export class NetworkController {
   private socket: SocketLike | null = null;

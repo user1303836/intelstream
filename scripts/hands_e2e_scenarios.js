@@ -130,6 +130,26 @@ async function main() {
     await A.page.keyboard.down('d'); await B.page.keyboard.down('a'); await wait(1600); await A.page.keyboard.up('d'); await B.page.keyboard.up('a');
 
     if (scenario === 'ko') {
+      // Records every fighter's punch phase while the knockout replay plays, to catch a stuttering replay.
+      await A.page.evaluate(() => {
+        const state = { frames: 0, jumps: 0, worst: 0 };
+        window.__replayProbe = state;
+        const last = [{ id: null, age: 0 }, { id: null, age: 0 }];
+        const tick = () => {
+          const renderer = window.__handsApp?.renderer;
+          if (renderer?.replay && renderer.graphs) {
+            state.frames += 1;
+            renderer.graphs.forEach((graph, index) => {
+              const id = graph.punchActive ? graph.actionId : null;
+              const age = graph.punchAgeTicks;
+              if (id !== null && id === last[index].id && last[index].age - age > 0.5) { state.jumps += 1; state.worst = Math.max(state.worst, last[index].age - age); }
+              last[index] = { id, age };
+            });
+          }
+          requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      });
       let downSeen = false; let promptsPressed = 0; let final = null; let lastCount = -1;
       const started = Date.now();
       await A.page.keyboard.down('Alt');
@@ -159,6 +179,7 @@ async function main() {
       await A.page.screenshot({ path: `${out}/e2e-ko-A-final.png` }); await B.page.screenshot({ path: `${out}/e2e-ko-B-final.png` });
       await wait(8000);
       await A.page.screenshot({ path: `${out}/e2e-ko-A-result.png` });
+      note('knockout replay:', JSON.stringify(await A.page.evaluate(() => window.__replayProbe)));
     }
 
     if (scenario === 'reconnect') {
@@ -363,7 +384,10 @@ async function main() {
             for (const graph of graphs) {
               const left = graph.boxer.rig.bones.gloveL.getWorldPosition(new Vector3());
               const right = graph.boxer.rig.bones.gloveR.getWorldPosition(new Vector3());
-              frame.fighters.push({ active: graph.punchActive === true, age: graph.punchAgeTicks, x: graph.boxer.root.position.x, z: graph.boxer.root.position.z, left: [left.x, left.y, left.z], right: [right.x, right.y, right.z] });
+              const timing = graph.punchTiming;
+              const age = graph.punchAgeTicks;
+              const progress = age < timing.startup ? age / Math.max(1, timing.startup) : age < timing.startup + timing.active ? 1 + (age - timing.startup) / Math.max(1, timing.active) : 2 + Math.min(1, (age - timing.startup - timing.active) / Math.max(1, timing.recovery));
+              frame.fighters.push({ active: graph.punchActive === true, age, progress, timing: `${graph.punchClass} ${timing.startup}/${timing.active}/${timing.recovery}`, x: graph.boxer.root.position.x, z: graph.boxer.root.position.z, left: [left.x, left.y, left.z], right: [right.x, right.y, right.z] });
             }
             state.frames.push(frame);
             if (state.frames.length > 6000) state.frames.shift();
@@ -395,15 +419,19 @@ async function main() {
         const seen = b.frames.find((frame) => frame.at > key.at && frame.fighters[viewerA].active && frame.fighters[viewerA].age < 8);
         local.push(started ? started.at - key.at : null); moved.push(glove ? glove.at - key.at : null); remote.push(seen ? seen.at - key.at : null);
       }
+      // Progress through the punch (0 at the press, 1 at contact, 2 at the end of the active phase, 3 when
+      // recovered), so a change in the server's timing is not mistaken for the glove going back.
       const rewinds = punchKeys.map((key) => {
         const window = a.frames.filter((frame) => frame.at > key.at && frame.at < key.at + 900 && frame.fighters[viewerA].active);
         let worst = 0; let at = null;
         for (let index = 1; index < window.length; index += 1) {
-          const drop = window[index - 1].fighters[viewerA].age - window[index].fighters[viewerA].age;
+          const drop = window[index - 1].fighters[viewerA].progress - window[index].fighters[viewerA].progress;
           if (drop > worst) { worst = drop; at = Math.round(window[index].at - key.at); }
         }
-        return { ticks: Number(worst.toFixed(1)), atMs: at };
+        return { progress: Number(worst.toFixed(2)), atMs: at };
       });
+      const timings = [...new Set(a.frames.filter((frame) => frame.fighters[viewerA].active).map((frame) => frame.fighters[viewerA].timing))];
+      note('punch timings seen on the puncher (startup/active/recovery):', JSON.stringify(timings));
       // Glove-to-hit gap: when the puncher's glove is at full extension versus when the opponent's head reacts on the same screen.
       const contacts = punchKeys.map((key) => {
         const hand = key.code === 'KeyU' ? 'right' : 'left';
@@ -416,7 +444,7 @@ async function main() {
       });
       note('own glove fully extended, ms after the key:', JSON.stringify(contacts), '| median', median(contacts));
       note('punch keys measured:', punchKeys.length, 'of', presses.length);
-      note('own punch rewinds (ticks the animation jumped back, and when):', JSON.stringify(rewinds));
+      note('own punch rewinds (progress the animation went back, and when):', JSON.stringify(rewinds));
       note('own punch starts on screen, ms:', JSON.stringify(local.map((v) => (v === null ? null : Math.round(v)))), '| median', median(local));
       note('own glove has moved 3 cm, ms:', JSON.stringify(moved.map((v) => (v === null ? null : Math.round(v)))), '| median', median(moved));
       note('opponent sees the punch start, ms:', JSON.stringify(remote.map((v) => (v === null ? null : Math.round(v)))), '| median', median(remote));
