@@ -6,7 +6,7 @@ import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { EventDeduplicator, SnapshotBuffer } from "../interpolation";
 import { coarsePointer } from "../input/touch";
-import { REST_CORNER_OFFSET, punchTiming } from "../manifest";
+import { FIGHTER_RADIUS, REST_CORNER_OFFSET, RING_HALF_HEIGHT, RING_HALF_WIDTH, punchTiming } from "../manifest";
 import { canAffordPunch, predictMovement, predictedPunchTiming, type HeldInput } from "../prediction";
 import type { BloodLevel, Settings } from "../settings";
 import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, Hand, MatchResult, PublicPlayer, PunchClass, SemanticAction, SimulationInfo } from "../types";
@@ -71,6 +71,8 @@ const FINISH_CLOSE_UP_SECONDS = 1.7;
 const CORNERMAN_APRON_DISTANCE = 3.42;
 /** Close cameras stay inside the rope line (posts stand at 2.46 m) so a rope never fills the lens. */
 const TIGHT_SHOT_LIMIT = 2.2;
+/** The engine lets fighters stand 76 units apart, which puts two drawn bodies inside each other. */
+const DRAWN_MINIMUM_GAP = 104;
 const CORNERMAN_WORK_DISTANCE = 2.95;
 const CUTMAN_WALK_SECONDS = 1.6;
 // Broadcast finish: a soft vignette and a whisper of grain, applied before tone mapping.
@@ -231,6 +233,39 @@ export function closeUpAngle(
   const cameraZ = THREE.MathUtils.clamp(z + (facing.z / level) * reach, -limit, limit);
   if (Math.hypot(cameraX - x, cameraZ - z) < reach * 0.7) return fallback;
   return Math.atan2(facing.x, facing.z);
+}
+
+/**
+ * Positions for drawing two fighters the engine has closer than `minimum`: both step back along the
+ * line between them. One held by the ropes stays, and the other gives the whole way. Null when they
+ * are already far enough apart.
+ */
+export function visualSeparation(
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  minimum: number,
+  limitX: number,
+  limitY: number,
+): { ax: number; ay: number; bx: number; by: number } | null {
+  const gap = Math.hypot(bx - ax, by - ay);
+  if (gap >= minimum) return null;
+  const ux = gap < 1e-6 ? 1 : (bx - ax) / gap;
+  const uy = gap < 1e-6 ? 0 : (by - ay) / gap;
+  const inside = (x: number, y: number): boolean => Math.abs(x) <= limitX && Math.abs(y) <= limitY;
+  const back = (minimum - gap) / 2;
+  const aFree = inside(ax - ux * back, ay - uy * back);
+  const bFree = inside(bx + ux * back, by + uy * back);
+  const aBack = aFree ? (bFree ? back : back * 2) : 0;
+  const bBack = bFree ? (aFree ? back : back * 2) : 0;
+  const clamp = THREE.MathUtils.clamp;
+  return {
+    ax: clamp(ax - ux * aBack, -limitX, limitX),
+    ay: clamp(ay - uy * aBack, -limitY, limitY),
+    bx: clamp(bx + ux * bBack, -limitX, limitX),
+    by: clamp(by + uy * bBack, -limitY, limitY),
+  };
 }
 
 /** True for the part of the head mesh that leaves with the head. */
@@ -445,6 +480,7 @@ export class FightRenderer {
   private readonly replayInjuries: [{ injury: ArcadeInjury; event: CombatEvent } | null, { injury: ArcadeInjury; event: CombatEvent } | null] = [null, null];
   private readonly closeUpTarget = new THREE.Vector3();
   private readonly closeUpFacing = new THREE.Vector3();
+  private readonly drawnFighters: [FighterSnapshot, FighterSnapshot] = [blankFighter("a"), blankFighter("b")];
   private readonly downedPoolAccumulators: [number, number] = [0, 0];
   private readonly downedPoolCounts: [number, number] = [0, 0];
   private bloodLevel: BloodLevel = "full";
@@ -1242,7 +1278,7 @@ export class FightRenderer {
     let separation = 1.8;
     let knockdown = false;
     if (snapshot !== null) {
-      const [a, b] = snapshot.fighters;
+      const [a, b] = this.standApart(snapshot.fighters);
       for (const [index, fighter] of snapshot.fighters.entries()) {
         if (this.arcadeInjuries[index] === null || this.replay !== null) continue;
         if (fighter.is_downed) this.observedInjuryDown[index] = true;
@@ -1398,6 +1434,15 @@ export class FightRenderer {
     const predicted = { ...viewer, x: viewer.x + this.localOffset.dx, y: viewer.y + this.localOffset.dy };
     const fighters: [FighterSnapshot, FighterSnapshot] = index === 0 ? [predicted, snapshot.fighters[1]] : [snapshot.fighters[0], predicted];
     return { ...snapshot, fighters };
+  }
+
+  /** The fighters as drawn: eased apart when the engine has them closer than two bodies can stand. */
+  private standApart(fighters: readonly [FighterSnapshot, FighterSnapshot]): readonly [FighterSnapshot, FighterSnapshot] {
+    const [a, b] = fighters;
+    const tied = [a, b].some((fighter) => fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0 || fighter.is_downed);
+    const apart = tied ? null : visualSeparation(a.x, a.y, b.x, b.y, DRAWN_MINIMUM_GAP, RING_HALF_WIDTH - FIGHTER_RADIUS, RING_HALF_HEIGHT - FIGHTER_RADIUS);
+    if (apart === null) return fighters;
+    return [Object.assign(this.drawnFighters[0], a, { x: apart.ax, y: apart.ay }), Object.assign(this.drawnFighters[1], b, { x: apart.bx, y: apart.by })];
   }
 
   private headHeightOf(index: number): number {

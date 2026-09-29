@@ -118,6 +118,16 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       one.x = 330;
       one.y = 20;
     }
+    const fixedGap = Number(search.get("gap"));
+    if (Number.isFinite(fixedGap) && fixedGap > 0) {
+      one.x = -Math.round(fixedGap / 2);
+      two.x = one.x + Math.round(fixedGap);
+      one.y = two.y = 0;
+      one.velocity_x = two.velocity_x = 0;
+      one.facing_x = 1000;
+      two.facing_x = -1000;
+      one.facing_y = two.facing_y = 0;
+    }
     if (search.get("pin") === "corner") {
       two.x = 366;
       two.y = 366;

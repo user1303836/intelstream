@@ -475,12 +475,38 @@ describe("own punch prediction", () => {
   });
 });
 
+describe("infighting", () => {
+  const settle = (gapUnits: number): { glove: number; head: THREE.Vector3 } => {
+    const { boxer, graph } = makeGraph();
+    const fighter = { ...facingOpponent(baseFighter("one")), defense: "guard_high" as const };
+    const opponent = { ...opponentFor("two"), y: -gapUnits };
+    run(graph, fighter, opponent, 90, undefined);
+    return { glove: bone(boxer, "gloveL").z - boxer.root.position.z, head: bone(boxer, "head").sub(boxer.root.position) };
+  };
+
+  it("tucks the guard in and takes the head off the centre line when the opponent is on top of the fighter", () => {
+    const open = settle(300);
+    const inside = settle(76);
+    const toward = Math.sign(open.glove);
+    expect(toward * (open.glove - inside.glove)).toBeGreaterThan(0.08);
+    expect(Math.abs(inside.head.x - open.head.x)).toBeGreaterThan(0.04);
+    expect(toward * (open.head.z - inside.head.z)).toBeGreaterThan(0.03);
+  });
+
+  it("stands in the open stance at punching range", () => {
+    const open = settle(300);
+    const ranged = settle(170);
+    expect(Math.abs(open.glove - ranged.glove)).toBeLessThan(0.005);
+    expect(open.head.distanceTo(ranged.head)).toBeLessThan(0.005);
+  });
+});
+
 describe("clinch hold", () => {
   it("ties up over the arms for the first-sorted fighter and under them for the other, heads to the right", () => {
     const clinched = (id: string): FighterSnapshot => ({ ...facingOpponent(baseFighter(id)), clinch_ticks: 30 });
     const held = (id: string): FighterSnapshot => ({ ...opponentFor(id), y: -100, clinch_ticks: 30 });
     const idle = makeGraph();
-    run(idle.graph, facingOpponent(baseFighter("one")), held("two"), 60, undefined);
+    run(idle.graph, facingOpponent(baseFighter("one")), { ...opponentFor("two"), y: -300 }, 60, undefined);
     const over = makeGraph();
     run(over.graph, clinched("one"), held("two"), 60, undefined);
     const under = makeGraph();

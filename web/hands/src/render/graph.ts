@@ -324,6 +324,9 @@ const springStep = (spring: Spring3, dt: number, stiffness: number, damping: num
 };
 
 const PUNCH_CONTACT_OFFSET = 0.06;
+/** Between these gaps (metres between the fighters' feet) the stance closes up for infighting. */
+const CROWDED_GAP = 0.58;
+const OPEN_GAP = 1;
 const KNOCKDOWN_FALL_SECONDS = 0.75;
 const GETUP_SECONDS = 1.7;
 
@@ -389,6 +392,7 @@ export class BoxingGraph {
   private clinchWeight = 0;
   private foulWeight = 0;
   private tauntWeight = 0;
+  private crowding = 0;
   private lastSpeed = 0;
   private readonly stool: { group: THREE.Group; dispose: () => void };
   private readonly enswell: { group: THREE.Group; dispose: () => void };
@@ -839,6 +843,9 @@ export class BoxingGraph {
     this.clinchWeight = smooth(this.clinchWeight, fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0 ? 1 : 0, 10, dt);
     this.foulWeight = smooth(this.foulWeight, fighter.is_foul_recovery_target ? 1 : 0, 8, dt);
     this.tauntWeight = smooth(this.tauntWeight, fighter.taunt_ticks > 0 ? 1 : 0, 10, dt);
+    const gap = Math.hypot(this.mapping.x(opponent.x) - this.mapping.x(fighter.x), this.mapping.z(opponent.y) - this.mapping.z(fighter.y));
+    const crowded = this.referee || fighter.is_downed || opponent.is_downed ? 0 : 1 - smoothstep(CROWDED_GAP, OPEN_GAP, gap);
+    this.crowding = smooth(this.crowding, crowded, 9, dt);
 
     springStep(this.headKick, dt, 190, 7.5, 0.24);
     springStep(this.torsoKick, dt, 150, 7, 0.7);
@@ -955,6 +962,20 @@ export class BoxingGraph {
       torso.hips.x -= p * 0.05 * mirror;
       torso.headOffset.z -= p * 0.06;
       torso.headPitch -= p * 0.1;
+    }
+
+    // Inside, the fighter stands taller with the guard tucked in and the head off the centre line,
+    // so two fighters chest to chest do not pass through each other.
+    const inside = this.crowding * (1 - this.clinchWeight);
+    if (inside > 0.001) {
+      torso.headOffset.x -= inside * 0.075;
+      torso.headOffset.z -= inside * 0.05;
+      torso.headYaw -= inside * 0.2;
+      torso.spinePitch -= inside * 0.07;
+      torso.hips.z -= inside * 0.05;
+      leadHand.position.z -= inside * 0.14;
+      leadHand.position.x -= inside * 0.035 * mirror;
+      rearHand.position.z -= inside * 0.07;
     }
 
     // Reactions.

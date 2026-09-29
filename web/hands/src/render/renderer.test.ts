@@ -1,6 +1,6 @@
 import { fighter, snapshot } from "../test/fixtures";
 import type { CombatEvent, MatchResult } from "../types";
-import { arcadeInjuryFor, canStartPunch, contactParticipants, contactPresentationPlan, FightRenderer, isArcadeInjuryCandidate, presentationTickFor, refereeSpacing, replayCameraSide, replayReattaches } from "./renderer";
+import { arcadeInjuryFor, canStartPunch, contactParticipants, contactPresentationPlan, FightRenderer, isArcadeInjuryCandidate, presentationTickFor, refereeSpacing, replayCameraSide, replayReattaches, visualSeparation } from "./renderer";
 
 const event = (kind: string, detail: string): CombatEvent => ({
   event_id: 1,
@@ -155,5 +155,36 @@ describe("replay injuries", () => {
     expect(apply({ blood: "full", reducedMotion: false })).toBe(1);
     expect(apply({ blood: "full", reducedMotion: true })).toBe(0);
     expect(apply({ blood: "reduced", reducedMotion: false })).toBe(0);
+  });
+});
+
+describe("drawn separation", () => {
+  it("leaves fighters alone at punching range", () => {
+    expect(visualSeparation(-60, 0, 60, 0, 104, 462, 462)).toBeNull();
+    expect(visualSeparation(0, 0, 104, 0, 104, 462, 462)).toBeNull();
+  });
+
+  it("steps both back evenly along the line between them", () => {
+    const apart = visualSeparation(-38, 10, 38, 10, 104, 462, 462)!;
+    expect(apart.bx - apart.ax).toBeCloseTo(104, 6);
+    expect(apart.ax + apart.bx).toBeCloseTo(0, 6);
+    expect(apart.ay).toBe(10);
+    expect(apart.by).toBe(10);
+    const angled = visualSeparation(0, 0, 30, 40, 104, 462, 462)!;
+    expect(Math.hypot(angled.bx - angled.ax, angled.by - angled.ay)).toBeCloseTo(104, 6);
+    expect((angled.ax + angled.bx) / 2).toBeCloseTo(15, 6);
+    expect((angled.ay + angled.by) / 2).toBeCloseTo(20, 6);
+  });
+
+  it("keeps a fighter on the ropes where they are and moves the other the whole way", () => {
+    const apart = visualSeparation(386, 0, 462, 0, 104, 462, 462)!;
+    expect(apart.bx).toBe(462);
+    expect(apart.ax).toBeCloseTo(358, 6);
+  });
+
+  it("separates fighters standing on one spot", () => {
+    const apart = visualSeparation(10, 10, 10, 10, 104, 462, 462)!;
+    expect(apart.bx - apart.ax).toBeCloseTo(104, 6);
+    expect(apart.ay).toBe(10);
   });
 });
