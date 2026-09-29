@@ -304,8 +304,11 @@ export class HandsApp {
     };
     const spectating = this.state.role === "spectator";
     this.setText(this.status, spectating ? `Spectating — ${labels[this.state.stage]}` : labels[this.state.stage]);
-    this.status.hidden = ["countdown", "fight", "knockdown", "foul_recovery", "rest"].includes(this.state.stage);
+    // The result card says how the bout ended; the button sits in the card's footer.
+    const resulted = this.state.stage === "complete" && this.state.final !== null;
+    this.status.hidden = resulted || ["countdown", "fight", "knockdown", "foul_recovery", "rest"].includes(this.state.stage);
     this.overlay.toggleAttribute("data-raised", this.state.snapshot !== null);
+    this.overlay.toggleAttribute("data-result", resulted);
     // The engine's last snapshot arrives before the result does; the finish plays without the overlay.
     if (this.state.stage !== "complete") {
       this.overlay.hidden = false;

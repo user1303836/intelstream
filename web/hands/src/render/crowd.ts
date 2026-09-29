@@ -37,6 +37,9 @@ const ARM_REST = -0.35;
 const ARM_RAISED = -2.7;
 const STANDING_RISE = 0.32;
 const HOUSE_LIGHT = 0.26;
+/** The broadcast camera pulls back as far as 14 m on a tall screen, over the first three rows. */
+export const CAMERA_PLATFORM_REACH = 14.5;
+export const CAMERA_PLATFORM_HALF_ANGLE = 0.3;
 const RIG_HEIGHT = 7.5;
 
 const SPILL_VERTEX = /* glsl */ `
@@ -89,14 +92,17 @@ export function seatSpectators(tiers: readonly CrowdTier[], rand: () => number):
       const reach = tier.radius + (rand() - 0.5) * 0.5;
       const x = Math.sin(angle) * reach;
       const z = Math.cos(angle) * reach;
+      const spectator = { keen: rand(), phase: rand() * Math.PI * 2, scale: tier.scale * (0.92 + rand() * 0.2), lean: (rand() - 0.5) * 0.5, lift: (rand() - 0.5) * 0.06 };
+      // The broadcast camera works from a platform in the stands; nobody sits in front of it.
+      if (tier.radius < CAMERA_PLATFORM_REACH && z > 0 && Math.abs(Math.atan2(x, z)) < CAMERA_PLATFORM_HALF_ANGLE) continue;
       seated.push({
         x,
-        y: tier.y + (rand() - 0.5) * 0.06,
+        y: tier.y + spectator.lift,
         z,
-        yaw: Math.atan2(-x, -z) + (rand() - 0.5) * 0.5,
-        scale: tier.scale * (0.92 + rand() * 0.2),
-        phase: rand() * Math.PI * 2,
-        keen: rand(),
+        yaw: Math.atan2(-x, -z) + spectator.lean,
+        scale: spectator.scale,
+        phase: spectator.phase,
+        keen: spectator.keen,
         light: Math.max(0.45, 1 - row * 0.17),
       });
     }

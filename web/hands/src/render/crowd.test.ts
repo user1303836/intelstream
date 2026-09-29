@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { describe, expect, it } from "vitest";
-import { CROWD_TIERS, PARAPET_HEIGHT, PARAPET_SETBACK, buildArmGeometry, buildCrowd, buildStandsGeometry, buildTorsoGeometry, seatSpectators, spectatorPose } from "./crowd";
+import { CAMERA_PLATFORM_HALF_ANGLE, CAMERA_PLATFORM_REACH, CROWD_TIERS, PARAPET_HEIGHT, PARAPET_SETBACK, buildArmGeometry, buildCrowd, buildStandsGeometry, buildTorsoGeometry, seatSpectators, spectatorPose } from "./crowd";
 
 const seeded = (seed: number): (() => number) => () => {
   seed = Math.imul(seed ^ (seed >>> 15), 1 | seed);
@@ -8,30 +8,37 @@ const seeded = (seed: number): (() => number) => () => {
   return ((seed ^ (seed >>> 14)) >>> 0) / 4294967296;
 };
 
-const total = CROWD_TIERS.reduce((sum, tier) => sum + tier.count, 0);
+const seats = CROWD_TIERS.reduce((sum, tier) => sum + tier.count, 0);
+const total = seatSpectators(CROWD_TIERS, seeded(7)).length;
 
 describe("crowd seating", () => {
-  it("fills every tier, the same way every time", () => {
+  it("fills the stands the same way every time", () => {
     const first = seatSpectators(CROWD_TIERS, seeded(7));
     const second = seatSpectators(CROWD_TIERS, seeded(7));
-    expect(first).toHaveLength(total);
+    expect(first.length).toBeGreaterThan(seats * 0.9);
+    expect(first.length).toBeLessThan(seats);
     expect(second).toEqual(first);
   });
 
   it("seats everyone in a row facing the ring", () => {
-    const seated = seatSpectators(CROWD_TIERS, seeded(7));
-    let index = 0;
-    for (const tier of CROWD_TIERS) {
-      for (let seat = 0; seat < tier.count; seat += 1) {
-        const spectator = seated[index]!;
-        index += 1;
-        expect(Math.abs(Math.hypot(spectator.x, spectator.z) - tier.radius)).toBeLessThanOrEqual(0.25 + 1e-9);
-        expect(Math.abs(spectator.y - tier.y)).toBeLessThanOrEqual(0.03 + 1e-9);
-        const toRing = Math.atan2(-spectator.x, -spectator.z);
-        const off = Math.atan2(Math.sin(spectator.yaw - toRing), Math.cos(spectator.yaw - toRing));
-        expect(Math.abs(off)).toBeLessThanOrEqual(0.25 + 1e-9);
-      }
+    for (const spectator of seatSpectators(CROWD_TIERS, seeded(7))) {
+      const reach = Math.hypot(spectator.x, spectator.z);
+      const tier = CROWD_TIERS.find((candidate) => Math.abs(candidate.radius - reach) <= 0.25 + 1e-9)!;
+      expect(tier).toBeDefined();
+      expect(Math.abs(spectator.y - tier.y)).toBeLessThanOrEqual(0.03 + 1e-9);
+      const toRing = Math.atan2(-spectator.x, -spectator.z);
+      const off = Math.atan2(Math.sin(spectator.yaw - toRing), Math.cos(spectator.yaw - toRing));
+      expect(Math.abs(off)).toBeLessThanOrEqual(0.25 + 1e-9);
     }
+  });
+
+  it("keeps the rows in front of the broadcast camera clear and fills the back row behind it", () => {
+    const seated = seatSpectators(CROWD_TIERS, seeded(7));
+    const inFront = seated.filter((spectator) => spectator.z > 0 && Math.abs(Math.atan2(spectator.x, spectator.z)) < CAMERA_PLATFORM_HALF_ANGLE);
+    expect(inFront.length).toBeGreaterThan(0);
+    for (const spectator of inFront) expect(Math.hypot(spectator.x, spectator.z)).toBeGreaterThan(CAMERA_PLATFORM_REACH);
+    const opposite = seated.filter((spectator) => spectator.z < 0 && Math.abs(Math.atan2(spectator.x, -spectator.z)) < CAMERA_PLATFORM_HALF_ANGLE);
+    expect(opposite.some((spectator) => Math.hypot(spectator.x, spectator.z) < 9)).toBe(true);
   });
 });
 

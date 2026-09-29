@@ -1,4 +1,4 @@
-import type { CombatEvent, EngineSnapshot, FinalMessage, PublicPlayer } from "../types";
+import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, FinishMethod, PublicPlayer, RatingDelta } from "../types";
 
 export const HUD_MAX_GUARD = 700;
 export const HUD_MAX_POISE = 600;
@@ -287,7 +287,8 @@ export function drawHud(
   const plateWidth = compact ? (width - 56) / 2 : Math.min(300, width * 0.38);
   const plateY = height - 84;
 
-  snapshot.fighters.forEach((fighter, index) => {
+  // The result card takes the place of the plates and the clock once the bout is over.
+  if (final === null) snapshot.fighters.forEach((fighter, index) => {
     const mirror = index === 1;
     const x = mirror ? width - 24 - plateWidth : 24;
     const player = players[fighter.player_id];
@@ -306,7 +307,7 @@ export function drawHud(
 
   const seconds = Math.floor((clockTicks ?? snapshot.phase_ticks_remaining) / tickRate);
   const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-  roundCard(ctx, width / 2, compact ? 54 : height - 84, clock, `ROUND ${snapshot.round_number}`, snapshot.phase.replace("_", " ").toUpperCase());
+  if (final === null) roundCard(ctx, width / 2, compact ? 54 : height - 84, clock, `ROUND ${snapshot.round_number}`, snapshot.phase.replace("_", " ").toUpperCase());
   if (inputLatencyMs !== null && final === null && snapshot.fighters.some((fighter) => fighter.player_id === viewerId)) {
     const rounded = Math.round(inputLatencyMs);
     ctx.save();
@@ -441,7 +442,10 @@ export function drawHud(
   if (reconnectMs > 0) {
     centerPanel(ctx, width, height, `OPPONENT RECONNECTING · ${Math.ceil(reconnectMs / 1000)}s`, "The bout is paused");
   }
-  if (final !== null) drawFinal(ctx, width, height, final, players, snapshot.fighters.map((fighter) => ({ name: players[fighter.player_id]?.name ?? "Fighter", stats: roundStats?.total(fighter.player_id) ?? { thrown: 0, landed: 0 } })));
+  if (final !== null) {
+    const punches = snapshot.fighters.map((fighter) => roundStats?.total(fighter.player_id) ?? { thrown: 0, landed: 0 }) as [RoundPunchStats, RoundPunchStats];
+    drawResultCard(ctx, width, height, resultCard(final, snapshot.fighters, players, punches), snapshot.fighters.some((fighter) => fighter.player_id === viewerId));
+  }
   ctx.restore();
 }
 
@@ -454,35 +458,155 @@ function fitted(ctx: CanvasRenderingContext2D, text: string, x: number, y: numbe
   ctx.fillText(fit(ctx, text, maxWidth), x, y);
 }
 
-function drawFinal(ctx: CanvasRenderingContext2D, width: number, height: number, final: FinalMessage, players: Readonly<Record<string, PublicPlayer>>, punches: readonly { name: string; stats: RoundPunchStats }[] = []): void {
-  ctx.fillStyle = "rgba(2,4,9,0.94)";
-  ctx.fillRect(width * 0.14, height * 0.13, width * 0.72, height * 0.74);
-  ctx.strokeStyle = "rgba(246,213,122,0.5)";
-  ctx.lineWidth = 2;
-  ctx.strokeRect(width * 0.14 + 4, height * 0.13 + 4, width * 0.72 - 8, height * 0.74 - 8);
-  const inner = width * 0.72 - 32;
-  ctx.textAlign = "center";
-  ctx.fillStyle = "#f6d57a";
-  fitted(ctx, decisionLabel(final), width / 2, height * 0.21, inner, 800, 26, 14);
-  const winner = final.winner_id === null ? "DRAW" : `${players[final.winner_id]?.name ?? "Winner"} WINS`;
-  ctx.fillStyle = "white";
-  fitted(ctx, winner, width / 2, height * 0.27, inner, 700, 18, 11);
-  const thrown = punches.filter(({ stats }) => stats.thrown > 0);
-  if (thrown.length > 0) {
-    ctx.fillStyle = "#c8d3e6";
-    ctx.font = "600 13px Inter, system-ui, sans-serif";
-    const line = thrown.map(({ name, stats }) => `${fit(ctx, name, inner / thrown.length - 70)} ${stats.landed}/${stats.thrown} landed`).join("   ·   ");
-    fitted(ctx, line, width / 2, height * 0.32, inner, 600, 13, 9);
+const METHOD_HEADLINES: Readonly<Partial<Record<FinishMethod, string>>> = {
+  ko: "KNOCKOUT",
+  flash_ko: "FLASH KNOCKOUT",
+  tko: "TECHNICAL KNOCKOUT",
+  doctor_stoppage: "DOCTOR STOPPAGE",
+  disqualification: "DISQUALIFICATION",
+  forfeit: "FORFEIT",
+};
+
+export interface ResultRow {
+  readonly label: string;
+  readonly values: readonly [string, string];
+  /** The seat with the better value, or null when they are level. */
+  readonly lead: 0 | 1 | null;
+  /** Whether each value is good or bad news for its fighter, where that applies. */
+  readonly news?: readonly [boolean, boolean];
+}
+
+export interface ResultCard {
+  readonly headline: string;
+  readonly detail: string;
+  readonly verdict: string;
+  readonly winnerSeat: 0 | 1 | null;
+  readonly names: readonly [string, string];
+  /** One per judge, for a bout that went to the cards. */
+  readonly judges: readonly ResultRow[];
+  readonly rows: readonly ResultRow[];
+}
+
+const lead = (one: number, two: number): 0 | 1 | null => (one > two ? 0 : two > one ? 1 : null);
+
+/** What the result card says. Seat 0 is the blue corner, the first fighter in every snapshot and on every scorecard. */
+export function resultCard(
+  final: FinalMessage,
+  fighters: readonly [FighterSnapshot, FighterSnapshot],
+  players: Readonly<Record<string, PublicPlayer>>,
+  punches: readonly [RoundPunchStats, RoundPunchStats],
+): ResultCard {
+  const names = fighters.map((fighter) => players[fighter.player_id]?.name ?? "Fighter") as [string, string];
+  const winnerSeat = final.winner_id === null ? null : fighters[0].player_id === final.winner_id ? 0 : fighters[1].player_id === final.winner_id ? 1 : null;
+  const rows: ResultRow[] = [];
+  const judges: ResultRow[] = [];
+  if (final.method === "decision" || final.method === "draw") {
+    for (const card of final.scorecards) {
+      const one = scoreTotal(card.player_one);
+      const two = scoreTotal(card.player_two);
+      judges.push({ label: card.judge.toUpperCase(), values: [String(one), String(two)], lead: lead(one, two) });
+    }
   }
-  final.scorecards.forEach((card, index) => {
-    const y = height * 0.37 + index * 36;
-    ctx.fillStyle = "#aebbd0";
-    fitted(ctx, `${card.judge}  ${scoreTotal(card.player_one)} — ${scoreTotal(card.player_two)}  [${card.player_one.join("·")}] [${card.player_two.join("·")}]`, width / 2, y, inner, 400, 12, 8, "ui-monospace, monospace");
+  const scored: [number, number] = [fighters[1].knockdowns, fighters[0].knockdowns];
+  if (scored[0] > 0 || scored[1] > 0) rows.push({ label: "KNOCKDOWNS", values: [String(scored[0]), String(scored[1])], lead: lead(scored[0], scored[1]) });
+  if (punches[0].thrown > 0 || punches[1].thrown > 0) {
+    const accuracy = punches.map((stats) => (stats.thrown > 0 ? Math.round((stats.landed / stats.thrown) * 100) : null)) as [number | null, number | null];
+    rows.push({ label: "PUNCHES LANDED", values: [`${punches[0].landed} of ${punches[0].thrown}`, `${punches[1].landed} of ${punches[1].thrown}`], lead: lead(punches[0].landed, punches[1].landed) });
+    rows.push({ label: "ACCURACY", values: [accuracy[0] === null ? "—" : `${accuracy[0]}%`, accuracy[1] === null ? "—" : `${accuracy[1]}%`], lead: lead(accuracy[0] ?? -1, accuracy[1] ?? -1) });
+  }
+  const ratings = fighters.map((fighter) => final.ratings[fighter.player_id]);
+  const [first, second] = ratings;
+  if (first !== undefined && second !== undefined) {
+    const change = (rating: RatingDelta): string => `${rating.after} (${rating.after >= rating.before ? "+" : "−"}${Math.abs(rating.after - rating.before)})`;
+    rows.push({ label: "RATING", values: [change(first), change(second)], lead: null, news: [first.after >= first.before, second.after >= second.before] });
+  }
+  return {
+    headline: METHOD_HEADLINES[final.method] ?? decisionLabel(final),
+    detail: `ROUND ${final.round}`,
+    verdict: winnerSeat === null ? (final.winner_id === null ? "DRAW" : `${players[final.winner_id]?.name ?? "Winner"} WINS`) : `${names[winnerSeat]} WINS`,
+    winnerSeat,
+    names,
+    judges,
+    rows,
+  };
+}
+
+const CORNER_ACCENTS = ["#4f86d9", "#d9483c"] as const;
+/** Room at the foot of the card for the rematch button, which the page draws over the canvas. */
+export const RESULT_CARD_FOOTER = 62;
+const VERDICT_HEIGHT = 112;
+const JUDGES_HEIGHT = 52;
+const CARD_PADDING = 14;
+
+/** The card's place on the screen: along the bottom, so the winner and the crowd stay in view above it. */
+export function resultCardLayout(width: number, height: number, card: ResultCard, fighter: boolean): { x: number; y: number; width: number; height: number; wide: boolean; rowHeight: number } {
+  // Side by side where there is the width for it, or no height to stack.
+  const wide = width >= 900 || (width >= 640 && height < 480);
+  const cardWidth = Math.min(width - 24, wide ? 980 : 720);
+  const footer = fighter ? RESULT_CARD_FOOTER : CARD_PADDING;
+  const verdict = VERDICT_HEIGHT + (card.judges.length > 0 ? JUDGES_HEIGHT : 0);
+  const rows = card.rows.length + 1;
+  const room = height - (width < 640 ? 118 : 70) - 14 - CARD_PADDING - footer - (wide ? 0 : verdict);
+  const rowHeight = Math.max(16, Math.min(28, room / rows));
+  const body = wide ? Math.max(verdict, rows * rowHeight) : verdict + rows * rowHeight;
+  const cardHeight = CARD_PADDING + body + footer;
+  return { x: (width - cardWidth) / 2, y: height - 14 - cardHeight, width: cardWidth, height: cardHeight, wide, rowHeight };
+}
+
+function drawResultCard(ctx: CanvasRenderingContext2D, width: number, height: number, card: ResultCard, fighter: boolean): void {
+  const layout = resultCardLayout(width, height, card, fighter);
+  const { x, y } = layout;
+  ctx.fillStyle = "rgba(3,6,12,0.9)";
+  ctx.fillRect(x, y, layout.width, layout.height);
+  ctx.strokeStyle = "rgba(246,213,122,0.55)";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x + 1, y + 1, layout.width - 2, layout.height - 2);
+  ctx.textAlign = "center";
+
+  const verdictWidth = (layout.wide ? layout.width * 0.42 : layout.width) - 32;
+  const verdictCentre = layout.wide ? x + layout.width * 0.21 + 4 : width / 2;
+  const top = y + CARD_PADDING;
+  ctx.fillStyle = "#f6d57a";
+  fitted(ctx, card.headline, verdictCentre, top + 34, verdictWidth, 800, layout.wide || width >= 640 ? 32 : 28, 14);
+  ctx.fillStyle = "#aebbd0";
+  fitted(ctx, card.detail, verdictCentre, top + 56, verdictWidth, 700, 13, 10);
+  ctx.fillStyle = card.winnerSeat === null ? "#f6f7fb" : CORNER_ACCENTS[card.winnerSeat];
+  fitted(ctx, card.verdict, verdictCentre, top + 92, verdictWidth, 800, 25, 12);
+  const cell = verdictWidth / Math.max(1, card.judges.length);
+  card.judges.forEach((judge, index) => {
+    const centre = verdictCentre - verdictWidth / 2 + cell * (index + 0.5);
+    ctx.fillStyle = "rgba(255,255,255,0.06)";
+    ctx.fillRect(centre - cell / 2 + 3, top + VERDICT_HEIGHT, cell - 6, JUDGES_HEIGHT - 8);
+    ctx.fillStyle = "#8fa3c8";
+    fitted(ctx, judge.label, centre, top + VERDICT_HEIGHT + 16, cell - 14, 700, 10, 7);
+    ctx.fillStyle = "#f6f7fb";
+    fitted(ctx, `${judge.values[0]} – ${judge.values[1]}`, centre, top + VERDICT_HEIGHT + 36, cell - 14, 800, 17, 10);
   });
-  const ratings = Object.entries(final.ratings);
-  ratings.forEach(([id, rating], index) => {
-    ctx.fillStyle = rating.after >= rating.before ? "#55df9b" : "#ff7b74";
-    const change = `${rating.before} → ${rating.after} (${rating.after - rating.before >= 0 ? "+" : ""}${rating.after - rating.before})`;
-    fitted(ctx, `${players[id]?.name ?? "Fighter"}  ${change}`, width / 2, height * 0.61 + index * 27, inner, 600, 13, 9);
-  });
+
+  const tableLeft = layout.wide ? x + layout.width * 0.42 : x + 12;
+  const tableWidth = x + layout.width - 12 - tableLeft;
+  const tableTop = layout.wide ? top : top + VERDICT_HEIGHT + (card.judges.length > 0 ? JUDGES_HEIGHT : 0);
+  const label = tableWidth * 0.36;
+  const side = (tableWidth - label) / 2;
+  const columns = [tableLeft + side / 2, tableLeft + tableWidth - side / 2] as const;
+  const rowHeight = layout.rowHeight;
+  const text = Math.min(16, rowHeight * 0.6);
+  let baseline = tableTop + rowHeight * 0.7;
+  ctx.fillStyle = "rgba(255,255,255,0.06)";
+  ctx.fillRect(tableLeft, tableTop, tableWidth, rowHeight);
+  for (const seat of [0, 1] as const) {
+    ctx.fillStyle = CORNER_ACCENTS[seat];
+    ctx.fillRect(seat === 0 ? tableLeft : tableLeft + tableWidth - 4, tableTop, 4, rowHeight);
+    ctx.fillStyle = "#f6f7fb";
+    fitted(ctx, card.names[seat], columns[seat], baseline, side - 16, 800, text, 9);
+  }
+  for (const row of card.rows) {
+    baseline += rowHeight;
+    ctx.fillStyle = "#8fa3c8";
+    fitted(ctx, row.label, tableLeft + tableWidth / 2, baseline, label, 700, Math.min(12, text), 8);
+    for (const seat of [0, 1] as const) {
+      ctx.fillStyle = row.news !== undefined ? (row.news[seat] ? "#55df9b" : "#ff7b74") : row.lead === seat ? "#f6f7fb" : "#aebbd0";
+      fitted(ctx, row.values[seat], columns[seat], baseline, side - 16, row.lead === seat ? 800 : 600, text, 9);
+    }
+  }
 }

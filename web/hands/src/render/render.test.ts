@@ -3,7 +3,7 @@ import { punchTiming, totalTicks } from "../manifest";
 import { buildArena } from "./arena";
 import { CameraDirector, cornerFrame, cornerPoint, cornerShot, cornerShotProgress, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE } from "./camera";
 import { bloodPatternFor, Effects3D } from "./effects";
-import { decisionLabel, drawHud, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, RoundClock, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
+import { decisionLabel, drawHud, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, RESULT_CARD_FOOTER, resultCard, resultCardLayout, RoundClock, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
 import { buildRing, disposeRing, nearRopeOpacityFor, ropePress } from "./ring";
 import { resizeHighDpi } from "./viewport";
 import { PALETTES, worldMapping } from "./world";
@@ -559,7 +559,10 @@ describe("round stats", () => {
     const players = Object.fromEntries(publicPlayers.map((player) => [player.id, player]));
     const final = { version: 3 as const, type: "final" as const, match_id: "m", winner_id: "one", method: "decision" as const, round: 3, scorecards: [], ratings: {} };
     drawHud(ctx, 1280, 720, { ...snapshot(), phase: "complete" }, players, "one", final, 0, 30, tracker);
-    expect(texts.some((text) => text.includes("One 1/2 landed") && text.includes("Two 0/1 landed"))).toBe(true);
+    const row = texts.indexOf("PUNCHES LANDED");
+    expect(texts.slice(row + 1, row + 3)).toEqual(["1 of 2", "0 of 1"]);
+    const accuracy = texts.indexOf("ACCURACY");
+    expect(texts.slice(accuracy + 1, accuracy + 3)).toEqual(["50%", "0%"]);
   });
 
   it("draws the round callout only while the renderer asks for it", () => {
@@ -749,7 +752,91 @@ describe("result panel text", () => {
     const final = { version: 3 as const, type: "final" as const, match_id: "m", winner_id: "one", method: "decision" as const, round: 2, scorecards: [{ judge: "Impact", player_one: [10, 10], player_two: [9, 10] }], ratings: { one: { before: 1000, after: 1016 }, two: { before: 1000, after: 984 } } };
     drawHud(ctx, 390, 844, { ...snapshot(), phase: "complete" }, players, "one", final, 0, 30);
     expect(texts).toContain(`${longName} WINS`);
-    expect(texts.some((text) => text.startsWith(`${longName}  1000`))).toBe(true);
+    expect(texts).toContain("1016 (+16)");
+    expect(texts).toContain("984 (−16)");
     expect(texts.some((text) => text.startsWith("INPUT"))).toBe(false);
+  });
+});
+
+describe("result card", () => {
+  const players = { one: { id: "one", name: "Alpha", avatar: null, rating: 1500, connected: true }, two: { id: "two", name: "Bravo", avatar: null, rating: 1500, connected: true } };
+  const fighters = (downOne = 0, downTwo = 0): [ReturnType<typeof fighter>, ReturnType<typeof fighter>] => [{ ...fighter("one"), knockdowns: downOne }, { ...fighter("two"), knockdowns: downTwo }];
+  const result = (method: "decision" | "draw" | "ko" | "flash_ko" | "tko" | "forfeit", winner: string | null, scorecards: { judge: string; player_one: number[]; player_two: number[] }[] = [], ratings: Record<string, { before: number; after: number }> = {}) =>
+    ({ version: 3 as const, type: "final" as const, match_id: "m", winner_id: winner, method, round: 2, scorecards, ratings });
+  const none = { thrown: 0, landed: 0 };
+
+  it("lists each judge's total for a decision, with the fighter who took the card in the lead", () => {
+    const card = resultCard(result("decision", "two", [{ judge: "Impact", player_one: [10, 9], player_two: [9, 10] }, { judge: "Craft", player_one: [9, 9], player_two: [10, 10] }]), fighters(), players, [none, none]);
+    expect(card.headline).toBe("MAJORITY DECISION");
+    expect(card.detail).toBe("ROUND 2");
+    expect(card.verdict).toBe("Bravo WINS");
+    expect(card.winnerSeat).toBe(1);
+    expect(card.names).toEqual(["Alpha", "Bravo"]);
+    expect(card.judges).toEqual([
+      { label: "IMPACT", values: ["19", "19"], lead: null },
+      { label: "CRAFT", values: ["18", "20"], lead: 1 },
+    ]);
+    expect(card.rows).toEqual([]);
+  });
+
+  it("leaves the unfinished scorecards off a stoppage and spells the method out", () => {
+    const empty = [{ judge: "Impact", player_one: [], player_two: [] }];
+    expect(resultCard(result("ko", "one", empty), fighters(0, 3), players, [none, none])).toMatchObject({ headline: "KNOCKOUT", verdict: "Alpha WINS", winnerSeat: 0, judges: [], rows: [{ label: "KNOCKDOWNS", values: ["3", "0"], lead: 0 }] });
+    expect(resultCard(result("flash_ko", "one", empty), fighters(), players, [none, none]).headline).toBe("FLASH KNOCKOUT");
+    expect(resultCard(result("tko", "one", empty), fighters(), players, [none, none]).headline).toBe("TECHNICAL KNOCKOUT");
+    expect(resultCard(result("forfeit", "one", empty), fighters(), players, [none, none])).toMatchObject({ headline: "FORFEIT", rows: [] });
+  });
+
+  it("credits a knockdown to the fighter who scored it", () => {
+    const card = resultCard(result("decision", "one"), fighters(1, 2), players, [none, none]);
+    expect(card.rows).toEqual([{ label: "KNOCKDOWNS", values: ["2", "1"], lead: 0 }]);
+  });
+
+  it("shows punches, accuracy and rating changes, and a dash for a fighter who threw nothing", () => {
+    const card = resultCard(result("decision", "one", [], { one: { before: 1000, after: 1016 }, two: { before: 1000, after: 984 } }), fighters(), players, [{ thrown: 9, landed: 6 }, none]);
+    expect(card.rows).toEqual([
+      { label: "PUNCHES LANDED", values: ["6 of 9", "0 of 0"], lead: 0 },
+      { label: "ACCURACY", values: ["67%", "—"], lead: 0 },
+      { label: "RATING", values: ["1016 (+16)", "984 (−16)"], lead: null, news: [true, false] },
+    ]);
+  });
+
+  it("calls a draw a draw and names a winner who is not in either seat", () => {
+    expect(resultCard(result("draw", null, [{ judge: "Impact", player_one: [10], player_two: [10] }]), fighters(), players, [none, none])).toMatchObject({ headline: "UNANIMOUS DRAW", verdict: "DRAW", winnerSeat: null });
+    expect(resultCard(result("forfeit", "three"), fighters(), { ...players, three: { id: "three", name: "Carol", avatar: null, rating: 1500, connected: true } }, [none, none])).toMatchObject({ verdict: "Carol WINS", winnerSeat: null });
+  });
+
+  const full = result("decision", "one", [{ judge: "Impact", player_one: [10, 10], player_two: [9, 9] }, { judge: "Craft", player_one: [10, 10], player_two: [9, 9] }, { judge: "Generalship", player_one: [10, 10], player_two: [9, 9] }], { one: { before: 1000, after: 1016 }, two: { before: 1000, after: 984 } });
+  const fullCard = resultCard(full, fighters(0, 1), players, [{ thrown: 9, landed: 6 }, { thrown: 4, landed: 1 }]);
+
+  it("sits along the bottom of the screen and leaves the ring in view above it", () => {
+    for (const [width, height, clear] of [[1280, 720, 0.55], [1920, 1080, 0.6], [390, 844, 0.45], [844, 390, 0.15], [640, 360, 0.1]] as const) {
+      const layout = resultCardLayout(width, height, fullCard, true);
+      expect(layout.x).toBeGreaterThanOrEqual(12);
+      expect(layout.x + layout.width).toBeLessThanOrEqual(width - 12);
+      expect(layout.y + layout.height).toBe(height - 14);
+      expect(layout.y).toBeGreaterThanOrEqual(height * clear);
+      expect(layout.rowHeight).toBeGreaterThanOrEqual(16);
+    }
+  });
+
+  it("puts the verdict beside the table on a wide or a short screen and above it on a tall one", () => {
+    expect(resultCardLayout(1280, 720, fullCard, true).wide).toBe(true);
+    expect(resultCardLayout(844, 390, fullCard, true).wide).toBe(true);
+    expect(resultCardLayout(390, 844, fullCard, true).wide).toBe(false);
+    expect(resultCardLayout(800, 900, fullCard, true).wide).toBe(false);
+  });
+
+  it("leaves room for the rematch button on a fighter's card only", () => {
+    expect(resultCardLayout(1280, 720, fullCard, true).height - resultCardLayout(1280, 720, fullCard, false).height).toBe(RESULT_CARD_FOOTER - 14);
+  });
+
+  it("replaces the plates and the clock", () => {
+    const texts: string[] = [];
+    const tracker = new RoundStatsTracker();
+    tracker.record({ event_id: 1, tick: 1, kind: "punch_start", actor_id: "one", target_id: "two", amount: 0, detail: "", blood: 0, direction: 1, action_id: null });
+    drawHud(mockHudContext(texts), 1280, 720, { ...snapshot(), phase: "complete" }, players, "one", full, 0, 30, tracker);
+    expect(texts.some((text) => /STAMINA|HEALTH|GUARD|POISE|COMPLETE/.test(text))).toBe(false);
+    expect(texts).toEqual(expect.arrayContaining(["UNANIMOUS DECISION", "ROUND 2", "Alpha WINS", "IMPACT", "20 – 18", "Alpha", "Bravo", "PUNCHES LANDED", "0 of 1", "RATING"]));
   });
 });
