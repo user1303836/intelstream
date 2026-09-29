@@ -7,7 +7,7 @@
  * Each scenario spawns scripts/hands_e2e_server.py on port 8091, drives two headless players with
  * keyboard or touch input, reads the client's screen-reader status text, and writes screenshots to
  * $TMPDIR/hands-e2e. Set E2E_GPU=1 to render on the machine's GPU instead of the software renderer
- * (real frame pacing and input latency).
+ * (real frame pacing and input latency). The response scenario takes E2E_DELAY_MS and E2E_JITTER_MS.
  *
  *   node scripts/hands_e2e_scenarios.js ko|reconnect|rest|spectator|touch|mash|latency|soak|background|rematch|rematchloop|clinch|response
  */
@@ -35,13 +35,32 @@ function healthz() {
   });
 }
 
-/** TCP proxy that delays every chunk in both directions, so websocket frames see real latency. */
-function delayProxy(listenPort, targetPort, delayMs) {
+/**
+ * TCP proxy that delays every chunk in both directions, so websocket frames see real latency.
+ * `jitterMs` adds a random extra wait to each chunk while keeping them in order.
+ */
+function delayProxy(listenPort, targetPort, delayMs, jitterMs = 0) {
   const server = net.createServer((client) => {
     const upstream = net.connect(targetPort, '127.0.0.1');
     const pipe = (from, to) => {
-      from.on('data', (chunk) => setTimeout(() => { if (!to.destroyed) to.write(chunk); }, delayMs));
-      from.on('end', () => setTimeout(() => to.end(), delayMs));
+      const queue = [];
+      let timer = null;
+      const drain = () => {
+        timer = null;
+        while (queue.length > 0 && queue[0].due <= Date.now()) {
+          const { chunk } = queue.shift();
+          if (chunk === null) to.end();
+          else if (!to.destroyed) to.write(chunk);
+        }
+        if (queue.length > 0) timer = setTimeout(drain, Math.max(1, queue[0].due - Date.now()));
+      };
+      const hold = (chunk) => {
+        const due = Math.max(queue.at(-1)?.due ?? 0, Date.now() + delayMs + Math.random() * jitterMs);
+        queue.push({ chunk, due });
+        if (timer === null) timer = setTimeout(drain, Math.max(1, queue[0].due - Date.now()));
+      };
+      from.on('data', hold);
+      from.on('end', () => hold(null));
       from.on('error', () => to.destroy());
     };
     pipe(client, upstream);
@@ -51,13 +70,13 @@ function delayProxy(listenPort, targetPort, delayMs) {
   return server;
 }
 
-async function startServer(args, { oneWayDelayMs = 0 } = {}) {
+async function startServer(args, { oneWayDelayMs = 0, jitterMs = 0 } = {}) {
   const backendPort = oneWayDelayMs > 0 ? PORT + 1 : PORT;
   const child = spawn('uv', ['run', 'python', 'scripts/hands_e2e_server.py', '--port', String(backendPort), ...args], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] });
   const log = [];
   child.stdout.on('data', (d) => log.push(String(d)));
   child.stderr.on('data', (d) => log.push(String(d)));
-  const proxy = oneWayDelayMs > 0 ? delayProxy(PORT, backendPort, oneWayDelayMs) : null;
+  const proxy = oneWayDelayMs > 0 ? delayProxy(PORT, backendPort, oneWayDelayMs, jitterMs) : null;
   for (let i = 0; i < 60; i += 1) { if (await healthz()) return { child, log, proxy }; await wait(500); }
   throw new Error('server did not start: ' + log.join(''));
 }
@@ -118,7 +137,8 @@ async function main() {
     response: ['--rounds', '1', '--round-seconds', '40', '--rest-seconds', '5'],
   }[scenario];
   const responseDelayMs = Number(process.env.E2E_DELAY_MS ?? 60);
-  const server = await startServer(serverArgs, { oneWayDelayMs: scenario === 'latency' ? 110 : scenario === 'response' ? responseDelayMs : 0 });
+  const responseJitterMs = Number(process.env.E2E_JITTER_MS ?? 0);
+  const server = await startServer(serverArgs, { oneWayDelayMs: scenario === 'latency' ? 110 : scenario === 'response' ? responseDelayMs : 0, jitterMs: scenario === 'response' ? responseJitterMs : 0 });
   try {
     const A = await open('Alpha');
     const B = await open('Bravo', { mobile: scenario === 'touch' });
@@ -368,7 +388,7 @@ async function main() {
     }
 
     if (scenario === 'response') {
-      note(`network delay ${responseDelayMs} ms each way (${responseDelayMs * 2} ms round trip); times are key press to the first rendered frame, within one frame`);
+      note(`network delay ${responseDelayMs} ms each way (${responseDelayMs * 2} ms round trip), up to ${responseJitterMs} ms of jitter; times are key press to the first rendered frame, within one frame`);
       const probe = () => {
         const state = { frames: [], keys: [] };
         window.__probe = state;
@@ -380,7 +400,7 @@ async function main() {
           const latest = renderer?.buffer?.latest?.();
           if (graphs && latest) {
             const Vector3 = graphs[0].boxer.root.position.constructor;
-            const frame = { at: epoch(), viewer: latest.fighters.findIndex((fighter) => fighter.player_id === renderer.viewerId), fighters: [] };
+            const frame = { at: epoch(), viewer: latest.fighters.findIndex((fighter) => fighter.player_id === renderer.viewerId), news: latest.fighters.map((fighter) => fighter.action_id), delay: renderer.buffer.interpolationDelayTicks, fighters: [] };
             for (const graph of graphs) {
               const left = graph.boxer.rig.bones.gloveL.getWorldPosition(new Vector3());
               const right = graph.boxer.rig.bones.gloveR.getWorldPosition(new Vector3());
@@ -410,7 +430,7 @@ async function main() {
       const median = (values) => { const sorted = values.filter((v) => v !== null).sort((x, y) => x - y); return sorted.length === 0 ? null : Math.round(sorted[Math.floor(sorted.length / 2)]); };
       const viewerA = a.frames.at(-1).viewer;
       const punchKeys = a.keys.filter((key) => ['KeyF', 'KeyU', 'KeyG'].includes(key.code));
-      const local = []; const moved = []; const remote = [];
+      const local = []; const moved = []; const remote = []; const shown = [];
       for (const key of punchKeys) {
         const hand = key.code === 'KeyU' ? 'right' : 'left';
         const before = frameAt(a.frames, key.at).fighters[viewerA];
@@ -418,6 +438,9 @@ async function main() {
         const glove = a.frames.find((frame) => frame.at > key.at && distance(frame.fighters[viewerA][hand], before[hand]) > 0.03);
         const seen = b.frames.find((frame) => frame.at > key.at && frame.fighters[viewerA].active && frame.fighters[viewerA].age < 8);
         local.push(started ? started.at - key.at : null); moved.push(glove ? glove.at - key.at : null); remote.push(seen ? seen.at - key.at : null);
+        const known = frameAt(b.frames, key.at).news[viewerA];
+        const news = b.frames.find((frame) => frame.at > key.at && frame.news[viewerA] !== null && frame.news[viewerA] !== known);
+        shown.push(news && seen ? seen.at - news.at : null);
       }
       // Progress through the punch (0 at the press, 1 at contact, 2 at the end of the active phase, 3 when
       // recovered), so a change in the server's timing is not mistaken for the glove going back.
@@ -448,6 +471,8 @@ async function main() {
       note('own punch starts on screen, ms:', JSON.stringify(local.map((v) => (v === null ? null : Math.round(v)))), '| median', median(local));
       note('own glove has moved 3 cm, ms:', JSON.stringify(moved.map((v) => (v === null ? null : Math.round(v)))), '| median', median(moved));
       note('opponent sees the punch start, ms:', JSON.stringify(remote.map((v) => (v === null ? null : Math.round(v)))), '| median', median(remote));
+      note('of which waiting on the opponent\'s screen after the news arrived, ms:', JSON.stringify(shown.map((v) => (v === null ? null : Math.round(v)))), '| median', median(shown));
+      note('opponent\'s playback delay, ticks:', JSON.stringify([...new Set(b.frames.map((frame) => frame.delay))]));
       const step = a.keys.find((key) => key.code === 'KeyA');
       if (step) {
         const before = frameAt(a.frames, step.at).fighters[viewerA];

@@ -306,6 +306,7 @@ export class BoxingGraph {
   private ownPulled = false;
   /** Own punches already played or cut short here; the server's copy of them is not played again. */
   private readonly retiredOwnIds: string[] = [];
+  private anticipatedId: string | null = null;
   private hitstop = 0;
   private hitstopScale = 1;
   private downState: "up" | "falling" | "down" | "rising" = "up";
@@ -453,6 +454,7 @@ export class BoxingGraph {
     this.retirePunch();
     this.completedActionId = null;
     this.retiredOwnIds.length = 0;
+    this.anticipatedId = null;
   }
 
   /** Referee wave-off: both arms sweep crossing overhead to call the fight. */
@@ -521,19 +523,48 @@ export class BoxingGraph {
     // recovery the follow-up cuts in at once.
     const remaining = this.punchActive ? this.punchTotalTicks - this.punchAgeTicks : 0;
     if (this.punchActive && this.punchAgeTicks / this.punchTotalTicks <= 0.55) return;
-    this.retirePunch();
     const timing = expected ?? punchTiming(action.class, action.target, action.power);
-    this.punchClass = action.class;
-    this.punchHand = action.hand;
-    this.punchTarget = action.target;
-    this.punchPower = action.power;
+    this.startEarly(action.id, action.class, action.hand, action.target, action.power, timing, leadTicks, Math.max(0, leadTicks) + remaining);
+  }
+
+  /**
+   * Starts a punch the server has begun but the delayed render clock has not reached, so an
+   * opponent's punch is seen as early as the network allows. `leadTicks` is how long the render
+   * clock will take to reach the punch's first tick. The wind-up is stretched over that wait, so
+   * a punch too far ahead is held back until it can be shown at half speed or faster.
+   */
+  anticipate(fighter: FighterSnapshot, leadTicks: number): void {
+    const id = fighter.action_id;
+    if (id === null || fighter.action === null || leadTicks <= 0) return;
+    if (id === this.anticipatedId || id === this.actionId || id === this.completedActionId || id === this.ownActionId || this.retiredOwnIds.includes(id)) return;
+    if (leadTicks > fighter.action_startup_ticks * (1 / MIN_ANTICIPATION_RATE - 1)) return;
+    if (this.punchActive && this.punchAgeTicks / this.punchTotalTicks <= 0.55) return;
+    this.anticipatedId = id;
+    const target = fighter.action_target ?? "head";
+    const power = fighter.action_power ?? "normal";
+    const timing = {
+      ...punchTiming(fighter.action, target, power),
+      startup: fighter.action_startup_ticks,
+      active: fighter.action_active_ticks,
+      recovery: fighter.action_recovery_ticks,
+    };
+    const hand = fighter.action_hand ?? (fighter.stance === "orthodox" ? "left" : "right");
+    this.startEarly(id, fighter.action, hand, target, power, timing, leadTicks, leadTicks);
+  }
+
+  private startEarly(id: string, punchClass: PunchClass, hand: Hand, target: Target, power: Power, timing: PunchTiming, leadTicks: number, expectedTicks: number): void {
+    this.retirePunch();
+    this.punchClass = punchClass;
+    this.punchHand = hand;
+    this.punchTarget = target;
+    this.punchPower = power;
     this.punchTiming = timing;
     this.punchTotalTicks = Math.max(1, totalTicks(timing));
     this.punchAgeTicks = 0;
     this.punchActive = true;
-    this.ownActionId = action.id;
+    this.ownActionId = id;
     this.ownLeadTicks = clamp(leadTicks, 0, MAX_OWN_LEAD_TICKS);
-    this.ownExpectedTicks = Math.max(0, leadTicks) + remaining;
+    this.ownExpectedTicks = expectedTicks;
   }
 
   /** True while the viewer's own punch, started on the key press, is playing. */
@@ -1856,6 +1887,7 @@ const worldUpVector = new THREE.Vector3(0, 1, 0);
 const MAX_OWN_LEAD_TICKS = 6;
 const OWN_PUNCH_GRACE_TICKS = 5;
 const OWN_PUNCH_PULL_RATE = 1.5;
+const MIN_ANTICIPATION_RATE = 0.5;
 
 /** Age in `to`'s timing at the same progress through the same phase as `age` in `from`'s. */
 export function remapPunchAge(age: number, from: PunchTiming, to: PunchTiming): number {

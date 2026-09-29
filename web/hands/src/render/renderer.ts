@@ -1255,6 +1255,13 @@ export class FightRenderer {
         }
         if (snapshot.phase === "rest" && this.lastPhase !== "rest") this.restStartedAt = seconds;
         this.lastPhase = snapshot.phase;
+        if (this.replay === null && latest !== null && latest.phase === "fight") {
+          // The newest snapshot may already carry a punch the delayed clock has not reached.
+          for (const [index, graph] of graphs.entries()) {
+            const ahead = latest.fighters[index];
+            if (ahead !== undefined && !ahead.is_downed) graph.anticipate(ahead, ahead.action_start_tick - sampledTick);
+          }
+        }
         graphs[0].update(a, b, actorDt, seconds, current.reducedMotion, current.blood, sampledTick, headB);
         graphs[1].update(b, a, actorDt, seconds, current.reducedMotion, current.blood, sampledTick, headA);
         for (const [index, graph] of graphs.entries()) {
