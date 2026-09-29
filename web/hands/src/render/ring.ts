@@ -97,7 +97,7 @@ function ringCanvasTexture(): THREE.CanvasTexture {
     ctx.textBaseline = "middle";
     ctx.fillText("H A N D S", size / 2, size / 2 - size * 0.012);
     ctx.font = `600 ${Math.round(size * 0.024)}px Inter, system-ui, sans-serif`;
-    ctx.fillText("AUTHORITATIVE BOXING", size / 2, size / 2 + size * 0.052);
+    ctx.fillText("CHAMPIONSHIP BOXING", size / 2, size / 2 + size * 0.052);
     ctx.strokeStyle = "rgba(30,60,140,0.6)";
     ctx.lineWidth = 6;
     ctx.strokeRect(size * 0.035, size * 0.035, size * 0.93, size * 0.93);
