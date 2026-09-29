@@ -854,7 +854,7 @@ export class BoxingGraph {
     if (this.referee) this.applyRefereePose(mirror, leadHand, rearHand, lead, rear, headRest, time);
 
     // Special states.
-    if (this.clinchWeight > 0.001) this.applyClinchPose(this.clinchWeight, mirror, fighter, opponent, leadHand, rearHand, headRest);
+    if (this.clinchWeight > 0.001) this.applyClinchPose(this.clinchWeight, time, mirror, fighter, opponent, leadHand, rearHand, headRest);
     if (this.foulWeight > 0.001) {
       const f = this.foulWeight;
       torso.hips.y -= f * 0.16;
@@ -933,11 +933,12 @@ export class BoxingGraph {
    * Tie-up: the fighter whose id sorts first hooks over the opponent's arms,
    * the other digs under them around the ribs. Both lean in over the bladed
    * chest line and rest the head to their own right, so the skulls pass on
-   * opposite shoulders.
+   * opposite shoulders, and both keep working for position while they hold.
    */
-  private applyClinchPose(c: number, mirror: number, fighter: FighterSnapshot, opponent: FighterSnapshot, leadHand: HandTarget, rearHand: HandTarget, headRest: THREE.Vector3): void {
+  private applyClinchPose(c: number, time: number, mirror: number, fighter: FighterSnapshot, opponent: FighterSnapshot, leadHand: HandTarget, rearHand: HandTarget, headRest: THREE.Vector3): void {
     const torso = this.torso;
     const over = fighter.player_id < opponent.player_id;
+    const struggle = Math.sin(time * 7.3) * 0.5 + Math.sin(time * 4.1 + 1.2) * 0.5;
     const centre = this.clinchCentre
       .set(this.mapping.x(opponent.x) - (this.rootX ?? 0), 0, this.mapping.z(opponent.y) - this.rootZ)
       .applyQuaternion(this.scratchQ.setFromAxisAngle(worldUpVector, -this.yaw));
@@ -945,9 +946,11 @@ export class BoxingGraph {
     const forward = this.clinchForward.copy(centre).normalize();
     const acrossX = forward.z;
     const acrossZ = -forward.x;
-    torso.spinePitch += c * (over ? 0.28 : 0.42);
+    torso.spinePitch += c * (over ? 0.28 : 0.42) + struggle * 0.025 * c;
     torso.hips.z += c * (over ? 0.04 : 0.06);
-    torso.hips.y -= c * (over ? 0 : 0.03);
+    torso.hips.x += struggle * 0.02 * c;
+    torso.hips.y -= c * (over ? 0 : 0.03) + Math.abs(struggle) * 0.012 * c;
+    torso.hipsYaw += struggle * 0.06 * c;
     torso.headPitch += c * (over ? 0.15 : 0.3);
     torso.headYaw -= c * 0.3;
     torso.headOffset.x -= c * 0.05;

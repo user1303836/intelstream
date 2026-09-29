@@ -253,6 +253,12 @@ describe("clinch hold", () => {
     expect(bone(under.boxer, "gloveL").y).toBeLessThan(1.1);
     expect(bone(under.boxer, "gloveR").y).toBeLessThan(1.1);
     expect(bone(over.boxer, "head").y).toBeGreaterThan(bone(under.boxer, "head").y);
+    const sway: number[] = [];
+    for (let frame = 0; frame < 40; frame += 1) {
+      over.graph.update(clinched("one"), held("two"), 1 / 60, 1 + frame / 60, false, "full", 60 + frame, undefined);
+      sway.push(bone(over.boxer, "hips").x);
+    }
+    expect(Math.max(...sway) - Math.min(...sway)).toBeGreaterThan(0.008);
   });
 });
 
