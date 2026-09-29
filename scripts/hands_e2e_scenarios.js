@@ -8,7 +8,7 @@
  * keyboard or touch input, reads the client's screen-reader status text, and writes screenshots to
  * $TMPDIR/hands-e2e.
  *
- *   node scripts/hands_e2e_scenarios.js ko|reconnect|rest|spectator|touch|mash|latency|soak
+ *   node scripts/hands_e2e_scenarios.js ko|reconnect|rest|spectator|touch|mash|latency|soak|background
  */
 const { chromium, devices } = require('playwright');
 const { spawn } = require('node:child_process');
@@ -107,6 +107,7 @@ async function main() {
     mash: ['--rounds', '1', '--round-seconds', '40', '--rest-seconds', '5'],
     latency: ['--rounds', '1', '--round-seconds', '45', '--rest-seconds', '5'],
     soak: ['--rounds', '3', '--round-seconds', '120', '--rest-seconds', '15'],
+    background: ['--rounds', '1', '--round-seconds', '60', '--rest-seconds', '5'],
   }[scenario];
   const server = await startServer(serverArgs, { oneWayDelayMs: scenario === 'latency' ? 110 : 0 });
   try {
@@ -261,6 +262,30 @@ async function main() {
       await B.page.screenshot({ path: `${out}/e2e-latency-B.png` });
       const final = await waitFor(B.page, (s) => Boolean(s.final), 90000, 'final');
       note('FINAL B:', JSON.stringify(final?.final ?? null).slice(0, 200));
+    }
+
+    if (scenario === 'background') {
+      for (let i = 0; i < 6; i += 1) { await A.page.keyboard.press('f'); await B.page.keyboard.press('j'); await wait(400); }
+      const clock = (s) => /Clock (\d+:\d+)/.exec(s.summary ?? '')?.[1] ?? null;
+      note('before freeze A clock', clock(await status(A.page)), 'B clock', clock(await status(B.page)));
+      const cdp = await B.context.newCDPSession(B.page);
+      await cdp.send('Page.enable');
+      await cdp.send('Page.setWebLifecycleState', { state: 'frozen' });
+      note('B frozen (backgrounded)');
+      await wait(8000);
+      for (let i = 0; i < 4; i += 1) { await A.page.keyboard.press('f'); await wait(300); }
+      note('A during B freeze:', (await status(A.page)).status, '| clock', clock(await status(A.page)));
+      await cdp.send('Page.setWebLifecycleState', { state: 'active' });
+      note('B active again');
+      await wait(2500);
+      const sA = await status(A.page); const sB = await status(B.page);
+      note('after resume A clock', clock(sA), 'status', sA.status, '| B clock', clock(sB), 'status', sB.status);
+      for (let i = 0; i < 6; i += 1) { await B.page.keyboard.press('j'); await A.page.keyboard.press('f'); await wait(400); }
+      const later = await status(B.page);
+      note('B after inputs:', later.status, '| clock', clock(later), '| latency', JSON.stringify(await B.page.evaluate(() => window.__handsApp?.networkStats ?? null)));
+      const final = await waitFor(B.page, (s) => Boolean(s.final), 90000, 'final');
+      note('FINAL B:', JSON.stringify(final?.final ?? null).slice(0, 200));
+      note('FINAL A:', JSON.stringify((await status(A.page)).final).slice(0, 200));
     }
 
     if (scenario === 'soak') {
