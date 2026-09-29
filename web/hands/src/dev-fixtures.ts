@@ -115,6 +115,12 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       one.x = 330;
       one.y = 20;
     }
+    if (search.get("pin") === "corner") {
+      two.x = 366;
+      two.y = 366;
+      one.x = 292;
+      one.y = 284;
+    }
     if (forcedRest) {
       for (const [fighter, sign] of [[one, -1], [two, 1]] as const) {
         fighter.x = sign * REST_CORNER_OFFSET;

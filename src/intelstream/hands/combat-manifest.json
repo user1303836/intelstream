@@ -164,6 +164,9 @@
       "offset_y": 0.16
     }
   },
+  "corners": {
+    "reach": 733
+  },
   "rest": {
     "corner_offset": 365,
     "walk_speed": 5

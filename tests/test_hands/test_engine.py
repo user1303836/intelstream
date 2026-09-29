@@ -18,6 +18,7 @@ from intelstream.hands.rules import (
     MINIMUM_SEPARATION,
     PUNCH_RULES,
     REST_CORNER_OFFSET,
+    RING_CORNER_REACH,
     RING_HALF_HEIGHT,
     RING_HALF_WIDTH,
 )
@@ -350,6 +351,37 @@ def test_momentum_only_frames_regenerate_at_a_reduced_rate_until_stationary() ->
     assert fighter.movement_load == 0
     assert fighter.x == stopped_x
     assert fighter.stamina > before_recovery
+
+
+def test_corner_posts_keep_fighters_out_of_the_corner_pad() -> None:
+    engine = make_engine(seed=95, round_ticks=2000)
+    fighter = engine.fighter("one")
+    limit = RING_HALF_WIDTH - FIGHTER_RADIUS
+    fighter.x = limit - 4
+    fighter.y = limit - 4
+    engine.fighter("two").x = -300
+
+    for sequence in range(1, 30):
+        engine.step({"one": command(sequence, move_x=1000, move_y=1000)})
+        assert abs(fighter.x) + abs(fighter.y) <= RING_CORNER_REACH
+
+    assert fighter.x > 0 and fighter.y > 0
+    assert abs(fighter.x) + abs(fighter.y) >= RING_CORNER_REACH - 2
+    assert abs(fighter.x - fighter.y) <= 2
+    assert REST_CORNER_OFFSET * 2 <= RING_CORNER_REACH
+
+
+def test_side_ropes_are_still_reachable_away_from_the_corners() -> None:
+    engine = make_engine(seed=96, round_ticks=2000)
+    fighter = engine.fighter("one")
+    fighter.x = RING_HALF_WIDTH - FIGHTER_RADIUS - 3
+    fighter.y = 0
+    engine.fighter("two").x = -300
+
+    for sequence in range(1, 6):
+        engine.step({"one": command(sequence, move_x=1000)})
+
+    assert fighter.x == RING_HALF_WIDTH - FIGHTER_RADIUS
 
 
 def test_ring_clamp_resets_fixed_point_momentum_and_position_remainder() -> None:

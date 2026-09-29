@@ -30,6 +30,7 @@ from intelstream.hands.rules import (
     REST_CORNER_OFFSET,
     REST_TICKS,
     REST_WALK_SPEED,
+    RING_CORNER_REACH,
     RING_HALF_HEIGHT,
     RING_HALF_WIDTH,
     ROUND_TICKS,
@@ -65,6 +66,8 @@ from intelstream.hands.types import (
 PERFECT_BLOCK_TICKS: Final = 4
 EVASION_TICKS: Final = 10
 COUNTER_WINDOW_TICKS: Final = 18
+CORNER_SEPARATION_STEPS: Final = 12
+CORNER_SEPARATION_STEP: Final = 8
 CLINCH_STARTUP_TICKS: Final = 8
 CLINCH_TICKS: Final = 45
 FOUL_RECOVERY_TICKS: Final = 60
@@ -1074,6 +1077,15 @@ class BoxingEngine:
             fighter.velocity_y = 0
             fighter.velocity_fixed_y = 0
             fighter.position_remainder_y = 0
+        excess = abs(clamped_x) + abs(clamped_y) - RING_CORNER_REACH
+        if excess > 0:
+            pull_x = (excess + 1) // 2
+            pull_y = excess // 2
+            clamped_x -= pull_x if clamped_x > 0 else -pull_x
+            clamped_y -= pull_y if clamped_y > 0 else -pull_y
+            fighter.velocity_x = fighter.velocity_y = 0
+            fighter.velocity_fixed_x = fighter.velocity_fixed_y = 0
+            fighter.position_remainder_x = fighter.position_remainder_y = 0
         fighter.x = clamped_x
         fighter.y = clamped_y
 
@@ -1104,6 +1116,19 @@ class BoxingEngine:
             two.y += shift
         self._clamp_to_ring(one)
         self._clamp_to_ring(two)
+        self._separate_in_corner(one, two)
+
+    def _separate_in_corner(self, one: FighterState, two: FighterState) -> None:
+        for _ in range(CORNER_SEPARATION_STEPS):
+            dx = two.x - one.x
+            dy = two.y - one.y
+            if dx * dx + dy * dy >= MINIMUM_SEPARATION**2:
+                return
+            inner = one if abs(one.x) + abs(one.y) <= abs(two.x) + abs(two.y) else two
+            inner.x -= CORNER_SEPARATION_STEP if inner.x > 0 else -CORNER_SEPARATION_STEP
+            inner.y -= CORNER_SEPARATION_STEP if inner.y > 0 else -CORNER_SEPARATION_STEP
+            self._clamp_to_ring(one)
+            self._clamp_to_ring(two)
 
     def _update_facing(self, fighter: FighterState, opponent: FighterState) -> None:
         if fighter.attack is not None or fighter.clinch_startup_ticks:
