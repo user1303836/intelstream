@@ -312,6 +312,13 @@ function shadowBoxing(idleTick: number): Partial<FighterSnapshot> {
   return {};
 }
 
+/** How far the referee stands from the action and how close he may get to a fighter: tight over a count, in close for a clinch, otherwise out of the way. */
+export function refereeSpacing(downed: boolean, clinched: boolean): { standoff: number; clearance: number } {
+  if (downed) return { standoff: 1.25, clearance: 1.0 };
+  if (clinched) return { standoff: 1.15, clearance: 0.9 };
+  return { standoff: 2.05, clearance: 1.45 };
+}
+
 function refereeSnapshot(position: THREE.Vector3, yaw: number, velocity: THREE.Vector3, mapping: WorldMapping): { self: FighterSnapshot; focus: FighterSnapshot } {
   const simX = position.x / mapping.x(1);
   const simY = position.z / mapping.z(1);
@@ -1268,12 +1275,13 @@ export class FightRenderer {
     const referee = this.referee;
     if (referee === null) return;
     const downed = snapshot?.fighters.find((fighter) => fighter.is_downed) ?? null;
+    const clinched = snapshot?.fighters.some((fighter) => fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0) ?? false;
     const focusX = downed !== null ? this.mapping.x(downed.x) : (this.tmpA.x + this.tmpB.x) / 2;
     const focusZ = downed !== null ? this.mapping.z(downed.y) : (this.tmpA.z + this.tmpB.z) / 2;
     const away = this.refereeAway.set(this.refereePosition.x - focusX, 0, this.refereePosition.z - focusZ);
     if (away.lengthSq() < 0.01) away.set(0, 0, -1);
     away.normalize();
-    const standoff = downed !== null ? 1.25 : 2.05;
+    const { standoff, clearance } = refereeSpacing(downed !== null, clinched);
     const targetX = THREE.MathUtils.clamp(focusX + away.x * standoff, -2.4, 2.4);
     const targetZ = THREE.MathUtils.clamp(focusZ + away.z * standoff, -2.4, 2.4);
     const previousX = this.refereePosition.x;
@@ -1285,7 +1293,6 @@ export class FightRenderer {
       const dx = this.refereePosition.x - fighter.x;
       const dz = this.refereePosition.z - fighter.z;
       const distance = Math.hypot(dx, dz);
-      const clearance = downed !== null ? 1.0 : 1.45;
       if (distance < clearance && distance > 0.001) {
         this.refereePosition.x = fighter.x + (dx / distance) * clearance;
         this.refereePosition.z = fighter.z + (dz / distance) * clearance;

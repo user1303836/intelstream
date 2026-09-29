@@ -1,12 +1,6 @@
 import { fighter, snapshot } from "../test/fixtures";
 import type { CombatEvent, MatchResult } from "../types";
-import {
-  arcadeInjuryFor,
-  contactParticipants,
-  contactPresentationPlan,
-  isArcadeInjuryCandidate,
-  presentationTickFor,
-} from "./renderer";
+import { arcadeInjuryFor, contactParticipants, contactPresentationPlan, isArcadeInjuryCandidate, presentationTickFor, refereeSpacing } from "./renderer";
 
 const event = (kind: string, detail: string): CombatEvent => ({
   event_id: 1,
@@ -104,5 +98,14 @@ describe("arcade injury candidate routing", () => {
     ["wrong winner", event("counter_hit", "right:hook:head"), fighter("two"), { ...flashKo, winner_id: "two" }],
   ] as const)("rejects %s", (_name, combatEvent, target, result) => {
     expect(isArcadeInjuryCandidate(combatEvent, target, result)).toBe(false);
+  });
+});
+
+describe("referee spacing", () => {
+  it("stands off during the action, steps in for a clinch and tightest over a count", () => {
+    expect(refereeSpacing(false, false).standoff).toBeGreaterThan(refereeSpacing(false, true).standoff);
+    expect(refereeSpacing(false, true).standoff).toBeGreaterThan(refereeSpacing(true, true).standoff - 0.2);
+    expect(refereeSpacing(true, false).clearance).toBeLessThan(refereeSpacing(false, false).clearance);
+    expect(refereeSpacing(false, true).clearance).toBeLessThan(refereeSpacing(false, false).clearance);
   });
 });
