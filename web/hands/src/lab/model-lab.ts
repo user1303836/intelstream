@@ -41,6 +41,7 @@ const base = (): Draft => ({
 
 const CAMERAS: Record<string, [number, number, number]> = {
   face: [0.25, 1.55, 1.0],
+  portrait: [0.12, 1.62, 0.62],
   hand: [0.55, 1.05, 0.75],
   front: [0, 1.35, 3.4],
   side: [3.4, 1.3, 0.2],
@@ -83,6 +84,7 @@ export class ModelLab {
     const cam = CAMERAS[this.params.get("cam") ?? "three-quarter"] ?? CAMERAS["three-quarter"]!;
     this.camera.position.set(...cam);
     if (this.params.get("cam") === "hand") this.camera.lookAt(0.27, 0.84, 0.12);
+    else if (this.params.get("cam") === "portrait") this.camera.lookAt(0, 1.6, 0.05);
     else this.camera.lookAt(0, this.params.get("cam") === "face" ? 1.5 : 1.0, 0);
     this.setupLighting();
   }

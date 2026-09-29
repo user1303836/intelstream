@@ -111,10 +111,12 @@ const FRAGMENT_GROOM = /* glsl */ `
   vec3 dyed = uLookHair * clamp(scanned / 0.075, 0.45, 1.7);
   vec3 scalp = mix(${SKIN}, uLookHair, 0.1) * clamp(scanned / 0.075, 0.85, 1.12) * 0.9;
   diffuseColor.rgb = mix(diffuseColor.rgb, mix(dyed, scalp, uLookGroom.x) * diffuse, hair);
-  float jaw = (1.0 - smoothstep(115.8, 117.2, p.y)) * smoothstep(109.2, 110.4, p.y) * smoothstep(-4.5, -2.5, p.z);
-  float lips = 1.0 - smoothstep(0.9, 1.7, length((p - vec3(0.0, 114.3, 4.8)) * vec3(0.55, 1.0, 0.4)));
-  float stubble = 0.75 + 0.25 * sin(p.x * 23.0) * sin(p.y * 29.0 + p.z * 17.0);
-  diffuseColor.rgb = mix(diffuseColor.rgb, uLookHair * 0.55 * diffuse, jaw * (1.0 - lips) * uLookGroom.y * stubble * 0.9);
+  // The beard covers the chin and runs back along the jaw to the ear, clear of the neck beneath it.
+  float front = mix(1.4, -4.8, smoothstep(111.2, 114.6, p.y));
+  float jaw = (1.0 - smoothstep(115.4, 116.8, p.y)) * smoothstep(109.6, 110.6, p.y) * smoothstep(front - 0.6, front + 0.6, p.z);
+  float lips = 1.0 - smoothstep(0.8, 2.0, length((p - vec3(0.0, 114.3, 4.8)) * vec3(0.55, 1.0, 0.4)));
+  float grain = 0.8 + 0.2 * sin(p.x * 41.0 + p.z * 13.0) * sin(p.y * 47.0 + p.z * 29.0);
+  diffuseColor.rgb = mix(diffuseColor.rgb, mix(uLookHair, ${SKIN}, 0.12) * 0.8 * diffuse, jaw * (1.0 - lips) * uLookGroom.y * grain * 0.88);
 }
 #endif
 `;
