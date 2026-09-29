@@ -58,6 +58,7 @@ class RoomConfig:
     final_delivery_timeout_seconds: float = 1.0
     max_catch_up_ticks: int = 4
     max_inputs_per_second: int = 60
+    max_input_frames_per_second: int = 180
     outbound_queue_size: int = 16
     max_spectators: int = 20
     engine_config: EngineConfig = field(default_factory=EngineConfig)
@@ -83,6 +84,8 @@ class RoomConfig:
             raise ValueError("room durations are invalid")
         if self.max_spectators < 0:
             raise ValueError("spectator bound must not be negative")
+        if self.max_input_frames_per_second < self.max_inputs_per_second:
+            raise ValueError("input frame bound must not be below the accepted input bound")
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +115,7 @@ class PlayerSlot:
     grace_remaining: float
     last_sequence: int = -1
     input_times: deque[float] = field(default_factory=deque)
+    frame_times: deque[float] = field(default_factory=deque)
     reconnect_deadline: float | None = None
     pre_match_grace_event: asyncio.Event = field(default_factory=asyncio.Event)
     pre_match_grace_task: asyncio.Task[None] | None = None
@@ -572,10 +576,17 @@ class HandsRoom:
             if engine is None:
                 raise RoomError("match_not_started")
             now = self._clock()
+            while slot.frame_times and slot.frame_times[0] <= now - 1.0:
+                slot.frame_times.popleft()
+            if len(slot.frame_times) >= self.config.max_input_frames_per_second:
+                raise RoomError("rate_limited")
+            slot.frame_times.append(now)
             while slot.input_times and slot.input_times[0] <= now - 1.0:
                 slot.input_times.popleft()
             if len(slot.input_times) >= self.config.max_inputs_per_second:
-                raise RoomError("rate_limited")
+                # A stalled connection delivers its backlog in one burst; the excess is ignored
+                # rather than ending the bout. Only a flood far beyond that disconnects.
+                return
             if any(current.connection is None for current in self._slots.values()):
                 slot.input_times.append(now)
                 return

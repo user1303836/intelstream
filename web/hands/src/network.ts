@@ -35,6 +35,9 @@ const OPEN = 1;
 const NEUTRAL_INPUT: InputFrame = { moveX: 0, moveY: 0, defense: "none", actions: [] };
 const INPUT_FLUSH_MS = 33;
 const MIN_EDGE_SEND_GAP_MS = 8;
+/** The server accepts 60 inputs a second; staying under it leaves room for frames the network bunches together. */
+const MAX_SENDS_PER_SECOND = 50;
+const MAX_EDGE_SENDS_PER_SECOND = 44;
 
 export class NetworkController {
   private socket: SocketLike | null = null;
@@ -58,6 +61,7 @@ export class NetworkController {
   private inputSuppressed = false;
   private listenersBound = false;
   private lastInputSentAt = -Infinity;
+  private readonly sendTimes: number[] = [];
 
   constructor(
     ticket: string,
@@ -86,7 +90,15 @@ export class NetworkController {
   /** Sends the pending input frame on the action edge instead of waiting for the periodic flush. */
   notifyAction(): void {
     if (this.now() - this.lastInputSentAt < MIN_EDGE_SEND_GAP_MS) return;
+    // Past the budget the press stays queued and leaves with the next periodic flush.
+    if (this.sendsInLastSecond() >= MAX_EDGE_SENDS_PER_SECOND) return;
     this.flushInput();
+  }
+
+  private sendsInLastSecond(): number {
+    const cutoff = this.now() - 1000;
+    while (this.sendTimes.length > 0 && this.sendTimes[0]! <= cutoff) this.sendTimes.shift();
+    return this.sendTimes.length;
   }
 
   private readonly onInputLoss = (): void => {
@@ -275,6 +287,7 @@ export class NetworkController {
       if (this.sentAt.size > 128) this.sentAt.delete(this.sentAt.keys().next().value!);
       this.nextSequence += 1;
       this.lastInputSentAt = this.now();
+      this.sendTimes.push(this.lastInputSentAt);
     } catch {
       this.handleClose(socket);
     }
@@ -282,6 +295,7 @@ export class NetworkController {
 
   private flushInput(): void {
     if (this.inputSuppressed || document.hidden || !document.hasFocus()) return;
+    if (this.sendsInLastSecond() >= MAX_SENDS_PER_SECOND) return;
     this.sendInput(this.getInput());
   }
 

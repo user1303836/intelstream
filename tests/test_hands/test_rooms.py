@@ -77,6 +77,7 @@ def room_config(
         final_delivery_timeout_seconds=final_delivery_timeout,
         max_catch_up_ticks=max_catch_up_ticks,
         max_inputs_per_second=5,
+        max_input_frames_per_second=8,
         outbound_queue_size=outbound_size,
         max_spectators=max_spectators,
         engine_config=EngineConfig(
@@ -396,11 +397,19 @@ async def test_input_protocol_rate_sequence_and_queue_bounds(repository: Reposit
             one.connection,
             encode_client_input(InputCommand(sequence=sequence, client_tick=tick)),
         )
+    accepted = engine.fighter("one").last_sequence
+    await one.room.submit_frame(
+        "one",
+        one.connection,
+        encode_client_input(InputCommand(sequence=6, client_tick=engine.tick, move_x=1000)),
+    )
+    assert engine.fighter("one").last_sequence == accepted
+    assert engine.fighter("one").held_input.move_x == 0
     with pytest.raises(RoomError, match="rate_limited"):
         await one.room.submit_frame(
             "one",
             one.connection,
-            encode_client_input(InputCommand(sequence=6, client_tick=engine.tick)),
+            encode_client_input(InputCommand(sequence=7, client_tick=engine.tick)),
         )
     await manager.close()
 
@@ -450,7 +459,7 @@ async def test_paused_room_discards_inputs_without_advancing_authority(
     assert not engine.fighter("one").pending_actions
     checksum = engine.snapshot().checksum
 
-    for sequence in range(5):
+    for sequence in range(8):
         await connected.room.submit_frame(
             "two",
             connected.connection,
@@ -462,7 +471,7 @@ async def test_paused_room_discards_inputs_without_advancing_authority(
         await connected.room.submit_frame(
             "two",
             connected.connection,
-            encode_client_input(InputCommand(sequence=5, client_tick=engine.tick, move_x=1000)),
+            encode_client_input(InputCommand(sequence=8, client_tick=engine.tick, move_x=1000)),
         )
     assert engine.snapshot().checksum == checksum
     assert engine.fighter("two").last_sequence == -1
