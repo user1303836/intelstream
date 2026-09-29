@@ -11,7 +11,7 @@ import { predictMovement, type HeldInput } from "../prediction";
 import type { BloodLevel, Settings } from "../settings";
 import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, Hand, MatchResult, PublicPlayer, PunchClass, SemanticAction, SimulationInfo } from "../types";
 import { buildArena, type BuiltArena } from "./arena";
-import { CameraDirector } from "./camera";
+import { CameraDirector, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE, cornerFrame, cornerPoint, cornerShot, cornerShotProgress } from "./camera";
 import { Effects3D, type BakedPart } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, type ArcadeDislocation } from "./graph";
 import { drawHud, finalRevealDelay, RoundStatsTracker, STOPPAGE_METHODS } from "./hud";
@@ -67,8 +67,8 @@ const LOW_TIER_SCALE = 0.56;
 const ROUND_CALLOUT_SECONDS = 1.8;
 const FINISH_CLOSE_UP_SECONDS = 1.7;
 const CORNERMAN_APRON_DISTANCE = 3.42;
+const CORNERMAN_WORK_DISTANCE = 2.95;
 const CUTMAN_WALK_SECONDS = 1.6;
-const CUTMAN_WORK_DISTANCE = 0.62;
 // Broadcast finish: a soft vignette and a whisper of grain, applied before tone mapping.
 const BROADCAST_FINISH_SHADER = {
   uniforms: { tDiffuse: { value: null }, uTime: { value: 0 }, uVignette: { value: 0.32 }, uGrain: { value: 0.035 } },
@@ -363,6 +363,8 @@ export class FightRenderer {
   private readonly cutmanProgress = [0, 0];
   private readonly cutmanFrom = new THREE.Vector3();
   private readonly cutmanTo = new THREE.Vector3();
+  private readonly cutmanEye = new THREE.Vector3();
+  private readonly cutmanFacing = new THREE.Vector3();
   private readonly cutmanLast = [new THREE.Vector3(), new THREE.Vector3()];
   private readonly refereePosition = new THREE.Vector3(0.4, 0, -2.1);
   private readonly refereeVelocity = new THREE.Vector3();
@@ -415,6 +417,9 @@ export class FightRenderer {
   private finalRevealAt = 0;
   private portraitPull = 1;
   private lastPhase: string | null = null;
+  private restStartedAt = 0;
+  private readonly cornerPosition = new THREE.Vector3();
+  private readonly cornerLookAt = new THREE.Vector3();
   private finishCloseUpUntil = 0;
   private finishCloseUpIndex = -1;
   private readonly closeUpPosition = new THREE.Vector3();
@@ -637,6 +642,17 @@ export class FightRenderer {
     if (final.winner_id === null) return;
     const index = fighters?.findIndex((fighter) => fighter.player_id === final.winner_id) ?? -1;
     if (index >= 0) this.graphs?.[index]?.celebrate();
+  }
+
+  /** Between rounds the broadcast cuts to each corner in turn, the viewer's own first, once its fighter is seated. */
+  private cornerShotFrame(seconds: number, snapshot: EngineSnapshot | null, reducedMotion: boolean): { position: THREE.Vector3; lookAt: THREE.Vector3 } | null {
+    if (snapshot === null || snapshot.phase !== "rest" || reducedMotion || this.graphs === null) return null;
+    const viewer = snapshot.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
+    const elapsed = seconds - this.restStartedAt;
+    const index = cornerShot(elapsed, snapshot.phase_ticks_remaining / this.simulation.tick_rate, viewer === 1 ? 1 : 0);
+    if (index === null || !this.graphs[index].stoolVisible) return null;
+    cornerFrame(index, this.mapping.x(REST_CORNER_OFFSET), cornerShotProgress(elapsed), this.cornerPosition, this.cornerLookAt);
+    return { position: this.cornerPosition, lookAt: this.cornerLookAt };
   }
 
   /** A short high three-quarter close-up on the beaten fighter's face, or on the head where it came to rest, before the result panel. */
@@ -1180,6 +1196,7 @@ export class FightRenderer {
           this.roundCalloutUntil = seconds + ROUND_CALLOUT_SECONDS;
           this.roundCalloutRound = snapshot.round_number;
         }
+        if (snapshot.phase === "rest" && this.lastPhase !== "rest") this.restStartedAt = seconds;
         this.lastPhase = snapshot.phase;
         graphs[0].update(a, b, dt, seconds, current.reducedMotion, current.blood, sampledTick, headB);
         graphs[1].update(b, a, dt, seconds, current.reducedMotion, current.blood, sampledTick, headA);
@@ -1264,7 +1281,7 @@ export class FightRenderer {
       current.reducedMotion,
     );
     const replaying = this.replay;
-    const frame = this.cameraOverride ?? (replaying !== null && snapshot !== null ? this.replayFrame(snapshot, seconds - replaying.startedAt) : (this.closeUpFrame(seconds) ?? directed));
+    const frame = this.cameraOverride ?? (replaying !== null && snapshot !== null ? this.replayFrame(snapshot, seconds - replaying.startedAt) : (this.closeUpFrame(seconds) ?? this.cornerShotFrame(seconds, snapshot, current.reducedMotion) ?? directed));
     if (this.cameraOverride === null && this.portraitPull > 1) {
       const distanceScale = this.portraitPull / Math.min(1.3, Math.sqrt(this.portraitPull));
       this.tmpCamera.subVectors(frame.position, frame.lookAt).multiplyScalar(distanceScale);
@@ -1377,7 +1394,7 @@ export class FightRenderer {
     const resting = snapshot?.phase === "rest";
     for (const [index, graph] of cornermen.entries()) {
       const sign = index === 0 ? -1 : 1;
-      const reach = resting ? CORNERMAN_APRON_DISTANCE - 0.22 : CORNERMAN_APRON_DISTANCE;
+      const reach = resting ? CORNERMAN_WORK_DISTANCE : CORNERMAN_APRON_DISTANCE;
       this.cornermanPosition.set(sign * reach, 0, -sign * reach);
       const yaw = index === 0 ? (3 * Math.PI) / 4 : -Math.PI / 4;
       graph.attend(resting);
@@ -1403,7 +1420,7 @@ export class FightRenderer {
       graph.boxer.root.visible = next > 0.005;
       if (!graph.boxer.root.visible) continue;
       this.cutmanFrom.set(sign * CORNERMAN_APRON_DISTANCE, 0, -sign * (CORNERMAN_APRON_DISTANCE - 1));
-      this.cutmanTo.set(sign * (corner - CUTMAN_WORK_DISTANCE * Math.SQRT1_2), 0, -sign * (corner - CUTMAN_WORK_DISTANCE * Math.SQRT1_2));
+      cornerPoint(index === 0 ? 0 : 1, corner, CUTMAN_WORK_DISTANCE, CUTMAN_WORK_DEGREES, this.cutmanTo);
       const eased = next * next * (3 - 2 * next);
       this.cornermanPosition.copy(this.cutmanFrom).lerp(this.cutmanTo, eased);
       const last = this.cutmanLast[index]!;
@@ -1411,14 +1428,25 @@ export class FightRenderer {
       this.cornermanVelocity.copy(this.cornermanPosition).sub(last).divideScalar(Math.max(dt, 1e-3));
       last.copy(this.cornermanPosition);
       const travelling = next > 0.02 && next < 0.98;
+      const head = this.headCacheValid[index] ? this.headCache[index]! : null;
       const yaw = travelling
         ? Math.atan2(this.cutmanTo.x - this.cutmanFrom.x, this.cutmanTo.z - this.cutmanFrom.z) + (wanted === 1 ? 0 : Math.PI)
         : next >= 0.98
-          ? Math.atan2(sign, -sign)
+          ? (head !== null ? Math.atan2(head.x - this.cutmanTo.x, head.z - this.cutmanTo.z) : Math.atan2(sign, -sign))
           : Math.atan2(-this.cutmanFrom.x, -this.cutmanFrom.z);
       const trauma = snapshot?.fighters[index]?.trauma;
       const side = trauma !== undefined && trauma.right_eye + trauma.right_cut > trauma.left_eye + trauma.left_cut ? -1 : 1;
-      graph.treat(next >= 0.98 && this.headCacheValid[index] ? this.headCache[index]! : null, side);
+      if (next >= 0.98 && head !== null) {
+        const fighterYaw = graphs[index]!.boxer.root.rotation.y;
+        this.cutmanFacing.set(Math.sin(fighterYaw), 0, Math.cos(fighterYaw));
+        this.cutmanEye.copy(head).addScaledVector(this.cutmanFacing, 0.09);
+        this.cutmanEye.x += Math.cos(fighterYaw) * side * 0.035;
+        this.cutmanEye.z -= Math.sin(fighterYaw) * side * 0.035;
+        this.cutmanEye.y += 0.08;
+        graph.treat(this.cutmanEye, this.cutmanFacing, side);
+      } else {
+        graph.treat(null);
+      }
       const state = refereeSnapshot(this.cornermanPosition, yaw, this.cornermanVelocity, this.mapping);
       graph.update(state.self, state.focus, dt, time, false, "off", sampledTick);
     }

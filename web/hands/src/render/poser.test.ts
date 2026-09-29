@@ -216,11 +216,11 @@ describe("taunt", () => {
 describe("cutman", () => {
   it("crouches before the seated fighter, presses the enswell on the eye, and stands back up when done", () => {
     const { boxer, graph } = makeGraph();
-    const eye = new THREE.Vector3(0, 1.1, 0.55);
-    graph.treat(eye, 1);
+    const eye = new THREE.Vector3(0.03, 1.18, 0.5);
+    graph.treat(eye, new THREE.Vector3(0, 0, -1), 1);
     run(graph, facingOpponent(baseFighter("one")), opponentFor("two"), 90, undefined);
     const glove = bone(boxer, "gloveL");
-    expect(glove.distanceTo(new THREE.Vector3(eye.x - 0.035, eye.y + 0.01, eye.z - 0.17))).toBeLessThan(0.1);
+    expect(glove.distanceTo(new THREE.Vector3(eye.x, eye.y - 0.07, eye.z - 0.08))).toBeLessThan(0.1);
     expect(bone(boxer, "hips").y).toBeLessThan(0.7);
     expect(boxer.rig.bones.gloveL.getObjectByName("enswell")?.visible).toBe(true);
     graph.treat(null);

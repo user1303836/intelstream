@@ -331,6 +331,8 @@ export class BoxingGraph {
   private readonly enswell: { group: THREE.Group; dispose: () => void };
   private readonly treatTarget = new THREE.Vector3();
   private readonly treatScratch = new THREE.Vector3();
+  private readonly treatFacing = new THREE.Vector3(0, 0, -1);
+  private readonly treatFacingLocal = new THREE.Vector3();
   private treatSide = 1;
   private treating = false;
   private treatWeight = 0;
@@ -455,13 +457,16 @@ export class BoxingGraph {
     this.attending = active;
   }
 
-  /** Cutman: crouch before a seated fighter and press the enswell on the eye at `head` (world); `side` 1 is the fighter's left eye. */
-  treat(head: THREE.Vector3 | null, side = 1): void {
-    this.treating = head !== null;
-    if (head !== null) {
-      this.treatTarget.copy(head);
-      this.treatSide = side;
-    }
+  /**
+   * Cutman: crouch by a seated fighter and press the enswell on the eye at `eye` (world). `facing` is
+   * the direction the fighter's face points and `side` is 1 when the eye is the fighter's left.
+   */
+  treat(eye: THREE.Vector3 | null, facing?: THREE.Vector3, side = 1): void {
+    this.treating = eye !== null;
+    if (eye === null) return;
+    this.treatTarget.copy(eye);
+    if (facing !== undefined) this.treatFacing.copy(facing);
+    this.treatSide = side;
   }
 
   /** Referee break: both arms push out and apart at chest height to separate a clinch. */
@@ -1405,18 +1410,19 @@ export class BoxingGraph {
     const torso = this.torso;
     const lerp = THREE.MathUtils.lerp;
     const rootPosition = this.treatScratch.set(this.rootX ?? 0, 0, this.rootZ);
-    const eye = seatedScratch.copy(this.treatTarget).sub(rootPosition).applyQuaternion(this.scratchQ.setFromAxisAngle(worldUpVector, -this.yaw));
-    eye.x -= this.treatSide * 0.035;
-    eye.y += 0.08;
-    eye.z -= 0.09;
+    const inverse = this.scratchQ.setFromAxisAngle(worldUpVector, -this.yaw);
+    const eye = seatedScratch.copy(this.treatTarget).sub(rootPosition).applyQuaternion(inverse);
+    const facing = this.treatFacingLocal.copy(this.treatFacing).applyQuaternion(inverse);
+    const leftX = facing.z;
+    const leftZ = -facing.x;
     const press = Math.sin(time * 2.6) * 0.006;
     torso.hips.lerp(this.treatScratch.set(0, 0.62, 0.04), blend);
     torso.hipsYaw = lerp(torso.hipsYaw, 0, blend);
-    torso.hipsPitch = lerp(torso.hipsPitch, 0.32, blend);
+    torso.hipsPitch = lerp(torso.hipsPitch, 0.22, blend);
     torso.hipsRoll = lerp(torso.hipsRoll, 0, blend);
     torso.shouldersYaw = lerp(torso.shouldersYaw, 0, blend);
-    torso.spinePitch = lerp(torso.spinePitch, 0.38, blend);
-    torso.headPitch = lerp(torso.headPitch, 0.3, blend);
+    torso.spinePitch = lerp(torso.spinePitch, 0.3, blend);
+    torso.headPitch = lerp(torso.headPitch, 0.2, blend);
     lead.position.x = lerp(lead.position.x, 0.24 * mirror, blend);
     lead.position.z = lerp(lead.position.z, 0.14, blend);
     rear.position.x = lerp(rear.position.x, -0.2 * mirror, blend);
@@ -1426,13 +1432,15 @@ export class BoxingGraph {
     rear.toe.lerp(this.treatScratch.set(-0.1 * mirror, 0, 1), blend).normalize();
     lead.pole.lerp(this.treatScratch.set(0.25 * mirror, 0.4, 1), blend).normalize();
     rear.pole.lerp(this.treatScratch.set(-0.2 * mirror, 0.4, 1), blend).normalize();
-    leadHand.position.lerp(this.treatScratch.set(eye.x, eye.y - 0.07 + press, eye.z - 0.08), blend);
+    const reach = 0.08 - press;
+    leadHand.position.lerp(this.treatScratch.set(eye.x + facing.x * reach, eye.y - 0.07, eye.z + facing.z * reach), blend);
     leadHand.knuckles.lerp(this.treatScratch.set(0, 1, 0.05), blend).normalize();
-    leadHand.palm.lerp(this.treatScratch.set(0, 0, 1), blend).normalize();
+    leadHand.palm.lerp(this.treatScratch.set(-facing.x, 0, -facing.z), blend).normalize();
     leadHand.pole.lerp(this.treatScratch.set(0.85 * mirror, -0.35, 0.1), blend).normalize();
-    rearHand.position.lerp(this.treatScratch.set(eye.x + this.treatSide * 0.13, eye.y - 0.2, eye.z - 0.03), blend);
+    const jaw = this.treatSide * 0.135;
+    rearHand.position.lerp(this.treatScratch.set(eye.x - leftX * jaw + facing.x * 0.05, eye.y - 0.2, eye.z - leftZ * jaw + facing.z * 0.05), blend);
     rearHand.knuckles.lerp(this.treatScratch.set(0, 0.9, 0.4), blend).normalize();
-    rearHand.palm.lerp(this.treatScratch.set(-this.treatSide * 0.8, 0.1, 0.6), blend).normalize();
+    rearHand.palm.lerp(this.treatScratch.set(leftX * this.treatSide * 0.8 - facing.x * 0.6, 0.1, leftZ * this.treatSide * 0.8 - facing.z * 0.6), blend).normalize();
     rearHand.pole.lerp(this.treatScratch.set(-0.85 * mirror, -0.4, 0.1), blend).normalize();
   }
 

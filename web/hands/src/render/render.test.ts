@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { punchTiming, totalTicks } from "../manifest";
 import { buildArena } from "./arena";
-import { CameraDirector } from "./camera";
+import { CameraDirector, cornerFrame, cornerPoint, cornerShot, cornerShotProgress, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE } from "./camera";
 import { bloodPatternFor, Effects3D } from "./effects";
 import { decisionLabel, drawHud, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
 import { buildRing, ropePress } from "./ring";
@@ -639,5 +639,51 @@ describe("topPanelOffset", () => {
     expect(top(1280, 720)).toBeCloseTo(72);
     expect(top(844, 390)).toBeCloseTo(56);
     expect(top(390, 844)).toBeCloseTo(96);
+  });
+});
+
+describe("corner shots", () => {
+  it("stays wide while the fighters walk over and before the bell, then alternates corners starting with the viewer's", () => {
+    expect(cornerShot(1, 14, 0)).toBeNull();
+    expect(cornerShot(3, 12, 0)).toBe(0);
+    expect(cornerShot(3, 12, 1)).toBe(1);
+    expect(cornerShot(8.5, 6.5, 0)).toBe(1);
+    expect(cornerShot(13.6, 1.4, 0)).toBeNull();
+    expect(cornerShotProgress(3)).toBeCloseTo(0.5);
+    expect(cornerShotProgress(8.5)).toBeCloseTo(0.5);
+  });
+
+  it("shoots each corner from inside the ropes, mirrored, looking at the stool", () => {
+    const position = new THREE.Vector3();
+    const lookAt = new THREE.Vector3();
+    cornerFrame(1, 2.56, 0, position, lookAt);
+    expect(Math.abs(position.x)).toBeLessThan(3.05);
+    expect(Math.abs(position.z)).toBeLessThan(3.05);
+    expect(position.distanceTo(new THREE.Vector3(2.56, 1, -2.56))).toBeGreaterThan(2);
+    expect(position.distanceTo(new THREE.Vector3(2.56, 1, -2.56))).toBeLessThan(2.9);
+    expect(lookAt.distanceTo(new THREE.Vector3(2.56, 1, -2.56))).toBeLessThan(0.8);
+    const mirrored = new THREE.Vector3();
+    cornerFrame(0, 2.56, 0, mirrored, lookAt);
+    expect(mirrored.x).toBeCloseTo(-position.x);
+    expect(mirrored.z).toBeCloseTo(-position.z);
+  });
+});
+
+describe("corner staging", () => {
+  it("puts the cutman on the fighter's left and the camera on the right, both inside the ropes", () => {
+    const cutman = cornerPoint(1, 2.56, CUTMAN_WORK_DISTANCE, CUTMAN_WORK_DEGREES, new THREE.Vector3());
+    const camera = new THREE.Vector3();
+    const lookAt = new THREE.Vector3();
+    cornerFrame(1, 2.56, 0, camera, lookAt);
+    for (const point of [cutman, camera]) {
+      expect(Math.abs(point.x)).toBeLessThan(2.6);
+      expect(Math.abs(point.z)).toBeLessThan(2.6);
+    }
+    const stool = new THREE.Vector3(2.56, 0, -2.56);
+    const forward = new THREE.Vector3(-1, 0, 1).normalize();
+    const left = new THREE.Vector3(forward.z, 0, -forward.x);
+    expect(cutman.clone().sub(stool).dot(left)).toBeGreaterThan(0.2);
+    expect(camera.clone().setY(0).sub(stool).dot(left)).toBeLessThan(-0.8);
+    expect(cutman.distanceTo(stool)).toBeCloseTo(CUTMAN_WORK_DISTANCE);
   });
 });

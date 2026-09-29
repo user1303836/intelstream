@@ -9,6 +9,48 @@ export interface CameraFrame {
   readonly lookAt: THREE.Vector3;
 }
 
+export const CORNER_SHOT_LEAD_SECONDS = 2.5;
+export const CORNER_SHOT_TAIL_SECONDS = 2;
+export const CORNER_SHOT_SECONDS = 5.5;
+
+/** Which corner the broadcast cuts to during the rest, or null for the wide shot while the fighters walk over and before the bell. */
+export function cornerShot(elapsedSeconds: number, remainingSeconds: number, firstCorner: 0 | 1): 0 | 1 | null {
+  if (elapsedSeconds < CORNER_SHOT_LEAD_SECONDS || remainingSeconds < CORNER_SHOT_TAIL_SECONDS) return null;
+  const segment = Math.floor((elapsedSeconds - CORNER_SHOT_LEAD_SECONDS) / CORNER_SHOT_SECONDS);
+  return ((firstCorner + segment) % 2) as 0 | 1;
+}
+
+/** Seconds into the current corner shot, for its slow drift. */
+export function cornerShotProgress(elapsedSeconds: number): number {
+  return Math.max(0, elapsedSeconds - CORNER_SHOT_LEAD_SECONDS) % CORNER_SHOT_SECONDS;
+}
+
+export const CUTMAN_WORK_DISTANCE = 0.95;
+export const CUTMAN_WORK_DEGREES = 32;
+const CORNER_CAMERA_DISTANCE = 2.6;
+const CORNER_CAMERA_DEGREES = -25;
+
+/**
+ * Point `distance` metres from a corner stool, swung `degrees` off the diagonal the seated fighter
+ * faces (positive toward the fighter's left). `corner` is the stool's distance from centre along each axis.
+ */
+export function cornerPoint(index: 0 | 1, corner: number, distance: number, degrees: number, out: THREE.Vector3): THREE.Vector3 {
+  const sign = index === 0 ? -1 : 1;
+  const angle = (degrees * Math.PI) / 180;
+  const forwardX = -sign * Math.SQRT1_2;
+  const forwardZ = sign * Math.SQRT1_2;
+  const x = forwardX * Math.cos(angle) + forwardZ * Math.sin(angle);
+  const z = -forwardX * Math.sin(angle) + forwardZ * Math.cos(angle);
+  return out.set(sign * corner + x * distance, 0, -sign * corner + z * distance);
+}
+
+/** Three-quarter shot from inside the ropes: the cutman works from the fighter's left, the camera shoots from the right. */
+export function cornerFrame(index: 0 | 1, corner: number, shotSeconds: number, position: THREE.Vector3, lookAt: THREE.Vector3): void {
+  const drift = Math.min(1, shotSeconds / CORNER_SHOT_SECONDS) * 5;
+  cornerPoint(index, corner, CORNER_CAMERA_DISTANCE, CORNER_CAMERA_DEGREES + drift, position).setY(1.45);
+  cornerPoint(index, corner, 0.62, 27, lookAt).setY(1.05);
+}
+
 export class CameraDirector {
   private readonly current = new THREE.Vector3(0, BASE_HEIGHT, BASE_DISTANCE);
   private readonly look = new THREE.Vector3(0, LOOK_HEIGHT, 0);

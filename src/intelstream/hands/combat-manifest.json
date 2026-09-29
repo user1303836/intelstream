@@ -165,7 +165,7 @@
     }
   },
   "rest": {
-    "corner_offset": 420,
+    "corner_offset": 365,
     "walk_speed": 5
   },
   "clinch": {

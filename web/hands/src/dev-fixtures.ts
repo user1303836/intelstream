@@ -1,3 +1,4 @@
+import { REST_CORNER_OFFSET } from "./manifest";
 import * as THREE from "three";
 import { SharedActionIntent } from "./input/action-buffer";
 import { TouchInput, coarsePointer } from "./input/touch";
@@ -116,8 +117,8 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
     }
     if (forcedRest) {
       for (const [fighter, sign] of [[one, -1], [two, 1]] as const) {
-        fighter.x = sign * 420;
-        fighter.y = sign * 420;
+        fighter.x = sign * REST_CORNER_OFFSET;
+        fighter.y = sign * REST_CORNER_OFFSET;
         fighter.velocity_x = fighter.velocity_y = 0;
         fighter.facing_x = fighter.facing_y = -sign * 707;
         fighter.facing = -sign;

@@ -419,7 +419,7 @@ export function drawHud(
       .filter(({ stats }) => stats.thrown > 0 || stats.landed > 0)
       .map(({ name, stats }) => `${fit(ctx, name, width * 0.22)} ${stats.landed}/${stats.thrown}`)
       .join("  ·  ");
-    centerPanel(ctx, width, height, "CORNERS · RECOVER", statsLine.length > 0 ? `Landed this round: ${statsLine}` : "Conditioning governs recovery");
+    centerPanel(ctx, width, height, "CORNERS · RECOVER", statsLine.length > 0 ? `Landed this round: ${statsLine}` : "Conditioning governs recovery", topPanelOffset(width, height));
   }
   if (reconnectMs > 0) {
     centerPanel(ctx, width, height, `OPPONENT RECONNECTING · ${Math.ceil(reconnectMs / 1000)}s`, "The bout is paused");
