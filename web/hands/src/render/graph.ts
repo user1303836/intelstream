@@ -846,18 +846,7 @@ export class BoxingGraph {
       leadHand.pole.set(0.6 * mirror, -0.6, 0.5);
       rearHand.pole.set(-0.6 * mirror, -0.6, 0.5);
     }
-    if (this.tauntWeight > 0.001) {
-      const t = this.tauntWeight;
-      const beat = ((60 - fighter.taunt_ticks) / 60) * 4;
-      const swing = Math.sin(beat * Math.PI * 2) * 0.5 + 0.5;
-      leadHand.position.lerp(this.scratch.set(0.3 * mirror, headRest.y - 0.32 + swing * 0.12, 0.42), t);
-      rearHand.position.lerp(this.scratch.set(-0.3 * mirror, headRest.y - 0.3 + (1 - swing) * 0.12, 0.4), t);
-      leadHand.palm.set(0, 0.6, 0.8);
-      rearHand.palm.set(0, 0.6, 0.8);
-      torso.headPitch -= t * 0.1;
-      torso.headYaw += Math.sin(beat * Math.PI) * 0.2 * t;
-      torso.spinePitch -= t * 0.1;
-    }
+    if (this.tauntWeight > 0.001) this.applyTauntPose(this.tauntWeight, ((60 - fighter.taunt_ticks) / 60) * 4, mirror, leadHand, rearHand, headRest);
 
     // Exhaustion and stun on guard.
     if (this.dislocation === "shoulder_left" || this.dislocation === "shoulder_right") {
@@ -895,6 +884,29 @@ export class BoxingGraph {
     applyHeadTrauma(boxer.headInjury, fighter.trauma, blood);
     applyBodyTrauma(boxer.bodyInjury, fighter.trauma, blood);
     boxer.setSkinClearcoat(0.25 + (1 - stamina) * 0.4);
+  }
+
+  /**
+   * Showboat: the rear glove drops to the hip with the chest out and chin up
+   * while the lead glove beckons the opponent in, palm up, twice per taunt.
+   */
+  private applyTauntPose(t: number, beat: number, mirror: number, leadHand: HandTarget, rearHand: HandTarget, headRest: THREE.Vector3): void {
+    const torso = this.torso;
+    const curl = 0.5 - 0.5 * Math.cos(beat * Math.PI * 2);
+    rearHand.position.lerp(this.scratch.set(-0.3 * mirror, headRest.y - 0.62, 0.02), t);
+    rearHand.pole.lerp(this.scratch.set(-0.5 * mirror, -0.4, -0.75), t).normalize();
+    rearHand.knuckles.lerp(this.scratch.set(-0.1 * mirror, -0.95, 0.3), t).normalize();
+    rearHand.palm.lerp(this.scratch.set(0, 0.3, 0.95), t).normalize();
+    leadHand.position.lerp(this.scratch.set(0.26 * mirror, headRest.y - 0.36 + curl * 0.1, 0.52 - curl * 0.24), t);
+    leadHand.pole.lerp(this.scratch.set(0.7 * mirror, -0.7, 0.1), t).normalize();
+    leadHand.knuckles.lerp(this.scratch.set(0.1 * mirror, 0.25 + curl * 0.6, 0.95 - curl * 0.7), t).normalize();
+    leadHand.palm.lerp(this.scratch.set(-0.2 * mirror, 0.95, -0.2 - curl * 0.5), t).normalize();
+    torso.spinePitch -= t * 0.12;
+    torso.headPitch -= t * 0.22;
+    torso.headYaw += Math.sin(beat * Math.PI) * 0.15 * t;
+    torso.shouldersYaw += Math.sin(beat * Math.PI * 3) * 0.1 * t;
+    torso.hips.x += Math.sin(beat * Math.PI) * 0.03 * t * mirror;
+    torso.headOffset.z += t * 0.03;
   }
 
   /**

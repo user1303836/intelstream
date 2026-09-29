@@ -199,6 +199,20 @@ describe("root follow", () => {
   });
 });
 
+describe("taunt", () => {
+  it("drops the rear glove to the hip and beckons with the lead glove out front", () => {
+    const { boxer, graph } = makeGraph();
+    const taunting = { ...facingOpponent(baseFighter("one")), taunt_ticks: 45 };
+    run(graph, taunting, opponentFor("two"), 45, undefined);
+    const left = bone(boxer, "gloveL");
+    const right = bone(boxer, "gloveR");
+    expect(right.y).toBeLessThan(1.05);
+    expect(right.z).toBeLessThan(0.2);
+    expect(left.y).toBeGreaterThan(right.y + 0.15);
+    expect(left.z).toBeGreaterThan(0.3);
+  });
+});
+
 describe("clinch hold", () => {
   it("ties up over the arms for the first-sorted fighter and under them for the other, heads to the right", () => {
     const clinched = (id: string): FighterSnapshot => ({ ...facingOpponent(baseFighter(id)), clinch_ticks: 30 });
