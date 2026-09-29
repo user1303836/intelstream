@@ -393,6 +393,34 @@ export class BoxingGraph {
     this.celebrateTime = seconds;
   }
 
+  /**
+   * Drops every transient animation state (falls, reactions, celebrations,
+   * smoothing) so the next update snaps to its snapshot; used around the
+   * knockout replay. `downed` seeds the lying pose instead of standing.
+   */
+  resetTransient(downed = false): void {
+    this.downState = downed ? "down" : "up";
+    this.fallAge = downed ? KNOCKDOWN_FALL_SECONDS : 0;
+    this.riseAge = 0;
+    this.hitstop = 0;
+    this.hitstopScale = 1;
+    for (const spring of [this.headKick, this.torsoKick, this.rootKick]) {
+      spring.value.set(0, 0, 0);
+      spring.velocity.set(0, 0, 0);
+    }
+    this.guardKick = 0;
+    this.stunAmount = 0;
+    this.celebrateTime = 0;
+    this.celebration = 0;
+    this.waveTime = 0;
+    this.wave = 0;
+    this.seated = 0;
+    this.stillTime = 0;
+    this.rootX = null;
+    this.yawInitialized = false;
+    this.feetInitialized = false;
+  }
+
   /** Referee wave-off: both arms sweep crossing overhead to call the fight. */
   waveOff(seconds = 2.6): void {
     this.waveTime = seconds;

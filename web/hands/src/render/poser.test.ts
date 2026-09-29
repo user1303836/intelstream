@@ -83,6 +83,24 @@ describe("fall direction", () => {
   });
 });
 
+describe("transient reset", () => {
+  it("snaps back to standing after a fall and can seed the lying pose directly", () => {
+    const { boxer, graph } = makeGraph();
+    const fighter = facingOpponent(baseFighter("one"));
+    const opponent = opponentFor("two");
+    run(graph, fighter, opponent, 10, undefined);
+    graph.react("hit", "head", 1, "uppercut", "right", 420);
+    run(graph, { ...fighter, is_downed: true }, opponent, 70, undefined, 5, 10 / 60);
+    expect(bone(boxer, "head").y).toBeLessThan(0.45);
+    graph.resetTransient(false);
+    run(graph, fighter, opponent, 3, undefined, 40, 80 / 60);
+    expect(bone(boxer, "hips").y).toBeGreaterThan(0.72);
+    graph.resetTransient(true);
+    run(graph, { ...fighter, is_downed: true }, opponent, 3, undefined, 42, 83 / 60);
+    expect(bone(boxer, "head").y).toBeLessThan(0.45);
+  });
+});
+
 describe("wave-off", () => {
   it("sweeps both gloves across overhead while waving the fight off", () => {
     const { boxer, graph } = makeGraph();

@@ -14,6 +14,7 @@ import { Effects3D, type BakedPart } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, type ArcadeDislocation } from "./graph";
 import { drawHud, finalRevealDelay, RoundStatsTracker, STOPPAGE_METHODS } from "./hud";
 import { ResolutionScaler } from "./quality";
+import { planKnockoutReplay, replayTick, type ReplayPlan } from "./replay";
 
 export type ArcadeInjury =
   | "decapitation"
@@ -58,6 +59,7 @@ export interface ContactPresentation {
 
 const isHit = (event: CombatEvent): boolean => event.kind === "hit" || event.kind === "counter_hit";
 const isBlock = (event: CombatEvent): boolean => event.kind === "block" || event.kind === "perfect_block";
+const HISTORY_LIMIT = 480;
 const CROWD_EXCITEMENT: Readonly<Record<string, number>> = { hit: 0.18, counter_hit: 0.3, guard_break: 0.25, knockdown: 1, block: 0.04, perfect_block: 0.1 };
 
 function pairedBlock(event: CombatEvent, events: readonly CombatEvent[]): CombatEvent | undefined {
@@ -289,6 +291,11 @@ export class FightRenderer {
   private portraitPull = 1;
   private readonly tmpCamera = new THREE.Vector3();
   private readonly roundStats = new RoundStatsTracker();
+  private readonly history: EngineSnapshot[] = [];
+  private lastKnockdown: { readonly knockdown: CombatEvent; readonly hit: CombatEvent | null } | null = null;
+  private replay: { readonly plan: ReplayPlan; readonly buffer: SnapshotBuffer; readonly startedAt: number; impactFired: boolean } | null = null;
+  private readonly replayCameraPosition = new THREE.Vector3();
+  private readonly replayLookAt = new THREE.Vector3();
   private frameSeconds = 0;
   private readonly pendingContacts: Array<{
     event: CombatEvent;
@@ -436,10 +443,84 @@ export class FightRenderer {
   setFinal(final: FinalMessage | null): void {
     this.final = final;
     this.finalRevealAt = this.frameSeconds + finalRevealDelay(final);
-    if (final === null || final.winner_id === null || !STOPPAGE_METHODS.has(final.method)) return;
+    if (final === null || !STOPPAGE_METHODS.has(final.method)) return;
+    const plan = this.lastKnockdown === null ? null : planKnockoutReplay(this.history, this.lastKnockdown.knockdown, this.simulation.tick_rate);
+    if (plan !== null && this.graphs !== null && !this.settings().reducedMotion) {
+      this.startReplay(plan);
+      return;
+    }
+    this.presentFinish(final);
+  }
+
+  private presentFinish(final: FinalMessage): void {
     this.referee?.waveOff();
+    if (final.winner_id === null) return;
     const index = this.buffer.latest()?.fighters.findIndex((fighter) => fighter.player_id === final.winner_id) ?? -1;
     if (index >= 0) this.graphs?.[index]?.celebrate();
+  }
+
+  /** Replays the recorded snapshots around the knockdown from a close camera before the result panel. */
+  private startReplay(plan: ReplayPlan): void {
+    const buffer = new SnapshotBuffer(plan.snapshots.length + 2, this.simulation.tick_rate);
+    for (const snapshot of plan.snapshots) buffer.push(snapshot);
+    this.replay = { plan, buffer, startedAt: this.frameSeconds, impactFired: false };
+    for (const graph of this.graphs ?? []) graph.resetTransient(false);
+    this.finalRevealAt = this.frameSeconds + plan.durationSeconds + finalRevealDelay(this.final);
+  }
+
+  private endReplay(): void {
+    this.replay = null;
+    const live = this.buffer.latest();
+    for (const [index, graph] of (this.graphs ?? []).entries()) graph.resetTransient(live?.fighters[index]?.is_downed === true);
+    if (this.final !== null) this.presentFinish(this.final);
+  }
+
+  private fireReplayImpact(snapshot: EngineSnapshot): void {
+    const record = this.lastKnockdown;
+    if (record === null) return;
+    const event = record.hit ?? { ...record.knockdown, kind: "hit", amount: 420, blood: 60 };
+    const { recipientIndex, puncherIndex } = contactParticipants(event, snapshot);
+    const recipient = snapshot.fighters[recipientIndex];
+    if (recipient === undefined) return;
+    this.tmpA.set(this.mapping.x(recipient.x), 0, this.mapping.z(recipient.y));
+    this.effects.addEvent(event, this.tmpA, this.settings().reducedMotion);
+    const puncher = puncherIndex >= 0 ? snapshot.fighters[puncherIndex] : undefined;
+    const keyParts = puncher?.action_key?.split(":") ?? [];
+    const punchClass = (keyParts[0] ?? null) as PunchClass | null;
+    const hand = (keyParts[1] ?? null) as Hand | null;
+    this.graphs?.[recipientIndex]?.react("hit", event.detail.endsWith(":body") ? "body" : "head", event.direction, punchClass, hand, Math.max(300, event.amount));
+    if (puncherIndex >= 0) this.graphs?.[puncherIndex]?.landedHit(false);
+    this.onContact?.(event);
+  }
+
+  private replayFrame(snapshot: EngineSnapshot, elapsed: number): { position: THREE.Vector3; lookAt: THREE.Vector3 } {
+    const [a, b] = snapshot.fighters;
+    const ax = this.mapping.x(a.x);
+    const az = this.mapping.z(a.y);
+    const bx = this.mapping.x(b.x);
+    const bz = this.mapping.z(b.y);
+    const midX = (ax + bx) / 2;
+    const midZ = (az + bz) / 2;
+    let nx = -(bz - az);
+    let nz = bx - ax;
+    const length = Math.hypot(nx, nz) || 1;
+    nx /= length;
+    nz /= length;
+    if (nz < 0) {
+      nx = -nx;
+      nz = -nz;
+    }
+    const orbit = 0.35 * Math.sin(elapsed * 0.7);
+    const dx = nx * Math.cos(orbit) - nz * Math.sin(orbit);
+    const dz = nx * Math.sin(orbit) + nz * Math.cos(orbit);
+    const distance = 2.5;
+    this.replayCameraPosition.set(
+      THREE.MathUtils.clamp(midX + dx * distance, -2.7, 2.7),
+      1.38 - Math.min(0.25, elapsed * 0.05),
+      THREE.MathUtils.clamp(midZ + dz * distance, -2.7, 2.7),
+    );
+    this.replayLookAt.set(midX, 1.28, midZ);
+    return { position: this.replayCameraPosition, lookAt: this.replayLookAt };
   }
 
   setReconnect(milliseconds: number): void {
@@ -545,7 +626,15 @@ export class FightRenderer {
   push(snapshot: EngineSnapshot): void {
     if (!this.buffer.push(snapshot, this.manualClock ? this.lastManualTime : performance.now())) return;
     const accepted = this.dedupe.accept(snapshot.events);
-    for (const event of accepted) this.roundStats.record(event);
+    this.history.push(snapshot);
+    if (this.history.length > HISTORY_LIMIT) this.history.shift();
+    for (const event of accepted) {
+      this.roundStats.record(event);
+      if (event.kind === "knockdown") {
+        const hit = accepted.find((candidate) => (candidate.kind === "hit" || candidate.kind === "counter_hit") && candidate.target_id === event.target_id) ?? null;
+        this.lastKnockdown = { knockdown: event, hit };
+      }
+    }
     for (const { event, presentationEvent, presentImpact } of contactPresentationPlan(accepted, snapshot)) {
       const targetIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.target_id);
       const actorIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.actor_id);
@@ -795,14 +884,28 @@ export class FightRenderer {
       dt *= 0.3 + 0.7 * (1 - eased);
     }
     this.viewerHitFlash = Math.max(0, this.viewerHitFlash - dt * 3.2);
-    const sampledTick = latest === null ? 0 : manual ? presentationTickFor(latest) : this.buffer.renderTick(time);
-    const snapshot = latest === null ? null : this.applyLocalPrediction(this.buffer.sample(sampledTick), dt);
+    let sampledTick = latest === null ? 0 : manual ? presentationTickFor(latest) : this.buffer.renderTick(time);
+    let snapshot = latest === null ? null : this.applyLocalPrediction(this.buffer.sample(sampledTick), dt);
+    const replay = this.replay;
+    if (replay !== null) {
+      const elapsed = seconds - replay.startedAt;
+      if (elapsed >= replay.plan.durationSeconds) {
+        this.endReplay();
+      } else {
+        sampledTick = replayTick(replay.plan, elapsed, this.simulation.tick_rate);
+        snapshot = replay.buffer.sample(sampledTick) ?? snapshot;
+        if (!replay.impactFired && sampledTick >= replay.plan.impact.tick && snapshot !== null) {
+          replay.impactFired = true;
+          this.fireReplayImpact(snapshot);
+        }
+      }
+    }
     let separation = 1.8;
     let knockdown = false;
     if (snapshot !== null) {
       const [a, b] = snapshot.fighters;
       for (const [index, fighter] of snapshot.fighters.entries()) {
-        if (this.arcadeInjuries[index] === null) continue;
+        if (this.arcadeInjuries[index] === null || this.replay !== null) continue;
         if (fighter.is_downed) this.observedInjuryDown[index] = true;
         else if (this.observedInjuryDown[index] && snapshot.result === null) this.restoreInjury(index);
       }
@@ -880,7 +983,7 @@ export class FightRenderer {
     if (this.followSpot !== null) {
       this.followSpot.target.position.set((this.tmpA.x + this.tmpB.x) / 2, 1.0, (this.tmpA.z + this.tmpB.z) / 2);
     }
-    const frame = this.cameraOverride ?? this.director.update(
+    const directed = this.director.update(
       dt,
       seconds,
       { x: this.tmpA.x, z: this.tmpA.z },
@@ -890,6 +993,8 @@ export class FightRenderer {
       this.effects.shakeAmount,
       current.reducedMotion,
     );
+    const replaying = this.replay;
+    const frame = this.cameraOverride ?? (replaying !== null && snapshot !== null ? this.replayFrame(snapshot, seconds - replaying.startedAt) : directed);
     if (this.cameraOverride === null && this.portraitPull > 1) {
       const distanceScale = this.portraitPull / Math.min(1.3, Math.sqrt(this.portraitPull));
       this.tmpCamera.subVectors(frame.position, frame.lookAt).multiplyScalar(distanceScale);
@@ -1000,7 +1105,7 @@ export class FightRenderer {
       ctx.fillStyle = vignette;
       ctx.fillRect(0, 0, viewport.width, viewport.height);
     }
-    drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.frameSeconds >= this.finalRevealAt ? this.final : null, this.reconnectMs, this.simulation.tick_rate, this.roundStats);
+    drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.frameSeconds >= this.finalRevealAt ? this.final : null, this.reconnectMs, this.simulation.tick_rate, this.roundStats, this.replay !== null ? "KNOCKOUT REPLAY" : null);
   }
 
   destroy(): void {
