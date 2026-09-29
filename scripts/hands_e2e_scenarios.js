@@ -8,7 +8,7 @@
  * keyboard or touch input, reads the client's screen-reader status text, and writes screenshots to
  * $TMPDIR/hands-e2e.
  *
- *   node scripts/hands_e2e_scenarios.js ko|reconnect|rest|spectator|touch|mash|latency|soak|background|rematch
+ *   node scripts/hands_e2e_scenarios.js ko|reconnect|rest|spectator|touch|mash|latency|soak|background|rematch|rematchloop
  */
 const { chromium, devices } = require('playwright');
 const { spawn } = require('node:child_process');
@@ -109,6 +109,7 @@ async function main() {
     soak: ['--rounds', '3', '--round-seconds', '120', '--rest-seconds', '15'],
     background: ['--rounds', '1', '--round-seconds', '60', '--rest-seconds', '5'],
     rematch: ['--rounds', '1', '--round-seconds', '25', '--rest-seconds', '5'],
+    rematchloop: ['--rounds', '1', '--round-seconds', '20', '--rest-seconds', '5'],
   }[scenario];
   const server = await startServer(serverArgs, { oneWayDelayMs: scenario === 'latency' ? 110 : 0 });
   try {
@@ -308,6 +309,32 @@ async function main() {
       note('second final A:', JSON.stringify(finalA?.final ?? null).slice(0, 120));
       const finalB = await waitFor(B.page, (s) => Boolean(s.final), 15000, 'second final on B');
       note('second final B:', JSON.stringify(finalB?.final ?? null).slice(0, 120));
+    }
+
+    if (scenario === 'rematchloop') {
+      const sample = (page) => page.evaluate(() => ({ heapMb: typeof performance.memory === 'object' && performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null, gpu: window.__handsApp?.networkStats?.gpu ?? null }));
+      const rematchReady = (page) => page.evaluate(() => { const b = document.querySelector('[data-rematch]'); return Boolean(b && !b.hidden && !b.disabled); });
+      const samples = [];
+      for (let bout = 1; bout <= 4; bout += 1) {
+        await waitFor(A.page, (s) => /\. fight\./.test(s.summary ?? ''), 30000, `bout ${bout} fight phase`);
+        for (let i = 0; i < 6; i += 1) { await A.page.keyboard.press('f'); await B.page.keyboard.press('j'); await wait(350); }
+        const final = await waitFor(A.page, (s) => Boolean(s.final), 90000, `bout ${bout} final`);
+        await waitFor(B.page, (s) => Boolean(s.final), 15000, `bout ${bout} final on B`);
+        const [a, b] = [await sample(A.page), await sample(B.page)];
+        samples.push({ bout, a, b });
+        note(`bout ${bout} final: ${JSON.stringify(final?.final ?? null).slice(0, 40)} | heap A ${a.heapMb} MB B ${b.heapMb} MB | gpu A ${JSON.stringify(a.gpu)} B ${JSON.stringify(b.gpu)}`);
+        if (bout === 4) break;
+        for (let i = 0; i < 60; i += 1) { if ((await rematchReady(A.page)) && (await rematchReady(B.page))) break; await wait(500); }
+        await A.page.click('[data-rematch]');
+        await B.page.click('[data-rematch]');
+        const next = await waitFor(A.page, (s) => /countdown|\. fight\./.test(s.summary ?? '') && !s.final, 60000, `bout ${bout + 1} start`);
+        note(`bout ${bout + 1} started: ${next !== null}`);
+      }
+      if (samples.length >= 2) {
+        const first = samples[0]; const last = samples.at(-1);
+        note('growth A: heap', last.a.heapMb - first.a.heapMb, 'MB; geometries', (last.a.gpu?.geometries ?? 0) - (first.a.gpu?.geometries ?? 0), '; textures', (last.a.gpu?.textures ?? 0) - (first.a.gpu?.textures ?? 0), '; programs', (last.a.gpu?.programs ?? 0) - (first.a.gpu?.programs ?? 0));
+        note('growth B: heap', last.b.heapMb - first.b.heapMb, 'MB; geometries', (last.b.gpu?.geometries ?? 0) - (first.b.gpu?.geometries ?? 0), '; textures', (last.b.gpu?.textures ?? 0) - (first.b.gpu?.textures ?? 0), '; programs', (last.b.gpu?.programs ?? 0) - (first.b.gpu?.programs ?? 0));
+      }
     }
 
     if (scenario === 'soak') {

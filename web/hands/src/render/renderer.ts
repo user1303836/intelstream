@@ -951,6 +951,11 @@ export class FightRenderer {
     return this.scaler.scale;
   }
 
+  /** Live GPU object counts from three, for leak checks across rematches. */
+  get memoryInfo(): { geometries: number; textures: number; programs: number } {
+    return { geometries: this.renderer.info.memory.geometries, textures: this.renderer.info.memory.textures, programs: this.renderer.info.programs?.length ?? 0 };
+  }
+
   private applyResolutionScale(): void {
     const ratio = this.basePixelRatio * this.scaler.scale;
     this.renderer.setPixelRatio(ratio);

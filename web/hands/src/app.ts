@@ -233,8 +233,8 @@ export class HandsApp {
   }
 
   /** Smoothed input acknowledgement latency of the local fighter and the render scale, for diagnostics. */
-  get networkStats(): { inputLatencyMs: number | null; resolutionScale: number | null } {
-    return { inputLatencyMs: this.network?.inputLatencyMs ?? null, resolutionScale: this.renderer?.resolutionScale ?? null };
+  get networkStats(): { inputLatencyMs: number | null; resolutionScale: number | null; gpu: { geometries: number; textures: number; programs: number } | null } {
+    return { inputLatencyMs: this.network?.inputLatencyMs ?? null, resolutionScale: this.renderer?.resolutionScale ?? null, gpu: this.renderer?.memoryInfo ?? null };
   }
 
   private receiveSnapshot(snapshot: EngineSnapshot): void {
