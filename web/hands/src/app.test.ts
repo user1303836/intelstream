@@ -139,7 +139,7 @@ describe("browser lifecycle and accessible overlays", () => {
     const reload = vi.fn();
     const app = new HandsApp(root, reload);
     app.start();
-    await vi.waitFor(() => expect(root.querySelector("[data-status]")?.textContent).toBe("Unable to continue (sdk_authenticate_failed)."));
+    await vi.waitFor(() => expect(root.querySelector("[data-status]")?.textContent).toBe("Unable to continue: Discord did not confirm your identity (sdk_authenticate_failed)."));
     const retry = root.querySelector<HTMLButtonElement>("[data-retry]")!;
     expect(retry.hidden).toBe(false);
     retry.click();

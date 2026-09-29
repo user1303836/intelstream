@@ -1,6 +1,7 @@
 import { AudioFeedback } from "./audio";
 import { ClientError, safeError } from "./api";
 import { authorizeDiscord, type DiscordSession } from "./discord";
+import { describeError } from "./errors";
 import { HapticFeedback } from "./haptics";
 import { CONTROL_HELP } from "./input/bindings";
 import { coarsePointer } from "./input/touch";
@@ -273,7 +274,7 @@ export class HandsApp {
       rest: "Between-round rest.",
       paused: `Connection paused. ${Math.ceil(this.state.reconnectMs / 1000)} seconds remain.`,
       complete: "Bout complete. Scorecards and rating changes are displayed.",
-      fatal: `Unable to continue (${this.state.safeError ?? "safe_error"}).`,
+      fatal: describeError(this.state.safeError ?? "safe_error"),
     };
     const spectating = this.state.role === "spectator";
     this.setText(this.status, spectating ? `Spectating — ${labels[this.state.stage]}` : labels[this.state.stage]);
