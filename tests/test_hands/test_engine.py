@@ -15,6 +15,7 @@ from intelstream.hands.protocol import encode_snapshot
 from intelstream.hands.rules import (
     FIGHTER_RADIUS,
     PUNCH_RULES,
+    REST_CORNER_OFFSET,
     RING_HALF_HEIGHT,
     RING_HALF_WIDTH,
 )
@@ -580,6 +581,42 @@ def test_exchange_stamina_recovers_but_long_term_fatigue_persists_after_rest() -
     for _ in range(30):
         engine.step()
     assert one.stamina >= spent
+
+
+def test_rest_walks_both_fighters_to_their_corners_and_seats_them_facing_the_ring() -> None:
+    engine = make_engine(round_ticks=30, rounds=2, rest_ticks=240)
+    one = engine.fighter("one")
+    two = engine.fighter("two")
+    for _ in range(28):
+        engine.step()
+    engine.step({"one": command(1, action=punch(PunchClass.UPPERCUT, power=Power.POWER))})
+    assert engine.phase is MatchPhase.FIGHT
+    assert one.attack is not None or one.pending_actions
+    engine.step({"two": command(1, defense=DefensivePose.GUARD_HIGH)})
+    assert engine.phase is MatchPhase.REST
+    assert one.attack is None and not one.pending_actions
+    assert two.defense is DefensivePose.NONE
+
+    engine.step()
+    assert one.velocity_x < 0 and one.velocity_y < 0
+    assert two.velocity_x > 0 and two.velocity_y > 0
+    ticks = 0
+    while (one.x, one.y) != (-REST_CORNER_OFFSET, -REST_CORNER_OFFSET):
+        engine.step({"one": command(2 + ticks, move_x=1000, move_y=1000)})
+        ticks += 1
+        assert ticks < 200
+    assert (two.x, two.y) == (REST_CORNER_OFFSET, REST_CORNER_OFFSET)
+    assert (one.velocity_x, one.velocity_y) == (0, 0)
+    assert (two.velocity_x, two.velocity_y) == (0, 0)
+    for step in range(12):
+        engine.step({"one": command(300 + step, move_x=1000, move_y=1000)})
+    assert (one.x, one.y) == (-REST_CORNER_OFFSET, -REST_CORNER_OFFSET)
+    assert one.facing_x > 0 and one.facing_y > 0
+    assert two.facing_x < 0 and two.facing_y < 0
+    while engine.phase is MatchPhase.REST:
+        engine.step()
+    assert engine.phase is MatchPhase.FIGHT
+    assert (one.x, one.y) == (-REST_CORNER_OFFSET, -REST_CORNER_OFFSET)
 
 
 def test_fatigue_reduces_hand_speed_foot_speed_guard_recovery_and_power() -> None:

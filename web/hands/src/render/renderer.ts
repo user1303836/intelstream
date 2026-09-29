@@ -784,6 +784,8 @@ export class FightRenderer {
       if (graphs !== null) {
         const headA = this.headCacheValid[0] ? this.headCache[0] : undefined;
         const headB = this.headCacheValid[1] ? this.headCache[1] : undefined;
+        graphs[0].setResting(snapshot.phase === "rest");
+        graphs[1].setResting(snapshot.phase === "rest");
         graphs[0].update(a, b, dt, seconds, current.reducedMotion, current.blood, sampledTick, headB);
         graphs[1].update(b, a, dt, seconds, current.reducedMotion, current.blood, sampledTick, headA);
         for (const [index, graph] of graphs.entries()) {

@@ -31,6 +31,8 @@ FACING_TURN_PERCENT: int = _MANIFEST["facing"]["turn_percent_per_tick"]
 RECOVERY_CANCEL_PERCENT: int = _MANIFEST["combos"]["recovery_cancel_percent"]
 KNOCKDOWN_NEUTRAL_SEPARATION: int = _MANIFEST["knockdown"]["neutral_separation"]
 REFEREE_WALK_SPEED: int = _MANIFEST["knockdown"]["referee_walk_speed"]
+REST_CORNER_OFFSET: int = _MANIFEST["rest"]["corner_offset"]
+REST_WALK_SPEED: int = _MANIFEST["rest"]["walk_speed"]
 
 
 def _manifest_check() -> None:

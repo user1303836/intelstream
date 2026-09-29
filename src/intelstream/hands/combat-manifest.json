@@ -164,6 +164,10 @@
       "offset_y": 0.16
     }
   },
+  "rest": {
+    "corner_offset": 420,
+    "walk_speed": 5
+  },
   "hitbox": {
     "glove_radius": 0.11
   }

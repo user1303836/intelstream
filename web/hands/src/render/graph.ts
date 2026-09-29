@@ -326,6 +326,10 @@ export class BoxingGraph {
   private foulWeight = 0;
   private tauntWeight = 0;
   private lastSpeed = 0;
+  private readonly stool: { group: THREE.Group; dispose: () => void };
+  private resting = false;
+  private seated = 0;
+  private stillTime = 0;
   private readonly feet: [FootState, FootState] = [
     { planted: new THREE.Vector3(), from: new THREE.Vector3(), to: new THREE.Vector3(), progress: 1, stepping: false, duration: 0.2 },
     { planted: new THREE.Vector3(), from: new THREE.Vector3(), to: new THREE.Vector3(), progress: 1, stepping: false, duration: 0.2 },
@@ -365,6 +369,18 @@ export class BoxingGraph {
     this.referee = options.referee === true;
     this.solver = new PoseSolver(boxer.rig);
     this.pose = { torso: this.torso, handL: this.hand.L, handR: this.hand.R, footL: this.foot.L, footR: this.foot.R, shrugL: 0, shrugR: 0 };
+    this.stool = buildStool();
+    this.stool.group.position.set(0, 0, 0.02);
+    boxer.root.add(this.stool.group);
+  }
+
+  /** Between rounds the fighter walks to the corner, and once still, sits on the stool. */
+  setResting(resting: boolean): void {
+    this.resting = resting;
+  }
+
+  get stoolVisible(): boolean {
+    return this.stool.group.visible;
   }
 
   private makeHand(): { position: THREE.Vector3; knuckles: THREE.Vector3; palm: THREE.Vector3; pole: THREE.Vector3 } {
@@ -555,6 +571,10 @@ export class BoxingGraph {
     const velocityWorld = this.scratchB.set(this.mapping.x(fighter.velocity_x) * 30, 0, this.mapping.z(fighter.velocity_y) * 30);
     const speed = velocityWorld.length();
     this.lastSpeed = speed;
+    this.stillTime = speed < 0.03 ? this.stillTime + dt : 0;
+    const wantSeated = this.resting && this.stillTime > 0.2 && this.downState === "up";
+    this.seated = smooth(this.seated, wantSeated ? 1 : 0, wantSeated ? 2.2 : 4, dt);
+    this.stool.group.visible = this.resting && this.stillTime > 0.05 && this.downState === "up";
     const stamina = fighter.stamina / Math.max(1, fighter.maximum_stamina);
     this.tired = smooth(this.tired, clamp((0.55 - stamina) / 0.5, 0, 1), 2, dt);
     this.stunAmount = smooth(this.stunAmount, Math.min(1, fighter.stunned_ticks / 24), 8, dt);
@@ -757,6 +777,7 @@ export class BoxingGraph {
     }
 
     // Knockdown overrides everything above.
+    if (this.seated > 0.001 && this.downState === "up") this.applySeatedPose(this.seated, time, mirror, leadHand, rearHand, lead, rear);
     if (this.downState !== "up") this.applyDownPose(mirror, leadHand, rearHand, lead, rear, headRest);
 
     crouch = 0;
@@ -1095,6 +1116,43 @@ export class BoxingGraph {
     }
   }
 
+  private applySeatedPose(
+    blend: number,
+    time: number,
+    mirror: number,
+    leadHand: { position: THREE.Vector3; knuckles: THREE.Vector3; palm: THREE.Vector3; pole: THREE.Vector3 },
+    rearHand: { position: THREE.Vector3; knuckles: THREE.Vector3; palm: THREE.Vector3; pole: THREE.Vector3 },
+    lead: { position: THREE.Vector3; toe: THREE.Vector3; heel: number; pole: THREE.Vector3 },
+    rear: { position: THREE.Vector3; toe: THREE.Vector3; heel: number; pole: THREE.Vector3 },
+  ): void {
+    const torso = this.torso;
+    const lerp = THREE.MathUtils.lerp;
+    const breath = 0.5 + 0.5 * Math.sin(time * 1.9);
+    torso.hips.lerp(seatedScratch.set(0.02 * mirror, STOOL_SEAT_HEIGHT + 0.07 + breath * 0.004, -0.06), blend);
+    torso.hipsYaw = lerp(torso.hipsYaw, 0, blend);
+    torso.hipsPitch = lerp(torso.hipsPitch, 0.32 + breath * 0.03, blend);
+    torso.hipsRoll = lerp(torso.hipsRoll, 0, blend);
+    torso.shouldersYaw = lerp(torso.shouldersYaw, 0, blend);
+    torso.spinePitch = lerp(torso.spinePitch, 0.1 - breath * 0.05, blend);
+    torso.headPitch = lerp(torso.headPitch, 0.28 - breath * 0.08, blend);
+    leadHand.position.lerp(seatedScratch.set(0.21 * mirror, STOOL_SEAT_HEIGHT + 0.17, 0.36), blend);
+    rearHand.position.lerp(seatedScratch.set(-0.21 * mirror, STOOL_SEAT_HEIGHT + 0.17, 0.36), blend);
+    leadHand.palm.lerp(seatedScratch.set(0, -1, 0), blend).normalize();
+    rearHand.palm.lerp(seatedScratch.set(0, -1, 0), blend).normalize();
+    leadHand.knuckles.lerp(seatedScratch.set(0.2 * mirror, 0, 1), blend).normalize();
+    rearHand.knuckles.lerp(seatedScratch.set(-0.2 * mirror, 0, 1), blend).normalize();
+    leadHand.pole.lerp(seatedScratch.set(0.9 * mirror, -0.3, -0.2), blend).normalize();
+    rearHand.pole.lerp(seatedScratch.set(-0.9 * mirror, -0.3, -0.2), blend).normalize();
+    lead.position.lerp(seatedScratch.set(0.18 * mirror, 0, 0.4), blend);
+    rear.position.lerp(seatedScratch.set(-0.18 * mirror, 0, 0.38), blend);
+    lead.heel = lerp(lead.heel, 0, blend);
+    rear.heel = lerp(rear.heel, 0, blend);
+    lead.toe.lerp(seatedScratch.set(0.15 * mirror, 0, 1), blend).normalize();
+    rear.toe.lerp(seatedScratch.set(-0.15 * mirror, 0, 1), blend).normalize();
+    lead.pole.lerp(seatedScratch.set(0.1 * mirror, 0.5, 1), blend).normalize();
+    rear.pole.lerp(seatedScratch.set(-0.1 * mirror, 0.5, 1), blend).normalize();
+  }
+
   private applyDownPose(
     mirror: number,
     leadHand: { position: THREE.Vector3; knuckles: THREE.Vector3; palm: THREE.Vector3; pole: THREE.Vector3 },
@@ -1263,8 +1321,43 @@ export class BoxingGraph {
   }
 
   dispose(): void {
+    this.stool.dispose();
     this.boxer.dispose();
   }
+}
+
+const STOOL_SEAT_HEIGHT = 0.44;
+const seatedScratch = new THREE.Vector3();
+
+function buildStool(): { group: THREE.Group; dispose: () => void } {
+  const group = new THREE.Group();
+  group.name = "stool";
+  group.visible = false;
+  const seatGeometry = new THREE.CylinderGeometry(0.17, 0.17, 0.035, 18);
+  const legGeometry = new THREE.CylinderGeometry(0.012, 0.014, STOOL_SEAT_HEIGHT - 0.02, 8);
+  const seatMaterial = new THREE.MeshStandardMaterial({ color: 0xc9c2b5, roughness: 0.85 });
+  const legMaterial = new THREE.MeshStandardMaterial({ color: 0x2a2d33, roughness: 0.45, metalness: 0.6 });
+  const seat = new THREE.Mesh(seatGeometry, seatMaterial);
+  seat.position.y = STOOL_SEAT_HEIGHT - 0.0175;
+  seat.castShadow = true;
+  group.add(seat);
+  for (let index = 0; index < 4; index += 1) {
+    const angle = Math.PI / 4 + (index * Math.PI) / 2;
+    const leg = new THREE.Mesh(legGeometry, legMaterial);
+    leg.position.set(Math.cos(angle) * 0.13, (STOOL_SEAT_HEIGHT - 0.02) / 2, Math.sin(angle) * 0.13);
+    leg.rotation.set(-Math.sin(angle) * 0.12, 0, Math.cos(angle) * 0.12);
+    leg.castShadow = true;
+    group.add(leg);
+  }
+  return {
+    group,
+    dispose: () => {
+      seatGeometry.dispose();
+      legGeometry.dispose();
+      seatMaterial.dispose();
+      legMaterial.dispose();
+    },
+  };
 }
 
 const worldUpVector = new THREE.Vector3(0, 1, 0);

@@ -25,7 +25,9 @@ from intelstream.hands.rules import (
     PUNCH_RULES,
     RECOVERY_CANCEL_PERCENT,
     REFEREE_WALK_SPEED,
+    REST_CORNER_OFFSET,
     REST_TICKS,
+    REST_WALK_SPEED,
     RING_HALF_HEIGHT,
     RING_HALF_WIDTH,
     ROUND_TICKS,
@@ -1091,6 +1093,14 @@ class BoxingEngine:
             return
         desired_x = _symmetric_divide(dx * FACING_SCALE, distance)
         desired_y = _symmetric_divide(dy * FACING_SCALE, distance)
+        if fighter.facing_x * desired_x + fighter.facing_y * desired_y < -(
+            FACING_SCALE * FACING_SCALE * 9 // 10
+        ):
+            # Anti-parallel facings would blend through the origin; turn via the perpendicular.
+            fighter.facing_x, fighter.facing_y = (
+                fighter.facing_x - _symmetric_divide(fighter.facing_y * FACING_TURN_PERCENT, 100),
+                fighter.facing_y + _symmetric_divide(fighter.facing_x * FACING_TURN_PERCENT, 100),
+            )
         fighter.facing_x += _symmetric_divide(
             (desired_x - fighter.facing_x) * FACING_TURN_PERCENT, 100
         )
@@ -1329,9 +1339,21 @@ class BoxingEngine:
         else:
             self.phase = MatchPhase.REST
             self.phase_ticks_remaining = self.config.rest_ticks
+            for fighter in self._fighters.values():
+                fighter.attack = None
+                fighter.pending_actions.clear()
+                fighter.clinch_startup_ticks = 0
+                fighter.clinch_ticks = 0
+                fighter.stunned_ticks = 0
+                fighter.taunt_ticks = 0
+                fighter.defense = DefensivePose.NONE
 
     def _advance_rest(self) -> None:
         self.phase_ticks_remaining -= 1
+        one = self._fighters[self._player_ids[0]]
+        two = self._fighters[self._player_ids[1]]
+        self._walk_to_corner(one, -REST_CORNER_OFFSET, -REST_CORNER_OFFSET, two)
+        self._walk_to_corner(two, REST_CORNER_OFFSET, REST_CORNER_OFFSET, one)
         for fighter in self._fighters.values():
             fighter.stamina = min(fighter.maximum_stamina, fighter.stamina + 3)
             fighter.guard = min(MAX_GUARD, fighter.guard + 2)
@@ -1340,6 +1362,37 @@ class BoxingEngine:
                 fighter.trauma.bleeding = max(0, fighter.trauma.bleeding - 2)
         if self.phase_ticks_remaining <= 0:
             self._start_next_round()
+
+    def _walk_to_corner(
+        self, fighter: FighterState, corner_x: int, corner_y: int, opponent: FighterState
+    ) -> None:
+        dx = corner_x - fighter.x
+        dy = corner_y - fighter.y
+        distance = isqrt(dx * dx + dy * dy)
+        if distance <= REST_WALK_SPEED:
+            fighter.x, fighter.y = corner_x, corner_y
+            fighter.velocity_x = fighter.velocity_y = 0
+            fighter.velocity_fixed_x = fighter.velocity_fixed_y = 0
+            fighter.position_remainder_x = fighter.position_remainder_y = 0
+            self._update_facing(fighter, opponent)
+            return
+        step_x = _symmetric_divide(dx * FACING_SCALE, distance)
+        step_y = _symmetric_divide(dy * FACING_SCALE, distance)
+        fighter.velocity_fixed_x = step_x * REST_WALK_SPEED
+        fighter.velocity_fixed_y = step_y * REST_WALK_SPEED
+        fighter.velocity_x = _rounded_fixed_velocity(fighter.velocity_fixed_x)
+        fighter.velocity_y = _rounded_fixed_velocity(fighter.velocity_fixed_y)
+        delta_x, fighter.position_remainder_x = _consume_fixed_position(
+            fighter.velocity_fixed_x, fighter.position_remainder_x
+        )
+        delta_y, fighter.position_remainder_y = _consume_fixed_position(
+            fighter.velocity_fixed_y, fighter.position_remainder_y
+        )
+        fighter.x += delta_x
+        fighter.y += delta_y
+        self._clamp_to_ring(fighter)
+        fighter.facing_x, fighter.facing_y = step_x, step_y
+        fighter.facing = 1 if fighter.facing_x >= 0 else -1
 
     def _start_next_round(self) -> None:
         self.round_number += 1

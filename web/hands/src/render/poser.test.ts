@@ -33,6 +33,24 @@ function run(graph: BoxingGraph, fighter: FighterSnapshot, opponent: FighterSnap
   return tick;
 }
 
+describe("rest corner", () => {
+  it("sits on the stool once still during rest and stands back up when the round starts", () => {
+    const { boxer, graph } = makeGraph();
+    const fighter = { ...facingOpponent(baseFighter("one")), x: -420, y: -420 };
+    const opponent = opponentFor("two");
+    graph.setResting(true);
+    run(graph, fighter, opponent, 150, undefined);
+    expect(graph.stoolVisible).toBe(true);
+    expect(bone(boxer, "hips").y).toBeLessThan(0.62);
+    expect(bone(boxer, "ankleL").y).toBeLessThan(0.2);
+    expect(bone(boxer, "ankleR").y).toBeLessThan(0.2);
+    graph.setResting(false);
+    run(graph, fighter, opponent, 120, undefined, 75, 2.5);
+    expect(graph.stoolVisible).toBe(false);
+    expect(bone(boxer, "hips").y).toBeGreaterThan(0.72);
+  });
+});
+
 describe("skinned rig solver", () => {
   it("reproduces the rest limb frames when solving onto rest targets", () => {
     const { boxer } = makeGraph();

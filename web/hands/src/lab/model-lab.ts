@@ -8,7 +8,7 @@ import type { FighterSnapshot, Hand, PunchClass, Target } from "../types";
  * every authored pose can be inspected from any angle without a match.
  * Query parameters: pose (idle, guard_high, guard_low, slip_left, slip_right,
  * weave, pull, jab_left, straight_right, hook_left, uppercut_right, ...,
- * hit_head, hit_body, block, knockdown, getup, stunned, taunt, clinch, walk),
+ * hit_head, hit_body, block, knockdown, getup, stunned, taunt, clinch, seated, walk),
  * t (seconds into the pose), stance (orthodox|southpaw), cam (front|side|
  * three-quarter|top|back), skeleton (1).
  */
@@ -213,6 +213,7 @@ export class ModelLab {
         graph.react(kind === "block" ? "block" : "hit", (target as Target) ?? "head", 1, (punchClass as PunchClass) ?? "straight", (hand as Hand) ?? "right", 320);
       }
     }
+    graph.setResting(this.params.get("pose") === "seated");
     graph.update(fighter, opponent, dt, this.elapsed, false, "full", sampledTick, head);
     (window as unknown as Record<string, unknown>).__poseLab = {
       head: this.boxer!.bone("head")!.getWorldPosition(new THREE.Vector3()).toArray().map((v) => Number(v.toFixed(3))),

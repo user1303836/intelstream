@@ -79,7 +79,9 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
         defender.stunned_ticks = 12;
       }
     }
-    const finisher = new URLSearchParams(window.location.search).get("finisher");
+    const search = new URLSearchParams(window.location.search);
+    const finisher = search.get("finisher");
+    const forcedRest = search.get("phase") === "rest";
     const knockdownCycle = finisher === null ? t % 14 : (t < 2.5 ? 0 : 12);
     if (knockdownCycle > 11 && knockdownCycle < 13.4) {
       two.is_downed = true;
@@ -97,8 +99,22 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
         events.push({ event_id: eventId, tick, kind: "knockdown", actor_id: one.player_id, target_id: two.player_id, amount: 420, detail: "knockdown", blood: 60, direction: 1, action_id: null });
       }
     }
+    if (forcedRest) {
+      for (const [fighter, sign] of [[one, -1], [two, 1]] as const) {
+        fighter.x = sign * 420;
+        fighter.y = sign * 420;
+        fighter.velocity_x = fighter.velocity_y = 0;
+        fighter.facing_x = fighter.facing_y = -sign * 707;
+        fighter.facing = -sign;
+        fighter.action = null;
+        fighter.taunt_ticks = fighter.stunned_ticks = 0;
+        fighter.is_downed = false;
+        fighter.defense = "none";
+      }
+      events.length = 0;
+    }
     const snapshot: EngineSnapshot = {
-      tick, phase: "fight", round_number: 3, phase_ticks_remaining: Math.max(0, 5400 - tick),
+      tick, phase: forcedRest ? "rest" : "fight", round_number: 3, phase_ticks_remaining: Math.max(0, 5400 - tick),
       fighters: [{ ...one }, { ...two }], events, result: null, checksum: "a".repeat(64),
     };
     renderer.push(snapshot);
