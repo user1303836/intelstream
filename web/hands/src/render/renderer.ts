@@ -6,10 +6,8 @@ import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { EventDeduplicator, SnapshotBuffer } from "../interpolation";
 import { predictMovement, type HeldInput } from "../prediction";
 import type { BloodLevel, Settings } from "../settings";
-import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, MatchResult, PublicPlayer, SemanticAction, SimulationInfo } from "../types";
-import { BoxerAnimator } from "./animation";
+import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, Hand, MatchResult, PublicPlayer, PunchClass, SemanticAction, SimulationInfo } from "../types";
 import { buildArena, type BuiltArena } from "./arena";
-import { buildBoxer, buildReferee, disposeBoxer, type BoxerRig } from "./boxer";
 import { CameraDirector } from "./camera";
 import { Effects3D } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, type ArcadeDislocation } from "./graph";
@@ -142,7 +140,7 @@ export function arcadeInjuryFor(
 }
 import { buildRing, disposeRing, type BuiltRing } from "./ring";
 import { resizeHighDpi } from "./viewport";
-import { PALETTES, worldMapping, type WorldMapping } from "./world";
+import { worldMapping, type WorldMapping } from "./world";
 
 function blobShadowTexture(): THREE.CanvasTexture {
   const canvas = document.createElement("canvas");
@@ -160,7 +158,45 @@ function blobShadowTexture(): THREE.CanvasTexture {
   return new THREE.CanvasTexture(canvas);
 }
 
-const DEFAULT_SIM: SimulationInfo = { tick_rate: 30, ring_half_width: 500, ring_half_height: 330 };
+const DEFAULT_SIM: SimulationInfo = { tick_rate: 30, ring_half_width: 500, ring_half_height: 500 };
+
+function refereeShirtTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext("2d");
+  if (ctx !== null) {
+    ctx.fillStyle = "#9fb4d8";
+    ctx.fillRect(0, 0, 256, 256);
+    ctx.fillStyle = "rgba(255,255,255,0.08)";
+    for (let x = 0; x < 256; x += 8) ctx.fillRect(x, 0, 2, 256);
+    ctx.fillStyle = "#1b2230";
+    ctx.fillRect(0, 0, 256, 18);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.flipY = false;
+  return texture;
+}
+
+function refereeSnapshot(position: THREE.Vector3, yaw: number, velocity: THREE.Vector3, mapping: WorldMapping): { self: FighterSnapshot; focus: FighterSnapshot } {
+  const simX = position.x / mapping.x(1);
+  const simY = position.z / mapping.z(1);
+  const base: FighterSnapshot = {
+    player_id: "referee", x: simX, y: simY, facing: 1, facing_x: Math.round(Math.sin(yaw) * 1000), facing_y: Math.round(-Math.cos(yaw) * 1000),
+    velocity_x: velocity.x / mapping.x(1) / 30, velocity_y: velocity.z / mapping.z(1) / 30,
+    stance: "orthodox", defense: "none", stamina: 1000, maximum_stamina: 1000, conditioning: 1000, guard: 700, poise: 600,
+    trauma: { head: 0, body: 0, left_eye: 0, right_eye: 0, left_cut: 0, right_cut: 0, swelling: 0, bleeding: 0 },
+    knockdowns: 0, warnings: 0, deductions: 0, stunned_ticks: 0, is_downed: false,
+    action: null, action_hand: null, action_target: null, action_power: null, action_id: null, action_key: null,
+    action_start_tick: 0, action_startup_ticks: 0, action_active_ticks: 0, action_recovery_ticks: 0, action_contact_tick: null,
+    queued_actions: 0, clinch_startup_ticks: 0, clinch_ticks: 0, is_foul_recovery_target: false, taunt_ticks: 0,
+    get_up_prompt: null, get_up_meter: 0, get_up_required: 0, get_up_count: 0, get_up_window_start_tick: 0, get_up_window_end_tick: 0,
+    last_input_sequence: -1,
+  };
+  const focus: FighterSnapshot = { ...base, player_id: "focus", x: simX + Math.sin(yaw) * 300, y: simY - Math.cos(yaw) * 300 };
+  return { self: base, focus };
+}
 
 export class FightRenderer {
   private readonly renderer: THREE.WebGLRenderer;
@@ -169,10 +205,9 @@ export class FightRenderer {
   private readonly composer: EffectComposer;
   private readonly ring: BuiltRing;
   private readonly arena: BuiltArena;
-  private readonly boxers: [BoxerRig, BoxerRig];
-  private readonly referee: BoxerRig;
+  private referee: BoxingGraph | null = null;
   private readonly refereePosition = new THREE.Vector3(0.4, 0, -2.1);
-  private readonly animators: [BoxerAnimator, BoxerAnimator];
+  private readonly refereeVelocity = new THREE.Vector3();
   private readonly effects: Effects3D;
   private readonly director = new CameraDirector();
   private readonly mapping: WorldMapping;
@@ -201,6 +236,7 @@ export class FightRenderer {
   private destroyed = false;
   private graphs: [BoxingGraph, BoxingGraph] | null = null;
   private glbLoading = false;
+  private refereeShirt: THREE.CanvasTexture | null = null;
   private graphsReady: Promise<void> = Promise.resolve();
   private readonly headCache = [new THREE.Vector3(), new THREE.Vector3()];
   private readonly headCacheValid = [false, false];
@@ -260,22 +296,6 @@ export class FightRenderer {
     this.scene.add(this.arena.group);
     this.effects = new Effects3D(this.scene);
 
-    this.boxers = [buildBoxer(PALETTES[0]), buildBoxer(PALETTES[1])];
-    this.animators = [new BoxerAnimator(this.boxers[0], this.mapping), new BoxerAnimator(this.boxers[1], this.mapping)];
-    this.boxers[0].root.position.set(-0.9, 0, 0);
-    this.boxers[1].root.position.set(0.9, 0, 0);
-    this.boxers[0].root.rotation.y = Math.PI / 2;
-    this.boxers[1].root.rotation.y = -Math.PI / 2;
-    this.scene.add(this.boxers[0].root, this.boxers[1].root);
-
-    this.referee = buildReferee();
-    this.referee.root.position.copy(this.refereePosition);
-    this.referee.shoulderL.rotation.x = -0.42;
-    this.referee.shoulderR.rotation.x = -0.42;
-    this.referee.elbowL.rotation.x = -0.55;
-    this.referee.elbowR.rotation.x = -0.55;
-    this.scene.add(this.referee.root);
-
     this.blobTexture = blobShadowTexture();
     const blobGeometry = new THREE.PlaneGeometry(1, 1);
     for (let i = 0; i < 3; i += 1) {
@@ -306,7 +326,6 @@ export class FightRenderer {
 
   private ensureGraphs(): void {
     if (this.glbLoading || this.graphs !== null) return;
-    if (new URLSearchParams(window.location.search).get("procedural") === "1") return;
     this.glbLoading = true;
     this.graphsReady = loadBoxerGlb()
       .then((gltf) => {
@@ -317,10 +336,10 @@ export class FightRenderer {
         this.syncInjuryPresentation(0);
         this.syncInjuryPresentation(1);
         this.scene.add(first.root, second.root);
-        for (const boxer of this.boxers) {
-          this.scene.remove(boxer.root);
-          disposeBoxer(boxer);
-        }
+        this.refereeShirt = refereeShirtTexture();
+        const official = new SkinnedBoxer(gltf, { skin: 0xc79b76, gear: 0x3b57b8, pants: 0x14161c, bodyMap: this.refereeShirt });
+        this.referee = new BoxingGraph(official, this.mapping, { referee: true });
+        this.scene.add(official.root);
       })
       .catch((error: unknown) => {
         this.glbLoading = false;
@@ -335,7 +354,7 @@ export class FightRenderer {
   get labRigs(): THREE.Object3D[] {
     const graphs = this.graphs;
     if (graphs !== null) return [graphs[0].boxer.root, graphs[1].boxer.root];
-    return this.boxers.map((boxer) => boxer.root);
+    return [];
   }
 
   get labScene(): THREE.Scene {
@@ -395,12 +414,7 @@ export class FightRenderer {
           ? injury
           : null;
       graph.setArcadeDislocation(dislocation);
-      return;
     }
-    const boxer = this.boxers[index]!;
-    boxer.head.visible = injury !== "decapitation";
-    boxer.gloveLMesh.visible = injury !== "dismember_left";
-    boxer.gloveRMesh.visible = injury !== "dismember_right";
   }
 
   private restoreInjury(index: number): void {
@@ -419,10 +433,9 @@ export class FightRenderer {
 
   private headWorldPose(index: number): { position: THREE.Vector3; quaternion: THREE.Quaternion } | null {
     const graphs = this.graphs;
-    const head = graphs !== null ? graphs[index]!.boxer.bone("head") : this.boxers[index]!.head;
-    if (head === null) return null;
-    if (graphs !== null) graphs[index]!.boxer.root.updateMatrixWorld(true);
-    else this.boxers[index]!.root.updateMatrixWorld(true);
+    const head = graphs !== null ? graphs[index]!.boxer.bone("head") : null;
+    if (head === null || graphs === null) return null;
+    graphs[index]!.boxer.root.updateMatrixWorld(true);
     head.getWorldPosition(this.tmpHead);
     head.getWorldQuaternion(this.tmpHeadQuaternion);
     this.tmpStumpOffset.set(0, 0.12, 0.02).applyQuaternion(this.tmpHeadQuaternion);
@@ -435,43 +448,29 @@ export class FightRenderer {
     side: "left" | "right",
   ): { position: THREE.Vector3; quaternion: THREE.Quaternion } | null {
     const graphs = this.graphs;
-    const hand = graphs !== null
-      ? graphs[index]!.boxer.bone(side === "left" ? "gloveL" : "gloveR")
-      : side === "left" ? this.boxers[index]!.gloveL : this.boxers[index]!.gloveR;
-    if (hand === null) return null;
-    if (graphs !== null) graphs[index]!.boxer.root.updateMatrixWorld(true);
-    else this.boxers[index]!.root.updateMatrixWorld(true);
+    const hand = graphs !== null ? graphs[index]!.boxer.bone(side === "left" ? "gloveL" : "gloveR") : null;
+    if (hand === null || graphs === null) return null;
+    graphs[index]!.boxer.root.updateMatrixWorld(true);
     hand.getWorldPosition(this.tmpPart);
     hand.getWorldQuaternion(this.tmpPartQuaternion);
     return { position: this.tmpPart, quaternion: this.tmpPartQuaternion };
   }
 
   private gearColor(index: number): number {
-    const graphs = this.graphs;
-    return graphs !== null
-      ? graphs[index]!.boxer.gearBaseColor.getHex()
-      : this.boxers[index]!.gloveBaseColor.getHex();
+    return this.graphs?.[index]?.boxer.gearBaseColor.getHex() ?? 0x1d4ed8;
   }
 
   private skinColor(index: number): number {
-    const graphs = this.graphs;
-    return graphs !== null
-      ? graphs[index]!.boxer.skinBaseColor.getHex()
-      : this.boxers[index]!.skinMaterial.color.getHex();
+    return this.graphs?.[index]?.boxer.skinBaseColor.getHex() ?? 0xb0703f;
   }
 
   private stumpWorldPose(index: number): { position: THREE.Vector3; quaternion: THREE.Quaternion } | null {
     const graphs = this.graphs;
-    const anchor = graphs !== null ? graphs[index]!.boxer.bone("Neck_012") : this.boxers[index]!.head;
-    if (anchor === null) return null;
-    if (graphs !== null) graphs[index]!.boxer.root.updateMatrixWorld(true);
-    else this.boxers[index]!.root.updateMatrixWorld(true);
+    const anchor = graphs !== null ? graphs[index]!.boxer.bone("Neck_012") : null;
+    if (anchor === null || graphs === null) return null;
+    graphs[index]!.boxer.root.updateMatrixWorld(true);
     anchor.getWorldPosition(this.tmpStump);
     anchor.getWorldQuaternion(this.tmpStumpQuaternion);
-    if (graphs === null) {
-      this.tmpStumpOffset.set(0, -0.085, 0).applyQuaternion(this.tmpStumpQuaternion);
-      this.tmpStump.add(this.tmpStumpOffset);
-    }
     return { position: this.tmpStump, quaternion: this.tmpStumpQuaternion };
   }
 
@@ -480,9 +479,7 @@ export class FightRenderer {
     if (latest === null || this.viewerId === null) return;
     const index = latest.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
     if (index < 0) return;
-    const graphs = this.graphs;
-    if (graphs !== null) graphs[index]!.predict(action, performance.now() / 1000, this.simulation.tick_rate);
-    else this.animators[index]!.predict(action, performance.now() / 1000, this.simulation.tick_rate);
+    this.graphs?.[index]?.predict(action, performance.now() / 1000, this.simulation.tick_rate);
   }
 
   push(snapshot: EngineSnapshot): void {
@@ -586,14 +583,11 @@ export class FightRenderer {
         const blocked = event.kind === "block" || event.kind === "perfect_block";
         const targetKind = presentationEvent.detail.endsWith(":body") ? "body" : "head";
         if (graphs !== null) {
-          graphs[recipientIndex]!.react(blocked ? "block" : "hit", targetKind, presentationEvent.direction);
-        } else {
-          this.animators[recipientIndex]!.impact({
-            direction: presentationEvent.direction,
-            amount: blocked ? event.amount * 0.35 : event.amount,
-            blocked,
-            target: targetKind,
-          });
+          const puncher = puncherIndex >= 0 ? this.buffer.latest()?.fighters[puncherIndex] : undefined;
+          const keyParts = puncher?.action_key?.split(":") ?? [];
+          const punchClass = (keyParts[0] ?? presentationEvent.detail.split(":")[0] ?? null) as PunchClass | null;
+          const punchHand = (keyParts[1] ?? null) as Hand | null;
+          graphs[recipientIndex]!.react(blocked ? "block" : "hit", targetKind, presentationEvent.direction, punchClass, punchHand, event.amount);
         }
       }
       if (
@@ -601,8 +595,7 @@ export class FightRenderer {
         && puncherIndex >= 0
         && ["hit", "counter_hit", "block", "perfect_block", "guard_break"].includes(event.kind)
       ) {
-        if (graphs !== null) graphs[puncherIndex]!.landedHit(event.kind === "block" || event.kind === "perfect_block");
-        else this.animators[puncherIndex]!.landedHit(event.kind === "block" || event.kind === "perfect_block");
+        graphs?.[puncherIndex]?.landedHit(event.kind === "block" || event.kind === "perfect_block");
       }
       this.onContact?.(event);
     }
@@ -704,9 +697,6 @@ export class FightRenderer {
             this.headCacheValid[index] = true;
           }
         }
-      } else {
-        this.animators[0].update(a, b, dt, seconds, current.reducedMotion, current.blood, sampledTick);
-        this.animators[1].update(b, a, dt, seconds, current.reducedMotion, current.blood, sampledTick);
       }
       for (let index = 0; index < this.arcadeInjuries.length; index += 1) {
         const injury = this.arcadeInjuries[index];
@@ -758,7 +748,7 @@ export class FightRenderer {
 
     this.arena.update(seconds, dt, current.reducedMotion);
     this.effects.update(dt);
-    this.updateReferee(dt, seconds, current.reducedMotion);
+    this.updateReferee(dt, seconds, snapshot, sampledTick);
     this.updateBlobShadows();
     this.fireContacts(sampledTick);
     if (this.followSpot !== null) {
@@ -804,9 +794,7 @@ export class FightRenderer {
   }
 
   private headHeightOf(index: number): number {
-    const graphs = this.graphs;
-    if (graphs !== null) return graphs[index]!.boxer.metrics.headRestY + 0.04;
-    return 1.56;
+    return (this.graphs?.[index]?.boxer.metrics.headRestY ?? 1.52) + 0.04;
   }
 
   private updateBlobShadows(): void {
@@ -820,14 +808,20 @@ export class FightRenderer {
     }
   }
 
-  private updateReferee(dt: number, time: number, reducedMotion: boolean): void {
-    const midX = (this.tmpA.x + this.tmpB.x) / 2;
-    const midZ = (this.tmpA.z + this.tmpB.z) / 2;
-    const away = this.refereeAway.set(this.refereePosition.x - midX, 0, this.refereePosition.z - midZ);
+  private updateReferee(dt: number, time: number, snapshot: EngineSnapshot | null, sampledTick: number): void {
+    const referee = this.referee;
+    if (referee === null) return;
+    const downed = snapshot?.fighters.find((fighter) => fighter.is_downed) ?? null;
+    const focusX = downed !== null ? this.mapping.x(downed.x) : (this.tmpA.x + this.tmpB.x) / 2;
+    const focusZ = downed !== null ? this.mapping.z(downed.y) : (this.tmpA.z + this.tmpB.z) / 2;
+    const away = this.refereeAway.set(this.refereePosition.x - focusX, 0, this.refereePosition.z - focusZ);
     if (away.lengthSq() < 0.01) away.set(0, 0, -1);
     away.normalize();
-    const targetX = THREE.MathUtils.clamp(midX + away.x * 2.05, -2.4, 2.4);
-    const targetZ = THREE.MathUtils.clamp(midZ + away.z * 2.05, -2.4, 2.4);
+    const standoff = downed !== null ? 1.25 : 2.05;
+    const targetX = THREE.MathUtils.clamp(focusX + away.x * standoff, -2.4, 2.4);
+    const targetZ = THREE.MathUtils.clamp(focusZ + away.z * standoff, -2.4, 2.4);
+    const previousX = this.refereePosition.x;
+    const previousZ = this.refereePosition.z;
     const rate = 1 - Math.exp(-1.6 * dt);
     this.refereePosition.x += (targetX - this.refereePosition.x) * rate;
     this.refereePosition.z += (targetZ - this.refereePosition.z) * rate;
@@ -835,17 +829,21 @@ export class FightRenderer {
       const dx = this.refereePosition.x - fighter.x;
       const dz = this.refereePosition.z - fighter.z;
       const distance = Math.hypot(dx, dz);
-      if (distance < 1.45 && distance > 0.001) {
-        this.refereePosition.x = fighter.x + (dx / distance) * 1.45;
-        this.refereePosition.z = fighter.z + (dz / distance) * 1.45;
+      const clearance = downed !== null ? 1.0 : 1.45;
+      if (distance < clearance && distance > 0.001) {
+        this.refereePosition.x = fighter.x + (dx / distance) * clearance;
+        this.refereePosition.z = fighter.z + (dz / distance) * clearance;
       }
     }
-    this.referee.root.position.set(this.refereePosition.x, 0, this.refereePosition.z);
-    const yaw = Math.atan2(midX - this.refereePosition.x, midZ - this.refereePosition.z);
-    let yawDelta = ((yaw - this.refereeYaw + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+    if (dt > 0) {
+      this.refereeVelocity.set((this.refereePosition.x - previousX) / dt, 0, (this.refereePosition.z - previousZ) / dt);
+    }
+    const yaw = Math.atan2(focusX - this.refereePosition.x, focusZ - this.refereePosition.z);
+    const yawDelta = ((yaw - this.refereeYaw + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
     this.refereeYaw += yawDelta * (1 - Math.exp(-3 * dt));
-    this.referee.root.rotation.y = this.refereeYaw;
-    this.referee.hips.position.y = 0.98 + (reducedMotion ? 0 : Math.sin(time * 1.7) * 0.006);
+    const state = refereeSnapshot(this.refereePosition, this.refereeYaw, this.refereeVelocity, this.mapping);
+    referee.setRefereeCount(downed !== null, downed?.get_up_count ?? 0);
+    referee.update(state.self, state.focus, dt, time, false, "off", sampledTick);
   }
 
   private drawHudOverlay(snapshot: EngineSnapshot | null): void {
@@ -876,10 +874,6 @@ export class FightRenderer {
     this.effects.dispose();
     this.arena.dispose();
     disposeRing(this.ring);
-    for (const boxer of this.boxers) {
-      this.scene.remove(boxer.root);
-      disposeBoxer(boxer);
-    }
     if (this.graphs !== null) {
       for (const graph of this.graphs) {
         this.scene.remove(graph.boxer.root);
@@ -887,8 +881,12 @@ export class FightRenderer {
       }
       this.graphs = null;
     }
-    this.scene.remove(this.referee.root);
-    disposeBoxer(this.referee);
+    if (this.referee !== null) {
+      this.scene.remove(this.referee.boxer.root);
+      this.referee.dispose();
+      this.referee = null;
+    }
+    this.refereeShirt?.dispose();
     for (const light of this.lights) this.scene.remove(light);
     this.keyLight?.shadow.map?.dispose();
     this.keyLight?.shadow.dispose();

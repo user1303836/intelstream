@@ -66,7 +66,7 @@ describe("Discord SDK OAuth", () => {
     await expect(authorizeDiscord(undefined, () => mockSdk)).rejects.toMatchObject({ code: "instance_mismatch" }); expect(mockSdk.commands.authorize).not.toHaveBeenCalled(); expect(mockSdk.close).toHaveBeenCalledOnce();
   });
   it("closes a constructed SDK when authorization is aborted after ready", async () => {
-    history.replaceState({}, "", launchUrl); const order: string[] = []; const mockSdk = sdk("launch-1", order); const abort = new AbortController(); (mockSdk.ready as ReturnType<typeof vi.fn>).mockImplementation(async () => { abort.abort(); }); vi.stubGlobal("fetch", vi.fn(async () => response({ client_id: "123", state: "state", protocol: 3, simulation: { tick_rate: 30, ring_half_width: 500, ring_half_height: 330 } })));
+    history.replaceState({}, "", launchUrl); const order: string[] = []; const mockSdk = sdk("launch-1", order); const abort = new AbortController(); (mockSdk.ready as ReturnType<typeof vi.fn>).mockImplementation(async () => { abort.abort(); }); vi.stubGlobal("fetch", vi.fn(async () => response({ client_id: "123", state: "state", protocol: 3, simulation: { tick_rate: 30, ring_half_width: 500, ring_half_height: 500 } })));
     await expect(authorizeDiscord(abort.signal, () => mockSdk)).rejects.toMatchObject({ code: "cancelled" }); expect(mockSdk.close).toHaveBeenCalledOnce();
   });
 });

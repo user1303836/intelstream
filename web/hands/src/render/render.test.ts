@@ -1,8 +1,6 @@
 import * as THREE from "three";
 import { punchTiming, totalTicks } from "../manifest";
 import { buildArena } from "./arena";
-import { BoxerAnimator } from "./animation";
-import { buildBoxer, buildReferee } from "./boxer";
 import { CameraDirector } from "./camera";
 import { bloodPatternFor, Effects3D } from "./effects";
 import { drawHud, HUD_MAX_GUARD, HUD_MAX_POISE, scoreTotal } from "./hud";
@@ -11,7 +9,7 @@ import { resizeHighDpi } from "./viewport";
 import { PALETTES, worldMapping } from "./world";
 import { fighter, publicPlayers, snapshot } from "../test/fixtures";
 
-const mapping = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 330 });
+const mapping = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 });
 
 const withAction = (
   base: ReturnType<typeof fighter>,
@@ -39,12 +37,12 @@ const withAction = (
 
 describe("world mapping", () => {
   it("maps sim up (W/stick-up) away from the broadcast camera and sim right to screen right", () => {
-    const map = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 330 });
-    expect(map.z(330)).toBeLessThan(0);
-    expect(map.z(-330)).toBeGreaterThan(0);
+    const map = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 });
+    expect(map.z(500)).toBeLessThan(0);
+    expect(map.z(-500)).toBeGreaterThan(0);
     expect(map.x(500)).toBeGreaterThan(0);
     expect(map.x(-500)).toBeLessThan(0);
-    expect(Math.abs(map.x(500))).toBeCloseTo(Math.abs(map.z(330)), 5);
+    expect(Math.abs(map.x(500))).toBeCloseTo(Math.abs(map.z(500)), 5);
   });
 });
 
@@ -58,296 +56,12 @@ describe("scene construction", () => {
     expect(ring.geometries.some((geometry) => geometry.type === "PlaneGeometry")).toBe(true);
   });
 
-  it("builds anatomically complete boxers with distinct corner palettes", () => {
-    const blue = buildBoxer(PALETTES[0]);
-    const red = buildBoxer(PALETTES[1]);
-    for (const joint of ["hips", "spine", "chest", "head", "shoulderL", "elbowL", "gloveL", "shoulderR", "elbowR", "gloveR", "hipL", "kneeL", "hipR", "kneeR"]) {
-      expect(blue.root.getObjectByName(joint), joint).toBeTruthy();
-    }
-    expect(blue.gloveLMesh).toBeTruthy();
-    expect(blue.gloveRMesh).toBeTruthy();
-    expect((blue.gloveLMesh.material as THREE.MeshStandardMaterial).color.getHex()).not.toBe((red.gloveLMesh.material as THREE.MeshStandardMaterial).color.getHex());
-    expect(blue.geometries.length).toBeGreaterThan(20);
-  });
-
-  it("builds a clothed referee sharing the boxer rig", () => {
-    const referee = buildReferee();
-    expect(referee.root.getObjectByName("hips")).toBeTruthy();
-    expect(referee.root.getObjectByName("head")).toBeTruthy();
-    expect(referee.materials.length).toBeGreaterThan(8);
-  });
-
   it("builds and animates the arena crowd deterministically", () => {
     const arena = buildArena();
     arena.update(1.5, 1 / 60, false);
     arena.update(2.5, 1 / 60, true);
     expect(arena.group.children.length).toBeGreaterThan(5);
     arena.dispose();
-  });
-});
-
-describe("boxer animation", () => {
-  const make = () => {
-    const rig = buildBoxer(PALETTES[0]);
-    return { rig, animator: new BoxerAnimator(rig, mapping) };
-  };
-
-  it("moves the rig to authoritative world positions and faces the opponent", () => {
-    const { rig, animator } = make();
-    const one = { ...fighter("one"), x: -200, y: 100, facing_x: 936, facing_y: -351 };
-    const two = { ...fighter("two"), x: 200, y: -50, facing_x: -936, facing_y: 351 };
-    for (let i = 0; i < 60; i += 1) animator.update(one, two, 1 / 60, i / 60, false);
-    expect(rig.root.position.x).toBeCloseTo(mapping.x(-200), 5);
-    expect(rig.root.position.z).toBeCloseTo(mapping.z(100), 5);
-    const expectedYaw = Math.atan2(936, 351) + 0.5;
-    expect(Math.abs(rig.root.rotation.y - expectedYaw)).toBeLessThan(0.05);
-  });
-
-  it("drives punch timelines from action instances and returns to guard", () => {
-    const { rig, animator } = make();
-    const one = fighter("one");
-    const two = fighter("two");
-    for (let i = 0; i < 30; i += 1) animator.update(one, two, 1 / 60, i / 60, false, "full", Math.floor(i / 2));
-    const guardZ = rig.gloveL.getWorldPosition(new THREE.Vector3()).z;
-    const punching = withAction({ ...one, x: 0 }, "straight", "right");
-    const farOpponent = { ...two, x: 195 };
-    let maxExtension = 0;
-    for (let i = 0; i < 40; i += 1) {
-      const snapshotTick = 15 + Math.floor(i / 2);
-      const frame = i < 34 ? { ...punching, action_start_tick: 15 } : { ...one, action_start_tick: 15 };
-      animator.update(frame, farOpponent, 1 / 60, 0.5 + i / 60, false, "full", snapshotTick);
-      const shoulder = rig.shoulderR.getWorldPosition(new THREE.Vector3());
-      const glove = rig.gloveR.getWorldPosition(new THREE.Vector3());
-      maxExtension = Math.max(maxExtension, shoulder.distanceTo(glove));
-    }
-    expect(maxExtension).toBeGreaterThan(0.55);
-    expect(maxExtension).toBeLessThanOrEqual(0.67);
-    for (let i = 0; i < 90; i += 1) animator.update(one, two, 1 / 60, 1.5 + i / 60, false, "full", 40 + Math.floor(i / 2));
-    const recovered = rig.gloveL.getWorldPosition(new THREE.Vector3()).z;
-    expect(Math.abs(recovered - guardZ)).toBeLessThan(0.25);
-  });
-
-  it("drops the hips to the canvas when downed and rises on recovery", () => {
-    const { rig, animator } = make();
-    const two = fighter("two");
-    const downed = { ...fighter("one"), is_downed: true };
-    for (let i = 0; i < 120; i += 1) animator.update(downed, two, 1 / 60, i / 60, false);
-    expect(rig.hips.position.y).toBeLessThan(0.35);
-    const standing = fighter("one");
-    for (let i = 0; i < 240; i += 1) animator.update(standing, two, 1 / 60, 2 + i / 60, false);
-    expect(rig.hips.position.y).toBeGreaterThan(0.9);
-  });
-
-  it("shows trauma overlays scaled by authoritative trauma", () => {
-    const { rig, animator } = make();
-    const two = fighter("two");
-    const hurt = { ...fighter("one"), trauma: { head: 500, body: 900, left_eye: 300, right_eye: 40, left_cut: 260, right_cut: 0, swelling: 0, bleeding: 300 } };
-    animator.update(hurt, two, 1 / 60, 0, false);
-    expect((rig.bruiseL.material as THREE.MeshStandardMaterial).opacity).toBeGreaterThan(0.5);
-    expect((rig.bruiseR.material as THREE.MeshStandardMaterial).opacity).toBeLessThan(0.5);
-    expect((rig.cutL.material as THREE.MeshStandardMaterial).opacity).toBeGreaterThan(0.5);
-    expect((rig.bodyBruise.material as THREE.MeshStandardMaterial).opacity).toBeGreaterThan(0.4);
-  });
-
-  it("reacts to impacts without mutating the snapshot", () => {
-    const { animator } = make();
-    const one = fighter("one");
-    const two = fighter("two");
-    const serialized = JSON.stringify(one);
-    animator.impact({ direction: 1, amount: 300, blocked: false });
-    animator.update(one, two, 1 / 60, 0, false);
-    expect(JSON.stringify(one)).toBe(serialized);
-  });
-
-  it("grows swelling, streaks and rib bruising with trauma and gates blood by setting", () => {
-    const { rig, animator } = make();
-    const two = fighter("two");
-    const hurt = { ...fighter("one"), trauma: { head: 800, body: 700, left_eye: 400, right_eye: 100, left_cut: 300, right_cut: 50, swelling: 300, bleeding: 350 } };
-    animator.update(hurt, two, 1 / 60, 0, false, "full");
-    expect(rig.swellL.scale.x).toBeGreaterThan(1);
-    expect(rig.swellR.scale.x).toBeLessThan(rig.swellL.scale.x);
-    expect((rig.streakL.material as THREE.MeshStandardMaterial).opacity).toBeGreaterThan(0.8);
-    expect((rig.ribL.material as THREE.MeshStandardMaterial).opacity).toBeGreaterThan(0.5);
-    expect((rig.noseStreak.material as THREE.MeshStandardMaterial).opacity).toBeGreaterThan(0.5);
-    animator.update(hurt, two, 1 / 60, 0.1, false, "off");
-    expect((rig.streakL.material as THREE.MeshStandardMaterial).opacity).toBe(0);
-    expect((rig.cutL.material as THREE.MeshStandardMaterial).opacity).toBe(0);
-    expect((rig.mouthBlood.material as THREE.MeshStandardMaterial).opacity).toBe(0);
-    expect((rig.swellL.material as THREE.MeshStandardMaterial).opacity).toBeGreaterThan(0);
-  });
-
-  it("bloodies the attacker's gloves with the opponent's bleeding", () => {
-    const { rig, animator } = make();
-    const one = fighter("one");
-    const bloodied = { ...fighter("two"), trauma: { head: 500, body: 0, left_eye: 0, right_eye: 0, left_cut: 300, right_cut: 200, swelling: 0, bleeding: 500 } };
-    animator.update(one, bloodied, 1 / 60, 0, false, "full");
-    const tinted = rig.gloveLMaterial.color.getHex();
-    animator.update(one, fighter("two"), 1 / 60, 0.1, false, "full");
-    expect(rig.gloveLMaterial.color.getHex()).not.toBe(tinted);
-    expect(tinted).not.toBe(rig.gloveBaseColor.getHex());
-    animator.update(one, bloodied, 1 / 60, 0.2, false, "off");
-    expect(rig.gloveLMaterial.color.getHex()).toBe(rig.gloveBaseColor.getHex());
-  });
-
-  it("retracts a punch when the fighter goes down mid-animation", () => {
-    const { rig, animator } = make();
-    const two = fighter("two");
-    const punching = { ...fighter("one"), facing_x: 0, facing_y: -1000, action: "straight" as const, action_hand: "right" as const, action_target: "head" as const, action_power: "power" as const };
-    for (let i = 0; i < 8; i += 1) animator.update(punching, two, 1 / 60, i / 60, false);
-    const extendedZ = rig.gloveR.getWorldPosition(new THREE.Vector3()).z - rig.root.position.z;
-    const downed = { ...punching, is_downed: true, action: null };
-    for (let i = 0; i < 120; i += 1) animator.update(downed, two, 1 / 60, 1 + i / 60, false);
-    const downZ = rig.gloveR.getWorldPosition(new THREE.Vector3()).z - rig.root.position.z;
-    expect(downZ).toBeLessThan(extendedZ);
-  });
-
-  it("freezes the punch during hitstop and rotates the punching shoulder into a cross", () => {
-    const { rig, animator } = make();
-    const two = fighter("two");
-    const punching = withAction(fighter("one"), "straight", "right");
-    for (let i = 0; i < 5; i += 1) animator.update(punching, two, 1 / 60, i / 60, false, "full", Math.floor(i / 2));
-    const gloveBefore = rig.gloveR.getWorldPosition(new THREE.Vector3()).z;
-    animator.landedHit(false);
-    for (let i = 0; i < 3; i += 1) animator.update(punching, two, 1 / 60, 0.1 + i / 60, false, "full", 2);
-    const gloveDuringStop = rig.gloveR.getWorldPosition(new THREE.Vector3()).z;
-    expect(Math.abs(gloveDuringStop - gloveBefore)).toBeLessThan(0.06);
-    for (let i = 0; i < 20; i += 1) animator.update(punching, two, 1 / 60, 0.3 + i / 60, false, "full", 2 + Math.floor(i / 2));
-    expect(rig.hips.rotation.y).toBeGreaterThan(0.1);
-    expect(rig.spine.rotation.y).toBeGreaterThan(0.1);
-    const southpawRig = buildBoxer(PALETTES[1]);
-    const southpawAnimator = new BoxerAnimator(southpawRig, mapping);
-    const southpawPunch = withAction({ ...fighter("two"), stance: "southpaw" as const }, "straight", "right");
-    for (let i = 0; i < 20; i += 1) southpawAnimator.update(southpawPunch, fighter("one"), 1 / 60, i / 60, false, "full", Math.floor(i / 2));
-    expect(southpawRig.spine.rotation.y).toBeGreaterThan(0.1);
-  });
-
-  it("drops level for body punches and springs the canvas landing on knockdown", () => {
-    const { rig, animator } = make();
-    const two = fighter("two");
-    const bodyPunch = withAction(fighter("one"), "straight", "left", "body");
-    for (let i = 0; i < 14; i += 1) animator.update(bodyPunch, two, 1 / 60, i / 60, false, "full", Math.floor(i / 2));
-    const bodyHeight = rig.hips.position.y;
-    const headPunch = withAction(fighter("one"), "straight", "left", "head");
-    const second = make();
-    for (let i = 0; i < 14; i += 1) second.animator.update(headPunch, two, 1 / 60, i / 60, false, "full", Math.floor(i / 2));
-    expect(bodyHeight).toBeLessThan(second.rig.hips.position.y - 0.03);
-    const downed = { ...fighter("one"), is_downed: true };
-    const third = make();
-    let maxSpring = 0;
-    for (let i = 0; i < 150; i += 1) {
-      third.animator.update(downed, two, 1 / 60, i / 60, false);
-      maxSpring = Math.max(maxSpring, Math.abs(third.animator.landingOffset));
-    }
-    expect(maxSpring).toBeGreaterThan(0.025);
-    expect(third.rig.hips.position.y).toBeLessThan(0.35);
-  });
-
-  it("dances the taunt with overhead swings and hip wiggle", () => {
-    const { rig, animator } = make();
-    const two = fighter("two");
-    const taunting = { ...fighter("one"), taunt_ticks: 45 };
-    let maxGloveY = -Infinity;
-    let maxRoll = 0;
-    for (let i = 0; i < 40; i += 1) {
-      animator.update({ ...taunting, taunt_ticks: 45 - i }, two, 1 / 60, i / 60, false);
-      maxGloveY = Math.max(maxGloveY, rig.gloveL.getWorldPosition(new THREE.Vector3()).y);
-      maxRoll = Math.max(maxRoll, Math.abs(rig.hips.rotation.z));
-    }
-    expect(maxGloveY).toBeGreaterThan(1.55);
-    expect(maxRoll).toBeGreaterThan(0.05);
-  });
-
-  it("differentiates punch silhouettes: hook sweeps wide, jab recovers fastest", () => {
-    const two = fighter("two");
-    const trace = (action: "jab" | "hook"): { maxLateral: number; recoverFrames: number } => {
-      const { rig, animator } = make();
-      const punching = withAction(fighter("one"), action, "left");
-      const farOpponent = { ...two, x: 195 };
-      animator.update(fighter("one"), farOpponent, 1 / 60, 0, false, "full", 0);
-      const guardZ = rig.chest.worldToLocal(rig.gloveL.getWorldPosition(new THREE.Vector3())).z;
-      let maxLateral = 0;
-      let peakZ = -Infinity;
-      let peakTick = 0;
-      let extended = false;
-      let recoverTick = Infinity;
-      for (let i = 0; i < 90; i += 1) {
-        const frame = i < 40 ? punching : fighter("one");
-        animator.update(frame, farOpponent, 1 / 60, i / 60, false, "full", Math.floor(i / 2));
-        const local = rig.chest.worldToLocal(rig.gloveL.getWorldPosition(new THREE.Vector3()));
-        maxLateral = Math.max(maxLateral, Math.abs(local.x));
-        if (local.z > guardZ + 0.15) extended = true;
-        if (local.z > peakZ) {
-          peakZ = local.z;
-          peakTick = i;
-        } else if (extended && recoverTick === Infinity && i > peakTick && local.z < guardZ + 0.04) {
-          recoverTick = i;
-        }
-      }
-      return { maxLateral, recoverFrames: recoverTick - peakTick };
-    };
-    const jab = trace("jab");
-    const hook = trace("hook");
-    expect(hook.maxLateral).toBeGreaterThan(jab.maxLateral + 0.1);
-    expect(totalTicks(punchTiming("jab", "head", "normal"))).toBeLessThan(totalTicks(punchTiming("hook", "head", "normal")));
-    expect(totalTicks(punchTiming("straight", "head", "normal"))).toBeLessThan(totalTicks(punchTiming("uppercut", "head", "normal")));
-  });
-
-  it("buckles the knees early in a knockdown before settling flat", () => {
-    const { rig, animator } = make();
-    const two = fighter("two");
-    const downed = { ...fighter("one"), is_downed: true };
-    let earlyKnee = 0;
-    for (let i = 0; i < 18; i += 1) {
-      animator.update(downed, two, 1 / 60, i / 60, false);
-      earlyKnee = Math.max(earlyKnee, rig.kneeL.rotation.x);
-    }
-    expect(earlyKnee).toBeGreaterThan(0.5);
-    for (let i = 0; i < 150; i += 1) animator.update(downed, two, 1 / 60, 1 + i / 60, false);
-    expect(rig.kneeL.rotation.x).toBeLessThan(0.4);
-  });
-
-  it("restarts identical punches on new action instances", () => {
-    const { rig, animator } = make();
-    const two = fighter("two");
-    const jabOne = withAction(fighter("one"), "jab", "left");
-    for (let i = 0; i < 16; i += 1) animator.update(jabOne, two, 1 / 60, i / 60, false, "full", Math.floor(i / 2));
-    const midZ = rig.chest.worldToLocal(rig.gloveL.getWorldPosition(new THREE.Vector3())).z;
-    expect(midZ).toBeGreaterThan(0.33);
-    const jabTwo = { ...withAction(fighter("one"), "jab", "left"), action_id: "jab-left-head-normal-2" };
-    animator.update(jabTwo, two, 1 / 60, 1, false, "full", 8);
-    const restartZ = rig.chest.worldToLocal(rig.gloveL.getWorldPosition(new THREE.Vector3())).z;
-    expect(restartZ).toBeLessThan(midZ);
-  });
-
-  it("begins predicted punches locally and reconciles within one tick", () => {
-    const { rig, animator } = make();
-    const two = fighter("two");
-    const baseline = rig.chest.worldToLocal(rig.gloveL.getWorldPosition(new THREE.Vector3())).z;
-    animator.predict({ kind: "punch", hand: "left", class: "jab", target: "head", power: "normal", id: "c7" }, 0, 30);
-    animator.update(fighter("one"), two, 1 / 60, 1 / 60, false, "full", 0);
-    const predictedZ = rig.chest.worldToLocal(rig.gloveL.getWorldPosition(new THREE.Vector3())).z;
-    expect(predictedZ).toBeGreaterThan(baseline + 0.005);
-    const authoritative = {
-      ...withAction(fighter("one"), "jab", "left"),
-      action_id: "c7",
-      action_start_tick: 2,
-    };
-    animator.update(authoritative, two, 1 / 60, 2 / 60, false, "full", 2);
-    const reconciledZ = rig.chest.worldToLocal(rig.gloveL.getWorldPosition(new THREE.Vector3())).z;
-    expect(Math.abs(reconciledZ - predictedZ)).toBeLessThan(0.3);
-  });
-
-  it("mirrors southpaw glove placement", () => {
-    const { rig, animator } = make();
-    const one = { ...fighter("one"), facing_x: 0, facing_y: -1000, stance: "southpaw" as const };
-    const two = fighter("two");
-    for (let i = 0; i < 30; i += 1) animator.update(one, two, 1 / 60, i / 60, false);
-    const leftX = rig.gloveL.getWorldPosition(new THREE.Vector3()).x - rig.root.position.x;
-    const orthodox = buildBoxer(PALETTES[0]);
-    const orthodoxAnimator = new BoxerAnimator(orthodox, mapping);
-    for (let i = 0; i < 30; i += 1) orthodoxAnimator.update({ ...fighter("one"), facing_x: 0, facing_y: -1000 }, two, 1 / 60, i / 60, false);
-    const orthodoxLeftX = orthodox.gloveL.getWorldPosition(new THREE.Vector3()).x - orthodox.root.position.x;
-    expect(Math.sign(leftX)).not.toBe(Math.sign(orthodoxLeftX));
   });
 });
 

@@ -8,9 +8,11 @@ import { FIGHTER_GLB_GZIP_BASE64 } from "../assets/fighter-glb";
 import { BONE_ADAPTER } from "./skeleton";
 export { BONE_ADAPTER };
 import { FIGHTER_TEXTURE_DATA_URLS } from "../assets/fighter-textures";
+import { PoseSolver, STANCE, easeIn, easeOut, mirrorX, smoothstep, vec, type FootTarget, type HandTarget, type PoseDescription } from "./poser";
+import { SolvedRig } from "./rig";
 import type { WorldMapping } from "./world";
 
-export const FIGHTER_MODEL_SCALE = 0.96;
+export const FIGHTER_MODEL_SCALE = 1;
 
 type FighterTexture = keyof typeof FIGHTER_TEXTURE_DATA_URLS;
 
@@ -92,10 +94,11 @@ export function applyFighterSkin(target: THREE.Object3D, palette: BoxerPaletteCo
     let material = bySource.get(sourceName);
     if (material === undefined) {
       const isSkin = sourceName === "MHeadMat0" || sourceName === "MBodyMat0";
-      const color = sourceName === "GlovesMat0" || sourceName === "PantsMat0" ? palette.gear : 0xffffff;
+      const color = sourceName === "GlovesMat0" ? palette.gear : sourceName === "PantsMat0" ? (palette.pants ?? palette.gear) : 0xffffff;
+      const map = sourceName === "MBodyMat0" && palette.bodyMap !== undefined ? palette.bodyMap : fighterTexture(textureName);
       material = isSkin
-        ? new THREE.MeshPhysicalMaterial({ map: fighterTexture(textureName), color, roughness: 0.58, metalness: 0.02, clearcoat: 0.25, clearcoatRoughness: 0.6 })
-        : new THREE.MeshStandardMaterial({ map: fighterTexture(textureName), color, roughness: 0.4, metalness: 0.03 });
+        ? new THREE.MeshPhysicalMaterial({ map, color, roughness: sourceName === "MBodyMat0" && palette.bodyMap !== undefined ? 0.85 : 0.58, metalness: 0.02, clearcoat: palette.bodyMap !== undefined && sourceName === "MBodyMat0" ? 0 : 0.25, clearcoatRoughness: 0.6 })
+        : new THREE.MeshStandardMaterial({ map, color, roughness: 0.4, metalness: 0.03 });
       material.name = sourceName;
       bySource.set(sourceName, material);
       owned.push(material);
@@ -113,21 +116,11 @@ export function applyFighterSkin(target: THREE.Object3D, palette: BoxerPaletteCo
   return { skin, gloves, owned };
 }
 
-export const CLIP_NAMES = [
-  "idle", "move_forward", "move_backward", "move_lateral_left", "move_lateral_right",
-  "guard_high", "guard_low", "slip_left", "slip_right", "weave", "pull",
-  "jab_left", "jab_right", "straight_left", "straight_right", "hook_left", "hook_right",
-  "uppercut_left", "uppercut_right",
-  "block_head_left", "block_head_right", "block_body_left", "block_body_right",
-  "hit_head_left", "hit_head_right", "hit_body_left", "hit_body_right",
-  "knockdown", "getup", "clinch", "foul_recovery", "stunned", "exhausted", "taunt",
-] as const;
-
-export type ClipName = (typeof CLIP_NAMES)[number];
-
 export interface BoxerPaletteColors {
   readonly skin: number;
   readonly gear: number;
+  readonly pants?: number;
+  readonly bodyMap?: THREE.Texture;
 }
 
 export type ArcadeDislocation = "jaw" | "shoulder_left" | "shoulder_right";
@@ -137,13 +130,12 @@ const smoothAngle = (current: number, target: number, rate: number, dt: number):
   const delta = ((target - current + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
   return current + delta * (1 - Math.exp(-rate * dt));
 };
-const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
+const clamp = THREE.MathUtils.clamp;
 
 export class SkinnedBoxer {
   readonly root = new THREE.Group();
-  readonly mixer: THREE.AnimationMixer;
-  readonly actions = new Map<ClipName, THREE.AnimationAction>();
   readonly bones = new Map<string, THREE.Bone>();
+  readonly rig: SolvedRig;
   /** Bone-derived measurements in world units (after MODEL_SCALE). */
   readonly metrics: { armUpper: number; armFore: number; legThigh: number; legShin: number; headRestY: number; chestRestY: number; ankleRestY: number };
   private readonly skinMaterials: readonly THREE.MeshPhysicalMaterial[];
@@ -181,33 +173,17 @@ export class SkinnedBoxer {
         throw new Error(`fighter GLB requires one ${side} glove mesh, found ${this.handMeshes[side].length}`);
       }
     }
-    this.mixer = new THREE.AnimationMixer(instance);
-    for (const clip of gltf.animations) {
-      const action = this.mixer.clipAction(clip);
-      this.actions.set(clip.name as ClipName, action);
-      if (
-        /^(jab|straight|hook|uppercut|block_|hit_)/.test(clip.name)
-        || clip.name === "knockdown"
-        || clip.name === "getup"
-        || clip.name === "taunt"
-      ) {
-        action.setLoop(THREE.LoopOnce, 1);
-        action.clampWhenFinished = true;
-      }
-    }
-    const missingClips = CLIP_NAMES.filter((name) => !this.actions.has(name));
-    if (missingClips.length > 0) throw new Error(`fighter GLB missing clips: ${missingClips.join(", ")}`);
-    instance.updateMatrixWorld(true);
-    const jointDistance = (from: string, to: string): number =>
-      this.bone(from)!.getWorldPosition(new THREE.Vector3()).distanceTo(this.bone(to)!.getWorldPosition(new THREE.Vector3()));
+    this.root.updateMatrixWorld(true);
+    this.rig = new SolvedRig(this.root);
+    const rigMetrics = this.rig.metrics;
     this.metrics = {
-      armUpper: jointDistance("shoulderL", "elbowL"),
-      armFore: jointDistance("elbowL", "gloveL"),
-      legThigh: jointDistance("hipL", "kneeL"),
-      legShin: jointDistance("kneeL", "ankleL"),
-      headRestY: this.bone("head")!.getWorldPosition(new THREE.Vector3()).y,
-      chestRestY: this.bone("chest")!.getWorldPosition(new THREE.Vector3()).y,
-      ankleRestY: this.bone("ankleL")!.getWorldPosition(new THREE.Vector3()).y,
+      armUpper: rigMetrics.armL.upper,
+      armFore: rigMetrics.armL.lower,
+      legThigh: rigMetrics.legL.upper,
+      legShin: rigMetrics.legL.lower,
+      headRestY: rigMetrics.headHeight,
+      chestRestY: rigMetrics.chestHeight,
+      ankleRestY: rigMetrics.ankleHeight,
     };
     this.overlays = buildTraumaOverlays(this.bone("head")!, this.bone("chest")!, palette.skin);
   }
@@ -252,7 +228,6 @@ export class SkinnedBoxer {
   }
 
   dispose(): void {
-    this.mixer.stopAllAction();
     for (const material of this.ownedMaterials) material.dispose();
     this.overlays.dispose();
   }
@@ -390,24 +365,45 @@ export function applyTraumaToOverlays(overlays: TraumaOverlays, fighter: Fighter
 }
 
 const BLOODED_GLOVE_COLOR = new THREE.Color(0x5c0a0e);
-const LOCOMOTION = [
-  "idle", "move_forward", "move_backward", "move_lateral_left", "move_lateral_right",
-] as const satisfies readonly ClipName[];
-const ONE_SHOTS: readonly ClipName[] = [
-  "jab_left", "jab_right", "straight_left", "straight_right", "hook_left", "hook_right",
-  "uppercut_left", "uppercut_right",
-  "block_head_left", "block_head_right", "block_body_left", "block_body_right",
-  "hit_head_left", "hit_head_right", "hit_body_left", "hit_body_right",
-  "knockdown", "getup", "clinch", "foul_recovery", "stunned", "exhausted", "taunt",
-];
-const PUNCH_CLIP = (punchClass: PunchClass, hand: Hand): ClipName => `${punchClass}_${hand}` as ClipName;
+
+export type ReactionKind = "block" | "hit";
+
+interface FootState {
+  readonly planted: THREE.Vector3;
+  readonly from: THREE.Vector3;
+  readonly to: THREE.Vector3;
+  progress: number;
+  stepping: boolean;
+  duration: number;
+}
+
+interface Spring3 {
+  readonly value: THREE.Vector3;
+  readonly velocity: THREE.Vector3;
+}
+
+const springStep = (spring: Spring3, dt: number, stiffness: number, damping: number, limit: number): void => {
+  const value = spring.value;
+  const velocity = spring.velocity;
+  velocity.addScaledVector(value, -stiffness * dt).multiplyScalar(Math.exp(-damping * dt));
+  value.addScaledVector(velocity, dt);
+  if (value.length() > limit) value.setLength(limit);
+};
+
+const PUNCH_CONTACT_OFFSET = 0.06;
+const KNOCKDOWN_FALL_SECONDS = 0.75;
+const GETUP_SECONDS = 1.7;
+
+const SIDE_FROM_HAND = (hand: Hand): "L" | "R" => (hand === "left" ? "L" : "R");
 
 export class BoxingGraph {
   readonly boxer: SkinnedBoxer;
+  private readonly solver: PoseSolver;
   private yaw = 0;
+  private yawInitialized = false;
   private rootX: number | null = null;
   private rootZ = 0;
-  private activePunch: THREE.AnimationAction | null = null;
+  private punchActive = false;
   private punchAgeTicks = 0;
   private punchTotalTicks = 1;
   private punchClass: PunchClass = "jab";
@@ -418,85 +414,118 @@ export class BoxingGraph {
   private actionId: string | null = null;
   private completedActionId: string | null = null;
   private predictedId: string | null = null;
-  private predictedAtSeconds = -1;
   private predictionAgeTicks = 0;
-  private predictedClip: ClipName = "jab_left";
-  private predictedTotalTicks = 13;
   private hitstop = 0;
-  private reactionAction: THREE.AnimationAction | null = null;
-  private stateAction: THREE.AnimationAction | null = null;
-  private stateWeight = 0;
-  private stateRequested = false;
+  private hitstopScale = 1;
   private downState: "up" | "falling" | "down" | "rising" = "up";
   private fallAge = 0;
   private riseAge = 0;
-  private opponentDrop = 0;
-  private readonly liveOpponentHead = new THREE.Vector3(0, 0.97, 0);
+  private fallSide = 0;
+  private readonly liveOpponentHead = new THREE.Vector3();
   private hasLiveHead = false;
-  private defenseWeight = 0;
-  private defenseClip: "guard_high" | "guard_low" | "slip_left" | "slip_right" | "weave" | "pull" = "guard_high";
-  private hitstopScale = 1;
-  private plantedL: THREE.Vector3 | null = null;
-  private plantedR: THREE.Vector3 | null = null;
-  private readonly locomotionWeights: Record<string, number> = {
-    idle: 1,
-    move_forward: 0,
-    move_backward: 0,
-    move_lateral_left: 0,
-    move_lateral_right: 0,
-  };
-  private readonly scratchA = new THREE.Vector3();
+  private readonly headKick: Spring3 = { value: new THREE.Vector3(), velocity: new THREE.Vector3() };
+  private readonly torsoKick: Spring3 = { value: new THREE.Vector3(), velocity: new THREE.Vector3() };
+  private readonly rootKick: Spring3 = { value: new THREE.Vector3(), velocity: new THREE.Vector3() };
+  private guardKick = 0;
+  private guardHigh = 0;
+  private guardLow = 0;
+  private slip = 0;
+  private weave = 0;
+  private weaveTime = 0;
+  private pull = 0;
+  private crouchExtra = 0;
+  private bouncePhase = 0;
+  private weightPhase = 0;
+  private stunPhase = 0;
+  private feintTimer = 2;
+  private feint = 0;
+  private stunAmount = 0;
+  private tired = 0;
+  private clinchWeight = 0;
+  private foulWeight = 0;
+  private tauntWeight = 0;
+  private lastSpeed = 0;
+  private readonly feet: [FootState, FootState] = [
+    { planted: new THREE.Vector3(), from: new THREE.Vector3(), to: new THREE.Vector3(), progress: 1, stepping: false, duration: 0.2 },
+    { planted: new THREE.Vector3(), from: new THREE.Vector3(), to: new THREE.Vector3(), progress: 1, stepping: false, duration: 0.2 },
+  ];
+  private feetInitialized = false;
+  private dislocation: ArcadeDislocation | null = null;
+  private readonly scratch = new THREE.Vector3();
   private readonly scratchB = new THREE.Vector3();
   private readonly scratchC = new THREE.Vector3();
+  private readonly scratchD = new THREE.Vector3();
+  private readonly scratchE = new THREE.Vector3();
   private readonly scratchQ = new THREE.Quaternion();
-  private readonly aimTarget = new THREE.Vector3();
-  private readonly aimShoulder = new THREE.Vector3();
-  private readonly aimTo = new THREE.Vector3();
-  private readonly aimPole = new THREE.Vector3();
-  private readonly aimBend = new THREE.Vector3();
-  private readonly aimElbow = new THREE.Vector3();
-  private readonly lockAnkle = new THREE.Vector3();
-  private readonly lockPinned = new THREE.Vector3();
-  private readonly lockHip = new THREE.Vector3();
-  private readonly lockTo = new THREE.Vector3();
-  private readonly lockPole = new THREE.Vector3();
-  private readonly lockBend = new THREE.Vector3();
-  private readonly lockKnee = new THREE.Vector3();
-  private dislocation: ArcadeDislocation | null = null;
+  private readonly headWorld = new THREE.Vector3();
+  private readonly hand = { L: this.makeHand(), R: this.makeHand() };
+  private readonly foot = { L: this.makeFoot(), R: this.makeFoot() };
+  private readonly torso = {
+    hips: new THREE.Vector3(),
+    hipsYaw: 0,
+    hipsPitch: 0,
+    hipsRoll: 0,
+    shouldersYaw: 0,
+    spinePitch: 0,
+    spineRoll: 0,
+    headYaw: 0,
+    headPitch: 0,
+    headRoll: 0,
+    headOffset: new THREE.Vector3(),
+  };
+  private readonly pose: PoseDescription;
 
-  constructor(boxer: SkinnedBoxer, private readonly mapping: WorldMapping) {
+  private readonly referee: boolean;
+  private refereeCount = 0;
+  private refereeCounting = false;
+
+  constructor(boxer: SkinnedBoxer, private readonly mapping: WorldMapping, options: { referee?: boolean } = {}) {
     this.boxer = boxer;
-    for (const name of LOCOMOTION) {
-      const action = boxer.actions.get(name)!;
-      action.setEffectiveWeight(name === "idle" ? 1 : 0);
-      action.play();
-    }
+    this.referee = options.referee === true;
+    this.solver = new PoseSolver(boxer.rig);
+    this.pose = { torso: this.torso, handL: this.hand.L, handR: this.hand.R, footL: this.foot.L, footR: this.foot.R, shrugL: 0, shrugR: 0 };
+  }
+
+  private makeHand(): { position: THREE.Vector3; knuckles: THREE.Vector3; palm: THREE.Vector3; pole: THREE.Vector3 } {
+    return { position: new THREE.Vector3(), knuckles: new THREE.Vector3(0, 1, 0), palm: new THREE.Vector3(0, 0, 1), pole: new THREE.Vector3(0, -1, 0) };
+  }
+
+  private makeFoot(): { position: THREE.Vector3; toe: THREE.Vector3; heel: number; pole: THREE.Vector3 } {
+    return { position: new THREE.Vector3(), toe: new THREE.Vector3(0, 0, 1), heel: 0, pole: new THREE.Vector3(0, 0, 1) };
   }
 
   get currentRoot(): { x: number; z: number } {
     return { x: this.rootX ?? 0, z: this.rootZ };
   }
 
+  get isDown(): boolean {
+    return this.downState !== "up";
+  }
+
+  setRefereeCount(counting: boolean, count: number): void {
+    this.refereeCounting = counting;
+    this.refereeCount = count;
+  }
+
   predict(action: SemanticAction, timeSeconds: number, tickRate: number): void {
     if (action.kind !== "punch" || action.id === undefined) return;
+    void timeSeconds;
+    void tickRate;
     this.predictedId = action.id;
-    this.predictedAtSeconds = timeSeconds;
     this.predictionAgeTicks = 0;
-    this.predictedClip = PUNCH_CLIP(action.class, action.hand);
     const timing = punchTiming(action.class, action.target, action.power);
-    this.punchClass = action.class;
-    this.punchHand = action.hand;
-    this.punchTarget = action.target;
-    this.punchPower = action.power;
-    this.punchTiming = timing;
-    this.predictedTotalTicks = totalTicks(timing);
     const inRecovery = this.actionId !== null && this.punchAgeTicks / this.punchTotalTicks > 0.55;
     if (this.actionId === null || inRecovery) {
       this.actionId = null;
-      this.beginPunch(this.boxer.actions.get(this.predictedClip)!, this.predictedTotalTicks);
+      this.punchClass = action.class;
+      this.punchHand = action.hand;
+      this.punchTarget = action.target;
+      this.punchPower = action.power;
+      this.punchTiming = timing;
+      this.punchTotalTicks = Math.max(1, totalTicks(timing));
       this.punchAgeTicks = 0;
+      this.punchActive = true;
     }
-    void tickRate;
   }
 
   landedHit(blocked: boolean): void {
@@ -512,44 +541,94 @@ export class BoxingGraph {
     (jaw.material as THREE.MeshStandardMaterial).opacity = dislocation === "jaw" ? 1 : 0;
   }
 
-  react(kind: "block" | "hit", target: Target = "head", direction = 1): void {
-    const side = direction < 0 ? "left" : "right";
-    const clip = this.boxer.actions.get(`${kind}_${target}_${side}` as ClipName);
-    if (clip === undefined) return;
-    if (this.reactionAction !== null && this.reactionAction !== clip) this.reactionAction.stop();
-    this.reactionAction = clip;
-    clip.reset().setLoop(THREE.LoopOnce, 1);
-    clip.setEffectiveWeight(0).play();
-  }
-
-  private setPunch(action: THREE.AnimationAction, ageTicks: number): void {
-    const clip = action.getClip();
-    const source = punchTiming(this.punchClass, "head", "normal");
-    const sourceRecovery = Math.max(1, clip.duration * 30 - source.startup - source.active);
-    const target = this.punchTiming;
-    const age = THREE.MathUtils.clamp(ageTicks, 0, totalTicks(target));
-    let clipTicks: number;
-    if (age <= target.startup) {
-      clipTicks = target.startup > 0 ? (age / target.startup) * source.startup : source.startup;
-    } else if (age <= target.startup + target.active) {
-      const activeAge = age - target.startup;
-      clipTicks = source.startup + (target.active > 0 ? (activeAge / target.active) * source.active : source.active);
+  /**
+   * Contact-synchronised reaction. `punchClass`/`hand` describe the incoming
+   * punch so the head snaps along the real impact line; `direction` is the
+   * legacy world-x sign used when the class is unknown.
+   */
+  react(kind: ReactionKind, target: Target = "head", direction = 1, punchClass: PunchClass | null = null, hand: Hand | null = null, amount = 200): void {
+    const scale = clamp(0.55 + amount / 320, 0.55, 1.6) * (kind === "block" ? 0.35 : 1);
+    const lateral = hand === "left" ? 1 : hand === "right" ? -1 : direction >= 0 ? -1 : 1;
+    if (target === "body") {
+      this.torsoKick.velocity.x += 3.2 * scale;
+      this.rootKick.velocity.z -= 0.35 * scale;
+      this.headKick.velocity.z -= 0.6 * scale;
+      this.headKick.velocity.y -= 0.4 * scale;
+      this.guardKick = Math.max(this.guardKick, 0.6 * scale);
     } else {
-      const recoveryAge = age - target.startup - target.active;
-      clipTicks = source.startup + source.active
-        + (target.recovery > 0 ? (recoveryAge / target.recovery) * sourceRecovery : sourceRecovery);
+      switch (punchClass) {
+        case "hook":
+          this.headKick.velocity.x += 2.6 * scale * lateral;
+          this.headKick.velocity.z -= 0.7 * scale;
+          this.torsoKick.velocity.z += 0.9 * scale * lateral;
+          break;
+        case "uppercut":
+          this.headKick.velocity.y += 2.2 * scale;
+          this.headKick.velocity.z -= 1.2 * scale;
+          this.torsoKick.velocity.x -= 1.2 * scale;
+          break;
+        case "straight":
+          this.headKick.velocity.z -= 2.4 * scale;
+          this.torsoKick.velocity.x -= 0.6 * scale;
+          break;
+        default:
+          this.headKick.velocity.z -= 1.5 * scale;
+          this.torsoKick.velocity.x -= 0.35 * scale;
+          break;
+      }
+      this.rootKick.velocity.z -= 0.45 * scale;
+      if (kind === "block") this.guardKick = Math.max(this.guardKick, 0.9 * scale);
     }
-    action.time = THREE.MathUtils.clamp(clipTicks / 30, 0, Math.max(0.001, clip.duration - 0.001));
+    if (kind === "hit" && target === "head" && amount > 250) this.fallSide = lateral;
   }
 
-  private beginPunch(action: THREE.AnimationAction, totalTicksValue: number): void {
-    if (this.activePunch !== null && this.activePunch !== action) this.activePunch.stop();
-    this.activePunch = action;
-    action.reset();
-    action.setLoop(THREE.LoopOnce, 1);
-    action.setEffectiveWeight(0).play();
-    action.paused = true;
-    this.punchTotalTicks = Math.max(1, totalTicksValue);
+  private stepFeet(dt: number, mirror: number, speed: number, velocityWorld: THREE.Vector3, rootPosition: THREE.Vector3, yaw: number): void {
+    const desired = this.scratch;
+    const rotate = this.scratchQ.setFromAxisAngle(worldUpVector, yaw);
+    for (const [index, foot] of this.feet.entries()) {
+      const isLead = (index === 0) === (mirror > 0);
+      const offset = isLead ? STANCE.leadFoot : STANCE.rearFoot;
+      if (this.referee) desired.set((index === 0 ? 0.16 : -0.16), 0, index === 0 ? 0.02 : -0.02).applyQuaternion(rotate).add(rootPosition);
+      else desired.set(offset.x * mirror, 0, offset.z).applyQuaternion(rotate).add(rootPosition);
+      desired.y = 0;
+      if (!this.feetInitialized) {
+        foot.planted.copy(desired);
+        foot.progress = 1;
+        foot.stepping = false;
+        continue;
+      }
+      if (foot.stepping) {
+        foot.progress = Math.min(1, foot.progress + dt / foot.duration);
+        if (foot.progress >= 1) {
+          foot.stepping = false;
+          foot.planted.copy(foot.to);
+        }
+        continue;
+      }
+      const other = this.feet[1 - index]!;
+      const drift = foot.planted.distanceTo(desired);
+      const threshold = speed > 0.05 ? 0.09 : 0.14;
+      if (drift > threshold && !other.stepping) {
+        foot.stepping = true;
+        foot.progress = 0;
+        foot.duration = clamp(0.24 - speed * 0.07, 0.15, 0.24);
+        foot.from.copy(foot.planted);
+        foot.to.copy(desired).addScaledVector(velocityWorld, foot.duration * 0.6);
+        foot.to.y = 0;
+      }
+    }
+    this.feetInitialized = true;
+  }
+
+  private footWorld(index: 0 | 1, out: THREE.Vector3): { lift: number } {
+    const foot = this.feet[index];
+    if (!foot.stepping) {
+      out.copy(foot.planted);
+      return { lift: 0 };
+    }
+    const t = easeOut(foot.progress, 1.6);
+    out.copy(foot.from).lerp(foot.to, t);
+    return { lift: Math.sin(foot.progress * Math.PI) * 0.055 };
   }
 
   update(
@@ -564,6 +643,7 @@ export class BoxingGraph {
   ): void {
     const boxer = this.boxer;
     const mirror = fighter.stance === "orthodox" ? 1 : -1;
+    const motionScale = reducedMotion ? 0.35 : 1;
 
     const worldX = this.mapping.x(fighter.x);
     const worldZ = this.mapping.z(fighter.y);
@@ -572,22 +652,266 @@ export class BoxingGraph {
       this.rootZ = worldZ;
     }
     const maxStep = 0.05;
-    this.rootX += THREE.MathUtils.clamp(worldX - this.rootX, -maxStep, maxStep);
-    this.rootZ += THREE.MathUtils.clamp(worldZ - this.rootZ, -maxStep, maxStep);
+    this.rootX += clamp(worldX - this.rootX, -maxStep, maxStep);
+    this.rootZ += clamp(worldZ - this.rootZ, -maxStep, maxStep);
     const targetYaw = Math.atan2(fighter.facing_x, -fighter.facing_y);
-    this.yaw = smoothAngle(this.yaw, targetYaw, 9, dt);
+    if (!this.yawInitialized) {
+      this.yaw = targetYaw;
+      this.yawInitialized = true;
+    }
+    const turnRate = this.punchActive ? 3 : 9;
+    this.yaw = smoothAngle(this.yaw, targetYaw, turnRate, dt);
     boxer.root.position.set(this.rootX, 0, this.rootZ);
     boxer.root.rotation.set(0, this.yaw, 0);
-    void mirror;
 
-    const fatigueScale = 0.82 + (fighter.stamina / Math.max(1, fighter.maximum_stamina)) * 0.18;
     this.hitstop = Math.max(0, this.hitstop - dt);
     this.hitstopScale = this.hitstop > 0 ? 0.12 : 1;
+    const simDt = dt * this.hitstopScale;
 
+    this.syncAction(fighter, sampledTick, simDt);
+
+    if (opponentHeadWorld !== undefined) {
+      this.liveOpponentHead.copy(opponentHeadWorld);
+      this.hasLiveHead = true;
+    }
+
+    const velocityWorld = this.scratchB.set(this.mapping.x(fighter.velocity_x) * 30, 0, this.mapping.z(fighter.velocity_y) * 30);
+    const speed = velocityWorld.length();
+    this.lastSpeed = speed;
+    const stamina = fighter.stamina / Math.max(1, fighter.maximum_stamina);
+    this.tired = smooth(this.tired, clamp((0.55 - stamina) / 0.5, 0, 1), 2, dt);
+    this.stunAmount = smooth(this.stunAmount, Math.min(1, fighter.stunned_ticks / 24), 8, dt);
+    const defending = fighter.defense;
+    this.guardHigh = smooth(this.guardHigh, defending === "guard_high" ? 1 : 0, 14, dt);
+    this.guardLow = smooth(this.guardLow, defending === "guard_low" ? 1 : 0, 14, dt);
+    const slipTarget = defending === "slip_left" ? 1 : defending === "slip_right" ? -1 : 0;
+    this.slip = smooth(this.slip, slipTarget, 16, dt);
+    const weaving = defending === "weave";
+    this.weaveTime = weaving ? this.weaveTime + dt : 0;
+    this.weave = smooth(this.weave, weaving ? 1 : 0, 14, dt);
+    this.pull = smooth(this.pull, defending === "pull" ? 1 : 0, 14, dt);
+    this.clinchWeight = smooth(this.clinchWeight, fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0 ? 1 : 0, 10, dt);
+    this.foulWeight = smooth(this.foulWeight, fighter.is_foul_recovery_target ? 1 : 0, 8, dt);
+    this.tauntWeight = smooth(this.tauntWeight, fighter.taunt_ticks > 0 ? 1 : 0, 10, dt);
+
+    springStep(this.headKick, dt, 190, 7.5, 0.24);
+    springStep(this.torsoKick, dt, 150, 7, 0.7);
+    springStep(this.rootKick, dt, 120, 8, 0.12);
+    this.guardKick = Math.max(0, this.guardKick - dt * 2.4);
+
+    this.updateDownState(fighter, dt);
+
+    const bounceTempo = (1.9 - this.tired * 0.7) * (1 - this.stunAmount * 0.6);
+    this.bouncePhase += dt * bounceTempo * Math.PI * 2 * motionScale;
+    this.weightPhase += dt * 0.55 * Math.PI * 2 * motionScale;
+    this.stunPhase += dt * 5.5;
+    this.feintTimer -= dt;
+    if (this.feintTimer <= 0 && !this.punchActive && speed < 0.05 && this.downState === "up") {
+      this.feintTimer = 2.5 + (this.bouncePhase % 1.7);
+      this.feint = 1;
+    }
+    this.feint = Math.max(0, this.feint - dt * 3.5);
+
+    // Feet.
+    const rootPosition = this.scratchC.set(this.rootX, 0, this.rootZ);
+    if (this.downState === "up") this.stepFeet(dt, mirror, speed, velocityWorld, rootPosition, this.yaw);
+    const rootQuatInverse = this.scratchQ.setFromAxisAngle(worldUpVector, -this.yaw);
+    const lead = mirror > 0 ? this.foot.L : this.foot.R;
+    const rear = mirror > 0 ? this.foot.R : this.foot.L;
+    const leadIndex: 0 | 1 = mirror > 0 ? 0 : 1;
+    const rearIndex: 0 | 1 = mirror > 0 ? 1 : 0;
+    const leadLift = this.footWorld(leadIndex, lead.position).lift;
+    const rearLift = this.footWorld(rearIndex, rear.position).lift;
+    lead.position.sub(rootPosition).applyQuaternion(rootQuatInverse);
+    rear.position.sub(rootPosition).applyQuaternion(rootQuatInverse);
+    const ankleRest = this.boxer.rig.metrics.ankleHeight;
+    lead.position.y = ankleRest + leadLift;
+    rear.position.y = ankleRest + rearLift;
+    mirrorX(STANCE.leadToe, mirror, lead.toe);
+    mirrorX(STANCE.rearToe, mirror, rear.toe);
+    lead.heel = 0;
+    rear.heel = 0;
+    lead.pole.copy(lead.toe).setY(0.35).normalize();
+    rear.pole.copy(rear.toe).setY(0.35).normalize();
+
+    // Torso baseline.
+    const torso = this.torso;
+    const blade = STANCE.bladeYaw * mirror;
+    const bounce = Math.sin(this.bouncePhase) * 0.012 * (1 - this.stunAmount) * (speed > 0.6 ? 0.6 : 1);
+    const sway = Math.sin(this.weightPhase) * 0.02;
+    let crouch = 0.012 + this.tired * 0.03 + this.stunAmount * 0.05;
+    torso.hips.set(sway * mirror + Math.sin(this.stunPhase * 0.9) * 0.05 * this.stunAmount, STANCE.hipsHeight - crouch + bounce, 0.0);
+    torso.hipsYaw = blade;
+    torso.hipsPitch = 0.02 + this.tired * 0.08;
+    torso.hipsRoll = Math.sin(this.stunPhase) * 0.09 * this.stunAmount;
+    torso.shouldersYaw = blade * 0.88;
+    torso.spinePitch = 0.16 + this.tired * 0.16 + Math.sin(time * (2.1 + this.tired * 1.8)) * 0.012;
+    torso.spineRoll = Math.sin(this.stunPhase * 1.3) * 0.06 * this.stunAmount;
+    torso.headYaw = -0.12 * mirror + Math.sin(time * 0.9) * 0.05 + Math.sin(this.stunPhase * 0.7) * 0.25 * this.stunAmount;
+    torso.headPitch = 0.12 + Math.sin(time * 1.7) * 0.02 + this.stunAmount * 0.18;
+    torso.headRoll = Math.sin(this.stunPhase * 1.1) * 0.14 * this.stunAmount;
+    torso.headOffset.set(0, 0, 0);
+
+    // Hands: guard baseline with feints, fatigue, stun.
+    const leadHand = mirror > 0 ? this.hand.L : this.hand.R;
+    const rearHand = mirror > 0 ? this.hand.R : this.hand.L;
+    const headRest = this.headRestChar(mirror);
+    const guardBlend = clamp(this.guardHigh + this.guardLow, 0, 1);
+    const leadTarget = this.scratch.copy(STANCE.relaxedLead).lerp(STANCE.guardHighLead, this.guardHigh).lerp(STANCE.guardLowLead, this.guardLow);
+    const rearTarget = this.scratchB.copy(STANCE.relaxedRear).lerp(STANCE.guardHighRear, this.guardHigh).lerp(STANCE.guardLowRear, this.guardLow);
+    leadTarget.y -= this.tired * 0.12 + this.stunAmount * 0.22;
+    rearTarget.y -= this.tired * 0.1 + this.stunAmount * 0.2;
+    leadTarget.z += this.feint * 0.1 + Math.sin(time * 2.3) * 0.012 * motionScale;
+    leadTarget.x += Math.sin(time * 1.9) * 0.01 * motionScale;
+    rearTarget.y += Math.cos(time * 2.7) * 0.01 * motionScale;
+    leadTarget.z -= this.guardKick * 0.07;
+    rearTarget.z -= this.guardKick * 0.05;
+    leadTarget.y -= this.guardKick * 0.02;
+    leadTarget.add(headRest);
+    rearTarget.add(headRest);
+    leadHand.position.set(leadTarget.x * mirror, leadTarget.y, leadTarget.z);
+    rearHand.position.set(rearTarget.x * mirror, rearTarget.y, rearTarget.z);
+    mirrorX(STANCE.leadKnuckles, mirror, leadHand.knuckles);
+    mirrorX(STANCE.leadPalm, mirror, leadHand.palm);
+    mirrorX(STANCE.rearKnuckles, mirror, rearHand.knuckles);
+    mirrorX(STANCE.rearPalm, mirror, rearHand.palm);
+    mirrorX(STANCE.leadPole, mirror, leadHand.pole);
+    mirrorX(STANCE.rearPole, mirror, rearHand.pole);
+    let shrugLead = 0.15 * guardBlend;
+    let shrugRear = 0.25 * guardBlend;
+
+    // Defensive body movement.
+    if (Math.abs(this.slip) > 0.001) {
+      const s = this.slip;
+      torso.headOffset.x += s * 0.13;
+      torso.spineRoll += -s * 0.28;
+      torso.hips.x += s * 0.03;
+      torso.hips.y -= Math.abs(s) * 0.05;
+      torso.spinePitch += Math.abs(s) * 0.12;
+      torso.headRoll += -s * 0.2;
+    }
+    if (this.weave > 0.001) {
+      const w = this.weave;
+      const phase = clamp(this.weaveTime / 0.42, 0, 1);
+      const arc = Math.sin(phase * Math.PI);
+      torso.hips.y -= w * 0.2;
+      torso.spinePitch += w * 0.42;
+      torso.headOffset.x += w * (1 - 2 * phase) * 0.16 * mirror;
+      torso.headOffset.y -= w * arc * 0.08;
+      torso.spineRoll += w * (1 - 2 * phase) * 0.18 * mirror;
+      leadHand.position.y -= w * 0.1;
+      rearHand.position.y -= w * 0.1;
+    }
+    if (this.pull > 0.001) {
+      const p = this.pull;
+      torso.spinePitch -= p * 0.34;
+      torso.hips.z -= p * 0.11;
+      torso.hips.x -= p * 0.05 * mirror;
+      torso.headOffset.z -= p * 0.06;
+      torso.headPitch -= p * 0.1;
+    }
+
+    // Reactions.
+    torso.headOffset.add(this.headKick.value);
+    torso.headPitch += -this.headKick.value.z * 2.4 + this.headKick.value.y * 1.6;
+    torso.headYaw += this.headKick.value.x * 2.2;
+    torso.headRoll += -this.headKick.value.x * 0.9;
+    torso.spinePitch += this.torsoKick.value.x;
+    torso.spineRoll += this.torsoKick.value.z * 0.5;
+    torso.hips.z += this.rootKick.value.z;
+    torso.hips.y -= Math.max(0, this.torsoKick.value.x) * 0.08;
+    if (this.torsoKick.value.x > 0.05) {
+      leadHand.position.y -= this.torsoKick.value.x * 0.25;
+      rearHand.position.y -= this.torsoKick.value.x * 0.2;
+      leadHand.position.z -= this.torsoKick.value.x * 0.1;
+    }
+
+    // Punch.
+    if (this.punchActive) {
+      shrugLead = 0;
+      shrugRear = 0;
+      const shrug = this.applyPunch(mirror, leadHand, rearHand, lead, rear, headRest);
+      if ((this.punchHand === "left") === (mirror > 0)) shrugLead = shrug;
+      else shrugRear = shrug;
+    }
+
+    if (this.referee) this.applyRefereePose(mirror, leadHand, rearHand, lead, rear, headRest, time);
+
+    // Special states.
+    if (this.clinchWeight > 0.001) {
+      const c = this.clinchWeight;
+      torso.spinePitch += c * 0.3;
+      torso.hips.z += c * 0.06;
+      leadHand.position.lerp(this.scratch.set(0.16 * mirror, headRest.y - 0.25, 0.5), c);
+      rearHand.position.lerp(this.scratch.set(-0.14 * mirror, headRest.y - 0.2, 0.46), c);
+      torso.headPitch += c * 0.25;
+    }
+    if (this.foulWeight > 0.001) {
+      const f = this.foulWeight;
+      torso.hips.y -= f * 0.16;
+      torso.spinePitch += f * 0.55;
+      torso.headPitch += f * 0.2;
+      leadHand.position.lerp(this.scratch.set(0.06 * mirror, 0.72, 0.16), f);
+      rearHand.position.lerp(this.scratch.set(-0.05 * mirror, 0.7, 0.14), f);
+      leadHand.pole.set(0.6 * mirror, -0.6, 0.5);
+      rearHand.pole.set(-0.6 * mirror, -0.6, 0.5);
+    }
+    if (this.tauntWeight > 0.001) {
+      const t = this.tauntWeight;
+      const beat = ((60 - fighter.taunt_ticks) / 60) * 4;
+      const swing = Math.sin(beat * Math.PI * 2) * 0.5 + 0.5;
+      leadHand.position.lerp(this.scratch.set(0.3 * mirror, headRest.y - 0.32 + swing * 0.12, 0.42), t);
+      rearHand.position.lerp(this.scratch.set(-0.3 * mirror, headRest.y - 0.3 + (1 - swing) * 0.12, 0.4), t);
+      leadHand.palm.set(0, 0.6, 0.8);
+      rearHand.palm.set(0, 0.6, 0.8);
+      torso.headPitch -= t * 0.1;
+      torso.headYaw += Math.sin(beat * Math.PI) * 0.2 * t;
+      torso.spinePitch -= t * 0.1;
+    }
+
+    // Exhaustion and stun on guard.
+    if (this.dislocation === "shoulder_left" || this.dislocation === "shoulder_right") {
+      const hand = this.dislocation === "shoulder_left" ? this.hand.L : this.hand.R;
+      const side = this.dislocation === "shoulder_left" ? 1 : -1;
+      hand.position.set(0.24 * side, 0.55, 0.05);
+      hand.pole.set(0.9 * side, -0.3, 0.2);
+      hand.knuckles.set(0, -1, 0.1);
+      hand.palm.set(-side, 0, 0.2);
+    }
+
+    // Knockdown overrides everything above.
+    if (this.downState !== "up") this.applyDownPose(mirror, leadHand, rearHand, lead, rear, headRest);
+
+    crouch = 0;
+    void crouch;
+    const pose = this.pose as { shrugL: number; shrugR: number };
+    pose.shrugL = mirror > 0 ? shrugLead : shrugRear;
+    pose.shrugR = mirror > 0 ? shrugRear : shrugLead;
+    this.solver.apply(boxer.root, this.pose);
+    this.applyDislocation();
+
+    const opponentBlood = Math.min(
+      1,
+      (opponent.trauma.bleeding + opponent.trauma.left_cut + opponent.trauma.right_cut) / 620
+        * (blood === "off" ? 0 : blood === "reduced" ? 0.3 : 1.5),
+    );
+    boxer.gloveGear.color.copy(boxer.gearBaseColor).lerp(BLOODED_GLOVE_COLOR, opponentBlood);
+    applyTraumaToOverlays(boxer.trauma, fighter, opponentBlood, blood);
+    boxer.setSkinClearcoat(0.25 + (1 - stamina) * 0.4);
+  }
+
+  /** Character-space head rest position for hand offsets (before torso deltas). */
+  private headRestChar(mirror: number): THREE.Vector3 {
+    const metrics = this.boxer.rig.metrics;
+    void mirror;
+    return this.headWorld.set(-0.08, metrics.headHeight - metrics.hipsHeight + this.torso.hips.y, 0.02);
+  }
+
+  private syncAction(fighter: FighterSnapshot, sampledTick: number, simDt: number): void {
     if (fighter.action_id !== null && fighter.action_id !== this.actionId && fighter.action_id !== this.completedActionId) {
       const punchClass = fighter.action;
-      const hand = fighter.action_hand ?? (fighter.stance === "orthodox" ? "left" : "right");
       if (punchClass !== null) {
+        const hand = fighter.action_hand ?? (fighter.stance === "orthodox" ? "left" : "right");
         this.actionId = fighter.action_id;
         this.punchClass = punchClass;
         this.punchHand = hand;
@@ -599,320 +923,477 @@ export class BoxingGraph {
           active: fighter.action_active_ticks,
           recovery: fighter.action_recovery_ticks,
         };
-        const total = Math.max(1, fighter.action_startup_ticks + fighter.action_active_ticks + fighter.action_recovery_ticks);
-        this.beginPunch(boxer.actions.get(PUNCH_CLIP(punchClass, hand))!, total);
-        this.punchAgeTicks = Math.max(0, sampledTick - fighter.action_start_tick);
-        if (this.predictedId === fighter.action_id) {
-          const predictedAge = this.predictionAgeTicks;
-          const authoritativeAge = sampledTick - fighter.action_start_tick;
-          if (Math.abs(predictedAge - authoritativeAge) > 1) this.punchAgeTicks = authoritativeAge;
-          this.predictedId = null;
+        this.punchTotalTicks = Math.max(1, fighter.action_startup_ticks + fighter.action_active_ticks + fighter.action_recovery_ticks);
+        const authoritativeAge = Math.max(0, sampledTick - fighter.action_start_tick);
+        if (this.predictedId === fighter.action_id && this.punchActive) {
+          if (Math.abs(this.punchAgeTicks - authoritativeAge) > 1) this.punchAgeTicks = authoritativeAge;
         } else {
-          this.punchAgeTicks = Math.max(0, sampledTick - fighter.action_start_tick);
+          this.punchAgeTicks = authoritativeAge;
         }
+        this.predictedId = null;
+        this.punchActive = true;
       }
     }
     if (fighter.action_id === null) {
       this.actionId = null;
       this.completedActionId = null;
+    } else if (fighter.action_id === this.actionId && this.punchActive) {
+      // Same instance: re-lock the phase if the render clock drifted more than a tick.
+      const authoritativeAge = Math.max(0, sampledTick - fighter.action_start_tick);
+      if (Math.abs(this.punchAgeTicks - authoritativeAge) > 1.5) this.punchAgeTicks = authoritativeAge;
     }
-
     if (this.predictedId !== null) {
-      this.predictionAgeTicks += dt * 30 * this.hitstopScale;
-      if (this.predictionAgeTicks > 10) {
-        this.predictedId = null;
-      }
+      this.predictionAgeTicks += simDt * 30;
+      if (this.predictionAgeTicks > 10) this.predictedId = null;
     }
-
-    if (this.activePunch !== null) {
-      this.punchAgeTicks += dt * 30 * this.hitstopScale;
-      const total = this.punchTotalTicks;
-      this.setPunch(this.activePunch, this.punchAgeTicks);
-      if (this.punchAgeTicks >= total) {
+    if (this.punchActive) {
+      this.punchAgeTicks += simDt * 30;
+      if (this.punchAgeTicks >= this.punchTotalTicks) {
         this.completedActionId = this.actionId;
         this.actionId = null;
-        this.activePunch.stop();
-        this.activePunch = null;
+        this.punchActive = false;
       }
     }
-    if (this.reactionAction !== null && !this.reactionAction.isRunning()) {
-      this.reactionAction.stop();
-      this.reactionAction = null;
-    }
-
-    const worldVelocityX = this.mapping.x(fighter.velocity_x) * 30;
-    const worldVelocityZ = this.mapping.z(fighter.velocity_y) * 30;
-    const worldSpeed = Math.hypot(worldVelocityX, worldVelocityZ);
-    const moving = worldSpeed > 0.05;
-    const moveWeight = THREE.MathUtils.clamp(worldSpeed / 1.1, 0, 1);
-    const facingLength = Math.hypot(fighter.facing_x, fighter.facing_y) || 1;
-    const forward = (worldVelocityX * fighter.facing_x - worldVelocityZ * fighter.facing_y) / facingLength;
-    const lateral = Math.sign(fighter.velocity_y) * Math.abs(worldVelocityZ);
-    const directionTotal = Math.abs(forward) + Math.abs(lateral);
-    const targets = {
-      idle: 1 - moveWeight,
-      move_forward: directionTotal > 0 ? Math.max(0, forward) / directionTotal * moveWeight : 0,
-      move_backward: directionTotal > 0 ? Math.max(0, -forward) / directionTotal * moveWeight : 0,
-      move_lateral_left: directionTotal > 0 ? Math.max(0, -lateral) / directionTotal * moveWeight : 0,
-      move_lateral_right: directionTotal > 0 ? Math.max(0, lateral) / directionTotal * moveWeight : 0,
-    };
-    const gaitCadence = THREE.MathUtils.clamp(0.35 + worldSpeed / 1.1 * 0.65, 0.35, 1.5);
-    const gaitTimeScale = fatigueScale * gaitCadence;
-    for (const name of LOCOMOTION) {
-      this.locomotionWeights[name] = smooth(this.locomotionWeights[name] ?? 0, targets[name], 10, dt);
-      const action = boxer.actions.get(name)!;
-      action.setEffectiveWeight(this.locomotionWeights[name]!);
-      const playbackRate = name === "idle" ? fatigueScale : gaitTimeScale;
-      action.setEffectiveTimeScale(reducedMotion ? Math.min(0.4, playbackRate) : playbackRate);
-    }
-
-    const defending = fighter.defense !== "none";
-    if (defending) this.defenseClip = fighter.defense;
-    this.defenseWeight = smooth(this.defenseWeight, defending ? 1 : 0, 12, dt);
-    const defenseAction = boxer.actions.get(this.defenseClip)!;
-    if (this.defenseWeight > 0.001 && !defenseAction.isRunning()) defenseAction.reset().play();
-
-    const stateClip: ClipName | null = fighter.is_foul_recovery_target
-      ? "foul_recovery"
-      : fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0
-        ? "clinch"
-        : fighter.stunned_ticks > 0
-          ? "stunned"
-          : fighter.taunt_ticks > 0
-            ? "taunt"
-            : fighter.stamina / Math.max(1, fighter.maximum_stamina) < 0.16 && !moving && !defending
-              ? "exhausted"
-              : null;
-    const nextStateAction = stateClip === null ? null : boxer.actions.get(stateClip)!;
-    if (nextStateAction !== null && nextStateAction !== this.stateAction) {
-      this.stateAction?.stop();
-      this.stateAction = nextStateAction;
-      this.stateWeight = 0;
-      this.stateAction.reset().play();
-    }
-    this.stateRequested = nextStateAction !== null;
-    this.stateWeight = smooth(this.stateWeight, this.stateRequested ? 1 : 0, 14, dt);
-    if (!this.stateRequested && this.stateWeight < 0.001) {
-      this.stateAction?.stop();
-      this.stateAction = null;
-      this.stateWeight = 0;
-    }
-
-    const dropTarget = opponent.is_downed ? -(this.boxer.metrics.headRestY * 0.88) : opponent.defense === "weave" ? -0.24 : -0.03;
-    this.opponentDrop = smooth(this.opponentDrop, dropTarget, 4, dt);
-    if (opponentHeadWorld !== undefined) {
-      this.liveOpponentHead.copy(opponentHeadWorld);
-      this.hasLiveHead = true;
-    }
-
-    if (fighter.is_downed) {
-      if (this.activePunch !== null) {
-        this.activePunch.stop();
-        this.activePunch = null;
-      }
+    if (fighter.is_downed && this.punchActive) {
+      this.punchActive = false;
       this.actionId = null;
       this.predictedId = null;
-      if (this.downState === "up") {
+    }
+  }
+
+  /** Punch mechanics. Returns the punching shoulder's shrug. */
+  private applyPunch(
+    mirror: number,
+    leadHand: { position: THREE.Vector3; knuckles: THREE.Vector3; palm: THREE.Vector3; pole: THREE.Vector3 },
+    rearHand: { position: THREE.Vector3; knuckles: THREE.Vector3; palm: THREE.Vector3; pole: THREE.Vector3 },
+    lead: { position: THREE.Vector3; toe: THREE.Vector3; heel: number; pole: THREE.Vector3 },
+    rear: { position: THREE.Vector3; toe: THREE.Vector3; heel: number; pole: THREE.Vector3 },
+    headRest: THREE.Vector3,
+  ): number {
+    const torso = this.torso;
+    const timing = this.punchTiming;
+    const age = this.punchAgeTicks;
+    const startup = Math.max(1, timing.startup);
+    const active = Math.max(0.5, timing.active);
+    const recovery = Math.max(1, timing.recovery);
+    const isLead = (this.punchHand === "left") === (mirror > 0);
+    const hand = isLead ? leadHand : rearHand;
+    const other = isLead ? rearHand : leadHand;
+    const side = isLead ? 1 : -1;
+    const power = this.punchPower === "power" ? 1 : 0;
+    const body = this.punchTarget === "body" ? 1 : 0;
+
+    let extend: number;
+    let windup: number;
+    let phase: "startup" | "active" | "recovery";
+    if (age < startup) {
+      phase = "startup";
+      const u = age / startup;
+      const windupEnd = this.punchClass === "hook" ? 0.3 : this.punchClass === "uppercut" ? 0.45 : 0.18;
+      windup = smoothstep(0, windupEnd, u) * (1 - smoothstep(windupEnd, Math.min(1, windupEnd + 0.4), u));
+      extend = u <= windupEnd ? 0 : easeIn((u - windupEnd) / (1 - windupEnd), 1.65);
+    } else if (age < startup + active) {
+      phase = "active";
+      windup = 0;
+      extend = 1 + 0.06 * Math.sin(((age - startup) / active) * Math.PI);
+    } else {
+      phase = "recovery";
+      windup = 0;
+      extend = 1 - easeOut((age - startup - active) / recovery, 1.9);
+    }
+    void phase;
+    const e = clamp(extend, 0, 1.1);
+
+    const guard = hand.position.clone();
+
+    // Torso rotation: lead punches blade further, rear punches square up.
+    const blade = STANCE.bladeYaw * mirror;
+    let yawTravel: number;
+    let hipsTravel: number;
+    let hipsForward = 0;
+    let heelRear = 0;
+    let heelLead = 0;
+    let leadPivot = 0;
+    let dip = 0;
+    switch (this.punchClass) {
+      case "jab":
+        yawTravel = -0.2 * side;
+        hipsTravel = -0.06 * side;
+        hipsForward = 0.03;
+        heelRear = 0.18;
+        break;
+      case "straight":
+        yawTravel = isLead ? -0.3 : 1.15 + 0.15 * power;
+        hipsTravel = isLead ? -0.1 : 1.05 + 0.1 * power;
+        hipsForward = 0.08;
+        heelRear = isLead ? 0.2 : 0.62;
+        break;
+      case "hook":
+        yawTravel = isLead ? -0.95 - 0.2 * power : 1.35 + 0.2 * power;
+        hipsTravel = isLead ? -0.8 : 1.15;
+        heelRear = isLead ? 0.1 : 0.55;
+        heelLead = isLead ? 0.45 : 0;
+        leadPivot = isLead ? 0.5 : 0;
+        hipsForward = 0.02;
+        break;
+      default:
+        yawTravel = isLead ? -0.55 : 0.95;
+        hipsTravel = isLead ? -0.45 : 0.85;
+        heelRear = isLead ? 0.15 : 0.5;
+        dip = 0.12 + 0.05 * power;
+        break;
+    }
+    const rotation = this.punchClass === "hook" ? smoothstep(0.15, 1, e) : e;
+    torso.shouldersYaw = blade * 0.88 + yawTravel * mirror * rotation;
+    torso.hipsYaw = blade + hipsTravel * mirror * rotation;
+    torso.hips.z += hipsForward * e;
+    torso.hips.x += (isLead ? 0.02 : 0.05) * mirror * e;
+    torso.hips.y -= body * 0.1 * e + dip * windup + dip * 0.3 * e;
+    torso.spinePitch += 0.06 * e + body * 0.25 * e + dip * 1.4 * windup;
+    torso.headPitch += 0.05 * e + body * 0.12 * e;
+    torso.headOffset.z += 0.02 * e;
+    torso.headYaw += -yawTravel * mirror * rotation * 0.35;
+
+    // Target in character space, measured from the rotated shoulder.
+    const target = this.scratch;
+    const rootPosition = this.scratchB.set(this.rootX ?? 0, 0, this.rootZ);
+    if (this.hasLiveHead) {
+      target.copy(this.liveOpponentHead).sub(rootPosition).applyQuaternion(this.scratchQ.setFromAxisAngle(worldUpVector, -this.yaw));
+      if (body === 1) target.y -= 0.42;
+      else target.y -= 0.04;
+    } else {
+      target.set(0, body === 1 ? 1.15 : 1.5, 0.9);
+    }
+    const shoulderSpan = 0.19 * side * mirror;
+    const shoulderChar = this.scratchD.set(
+      torso.hips.x + shoulderSpan * Math.cos(torso.shouldersYaw),
+      headRest.y - 0.22,
+      torso.hips.z + 0.04 + torso.spinePitch * 0.25 - shoulderSpan * Math.sin(torso.shouldersYaw),
+    );
+    const toTarget = target.clone().sub(shoulderChar);
+    const distance = toTarget.length();
+    const dir = toTarget.normalize();
+    const reach = 0.5 + 0.04 * power + (this.punchClass === "straight" ? 0.06 : 0) + (this.punchClass === "jab" ? 0.03 : 0)
+      - (this.punchClass === "hook" ? 0.08 : 0) - (this.punchClass === "uppercut" ? 0.08 : 0);
+    const contactDistance = Math.min(distance - HURTBOXES.head.radius - GLOVE_HITBOX_RADIUS + PUNCH_CONTACT_OFFSET, reach);
+    const contact = shoulderChar.clone().addScaledVector(dir, Math.max(0.2, contactDistance));
+    rear.heel = heelRear * e;
+    lead.heel = heelLead * e;
+    if (leadPivot > 0) {
+      const pivot = this.scratchQ.setFromAxisAngle(worldUpVector, -leadPivot * mirror * e);
+      lead.toe.applyQuaternion(pivot);
+      lead.pole.applyQuaternion(pivot);
+    }
+    if (heelRear > 0.3) {
+      const pivot = this.scratchQ.setFromAxisAngle(worldUpVector, 0.45 * mirror * e);
+      rear.toe.applyQuaternion(pivot);
+      rear.pole.applyQuaternion(pivot);
+    }
+
+    // Hand path.
+    const windupOffset = this.scratchE;
+    switch (this.punchClass) {
+      case "hook":
+        windupOffset.set(0.22 * side * mirror, -0.06, -0.12);
+        break;
+      case "uppercut":
+        windupOffset.set(0.05 * side * mirror, -0.42, -0.02);
+        break;
+      case "straight":
+        windupOffset.set(0.02 * side * mirror, -0.03, -0.09 - 0.05 * power);
+        break;
+      default:
+        windupOffset.set(0, -0.01, -0.05 - 0.04 * power);
+        break;
+    }
+    const start = guard.clone().addScaledVector(windupOffset, Math.max(windup, this.punchClass === "hook" || this.punchClass === "uppercut" ? (1 - e) * 0.6 : 0));
+    if (this.punchClass === "hook") {
+      // Horizontal sweep around the shoulder from the wide windup into the target.
+      const radius = Math.max(0.32, Math.min(0.48, contact.distanceTo(shoulderChar)));
+      const startDir = start.clone().sub(shoulderChar).setY(0).normalize();
+      const endDir = contact.clone().sub(shoulderChar).setY(0).normalize();
+      const angle = Math.acos(clamp(startDir.dot(endDir), -1, 1));
+      const turn = new THREE.Vector3().crossVectors(startDir, endDir).y >= 0 ? 1 : -1;
+      const sweep = smoothstep(0, 1, e);
+      const rotated = startDir.clone().applyAxisAngle(worldUpVector, angle * sweep * turn).normalize();
+      hand.position.copy(shoulderChar).addScaledVector(rotated, radius * (0.8 + 0.2 * sweep));
+      hand.position.y = THREE.MathUtils.lerp(start.y, contact.y, sweep);
+      hand.pole.set(0.95 * side * mirror, 0.08, 0.3).normalize();
+      hand.knuckles.copy(rotated).applyAxisAngle(worldUpVector, turn * Math.PI / 2).setY(0.05).normalize();
+      hand.palm.set(0, -1, 0);
+    } else if (this.punchClass === "uppercut") {
+      const rise = smoothstep(0, 1, e);
+      const low = start.clone();
+      const mid = contact.clone().lerp(low, 0.5);
+      mid.y = Math.min(low.y, contact.y) - 0.04;
+      mid.z += 0.08;
+      hand.position.copy(low).lerp(mid, rise * 2 > 1 ? 1 : rise * 2);
+      if (rise > 0.5) hand.position.copy(mid).lerp(contact, (rise - 0.5) * 2);
+      hand.pole.set(0.3 * side * mirror, -0.2, 1);
+      hand.knuckles.set(0.05 * side * mirror, 0.9, 0.35).normalize();
+      hand.palm.set(-0.2 * side * mirror, 0.3, -0.95).normalize();
+    } else {
+      hand.position.copy(start).lerp(contact, e);
+      hand.position.y += Math.sin(clamp(e, 0, 1) * Math.PI) * 0.025;
+      hand.pole.set(0.55 * side * mirror, -0.9, 0.35);
+      const pronate = smoothstep(0.55, 1, e);
+      hand.knuckles.copy(dir).lerp(this.scratchC.set(0.1 * side * mirror, 0.55, 0.8), 1 - pronate).normalize();
+      hand.palm.set(-0.9 * side * mirror, 0.2, -0.3).lerp(this.scratchC.set(0, -1, 0.1), pronate).normalize();
+    }
+
+    // Non-punching hand protects the chin.
+    const chin = this.scratchE.set(-0.1 * side * mirror, headRest.y - 0.04, 0.12 + headRest.z);
+    other.position.lerp(chin, e * 0.7);
+    return e;
+  }
+
+  /** Square, hands-low official's posture with a raised counting arm during knockdowns. */
+  private applyRefereePose(
+    mirror: number,
+    leadHand: { position: THREE.Vector3; knuckles: THREE.Vector3; palm: THREE.Vector3; pole: THREE.Vector3 },
+    rearHand: { position: THREE.Vector3; knuckles: THREE.Vector3; palm: THREE.Vector3; pole: THREE.Vector3 },
+    lead: { position: THREE.Vector3; toe: THREE.Vector3; heel: number; pole: THREE.Vector3 },
+    rear: { position: THREE.Vector3; toe: THREE.Vector3; heel: number; pole: THREE.Vector3 },
+    headRest: THREE.Vector3,
+    time: number,
+  ): void {
+    const torso = this.torso;
+    torso.hipsYaw = 0;
+    torso.shouldersYaw = 0;
+    torso.hipsPitch = 0;
+    torso.spinePitch = 0.06;
+    torso.headYaw = Math.sin(time * 0.7) * 0.08;
+    torso.headPitch = 0.08;
+    torso.hips.y = STANCE.hipsHeight + 0.03;
+    torso.hips.x = 0;
+    torso.hips.z = 0;
+    lead.toe.set(0.12 * mirror, 0, 1).normalize();
+    rear.toe.set(-0.12 * mirror, 0, 1).normalize();
+    lead.pole.copy(lead.toe).setY(0.3).normalize();
+    rear.pole.copy(rear.toe).setY(0.3).normalize();
+    const sway = Math.sin(time * 1.3) * 0.01;
+    leadHand.position.set(0.27 * mirror, 0.86 + sway, 0.12);
+    rearHand.position.set(-0.27 * mirror, 0.86 - sway, 0.12);
+    leadHand.pole.set(0.5 * mirror, -0.4, -0.8).normalize();
+    rearHand.pole.set(-0.5 * mirror, -0.4, -0.8).normalize();
+    leadHand.knuckles.set(0.15 * mirror, -0.9, 0.35).normalize();
+    rearHand.knuckles.set(-0.15 * mirror, -0.9, 0.35).normalize();
+    leadHand.palm.set(-0.9 * mirror, 0.1, 0.35).normalize();
+    rearHand.palm.set(0.9 * mirror, 0.1, 0.35).normalize();
+    if (this.refereeCounting) {
+      const beat = time * 2 * Math.PI;
+      const pump = 0.5 + 0.5 * Math.sin(beat);
+      rearHand.position.set(-0.22 * mirror, headRest.y - 0.05 + pump * 0.12, 0.34 + pump * 0.08);
+      rearHand.pole.set(-0.9 * mirror, -0.3, 0.2).normalize();
+      rearHand.knuckles.set(0, 0.7, 0.7).normalize();
+      rearHand.palm.set(0, 0.3, -0.95).normalize();
+      torso.spinePitch += 0.12;
+      torso.headPitch += 0.18;
+      leadHand.position.set(0.24 * mirror, 0.95, 0.08);
+      void this.refereeCount;
+    }
+  }
+
+  private updateDownState(fighter: FighterSnapshot, dt: number): void {
+    if (fighter.is_downed) {
+      if (this.downState === "up" || this.downState === "rising") {
         this.downState = "falling";
         this.fallAge = 0;
-        const knockdown = boxer.actions.get("knockdown")!;
-        knockdown.reset().setLoop(THREE.LoopOnce, 1);
-        knockdown.setEffectiveWeight(0).play();
       } else if (this.downState === "falling") {
         this.fallAge += dt;
+        if (this.fallAge >= KNOCKDOWN_FALL_SECONDS) this.downState = "down";
       }
-    } else if (this.downState !== "up") {
-      if (this.downState === "down" || this.downState === "falling") {
-        this.downState = "rising";
-        this.riseAge = 0;
-        const getup = boxer.actions.get("getup")!;
-        getup.reset().setLoop(THREE.LoopOnce, 1);
-        getup.setEffectiveWeight(0).play();
-      } else {
-        this.riseAge += dt;
-        if (this.riseAge > this.boxer.actions.get("getup")!.getClip().duration) {
-          this.downState = "up";
-          this.boxer.actions.get("knockdown")!.stop();
-          this.boxer.actions.get("getup")!.stop();
-        }
+      return;
+    }
+    if (this.downState === "down" || this.downState === "falling") {
+      this.downState = "rising";
+      this.riseAge = 0;
+    } else if (this.downState === "rising") {
+      this.riseAge += dt;
+      if (this.riseAge >= GETUP_SECONDS) {
+        this.downState = "up";
+        this.feetInitialized = false;
       }
-    }
-    if (this.downState === "falling" && this.fallAge > 1.3) this.downState = "down";
-
-    this.applyActionWeights();
-    boxer.mixer.update(dt * this.hitstopScale);
-
-    this.applyAimCorrection(fighter, opponent);
-    this.lockFeet(fighter, moving);
-    this.applyDislocation();
-
-    const opponentBlood = Math.min(
-      1,
-      (opponent.trauma.bleeding + opponent.trauma.left_cut + opponent.trauma.right_cut) / 620
-        * (blood === "off" ? 0 : blood === "reduced" ? 0.3 : 1.5),
-    );
-    boxer.gloveGear.color.copy(boxer.gearBaseColor).lerp(BLOODED_GLOVE_COLOR, opponentBlood);
-    applyTraumaToOverlays(boxer.trauma, fighter, opponentBlood, blood);
-    boxer.setSkinClearcoat(0.25 + (1 - fighter.stamina / Math.max(1, fighter.maximum_stamina)) * 0.4);
-    void time;
-  }
-
-  private applyActionWeights(): void {
-    const downAction = this.downState === "falling" || this.downState === "down"
-      ? this.boxer.actions.get("knockdown")!
-      : this.downState === "rising"
-        ? this.boxer.actions.get("getup")!
-        : null;
-    const hardOverride = downAction ?? this.reactionAction ?? this.activePunch;
-    const stateWeight = hardOverride === null && this.stateAction !== null ? this.stateWeight : 0;
-    const baseWeight = hardOverride === null ? 1 - stateWeight : 0;
-    const defenseWeight = this.defenseWeight * baseWeight;
-    const locomotionWeight = (1 - this.defenseWeight) * baseWeight;
-    const locomotionTotal = LOCOMOTION.reduce(
-      (total, name) => total + Math.max(0, this.locomotionWeights[name] ?? 0),
-      0,
-    );
-    for (const name of LOCOMOTION) {
-      const normalized = locomotionTotal > 0
-        ? Math.max(0, this.locomotionWeights[name] ?? 0) / locomotionTotal
-        : name === "idle" ? 1 : 0;
-      this.boxer.actions.get(name)!.setEffectiveWeight(normalized * locomotionWeight);
-    }
-    for (const name of ["guard_high", "guard_low", "slip_left", "slip_right", "weave", "pull"] as const) {
-      this.boxer.actions.get(name)!.setEffectiveWeight(name === this.defenseClip ? defenseWeight : 0);
-    }
-    for (const name of ONE_SHOTS) {
-      const action = this.boxer.actions.get(name)!;
-      const weight = action === hardOverride
-        ? 1
-        : hardOverride === null && action === this.stateAction
-          ? stateWeight
-          : 0;
-      action.setEffectiveWeight(weight);
     }
   }
 
-  private applyAimCorrection(fighter: FighterSnapshot, opponent: FighterSnapshot): void {
-    if (this.activePunch === null || fighter.is_downed) return;
-    const startupFrac = this.punchTiming.startup / Math.max(1, totalTicks(this.punchTiming));
-    const punchT = this.punchAgeTicks / this.punchTotalTicks;
-    if (punchT < startupFrac * 0.45 || punchT > startupFrac + 0.2) return;
-    const metrics = this.boxer.metrics;
-    const hurtbox = this.punchTarget === "body" ? HURTBOXES.torso : HURTBOXES.head;
-    const opponentTarget = this.scratchA.set(
-      this.mapping.x(opponent.x),
-      (this.punchTarget === "body" ? metrics.chestRestY : metrics.headRestY) + hurtbox.offset_y + this.opponentDrop,
-      this.mapping.z(opponent.y),
-    );
-    if (this.punchTarget === "head" && this.hasLiveHead) {
-      opponentTarget.copy(this.liveOpponentHead).addScaledVector(this.boxer.root.up, hurtbox.offset_y);
+  private applyDownPose(
+    mirror: number,
+    leadHand: { position: THREE.Vector3; knuckles: THREE.Vector3; palm: THREE.Vector3; pole: THREE.Vector3 },
+    rearHand: { position: THREE.Vector3; knuckles: THREE.Vector3; palm: THREE.Vector3; pole: THREE.Vector3 },
+    lead: { position: THREE.Vector3; toe: THREE.Vector3; heel: number; pole: THREE.Vector3 },
+    rear: { position: THREE.Vector3; toe: THREE.Vector3; heel: number; pole: THREE.Vector3 },
+    headRest: THREE.Vector3,
+  ): void {
+    const torso = this.torso;
+    const side = this.fallSide === 0 ? 0 : this.fallSide;
+    // Lying-on-the-back pose (character space).
+    const lying = {
+      hips: vec(side * 0.22, 0.14, -0.4),
+      hipsYaw: side * 0.35,
+      hipsPitch: -1.42,
+      hipsRoll: side * 0.25,
+      shouldersYaw: side * 0.2,
+      spinePitch: 0.1,
+      headPitch: -0.5,
+      leadHand: vec(0.52 * mirror, 0.1, -0.62),
+      rearHand: vec(-0.5 * mirror, 0.1, -0.7),
+      leadFoot: vec(0.17 * mirror + side * 0.05, 0.08, 0.16),
+      rearFoot: vec(-0.16 * mirror + side * 0.05, 0.09, -0.02),
+    };
+    const standing = {
+      hips: torso.hips.clone(),
+      hipsYaw: torso.hipsYaw,
+      hipsPitch: torso.hipsPitch,
+      hipsRoll: torso.hipsRoll,
+      shouldersYaw: torso.shouldersYaw,
+      spinePitch: torso.spinePitch,
+      headPitch: torso.headPitch,
+      leadHand: leadHand.position.clone(),
+      rearHand: rearHand.position.clone(),
+      leadFoot: lead.position.clone(),
+      rearFoot: rear.position.clone(),
+    };
+    let t: number;
+    let headLag: number;
+    if (this.downState === "falling") {
+      const u = clamp(this.fallAge / KNOCKDOWN_FALL_SECONDS, 0, 1);
+      t = easeIn(u, 2.1);
+      headLag = Math.sin(u * Math.PI) * 0.12;
+      const buckle = smoothstep(0, 0.35, u) * (1 - smoothstep(0.35, 0.8, u));
+      standing.hips.y -= buckle * 0.12;
+    } else if (this.downState === "down") {
+      t = 1;
+      headLag = 0;
+    } else {
+      // Rising: lying -> all fours -> one knee -> stand.
+      const u = clamp(this.riseAge / GETUP_SECONDS, 0, 1);
+      headLag = 0;
+      const fours = {
+        hips: vec(0.08 * mirror, 0.52, -0.18),
+        hipsYaw: STANCE.bladeYaw * mirror * 0.4,
+        hipsPitch: 1.0,
+        hipsRoll: 0,
+        shouldersYaw: STANCE.bladeYaw * mirror * 0.35,
+        spinePitch: 0.15,
+        headPitch: -0.5,
+        leadHand: vec(0.26 * mirror, 0.02, 0.18),
+        rearHand: vec(-0.24 * mirror, 0.02, 0.1),
+        leadFoot: vec(0.17 * mirror, 0.05, -0.55),
+        rearFoot: vec(-0.16 * mirror, 0.05, -0.6),
+      };
+      const knee = {
+        hips: vec(0.03 * mirror, 0.66, -0.06),
+        hipsYaw: STANCE.bladeYaw * mirror * 0.7,
+        hipsPitch: 0.5,
+        hipsRoll: 0,
+        shouldersYaw: STANCE.bladeYaw * mirror * 0.6,
+        spinePitch: 0.25,
+        headPitch: -0.15,
+        leadHand: vec(0.2 * mirror, 0.75, 0.3),
+        rearHand: vec(-0.25 * mirror, 0.55, 0.05),
+        leadFoot: vec(0.14 * mirror, 0.0, 0.3),
+        rearFoot: vec(-0.14 * mirror, 0.06, -0.5),
+      };
+      const blend = (a: typeof lying, b: typeof lying, s: number): typeof lying => ({
+        hips: a.hips.clone().lerp(b.hips, s),
+        hipsYaw: THREE.MathUtils.lerp(a.hipsYaw, b.hipsYaw, s),
+        hipsPitch: THREE.MathUtils.lerp(a.hipsPitch, b.hipsPitch, s),
+        hipsRoll: THREE.MathUtils.lerp(a.hipsRoll, b.hipsRoll, s),
+        shouldersYaw: THREE.MathUtils.lerp(a.shouldersYaw, b.shouldersYaw, s),
+        spinePitch: THREE.MathUtils.lerp(a.spinePitch, b.spinePitch, s),
+        headPitch: THREE.MathUtils.lerp(a.headPitch, b.headPitch, s),
+        leadHand: a.leadHand.clone().lerp(b.leadHand, s),
+        rearHand: a.rearHand.clone().lerp(b.rearHand, s),
+        leadFoot: a.leadFoot.clone().lerp(b.leadFoot, s),
+        rearFoot: a.rearFoot.clone().lerp(b.rearFoot, s),
+      });
+      let current: typeof lying;
+      if (u < 0.38) current = blend(lying, fours, smoothstep(0, 0.38, u));
+      else if (u < 0.72) current = blend(fours, knee, smoothstep(0.38, 0.72, u));
+      else current = blend(knee, standing, smoothstep(0.72, 1, u));
+      this.writeDown(current, leadHand, rearHand, lead, rear, 0);
+      return;
     }
-    const gloveName = this.punchHand === "left" ? "gloveL" : "gloveR";
-    const gloveBone = this.boxer.bone(gloveName);
-    const elbowBone = this.boxer.bone(gloveName === "gloveL" ? "elbowL" : "elbowR");
-    const shoulderBone = this.boxer.bone(gloveName === "gloveL" ? "shoulderL" : "shoulderR");
-    if (gloveBone === null || elbowBone === null || shoulderBone === null) return;
-    this.boxer.root.updateMatrixWorld(true);
-    const gloveWorld = gloveBone.getWorldPosition(this.scratchB);
-    const correction = this.scratchC.subVectors(opponentTarget, gloveWorld);
-    const contactDistance = hurtbox.radius + GLOVE_HITBOX_RADIUS;
-    const overshoot = correction.length() - contactDistance;
-    if (overshoot <= 0.01) return;
-    correction.setLength(Math.min(0.42, overshoot));
-    const targetWorld = this.aimTarget.copy(gloveWorld).add(correction);
-    const shoulderWorld = shoulderBone.getWorldPosition(this.aimShoulder);
-    const upper = this.boxer.metrics.armUpper;
-    const fore = this.boxer.metrics.armFore;
-    const to = this.aimTo.copy(targetWorld).sub(shoulderWorld);
-    const reachReserve = this.punchClass === "hook" ? 0.11 : this.punchClass === "uppercut" ? 0.07 : 0.015;
-    const distance = THREE.MathUtils.clamp(to.length(), 0.12, upper + fore - reachReserve);
-    to.normalize();
-    const a = (upper * upper - fore * fore + distance * distance) / (2 * distance);
-    const h = Math.sqrt(Math.max(0.0001, upper * upper - a * a));
-    const pole = this.aimPole.set(0.9 * (gloveName === "gloveL" ? 1 : -1), -1, -0.25).applyQuaternion(this.boxer.root.quaternion);
-    const bend = this.aimBend.copy(pole).addScaledVector(to, -pole.dot(to)).normalize();
-    const elbowWorld = this.aimElbow.copy(shoulderWorld).addScaledVector(to, a).addScaledVector(bend, h);
-    aimBoneLocal(shoulderBone, elbowBone, elbowWorld);
-    shoulderBone.updateMatrixWorld(true);
-    aimBoneLocal(elbowBone, gloveBone, targetWorld);
+    const mixed = {
+      hips: standing.hips.clone().lerp(lying.hips, t),
+      hipsYaw: THREE.MathUtils.lerp(standing.hipsYaw, lying.hipsYaw, t),
+      hipsPitch: THREE.MathUtils.lerp(standing.hipsPitch, lying.hipsPitch, t),
+      hipsRoll: THREE.MathUtils.lerp(standing.hipsRoll, lying.hipsRoll, t),
+      shouldersYaw: THREE.MathUtils.lerp(standing.shouldersYaw, lying.shouldersYaw, t),
+      spinePitch: THREE.MathUtils.lerp(standing.spinePitch, lying.spinePitch, t),
+      headPitch: THREE.MathUtils.lerp(standing.headPitch, lying.headPitch, t),
+      leadHand: standing.leadHand.clone().lerp(lying.leadHand, t),
+      rearHand: standing.rearHand.clone().lerp(lying.rearHand, t),
+      leadFoot: standing.leadFoot.clone().lerp(lying.leadFoot, t),
+      rearFoot: standing.rearFoot.clone().lerp(lying.rearFoot, t),
+    };
+    if (this.downState === "falling") {
+      const flail = Math.sin(clamp(this.fallAge / KNOCKDOWN_FALL_SECONDS, 0, 1) * Math.PI) * 0.35;
+      mixed.leadHand.y += flail;
+      mixed.rearHand.y += flail * 0.8;
+    }
+    this.writeDown(mixed, leadHand, rearHand, lead, rear, headLag);
+    void headRest;
+  }
+
+  private writeDown(
+    state: { hips: THREE.Vector3; hipsYaw: number; hipsPitch: number; hipsRoll: number; shouldersYaw: number; spinePitch: number; headPitch: number; leadHand: THREE.Vector3; rearHand: THREE.Vector3; leadFoot: THREE.Vector3; rearFoot: THREE.Vector3 },
+    leadHand: { position: THREE.Vector3; knuckles: THREE.Vector3; palm: THREE.Vector3; pole: THREE.Vector3 },
+    rearHand: { position: THREE.Vector3; knuckles: THREE.Vector3; palm: THREE.Vector3; pole: THREE.Vector3 },
+    lead: { position: THREE.Vector3; toe: THREE.Vector3; heel: number; pole: THREE.Vector3 },
+    rear: { position: THREE.Vector3; toe: THREE.Vector3; heel: number; pole: THREE.Vector3 },
+    headLag: number,
+  ): void {
+    const torso = this.torso;
+    torso.hips.copy(state.hips);
+    torso.hipsYaw = state.hipsYaw;
+    torso.hipsPitch = state.hipsPitch;
+    torso.hipsRoll = state.hipsRoll;
+    torso.shouldersYaw = state.shouldersYaw;
+    torso.spinePitch = state.spinePitch;
+    torso.spineRoll = 0;
+    torso.headPitch = state.headPitch;
+    torso.headYaw = 0;
+    torso.headRoll = 0;
+    torso.headOffset.set(0, 0, -headLag);
+    leadHand.position.copy(state.leadHand);
+    rearHand.position.copy(state.rearHand);
+    leadHand.pole.set(0.4, 0.9, 0.2);
+    rearHand.pole.set(-0.4, 0.9, 0.2);
+    leadHand.knuckles.set(0.6, 0.2, -0.75).normalize();
+    rearHand.knuckles.set(-0.6, 0.2, -0.75).normalize();
+    leadHand.palm.set(0, 1, 0.2).normalize();
+    rearHand.palm.set(0, 1, 0.2).normalize();
+    lead.position.copy(state.leadFoot);
+    rear.position.copy(state.rearFoot);
+    lead.pole.set(0, 1, 0.35).normalize();
+    rear.pole.set(0, 1, 0.35).normalize();
+    lead.toe.set(0.2, 0, 1).normalize();
+    rear.toe.set(-0.2, 0, 1).normalize();
+    lead.heel = 0;
+    rear.heel = 0;
   }
 
   private applyDislocation(): void {
-    if (this.dislocation === null) return;
-    if (this.dislocation === "jaw") {
-      const head = this.boxer.bone("head");
-      if (head !== null) {
-        head.quaternion.multiply(
-          this.scratchQ.setFromEuler(new THREE.Euler(0.08, 0.2, -0.22)),
-        );
-      }
-      const jaw = this.boxer.trauma.jaw;
-      const rest = jaw.userData.restPosition as THREE.Vector3;
-      jaw.position.copy(rest).add(this.scratchA.set(0.04, -0.04, 0.018));
-      jaw.rotation.set(0.16, 0.08, -0.18);
-      return;
+    if (this.dislocation !== "jaw") return;
+    const head = this.boxer.bone("head");
+    if (head !== null) {
+      head.quaternion.multiply(this.scratchQ.setFromEuler(new THREE.Euler(0.08, 0.2, -0.22)));
+      head.updateWorldMatrix(false, true);
     }
-    const side = this.dislocation === "shoulder_left" ? "L" : "R";
-    const shoulder = this.boxer.bone(`shoulder${side}`);
-    const elbow = this.boxer.bone(`elbow${side}`);
-    if (shoulder === null || elbow === null) return;
-    this.boxer.root.updateMatrixWorld(true);
-    const shoulderWorld = shoulder.getWorldPosition(this.scratchA);
-    const hangingOffset = this.scratchB
-      .set(side === "L" ? 0.2 : -0.2, -0.38, 0.04)
-      .applyQuaternion(this.boxer.root.quaternion);
-    aimBoneLocal(shoulder, elbow, hangingOffset.add(shoulderWorld));
-  }
-
-  private lockFeet(fighter: FighterSnapshot, moving: boolean): void {
-    for (const side of ["L", "R"] as const) {
-      const ankle = this.boxer.bone(`ankle${side}`);
-      const knee = this.boxer.bone(`knee${side}`);
-      const hip = this.boxer.bone(`hip${side}`);
-      if (ankle === null || knee === null || hip === null) continue;
-      this.boxer.root.updateMatrixWorld(true);
-      const world = ankle.getWorldPosition(this.lockAnkle);
-      const key = side === "L" ? "plantedL" : "plantedR";
-      let planted = this[key];
-      if (moving || fighter.is_downed || world.y > this.boxer.metrics.ankleRestY * 1.35) {
-        this[key] = null;
-        continue;
-      }
-      if (planted === null) {
-        this[key] = world.clone();
-        continue;
-      }
-      const flatDrift = Math.hypot(world.x - planted.x, world.z - planted.z);
-      if (flatDrift > 0.11) {
-        this[key] = world.clone();
-        planted = this[key];
-        continue;
-      }
-      if (flatDrift < 0.008) continue;
-      const pinned = this.lockPinned.set(planted.x, world.y, planted.z);
-      const hipWorld = hip.getWorldPosition(this.lockHip);
-      const thigh = this.boxer.metrics.legThigh;
-      const shin = this.boxer.metrics.legShin;
-      const to = this.lockTo.copy(pinned).sub(hipWorld);
-      const distance = THREE.MathUtils.clamp(to.length(), 0.15, thigh + shin - 0.02);
-      to.normalize();
-      const a = (thigh * thigh - shin * shin + distance * distance) / (2 * distance);
-      const h = Math.sqrt(Math.max(0.0001, thigh * thigh - a * a));
-      const pole = this.lockPole.set(0, 0.2, 1).applyQuaternion(this.boxer.root.quaternion);
-      const bend = this.lockBend.copy(pole).addScaledVector(to, -pole.dot(to));
-      if (bend.lengthSq() < 0.0001) bend.set(0, 0, 1);
-      bend.normalize();
-      const kneeWorld = this.lockKnee.copy(hipWorld).addScaledVector(to, a).addScaledVector(bend, h);
-      aimBoneLocal(hip, knee, kneeWorld);
-      hip.updateMatrixWorld(true);
-      aimBoneLocal(knee, ankle, pinned);
-    }
+    const jaw = this.boxer.trauma.jaw;
+    const rest = jaw.userData.restPosition as THREE.Vector3;
+    jaw.position.copy(rest).add(this.scratch.set(0.04, -0.04, 0.018));
+    jaw.rotation.set(0.16, 0.08, -0.18);
   }
 
   dispose(): void {
     this.boxer.dispose();
   }
 }
+
+const worldUpVector = new THREE.Vector3(0, 1, 0);
 
 const aimJointWorld = new THREE.Vector3();
 const aimChildWorld = new THREE.Vector3();

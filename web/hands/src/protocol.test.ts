@@ -58,14 +58,14 @@ describe("strict protocol v3", () => {
   });
   it("accepts exact fighter-domain boundaries and the private get-up sentinel", () => {
     const base = snapshot();
-    const lower = { ...base.fighters[0], x: -462, y: -292, facing: -1, velocity_x: -7, velocity_y: -7, maximum_stamina: 330, stamina: 0, poise: 0, get_up_required: 45 };
-    const upper = { ...base.fighters[1], x: 462, y: 292, facing: 1, velocity_x: 7, velocity_y: 7, maximum_stamina: 1000, stamina: 1000, poise: 600, get_up_required: 169 };
+    const lower = { ...base.fighters[0], x: -462, y: -462, facing: -1, velocity_x: -7, velocity_y: -7, maximum_stamina: 330, stamina: 0, poise: 0, get_up_required: 45 };
+    const upper = { ...base.fighters[1], x: 462, y: 462, facing: 1, velocity_x: 7, velocity_y: 7, maximum_stamina: 1000, stamina: 1000, poise: 600, get_up_required: 169 };
     expect(decodeServerFrame(JSON.stringify({ version: 3, type: "snapshot", payload: { ...base, fighters: [lower, upper] } }))).toMatchObject({ type: "snapshot", payload: { fighters: [{ get_up_required: 45 }, { get_up_required: 169 }] } });
     const redactedOpponent = { ...upper, get_up_required: 0 };
     expect(decodeServerFrame(JSON.stringify({ version: 3, type: "snapshot", payload: { ...base, fighters: [lower, redactedOpponent] } }))).toMatchObject({ payload: { fighters: [{ get_up_required: 45 }, { get_up_required: 0 }] } });
   });
   it.each([
-    ["x below", "x", -463], ["x above", "x", 463], ["y below", "y", -293], ["y above", "y", 293],
+    ["x below", "x", -463], ["x above", "x", 463], ["y below", "y", -463], ["y above", "y", 463],
     ["zero facing", "facing", 0], ["velocity x below", "velocity_x", -8], ["velocity x above", "velocity_x", 8],
     ["velocity y below", "velocity_y", -8], ["velocity y above", "velocity_y", 8], ["maximum stamina below", "maximum_stamina", 329],
     ["maximum stamina above", "maximum_stamina", 1001], ["poise below", "poise", -1], ["poise above", "poise", 601],

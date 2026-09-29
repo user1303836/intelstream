@@ -23,7 +23,7 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
   root.innerHTML = `<section class="activity"><canvas class="fight"></canvas><header class="topbar"><strong>HANDS · DEV FIXTURE</strong><span>Production never enters this harness</span></header></section>`;
   const renderer = new FightRenderer(
     root.querySelector("canvas")!,
-    { tick_rate: 30, ring_half_width: 500, ring_half_height: 330 },
+    { tick_rate: 30, ring_half_width: 500, ring_half_height: 500 },
     () => ({ volume: 0, haptics: false, reducedMotion: false, blood: "full" }),
   );
   const players: Record<string, PublicPlayer> = {

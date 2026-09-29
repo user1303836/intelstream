@@ -3,7 +3,7 @@
   "tick_rate": 30,
   "ring": {
     "half_width": 500,
-    "half_height": 330,
+    "half_height": 500,
     "fighter_radius": 38
   },
   "limits": {

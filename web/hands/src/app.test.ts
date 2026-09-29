@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("./discord", () => ({
   authorizeDiscord: vi.fn(async () => ({
     sdk: {},
-    bootstrap: { client_id: "123", state: "state", protocol: 3, simulation: { tick_rate: 20, ring_half_width: 500, ring_half_height: 330 } },
+    bootstrap: { client_id: "123", state: "state", protocol: 3, simulation: { tick_rate: 20, ring_half_width: 500, ring_half_height: 500 } },
     player: { id: "one", name: "One", avatar: null, rating: 1500 },
     takeTicket: () => "ticket",
     destroy: mocks.sessionDestroy,

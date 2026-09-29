@@ -227,7 +227,7 @@ async def test_bootstrap_token_origin_schema_media_and_no_store(
             "simulation": {
                 "tick_rate": 30,
                 "ring_half_width": 500,
-                "ring_half_height": 330,
+                "ring_half_height": 500,
             },
         }
         assert bootstrap.headers["Cache-Control"] == "no-store"

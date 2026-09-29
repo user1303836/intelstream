@@ -143,7 +143,7 @@ function fighter(value: unknown): FighterSnapshot {
   if (facingX === 0 && facingY === 0) throw new ProtocolError("invalid facing vector");
   if (getUpRequired !== 0 && getUpRequired < 34) throw new ProtocolError("invalid get-up requirement");
   return {
-    player_id: string(o.player_id, "player_id"), x: integer(o.x, "x", -462, 462), y: integer(o.y, "y", -292, 292),
+    player_id: string(o.player_id, "player_id"), x: integer(o.x, "x", -462, 462), y: integer(o.y, "y", -462, 462),
     facing, facing_x: facingX, facing_y: facingY, velocity_x: integer(o.velocity_x, "velocity_x", -7, 7), velocity_y: integer(o.velocity_y, "velocity_y", -7, 7),
     stance: oneOf<Stance>(o.stance, stances, "stance"), defense: oneOf<DefensivePose>(o.defense, defenses, "defense"),
     stamina, maximum_stamina: maximumStamina,
