@@ -8,7 +8,10 @@ import { FIGHTER_GLB_GZIP_BASE64 } from "../assets/fighter-glb";
 import { BONE_ADAPTER } from "./skeleton";
 export { BONE_ADAPTER };
 import { FIGHTER_TEXTURE_DATA_URLS } from "../assets/fighter-textures";
+import { wearCornerColour } from "./gear";
 import { BODY_SITES, HEAD_SITES, InjuryShading, applyBodyTrauma, applyHeadTrauma } from "./injury";
+import { LookShading, SCANNED_LOOK, type FighterLook } from "./looks";
+import { applyOutfitShading, buildCuffGeometry, buildHandGeometry, type OfficialOutfit, type OutfitPart } from "./outfit";
 import { PoseSolver, STANCE, easeIn, easeOut, mirrorX, smoothstep, vec, type FootTarget, type HandTarget, type PoseDescription } from "./poser";
 import { SolvedRig } from "./rig";
 import type { WorldMapping } from "./world";
@@ -78,7 +81,7 @@ function fighterTexture(name: FighterTexture): THREE.Texture {
 
 interface AppliedFighterMaterials {
   readonly skin: readonly THREE.MeshPhysicalMaterial[];
-  readonly gloves: THREE.MeshStandardMaterial;
+  readonly gloveBlood: { value: number };
   readonly owned: readonly THREE.Material[];
   readonly headInjury: InjuryShading;
   readonly bodyInjury: InjuryShading;
@@ -88,7 +91,7 @@ export function applyFighterSkin(target: THREE.Object3D, palette: BoxerPaletteCo
   const skin: THREE.MeshPhysicalMaterial[] = [];
   const owned: THREE.Material[] = [];
   const bySource = new Map<string, THREE.MeshStandardMaterial>();
-  let gloves: THREE.MeshStandardMaterial | null = null;
+  let gloveBlood: { value: number } | null = null;
   let headInjury: InjuryShading | null = null;
   let bodyInjury: InjuryShading | null = null;
   target.traverse((object) => {
@@ -99,36 +102,49 @@ export function applyFighterSkin(target: THREE.Object3D, palette: BoxerPaletteCo
     let material = bySource.get(sourceName);
     if (material === undefined) {
       const isSkin = sourceName === "MHeadMat0" || sourceName === "MBodyMat0";
-      const color = sourceName === "GlovesMat0" ? palette.gear : sourceName === "PantsMat0" ? (palette.pants ?? palette.gear) : 0xffffff;
-      const map = sourceName === "MBodyMat0" && palette.bodyMap !== undefined ? palette.bodyMap : fighterTexture(textureName);
+      const outfit = palette.outfit;
+      const color = sourceName === "GlovesMat0" ? palette.gear
+        : sourceName === "PantsMat0" ? (outfit?.trousers ?? palette.gear)
+        : sourceName === "ShoesMat0" && outfit !== undefined ? outfit.shoes
+        : 0xffffff;
+      const map = fighterTexture(textureName);
       material = isSkin
-        ? new THREE.MeshPhysicalMaterial({ map, color, roughness: sourceName === "MBodyMat0" && palette.bodyMap !== undefined ? 0.85 : 0.58, metalness: 0.02, clearcoat: palette.bodyMap !== undefined && sourceName === "MBodyMat0" ? 0 : 0.25, clearcoatRoughness: 0.6 })
+        ? new THREE.MeshPhysicalMaterial({ map, color, roughness: 0.58, metalness: 0.02, clearcoat: 0.25, clearcoatRoughness: 0.6 })
         : new THREE.MeshStandardMaterial({ map, color, roughness: 0.4, metalness: 0.03 });
       material.name = sourceName;
       bySource.set(sourceName, material);
       owned.push(material);
       if (material instanceof THREE.MeshPhysicalMaterial) skin.push(material);
-      if (sourceName === "GlovesMat0") gloves = material;
       if (sourceName === "MHeadMat0") headInjury = new InjuryShading(material, HEAD_SITES);
       if (sourceName === "MBodyMat0") bodyInjury = new InjuryShading(material, BODY_SITES);
+      const part = OUTFIT_PARTS[sourceName];
+      if (outfit !== undefined && part !== undefined) applyOutfitShading(material, part, outfit);
+      else if (sourceName === "PantsMat0") wearCornerColour(material);
+      else if (sourceName === "GlovesMat0") gloveBlood = wearCornerColour(material);
     }
     object.material = material;
     object.castShadow = true;
     object.receiveShadow = true;
     object.frustumCulled = false;
   });
-  if (skin.length !== 2 || gloves === null || owned.length !== 5 || headInjury === null || bodyInjury === null) {
+  if (skin.length !== 2 || gloveBlood === null || owned.length !== 5 || headInjury === null || bodyInjury === null) {
     throw new Error(`fighter GLB material contract failed: ${skin.length} skin, ${owned.length} total`);
   }
-  return { skin, gloves, owned, headInjury, bodyInjury };
+  return { skin, gloveBlood, owned, headInjury, bodyInjury };
 }
 
 export interface BoxerPaletteColors {
   readonly skin: number;
   readonly gear: number;
-  readonly pants?: number;
-  readonly bodyMap?: THREE.Texture;
+  /** Skin tone, hair, beard and face shape; the scanned man when omitted. */
+  readonly look?: FighterLook;
+  /** Dresses the body as a ring official and swaps the gloves for hands. */
+  readonly outfit?: OfficialOutfit;
 }
+
+const OUTFIT_PARTS: Readonly<Record<string, OutfitPart>> = { MHeadMat0: "head", MBodyMat0: "body", ShoesMat0: "shoes", PantsMat0: "pants" };
+/** The lit tone of the scanned face texture in linear light, so bare hands match the face. */
+const SCANNED_SKIN = new THREE.Color().setRGB(0.6, 0.32, 0.19, THREE.LinearSRGBColorSpace);
 
 export type ArcadeDislocation = "jaw" | "shoulder_left" | "shoulder_right";
 
@@ -146,16 +162,20 @@ export class SkinnedBoxer {
   /** Bone-derived measurements in world units (after MODEL_SCALE). */
   readonly metrics: { armUpper: number; armFore: number; legThigh: number; legShin: number; headRestY: number; chestRestY: number; ankleRestY: number };
   private readonly skinMaterials: readonly THREE.MeshPhysicalMaterial[];
-  private readonly ownedMaterials: readonly THREE.Material[];
-  private readonly gearMaterial: THREE.MeshStandardMaterial;
+  private readonly ownedMaterials: THREE.Material[];
+  private readonly gloveBlood: { value: number };
   private readonly headMeshes: THREE.SkinnedMesh[] = [];
   private readonly handMeshes: Record<Hand, THREE.SkinnedMesh[]> = { left: [], right: [] };
   private decapitated = false;
   private readonly dismemberedHands: Record<Hand, boolean> = { left: false, right: false };
+  private readonly dressed: boolean;
+  private readonly ownedGeometries: THREE.BufferGeometry[] = [];
   readonly gearBaseColor: THREE.Color;
   readonly skinBaseColor: THREE.Color;
   readonly headInjury: InjuryShading;
   readonly bodyInjury: InjuryShading;
+  private readonly headLook: LookShading;
+  private readonly bareHand: THREE.MeshStandardMaterial | null;
 
   constructor(gltf: GLTF, palette: BoxerPaletteColors) {
     const instance = cloneSkeleton(gltf.scene);
@@ -163,12 +183,13 @@ export class SkinnedBoxer {
     this.root.add(instance);
     const materials = applyFighterSkin(instance, palette);
     this.skinMaterials = materials.skin;
-    this.ownedMaterials = materials.owned;
-    this.gearMaterial = materials.gloves;
+    this.ownedMaterials = [...materials.owned];
+    this.gloveBlood = materials.gloveBlood;
     this.headInjury = materials.headInjury;
     this.bodyInjury = materials.bodyInjury;
     this.gearBaseColor = new THREE.Color(palette.gear);
     this.skinBaseColor = new THREE.Color(palette.skin);
+    this.dressed = palette.outfit !== undefined;
     instance.traverse((object) => {
       if (object instanceof THREE.SkinnedMesh && object.name === "BoxerHead") this.headMeshes.push(object);
       if (object instanceof THREE.SkinnedMesh && object.name === "BoxerGloveLeft") this.handMeshes.left.push(object);
@@ -178,6 +199,9 @@ export class SkinnedBoxer {
     const missing = Object.values(BONE_ADAPTER).filter((name) => !this.bones.has(name));
     if (missing.length > 0) throw new Error(`fighter GLB missing required bones: ${missing.join(", ")}`);
     if (this.headMeshes.length !== 1) throw new Error(`fighter GLB requires one BoxerHead mesh, found ${this.headMeshes.length}`);
+    const headShadow = this.headInjury.shadowMaterial();
+    this.headMeshes[0]!.customDepthMaterial = headShadow;
+    this.ownedMaterials.push(headShadow);
     for (const side of ["left", "right"] as const) {
       if (this.handMeshes[side].length !== 1) {
         throw new Error(`fighter GLB requires one ${side} glove mesh, found ${this.handMeshes[side].length}`);
@@ -185,6 +209,10 @@ export class SkinnedBoxer {
     }
     this.root.updateMatrixWorld(true);
     this.rig = new SolvedRig(this.root);
+    // Last on, so it runs first in the shader: the look, then the clothes over it, then the injuries.
+    this.headLook = new LookShading(this.headMeshes[0]!.material as THREE.MeshStandardMaterial);
+    this.bareHand = palette.outfit === undefined ? null : this.addHands(palette.outfit);
+    this.setLook(palette.look ?? SCANNED_LOOK);
     const rigMetrics = this.rig.metrics;
     this.metrics = {
       armUpper: rigMetrics.armL.upper,
@@ -201,8 +229,13 @@ export class SkinnedBoxer {
     return this.bones.get(BONE_ADAPTER[name] ?? name) ?? null;
   }
 
-  get gloveGear(): THREE.MeshStandardMaterial {
-    return this.gearMaterial;
+  /** How much of the opponent's blood is on the gloves, 0 to 1. */
+  setGloveBlood(amount: number): void {
+    this.gloveBlood.value = clamp(amount, 0, 1);
+  }
+
+  get gloveBloodLevel(): number {
+    return this.gloveBlood.value;
   }
 
   get headMesh(): THREE.SkinnedMesh {
@@ -221,9 +254,10 @@ export class SkinnedBoxer {
     return this.decapitated;
   }
 
+  /** Cuts the head off through the neck; the collar of the head mesh stays on the shoulders. */
   setDecapitated(value: boolean): void {
     this.decapitated = value;
-    for (const mesh of this.headMeshes) mesh.visible = !value;
+    this.headInjury.setSevered(value);
     this.bone("head")!.visible = !value;
   }
 
@@ -233,7 +267,50 @@ export class SkinnedBoxer {
 
   setHandDismembered(side: Hand, value: boolean): void {
     this.dismemberedHands[side] = value;
-    for (const mesh of this.handMeshes[side]) mesh.visible = !value;
+    for (const mesh of this.handMeshes[side]) mesh.visible = !value && !this.dressed;
+  }
+
+  /** Changes who this fighter is: skin tone, hair, beard and face shape. */
+  setLook(look: FighterLook): void {
+    this.headLook.set(look);
+    for (const material of this.skinMaterials) material.color.setHex(look.tint);
+    this.bareHand?.color.copy(SCANNED_SKIN).multiply(this.skinMaterials[0]!.color);
+  }
+
+  get look(): FighterLook {
+    return this.headLook.look;
+  }
+
+  /** Returns the material of bare hands, which follows the skin tone, or null for gloved ones. */
+  private addHands(outfit: OfficialOutfit): THREE.MeshStandardMaterial | null {
+    const gloved = outfit.gloves !== null;
+    const hand = new THREE.MeshStandardMaterial({
+      color: gloved ? outfit.gloves! : SCANNED_SKIN,
+      roughness: gloved ? 0.38 : 0.6,
+      metalness: 0.02,
+    });
+    const cuff = gloved ? hand : new THREE.MeshStandardMaterial({ color: new THREE.Color(outfit.shirt).multiplyScalar(0.9), roughness: 0.88, metalness: 0 });
+    this.ownedMaterials.push(hand);
+    if (cuff !== hand) this.ownedMaterials.push(cuff);
+    const cuffGeometry = buildCuffGeometry();
+    this.ownedGeometries.push(cuffGeometry);
+    for (const side of ["left", "right"] as const) {
+      for (const mesh of this.handMeshes[side]) mesh.visible = false;
+      const geometry = buildHandGeometry(side);
+      this.ownedGeometries.push(geometry);
+      const suffix = side === "left" ? "L" : "R";
+      for (const [bone, part, material, name] of [
+        [this.rig.bones[`glove${suffix}`], geometry, hand, `hand-${side}`],
+        [this.rig.bones[`elbow${suffix}`], cuffGeometry, cuff, `cuff-${side}`],
+      ] as const) {
+        const mesh = new THREE.Mesh(part, material);
+        mesh.name = name;
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        bone.add(mesh);
+      }
+    }
+    return gloved ? null : hand;
   }
 
   setSkinClearcoat(value: number): void {
@@ -242,12 +319,13 @@ export class SkinnedBoxer {
 
   dispose(): void {
     for (const material of this.ownedMaterials) material.dispose();
+    for (const geometry of this.ownedGeometries) geometry.dispose();
   }
 }
 
-const BLOODED_GLOVE_COLOR = new THREE.Color(0x5c0a0e);
-
 export type ReactionKind = "block" | "hit";
+
+export type Verdict = "winner" | "loser" | "level";
 
 interface FootState {
   readonly planted: THREE.Vector3;
@@ -272,6 +350,9 @@ const springStep = (spring: Spring3, dt: number, stiffness: number, damping: num
 };
 
 const PUNCH_CONTACT_OFFSET = 0.06;
+/** Between these gaps (metres between the fighters' feet) the stance closes up for infighting. */
+const CROWDED_GAP = 0.58;
+const OPEN_GAP = 1;
 const KNOCKDOWN_FALL_SECONDS = 0.75;
 const GETUP_SECONDS = 1.7;
 
@@ -306,6 +387,7 @@ export class BoxingGraph {
   private ownPulled = false;
   /** Own punches already played or cut short here; the server's copy of them is not played again. */
   private readonly retiredOwnIds: string[] = [];
+  private anticipatedId: string | null = null;
   private hitstop = 0;
   private hitstopScale = 1;
   private downState: "up" | "falling" | "down" | "rising" = "up";
@@ -336,6 +418,7 @@ export class BoxingGraph {
   private clinchWeight = 0;
   private foulWeight = 0;
   private tauntWeight = 0;
+  private crowding = 0;
   private lastSpeed = 0;
   private readonly stool: { group: THREE.Group; dispose: () => void };
   private readonly enswell: { group: THREE.Group; dispose: () => void };
@@ -356,6 +439,15 @@ export class BoxingGraph {
   private breakTime = 0;
   private breakWeight = 0;
   private attending = false;
+  /** Where the referee stands at the announcement (1 = on this fighter's left), or 0 outside it. */
+  private verdictSide = 0;
+  private verdict: Verdict | null = null;
+  private squareWeight = 0;
+  private raisedWeight = 0;
+  private bowedWeight = 0;
+  private readonly wrists: [THREE.Vector3 | null, THREE.Vector3 | null] = [null, null];
+  private readonly wristTargets = [new THREE.Vector3(), new THREE.Vector3()] as const;
+  private readonly wristWeights: [number, number] = [0, 0];
   private attendWeight = 0;
   private countdownTicks: number | null = null;
   private touchWeight = 0;
@@ -445,6 +537,13 @@ export class BoxingGraph {
     this.celebration = 0;
     this.waveTime = 0;
     this.wave = 0;
+    this.verdictSide = 0;
+    this.verdict = null;
+    this.squareWeight = 0;
+    this.raisedWeight = 0;
+    this.bowedWeight = 0;
+    this.wrists.fill(null);
+    this.wristWeights.fill(0);
     this.seated = 0;
     this.stillTime = 0;
     this.rootX = null;
@@ -453,6 +552,7 @@ export class BoxingGraph {
     this.retirePunch();
     this.completedActionId = null;
     this.retiredOwnIds.length = 0;
+    this.anticipatedId = null;
   }
 
   /** Referee wave-off: both arms sweep crossing overhead to call the fight. */
@@ -480,6 +580,26 @@ export class BoxingGraph {
     this.treatTarget.copy(eye);
     if (facing !== undefined) this.treatFacing.copy(facing);
     this.treatSide = side;
+  }
+
+  /**
+   * The announcement of a decision. The fighter stands square to the camera beside the referee, who
+   * is on the side given (1 = the fighter's left); null ends it.
+   */
+  awaitVerdict(side: 1 | -1 | null): void {
+    this.verdictSide = side ?? 0;
+    if (side === null) this.verdict = null;
+  }
+
+  /** The winner's arm on the referee's side goes up, as do both fighters' after a draw; the loser's head goes down. */
+  announce(verdict: Verdict): void {
+    this.verdict = verdict;
+  }
+
+  /** Referee: hold up the wrists at these world positions, one to each side; null lets that arm down. */
+  raise(left: THREE.Vector3 | null, right: THREE.Vector3 | null): void {
+    this.wrists[0] = left === null ? null : this.wristTargets[0].copy(left);
+    this.wrists[1] = right === null ? null : this.wristTargets[1].copy(right);
   }
 
   /** Referee break: both arms push out and apart at chest height to separate a clinch. */
@@ -521,19 +641,48 @@ export class BoxingGraph {
     // recovery the follow-up cuts in at once.
     const remaining = this.punchActive ? this.punchTotalTicks - this.punchAgeTicks : 0;
     if (this.punchActive && this.punchAgeTicks / this.punchTotalTicks <= 0.55) return;
-    this.retirePunch();
     const timing = expected ?? punchTiming(action.class, action.target, action.power);
-    this.punchClass = action.class;
-    this.punchHand = action.hand;
-    this.punchTarget = action.target;
-    this.punchPower = action.power;
+    this.startEarly(action.id, action.class, action.hand, action.target, action.power, timing, leadTicks, Math.max(0, leadTicks) + remaining);
+  }
+
+  /**
+   * Starts a punch the server has begun but the delayed render clock has not reached, so an
+   * opponent's punch is seen as early as the network allows. `leadTicks` is how long the render
+   * clock will take to reach the punch's first tick. The wind-up is stretched over that wait, so
+   * a punch too far ahead is held back until it can be shown at half speed or faster.
+   */
+  anticipate(fighter: FighterSnapshot, leadTicks: number): void {
+    const id = fighter.action_id;
+    if (id === null || fighter.action === null || leadTicks <= 0) return;
+    if (id === this.anticipatedId || id === this.actionId || id === this.completedActionId || id === this.ownActionId || this.retiredOwnIds.includes(id)) return;
+    if (leadTicks > fighter.action_startup_ticks * (1 / MIN_ANTICIPATION_RATE - 1)) return;
+    if (this.punchActive && this.punchAgeTicks / this.punchTotalTicks <= 0.55) return;
+    this.anticipatedId = id;
+    const target = fighter.action_target ?? "head";
+    const power = fighter.action_power ?? "normal";
+    const timing = {
+      ...punchTiming(fighter.action, target, power),
+      startup: fighter.action_startup_ticks,
+      active: fighter.action_active_ticks,
+      recovery: fighter.action_recovery_ticks,
+    };
+    const hand = fighter.action_hand ?? (fighter.stance === "orthodox" ? "left" : "right");
+    this.startEarly(id, fighter.action, hand, target, power, timing, leadTicks, leadTicks);
+  }
+
+  private startEarly(id: string, punchClass: PunchClass, hand: Hand, target: Target, power: Power, timing: PunchTiming, leadTicks: number, expectedTicks: number): void {
+    this.retirePunch();
+    this.punchClass = punchClass;
+    this.punchHand = hand;
+    this.punchTarget = target;
+    this.punchPower = power;
     this.punchTiming = timing;
     this.punchTotalTicks = Math.max(1, totalTicks(timing));
     this.punchAgeTicks = 0;
     this.punchActive = true;
-    this.ownActionId = action.id;
+    this.ownActionId = id;
     this.ownLeadTicks = clamp(leadTicks, 0, MAX_OWN_LEAD_TICKS);
-    this.ownExpectedTicks = Math.max(0, leadTicks) + remaining;
+    this.ownExpectedTicks = expectedTicks;
   }
 
   /** True while the viewer's own punch, started on the key press, is playing. */
@@ -632,7 +781,7 @@ export class BoxingGraph {
     for (const [index, foot] of this.feet.entries()) {
       const isLead = (index === 0) === (mirror > 0);
       const offset = isLead ? STANCE.leadFoot : STANCE.rearFoot;
-      if (this.referee) desired.set((index === 0 ? 0.16 : -0.16), 0, index === 0 ? 0.02 : -0.02).applyQuaternion(rotate).add(rootPosition);
+      if (this.referee || this.squareWeight > 0.5) desired.set((index === 0 ? 0.16 : -0.16), 0, index === 0 ? 0.02 : -0.02).applyQuaternion(rotate).add(rootPosition);
       else desired.set(offset.x * mirror, 0, offset.z).applyQuaternion(rotate).add(rootPosition);
       desired.y = 0;
       if (!this.feetInitialized) {
@@ -737,6 +886,10 @@ export class BoxingGraph {
     this.breakTime = Math.max(0, this.breakTime - dt);
     this.breakWeight = smooth(this.breakWeight, this.breakTime > 0 && this.downState === "up" ? 1 : 0, 6, dt);
     this.attendWeight = smooth(this.attendWeight, this.attending ? 1 : 0, 2.5, dt);
+    this.squareWeight = smooth(this.squareWeight, this.verdictSide !== 0 ? 1 : 0, 3, dt);
+    this.raisedWeight = smooth(this.raisedWeight, this.verdictSide !== 0 && (this.verdict === "winner" || this.verdict === "level") ? 1 : 0, 3.2, dt);
+    this.bowedWeight = smooth(this.bowedWeight, this.verdictSide !== 0 && this.verdict === "loser" ? 1 : 0, 2.2, dt);
+    for (const index of [0, 1] as const) this.wristWeights[index] = smooth(this.wristWeights[index], this.wrists[index] !== null ? 1 : 0, 3.2, dt);
     this.treatWeight = smooth(this.treatWeight, this.treating ? 1 : 0, 3, dt);
     this.enswell.group.visible = this.treatWeight > 0.4;
     const touching = this.countdownTicks !== null && this.countdownTicks <= TOUCH_GLOVES_START_TICKS && this.countdownTicks >= TOUCH_GLOVES_END_TICKS;
@@ -756,6 +909,9 @@ export class BoxingGraph {
     this.clinchWeight = smooth(this.clinchWeight, fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0 ? 1 : 0, 10, dt);
     this.foulWeight = smooth(this.foulWeight, fighter.is_foul_recovery_target ? 1 : 0, 8, dt);
     this.tauntWeight = smooth(this.tauntWeight, fighter.taunt_ticks > 0 ? 1 : 0, 10, dt);
+    const gap = Math.hypot(this.mapping.x(opponent.x) - this.mapping.x(fighter.x), this.mapping.z(opponent.y) - this.mapping.z(fighter.y));
+    const crowded = this.referee || fighter.is_downed || opponent.is_downed ? 0 : 1 - smoothstep(CROWDED_GAP, OPEN_GAP, gap);
+    this.crowding = smooth(this.crowding, crowded, 9, dt);
 
     springStep(this.headKick, dt, 190, 7.5, 0.24);
     springStep(this.torsoKick, dt, 150, 7, 0.7);
@@ -874,6 +1030,20 @@ export class BoxingGraph {
       torso.headPitch -= p * 0.1;
     }
 
+    // Inside, the fighter stands taller with the guard tucked in and the head off the centre line,
+    // so two fighters chest to chest do not pass through each other.
+    const inside = this.crowding * (1 - this.clinchWeight);
+    if (inside > 0.001) {
+      torso.headOffset.x -= inside * 0.075;
+      torso.headOffset.z -= inside * 0.05;
+      torso.headYaw -= inside * 0.2;
+      torso.spinePitch -= inside * 0.07;
+      torso.hips.z -= inside * 0.05;
+      leadHand.position.z -= inside * 0.14;
+      leadHand.position.x -= inside * 0.035 * mirror;
+      rearHand.position.z -= inside * 0.07;
+    }
+
     // Reactions.
     torso.headOffset.add(this.headKick.value);
     torso.headPitch += -this.headKick.value.z * 2.4 + this.headKick.value.y * 1.6;
@@ -928,6 +1098,8 @@ export class BoxingGraph {
     if (this.touchWeight > 0.001 && this.downState === "up") this.applyTouchGlovesPose(this.touchWeight, mirror, leadHand, rearHand);
     if (this.celebration > 0.001 && this.downState === "up") this.applyCelebratePose(this.celebration, time, mirror, leadHand, rearHand, lead, rear);
     if (this.wave > 0.001 && this.downState === "up") this.applyWaveOffPose(this.wave, time, mirror, leadHand, rearHand);
+    if (this.squareWeight > 0.001 && this.downState === "up") this.applyVerdictPose(this.squareWeight, time, mirror, leadHand, rearHand, lead, rear, headRest);
+    if ((this.wristWeights[0] > 0.001 || this.wristWeights[1] > 0.001) && this.downState === "up") this.applyRaisePose(mirror, leadHand, rearHand);
     if (this.breakWeight > 0.001 && this.downState === "up") this.applyBreakPose(this.breakWeight, mirror, leadHand, rearHand);
     if (this.attendWeight > 0.001 && this.downState === "up") this.applyAttendPose(this.attendWeight, time, mirror, leadHand, rearHand);
     if (this.treatWeight > 0.001 && this.downState === "up") this.applyTreatPose(this.treatWeight, time, mirror, leadHand, rearHand, lead, rear);
@@ -947,7 +1119,7 @@ export class BoxingGraph {
       (opponent.trauma.bleeding + opponent.trauma.left_cut + opponent.trauma.right_cut) / 620
         * (blood === "off" ? 0 : blood === "reduced" ? 0.3 : 1.5),
     );
-    boxer.gloveGear.color.copy(boxer.gearBaseColor).lerp(BLOODED_GLOVE_COLOR, opponentBlood);
+    boxer.setGloveBlood(opponentBlood);
     applyHeadTrauma(boxer.headInjury, fighter.trauma, blood);
     applyBodyTrauma(boxer.bodyInjury, fighter.trauma, blood);
     boxer.setSkinClearcoat(0.25 + (1 - stamina) * 0.4);
@@ -1122,6 +1294,8 @@ export class BoxingGraph {
     const startup = this.punchTiming.startup;
     const authoritative = this.ownAuthoritativeAge;
     if (authoritative === null) return this.punchAgeTicks < startup ? startup / (startup + this.ownLeadTicks) : 1;
+    // The server has stopped reporting it, for a clinch or the bell: the age it last gave is stale.
+    if (this.actionId !== this.ownActionId) return 1;
     if (this.punchAgeTicks - authoritative <= 0.25) return 1;
     if (this.punchAgeTicks < startup && authoritative < startup) return clamp((startup - this.punchAgeTicks) / (startup - authoritative), 0.25, 1);
     return 0.5;
@@ -1542,6 +1716,64 @@ export class BoxingGraph {
     rearHand.pole.lerp(seatedScratch.set(-0.2 * mirror, -1, 0.1), blend).normalize();
   }
 
+  /** Standing square beside the referee for the decision, then the arm on the referee's side going up or the head going down. */
+  private applyVerdictPose(
+    blend: number,
+    time: number,
+    mirror: number,
+    leadHand: HandTarget,
+    rearHand: HandTarget,
+    lead: FootTarget,
+    rear: FootTarget,
+    headRest: THREE.Vector3,
+  ): void {
+    const torso = this.torso;
+    const lerp = THREE.MathUtils.lerp;
+    const raised = this.raisedWeight;
+    const bowed = this.bowedWeight;
+    const breath = Math.sin(time * 1.9) * 0.008;
+    torso.hips.x = lerp(torso.hips.x, this.verdictSide * 0.02 * raised, blend);
+    torso.hips.y = lerp(torso.hips.y, STANCE.hipsHeight + 0.03 + raised * 0.01 - bowed * 0.015, blend);
+    torso.hips.z = lerp(torso.hips.z, 0, blend);
+    torso.hipsYaw = lerp(torso.hipsYaw, 0, blend);
+    torso.hipsPitch = lerp(torso.hipsPitch, 0, blend);
+    torso.shouldersYaw = lerp(torso.shouldersYaw, 0, blend);
+    torso.spinePitch = lerp(torso.spinePitch, 0.05 - raised * 0.1 + bowed * 0.12, blend);
+    torso.spineRoll = lerp(torso.spineRoll, -this.verdictSide * 0.06 * raised, blend);
+    torso.headYaw = lerp(torso.headYaw, 0, blend);
+    torso.headPitch = lerp(torso.headPitch, 0.04 - raised * 0.2 + bowed * 0.34, blend);
+    lead.toe.lerp(seatedScratch.set(0.12 * mirror, 0, 1), blend).normalize();
+    rear.toe.lerp(seatedScratch.set(-0.12 * mirror, 0, 1), blend).normalize();
+    lead.pole.lerp(seatedScratch.set(0.12 * mirror, 0.3, 1), blend).normalize();
+    rear.pole.lerp(seatedScratch.set(-0.12 * mirror, 0.3, 1), blend).normalize();
+    for (const [hand, side] of [[leadHand, mirror], [rearHand, -mirror]] as const) {
+      const lifted = side === this.verdictSide ? raised : 0;
+      hand.position.lerp(seatedScratch.set(side * (0.27 + lifted * 0.11), lerp(0.88 + breath, headRest.y + 0.44, lifted), lerp(0.12, 0.05, lifted)), blend);
+      hand.knuckles.lerp(seatedScratch.set(side * 0.15, lerp(-0.9, 1, lifted), lerp(0.35, 0, lifted)), blend).normalize();
+      hand.palm.lerp(seatedScratch.set(lerp(-0.9 * side, 0, lifted), 0.1, lerp(0.35, 1, lifted)), blend).normalize();
+      hand.pole.lerp(seatedScratch.set(side * lerp(0.5, 1, lifted), lerp(-0.4, 0.1, lifted), lerp(-0.8, -0.3, lifted)), blend).normalize();
+    }
+  }
+
+  /** Referee: a hand around each wrist it has been given, just below the glove. */
+  private applyRaisePose(mirror: number, leadHand: HandTarget, rearHand: HandTarget): void {
+    const root = this.treatScratch.set(this.rootX ?? 0, 0, this.rootZ);
+    const inverse = this.scratchQ.setFromAxisAngle(worldUpVector, -this.yaw);
+    for (const [index, side] of [[0, 1], [1, -1]] as const) {
+      const wrist = this.wrists[index] ?? this.wristTargets[index];
+      const weight = this.wristWeights[index];
+      if (weight <= 0.001) continue;
+      const hand = side === mirror ? leadHand : rearHand;
+      const held = seatedScratch.copy(wrist).sub(root).applyQuaternion(inverse);
+      held.y -= 0.17;
+      hand.position.lerp(held, weight);
+      hand.knuckles.lerp(seatedScratch.set(0, 1, 0), weight).normalize();
+      hand.palm.lerp(seatedScratch.set(side, 0, 0.2), weight).normalize();
+      hand.pole.lerp(seatedScratch.set(side * 0.6, -0.5, -0.6), weight).normalize();
+    }
+    this.torso.headPitch = THREE.MathUtils.lerp(this.torso.headPitch, -0.05, Math.max(this.wristWeights[0], this.wristWeights[1]));
+  }
+
   private applyWaveOffPose(
     blend: number,
     time: number,
@@ -1800,15 +2032,15 @@ function buildEnswell(): { group: THREE.Group; dispose: () => void } {
   const group = new THREE.Group();
   group.name = "enswell";
   group.visible = false;
-  const plateGeometry = new THREE.CylinderGeometry(0.03, 0.03, 0.008, 16);
-  const handleGeometry = new THREE.CylinderGeometry(0.008, 0.008, 0.06, 8);
+  const plateGeometry = new THREE.CylinderGeometry(3.2, 3.2, 0.9, 20);
+  const handleGeometry = new THREE.CylinderGeometry(0.8, 0.8, 6, 10);
   const metal = new THREE.MeshStandardMaterial({ color: 0xc8ccd2, roughness: 0.3, metalness: 0.9 });
   const plate = new THREE.Mesh(plateGeometry, metal);
   plate.rotation.x = Math.PI / 2;
-  plate.position.set(0, 0.07, 0.075);
+  plate.position.set(0, 9.5, 3.4);
   group.add(plate);
   const handle = new THREE.Mesh(handleGeometry, metal);
-  handle.position.set(0, 0.035, 0.075);
+  handle.position.set(0, 5.5, 2.4);
   group.add(handle);
   return {
     group,
@@ -1856,6 +2088,7 @@ const worldUpVector = new THREE.Vector3(0, 1, 0);
 const MAX_OWN_LEAD_TICKS = 6;
 const OWN_PUNCH_GRACE_TICKS = 5;
 const OWN_PUNCH_PULL_RATE = 1.5;
+const MIN_ANTICIPATION_RATE = 0.5;
 
 /** Age in `to`'s timing at the same progress through the same phase as `age` in `from`'s. */
 export function remapPunchAge(age: number, from: PunchTiming, to: PunchTiming): number {

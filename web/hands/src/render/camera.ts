@@ -51,6 +51,24 @@ export function cornerFrame(index: 0 | 1, corner: number, shotSeconds: number, p
   cornerPoint(index, corner, 0.62, 27, lookAt).setY(1.05);
 }
 
+/** The three at the decision, from above the raised glove down to the waist. */
+const CEREMONY_SUBJECT = { top: 2.42, bottom: 0.95, width: 2.4 } as const;
+
+/**
+ * Frames the announcement in the part of the screen the result card leaves free: how far back the
+ * camera stands and the height it looks at. `covered` is the share of the screen's height under the
+ * card and `clear` the share under the top bar.
+ */
+export function ceremonyShot(aspect: number, fovDegrees: number, covered: number, clear = 0.09): { distance: number; height: number } {
+  const free = Math.max(0.2, 1 - covered - clear);
+  const span = Math.max((CEREMONY_SUBJECT.top - CEREMONY_SUBJECT.bottom) / free, CEREMONY_SUBJECT.width / Math.max(0.1, aspect));
+  const middle = (CEREMONY_SUBJECT.top + CEREMONY_SUBJECT.bottom) / 2;
+  return {
+    distance: span / (2 * Math.tan(THREE.MathUtils.degToRad(fovDegrees) / 2)),
+    height: middle - (0.5 - (clear + free / 2)) * span,
+  };
+}
+
 export class CameraDirector {
   private readonly current = new THREE.Vector3(0, BASE_HEIGHT, BASE_DISTANCE);
   private readonly look = new THREE.Vector3(0, LOOK_HEIGHT, 0);

@@ -1,6 +1,6 @@
 import { fighter, snapshot } from "../test/fixtures";
 import type { CombatEvent, MatchResult } from "../types";
-import { arcadeInjuryFor, canStartPunch, contactParticipants, contactPresentationPlan, FightRenderer, isArcadeInjuryCandidate, presentationTickFor, refereeSpacing, replayCameraSide, replayReattaches } from "./renderer";
+import { arcadeInjuryFor, canStartPunch, CEREMONY_MARKS, ceremonyStep, contactParticipants, contactPresentationPlan, FightRenderer, isArcadeInjuryCandidate, presentationTickFor, refereeSpacing, replayCameraSide, replayReattaches, visualSeparation } from "./renderer";
 
 const event = (kind: string, detail: string): CombatEvent => ({
   event_id: 1,
@@ -155,5 +155,189 @@ describe("replay injuries", () => {
     expect(apply({ blood: "full", reducedMotion: false })).toBe(1);
     expect(apply({ blood: "full", reducedMotion: true })).toBe(0);
     expect(apply({ blood: "reduced", reducedMotion: false })).toBe(0);
+  });
+});
+
+describe("drawn separation", () => {
+  it("leaves fighters alone at punching range", () => {
+    expect(visualSeparation(-60, 0, 60, 0, 104, 462, 462)).toBeNull();
+    expect(visualSeparation(0, 0, 104, 0, 104, 462, 462)).toBeNull();
+  });
+
+  it("steps both back evenly along the line between them", () => {
+    const apart = visualSeparation(-38, 10, 38, 10, 104, 462, 462)!;
+    expect(apart.bx - apart.ax).toBeCloseTo(104, 6);
+    expect(apart.ax + apart.bx).toBeCloseTo(0, 6);
+    expect(apart.ay).toBe(10);
+    expect(apart.by).toBe(10);
+    const angled = visualSeparation(0, 0, 30, 40, 104, 462, 462)!;
+    expect(Math.hypot(angled.bx - angled.ax, angled.by - angled.ay)).toBeCloseTo(104, 6);
+    expect((angled.ax + angled.bx) / 2).toBeCloseTo(15, 6);
+    expect((angled.ay + angled.by) / 2).toBeCloseTo(20, 6);
+  });
+
+  it("keeps a fighter on the ropes where they are and moves the other the whole way", () => {
+    const apart = visualSeparation(386, 0, 462, 0, 104, 462, 462)!;
+    expect(apart.bx).toBe(462);
+    expect(apart.ax).toBeCloseTo(358, 6);
+  });
+
+  it("separates fighters standing on one spot", () => {
+    const apart = visualSeparation(10, 10, 10, 10, 104, 462, 462)!;
+    expect(apart.bx - apart.ax).toBeCloseTo(104, 6);
+    expect(apart.ay).toBe(10);
+  });
+});
+
+describe("decision ceremony", () => {
+  type Staged = { positions: { x: number; y: number }[] | null; winnerSeat: 0 | 1 | null; refereeArrived: boolean; arrivedAt: number | null; announced: boolean };
+  const methods = FightRenderer.prototype as unknown as {
+    ceremonyFor: (final: unknown) => Staged | null;
+    ceremonyFighters: (ceremony: Staged, fighters: unknown, dt: number, seconds: number) => ReturnType<typeof fighter>[];
+  };
+  const final = (method: string, winner: string | null) => ({ version: 3, type: "final", match_id: "m", winner_id: winner, method, round: 3, scorecards: [], ratings: {} });
+  const standing = () => [{ ...fighter("one"), x: -300, y: 200 }, { ...fighter("two"), x: 250, y: -120, action: "jab" as const, action_id: "late", defense: "guard_high" as const }];
+
+  it("walks at no more than the step it is given and stops on the mark", () => {
+    expect(ceremonyStep(0, 0, { x: 30, y: 40 }, 10)).toEqual({ x: 6, y: 8, arrived: false });
+    expect(ceremonyStep(27, 36, { x: 30, y: 40 }, 10)).toEqual({ x: 30, y: 40, arrived: true });
+    expect(ceremonyStep(30, 40, { x: 30, y: 40 }, 0)).toEqual({ x: 30, y: 40, arrived: true });
+    expect(ceremonyStep(0, 0, { x: 30, y: 40 }, 0)).toEqual({ x: 0, y: 0, arrived: false });
+  });
+
+  it("is held for a bout that went to the cards, with both fighters on their feet", () => {
+    const stub = (fighters: unknown) => ({ buffer: { latest: () => ({ fighters }) } });
+    expect(methods.ceremonyFor.call(stub(standing()), final("decision", "two"))).toMatchObject({ winnerSeat: 1, positions: null, announced: false });
+    expect(methods.ceremonyFor.call(stub(standing()), final("draw", null))).toMatchObject({ winnerSeat: null });
+    expect(methods.ceremonyFor.call(stub(standing()), final("ko", "one"))).toBeNull();
+    expect(methods.ceremonyFor.call(stub(standing()), final("forfeit", "one"))).toBeNull();
+    expect(methods.ceremonyFor.call(stub(standing()), null)).toBeNull();
+    expect(methods.ceremonyFor.call(stub([{ ...fighter("one"), is_downed: true }, fighter("two")]), final("decision", "two"))).toBeNull();
+    expect(methods.ceremonyFor.call({ buffer: { latest: () => null } }, final("decision", "two"))).toBeNull();
+  });
+
+  it("walks both fighters to their marks, turns them to the camera and then raises the winner's arm", () => {
+    const calls: string[] = [];
+    const graph = (seat: number) => ({
+      awaitVerdict: (side: number) => { if (!calls.includes(`await ${seat} ${side}`)) calls.push(`await ${seat} ${side}`); },
+      announce: (verdict: string) => calls.push(`announce ${seat} ${verdict}`),
+      boxer: { rig: { bones: { gloveL: { getWorldPosition: (out: { set: (x: number, y: number, z: number) => unknown }) => out.set(-0.3, 2, 0.1) }, gloveR: { getWorldPosition: (out: { set: (x: number, y: number, z: number) => unknown }) => out.set(0.3, 2, 0.1) } } } },
+    });
+    const raised: unknown[][] = [];
+    const stub = {
+      drawnFighters: [fighter("a"), fighter("b")],
+      simulation: { tick_rate: 30 },
+      graphs: [graph(0), graph(1)],
+      referee: { raise: (...wrists: unknown[]) => raised.push(wrists.map((wrist) => (wrist === null ? null : (wrist as { x: number }).x))) },
+      arena: { excite: (amount: number) => calls.push(`excite ${amount}`) },
+      ceremonyWrists: [{ x: 0, set(x: number) { this.x = x; return this; } }, { x: 0, set(x: number) { this.x = x; return this; } }],
+      frameSeconds: 0,
+      finalRevealAt: 99,
+    };
+    const ceremony: Staged = { winnerSeat: 0, positions: null, refereeArrived: true, arrivedAt: null, announced: false };
+    let drawn = methods.ceremonyFighters.call(stub, ceremony, standing(), 1 / 60, 0);
+    expect(drawn[0]!.x).toBeGreaterThan(-300);
+    expect(Math.hypot(drawn[0]!.x + 300, drawn[0]!.y - 200)).toBeCloseTo(200 / 60, 6);
+    expect(Math.hypot(drawn[0]!.velocity_x, drawn[0]!.velocity_y)).toBeCloseTo(200 / 30, 6);
+    expect(drawn[0]!.facing_x).toBeGreaterThan(0);
+    expect(drawn[1]!).toMatchObject({ action: null, action_id: null, defense: "none" });
+    let seconds = 0;
+    let arrivedAt: number | null = null;
+    for (let frame = 0; frame < 400 && !ceremony.announced; frame += 1) {
+      seconds += 1 / 60;
+      stub.frameSeconds = seconds;
+      drawn = methods.ceremonyFighters.call(stub, ceremony, standing(), 1 / 60, seconds);
+      if (ceremony.arrivedAt !== null) arrivedAt ??= seconds;
+    }
+    expect(drawn.map(({ x, y }) => ({ x, y }))).toEqual(CEREMONY_MARKS.map(({ x, y }) => ({ x, y })));
+    for (const stood of drawn) expect(stood).toMatchObject({ velocity_x: 0, velocity_y: 0, facing_x: 0, facing_y: -1000 });
+    expect(arrivedAt).not.toBeNull();
+    expect(seconds - arrivedAt!).toBeGreaterThanOrEqual(0.7 - 1e-9);
+    expect(seconds - arrivedAt!).toBeLessThan(0.75);
+    expect(calls).toEqual(["await 0 1", "await 1 -1", "announce 0 winner", "announce 1 loser", "excite 1"]);
+    expect(stub.finalRevealAt).toBeCloseTo(seconds + 0.35, 6);
+    expect(raised.at(-1)).toEqual([null, -0.3]);
+  });
+
+  it("waits for the referee, and raises both arms after a draw", () => {
+    const raised: unknown[][] = [];
+    const announced: string[] = [];
+    const graph = () => ({ awaitVerdict: () => {}, announce: (verdict: string) => announced.push(verdict), boxer: { rig: { bones: { gloveL: { getWorldPosition: (out: unknown) => out }, gloveR: { getWorldPosition: (out: unknown) => out } } } } });
+    const stub = { drawnFighters: [fighter("a"), fighter("b")], simulation: { tick_rate: 30 }, graphs: [graph(), graph()], referee: { raise: (...wrists: unknown[]) => raised.push(wrists) }, arena: { excite: () => {} }, ceremonyWrists: ["blue", "red"], frameSeconds: 0, finalRevealAt: 99 };
+    const ceremony: Staged = { winnerSeat: null, positions: CEREMONY_MARKS.map(({ x, y }) => ({ x, y })), refereeArrived: false, arrivedAt: null, announced: false };
+    for (let frame = 0; frame < 120; frame += 1) methods.ceremonyFighters.call(stub, ceremony, standing(), 1 / 60, frame / 60);
+    expect(ceremony.arrivedAt).toBeNull();
+    expect(announced).toEqual([]);
+    ceremony.refereeArrived = true;
+    for (let frame = 120; frame < 200; frame += 1) methods.ceremonyFighters.call(stub, ceremony, standing(), 1 / 60, frame / 60);
+    expect(announced).toEqual(["level", "level"]);
+    expect(raised.at(-1)).toEqual(["red", "blue"]);
+  });
+});
+
+describe("early punches", () => {
+  const anticipate = (FightRenderer.prototype as unknown as { anticipatePunches: (latest: unknown, sampledTick: number) => void }).anticipatePunches;
+  const watch = (replay: unknown = null) => {
+    const calls: { seat: number; id: string | null; lead: number }[] = [];
+    const graph = (seat: number) => ({ anticipate: (ahead: { action_id: string | null }, lead: number) => calls.push({ seat, id: ahead.action_id, lead }) });
+    return { stub: { replay, graphs: [graph(0), graph(1)] }, calls };
+  };
+  const newest = (phase: string, downed = false) => ({
+    ...snapshot(40), phase,
+    fighters: [{ ...fighter("one"), action_id: "a", action_start_tick: 40 }, { ...fighter("two"), action_id: "b", action_start_tick: 39, is_downed: downed }],
+  });
+
+  it("are offered to both fighters with the time the delayed clock needs to reach them", () => {
+    const { stub, calls } = watch();
+    anticipate.call(stub, newest("fight"), 37.5);
+    expect(calls).toEqual([{ seat: 0, id: "a", lead: 2.5 }, { seat: 1, id: "b", lead: 1.5 }]);
+  });
+
+  it("are left alone outside the fight, during the replay, and for a fighter on the canvas", () => {
+    for (const phase of ["countdown", "knockdown", "rest", "complete", "foul_recovery"]) {
+      const { stub, calls } = watch();
+      anticipate.call(stub, newest(phase), 37.5);
+      expect(calls).toEqual([]);
+    }
+    const replaying = watch({ plan: {} });
+    anticipate.call(replaying.stub, newest("fight"), 37.5);
+    expect(replaying.calls).toEqual([]);
+    const downed = watch();
+    anticipate.call(downed.stub, newest("fight", true), 37.5);
+    expect(downed.calls.map((call) => call.seat)).toEqual([0]);
+    const waiting = watch();
+    anticipate.call(waiting.stub, null, 37.5);
+    expect(waiting.calls).toEqual([]);
+  });
+});
+
+describe("ovation", () => {
+  const methods = FightRenderer.prototype as unknown as { setFinal: (final: unknown) => void; cheer: (seconds: number, dt: number) => void };
+  const hall = (frameSeconds: number) => {
+    const excited: number[] = [];
+    return { excited, stub: { frameSeconds, buffer: { latest: () => null }, graphs: null, referee: null, arena: { excite: (amount: number) => excited.push(amount) }, ovationUntil: 0, finalRevealAt: 0, ceremony: null, final: null, ceremonyFor: () => null, endCeremony: () => {} } };
+  };
+  const decision = { version: 3, type: "final", match_id: "m", winner_id: "one", method: "forfeit", round: 3, scorecards: [], ratings: {} };
+
+  it("keeps the crowd up for sixteen seconds after the result and then lets it sit", () => {
+    const { stub, excited } = hall(10);
+    methods.cheer.call(stub, 10, 1 / 60);
+    expect(excited).toEqual([]);
+    methods.setFinal.call(stub, decision);
+    methods.cheer.call(stub, 10.5, 0.5);
+    methods.cheer.call(stub, 25.9, 0.5);
+    expect(excited).toHaveLength(2);
+    expect(excited[0]).toBeGreaterThan(0.5 * 0.3);
+    methods.cheer.call(stub, 26.1, 0.5);
+    methods.cheer.call(stub, 400, 0.5);
+    expect(excited).toHaveLength(2);
+  });
+
+  it("ends when the result is withdrawn", () => {
+    const { stub, excited } = hall(10);
+    methods.setFinal.call(stub, decision);
+    methods.setFinal.call(stub, null);
+    methods.cheer.call(stub, 11, 0.5);
+    expect(excited).toEqual([]);
   });
 });

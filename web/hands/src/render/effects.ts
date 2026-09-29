@@ -1,7 +1,10 @@
 import * as THREE from "three";
 import type { BloodLevel } from "../settings";
 import type { CombatEvent, Hand } from "../types";
-import { CANVAS_TOP, RING_FIGHT_HALF } from "./world";
+import { wearCornerColour } from "./gear";
+import { buildChunkGeometry, buildWoundGeometry, closeCut, woundTexture } from "./gore";
+import { LookShading, SCANNED_LOOK, type FighterLook } from "./looks";
+import { CANVAS_TOP, RING_FIGHT_HALF, ROPE_LINE } from "./world";
 
 const MAX_DROPLETS = 900;
 const MAX_MIST = 90;
@@ -12,6 +15,11 @@ const MAX_HANDS = 4;
 const GIBS_PER_DECAPITATION = 24;
 const GIBS_PER_HAND = 16;
 const HEAD_RADIUS = 0.12;
+const SEVERED_PART_MARGIN = 0.04;
+/** Inward speed of a part beyond the ropes, per metre it is beyond them. */
+const ROPE_RETURN_RATE = 4;
+/** The neck is close to round where it is cut. */
+export const NECK_WOUND_RADIUS = 0.068;
 const HAND_RADIUS = 0.085;
 const MAX_STEP = 0.05;
 const SIMULATION_STEP = 1 / 60;
@@ -28,9 +36,14 @@ interface Droplet {
 }
 
 export interface BakedPart {
+  /** Carries the mesh's bind positions in a `bindPosition` attribute. */
   readonly geometry: THREE.BufferGeometry;
   readonly map: THREE.Texture | null;
   readonly color: number;
+  /** The cut that freed the part, in the part's own frame: its middle, and the flesh that closes it, measured from there. */
+  readonly cut?: { readonly position: THREE.Vector3; readonly flesh: THREE.BufferGeometry };
+  /** Whose head it is, so it keeps its hair and beard once it is off. */
+  readonly look?: FighterLook;
 }
 
 interface Mist {
@@ -49,6 +62,8 @@ interface Gib {
   vrx: number; vry: number; vrz: number;
   life: number;
   scale: number;
+  /** Lengthens the chunk along one axis so no two look alike. */
+  stretch: number;
   bounces: number;
   stained: boolean;
   tooth: boolean;
@@ -59,7 +74,11 @@ interface SeveredHead {
   readonly defaultGeometry: THREE.BufferGeometry;
   readonly defaultScale: THREE.Vector3;
   readonly cap: THREE.Mesh;
+  readonly defaultCap: THREE.BufferGeometry;
+  /** Hair and beard of a severed head; null for a hand. */
+  readonly look: LookShading | null;
   baked: THREE.BufferGeometry | null;
+  bakedFlesh: THREE.BufferGeometry | null;
   readonly radius: number;
   active: boolean;
   moving: boolean;
@@ -72,6 +91,8 @@ interface SeveredHead {
 
 interface Stump {
   readonly mesh: THREE.Mesh;
+  /** The wound shaped to the cut, once the renderer has measured it. */
+  readonly flesh: THREE.BufferGeometry;
   active: boolean;
   fountainLife: number;
   accumulator: number;
@@ -96,6 +117,18 @@ const finite = (value: number, fallback = 0): number => Number.isFinite(value) ?
 const unitY = new THREE.Vector3(0, 1, 0);
 const safeStep = (dt: number): number => Number.isFinite(dt) ? THREE.MathUtils.clamp(dt, 0, MAX_STEP) : 0;
 const IMPACT_KINDS = new Set(["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown", "bleed"]);
+
+/**
+ * One axis of a severed part against the ropes. A part that reaches them from inside bounces off.
+ * One cut off beyond them, on a fighter leaning into the ropes, is drawn back in rather than moved.
+ */
+export function confineToRopes(position: number, velocity: number, from: number, limit: number): { position: number; velocity: number } {
+  const excess = Math.abs(position) - limit;
+  if (excess <= 0) return { position, velocity };
+  const side = Math.sign(position);
+  if (Math.abs(from) <= limit) return { position: side * limit, velocity: velocity * -0.42 };
+  return { position, velocity: -side * Math.max(-side * velocity, excess * ROPE_RETURN_RATE) };
+}
 
 export type BloodPattern = "jet" | "fan" | "plume" | "body_burst" | "ooze" | "impact";
 
@@ -194,7 +227,7 @@ export class Effects3D {
   private readonly decalGeometry: THREE.PlaneGeometry;
   private decalIndex = 0;
 
-  private readonly gibGeometry: THREE.IcosahedronGeometry;
+  private readonly gibGeometry: THREE.BufferGeometry;
   private readonly gibMaterial: THREE.MeshStandardMaterial;
   private readonly gibMesh: THREE.InstancedMesh;
   private readonly gibColor = new THREE.Color();
@@ -212,9 +245,12 @@ export class Effects3D {
   private readonly handGeometry: THREE.CapsuleGeometry;
   private readonly handMaterials: THREE.MeshStandardMaterial[] = [];
   private readonly hands: SeveredHead[] = [];
-  private readonly stumpGeometry: THREE.CylinderGeometry;
-  private readonly wristStumpGeometry: THREE.CylinderGeometry;
+  private readonly stumpGeometry: THREE.BufferGeometry;
+  private readonly wristStumpGeometry: THREE.BufferGeometry;
   private readonly stumpMaterial: THREE.MeshStandardMaterial;
+  private readonly stumpMap: THREE.CanvasTexture;
+  private dropletCloseness = 1;
+  private readonly stumpOutward = new THREE.Vector3();
   private readonly stumps: Stump[] = [];
   private readonly handStumps: Stump[] = [];
   private readonly lastDecapitationEvent = [null, null] as Array<number | null>;
@@ -253,12 +289,12 @@ export class Effects3D {
     for (let i = 0; i < 4; i += 1) this.splatMaps.push(splatTexture(0x3a1f_00d1 + i * 977));
 
     this.mistPositions = new Float32Array(MAX_MIST * 3);
-    this.mistColors = new Float32Array(MAX_MIST * 3);
+    this.mistColors = new Float32Array(MAX_MIST * 4).fill(1);
     this.mistGeometry = new THREE.BufferGeometry();
     this.mistGeometry.setAttribute("position", new THREE.BufferAttribute(this.mistPositions, 3));
-    this.mistGeometry.setAttribute("color", new THREE.BufferAttribute(this.mistColors, 3));
+    this.mistGeometry.setAttribute("color", new THREE.BufferAttribute(this.mistColors, 4));
     this.mistMap = mistTexture();
-    this.mistMaterial = new THREE.PointsMaterial({ size: 0.42, map: this.mistMap, transparent: true, opacity: 0.68, depthWrite: false, sizeAttenuation: true });
+    this.mistMaterial = new THREE.PointsMaterial({ size: 0.36, map: this.mistMap, transparent: true, opacity: 0.6, depthWrite: false, sizeAttenuation: true, vertexColors: true });
     this.mistPoints = new THREE.Points(this.mistGeometry, this.mistMaterial);
     this.mistPoints.frustumCulled = false;
     scene.add(this.mistPoints);
@@ -269,7 +305,7 @@ export class Effects3D {
 
     this.decalGeometry = new THREE.PlaneGeometry(0.2, 0.2);
     for (let i = 0; i < MAX_DECALS; i += 1) {
-      const decal = new THREE.Mesh(this.decalGeometry, new THREE.MeshStandardMaterial({ color: 0x6e0d13, map: this.splatMaps[i % this.splatMaps.length]!, alphaMap: this.splatMaps[i % this.splatMaps.length]!, transparent: true, opacity: 0.42, depthWrite: false, roughness: 0.25, metalness: 0 }));
+      const decal = new THREE.Mesh(this.decalGeometry, new THREE.MeshStandardMaterial({ color: 0x6e0d13, map: this.splatMaps[i % this.splatMaps.length]!, alphaMap: this.splatMaps[i % this.splatMaps.length]!, transparent: true, opacity: 0.42, depthWrite: false, roughness: 0.6, metalness: 0 }));
       decal.rotation.x = -Math.PI / 2;
       decal.position.y = CANVAS_TOP + 0.004 + i * 0.00015;
       decal.visible = false;
@@ -277,14 +313,14 @@ export class Effects3D {
       scene.add(decal);
     }
 
-    this.gibGeometry = new THREE.IcosahedronGeometry(0.04, 0);
-    this.gibMaterial = new THREE.MeshStandardMaterial({ color: 0x650a10, roughness: 0.82, metalness: 0 });
+    this.gibGeometry = buildChunkGeometry();
+    this.gibMaterial = new THREE.MeshStandardMaterial({ color: 0x5c0a10, roughness: 0.34, metalness: 0 });
     this.gibMesh = new THREE.InstancedMesh(this.gibGeometry, this.gibMaterial, MAX_GIBS);
     this.gibMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.gibMesh.frustumCulled = false;
     scene.add(this.gibMesh);
     for (let i = 0; i < MAX_GIBS; i += 1) {
-      const gib: Gib = { alive: false, x: 0, y: -50, z: 0, vx: 0, vy: 0, vz: 0, rx: 0, ry: 0, rz: 0, vrx: 0, vry: 0, vrz: 0, life: 0, scale: 0, bounces: 0, stained: false, tooth: false };
+      const gib: Gib = { alive: false, x: 0, y: -50, z: 0, vx: 0, vy: 0, vz: 0, rx: 0, ry: 0, rz: 0, vrx: 0, vry: 0, vrz: 0, life: 0, scale: 0, stretch: 1, bounces: 0, stained: false, tooth: false };
       this.gibs.push(gib);
       this.gibMesh.setColorAt(i, this.gibColor.setHex(0xffffff));
       this.writeGibMatrix(i, gib);
@@ -293,49 +329,58 @@ export class Effects3D {
 
     this.headGeometry = new THREE.SphereGeometry(HEAD_RADIUS, 18, 14);
     this.handGeometry = new THREE.CapsuleGeometry(0.055, 0.09, 6, 12);
-    this.stumpGeometry = new THREE.CylinderGeometry(0.072, 0.09, 0.035, 12);
-    this.wristStumpGeometry = new THREE.CylinderGeometry(0.035, 0.05, 0.03, 10);
-    this.stumpMaterial = new THREE.MeshStandardMaterial({ color: 0x56070c, roughness: 0.88, metalness: 0 });
+    this.stumpGeometry = buildWoundGeometry(NECK_WOUND_RADIUS, NECK_WOUND_RADIUS);
+    this.wristStumpGeometry = buildWoundGeometry(0.038, 0.042, 0.006);
+    this.stumpMap = woundTexture();
+    this.stumpMaterial = new THREE.MeshStandardMaterial({ map: this.stumpMap, roughness: 0.3, metalness: 0 });
     for (let i = 0; i < MAX_HEADS; i += 1) {
       const headMaterial = new THREE.MeshStandardMaterial({ color: 0x8a4d32, roughness: 0.76, metalness: 0 });
       this.headMaterials.push(headMaterial);
+      const headLook = new LookShading(headMaterial, true);
       const headMesh = new THREE.Mesh(this.headGeometry, headMaterial);
       headMesh.scale.set(0.82, 1.08, 0.9);
       headMesh.castShadow = true;
       headMesh.visible = false;
       scene.add(headMesh);
-      const cap = new THREE.Mesh(new THREE.CircleGeometry(0.058, 14), this.stumpMaterial);
-      cap.rotation.x = Math.PI / 2;
-      cap.position.y = -0.1;
+      const cap = new THREE.Mesh(this.stumpGeometry, this.stumpMaterial);
       cap.visible = false;
       headMesh.add(cap);
-      this.heads.push({ mesh: headMesh, defaultGeometry: this.headGeometry, defaultScale: headMesh.scale.clone(), cap, baked: null, radius: HEAD_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
+      this.heads.push({ mesh: headMesh, defaultGeometry: this.headGeometry, defaultScale: headMesh.scale.clone(), cap, defaultCap: this.stumpGeometry, look: headLook, baked: null, bakedFlesh: null, radius: HEAD_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
 
       const stumpMesh = new THREE.Mesh(this.stumpGeometry, this.stumpMaterial);
       stumpMesh.visible = false;
       scene.add(stumpMesh);
-      this.stumps.push({ mesh: stumpMesh, active: false, fountainLife: 0, accumulator: 0, seed: 1, direction: 1 });
+      this.stumps.push({ mesh: stumpMesh, flesh: new THREE.BufferGeometry(), active: false, fountainLife: 0, accumulator: 0, seed: 1, direction: 1 });
     }
     for (let index = 0; index < MAX_HANDS; index += 1) {
       const material = new THREE.MeshStandardMaterial({ color: 0x1d4ed8, roughness: 0.38, metalness: 0.03 });
+      wearCornerColour(material, true);
       this.handMaterials.push(material);
       const handMesh = new THREE.Mesh(this.handGeometry, material);
       handMesh.scale.set(1.15, 1, 1.35);
       handMesh.castShadow = true;
       handMesh.visible = false;
       scene.add(handMesh);
-      const cap = new THREE.Mesh(new THREE.CircleGeometry(0.04, 12), this.stumpMaterial);
-      cap.rotation.x = Math.PI / 2;
+      const cap = new THREE.Mesh(this.wristStumpGeometry, this.stumpMaterial);
+      cap.rotation.x = Math.PI;
       cap.position.y = 0.02;
       cap.visible = false;
       handMesh.add(cap);
-      this.hands.push({ mesh: handMesh, defaultGeometry: this.handGeometry, defaultScale: handMesh.scale.clone(), cap, baked: null, radius: HAND_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
+      this.hands.push({ mesh: handMesh, defaultGeometry: this.handGeometry, defaultScale: handMesh.scale.clone(), cap, defaultCap: this.wristStumpGeometry, look: null, baked: null, bakedFlesh: null, radius: HAND_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
 
       const stumpMesh = new THREE.Mesh(this.wristStumpGeometry, this.stumpMaterial);
       stumpMesh.visible = false;
       scene.add(stumpMesh);
-      this.handStumps.push({ mesh: stumpMesh, active: false, fountainLife: 0, accumulator: 0, seed: 1, direction: 1 });
+      this.handStumps.push({ mesh: stumpMesh, flesh: new THREE.BufferGeometry(), active: false, fountainLife: 0, accumulator: 0, seed: 1, direction: 1 });
     }
+  }
+
+  /**
+   * Droplets are drawn oversized so they read from the broadcast camera; a close camera shrinks
+   * them toward their real size. `distance` is from the camera to what it is looking at.
+   */
+  setViewDistance(distance: number): void {
+    this.dropletCloseness = THREE.MathUtils.clamp(finite(distance, 5) / 5, 0.4, 1);
   }
 
   setBloodLevel(level: BloodLevel): void {
@@ -378,6 +423,14 @@ export class Effects3D {
     const head = this.heads[Math.trunc(fighterIndex)];
     if (head === undefined || !head.active) return false;
     out.copy(head.mesh.position);
+    return true;
+  }
+
+  /** Copies the direction a severed head's face points into `out`; false when the head is still on. */
+  severedHeadFacing(fighterIndex: number, out: THREE.Vector3): boolean {
+    const head = this.heads[Math.trunc(fighterIndex)];
+    if (head === undefined || !head.active) return false;
+    out.set(0, 0, 1).applyQuaternion(head.mesh.quaternion);
     return true;
   }
 
@@ -435,7 +488,7 @@ export class Effects3D {
     } else {
       this.dropletQuaternion.identity();
     }
-    const fade = Math.min(1, droplet.life / (droplet.maxLife * 0.3));
+    const fade = Math.min(1, droplet.life / (droplet.maxLife * 0.3)) * this.dropletCloseness;
     this.dropletScale.set(droplet.radius * fade, droplet.radius * stretch * fade, droplet.radius * fade);
     this.dropletMatrix.compose(this.dropletVelocity.set(droplet.x, droplet.y, droplet.z), this.dropletQuaternion, this.dropletScale);
     this.dropletMesh.setMatrixAt(index, this.dropletMatrix);
@@ -455,9 +508,7 @@ export class Effects3D {
     this.mistPositions[index * 3] = mist.x;
     this.mistPositions[index * 3 + 1] = mist.y;
     this.mistPositions[index * 3 + 2] = mist.z;
-    this.mistColors[index * 3] = 0.6 * mist.scale;
-    this.mistColors[index * 3 + 1] = 0.07 * mist.scale;
-    this.mistColors[index * 3 + 2] = 0.08 * mist.scale;
+    this.mistColors[index * 4 + 3] = Math.min(1, mist.scale);
     this.mistGeometry.attributes.position!.needsUpdate = true;
     this.mistGeometry.attributes.color!.needsUpdate = true;
   }
@@ -625,20 +676,31 @@ export class Effects3D {
   }
 
   private applyBakedPart(part: SeveredHead, baked: BakedPart | undefined, fallbackColor: number): void {
-    if (part.baked !== null) {
-      part.baked.dispose();
-      part.baked = null;
-    }
+    part.baked?.dispose();
+    part.bakedFlesh?.dispose();
+    part.baked = null;
+    part.bakedFlesh = null;
+    part.cap.geometry = part.defaultCap;
+    part.cap.quaternion.identity();
     const material = part.mesh.material as THREE.MeshStandardMaterial;
     if (baked !== undefined) {
       part.mesh.geometry = baked.geometry;
       part.baked = baked.geometry;
       part.mesh.scale.setScalar(1);
       material.map = baked.map;
+      part.look?.set(baked.look ?? SCANNED_LOOK);
       material.color.setHex(baked.color);
-      baked.geometry.computeBoundingBox();
-      const box = baked.geometry.boundingBox;
-      if (box !== null) part.cap.position.y = box.min.y + 0.004;
+      if (baked.cut !== undefined) {
+        part.cap.geometry = baked.cut.flesh;
+        part.bakedFlesh = baked.cut.flesh;
+        part.cap.position.copy(baked.cut.position);
+      } else {
+        // A glove is a mesh of its own, open at the wrist: the wound closes its lowest point.
+        baked.geometry.computeBoundingBox();
+        const box = baked.geometry.boundingBox;
+        part.cap.position.set(0, (box?.min.y ?? 0) + 0.004, 0);
+        part.cap.rotation.x = Math.PI;
+      }
       part.cap.visible = true;
     } else {
       part.mesh.geometry = part.defaultGeometry;
@@ -827,12 +889,23 @@ export class Effects3D {
     copyFiniteQuaternion(stump.mesh.quaternion, quaternion);
   }
 
-  anchorStump(fighterIndex: number, position: THREE.Vector3, quaternion: THREE.Quaternion): void {
+  /**
+   * Keeps the wound on the neck. `rim` is the edge of the cut as the skin is posed, both ends of each
+   * edge in turn: with it the wound closes the opening exactly, and without it a disc stands in.
+   */
+  anchorStump(fighterIndex: number, position: THREE.Vector3, quaternion: THREE.Quaternion, rim?: ArrayLike<number>): void {
     if (this.bloodLevel !== "full" || fighterIndex < 0 || fighterIndex >= MAX_HEADS) return;
     const stump = this.stumps[Math.trunc(fighterIndex)]!;
     if (!stump.active) return;
     stump.mesh.position.set(finite(position.x), finite(position.y, 1.5), finite(position.z));
-    copyFiniteQuaternion(stump.mesh.quaternion, quaternion);
+    if (rim === undefined || rim.length < 18) {
+      stump.mesh.geometry = this.stumpGeometry;
+      copyFiniteQuaternion(stump.mesh.quaternion, quaternion);
+      return;
+    }
+    closeCut(stump.flesh, rim, stump.mesh.position, this.stumpOutward.set(0, 1, 0).applyQuaternion(quaternion));
+    stump.mesh.geometry = stump.flesh;
+    stump.mesh.quaternion.identity();
   }
 
   restoreFighter(fighterIndex: number): void {
@@ -936,7 +1009,10 @@ export class Effects3D {
     const gib = this.gibs[index]!;
     gib.alive = true;
     gib.tooth = tooth;
-    this.gibMesh.setColorAt(index, this.gibColor.setHex(tooth ? 0xf3ead6 : 0xffffff));
+    const shade = 0.55 + rand() * 0.45;
+    if (tooth) this.gibColor.setHex(0xf3ead6);
+    else this.gibColor.setRGB(shade, shade * (0.75 + rand() * 0.25), shade);
+    this.gibMesh.setColorAt(index, this.gibColor);
     if (this.gibMesh.instanceColor !== null) this.gibMesh.instanceColor.needsUpdate = true;
     gib.x = finite(x);
     gib.y = finite(y, 1.5);
@@ -951,7 +1027,8 @@ export class Effects3D {
     gib.vry = (rand() - 0.5) * 18;
     gib.vrz = (rand() - 0.5) * 18;
     gib.life = tooth ? 6 : 1.8 + rand() * 1.2;
-    gib.scale = tooth ? 0.22 + rand() * 0.12 : 0.32 + rand() * 0.7;
+    gib.scale = tooth ? 0.22 + rand() * 0.12 : 0.3 + rand() * 0.6;
+    gib.stretch = tooth ? 1 : 0.7 + rand() * 0.9;
     gib.bounces = 0;
     gib.stained = false;
     this.writeGibMatrix(index, gib);
@@ -967,7 +1044,7 @@ export class Effects3D {
       this.gibPosition.set(gib.x, gib.y, gib.z);
       this.gibEuler.set(gib.rx, gib.ry, gib.rz);
       this.gibQuaternion.setFromEuler(this.gibEuler);
-      this.gibScale.setScalar(gib.scale);
+      this.gibScale.set(gib.scale * gib.stretch, gib.scale, gib.scale / Math.sqrt(gib.stretch));
     }
     this.gibMatrix.compose(this.gibPosition, this.gibQuaternion, this.gibScale);
     this.gibMesh.setMatrixAt(index, this.gibMatrix);
@@ -1034,6 +1111,8 @@ export class Effects3D {
   private updateDetachedParts(parts: readonly SeveredHead[], dt: number): void {
     for (const part of parts) {
       if (!part.active || !part.moving) continue;
+      const fromX = part.mesh.position.x;
+      const fromZ = part.mesh.position.z;
       part.vy -= 5.8 * dt;
       part.mesh.position.x += part.vx * dt;
       part.mesh.position.y += part.vy * dt;
@@ -1041,14 +1120,14 @@ export class Effects3D {
       part.mesh.rotation.x += part.vrx * dt;
       part.mesh.rotation.y += part.vry * dt;
       part.mesh.rotation.z += part.vrz * dt;
-      if (Math.abs(part.mesh.position.x) > RING_FIGHT_HALF) {
-        part.mesh.position.x = Math.sign(part.mesh.position.x) * RING_FIGHT_HALF;
-        part.vx *= -0.42;
-      }
-      if (Math.abs(part.mesh.position.z) > RING_FIGHT_HALF) {
-        part.mesh.position.z = Math.sign(part.mesh.position.z) * RING_FIGHT_HALF;
-        part.vz *= -0.42;
-      }
+      // The ropes keep a severed part in the ring, where the cameras can reach it.
+      const limit = ROPE_LINE - part.radius - SEVERED_PART_MARGIN;
+      const x = confineToRopes(part.mesh.position.x, part.vx, fromX, limit);
+      const z = confineToRopes(part.mesh.position.z, part.vz, fromZ, limit);
+      part.mesh.position.x = x.position;
+      part.mesh.position.z = z.position;
+      part.vx = x.velocity;
+      part.vz = z.velocity;
       if (part.mesh.position.y <= CANVAS_TOP + part.radius) {
         part.mesh.position.y = CANVAS_TOP + part.radius;
         if (!part.stained && this.bloodLevel === "full") {
@@ -1180,13 +1259,10 @@ export class Effects3D {
         continue;
       }
       const progress = 1 - mist.life / mist.maxLife;
-      const fade = Math.max(0, 1 - progress) * 0.7 * mist.scale;
       this.mistPositions[i * 3] = mist.x;
       this.mistPositions[i * 3 + 1] = mist.y + progress * 0.14;
       this.mistPositions[i * 3 + 2] = mist.z;
-      this.mistColors[i * 3] = fade;
-      this.mistColors[i * 3 + 1] = fade * 0.1;
-      this.mistColors[i * 3 + 2] = fade * 0.12;
+      this.mistColors[i * 4 + 3] = Math.max(0, 1 - progress) * Math.min(1, mist.scale);
     }
     if (mistChanged) {
       this.mistGeometry.attributes.position!.needsUpdate = true;
@@ -1272,8 +1348,9 @@ export class Effects3D {
     for (const map of this.splatMaps) map.dispose();
     for (const part of [...this.heads, ...this.hands]) {
       part.baked?.dispose();
-      part.cap.geometry.dispose();
+      part.bakedFlesh?.dispose();
     }
+    for (const stump of [...this.stumps, ...this.handStumps]) stump.flesh.dispose();
     this.mistGeometry.dispose();
     this.mistMaterial.dispose();
     this.mistMap.dispose();
@@ -1286,6 +1363,7 @@ export class Effects3D {
     this.stumpGeometry.dispose();
     this.wristStumpGeometry.dispose();
     this.stumpMaterial.dispose();
+    this.stumpMap.dispose();
     for (const head of this.heads) this.scene.remove(head.mesh);
     for (const hand of this.hands) this.scene.remove(hand.mesh);
     for (const stump of [...this.stumps, ...this.handStumps]) this.scene.remove(stump.mesh);

@@ -231,9 +231,11 @@ describe("browser lifecycle and accessible overlays", () => {
     expect(root.querySelector("[data-status]")?.textContent).toBe("Bout countdown.");
     expect(root.querySelector<HTMLElement>("[data-status]")?.hidden).toBe(true);
     expect(root.querySelector("[data-overlay]")?.hasAttribute("data-raised")).toBe(true);
+    expect(root.querySelector("[data-overlay]")?.hasAttribute("data-result")).toBe(false);
     send(final("m2"));
     expect(root.querySelector("[data-status]")?.textContent).toBe("Bout complete. Scorecards and rating changes are displayed.");
-    expect(root.querySelector<HTMLElement>("[data-status]")?.hidden).toBe(false);
+    expect(root.querySelector<HTMLElement>("[data-status]")?.hidden).toBe(true);
+    expect(root.querySelector("[data-overlay]")?.hasAttribute("data-result")).toBe(true);
     expect(button.hidden).toBe(false);
     expect(button.disabled).toBe(true);
     app.destroy();

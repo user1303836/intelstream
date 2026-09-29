@@ -1,12 +1,12 @@
 import * as THREE from "three";
 import { punchTiming, totalTicks } from "../manifest";
 import { buildArena } from "./arena";
-import { CameraDirector, cornerFrame, cornerPoint, cornerShot, cornerShotProgress, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE } from "./camera";
+import { CameraDirector, ceremonyShot, cornerFrame, cornerPoint, cornerShot, cornerShotProgress, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE } from "./camera";
 import { bloodPatternFor, Effects3D } from "./effects";
-import { decisionLabel, drawHud, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, RoundClock, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
-import { buildRing, ropePress } from "./ring";
+import { decisionLabel, drawHud, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, RESULT_CARD_FOOTER, resultCard, resultCardLayout, RoundClock, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
+import { buildRing, disposeRing, nearRopeOpacityFor, ropeGive, ropePress } from "./ring";
 import { resizeHighDpi } from "./viewport";
-import { PALETTES, worldMapping } from "./world";
+import { PALETTES, ROPE_LINE, worldMapping } from "./world";
 import { fighter, publicPlayers, snapshot } from "../test/fixtures";
 
 const mapping = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 });
@@ -476,14 +476,67 @@ describe("viewport and broadcast HUD", () => {
   });
 });
 
-describe("rope flex", () => {
-  it("presses into the nearest ropes only when a fighter is within reach of them", () => {
+describe("near ropes", () => {
+  it("are solid while the fighters are across the ring and mostly clear when they are against them", () => {
+    expect(nearRopeOpacityFor(-2)).toBe(1);
+    expect(nearRopeOpacityFor(0)).toBeGreaterThan(0.75);
+    expect(nearRopeOpacityFor(1.8)).toBeCloseTo(0.26, 6);
+    expect(nearRopeOpacityFor(1)).toBeLessThan(nearRopeOpacityFor(0));
+  });
+
+  it("fade only on the side that faces the broadcast camera", () => {
+    const ring = buildRing();
+    ring.setNearRopeOpacity(0.3);
+    expect(ring.nearRopeOpacity()).toBeCloseTo(0.3, 6);
+    const faded = ring.materials.filter((material) => material.transparent && material.opacity < 1);
+    expect(faded).toHaveLength(3 + 3 * 2);
+    ring.group.updateMatrixWorld(true);
+    const box = new THREE.Box3();
+    ring.group.traverse((object) => {
+      if (!(object instanceof THREE.Mesh) || !faded.includes(object.material as THREE.Material)) return;
+      box.setFromObject(object);
+      expect(box.min.z).toBeGreaterThan(2.3);
+    });
+    ring.setNearRopeOpacity(4);
+    expect(ring.nearRopeOpacity()).toBe(1);
+    expect(faded.every((material) => material.visible)).toBe(true);
+    ring.setNearRopeOpacity(0);
+    expect(faded.every((material) => !material.visible)).toBe(true);
+    expect(ring.materials.filter((material) => !material.visible)).toHaveLength(faded.length);
+    disposeRing(ring);
+  });
+});
+
+describe("rope give", () => {
+  it("leaves the ropes alone until a fighter's back reaches them", () => {
     expect(ropePress(0, 0)).toEqual({ pressX: 0, pressZ: 0 });
-    expect(ropePress(2.82, 0).pressX).toBeGreaterThan(0.95);
-    expect(ropePress(2.82, 0).pressZ).toBe(0);
-    expect(ropePress(0, -2.82).pressZ).toBeGreaterThan(0.95);
-    expect(ropePress(2.6, 0).pressX).toBeGreaterThan(0.1);
-    expect(ropePress(2.6, 0).pressX).toBeLessThan(0.6);
+    expect(ropePress(ROPE_LINE - 0.21, 0.4)).toEqual({ pressX: 0, pressZ: 0 });
+    expect(ropePress(-(ROPE_LINE - 0.1), 0).pressX).toBeCloseTo(0.1, 9);
+    expect(ropePress(0, -2.82).pressZ).toBeCloseTo(2.82 + 0.2 - ROPE_LINE, 9);
+    expect(ropePress(0, -2.82).pressX).toBe(0);
+  });
+
+  it("keeps the top ropes behind the back of a fighter anywhere the engine lets one stand", () => {
+    for (const x of [2.3, 2.5, 2.7, 2.82]) {
+      for (const along of [-1.6, 0, 1.2]) {
+        for (const height of [0.88, 1.26]) {
+          const rope = ROPE_LINE + ropePress(x, along).pressX * ropeGive(0, along, height);
+          expect(rope).toBeGreaterThanOrEqual(x + 0.2 - 1e-9);
+          const beside = ROPE_LINE + ropePress(x, along).pressX * ropeGive(0.2, along + 0.2, height);
+          expect(beside).toBeGreaterThanOrEqual(x + 0.2 - 1e-9);
+        }
+      }
+    }
+  });
+
+  it("gives less at the bottom rope, nothing at the posts and nothing away from the fighter", () => {
+    expect(ropeGive(0, 0, 0.5)).toBeCloseTo(0.6, 9);
+    expect(ropeGive(0, 0, 1.26)).toBe(1);
+    expect(ropeGive(0, ROPE_LINE, 1.26)).toBe(0);
+    expect(ropeGive(0, -ROPE_LINE, 1.26)).toBe(0);
+    expect(ropeGive(1.2, 0, 1.26)).toBe(0);
+    expect(ropeGive(0.6, 0, 1.26)).toBeGreaterThan(0.3);
+    expect(ropeGive(0.6, 0, 1.26)).toBeLessThan(0.9);
   });
 
   it("writes fighter contacts into the rope shader uniforms and clears them", () => {
@@ -491,7 +544,8 @@ describe("rope flex", () => {
     ring.setRopeContacts({ x: 2.82, z: 0.4 }, null);
     expect(ring.ropeContacts[0].x).toBeCloseTo(2.82);
     expect(ring.ropeContacts[0].y).toBeCloseTo(0.4);
-    expect(ring.ropeContacts[0].z).toBeGreaterThan(0.95);
+    expect(ring.ropeContacts[0].z).toBeCloseTo(2.82 + 0.2 - ROPE_LINE, 9);
+    expect(ring.ropeContacts[0].w).toBe(0);
     expect(ring.ropeContacts[1].toArray()).toEqual([0, 0, 0, 0]);
     ring.setRopeContacts(null, null);
     expect(ring.ropeContacts[0].toArray()).toEqual([0, 0, 0, 0]);
@@ -532,7 +586,10 @@ describe("round stats", () => {
     const players = Object.fromEntries(publicPlayers.map((player) => [player.id, player]));
     const final = { version: 3 as const, type: "final" as const, match_id: "m", winner_id: "one", method: "decision" as const, round: 3, scorecards: [], ratings: {} };
     drawHud(ctx, 1280, 720, { ...snapshot(), phase: "complete" }, players, "one", final, 0, 30, tracker);
-    expect(texts.some((text) => text.includes("One 1/2 landed") && text.includes("Two 0/1 landed"))).toBe(true);
+    const row = texts.indexOf("PUNCHES LANDED");
+    expect(texts.slice(row + 1, row + 3)).toEqual(["1 of 2", "0 of 1"]);
+    const accuracy = texts.indexOf("ACCURACY");
+    expect(texts.slice(accuracy + 1, accuracy + 3)).toEqual(["50%", "0%"]);
   });
 
   it("draws the round callout only while the renderer asks for it", () => {
@@ -669,6 +726,34 @@ describe("corner shots", () => {
   });
 });
 
+describe("announcement shot", () => {
+  const visible = (shot: { distance: number; height: number }, fov: number, fromTop: number): number =>
+    shot.height + (0.5 - fromTop) * 2 * shot.distance * Math.tan(THREE.MathUtils.degToRad(fov) / 2);
+
+  it("fits the three from the raised glove to the waist between the top bar and the card", () => {
+    for (const covered of [0.2, 0.35, 0.5]) {
+      const shot = ceremonyShot(16 / 9, 36, covered);
+      expect(visible(shot, 36, 0.09)).toBeCloseTo(2.42, 6);
+      expect(visible(shot, 36, 1 - covered)).toBeCloseTo(0.95, 6);
+    }
+  });
+
+  it("stands further back the more of the screen the card covers", () => {
+    expect(ceremonyShot(16 / 9, 36, 0.5).distance).toBeGreaterThan(ceremonyShot(16 / 9, 36, 0.3).distance);
+  });
+
+  it("stands back far enough on a tall screen to keep all three in the width", () => {
+    const aspect = 390 / 844;
+    const shot = ceremonyShot(aspect, 46.8, 0.45);
+    const span = 2 * shot.distance * Math.tan(THREE.MathUtils.degToRad(46.8) / 2);
+    expect(span * aspect).toBeCloseTo(2.4, 6);
+    expect(visible(shot, 46.8, 0.09)).toBeGreaterThan(2.42);
+    expect(visible(shot, 46.8, 0.55)).toBeLessThan(0.95);
+    const middle = visible(shot, 46.8, 0.09 + (1 - 0.45 - 0.09) / 2);
+    expect(middle).toBeCloseTo((2.42 + 0.95) / 2, 6);
+  });
+});
+
 describe("corner staging", () => {
   it("puts the cutman on the fighter's left and the camera on the right, both inside the ropes", () => {
     const cutman = cornerPoint(1, 2.56, CUTMAN_WORK_DISTANCE, CUTMAN_WORK_DEGREES, new THREE.Vector3());
@@ -722,7 +807,91 @@ describe("result panel text", () => {
     const final = { version: 3 as const, type: "final" as const, match_id: "m", winner_id: "one", method: "decision" as const, round: 2, scorecards: [{ judge: "Impact", player_one: [10, 10], player_two: [9, 10] }], ratings: { one: { before: 1000, after: 1016 }, two: { before: 1000, after: 984 } } };
     drawHud(ctx, 390, 844, { ...snapshot(), phase: "complete" }, players, "one", final, 0, 30);
     expect(texts).toContain(`${longName} WINS`);
-    expect(texts.some((text) => text.startsWith(`${longName}  1000`))).toBe(true);
+    expect(texts).toContain("1016 (+16)");
+    expect(texts).toContain("984 (−16)");
     expect(texts.some((text) => text.startsWith("INPUT"))).toBe(false);
+  });
+});
+
+describe("result card", () => {
+  const players = { one: { id: "one", name: "Alpha", avatar: null, rating: 1500, connected: true }, two: { id: "two", name: "Bravo", avatar: null, rating: 1500, connected: true } };
+  const fighters = (downOne = 0, downTwo = 0): [ReturnType<typeof fighter>, ReturnType<typeof fighter>] => [{ ...fighter("one"), knockdowns: downOne }, { ...fighter("two"), knockdowns: downTwo }];
+  const result = (method: "decision" | "draw" | "ko" | "flash_ko" | "tko" | "forfeit", winner: string | null, scorecards: { judge: string; player_one: number[]; player_two: number[] }[] = [], ratings: Record<string, { before: number; after: number }> = {}) =>
+    ({ version: 3 as const, type: "final" as const, match_id: "m", winner_id: winner, method, round: 2, scorecards, ratings });
+  const none = { thrown: 0, landed: 0 };
+
+  it("lists each judge's total for a decision, with the fighter who took the card in the lead", () => {
+    const card = resultCard(result("decision", "two", [{ judge: "Impact", player_one: [10, 9], player_two: [9, 10] }, { judge: "Craft", player_one: [9, 9], player_two: [10, 10] }]), fighters(), players, [none, none]);
+    expect(card.headline).toBe("MAJORITY DECISION");
+    expect(card.detail).toBe("ROUND 2");
+    expect(card.verdict).toBe("Bravo WINS");
+    expect(card.winnerSeat).toBe(1);
+    expect(card.names).toEqual(["Alpha", "Bravo"]);
+    expect(card.judges).toEqual([
+      { label: "IMPACT", values: ["19", "19"], lead: null },
+      { label: "CRAFT", values: ["18", "20"], lead: 1 },
+    ]);
+    expect(card.rows).toEqual([]);
+  });
+
+  it("leaves the unfinished scorecards off a stoppage and spells the method out", () => {
+    const empty = [{ judge: "Impact", player_one: [], player_two: [] }];
+    expect(resultCard(result("ko", "one", empty), fighters(0, 3), players, [none, none])).toMatchObject({ headline: "KNOCKOUT", verdict: "Alpha WINS", winnerSeat: 0, judges: [], rows: [{ label: "KNOCKDOWNS", values: ["3", "0"], lead: 0 }] });
+    expect(resultCard(result("flash_ko", "one", empty), fighters(), players, [none, none]).headline).toBe("FLASH KNOCKOUT");
+    expect(resultCard(result("tko", "one", empty), fighters(), players, [none, none]).headline).toBe("TECHNICAL KNOCKOUT");
+    expect(resultCard(result("forfeit", "one", empty), fighters(), players, [none, none])).toMatchObject({ headline: "FORFEIT", rows: [] });
+  });
+
+  it("credits a knockdown to the fighter who scored it", () => {
+    const card = resultCard(result("decision", "one"), fighters(1, 2), players, [none, none]);
+    expect(card.rows).toEqual([{ label: "KNOCKDOWNS", values: ["2", "1"], lead: 0 }]);
+  });
+
+  it("shows punches, accuracy and rating changes, and a dash for a fighter who threw nothing", () => {
+    const card = resultCard(result("decision", "one", [], { one: { before: 1000, after: 1016 }, two: { before: 1000, after: 984 } }), fighters(), players, [{ thrown: 9, landed: 6 }, none]);
+    expect(card.rows).toEqual([
+      { label: "PUNCHES LANDED", values: ["6 of 9", "0 of 0"], lead: 0 },
+      { label: "ACCURACY", values: ["67%", "—"], lead: 0 },
+      { label: "RATING", values: ["1016 (+16)", "984 (−16)"], lead: null, news: [true, false] },
+    ]);
+  });
+
+  it("calls a draw a draw and names a winner who is not in either seat", () => {
+    expect(resultCard(result("draw", null, [{ judge: "Impact", player_one: [10], player_two: [10] }]), fighters(), players, [none, none])).toMatchObject({ headline: "UNANIMOUS DRAW", verdict: "DRAW", winnerSeat: null });
+    expect(resultCard(result("forfeit", "three"), fighters(), { ...players, three: { id: "three", name: "Carol", avatar: null, rating: 1500, connected: true } }, [none, none])).toMatchObject({ verdict: "Carol WINS", winnerSeat: null });
+  });
+
+  const full = result("decision", "one", [{ judge: "Impact", player_one: [10, 10], player_two: [9, 9] }, { judge: "Craft", player_one: [10, 10], player_two: [9, 9] }, { judge: "Generalship", player_one: [10, 10], player_two: [9, 9] }], { one: { before: 1000, after: 1016 }, two: { before: 1000, after: 984 } });
+  const fullCard = resultCard(full, fighters(0, 1), players, [{ thrown: 9, landed: 6 }, { thrown: 4, landed: 1 }]);
+
+  it("sits along the bottom of the screen and leaves the ring in view above it", () => {
+    for (const [width, height, clear] of [[1280, 720, 0.55], [1920, 1080, 0.6], [390, 844, 0.45], [844, 390, 0.15], [640, 360, 0.1]] as const) {
+      const layout = resultCardLayout(width, height, fullCard, true);
+      expect(layout.x).toBeGreaterThanOrEqual(12);
+      expect(layout.x + layout.width).toBeLessThanOrEqual(width - 12);
+      expect(layout.y + layout.height).toBe(height - 14);
+      expect(layout.y).toBeGreaterThanOrEqual(height * clear);
+      expect(layout.rowHeight).toBeGreaterThanOrEqual(16);
+    }
+  });
+
+  it("puts the verdict beside the table on a wide or a short screen and above it on a tall one", () => {
+    expect(resultCardLayout(1280, 720, fullCard, true).wide).toBe(true);
+    expect(resultCardLayout(844, 390, fullCard, true).wide).toBe(true);
+    expect(resultCardLayout(390, 844, fullCard, true).wide).toBe(false);
+    expect(resultCardLayout(800, 900, fullCard, true).wide).toBe(false);
+  });
+
+  it("leaves room for the rematch button on a fighter's card only", () => {
+    expect(resultCardLayout(1280, 720, fullCard, true).height - resultCardLayout(1280, 720, fullCard, false).height).toBe(RESULT_CARD_FOOTER - 14);
+  });
+
+  it("replaces the plates and the clock", () => {
+    const texts: string[] = [];
+    const tracker = new RoundStatsTracker();
+    tracker.record({ event_id: 1, tick: 1, kind: "punch_start", actor_id: "one", target_id: "two", amount: 0, detail: "", blood: 0, direction: 1, action_id: null });
+    drawHud(mockHudContext(texts), 1280, 720, { ...snapshot(), phase: "complete" }, players, "one", full, 0, 30, tracker);
+    expect(texts.some((text) => /STAMINA|HEALTH|GUARD|POISE|COMPLETE/.test(text))).toBe(false);
+    expect(texts).toEqual(expect.arrayContaining(["UNANIMOUS DECISION", "ROUND 2", "Alpha WINS", "IMPACT", "20 – 18", "Alpha", "Bravo", "PUNCHES LANDED", "0 of 1", "RATING"]));
   });
 });
