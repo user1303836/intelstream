@@ -229,7 +229,7 @@ async function main() {
     }
 
     if (scenario === 'mash') {
-      const keys = ['f', 'j', 'r', 'u', 'g', 'h', 't', 'y', 'q', 'e', 'z', 'x', 'c', 'v'];
+      const keys = ['f', 'j', 'r', 'u', 'g', 'h', 't', 'y', 'q', 'e', 'z', 'x', 'c', 'v', 'b', 'm'];
       const started = Date.now();
       let presses = 0;
       while (Date.now() - started < 15000) {
