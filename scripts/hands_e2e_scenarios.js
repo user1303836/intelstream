@@ -358,9 +358,9 @@ async function main() {
         }, 40);
       });
       await A.page.keyboard.press('b');
-      await wait(650);
-      await A.page.screenshot({ path: `${out}/e2e-clinch-A.png` }); await B.page.screenshot({ path: `${out}/e2e-clinch-B.png` });
-      await wait(2500);
+      await wait(600);
+      for (let i = 0; i < 4; i += 1) await A.page.screenshot({ path: `${out}/e2e-clinch-A-${i}.png` });
+      await wait(2000);
       const log = await B.page.evaluate(() => { clearInterval(window.__clinchTimer); return window.__clinchLog; });
       const firstHeld = log.findIndex((s) => s.clinch > 0);
       const held = log.filter((s) => s.clinch > 0);

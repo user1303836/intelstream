@@ -183,6 +183,22 @@ describe("clinch break", () => {
   });
 });
 
+describe("root follow", () => {
+  it("catches a teleport at the same speed whatever the frame rate", () => {
+    const fast = makeGraph();
+    const slow = makeGraph();
+    const start = facingOpponent(baseFighter("one"));
+    run(fast.graph, start, opponentFor("two"), 5, undefined);
+    run(slow.graph, start, opponentFor("two"), 5, undefined);
+    const moved = { ...start, x: 300 };
+    for (let frame = 0; frame < 30; frame += 1) fast.graph.update(moved, opponentFor("two"), 1 / 60, frame / 60, false, "full", frame, undefined);
+    for (let frame = 0; frame < 3; frame += 1) slow.graph.update(moved, opponentFor("two"), 1 / 6, frame / 6, false, "full", frame * 5, undefined);
+    const target = mapping.x(300);
+    expect(Math.abs(fast.boxer.root.position.x - target)).toBeLessThan(0.01);
+    expect(Math.abs(slow.boxer.root.position.x - target)).toBeLessThan(0.01);
+  });
+});
+
 describe("clinch hold", () => {
   it("ties up over the arms for the first-sorted fighter and under them for the other, heads to the right", () => {
     const clinched = (id: string): FighterSnapshot => ({ ...facingOpponent(baseFighter(id)), clinch_ticks: 30 });

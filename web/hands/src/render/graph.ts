@@ -631,7 +631,7 @@ export class BoxingGraph {
       this.rootX = worldX;
       this.rootZ = worldZ;
     }
-    const maxStep = 0.05;
+    const maxStep = ROOT_FOLLOW_SPEED * Math.max(dt, 1 / 60);
     this.rootX += clamp(worldX - this.rootX, -maxStep, maxStep);
     this.rootZ += clamp(worldZ - this.rootZ, -maxStep, maxStep);
     const targetYaw = Math.atan2(fighter.facing_x, -fighter.facing_y);
@@ -1662,6 +1662,8 @@ function buildStool(): { group: THREE.Group; dispose: () => void } {
 }
 
 const worldUpVector = new THREE.Vector3(0, 1, 0);
+/** Metres per second the rendered root may move toward the authoritative position; above any walking speed so slow frames never fall behind. */
+const ROOT_FOLLOW_SPEED = 6;
 
 const aimJointWorld = new THREE.Vector3();
 const aimChildWorld = new THREE.Vector3();
