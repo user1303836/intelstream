@@ -155,6 +155,8 @@ async function main() {
       if (final === null) final = await waitFor(B.page, (s) => Boolean(s.final), 120000, 'final');
       note('FINAL:', JSON.stringify(final?.final ?? null));
       await A.page.screenshot({ path: `${out}/e2e-ko-A-final.png` }); await B.page.screenshot({ path: `${out}/e2e-ko-B-final.png` });
+      await wait(8000);
+      await A.page.screenshot({ path: `${out}/e2e-ko-A-result.png` });
     }
 
     if (scenario === 'reconnect') {

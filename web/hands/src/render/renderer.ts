@@ -312,6 +312,13 @@ function shadowBoxing(idleTick: number): Partial<FighterSnapshot> {
   return {};
 }
 
+const REPLAY_EVENT_ID_OFFSET = 1_000_003;
+
+/** Whether the knockout replay puts this injury back so it can happen again on screen. */
+export function replayReattaches(injury: ArcadeInjury): boolean {
+  return injury === "decapitation" || injury === "dismember_left" || injury === "dismember_right";
+}
+
 /** How far the referee stands from the action and how close he may get to a fighter: tight over a count, in close for a clinch, otherwise out of the way. */
 export function refereeSpacing(downed: boolean, clinched: boolean): { standoff: number; clearance: number } {
   if (downed) return { standoff: 1.25, clearance: 1.0 };
@@ -396,6 +403,9 @@ export class FightRenderer {
   private readonly headCacheValid = [false, false];
   private readonly arcadeInjuries: [ArcadeInjury | null, ArcadeInjury | null] = [null, null];
   private readonly observedInjuryDown: [boolean, boolean] = [false, false];
+  private readonly arcadeInjuryEvents: [CombatEvent | null, CombatEvent | null] = [null, null];
+  private readonly replayInjuries: [{ injury: ArcadeInjury; event: CombatEvent } | null, { injury: ArcadeInjury; event: CombatEvent } | null] = [null, null];
+  private readonly closeUpTarget = new THREE.Vector3();
   private readonly downedPoolAccumulators: [number, number] = [0, 0];
   private readonly downedPoolCounts: [number, number] = [0, 0];
   private bloodLevel: BloodLevel = "full";
@@ -629,18 +639,20 @@ export class FightRenderer {
     if (index >= 0) this.graphs?.[index]?.celebrate();
   }
 
-  /** A short high three-quarter close-up on the beaten fighter's face before the result panel. */
+  /** A short high three-quarter close-up on the beaten fighter's face, or on the head where it came to rest, before the result panel. */
   private closeUpFrame(seconds: number): { position: THREE.Vector3; lookAt: THREE.Vector3 } | null {
     if (seconds >= this.finishCloseUpUntil || this.finishCloseUpIndex < 0 || !this.headCacheValid[this.finishCloseUpIndex]) return null;
-    const head = this.headCache[this.finishCloseUpIndex]!;
+    const severed = this.arcadeInjuries[this.finishCloseUpIndex] === "decapitation" && this.effects.severedHeadPosition(this.finishCloseUpIndex, this.closeUpTarget);
+    const head = severed ? this.closeUpTarget : this.headCache[this.finishCloseUpIndex]!;
+    const reach = severed ? 0.8 : 1.05;
     const drift = (seconds - (this.finishCloseUpUntil - FINISH_CLOSE_UP_SECONDS)) * 0.25 - 0.2;
     // Shoot from the ring-centre side of the fighter so the ropes stay behind the face.
     const toCentre = Math.atan2(-head.x, -head.z);
     const angle = (Math.hypot(head.x, head.z) > 0.4 ? toCentre : 0.9) + drift;
     this.closeUpPosition.set(
-      THREE.MathUtils.clamp(head.x + Math.sin(angle) * 1.05, -2.8, 2.8),
-      head.y + 0.75,
-      THREE.MathUtils.clamp(head.z + Math.cos(angle) * 1.05, -2.8, 2.8),
+      THREE.MathUtils.clamp(head.x + Math.sin(angle) * reach, -2.8, 2.8),
+      head.y + (severed ? 0.42 : 0.75),
+      THREE.MathUtils.clamp(head.z + Math.cos(angle) * reach, -2.8, 2.8),
     );
     this.replayLookAt.copy(head);
     return { position: this.closeUpPosition, lookAt: this.replayLookAt };
@@ -651,12 +663,21 @@ export class FightRenderer {
     const buffer = new SnapshotBuffer(plan.snapshots.length + 2, this.simulation.tick_rate);
     for (const snapshot of plan.snapshots) buffer.push(snapshot);
     this.replay = { plan, buffer, startedAt: this.frameSeconds, impactFired: false };
+    for (const index of [0, 1] as const) {
+      const injury = this.arcadeInjuries[index];
+      const event = this.arcadeInjuryEvents[index];
+      if (injury !== null && event !== null && replayReattaches(injury)) {
+        this.replayInjuries[index] = { injury, event };
+        this.restoreInjury(index);
+      }
+    }
     for (const graph of this.graphs ?? []) graph.resetTransient(false);
     this.finalRevealAt = this.frameSeconds + plan.durationSeconds + finalRevealDelay(this.final);
   }
 
   private endReplay(): void {
     this.replay = null;
+    this.reapplyReplayInjuries();
     const live = this.buffer.latest();
     for (const [index, graph] of (this.graphs ?? []).entries()) graph.resetTransient(live?.fighters[index]?.is_downed === true);
     if (this.final !== null) this.presentFinish(this.final);
@@ -678,6 +699,7 @@ export class FightRenderer {
     this.graphs?.[recipientIndex]?.react("hit", event.detail.endsWith(":body") ? "body" : "head", event.direction, punchClass, hand, Math.max(300, event.amount));
     if (puncherIndex >= 0) this.graphs?.[puncherIndex]?.landedHit(false);
     this.onContact?.(event);
+    this.reapplyReplayInjuries();
   }
 
   private replayFrame(snapshot: EngineSnapshot, elapsed: number): { position: THREE.Vector3; lookAt: THREE.Vector3 } {
@@ -749,9 +771,72 @@ export class FightRenderer {
     }
   }
 
+  /** Severs the head or a hand from the fighter's current pose, or sets a dislocation, and records it. */
+  private applyArcadeInjury(index: number, injury: ArcadeInjury, event: CombatEvent): boolean {
+    let applied = this.graphs !== null
+      && (injury === "jaw_dislocation" || injury === "shoulder_left" || injury === "shoulder_right");
+    if (injury === "decapitation") {
+      const pose = this.headWorldPose(index);
+      if (pose !== null) {
+        const graph = this.graphs?.[index];
+        const baked = graph === undefined ? undefined : bakeSkinnedPart(graph.boxer.headMesh, pose.position, pose.quaternion);
+        this.effects.decapitate(
+          index,
+          pose.position,
+          pose.quaternion,
+          event.direction,
+          event.event_id,
+          this.skinColor(index),
+          baked,
+        );
+        const stumpPose = this.stumpWorldPose(index);
+        if (stumpPose !== null) this.effects.anchorStump(index, stumpPose.position, stumpPose.quaternion);
+        applied = true;
+      }
+    } else if (injury === "dismember_left" || injury === "dismember_right") {
+      const side = injury === "dismember_left" ? "left" : "right";
+      const pose = this.handWorldPose(index, side);
+      if (pose !== null) {
+        const graph = this.graphs?.[index];
+        const baked = graph === undefined ? undefined : bakeSkinnedPart(graph.boxer.gloveMesh(side), pose.position, pose.quaternion);
+        this.effects.dismemberHand(
+          index,
+          side,
+          pose.position,
+          pose.quaternion,
+          event.direction,
+          event.event_id,
+          this.gearColor(index),
+          baked,
+        );
+        this.effects.anchorHandStump(index, side, pose.position, pose.quaternion);
+        applied = true;
+      }
+    }
+    if (!applied) return false;
+    this.arcadeInjuries[index] = injury;
+    this.arcadeInjuryEvents[index] = event;
+    this.observedInjuryDown[index] = false;
+    this.syncInjuryPresentation(index);
+    this.onArcadeInjury?.(injury, event);
+    return true;
+  }
+
+  /** Severed parts go back on for the replay and come off again, from the replayed pose, at its impact. */
+  private reapplyReplayInjuries(): void {
+    for (const index of [0, 1] as const) {
+      const stash = this.replayInjuries[index];
+      if (stash === null) continue;
+      this.replayInjuries[index] = null;
+      if (this.settings().blood !== "full") continue;
+      this.applyArcadeInjury(index, stash.injury, { ...stash.event, event_id: stash.event.event_id + REPLAY_EVENT_ID_OFFSET });
+    }
+  }
+
   private restoreInjury(index: number): void {
     if (this.arcadeInjuries[index] === null) return;
     this.arcadeInjuries[index] = null;
+    this.arcadeInjuryEvents[index] = null;
     this.observedInjuryDown[index] = false;
     this.syncInjuryPresentation(index);
     this.effects.restoreFighter(index);
@@ -885,52 +970,7 @@ export class FightRenderer {
         && currentSettings.blood === "full"
         && !currentSettings.reducedMotion
       ) {
-        let applied = this.graphs !== null
-          && (injury === "jaw_dislocation" || injury === "shoulder_left" || injury === "shoulder_right");
-        if (injury === "decapitation") {
-          const pose = this.headWorldPose(recipientIndex);
-          if (pose !== null) {
-            const graph = this.graphs?.[recipientIndex];
-            const baked = graph === undefined ? undefined : bakeSkinnedPart(graph.boxer.headMesh, pose.position, pose.quaternion);
-            this.effects.decapitate(
-              recipientIndex,
-              pose.position,
-              pose.quaternion,
-              event.direction,
-              event.event_id,
-              this.skinColor(recipientIndex),
-              baked,
-            );
-            const stumpPose = this.stumpWorldPose(recipientIndex);
-            if (stumpPose !== null) this.effects.anchorStump(recipientIndex, stumpPose.position, stumpPose.quaternion);
-            applied = true;
-          }
-        } else if (injury === "dismember_left" || injury === "dismember_right") {
-          const side = injury === "dismember_left" ? "left" : "right";
-          const pose = this.handWorldPose(recipientIndex, side);
-          if (pose !== null) {
-            const graph = this.graphs?.[recipientIndex];
-            const baked = graph === undefined ? undefined : bakeSkinnedPart(graph.boxer.gloveMesh(side), pose.position, pose.quaternion);
-            this.effects.dismemberHand(
-              recipientIndex,
-              side,
-              pose.position,
-              pose.quaternion,
-              event.direction,
-              event.event_id,
-              this.gearColor(recipientIndex),
-              baked,
-            );
-            this.effects.anchorHandStump(recipientIndex, side, pose.position, pose.quaternion);
-            applied = true;
-          }
-        }
-        if (applied) {
-          this.arcadeInjuries[recipientIndex] = injury;
-          this.observedInjuryDown[recipientIndex] = false;
-          this.syncInjuryPresentation(recipientIndex);
-          this.onArcadeInjury?.(injury, event);
-        }
+        this.applyArcadeInjury(recipientIndex, injury, event);
       }
       const graphs = this.graphs;
       if (
@@ -972,6 +1012,11 @@ export class FightRenderer {
       }
       this.onContact?.(event);
     }
+  }
+
+  /** True once the result panel is on screen, after any knockout replay and close-up. */
+  get resultVisible(): boolean {
+    return this.final !== null && this.frameSeconds >= this.finalRevealAt;
   }
 
   get resolutionScale(): number {
@@ -1198,7 +1243,7 @@ export class FightRenderer {
     }
 
     this.arena.update(seconds, dt, current.reducedMotion);
-    this.effects.update(dt);
+    this.effects.update(this.replay !== null ? dt * this.replay.plan.speed : dt);
     this.updateTrails(dt, current.reducedMotion);
     this.updateReferee(dt, seconds, snapshot, sampledTick);
     this.updateCornermen(dt, seconds, snapshot, sampledTick);

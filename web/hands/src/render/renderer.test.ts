@@ -1,6 +1,6 @@
 import { fighter, snapshot } from "../test/fixtures";
 import type { CombatEvent, MatchResult } from "../types";
-import { arcadeInjuryFor, contactParticipants, contactPresentationPlan, isArcadeInjuryCandidate, presentationTickFor, refereeSpacing } from "./renderer";
+import { arcadeInjuryFor, contactParticipants, contactPresentationPlan, isArcadeInjuryCandidate, presentationTickFor, refereeSpacing, replayReattaches } from "./renderer";
 
 const event = (kind: string, detail: string): CombatEvent => ({
   event_id: 1,
@@ -107,5 +107,15 @@ describe("referee spacing", () => {
     expect(refereeSpacing(false, true).standoff).toBeGreaterThan(refereeSpacing(true, true).standoff - 0.2);
     expect(refereeSpacing(true, false).clearance).toBeLessThan(refereeSpacing(false, false).clearance);
     expect(refereeSpacing(false, true).clearance).toBeLessThan(refereeSpacing(false, false).clearance);
+  });
+});
+
+describe("knockout replay injuries", () => {
+  it("reattaches severed parts for the replay but leaves dislocations in place", () => {
+    expect(replayReattaches("decapitation")).toBe(true);
+    expect(replayReattaches("dismember_left")).toBe(true);
+    expect(replayReattaches("dismember_right")).toBe(true);
+    expect(replayReattaches("jaw_dislocation")).toBe(false);
+    expect(replayReattaches("shoulder_left")).toBe(false);
   });
 });

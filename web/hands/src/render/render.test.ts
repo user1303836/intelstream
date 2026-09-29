@@ -176,6 +176,27 @@ describe("effects", () => {
     effects.dispose();
   });
 
+  it("reports where a severed head is, follows it as it falls, and can sever again after a restore", () => {
+    const scene = new THREE.Scene();
+    const effects = new Effects3D(scene);
+    const where = new THREE.Vector3();
+    expect(effects.severedHeadPosition(0, where)).toBe(false);
+    effects.decapitate(0, new THREE.Vector3(0.2, 1.5, -0.1), new THREE.Quaternion(), 1, 77);
+    expect(effects.severedHeadPosition(0, where)).toBe(true);
+    expect(where.y).toBeCloseTo(1.5, 1);
+    for (let frame = 0; frame < 240; frame += 1) effects.update(1 / 60);
+    expect(effects.severedHeadPosition(0, where)).toBe(true);
+    expect(where.y).toBeLessThan(0.6);
+    expect(effects.severedHeadPosition(1, where)).toBe(false);
+    effects.restoreFighter(0);
+    expect(effects.severedHeadPosition(0, where)).toBe(false);
+    effects.decapitate(0, new THREE.Vector3(0, 1.5, 0), new THREE.Quaternion(), 1, 77);
+    expect(effects.activeHeads).toBe(0);
+    effects.decapitate(0, new THREE.Vector3(0, 1.5, 0), new THREE.Quaternion(), 1, 77 + 1_000_003);
+    expect(effects.activeHeads).toBe(1);
+    effects.dispose();
+  });
+
   it("immediately clears every red effect when blood is turned off while retaining sweat", () => {
     const scene = new THREE.Scene();
     const effects = new Effects3D(scene);
@@ -419,6 +440,8 @@ describe("viewport and broadcast HUD", () => {
     drawHud(ctx, 800, 600, opponentPrompt, players, "one", null, 0);
     expect(texts.join(" ")).not.toContain("NOW!");
     expect(texts.join(" ")).not.toContain("GET READY");
+    expect(texts).toContain("COUNT 4");
+    expect(texts.join(" ")).not.toContain("Waiting for");
     texts.length = 0;
     const ownPrompt = { ...opponentPrompt, fighters: [{ ...base.fighters[0], is_downed: true, get_up_prompt: "get_up_right" as const, get_up_meter: 2, get_up_required: 4 }, opponentPrompt.fighters[1]] as const };
     drawHud(ctx, 800, 600, ownPrompt, players, "one", null, 0);

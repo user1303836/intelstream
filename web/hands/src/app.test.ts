@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   rendererDestroy: vi.fn(),
   rendererPushes: [] as number[][],
   callbacks: null as NetworkCallbacks | null,
+  resultVisible: true,
 }));
 vi.mock("./discord", () => ({
   authorizeDiscord: vi.fn(async () => ({
@@ -41,6 +42,7 @@ vi.mock("./render/renderer", () => ({
     push(snapshot: EngineSnapshot): void { this.pushes.push(snapshot.tick); }
     destroy(): void { mocks.rendererDestroy(); }
     setInputLatency(): void {}
+    get resultVisible(): boolean { return mocks.resultVisible; }
   },
 }));
 
@@ -68,6 +70,7 @@ describe("browser lifecycle and accessible overlays", () => {
   beforeEach(() => {
     mocks.callbacks = null;
     mocks.rendererPushes.length = 0;
+    mocks.resultVisible = true;
     vi.clearAllMocks();
   });
 
@@ -92,6 +95,8 @@ describe("browser lifecycle and accessible overlays", () => {
     send({ version: 3, type: "waiting", open_seats: 1 });
     expect(root.querySelector("[data-invite]")).toBeNull();
     expect(root.querySelector("[data-status]")?.textContent).toContain("Play now");
+    expect(root.querySelector<HTMLElement>("[data-status]")?.hidden).toBe(false);
+    expect(root.querySelector("[data-overlay]")?.hasAttribute("data-raised")).toBe(false);
     const hint = root.querySelector<HTMLElement>("[data-hint]")!;
     expect(hint.hidden).toBe(false);
     expect(hint.textContent).toContain("Jab");
@@ -148,6 +153,28 @@ describe("browser lifecycle and accessible overlays", () => {
     app.destroy();
   });
 
+  it("keeps the result overlay hidden until the knockout replay has revealed the result", async () => {
+    const root = document.createElement("main");
+    const app = new HandsApp(root);
+    app.start();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
+    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 100, next_sequence: 8, reconnect_ticket: "rotated" });
+    send({ version: 3, type: "snapshot", payload: makeSnapshot(100) });
+    const overlay = root.querySelector<HTMLElement>("[data-overlay]")!;
+    expect(overlay.hidden).toBe(false);
+    mocks.resultVisible = false;
+    vi.useFakeTimers();
+    send({ version: 3, type: "final", match_id: "m-replay", winner_id: "one", method: "ko", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } });
+    expect(overlay.hidden).toBe(true);
+    vi.advanceTimersByTime(1_000);
+    expect(overlay.hidden).toBe(true);
+    mocks.resultVisible = true;
+    vi.advanceTimersByTime(250);
+    expect(overlay.hidden).toBe(false);
+    vi.useRealTimers();
+    app.destroy();
+  });
+
   it("offers a rematch after the result hold and retries while the ring is still clearing", async () => {
     history.replaceState({}, "", "/?instance_id=launch");
     const root = document.createElement("div");
@@ -184,8 +211,11 @@ describe("browser lifecycle and accessible overlays", () => {
     send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1516, players: [...players], server_tick: 1, next_sequence: 0, reconnect_ticket: "fresh" });
     send({ version: 3, type: "snapshot", payload: makeSnapshot(1, "countdown") });
     expect(root.querySelector("[data-status]")?.textContent).toBe("Bout countdown.");
+    expect(root.querySelector<HTMLElement>("[data-status]")?.hidden).toBe(true);
+    expect(root.querySelector("[data-overlay]")?.hasAttribute("data-raised")).toBe(true);
     send(final("m2"));
     expect(root.querySelector("[data-status]")?.textContent).toBe("Bout complete. Scorecards and rating changes are displayed.");
+    expect(root.querySelector<HTMLElement>("[data-status]")?.hidden).toBe(false);
     expect(button.hidden).toBe(false);
     expect(button.disabled).toBe(true);
     app.destroy();

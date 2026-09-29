@@ -373,6 +373,14 @@ export class Effects3D {
     return this.heads.filter((head) => head.active).length;
   }
 
+  /** Copies the world position of a fighter's severed head into `out`; false when the head is still on. */
+  severedHeadPosition(fighterIndex: number, out: THREE.Vector3): boolean {
+    const head = this.heads[Math.trunc(fighterIndex)];
+    if (head === undefined || !head.active) return false;
+    out.copy(head.mesh.position);
+    return true;
+  }
+
   get activeHands(): number {
     return this.hands.filter((hand) => hand.active).length;
   }

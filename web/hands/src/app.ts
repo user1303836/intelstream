@@ -39,6 +39,7 @@ export class HandsApp {
 
   private readonly canvas: HTMLCanvasElement;
   private readonly status: HTMLElement;
+  private readonly overlay: HTMLElement;
   private readonly roleIndicator: HTMLElement;
   private readonly controlsButton: HTMLButtonElement;
   private readonly controlsPanel: HTMLElement;
@@ -51,6 +52,7 @@ export class HandsApp {
   private rematchAttempts = 0;
   private rematchTimer: number | null = null;
   private rematchCountdownTimer: number | null = null;
+  private resultRevealTimer: number | null = null;
   private readonly fightSummary: HTMLElement;
   private readonly liveFightStatus: HTMLElement;
   private readonly finalSummary: HTMLElement;
@@ -63,6 +65,7 @@ export class HandsApp {
     root.innerHTML = `<section class="activity" aria-label="Hands boxing activity"><canvas class="fight" aria-label="Authoritative two-player boxing match"></canvas><header class="topbar"><strong>HANDS</strong><span>authoritative two-player boxing</span><span class="spectator-role" data-role hidden>SPECTATING · READ ONLY</span><button type="button" data-controls aria-expanded="false">Controls</button><button type="button" data-settings aria-expanded="false">Settings</button></header><section class="overlay" data-overlay><p class="status" data-status></p><p class="hint" data-hint hidden></p><button type="button" class="primary" data-retry hidden>Retry securely</button><button type="button" class="primary" data-rematch hidden>Rematch</button></section><aside class="panel" data-controls-panel hidden aria-label="Controls"><h2>Controls</h2><ul>${CONTROL_HELP.map((item) => `<li>${item}</li>`).join("")}</ul></aside><aside class="panel settings" data-settings-panel hidden aria-label="Accessibility and feedback settings"><h2>Settings</h2><label>Volume <input data-volume type="range" min="0" max="1" step="0.05"></label><label><input data-haptics type="checkbox"> Haptics</label><label><input data-motion type="checkbox"> Reduced motion</label><label>Blood <select data-blood><option value="full">Full (arcade gore)</option><option value="reduced">Reduced</option><option value="off">Off</option></select></label><section class="diagnostics"><h3>Diagnostics</h3><pre data-diagnostics></pre><button type="button" data-copy-diagnostics>Copy diagnostics</button></section><p class="model-credit"><a href="https://sketchfab.com/3d-models/boxer-84767168720948b38728ff78ee6f6090" target="_blank" rel="noreferrer">“Boxer” by Texel, Inc.</a> · <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">CC BY 4.0</a> · modified</p></aside><section class="sr-summary" data-fight-summary aria-label="Fight summary"></section><p class="sr-summary" data-fight-status role="status" aria-live="polite" aria-atomic="true"></p><section class="sr-summary" data-final aria-live="polite" aria-label="Final result"></section></section>`;
     this.canvas = root.querySelector<HTMLCanvasElement>("canvas")!;
     this.status = root.querySelector<HTMLElement>("[data-status]")!;
+    this.overlay = root.querySelector<HTMLElement>("[data-overlay]")!;
     this.roleIndicator = root.querySelector<HTMLElement>("[data-role]")!;
     this.controlsButton = root.querySelector<HTMLButtonElement>("[data-controls]")!;
     this.controlsPanel = root.querySelector<HTMLElement>("[data-controls-panel]")!;
@@ -115,6 +118,21 @@ export class HandsApp {
     if (this.rematchCountdownTimer !== null) window.clearInterval(this.rematchCountdownTimer);
     this.rematchTimer = null;
     this.rematchCountdownTimer = null;
+  }
+
+  /** Keeps the overlay out of the knockout replay's way until the result panel is on screen. */
+  private awaitResultReveal(): void {
+    if (this.resultRevealTimer !== null) window.clearInterval(this.resultRevealTimer);
+    const check = (): void => {
+      const visible = this.renderer?.resultVisible ?? true;
+      this.overlay.hidden = this.state.stage === "complete" && !visible;
+      if ((visible || this.state.stage !== "complete") && this.resultRevealTimer !== null) {
+        window.clearInterval(this.resultRevealTimer);
+        this.resultRevealTimer = null;
+      }
+    };
+    this.resultRevealTimer = window.setInterval(check, 200);
+    check();
   }
 
   private startRematchCountdown(): void {
@@ -227,6 +245,7 @@ export class HandsApp {
       this.renderer?.setFinal(message);
       this.audio.result(message);
       this.startRematchCountdown();
+      this.awaitResultReveal();
     }
     this.renderer?.setPlayers(this.state.players, this.state.playerId, this.state.playerOrder);
     this.renderer?.setReconnect(this.state.reconnectMs);
@@ -279,6 +298,9 @@ export class HandsApp {
     };
     const spectating = this.state.role === "spectator";
     this.setText(this.status, spectating ? `Spectating — ${labels[this.state.stage]}` : labels[this.state.stage]);
+    this.status.hidden = ["countdown", "fight", "knockdown", "foul_recovery", "rest"].includes(this.state.stage);
+    this.overlay.toggleAttribute("data-raised", this.state.snapshot !== null);
+    if (this.state.stage !== "complete") this.overlay.hidden = false;
     this.roleIndicator.hidden = !spectating;
     this.controlsButton.hidden = spectating;
     if (spectating) {
@@ -457,6 +479,7 @@ export class HandsApp {
     this.rematchButton.removeEventListener("click", this.onRematch);
     this.clearRematchTimers();
     if (this.diagnosticsTimer !== null) window.clearInterval(this.diagnosticsTimer);
+    if (this.resultRevealTimer !== null) window.clearInterval(this.resultRevealTimer);
     this.diagnosticsTimer = null;
     this.root.replaceChildren();
   }
