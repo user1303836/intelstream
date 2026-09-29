@@ -3,7 +3,7 @@ import { punchTiming, totalTicks } from "../manifest";
 import { buildArena } from "./arena";
 import { CameraDirector } from "./camera";
 import { bloodPatternFor, Effects3D } from "./effects";
-import { decisionLabel, drawHud, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, HUD_MAX_GUARD, HUD_MAX_POISE, RoundStatsTracker, scoreTotal } from "./hud";
+import { decisionLabel, drawHud, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, RoundStatsTracker, scoreTotal } from "./hud";
 import { buildRing, ropePress } from "./ring";
 import { resizeHighDpi } from "./viewport";
 import { PALETTES, worldMapping } from "./world";
@@ -600,3 +600,12 @@ function mockHudContext(texts: string[]): CanvasRenderingContext2D {
     set textBaseline(_value: CanvasTextBaseline) {},
   } as unknown as CanvasRenderingContext2D;
 }
+
+describe("fitFontSize", () => {
+  it("returns the largest size that fits and the minimum when nothing does", () => {
+    const measure = (size: number) => size * 10;
+    expect(fitFontSize(measure, 160, 16, 11)).toBe(16);
+    expect(fitFontSize(measure, 135, 16, 11)).toBe(13);
+    expect(fitFontSize(measure, 50, 16, 11)).toBe(11);
+  });
+});

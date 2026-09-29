@@ -12,6 +12,12 @@ const fit = (ctx: CanvasRenderingContext2D, text: string, width: number): string
   return `${value}…`;
 };
 
+/** Largest font size from `maximum` down to `minimum` (whole pixels) at which `measure` fits `width`, else `minimum`. */
+export const fitFontSize = (measure: (size: number) => number, width: number, maximum: number, minimum: number): number => {
+  for (let size = maximum; size > minimum; size -= 1) if (measure(size) <= width) return size;
+  return minimum;
+};
+
 interface BarSpec {
   readonly label: string;
   readonly value: number;
@@ -83,8 +89,13 @@ function fighterPlate(
   const textX = mirror ? x + width - 20 : x + 20;
   ctx.textAlign = mirror ? "right" : "left";
   ctx.fillStyle = "#f5f8ff";
-  ctx.font = "800 16px Inter, system-ui, sans-serif";
-  ctx.fillText(fit(ctx, name.toUpperCase(), width - 44), textX, y + 21);
+  const label = name.toUpperCase();
+  const nameSize = fitFontSize((size) => {
+    ctx.font = `800 ${size}px Inter, system-ui, sans-serif`;
+    return ctx.measureText(label).width;
+  }, width - 44, 16, 11);
+  ctx.font = `800 ${nameSize}px Inter, system-ui, sans-serif`;
+  ctx.fillText(fit(ctx, label, width - 44), textX, y + 21);
   ctx.fillStyle = "#93a3bd";
   ctx.font = "600 10px Inter, system-ui, sans-serif";
   ctx.fillText(detail, textX, y + 35);
