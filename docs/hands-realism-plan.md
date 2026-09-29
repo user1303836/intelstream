@@ -61,3 +61,18 @@ Presentation and network
 
 Every phase lands as its own commits with Python and Vitest coverage, a
 rebuilt committed bundle, and screenshots captured through headless Chromium.
+
+## Status (2026-09-28)
+
+All five phases landed on `feature/hands-realism` (PR #293). Beyond the plan, the branch also
+carries: adaptive render resolution with a no-gain revert, crowd excitement, rest-phase corner
+walk with stools (engine + client), anti-parallel facing fix, knockout presentation (held result
+panel, winner celebration, referee wave-off), portrait framing with a compact scoreboard, per-round
+punch stats, rope flex under a pinned fighter, and face-down knockdowns after hooks.
+
+Review harnesses: `?model-lab=1&pose=...` (pose lab), `?fixture=1` with `&finisher=head|hand`,
+`&phase=rest`, `&pin=1`, `&platform=mobile`, and `?lab=1` (golden replay).
+
+Considered and not done: starting round 1 from the corners (the engine tests and the golden
+replay schedule assume the centre start), a Discord-free end-to-end run of the real client (the
+launch requires a live Activity instance).
