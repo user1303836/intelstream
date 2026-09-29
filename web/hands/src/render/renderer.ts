@@ -671,7 +671,7 @@ export class FightRenderer {
     this.scene.add(hemisphere);
     this.lights.push(hemisphere);
 
-    const key = new THREE.SpotLight("#fff1dc", 190, 24, 0.56, 0.55, 1.7);
+    const key = new THREE.SpotLight("#fff1dc", 150, 24, 0.56, 0.55, 1.7);
     key.position.set(0.6, 7.4, 1.2);
     key.target.position.set(0, 0.6, 0);
     key.castShadow = true;

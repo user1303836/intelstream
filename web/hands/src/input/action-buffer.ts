@@ -20,7 +20,7 @@ export function pushActionIntent(
   queue.push(action);
 }
 
-export type ActionSource = "keyboard" | "gamepad";
+export type ActionSource = "keyboard" | "gamepad" | "touch";
 
 export class SharedActionIntent {
   private readonly queue: Array<{ action: SemanticAction; source: ActionSource }> = [];

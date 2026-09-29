@@ -55,6 +55,7 @@ export class HandsApp {
     this.retry.addEventListener("click", this.onRetry);
     this.bindPanels();
     this.syncSettings();
+    this.input.attachTouch(root.querySelector<HTMLElement>(".activity")!);
   }
 
   start(): void {

@@ -14,6 +14,8 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
+import { encode as encodeJpeg } from "jpeg-js";
+import { PNG } from "pngjs";
 import * as THREE from "three";
 import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
 import { GLTFLoader, type GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
@@ -46,6 +48,7 @@ globals.document = {
 };
 
 const OUT_DIR = `${process.cwd()}/src/assets`;
+const JPEG_QUALITY = 90;
 
 async function loadModel(path: string): Promise<GLTF> {
   const buffer = readFileSync(path);
@@ -111,7 +114,11 @@ function embeddedTextureDataUrls(path: string): Record<(typeof TEXTURE_SPECS)[nu
       bufferView.byteOffset ?? 0,
       (bufferView.byteOffset ?? 0) + bufferView.byteLength,
     );
-    result[spec.key] = `data:${image.mimeType};base64,${imageBytes.toString("base64")}`;
+    if (image.mimeType !== "image/png") throw new Error(`${spec.material} texture is ${image.mimeType}, expected image/png`);
+    const decoded = PNG.sync.read(Buffer.from(imageBytes));
+    const jpeg = encodeJpeg({ data: decoded.data, width: decoded.width, height: decoded.height }, JPEG_QUALITY);
+    console.log(`texture ${spec.key}: ${decoded.width}x${decoded.height} png ${imageBytes.byteLength} bytes -> jpeg ${jpeg.data.byteLength} bytes`);
+    result[spec.key] = `data:image/jpeg;base64,${Buffer.from(jpeg.data).toString("base64")}`;
   }
   return result;
 }

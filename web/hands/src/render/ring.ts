@@ -22,34 +22,42 @@ function canvasTexture(size: number, draw: (ctx: CanvasRenderingContext2D, size:
 
 function ringCanvasTexture(): THREE.CanvasTexture {
   return canvasTexture(1024, (ctx, size) => {
-    ctx.fillStyle = "#2c4386";
+    ctx.fillStyle = "#9d968a";
     ctx.fillRect(0, 0, size, size);
     const noise = ctx.createLinearGradient(0, 0, size, size);
-    noise.addColorStop(0, "rgba(255,255,255,0.05)");
-    noise.addColorStop(0.5, "rgba(0,0,0,0.04)");
-    noise.addColorStop(1, "rgba(255,255,255,0.03)");
+    noise.addColorStop(0, "rgba(255,255,255,0.08)");
+    noise.addColorStop(0.5, "rgba(60,50,40,0.06)");
+    noise.addColorStop(1, "rgba(255,255,255,0.04)");
     ctx.fillStyle = noise;
     ctx.fillRect(0, 0, size, size);
-    for (let i = 0; i < 900; i += 1) {
+    for (let i = 0; i < 2600; i += 1) {
       const x = (Math.sin(i * 12.9898) * 43758.5453) % 1;
       const y = (Math.sin(i * 78.233) * 12543.1234) % 1;
-      ctx.fillStyle = `rgba(${i % 2 === 0 ? "255,255,255" : "10,20,50"},${0.015 + (i % 5) * 0.004})`;
-      ctx.fillRect(Math.abs(x) * size, Math.abs(y) * size, 2 + (i % 3), 1 + (i % 2));
+      ctx.fillStyle = `rgba(${i % 3 === 0 ? "255,255,255" : "70,55,45"},${0.02 + (i % 5) * 0.006})`;
+      ctx.fillRect(Math.abs(x) * size, Math.abs(y) * size, 2 + (i % 4), 1 + (i % 3));
     }
-    ctx.strokeStyle = "rgba(235,240,255,0.9)";
-    ctx.lineWidth = 10;
+    for (let i = 0; i < 40; i += 1) {
+      const x = Math.abs((Math.sin(i * 91.7) * 7919.3) % 1) * size;
+      const y = Math.abs((Math.sin(i * 47.1) * 4271.9) % 1) * size;
+      ctx.fillStyle = `rgba(80,60,50,${0.05 + (i % 4) * 0.02})`;
+      ctx.beginPath();
+      ctx.ellipse(x, y, 18 + (i % 7) * 6, 6 + (i % 5) * 3, (i * 0.7) % Math.PI, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.strokeStyle = "rgba(30,60,140,0.85)";
+    ctx.lineWidth = 12;
     ctx.beginPath();
     ctx.arc(size / 2, size / 2, size * 0.2, 0, Math.PI * 2);
     ctx.stroke();
-    ctx.fillStyle = "rgba(235,240,255,0.92)";
+    ctx.fillStyle = "rgba(30,60,140,0.9)";
     ctx.font = `800 ${Math.round(size * 0.062)}px Inter, system-ui, sans-serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText("H A N D S", size / 2, size / 2 - size * 0.012);
     ctx.font = `600 ${Math.round(size * 0.024)}px Inter, system-ui, sans-serif`;
     ctx.fillText("AUTHORITATIVE BOXING", size / 2, size / 2 + size * 0.052);
-    ctx.strokeStyle = "rgba(235,240,255,0.55)";
-    ctx.lineWidth = 5;
+    ctx.strokeStyle = "rgba(30,60,140,0.6)";
+    ctx.lineWidth = 6;
     ctx.strokeRect(size * 0.035, size * 0.035, size * 0.93, size * 0.93);
   });
 }
@@ -63,7 +71,7 @@ export function buildRing(): BuiltRing {
 
   const canvasMap = ringCanvasTexture();
   textures.push(canvasMap);
-  const canvasMat = new THREE.MeshStandardMaterial({ map: canvasMap, roughness: 0.92, metalness: 0 });
+  const canvasMat = new THREE.MeshStandardMaterial({ map: canvasMap, roughness: 0.88, metalness: 0 });
   materials.push(canvasMat);
   const canvasGeo = new THREE.PlaneGeometry(RING_FIGHT_HALF * 2, RING_FIGHT_HALF * 2);
   geometries.push(canvasGeo);
@@ -73,7 +81,7 @@ export function buildRing(): BuiltRing {
   canvasMesh.receiveShadow = true;
   group.add(canvasMesh);
 
-  const apronMat = new THREE.MeshStandardMaterial({ color: "#16233f", roughness: 0.85 });
+  const apronMat = new THREE.MeshStandardMaterial({ color: "#1c2b52", roughness: 0.85 });
   materials.push(apronMat);
   const apronGeo = new THREE.RingGeometry(RING_FIGHT_HALF * 0.98, RING_APRON_HALF, 4, 1);
   geometries.push(apronGeo);
