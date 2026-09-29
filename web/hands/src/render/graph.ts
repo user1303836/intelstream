@@ -302,6 +302,7 @@ export class BoxingGraph {
   private fallAge = 0;
   private riseAge = 0;
   private fallSide = 0;
+  private fallProne = false;
   private readonly liveOpponentHead = new THREE.Vector3();
   private hasLiveHead = false;
   private readonly headKick: Spring3 = { value: new THREE.Vector3(), velocity: new THREE.Vector3() };
@@ -486,7 +487,10 @@ export class BoxingGraph {
       this.rootKick.velocity.z -= 0.45 * scale;
       if (kind === "block") this.guardKick = Math.max(this.guardKick, 0.9 * scale);
     }
-    if (kind === "hit" && target === "head" && amount > 250) this.fallSide = lateral;
+    if (kind === "hit" && target === "head" && amount > 250) {
+      this.fallSide = lateral;
+      this.fallProne = punchClass === "hook";
+    }
   }
 
   private stepFeet(dt: number, mirror: number, speed: number, velocityWorld: THREE.Vector3, rootPosition: THREE.Vector3, yaw: number): void {
@@ -1251,6 +1255,21 @@ export class BoxingGraph {
       leadFoot: vec(0.17 * mirror + side * 0.05, 0.08, 0.16),
       rearFoot: vec(-0.16 * mirror + side * 0.05, 0.09, -0.02),
     };
+    // Face-down pose after a hook: the fighter pitches forward over the front foot.
+    const prone = {
+      hips: vec(side * 0.12, 0.13, 0.32),
+      hipsYaw: side * 0.3,
+      hipsPitch: 1.5,
+      hipsRoll: side * 0.15,
+      shouldersYaw: side * 0.15,
+      spinePitch: 0.05,
+      headPitch: 0.2,
+      leadHand: vec(0.34 * mirror, 0.06, 0.78),
+      rearHand: vec(-0.3 * mirror, 0.06, 0.62),
+      leadFoot: vec(0.16 * mirror + side * 0.04, 0.06, -0.5),
+      rearFoot: vec(-0.15 * mirror + side * 0.04, 0.07, -0.55),
+    };
+    const down = this.fallProne ? prone : lying;
     const standing = {
       hips: torso.hips.clone(),
       hipsYaw: torso.hipsYaw,
@@ -1319,24 +1338,24 @@ export class BoxingGraph {
         rearFoot: a.rearFoot.clone().lerp(b.rearFoot, s),
       });
       let current: typeof lying;
-      if (u < 0.38) current = blend(lying, fours, smoothstep(0, 0.38, u));
+      if (u < 0.38) current = blend(down, fours, smoothstep(0, 0.38, u));
       else if (u < 0.72) current = blend(fours, knee, smoothstep(0.38, 0.72, u));
       else current = blend(knee, standing, smoothstep(0.72, 1, u));
       this.writeDown(current, leadHand, rearHand, lead, rear, 0);
       return;
     }
     const mixed = {
-      hips: standing.hips.clone().lerp(lying.hips, t),
-      hipsYaw: THREE.MathUtils.lerp(standing.hipsYaw, lying.hipsYaw, t),
-      hipsPitch: THREE.MathUtils.lerp(standing.hipsPitch, lying.hipsPitch, t),
-      hipsRoll: THREE.MathUtils.lerp(standing.hipsRoll, lying.hipsRoll, t),
-      shouldersYaw: THREE.MathUtils.lerp(standing.shouldersYaw, lying.shouldersYaw, t),
-      spinePitch: THREE.MathUtils.lerp(standing.spinePitch, lying.spinePitch, t),
-      headPitch: THREE.MathUtils.lerp(standing.headPitch, lying.headPitch, t),
-      leadHand: standing.leadHand.clone().lerp(lying.leadHand, t),
-      rearHand: standing.rearHand.clone().lerp(lying.rearHand, t),
-      leadFoot: standing.leadFoot.clone().lerp(lying.leadFoot, t),
-      rearFoot: standing.rearFoot.clone().lerp(lying.rearFoot, t),
+      hips: standing.hips.clone().lerp(down.hips, t),
+      hipsYaw: THREE.MathUtils.lerp(standing.hipsYaw, down.hipsYaw, t),
+      hipsPitch: THREE.MathUtils.lerp(standing.hipsPitch, down.hipsPitch, t),
+      hipsRoll: THREE.MathUtils.lerp(standing.hipsRoll, down.hipsRoll, t),
+      shouldersYaw: THREE.MathUtils.lerp(standing.shouldersYaw, down.shouldersYaw, t),
+      spinePitch: THREE.MathUtils.lerp(standing.spinePitch, down.spinePitch, t),
+      headPitch: THREE.MathUtils.lerp(standing.headPitch, down.headPitch, t),
+      leadHand: standing.leadHand.clone().lerp(down.leadHand, t),
+      rearHand: standing.rearHand.clone().lerp(down.rearHand, t),
+      leadFoot: standing.leadFoot.clone().lerp(down.leadFoot, t),
+      rearFoot: standing.rearFoot.clone().lerp(down.rearFoot, t),
     };
     if (this.downState === "falling") {
       const flail = Math.sin(clamp(this.fallAge / KNOCKDOWN_FALL_SECONDS, 0, 1) * Math.PI) * 0.35;

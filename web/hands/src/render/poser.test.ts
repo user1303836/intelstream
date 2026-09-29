@@ -66,6 +66,23 @@ describe("celebration", () => {
   });
 });
 
+describe("fall direction", () => {
+  it("drops face down after a hook and onto the back after an uppercut", () => {
+    for (const [punchClass, faceDown] of [["hook", true], ["uppercut", false]] as const) {
+      const { boxer, graph } = makeGraph();
+      const fighter = facingOpponent(baseFighter("one"));
+      const opponent = opponentFor("two");
+      run(graph, fighter, opponent, 10, undefined);
+      graph.react("hit", "head", 1, punchClass, "left", 420);
+      run(graph, { ...fighter, is_downed: true }, opponent, 70, undefined, 5, 10 / 60);
+      const head = bone(boxer, "head");
+      const hips = bone(boxer, "hips");
+      expect(head.y).toBeLessThan(0.45);
+      expect(head.z > hips.z).toBe(faceDown);
+    }
+  });
+});
+
 describe("wave-off", () => {
   it("sweeps both gloves across overhead while waving the fight off", () => {
     const { boxer, graph } = makeGraph();
