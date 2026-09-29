@@ -189,7 +189,7 @@ export function arcadeInjuryFor(
   const recipientSide = hand === "left" ? "right" : hand === "right" ? "left" : Math.floor(selection / 2) % 2 === 0 ? "left" : "right";
   return selection % 2 === 0 ? `dismember_${recipientSide}` : `shoulder_${recipientSide}`;
 }
-import { buildRing, disposeRing, type BuiltRing } from "./ring";
+import { buildRing, disposeRing, nearRopeOpacityFor, type BuiltRing } from "./ring";
 import { resizeHighDpi } from "./viewport";
 import { worldMapping, type WorldMapping } from "./world";
 
@@ -1408,6 +1408,9 @@ export class FightRenderer {
       this.camera.lookAt(frame.lookAt);
     }
     this.effects.setViewDistance(this.camera.position.distanceTo(frame.lookAt));
+    // Only the broadcast camera looks through the near ropes; every other shot is from inside them.
+    const solid = frame === directed ? nearRopeOpacityFor(Math.max(this.tmpA.z, this.tmpB.z)) : 1;
+    this.ring.setNearRopeOpacity(this.ring.nearRopeOpacity() + (solid - this.ring.nearRopeOpacity()) * (1 - Math.exp(-6 * dt)));
 
     if (render) {
       this.composer.render();

@@ -4,7 +4,7 @@ import { buildArena } from "./arena";
 import { CameraDirector, cornerFrame, cornerPoint, cornerShot, cornerShotProgress, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE } from "./camera";
 import { bloodPatternFor, Effects3D } from "./effects";
 import { decisionLabel, drawHud, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, RoundClock, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
-import { buildRing, ropePress } from "./ring";
+import { buildRing, disposeRing, nearRopeOpacityFor, ropePress } from "./ring";
 import { resizeHighDpi } from "./viewport";
 import { PALETTES, worldMapping } from "./world";
 import { fighter, publicPlayers, snapshot } from "../test/fixtures";
@@ -473,6 +473,33 @@ describe("viewport and broadcast HUD", () => {
     const state = { ...snapshot(), phase_ticks_remaining: 1205 };
     drawHud(ctx, 800, 600, state, Object.fromEntries(publicPlayers.map((player) => [player.id, player])), "one", null, 0, 20);
     expect(texts).toContain("1:00");
+  });
+});
+
+describe("near ropes", () => {
+  it("are solid while the fighters are across the ring and mostly clear when they are against them", () => {
+    expect(nearRopeOpacityFor(-2)).toBe(1);
+    expect(nearRopeOpacityFor(0)).toBeGreaterThan(0.75);
+    expect(nearRopeOpacityFor(1.8)).toBeCloseTo(0.26, 6);
+    expect(nearRopeOpacityFor(1)).toBeLessThan(nearRopeOpacityFor(0));
+  });
+
+  it("fade only on the side that faces the broadcast camera", () => {
+    const ring = buildRing();
+    ring.setNearRopeOpacity(0.3);
+    expect(ring.nearRopeOpacity()).toBeCloseTo(0.3, 6);
+    const faded = ring.materials.filter((material) => material.transparent && material.opacity < 1);
+    expect(faded).toHaveLength(3 + 3 * 2);
+    ring.group.updateMatrixWorld(true);
+    const box = new THREE.Box3();
+    ring.group.traverse((object) => {
+      if (!(object instanceof THREE.Mesh) || !faded.includes(object.material as THREE.Material)) return;
+      box.setFromObject(object);
+      expect(box.min.z).toBeGreaterThan(2.3);
+    });
+    ring.setNearRopeOpacity(4);
+    expect(ring.nearRopeOpacity()).toBe(1);
+    disposeRing(ring);
   });
 });
 

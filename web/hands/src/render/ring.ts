@@ -9,6 +9,17 @@ export interface BuiltRing {
   /** Feeds the two fighters' world positions to the rope flex shader. */
   readonly setRopeContacts: (a: { x: number; z: number } | null, b: { x: number; z: number } | null) => void;
   readonly ropeContacts: readonly [THREE.Vector4, THREE.Vector4];
+  /** Fades the ropes between the broadcast camera and the ring so they do not hide the fighters. */
+  readonly setNearRopeOpacity: (opacity: number) => void;
+  readonly nearRopeOpacity: () => number;
+}
+
+/** The side of the ring that faces the broadcast camera. */
+const NEAR_SIDE = 3;
+
+/** How solid the near ropes are drawn for fighters whose nearest point to the camera is `z` metres from the centre. */
+export function nearRopeOpacityFor(z: number): number {
+  return 1 - 0.74 * smoothstep(-0.6, 1.4, z);
 }
 
 export interface RopePress {
@@ -188,7 +199,7 @@ export function buildRing(): BuiltRing {
   const ropeContacts: [THREE.Vector4, THREE.Vector4] = [new THREE.Vector4(0, 0, 0, 0), new THREE.Vector4(0, 0, 0, 0)];
   const ropeUniforms = { uRopeContactA: { value: ropeContacts[0] }, uRopeContactB: { value: ropeContacts[1] } };
   const ropeColors = [0xb91c1c, 0xe5e7eb, 0x1d4ed8];
-  const ropeMats = ropeColors.map((color) => {
+  const ropeMaterial = (color: number): THREE.MeshStandardMaterial => {
     const material = new THREE.MeshStandardMaterial({ color, roughness: 0.42, metalness: 0.05 });
     material.onBeforeCompile = (shader) => {
       shader.uniforms.uRopeContactA = ropeUniforms.uRopeContactA;
@@ -199,7 +210,9 @@ export function buildRing(): BuiltRing {
     };
     materials.push(material);
     return material;
-  });
+  };
+  const ropeMats = ropeColors.map(ropeMaterial);
+  const nearMaterials: THREE.MeshStandardMaterial[] = ropeColors.map(ropeMaterial);
   const setRopeContacts = (a: { x: number; z: number } | null, b: { x: number; z: number } | null): void => {
     for (const [index, contact] of [a, b].entries()) {
       const target = ropeContacts[index]!;
@@ -224,7 +237,7 @@ export function buildRing(): BuiltRing {
       );
       const ropeGeo = new THREE.TubeGeometry(curve, 24, 0.028, 8, false);
       geometries.push(ropeGeo);
-      const rope = new THREE.Mesh(ropeGeo, ropeMats[ropeIndex]!);
+      const rope = new THREE.Mesh(ropeGeo, (side === NEAR_SIDE ? nearMaterials : ropeMats)[ropeIndex]!);
       rope.castShadow = true;
       group.add(rope);
       for (const t of [0.33, 0.66]) {
@@ -233,6 +246,7 @@ export function buildRing(): BuiltRing {
         geometries.push(tieGeo);
         const tieMat = new THREE.MeshStandardMaterial({ color: 0xd8dee8, roughness: 0.6 });
         materials.push(tieMat);
+        if (side === NEAR_SIDE) nearMaterials.push(tieMat);
         const tie = new THREE.Mesh(tieGeo, tieMat);
         tie.position.set(point.x, height - 0.36, point.z);
         tie.lookAt(0, height - 0.36, 0);
@@ -241,7 +255,12 @@ export function buildRing(): BuiltRing {
     }
   }
 
-  return { group, materials, geometries, textures, setRopeContacts, ropeContacts };
+  for (const material of nearMaterials) material.transparent = true;
+  const setNearRopeOpacity = (opacity: number): void => {
+    for (const material of nearMaterials) material.opacity = THREE.MathUtils.clamp(opacity, 0, 1);
+  };
+
+  return { group, materials, geometries, textures, setRopeContacts, ropeContacts, setNearRopeOpacity, nearRopeOpacity: () => nearMaterials[0]!.opacity };
 }
 
 export function disposeRing(ring: BuiltRing): void {
