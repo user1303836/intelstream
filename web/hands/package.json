@@ -15,11 +15,11 @@
   },
   "dependencies": {
     "@discord/embedded-app-sdk": "2.5.0",
-    "three": "0.185.1"
+    "three": "0.186.1"
   },
   "devDependencies": {
     "@types/node": "26.1.1",
-    "@types/three": "0.185.1",
+    "@types/three": "0.186.0",
     "esbuild": "0.28.1",
     "jpeg-js": "0.4.4",
     "jsdom": "29.1.1",
