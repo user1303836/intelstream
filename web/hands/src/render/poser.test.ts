@@ -213,6 +213,23 @@ describe("taunt", () => {
   });
 });
 
+describe("cutman", () => {
+  it("crouches before the seated fighter, presses the enswell on the eye, and stands back up when done", () => {
+    const { boxer, graph } = makeGraph();
+    const eye = new THREE.Vector3(0, 1.1, 0.55);
+    graph.treat(eye, 1);
+    run(graph, facingOpponent(baseFighter("one")), opponentFor("two"), 90, undefined);
+    const glove = bone(boxer, "gloveL");
+    expect(glove.distanceTo(new THREE.Vector3(eye.x - 0.035, eye.y + 0.01, eye.z - 0.17))).toBeLessThan(0.1);
+    expect(bone(boxer, "hips").y).toBeLessThan(0.7);
+    expect(boxer.rig.bones.gloveL.getObjectByName("enswell")?.visible).toBe(true);
+    graph.treat(null);
+    run(graph, facingOpponent(baseFighter("one")), opponentFor("two"), 90, undefined, 45, 1.5);
+    expect(bone(boxer, "hips").y).toBeGreaterThan(0.75);
+    expect(boxer.rig.bones.gloveL.getObjectByName("enswell")?.visible).toBe(false);
+  });
+});
+
 describe("clinch hold", () => {
   it("ties up over the arms for the first-sorted fighter and under them for the other, heads to the right", () => {
     const clinched = (id: string): FighterSnapshot => ({ ...facingOpponent(baseFighter(id)), clinch_ticks: 30 });

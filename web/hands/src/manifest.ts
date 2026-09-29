@@ -36,6 +36,7 @@ export const HITSTOP_MS = manifestJson.hitstop_ms;
 export const HURTBOXES = manifestJson.hurtboxes;
 export const GLOVE_HITBOX_RADIUS = manifestJson.hitbox.glove_radius;
 export const FATIGUE_SCALING = manifestJson.fatigue_scaling;
+export const REST_CORNER_OFFSET = manifestJson.rest.corner_offset;
 
 export function punchTiming(punchClass: PunchClass, target: Target, power: Power): PunchTiming {
   const base = punches[punchClass];

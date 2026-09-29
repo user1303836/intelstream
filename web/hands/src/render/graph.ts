@@ -328,6 +328,12 @@ export class BoxingGraph {
   private tauntWeight = 0;
   private lastSpeed = 0;
   private readonly stool: { group: THREE.Group; dispose: () => void };
+  private readonly enswell: { group: THREE.Group; dispose: () => void };
+  private readonly treatTarget = new THREE.Vector3();
+  private readonly treatScratch = new THREE.Vector3();
+  private treatSide = 1;
+  private treating = false;
+  private treatWeight = 0;
   private resting = false;
   private seated = 0;
   private stillTime = 0;
@@ -388,6 +394,8 @@ export class BoxingGraph {
     this.stool = buildStool();
     this.stool.group.position.set(0, 0, 0.02);
     boxer.root.add(this.stool.group);
+    this.enswell = buildEnswell();
+    boxer.rig.bones.gloveL.add(this.enswell.group);
   }
 
   /** Between rounds the fighter walks to the corner, and once still, sits on the stool. */
@@ -445,6 +453,15 @@ export class BoxingGraph {
   /** Cornerman: lean in over the top rope and work on the seated fighter while attending. */
   attend(active: boolean): void {
     this.attending = active;
+  }
+
+  /** Cutman: crouch before a seated fighter and press the enswell on the eye at `head` (world); `side` 1 is the fighter's left eye. */
+  treat(head: THREE.Vector3 | null, side = 1): void {
+    this.treating = head !== null;
+    if (head !== null) {
+      this.treatTarget.copy(head);
+      this.treatSide = side;
+    }
   }
 
   /** Referee break: both arms push out and apart at chest height to separate a clinch. */
@@ -673,6 +690,8 @@ export class BoxingGraph {
     this.breakTime = Math.max(0, this.breakTime - dt);
     this.breakWeight = smooth(this.breakWeight, this.breakTime > 0 && this.downState === "up" ? 1 : 0, 6, dt);
     this.attendWeight = smooth(this.attendWeight, this.attending ? 1 : 0, 2.5, dt);
+    this.treatWeight = smooth(this.treatWeight, this.treating ? 1 : 0, 3, dt);
+    this.enswell.group.visible = this.treatWeight > 0.4;
     const touching = this.countdownTicks !== null && this.countdownTicks <= TOUCH_GLOVES_START_TICKS && this.countdownTicks >= TOUCH_GLOVES_END_TICKS;
     this.touchWeight = smooth(this.touchWeight, touching ? 1 : 0, 6, dt);
     const stamina = fighter.stamina / Math.max(1, fighter.maximum_stamina);
@@ -864,6 +883,7 @@ export class BoxingGraph {
     if (this.wave > 0.001 && this.downState === "up") this.applyWaveOffPose(this.wave, time, mirror, leadHand, rearHand);
     if (this.breakWeight > 0.001 && this.downState === "up") this.applyBreakPose(this.breakWeight, mirror, leadHand, rearHand);
     if (this.attendWeight > 0.001 && this.downState === "up") this.applyAttendPose(this.attendWeight, time, mirror, leadHand, rearHand);
+    if (this.treatWeight > 0.001 && this.downState === "up") this.applyTreatPose(this.treatWeight, time, mirror, leadHand, rearHand, lead, rear);
     if (this.seated > 0.001 && this.downState === "up") this.applySeatedPose(this.seated, time, mirror, leadHand, rearHand, lead, rear);
     if (this.downState !== "up") this.applyDownPose(mirror, leadHand, rearHand, lead, rear, headRest);
 
@@ -1369,6 +1389,50 @@ export class BoxingGraph {
     rearHand.pole.lerp(seatedScratch.set(-0.8 * mirror, -0.5, -0.1), blend).normalize();
   }
 
+  /** Cutman work: a deep crouch before the seated fighter, the lead glove pressing the enswell on the eye, the rear hand steadying the jaw. */
+  private applyTreatPose(
+    blend: number,
+    time: number,
+    mirror: number,
+    leadHand: HandTarget,
+    rearHand: HandTarget,
+    lead: { position: THREE.Vector3; toe: THREE.Vector3; heel: number; pole: THREE.Vector3 },
+    rear: { position: THREE.Vector3; toe: THREE.Vector3; heel: number; pole: THREE.Vector3 },
+  ): void {
+    const torso = this.torso;
+    const lerp = THREE.MathUtils.lerp;
+    const rootPosition = this.treatScratch.set(this.rootX ?? 0, 0, this.rootZ);
+    const eye = seatedScratch.copy(this.treatTarget).sub(rootPosition).applyQuaternion(this.scratchQ.setFromAxisAngle(worldUpVector, -this.yaw));
+    eye.x -= this.treatSide * 0.035;
+    eye.y += 0.08;
+    eye.z -= 0.09;
+    const press = Math.sin(time * 2.6) * 0.006;
+    torso.hips.lerp(this.treatScratch.set(0, 0.62, 0.04), blend);
+    torso.hipsYaw = lerp(torso.hipsYaw, 0, blend);
+    torso.hipsPitch = lerp(torso.hipsPitch, 0.32, blend);
+    torso.hipsRoll = lerp(torso.hipsRoll, 0, blend);
+    torso.shouldersYaw = lerp(torso.shouldersYaw, 0, blend);
+    torso.spinePitch = lerp(torso.spinePitch, 0.38, blend);
+    torso.headPitch = lerp(torso.headPitch, 0.3, blend);
+    lead.position.x = lerp(lead.position.x, 0.24 * mirror, blend);
+    lead.position.z = lerp(lead.position.z, 0.14, blend);
+    rear.position.x = lerp(rear.position.x, -0.2 * mirror, blend);
+    rear.position.z = lerp(rear.position.z, -0.2, blend);
+    rear.heel = lerp(rear.heel, 0.55, blend);
+    lead.toe.lerp(this.treatScratch.set(0.2 * mirror, 0, 1), blend).normalize();
+    rear.toe.lerp(this.treatScratch.set(-0.1 * mirror, 0, 1), blend).normalize();
+    lead.pole.lerp(this.treatScratch.set(0.25 * mirror, 0.4, 1), blend).normalize();
+    rear.pole.lerp(this.treatScratch.set(-0.2 * mirror, 0.4, 1), blend).normalize();
+    leadHand.position.lerp(this.treatScratch.set(eye.x, eye.y - 0.07 + press, eye.z - 0.08), blend);
+    leadHand.knuckles.lerp(this.treatScratch.set(0, 1, 0.05), blend).normalize();
+    leadHand.palm.lerp(this.treatScratch.set(0, 0, 1), blend).normalize();
+    leadHand.pole.lerp(this.treatScratch.set(0.85 * mirror, -0.35, 0.1), blend).normalize();
+    rearHand.position.lerp(this.treatScratch.set(eye.x + this.treatSide * 0.13, eye.y - 0.2, eye.z - 0.03), blend);
+    rearHand.knuckles.lerp(this.treatScratch.set(0, 0.9, 0.4), blend).normalize();
+    rearHand.palm.lerp(this.treatScratch.set(-this.treatSide * 0.8, 0.1, 0.6), blend).normalize();
+    rearHand.pole.lerp(this.treatScratch.set(-0.85 * mirror, -0.4, 0.1), blend).normalize();
+  }
+
   private applyBreakPose(
     blend: number,
     mirror: number,
@@ -1633,6 +1697,7 @@ export class BoxingGraph {
 
   dispose(): void {
     this.stool.dispose();
+    this.enswell.dispose();
     this.boxer.dispose();
   }
 }
@@ -1641,6 +1706,30 @@ const STOOL_SEAT_HEIGHT = 0.44;
 const TOUCH_GLOVES_START_TICKS = 48;
 const TOUCH_GLOVES_END_TICKS = 14;
 const seatedScratch = new THREE.Vector3();
+
+function buildEnswell(): { group: THREE.Group; dispose: () => void } {
+  const group = new THREE.Group();
+  group.name = "enswell";
+  group.visible = false;
+  const plateGeometry = new THREE.CylinderGeometry(0.03, 0.03, 0.008, 16);
+  const handleGeometry = new THREE.CylinderGeometry(0.008, 0.008, 0.06, 8);
+  const metal = new THREE.MeshStandardMaterial({ color: 0xc8ccd2, roughness: 0.3, metalness: 0.9 });
+  const plate = new THREE.Mesh(plateGeometry, metal);
+  plate.rotation.x = Math.PI / 2;
+  plate.position.set(0, 0.07, 0.075);
+  group.add(plate);
+  const handle = new THREE.Mesh(handleGeometry, metal);
+  handle.position.set(0, 0.035, 0.075);
+  group.add(handle);
+  return {
+    group,
+    dispose: () => {
+      plateGeometry.dispose();
+      handleGeometry.dispose();
+      metal.dispose();
+    },
+  };
+}
 
 function buildStool(): { group: THREE.Group; dispose: () => void } {
   const group = new THREE.Group();

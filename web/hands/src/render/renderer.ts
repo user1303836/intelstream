@@ -6,7 +6,7 @@ import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { EventDeduplicator, SnapshotBuffer } from "../interpolation";
 import { coarsePointer } from "../input/touch";
-import { punchTiming } from "../manifest";
+import { REST_CORNER_OFFSET, punchTiming } from "../manifest";
 import { predictMovement, type HeldInput } from "../prediction";
 import type { BloodLevel, Settings } from "../settings";
 import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, Hand, MatchResult, PublicPlayer, PunchClass, SemanticAction, SimulationInfo } from "../types";
@@ -67,6 +67,8 @@ const LOW_TIER_SCALE = 0.56;
 const ROUND_CALLOUT_SECONDS = 1.8;
 const FINISH_CLOSE_UP_SECONDS = 1.7;
 const CORNERMAN_APRON_DISTANCE = 3.42;
+const CUTMAN_WALK_SECONDS = 1.6;
+const CUTMAN_WORK_DISTANCE = 0.62;
 // Broadcast finish: a soft vignette and a whisper of grain, applied before tone mapping.
 const BROADCAST_FINISH_SHADER = {
   uniforms: { tDiffuse: { value: null }, uTime: { value: 0 }, uVignette: { value: 0.32 }, uGrain: { value: 0.035 } },
@@ -343,6 +345,11 @@ export class FightRenderer {
   private readonly cornerShirts: THREE.CanvasTexture[] = [];
   private readonly cornermanPosition = new THREE.Vector3();
   private readonly cornermanVelocity = new THREE.Vector3();
+  private cutmen: [BoxingGraph, BoxingGraph] | null = null;
+  private readonly cutmanProgress = [0, 0];
+  private readonly cutmanFrom = new THREE.Vector3();
+  private readonly cutmanTo = new THREE.Vector3();
+  private readonly cutmanLast = [new THREE.Vector3(), new THREE.Vector3()];
   private readonly refereePosition = new THREE.Vector3(0.4, 0, -2.1);
   private readonly refereeVelocity = new THREE.Vector3();
   private readonly effects: Effects3D;
@@ -510,17 +517,24 @@ export class FightRenderer {
         const blueCorner = new SkinnedBoxer(gltf, { skin: 0x8a5a3b, gear: 0x1b2230, pants: 0x14161c, bodyMap: blueShirt });
         const redCorner = new SkinnedBoxer(gltf, { skin: 0xd9a77c, gear: 0x1b2230, pants: 0x14161c, bodyMap: redShirt });
         this.cornermen = [new BoxingGraph(blueCorner, this.mapping, { referee: true }), new BoxingGraph(redCorner, this.mapping, { referee: true })];
+        const whiteShirt = cornerShirtTexture("#e3e4e8");
+        this.cornerShirts.push(whiteShirt);
+        const blueCutman = new SkinnedBoxer(gltf, { skin: 0xb98c66, gear: 0x1b2230, pants: 0x14161c, bodyMap: whiteShirt });
+        const redCutman = new SkinnedBoxer(gltf, { skin: 0x5a3a26, gear: 0x1b2230, pants: 0x14161c, bodyMap: whiteShirt });
+        this.cutmen = [new BoxingGraph(blueCutman, this.mapping, { referee: true }), new BoxingGraph(redCutman, this.mapping, { referee: true })];
+        blueCutman.root.visible = false;
+        redCutman.root.visible = false;
         // Compile the skinned materials off the critical path (parallel shader compile where
         // available) so the first frame with fighters does not stall the page.
         const staging = new THREE.Group();
-        staging.add(first.root, second.root, official.root, blueCorner.root, redCorner.root);
+        staging.add(first.root, second.root, official.root, blueCorner.root, redCorner.root, blueCutman.root, redCutman.root);
         try {
           await this.renderer.compileAsync(staging, this.camera, this.scene);
         } catch {
           // Fall back to compiling on the first draw.
         }
         if (this.destroyed) return;
-        this.scene.add(first.root, second.root, official.root, blueCorner.root, redCorner.root);
+        this.scene.add(first.root, second.root, official.root, blueCorner.root, redCorner.root, blueCutman.root, redCutman.root);
         this.trails = [0x1d4ed8, 0xb91c1c].flatMap((gear) => [0, 1].map(() => new GloveTrail(new THREE.Color(gear).lerp(new THREE.Color(0xffffff), 0.55))));
         for (const trail of this.trails) this.scene.add(trail.mesh);
       })
@@ -1181,6 +1195,7 @@ export class FightRenderer {
     this.updateTrails(dt, current.reducedMotion);
     this.updateReferee(dt, seconds, snapshot, sampledTick);
     this.updateCornermen(dt, seconds, snapshot, sampledTick);
+    this.updateCutmen(dt, seconds, snapshot, sampledTick);
     this.updateBlobShadows();
     this.fireContacts(sampledTick);
     if (this.followSpot !== null) {
@@ -1319,6 +1334,44 @@ export class FightRenderer {
     }
   }
 
+  /** Between rounds each cutman climbs in from the apron, crouches before the seated fighter and works the worse eye, then climbs back out for the bell. */
+  private updateCutmen(dt: number, time: number, snapshot: EngineSnapshot | null, sampledTick: number): void {
+    const cutmen = this.cutmen;
+    const graphs = this.graphs;
+    if (cutmen === null || graphs === null) return;
+    const resting = snapshot?.phase === "rest";
+    const corner = this.mapping.x(REST_CORNER_OFFSET);
+    for (const [index, graph] of cutmen.entries()) {
+      const sign = index === 0 ? -1 : 1;
+      const wanted = resting && graphs[index]!.stoolVisible ? 1 : 0;
+      const progress = this.cutmanProgress[index]!;
+      const next = progress + Math.sign(wanted - progress) * Math.min(Math.abs(wanted - progress), dt / CUTMAN_WALK_SECONDS);
+      this.cutmanProgress[index] = next;
+      const wasVisible = graph.boxer.root.visible;
+      graph.boxer.root.visible = next > 0.005;
+      if (!graph.boxer.root.visible) continue;
+      this.cutmanFrom.set(sign * CORNERMAN_APRON_DISTANCE, 0, -sign * (CORNERMAN_APRON_DISTANCE - 1));
+      this.cutmanTo.set(sign * (corner - CUTMAN_WORK_DISTANCE * Math.SQRT1_2), 0, -sign * (corner - CUTMAN_WORK_DISTANCE * Math.SQRT1_2));
+      const eased = next * next * (3 - 2 * next);
+      this.cornermanPosition.copy(this.cutmanFrom).lerp(this.cutmanTo, eased);
+      const last = this.cutmanLast[index]!;
+      if (!wasVisible) last.copy(this.cornermanPosition);
+      this.cornermanVelocity.copy(this.cornermanPosition).sub(last).divideScalar(Math.max(dt, 1e-3));
+      last.copy(this.cornermanPosition);
+      const travelling = next > 0.02 && next < 0.98;
+      const yaw = travelling
+        ? Math.atan2(this.cutmanTo.x - this.cutmanFrom.x, this.cutmanTo.z - this.cutmanFrom.z) + (wanted === 1 ? 0 : Math.PI)
+        : next >= 0.98
+          ? Math.atan2(sign, -sign)
+          : Math.atan2(-this.cutmanFrom.x, -this.cutmanFrom.z);
+      const trauma = snapshot?.fighters[index]?.trauma;
+      const side = trauma !== undefined && trauma.right_eye + trauma.right_cut > trauma.left_eye + trauma.left_cut ? -1 : 1;
+      graph.treat(next >= 0.98 && this.headCacheValid[index] ? this.headCache[index]! : null, side);
+      const state = refereeSnapshot(this.cornermanPosition, yaw, this.cornermanVelocity, this.mapping);
+      graph.update(state.self, state.focus, dt, time, false, "off", sampledTick);
+    }
+  }
+
   private drawHudOverlay(snapshot: EngineSnapshot | null): void {
     const resized = resizeHighDpi(this.hudCanvas);
     if (resized === null) return;
@@ -1377,6 +1430,13 @@ export class FightRenderer {
         graph.dispose();
       }
       this.cornermen = null;
+    }
+    if (this.cutmen !== null) {
+      for (const graph of this.cutmen) {
+        this.scene.remove(graph.boxer.root);
+        graph.dispose();
+      }
+      this.cutmen = null;
       for (const shirt of this.cornerShirts) shirt.dispose();
       this.cornerShirts.length = 0;
     }
