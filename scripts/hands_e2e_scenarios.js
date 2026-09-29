@@ -8,7 +8,7 @@
  * keyboard or touch input, reads the client's screen-reader status text, and writes screenshots to
  * $TMPDIR/hands-e2e.
  *
- *   node scripts/hands_e2e_scenarios.js ko|reconnect|rest|spectator|touch|mash|latency
+ *   node scripts/hands_e2e_scenarios.js ko|reconnect|rest|spectator|touch|mash|latency|soak
  */
 const { chromium, devices } = require('playwright');
 const { spawn } = require('node:child_process');
@@ -106,6 +106,7 @@ async function main() {
     touch: ['--rounds', '1', '--round-seconds', '40', '--rest-seconds', '5'],
     mash: ['--rounds', '1', '--round-seconds', '40', '--rest-seconds', '5'],
     latency: ['--rounds', '1', '--round-seconds', '45', '--rest-seconds', '5'],
+    soak: ['--rounds', '3', '--round-seconds', '120', '--rest-seconds', '15'],
   }[scenario];
   const server = await startServer(serverArgs, { oneWayDelayMs: scenario === 'latency' ? 110 : 0 });
   try {
@@ -260,6 +261,38 @@ async function main() {
       await B.page.screenshot({ path: `${out}/e2e-latency-B.png` });
       const final = await waitFor(B.page, (s) => Boolean(s.final), 90000, 'final');
       note('FINAL B:', JSON.stringify(final?.final ?? null).slice(0, 200));
+    }
+
+    if (scenario === 'soak') {
+      const sample = (page) => page.evaluate(() => ({
+        heapMb: typeof performance.memory === 'object' && performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null,
+        stats: window.__handsApp?.networkStats ?? null,
+      }));
+      const started = Date.now();
+      const samples = [];
+      let step = 0;
+      let final = null;
+      while (Date.now() - started < 8 * 60 * 1000) {
+        const sA = await status(A.page);
+        if (sA.final) { final = sA; break; }
+        // A measured pace: a jab every few seconds behind a held guard keeps the bout going for three rounds.
+        if (step % 4 === 0) await A.page.keyboard.press('f');
+        if (step % 4 === 2) await B.page.keyboard.press('j');
+        await A.page.keyboard.down('q'); await B.page.keyboard.down('q'); await wait(700); await A.page.keyboard.up('q'); await B.page.keyboard.up('q');
+        if (step % 6 === 0) { await A.page.keyboard.down('d'); await B.page.keyboard.down('a'); await wait(200); await A.page.keyboard.up('d'); await B.page.keyboard.up('a'); }
+        if (step % 7 === 3) { await A.page.keyboard.down('a'); await B.page.keyboard.down('d'); await wait(300); await A.page.keyboard.up('a'); await B.page.keyboard.up('d'); }
+        await wait(400);
+        step += 1;
+        if (step % 18 === 0) {
+          const [a, b] = [await sample(A.page), await sample(B.page)];
+          samples.push({ t: Math.round((Date.now() - started) / 1000), a, b });
+          note(`t=${samples.at(-1).t}s heap A ${a.heapMb} MB B ${b.heapMb} MB | latency A ${Math.round(a.stats?.inputLatencyMs ?? -1)} B ${Math.round(b.stats?.inputLatencyMs ?? -1)} | scale A ${a.stats?.resolutionScale} B ${b.stats?.resolutionScale} | ${sA.summary?.slice(0, 40)}`);
+        }
+      }
+      if (final === null) final = await waitFor(A.page, (s) => Boolean(s.final), 60000, 'final');
+      note('FINAL:', JSON.stringify(final?.final ?? null).slice(0, 220));
+      if (samples.length >= 2) note('heap growth A:', samples.at(-1).a.heapMb - samples[0].a.heapMb, 'MB; B:', samples.at(-1).b.heapMb - samples[0].b.heapMb, 'MB over', samples.at(-1).t - samples[0].t, 's');
+      await A.page.screenshot({ path: `${out}/e2e-soak-A-final.png` });
     }
 
     report.errors.push(...A.errors, ...B.errors);

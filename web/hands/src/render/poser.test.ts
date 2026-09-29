@@ -83,6 +83,21 @@ describe("fall direction", () => {
   });
 });
 
+describe("impact dent", () => {
+  it("dents the struck cheek on a hook and releases within a second", () => {
+    const { boxer, graph } = makeGraph();
+    graph.react("hit", "head", 1, "hook", "left", 300);
+    expect(boxer.headInjury.uniforms.uInjuryImpact.value.x).toBeLessThan(0);
+    expect(boxer.headInjury.uniforms.uInjuryImpactPush.value.x).toBeGreaterThan(1);
+    expect(boxer.headInjury.impactDepth).toBeGreaterThan(1);
+    run(graph, facingOpponent(baseFighter("one")), opponentFor("two"), 60, undefined);
+    expect(boxer.headInjury.impactDepth).toBeLessThan(0.2);
+    graph.react("hit", "body", 1, "straight", "right", 260);
+    expect(boxer.bodyInjury.uniforms.uInjuryImpact.value.y).toBeCloseTo(96.5, 1);
+    expect(boxer.bodyInjury.uniforms.uInjuryImpactPush.value.z).toBeLessThan(-1);
+  });
+});
+
 describe("transient reset", () => {
   it("snaps back to standing after a fall and can seed the lying pose directly", () => {
     const { boxer, graph } = makeGraph();

@@ -67,6 +67,8 @@ uniform vec4 uInjurySite[${INJURY_SITE_COUNT}];
 uniform float uInjurySwell[${INJURY_SITE_COUNT}];
 uniform float uInjuryJaw;
 uniform float uInjuryJawLevel;
+uniform vec4 uInjuryImpact;
+uniform vec3 uInjuryImpactPush;
 varying vec3 vInjuryPos;
 `;
 
@@ -82,6 +84,9 @@ vInjuryPos = transformed;
     injurySwell += uInjurySwell[i] * w * w;
   }
   transformed += objectNormal * injurySwell;
+  float impactDistance = distance(transformed, uInjuryImpact.xyz);
+  float impactWeight = 1.0 - smoothstep(0.0, max(uInjuryImpact.w, 0.001), impactDistance);
+  transformed += uInjuryImpactPush * (impactWeight * impactWeight);
   float jawMask = (1.0 - smoothstep(uInjuryJawLevel - 2.5, uInjuryJawLevel + 1.5, transformed.y)) * smoothstep(-6.0, 0.0, transformed.z);
   transformed.x += uInjuryJaw * 1.7 * jawMask;
   transformed.y -= uInjuryJaw * 0.9 * jawMask;
@@ -161,6 +166,8 @@ const ROUGHNESS_BODY = /* glsl */ `
 roughnessFactor = mix(roughnessFactor, 0.18, injuryWet);
 `;
 
+const IMPACT_RELEASE_RATE = 9;
+
 export class InjuryShading {
   readonly uniforms = {
     uInjurySite: { value: [] as THREE.Vector4[] },
@@ -170,6 +177,8 @@ export class InjuryShading {
     uInjuryBlood: { value: new Float32Array(INJURY_SITE_COUNT) },
     uInjuryJaw: { value: 0 },
     uInjuryJawLevel: { value: 114.5 },
+    uInjuryImpact: { value: new THREE.Vector4(0, -1000, 0, 1) },
+    uInjuryImpactPush: { value: new THREE.Vector3() },
     uInjuryWetness: { value: 1 },
   };
   private readonly index = new Map<string, number>();
@@ -208,6 +217,24 @@ export class InjuryShading {
     if (levels.swell !== undefined) this.uniforms.uInjurySwell.value[index] = THREE.MathUtils.clamp(levels.swell, 0, 2.2);
     if (levels.cut !== undefined) this.uniforms.uInjuryCut.value[index]!.y = THREE.MathUtils.clamp(levels.cut, 0, 1);
     if (levels.blood !== undefined) this.uniforms.uInjuryBlood.value[index] = THREE.MathUtils.clamp(levels.blood, 0, 1.4);
+  }
+
+  /** Dents the surface around a site along `push` (object-space centimetres); released by update(). */
+  impact(name: string, push: readonly [number, number, number], radius: number): void {
+    const site = this.uniforms.uInjurySite.value[this.slot(name)]!;
+    this.uniforms.uInjuryImpact.value.set(site.x, site.y, site.z, radius);
+    this.uniforms.uInjuryImpactPush.value.set(push[0], push[1], push[2]);
+  }
+
+  update(dt: number): void {
+    const push = this.uniforms.uInjuryImpactPush.value;
+    if (push.lengthSq() < 1e-6) return;
+    push.multiplyScalar(Math.exp(-IMPACT_RELEASE_RATE * dt));
+    if (push.lengthSq() < 1e-4) push.set(0, 0, 0);
+  }
+
+  get impactDepth(): number {
+    return this.uniforms.uInjuryImpactPush.value.length();
   }
 
   setJaw(amount: number): void {

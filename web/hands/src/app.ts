@@ -160,9 +160,9 @@ export class HandsApp {
     this.renderState();
   }
 
-  /** Smoothed input acknowledgement latency of the local fighter, for diagnostics. */
-  get networkStats(): { inputLatencyMs: number | null } {
-    return { inputLatencyMs: this.network?.inputLatencyMs ?? null };
+  /** Smoothed input acknowledgement latency of the local fighter and the render scale, for diagnostics. */
+  get networkStats(): { inputLatencyMs: number | null; resolutionScale: number | null } {
+    return { inputLatencyMs: this.network?.inputLatencyMs ?? null, resolutionScale: this.renderer?.resolutionScale ?? null };
   }
 
   private receiveSnapshot(snapshot: EngineSnapshot): void {

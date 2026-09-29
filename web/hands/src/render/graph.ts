@@ -335,6 +335,8 @@ export class BoxingGraph {
   private celebration = 0;
   private waveTime = 0;
   private wave = 0;
+  /** Pose lab: keep the impact dent at full depth for review. */
+  debugHoldImpact = false;
   private readonly feet: [FootState, FootState] = [
     { planted: new THREE.Vector3(), from: new THREE.Vector3(), to: new THREE.Vector3(), progress: 1, stepping: false, duration: 0.2 },
     { planted: new THREE.Vector3(), from: new THREE.Vector3(), to: new THREE.Vector3(), progress: 1, stepping: false, duration: 0.2 },
@@ -515,10 +517,24 @@ export class BoxingGraph {
       this.rootKick.velocity.z -= 0.45 * scale;
       if (kind === "block") this.guardKick = Math.max(this.guardKick, 0.9 * scale);
     }
+    if (kind === "hit") this.dentSurface(target, lateral, punchClass, amount);
     if (kind === "hit" && target === "head" && amount > 250) {
       this.fallSide = lateral;
       this.fallProne = punchClass === "hook";
     }
+  }
+
+  /** Transient compression of the struck surface at contact; the injury shading releases it. */
+  private dentSurface(target: Target, lateral: number, punchClass: PunchClass | null, amount: number): void {
+    const depth = THREE.MathUtils.clamp(1.1 + amount / 220, 1.1, 3.2);
+    if (target === "body") {
+      const site = punchClass === "hook" ? (lateral > 0 ? "rightRibs" : "leftRibs") : "solarPlexus";
+      this.boxer.bodyInjury.impact(site, [punchClass === "hook" ? lateral * depth * 0.8 : 0, 0, -depth], 9);
+      return;
+    }
+    if (punchClass === "hook") this.boxer.headInjury.impact(lateral > 0 ? "rightCheek" : "leftCheek", [lateral * depth, 0, -depth * 0.35], 5.5);
+    else if (punchClass === "uppercut") this.boxer.headInjury.impact("chin", [0, depth * 0.7, -depth * 0.6], 5);
+    else this.boxer.headInjury.impact(punchClass === "jab" ? "nose" : "mouth", [0, 0, -depth], 4.5);
   }
 
   private stepFeet(dt: number, mirror: number, speed: number, velocityWorld: THREE.Vector3, rootPosition: THREE.Vector3, yaw: number): void {
@@ -608,6 +624,10 @@ export class BoxingGraph {
     const simDt = dt * this.hitstopScale;
 
     this.syncAction(fighter, sampledTick, simDt);
+    if (!this.debugHoldImpact) {
+      this.boxer.headInjury.update(simDt);
+      this.boxer.bodyInjury.update(simDt);
+    }
 
     if (opponentHeadWorld !== undefined) {
       this.liveOpponentHead.copy(opponentHeadWorld);

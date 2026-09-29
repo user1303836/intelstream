@@ -216,6 +216,7 @@ export class ModelLab {
     if (this.params.get("pose") === "knockdown" && this.params.get("fall") === "prone" && this.elapsed % 6 < dt * 1.5) {
       graph.react("hit", "head", 1, "hook", "left", 420);
     }
+    graph.debugHoldImpact = this.params.get("dent") === "hold";
     graph.setResting(this.params.get("pose") === "seated");
     if (this.params.get("pose") === "celebrate") graph.celebrate(60);
     if (this.params.get("pose") === "wave_off") graph.waveOff(60);
