@@ -66,6 +66,22 @@ describe("celebration", () => {
   });
 });
 
+describe("wave-off", () => {
+  it("sweeps both gloves across overhead while waving the fight off", () => {
+    const { boxer, graph } = makeGraph();
+    const fighter = facingOpponent(baseFighter("one"));
+    const opponent = opponentFor("two");
+    graph.waveOff(4);
+    run(graph, fighter, opponent, 60, undefined);
+    const first = bone(boxer, "gloveL").clone();
+    expect(first.y).toBeGreaterThan(1.45);
+    run(graph, fighter, opponent, 12, undefined, 30, 1);
+    const later = bone(boxer, "gloveL");
+    expect(later.y).toBeGreaterThan(1.45);
+    expect(Math.abs(later.x - first.x)).toBeGreaterThan(0.15);
+  });
+});
+
 describe("skinned rig solver", () => {
   it("reproduces the rest limb frames when solving onto rest targets", () => {
     const { boxer } = makeGraph();

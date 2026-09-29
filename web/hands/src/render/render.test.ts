@@ -4,7 +4,7 @@ import { buildArena } from "./arena";
 import { CameraDirector } from "./camera";
 import { bloodPatternFor, Effects3D } from "./effects";
 import { drawHud, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, HUD_MAX_GUARD, HUD_MAX_POISE, RoundStatsTracker, scoreTotal } from "./hud";
-import { buildRing } from "./ring";
+import { buildRing, ropePress } from "./ring";
 import { resizeHighDpi } from "./viewport";
 import { PALETTES, worldMapping } from "./world";
 import { fighter, publicPlayers, snapshot } from "../test/fixtures";
@@ -450,6 +450,28 @@ describe("viewport and broadcast HUD", () => {
     const state = { ...snapshot(), phase_ticks_remaining: 1205 };
     drawHud(ctx, 800, 600, state, Object.fromEntries(publicPlayers.map((player) => [player.id, player])), "one", null, 0, 20);
     expect(texts).toContain("1:00");
+  });
+});
+
+describe("rope flex", () => {
+  it("presses into the nearest ropes only when a fighter is within reach of them", () => {
+    expect(ropePress(0, 0)).toEqual({ pressX: 0, pressZ: 0 });
+    expect(ropePress(2.82, 0).pressX).toBeGreaterThan(0.95);
+    expect(ropePress(2.82, 0).pressZ).toBe(0);
+    expect(ropePress(0, -2.82).pressZ).toBeGreaterThan(0.95);
+    expect(ropePress(2.6, 0).pressX).toBeGreaterThan(0.1);
+    expect(ropePress(2.6, 0).pressX).toBeLessThan(0.6);
+  });
+
+  it("writes fighter contacts into the rope shader uniforms and clears them", () => {
+    const ring = buildRing();
+    ring.setRopeContacts({ x: 2.82, z: 0.4 }, null);
+    expect(ring.ropeContacts[0].x).toBeCloseTo(2.82);
+    expect(ring.ropeContacts[0].y).toBeCloseTo(0.4);
+    expect(ring.ropeContacts[0].z).toBeGreaterThan(0.95);
+    expect(ring.ropeContacts[1].toArray()).toEqual([0, 0, 0, 0]);
+    ring.setRopeContacts(null, null);
+    expect(ring.ropeContacts[0].toArray()).toEqual([0, 0, 0, 0]);
   });
 });
 

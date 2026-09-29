@@ -428,6 +428,7 @@ export class FightRenderer {
     this.final = final;
     this.finalRevealAt = this.frameSeconds + finalRevealDelay(final);
     if (final === null || final.winner_id === null || !STOPPAGE_METHODS.has(final.method)) return;
+    this.referee?.waveOff();
     const index = this.buffer.latest()?.fighters.findIndex((fighter) => fighter.player_id === final.winner_id) ?? -1;
     if (index >= 0) this.graphs?.[index]?.celebrate();
   }
@@ -830,6 +831,7 @@ export class FightRenderer {
       const bz = this.mapping.z(b.y);
       separation = Math.hypot(ax - bx, az - bz);
       knockdown = a.is_downed || b.is_downed;
+      this.ring.setRopeContacts({ x: ax, z: az }, { x: bx, z: bz });
       this.tmpA.set(ax, 0, az);
       this.tmpB.set(bx, 0, bz);
       for (const [index, fighter] of snapshot.fighters.entries()) {

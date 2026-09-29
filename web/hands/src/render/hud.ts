@@ -135,7 +135,7 @@ function roundCard(ctx: CanvasRenderingContext2D, centerX: number, y: number, cl
 }
 
 function centerPanel(ctx: CanvasRenderingContext2D, width: number, height: number, title: string, subtitle: string, yOffset = 0): void {
-  const panelWidth = 320;
+  const panelWidth = Math.min(320, width - 24);
   const panelHeight = 78;
   const x = width / 2 - panelWidth / 2;
   const y = height / 2 - panelHeight / 2 + yOffset;
@@ -150,7 +150,7 @@ function centerPanel(ctx: CanvasRenderingContext2D, width: number, height: numbe
   ctx.fillText(title, width / 2, y + 34);
   ctx.fillStyle = "#c8d3e6";
   ctx.font = "600 12px Inter, system-ui, sans-serif";
-  ctx.fillText(subtitle, width / 2, y + 58);
+  ctx.fillText(fit(ctx, subtitle, panelWidth - 24), width / 2, y + 58);
 }
 
 export interface RoundPunchStats {
@@ -254,7 +254,7 @@ export function drawHud(
     ctx.fillStyle = "#e6ecf7";
     ctx.fillText(`${fit(ctx, downedName.toUpperCase(), width * 0.5)} IS DOWN`, width / 2, height * 0.16 + 24);
     ctx.restore();
-    const panelWidth = 380;
+    const panelWidth = Math.min(380, width - 24);
     const panelHeight = 150;
     const x = width / 2 - panelWidth / 2;
     const y = height * 0.24;

@@ -6,7 +6,49 @@ export interface BuiltRing {
   readonly materials: readonly THREE.Material[];
   readonly geometries: readonly THREE.BufferGeometry[];
   readonly textures: readonly THREE.Texture[];
+  /** Feeds the two fighters' world positions to the rope flex shader. */
+  readonly setRopeContacts: (a: { x: number; z: number } | null, b: { x: number; z: number } | null) => void;
+  readonly ropeContacts: readonly [THREE.Vector4, THREE.Vector4];
 }
+
+export interface RopePress {
+  readonly pressX: number;
+  readonly pressZ: number;
+}
+
+const ROPE_PRESS_START = 0.6;
+const ROPE_PRESS_FULL = 0.22;
+
+function smoothstep(edge0: number, edge1: number, value: number): number {
+  const t = Math.min(1, Math.max(0, (value - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+/** How hard a fighter at (x, z) leans into the x-facing and z-facing ropes (0..1 each). */
+export function ropePress(x: number, z: number): RopePress {
+  return {
+    pressX: smoothstep(ROPE_PRESS_START, ROPE_PRESS_FULL, RING_FIGHT_HALF - Math.abs(x)),
+    pressZ: smoothstep(ROPE_PRESS_START, ROPE_PRESS_FULL, RING_FIGHT_HALF - Math.abs(z)),
+  };
+}
+
+const ROPE_FLEX_GLSL = `
+vec3 ropeWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;
+bool ropeSideX = abs(ropeWorld.x) > abs(ropeWorld.z);
+vec3 ropeOut = ropeSideX ? vec3(sign(ropeWorld.x), 0.0, 0.0) : vec3(0.0, 0.0, sign(ropeWorld.z));
+float ropeAlong = ropeSideX ? ropeWorld.z : ropeWorld.x;
+float ropeFlex = 0.0;
+for (int ropeIndex = 0; ropeIndex < 2; ropeIndex += 1) {
+  vec4 contact = ropeIndex == 0 ? uRopeContactA : uRopeContactB;
+  float along = ropeSideX ? contact.y : contact.x;
+  float press = ropeSideX ? contact.z : contact.w;
+  float sameSide = ropeSideX ? step(0.0, ropeOut.x * contact.x) : step(0.0, ropeOut.z * contact.y);
+  ropeFlex += press * sameSide * (1.0 - smoothstep(0.0, 0.8, abs(ropeAlong - along)));
+}
+float ropeAnchor = smoothstep(0.0, 0.7, ${RING_FIGHT_HALF.toFixed(2)} - abs(ropeAlong));
+float ropeHeightWeight = 0.45 + 0.55 * smoothstep(0.4, 1.0, ropeWorld.y);
+transformed += ropeOut * min(1.0, ropeFlex) * 0.22 * ropeHeightWeight * ropeAnchor;
+`;
 
 function canvasTexture(size: number, draw: (ctx: CanvasRenderingContext2D, size: number) => void): THREE.CanvasTexture {
   const canvas = document.createElement("canvas");
@@ -143,12 +185,32 @@ export function buildRing(): BuiltRing {
     }
   }
 
+  const ropeContacts: [THREE.Vector4, THREE.Vector4] = [new THREE.Vector4(0, 0, 0, 0), new THREE.Vector4(0, 0, 0, 0)];
+  const ropeUniforms = { uRopeContactA: { value: ropeContacts[0] }, uRopeContactB: { value: ropeContacts[1] } };
   const ropeColors = [0xb91c1c, 0xe5e7eb, 0x1d4ed8];
   const ropeMats = ropeColors.map((color) => {
     const material = new THREE.MeshStandardMaterial({ color, roughness: 0.42, metalness: 0.05 });
+    material.onBeforeCompile = (shader) => {
+      shader.uniforms.uRopeContactA = ropeUniforms.uRopeContactA;
+      shader.uniforms.uRopeContactB = ropeUniforms.uRopeContactB;
+      shader.vertexShader = shader.vertexShader
+        .replace("#include <common>", "#include <common>\nuniform vec4 uRopeContactA;\nuniform vec4 uRopeContactB;")
+        .replace("#include <begin_vertex>", `#include <begin_vertex>${ROPE_FLEX_GLSL}`);
+    };
     materials.push(material);
     return material;
   });
+  const setRopeContacts = (a: { x: number; z: number } | null, b: { x: number; z: number } | null): void => {
+    for (const [index, contact] of [a, b].entries()) {
+      const target = ropeContacts[index]!;
+      if (contact === null) {
+        target.set(0, 0, 0, 0);
+        continue;
+      }
+      const press = ropePress(contact.x, contact.z);
+      target.set(contact.x, contact.z, press.pressX, press.pressZ);
+    }
+  };
   for (let side = 0; side < 4; side += 1) {
     const from = corners[side]!;
     const to = corners[(side + 1) % 4]!;
@@ -179,7 +241,7 @@ export function buildRing(): BuiltRing {
     }
   }
 
-  return { group, materials, geometries, textures };
+  return { group, materials, geometries, textures, setRopeContacts, ropeContacts };
 }
 
 export function disposeRing(ring: BuiltRing): void {

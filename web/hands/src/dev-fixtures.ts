@@ -83,6 +83,7 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
     const search = new URLSearchParams(window.location.search);
     const finisher = search.get("finisher");
     const forcedRest = search.get("phase") === "rest";
+    const pinned = search.get("pin") === "1";
     const knockdownCycle = finisher === null ? t % 14 : (t < 2.5 ? 0 : 12);
     if (knockdownCycle > 11 && knockdownCycle < 13.4) {
       two.is_downed = true;
@@ -99,6 +100,12 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
         eventId += 1;
         events.push({ event_id: eventId, tick, kind: "knockdown", actor_id: one.player_id, target_id: two.player_id, amount: 420, detail: "knockdown", blood: 60, direction: 1, action_id: null });
       }
+    }
+    if (pinned) {
+      two.x = 460;
+      two.y = 40;
+      one.x = 330;
+      one.y = 20;
     }
     if (forcedRest) {
       for (const [fighter, sign] of [[one, -1], [two, 1]] as const) {
