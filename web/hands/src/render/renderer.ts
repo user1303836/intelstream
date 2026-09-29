@@ -16,6 +16,7 @@ import { Effects3D, type BakedPart } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, type ArcadeDislocation } from "./graph";
 import { drawHud, finalRevealDelay, RoundStatsTracker, STOPPAGE_METHODS, RoundClock } from "./hud";
 import { NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE } from "./injury";
+import { OFFICIAL_LOOKS, lookFor } from "./looks";
 import { BLUE_CORNER_OUTFIT, CUTMAN_OUTFIT, RED_CORNER_OUTFIT, REFEREE_OUTFIT } from "./outfit";
 import { ResolutionScaler } from "./quality";
 import { planKnockoutReplay, replayTick, type ReplayPlan } from "./replay";
@@ -301,6 +302,7 @@ export function bakeSkinnedPart(
   }
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.BufferAttribute(baked, 3));
+  geometry.setAttribute("bindPosition", positions.clone());
   const uv = source.getAttribute("uv");
   if (uv !== undefined) geometry.setAttribute("uv", uv.clone());
   const index = source.getIndex();
@@ -481,6 +483,7 @@ export class FightRenderer {
   private readonly closeUpTarget = new THREE.Vector3();
   private readonly closeUpFacing = new THREE.Vector3();
   private readonly drawnFighters: [FighterSnapshot, FighterSnapshot] = [blankFighter("a"), blankFighter("b")];
+  private readonly lookIds: [string | null, string | null] = [null, null];
   private readonly downedPoolAccumulators: [number, number] = [0, 0];
   private readonly downedPoolCounts: [number, number] = [0, 0];
   private bloodLevel: BloodLevel = "full";
@@ -603,17 +606,18 @@ export class FightRenderer {
       .then(async (gltf) => {
         if (this.destroyed) return;
         const first = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
-        const second = new SkinnedBoxer(gltf, { skin: 0x6e4128, gear: 0xb91c1c, tint: 0xa38a7c });
+        const second = new SkinnedBoxer(gltf, { skin: 0x6e4128, gear: 0xb91c1c });
         this.graphs = [new BoxingGraph(first, this.mapping), new BoxingGraph(second, this.mapping)];
+        this.lookIds.fill(null);
         this.syncInjuryPresentation(0);
         this.syncInjuryPresentation(1);
-        const official = new SkinnedBoxer(gltf, { skin: 0xc79b76, gear: 0x3b57b8, tint: 0xf2dccb, outfit: REFEREE_OUTFIT });
+        const official = new SkinnedBoxer(gltf, { skin: 0xc79b76, gear: 0x3b57b8, look: OFFICIAL_LOOKS.referee, outfit: REFEREE_OUTFIT });
         this.referee = new BoxingGraph(official, this.mapping, { referee: true });
-        const blueCorner = new SkinnedBoxer(gltf, { skin: 0x8a5a3b, gear: 0x1b2230, tint: 0xa98468, outfit: BLUE_CORNER_OUTFIT });
-        const redCorner = new SkinnedBoxer(gltf, { skin: 0xd9a77c, gear: 0x1b2230, tint: 0xffeedd, outfit: RED_CORNER_OUTFIT });
+        const blueCorner = new SkinnedBoxer(gltf, { skin: 0x8a5a3b, gear: 0x1b2230, look: OFFICIAL_LOOKS.blueCorner, outfit: BLUE_CORNER_OUTFIT });
+        const redCorner = new SkinnedBoxer(gltf, { skin: 0xd9a77c, gear: 0x1b2230, look: OFFICIAL_LOOKS.redCorner, outfit: RED_CORNER_OUTFIT });
         this.cornermen = [new BoxingGraph(blueCorner, this.mapping, { referee: true }), new BoxingGraph(redCorner, this.mapping, { referee: true })];
-        const blueCutman = new SkinnedBoxer(gltf, { skin: 0xb98c66, gear: 0x1b2230, tint: 0xd8b498, outfit: CUTMAN_OUTFIT });
-        const redCutman = new SkinnedBoxer(gltf, { skin: 0x5a3a26, gear: 0x1b2230, tint: 0x8a6650, outfit: CUTMAN_OUTFIT });
+        const blueCutman = new SkinnedBoxer(gltf, { skin: 0xb98c66, gear: 0x1b2230, look: OFFICIAL_LOOKS.blueCutman, outfit: CUTMAN_OUTFIT });
+        const redCutman = new SkinnedBoxer(gltf, { skin: 0x5a3a26, gear: 0x1b2230, look: OFFICIAL_LOOKS.redCutman, outfit: CUTMAN_OUTFIT });
         this.cutmen = [new BoxingGraph(blueCutman, this.mapping, { referee: true }), new BoxingGraph(redCutman, this.mapping, { referee: true })];
         blueCutman.root.visible = false;
         redCutman.root.visible = false;
@@ -680,6 +684,7 @@ export class FightRenderer {
       const present = alone ? id === this.viewerId || (this.viewerId === null && index === 0) : true;
       graph.boxer.root.visible = present;
       if (!present) continue;
+      this.wearLook(index === 0 ? 0 : 1, id);
       const sign = index === 0 ? -1 : 1;
       const idleTick = Math.floor(time * this.simulation.tick_rate);
       const self = { ...blankFighter(id), x: alone ? 0 : sign * 180, y: alone ? -70 : 0, facing: alone ? 1 : -sign, facing_x: alone ? 0 : -sign * 1000, facing_y: alone ? -1000 : 0, ...(alone ? shadowBoxing(idleTick) : {}) };
@@ -889,7 +894,7 @@ export class FightRenderer {
       const pose = this.headWorldPose(index);
       if (pose !== null) {
         const graph = this.graphs?.[index];
-        const baked = graph === undefined ? undefined : bakeSkinnedPart(graph.boxer.headMesh, pose.position, pose.quaternion, aboveNeckCut);
+        const baked = graph === undefined ? undefined : { ...bakeSkinnedPart(graph.boxer.headMesh, pose.position, pose.quaternion, aboveNeckCut), look: graph.boxer.look };
         this.effects.decapitate(
           index,
           pose.position,
@@ -1286,6 +1291,8 @@ export class FightRenderer {
       }
       const graphs = this.graphs;
       if (graphs !== null) {
+        this.wearLook(0, a.player_id);
+        this.wearLook(1, b.player_id);
         const headA = this.headCacheValid[0] ? this.headCache[0] : undefined;
         const headB = this.headCacheValid[1] ? this.headCache[1] : undefined;
         graphs[0].boxer.root.visible = true;
@@ -1437,6 +1444,13 @@ export class FightRenderer {
     const predicted = { ...viewer, x: viewer.x + this.localOffset.dx, y: viewer.y + this.localOffset.dy };
     const fighters: [FighterSnapshot, FighterSnapshot] = index === 0 ? [predicted, snapshot.fighters[1]] : [snapshot.fighters[0], predicted];
     return { ...snapshot, fighters };
+  }
+
+  /** Gives the fighter in a seat the look of the player who holds it. */
+  private wearLook(index: 0 | 1, playerId: string): void {
+    if (this.lookIds[index] === playerId) return;
+    this.lookIds[index] = playerId;
+    this.graphs?.[index]?.boxer.setLook(lookFor(playerId));
   }
 
   /** The fighters as drawn: eased apart when the engine has them closer than two bodies can stand. */

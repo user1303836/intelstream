@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { buildChunkGeometry, buildWoundGeometry } from "./gore";
 import { SkinnedBoxer, loadBoxerGlb } from "./graph";
 import { HEAD_SITES, InjuryShading, NECK_CUT_HEIGHT } from "./injury";
+import { SCANNED_LOOK } from "./looks";
 import { Effects3D } from "./effects";
 import { aboveNeckCut, bakeSkinnedPart, closeUpAngle } from "./renderer";
 import { ROPE_LINE } from "./world";
@@ -104,7 +105,7 @@ describe("neck cut", () => {
   });
 
   it("bakes only the part of the head mesh above the cut", () => {
-    const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8, tint: 0xa38a7c });
+    const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8, look: { ...SCANNED_LOOK, tint: 0xa38a7c } });
     boxer.root.updateMatrixWorld(true);
     const pivot = boxer.bone("head")!;
     const whole = bakeSkinnedPart(boxer.headMesh, pivot.getWorldPosition(new THREE.Vector3()), pivot.getWorldQuaternion(new THREE.Quaternion()));

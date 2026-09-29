@@ -2,6 +2,7 @@ import * as THREE from "three";
 import type { BloodLevel } from "../settings";
 import type { CombatEvent, Hand } from "../types";
 import { buildChunkGeometry, buildWoundGeometry, woundTexture } from "./gore";
+import { LookShading, SCANNED_LOOK, type FighterLook } from "./looks";
 import { CANVAS_TOP, RING_FIGHT_HALF, ROPE_LINE } from "./world";
 
 const MAX_DROPLETS = 900;
@@ -35,9 +36,12 @@ interface Droplet {
 }
 
 export interface BakedPart {
+  /** Carries the mesh's bind positions in a `bindPosition` attribute. */
   readonly geometry: THREE.BufferGeometry;
   readonly map: THREE.Texture | null;
   readonly color: number;
+  /** Whose head it is, so it keeps its hair and beard once it is off. */
+  readonly look?: FighterLook;
 }
 
 interface Mist {
@@ -70,6 +74,8 @@ interface SeveredHead {
   readonly cap: THREE.Mesh;
   /** A cap that sits on the lowest point of the part; otherwise it keeps the place it was built with. */
   readonly capAtBase: boolean;
+  /** Hair and beard of a severed head; null for a hand. */
+  readonly look: LookShading | null;
   baked: THREE.BufferGeometry | null;
   readonly radius: number;
   active: boolean;
@@ -313,6 +319,7 @@ export class Effects3D {
     for (let i = 0; i < MAX_HEADS; i += 1) {
       const headMaterial = new THREE.MeshStandardMaterial({ color: 0x8a4d32, roughness: 0.76, metalness: 0 });
       this.headMaterials.push(headMaterial);
+      const headLook = new LookShading(headMaterial, true);
       const headMesh = new THREE.Mesh(this.headGeometry, headMaterial);
       headMesh.scale.set(0.82, 1.08, 0.9);
       headMesh.castShadow = true;
@@ -323,7 +330,7 @@ export class Effects3D {
       cap.rotation.x = HEAD_WOUND_TILT;
       cap.visible = false;
       headMesh.add(cap);
-      this.heads.push({ mesh: headMesh, defaultGeometry: this.headGeometry, defaultScale: headMesh.scale.clone(), cap, capAtBase: false, baked: null, radius: HEAD_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
+      this.heads.push({ mesh: headMesh, defaultGeometry: this.headGeometry, defaultScale: headMesh.scale.clone(), cap, capAtBase: false, look: headLook, baked: null, radius: HEAD_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
 
       const stumpMesh = new THREE.Mesh(this.stumpGeometry, this.stumpMaterial);
       stumpMesh.visible = false;
@@ -343,7 +350,7 @@ export class Effects3D {
       cap.position.y = 0.02;
       cap.visible = false;
       handMesh.add(cap);
-      this.hands.push({ mesh: handMesh, defaultGeometry: this.handGeometry, defaultScale: handMesh.scale.clone(), cap, capAtBase: true, baked: null, radius: HAND_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
+      this.hands.push({ mesh: handMesh, defaultGeometry: this.handGeometry, defaultScale: handMesh.scale.clone(), cap, capAtBase: true, look: null, baked: null, radius: HAND_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
 
       const stumpMesh = new THREE.Mesh(this.wristStumpGeometry, this.stumpMaterial);
       stumpMesh.visible = false;
@@ -663,6 +670,7 @@ export class Effects3D {
       part.baked = baked.geometry;
       part.mesh.scale.setScalar(1);
       material.map = baked.map;
+      part.look?.set(baked.look ?? SCANNED_LOOK);
       material.color.setHex(baked.color);
       baked.geometry.computeBoundingBox();
       const box = baked.geometry.boundingBox;

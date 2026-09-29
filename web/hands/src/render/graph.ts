@@ -9,6 +9,7 @@ import { BONE_ADAPTER } from "./skeleton";
 export { BONE_ADAPTER };
 import { FIGHTER_TEXTURE_DATA_URLS } from "../assets/fighter-textures";
 import { BODY_SITES, HEAD_SITES, InjuryShading, applyBodyTrauma, applyHeadTrauma } from "./injury";
+import { LookShading, SCANNED_LOOK, type FighterLook } from "./looks";
 import { applyOutfitShading, buildCuffGeometry, buildHandGeometry, type OfficialOutfit, type OutfitPart } from "./outfit";
 import { PoseSolver, STANCE, easeIn, easeOut, mirrorX, smoothstep, vec, type FootTarget, type HandTarget, type PoseDescription } from "./poser";
 import { SolvedRig } from "./rig";
@@ -104,7 +105,7 @@ export function applyFighterSkin(target: THREE.Object3D, palette: BoxerPaletteCo
       const color = sourceName === "GlovesMat0" ? palette.gear
         : sourceName === "PantsMat0" ? (outfit?.trousers ?? palette.gear)
         : sourceName === "ShoesMat0" && outfit !== undefined ? outfit.shoes
-        : isSkin ? (palette.tint ?? 0xffffff) : 0xffffff;
+        : 0xffffff;
       const map = fighterTexture(textureName);
       material = isSkin
         ? new THREE.MeshPhysicalMaterial({ map, color, roughness: 0.58, metalness: 0.02, clearcoat: 0.25, clearcoatRoughness: 0.6 })
@@ -133,8 +134,8 @@ export function applyFighterSkin(target: THREE.Object3D, palette: BoxerPaletteCo
 export interface BoxerPaletteColors {
   readonly skin: number;
   readonly gear: number;
-  /** Multiplies the skin textures; white leaves the scanned skin tone as it is. */
-  readonly tint?: number;
+  /** Skin tone, hair, beard and face shape; the scanned man when omitted. */
+  readonly look?: FighterLook;
   /** Dresses the body as a ring official and swaps the gloves for hands. */
   readonly outfit?: OfficialOutfit;
 }
@@ -171,6 +172,8 @@ export class SkinnedBoxer {
   readonly skinBaseColor: THREE.Color;
   readonly headInjury: InjuryShading;
   readonly bodyInjury: InjuryShading;
+  private readonly headLook: LookShading;
+  private readonly bareHand: THREE.MeshStandardMaterial | null;
 
   constructor(gltf: GLTF, palette: BoxerPaletteColors) {
     const instance = cloneSkeleton(gltf.scene);
@@ -204,7 +207,10 @@ export class SkinnedBoxer {
     }
     this.root.updateMatrixWorld(true);
     this.rig = new SolvedRig(this.root);
-    if (palette.outfit !== undefined) this.addHands(palette.outfit, palette.tint ?? 0xffffff);
+    // Last on, so it runs first in the shader: the look, then the clothes over it, then the injuries.
+    this.headLook = new LookShading(this.headMeshes[0]!.material as THREE.MeshStandardMaterial);
+    this.bareHand = palette.outfit === undefined ? null : this.addHands(palette.outfit);
+    this.setLook(palette.look ?? SCANNED_LOOK);
     const rigMetrics = this.rig.metrics;
     this.metrics = {
       armUpper: rigMetrics.armL.upper,
@@ -257,10 +263,22 @@ export class SkinnedBoxer {
     for (const mesh of this.handMeshes[side]) mesh.visible = !value && !this.dressed;
   }
 
-  private addHands(outfit: OfficialOutfit, tint: number): void {
+  /** Changes who this fighter is: skin tone, hair, beard and face shape. */
+  setLook(look: FighterLook): void {
+    this.headLook.set(look);
+    for (const material of this.skinMaterials) material.color.setHex(look.tint);
+    this.bareHand?.color.copy(SCANNED_SKIN).multiply(this.skinMaterials[0]!.color);
+  }
+
+  get look(): FighterLook {
+    return this.headLook.look;
+  }
+
+  /** Returns the material of bare hands, which follows the skin tone, or null for gloved ones. */
+  private addHands(outfit: OfficialOutfit): THREE.MeshStandardMaterial | null {
     const gloved = outfit.gloves !== null;
     const hand = new THREE.MeshStandardMaterial({
-      color: gloved ? outfit.gloves! : SCANNED_SKIN.clone().multiply(new THREE.Color(tint)),
+      color: gloved ? outfit.gloves! : SCANNED_SKIN,
       roughness: gloved ? 0.38 : 0.6,
       metalness: 0.02,
     });
@@ -285,6 +303,7 @@ export class SkinnedBoxer {
         bone.add(mesh);
       }
     }
+    return gloved ? null : hand;
   }
 
   setSkinClearcoat(value: number): void {

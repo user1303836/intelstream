@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import { SkinnedBoxer, loadBoxerGlb } from "./graph";
+import { SCANNED_LOOK } from "./looks";
 import { CUTMAN_OUTFIT, HAND_LENGTH, REFEREE_OUTFIT, applyOutfitShading, buildCuffGeometry, buildHandGeometry } from "./outfit";
 
 const gltf = await loadBoxerGlb();
@@ -123,7 +124,7 @@ describe("dressed official", () => {
   });
 
   it("gives the cutman examination gloves in the glove colour", () => {
-    const boxer = new SkinnedBoxer(gltf, { skin: 0xb98c66, gear: 0x1b2230, tint: 0xd8b498, outfit: CUTMAN_OUTFIT });
+    const boxer = new SkinnedBoxer(gltf, { skin: 0xb98c66, gear: 0x1b2230, look: { ...SCANNED_LOOK, tint: 0xd8b498 }, outfit: CUTMAN_OUTFIT });
     const hand = boxer.rig.bones.gloveR.getObjectByName("hand-right") as THREE.Mesh;
     expect((hand.material as THREE.MeshStandardMaterial).color.getHex()).toBe(CUTMAN_OUTFIT.gloves);
     expect(boxer.skin.color.getHex()).toBe(0xd8b498);

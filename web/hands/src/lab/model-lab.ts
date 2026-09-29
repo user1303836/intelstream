@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "../render/graph";
+import { OFFICIAL_LOOKS, lookFor, type FighterLook } from "../render/looks";
 import { BLUE_CORNER_OUTFIT, CUTMAN_OUTFIT, RED_CORNER_OUTFIT, REFEREE_OUTFIT, type OfficialOutfit } from "../render/outfit";
 import { GloveTrail } from "../render/trails";
 import { worldMapping } from "../render/world";
@@ -13,14 +14,15 @@ import type { FighterSnapshot, Hand, PunchClass, Target } from "../types";
  * hit_head, hit_body, block, knockdown, getup, stunned, taunt, clinch, seated, celebrate, wave_off, break, touch_gloves, walk),
  * t (seconds into the pose), stance (orthodox|southpaw), cam (front|side|
  * three-quarter|top|back), skeleton (1), outfit (referee|corner_blue|corner_red|cutman) to
- * show a ring official, whose poses are idle, count, attend, treat, wave_off and break.
+ * show a ring official, whose poses are idle, count, attend, treat, wave_off and break, and
+ * player (any id) to show the fighter that player gets.
  */
 
-const OUTFITS: Readonly<Record<string, { readonly outfit: OfficialOutfit; readonly tint: number }>> = {
-  referee: { outfit: REFEREE_OUTFIT, tint: 0xf2dccb },
-  corner_blue: { outfit: BLUE_CORNER_OUTFIT, tint: 0xa98468 },
-  corner_red: { outfit: RED_CORNER_OUTFIT, tint: 0xffeedd },
-  cutman: { outfit: CUTMAN_OUTFIT, tint: 0xd8b498 },
+const OUTFITS: Readonly<Record<string, { readonly outfit: OfficialOutfit; readonly look: FighterLook }>> = {
+  referee: { outfit: REFEREE_OUTFIT, look: OFFICIAL_LOOKS.referee },
+  corner_blue: { outfit: BLUE_CORNER_OUTFIT, look: OFFICIAL_LOOKS.blueCorner },
+  corner_red: { outfit: RED_CORNER_OUTFIT, look: OFFICIAL_LOOKS.redCorner },
+  cutman: { outfit: CUTMAN_OUTFIT, look: OFFICIAL_LOOKS.blueCutman },
 };
 
 type Draft = { -readonly [K in keyof FighterSnapshot]: FighterSnapshot[K] };
@@ -170,7 +172,10 @@ export class ModelLab {
     try {
       const gltf = await loadBoxerGlb();
       const official = OUTFITS[this.params.get("outfit") ?? ""];
-      this.boxer = new SkinnedBoxer(gltf, official === undefined ? { skin: 0xa9744f, gear: 0x1d4ed8 } : { skin: 0xa9744f, gear: 0x1b2230, ...official });
+      const player = this.params.get("player");
+      this.boxer = new SkinnedBoxer(gltf, official === undefined
+        ? { skin: 0xa9744f, gear: 0x1d4ed8, ...(player === null ? {} : { look: lookFor(player) }) }
+        : { skin: 0xa9744f, gear: 0x1b2230, ...official });
       this.graph = new BoxingGraph(this.boxer, worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }), { referee: official !== undefined });
       this.scene.add(this.boxer.root);
       this.trails = [new GloveTrail(new THREE.Color(0xdbe4ff)), new GloveTrail(new THREE.Color(0xdbe4ff))];
