@@ -8,7 +8,7 @@
  * keyboard or touch input, reads the client's screen-reader status text, and writes screenshots to
  * $TMPDIR/hands-e2e.
  *
- *   node scripts/hands_e2e_scenarios.js ko|reconnect|rest|spectator|touch
+ *   node scripts/hands_e2e_scenarios.js ko|reconnect|rest|spectator|touch|mash|latency
  */
 const { chromium, devices } = require('playwright');
 const { spawn } = require('node:child_process');
@@ -85,11 +85,19 @@ async function main() {
     rest: ['--rounds', '2', '--round-seconds', '14', '--rest-seconds', '9'],
     spectator: ['--rounds', '1', '--round-seconds', '30', '--rest-seconds', '5'],
     touch: ['--rounds', '1', '--round-seconds', '40', '--rest-seconds', '5'],
+    mash: ['--rounds', '1', '--round-seconds', '40', '--rest-seconds', '5'],
+    latency: ['--rounds', '1', '--round-seconds', '45', '--rest-seconds', '5'],
   }[scenario];
   const server = await startServer(serverArgs);
   try {
     const A = await open('Alpha');
     const B = await open('Bravo', { mobile: scenario === 'touch' });
+    if (scenario === 'latency') {
+      const cdp = await B.context.newCDPSession(B.page);
+      await cdp.send('Network.enable');
+      await cdp.send('Network.emulateNetworkConditions', { offline: false, latency: 220, downloadThroughput: 1_500_000, uploadThroughput: 750_000 });
+      note('B on emulated 220 ms latency link');
+    }
     const startedState = await waitFor(A.page, (s) => /countdown|fight/.test(s.summary ?? ''), 60000, 'bout start');
     note('bout started:', startedState !== null);
     await waitFor(A.page, (s) => /\. fight\./.test(s.summary ?? ''), 20000, 'fight phase');
@@ -198,6 +206,42 @@ async function main() {
       note('A summary after :', after.summary?.slice(0, 200));
       const final = await waitFor(A.page, (s) => Boolean(s.final), 90000, 'final');
       note('FINAL:', JSON.stringify(final?.final ?? null).slice(0, 200));
+    }
+
+    if (scenario === 'mash') {
+      const keys = ['f', 'j', 'r', 'u', 'g', 'h', 't', 'y', 'q', 'e', 'z', 'x', 'c', 'v'];
+      const started = Date.now();
+      let presses = 0;
+      while (Date.now() - started < 15000) {
+        const key = keys[presses % keys.length];
+        await A.page.keyboard.press(key, { delay: 0 });
+        presses += 1;
+        if (presses % 40 === 0) { await A.page.keyboard.down('d'); await wait(40); await A.page.keyboard.up('d'); }
+      }
+      note('presses in 15 s:', presses, `(${(presses / 15).toFixed(0)}/s)`);
+      const after = await status(A.page);
+      note('A after mash:', after.status, '|', after.summary?.slice(0, 120));
+      note('B after mash:', (await status(B.page)).status);
+      const final = await waitFor(A.page, (s) => Boolean(s.final), 90000, 'final');
+      note('FINAL:', JSON.stringify(final?.final ?? null).slice(0, 200));
+    }
+
+    if (scenario === 'latency') {
+      const started = Date.now();
+      let step = 0;
+      while (Date.now() - started < 25000) {
+        await A.page.keyboard.press(['f', 'r', 'g'][step % 3]);
+        await B.page.keyboard.press(['j', 'u', 'h'][step % 3]);
+        if (step % 4 === 0) { await B.page.keyboard.down('a'); await wait(150); await B.page.keyboard.up('a'); }
+        await wait(420);
+        step += 1;
+      }
+      const sA = await status(A.page); const sB = await status(B.page);
+      note('A:', sA.status, '|', sA.summary?.slice(0, 140));
+      note('B:', sB.status, '|', sB.summary?.slice(0, 140));
+      await B.page.screenshot({ path: `${out}/e2e-latency-B.png` });
+      const final = await waitFor(B.page, (s) => Boolean(s.final), 90000, 'final');
+      note('FINAL B:', JSON.stringify(final?.final ?? null).slice(0, 200));
     }
 
     report.errors.push(...A.errors, ...B.errors);
