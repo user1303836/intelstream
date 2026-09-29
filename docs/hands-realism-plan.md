@@ -62,17 +62,26 @@ Presentation and network
 Every phase lands as its own commits with Python and Vitest coverage, a
 rebuilt committed bundle, and screenshots captured through headless Chromium.
 
-## Status (2026-09-28)
+## Status (2026-09-29)
 
 All five phases landed on `feature/hands-realism` (PR #293). Beyond the plan, the branch also
 carries: adaptive render resolution with a no-gain revert, crowd excitement, rest-phase corner
-walk with stools (engine + client), anti-parallel facing fix, knockout presentation (held result
-panel, winner celebration, referee wave-off), portrait framing with a compact scoreboard, per-round
-punch stats, rope flex under a pinned fighter, and face-down knockdowns after hooks.
+walk with stools and a cutman who climbs in to work the worse eye (engine + client), anti-parallel
+facing fix, knockout presentation (slow-motion replay, close-up, held result panel, winner
+celebration, referee wave-off), portrait framing with a compact scoreboard, per-round and per-bout
+punch stats, rope flex under a pinned fighter, face-down knockdowns after hooks, a real clinch
+tie-up (the engine draws the fighters to a hold distance; one hooks over, the other under), a
+legible showboat taunt, glove trails on fast punches, a rendered root that follows the engine at a
+fixed speed per second, a broken nose under heavy head trauma, a glove touch before the opening
+bell, a shadow-boxing waiting screen, rematches, plain-language failure text and a copyable
+diagnostics panel.
 
 Review harnesses: `?model-lab=1&pose=...` (pose lab), `?fixture=1` with `&finisher=head|hand`,
-`&phase=rest`, `&pin=1`, `&platform=mobile`, and `?lab=1` (golden replay).
+`&phase=rest`, `&pin=1`, `&platform=mobile`, `?lab=1` (golden replay), and the Discord-free
+real-stack harness (`scripts/hands_e2e_server.py` plus `scripts/hands_e2e_scenarios.js` with the
+ko, reconnect, rest, spectator, touch, mash, latency, soak, background, rematch, rematchloop and
+clinch scenarios; see the README).
 
 Considered and not done: starting round 1 from the corners (the engine tests and the golden
-replay schedule assume the centre start), a Discord-free end-to-end run of the real client (the
-launch requires a live Activity instance).
+replay schedule assume the centre start). A live Discord Activity launch with the server's players
+still has to happen outside this repository's tooling.
