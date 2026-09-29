@@ -502,12 +502,13 @@ export class BoxingGraph {
     const scale = clamp(0.55 + amount / 320, 0.55, 1.6) * (kind === "block" ? 0.35 : 1);
     const lateral = hand === "left" ? 1 : hand === "right" ? -1 : direction >= 0 ? -1 : 1;
     if (target === "body") {
-      this.torsoKick.velocity.x += 3.2 * scale;
-      this.rootKick.velocity.z -= 0.35 * scale;
+      this.torsoKick.velocity.x += 4.6 * scale;
+      this.rootKick.velocity.z -= 0.45 * scale;
       this.headKick.velocity.z -= 0.6 * scale;
-      this.headKick.velocity.y -= 0.4 * scale;
+      this.headKick.velocity.y -= 0.7 * scale;
       this.guardKick = Math.max(this.guardKick, 0.6 * scale);
     } else {
+      if (kind === "hit") this.guardKick = Math.max(this.guardKick, 0.4 * scale);
       switch (punchClass) {
         case "hook":
           this.headKick.velocity.x += 2.6 * scale * lateral;
