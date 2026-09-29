@@ -7,6 +7,7 @@ export interface GameState {
   readonly playerId: string | null;
   readonly role: ConnectionRole | null;
   readonly players: Readonly<Record<string, PublicPlayer>>;
+  readonly playerOrder: readonly string[];
   readonly simulation: SimulationInfo | null;
   readonly snapshot: EngineSnapshot | null;
   readonly final: FinalMessage | null;
@@ -15,7 +16,7 @@ export interface GameState {
   readonly reconnectMs: number;
   readonly safeError: string | null;
 }
-export const initialState: GameState = { stage: "bootstrapping", player: null, playerId: null, role: null, players: {}, simulation: null, snapshot: null, final: null, serverTick: 0, nextSequence: 0, reconnectMs: 0, safeError: null };
+export const initialState: GameState = { stage: "bootstrapping", player: null, playerId: null, role: null, players: {}, playerOrder: [], simulation: null, snapshot: null, final: null, serverTick: 0, nextSequence: 0, reconnectMs: 0, safeError: null };
 export type StateAction = { type: "bootstrap"; simulation: SimulationInfo } | { type: "authorized"; player: TokenPlayer } | { type: "connecting" } | { type: "message"; message: ServerMessage } | { type: "reconnect-tick"; remainingMs: number } | { type: "fatal"; code: string };
 const mapPlayers = (players: readonly PublicPlayer[]): Readonly<Record<string, PublicPlayer>> => Object.fromEntries(players.map((player) => [player.id, player]));
 
@@ -27,10 +28,10 @@ export function reduceState(state: GameState, action: StateAction): GameState {
   if (action.type === "fatal") return { ...state, stage: "fatal", safeError: action.code, reconnectMs: 0 };
   const message = action.message;
   switch (message.type) {
-    case "welcome": return { ...state, playerId: message.role === "fighter" ? message.player_id : null, role: message.role, players: mapPlayers(message.players), serverTick: message.server_tick, nextSequence: message.role === "fighter" ? message.next_sequence : 0, safeError: null };
+    case "welcome": return { ...state, playerId: message.role === "fighter" ? message.player_id : null, role: message.role, players: mapPlayers(message.players), playerOrder: message.players.map((player) => player.id), serverTick: message.server_tick, nextSequence: message.role === "fighter" ? message.next_sequence : 0, safeError: null };
     case "ticket": return state;
     case "waiting": return { ...state, stage: "waiting" };
-    case "ready": return { ...state, stage: state.snapshot?.phase ?? "countdown", players: mapPlayers(message.players) };
+    case "ready": return { ...state, stage: state.snapshot?.phase ?? "countdown", players: mapPlayers(message.players), playerOrder: message.players.map((player) => player.id) };
     case "paused": return { ...state, stage: "paused", reconnectMs: message.grace_ms };
     case "resumed": return { ...state, stage: state.snapshot?.phase ?? "countdown", reconnectMs: 0 };
     case "snapshot": return { ...state, stage: message.payload.phase, snapshot: message.payload, serverTick: Math.max(state.serverTick, message.payload.tick) };

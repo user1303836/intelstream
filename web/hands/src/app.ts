@@ -1,8 +1,11 @@
+import { RoundClock } from "./render/hud";
 import { AudioFeedback } from "./audio";
 import { ClientError, safeError } from "./api";
 import { authorizeDiscord, type DiscordSession } from "./discord";
+import { describeError } from "./errors";
 import { HapticFeedback } from "./haptics";
 import { CONTROL_HELP } from "./input/bindings";
+import { coarsePointer } from "./input/touch";
 import { InputController } from "./input/input";
 import { EventDeduplicator } from "./interpolation";
 import { NetworkController } from "./network";
@@ -12,6 +15,15 @@ import { initialState, reduceState, type GameState } from "./state";
 import type { EngineSnapshot, ServerMessage } from "./types";
 
 const CONTACT_FEEDBACK_KINDS = new Set(["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown"]);
+// The room keeps the finished bout for its result hold (ten seconds by default); a rejoin inside
+// that window only replays the old final, so the rematch waits it out and retries if it still hits it.
+const CONTROL_HINT_KEYBOARD = "Move WASD · Jab F/J · Straight R/U · Hook G/H · Uppercut T/Y · Guard Q/E · Body Shift · Power Alt";
+const CONTROL_HINT_TOUCH = "Left side: drag to move · Right pads: L/R punches · Hold BODY, POWER or GUARD";
+const REMATCH_HOLD_MS = 11_000;
+/** How long the finish plays without the overlay while the result is still on its way. */
+const RESULT_WAIT_MS = 4_000;
+const REMATCH_RETRY_MS = 3_000;
+const REMATCH_MAX_ATTEMPTS = 6;
 
 export class HandsApp {
   private state: GameState = initialState;
@@ -30,10 +42,23 @@ export class HandsApp {
 
   private readonly canvas: HTMLCanvasElement;
   private readonly status: HTMLElement;
+  private readonly overlay: HTMLElement;
   private readonly roleIndicator: HTMLElement;
   private readonly controlsButton: HTMLButtonElement;
   private readonly controlsPanel: HTMLElement;
   private readonly retry: HTMLButtonElement;
+  private readonly rematchButton: HTMLButtonElement;
+  private readonly hint: HTMLElement;
+  private diagnosticsTimer: number | null = null;
+  private finalReceivedAt = 0;
+  private lastFinalMatchId: string | null = null;
+  private rematchAttempts = 0;
+  private rematchTimer: number | null = null;
+  private rematchCountdownTimer: number | null = null;
+  private resultRevealTimer: number | null = null;
+  private resultWaitTimer: number | null = null;
+  private completeSince: number | null = null;
+  private readonly summaryClock = new RoundClock();
   private readonly fightSummary: HTMLElement;
   private readonly liveFightStatus: HTMLElement;
   private readonly finalSummary: HTMLElement;
@@ -41,20 +66,26 @@ export class HandsApp {
   constructor(
     private readonly root: HTMLElement,
     private readonly reloadPage: () => void = () => window.location.reload(),
+    private readonly authorizer: (signal: AbortSignal) => Promise<DiscordSession> = authorizeDiscord,
   ) {
-    root.innerHTML = `<section class="activity" aria-label="Hands boxing activity"><canvas class="fight" aria-label="Authoritative two-player boxing match"></canvas><header class="topbar"><strong>HANDS</strong><span>authoritative two-player boxing</span><span class="spectator-role" data-role hidden>SPECTATING · READ ONLY</span><button type="button" data-controls aria-expanded="false">Controls</button><button type="button" data-settings aria-expanded="false">Settings</button></header><section class="overlay" data-overlay><p class="status" data-status></p><button type="button" class="primary" data-retry hidden>Retry securely</button></section><aside class="panel" data-controls-panel hidden aria-label="Controls"><h2>Controls</h2><ul>${CONTROL_HELP.map((item) => `<li>${item}</li>`).join("")}</ul></aside><aside class="panel settings" data-settings-panel hidden aria-label="Accessibility and feedback settings"><h2>Settings</h2><label>Volume <input data-volume type="range" min="0" max="1" step="0.05"></label><label><input data-haptics type="checkbox"> Haptics</label><label><input data-motion type="checkbox"> Reduced motion</label><label>Blood <select data-blood><option value="full">Full (arcade gore)</option><option value="reduced">Reduced</option><option value="off">Off</option></select></label><p class="model-credit"><a href="https://sketchfab.com/3d-models/boxer-84767168720948b38728ff78ee6f6090" target="_blank" rel="noreferrer">“Boxer” by Texel, Inc.</a> · <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">CC BY 4.0</a> · modified</p></aside><section class="sr-summary" data-fight-summary aria-label="Fight summary"></section><p class="sr-summary" data-fight-status role="status" aria-live="polite" aria-atomic="true"></p><section class="sr-summary" data-final aria-live="polite" aria-label="Final result"></section></section>`;
+    root.innerHTML = `<section class="activity" aria-label="Hands boxing activity"><canvas class="fight" aria-label="Authoritative two-player boxing match"></canvas><header class="topbar"><strong>HANDS</strong><span>authoritative two-player boxing</span><span class="spectator-role" data-role hidden>SPECTATING · READ ONLY</span><button type="button" data-controls aria-expanded="false">Controls</button><button type="button" data-settings aria-expanded="false">Settings</button></header><section class="overlay" data-overlay><p class="status" data-status></p><p class="hint" data-hint hidden></p><button type="button" class="primary" data-retry hidden>Retry securely</button><button type="button" class="primary" data-rematch hidden>Rematch</button></section><aside class="panel" data-controls-panel hidden aria-label="Controls"><h2>Controls</h2><ul>${CONTROL_HELP.map((item) => `<li>${item}</li>`).join("")}</ul></aside><aside class="panel settings" data-settings-panel hidden aria-label="Accessibility and feedback settings"><h2>Settings</h2><label>Volume <input data-volume type="range" min="0" max="1" step="0.05"></label><label><input data-haptics type="checkbox"> Haptics</label><label><input data-motion type="checkbox"> Reduced motion</label><label>Blood <select data-blood><option value="full">Full (arcade gore)</option><option value="reduced">Reduced</option><option value="off">Off</option></select></label><section class="diagnostics"><h3>Diagnostics</h3><pre data-diagnostics></pre><button type="button" data-copy-diagnostics>Copy diagnostics</button></section><p class="model-credit"><a href="https://sketchfab.com/3d-models/boxer-84767168720948b38728ff78ee6f6090" target="_blank" rel="noreferrer">“Boxer” by Texel, Inc.</a> · <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">CC BY 4.0</a> · modified</p></aside><section class="sr-summary" data-fight-summary aria-label="Fight summary"></section><p class="sr-summary" data-fight-status role="status" aria-live="polite" aria-atomic="true"></p><section class="sr-summary" data-final aria-live="polite" aria-label="Final result"></section></section>`;
     this.canvas = root.querySelector<HTMLCanvasElement>("canvas")!;
     this.status = root.querySelector<HTMLElement>("[data-status]")!;
+    this.overlay = root.querySelector<HTMLElement>("[data-overlay]")!;
     this.roleIndicator = root.querySelector<HTMLElement>("[data-role]")!;
     this.controlsButton = root.querySelector<HTMLButtonElement>("[data-controls]")!;
     this.controlsPanel = root.querySelector<HTMLElement>("[data-controls-panel]")!;
     this.retry = root.querySelector<HTMLButtonElement>("[data-retry]")!;
+    this.rematchButton = root.querySelector<HTMLButtonElement>("[data-rematch]")!;
+    this.hint = root.querySelector<HTMLElement>("[data-hint]")!;
+    this.rematchButton.addEventListener("click", this.onRematch);
     this.fightSummary = root.querySelector<HTMLElement>("[data-fight-summary]")!;
     this.liveFightStatus = root.querySelector<HTMLElement>("[data-fight-status]")!;
     this.finalSummary = root.querySelector<HTMLElement>("[data-final]")!;
     this.retry.addEventListener("click", this.onRetry);
     this.bindPanels();
     this.syncSettings();
+    this.input.attachTouch(root.querySelector<HTMLElement>(".activity")!);
   }
 
   start(): void {
@@ -78,6 +109,66 @@ export class HandsApp {
     this.finalSummary.textContent = "";
     this.fightSummary.textContent = "";
     this.liveFightStatus.textContent = "";
+    this.clearRematchTimers();
+    this.rematchButton.hidden = true;
+  }
+
+  private readonly onRematch = (): void => {
+    if (this.rematchButton.disabled || this.state.stage !== "complete") return;
+    this.rematchAttempts = 1;
+    void this.authorize();
+  };
+
+  private clearRematchTimers(): void {
+    if (this.rematchTimer !== null) window.clearTimeout(this.rematchTimer);
+    if (this.rematchCountdownTimer !== null) window.clearInterval(this.rematchCountdownTimer);
+    this.rematchTimer = null;
+    this.rematchCountdownTimer = null;
+  }
+
+  /** Keeps the overlay out of the knockout replay's way until the result panel is on screen. */
+  private awaitResultReveal(): void {
+    if (this.resultRevealTimer !== null) window.clearInterval(this.resultRevealTimer);
+    const check = (): void => {
+      const visible = this.renderer?.resultVisible ?? true;
+      this.overlay.hidden = this.state.stage === "complete" && !visible;
+      if ((visible || this.state.stage !== "complete") && this.resultRevealTimer !== null) {
+        window.clearInterval(this.resultRevealTimer);
+        this.resultRevealTimer = null;
+      }
+    };
+    this.resultRevealTimer = window.setInterval(check, 200);
+    check();
+  }
+
+  private startRematchCountdown(): void {
+    this.clearRematchTimers();
+    if (this.state.role !== "fighter") return;
+    const tick = (): void => {
+      const remaining = Math.ceil((this.finalReceivedAt + REMATCH_HOLD_MS - Date.now()) / 1000);
+      this.rematchButton.hidden = this.state.stage !== "complete";
+      this.rematchButton.disabled = remaining > 0;
+      this.setText(this.rematchButton, remaining > 0 ? `Rematch in ${remaining}s` : "Rematch");
+      if (remaining <= 0 && this.rematchCountdownTimer !== null) {
+        window.clearInterval(this.rematchCountdownTimer);
+        this.rematchCountdownTimer = null;
+      }
+    };
+    tick();
+    this.rematchCountdownTimer = window.setInterval(tick, 1000);
+  }
+
+  private scheduleRematchRetry(): void {
+    if (this.rematchAttempts >= REMATCH_MAX_ATTEMPTS) {
+      this.fail("rematch_unavailable");
+      return;
+    }
+    this.rematchAttempts += 1;
+    this.setText(this.status, "The ring is still being cleared… trying again.");
+    this.rematchTimer = window.setTimeout(() => {
+      this.rematchTimer = null;
+      void this.authorize();
+    }, REMATCH_RETRY_MS);
   }
 
   private async authorize(): Promise<void> {
@@ -87,7 +178,7 @@ export class HandsApp {
     this.setText(this.status, "Securing Discord Activity session…");
     this.retry.hidden = true;
     try {
-      const session = await authorizeDiscord(this.abort.signal);
+      const session = await this.authorizer(this.abort.signal);
       if (this.destroyed || generation !== this.generation) {
         session.destroy();
         return;
@@ -95,13 +186,10 @@ export class HandsApp {
       this.session = session;
       this.dispatch({ type: "bootstrap", simulation: session.bootstrap.simulation });
       this.dispatch({ type: "authorized", player: session.player });
-      this.renderer = new FightRenderer(this.canvas, session.bootstrap.simulation, () => this.settings.current);
-      this.renderer.onContact = (event) => {
-        this.audio.event(event);
-        this.haptics.event(event);
-      };
-      this.renderer.onArcadeInjury = (injury) => this.audio.injury(injury);
-      this.input.onAction((action) => this.renderer?.predictAction?.(action));
+      this.input.onAction((action) => {
+        this.renderer?.predictAction?.(action);
+        this.network?.notifyAction();
+      });
       const ticket = session.takeTicket();
       if (ticket === null) throw new Error("ticket_unavailable");
       const network = new NetworkController(ticket, () => this.input.frame(), {
@@ -127,29 +215,63 @@ export class HandsApp {
     }
   }
 
+  /**
+   * The renderer is built once the socket is authenticated. Building it
+   * earlier delayed the authenticate frame behind model parsing and shader
+   * compilation on slow machines, which tripped the server's handshake
+   * timeout.
+   */
+  private ensureRenderer(): void {
+    if (this.renderer !== null || this.session === null || this.destroyed) return;
+    const renderer = new FightRenderer(this.canvas, this.session.bootstrap.simulation, () => this.settings.current, { localInput: () => this.input.held() });
+    renderer.onContact = (event) => {
+      this.audio.event(event);
+      this.haptics.event(event);
+    };
+    renderer.onArcadeInjury = (injury) => this.audio.injury(injury);
+    this.renderer = renderer;
+  }
+
   private receive(message: ServerMessage): void {
     if (message.type === "error") {
       this.fail(message.code);
       return;
     }
+    if (message.type === "welcome") this.ensureRenderer();
+    if (message.type === "final" && this.rematchAttempts > 0 && message.match_id === this.lastFinalMatchId) {
+      this.scheduleRematchRetry();
+      return;
+    }
     this.dispatch({ type: "message", message });
     if (message.type === "snapshot") this.receiveSnapshot(message.payload);
     if (message.type === "final") {
+      this.rematchAttempts = 0;
+      this.lastFinalMatchId = message.match_id;
+      this.finalReceivedAt = Date.now();
       this.renderer?.setFinal(message);
       this.audio.result(message);
+      this.startRematchCountdown();
+      this.awaitResultReveal();
     }
-    this.renderer?.setPlayers(this.state.players, this.state.playerId);
+    this.renderer?.setPlayers(this.state.players, this.state.playerId, this.state.playerOrder);
     this.renderer?.setReconnect(this.state.reconnectMs);
     this.renderState();
   }
 
+  /** Smoothed input acknowledgement latency of the local fighter and the render scale, for diagnostics. */
+  get networkStats(): { inputLatencyMs: number | null; resolutionScale: number | null; gpu: { geometries: number; textures: number; programs: number } | null } {
+    return { inputLatencyMs: this.network?.inputLatencyMs ?? null, resolutionScale: this.renderer?.resolutionScale ?? null, gpu: this.renderer?.memoryInfo ?? null };
+  }
+
   private receiveSnapshot(snapshot: EngineSnapshot): void {
+    this.renderer?.setInputLatency(this.network?.inputLatencyMs ?? null);
     this.renderer?.push(snapshot);
     const viewer = snapshot.fighters.find((fighter) => fighter.player_id === this.state.playerId);
     this.input.setKnockdown(viewer?.is_downed === true);
     if (viewer !== undefined) {
       this.audio.snapshot(snapshot.tick, viewer.stamina, viewer.maximum_stamina, viewer.trauma.head + viewer.trauma.body);
     }
+    this.audio.roundClock(snapshot.phase, snapshot.round_number, snapshot.phase_ticks_remaining, this.state.simulation?.tick_rate ?? 30);
     for (const event of this.feedbackEvents.accept(snapshot.events)) {
       if (CONTACT_FEEDBACK_KINDS.has(event.kind)) continue;
       this.audio.event(event);
@@ -178,10 +300,27 @@ export class HandsApp {
       rest: "Between-round rest.",
       paused: `Connection paused. ${Math.ceil(this.state.reconnectMs / 1000)} seconds remain.`,
       complete: "Bout complete. Scorecards and rating changes are displayed.",
-      fatal: `Unable to continue (${this.state.safeError ?? "safe_error"}).`,
+      fatal: describeError(this.state.safeError ?? "safe_error"),
     };
     const spectating = this.state.role === "spectator";
     this.setText(this.status, spectating ? `Spectating — ${labels[this.state.stage]}` : labels[this.state.stage]);
+    this.status.hidden = ["countdown", "fight", "knockdown", "foul_recovery", "rest"].includes(this.state.stage);
+    this.overlay.toggleAttribute("data-raised", this.state.snapshot !== null);
+    // The engine's last snapshot arrives before the result does; the finish plays without the overlay.
+    if (this.state.stage !== "complete") {
+      this.overlay.hidden = false;
+      this.completeSince = null;
+    } else if (this.state.final === null) {
+      this.completeSince ??= Date.now();
+      const waited = Date.now() - this.completeSince;
+      this.overlay.hidden = waited < RESULT_WAIT_MS;
+      if (this.overlay.hidden && this.resultWaitTimer === null) {
+        this.resultWaitTimer = window.setTimeout(() => {
+          this.resultWaitTimer = null;
+          this.renderState();
+        }, RESULT_WAIT_MS - waited + 50);
+      }
+    }
     this.roleIndicator.hidden = !spectating;
     this.controlsButton.hidden = spectating;
     if (spectating) {
@@ -198,6 +337,10 @@ export class HandsApp {
           : labels[this.state.stage];
     this.setText(this.liveFightStatus, liveStatus);
     this.retry.hidden = this.state.stage !== "fatal";
+    if (this.state.stage !== "complete") this.rematchButton.hidden = true;
+    const showHint = !spectating && (this.state.stage === "waiting" || this.state.stage === "countdown");
+    this.hint.hidden = !showHint;
+    if (showHint) this.setText(this.hint, coarsePointer() ? CONTROL_HINT_TOUCH : CONTROL_HINT_KEYBOARD);
     const active = !spectating && ["countdown", "fight", "knockdown", "foul_recovery"].includes(this.state.stage);
     this.input.setActive(active);
     this.network?.setActive(active);
@@ -212,7 +355,7 @@ export class HandsApp {
     const snapshot = this.state.snapshot;
     if (snapshot === null) return;
     const tickRate = this.state.simulation?.tick_rate ?? 30;
-    const seconds = Math.floor(snapshot.phase_ticks_remaining / tickRate);
+    const seconds = Math.floor(this.summaryClock.ticks(snapshot) / tickRate);
     const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
     const fighters = snapshot.fighters.map((fighter) => {
       const player = this.state.players[fighter.player_id];
@@ -246,6 +389,39 @@ export class HandsApp {
     };
     bind("[data-controls]", "[data-controls-panel]");
     bind("[data-settings]", "[data-settings-panel]");
+    const settingsPanel = this.root.querySelector<HTMLElement>("[data-settings-panel]")!;
+    this.root.querySelector<HTMLButtonElement>("[data-settings]")!.addEventListener("click", () => {
+      if (this.diagnosticsTimer !== null) window.clearInterval(this.diagnosticsTimer);
+      this.diagnosticsTimer = null;
+      if (settingsPanel.hidden) return;
+      this.refreshDiagnostics();
+      this.diagnosticsTimer = window.setInterval(() => this.refreshDiagnostics(), 1000);
+    });
+    const copy = this.root.querySelector<HTMLButtonElement>("[data-copy-diagnostics]")!;
+    copy.addEventListener("click", () => {
+      const text = this.diagnosticsText();
+      const done = (): void => {
+        this.setText(copy, "Copied");
+        window.setTimeout(() => this.setText(copy, "Copy diagnostics"), 1500);
+      };
+      const selectFallback = (): void => {
+        const block = this.root.querySelector<HTMLElement>("[data-diagnostics]")!;
+        const selection = window.getSelection();
+        if (selection === null) return;
+        const range = document.createRange();
+        range.selectNodeContents(block);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        this.setText(copy, "Selected. Copy manually");
+        window.setTimeout(() => this.setText(copy, "Copy diagnostics"), 2500);
+      };
+      const clipboard = navigator.clipboard;
+      if (clipboard === undefined || typeof clipboard.writeText !== "function") {
+        selectFallback();
+        return;
+      }
+      clipboard.writeText(text).then(done).catch(selectFallback);
+    });
     this.root.querySelector<HTMLInputElement>("[data-volume]")!.addEventListener("input", (event) => {
       this.settings.update({ volume: Number((event.target as HTMLInputElement).value) });
       this.audio.setVolume();
@@ -263,6 +439,28 @@ export class HandsApp {
       this.settings.update({ blood });
       this.renderer?.setBloodLevel(blood);
     });
+  }
+
+  /** One block of text a player can paste into the server when reporting a problem. */
+  private diagnosticsText(): string {
+    const stats = this.networkStats;
+    const diag = this.renderer?.diagnostics;
+    const fps = diag === undefined || diag.frameMs <= 0 ? "-" : (1000 / diag.frameMs).toFixed(0);
+    return [
+      `stage: ${this.state.stage} · role: ${this.state.role ?? "-"}`,
+      `input latency: ${stats.inputLatencyMs === null ? "-" : `${Math.round(stats.inputLatencyMs)} ms`}`,
+      `frame: ${diag === undefined ? "-" : `${diag.frameMs.toFixed(1)} ms (${fps} fps)`} · render scale: ${diag?.resolutionScale ?? "-"}`,
+      `gpu objects: ${diag === undefined ? "-" : `${diag.gpu.geometries} geometries, ${diag.gpu.textures} textures, ${diag.gpu.programs} programs`}`,
+      `graphics: ${diag?.graphics ?? "-"}`,
+      `browser: ${navigator.userAgent}`,
+      `pointer: ${coarsePointer() ? "coarse" : "fine"} · viewport: ${window.innerWidth}x${window.innerHeight} @${window.devicePixelRatio}`,
+      `last error: ${this.state.safeError ?? "none"}`,
+      `match: ${this.state.final?.match_id ?? "-"}`,
+    ].join("\n");
+  }
+
+  private refreshDiagnostics(): void {
+    this.setText(this.root.querySelector<HTMLElement>("[data-diagnostics]")!, this.diagnosticsText());
   }
 
   private syncSettings(): void {
@@ -298,6 +496,12 @@ export class HandsApp {
     this.audio.destroy();
     this.settings.destroy();
     this.retry.removeEventListener("click", this.onRetry);
+    this.rematchButton.removeEventListener("click", this.onRematch);
+    this.clearRematchTimers();
+    if (this.diagnosticsTimer !== null) window.clearInterval(this.diagnosticsTimer);
+    if (this.resultRevealTimer !== null) window.clearInterval(this.resultRevealTimer);
+    if (this.resultWaitTimer !== null) window.clearTimeout(this.resultWaitTimer);
+    this.diagnosticsTimer = null;
     this.root.replaceChildren();
   }
 }

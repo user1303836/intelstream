@@ -1,6 +1,6 @@
 import { safeError } from "./api";
 import { decodeServerFrame, encodeInput } from "./protocol";
-import { PROTOCOL_VERSION, type ConnectionRole, type InputFrame, type ServerMessage } from "./types";
+import { PROTOCOL_VERSION, type ConnectionRole, type EngineSnapshot, type InputFrame, type ServerMessage } from "./types";
 
 export function websocketUrl(location: Location = window.location): string {
   const url = new URL("/api/hands/ws", location.origin);
@@ -21,6 +21,7 @@ export interface NetworkCallbacks {
 
 interface SocketLike {
   readonly readyState: number;
+  readonly bufferedAmount?: number;
   binaryType: BinaryType;
   onopen: ((event: Event) => void) | null;
   onmessage: ((event: MessageEvent) => void) | null;
@@ -33,6 +34,14 @@ interface SocketLike {
 type SocketFactory = (url: string) => SocketLike;
 const OPEN = 1;
 const NEUTRAL_INPUT: InputFrame = { moveX: 0, moveY: 0, defense: "none", actions: [] };
+const INPUT_FLUSH_MS = 33;
+const MIN_EDGE_SEND_GAP_MS = 8;
+/** The server accepts 60 inputs a second; staying under it leaves room for frames the network bunches together. */
+const MAX_SENDS_PER_SECOND = 50;
+/** Edge sends share the window with the 30 a second flush, which must always fit so a released key is reported. */
+const MAX_EDGE_SENDS_PER_SECOND = 20;
+/** Bytes still waiting in the socket above which the connection is stalled; frames queued behind it would all land at once. */
+const BACKLOG_BYTES = 2048;
 
 export class NetworkController {
   private socket: SocketLike | null = null;
@@ -45,6 +54,9 @@ export class NetworkController {
   private opponentPaused = false;
   private attempts = 0;
   private nextSequence = 0;
+  private playerId: string | null = null;
+  private readonly sentAt = new Map<number, number>();
+  private latencyMs: number | null = null;
   private serverTick = 0;
   private role: ConnectionRole | null = null;
   private active = false;
@@ -52,6 +64,8 @@ export class NetworkController {
   private terminal = false;
   private inputSuppressed = false;
   private listenersBound = false;
+  private lastInputSentAt = -Infinity;
+  private readonly sendTimes: number[] = [];
 
   constructor(
     ticket: string,
@@ -70,11 +84,25 @@ export class NetworkController {
     window.addEventListener("focus", this.onInputRegain);
     document.addEventListener("visibilitychange", this.onVisibilityChange);
     this.connect();
-    if (!this.disposed && !this.terminal) this.inputTimer = window.setInterval(() => this.flushInput(), 40);
+    if (!this.disposed && !this.terminal) this.inputTimer = window.setInterval(() => this.flushInput(), INPUT_FLUSH_MS);
   }
 
   setActive(active: boolean): void {
     this.active = active;
+  }
+
+  /** Sends the pending input frame on the action edge instead of waiting for the periodic flush. */
+  notifyAction(): void {
+    if (this.now() - this.lastInputSentAt < MIN_EDGE_SEND_GAP_MS) return;
+    // Past the budget the press stays queued and leaves with the next periodic flush.
+    if (this.sendsInLastSecond() >= MAX_EDGE_SENDS_PER_SECOND) return;
+    this.flushInput();
+  }
+
+  private sendsInLastSecond(): number {
+    const cutoff = this.now() - 1000;
+    while (this.sendTimes.length > 0 && this.sendTimes[0]! <= cutoff) this.sendTimes.shift();
+    return this.sendTimes.length;
   }
 
   private readonly onInputLoss = (): void => {
@@ -164,6 +192,8 @@ export class NetworkController {
       this.reconnectTicket = message.reconnect_ticket;
       this.serverTick = message.server_tick;
       this.role = message.role;
+      this.playerId = message.role === "fighter" ? message.player_id : null;
+      this.sentAt.clear();
       if (message.role === "fighter") this.nextSequence = Math.max(this.nextSequence, message.next_sequence);
       else this.stopInputLifecycle();
       this.attempts = 0;
@@ -173,6 +203,7 @@ export class NetworkController {
     } else if (message.type === "snapshot") {
       this.serverTick = Math.max(this.serverTick, message.payload.tick);
       this.active = ["countdown", "fight", "knockdown", "foul_recovery"].includes(message.payload.phase);
+      this.observeAcknowledgement(message.payload);
     } else if (message.type === "paused") {
       this.active = false;
       this.startOpponentPause(message.grace_ms);
@@ -234,12 +265,33 @@ export class NetworkController {
     }, delay);
   }
 
+  /** Smoothed round trip from an input send to the first snapshot acknowledging it, in milliseconds. */
+  get inputLatencyMs(): number | null {
+    return this.latencyMs;
+  }
+
+  private observeAcknowledgement(snapshot: EngineSnapshot): void {
+    if (this.playerId === null) return;
+    const self = snapshot.fighters.find((fighter) => fighter.player_id === this.playerId);
+    if (self === undefined || self.last_input_sequence < 0) return;
+    const sent = this.sentAt.get(self.last_input_sequence);
+    if (sent !== undefined) {
+      const sample = Math.max(0, this.now() - sent);
+      this.latencyMs = this.latencyMs === null ? sample : this.latencyMs * 0.8 + sample * 0.2;
+    }
+    for (const sequence of this.sentAt.keys()) if (sequence <= self.last_input_sequence) this.sentAt.delete(sequence);
+  }
+
   private sendInput(frame: InputFrame): void {
     const socket = this.socket;
     if (this.role !== "fighter" || !this.active || this.disposed || this.terminal || socket?.readyState !== OPEN) return;
     try {
       socket.send(encodeInput(this.nextSequence, this.serverTick, { ...frame, actions: frame.actions.slice(0, 4) }));
+      this.sentAt.set(this.nextSequence, this.now());
+      if (this.sentAt.size > 128) this.sentAt.delete(this.sentAt.keys().next().value!);
       this.nextSequence += 1;
+      this.lastInputSentAt = this.now();
+      this.sendTimes.push(this.lastInputSentAt);
     } catch {
       this.handleClose(socket);
     }
@@ -247,6 +299,10 @@ export class NetworkController {
 
   private flushInput(): void {
     if (this.inputSuppressed || document.hidden || !document.hasFocus()) return;
+    if (this.sendsInLastSecond() >= MAX_SENDS_PER_SECOND) return;
+    // While the connection is stalled the input stays here, current, instead of joining a queue
+    // of stale frames; presses wait in the input buffer and leave with the next frame that goes.
+    if ((this.socket?.bufferedAmount ?? 0) > BACKLOG_BYTES) return;
     this.sendInput(this.getInput());
   }
 

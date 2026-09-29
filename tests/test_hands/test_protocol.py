@@ -6,6 +6,8 @@ from intelstream.hands.engine import BoxingEngine, EngineConfig
 from intelstream.hands.protocol import (
     MAX_ACTIONS_PER_INPUT,
     MAX_FRAME_BYTES,
+    MAX_TICK_LAG,
+    MAX_TICK_LEAD,
     ProtocolError,
     encode_client_input,
     encode_snapshot,
@@ -57,7 +59,7 @@ def test_round_trip_every_semantic_action() -> None:
 
 def valid_payload() -> dict[str, object]:
     return {
-        "version": 2,
+        "version": 3,
         "type": "input",
         "sequence": 2,
         "client_tick": 10,
@@ -120,7 +122,7 @@ def test_rejects_unknown_nested_fields_and_malformed_actions() -> None:
 
 def test_rejects_duplicate_fields() -> None:
     frame = (
-        '{"version":2,"type":"input","sequence":1,"sequence":2,'
+        '{"version":3,"type":"input","sequence":1,"sequence":2,'
         '"client_tick":1,"move":{"x":0,"y":0},"defense":"none","actions":[]}'
     )
 
@@ -140,19 +142,19 @@ def test_rejects_non_finite_and_non_integer_numbers() -> None:
         parse_client_input(json.dumps(payload), server_tick=10)
 
 
-def test_rejects_stale_and_implausible_ticks() -> None:
+def test_rejects_stale_sequences_but_clamps_implausible_ticks() -> None:
     frame = json.dumps(valid_payload())
     with pytest.raises(ProtocolError, match="stale"):
         parse_client_input(frame, last_sequence=2, server_tick=10)
 
     payload = valid_payload()
     payload["client_tick"] = 500
-    with pytest.raises(ProtocolError, match="far ahead"):
-        parse_client_input(json.dumps(payload), server_tick=10)
+    ahead = parse_client_input(json.dumps(payload), server_tick=10)
+    assert ahead.client_tick == 10 + MAX_TICK_LEAD
 
     payload["client_tick"] = 1
-    with pytest.raises(ProtocolError, match="too old"):
-        parse_client_input(json.dumps(payload), server_tick=500)
+    stalled = parse_client_input(json.dumps(payload), server_tick=500)
+    assert stalled.client_tick == 500 - MAX_TICK_LAG
 
 
 def test_rejects_oversized_frames_and_action_arrays() -> None:
@@ -172,13 +174,13 @@ def test_rejects_malformed_frames(frame: str | bytes) -> None:
 
 
 def test_ticket_ack_is_strict_and_distinct_from_semantic_input() -> None:
-    frame = '{"version":2,"type":"ticket_ack","refresh_id":"refresh-identifier"}'
+    frame = '{"version":3,"type":"ticket_ack","refresh_id":"refresh-identifier"}'
     assert parse_ticket_ack(frame) == "refresh-identifier"
     assert parse_ticket_ack(json.dumps(valid_payload())) is None
     for malformed in (
-        '{"version":2,"type":"ticket_ack","refresh_id":"short"}',
-        '{"version":2,"type":"ticket_ack","refresh_id":"refresh-identifier","extra":1}',
-        '{"version":2,"type":"ticket_ack","refresh_id":"one","refresh_id":"two"}',
+        '{"version":3,"type":"ticket_ack","refresh_id":"short"}',
+        '{"version":3,"type":"ticket_ack","refresh_id":"refresh-identifier","extra":1}',
+        '{"version":3,"type":"ticket_ack","refresh_id":"one","refresh_id":"two"}',
     ):
         with pytest.raises(ProtocolError):
             parse_ticket_ack(malformed)

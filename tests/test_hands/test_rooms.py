@@ -77,6 +77,7 @@ def room_config(
         final_delivery_timeout_seconds=final_delivery_timeout,
         max_catch_up_ticks=max_catch_up_ticks,
         max_inputs_per_second=5,
+        max_input_frames_per_second=8,
         outbound_queue_size=outbound_size,
         max_spectators=max_spectators,
         engine_config=EngineConfig(
@@ -371,6 +372,64 @@ async def test_post_start_disconnect_forfeits_and_pre_match_abandonment_does_not
     await waiting_manager.close()
 
 
+async def test_burst_past_the_input_budget_keeps_the_newest_frame(
+    repository: Repository,
+) -> None:
+    class MutableClock:
+        value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    clock = MutableClock()
+    sleep_entered = asyncio.Event()
+    sleep_release = asyncio.Event()
+
+    async def controlled_sleep(_delay: float) -> None:
+        sleep_entered.set()
+        await sleep_release.wait()
+
+    manager = HandsRoomManager(
+        repository,
+        config=room_config(round_ticks=1000, reconnect_grace=30.0),
+        monotonic_clock=clock,
+        sleep=controlled_sleep,
+        match_id_factory=lambda: "match-burst",
+    )
+    one = await manager.join(player("one"), FakeSocket())
+    await manager.join(player("two"), FakeSocket())
+    await sleep_entered.wait()
+    engine = one.room.engine
+    assert engine is not None
+
+    for sequence in range(1, 6):
+        await one.room.submit_frame(
+            "one",
+            one.connection,
+            encode_client_input(
+                InputCommand(sequence=sequence, client_tick=engine.tick, move_x=1000)
+            ),
+        )
+    for sequence in range(6, 9):
+        await one.room.submit_frame(
+            "one",
+            one.connection,
+            encode_client_input(InputCommand(sequence=sequence, client_tick=engine.tick)),
+        )
+    assert engine.fighter("one").last_sequence == 5
+    assert engine.fighter("one").held_input.move_x == 1000
+
+    clock.value += 0.25
+    one.room._apply_deferred_inputs(clock())
+    assert engine.fighter("one").last_sequence == 8
+    assert engine.fighter("one").held_input.move_x == 0
+
+    one.room._apply_deferred_inputs(clock())
+    assert engine.fighter("one").last_sequence == 8
+    sleep_release.set()
+    await manager.close()
+
+
 async def test_input_protocol_rate_sequence_and_queue_bounds(repository: Repository) -> None:
     manager = HandsRoomManager(
         repository,
@@ -396,11 +455,19 @@ async def test_input_protocol_rate_sequence_and_queue_bounds(repository: Reposit
             one.connection,
             encode_client_input(InputCommand(sequence=sequence, client_tick=tick)),
         )
+    accepted = engine.fighter("one").last_sequence
+    await one.room.submit_frame(
+        "one",
+        one.connection,
+        encode_client_input(InputCommand(sequence=6, client_tick=engine.tick, move_x=1000)),
+    )
+    assert engine.fighter("one").last_sequence == accepted
+    assert engine.fighter("one").held_input.move_x == 0
     with pytest.raises(RoomError, match="rate_limited"):
         await one.room.submit_frame(
             "one",
             one.connection,
-            encode_client_input(InputCommand(sequence=6, client_tick=engine.tick)),
+            encode_client_input(InputCommand(sequence=7, client_tick=engine.tick)),
         )
     await manager.close()
 
@@ -450,7 +517,7 @@ async def test_paused_room_discards_inputs_without_advancing_authority(
     assert not engine.fighter("one").pending_actions
     checksum = engine.snapshot().checksum
 
-    for sequence in range(5):
+    for sequence in range(8):
         await connected.room.submit_frame(
             "two",
             connected.connection,
@@ -462,7 +529,7 @@ async def test_paused_room_discards_inputs_without_advancing_authority(
         await connected.room.submit_frame(
             "two",
             connected.connection,
-            encode_client_input(InputCommand(sequence=5, client_tick=engine.tick, move_x=1000)),
+            encode_client_input(InputCommand(sequence=8, client_tick=engine.tick, move_x=1000)),
         )
     assert engine.snapshot().checksum == checksum
     assert engine.fighter("two").last_sequence == -1
@@ -567,7 +634,7 @@ async def test_ticket_refresh_queue_coalesces_and_rejects_replaced_connection(
             "reconnect_ticket": "ticket-99",
             "refresh_id": "refresh-id-000099",
             "type": "ticket",
-            "version": 2,
+            "version": 3,
         }
     ]
 
@@ -765,7 +832,7 @@ async def test_one_of_two_disconnected_players_recovers_into_paused_state(
         "grace_ms": 22_750,
         "player_id": "two",
         "type": "paused",
-        "version": 2,
+        "version": 3,
     }
 
     two_socket = FakeSocket()
@@ -833,7 +900,7 @@ async def test_persistence_failure_errors_closes_and_unregisters(repository: Rep
     assert one.closed and two.closed
     for socket in (one, two):
         errors = [json.loads(message) for message in socket.messages if '"type":"error"' in message]
-        assert errors == [{"code": "persistence_failed", "type": "error", "version": 2}]
+        assert errors == [{"code": "persistence_failed", "type": "error", "version": 3}]
         assert all("database detail" not in message for message in socket.messages)
     await manager.close()
 
@@ -1240,8 +1307,7 @@ async def test_reconnect_during_result_persistence_gets_snapshot_then_exact_fina
     recovered = await manager.join(player("one"), reconnect_socket)
     await wait_until(lambda: len(reconnect_socket.messages) >= 2)
     assert message_types(reconnect_socket)[:2] == ["welcome", "snapshot"]
-    with pytest.raises(RoomError, match="match_complete"):
-        await recovered.room.submit_frame("one", recovered.connection, "{}")
+    await recovered.room.submit_frame("one", recovered.connection, "{}")
     with pytest.raises(RoomError, match="room_closed"):
         await manager.join(player("three"), FakeSocket())
 
@@ -1298,8 +1364,7 @@ async def test_reconnect_during_result_hold_gets_stored_final_before_close(
         "final",
     ]
     assert recovered_messages[2] == authoritative_final
-    with pytest.raises(RoomError, match="match_complete"):
-        await recovered.room.submit_frame("one", recovered.connection, "{}")
+    await recovered.room.submit_frame("one", recovered.connection, "{}")
     hold_release.set()
     await wait_until(lambda: reconnect_socket.closed)
     assert message_types(reconnect_socket).index("final") < len(reconnect_socket.messages)

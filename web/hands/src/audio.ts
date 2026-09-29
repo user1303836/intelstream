@@ -41,6 +41,7 @@ export class AudioFeedback {
   private readonly timers = new Set<number>();
   private lastBreathTick = -300;
   private lastHeartbeatTick = -300;
+  private clapperRound = 0;
 
   private readonly unlockListener = (): void => {
     void this.unlock().catch(() => undefined);
@@ -112,33 +113,35 @@ export class AudioFeedback {
       case "hit":
       case "counter_hit": {
         const body = event.detail.endsWith("body");
-        const loud = Math.min(0.34, 0.16 + event.amount / 1400) * (event.kind === "counter_hit" ? 1.3 : 1);
-        this.tone({ from: body ? 120 : 150, to: 42, duration: 0.13, type: "sine", gain: loud });
-        this.noise({ duration: 0.06, frequency: body ? 420 : 1650, gain: loud * 0.85, type: "bandpass", q: 0.9 });
-        this.noise({ duration: 0.16, frequency: body ? 190 : 300, gain: loud * 0.6 });
-        if (event.kind === "counter_hit") this.crowdSwell(0.5);
+        const weight = Math.min(1, event.amount / 260);
+        const loud = Math.min(0.36, 0.14 + weight * 0.2) * (event.kind === "counter_hit" ? 1.25 : 1);
+        this.impact(loud, body, weight);
+        if (event.kind === "counter_hit" || weight > 0.7) this.crowdSwell(0.35 + weight * 0.4);
         break;
       }
       case "block":
-        this.noise({ duration: 0.05, frequency: 900, gain: 0.15, type: "bandpass", q: 1.4 });
-        this.tone({ from: 170, to: 120, duration: 0.05, type: "triangle", gain: 0.06 });
+        this.noise({ duration: 0.045, frequency: 1200, sweepTo: 600, gain: 0.14, type: "bandpass", q: 1.1 });
+        this.noise({ duration: 0.09, frequency: 260, gain: 0.08 });
+        this.tone({ from: 160, to: 110, duration: 0.06, type: "triangle", gain: 0.05 });
         break;
       case "perfect_block":
-        this.noise({ duration: 0.05, frequency: 1450, gain: 0.16, type: "bandpass", q: 1.6 });
-        this.tone({ from: 260, to: 200, duration: 0.06, type: "triangle", gain: 0.07 });
+        this.noise({ duration: 0.05, frequency: 1800, sweepTo: 900, gain: 0.16, type: "bandpass", q: 1.6 });
+        this.tone({ from: 280, to: 210, duration: 0.06, type: "triangle", gain: 0.06 });
         break;
       case "guard_break":
-        this.noise({ duration: 0.18, frequency: 520, gain: 0.24 });
-        this.tone({ from: 230, to: 78, duration: 0.2, type: "sawtooth", gain: 0.1 });
-        this.crowdSwell(0.4);
+        this.impact(0.3, false, 0.9);
+        this.tone({ from: 230, to: 78, duration: 0.2, type: "sawtooth", gain: 0.08 });
+        this.crowdSwell(0.5);
         break;
       case "stun":
         this.tone({ from: 96, to: 74, duration: 0.22, type: "sine", gain: 0.1 });
+        this.crowdSwell(0.3);
         break;
       case "knockdown":
-        this.tone({ from: 68, to: 32, duration: 0.34, type: "sine", gain: 0.3 });
-        this.noise({ duration: 0.22, frequency: 260, gain: 0.26 });
-        this.crowdSwell(1);
+        this.impact(0.34, false, 1);
+        this.tone({ from: 60, to: 28, duration: 0.42, type: "sine", gain: 0.3 });
+        this.noise({ duration: 0.3, frequency: 140, gain: 0.24 });
+        this.crowdRoar(1);
         break;
       case "bell": {
         const strikes = event.detail === "round_start" ? 3 : 1;
@@ -159,17 +162,40 @@ export class AudioFeedback {
       case "clinch_start":
         this.noise({ duration: 0.12, frequency: 190, gain: 0.1 });
         break;
+      case "taunt":
+        this.tone({ from: 520, to: 390, duration: 0.18, type: "triangle", gain: 0.05 });
+        this.crowdSwell(0.45);
+        break;
+      case "clinch_denied":
+      case "clinch_interrupted":
+        this.noise({ duration: 0.1, frequency: 520, sweepTo: 240, gain: 0.05, type: "bandpass", q: 1 });
+        break;
       case "bleed":
         break;
       case "exhausted":
         this.noise({ duration: 0.24, frequency: 360, gain: 0.05 });
         break;
       case "result":
-        this.crowdSwell(0.8);
+        this.crowdRoar(0.8);
         break;
       default:
         break;
     }
+  }
+
+  /** The ten-second clapper: two wood-block cracks once per round when ten seconds remain. */
+  roundClock(phase: string, roundNumber: number, ticksRemaining: number, tickRate: number): void {
+    if (phase !== "fight" || ticksRemaining > 10 * tickRate || this.clapperRound === roundNumber) return;
+    this.clapperRound = roundNumber;
+    if (!this.unlocked) return;
+    this.noise({ duration: 0.05, frequency: 2600, gain: 0.42, type: "bandpass", q: 1.4 });
+    this.noise({ duration: 0.09, frequency: 700, gain: 0.18, type: "bandpass", q: 0.8 });
+    const timer = window.setTimeout(() => {
+      this.timers.delete(timer);
+      this.noise({ duration: 0.05, frequency: 2400, gain: 0.4, type: "bandpass", q: 1.4 });
+      this.noise({ duration: 0.09, frequency: 660, gain: 0.16, type: "bandpass", q: 0.8 });
+    }, 120);
+    this.timers.add(timer);
   }
 
   snapshot(tick: number, stamina: number, maximumStamina: number, trauma: number): void {
@@ -227,6 +253,27 @@ export class AudioFeedback {
       if (entry !== null) buffers.set(entry[0], entry[1]);
     }
     return buffers;
+  }
+
+  /** Layered punch impact: sub thump, glove thud, and a short leather snap scaled by weight. */
+  private impact(loud: number, body: boolean, weight: number): void {
+    this.tone({ from: body ? 86 : 118, to: body ? 34 : 44, duration: 0.14 + weight * 0.06, type: "sine", gain: loud });
+    this.noise({ duration: 0.05 + weight * 0.03, frequency: body ? 240 : 420, sweepTo: body ? 120 : 200, gain: loud * 0.8, type: "bandpass", q: 0.8 });
+    this.noise({ duration: 0.028, frequency: body ? 1500 : 2600, sweepTo: body ? 700 : 1400, gain: loud * (body ? 0.35 : 0.6), type: "bandpass", q: 1.3 });
+    this.noise({ duration: 0.18 + weight * 0.1, frequency: body ? 150 : 210, gain: loud * 0.45 });
+  }
+
+  /** Full crowd eruption with a slow decay, used for knockdowns and finishes. */
+  private crowdRoar(intensity: number): void {
+    const context = this.context;
+    if (context === null) return;
+    this.noise({ duration: 0.5, frequency: 900, sweepTo: 520, gain: Math.min(0.3, 0.12 + intensity * 0.18), type: "bandpass", q: 0.5 });
+    const crowd = this.crowdGain;
+    if (crowd !== null) {
+      const now = context.currentTime;
+      crowd.gain.setValueAtTime(Math.min(0.16, 0.06 + intensity * 0.1), now);
+      crowd.gain.exponentialRampToValueAtTime(0.022, now + 4.5);
+    }
   }
 
   private tone(spec: ToneSpec): void {

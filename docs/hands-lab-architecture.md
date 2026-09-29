@@ -347,3 +347,13 @@ the palette toward pastel; trauma overlays are scaled for the larger head but
 their positions are approximate; the knockdown head-fall velocity makes the
 0.10 m joint metric read ~0.22 m one tick after contact (filmstrip shows flush
 contact).
+
+---
+
+# Superseded (2026-09-28)
+
+The clip-based animation graph, the retarget-baked GLB, the marker export, and
+the sphere trauma overlays described above were replaced by the runtime pose
+system, object-space injury shading, and mesh-baked gore documented in
+`docs/hands-realism-plan.md`. The lab route, the golden replay, and the
+acceptance metrics still apply; the protocol is now v3 and the ring is square.

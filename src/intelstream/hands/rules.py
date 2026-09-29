@@ -15,7 +15,7 @@ _MANIFEST = _load_manifest()
 
 TICKS_PER_SECOND = 30
 RING_HALF_WIDTH = 500
-RING_HALF_HEIGHT = 330
+RING_HALF_HEIGHT = 500
 FIGHTER_RADIUS = 38
 MINIMUM_SEPARATION = FIGHTER_RADIUS * 2
 ROUND_TICKS = 120 * TICKS_PER_SECOND
@@ -26,6 +26,16 @@ MAX_STAMINA = 1000
 MAX_CONDITIONING = 1000
 MAX_GUARD = 700
 MAX_POISE = 600
+FACING_SCALE: int = _MANIFEST["facing"]["scale"]
+FACING_TURN_PERCENT: int = _MANIFEST["facing"]["turn_percent_per_tick"]
+RECOVERY_CANCEL_PERCENT: int = _MANIFEST["combos"]["recovery_cancel_percent"]
+KNOCKDOWN_NEUTRAL_SEPARATION: int = _MANIFEST["knockdown"]["neutral_separation"]
+REFEREE_WALK_SPEED: int = _MANIFEST["knockdown"]["referee_walk_speed"]
+RING_CORNER_REACH: int = _MANIFEST["corners"]["reach"]
+REST_CORNER_OFFSET: int = _MANIFEST["rest"]["corner_offset"]
+CLINCH_HOLD_DISTANCE: int = _MANIFEST["clinch"]["hold_distance"]
+CLINCH_DRAW_SPEED: int = _MANIFEST["clinch"]["draw_speed"]
+REST_WALK_SPEED: int = _MANIFEST["rest"]["walk_speed"]
 
 
 def _manifest_check() -> None:
@@ -126,13 +136,7 @@ PUNCH_RULES: dict[tuple[PunchClass, Target, Power], PunchRule] = {
 }
 
 COMPATIBLE_COMBO_CHAINS: frozenset[tuple[PunchClass, PunchClass]] = frozenset(
-    {
-        (PunchClass.JAB, PunchClass.STRAIGHT),
-        (PunchClass.JAB, PunchClass.HOOK),
-        (PunchClass.STRAIGHT, PunchClass.HOOK),
-        (PunchClass.HOOK, PunchClass.UPPERCUT),
-        (PunchClass.UPPERCUT, PunchClass.HOOK),
-    }
+    (PunchClass(first), PunchClass(second)) for first, second in _MANIFEST["combos"]["chains"]
 )
 
 
