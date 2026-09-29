@@ -614,6 +614,17 @@ Terminal two runs Vite and proxies HTTP plus WebSocket `/api/hands` requests to 
 HANDS_DEV_BACKEND=http://127.0.0.1:8080 npm --prefix web/hands run dev
 ```
 
+### Playing a match locally without Discord
+
+`scripts/hands_e2e_server.py` runs the Hands server with a development auth backend that skips the Discord OAuth steps but keeps the production ticket, room, websocket, engine and persistence code paths:
+
+```bash
+uv run python scripts/hands_e2e_server.py --port 8091 --rounds 1 --round-seconds 45
+HANDS_DEV_BACKEND=http://127.0.0.1:8091 npm --prefix web/hands run dev -- --port 5174
+```
+
+Open `http://localhost:5174/?e2e=1&instance_id=<any id>&player=<name>` in two browser windows (different names) to fight. The `e2e` switch only exists in Vite development builds; the development server authenticates anyone who can reach its port, so never expose it.
+
 `HANDS_DEV_BACKEND` is a Node/Vite development-process setting, not a browser `VITE_*` value and not a production origin. Real OAuth still needs a valid Activity instance; the fixture is only recorded presentation data. Keep `HANDS_DEV_MODE=false` in production.
 
 ### Wheel/package verification

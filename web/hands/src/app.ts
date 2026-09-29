@@ -41,6 +41,7 @@ export class HandsApp {
   constructor(
     private readonly root: HTMLElement,
     private readonly reloadPage: () => void = () => window.location.reload(),
+    private readonly authorizer: (signal: AbortSignal) => Promise<DiscordSession> = authorizeDiscord,
   ) {
     root.innerHTML = `<section class="activity" aria-label="Hands boxing activity"><canvas class="fight" aria-label="Authoritative two-player boxing match"></canvas><header class="topbar"><strong>HANDS</strong><span>authoritative two-player boxing</span><span class="spectator-role" data-role hidden>SPECTATING · READ ONLY</span><button type="button" data-controls aria-expanded="false">Controls</button><button type="button" data-settings aria-expanded="false">Settings</button></header><section class="overlay" data-overlay><p class="status" data-status></p><button type="button" class="primary" data-retry hidden>Retry securely</button></section><aside class="panel" data-controls-panel hidden aria-label="Controls"><h2>Controls</h2><ul>${CONTROL_HELP.map((item) => `<li>${item}</li>`).join("")}</ul></aside><aside class="panel settings" data-settings-panel hidden aria-label="Accessibility and feedback settings"><h2>Settings</h2><label>Volume <input data-volume type="range" min="0" max="1" step="0.05"></label><label><input data-haptics type="checkbox"> Haptics</label><label><input data-motion type="checkbox"> Reduced motion</label><label>Blood <select data-blood><option value="full">Full (arcade gore)</option><option value="reduced">Reduced</option><option value="off">Off</option></select></label><p class="model-credit"><a href="https://sketchfab.com/3d-models/boxer-84767168720948b38728ff78ee6f6090" target="_blank" rel="noreferrer">“Boxer” by Texel, Inc.</a> · <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">CC BY 4.0</a> · modified</p></aside><section class="sr-summary" data-fight-summary aria-label="Fight summary"></section><p class="sr-summary" data-fight-status role="status" aria-live="polite" aria-atomic="true"></p><section class="sr-summary" data-final aria-live="polite" aria-label="Final result"></section></section>`;
     this.canvas = root.querySelector<HTMLCanvasElement>("canvas")!;
@@ -88,7 +89,7 @@ export class HandsApp {
     this.setText(this.status, "Securing Discord Activity session…");
     this.retry.hidden = true;
     try {
-      const session = await authorizeDiscord(this.abort.signal);
+      const session = await this.authorizer(this.abort.signal);
       if (this.destroyed || generation !== this.generation) {
         session.destroy();
         return;
@@ -96,12 +97,6 @@ export class HandsApp {
       this.session = session;
       this.dispatch({ type: "bootstrap", simulation: session.bootstrap.simulation });
       this.dispatch({ type: "authorized", player: session.player });
-      this.renderer = new FightRenderer(this.canvas, session.bootstrap.simulation, () => this.settings.current, { localInput: () => this.input.held() });
-      this.renderer.onContact = (event) => {
-        this.audio.event(event);
-        this.haptics.event(event);
-      };
-      this.renderer.onArcadeInjury = (injury) => this.audio.injury(injury);
       this.input.onAction((action) => {
         this.renderer?.predictAction?.(action);
         this.network?.notifyAction();
@@ -131,11 +126,29 @@ export class HandsApp {
     }
   }
 
+  /**
+   * The renderer is built once the socket is authenticated. Building it
+   * earlier delayed the authenticate frame behind model parsing and shader
+   * compilation on slow machines, which tripped the server's handshake
+   * timeout.
+   */
+  private ensureRenderer(): void {
+    if (this.renderer !== null || this.session === null || this.destroyed) return;
+    const renderer = new FightRenderer(this.canvas, this.session.bootstrap.simulation, () => this.settings.current, { localInput: () => this.input.held() });
+    renderer.onContact = (event) => {
+      this.audio.event(event);
+      this.haptics.event(event);
+    };
+    renderer.onArcadeInjury = (injury) => this.audio.injury(injury);
+    this.renderer = renderer;
+  }
+
   private receive(message: ServerMessage): void {
     if (message.type === "error") {
       this.fail(message.code);
       return;
     }
+    if (message.type === "welcome") this.ensureRenderer();
     this.dispatch({ type: "message", message });
     if (message.type === "snapshot") this.receiveSnapshot(message.payload);
     if (message.type === "final") {

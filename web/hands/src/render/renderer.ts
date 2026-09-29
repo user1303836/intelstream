@@ -373,18 +373,27 @@ export class FightRenderer {
     if (this.glbLoading || this.graphs !== null) return;
     this.glbLoading = true;
     this.graphsReady = loadBoxerGlb()
-      .then((gltf) => {
+      .then(async (gltf) => {
         if (this.destroyed) return;
         const first = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
         const second = new SkinnedBoxer(gltf, { skin: 0x6e4128, gear: 0xb91c1c });
         this.graphs = [new BoxingGraph(first, this.mapping), new BoxingGraph(second, this.mapping)];
         this.syncInjuryPresentation(0);
         this.syncInjuryPresentation(1);
-        this.scene.add(first.root, second.root);
         this.refereeShirt = refereeShirtTexture();
         const official = new SkinnedBoxer(gltf, { skin: 0xc79b76, gear: 0x3b57b8, pants: 0x14161c, bodyMap: this.refereeShirt });
         this.referee = new BoxingGraph(official, this.mapping, { referee: true });
-        this.scene.add(official.root);
+        // Compile the skinned materials off the critical path (parallel shader compile where
+        // available) so the first frame with fighters does not stall the page.
+        const staging = new THREE.Group();
+        staging.add(first.root, second.root, official.root);
+        try {
+          await this.renderer.compileAsync(staging, this.camera, this.scene);
+        } catch {
+          // Fall back to compiling on the first draw.
+        }
+        if (this.destroyed) return;
+        this.scene.add(first.root, second.root, official.root);
       })
       .catch((error: unknown) => {
         this.glbLoading = false;

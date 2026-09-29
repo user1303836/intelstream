@@ -145,10 +145,11 @@ def parse_client_input(
     if sequence <= last_sequence:
         raise ProtocolError("stale input sequence")
     client_tick = _integer(envelope.get("client_tick"), "client_tick", 0, MAX_SEQUENCE)
-    if client_tick < max(0, server_tick - MAX_TICK_LAG):
-        raise ProtocolError("client tick is too old")
-    if client_tick > server_tick + MAX_TICK_LEAD:
-        raise ProtocolError("client tick is too far ahead")
+    # The client tick is informational; a stalled or lagging client must keep playing, so the
+    # value is clamped into the plausible window instead of ending the connection.
+    client_tick = min(
+        max(client_tick, max(0, server_tick - MAX_TICK_LAG)), server_tick + MAX_TICK_LEAD
+    )
 
     move = _object(envelope.get("move"), "move")
     _exact_fields(move, {"x", "y"}, "move")

@@ -6,6 +6,8 @@ from intelstream.hands.engine import BoxingEngine, EngineConfig
 from intelstream.hands.protocol import (
     MAX_ACTIONS_PER_INPUT,
     MAX_FRAME_BYTES,
+    MAX_TICK_LAG,
+    MAX_TICK_LEAD,
     ProtocolError,
     encode_client_input,
     encode_snapshot,
@@ -140,19 +142,19 @@ def test_rejects_non_finite_and_non_integer_numbers() -> None:
         parse_client_input(json.dumps(payload), server_tick=10)
 
 
-def test_rejects_stale_and_implausible_ticks() -> None:
+def test_rejects_stale_sequences_but_clamps_implausible_ticks() -> None:
     frame = json.dumps(valid_payload())
     with pytest.raises(ProtocolError, match="stale"):
         parse_client_input(frame, last_sequence=2, server_tick=10)
 
     payload = valid_payload()
     payload["client_tick"] = 500
-    with pytest.raises(ProtocolError, match="far ahead"):
-        parse_client_input(json.dumps(payload), server_tick=10)
+    ahead = parse_client_input(json.dumps(payload), server_tick=10)
+    assert ahead.client_tick == 10 + MAX_TICK_LEAD
 
     payload["client_tick"] = 1
-    with pytest.raises(ProtocolError, match="too old"):
-        parse_client_input(json.dumps(payload), server_tick=500)
+    stalled = parse_client_input(json.dumps(payload), server_tick=500)
+    assert stalled.client_tick == 500 - MAX_TICK_LAG
 
 
 def test_rejects_oversized_frames_and_action_arrays() -> None:

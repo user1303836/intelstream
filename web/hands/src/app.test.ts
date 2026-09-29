@@ -157,10 +157,12 @@ describe("browser lifecycle and accessible overlays", () => {
     expect(root.querySelector<HTMLButtonElement>("[data-retry]")!.hidden).toBe(false);
     expect(root.querySelector("canvas")).not.toBeNull();
     root.querySelector<HTMLButtonElement>("[data-retry]")!.click();
-    await vi.waitFor(() => expect(mocks.rendererPushes).toHaveLength(2));
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBe(firstCallbacks));
     expect(mocks.rendererDestroy).toHaveBeenCalledOnce();
     expect(mocks.sessionDestroy).toHaveBeenCalledOnce();
+    expect(mocks.rendererPushes).toHaveLength(1);
     send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 1, next_sequence: 0, reconnect_ticket: "new" });
+    expect(mocks.rendererPushes).toHaveLength(2);
     send({ version: 3, type: "snapshot", payload: makeSnapshot(1, "countdown") });
     expect(mocks.rendererPushes).toEqual([[100], [1]]);
     expect(root.querySelector("[data-final]")?.textContent).toBe("");
