@@ -625,6 +625,8 @@ HANDS_DEV_BACKEND=http://127.0.0.1:8091 npm --prefix web/hands run dev -- --port
 
 Open `http://localhost:5174/?e2e=1&instance_id=<any id>&player=<name>` in two browser windows (different names) to fight. The `e2e` switch only exists in Vite development builds; the development server authenticates anyone who can reach its port, so never expose it.
 
+`scripts/hands_e2e_scenarios.js` automates this with Playwright: `ko` (power punches until a knockdown, private get-up rhythm, stoppage), `reconnect` (one client drops offline mid-round and resumes), `rest` (two rounds with the corner rest), `spectator` (a third client joins read-only) and `touch` (one player on an emulated phone). It spawns the development server itself and prints the clients' status text plus any client or server errors.
+
 `HANDS_DEV_BACKEND` is a Node/Vite development-process setting, not a browser `VITE_*` value and not a production origin. Real OAuth still needs a valid Activity instance; the fixture is only recorded presentation data. Keep `HANDS_DEV_MODE=false` in production.
 
 ### Wheel/package verification

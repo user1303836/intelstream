@@ -389,7 +389,7 @@ export class BoxingGraph {
   }
 
   /** Raises both gloves overhead for a stoppage win, then settles back to the guard. */
-  celebrate(seconds = 3.2): void {
+  celebrate(seconds = 4.4): void {
     this.celebrateTime = seconds;
   }
 
