@@ -241,6 +241,7 @@ export function drawHud(
   roundStats: RoundStatsTracker | null = null,
   replayLabel: string | null = null,
   inputLatencyMs: number | null = null,
+  roundCallout: string | null = null,
 ): void {
   ctx.save();
   ctx.textBaseline = "alphabetic";
@@ -294,6 +295,17 @@ export function drawHud(
     ctx.restore();
   }
 
+  if (roundCallout !== null && snapshot.phase === "fight") {
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.font = "900 46px Inter, system-ui, sans-serif";
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = "rgba(0,0,0,0.75)";
+    ctx.strokeText(roundCallout, width / 2, height * 0.22);
+    ctx.fillStyle = "#f6d57a";
+    ctx.fillText(roundCallout, width / 2, height * 0.22);
+    ctx.restore();
+  }
   if (snapshot.phase === "countdown") {
     centerPanel(ctx, width, height, `ROUND ${snapshot.round_number}`, "Touch gloves. Protect yourself at all times.", -height * 0.12);
   }

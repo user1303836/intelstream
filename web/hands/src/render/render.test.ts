@@ -512,6 +512,17 @@ describe("round stats", () => {
     expect(texts.some((text) => text.includes("One 1/2 landed") && text.includes("Two 0/1 landed"))).toBe(true);
   });
 
+  it("draws the round callout only while the renderer asks for it", () => {
+    const texts: string[] = [];
+    const ctx = mockHudContext(texts);
+    const players = Object.fromEntries(publicPlayers.map((player) => [player.id, player]));
+    drawHud(ctx, 1280, 720, { ...snapshot(), phase: "fight", round_number: 2 }, players, "one", null, 0, 30, null, null, null, "ROUND 2");
+    expect(texts.filter((text) => text === "ROUND 2").length).toBeGreaterThanOrEqual(2);
+    texts.length = 0;
+    drawHud(ctx, 1280, 720, { ...snapshot(), phase: "fight", round_number: 2 }, players, "one", null, 0, 30, null, null, null, null);
+    expect(texts.filter((text) => text === "ROUND 2").length).toBe(1);
+  });
+
   it("shows the local fighter's input latency readout", () => {
     const texts: string[] = [];
     const ctx = mockHudContext(texts);

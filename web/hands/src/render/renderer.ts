@@ -63,6 +63,7 @@ const isHit = (event: CombatEvent): boolean => event.kind === "hit" || event.kin
 const isBlock = (event: CombatEvent): boolean => event.kind === "block" || event.kind === "perfect_block";
 const HISTORY_LIMIT = 480;
 const LOW_TIER_SCALE = 0.56;
+const ROUND_CALLOUT_SECONDS = 1.8;
 const CORNERMAN_APRON_DISTANCE = 3.42;
 // Broadcast finish: a soft vignette and a whisper of grain, applied before tone mapping.
 const BROADCAST_FINISH_SHADER = {
@@ -385,6 +386,9 @@ export class FightRenderer {
   private finishSeen = false;
   private finalRevealAt = 0;
   private portraitPull = 1;
+  private lastPhase: string | null = null;
+  private roundCalloutUntil = 0;
+  private roundCalloutRound = 0;
   private readonly tmpCamera = new THREE.Vector3();
   private readonly roundStats = new RoundStatsTracker();
   private readonly history: EngineSnapshot[] = [];
@@ -1059,6 +1063,11 @@ export class FightRenderer {
         const countdown = snapshot.phase === "countdown" ? snapshot.phase_ticks_remaining : null;
         graphs[0].setCountdown(countdown);
         graphs[1].setCountdown(countdown);
+        if (snapshot.phase === "fight" && this.lastPhase === "rest" && this.replay === null) {
+          this.roundCalloutUntil = seconds + ROUND_CALLOUT_SECONDS;
+          this.roundCalloutRound = snapshot.round_number;
+        }
+        this.lastPhase = snapshot.phase;
         graphs[0].update(a, b, dt, seconds, current.reducedMotion, current.blood, sampledTick, headB);
         graphs[1].update(b, a, dt, seconds, current.reducedMotion, current.blood, sampledTick, headA);
         for (const [index, graph] of graphs.entries()) {
@@ -1267,7 +1276,7 @@ export class FightRenderer {
       ctx.fillStyle = vignette;
       ctx.fillRect(0, 0, viewport.width, viewport.height);
     }
-    drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.frameSeconds >= this.finalRevealAt ? this.final : null, this.reconnectMs, this.simulation.tick_rate, this.roundStats, this.replay !== null ? "KNOCKOUT REPLAY" : null, this.inputLatencyMs);
+    drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.frameSeconds >= this.finalRevealAt ? this.final : null, this.reconnectMs, this.simulation.tick_rate, this.roundStats, this.replay !== null ? "KNOCKOUT REPLAY" : null, this.inputLatencyMs, this.frameSeconds < this.roundCalloutUntil ? `ROUND ${this.roundCalloutRound}` : null);
   }
 
   destroy(): void {
