@@ -307,7 +307,7 @@ export function drawHud(
   const seconds = Math.floor((clockTicks ?? snapshot.phase_ticks_remaining) / tickRate);
   const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
   roundCard(ctx, width / 2, compact ? 54 : height - 84, clock, `ROUND ${snapshot.round_number}`, snapshot.phase.replace("_", " ").toUpperCase());
-  if (inputLatencyMs !== null && snapshot.fighters.some((fighter) => fighter.player_id === viewerId)) {
+  if (inputLatencyMs !== null && final === null && snapshot.fighters.some((fighter) => fighter.player_id === viewerId)) {
     const rounded = Math.round(inputLatencyMs);
     ctx.save();
     ctx.textAlign = "right";
@@ -445,36 +445,44 @@ export function drawHud(
   ctx.restore();
 }
 
+function fitted(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, maxWidth: number, weight: number, maximum: number, minimum: number, family = "Inter, system-ui, sans-serif"): void {
+  const size = fitFontSize((candidate) => {
+    ctx.font = `${weight} ${candidate}px ${family}`;
+    return ctx.measureText(text).width;
+  }, maxWidth, maximum, minimum);
+  ctx.font = `${weight} ${size}px ${family}`;
+  ctx.fillText(fit(ctx, text, maxWidth), x, y);
+}
+
 function drawFinal(ctx: CanvasRenderingContext2D, width: number, height: number, final: FinalMessage, players: Readonly<Record<string, PublicPlayer>>, punches: readonly { name: string; stats: RoundPunchStats }[] = []): void {
   ctx.fillStyle = "rgba(2,4,9,0.94)";
   ctx.fillRect(width * 0.14, height * 0.13, width * 0.72, height * 0.74);
   ctx.strokeStyle = "rgba(246,213,122,0.5)";
   ctx.lineWidth = 2;
   ctx.strokeRect(width * 0.14 + 4, height * 0.13 + 4, width * 0.72 - 8, height * 0.74 - 8);
+  const inner = width * 0.72 - 32;
   ctx.textAlign = "center";
   ctx.fillStyle = "#f6d57a";
-  ctx.font = "800 26px Inter, system-ui, sans-serif";
-  ctx.fillText(decisionLabel(final), width / 2, height * 0.21);
+  fitted(ctx, decisionLabel(final), width / 2, height * 0.21, inner, 800, 26, 14);
   const winner = final.winner_id === null ? "DRAW" : `${players[final.winner_id]?.name ?? "Winner"} WINS`;
   ctx.fillStyle = "white";
-  ctx.font = "700 18px Inter, system-ui, sans-serif";
-  ctx.fillText(fit(ctx, winner, width * 0.6), width / 2, height * 0.27);
+  fitted(ctx, winner, width / 2, height * 0.27, inner, 700, 18, 11);
   const thrown = punches.filter(({ stats }) => stats.thrown > 0);
   if (thrown.length > 0) {
     ctx.fillStyle = "#c8d3e6";
     ctx.font = "600 13px Inter, system-ui, sans-serif";
-    ctx.fillText(thrown.map(({ name, stats }) => `${fit(ctx, name, width * 0.2)} ${stats.landed}/${stats.thrown} landed`).join("   ·   "), width / 2, height * 0.32);
+    const line = thrown.map(({ name, stats }) => `${fit(ctx, name, inner / thrown.length - 70)} ${stats.landed}/${stats.thrown} landed`).join("   ·   ");
+    fitted(ctx, line, width / 2, height * 0.32, inner, 600, 13, 9);
   }
-  ctx.font = "12px ui-monospace, monospace";
   final.scorecards.forEach((card, index) => {
     const y = height * 0.37 + index * 36;
     ctx.fillStyle = "#aebbd0";
-    ctx.fillText(`${fit(ctx, card.judge, 100)}  ${scoreTotal(card.player_one)} — ${scoreTotal(card.player_two)}  [${card.player_one.join("·")}] [${card.player_two.join("·")}]`, width / 2, y);
+    fitted(ctx, `${card.judge}  ${scoreTotal(card.player_one)} — ${scoreTotal(card.player_two)}  [${card.player_one.join("·")}] [${card.player_two.join("·")}]`, width / 2, y, inner, 400, 12, 8, "ui-monospace, monospace");
   });
   const ratings = Object.entries(final.ratings);
-  ctx.font = "600 13px Inter, system-ui, sans-serif";
   ratings.forEach(([id, rating], index) => {
     ctx.fillStyle = rating.after >= rating.before ? "#55df9b" : "#ff7b74";
-    ctx.fillText(`${fit(ctx, players[id]?.name ?? "Fighter", 100)}  ${rating.before} → ${rating.after} (${rating.after - rating.before >= 0 ? "+" : ""}${rating.after - rating.before})`, width / 2, height * 0.61 + index * 27);
+    const change = `${rating.before} → ${rating.after} (${rating.after - rating.before >= 0 ? "+" : ""}${rating.after - rating.before})`;
+    fitted(ctx, `${players[id]?.name ?? "Fighter"}  ${change}`, width / 2, height * 0.61 + index * 27, inner, 600, 13, 9);
   });
 }

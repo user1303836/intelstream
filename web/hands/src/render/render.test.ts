@@ -712,3 +712,17 @@ describe("compact scoreboard labels", () => {
     expect(texts.some((text) => text.startsWith("STAMINA"))).toBe(false);
   });
 });
+
+describe("result panel text", () => {
+  it("keeps a long winner name whole on a narrow screen instead of cutting the verdict", () => {
+    const texts: string[] = [];
+    const ctx = mockHudContext(texts);
+    const longName = "Anastasia-the-Great5";
+    const players = { one: { id: "one", name: longName, avatar: null, rating: 1500, connected: true }, two: { id: "two", name: "Bo", avatar: null, rating: 1500, connected: true } };
+    const final = { version: 3 as const, type: "final" as const, match_id: "m", winner_id: "one", method: "decision" as const, round: 2, scorecards: [{ judge: "Impact", player_one: [10, 10], player_two: [9, 10] }], ratings: { one: { before: 1000, after: 1016 }, two: { before: 1000, after: 984 } } };
+    drawHud(ctx, 390, 844, { ...snapshot(), phase: "complete" }, players, "one", final, 0, 30);
+    expect(texts).toContain(`${longName} WINS`);
+    expect(texts.some((text) => text.startsWith(`${longName}  1000`))).toBe(true);
+    expect(texts.some((text) => text.startsWith("INPUT"))).toBe(false);
+  });
+});
