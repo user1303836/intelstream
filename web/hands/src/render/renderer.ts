@@ -17,6 +17,7 @@ import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, type ArcadeDislocation } from 
 import { drawHud, finalRevealDelay, RoundStatsTracker, STOPPAGE_METHODS } from "./hud";
 import { ResolutionScaler } from "./quality";
 import { planKnockoutReplay, replayTick, type ReplayPlan } from "./replay";
+import { GloveTrail } from "./trails";
 
 export type ArcadeInjury =
   | "decapitation"
@@ -337,6 +338,8 @@ export class FightRenderer {
   private readonly arena: BuiltArena;
   private referee: BoxingGraph | null = null;
   private cornermen: [BoxingGraph, BoxingGraph] | null = null;
+  private trails: GloveTrail[] = [];
+  private readonly trailGlove = new THREE.Vector3();
   private readonly cornerShirts: THREE.CanvasTexture[] = [];
   private readonly cornermanPosition = new THREE.Vector3();
   private readonly cornermanVelocity = new THREE.Vector3();
@@ -518,6 +521,8 @@ export class FightRenderer {
         }
         if (this.destroyed) return;
         this.scene.add(first.root, second.root, official.root, blueCorner.root, redCorner.root);
+        this.trails = [0x1d4ed8, 0xb91c1c].flatMap((gear) => [0, 1].map(() => new GloveTrail(new THREE.Color(gear).lerp(new THREE.Color(0xffffff), 0.55))));
+        for (const trail of this.trails) this.scene.add(trail.mesh);
       })
       .catch((error: unknown) => {
         this.glbLoading = false;
@@ -1173,6 +1178,7 @@ export class FightRenderer {
 
     this.arena.update(seconds, dt, current.reducedMotion);
     this.effects.update(dt);
+    this.updateTrails(dt, current.reducedMotion);
     this.updateReferee(dt, seconds, snapshot, sampledTick);
     this.updateCornermen(dt, seconds, snapshot, sampledTick);
     this.updateBlobShadows();
@@ -1281,6 +1287,22 @@ export class FightRenderer {
     referee.update(state.self, state.focus, dt, time, false, "off", sampledTick);
   }
 
+  private updateTrails(dt: number, reducedMotion: boolean): void {
+    const graphs = this.graphs;
+    if (graphs === null || this.trails.length < 4) return;
+    for (const [index, graph] of graphs.entries()) {
+      for (const [gloveIndex, bone] of (["gloveL", "gloveR"] as const).entries()) {
+        const trail = this.trails[index * 2 + gloveIndex]!;
+        if (!graph.boxer.root.visible) {
+          trail.reset();
+          continue;
+        }
+        graph.boxer.rig.bones[bone].getWorldPosition(this.trailGlove);
+        trail.update(this.trailGlove, dt, this.camera.position, !reducedMotion && this.replay === null);
+      }
+    }
+  }
+
   /** Cornermen stand on the apron outside their fighter's corner and lean in during the rest. */
   private updateCornermen(dt: number, time: number, snapshot: EngineSnapshot | null, sampledTick: number): void {
     const cornermen = this.cornermen;
@@ -1344,6 +1366,11 @@ export class FightRenderer {
       this.referee.dispose();
       this.referee = null;
     }
+    for (const trail of this.trails) {
+      this.scene.remove(trail.mesh);
+      trail.dispose();
+    }
+    this.trails = [];
     if (this.cornermen !== null) {
       for (const graph of this.cornermen) {
         this.scene.remove(graph.boxer.root);

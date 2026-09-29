@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "../render/graph";
+import { GloveTrail } from "../render/trails";
 import { worldMapping } from "../render/world";
 import type { FighterSnapshot, Hand, PunchClass, Target } from "../types";
 
@@ -43,6 +44,8 @@ export class ModelLab {
   private readonly camera: THREE.PerspectiveCamera;
   private graph: BoxingGraph | null = null;
   private boxer: SkinnedBoxer | null = null;
+  private trails: GloveTrail[] = [];
+  private readonly trailGlove = new THREE.Vector3();
   private skeletonHelper: THREE.SkeletonHelper | null = null;
   private raf = 0;
   private previous = performance.now();
@@ -156,6 +159,8 @@ export class ModelLab {
       this.boxer = new SkinnedBoxer(gltf, { skin: 0xa9744f, gear: 0x1d4ed8 });
       this.graph = new BoxingGraph(this.boxer, worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }));
       this.scene.add(this.boxer.root);
+      this.trails = [new GloveTrail(new THREE.Color(0xdbe4ff)), new GloveTrail(new THREE.Color(0xdbe4ff))];
+      for (const trail of this.trails) this.scene.add(trail.mesh);
       if (this.params.get("skeleton") === "1") {
         this.skeletonHelper = new THREE.SkeletonHelper(this.boxer.root);
         this.scene.add(this.skeletonHelper);
@@ -223,6 +228,10 @@ export class ModelLab {
     if (this.params.get("pose") === "break") graph.breakClinch(60);
     graph.setCountdown(this.params.get("pose") === "touch_gloves" ? 30 : null);
     graph.update(fighter, opponent, dt, this.elapsed, false, "full", sampledTick, head);
+    for (const [index, bone] of (["gloveL", "gloveR"] as const).entries()) {
+      this.boxer!.rig.bones[bone].getWorldPosition(this.trailGlove);
+      this.trails[index]?.update(this.trailGlove, dt, this.camera.position, dt > 0);
+    }
     (window as unknown as Record<string, unknown>).__poseLab = {
       head: this.boxer!.bone("head")!.getWorldPosition(new THREE.Vector3()).toArray().map((v) => Number(v.toFixed(3))),
       gloveL: this.boxer!.bone("gloveL")!.getWorldPosition(new THREE.Vector3()).toArray().map((v) => Number(v.toFixed(3))),
