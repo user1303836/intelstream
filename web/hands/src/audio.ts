@@ -162,6 +162,10 @@ export class AudioFeedback {
       case "clinch_start":
         this.noise({ duration: 0.12, frequency: 190, gain: 0.1 });
         break;
+      case "taunt":
+        this.tone({ from: 520, to: 390, duration: 0.18, type: "triangle", gain: 0.05 });
+        this.crowdSwell(0.45);
+        break;
       case "bleed":
         break;
       case "exhausted":
