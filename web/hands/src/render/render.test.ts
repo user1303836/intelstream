@@ -638,7 +638,7 @@ describe("topPanelOffset", () => {
     const top = (width: number, height: number): number => height / 2 + topPanelOffset(width, height) - (height < 480 ? 25 : 39);
     expect(top(1280, 720)).toBeCloseTo(72);
     expect(top(844, 390)).toBeCloseTo(56);
-    expect(top(390, 844)).toBeCloseTo(96);
+    expect(top(390, 844)).toBeCloseTo(112);
   });
 });
 

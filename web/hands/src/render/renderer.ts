@@ -67,6 +67,8 @@ const LOW_TIER_SCALE = 0.56;
 const ROUND_CALLOUT_SECONDS = 1.8;
 const FINISH_CLOSE_UP_SECONDS = 1.7;
 const CORNERMAN_APRON_DISTANCE = 3.42;
+/** Close cameras stay inside the rope line (posts stand at 2.46 m) so a rope never fills the lens. */
+const TIGHT_SHOT_LIMIT = 2.2;
 const CORNERMAN_WORK_DISTANCE = 2.95;
 const CUTMAN_WALK_SECONDS = 1.6;
 // Broadcast finish: a soft vignette and a whisper of grain, applied before tone mapping.
@@ -418,6 +420,8 @@ export class FightRenderer {
   private portraitPull = 1;
   private lastPhase: string | null = null;
   private restStartedAt = 0;
+  private replayFollow = 0;
+  private replayFollowAt = 0;
   private readonly cornerPosition = new THREE.Vector3();
   private readonly cornerLookAt = new THREE.Vector3();
   private finishCloseUpUntil = 0;
@@ -656,7 +660,7 @@ export class FightRenderer {
   }
 
   /** A short high three-quarter close-up on the beaten fighter's face, or on the head where it came to rest, before the result panel. */
-  private closeUpFrame(seconds: number): { position: THREE.Vector3; lookAt: THREE.Vector3 } | null {
+  private closeUpFrame(seconds: number): { position: THREE.Vector3; lookAt: THREE.Vector3; tight: boolean } | null {
     if (seconds >= this.finishCloseUpUntil || this.finishCloseUpIndex < 0 || !this.headCacheValid[this.finishCloseUpIndex]) return null;
     const severed = this.arcadeInjuries[this.finishCloseUpIndex] === "decapitation" && this.effects.severedHeadPosition(this.finishCloseUpIndex, this.closeUpTarget);
     const head = severed ? this.closeUpTarget : this.headCache[this.finishCloseUpIndex]!;
@@ -666,12 +670,12 @@ export class FightRenderer {
     const toCentre = Math.atan2(-head.x, -head.z);
     const angle = (Math.hypot(head.x, head.z) > 0.4 ? toCentre : 0.9) + drift;
     this.closeUpPosition.set(
-      THREE.MathUtils.clamp(head.x + Math.sin(angle) * reach, -2.8, 2.8),
+      THREE.MathUtils.clamp(head.x + Math.sin(angle) * reach, -TIGHT_SHOT_LIMIT, TIGHT_SHOT_LIMIT),
       head.y + (severed ? 0.42 : 0.75),
-      THREE.MathUtils.clamp(head.z + Math.cos(angle) * reach, -2.8, 2.8),
+      THREE.MathUtils.clamp(head.z + Math.cos(angle) * reach, -TIGHT_SHOT_LIMIT, TIGHT_SHOT_LIMIT),
     );
     this.replayLookAt.copy(head);
-    return { position: this.closeUpPosition, lookAt: this.replayLookAt };
+    return { position: this.closeUpPosition, lookAt: this.replayLookAt, tight: true };
   }
 
   /** Replays the recorded snapshots around the knockdown from a close camera before the result panel. */
@@ -679,6 +683,8 @@ export class FightRenderer {
     const buffer = new SnapshotBuffer(plan.snapshots.length + 2, this.simulation.tick_rate);
     for (const snapshot of plan.snapshots) buffer.push(snapshot);
     this.replay = { plan, buffer, startedAt: this.frameSeconds, impactFired: false };
+    this.replayFollow = 0;
+    this.replayFollowAt = 0;
     for (const index of [0, 1] as const) {
       const injury = this.arcadeInjuries[index];
       const event = this.arcadeInjuryEvents[index];
@@ -718,14 +724,22 @@ export class FightRenderer {
     this.reapplyReplayInjuries();
   }
 
-  private replayFrame(snapshot: EngineSnapshot, elapsed: number): { position: THREE.Vector3; lookAt: THREE.Vector3 } {
+  private replayFrame(snapshot: EngineSnapshot, elapsed: number): { position: THREE.Vector3; lookAt: THREE.Vector3; tight: boolean } {
     const [a, b] = snapshot.fighters;
     const ax = this.mapping.x(a.x);
     const az = this.mapping.z(a.y);
     const bx = this.mapping.x(b.x);
     const bz = this.mapping.z(b.y);
-    const midX = (ax + bx) / 2;
-    const midZ = (az + bz) / 2;
+    // A portrait screen is too narrow for both fighters up close, so it favours the one being hit;
+    // after the impact every screen follows that fighter down to the canvas.
+    const victim = snapshot.fighters.findIndex((fighter) => fighter.player_id === this.replay?.plan.impact.target_id);
+    const falling = this.replay?.impactFired === true && victim >= 0 && this.headCacheValid[victim] === true;
+    const follow = 1 - Math.exp(-3 * Math.max(0, elapsed - this.replayFollowAt));
+    this.replayFollowAt = elapsed;
+    this.replayFollow += ((falling ? 1 : 0) - this.replayFollow) * follow;
+    const favour = victim < 0 ? 0 : Math.max(this.portraitPull > 1.3 ? 0.7 : 0, this.replayFollow * 0.8);
+    const midX = (ax + bx) / 2 + ((victim === 1 ? bx : ax) - (ax + bx) / 2) * favour;
+    const midZ = (az + bz) / 2 + ((victim === 1 ? bz : az) - (az + bz) / 2) * favour;
     let nx = -(bz - az);
     let nz = bx - ax;
     const length = Math.hypot(nx, nz) || 1;
@@ -740,12 +754,13 @@ export class FightRenderer {
     const dz = nx * Math.sin(orbit) + nz * Math.cos(orbit);
     const distance = 2.5;
     this.replayCameraPosition.set(
-      THREE.MathUtils.clamp(midX + dx * distance, -2.7, 2.7),
+      THREE.MathUtils.clamp(midX + dx * distance, -TIGHT_SHOT_LIMIT, TIGHT_SHOT_LIMIT),
       1.38 - Math.min(0.25, elapsed * 0.05),
-      THREE.MathUtils.clamp(midZ + dz * distance, -2.7, 2.7),
+      THREE.MathUtils.clamp(midZ + dz * distance, -TIGHT_SHOT_LIMIT, TIGHT_SHOT_LIMIT),
     );
-    this.replayLookAt.set(midX, 1.28, midZ);
-    return { position: this.replayCameraPosition, lookAt: this.replayLookAt };
+    const headHeight = falling ? THREE.MathUtils.clamp(this.headCache[victim]!.y, 0.45, 1.28) : 1.28;
+    this.replayLookAt.set(midX, 1.28 + (headHeight - 1.28) * this.replayFollow, midZ);
+    return { position: this.replayCameraPosition, lookAt: this.replayLookAt, tight: true };
   }
 
   setInputLatency(milliseconds: number | null): void {
@@ -1281,12 +1296,18 @@ export class FightRenderer {
       current.reducedMotion,
     );
     const replaying = this.replay;
-    const frame = this.cameraOverride ?? (replaying !== null && snapshot !== null ? this.replayFrame(snapshot, seconds - replaying.startedAt) : (this.closeUpFrame(seconds) ?? this.cornerShotFrame(seconds, snapshot, current.reducedMotion) ?? directed));
+    const frame: { position: THREE.Vector3; lookAt: THREE.Vector3; tight?: boolean } = this.cameraOverride ?? (replaying !== null && snapshot !== null ? this.replayFrame(snapshot, seconds - replaying.startedAt) : (this.closeUpFrame(seconds) ?? this.cornerShotFrame(seconds, snapshot, current.reducedMotion) ?? directed));
     if (this.cameraOverride === null && this.portraitPull > 1) {
-      const distanceScale = this.portraitPull / Math.min(1.3, Math.sqrt(this.portraitPull));
+      const tight = frame.tight === true;
+      const pull = this.portraitPull / Math.min(1.3, Math.sqrt(this.portraitPull));
+      const distanceScale = tight ? Math.min(pull, 1.25) : pull;
       this.tmpCamera.subVectors(frame.position, frame.lookAt).multiplyScalar(distanceScale);
       this.camera.position.copy(frame.lookAt).add(this.tmpCamera);
-      this.camera.lookAt(frame.lookAt.x, frame.lookAt.y - (this.portraitPull - 1) * 0.45, frame.lookAt.z);
+      if (tight) {
+        this.camera.position.x = THREE.MathUtils.clamp(this.camera.position.x, -TIGHT_SHOT_LIMIT, TIGHT_SHOT_LIMIT);
+        this.camera.position.z = THREE.MathUtils.clamp(this.camera.position.z, -TIGHT_SHOT_LIMIT, TIGHT_SHOT_LIMIT);
+      }
+      this.camera.lookAt(frame.lookAt.x, frame.lookAt.y - (this.portraitPull - 1) * (tight ? 0.08 : 0.45), frame.lookAt.z);
     } else {
       this.camera.position.copy(frame.position);
       this.camera.lookAt(frame.lookAt);

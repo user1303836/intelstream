@@ -151,7 +151,7 @@ const panelHeightFor = (height: number): number => (height < 480 ? SHORT_PANEL_H
 
 /** Offset that parks a centre panel under the top bar, or under the round card on narrow screens, clear of the fighters. */
 export const topPanelOffset = (width: number, height: number): number =>
-  Math.max(width < 640 ? 96 : 56, height * 0.1) + panelHeightFor(height) / 2 - height / 2;
+  Math.max(width < 640 ? 112 : 56, height * 0.1) + panelHeightFor(height) / 2 - height / 2;
 
 function centerPanel(ctx: CanvasRenderingContext2D, width: number, height: number, title: string, subtitle: string, yOffset = 0): void {
   const panelWidth = Math.min(320, width - 24);
