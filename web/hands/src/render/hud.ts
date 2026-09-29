@@ -145,9 +145,18 @@ function roundCard(ctx: CanvasRenderingContext2D, centerX: number, y: number, cl
   ctx.restore();
 }
 
+const PANEL_HEIGHT = 78;
+const SHORT_PANEL_HEIGHT = 50;
+const panelHeightFor = (height: number): number => (height < 480 ? SHORT_PANEL_HEIGHT : PANEL_HEIGHT);
+
+/** Offset that parks a centre panel under the top bar, or under the round card on narrow screens, clear of the fighters. */
+export const topPanelOffset = (width: number, height: number): number =>
+  Math.max(width < 640 ? 96 : 56, height * 0.1) + panelHeightFor(height) / 2 - height / 2;
+
 function centerPanel(ctx: CanvasRenderingContext2D, width: number, height: number, title: string, subtitle: string, yOffset = 0): void {
   const panelWidth = Math.min(320, width - 24);
-  const panelHeight = 78;
+  const panelHeight = panelHeightFor(height);
+  const short = panelHeight === SHORT_PANEL_HEIGHT;
   const x = width / 2 - panelWidth / 2;
   const y = height / 2 - panelHeight / 2 + yOffset;
   ctx.fillStyle = "rgba(3,6,12,0.88)";
@@ -157,11 +166,11 @@ function centerPanel(ctx: CanvasRenderingContext2D, width: number, height: numbe
   ctx.strokeRect(x + 2, y + 2, panelWidth - 4, panelHeight - 4);
   ctx.textAlign = "center";
   ctx.fillStyle = "#ffd77a";
-  ctx.font = "800 22px Inter, system-ui, sans-serif";
-  ctx.fillText(title, width / 2, y + 34);
+  ctx.font = `800 ${short ? 17 : 22}px Inter, system-ui, sans-serif`;
+  ctx.fillText(title, width / 2, y + (short ? 22 : 34));
   ctx.fillStyle = "#c8d3e6";
-  ctx.font = "600 12px Inter, system-ui, sans-serif";
-  ctx.fillText(fit(ctx, subtitle, panelWidth - 24), width / 2, y + 58);
+  ctx.font = `600 ${short ? 11 : 12}px Inter, system-ui, sans-serif`;
+  ctx.fillText(fit(ctx, subtitle, panelWidth - 24), width / 2, y + (short ? 39 : 58));
 }
 
 export interface RoundPunchStats {
@@ -318,7 +327,7 @@ export function drawHud(
     ctx.restore();
   }
   if (snapshot.phase === "countdown") {
-    centerPanel(ctx, width, height, `ROUND ${snapshot.round_number}`, "Touch gloves. Protect yourself at all times.", -height * 0.12);
+    centerPanel(ctx, width, height, `ROUND ${snapshot.round_number}`, "Touch gloves. Protect yourself at all times.", topPanelOffset(width, height));
   }
   if (snapshot.phase === "knockdown") {
     const viewer = snapshot.fighters.find((fighter) => fighter.player_id === viewerId);
@@ -402,7 +411,7 @@ export function drawHud(
   }
   if (snapshot.phase === "foul_recovery") {
     const victim = snapshot.fighters.find((fighter) => fighter.is_foul_recovery_target);
-    centerPanel(ctx, width, height, "FOUL RECOVERY", `${players[victim?.player_id ?? ""]?.name ?? "Fighter"} is recovering`);
+    centerPanel(ctx, width, height, "FOUL RECOVERY", `${players[victim?.player_id ?? ""]?.name ?? "Fighter"} is recovering`, topPanelOffset(width, height));
   }
   if (snapshot.phase === "rest") {
     const statsLine = snapshot.fighters

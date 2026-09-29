@@ -3,7 +3,7 @@ import { punchTiming, totalTicks } from "../manifest";
 import { buildArena } from "./arena";
 import { CameraDirector } from "./camera";
 import { bloodPatternFor, Effects3D } from "./effects";
-import { decisionLabel, drawHud, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, RoundStatsTracker, scoreTotal } from "./hud";
+import { decisionLabel, drawHud, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
 import { buildRing, ropePress } from "./ring";
 import { resizeHighDpi } from "./viewport";
 import { PALETTES, worldMapping } from "./world";
@@ -630,5 +630,14 @@ describe("fitFontSize", () => {
     expect(fitFontSize(measure, 160, 16, 11)).toBe(16);
     expect(fitFontSize(measure, 135, 16, 11)).toBe(13);
     expect(fitFontSize(measure, 50, 16, 11)).toBe(11);
+  });
+});
+
+describe("topPanelOffset", () => {
+  it("parks the panel under the top bar and lower on narrow screens", () => {
+    const top = (width: number, height: number): number => height / 2 + topPanelOffset(width, height) - (height < 480 ? 25 : 39);
+    expect(top(1280, 720)).toBeCloseTo(72);
+    expect(top(844, 390)).toBeCloseTo(56);
+    expect(top(390, 844)).toBeCloseTo(96);
   });
 });
