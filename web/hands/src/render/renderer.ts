@@ -14,7 +14,7 @@ import { buildArena, type BuiltArena } from "./arena";
 import { CameraDirector, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE, cornerFrame, cornerPoint, cornerShot, cornerShotProgress } from "./camera";
 import { Effects3D, type BakedPart } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, type ArcadeDislocation } from "./graph";
-import { drawHud, finalRevealDelay, RoundStatsTracker, STOPPAGE_METHODS } from "./hud";
+import { drawHud, finalRevealDelay, RoundStatsTracker, STOPPAGE_METHODS, RoundClock } from "./hud";
 import { ResolutionScaler } from "./quality";
 import { planKnockoutReplay, replayTick, type ReplayPlan } from "./replay";
 import { GloveTrail } from "./trails";
@@ -420,6 +420,7 @@ export class FightRenderer {
   private portraitPull = 1;
   private lastPhase: string | null = null;
   private restStartedAt = 0;
+  private readonly roundClock = new RoundClock();
   private replayFollow = 0;
   private replayFollowAt = 0;
   private readonly cornerPosition = new THREE.Vector3();
@@ -1494,7 +1495,7 @@ export class FightRenderer {
       ctx.fillStyle = vignette;
       ctx.fillRect(0, 0, viewport.width, viewport.height);
     }
-    drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.frameSeconds >= this.finalRevealAt ? this.final : null, this.reconnectMs, this.simulation.tick_rate, this.roundStats, this.replay !== null ? "KNOCKOUT REPLAY" : null, this.inputLatencyMs, this.frameSeconds < this.roundCalloutUntil ? `ROUND ${this.roundCalloutRound}` : null);
+    drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.frameSeconds >= this.finalRevealAt ? this.final : null, this.reconnectMs, this.simulation.tick_rate, this.roundStats, this.replay !== null ? "KNOCKOUT REPLAY" : null, this.inputLatencyMs, this.frameSeconds < this.roundCalloutUntil ? `ROUND ${this.roundCalloutRound}` : null, this.roundClock.ticks(snapshot));
   }
 
   destroy(): void {

@@ -1,3 +1,4 @@
+import { RoundClock } from "./render/hud";
 import { AudioFeedback } from "./audio";
 import { ClientError, safeError } from "./api";
 import { authorizeDiscord, type DiscordSession } from "./discord";
@@ -53,6 +54,7 @@ export class HandsApp {
   private rematchTimer: number | null = null;
   private rematchCountdownTimer: number | null = null;
   private resultRevealTimer: number | null = null;
+  private readonly summaryClock = new RoundClock();
   private readonly fightSummary: HTMLElement;
   private readonly liveFightStatus: HTMLElement;
   private readonly finalSummary: HTMLElement;
@@ -335,7 +337,7 @@ export class HandsApp {
     const snapshot = this.state.snapshot;
     if (snapshot === null) return;
     const tickRate = this.state.simulation?.tick_rate ?? 30;
-    const seconds = Math.floor(snapshot.phase_ticks_remaining / tickRate);
+    const seconds = Math.floor(this.summaryClock.ticks(snapshot) / tickRate);
     const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
     const fighters = snapshot.fighters.map((fighter) => {
       const player = this.state.players[fighter.player_id];

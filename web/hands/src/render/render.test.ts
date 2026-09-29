@@ -3,7 +3,7 @@ import { punchTiming, totalTicks } from "../manifest";
 import { buildArena } from "./arena";
 import { CameraDirector, cornerFrame, cornerPoint, cornerShot, cornerShotProgress, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE } from "./camera";
 import { bloodPatternFor, Effects3D } from "./effects";
-import { decisionLabel, drawHud, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
+import { decisionLabel, drawHud, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, RoundClock, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
 import { buildRing, ropePress } from "./ring";
 import { resizeHighDpi } from "./viewport";
 import { PALETTES, worldMapping } from "./world";
@@ -685,5 +685,30 @@ describe("corner staging", () => {
     expect(cutman.clone().sub(stool).dot(left)).toBeGreaterThan(0.2);
     expect(camera.clone().setY(0).sub(stool).dot(left)).toBeLessThan(-0.8);
     expect(cutman.distanceTo(stool)).toBeCloseTo(CUTMAN_WORK_DISTANCE);
+  });
+});
+
+describe("round clock", () => {
+  it("holds the round time through a knockdown count and a foul timeout, and resets for a new round", () => {
+    const clock = new RoundClock();
+    const base = snapshot();
+    expect(clock.ticks({ ...base, phase: "fight", round_number: 1, phase_ticks_remaining: 2400 })).toBe(2400);
+    expect(clock.ticks({ ...base, phase: "knockdown", round_number: 1, phase_ticks_remaining: 270 })).toBe(2400);
+    expect(clock.ticks({ ...base, phase: "fight", round_number: 1, phase_ticks_remaining: 2390 })).toBe(2390);
+    expect(clock.ticks({ ...base, phase: "foul_recovery", round_number: 1, phase_ticks_remaining: 60 })).toBe(2390);
+    expect(clock.ticks({ ...base, phase: "rest", round_number: 1, phase_ticks_remaining: 450 })).toBe(450);
+    expect(clock.ticks({ ...base, phase: "knockdown", round_number: 2, phase_ticks_remaining: 250 })).toBe(250);
+  });
+});
+
+describe("compact scoreboard labels", () => {
+  it("abbreviates the bar labels on narrow screens so four-digit values do not collide", () => {
+    const texts: string[] = [];
+    const ctx = mockHudContext(texts);
+    const players = Object.fromEntries(publicPlayers.map((p) => [p.id, p]));
+    drawHud(ctx, 390, 844, snapshot(), players, "one", null, 0, 30);
+    expect(texts.some((text) => text.startsWith("STA "))).toBe(true);
+    expect(texts.some((text) => text.startsWith("HP "))).toBe(true);
+    expect(texts.some((text) => text.startsWith("STAMINA"))).toBe(false);
   });
 });

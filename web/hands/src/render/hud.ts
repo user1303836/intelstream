@@ -173,6 +173,22 @@ function centerPanel(ctx: CanvasRenderingContext2D, width: number, height: numbe
   ctx.fillText(fit(ctx, subtitle, panelWidth - 24), width / 2, y + (short ? 39 : 58));
 }
 
+/** Holds the round clock while a knockdown count or a foul timeout runs its own timer. */
+export class RoundClock {
+  private fightTicks: number | null = null;
+  private round = 0;
+
+  ticks(snapshot: EngineSnapshot): number {
+    if (snapshot.round_number !== this.round) {
+      this.round = snapshot.round_number;
+      this.fightTicks = null;
+    }
+    if (snapshot.phase === "fight") this.fightTicks = snapshot.phase_ticks_remaining;
+    const held = snapshot.phase === "knockdown" || snapshot.phase === "foul_recovery";
+    return held && this.fightTicks !== null ? this.fightTicks : snapshot.phase_ticks_remaining;
+  }
+}
+
 export interface RoundPunchStats {
   thrown: number;
   landed: number;
@@ -262,6 +278,7 @@ export function drawHud(
   replayLabel: string | null = null,
   inputLatencyMs: number | null = null,
   roundCallout: string | null = null,
+  clockTicks: number | null = null,
 ): void {
   ctx.save();
   ctx.textBaseline = "alphabetic";
@@ -276,8 +293,8 @@ export function drawHud(
     const player = players[fighter.player_id];
     const detail = `ELO ${player?.rating ?? "—"} · KD ${fighter.knockdowns} · W ${fighter.warnings} · −${fighter.deductions}`;
     const bars: BarSpec[] = [
-      { label: `STAMINA ${Math.round(fighter.stamina)}`, value: fighter.stamina, maximum: fighter.maximum_stamina, from: "#ffe08a", to: "#d9a53a" },
-      { label: `HEALTH ${Math.round(fighter.conditioning)}`, value: fighter.conditioning, maximum: HUD_MAX_CONDITIONING, from: "#ff8a7a", to: "#b02a20" },
+      { label: `${compact ? "STA" : "STAMINA"} ${Math.round(fighter.stamina)}`, value: fighter.stamina, maximum: fighter.maximum_stamina, from: "#ffe08a", to: "#d9a53a" },
+      { label: `${compact ? "HP" : "HEALTH"} ${Math.round(fighter.conditioning)}`, value: fighter.conditioning, maximum: HUD_MAX_CONDITIONING, from: "#ff8a7a", to: "#b02a20" },
       { label: "GUARD", value: fighter.guard, maximum: HUD_MAX_GUARD, from: "#9ec7ff", to: "#3d6fb8" },
       { label: `POISE ${Math.round(fighter.poise)}`, value: fighter.poise, maximum: HUD_MAX_POISE, from: "#e8c890", to: "#8a6a34" },
     ];
@@ -287,7 +304,7 @@ export function drawHud(
     broadcastBar(ctx, mirror ? x + plateWidth - 72 : x + 96, miniY, 64, bars[3]!, mirror);
   });
 
-  const seconds = Math.floor(snapshot.phase_ticks_remaining / tickRate);
+  const seconds = Math.floor((clockTicks ?? snapshot.phase_ticks_remaining) / tickRate);
   const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
   roundCard(ctx, width / 2, compact ? 54 : height - 84, clock, `ROUND ${snapshot.round_number}`, snapshot.phase.replace("_", " ").toUpperCase());
   if (inputLatencyMs !== null && snapshot.fighters.some((fighter) => fighter.player_id === viewerId)) {
