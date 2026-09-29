@@ -1,4 +1,4 @@
-import type { EngineSnapshot, FinalMessage, PublicPlayer } from "../types";
+import type { CombatEvent, EngineSnapshot, FinalMessage, PublicPlayer } from "../types";
 
 export const HUD_MAX_GUARD = 700;
 export const HUD_MAX_POISE = 600;
@@ -153,6 +153,39 @@ function centerPanel(ctx: CanvasRenderingContext2D, width: number, height: numbe
   ctx.fillText(subtitle, width / 2, y + 58);
 }
 
+export interface RoundPunchStats {
+  thrown: number;
+  landed: number;
+}
+
+/** Punches thrown and landed per fighter in the current round, reset on the round-start bell. */
+export class RoundStatsTracker {
+  private readonly stats = new Map<string, RoundPunchStats>();
+
+  record(event: CombatEvent): void {
+    if (event.kind === "bell") {
+      if (event.detail === "round_start") this.stats.clear();
+      return;
+    }
+    if (event.actor_id === null) return;
+    if (event.kind === "punch_start") this.entry(event.actor_id).thrown += 1;
+    else if (event.kind === "hit" || event.kind === "counter_hit") this.entry(event.actor_id).landed += 1;
+  }
+
+  get(playerId: string): RoundPunchStats {
+    return this.stats.get(playerId) ?? { thrown: 0, landed: 0 };
+  }
+
+  private entry(playerId: string): RoundPunchStats {
+    let entry = this.stats.get(playerId);
+    if (entry === undefined) {
+      entry = { thrown: 0, landed: 0 };
+      this.stats.set(playerId, entry);
+    }
+    return entry;
+  }
+}
+
 export const STOPPAGE_METHODS: ReadonlySet<string> = new Set(["ko", "flash_ko", "tko"]);
 export const FINAL_REVEAL_DELAY_SECONDS = 3.6;
 
@@ -171,10 +204,13 @@ export function drawHud(
   final: FinalMessage | null,
   reconnectMs: number,
   tickRate = 30,
+  roundStats: RoundStatsTracker | null = null,
 ): void {
   ctx.save();
   ctx.textBaseline = "alphabetic";
-  const plateWidth = Math.min(300, width * 0.38);
+  // Below 640 px the two plates share the bottom edge and the round card moves under the top bar.
+  const compact = width < 640;
+  const plateWidth = compact ? (width - 56) / 2 : Math.min(300, width * 0.38);
   const plateY = height - 84;
 
   snapshot.fighters.forEach((fighter, index) => {
@@ -196,7 +232,7 @@ export function drawHud(
 
   const seconds = Math.floor(snapshot.phase_ticks_remaining / tickRate);
   const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-  roundCard(ctx, width / 2, height - 84, clock, `ROUND ${snapshot.round_number}`, snapshot.phase.replace("_", " ").toUpperCase());
+  roundCard(ctx, width / 2, compact ? 54 : height - 84, clock, `ROUND ${snapshot.round_number}`, snapshot.phase.replace("_", " ").toUpperCase());
 
   if (snapshot.phase === "countdown") {
     centerPanel(ctx, width, height, `ROUND ${snapshot.round_number}`, "Touch gloves. Protect yourself at all times.", -height * 0.12);
@@ -270,7 +306,12 @@ export function drawHud(
     centerPanel(ctx, width, height, "FOUL RECOVERY", `${players[victim?.player_id ?? ""]?.name ?? "Fighter"} is recovering`);
   }
   if (snapshot.phase === "rest") {
-    centerPanel(ctx, width, height, "CORNERS · RECOVER", "Conditioning governs recovery");
+    const statsLine = snapshot.fighters
+      .map((fighter) => ({ name: players[fighter.player_id]?.name ?? "Fighter", stats: roundStats?.get(fighter.player_id) ?? { thrown: 0, landed: 0 } }))
+      .filter(({ stats }) => stats.thrown > 0 || stats.landed > 0)
+      .map(({ name, stats }) => `${fit(ctx, name, width * 0.22)} ${stats.landed}/${stats.thrown}`)
+      .join("  ·  ");
+    centerPanel(ctx, width, height, "CORNERS · RECOVER", statsLine.length > 0 ? `Landed this round: ${statsLine}` : "Conditioning governs recovery");
   }
   if (reconnectMs > 0) {
     centerPanel(ctx, width, height, `OPPONENT RECONNECTING · ${Math.ceil(reconnectMs / 1000)}s`, "The bout is paused");

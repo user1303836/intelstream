@@ -3,7 +3,7 @@ import { punchTiming, totalTicks } from "../manifest";
 import { buildArena } from "./arena";
 import { CameraDirector } from "./camera";
 import { bloodPatternFor, Effects3D } from "./effects";
-import { drawHud, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, HUD_MAX_GUARD, HUD_MAX_POISE, scoreTotal } from "./hud";
+import { drawHud, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, HUD_MAX_GUARD, HUD_MAX_POISE, RoundStatsTracker, scoreTotal } from "./hud";
 import { buildRing } from "./ring";
 import { resizeHighDpi } from "./viewport";
 import { PALETTES, worldMapping } from "./world";
@@ -450,6 +450,37 @@ describe("viewport and broadcast HUD", () => {
     const state = { ...snapshot(), phase_ticks_remaining: 1205 };
     drawHud(ctx, 800, 600, state, Object.fromEntries(publicPlayers.map((player) => [player.id, player])), "one", null, 0, 20);
     expect(texts).toContain("1:00");
+  });
+});
+
+describe("round stats", () => {
+  const event = (kind: string, actor: string, detail = ""): Parameters<RoundStatsTracker["record"]>[0] =>
+    ({ event_id: 1, tick: 1, kind, actor_id: actor, target_id: null, amount: 0, detail, blood: 0, direction: 1, action_id: null });
+
+  it("counts punches thrown and landed per fighter and resets on the round-start bell", () => {
+    const tracker = new RoundStatsTracker();
+    tracker.record(event("punch_start", "one"));
+    tracker.record(event("punch_start", "one"));
+    tracker.record(event("hit", "one"));
+    tracker.record(event("punch_start", "two"));
+    tracker.record(event("counter_hit", "two"));
+    tracker.record(event("block", "two"));
+    expect(tracker.get("one")).toEqual({ thrown: 2, landed: 1 });
+    expect(tracker.get("two")).toEqual({ thrown: 1, landed: 1 });
+    tracker.record(event("bell", "", "round_end"));
+    expect(tracker.get("one")).toEqual({ thrown: 2, landed: 1 });
+    tracker.record(event("bell", "", "round_start"));
+    expect(tracker.get("one")).toEqual({ thrown: 0, landed: 0 });
+  });
+
+  it("shows the landed counts on the rest panel", () => {
+    const texts: string[] = [];
+    const ctx = mockHudContext(texts);
+    const tracker = new RoundStatsTracker();
+    tracker.record(event("punch_start", "one"));
+    tracker.record(event("hit", "one"));
+    drawHud(ctx, 1280, 720, { ...snapshot(), phase: "rest" }, Object.fromEntries(publicPlayers.map((player) => [player.id, player])), "one", null, 0, 30, tracker);
+    expect(texts.some((text) => text.includes("One 1/1"))).toBe(true);
   });
 });
 

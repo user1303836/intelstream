@@ -4,6 +4,7 @@ import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { EventDeduplicator, SnapshotBuffer } from "../interpolation";
+import { coarsePointer } from "../input/touch";
 import { predictMovement, type HeldInput } from "../prediction";
 import type { BloodLevel, Settings } from "../settings";
 import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, Hand, MatchResult, PublicPlayer, PunchClass, SemanticAction, SimulationInfo } from "../types";
@@ -11,7 +12,7 @@ import { buildArena, type BuiltArena } from "./arena";
 import { CameraDirector } from "./camera";
 import { Effects3D, type BakedPart } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, type ArcadeDislocation } from "./graph";
-import { drawHud, finalRevealDelay, STOPPAGE_METHODS } from "./hud";
+import { drawHud, finalRevealDelay, RoundStatsTracker, STOPPAGE_METHODS } from "./hud";
 import { ResolutionScaler } from "./quality";
 
 export type ArcadeInjury =
@@ -264,7 +265,7 @@ export class FightRenderer {
   private raf = 0;
   private previous = performance.now();
   private readonly scaler = new ResolutionScaler();
-  private readonly basePixelRatio = Math.min(2, window.devicePixelRatio || 1);
+  private readonly basePixelRatio = Math.min(coarsePointer() ? 1.5 : 2, window.devicePixelRatio || 1);
   private players: Readonly<Record<string, PublicPlayer>> = {};
   private viewerId: string | null = null;
   private final: FinalMessage | null = null;
@@ -285,6 +286,9 @@ export class FightRenderer {
   private finishSlowMotion = 0;
   private finishSeen = false;
   private finalRevealAt = 0;
+  private portraitPull = 1;
+  private readonly tmpCamera = new THREE.Vector3();
+  private readonly roundStats = new RoundStatsTracker();
   private frameSeconds = 0;
   private readonly pendingContacts: Array<{
     event: CombatEvent;
@@ -531,6 +535,7 @@ export class FightRenderer {
   push(snapshot: EngineSnapshot): void {
     if (!this.buffer.push(snapshot, this.manualClock ? this.lastManualTime : performance.now())) return;
     const accepted = this.dedupe.accept(snapshot.events);
+    for (const event of accepted) this.roundStats.record(event);
     for (const { event, presentationEvent, presentImpact } of contactPresentationPlan(accepted, snapshot)) {
       const targetIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.target_id);
       const actorIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.actor_id);
@@ -753,6 +758,9 @@ export class FightRenderer {
         this.renderer.setSize(width, height, false);
         this.composer.setSize(width, height);
         this.camera.aspect = width / height;
+        // Narrow viewports widen the lens a little and pull the camera back (see the frame step below).
+        this.portraitPull = THREE.MathUtils.clamp(1.2 / this.camera.aspect, 1, 2.2);
+        this.camera.fov = 36 * Math.min(1.3, Math.sqrt(this.portraitPull));
         this.camera.updateProjectionMatrix();
       }
     }
@@ -871,8 +879,15 @@ export class FightRenderer {
       this.effects.shakeAmount,
       current.reducedMotion,
     );
-    this.camera.position.copy(frame.position);
-    this.camera.lookAt(frame.lookAt);
+    if (this.cameraOverride === null && this.portraitPull > 1) {
+      const distanceScale = this.portraitPull / Math.min(1.3, Math.sqrt(this.portraitPull));
+      this.tmpCamera.subVectors(frame.position, frame.lookAt).multiplyScalar(distanceScale);
+      this.camera.position.copy(frame.lookAt).add(this.tmpCamera);
+      this.camera.lookAt(frame.lookAt.x, frame.lookAt.y - (this.portraitPull - 1) * 0.45, frame.lookAt.z);
+    } else {
+      this.camera.position.copy(frame.position);
+      this.camera.lookAt(frame.lookAt);
+    }
 
     if (render) {
       this.composer.render();
@@ -974,7 +989,7 @@ export class FightRenderer {
       ctx.fillStyle = vignette;
       ctx.fillRect(0, 0, viewport.width, viewport.height);
     }
-    drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.frameSeconds >= this.finalRevealAt ? this.final : null, this.reconnectMs, this.simulation.tick_rate);
+    drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.frameSeconds >= this.finalRevealAt ? this.final : null, this.reconnectMs, this.simulation.tick_rate, this.roundStats);
   }
 
   destroy(): void {
