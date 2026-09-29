@@ -8,7 +8,7 @@
  * keyboard or touch input, reads the client's screen-reader status text, and writes screenshots to
  * $TMPDIR/hands-e2e.
  *
- *   node scripts/hands_e2e_scenarios.js ko|reconnect|rest|spectator|touch|mash|latency|soak|background
+ *   node scripts/hands_e2e_scenarios.js ko|reconnect|rest|spectator|touch|mash|latency|soak|background|rematch
  */
 const { chromium, devices } = require('playwright');
 const { spawn } = require('node:child_process');
@@ -108,6 +108,7 @@ async function main() {
     latency: ['--rounds', '1', '--round-seconds', '45', '--rest-seconds', '5'],
     soak: ['--rounds', '3', '--round-seconds', '120', '--rest-seconds', '15'],
     background: ['--rounds', '1', '--round-seconds', '60', '--rest-seconds', '5'],
+    rematch: ['--rounds', '1', '--round-seconds', '25', '--rest-seconds', '5'],
   }[scenario];
   const server = await startServer(serverArgs, { oneWayDelayMs: scenario === 'latency' ? 110 : 0 });
   try {
@@ -286,6 +287,27 @@ async function main() {
       const final = await waitFor(B.page, (s) => Boolean(s.final), 90000, 'final');
       note('FINAL B:', JSON.stringify(final?.final ?? null).slice(0, 200));
       note('FINAL A:', JSON.stringify((await status(A.page)).final).slice(0, 200));
+    }
+
+    if (scenario === 'rematch') {
+      for (let i = 0; i < 4; i += 1) { await A.page.keyboard.press('f'); await B.page.keyboard.press('j'); await wait(400); }
+      const first = await waitFor(A.page, (s) => Boolean(s.final), 90000, 'first final');
+      note('first final:', JSON.stringify(first?.final ?? null).slice(0, 90));
+      const rematchState = (page) => page.evaluate(() => { const b = document.querySelector('[data-rematch]'); return b ? { hidden: b.hidden, disabled: b.disabled, text: b.textContent } : null; });
+      note('rematch button right after final:', JSON.stringify(await rematchState(A.page)));
+      const enabledAt = Date.now();
+      for (let i = 0; i < 60; i += 1) { const s = await rematchState(A.page); if (s && !s.hidden && !s.disabled) break; await wait(500); }
+      note('rematch enabled after', ((Date.now() - enabledAt) / 1000).toFixed(1), 's:', JSON.stringify(await rematchState(A.page)), JSON.stringify(await rematchState(B.page)));
+      await A.page.click('[data-rematch]');
+      await B.page.click('[data-rematch]');
+      const second = await waitFor(A.page, (s) => /countdown|\. fight\./.test(s.summary ?? '') && !s.final, 60000, 'second bout start');
+      note('second bout started:', second !== null, '|', second?.status, '|', second?.summary?.slice(0, 60));
+      await waitFor(A.page, (s) => /\. fight\./.test(s.summary ?? ''), 20000, 'second fight phase');
+      for (let i = 0; i < 4; i += 1) { await A.page.keyboard.press('f'); await B.page.keyboard.press('j'); await wait(400); }
+      const finalA = await waitFor(A.page, (s) => Boolean(s.final), 90000, 'second final');
+      note('second final A:', JSON.stringify(finalA?.final ?? null).slice(0, 120));
+      const finalB = await waitFor(B.page, (s) => Boolean(s.final), 15000, 'second final on B');
+      note('second final B:', JSON.stringify(finalB?.final ?? null).slice(0, 120));
     }
 
     if (scenario === 'soak') {

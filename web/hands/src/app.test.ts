@@ -144,6 +144,49 @@ describe("browser lifecycle and accessible overlays", () => {
     app.destroy();
   });
 
+  it("offers a rematch after the result hold and retries while the ring is still clearing", async () => {
+    history.replaceState({}, "", "/?instance_id=launch");
+    const root = document.createElement("div");
+    const app = new HandsApp(root);
+    app.start();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
+    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 100, next_sequence: 8, reconnect_ticket: "rotated" });
+    send({ version: 3, type: "snapshot", payload: makeSnapshot(100) });
+    const final = (matchId: string): ServerMessage => ({ version: 3, type: "final", match_id: matchId, winner_id: "one", method: "decision", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } });
+    const button = root.querySelector<HTMLButtonElement>("[data-rematch]")!;
+    expect(button.hidden).toBe(true);
+    vi.useFakeTimers();
+    send(final("m1"));
+    expect(button.hidden).toBe(false);
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toContain("Rematch in");
+    vi.advanceTimersByTime(11_500);
+    expect(button.disabled).toBe(false);
+    expect(button.textContent).toBe("Rematch");
+    const first = mocks.callbacks;
+    button.click();
+    vi.useRealTimers();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBe(first));
+    expect(button.hidden).toBe(true);
+    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1516, players: [...players], server_tick: 900, next_sequence: 0, reconnect_ticket: "again" });
+    vi.useFakeTimers();
+    const held = mocks.callbacks;
+    send(final("m1"));
+    expect(root.querySelector("[data-status]")?.textContent).toContain("still being cleared");
+    expect(root.querySelector("[data-final]")?.textContent).toBe("");
+    vi.advanceTimersByTime(3_100);
+    vi.useRealTimers();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBe(held));
+    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1516, players: [...players], server_tick: 1, next_sequence: 0, reconnect_ticket: "fresh" });
+    send({ version: 3, type: "snapshot", payload: makeSnapshot(1, "countdown") });
+    expect(root.querySelector("[data-status]")?.textContent).toBe("Bout countdown.");
+    send(final("m2"));
+    expect(root.querySelector("[data-status]")?.textContent).toBe("Bout complete. Scorecards and rating changes are displayed.");
+    expect(button.hidden).toBe(false);
+    expect(button.disabled).toBe(true);
+    app.destroy();
+  });
+
   it("fully resets renderer, snapshot tick history, player/final state and dedupers on fresh authorization", async () => {
     history.replaceState({}, "", "/?instance_id=launch");
     const root = document.createElement("div");
