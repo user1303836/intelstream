@@ -2,7 +2,7 @@ import * as THREE from "three";
 import type { BloodLevel } from "../settings";
 import type { CombatEvent, Hand } from "../types";
 import { buildChunkGeometry, buildWoundGeometry, woundTexture } from "./gore";
-import { CANVAS_TOP, RING_FIGHT_HALF } from "./world";
+import { CANVAS_TOP, RING_FIGHT_HALF, ROPE_LINE } from "./world";
 
 const MAX_DROPLETS = 900;
 const MAX_MIST = 90;
@@ -13,6 +13,7 @@ const MAX_HANDS = 4;
 const GIBS_PER_DECAPITATION = 24;
 const GIBS_PER_HAND = 16;
 const HEAD_RADIUS = 0.12;
+const SEVERED_PART_MARGIN = 0.04;
 /** The neck is close to round where it is cut. */
 export const NECK_WOUND_RADIUS = 0.068;
 /** Where the cut through the neck sits on a severed head, in the head bone's frame, and how it faces. It is set a little way up inside the neck. */
@@ -399,6 +400,14 @@ export class Effects3D {
     const head = this.heads[Math.trunc(fighterIndex)];
     if (head === undefined || !head.active) return false;
     out.copy(head.mesh.position);
+    return true;
+  }
+
+  /** Copies the direction a severed head's face points into `out`; false when the head is still on. */
+  severedHeadFacing(fighterIndex: number, out: THREE.Vector3): boolean {
+    const head = this.heads[Math.trunc(fighterIndex)];
+    if (head === undefined || !head.active) return false;
+    out.set(0, 0, 1).applyQuaternion(head.mesh.quaternion);
     return true;
   }
 
@@ -1064,12 +1073,14 @@ export class Effects3D {
       part.mesh.rotation.x += part.vrx * dt;
       part.mesh.rotation.y += part.vry * dt;
       part.mesh.rotation.z += part.vrz * dt;
-      if (Math.abs(part.mesh.position.x) > RING_FIGHT_HALF) {
-        part.mesh.position.x = Math.sign(part.mesh.position.x) * RING_FIGHT_HALF;
+      // The ropes keep a severed part in the ring, where the cameras can reach it.
+      const limit = ROPE_LINE - part.radius - SEVERED_PART_MARGIN;
+      if (Math.abs(part.mesh.position.x) > limit) {
+        part.mesh.position.x = Math.sign(part.mesh.position.x) * limit;
         part.vx *= -0.42;
       }
-      if (Math.abs(part.mesh.position.z) > RING_FIGHT_HALF) {
-        part.mesh.position.z = Math.sign(part.mesh.position.z) * RING_FIGHT_HALF;
+      if (Math.abs(part.mesh.position.z) > limit) {
+        part.mesh.position.z = Math.sign(part.mesh.position.z) * limit;
         part.vz *= -0.42;
       }
       if (part.mesh.position.y <= CANVAS_TOP + part.radius) {

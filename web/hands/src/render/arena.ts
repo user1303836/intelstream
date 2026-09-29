@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { CROWD_TIERS, PARAPET_HEIGHT, PARAPET_SETBACK, buildCrowd } from "./crowd";
 
 export interface BuiltArena {
   readonly group: THREE.Group;
@@ -10,9 +11,9 @@ export interface BuiltArena {
 }
 
 const EXCITEMENT_DECAY_PER_SECOND = 0.3;
-
-const CROWD_BODY_COLORS = [0x2a3140, 0x3a2f2a, 0x26343a, 0x40312e, 0x2e3a2c, 0x38343e, 0x443c30, 0x5a5148, 0x31404a, 0x4a3542];
-const CROWD_SKIN_COLORS = [0xc79b76, 0x8a5a3b, 0x6e4128, 0xe0b48f, 0x54301d, 0xa9744f];
+const ARENA_FLOOR = -1;
+const BOARD_REPEATS = 6;
+const BOARD_SCROLL_PER_SECOND = 0.012;
 
 const seededRandom = (seed: number): (() => number) => () => {
   seed = Math.imul(seed ^ (seed >>> 15), 1 | seed);
@@ -33,60 +34,54 @@ export function buildArena(): BuiltArena {
   geometries.push(floorGeo);
   const floor = new THREE.Mesh(floorGeo, floorMat);
   floor.rotation.x = -Math.PI / 2;
-  floor.position.y = -1.0;
+  floor.position.y = ARENA_FLOOR;
   floor.receiveShadow = true;
   group.add(floor);
 
   const rand = seededRandom(20260727);
-  const tiers = [
-    { radius: 8.2, y: -0.55, count: 120, scale: 1 },
-    { radius: 10.6, y: 0.35, count: 150, scale: 1.04 },
-    { radius: 13.2, y: 1.35, count: 180, scale: 1.08 },
-    { radius: 16.0, y: 2.45, count: 210, scale: 1.12 },
-  ];
-  const total = tiers.reduce((sum, tier) => sum + tier.count, 0);
+  const tiers = CROWD_TIERS;
+  const crowd = buildCrowd(rand);
+  group.add(crowd.group);
 
-  const bodyGeo = new THREE.CapsuleGeometry(0.19, 0.5, 4, 8);
-  const headGeo = new THREE.SphereGeometry(0.115, 8, 7);
-  geometries.push(bodyGeo, headGeo);
-  const bodyMat = new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0, emissive: 0x141926, emissiveIntensity: 0.7 });
-  const headMat = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0, emissive: 0x2a1d16, emissiveIntensity: 0.7 });
-  materials.push(bodyMat, headMat);
-  const bodies = new THREE.InstancedMesh(bodyGeo, bodyMat, total);
-  const heads = new THREE.InstancedMesh(headGeo, headMat, total);
-  bodies.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-  heads.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-
-  const matrix = new THREE.Matrix4();
-  const color = new THREE.Color();
-  const phases = new Float32Array(total);
-  const bases: Array<{ x: number; y: number; z: number; yaw: number; scale: number }> = [];
-  let index = 0;
-  for (const tier of tiers) {
-    for (let i = 0; i < tier.count; i += 1) {
-      const angle = (i / tier.count) * Math.PI * 2 + rand() * 0.03;
-      const jitter = (rand() - 0.5) * 0.7;
-      const x = Math.sin(angle) * (tier.radius + jitter);
-      const z = Math.cos(angle) * (tier.radius + jitter);
-      const y = tier.y + (rand() - 0.5) * 0.12;
-      const yaw = Math.atan2(-x, -z) + (rand() - 0.5) * 0.5;
-      const scale = tier.scale * (0.92 + rand() * 0.2);
-      bases.push({ x, y, z, yaw, scale });
-      phases[index] = rand() * Math.PI * 2;
-      matrix.compose(new THREE.Vector3(x, y + 0.45 * scale, z), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw), new THREE.Vector3(scale, scale, scale));
-      bodies.setMatrixAt(index, matrix);
-      matrix.compose(new THREE.Vector3(x, y + 0.95 * scale, z), new THREE.Quaternion(), new THREE.Vector3(scale, scale, scale));
-      heads.setMatrixAt(index, matrix);
-      color.setHex(CROWD_BODY_COLORS[Math.floor(rand() * CROWD_BODY_COLORS.length)]!).multiplyScalar(0.85 + rand() * 0.6);
-      bodies.setColorAt(index, color);
-      color.setHex(CROWD_SKIN_COLORS[Math.floor(rand() * CROWD_SKIN_COLORS.length)]!).multiplyScalar(0.85 + rand() * 0.35);
-      heads.setColorAt(index, color);
-      index += 1;
-    }
+  const boardCanvas = document.createElement("canvas");
+  boardCanvas.width = 1024;
+  boardCanvas.height = 64;
+  const boardCtx = boardCanvas.getContext("2d");
+  if (boardCtx !== null) {
+    boardCtx.fillStyle = "#070c1a";
+    boardCtx.fillRect(0, 0, 1024, 64);
+    boardCtx.fillStyle = "#13203f";
+    boardCtx.fillRect(0, 0, 1024, 5);
+    boardCtx.fillRect(0, 59, 1024, 5);
+    boardCtx.textBaseline = "middle";
+    boardCtx.font = "800 38px Inter, system-ui, sans-serif";
+    boardCtx.fillStyle = "#e9c46a";
+    boardCtx.fillText("H A N D S", 28, 33);
+    boardCtx.fillStyle = "#c9d6f2";
+    boardCtx.font = "600 26px Inter, system-ui, sans-serif";
+    boardCtx.fillText("CHAMPIONSHIP BOXING", 300, 34);
+    boardCtx.fillStyle = "#e9c46a";
+    boardCtx.font = "800 30px Inter, system-ui, sans-serif";
+    boardCtx.fillText("FIGHT NIGHT", 700, 34);
+    boardCtx.fillStyle = "#b91c1c";
+    boardCtx.fillRect(948, 22, 22, 22);
+    boardCtx.fillStyle = "#1d4ed8";
+    boardCtx.fillRect(978, 22, 22, 22);
   }
-  bodies.instanceColor!.needsUpdate = true;
-  heads.instanceColor!.needsUpdate = true;
-  group.add(bodies, heads);
+  const boardTexture = new THREE.CanvasTexture(boardCanvas);
+  boardTexture.colorSpace = THREE.SRGBColorSpace;
+  boardTexture.wrapS = THREE.RepeatWrapping;
+  boardTexture.repeat.set(-BOARD_REPEATS, 1);
+  disposables.push(boardTexture);
+  const boardMat = new THREE.MeshBasicMaterial({ map: boardTexture, side: THREE.BackSide });
+  materials.push(boardMat);
+  const boardTop = tiers[0]!.y + PARAPET_HEIGHT;
+  const boardGeo = new THREE.CylinderGeometry(tiers[0]!.radius - PARAPET_SETBACK - 0.03, tiers[0]!.radius - PARAPET_SETBACK - 0.03, boardTop - ARENA_FLOOR - 0.04, 72, 1, true);
+  geometries.push(boardGeo);
+  const boards = new THREE.Mesh(boardGeo, boardMat);
+  boards.name = "boards";
+  boards.position.y = (boardTop + ARENA_FLOOR) / 2 + 0.02;
+  group.add(boards);
 
   const flashCount = 90;
   const flashPositions = new Float32Array(flashCount * 3);
@@ -177,38 +172,11 @@ export function buildArena(): BuiltArena {
   let flashTimer = 0;
   let flashOn = 0;
   let excitement = 0;
-  const crowdMatrix = new THREE.Matrix4();
-  const crowdPosition = new THREE.Vector3();
-  const crowdQuaternion = new THREE.Quaternion();
-  const crowdScale = new THREE.Vector3();
-  const yAxis = new THREE.Vector3(0, 1, 0);
   const update = (time: number, dt: number, reducedMotion: boolean): void => {
     excitement = Math.max(0, excitement - dt * EXCITEMENT_DECAY_PER_SECOND);
     if (!reducedMotion) {
-      const swayAmplitude = 0.05 + excitement * 0.06;
-      const bounceAmplitude = 0.05 + excitement * 0.2;
-      const bounceRate = 2.3 + excitement * 3.2;
-      for (let i = 0; i < total; i += 1) {
-        const base = bases[i]!;
-        const sway = Math.sin(time * 1.6 + phases[i]!) * swayAmplitude;
-        const bounce = Math.abs(Math.sin(time * bounceRate + phases[i]! * 1.7)) * bounceAmplitude;
-        crowdQuaternion.setFromAxisAngle(yAxis, base.yaw + sway);
-        crowdMatrix.compose(
-          crowdPosition.set(base.x, base.y + 0.45 * base.scale + bounce, base.z + sway * 0.4),
-          crowdQuaternion,
-          crowdScale.set(base.scale, base.scale, base.scale),
-        );
-        bodies.setMatrixAt(i, crowdMatrix);
-        crowdQuaternion.setFromAxisAngle(yAxis, base.yaw + sway * 1.2);
-        crowdMatrix.compose(
-          crowdPosition.set(base.x, base.y + 0.95 * base.scale + bounce * 1.2, base.z + sway * 0.5),
-          crowdQuaternion,
-          crowdScale,
-        );
-        heads.setMatrixAt(i, crowdMatrix);
-      }
-      bodies.instanceMatrix.needsUpdate = true;
-      heads.instanceMatrix.needsUpdate = true;
+      crowd.update(time, excitement);
+      boardTexture.offset.x = (time * BOARD_SCROLL_PER_SECOND) % 1;
       flashTimer -= dt;
       if (flashTimer <= 0) {
         flashOn = 0.09 + Math.random() * 0.08;
@@ -223,8 +191,7 @@ export function buildArena(): BuiltArena {
     for (const geometry of geometries) geometry.dispose();
     for (const material of materials) material.dispose();
     for (const disposable of disposables) disposable.dispose();
-    bodies.dispose();
-    heads.dispose();
+    crowd.dispose();
   };
 
   const excite = (amount: number): void => {

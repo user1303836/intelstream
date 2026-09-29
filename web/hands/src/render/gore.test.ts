@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import { buildChunkGeometry, buildWoundGeometry } from "./gore";
 import { SkinnedBoxer, loadBoxerGlb } from "./graph";
 import { HEAD_SITES, InjuryShading, NECK_CUT_HEIGHT } from "./injury";
-import { aboveNeckCut, bakeSkinnedPart } from "./renderer";
+import { Effects3D } from "./effects";
+import { aboveNeckCut, bakeSkinnedPart, closeUpAngle } from "./renderer";
+import { ROPE_LINE } from "./world";
 
 const gltf = await loadBoxerGlb();
 
@@ -121,5 +123,46 @@ describe("neck cut", () => {
     whole.geometry.dispose();
     head.geometry.dispose();
     boxer.dispose();
+  });
+});
+
+describe("severed head", () => {
+  it("stays inside the ropes however hard it is launched", () => {
+    const effects = new Effects3D(new THREE.Scene());
+    effects.decapitate(0, new THREE.Vector3(2.2, 1.5, -2.2), new THREE.Quaternion(), 1, 9);
+    const at = new THREE.Vector3();
+    for (let frame = 0; frame < 600; frame += 1) {
+      effects.update(1 / 60);
+      expect(effects.severedHeadPosition(0, at)).toBe(true);
+      expect(Math.abs(at.x)).toBeLessThan(ROPE_LINE - 0.12);
+      expect(Math.abs(at.z)).toBeLessThan(ROPE_LINE - 0.12);
+    }
+    effects.dispose();
+  });
+
+  it("reports which way the face points", () => {
+    const effects = new Effects3D(new THREE.Scene());
+    const facing = new THREE.Vector3();
+    expect(effects.severedHeadFacing(0, facing)).toBe(false);
+    effects.decapitate(0, new THREE.Vector3(0, 1.5, 0), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2), 1, 11);
+    expect(effects.severedHeadFacing(0, facing)).toBe(true);
+    expect(facing.x).toBeCloseTo(1, 5);
+    expect(facing.z).toBeCloseTo(0, 5);
+    effects.dispose();
+  });
+});
+
+describe("severed head close-up", () => {
+  const fallback = 2.5;
+
+  it("shoots from the side the face points to", () => {
+    expect(closeUpAngle(0.5, 0.2, { x: 1, y: 0, z: 0 }, 0.8, 2.2, fallback)).toBeCloseTo(Math.PI / 2, 6);
+    expect(closeUpAngle(0.5, 0.2, { x: 0, y: 0.2, z: -1 }, 0.8, 2.2, fallback)).toBeCloseTo(Math.PI, 6);
+  });
+
+  it("falls back when the face points up or down, or into the ropes", () => {
+    expect(closeUpAngle(0.5, 0.2, { x: 0.1, y: 0.99, z: 0.1 }, 0.8, 2.2, fallback)).toBe(fallback);
+    expect(closeUpAngle(2.1, 0, { x: 1, y: 0, z: 0 }, 0.8, 2.2, fallback)).toBe(fallback);
+    expect(closeUpAngle(0.5, 0.2, null, 0.8, 2.2, fallback)).toBe(fallback);
   });
 });

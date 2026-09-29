@@ -101,6 +101,9 @@ void main() {
   gl_FragColor = color;
 }`,
 };
+/** The crowd stays on its feet from the result until the replay and the verdict have played out. */
+const CROWD_OVATION_SECONDS = 16;
+const CROWD_OVATION_RATE = 0.6;
 const CROWD_EXCITEMENT: Readonly<Record<string, number>> = { hit: 0.18, counter_hit: 0.3, guard_break: 0.25, knockdown: 1, block: 0.04, perfect_block: 0.1 };
 
 function pairedBlock(event: CombatEvent, events: readonly CombatEvent[]): CombatEvent | undefined {
@@ -207,6 +210,28 @@ function blobShadowTexture(): THREE.CanvasTexture {
 /** The middle of the neck cut in the neck bone's frame (centimetres), and the forward tilt of the cut. */
 const NECK_WOUND_OFFSET = new THREE.Vector3(0.15, 4.98, 3.85);
 const NECK_WOUND_TILT = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.atan(NECK_CUT_SLOPE) + 0.07);
+
+/**
+ * Bearing from a severed head to the camera for its close-up. The camera goes to the side the face
+ * points to, when the face points sideways and that side has room inside the ropes; otherwise it
+ * takes `fallback`.
+ */
+export function closeUpAngle(
+  x: number,
+  z: number,
+  facing: { readonly x: number; readonly y: number; readonly z: number } | null,
+  reach: number,
+  limit: number,
+  fallback: number,
+): number {
+  if (facing === null) return fallback;
+  const level = Math.hypot(facing.x, facing.z);
+  if (level < 0.35) return fallback;
+  const cameraX = THREE.MathUtils.clamp(x + (facing.x / level) * reach, -limit, limit);
+  const cameraZ = THREE.MathUtils.clamp(z + (facing.z / level) * reach, -limit, limit);
+  if (Math.hypot(cameraX - x, cameraZ - z) < reach * 0.7) return fallback;
+  return Math.atan2(facing.x, facing.z);
+}
 
 /** True for the part of the head mesh that leaves with the head. */
 export function aboveNeckCut(bind: THREE.Vector3): boolean {
@@ -419,12 +444,14 @@ export class FightRenderer {
   private readonly arcadeInjuryEvents: [CombatEvent | null, CombatEvent | null] = [null, null];
   private readonly replayInjuries: [{ injury: ArcadeInjury; event: CombatEvent } | null, { injury: ArcadeInjury; event: CombatEvent } | null] = [null, null];
   private readonly closeUpTarget = new THREE.Vector3();
+  private readonly closeUpFacing = new THREE.Vector3();
   private readonly downedPoolAccumulators: [number, number] = [0, 0];
   private readonly downedPoolCounts: [number, number] = [0, 0];
   private bloodLevel: BloodLevel = "full";
   private viewerHitFlash = 0;
   private finishSlowMotion = 0;
   private finishSeen = false;
+  private ovationUntil = 0;
   private finalRevealAt = 0;
   private portraitPull = 1;
   private lastPhase: string | null = null;
@@ -630,6 +657,7 @@ export class FightRenderer {
   setFinal(final: FinalMessage | null): void {
     this.final = final;
     this.finalRevealAt = this.frameSeconds + finalRevealDelay(final);
+    this.ovationUntil = final === null ? 0 : this.frameSeconds + CROWD_OVATION_SECONDS;
     if (final === null || !STOPPAGE_METHODS.has(final.method)) return;
     const plan = this.lastKnockdown === null ? null : planKnockoutReplay(this.history, this.lastKnockdown.knockdown, this.simulation.tick_rate);
     if (plan !== null && this.graphs !== null && !this.settings().reducedMotion) {
@@ -672,7 +700,8 @@ export class FightRenderer {
     const drift = (seconds - (this.finishCloseUpUntil - FINISH_CLOSE_UP_SECONDS)) * 0.25 - 0.2;
     // Shoot from the ring-centre side of the fighter so the ropes stay behind the face.
     const toCentre = Math.atan2(-head.x, -head.z);
-    const angle = (Math.hypot(head.x, head.z) > 0.4 ? toCentre : 0.9) + drift;
+    const facing = severed && this.effects.severedHeadFacing(this.finishCloseUpIndex, this.closeUpFacing) ? this.closeUpFacing : null;
+    const angle = closeUpAngle(head.x, head.z, facing, reach, TIGHT_SHOT_LIMIT, Math.hypot(head.x, head.z) > 0.4 ? toCentre : 0.9) + drift;
     this.closeUpPosition.set(
       THREE.MathUtils.clamp(head.x + Math.sin(angle) * reach, -TIGHT_SHOT_LIMIT, TIGHT_SHOT_LIMIT),
       head.y + (severed ? 0.42 : 0.75),
@@ -1180,6 +1209,7 @@ export class FightRenderer {
     const latest = this.buffer.latest();
     const finishing = latest?.result !== null && latest?.result !== undefined
       && STOPPAGE_METHODS.has(latest.result.finish_method);
+    if (seconds < this.ovationUntil) this.arena.excite(dt * CROWD_OVATION_RATE);
     if (finishing && !this.finishSeen) {
       this.finishSeen = true;
       this.finishSlowMotion = 2.2;

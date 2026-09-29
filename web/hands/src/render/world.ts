@@ -4,6 +4,8 @@ export const RING_FIGHT_HALF = 3.05;
 export const RING_APRON_HALF = 3.85;
 export const PLATFORM_HALF = 4.05;
 export const POST_RADIUS = 3.42;
+/** Distance from the centre of the ring to the ropes along either axis. */
+export const ROPE_LINE = POST_RADIUS * 0.72;
 export const ROPE_HEIGHTS = [0.5, 0.88, 1.26] as const;
 export const CANVAS_TOP = 0;
 
