@@ -11,7 +11,7 @@ import { FIGHTER_TEXTURE_DATA_URLS } from "../assets/fighter-textures";
 import { BODY_SITES, HEAD_SITES, InjuryShading, applyBodyTrauma, applyHeadTrauma } from "./injury";
 import { PoseSolver, STANCE, easeIn, easeOut, mirrorX, smoothstep, vec, type FootTarget, type HandTarget, type PoseDescription } from "./poser";
 import { SolvedRig } from "./rig";
-import type { WorldMapping } from "./world";
+import { POST_RADIUS, type WorldMapping } from "./world";
 
 export const FIGHTER_MODEL_SCALE = 1;
 
@@ -342,6 +342,11 @@ export class BoxingGraph {
   private riseAge = 0;
   private fallSide = 0;
   private fallProne = false;
+  /** The fall played: the punch's own, or the nearest variant that keeps the body inside the ropes, moved in as far as it must. */
+  private landProne = false;
+  private landSide = 0;
+  private readonly landShift = new THREE.Vector3();
+  private landSettled = false;
   private readonly liveOpponentHead = new THREE.Vector3();
   private hasLiveHead = false;
   private readonly headKick: Spring3 = { value: new THREE.Vector3(), velocity: new THREE.Vector3() };
@@ -470,6 +475,7 @@ export class BoxingGraph {
    */
   resetTransient(downed = false): void {
     this.downState = downed ? "down" : "up";
+    this.landSettled = false;
     this.fallAge = downed ? KNOCKDOWN_FALL_SECONDS : 0;
     this.riseAge = 0;
     this.hitstop = 0;
@@ -1467,6 +1473,7 @@ export class BoxingGraph {
       if (this.downState === "up" || this.downState === "rising") {
         this.downState = "falling";
         this.fallAge = 0;
+        this.landSettled = false;
       } else if (this.downState === "falling") {
         this.fallAge += dt;
         if (this.fallAge >= KNOCKDOWN_FALL_SECONDS) this.downState = "down";
@@ -1715,6 +1722,10 @@ export class BoxingGraph {
     standing.rearFoot.copy(rear.position);
     standing.leadHeel = lead.heel;
     standing.rearHeel = rear.heel;
+    // Where he lands is chosen while the fall is still barely visible (the hit that decides it can arrive a
+    // frame after the knockdown), then kept.
+    if (!this.landSettled) this.chooseLanding(mirror);
+    this.landSettled = this.downState !== "falling" || this.fallAge > KNOCKDOWN_FALL_SECONDS * 0.15;
     const pose = this.downResult;
     if (this.downState === "rising") {
       // Rising: lying -> all fours -> one knee -> stand.
@@ -1726,7 +1737,7 @@ export class BoxingGraph {
         const fours = this.placeDown(this.downTo, ALL_FOURS, mirror);
         lerpDownPose(pose, lying, fours, s);
         // Face down, he pushes up on his gloves before the knees come under him: the hips rise first.
-        if (this.fallProne) pose.hips.y = THREE.MathUtils.lerp(lying.hips.y, fours.hips.y, easeOut(s, 3));
+        if (this.landProne) pose.hips.y = THREE.MathUtils.lerp(lying.hips.y, fours.hips.y, easeOut(s, 3));
       } else if (u < 0.72) {
         lerpDownPose(pose, this.placeDown(this.downFrom, ALL_FOURS, mirror), this.placeDown(this.downTo, ONE_KNEE, mirror), smoothstep(0.38, 0.72, u));
       } else {
@@ -1752,7 +1763,7 @@ export class BoxingGraph {
     pose.rearFoot.lerpVectors(standing.rearFoot, lying.rearFoot, feet);
     pose.leadHeel = THREE.MathUtils.lerp(standing.leadHeel, lying.leadHeel, feet);
     pose.rearHeel = THREE.MathUtils.lerp(standing.rearHeel, lying.rearHeel, feet);
-    if (this.fallProne) {
+    if (this.landProne) {
       // Pitching forward, the gloves reach out ahead of him to break the fall.
       const reach = easeOut(u, 2.5);
       pose.leadHand.lerpVectors(standing.leadHand, lying.leadHand, reach);
@@ -1768,13 +1779,66 @@ export class BoxingGraph {
   /** The pose the fighter ends up in on the canvas: face down or on his back, twisted by the fall side. */
   private placeLying(mirror: number): DownPose {
     const ankle = this.boxer.rig.metrics.ankleHeight;
-    return this.fallProne
-      ? placeDownPose(this.downFrom, PRONE, PRONE_TWIST, mirror, this.fallSide, ankle)
-      : placeDownPose(this.downFrom, LYING, LYING_TWIST, mirror, this.fallSide, ankle);
+    const pose = this.landProne
+      ? placeDownPose(this.downFrom, PRONE, PRONE_TWIST, mirror, this.landSide, ankle)
+      : placeDownPose(this.downFrom, LYING, LYING_TWIST, mirror, this.landSide, ankle);
+    return moveDownPose(pose, this.landShift);
   }
 
+  /** A get-up stage, over the root: a body that landed moved in from the ropes comes back as he gets onto all fours. */
   private placeDown(out: DownPose, base: DownPose, mirror: number): DownPose {
     return placeDownPose(out, base, null, mirror, 0, this.boxer.rig.metrics.ankleHeight);
+  }
+
+  /**
+   * Picks the fall that keeps the body inside the ropes: the punch's own when it fits, otherwise the variant
+   * (untwisted, twisted the other way, or falling the other way round) that needs the least moving in from
+   * the ropes, counting each change from the punch's fall as some distance moved.
+   */
+  private chooseLanding(mirror: number): void {
+    const ankle = this.boxer.rig.metrics.ankleHeight;
+    let best = Infinity;
+    for (let index = 0; index < LANDINGS.length; index += 1) {
+      const [otherWay, twist, cost] = LANDINGS[index]!;
+      const prone = this.fallProne !== otherWay;
+      const side = this.fallSide * twist;
+      const pose = placeDownPose(this.downTo, prone ? PRONE : LYING, prone ? PRONE_TWIST : LYING_TWIST, mirror, side, ankle);
+      const shift = this.ropeShift(pose, this.scratchE);
+      if (shift.length() + cost >= best) continue;
+      best = shift.length() + cost;
+      this.landProne = prone;
+      this.landSide = side;
+      this.landShift.copy(shift);
+    }
+  }
+
+  /** How far, in character space, a body lying in `pose` must move to stay inside the ropes. */
+  private ropeShift(pose: DownPose, out: THREE.Vector3): THREE.Vector3 {
+    const turn = this.scratchQ.setFromAxisAngle(worldUpVector, this.yaw);
+    // The head and shoulders sit along the spine from the hips (the elbows bend out past the shoulders); the
+    // feet reach past the ankles to the toes, or to the heels when they are up on their toes.
+    downEuler.set(pose.hipsPitch + pose.spinePitch * 0.7, pose.hipsYaw, pose.hipsRoll, "YXZ");
+    REACH_POINTS[0]!.set(0, HIPS_TO_HEAD, 0).applyEuler(downEuler).add(pose.hips);
+    REACH_POINTS[1]!.set(0.2, HIPS_TO_SHOULDERS, 0).applyEuler(downEuler).add(pose.hips);
+    REACH_POINTS[2]!.set(-0.2, HIPS_TO_SHOULDERS, 0).applyEuler(downEuler).add(pose.hips);
+    REACH_POINTS[3]!.copy(pose.leadHand);
+    REACH_POINTS[4]!.copy(pose.rearHand);
+    REACH_POINTS[5]!.copy(pose.leadFoot).z += pose.leadHeel > 0 ? 0.25 : 0.19;
+    REACH_POINTS[6]!.copy(pose.rearFoot).z += pose.rearHeel > 0 ? 0.25 : 0.19;
+    REACH_POINTS[7]!.copy(pose.hips);
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (let index = 0; index < REACH_POINTS.length; index += 1) {
+      const point = REACH_POINTS[index]!.applyQuaternion(turn);
+      const radius = REACH_RADII[index]!;
+      minX = Math.min(minX, (this.rootX ?? 0) + point.x - radius);
+      maxX = Math.max(maxX, (this.rootX ?? 0) + point.x + radius);
+      minZ = Math.min(minZ, this.rootZ + point.z - radius);
+      maxZ = Math.max(maxZ, this.rootZ + point.z + radius);
+    }
+    return out.set(fitInsideRopes(minX, maxX), 0, fitInsideRopes(minZ, maxZ)).applyQuaternion(turn.invert());
   }
 
   /**
@@ -1957,6 +2021,42 @@ function placeDownPose(out: DownPose, base: DownPose, twist: DownPose | null, mi
   out.leadFoot.addScaledVector(twist.leadFoot, side);
   out.rearFoot.addScaledVector(twist.rearFoot, side);
   return out;
+}
+
+/** Moves a whole pose by `shift` (character space). */
+function moveDownPose(pose: DownPose, shift: THREE.Vector3): DownPose {
+  pose.hips.add(shift);
+  pose.leadHand.add(shift);
+  pose.rearHand.add(shift);
+  pose.leadFoot.add(shift);
+  pose.rearFoot.add(shift);
+  return pose;
+}
+
+/** The rope line between the corner posts (as built in ring.ts), less a margin for the rough reach of a lying body. */
+const ROPE_LINE = POST_RADIUS * 0.72 - 0.05;
+/** Hips to the head bone, and to the shoulder line, along the spine of a body lying on the canvas. */
+const HIPS_TO_HEAD = 0.78;
+const HIPS_TO_SHOULDERS = 0.5;
+/** Head, shoulders, gloves, feet and hips of a lying body, and how far the mesh reaches around each. */
+const REACH_POINTS = Array.from({ length: 8 }, () => new THREE.Vector3());
+const REACH_RADII = [0.17, 0.22, 0.22, 0.13, 0.13, 0.12, 0.12, 0.2] as const;
+/** Falls tried near the ropes: [the other way round, the punch's twist scaled by, cost of the change in metres]. */
+const LANDINGS: readonly (readonly [boolean, number, number])[] = [
+  [false, 1, 0],
+  [false, 0, 0.15],
+  [false, -1, 0.3],
+  [true, 1, 0.4],
+  [true, 0, 0.5],
+  [true, -1, 0.6],
+];
+
+/** The move along one axis that brings the span [low, high] inside the rope line (centred if it cannot fit). */
+function fitInsideRopes(low: number, high: number): number {
+  if (low < -ROPE_LINE && high > ROPE_LINE) return -(low + high) / 2;
+  if (low < -ROPE_LINE) return -ROPE_LINE - low;
+  if (high > ROPE_LINE) return ROPE_LINE - high;
+  return 0;
 }
 
 /** Writes the blend from `a` to `b` into `out`, which may be `a` but not `b`. */

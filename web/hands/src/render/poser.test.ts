@@ -226,6 +226,55 @@ describe("down and get-up poses", () => {
   });
 });
 
+describe("falls near the ropes", () => {
+  // The rope line runs between the corner posts at 2.46 m from the centre; the engine lets a fighter's
+  // centre reach 2.82 m (pressing the ropes out).
+  const ropeLine = 2.46;
+  const skinned = new THREE.Vector3();
+  const furthest = (boxer: SkinnedBoxer): number => {
+    boxer.root.updateMatrixWorld(true);
+    let reach = 0;
+    boxer.root.traverse((object) => {
+      if (!(object instanceof THREE.SkinnedMesh)) return;
+      const count = object.geometry.getAttribute("position").count;
+      for (let index = 0; index < count; index += 2) {
+        object.getVertexPosition(index, skinned).applyMatrix4(object.matrixWorld);
+        reach = Math.max(reach, Math.abs(skinned.x), Math.abs(skinned.z));
+      }
+    });
+    return reach;
+  };
+  /** Knocks the fighter down; `reach` is where he lands, `overshoot` how far past the ropes (or his start, if out there) the fall went. */
+  const fall = (fighter: FighterSnapshot, punchClass: "hook" | "uppercut"): { boxer: SkinnedBoxer; reach: number; overshoot: number } => {
+    const { boxer, graph } = makeGraph();
+    const opponent = { ...baseFighter("two"), x: 0, y: 0 };
+    run(graph, fighter, opponent, 20, undefined);
+    const start = furthest(boxer);
+    graph.react("hit", "head", 1, punchClass, "left", 120);
+    let widest = 0;
+    for (let frame = 0; frame < 70; frame += 5) {
+      run(graph, { ...fighter, is_downed: true }, opponent, 5, undefined, 10 + frame / 2, 1 + frame / 60);
+      widest = Math.max(widest, furthest(boxer));
+    }
+    return { boxer, reach: furthest(boxer), overshoot: widest - Math.max(start, ropeLine) };
+  };
+
+  it("keeps a fighter knocked down against the ropes inside them", () => {
+    // Back to the ropes and facing the centre, an uppercut would lay him under the ropes or off the apron.
+    for (const x of [300, 400, 462]) {
+      const pinned = { ...baseFighter("one"), x, y: 0, facing_x: -1000, facing_y: 0 };
+      const { boxer, reach, overshoot } = fall(pinned, "uppercut");
+      expect(reach).toBeLessThan(ropeLine);
+      expect(overshoot).toBeLessThan(0.01);
+      expect(bone(boxer, "head").x).toBeLessThan(bone(boxer, "hips").x);
+    }
+    // Facing the ropes, a hook would put his head through them.
+    expect(fall({ ...baseFighter("one"), x: 400, y: 0, facing_x: 1000, facing_y: 0 }, "hook").reach).toBeLessThan(ropeLine);
+    // Wedged in a corner, neither fall fits as it is.
+    expect(fall({ ...baseFighter("one"), x: 380, y: 380, facing_x: 1000, facing_y: -1000 }, "uppercut").reach).toBeLessThan(ropeLine);
+  });
+});
+
 describe("body shots", () => {
   // Two fighters in lockstep, one hit and one not (or hit differently), so the idle sway cancels out.
   const pair = (react: (graph: BoxingGraph) => void, other: (graph: BoxingGraph) => void, sample: (boxer: SkinnedBoxer) => number[]): number[][] => {
