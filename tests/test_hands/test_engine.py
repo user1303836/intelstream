@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from math import hypot
 
 import pytest
@@ -2301,3 +2302,99 @@ def test_a_clean_body_shot_takes_the_wind_and_a_blocked_one_does_not() -> None:
         else:
             assert contact.kind == "block"
             assert lost <= 0
+
+
+def test_recovery_is_only_cut_short_for_a_follow_up_the_fighter_can_afford() -> None:
+    engine = make_engine(round_ticks=2000)
+    one = engine.fighter("one")
+    jab = punch(PunchClass.JAB, hand=Hand.LEFT)
+    straight = punch(PunchClass.STRAIGHT)
+    straight_cost = PUNCH_RULES[(PunchClass.STRAIGHT, Target.HEAD, Power.NORMAL)].stamina_cost
+    jab_cost = PUNCH_RULES[(PunchClass.JAB, Target.HEAD, Power.NORMAL)].stamina_cost
+    one.stamina = jab_cost + straight_cost - 25
+    engine.step({"one": command(1, action=jab)})
+    attack = one.attack
+    assert attack is not None
+    engine.step({"one": command(2, action=straight)})
+    kinds: set[str] = set()
+    while engine.tick <= attack.start_tick + attack.cancel_age:
+        kinds.update(event.kind for event in engine.step().events)
+    assert "hit" in kinds
+    assert one.stamina < straight_cost
+    assert one.attack is attack
+
+
+def test_a_parried_punch_cannot_be_cut_short_into_a_combo_but_a_blocked_one_can() -> None:
+    def cut_short(*, parried: bool) -> tuple[bool, set[str]]:
+        engine = make_engine(round_ticks=2000)
+        one = engine.fighter("one")
+        jab = punch(PunchClass.JAB, hand=Hand.LEFT)
+        if not parried:
+            engine.step({"two": command(1, defense=DefensivePose.GUARD_HIGH)})
+            for _ in range(10):
+                engine.step()
+        engine.step(
+            {
+                "one": command(1, action=jab),
+                "two": command(2, defense=DefensivePose.GUARD_HIGH),
+            }
+        )
+        attack = one.attack
+        assert attack is not None
+        engine.step({"one": command(2, action=punch(PunchClass.STRAIGHT))})
+        kinds: set[str] = set()
+        while engine.tick <= attack.start_tick + attack.cancel_age:
+            kinds.update(event.kind for event in engine.step().events)
+        return one.attack is not attack, kinds
+
+    parried, parried_events = cut_short(parried=True)
+    assert "perfect_block" in parried_events
+    assert not parried
+    blocked, blocked_events = cut_short(parried=False)
+    assert "block" in blocked_events and "perfect_block" not in blocked_events
+    assert blocked
+
+
+def test_fighters_walking_to_their_corners_go_round_each_other() -> None:
+    engine = make_engine(round_ticks=3, rounds=2, rest_ticks=300)
+    one = engine.fighter("one")
+    two = engine.fighter("two")
+    one.x, one.y = 60, 60
+    two.x, two.y = -60, -60
+    while engine.phase is not MatchPhase.REST:
+        engine.step()
+    closest = hypot(one.x - two.x, one.y - two.y)
+    while engine.phase is MatchPhase.REST:
+        engine.step()
+        closest = min(closest, hypot(one.x - two.x, one.y - two.y))
+    assert closest >= MINIMUM_SEPARATION - 3
+    assert (one.x, one.y) == (-REST_CORNER_OFFSET, -REST_CORNER_OFFSET)
+    assert (two.x, two.y) == (REST_CORNER_OFFSET, REST_CORNER_OFFSET)
+
+
+@pytest.mark.parametrize("rest_ticks", [5, 0])
+def test_the_bell_clears_evasion_counter_and_combo_windows(rest_ticks: int) -> None:
+    engine = make_engine(round_ticks=20, rounds=2, rest_ticks=rest_ticks)
+    one = engine.fighter("one")
+    while engine.tick < 18:
+        engine.step()
+    engine.step({"one": command(1, action=MovementAction(ActionKind.SLIP_LEFT))})
+    assert one.evasion_ticks > 0
+    one.counter_ticks = 17
+    one.combo_ticks = 12
+    while engine.round_number == 1:
+        engine.step()
+    assert (one.evasion_ticks, one.counter_ticks, one.combo_ticks) == (0, 0, 0)
+
+
+def test_the_facing_blends_toward_the_opponent_before_and_after_footwork_each_fight_tick() -> None:
+    engine = make_engine(round_ticks=2000)
+    one = engine.fighter("one")
+    two = engine.fighter("two")
+    one.x = one.y = 0
+    two.x, two.y = 0, 300
+    engine.step()
+    turned = math.degrees(math.atan2(one.facing_y, one.facing_x))
+    single_blend = math.degrees(math.atan2(350, 650))
+    assert turned > single_blend + 15
+    assert 46 < turned < 52

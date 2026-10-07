@@ -38,7 +38,7 @@ const INPUT_FLUSH_MS = 33;
 const MIN_EDGE_SEND_GAP_MS = 8;
 /** The server accepts 60 inputs a second; staying under it leaves room for frames the network bunches together. */
 const MAX_SENDS_PER_SECOND = 50;
-/** Edge sends share the window with the 30 a second flush, which must always fit so a released key is reported. */
+/** Edge sends have a budget of their own on top of the 30 a second flush, together under MAX_SENDS_PER_SECOND. */
 const MAX_EDGE_SENDS_PER_SECOND = 20;
 /** Bytes still waiting in the socket above which the connection is stalled; frames queued behind it would all land at once. */
 const BACKLOG_BYTES = 2048;
@@ -67,6 +67,7 @@ export class NetworkController {
   private listenersBound = false;
   private lastInputSentAt = -Infinity;
   private readonly sendTimes: number[] = [];
+  private readonly edgeSendTimes: number[] = [];
 
   constructor(
     ticket: string,
@@ -96,14 +97,18 @@ export class NetworkController {
   notifyAction(): void {
     if (this.now() - this.lastInputSentAt < MIN_EDGE_SEND_GAP_MS) return;
     // Past the budget the press stays queued and leaves with the next periodic flush.
-    if (this.sendsInLastSecond() >= MAX_EDGE_SENDS_PER_SECOND) return;
-    this.flushInput();
+    if (this.withinLastSecond(this.edgeSendTimes) >= MAX_EDGE_SENDS_PER_SECOND) return;
+    if (this.flushInput()) this.edgeSendTimes.push(this.lastInputSentAt);
   }
 
   private sendsInLastSecond(): number {
+    return this.withinLastSecond(this.sendTimes);
+  }
+
+  private withinLastSecond(times: number[]): number {
     const cutoff = this.now() - 1000;
-    while (this.sendTimes.length > 0 && this.sendTimes[0]! <= cutoff) this.sendTimes.shift();
-    return this.sendTimes.length;
+    while (times.length > 0 && times[0]! <= cutoff) times.shift();
+    return times.length;
   }
 
   private readonly onInputLoss = (): void => {
@@ -297,8 +302,8 @@ export class NetworkController {
     for (const sequence of this.sentAt.keys()) if (sequence <= self.last_input_sequence) this.sentAt.delete(sequence);
   }
 
-  private sendInput(frame: InputFrame): void {
-    if (this.active) this.transmit(frame);
+  private sendInput(frame: InputFrame): boolean {
+    return this.active && this.transmit(frame);
   }
 
   /** Tells the corner what to work on. The rest is the one phase the input stream is off, so this frame goes on its own. */
@@ -324,13 +329,13 @@ export class NetworkController {
     }
   }
 
-  private flushInput(): void {
-    if (this.inputSuppressed || document.hidden || !document.hasFocus()) return;
-    if (this.sendsInLastSecond() >= MAX_SENDS_PER_SECOND) return;
+  private flushInput(): boolean {
+    if (this.inputSuppressed || document.hidden || !document.hasFocus()) return false;
+    if (this.sendsInLastSecond() >= MAX_SENDS_PER_SECOND) return false;
     // While the connection is stalled the input stays here, current, instead of joining a queue
     // of stale frames; presses wait in the input buffer and leave with the next frame that goes.
-    if ((this.socket?.bufferedAmount ?? 0) > BACKLOG_BYTES) return;
-    this.sendInput(this.getInput());
+    if ((this.socket?.bufferedAmount ?? 0) > BACKLOG_BYTES) return false;
+    return this.sendInput(this.getInput());
   }
 
   private startOpponentPause(graceMs: number): void {

@@ -12,7 +12,7 @@ from intelstream.hands.auth import AuthenticatedPlayer
 from intelstream.hands.cpu import PROFILES, CpuLevel
 from intelstream.hands.engine import EngineConfig
 from intelstream.hands.protocol import encode_client_input
-from intelstream.hands.rooms import HandsRoomManager, RoomConfig, RoomError
+from intelstream.hands.rooms import HandsRoomManager, RoomConfig, RoomError, RoomMembership
 from intelstream.hands.types import ActionKind, InputCommand, MovementAction
 
 
@@ -464,12 +464,19 @@ async def test_input_protocol_rate_sequence_and_queue_bounds(repository: Reposit
     )
     assert engine.fighter("one").last_sequence == accepted
     assert engine.fighter("one").held_input.move_x == 0
+    await one.room.submit_frame(
+        "one",
+        one.connection,
+        encode_client_input(InputCommand(sequence=7, client_tick=engine.tick)),
+    )
+    assert engine.fighter("one").last_sequence == accepted
     with pytest.raises(RoomError, match="rate_limited"):
-        await one.room.submit_frame(
-            "one",
-            one.connection,
-            encode_client_input(InputCommand(sequence=7, client_tick=engine.tick)),
-        )
+        for sequence in range(8, 8 + 4 * 8):
+            await one.room.submit_frame(
+                "one",
+                one.connection,
+                encode_client_input(InputCommand(sequence=sequence, client_tick=engine.tick)),
+            )
     await manager.close()
 
 
@@ -526,15 +533,24 @@ async def test_paused_room_discards_inputs_without_advancing_authority(
                 InputCommand(sequence=sequence, client_tick=engine.tick, move_x=1000)
             ),
         )
-    with pytest.raises(RoomError, match="rate_limited"):
-        await connected.room.submit_frame(
-            "two",
-            connected.connection,
-            encode_client_input(InputCommand(sequence=8, client_tick=engine.tick, move_x=1000)),
-        )
+    await connected.room.submit_frame(
+        "two",
+        connected.connection,
+        encode_client_input(InputCommand(sequence=8, client_tick=engine.tick, move_x=1000)),
+    )
     assert engine.snapshot().checksum == checksum
     assert engine.fighter("two").last_sequence == -1
     assert not engine.fighter("two").pending_actions
+    with pytest.raises(RoomError, match="rate_limited"):
+        for sequence in range(9, 9 + 4 * 8):
+            await connected.room.submit_frame(
+                "two",
+                connected.connection,
+                encode_client_input(
+                    InputCommand(sequence=sequence, client_tick=engine.tick, move_x=1000)
+                ),
+            )
+    assert engine.snapshot().checksum == checksum
 
     clock.value = 1.01
     await manager.join(player("one"), FakeSocket())
@@ -1564,4 +1580,247 @@ async def test_a_rematch_against_the_computer_starts_a_fresh_bout(
     assert await second.room.request_cpu("one", second.connection, CpuLevel.ROOKIE)
     await wait_until(lambda: "final" in message_types(second_socket), deadline_seconds=5)
     assert payloads(second_socket, "final")[0]["match_id"] == "match-cpu-2"
+
+
+async def test_a_rematch_reaches_a_new_room_while_the_old_one_is_still_closing(
+    repository: Repository,
+) -> None:
+    hold = 0.2
+    delivery = 0.3
+    manager = HandsRoomManager(
+        repository,
+        config=room_config(result_hold=hold, final_delivery_timeout=delivery),
+    )
+    first, second = FakeSocket(), FakeSocket()
+    stalled = FakeSocket(block_send=asyncio.Event())
+    one = await manager.join(player("one"), first)
+    two = await manager.join(player("two"), second)
+    await manager.join(player("spectator"), stalled)
+    await wait_until(
+        lambda: any(json.loads(message)["type"] == "final" for message in first.messages),
+        deadline_seconds=2.0,
+    )
+    await manager.leave(one)
+    await manager.leave(two)
+
+    outcomes: list[str] = []
+    async with asyncio.timeout(hold + 2 * delivery + 1.0):
+        while not outcomes or outcomes[-1] != "new room":
+            try:
+                membership = await manager.join(player("one"), FakeSocket())
+                outcome = "old room" if membership.room is one.room else "new room"
+                await manager.leave(membership)
+            except RoomError as exc:
+                outcome = f"refused: {exc.code}"
+            if not outcomes or outcomes[-1] != outcome:
+                outcomes.append(outcome)
+            await asyncio.sleep(0.01)
+    assert outcomes == ["old room", "new room"]
+    assert stalled.block_send is not None
+    stalled.block_send.set()
+    await manager.close()
+
+
+class MutableClock:
+    value = 0.0
+
+    def __call__(self) -> float:
+        return self.value
+
+
+async def burst_then_drop(
+    repository: Repository, label: str
+) -> tuple[HandsRoomManager, RoomMembership, MutableClock, asyncio.Event]:
+    clock = MutableClock()
+    sleep_entered = asyncio.Event()
+    sleep_release = asyncio.Event()
+
+    async def controlled_sleep(_delay: float) -> None:
+        sleep_entered.set()
+        await sleep_release.wait()
+
+    manager = HandsRoomManager(
+        repository,
+        config=room_config(round_ticks=1000, reconnect_grace=30.0),
+        monotonic_clock=clock,
+        sleep=controlled_sleep,
+        match_id_factory=lambda: f"match-{label}",
+    )
+    one = await manager.join(player("one"), FakeSocket())
+    await manager.join(player("two"), FakeSocket())
+    await sleep_entered.wait()
+    engine = one.room.engine
+    assert engine is not None
+    for sequence in range(1, 8):
+        await one.room.submit_frame(
+            "one",
+            one.connection,
+            encode_client_input(
+                InputCommand(sequence=sequence, client_tick=engine.tick, move_x=1000)
+            ),
+        )
+    assert engine.fighter("one").last_sequence == 5
+    await manager.leave(one)
+    return manager, one, clock, sleep_release
+
+
+async def test_a_fresh_client_is_not_broken_by_frames_held_back_from_its_dropped_connection(
+    repository: Repository,
+) -> None:
+    manager, one, clock, sleep_release = await burst_then_drop(repository, "fresh")
+    room = one.room
+    engine = room.engine
+    assert engine is not None
+    socket = FakeSocket()
+    rejoined = await manager.join(player("one"), socket)
+    await wait_until(lambda: bool(socket.messages))
+    welcome = json.loads(socket.messages[0])
+    assert welcome["type"] == "welcome"
+    clock.value += 1.0
+    room._apply_deferred_inputs(clock())
+    assert engine.fighter("one").last_sequence == 5
+    await room.submit_frame(
+        "one",
+        rejoined.connection,
+        encode_client_input(
+            InputCommand(sequence=welcome["next_sequence"], client_tick=engine.tick)
+        ),
+    )
+    assert engine.fighter("one").last_sequence == welcome["next_sequence"]
+    sleep_release.set()
+    await manager.close()
+
+
+async def test_a_new_connection_gets_its_own_frame_allowance(repository: Repository) -> None:
+    manager, one, clock, sleep_release = await burst_then_drop(repository, "allowance")
+    room = one.room
+    engine = room.engine
+    assert engine is not None
+    socket = FakeSocket()
+    rejoined = await manager.join(player("one"), socket)
+    await wait_until(lambda: bool(socket.messages))
+    welcome = json.loads(socket.messages[0])
+    clock.value += 0.4
+    sequence = welcome["next_sequence"]
+    for offset in range(5):
+        await room.submit_frame(
+            "one",
+            rejoined.connection,
+            encode_client_input(InputCommand(sequence=sequence + offset, client_tick=engine.tick)),
+        )
+    assert engine.fighter("one").last_sequence == sequence + 4
+    sleep_release.set()
+    await manager.close()
+
+
+async def test_a_backlog_after_a_stall_is_dropped_but_a_lasting_flood_ends_the_bout(
+    repository: Repository,
+) -> None:
+    class MutableClock:
+        value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    clock = MutableClock()
+    sleep_entered = asyncio.Event()
+    sleep_release = asyncio.Event()
+
+    async def controlled_sleep(_delay: float) -> None:
+        sleep_entered.set()
+        await sleep_release.wait()
+
+    manager = HandsRoomManager(
+        repository,
+        config=room_config(round_ticks=1000, reconnect_grace=30.0),
+        monotonic_clock=clock,
+        sleep=controlled_sleep,
+        match_id_factory=lambda: "match-flood",
+    )
+    one = await manager.join(player("one"), FakeSocket())
+    await manager.join(player("two"), FakeSocket())
+    await sleep_entered.wait()
+    room = one.room
+    engine = room.engine
+    assert engine is not None
+    sequence = 0
+
+    async def send(count: int, move_x: int = 0) -> None:
+        nonlocal sequence
+        for _ in range(count):
+            sequence += 1
+            await room.submit_frame(
+                "one",
+                one.connection,
+                encode_client_input(
+                    InputCommand(sequence=sequence, client_tick=engine.tick, move_x=move_x)
+                ),
+            )
+
+    await send(20, move_x=0)
+    await send(1, move_x=1000)
+    clock.value += 1.0
+    room._apply_deferred_inputs(clock())
+    assert engine.fighter("one").last_sequence == sequence
+    assert engine.fighter("one").held_input.move_x == 1000
+
+    with pytest.raises(RoomError, match="rate_limited"):
+        for _ in range(40):
+            clock.value += 0.1
+            await send(1)
+            await send(1)
+    assert clock.value - 1.0 >= 3.0
+    sleep_release.set()
+    await manager.close()
+
+
+async def test_a_connection_that_replaces_a_live_one_starts_with_its_own_input_pacing(
+    repository: Repository,
+) -> None:
+    clock = MutableClock()
+    sleep_entered = asyncio.Event()
+    sleep_release = asyncio.Event()
+
+    async def controlled_sleep(_delay: float) -> None:
+        sleep_entered.set()
+        await sleep_release.wait()
+
+    manager = HandsRoomManager(
+        repository,
+        config=room_config(round_ticks=1000, reconnect_grace=30.0),
+        monotonic_clock=clock,
+        sleep=controlled_sleep,
+        match_id_factory=lambda: "match-replace",
+    )
+    one = await manager.join(player("one"), FakeSocket())
+    await manager.join(player("two"), FakeSocket())
+    await sleep_entered.wait()
+    room = one.room
+    engine = room.engine
+    assert engine is not None
+    for sequence in range(1, 10):
+        await room.submit_frame(
+            "one",
+            one.connection,
+            encode_client_input(
+                InputCommand(sequence=sequence, client_tick=engine.tick, move_x=1000)
+            ),
+        )
+    socket = FakeSocket()
+    replacing = await manager.join(player("one"), socket)
+    await wait_until(lambda: bool(socket.messages))
+    welcome = json.loads(socket.messages[0])
+    clock.value += 0.4
+    room._apply_deferred_inputs(clock())
+    assert engine.fighter("one").last_sequence == 5
+    for offset in range(5):
+        await room.submit_frame(
+            "one",
+            replacing.connection,
+            encode_client_input(
+                InputCommand(sequence=welcome["next_sequence"] + offset, client_tick=engine.tick)
+            ),
+        )
+    assert engine.fighter("one").last_sequence == welcome["next_sequence"] + 4
+    sleep_release.set()
     await manager.close()

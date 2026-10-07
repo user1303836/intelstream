@@ -27,6 +27,9 @@ MAX_CONDITIONING = 1000
 MAX_GUARD = 700
 MAX_POISE = 600
 FACING_SCALE: int = _MANIFEST["facing"]["scale"]
+# Share of the remaining turn toward the opponent taken per facing update. A fight tick makes two
+# updates (before the exchange and after footwork), about 58% per tick; knockdown and rest walks
+# make one.
 FACING_TURN_PERCENT: int = _MANIFEST["facing"]["turn_percent_per_tick"]
 RECOVERY_CANCEL_PERCENT: int = _MANIFEST["combos"]["recovery_cancel_percent"]
 KNOCKDOWN_NEUTRAL_SEPARATION: int = _MANIFEST["knockdown"]["neutral_separation"]

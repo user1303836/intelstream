@@ -3,7 +3,8 @@ import { fighter, mockHudContext, snapshot, type DrawnPicture } from "../test/fi
 import { Avatars } from "./avatars";
 import { RoundClock } from "./hud";
 import type { CombatEvent, EngineSnapshot, MatchResult } from "../types";
-import { arcadeInjuryFor, canStartPunch, CEREMONY_MARKS, ceremonyStep, contactParticipants, contactPresentationPlan, cornersAtWork, FightRenderer, ownViewPhase, isArcadeInjuryCandidate, knockdownFinisher, presentationTickFor, refereeSpacing, replayCameraSide, replayReattaches, visualSeparation } from "./renderer";
+import { releaseSharedGpu, disposeSkeletons } from "./graph";
+import { arcadeInjuryFor, canStartPunch, compileForComposer, CEREMONY_MARKS, ceremonyStep, contactParticipants, contactPresentationPlan, disposeComposer, cornersAtWork, FightRenderer, ownViewPhase, isArcadeInjuryCandidate, knockdownFinisher, presentationTickFor, refereeSpacing, replayCameraSide, replayReattaches, visualSeparation } from "./renderer";
 import { RockedVision } from "./rocked";
 import { worldMapping } from "./world";
 
@@ -628,5 +629,59 @@ describe("the player's own camera", () => {
     expect(ownViewPhase({ phase: "rest" })).toBe(false);
     expect(ownViewPhase({ phase: "complete" })).toBe(false);
     expect(ownViewPhase(null)).toBe(false);
+  });
+});
+
+describe("graphics memory across rematches", () => {
+  it("frees every composer pass before the composer itself", () => {
+    const order: string[] = [];
+    const composer = {
+      passes: [{ dispose: () => order.push("render") }, {}, { dispose: () => order.push("bloom") }, { dispose: () => order.push("output") }],
+      dispose: () => order.push("composer"),
+    };
+    disposeComposer(composer);
+    expect(order).toEqual(["render", "bloom", "output", "composer"]);
+  });
+
+  it("frees each fighter's bone texture with the fighter", () => {
+    const bones = [new THREE.Bone(), new THREE.Bone()];
+    bones[0]!.add(bones[1]!);
+    const meshes = [0, 1].map(() => {
+      const mesh = new THREE.SkinnedMesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial());
+      mesh.bind(new THREE.Skeleton(bones));
+      return mesh;
+    });
+    const root = new THREE.Group();
+    root.add(bones[0]!, ...meshes);
+    const disposed = meshes.map((mesh) => vi.spyOn(mesh.skeleton, "dispose"));
+    disposeSkeletons(root);
+    for (const spy of disposed) expect(spy).toHaveBeenCalledOnce();
+  });
+
+  it("frees the graphics copies of the shared model and textures but keeps their data for the next renderer", () => {
+    const geometry = new THREE.BoxGeometry();
+    const scene = new THREE.Group();
+    scene.add(new THREE.Mesh(geometry), new THREE.Group().add(new THREE.SkinnedMesh(geometry, new THREE.MeshBasicMaterial())));
+    const texture = new THREE.Texture();
+    const geometryDisposed = vi.fn();
+    const textureDisposed = vi.fn();
+    geometry.addEventListener("dispose", geometryDisposed);
+    texture.addEventListener("dispose", textureDisposed);
+    releaseSharedGpu(scene, [texture]);
+    expect(geometryDisposed).toHaveBeenCalled();
+    expect(textureDisposed).toHaveBeenCalledOnce();
+    expect(geometry.getAttribute("position").count).toBeGreaterThan(0);
+    releaseSharedGpu(null, []);
+  });
+
+  it("compiles the fighters' shaders for the composer's own target, then lets go of it", async () => {
+    const calls: string[] = [];
+    const readBuffer = { name: "composer target" };
+    const renderer = {
+      setRenderTarget: (target: unknown) => calls.push(target === readBuffer ? "bind composer target" : target === null ? "unbind" : "bind other"),
+      compileAsync: () => { calls.push("compile"); return Promise.resolve(); },
+    };
+    await compileForComposer(renderer as unknown as Parameters<typeof compileForComposer>[0], { readBuffer } as unknown as Parameters<typeof compileForComposer>[1], new THREE.Group(), new THREE.PerspectiveCamera(), new THREE.Scene());
+    expect(calls).toEqual(["bind composer target", "compile", "unbind"]);
   });
 });

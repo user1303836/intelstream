@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   rendererDestroy: vi.fn(),
   rendererPushes: [] as number[][],
   callbacks: null as NetworkCallbacks | null,
+  rendererResyncs: 0,
   resultVisible: true,
   cornerPicks: [] as string[],
   cpuRequests: [] as string[],
@@ -48,6 +49,7 @@ vi.mock("./render/renderer", () => ({
     setBloodLevel(): void {}
     setReducedMotion(): void {}
     viewForward(): null { return null; }
+    resyncClock(): void { mocks.rendererResyncs += 1; }
     push(snapshot: EngineSnapshot): void { this.pushes.push(snapshot.tick); }
     destroy(): void { mocks.rendererDestroy(); }
     setInputLatency(): void {}
@@ -387,6 +389,55 @@ describe("browser lifecycle and accessible overlays", () => {
       expect(root.querySelector<HTMLElement>("[data-cpu]")!.hidden).toBe(false);
       app.destroy();
     });
+  });
+
+  it("retries a rematch that reaches the old room while it is still closing, once per refusal", async () => {
+    history.replaceState({}, "", "/?instance_id=launch");
+    const root = document.createElement("div");
+    const app = new HandsApp(root);
+    app.start();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
+    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 100, next_sequence: 8, reconnect_ticket: "rotated" });
+    send({ version: 3, type: "snapshot", payload: makeSnapshot(100) });
+    vi.useFakeTimers();
+    send({ version: 3, type: "final", match_id: "m1", winner_id: "one", method: "decision", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } });
+    vi.advanceTimersByTime(11_500);
+    const first = mocks.callbacks;
+    root.querySelector<HTMLButtonElement>("[data-rematch]")!.click();
+    vi.useRealTimers();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBe(first));
+    const closing = mocks.callbacks;
+    const authorizations = vi.mocked(authorizeDiscord).mock.calls.length;
+    vi.useFakeTimers();
+    send({ version: 3, type: "error", code: "room_closed" });
+    closing?.onFatal("room_closed");
+    expect(root.querySelector("[data-status]")?.textContent).toContain("still being cleared");
+    vi.advanceTimersByTime(3_100);
+    vi.useRealTimers();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBe(closing));
+    expect(vi.mocked(authorizeDiscord).mock.calls.length).toBe(authorizations + 1);
+    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1516, players: [players[0]], server_tick: 0, next_sequence: 0, reconnect_ticket: "fresh" });
+    send({ version: 3, type: "waiting", open_seats: 1 });
+    send({ version: 3, type: "error", code: "room_closed" });
+    expect(root.querySelector("[data-status]")?.textContent).toContain("already ended");
+    app.destroy();
+  });
+
+  it("relearns the server clock on a new connection and when a paused bout resumes", async () => {
+    history.replaceState({}, "", "/?instance_id=launch");
+    const root = document.createElement("div");
+    const app = new HandsApp(root);
+    app.start();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
+    mocks.rendererResyncs = 0;
+    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 100, next_sequence: 8, reconnect_ticket: "rotated" });
+    expect(mocks.rendererResyncs).toBe(1);
+    send({ version: 3, type: "snapshot", payload: makeSnapshot(100) });
+    send({ version: 3, type: "paused", player_id: "two", grace_ms: 20_000 });
+    expect(mocks.rendererResyncs).toBe(1);
+    send({ version: 3, type: "resumed", player_id: "two" });
+    expect(mocks.rendererResyncs).toBe(2);
+    app.destroy();
   });
 
   it("shows copyable diagnostics in the settings panel", async () => {

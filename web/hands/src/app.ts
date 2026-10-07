@@ -209,6 +209,7 @@ export class HandsApp {
   }
 
   private scheduleRematchRetry(): void {
+    if (this.rematchTimer !== null) return;
     if (this.rematchAttempts >= REMATCH_MAX_ATTEMPTS) {
       this.fail("rematch_unavailable");
       return;
@@ -290,6 +291,9 @@ export class HandsApp {
       return;
     }
     if (message.type === "welcome") this.ensureRenderer();
+    if (message.type === "welcome" || message.type === "resumed") this.renderer?.resyncClock();
+    const rematching = this.rematchAttempts > 0;
+    if (message.type === "waiting" || message.type === "ready") this.rematchAttempts = 0;
     if (message.type === "final" && this.rematchAttempts > 0 && message.match_id === this.lastFinalMatchId) {
       this.scheduleRematchRetry();
       return;
@@ -298,7 +302,7 @@ export class HandsApp {
     if (message.type === "snapshot") this.receiveSnapshot(message.payload);
     if (message.type === "waiting") {
       // Asked again after a reconnect lost the request, and on a rematch against the computer.
-      const level = this.cpuLevel ?? (this.rematchAttempts > 0 ? this.cpuRematchLevel : null);
+      const level = this.cpuLevel ?? (rematching ? this.cpuRematchLevel : null);
       if (level !== null) this.callCpu(level);
     }
     if (message.type === "final") {
@@ -555,6 +559,11 @@ export class HandsApp {
   }
 
   private fail(code: string): void {
+    // A rematch can reach the old room while it is still closing; a new one opens a moment later.
+    if (code === "room_closed" && this.rematchAttempts > 0) {
+      this.scheduleRematchRetry();
+      return;
+    }
     this.dispatch({ type: "fatal", code });
     this.voice.cancel();
     this.network?.dispose();

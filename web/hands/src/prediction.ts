@@ -1,4 +1,4 @@
-import { punchStaminaCost, punchTiming, type PunchTiming } from "./manifest";
+import { comboChain, comboWindow, FIGHTER_RADIUS, punchStaminaCost, punchTiming, RING_CORNER_REACH, RING_HALF_HEIGHT, RING_HALF_WIDTH, type PunchTiming } from "./manifest";
 import type { FighterSnapshot, Hand, HeldDefense, Power, PunchClass, Target } from "./types";
 
 export interface HeldInput {
@@ -15,6 +15,7 @@ export interface PredictedOffset {
 const MAX_SPEED = 7;
 const GUARD_SPEED_PERCENT = 70;
 const MAX_CONDITIONING = 1000;
+export const MINIMUM_SEPARATION = FIGHTER_RADIUS * 2;
 
 export function fatigueFactor(conditioning: number, bodyTrauma: number): number {
   return Math.max(48, 100 - Math.floor((MAX_CONDITIONING - conditioning) / 18) - Math.floor(bodyTrauma / 35));
@@ -27,10 +28,24 @@ export interface PunchIntent {
   readonly power: Power;
 }
 
-/** The timing the engine will give this punch: slower for a tired fighter, a tick quicker for the lead-hand jab. */
-export function predictedPunchTiming(fighter: FighterSnapshot, punch: PunchIntent): PunchTiming {
+/** Whether a punch started at `tick` follows the fighter's last one inside its combination window. */
+export function inComboWindow(fighter: FighterSnapshot, punch: PunchIntent, tick: number): boolean {
+  if (fighter.action === null || !comboChain(fighter.action, punch.class)) return false;
+  const total = fighter.action_startup_ticks + fighter.action_active_ticks + fighter.action_recovery_ticks;
+  return tick - fighter.action_start_tick < total + comboWindow(fighter.action);
+}
+
+/**
+ * The timing the engine will give this punch if it starts at `tick`: slower for a tired fighter, a
+ * tick quicker for the lead-hand jab. The engine takes the punch's own cost off the conditioning
+ * before it measures fatigue, at the combination discount inside the window.
+ */
+export function predictedPunchTiming(fighter: FighterSnapshot, punch: PunchIntent, tick?: number): PunchTiming {
   const base = punchTiming(punch.class, punch.target, punch.power);
-  const speed = fatigueFactor(fighter.conditioning, fighter.trauma.body);
+  const fullCost = punchStaminaCost(punch.class, punch.target, punch.power);
+  const cost = tick !== undefined && inComboWindow(fighter, punch, tick) ? Math.max(1, Math.floor((fullCost * 90) / 100)) : fullCost;
+  const conditioning = Math.max(0, fighter.conditioning - Math.max(1, Math.floor(cost / 12)));
+  const speed = fatigueFactor(conditioning, fighter.trauma.body);
   const lead = fighter.stance === "orthodox" ? "left" : "right";
   const quick = punch.class === "jab" && punch.hand === lead ? 1 : 0;
   return {
@@ -40,10 +55,9 @@ export function predictedPunchTiming(fighter: FighterSnapshot, punch: PunchInten
   };
 }
 
-/** False when the fighter cannot pay for the punch even at the combo discount, so the engine will turn it down. */
+/** False when the fighter cannot pay the punch's full cost: the engine checks it before any combo discount. */
 export function canAffordPunch(fighter: FighterSnapshot, punch: PunchIntent): boolean {
-  const cost = punchStaminaCost(punch.class, punch.target, punch.power);
-  return fighter.stamina >= Math.max(1, Math.floor((cost * 90) / 100));
+  return fighter.stamina >= punchStaminaCost(punch.class, punch.target, punch.power);
 }
 
 /**
@@ -115,4 +129,49 @@ export function predictMovement(fighter: FighterSnapshot, held: HeldInput, ticks
     dy += ((vy + (free ? desiredY : 0)) / 2) * fraction;
   }
   return { dx, dy };
+}
+
+/** The nearest point inside the ropes and corner pads, the engine's ring projection without its integer rounding. */
+export function ringPoint(x: number, y: number): { x: number; y: number } {
+  const limitX = RING_HALF_WIDTH - FIGHTER_RADIUS;
+  const limitY = RING_HALF_HEIGHT - FIGHTER_RADIUS;
+  const signX = x < 0 ? -1 : 1;
+  const signY = y < 0 ? -1 : 1;
+  const reachX = Math.abs(x);
+  const reachY = Math.abs(y);
+  const insideX = Math.min(reachX, limitX);
+  const insideY = Math.min(reachY, limitY);
+  if (insideX + insideY <= RING_CORNER_REACH) return { x: signX * insideX, y: signY * insideY };
+  const excess = reachX + reachY - RING_CORNER_REACH;
+  const cutX = reachX - excess / 2;
+  const cutY = reachY - excess / 2;
+  if (cutY > limitY) return { x: signX * (RING_CORNER_REACH - limitY), y: signY * limitY };
+  if (cutX > limitX) return { x: signX * limitX, y: signY * (RING_CORNER_REACH - limitX) };
+  return { x: signX * cutX, y: signY * cutY };
+}
+
+/**
+ * Keeps a predicted step where the engine can put the fighter: inside the ropes and corner pads, and
+ * no nearer the opponent than the engine's minimum separation (or than they already stand, in a clinch).
+ */
+export function constrainPrediction(fighter: { readonly x: number; readonly y: number }, offset: PredictedOffset, opponent: { readonly x: number; readonly y: number } | null): PredictedOffset {
+  let x = fighter.x + offset.dx;
+  let y = fighter.y + offset.dy;
+  if (opponent !== null) {
+    const limit = Math.min(MINIMUM_SEPARATION, Math.hypot(fighter.x - opponent.x, fighter.y - opponent.y));
+    const awayX = x - opponent.x;
+    const awayY = y - opponent.y;
+    const apart = Math.hypot(awayX, awayY);
+    if (apart < limit) {
+      if (apart > 1e-9) {
+        x = opponent.x + (awayX / apart) * limit;
+        y = opponent.y + (awayY / apart) * limit;
+      } else {
+        x = fighter.x;
+        y = fighter.y;
+      }
+    }
+  }
+  const inside = ringPoint(x, y);
+  return { dx: inside.x - fighter.x, dy: inside.y - fighter.y };
 }

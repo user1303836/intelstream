@@ -29,6 +29,7 @@ interface ManifestPunch {
   readonly reach: number;
   readonly lateral_arc: number;
   readonly stamina_cost: number;
+  readonly combo_window: number;
 }
 
 const punches = manifestJson.punches as unknown as Record<PunchClass, ManifestPunch>;
@@ -47,6 +48,18 @@ export const FIGHTER_RADIUS = manifestJson.ring.fighter_radius;
 /** Eye trauma at which the eye is swollen shut and punches from that side go unseen. */
 export const EYE_SHUT_TRAUMA = manifestJson.blind_side.eye_threshold;
 export const CORNER_TREATMENTS = manifestJson.corner;
+export const RING_CORNER_REACH = manifestJson.corners.reach;
+const comboChains = new Set(manifestJson.combos.chains.map(([first, second]) => `${first}:${second}`));
+
+/** Whether the engine counts `second` straight after `first` as a combination. */
+export function comboChain(first: PunchClass, second: PunchClass): boolean {
+  return comboChains.has(`${first}:${second}`);
+}
+
+/** Ticks after a punch ends during which a compatible follow-up still counts as a combination. */
+export function comboWindow(punchClass: PunchClass): number {
+  return punches[punchClass].combo_window;
+}
 
 export function punchTiming(punchClass: PunchClass, target: Target, power: Power): PunchTiming {
   const base = punches[punchClass];

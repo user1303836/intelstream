@@ -7,7 +7,7 @@ import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { EventDeduplicator, SnapshotBuffer } from "../interpolation";
 import { coarsePointer } from "../input/touch";
 import { FIGHTER_RADIUS, REST_CORNER_OFFSET, RING_HALF_HEIGHT, RING_HALF_WIDTH, punchTiming } from "../manifest";
-import { canAffordPunch, predictMovement, predictedPunchTiming, type HeldInput } from "../prediction";
+import { canAffordPunch, constrainPrediction, predictMovement, predictedPunchTiming, type HeldInput } from "../prediction";
 import type { BloodLevel, Settings } from "../settings";
 import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, Hand, MatchResult, PublicPlayer, PunchClass, SemanticAction, SimulationInfo } from "../types";
 import { buildArena, type BuiltArena } from "./arena";
@@ -16,7 +16,7 @@ import { Avatars } from "./avatars";
 import { captionSlot, drawCaption } from "./caption";
 import { CommentaryDirector, type CrowdCue } from "./commentary";
 import { Effects3D, type BakedPart } from "./effects";
-import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, type ArcadeDislocation, type CutmanProp } from "./graph";
+import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, releaseFighterGpu, type ArcadeDislocation, type CutmanProp } from "./graph";
 import { drawHud, finalRevealDelay, resultCard, resultCardLayout, RoundStatsTracker, STOPPAGE_METHODS, RoundClock, type RoundPunchStats } from "./hud";
 import { BURST_CUT_HEIGHT, EYE_LIDS, NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE } from "./injury";
 import { BIG_SHOT, closeCut, cutRim, teethFor } from "./gore";
@@ -65,6 +65,30 @@ export function isArcadeInjuryCandidate(
   if (result === null || result.winner_id === null || result.winner_id !== event.actor_id) return false;
   if (result.finish_method === "flash_ko") return true;
   return (result.finish_method === "ko" || result.finish_method === "tko") && target.is_downed;
+}
+
+/** EffectComposer.dispose frees only its own targets; each pass (bloom keeps a chain of them) is freed too. */
+export function disposeComposer(composer: { readonly passes: readonly { dispose?: () => void }[]; dispose(): void }): void {
+  for (const pass of composer.passes) pass.dispose?.();
+  composer.dispose();
+}
+
+/**
+ * Compiles a scene's shaders for the composer's own target (linear, without tone mapping), which is
+ * what the scene is drawn into; compiled for the screen they would be variants the frame never uses.
+ */
+export function compileForComposer(
+  renderer: Pick<THREE.WebGLRenderer, "setRenderTarget" | "compileAsync">,
+  composer: { readonly readBuffer: THREE.WebGLRenderTarget },
+  staging: THREE.Object3D,
+  camera: THREE.Camera,
+  scene: THREE.Scene,
+): Promise<unknown> {
+  renderer.setRenderTarget(composer.readBuffer);
+  // compileAsync builds the programs before it returns, so the target can be let go at once.
+  const compiled = renderer.compileAsync(staging, camera, scene);
+  renderer.setRenderTarget(null);
+  return compiled;
 }
 
 export function contactParticipants(event: CombatEvent, snapshot: EngineSnapshot): {
@@ -936,7 +960,7 @@ export class FightRenderer {
         const staging = new THREE.Group();
         staging.add(first.root, second.root, official.root, blueCorner.root, redCorner.root, blueCutman.root, redCutman.root);
         try {
-          await this.renderer.compileAsync(staging, this.camera, this.scene);
+          await compileForComposer(this.renderer, this.composer, staging, this.camera, this.scene);
         } catch {
           // Fall back to compiling on the first draw.
         }
@@ -1316,6 +1340,11 @@ export class FightRenderer {
     this.inputLatencyMs = milliseconds;
   }
 
+  /** The server clock starts over after a new connection or a paused bout, so the render clock relearns it. */
+  resyncClock(): void {
+    this.buffer.resync();
+  }
+
   setReconnect(milliseconds: number): void {
     this.reconnectMs = milliseconds;
   }
@@ -1522,7 +1551,7 @@ export class FightRenderer {
     const fighter = latest.fighters[index]!;
     if (action.kind !== "punch" || latest.phase !== "fight" || !canStartPunch(fighter) || !canAffordPunch(fighter, action)) return;
     const leadTicks = ((this.inputLatencyMs ?? 60) / 1000) * this.simulation.tick_rate + this.buffer.interpolationDelayTicks;
-    this.graphs?.[index]?.predict(action, performance.now() / 1000, this.simulation.tick_rate, leadTicks, predictedPunchTiming(fighter, action));
+    this.graphs?.[index]?.predict(action, performance.now() / 1000, this.simulation.tick_rate, leadTicks, predictedPunchTiming(fighter, action, latest.tick + 1));
   }
 
   push(snapshot: EngineSnapshot): void {
@@ -2023,7 +2052,8 @@ export class FightRenderer {
     this.localOffset.dy += (target.dy - this.localOffset.dy) * rate;
     if (index < 0 || (Math.abs(this.localOffset.dx) < 0.01 && Math.abs(this.localOffset.dy) < 0.01)) return snapshot;
     const viewer = snapshot.fighters[index]!;
-    const predicted = { ...viewer, x: viewer.x + this.localOffset.dx, y: viewer.y + this.localOffset.dy };
+    const offset = constrainPrediction(viewer, this.localOffset, snapshot.fighters[index === 0 ? 1 : 0] ?? null);
+    const predicted = { ...viewer, x: viewer.x + offset.dx, y: viewer.y + offset.dy };
     const fighters: [FighterSnapshot, FighterSnapshot] = index === 0 ? [predicted, snapshot.fighters[1]] : [snapshot.fighters[0], predicted];
     return { ...snapshot, fighters };
   }
@@ -2325,7 +2355,8 @@ export class FightRenderer {
     this.keyLight?.shadow.map?.dispose();
     this.keyLight?.shadow.dispose();
     this.renderer.renderLists.dispose();
-    this.composer.dispose();
+    disposeComposer(this.composer);
+    releaseFighterGpu();
     this.renderer.dispose();
     this.blobTexture.dispose();
     for (const blob of this.blobShadows) {
