@@ -124,12 +124,26 @@ export function parryRootedUntil(event: CombatEvent, playerId: string | null, cu
   return event.kind === "parry" && event.target_id === playerId ? Math.max(current, event.tick + event.amount) : current;
 }
 
+/** What holds a fighter's feet that a snapshot does not show: `MovementPrediction` keeps track of it. */
+export interface FootworkHolds {
+  /** The tick a parry roots him until (`parryRootedUntil`). */
+  readonly rootedUntil?: number;
+  /** A punch he was seen stunned in: the stun cut it short, though snapshots go on presenting it. */
+  readonly cutActionId?: string | null;
+}
+
 /**
- * Ticks of the replay a parried fighter stays rooted: the engine holds his feet still until the tick
- * `rootedUntil` while the stagger's stun lasts.
+ * Steps of the replay from snapshot `tick` that the engine holds the fighter's feet still. A punch
+ * holds them through its last tick, and the engine frees him on the tick it ends. A stun cuts a
+ * punch short on the tick it lands, though snapshots go on presenting the punch with its own timing
+ * for a while, so a stunned fighter is not held by one, nor afterwards by the punch a stun was seen
+ * to cut. A parry roots him while its stagger lasts.
  */
-function rootedTicks(fighter: FighterSnapshot, tick: number, rootedUntil: number): number {
-  return fighter.stunned_ticks > 0 ? Math.max(0, Math.min(rootedUntil - tick, fighter.stunned_ticks) - 1) : 0;
+function heldSteps(fighter: FighterSnapshot, tick: number, holds: FootworkHolds): number {
+  const cut = fighter.stunned_ticks > 0 || (fighter.action_id !== null && fighter.action_id === holds.cutActionId);
+  const punch = cut ? 0 : Math.max(0, attackTicksRemaining(fighter, tick) - 1);
+  const rooted = fighter.stunned_ticks > 0 ? Math.min((holds.rootedUntil ?? 0) - tick, fighter.stunned_ticks) - 1 : 0;
+  return Math.max(punch, rooted);
 }
 
 /**
@@ -137,13 +151,13 @@ function rootedTicks(fighter: FighterSnapshot, tick: number, rootedUntil: number
  * the held direction each tick, capped at the fatigue-scaled speed) so the
  * viewer's own fighter can be shown `ticks` ahead of the delayed snapshot,
  * walking toward `intent(step)` on each tick. With the snapshot `tick`, a
- * punch only holds the fighter for the ticks it has left, so stepping out of
- * a punch is predicted as soon as it ends, and a parry's stagger until
- * `rootedUntil` (see `MovementPrediction.observe`).
+ * punch or a parry's stagger only holds the fighter for the ticks it has
+ * left (see `heldSteps`), so stepping out of it is predicted as soon as it
+ * ends.
  */
-export function replayMovement(fighter: FighterSnapshot, intent: (step: number) => MovementIntent, ticks: number, tick?: number, rootedUntil = 0): PredictedOffset {
+export function replayMovement(fighter: FighterSnapshot, intent: (step: number) => MovementIntent, ticks: number, tick?: number, holds: FootworkHolds = {}): PredictedOffset {
   if (ticks <= 0 || stateLocked(fighter)) return { dx: 0, dy: 0 };
-  const committed = tick === undefined ? (fighter.action !== null ? Infinity : 0) : Math.max(attackTicksRemaining(fighter, tick), rootedTicks(fighter, tick, rootedUntil));
+  const committed = tick === undefined ? (fighter.action !== null ? Infinity : 0) : heldSteps(fighter, tick, holds);
   if (committed >= ticks) return { dx: 0, dy: 0 };
   let vx = fighter.velocity_x;
   let vy = fighter.velocity_y;
@@ -174,9 +188,9 @@ export function replayMovement(fighter: FighterSnapshot, intent: (step: number) 
 }
 
 /** `replayMovement` with the same input held on every tick. */
-export function predictMovement(fighter: FighterSnapshot, held: HeldInput, ticks: number, tick?: number, rootedUntil = 0): PredictedOffset {
+export function predictMovement(fighter: FighterSnapshot, held: HeldInput, ticks: number, tick?: number, holds: FootworkHolds = {}): PredictedOffset {
   const intent = { x: 0, y: 0, speed: 0 };
-  return replayMovement(fighter, (step) => movementIntent(fighter, held, intent, step), ticks, tick, rootedUntil);
+  return replayMovement(fighter, (step) => movementIntent(fighter, held, intent, step), ticks, tick, holds);
 }
 
 /** Held input kept for replay, longer than any lead the renderer works with. */
@@ -199,11 +213,11 @@ export class MovementPrediction {
   private readonly mean = { x: 0, y: 0, speed: 0 };
   private readonly sample = { x: 0, y: 0, speed: 0 };
   private horizon: number | null = null;
-  private rootedUntil = 0;
+  private readonly holds: { rootedUntil: number; cutActionId: string | null } = { rootedUntil: 0, cutActionId: null };
 
   /** Takes note of an event from the engine for the fighter `playerId` (see `parryRootedUntil`). */
   observe(event: CombatEvent, playerId: string | null): void {
-    this.rootedUntil = parryRootedUntil(event, playerId, this.rootedUntil);
+    this.holds.rootedUntil = parryRootedUntil(event, playerId, this.holds.rootedUntil);
   }
 
   /**
@@ -216,11 +230,12 @@ export class MovementPrediction {
     while (this.history.length > 2 && this.history[1]!.at < nowMs - HELD_HISTORY_MS) this.history.shift();
     this.horizon = this.horizon === null ? horizonTicks : this.horizon + (horizonTicks - this.horizon) * (1 - Math.exp(-HORIZON_EASE_RATE * dt));
     let target: PredictedOffset = { dx: 0, dy: 0 };
+    if (fighter !== null && fighter.stunned_ticks > 0 && fighter.action_id !== null) this.holds.cutActionId = fighter.action_id;
     if (fighter !== null) {
       const tickMs = 1000 / tickRate;
       const lead = this.horizon;
       // The input applied `step` ticks ahead left with a flush around `lead - 1 - step` ticks ago.
-      target = replayMovement(fighter, (step) => this.meanIntent(fighter, step, nowMs - (lead - 1 - step) * tickMs, tickMs), lead, tick, this.rootedUntil);
+      target = replayMovement(fighter, (step) => this.meanIntent(fighter, step, nowMs - (lead - 1 - step) * tickMs, tickMs), lead, tick, this.holds);
     }
     const limit = OFFSET_SPEED_LIMIT * MAX_SPEED * tickRate * dt;
     const changeX = target.dx - this.offset.dx;

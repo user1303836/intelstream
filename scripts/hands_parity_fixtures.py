@@ -147,7 +147,31 @@ def movement_traces() -> dict[str, list[dict[str, Any]]]:
             inputs["two"] = InputCommand(tick, tick, defense=DefensivePose.GUARD_HIGH)
         return inputs
 
-    return {"parried while holding back": _trace(parried, back, parry)}
+    hook = PunchAction(Hand.LEFT, PunchClass.HOOK, Target.HEAD, Power.NORMAL)
+    jab = PunchAction(Hand.LEFT, PunchClass.JAB, Target.HEAD, Power.NORMAL)
+    flinched = _engine((FighterStyle.BALANCED, FighterStyle.BALANCED), 100)
+
+    def counter(tick: int) -> dict[str, InputCommand]:
+        # His hook is still winding up when the other man's quicker jab lands on it.
+        if tick != 1:
+            return {}
+        return {
+            "one": InputCommand(tick, tick, back.move_x, back.move_y, actions=(hook,)),
+            "two": InputCommand(tick, tick, actions=(jab,)),
+        }
+
+    finished = _engine((FighterStyle.BALANCED, FighterStyle.BALANCED), 300)
+
+    def alone(tick: int) -> dict[str, InputCommand]:
+        if tick != 1:
+            return {}
+        return {"one": InputCommand(tick, tick, back.move_x, back.move_y, actions=(jab,))}
+
+    return {
+        "parried while holding back": _trace(parried, back, parry),
+        "flinched mid-hook while holding back": _trace(flinched, back, counter),
+        "a jab thrown holding back": _trace(finished, back, alone),
+    }
 
 
 def documents() -> dict[Path, str]:

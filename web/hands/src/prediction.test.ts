@@ -2,7 +2,7 @@ import { cancelsRecovery, punchStaminaCost, punchTiming, recoveryCancelAge, styl
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { SnapshotBuffer } from "./interpolation";
-import { attackTicksRemaining, constrainPrediction, EVASION_STAMINA, EVASION_TICKS, EvasionPrediction, fatigueFactor, MINIMUM_SEPARATION, MovementPrediction, movementLocked, parryRootedUntil, predictedDefense, predictMovement, predictedPunchTiming, type HeldInput } from "./prediction";
+import { attackTicksRemaining, constrainPrediction, EVASION_STAMINA, EVASION_TICKS, EvasionPrediction, fatigueFactor, MINIMUM_SEPARATION, MovementPrediction, movementLocked, parryRootedUntil, predictedDefense, predictMovement, predictedPunchTiming, type FootworkHolds, type HeldInput } from "./prediction";
 import { decodeServerFrame, ProtocolError } from "./protocol";
 import { fighter, snapshot } from "./test/fixtures";
 import movementTraces from "./test/movement-traces.json";
@@ -70,14 +70,47 @@ describe("local movement prediction", () => {
     expect(movementLocked(hook, 122)).toBe(false);
     expect(predictMovement(hook, held, 4, 110)).toEqual({ dx: 0, dy: 0 });
     expect(predictMovement(hook, held, 4, 130)).toEqual(predictMovement(still, held, 4));
+    // The engine frees him on the tick the punch ends, 122: three of the four ticks after 120.
     const leaving = predictMovement(hook, held, 4, 120);
     expect(leaving.dx).toBeGreaterThan(0);
-    expect(leaving.dx).toBeCloseTo(predictMovement(still, held, 2).dx);
+    expect(leaving.dx).toBeCloseTo(predictMovement(still, held, 3).dx);
     const stumbling = predictMovement({ ...hook, stunned_ticks: 5 }, held, 4, 130);
     expect(stumbling.dx).toBeGreaterThan(0);
     expect(stumbling.dx).toBeLessThan(predictMovement(still, held, 4).dx);
     expect(predictMovement({ ...hook, queued_actions: 1 }, held, 4, 130)).toEqual({ dx: 0, dy: 0 });
     expect(movementLocked({ ...still, queued_actions: 1 }, 130)).toBe(true);
+  });
+
+  it("lets a stunned fighter stumble though the punch the stun cut short is still presented", () => {
+    const held = { moveX: -1000, moveY: 0, defense: "none" as const };
+    const still = { ...fighter("one"), conditioning: 1000, stunned_ticks: 20 };
+    const hook = { ...still, action: "hook" as const, action_id: "c1", action_start_tick: 197, action_startup_ticks: 9, action_active_ticks: 2, action_recovery_ticks: 14 };
+    const stumble = predictMovement(still, held, 4, 200);
+    expect(stumble.dx).toBeLessThan(-10);
+    expect(predictMovement(hook, held, 4, 200)).toEqual(stumble);
+    // Once the stun is over, the punch it cut no longer holds him, for a player who saw him stunned in it.
+    const after = { ...hook, stunned_ticks: 0 };
+    expect(predictMovement(after, held, 4, 205)).toEqual({ dx: 0, dy: 0 });
+    expect(predictMovement(after, held, 4, 205, { cutActionId: "c1" })).toEqual(predictMovement({ ...after, action: null, action_id: null }, held, 4, 205));
+    const prediction = new MovementPrediction();
+    prediction.update(hook, held, false, 0, 4, 200, 1, 30);
+    expect(prediction.update(after, held, false, 1000, 4, 205, 1, 30).dx).toBeLessThan(-10);
+    expect(new MovementPrediction().update(after, held, false, 1000, 4, 205, 1, 30)).toEqual({ dx: 0, dy: 0 });
+  });
+
+  it("holds the player's own fighter still for a parry's stagger once it hears of the parry, then walks him off", () => {
+    const held = { moveX: -1000, moveY: 0, defense: "none" as const };
+    const parried = { ...fighter("one"), conditioning: 1000, stunned_ticks: 18 };
+    const parry = { event_id: 1, tick: 98, kind: "parry", actor_id: "two", target_id: "one", amount: 20, detail: "", blood: 0, direction: 0, action_id: "c4" };
+    const prediction = new MovementPrediction();
+    prediction.observe({ ...parry, target_id: "two" }, "one");
+    expect(prediction.update(parried, held, false, 0, 4, 100, 1, 30).dx).toBeLessThan(-5);
+    const rooted = new MovementPrediction();
+    rooted.observe(parry, "one");
+    expect(rooted.update(parried, held, false, 0, 4, 100, 1, 30)).toEqual({ dx: 0, dy: 0 });
+    // With two ticks of the stagger left the engine roots him for one more: three of the four ticks ahead are his.
+    const leaving = rooted.update({ ...parried, stunned_ticks: 2 }, held, false, 1000, 4, 116, 1, 30);
+    expect(leaving.dx).toBeCloseTo(predictMovement({ ...parried, stunned_ticks: 0 }, held, 3).dx, 5);
   });
 
   it("predicts the timing and cost the engine will use", () => {
@@ -221,15 +254,19 @@ describe("footwork predicted against what the engine did", () => {
   interface TraceRecord { readonly tick: number; readonly fighter: unknown; readonly events: unknown[]; readonly held: HeldInput }
   const LOOKAHEAD = 4;
 
-  /** Each tick's snapshot as the client decodes it, with the parries it has seen so far. */
-  function replay(records: readonly TraceRecord[]): { fighter: FighterSnapshot; rootedUntil: number; held: HeldInput }[] {
+  /** Each tick's snapshot as the client decodes it, with what it has learnt so far of parries and cut punches. */
+  function replay(records: readonly TraceRecord[]): { fighter: FighterSnapshot; holds: FootworkHolds; held: HeldInput; struck: boolean }[] {
     let rootedUntil = 0;
+    let cutActionId: string | null = null;
     return records.map((record) => {
       const payload = { ...snapshot(record.tick), fighters: [record.fighter, fighter("two", 400)], events: record.events };
       const message = decodeServerFrame(JSON.stringify({ version: PROTOCOL_VERSION, type: "snapshot", payload }));
       if (message.type !== "snapshot") throw new Error(message.type);
+      const one = message.payload.fighters[0];
       for (const event of message.payload.events) rootedUntil = parryRootedUntil(event, "one", rootedUntil);
-      return { fighter: message.payload.fighters[0], rootedUntil, held: record.held };
+      if (one.stunned_ticks > 0 && one.action_id !== null) cutActionId = one.action_id;
+      const struck = message.payload.events.some((event) => event.target_id === "one" && ["hit", "counter_hit", "parry"].includes(event.kind));
+      return { fighter: one, holds: { rootedUntil, cutActionId }, held: record.held, struck };
     });
   }
 
@@ -237,10 +274,12 @@ describe("footwork predicted against what the engine did", () => {
     it(`${name}: every tick's ${LOOKAHEAD}-tick step is the engine's to within 2 units`, () => {
       const decoded = replay(records);
       const misses: string[] = [];
+      // A punch landing on him inside the look-ahead is news no snapshot before it carries.
       for (let index = 0; index + LOOKAHEAD < decoded.length; index += 1) {
-        const { fighter: now, rootedUntil, held } = decoded[index]!;
+        if (decoded.slice(index + 1, index + 1 + LOOKAHEAD).some((later) => later.struck)) continue;
+        const { fighter: now, holds, held } = decoded[index]!;
         const later = decoded[index + LOOKAHEAD]!.fighter;
-        const step = predictMovement(now, held, LOOKAHEAD, records[index]!.tick, rootedUntil);
+        const step = predictMovement(now, held, LOOKAHEAD, records[index]!.tick, holds);
         const miss = Math.hypot(step.dx - (later.x - now.x), step.dy - (later.y - now.y));
         if (miss > 2) misses.push(`tick ${records[index]!.tick}: predicted ${step.dx.toFixed(1)}, engine ${later.x - now.x}`);
       }
