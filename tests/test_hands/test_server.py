@@ -21,7 +21,12 @@ from intelstream.database.repository import Repository
 from intelstream.hands import server as server_module
 from intelstream.hands.auth import AuthenticatedPlayer, AuthExchange, HandsAuth, HandsAuthError
 from intelstream.hands.engine import EngineConfig
-from intelstream.hands.rooms import HandsRoomManager, RoomConfig, RoomError
+from intelstream.hands.rooms import (
+    SNAPSHOT_BACKLOG_BYTES,
+    HandsRoomManager,
+    RoomConfig,
+    RoomError,
+)
 from intelstream.hands.server import AdmissionConfig, HandsServer
 
 if TYPE_CHECKING:
@@ -850,11 +855,16 @@ async def test_reconnecting_over_a_stalled_socket_does_not_hold_up_any_join(
             assert isinstance(old_socket, server_module._RoomSocket)
             # The room holds snapshots back once a few kilobytes are buffered, short of the
             # transport's own pause; a lower mark gets the paused transport a dead peer leaves.
+            # More than that backlog only builds once the peer's kernel buffers are full too, so
+            # the pause is lasting rather than one overlapped write still in flight.
             transport = old_socket._request.transport
             assert transport is not None
             transport.set_write_buffer_limits(high=1024)
             async with asyncio.timeout(10):
-                while not old_socket._request.protocol.writing_paused:  # noqa: ASYNC110
+                while not (  # noqa: ASYNC110
+                    old_socket._request.protocol.writing_paused
+                    and transport.get_write_buffer_size() > SNAPSHOT_BACKLOG_BYTES
+                ):
                     await asyncio.sleep(0.01)
 
             replacement = await client.ws_connect(
