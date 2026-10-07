@@ -65,6 +65,24 @@ describe("rest corner", () => {
     expect(graph.stoolVisible).toBe(false);
     expect(bone(boxer, "hips").y).toBeGreaterThan(0.72);
   });
+
+  it("rests the seated fighter's feet on the canvas and keeps them there as he stands up", () => {
+    const { boxer, graph } = makeGraph();
+    const fighter = { ...facingOpponent(baseFighter("one")), x: -420, y: -420 };
+    const opponent = opponentFor("two");
+    graph.setResting(true);
+    run(graph, fighter, opponent, 150, undefined);
+    const seated = lowestVertex(boxer, "ShoesMat0");
+    expect(seated).toBeGreaterThan(-0.02);
+    expect(seated).toBeLessThan(0.02);
+    graph.setResting(false);
+    let lowest = Infinity;
+    for (let frame = 0; frame < 60; frame += 2) {
+      run(graph, fighter, opponent, 2, undefined, 75 + frame / 2, 2.5 + frame / 60);
+      lowest = Math.min(lowest, lowestVertex(boxer, "ShoesMat0"));
+    }
+    expect(lowest).toBeGreaterThan(-0.02);
+  });
 });
 
 describe("celebration", () => {

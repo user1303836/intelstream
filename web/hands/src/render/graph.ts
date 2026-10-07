@@ -1681,8 +1681,10 @@ export class BoxingGraph {
     rearHand.knuckles.lerp(seatedScratch.set(-0.2 * mirror, 0, 1), blend).normalize();
     leadHand.pole.lerp(seatedScratch.set(0.9 * mirror, -0.3, -0.2), blend).normalize();
     rearHand.pole.lerp(seatedScratch.set(-0.9 * mirror, -0.3, -0.2), blend).normalize();
-    lead.position.lerp(seatedScratch.set(0.18 * mirror, 0, 0.4), blend);
-    rear.position.lerp(seatedScratch.set(-0.18 * mirror, 0, 0.38), blend);
+    // Foot targets are ankle joints: the soles rest on the canvas.
+    const ankle = this.boxer.rig.metrics.ankleHeight;
+    lead.position.lerp(seatedScratch.set(0.18 * mirror, ankle, 0.4), blend);
+    rear.position.lerp(seatedScratch.set(-0.18 * mirror, ankle, 0.38), blend);
     lead.heel = lerp(lead.heel, 0, blend);
     rear.heel = lerp(rear.heel, 0, blend);
     lead.toe.lerp(seatedScratch.set(0.15 * mirror, 0, 1), blend).normalize();
