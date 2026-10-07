@@ -1,6 +1,6 @@
 import { ROCKED_BASE_TICKS, ROCKED_MAX_TICKS } from "../manifest";
 import { fighter } from "../test/fixtures";
-import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, MatchPhase, PublicPlayer } from "../types";
+import { PROTOCOL_VERSION, type CombatEvent, type EngineSnapshot, type FighterSnapshot, type FinalMessage, type MatchPhase, type PublicPlayer } from "../types";
 import { CommentaryDirector, crowdTension, fillLine, holdFor, punchName, type CommentaryHooks } from "./commentary";
 
 const players: Record<string, PublicPlayer> = {
@@ -208,7 +208,7 @@ describe("the ring announcer", () => {
   });
 
   const decision = (winner: string | null, cards: Array<[number[], number[]]>): FinalMessage => ({
-    version: 3, type: "final", match_id: "m", winner_id: winner, method: winner === null ? "draw" : "decision", round: 3,
+    version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: winner, method: winner === null ? "draw" : "decision", round: 3,
     scorecards: cards.map(([one, two], index) => ({ judge: `J${index}`, player_one: one, player_two: two })), ratings: {},
   });
 
@@ -240,7 +240,7 @@ describe("the ring announcer", () => {
     feed(director, state(1350, "fight", [{}, {}], { phase_ticks_remaining: 2340 }), [], 45);
     feed(director, state(1351, "knockdown", [{}, { is_downed: true }], { phase_ticks_remaining: 300 }), [event("knockdown", 1351, { actor_id: "one", target_id: "two", amount: 1 })], 46);
     feed(director, state(1651, "complete", [{}, { is_downed: true }], { phase_ticks_remaining: 0 }), [event("result", 1651, { actor_id: "one", detail: "ko" })], 56);
-    director.finish({ version: 3, type: "final", match_id: "m", winner_id: "one", method: "ko", round: 1, scorecards: [], ratings: {} }, players, false, 56.2);
+    director.finish({ version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: "one", method: "ko", round: 1, scorecards: [], ratings: {} }, players, false, 56.2);
     director.resultShown(70);
     expect(director.current(70.5)?.line.card).toEqual({ kicker: "STOPPED AT 0:42 OF ROUND 1", title: "AZURE VECTOR", detail: "WINS BY KNOCKOUT", corner: 0 });
     expect(speak.mock.calls.at(-1)![0]).toEqual(["The referee stops the contest at 0:42 of round one. Your winner, by knockout... Azure Vector!"]);

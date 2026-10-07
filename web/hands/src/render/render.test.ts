@@ -1,3 +1,4 @@
+import { PROTOCOL_VERSION } from "../types";
 import * as THREE from "three";
 import { punchTiming, REST_CORNER_OFFSET, totalTicks } from "../manifest";
 import { buildArena } from "./arena";
@@ -793,7 +794,7 @@ describe("round stats", () => {
     const texts: string[] = [];
     const ctx = mockHudContext(texts);
     const players = Object.fromEntries(publicPlayers.map((player) => [player.id, player]));
-    const final = { version: 3 as const, type: "final" as const, match_id: "m", winner_id: "one", method: "decision" as const, round: 3, scorecards: [], ratings: {} };
+    const final = { version: PROTOCOL_VERSION, type: "final" as const, match_id: "m", winner_id: "one", method: "decision" as const, round: 3, scorecards: [], ratings: {} };
     drawHud(ctx, 1280, 720, { ...snapshot(), phase: "complete" }, players, "one", final, 0, 30, tracker);
     const row = texts.indexOf("TOTAL PUNCHES");
     expect(texts.slice(row + 1, row + 3)).toEqual(["1/2 (50%)", "0/1 (0%)"]);
@@ -926,7 +927,7 @@ describe("the broadcast HUD after the QA pass", () => {
   });
 
   it("gives the referee a moment before a disqualification or a doctor's stoppage is shown", () => {
-    const final = (method: string) => ({ version: 3 as const, type: "final" as const, match_id: "m", winner_id: "one", method: method as "decision", round: 1, scorecards: [], ratings: {} });
+    const final = (method: string) => ({ version: PROTOCOL_VERSION, type: "final" as const, match_id: "m", winner_id: "one", method: method as "decision", round: 1, scorecards: [], ratings: {} });
     expect(revealDelay(final("disqualification"))).toBe(REFEREE_REVEAL_DELAY_SECONDS);
     expect(revealDelay(final("doctor_stoppage"))).toBe(REFEREE_REVEAL_DELAY_SECONDS);
     expect(revealDelay(final("decision"))).toBe(0);
@@ -948,7 +949,7 @@ describe("the broadcast HUD after the QA pass", () => {
 describe("decision label", () => {
   const card = (one: number[], two: number[], judge = "J") => ({ judge, player_one: one, player_two: two });
   const final = (method: "decision" | "draw" | "ko" | "tko", scorecards: ReturnType<typeof card>[]) =>
-    ({ version: 3 as const, type: "final" as const, match_id: "m", winner_id: method === "draw" ? null : "one", method, round: 3, scorecards, ratings: {} });
+    ({ version: PROTOCOL_VERSION, type: "final" as const, match_id: "m", winner_id: method === "draw" ? null : "one", method, round: 3, scorecards, ratings: {} });
 
   it("names unanimous, split and majority decisions and draws from the scorecards", () => {
     expect(decisionLabel(final("decision", [card([10, 10, 10], [9, 9, 9]), card([10, 10, 9], [9, 9, 10]), card([10, 10, 10], [9, 9, 9])]))).toBe("UNANIMOUS DECISION");
@@ -963,7 +964,7 @@ describe("decision label", () => {
 });
 
 describe("final reveal", () => {
-  const final = { version: 3 as const, type: "final" as const, match_id: "m", winner_id: "one", method: "ko" as const, round: 1, scorecards: [], ratings: {} };
+  const final = { version: PROTOCOL_VERSION, type: "final" as const, match_id: "m", winner_id: "one", method: "ko" as const, round: 1, scorecards: [], ratings: {} };
   it("holds stoppage results back for the slow-motion fall and shows decisions at once", () => {
     expect(finalRevealDelay(final)).toBe(FINAL_REVEAL_DELAY_SECONDS);
     expect(finalRevealDelay({ ...final, method: "tko" })).toBe(FINAL_REVEAL_DELAY_SECONDS);
@@ -1151,7 +1152,7 @@ describe("players' pictures", () => {
   it("head the columns of the result card", () => {
     const texts: string[] = [];
     const drawn: DrawnPicture[] = [];
-    const final = { version: 3 as const, type: "final" as const, match_id: "m", winner_id: "one", method: "decision" as const, round: 3, scorecards: [], ratings: { one: { before: 1000, after: 1016 }, two: { before: 1000, after: 984 } } };
+    const final = { version: PROTOCOL_VERSION, type: "final" as const, match_id: "m", winner_id: "one", method: "decision" as const, round: 3, scorecards: [], ratings: { one: { before: 1000, after: 1016 }, two: { before: 1000, after: 984 } } };
     drawHud(mockHudContext(texts, drawn), 1280, 720, { ...snapshot(), phase: "complete" }, players, "one", final, 0, 30, null, null, null, null, null, onlyOne);
     expect(drawn).toHaveLength(1);
     expect(drawn[0]!.image).toBe(picture);
@@ -1223,7 +1224,7 @@ describe("result panel text", () => {
     const ctx = mockHudContext(texts);
     const longName = "Anastasia-the-Great5";
     const players = { one: { id: "one", name: longName, avatar: null, rating: 1500, connected: true }, two: { id: "two", name: "Bo", avatar: null, rating: 1500, connected: true } };
-    const final = { version: 3 as const, type: "final" as const, match_id: "m", winner_id: "one", method: "decision" as const, round: 2, scorecards: [{ judge: "Impact", player_one: [10, 10], player_two: [9, 10] }], ratings: { one: { before: 1000, after: 1016 }, two: { before: 1000, after: 984 } } };
+    const final = { version: PROTOCOL_VERSION, type: "final" as const, match_id: "m", winner_id: "one", method: "decision" as const, round: 2, scorecards: [{ judge: "Impact", player_one: [10, 10], player_two: [9, 10] }], ratings: { one: { before: 1000, after: 1016 }, two: { before: 1000, after: 984 } } };
     drawHud(ctx, 390, 844, { ...snapshot(), phase: "complete" }, players, "one", final, 0, 30);
     expect(texts).toContain(`${longName.toUpperCase()} WINS`);
     expect(texts).toContain("1016 (+16)");
@@ -1236,7 +1237,7 @@ describe("result card", () => {
   const players = { one: { id: "one", name: "Alpha", avatar: null, rating: 1500, connected: true }, two: { id: "two", name: "Bravo", avatar: null, rating: 1500, connected: true } };
   const fighters = (downOne = 0, downTwo = 0): [ReturnType<typeof fighter>, ReturnType<typeof fighter>] => [{ ...fighter("one"), knockdowns: downOne }, { ...fighter("two"), knockdowns: downTwo }];
   const result = (method: "decision" | "draw" | "ko" | "flash_ko" | "tko" | "forfeit", winner: string | null, scorecards: { judge: string; player_one: number[]; player_two: number[] }[] = [], ratings: Record<string, { before: number; after: number }> = {}) =>
-    ({ version: 3 as const, type: "final" as const, match_id: "m", winner_id: winner, method, round: 2, scorecards, ratings });
+    ({ version: PROTOCOL_VERSION, type: "final" as const, match_id: "m", winner_id: winner, method, round: 2, scorecards, ratings });
   const none = { thrown: 0, landed: 0, jabsThrown: 0, jabsLanded: 0 };
 
   it("lists each judge's total for a decision, with the fighter who took the card in the lead", () => {

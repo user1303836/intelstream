@@ -1,9 +1,9 @@
 import { FIGHTER_STYLES } from "./protocol";
 import { loadStyle, saveStyle, STYLE_CARDS, StylePicker, styleTag, styleTitle } from "./styles";
 import { publicPlayers } from "./test/fixtures";
-import type { ConnectionRole, FighterStyle, SelectMessage } from "./types";
+import { PROTOCOL_VERSION, type ConnectionRole, type FighterStyle, type SelectMessage } from "./types";
 
-const choosing = (fields: Partial<SelectMessage> = {}): SelectMessage => ({ version: 3, type: "select", deadline_ms: 9_500, players: [publicPlayers[0], publicPlayers[1]], ready: [], ...fields });
+const choosing = (fields: Partial<SelectMessage> = {}): SelectMessage => ({ version: PROTOCOL_VERSION, type: "select", deadline_ms: 9_500, players: [publicPlayers[0], publicPlayers[1]], ready: [], ...fields });
 const press = (code: string, init: KeyboardEventInit = {}): void => { window.dispatchEvent(new KeyboardEvent("keydown", { code, cancelable: true, ...init })); };
 
 describe("style cards", () => {

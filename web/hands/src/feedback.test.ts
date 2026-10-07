@@ -1,3 +1,4 @@
+import { PROTOCOL_VERSION } from "./types";
 import { AudioFeedback, rockedBeatTicks } from "./audio";
 import { INJURY_SOUNDS } from "./assets/injury-sounds";
 import { HapticFeedback } from "./haptics";
@@ -443,7 +444,7 @@ describe("rocked", () => {
     const muffle = MockAudioContext.filters.find((filter) => filter.type === "lowpass" && (filter.frequency as unknown as { value: number }).value === 20_000)!;
     const target = muffle.frequency.setTargetAtTime as unknown as ReturnType<typeof vi.fn>;
     feedback.rocked(1, 100);
-    feedback.result({ version: 3, type: "final", match_id: "m", winner_id: "two", method: "forfeit", round: 1, scorecards: [], ratings: {} });
+    feedback.result({ version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: "two", method: "forfeit", round: 1, scorecards: [], ratings: {} });
     expect(target.mock.lastCall![0]).toBeCloseTo(20_000);
     feedback.destroy();
   });

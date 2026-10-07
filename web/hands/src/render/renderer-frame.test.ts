@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { fighter, snapshot } from "../test/fixtures";
-import type { EngineSnapshot, FighterSnapshot, FinalMessage } from "../types";
+import { PROTOCOL_VERSION, type EngineSnapshot, type FighterSnapshot, type FinalMessage } from "../types";
 import { CameraDirector, ceremonyShot, FIGHTER_CAM_FOV_SCALE, FighterCam } from "./camera";
 import { RoundStatsTracker } from "./hud";
 import { lookFor } from "./looks";
@@ -271,7 +271,7 @@ describe("a rendered frame", () => {
   });
 
   it("frames the decision above the result card, looking through the near ropes", () => {
-    const final: FinalMessage = { version: 3, type: "final", match_id: "m", winner_id: "one", method: "decision", round: 3, scorecards: [], ratings: {} };
+    const final: FinalMessage = { version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: "one", method: "decision", round: 3, scorecards: [], ratings: {} };
     const state = fighting({}, {}, { phase: "complete" });
     const ceremony = { winnerSeat: 0, positions: [{ x: -102, y: -16 }, { x: 102, y: -16 }], marks: [0, 1], refereeArrived: true, arrivedAt: 0.5, announced: true };
     const { renderer, run, camera } = frame(state, { ceremony, final, settings: () => ({ reducedMotion: true, blood: "full", camera: "broadcast" }), referee: { raise: vi.fn() }, ceremonyWrists: [new THREE.Vector3(), new THREE.Vector3()], commentary: { verdict: vi.fn() } });
@@ -311,7 +311,7 @@ describe("around the fight", () => {
       graphs: null, settings: () => ({ reducedMotion: false, blood: "full" }), arcadeInjuries: [null, null],
       lastKnockdown: { knockdown: combat("knockdown", { event_id: 8, amount: 1 }), hit, finisher: "decapitation" }, applyArcadeInjury, presentFinish, pendingContacts: [],
     });
-    method("setFinal").call(stub, { version: 3, type: "final", match_id: "m", winner_id: "one", method: "ko", round: 2, scorecards: [], ratings: {} });
+    method("setFinal").call(stub, { version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: "one", method: "ko", round: 2, scorecards: [], ratings: {} });
     expect(applyArcadeInjury).toHaveBeenCalledWith(1, "decapitation", hit);
     expect(presentFinish).toHaveBeenCalledOnce();
   });
@@ -325,7 +325,7 @@ describe("around the fight", () => {
       graphs: null, settings: () => ({ reducedMotion: false, blood: "full" }), arcadeInjuries: [null, null],
       lastKnockdown: { knockdown: combat("knockdown", { event_id: 8, amount: 3 }), hit, finisher: "decapitation" }, applyArcadeInjury, presentFinish: vi.fn(), pendingContacts: [waiting],
     });
-    method("setFinal").call(stub, { version: 3, type: "final", match_id: "m", winner_id: "one", method: "tko", round: 2, scorecards: [], ratings: {} });
+    method("setFinal").call(stub, { version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: "one", method: "tko", round: 2, scorecards: [], ratings: {} });
     expect(applyArcadeInjury).not.toHaveBeenCalled();
     expect(waiting.injury).toBe("decapitation");
   });
@@ -350,7 +350,7 @@ describe("around the fight", () => {
       referee: { waveOff: vi.fn() }, buffer: { latest: () => snapshot() }, headCacheValid: [false, false], settings: () => ({ reducedMotion: false }), frameSeconds: 0,
       graphs: [{ celebrate: celebrate[0] }, { celebrate: celebrate[1] }],
     });
-    method("presentFinish").call(stub, { version: 3, type: "final", match_id: "m", winner_id: "two", method: "tko", round: 2, scorecards: [], ratings: {} });
+    method("presentFinish").call(stub, { version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: "two", method: "tko", round: 2, scorecards: [], ratings: {} });
     expect(celebrate[1]).toHaveBeenCalledOnce();
     expect(celebrate[0]).not.toHaveBeenCalled();
     // He celebrates for as long as the result is up, rather than going back into his guard.
@@ -399,7 +399,7 @@ describe("around the fight", () => {
       refereeVelocity: new THREE.Vector3(), refereeAway: new THREE.Vector3(), refereeYaw: 0, effects: { severedHeadPosition: () => false },
       closeUpTarget: new THREE.Vector3(), replay: null, ceremony: null, stoppageWrist: new THREE.Vector3(), stoppageOtherWrist: new THREE.Vector3(),
     });
-    method("presentFinish").call(stub, { version: 3, type: "final", match_id: "m", winner_id: "two", method: "ko", round: 2, scorecards: [], ratings: {} });
+    method("presentFinish").call(stub, { version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: "two", method: "ko", round: 2, scorecards: [], ratings: {} });
     const step = method("updateReferee");
     for (let frame = 0; frame < 150; frame += 1) {
       (stub as { frameSeconds: number }).frameSeconds = frame / 60;

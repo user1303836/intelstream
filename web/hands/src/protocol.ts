@@ -221,28 +221,28 @@ export function decodeServerFrame(frame: string | ArrayBuffer | Uint8Array): Ser
       exact(o, ["version", "type", "role", "player_id", "seat", "rating", "players", "server_tick", "next_sequence"], ["reconnect_ticket"]);
       const decodedPlayers = players(o.players);
       if (!decodedPlayers.some((player) => player.id === playerId)) throw new ProtocolError("welcome fighter is absent");
-      return { version: 3, type, role, player_id: playerId, seat: integer(o.seat, "seat", 1, 2) as 1 | 2, rating: integer(o.rating, "rating"), players: decodedPlayers, server_tick: integer(o.server_tick, "server_tick"), next_sequence: integer(o.next_sequence, "next_sequence"), ...reconnect };
+      return { version: PROTOCOL_VERSION, type, role, player_id: playerId, seat: integer(o.seat, "seat", 1, 2) as 1 | 2, rating: integer(o.rating, "rating"), players: decodedPlayers, server_tick: integer(o.server_tick, "server_tick"), next_sequence: integer(o.next_sequence, "next_sequence"), ...reconnect };
     }
     exact(o, ["version", "type", "role", "player_id", "players", "server_tick"], ["reconnect_ticket"]);
     // Before the bell a spectator can arrive while the corners are still filling.
     const decodedPlayers = players(o.players, undefined, 0);
     if (decodedPlayers.some((player) => player.id === playerId)) throw new ProtocolError("spectator cannot be a fighter");
-    return { version: 3, type, role, player_id: playerId, players: decodedPlayers, server_tick: integer(o.server_tick, "server_tick"), ...reconnect };
+    return { version: PROTOCOL_VERSION, type, role, player_id: playerId, players: decodedPlayers, server_tick: integer(o.server_tick, "server_tick"), ...reconnect };
   }
-  if (type === "ticket") { exact(o, ["version", "type", "reconnect_ticket", "refresh_id"]); return { version: 3, type, reconnect_ticket: string(o.reconnect_ticket, "reconnect_ticket", 4096), refresh_id: string(o.refresh_id, "refresh_id", 128, 16) }; }
-  if (type === "waiting") { exact(o, ["version", "type", "open_seats"]); if (o.open_seats !== 1 && o.open_seats !== 2) throw new ProtocolError("invalid open seats"); return { version: 3, type, open_seats: o.open_seats }; }
+  if (type === "ticket") { exact(o, ["version", "type", "reconnect_ticket", "refresh_id"]); return { version: PROTOCOL_VERSION, type, reconnect_ticket: string(o.reconnect_ticket, "reconnect_ticket", 4096), refresh_id: string(o.refresh_id, "refresh_id", 128, 16) }; }
+  if (type === "waiting") { exact(o, ["version", "type", "open_seats"]); if (o.open_seats !== 1 && o.open_seats !== 2) throw new ProtocolError("invalid open seats"); return { version: PROTOCOL_VERSION, type, open_seats: o.open_seats }; }
   if (type === "select") {
     exact(o, ["version", "type", "deadline_ms", "players", "ready"]);
     const ps = players(o.players, 2);
     const ready = array(o.ready, "ready", 2).map((id) => string(id, "ready player id"));
     if (new Set(ready).size !== ready.length || ready.some((id) => !ps.some((player) => player.id === id))) throw new ProtocolError("invalid ready fighters");
-    return { version: 3, type, deadline_ms: integer(o.deadline_ms, "deadline_ms", 0, 60_000), players: [ps[0]!, ps[1]!], ready };
+    return { version: PROTOCOL_VERSION, type, deadline_ms: integer(o.deadline_ms, "deadline_ms", 0, 60_000), players: [ps[0]!, ps[1]!], ready };
   }
-  if (type === "ready") { exact(o, ["version", "type", "players"]); const ps = players(o.players, 2); return { version: 3, type, players: [ps[0]!, ps[1]!] }; }
-  if (type === "paused") { exact(o, ["version", "type", "player_id", "grace_ms"]); return { version: 3, type, player_id: string(o.player_id, "player_id"), grace_ms: integer(o.grace_ms, "grace_ms", 0, 60_000) }; }
-  if (type === "resumed") { exact(o, ["version", "type", "player_id"]); return { version: 3, type, player_id: string(o.player_id, "player_id") }; }
-  if (type === "snapshot") { exact(o, ["version", "type", "payload"]); return { version: 3, type, payload: snapshot(o.payload) }; }
-  if (type === "error") { exact(o, ["version", "type", "code"]); return { version: 3, type, code: string(o.code, "error code", 80) }; }
+  if (type === "ready") { exact(o, ["version", "type", "players"]); const ps = players(o.players, 2); return { version: PROTOCOL_VERSION, type, players: [ps[0]!, ps[1]!] }; }
+  if (type === "paused") { exact(o, ["version", "type", "player_id", "grace_ms"]); return { version: PROTOCOL_VERSION, type, player_id: string(o.player_id, "player_id"), grace_ms: integer(o.grace_ms, "grace_ms", 0, 60_000) }; }
+  if (type === "resumed") { exact(o, ["version", "type", "player_id"]); return { version: PROTOCOL_VERSION, type, player_id: string(o.player_id, "player_id") }; }
+  if (type === "snapshot") { exact(o, ["version", "type", "payload"]); return { version: PROTOCOL_VERSION, type, payload: snapshot(o.payload) }; }
+  if (type === "error") { exact(o, ["version", "type", "code"]); return { version: PROTOCOL_VERSION, type, code: string(o.code, "error code", 80) }; }
   if (type === "final") return decodeFinal(o, type);
   throw new ProtocolError("unsupported server message type");
 }
@@ -265,7 +265,7 @@ function decodeFinal(o: Obj, type: "final"): FinalMessage {
   const winner = nullableString(o.winner_id, "winner_id"); if (winner !== null && !Object.hasOwn(ratings, winner)) throw new ProtocolError("winner absent from ratings");
   const method = oneOf<FinishMethod>(o.method, methods, "finish method"); coherentFinish(winner, method);
   const punches = o.punches === undefined ? {} : { punches: punchTotals(o.punches, Object.keys(ratings)) };
-  return { version: 3, type, match_id: string(o.match_id, "match_id"), winner_id: winner, method, round: integer(o.round, "round", 1, 15), scorecards: scorecards(o.scorecards), ratings, ...punches };
+  return { version: PROTOCOL_VERSION, type, match_id: string(o.match_id, "match_id"), winner_id: winner, method, round: integer(o.round, "round", 1, 15), scorecards: scorecards(o.scorecards), ratings, ...punches };
 }
 
 export function encodeInput(sequence: number, clientTick: number, frame: { moveX: number; moveY: number; defense: HeldDefense; actions: readonly SemanticAction[] }): string {
@@ -275,22 +275,22 @@ export function encodeInput(sequence: number, clientTick: number, frame: { moveX
     if (raw.kind === "foul") return { kind: "foul", foul: oneOf<Foul>(raw.foul, fouls, "foul"), ...id };
     return { kind: oneOf<MovementKind>(raw.kind, movementKinds, "action"), ...id };
   };
-  return JSON.stringify({ version: 3, type: "input", sequence: integer(sequence, "sequence"), client_tick: integer(clientTick, "client tick"), move: { x: Math.max(-1000, Math.min(1000, Math.round(Number.isFinite(frame.moveX) ? frame.moveX : 0))), y: Math.max(-1000, Math.min(1000, Math.round(Number.isFinite(frame.moveY) ? frame.moveY : 0))) }, defense: oneOf<HeldDefense>(frame.defense, heldDefenses, "held defense"), actions: frame.actions.slice(0, 4).map(action) });
+  return JSON.stringify({ version: PROTOCOL_VERSION, type: "input", sequence: integer(sequence, "sequence"), client_tick: integer(clientTick, "client tick"), move: { x: Math.max(-1000, Math.min(1000, Math.round(Number.isFinite(frame.moveX) ? frame.moveX : 0))), y: Math.max(-1000, Math.min(1000, Math.round(Number.isFinite(frame.moveY) ? frame.moveY : 0))) }, defense: oneOf<HeldDefense>(frame.defense, heldDefenses, "held defense"), actions: frame.actions.slice(0, 4).map(action) });
 }
 
 /** A style the fighter is choosing (`ready` false) or has settled on before the bout. */
 export function encodeStyleChoice(style: FighterStyle, ready: boolean): string {
-  return JSON.stringify({ version: 3, type: "style", style: oneOf<FighterStyle>(style, FIGHTER_STYLES, "fighter style"), ready: ready === true });
+  return JSON.stringify({ version: PROTOCOL_VERSION, type: "style", style: oneOf<FighterStyle>(style, FIGHTER_STYLES, "fighter style"), ready: ready === true });
 }
 
 export const CPU_LEVELS = ["rookie", "contender", "champion"] as const;
 export function encodeCpuRequest(level: CpuLevel): string {
-  return JSON.stringify({ version: 3, type: "cpu", level: oneOf<CpuLevel>(level, CPU_LEVELS, "computer level") });
+  return JSON.stringify({ version: PROTOCOL_VERSION, type: "cpu", level: oneOf<CpuLevel>(level, CPU_LEVELS, "computer level") });
 }
 
 export function decodeBootstrap(value: unknown): BootstrapResponse {
-  const o = object(value, "bootstrap"); exact(o, ["client_id", "state", "protocol", "simulation"]); if (o.protocol !== 3) throw new ProtocolError("unsupported protocol version"); const s = object(o.simulation, "simulation"); exact(s, ["tick_rate", "ring_half_width", "ring_half_height"]);
-  return { client_id: string(o.client_id, "client_id", 36), state: string(o.state, "state", 128), protocol: 3, simulation: { tick_rate: integer(s.tick_rate, "tick rate", 1, 120), ring_half_width: integer(s.ring_half_width, "ring width", 1), ring_half_height: integer(s.ring_half_height, "ring height", 1) } };
+  const o = object(value, "bootstrap"); exact(o, ["client_id", "state", "protocol", "simulation"]); if (o.protocol !== PROTOCOL_VERSION) throw new ProtocolError("unsupported protocol version"); const s = object(o.simulation, "simulation"); exact(s, ["tick_rate", "ring_half_width", "ring_half_height"]);
+  return { client_id: string(o.client_id, "client_id", 36), state: string(o.state, "state", 128), protocol: PROTOCOL_VERSION, simulation: { tick_rate: integer(s.tick_rate, "tick rate", 1, 120), ring_half_width: integer(s.ring_half_width, "ring width", 1), ring_half_height: integer(s.ring_half_height, "ring height", 1) } };
 }
 export function decodeToken(value: unknown): TokenResponse {
   const o = object(value, "token response"); exact(o, ["access_token", "ticket", "player"]); const p = object(o.player, "player"); exact(p, ["id", "name", "avatar", "rating"]);

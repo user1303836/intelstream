@@ -12,7 +12,7 @@ from intelstream.hands import rooms as rooms_module
 from intelstream.hands.auth import AuthenticatedPlayer
 from intelstream.hands.cpu import CPU_STYLES, PROFILES, CpuBrain, CpuLevel, cpu_style
 from intelstream.hands.engine import BoxingEngine, EngineConfig, PunchCount
-from intelstream.hands.protocol import StyleChoice, encode_client_input
+from intelstream.hands.protocol import PROTOCOL_VERSION, StyleChoice, encode_client_input
 from intelstream.hands.rooms import (
     CPU_RECORDS,
     SNAPSHOT_BACKLOG_BYTES,
@@ -908,7 +908,7 @@ async def test_ticket_refresh_queue_coalesces_and_rejects_replaced_connection(
             "reconnect_ticket": "ticket-99",
             "refresh_id": "refresh-id-000099",
             "type": "ticket",
-            "version": 3,
+            "version": PROTOCOL_VERSION,
         }
     ]
 
@@ -1111,7 +1111,7 @@ async def test_one_of_two_disconnected_players_recovers_into_paused_state(
         "grace_ms": 22_750,
         "player_id": "two",
         "type": "paused",
-        "version": 3,
+        "version": PROTOCOL_VERSION,
     }
 
     two_socket = FakeSocket()
@@ -1228,7 +1228,9 @@ async def test_persistence_failure_errors_closes_and_unregisters(repository: Rep
     assert one.closed and two.closed
     for socket in (one, two):
         errors = [json.loads(message) for message in socket.messages if '"type":"error"' in message]
-        assert errors == [{"code": "persistence_failed", "type": "error", "version": 3}]
+        assert errors == [
+            {"code": "persistence_failed", "type": "error", "version": PROTOCOL_VERSION}
+        ]
         assert all("database detail" not in message for message in socket.messages)
     await manager.close()
 
@@ -1269,7 +1271,7 @@ async def test_an_engine_failure_voids_the_bout_and_frees_the_instance(
         assert socket.closed
         assert socket.close_code == 1011
         errors = [json.loads(message) for message in socket.messages if '"type":"error"' in message]
-        assert errors == [{"code": "internal_error", "type": "error", "version": 3}]
+        assert errors == [{"code": "internal_error", "type": "error", "version": PROTOCOL_VERSION}]
     safe_logger.exception.assert_called_once()
     assert await repository.get_hands_match("match-engine-failure") is None
     for user_id in ("one", "two"):
@@ -3082,7 +3084,7 @@ async def test_a_computer_that_fails_mid_bout_voids_it_and_frees_the_instance(
     assert socket.closed
     assert socket.close_code == 1011
     errors = [json.loads(message) for message in socket.messages if '"type":"error"' in message]
-    assert errors == [{"code": "internal_error", "type": "error", "version": 3}]
+    assert errors == [{"code": "internal_error", "type": "error", "version": PROTOCOL_VERSION}]
     safe_logger.exception.assert_called_once()
     assert engine.result is None
     assert await repository.get_hands_match("match-cpu-failure") is None

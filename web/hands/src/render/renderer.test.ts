@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { fighter, mockHudContext, snapshot, type DrawnPicture } from "../test/fixtures";
 import { Avatars } from "./avatars";
 import { RoundClock } from "./hud";
-import type { CombatEvent, EngineSnapshot, MatchResult } from "../types";
+import { PROTOCOL_VERSION, type CombatEvent, type EngineSnapshot, type MatchResult } from "../types";
 import { releaseSharedGpu, disposeSkeletons } from "./graph";
 import { arcadeInjuryFor, canStartPunch, compileForComposer, CEREMONY_MARKS, ceremonyStep, contactParticipants, contactPresentationPlan, disposeComposer, cornersAtWork, FightRenderer, ownViewPhase, isArcadeInjuryCandidate, knockdownFinisher, presentationTickFor, refereeSpacing, replayCameraSide, replayReattaches, sprayDirection, visualSeparation, resultCardTop } from "./renderer";
 import { RockedVision } from "./rocked";
@@ -154,7 +154,7 @@ describe("arcade injury candidate routing", () => {
 describe("a knockout by the count", () => {
   type Finisher = { index: number; injury: string; event: CombatEvent } | null;
   const hit = { ...event("counter_hit", "uppercut:head"), event_id: 8 };
-  const final = (method: string, winner: string | null = "one") => ({ version: 3, type: "final", match_id: "m", winner_id: winner, method, round: 2, scorecards: [], ratings: {} });
+  const final = (method: string, winner: string | null = "one") => ({ version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: winner, method, round: 2, scorecards: [], ratings: {} });
   const finishing = (overrides: Record<string, unknown> = {}, method = "ko", winner: string | null = "one"): Finisher => {
     const stub = {
       lastKnockdown: { knockdown: event("knockdown", ""), hit, finisher: "decapitation" },
@@ -276,7 +276,7 @@ describe("decision ceremony", () => {
     ceremonyFor: (final: unknown) => Staged | null;
     ceremonyFighters: (ceremony: Staged, fighters: unknown, dt: number, seconds: number) => ReturnType<typeof fighter>[];
   };
-  const final = (method: string, winner: string | null) => ({ version: 3, type: "final", match_id: "m", winner_id: winner, method, round: 3, scorecards: [], ratings: {} });
+  const final = (method: string, winner: string | null) => ({ version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: winner, method, round: 3, scorecards: [], ratings: {} });
   const standing = () => [{ ...fighter("one"), x: -300, y: 200 }, { ...fighter("two"), x: 250, y: -120, action: "jab" as const, action_id: "late", defense: "guard_high" as const }];
 
   it("walks at no more than the step it is given and stops on the mark", () => {
@@ -376,7 +376,7 @@ describe("decision ceremony", () => {
     const shotAt = (reducedMotion: boolean, seconds: number): number => {
       const stub = {
         ceremony: { winnerSeat: 0, positions: [], refereeArrived: true, arrivedAt: 10, announced: true }, replay: null,
-        final: { version: 3, type: "final", match_id: "m", winner_id: "one", method: "decision", round: 3, scorecards: [], ratings: {} },
+        final: { version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: "one", method: "decision", round: 3, scorecards: [], ratings: {} },
         buffer: { latest: () => snapshot() }, hudViewport: { width: 1280, height: 720 }, roundStats: { total: () => ({ thrown: 0, landed: 0 }) },
         players: {}, viewerId: "one", camera: { aspect: 16 / 9, fov: 36 }, cornerPosition: new THREE.Vector3(), cornerLookAt: new THREE.Vector3(),
         settings: () => ({ reducedMotion }),
@@ -446,7 +446,7 @@ describe("ovation", () => {
     const excited: number[] = [];
     return { excited, stub: { frameSeconds, buffer: { latest: () => null }, graphs: null, referee: null, arena: { excite: (amount: number) => excited.push(amount) }, ovationUntil: 0, finalRevealAt: 0, ceremony: null, final: null, ceremonyFor: () => null, endCeremony: () => {}, commentary: { finish: () => {} } } };
   };
-  const decision = { version: 3, type: "final", match_id: "m", winner_id: "one", method: "forfeit", round: 3, scorecards: [], ratings: {} };
+  const decision = { version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: "one", method: "forfeit", round: 3, scorecards: [], ratings: {} };
 
   it("keeps the crowd up for sixteen seconds after the result and then lets it sit", () => {
     const { stub, excited } = hall(10);
@@ -605,7 +605,7 @@ describe("the broadcast caption", () => {
   });
 
   it("tells the announcer once that the result card is up", () => {
-    const final = { version: 3, type: "final", match_id: "m", winner_id: "one", method: "ko", round: 2, scorecards: [], ratings: {} };
+    const final = { version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: "one", method: "ko", round: 2, scorecards: [], ratings: {} };
     const self = scene({ final, finalRevealAt: 12 });
     draw.call(self, mockHudContext([]), 1280, 720, snapshot());
     expect(self.commentary.resultShown).not.toHaveBeenCalled();
@@ -642,7 +642,7 @@ describe("hurt vision in the broadcast finish", () => {
   it("clears once the bout is over, even when it ended without a last snapshot", () => {
     const self = rig("one");
     for (let frame = 0; frame < 20; frame += 1) update.call(self, rocked(), 1 / 60, false);
-    self.final = { version: 3, type: "final", match_id: "m", winner_id: "two", method: "forfeit", round: 1, scorecards: [], ratings: {} };
+    self.final = { version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: "two", method: "forfeit", round: 1, scorecards: [], ratings: {} };
     for (let frame = 0; frame < 300; frame += 1) update.call(self, rocked(), 1 / 60, false);
     expect(self.finishPass.uniforms.uRocked.value).toBeLessThan(0.02);
   });
@@ -727,7 +727,7 @@ describe("graphics memory across rematches", () => {
 
 describe("the result card's place on screen", () => {
   it("is laid out once per result and screen size, though it is asked for every frame", () => {
-    const final = { version: 3 as const, type: "final" as const, match_id: "m", winner_id: "one", method: "decision" as const, round: 3, scorecards: [], ratings: {} };
+    const final = { version: PROTOCOL_VERSION, type: "final" as const, match_id: "m", winner_id: "one", method: "decision" as const, round: 3, scorecards: [], ratings: {} };
     const total = vi.fn(() => ({ thrown: 4, landed: 2, jabsThrown: 1, jabsLanded: 1 }));
     const fighters = snapshot().fighters;
     const first = resultCardTop(final, 1280, 720, fighters, {}, { total }, "one");

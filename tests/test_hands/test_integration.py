@@ -10,7 +10,7 @@ import httpx
 from intelstream.database.repository import Repository
 from intelstream.hands.auth import HandsAuth
 from intelstream.hands.engine import EngineConfig
-from intelstream.hands.protocol import encode_client_input
+from intelstream.hands.protocol import PROTOCOL_VERSION, encode_client_input
 from intelstream.hands.rooms import HandsRoomManager, RoomConfig
 from intelstream.hands.server import HandsServer
 from intelstream.hands.types import Hand, InputCommand, PunchAction, PunchClass, Target
@@ -162,7 +162,7 @@ async def test_real_auth_spectator_reconnect_and_authoritative_elo(tmp_path) -> 
             two = await client.ws_connect(f"{base}/api/hands/ws", headers=headers)
             await one.send_json(
                 {
-                    "version": 3,
+                    "version": PROTOCOL_VERSION,
                     "type": "authenticate",
                     "ticket": credentials["one"]["ticket"],
                 }
@@ -170,7 +170,7 @@ async def test_real_auth_spectator_reconnect_and_authoritative_elo(tmp_path) -> 
             welcome_one = await wait_for_type(one, "welcome")
             await two.send_json(
                 {
-                    "version": 3,
+                    "version": PROTOCOL_VERSION,
                     "type": "authenticate",
                     "ticket": credentials["two"]["ticket"],
                 }
@@ -181,7 +181,7 @@ async def test_real_auth_spectator_reconnect_and_authoritative_elo(tmp_path) -> 
             spectator = await client.ws_connect(f"{base}/api/hands/ws", headers=headers)
             await spectator.send_json(
                 {
-                    "version": 3,
+                    "version": PROTOCOL_VERSION,
                     "type": "authenticate",
                     "ticket": credentials["three"]["ticket"],
                 }
@@ -199,7 +199,7 @@ async def test_real_auth_spectator_reconnect_and_authoritative_elo(tmp_path) -> 
             replacement = await client.ws_connect(f"{base}/api/hands/ws", headers=headers)
             await replacement.send_json(
                 {
-                    "version": 3,
+                    "version": PROTOCOL_VERSION,
                     "type": "authenticate",
                     "ticket": welcome_one["reconnect_ticket"],
                 }
