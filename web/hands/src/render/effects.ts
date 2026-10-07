@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type { BloodLevel } from "../settings";
 import type { CombatEvent, Hand } from "../types";
+import { CanvasBlood } from "./canvas-blood";
 import { wearCornerColour } from "./gear";
 import { HARD_SHOT, bloodDropsFor, bloodShade, buildChunkGeometry, buildDropletGeometry, buildWoundGeometry, closeCut, dropletShape, woundTexture } from "./gore";
 import { LookShading, SCANNED_LOOK, type FighterLook } from "./looks";
@@ -9,7 +10,6 @@ import { CANVAS_TOP, RING_FIGHT_HALF, ROPE_LINE } from "./world";
 
 const MAX_DROPLETS = 900;
 const MAX_MIST = 90;
-const MAX_DECALS = 48;
 const MAX_GIBS = 48;
 const MAX_HEADS = 2;
 const MAX_HANDS = 4;
@@ -158,39 +158,6 @@ function copyFiniteQuaternion(target: THREE.Quaternion, source: THREE.Quaternion
   else target.normalize();
 }
 
-function splatTexture(seed: number): THREE.CanvasTexture {
-  const canvas = document.createElement("canvas");
-  canvas.width = 128;
-  canvas.height = 128;
-  const ctx = canvas.getContext("2d");
-  if (ctx !== null) {
-    const rand = seeded(seed);
-    ctx.clearRect(0, 0, 128, 128);
-    ctx.fillStyle = "rgba(255,255,255,1)";
-    const blobs = 7 + Math.floor(rand() * 6);
-    for (let i = 0; i < blobs; i += 1) {
-      const angle = rand() * Math.PI * 2;
-      const distance = i === 0 ? 0 : 8 + rand() * 40;
-      const radius = i === 0 ? 24 + rand() * 12 : 3 + rand() * 12;
-      ctx.globalAlpha = i === 0 ? 1 : 0.7 + rand() * 0.3;
-      ctx.beginPath();
-      ctx.ellipse(64 + Math.cos(angle) * distance, 64 + Math.sin(angle) * distance, radius, radius * (0.55 + rand() * 0.5), rand() * Math.PI, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.globalAlpha = 1;
-    for (let i = 0; i < 12; i += 1) {
-      const angle = rand() * Math.PI * 2;
-      const distance = 30 + rand() * 30;
-      ctx.beginPath();
-      ctx.arc(64 + Math.cos(angle) * distance, 64 + Math.sin(angle) * distance, 1 + rand() * 3, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.NoColorSpace;
-  return texture;
-}
-
 function mistTexture(): THREE.CanvasTexture {
   const canvas = document.createElement("canvas");
   canvas.width = 64;
@@ -221,7 +188,6 @@ export class Effects3D {
   private readonly dropletScale = new THREE.Vector3();
   private readonly dropletVelocity = new THREE.Vector3();
   private readonly dropletColor = new THREE.Color();
-  private readonly splatMaps: THREE.CanvasTexture[] = [];
   private dropletIndex = 0;
 
   readonly mistPoints: THREE.Points;
@@ -233,9 +199,7 @@ export class Effects3D {
   private readonly mistMap: THREE.CanvasTexture;
   private mistIndex = 0;
 
-  private readonly decals: THREE.Mesh[] = [];
-  private readonly decalGeometry: THREE.PlaneGeometry;
-  private decalIndex = 0;
+  private readonly canvasBlood: CanvasBlood;
 
   private readonly gibGeometry: THREE.BufferGeometry;
   private readonly gibMaterial: THREE.MeshStandardMaterial;
@@ -281,7 +245,8 @@ export class Effects3D {
   private shake = 0;
   private bloodLevel: BloodLevel = "full";
 
-  constructor(private readonly scene: THREE.Scene) {
+  /** `bloodCanvasSize` is the resolution blood on the canvas is painted at, in pixels across the ring. */
+  constructor(private readonly scene: THREE.Scene, bloodCanvasSize = 1024) {
     this.dropletPositions = new Float32Array(MAX_DROPLETS * 3);
     this.dropletColors = new Float32Array(MAX_DROPLETS * 3);
     this.dropletBuffers = {
@@ -302,7 +267,6 @@ export class Effects3D {
       this.writeDropletMatrix(i, this.droplets[i]!);
     }
     this.dropletMesh.instanceMatrix.needsUpdate = true;
-    for (let i = 0; i < 4; i += 1) this.splatMaps.push(splatTexture(0x3a1f_00d1 + i * 977));
 
     this.mistPositions = new Float32Array(MAX_MIST * 3);
     this.mistColors = new Float32Array(MAX_MIST * 4).fill(1);
@@ -319,15 +283,7 @@ export class Effects3D {
       this.mistPositions[i * 3 + 1] = -50;
     }
 
-    this.decalGeometry = new THREE.PlaneGeometry(0.2, 0.2);
-    for (let i = 0; i < MAX_DECALS; i += 1) {
-      const decal = new THREE.Mesh(this.decalGeometry, new THREE.MeshStandardMaterial({ color: 0x6e0d13, map: this.splatMaps[i % this.splatMaps.length]!, alphaMap: this.splatMaps[i % this.splatMaps.length]!, transparent: true, opacity: 0.42, depthWrite: false, roughness: 0.6, metalness: 0 }));
-      decal.rotation.x = -Math.PI / 2;
-      decal.position.y = CANVAS_TOP + 0.004 + i * 0.00015;
-      decal.visible = false;
-      this.decals.push(decal);
-      scene.add(decal);
-    }
+    this.canvasBlood = new CanvasBlood(scene, bloodCanvasSize);
 
     this.gibGeometry = buildChunkGeometry();
     this.gibMaterial = new THREE.MeshStandardMaterial({ color: 0x5c0a10, roughness: 0.34, metalness: 0 });
@@ -432,8 +388,9 @@ export class Effects3D {
     return this.mists.filter((mist) => mist.alive).length;
   }
 
-  get visibleDecals(): number {
-    return this.decals.filter((decal) => decal.visible).length;
+  /** Stains of blood painted on the canvas since it was last cleaned. */
+  get canvasStains(): number {
+    return this.canvasBlood.stains;
   }
 
   get liveGibs(): number {
@@ -637,16 +594,15 @@ export class Effects3D {
   }
 
   private placeDecal(x: number, z: number, scaleX: number, scaleZ: number, rotation: number, opacity: number, color: number): void {
-    const decal = this.decals[this.decalIndex % MAX_DECALS]!;
-    this.decalIndex += 1;
-    decal.visible = true;
-    decal.position.x = finite(x);
-    decal.position.z = finite(z);
-    decal.rotation.z = finite(rotation);
-    decal.scale.set(Math.max(0.01, finite(scaleX, 0.2)) * 1.4, Math.max(0.01, finite(scaleZ, 0.15)) * 1.4, 1);
-    const material = decal.material as THREE.MeshStandardMaterial;
-    material.opacity = THREE.MathUtils.clamp(finite(opacity, 0.4) * 1.6, 0, 1);
-    material.color.setHex(color);
+    this.canvasBlood.stain(
+      finite(x),
+      finite(z),
+      Math.max(0.01, finite(scaleX, 0.2)) * 0.28,
+      Math.max(0.01, finite(scaleZ, 0.15)) * 0.28,
+      finite(rotation),
+      THREE.MathUtils.clamp(finite(opacity, 0.4) * 2.1, 0, 0.95),
+      color,
+    );
   }
 
   private ambientRandom(): number {
@@ -675,17 +631,11 @@ export class Effects3D {
     }
   }
 
-  pool(x: number, z: number, scale: number, rand: () => number = () => this.ambientRandom()): void {
+  /** Blood pooling on the canvas, `radius` metres from `x`, `z`; `stamp` picks the shape of its edge. */
+  pool(x: number, z: number, radius: number, stamp: number): void {
     if (this.bloodLevel === "off") return;
     const reduced = this.bloodLevel === "reduced";
-    const modeScale = reduced ? 0.35 : 1;
-    this.placeDecal(x, z, 2.8 * scale * modeScale, 2.0 * scale * modeScale, rand() * Math.PI, 0.56 * modeScale, 0x450609);
-    if (reduced) return;
-    for (let i = 0; i < 3; i += 1) {
-      const angle = rand() * Math.PI * 2;
-      const radius = 0.18 + rand() * 0.32;
-      this.placeDecal(x + Math.sin(angle) * radius, z + Math.cos(angle) * radius, 0.45 + rand() * 0.55, 0.22 + rand() * 0.38, rand() * Math.PI, 0.38 + rand() * 0.18, 0x620a10);
-    }
+    this.canvasBlood.pool(finite(x), finite(z), Math.max(0.02, finite(radius, 0.1)) * (reduced ? 0.5 : 1), reduced ? 0.45 : 0.92, stamp);
   }
 
   addEvent(event: CombatEvent, targetWorld: THREE.Vector3, reducedMotion: boolean): void {
@@ -1336,6 +1286,7 @@ export class Effects3D {
   }
 
   update(dt: number): void {
+    this.canvasBlood.update(safeStep(dt));
     this.simulationRemainder += safeStep(dt);
     while (this.simulationRemainder + 1e-9 >= SIMULATION_STEP) {
       this.simulationRemainder = Math.max(0, this.simulationRemainder - SIMULATION_STEP);
@@ -1473,8 +1424,7 @@ export class Effects3D {
   }
 
   clearDecals(): void {
-    for (const decal of this.decals) decal.visible = false;
-    this.decalIndex = 0;
+    this.canvasBlood.clear();
   }
 
   dispose(): void {
@@ -1484,7 +1434,7 @@ export class Effects3D {
     this.dropletMesh.dispose();
     this.dropletGeometry.dispose();
     this.dropletMaterial.dispose();
-    for (const map of this.splatMaps) map.dispose();
+    this.canvasBlood.dispose();
     for (const part of [...this.heads, ...this.hands]) {
       part.baked?.dispose();
       part.bakedFlesh?.dispose();
@@ -1509,10 +1459,5 @@ export class Effects3D {
     for (const head of this.heads) this.scene.remove(head.mesh);
     for (const hand of this.hands) this.scene.remove(hand.mesh);
     for (const stump of [...this.stumps, ...this.handStumps]) this.scene.remove(stump.mesh);
-    this.decalGeometry.dispose();
-    for (const decal of this.decals) {
-      this.scene.remove(decal);
-      (decal.material as THREE.Material).dispose();
-    }
   }
 }

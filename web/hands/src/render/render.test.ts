@@ -131,7 +131,7 @@ describe("effects", () => {
     expect(full.liveBloodParticles).toBe(140);
     expect(full.liveMist).toBe(10);
     expect(full.liveGibs).toBe(11);
-    expect(full.visibleDecals).toBe(12);
+    expect(full.canvasStains).toBe(12);
     full.dispose();
 
     const reduced = new Effects3D(new THREE.Scene());
@@ -140,7 +140,7 @@ describe("effects", () => {
     expect(reduced.liveBloodParticles).toBe(24);
     expect(reduced.liveMist).toBe(2);
     expect(reduced.liveGibs).toBe(0);
-    expect(reduced.visibleDecals).toBe(3);
+    expect(reduced.canvasStains).toBe(3);
     reduced.decapitate(0, new THREE.Vector3(0, 1.5, 0), new THREE.Quaternion(), 1, 2);
     expect(reduced.activeHeads).toBe(0);
     expect(reduced.activeStumps).toBe(0);
@@ -154,7 +154,7 @@ describe("effects", () => {
     expect(off.liveBloodParticles).toBe(0);
     expect(off.liveMist).toBe(0);
     expect(off.liveGibs).toBe(0);
-    expect(off.visibleDecals).toBe(0);
+    expect(off.canvasStains).toBe(0);
     off.dispose();
   });
 
@@ -208,7 +208,7 @@ describe("effects", () => {
     expect(effects.liveGibs).toBe(35);
     expect(effects.activeHeads).toBe(1);
     expect(effects.activeStumps).toBe(1);
-    expect(effects.visibleDecals).toBeGreaterThan(0);
+    expect(effects.canvasStains).toBeGreaterThan(0);
 
     effects.setBloodLevel("off");
     expect(effects.liveParticles).toBe(sweat);
@@ -217,12 +217,12 @@ describe("effects", () => {
     expect(effects.liveGibs).toBe(0);
     expect(effects.activeHeads).toBe(0);
     expect(effects.activeStumps).toBe(0);
-    expect(effects.visibleDecals).toBe(0);
+    expect(effects.canvasStains).toBe(0);
 
     effects.addEvent(severeHit(11), origin, false);
     expect(effects.liveParticles).toBeGreaterThan(sweat);
     expect(effects.liveBloodParticles).toBe(0);
-    expect(effects.visibleDecals).toBe(0);
+    expect(effects.canvasStains).toBe(0);
     effects.dispose();
   });
 
@@ -269,7 +269,7 @@ describe("effects", () => {
     expect(effects.liveGibs).toBe(0);
     expect(effects.liveBloodParticles).toBe(0);
     expect(effects.liveMist).toBe(0);
-    expect(effects.visibleDecals).toBe(0);
+    expect(effects.canvasStains).toBe(0);
 
     effects.decapitate(0, position, quaternion, 1, 42);
     expect(effects.activeHeads).toBe(0);
@@ -315,9 +315,10 @@ describe("effects", () => {
   it("keeps ballistic updates finite, bounded to the ring, and stains the floor", () => {
     const scene = new THREE.Scene();
     const effects = new Effects3D(scene);
+    const children = scene.children.length;
     effects.decapitate(0, new THREE.Vector3(2.9, 0.2, 2.9), new THREE.Quaternion(), 1, 70);
     const initialBlood = effects.liveBloodParticles;
-    const initialDecals = effects.visibleDecals;
+    const initialDecals = effects.canvasStains;
     effects.anchorStump(0, new THREE.Vector3(0.4, 1.4, -0.2), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.4));
     for (let i = 0; i < 10; i += 1) effects.update(1 / 60);
     expect(effects.liveBloodParticles).toBeGreaterThan(initialBlood);
@@ -328,8 +329,9 @@ describe("effects", () => {
     expect(effects.liveMist).toBe(0);
     expect(effects.activeHeads).toBe(1);
     expect(effects.activeStumps).toBe(1);
-    expect(effects.visibleDecals).toBeGreaterThan(initialDecals);
-    expect(effects.visibleDecals).toBeLessThanOrEqual(48);
+    expect(effects.canvasStains).toBeGreaterThan(initialDecals);
+    // Stains are painted into the one canvas, so however many there are the scene holds no more objects.
+    expect(scene.children.length).toBe(children);
 
     effects.decapitate(
       1,
@@ -380,7 +382,7 @@ describe("effects", () => {
         head: head.position.toArray(),
         gib: gibPosition.toArray(),
         particles: Array.from(effects.dropletBuffers.position.array),
-        decals: effects.visibleDecals,
+        decals: effects.canvasStains,
       };
       effects.dispose();
       return result;
@@ -391,6 +393,7 @@ describe("effects", () => {
   it("never exceeds any fixed pool under repeated production-valid events", () => {
     const scene = new THREE.Scene();
     const effects = new Effects3D(scene);
+    const children = scene.children.length;
     const position = new THREE.Vector3(0, 1.5, 0);
     const quaternion = new THREE.Quaternion();
     for (let eventId = 0; eventId < 100; eventId += 1) {
@@ -404,12 +407,12 @@ describe("effects", () => {
     expect(effects.liveParticles).toBeLessThanOrEqual(900);
     expect(effects.liveBloodParticles).toBeLessThanOrEqual(900);
     expect(effects.liveMist).toBeLessThanOrEqual(90);
-    expect(effects.visibleDecals).toBeLessThanOrEqual(48);
+    expect(scene.children.length).toBe(children);
     expect(effects.liveGibs).toBe(48);
     expect(effects.activeHeads).toBeLessThanOrEqual(2);
     expect(effects.activeStumps).toBeLessThanOrEqual(2);
 
-    const stains = effects.visibleDecals;
+    const stains = effects.canvasStains;
     effects.clearDynamic();
     expect(effects.liveParticles).toBe(0);
     expect(effects.liveBloodParticles).toBe(0);
@@ -417,7 +420,7 @@ describe("effects", () => {
     expect(effects.liveGibs).toBe(0);
     expect(effects.activeHeads).toBe(0);
     expect(effects.activeStumps).toBe(0);
-    expect(effects.visibleDecals).toBe(stains);
+    expect(effects.canvasStains).toBe(stains);
     effects.dispose();
     expect(scene.children).toHaveLength(0);
   });

@@ -495,6 +495,14 @@ export function knockdownFinisher(hit: CombatEvent | null, snapshot: EngineSnaps
   return arcadeInjuryFor(hit, target === undefined ? undefined : { ...target, is_downed: true }, { finish_method: "ko", winner_id: hit.actor_id }, puncher);
 }
 
+const POOL_SEVERITY = 0.2;
+const POOL_RATE = 2;
+
+/** How far the pool under a downed fighter has spread after `count` spills, in metres: fast at first, then slower, wider the worse he bleeds. */
+export function poolRadius(count: number, severity: number): number {
+  return Math.min(0.42, 0.05 + 0.045 * Math.sqrt(Math.max(0, count)) * Math.min(1.6, Math.max(0, severity)));
+}
+
 /** Whether the knockout replay puts this injury back so it can happen again on screen. */
 export function replayReattaches(injury: ArcadeInjury): boolean {
   return injury === "decapitation" || injury === "dismember_left" || injury === "dismember_right";
@@ -678,7 +686,7 @@ export class FightRenderer {
     this.scene.add(this.ring.group);
     this.arena = buildArena();
     this.scene.add(this.arena.group);
-    this.effects = new Effects3D(this.scene);
+    this.effects = new Effects3D(this.scene, coarsePointer() ? 512 : 1024);
 
     this.blobTexture = blobShadowTexture();
     const blobGeometry = new THREE.PlaneGeometry(1, 1);
@@ -1585,24 +1593,27 @@ export class FightRenderer {
         const severity = (fighter.trauma.bleeding + fighter.trauma.left_cut + fighter.trauma.right_cut) / 380;
         if (severity > 0.05 && !fighter.is_downed) {
           this.downedPoolAccumulators[index] = 0;
+          this.downedPoolCounts[index] = 0;
           const anchor = index === 0 ? this.tmpA : this.tmpB;
           this.tmpHead.set(anchor.x, this.headHeightOf(index), anchor.z);
           this.effects.drip(this.tmpHead, severity, current.reducedMotion, index);
-        } else if (severity > 0.3 && fighter.is_downed && current.blood !== "off") {
+        } else if (severity > POOL_SEVERITY && fighter.is_downed && current.blood !== "off") {
+          // A pool spreads from under his head through the count.
           this.effects.stopDrip(index);
-          this.downedPoolAccumulators[index]! += dt * 0.8;
+          this.downedPoolAccumulators[index]! += dt * POOL_RATE;
+          const head = this.headCacheValid[index] ? this.headCache[index]! : index === 0 ? this.tmpA : this.tmpB;
           while (this.downedPoolAccumulators[index]! >= 1) {
             this.downedPoolAccumulators[index]! -= 1;
             const count = this.downedPoolCounts[index]!;
             this.downedPoolCounts[index] = count + 1;
+            const spread = poolRadius(count, severity);
             const angle = count * 2.399_963 + index * Math.PI;
-            const radius = 0.12 + ((count * 0.618_034) % 1) * 0.24;
-            const anchor = index === 0 ? this.tmpA : this.tmpB;
-            this.effects.pool(anchor.x + Math.sin(angle) * radius, anchor.z + Math.cos(angle) * radius, 0.8);
+            this.effects.pool(head.x + Math.sin(angle) * spread * 0.25, head.z + Math.cos(angle) * spread * 0.25, spread, count + index * 7);
           }
         } else {
           this.effects.stopDrip(index);
           this.downedPoolAccumulators[index] = 0;
+          if (!fighter.is_downed) this.downedPoolCounts[index] = 0;
         }
       }
     } else {
