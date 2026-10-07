@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 import * as THREE from "three";
 import { fighter as baseFighter } from "../test/fixtures";
-import type { FighterSnapshot } from "../types";
+import type { DefensivePose, FighterSnapshot } from "../types";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
+import { NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE } from "./injury";
 import { KnockoutRagdoll, P, PARTICLES, RADIUS, RagdollBody, blowImpulse, fallStyleFor, type ImpulseRecord } from "./ragdoll";
 import { closeUpAngle } from "./renderer";
 import { worldPosition } from "./rig";
@@ -14,10 +15,10 @@ const gltf = await loadBoxerGlb();
 const facing = (fighter: FighterSnapshot, x = 0, y = 0): FighterSnapshot => ({ ...fighter, facing_x: 0, facing_y: -1000, x, y });
 const opponentAt = (x = 0, y = -150): FighterSnapshot => ({ ...baseFighter("two"), x, y, facing_x: 0, facing_y: 1000 });
 
-function standing(x = 0, y = 0): { boxer: SkinnedBoxer; graph: BoxingGraph; fighter: FighterSnapshot; opponent: FighterSnapshot; time: number } {
+function standing(x = 0, y = 0, defense?: DefensivePose): { boxer: SkinnedBoxer; graph: BoxingGraph; fighter: FighterSnapshot; opponent: FighterSnapshot; time: number } {
   const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
   const graph = new BoxingGraph(boxer, mapping);
-  const fighter = facing(baseFighter("one"), x, y);
+  const fighter = { ...facing(baseFighter("one"), x, y), ...(defense === undefined ? {} : { defense }) };
   const opponent = opponentAt(x, y - 150);
   for (let frame = 0; frame < 12; frame += 1) graph.update(fighter, opponent, 1 / 60, frame / 60, false, "full", frame / 2);
   return { boxer, graph, fighter, opponent, time: 12 / 60 };
@@ -188,7 +189,7 @@ describe("knockout physics", () => {
 
   it("builds nothing while it steps or draws", () => {
     const source = readFileSync("src/render/ragdoll.ts", "utf8");
-    const hot = ["step", "carryHinges", "solveRigid", "solveRanges", "solveKnees", "solveElbows", "solveNeck", "solveFeet", "footNormal", "cone", "rotateAbout", "hinge", "satisfy", "hingeAxis", "solveArmsAgainstTorso", "closestOnSegment", "solveEnvironment", "applyFriction", "limitSpeed", "interpolate", "drive", "prepareFrames", "segment", "frameFor", "blend", "elbowAxis", "kneeAxis"];
+    const hot = ["step", "carryHinges", "solveRigid", "solveRanges", "solveKnees", "solveElbows", "solveNeck", "solveFeet", "footNormal", "cone", "rotateAbout", "hinge", "satisfy", "hingeAxis", "solveArmsAgainstTorso", "closestOnSegment", "solveEnvironment", "applyFriction", "limitSpeed", "interpolate", "drive", "tiltHips", "prepareFrames", "segment", "frameFor", "blend", "elbowAxis", "kneeAxis"];
     for (const name of hot) {
       const start = source.search(new RegExp(`\\n  (private )?(get )?${name}\\(`));
       expect(start, name).toBeGreaterThan(0);
@@ -230,6 +231,41 @@ describe("knockouts on the fighter", () => {
     for (let frame = 0; frame < 150; frame += 1) ragdoll.update(1 / 60, null);
     const where = bones.neck.localToWorld(onTheNeck.clone());
     expect(worldPosition(bones.head, new THREE.Vector3()).distanceTo(where)).toBeLessThan(0.001);
+  });
+
+  it("keeps the head on the neck, the belly its length and the skull on the canvas however the fall starts", () => {
+    // Falls that start mid-slip or mid-weave, where the poser has moved the head off the neck. The physics' neck used to
+    // keep that stretched length (15-21 cm against 10.7) and the skull ended up to 14.5 cm under the canvas, the head
+    // bone up to 16 cm off its particle; pinning the chest to its particle then stretched the belly by up to 16 cm.
+    const aboveNeckCut = (bind: THREE.Vector3): boolean => bind.y > NECK_CUT_HEIGHT - NECK_CUT_SLOPE * (bind.z - NECK_CUT_DEPTH) - 0.3;
+    const vertex = new THREE.Vector3();
+    const rest = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
+    rest.rig.resetToRest();
+    rest.root.updateMatrixWorld(true);
+    const neck = worldPosition(rest.rig.bones.neck, new THREE.Vector3()).distanceTo(worldPosition(rest.rig.bones.head, vertex));
+    const spine = worldPosition(rest.rig.bones.spine, new THREE.Vector3()).distanceTo(worldPosition(rest.rig.bones.chest, vertex));
+    for (const defense of ["slip_left", "slip_right", "weave"] as const) {
+      for (const punchClass of ["jab", "hook"] as const) {
+        const { boxer, graph, fighter, opponent, time } = standing(0, 0, defense);
+        const bones = boxer.rig.bones;
+        graph.react("hit", "head", 1, punchClass, "right", 110);
+        frames(graph, { ...fighter, is_downed: true, defense: "none" }, opponent, 300, time);
+        const body = graph.fallBody!.body;
+        const label = `${defense} ${punchClass}`;
+        expect(at(body.position, P.neck).distanceTo(at(body.position, P.head)), label).toBeCloseTo(neck, 2);
+        expect(worldPosition(bones.head, vertex).distanceTo(at(body.position, P.head)), label).toBeLessThan(0.01);
+        expect(worldPosition(bones.spine, new THREE.Vector3()).distanceTo(worldPosition(bones.chest, vertex)), label).toBeCloseTo(spine, 2);
+        const mesh = boxer.headMesh;
+        mesh.updateMatrixWorld(true);
+        const position = mesh.geometry.getAttribute("position");
+        let lowest = Infinity;
+        for (let index = 0; index < position.count; index += 1) {
+          if (!aboveNeckCut(vertex.fromBufferAttribute(position, index))) continue;
+          lowest = Math.min(lowest, mesh.getVertexPosition(index, vertex).applyMatrix4(mesh.matrixWorld).y);
+        }
+        expect(lowest, label).toBeGreaterThan(-0.035);
+      }
+    }
   });
 
   it("lies with his shoulders turned on his hips no further than a spine turns, however he went down", () => {

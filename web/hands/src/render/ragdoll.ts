@@ -20,7 +20,7 @@ export const P = {
 export const PARTICLES = 26;
 
 const MASS = [9, 4, 4, 2, 10, 7, 2, 3.5, 3.5, 2.5, 1.5, 1, 1.6, 1, 1, 1.6, 1, 1, 3.6, 1.6, 0.4, 0.6, 3.6, 1.6, 0.4, 0.6];
-export const RADIUS = [0.12, 0.09, 0.09, 0.11, 0.14, 0.13, 0.06, 0.07, 0.07, 0.07, 0.085, 0.055, 0.05, 0.045, 0.08, 0.05, 0.045, 0.08, 0.06, 0.05, 0.035, 0.04, 0.06, 0.05, 0.035, 0.04];
+export const RADIUS = [0.12, 0.09, 0.09, 0.11, 0.14, 0.13, 0.06, 0.07, 0.07, 0.09, 0.085, 0.055, 0.05, 0.045, 0.08, 0.05, 0.045, 0.08, 0.06, 0.05, 0.035, 0.04, 0.06, 0.05, 0.035, 0.04];
 
 /** Helpers fixed to a bone, in metres along the bone's own axes. */
 const BELLY_FORWARD = 0.12;
@@ -216,6 +216,8 @@ export interface FallRecord {
 }
 
 const v = (a: Float64Array, i: number, out: THREE.Vector3): THREE.Vector3 => out.set(a[i * 3]!, a[i * 3 + 1]!, a[i * 3 + 2]!);
+/** An angle brought within half a turn of zero. */
+const wrapAngle = (angle: number): number => angle - Math.round(angle / (Math.PI * 2)) * Math.PI * 2;
 const setV = (a: Float64Array, i: number, value: THREE.Vector3): void => {
   a[i * 3] = value.x;
   a[i * 3 + 1] = value.y;
@@ -997,6 +999,8 @@ const SEGMENTS: readonly (readonly [number, number] | null)[] = DRIVEN.map((name
   shoulderR: [P.shoulderR, P.elbowR], elbowR: [P.elbowR, P.wristR], gloveR: [P.wristR, P.fistR],
   hipL: [P.hipL, P.kneeL], kneeL: [P.kneeL, P.ankleL], hipR: [P.hipR, P.kneeR], kneeR: [P.kneeR, P.ankleR],
 } as Partial<Record<CanonicalBone, readonly [number, number]>>)[name] ?? null);
+/** The particle each driven bone is put on, by its place in DRIVEN (-1: it is placed by its parent). */
+const PINNED: readonly number[] = DRIVEN.map((name) => ({ chest: P.chest, shoulderL: P.shoulderL, shoulderR: P.shoulderR, hipL: P.hipL, hipR: P.hipR } as Partial<Record<CanonicalBone, number>>)[name] ?? -1);
 const BLEND_IN_SECONDS = 0.1;
 /** A blow presented this soon after the fall began still decides how the fighter goes down. */
 const LATE_BLOW_SECONDS = 0.35;
@@ -1100,6 +1104,12 @@ export class KnockoutRagdoll {
   private readonly headX = new THREE.Vector3();
   private readonly kneeAxes = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(1, 0, 0)] as const;
   private readonly elbowAxes = [new THREE.Vector3(), new THREE.Vector3()] as const;
+  /** From the spine's joint to the chest's at rest, in world units. */
+  private readonly spineLength: number;
+  private readonly tiltJoint = new THREE.Vector3();
+  private readonly tiltChest = new THREE.Vector3();
+  private readonly tiltAcross = new THREE.Vector3();
+  private readonly tiltTurn = new THREE.Quaternion();
 
   constructor(private readonly rig: SolvedRig, private readonly root: THREE.Object3D) {
     this.bones = DRIVEN.map((name) => rig.bones[name]);
@@ -1112,6 +1122,7 @@ export class KnockoutRagdoll {
     const rest = new Float64Array(PARTICLES * 3);
     this.read(rest);
     this.body.calibrate(rest);
+    this.spineLength = this.tiltJoint.setFromMatrixPosition(rig.bones.spine.matrixWorld).distanceTo(this.tiltChest.setFromMatrixPosition(rig.bones.chest.matrixWorld));
     for (const [bone, [quaternion, position]] of locals) {
       bone.quaternion.copy(quaternion);
       bone.position.copy(position);
@@ -1188,6 +1199,16 @@ export class KnockoutRagdoll {
       for (let i = 0; i < PARTICLES * 3; i += 1) {
         const speed = seconds > 0 ? (this.sampleNow[i]! - this.sampleBefore[i]!) / seconds : 0;
         this.velocities[i] = Math.max(-MAX_START_SPEED, Math.min(MAX_START_SPEED, speed));
+      }
+      // The poser moves the head off the neck for slips and blows, but the body on the canvas is drawn with the
+      // head on its neck (see drive): the head, crown and face start where the neck will carry them.
+      const neckBone = this.rig.bones.neck;
+      const headBone = this.rig.bones.head;
+      this.point.copy(this.rig.restLocalPosition(headBone)).applyMatrix4(neckBone.matrixWorld).sub(this.other.setFromMatrixPosition(headBone.matrixWorld));
+      for (const i of HEAD_PARTS) {
+        this.sampleNow[i * 3] = this.sampleNow[i * 3]! + this.point.x;
+        this.sampleNow[i * 3 + 1] = this.sampleNow[i * 3 + 1]! + this.point.y;
+        this.sampleNow[i * 3 + 2] = this.sampleNow[i * 3 + 2]! + this.point.z;
       }
       const blow = this.pending !== null && this.clock - this.pending.at <= EARLY_BLOW_SECONDS ? this.pending : null;
       this.body.start(this.sampleNow, this.velocities, blow?.style ?? defaultStyle);
@@ -1437,12 +1458,50 @@ export class KnockoutRagdoll {
       this.frameFor(index, positions, this.frame);
       this.world.copy(this.frame).multiply(this.offsets[index]!);
       this.rig.setWorldRotation(bone, this.world);
+      if (bone === hips) this.tiltHips(positions);
+      // The spine bone between the hips and the chest has no particle of its own, so the chest is put on its
+      // particle; everything above it then lies on its particles too (the upper body's lengths are rigid). The
+      // limbs' roots go on theirs as well: the tilted hips carry the hip joints a little off the hip line, and
+      // the shoulders hang from clavicles the physics does not move.
+      const pinned = PINNED[index]!;
+      if (pinned >= 0) this.rig.setWorldPosition(bone, v(positions, pinned, this.point));
       if (DRIVEN[index] === "upperChest") {
         this.rig.bones.clavicleL.updateWorldMatrix(false, false);
         this.rig.bones.clavicleR.updateWorldMatrix(false, false);
       }
     }
     this.root.updateMatrixWorld(true);
+  }
+
+  /**
+   * The particles bend the trunk at the pelvis, the skeleton at the spine's joint a hand's width above it: the
+   * hips pitch about the hip line until that joint is the spine's own length from the chest particle, so the
+   * belly neither stretches nor squashes however far he folds (the hip joints lie on that line and stay put).
+   */
+  private tiltHips(positions: Float64Array): void {
+    const hips = this.rig.bones.hips;
+    const origin = this.point.setFromMatrixPosition(hips.matrixWorld);
+    const joint = this.tiltJoint.copy(this.rig.restLocalPosition(this.rig.bones.spine)).applyMatrix4(hips.matrixWorld).sub(origin);
+    const chest = v(positions, P.chest, this.tiltChest).sub(origin);
+    const axis = this.pelvisX;
+    // The joint turns about the hip line: joint(a) = along + across cos a + (axis x across) sin a. Its distance
+    // from the chest is the spine's length where joint(a).chest = wanted.
+    const along = axis.dot(joint);
+    const across = this.tiltAcross.copy(joint).addScaledVector(axis, -along);
+    const wanted = (joint.lengthSq() + chest.lengthSq() - this.spineLength * this.spineLength) / 2 - along * axis.dot(chest);
+    const b = across.dot(chest);
+    const c = this.other.crossVectors(axis, across).dot(chest);
+    const reach = Math.hypot(b, c);
+    if (reach < 1e-9) return;
+    const phase = Math.atan2(c, b);
+    const spread = Math.acos(Math.min(1, Math.max(-1, wanted / reach)));
+    // Of the two pitches that fit, the smaller.
+    const first = wrapAngle(phase - spread);
+    const second = wrapAngle(phase + spread);
+    const pitch = Math.abs(first) <= Math.abs(second) ? first : second;
+    if (Math.abs(pitch) < 1e-5) return;
+    hips.getWorldQuaternion(this.world).premultiply(this.tiltTurn.setFromAxisAngle(axis, pitch));
+    this.rig.setWorldRotation(hips, this.world);
   }
 
   /** Body axes shared by every bone's frame: the pelvis, the shoulder line and the head. Call before `frameFor`. */
@@ -1473,9 +1532,17 @@ export class KnockoutRagdoll {
     switch (name) {
       case "hips":
         return frameFromAxes(this.pelvisY, this.pelvisX, "x", out);
-      case "spine":
-        this.segment(p, P.pelvis, P.chest, this.axisY);
+      case "spine": {
+        // Aimed from its own joint, where the hips carry it, at the chest particle: aimed along the pelvis's line
+        // instead, it left the chest up to 16 cm off its particle once the body folded at the waist.
+        const spine = this.bones[index]!;
+        spine.updateWorldMatrix(false, false);
+        this.axisY.setFromMatrixPosition(spine.matrixWorld);
+        this.axisY.set(p[P.chest * 3]! - this.axisY.x, p[P.chest * 3 + 1]! - this.axisY.y, p[P.chest * 3 + 2]! - this.axisY.z);
+        if (this.axisY.lengthSq() > 1e-12) this.axisY.normalize();
+        else this.segment(p, P.pelvis, P.chest, this.axisY);
         return frameFromAxes(this.axisY, this.hint.copy(this.pelvisX).multiplyScalar(0.75).addScaledVector(this.upperX, 0.25), "x", out);
+      }
       case "chest":
         this.segment(p, P.chest, P.upper, this.axisY);
         return frameFromAxes(this.axisY, this.hint.copy(this.pelvisX).multiplyScalar(0.4).addScaledVector(this.upperX, 0.6), "x", out);
