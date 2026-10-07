@@ -133,6 +133,7 @@ export class HandsApp {
     this.renderer?.destroy();
     this.renderer = null;
     this.voice.cancel();
+    this.audio.reset();
     this.abort.abort();
     this.abort = new AbortController();
     this.state = initialState;

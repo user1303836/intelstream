@@ -587,7 +587,7 @@ describe("the broadcast caption", () => {
 
 describe("hurt vision in the broadcast finish", () => {
   const update = (FightRenderer.prototype as unknown as { updateRocked(this: unknown, latest: EngineSnapshot | null, dt: number, reducedMotion: boolean): void }).updateRocked;
-  const rig = (viewerId: string | null, replay: unknown = null) => ({ viewerId, replay, rocked: new RockedVision(), finishPass: { uniforms: { uRocked: { value: 0 } } } });
+  const rig = (viewerId: string | null, replay: unknown = null) => ({ viewerId, replay, final: null as unknown, rocked: new RockedVision(), finishPass: { uniforms: { uRocked: { value: 0 } } } });
   const rocked = (): EngineSnapshot => ({ ...snapshot(), fighters: [{ ...fighter("one", -100), stunned_ticks: 60 }, { ...fighter("two", 100), stunned_ticks: 60 }] });
 
   it("blurs the picture for the fighter who is rocked", () => {
@@ -606,6 +606,14 @@ describe("hurt vision in the broadcast finish", () => {
     }
     expect(spectator.finishPass.uniforms.uRocked.value).toBe(0);
     expect(other.finishPass.uniforms.uRocked.value).toBe(0);
+  });
+
+  it("clears once the bout is over, even when it ended without a last snapshot", () => {
+    const self = rig("one");
+    for (let frame = 0; frame < 20; frame += 1) update.call(self, rocked(), 1 / 60, false);
+    self.final = { version: 3, type: "final", match_id: "m", winner_id: "two", method: "forfeit", round: 1, scorecards: [], ratings: {} };
+    for (let frame = 0; frame < 300; frame += 1) update.call(self, rocked(), 1 / 60, false);
+    expect(self.finishPass.uniforms.uRocked.value).toBeLessThan(0.02);
   });
 
   it("is off with reduced motion and during the knockout replay", () => {

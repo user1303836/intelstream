@@ -2331,7 +2331,7 @@ export class FightRenderer {
   /** Hurt vision while the viewer's own fighter is rocked; never for a spectator, in a replay or with reduced motion. */
   private updateRocked(latest: EngineSnapshot | null, dt: number, reducedMotion: boolean): void {
     const viewer = latest?.fighters.find((fighter) => fighter.player_id === this.viewerId);
-    const target = latest === null || this.replay !== null || reducedMotion ? 0 : rockedLevel(viewer, latest.phase);
+    const target = latest === null || this.replay !== null || this.final !== null || reducedMotion ? 0 : rockedLevel(viewer, latest.phase);
     const level = this.rocked.update(target, dt);
     this.finishPass.uniforms.uRocked!.value = reducedMotion ? 0 : level;
   }
