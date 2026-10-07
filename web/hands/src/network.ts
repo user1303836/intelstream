@@ -77,6 +77,8 @@ export class NetworkController {
   private serverTick = 0;
   private role: ConnectionRole | null = null;
   private active = false;
+  /** Input has been on, so the server's engine exists and accepts a frame in any phase. */
+  private boutStarted = false;
   private disposed = false;
   private terminal = false;
   private inputSuppressed = false;
@@ -106,7 +108,19 @@ export class NetworkController {
   }
 
   setActive(active: boolean): void {
+    this.setInputActive(active);
+  }
+
+  /**
+   * The server keeps applying the last frame's movement and guard until the next frame arrives, and
+   * none comes while input is off: one neutral frame as it goes off (the bell, a pause) stops a key
+   * held at the bell from walking the fighter out at the start of the next round.
+   */
+  private setInputActive(active: boolean): void {
+    const wasActive = this.active;
     this.active = active;
+    if (active) this.boutStarted = true;
+    else if (wasActive) this.sendInput(NEUTRAL_INPUT, true);
   }
 
   /** Sends the pending input frame on the action edge instead of waiting for the periodic flush. */
@@ -131,7 +145,8 @@ export class NetworkController {
 
   private readonly onInputLoss = (): void => {
     if (this.inputSuppressed) return;
-    this.sendInput(NEUTRAL_INPUT);
+    // Sent while input is off too (the rest, a pause); before the bout starts the server refuses input.
+    this.sendInput(NEUTRAL_INPUT, this.boutStarted);
     this.inputSuppressed = true;
   };
 
@@ -226,19 +241,19 @@ export class NetworkController {
       this.reconnectTicket = message.reconnect_ticket;
     } else if (message.type === "snapshot") {
       this.serverTick = Math.max(this.serverTick, message.payload.tick);
-      this.active = ["countdown", "fight", "knockdown", "foul_recovery"].includes(message.payload.phase);
+      this.setInputActive(["countdown", "fight", "knockdown", "foul_recovery"].includes(message.payload.phase));
       this.observeAcknowledgement(message.payload);
     } else if (message.type === "paused") {
-      this.active = false;
+      this.setInputActive(false);
       this.startOpponentPause(message.grace_ms);
     } else if (message.type === "resumed") {
-      this.active = true;
+      this.setInputActive(true);
       this.attempts = 0;
       this.clearOpponentPause(true);
     } else if (message.type === "ready") {
-      this.active = true;
+      this.setInputActive(true);
     } else if (message.type === "waiting") {
-      this.active = false;
+      this.setInputActive(false);
     } else if (message.type === "final" || message.type === "error") {
       this.active = false;
       this.clearOpponentPause(true);
@@ -306,9 +321,9 @@ export class NetworkController {
     for (const sequence of this.sentAt.keys()) if (sequence <= self.last_input_sequence) this.sentAt.delete(sequence);
   }
 
-  private sendInput(frame: InputFrame): boolean {
+  private sendInput(frame: InputFrame, whileInactive = false): boolean {
     const socket = this.socket;
-    if (this.role !== "fighter" || !this.active || this.disposed || this.terminal || socket?.readyState !== OPEN) return false;
+    if (this.role !== "fighter" || (!this.active && !whileInactive) || this.disposed || this.terminal || socket?.readyState !== OPEN) return false;
     try {
       socket.send(encodeInput(this.nextSequence, this.serverTick, { ...frame, actions: frame.actions.slice(0, 4) }));
       this.sentAt.set(this.nextSequence, this.now());

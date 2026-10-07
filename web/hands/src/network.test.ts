@@ -186,6 +186,46 @@ describe("same-origin WebSocket controller", () => {
     expect(socket.sent.slice(1)).toHaveLength(1);
   });
 
+  it("sends one neutral frame as input goes off at the bell, and one on a later focus loss, so held input stops driving the fighter", () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket();
+    const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 1000, defense: "guard_high", actions: [] }), callbacks(), () => socket);
+    const inputs = (): Record<string, unknown>[] => socket.sent.map((frame) => JSON.parse(frame) as Record<string, unknown>).filter((frame) => frame.type === "input");
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message(ready);
+    socket.message({ version: 3, type: "snapshot", payload: { ...snapshot(41), phase: "fight" } });
+    vi.advanceTimersByTime(40);
+    expect(inputs().at(-1)).toMatchObject({ move: { x: 0, y: 1000 }, defense: "guard_high" });
+    const held = inputs().length;
+    socket.message({ version: 3, type: "snapshot", payload: { ...snapshot(42), phase: "rest" } });
+    expect(inputs()).toHaveLength(held + 1);
+    expect(inputs().at(-1)).toMatchObject({ move: { x: 0, y: 0 }, defense: "none", actions: [] });
+    controller.setActive(false);
+    vi.advanceTimersByTime(500);
+    expect(inputs()).toHaveLength(held + 1);
+    window.dispatchEvent(new Event("blur"));
+    expect(inputs()).toHaveLength(held + 2);
+    expect(inputs().at(-1)).toMatchObject({ move: { x: 0, y: 0 }, defense: "none" });
+    controller.dispose();
+  });
+
+  it("sends nothing before the bout starts, even on a focus loss, since the server ends the connection for it", () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket();
+    const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 1000, defense: "guard_high", actions: [] }), callbacks(), () => socket);
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message({ version: 3, type: "waiting", open_seats: 1 });
+    controller.setActive(false);
+    window.dispatchEvent(new Event("blur"));
+    vi.advanceTimersByTime(200);
+    expect(socket.sent.map((frame) => JSON.parse(frame).type)).toEqual(["authenticate"]);
+    controller.dispose();
+  });
+
   it.each(["room_full", "persistence_failed", "abandoned"])("treats server error %s as terminal", (code) => {
     vi.useFakeTimers();
     const socket = new FakeSocket();
