@@ -118,6 +118,31 @@ describe("the announcer's voice", () => {
     expect(synthesis.spoken).toHaveLength(1);
   });
 
+  it("says nothing while the Activity is hidden and stops the line it was reading when it hides", () => {
+    let hidden = true;
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+    try {
+      const announcer = make();
+      // The final arrives with the player in another app: the scorecards line is not read over it.
+      announcer.speak(["Ladies and gentlemen, we go to the scorecards."]);
+      expect(synthesis.spoken).toHaveLength(0);
+      hidden = false;
+      announcer.speak(["In the blue corner, Azure Vector!", "And in the red corner, Crimson Geometry!"]);
+      expect(synthesis.spoken).toHaveLength(1);
+      hidden = true;
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(synthesis.cancels).toBe(1);
+      synthesis.finishLast();
+      expect(synthesis.spoken).toHaveLength(1);
+      announcer.destroy();
+      hidden = false;
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(synthesis.cancels).toBe(1);
+    } finally {
+      Reflect.deleteProperty(document, "hidden");
+    }
+  });
+
   it("does nothing where the browser cannot speak", () => {
     const announcer = new AnnouncerVoice(() => settings, null, null);
     expect(announcer.supported).toBe(false);

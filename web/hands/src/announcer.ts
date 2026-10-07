@@ -41,6 +41,11 @@ export class AnnouncerVoice {
     this.onVoicesChanged?.();
   };
 
+  /** The rest of the game's sound is suspended while the Activity is hidden, and the voice goes quiet with it. */
+  private readonly visibility = (): void => {
+    if (document.hidden) this.cancel();
+  };
+
   constructor(
     private readonly settings: () => Settings,
     private readonly synthesis: Synthesis | null = speechAvailable() ? window.speechSynthesis : null,
@@ -49,6 +54,7 @@ export class AnnouncerVoice {
     // Asking for the voices is also what starts Chrome loading them.
     this.listVoices();
     synthesis?.addEventListener?.("voiceschanged", this.voicesChanged);
+    document.addEventListener("visibilitychange", this.visibility);
   }
 
   get supported(): boolean {
@@ -61,7 +67,7 @@ export class AnnouncerVoice {
   }
 
   speak(lines: readonly string[]): void {
-    if (!this.supported || this.destroyed) return;
+    if (!this.supported || this.destroyed || document.hidden) return;
     const settings = this.settings();
     if (!settings.announcer || settings.volume <= 0) return;
     // A browser that never says its voices changed may still have listed them since.
@@ -93,6 +99,7 @@ export class AnnouncerVoice {
   destroy(): void {
     this.destroyed = true;
     this.synthesis?.removeEventListener?.("voiceschanged", this.voicesChanged);
+    document.removeEventListener("visibilitychange", this.visibility);
     this.onVoicesChanged = null;
     this.cancel();
   }
@@ -110,7 +117,7 @@ export class AnnouncerVoice {
     const text = this.queue.shift();
     if (synthesis === null || Utterance === null || text === undefined) return;
     const settings = this.settings();
-    if (!settings.announcer || settings.volume <= 0 || voice === null) {
+    if (!settings.announcer || settings.volume <= 0 || voice === null || document.hidden) {
       this.queue.length = 0;
       return;
     }
