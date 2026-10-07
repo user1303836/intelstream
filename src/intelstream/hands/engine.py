@@ -135,6 +135,9 @@ GET_UP_WINDOW_START_OFFSET: Final = 3
 GET_UP_WINDOW_END_OFFSET: Final = 13
 TAUNT_TICKS: Final = 60
 MOVEMENT_FIXED_SCALE: Final = 1000
+# Conditioning a punch costs is worked out in thousandths of a point, so a style's saving survives
+# the rounding of per-punch losses of only a few points.
+CONDITIONING_FIXED_SCALE: Final = 1000
 # A fresh fighter's walking speed in units a tick, and the fastest velocity a snapshot reports.
 MAX_SPEED: Final = 7
 CORNER_INSTRUCTIONS: Final = {
@@ -228,6 +231,8 @@ class FighterState:
     position_remainder_y: int = 0
     stamina: int = MAX_STAMINA
     conditioning: int = MAX_CONDITIONING
+    conditioning_remainder: int = 0
+    """Thousandths of a point of conditioning spent on punches and not yet taken off."""
     guard: int = MAX_GUARD
     poise: int = MAX_POISE
     trauma: Trauma = field(default_factory=Trauma)
@@ -784,9 +789,7 @@ class BoxingEngine:
             combo_bonus = 10
             cost = max(1, cost * 90 // 100)
         fighter.stamina -= cost
-        fighter.conditioning = max(
-            0, fighter.conditioning - max(1, cost // 12) * style.conditioning_loss_percent // 100
-        )
+        self._spend_conditioning(fighter, max(1, cost // 12))
         speed = fighter.fatigue
         startup = max(
             2,
@@ -828,6 +831,23 @@ class BoxingEngine:
             detail=f"{action.hand.value}:{action.punch_class.value}:{action.target.value}",
             action_id=self._action_id(fighter, fighter.attack),
         )
+
+    @staticmethod
+    def _spend_conditioning(fighter: FighterState, points: int) -> None:
+        """Takes `points` of conditioning off at the rate the fighter's style tires at.
+
+        The fraction of a point is carried to the next punch, so a style that tires 20% less saves
+        20% of every punch, and even a tired arm punch costs it something.
+        """
+        owed = (
+            fighter.conditioning_remainder
+            + points
+            * CONDITIONING_FIXED_SCALE
+            * fighter.style_rule.conditioning_loss_percent
+            // 100
+        )
+        fighter.conditioning = max(0, fighter.conditioning - owed // CONDITIONING_FIXED_SCALE)
+        fighter.conditioning_remainder = owed % CONDITIONING_FIXED_SCALE
 
     @staticmethod
     def _action_key(action: PunchAction) -> str:
@@ -875,13 +895,7 @@ class BoxingEngine:
             or lateral_distance > effective_arc
         ):
             attacker.stamina = max(0, attacker.stamina - rule.whiff_cost)
-            attacker.conditioning = max(
-                0,
-                attacker.conditioning
-                - max(2, rule.whiff_cost // 10)
-                * attacker.style_rule.conditioning_loss_percent
-                // 100,
-            )
+            self._spend_conditioning(attacker, max(2, rule.whiff_cost // 10))
             self._emit(
                 "whiff",
                 attacker.player_id,
@@ -2295,6 +2309,7 @@ class BoxingEngine:
                     "resources": [
                         fighter.stamina,
                         fighter.conditioning,
+                        fighter.conditioning_remainder,
                         fighter.guard,
                         fighter.poise,
                     ],

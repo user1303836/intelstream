@@ -209,6 +209,35 @@ def test_a_miss_costs_a_slugger_more_and_tires_a_swarmer_less() -> None:
     assert swarmer_conditioning < balanced_conditioning
 
 
+def _conditioning_spent(style: FighterStyle, jabs: int, *, stamina: int, gap: int) -> int:
+    """Conditioning a fighter of `style` spends on `jabs` lead jabs, each thrown with `stamina`."""
+    engine = styled_engine(style, gap=gap)
+    fighter = engine.fighter("one")
+    before = fighter.conditioning
+    for sequence in range(1, jabs + 1):
+        fighter.stamina = stamina
+        engine.fighter("two").poise = 600
+        engine.step({"one": command(sequence, action=punch(PunchClass.JAB, hand=Hand.LEFT))})
+        while fighter.attack is not None:
+            engine.step()
+    return before - fighter.conditioning
+
+
+def test_a_swarmer_keeps_its_whole_conditioning_saving_however_little_each_punch_costs() -> None:
+    saving = STYLE_RULES[SWARMER].conditioning_loss_percent
+    assert saving < 100
+    # Sixty whiffed jabs: three points to throw each and two for the miss, for a balanced fighter.
+    balanced = _conditioning_spent(BALANCED, 60, stamina=1000, gap=400)
+    assert balanced == 60 * (3 + 2)
+    assert (
+        abs(_conditioning_spent(SWARMER, 60, stamina=1000, gap=400) - balanced * saving // 100) <= 1
+    )
+    # Arm punches out of breath cost a point each, and the swarmer his share of it, not nothing.
+    tired = _conditioning_spent(BALANCED, 30, stamina=10, gap=90)
+    assert tired == 30
+    assert abs(_conditioning_spent(SWARMER, 30, stamina=10, gap=90) - tired * saving // 100) <= 1
+
+
 def test_a_combination_waits_out_a_punch_the_style_cannot_yet_pay_for() -> None:
     straight = (PunchClass.STRAIGHT, Target.HEAD, Power.NORMAL)
     base_cost = PUNCH_RULES[straight].stamina_cost

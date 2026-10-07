@@ -38,9 +38,12 @@ export function inComboWindow(fighter: FighterSnapshot, punch: PunchIntent, tick
 /**
  * The timing the engine will give this punch if it starts at `tick`: slower for a tired fighter, a
  * tick quicker for the lead-hand jab. The engine takes the punch's own cost off the conditioning
- * before it measures fatigue, at the combination discount inside the window. A fighter who cannot
- * pay the full cost throws a tired arm punch on what stamina is left, slower still and never a
- * combination.
+ * before it measures fatigue, at the combination discount inside the window and at the rate the
+ * fighter's style tires at. A fighter who cannot pay the full cost throws a tired arm punch on what
+ * stamina is left, slower still and never a combination. For a style that tires less, the engine
+ * carries the fraction of a point it saves from punch to punch, which no snapshot shows; this takes
+ * none, as for a fresh fighter, so it can be a point off, and in about one such punch in a hundred
+ * that crosses a fatigue step and puts the timing a tick out.
  */
 export function predictedPunchTiming(fighter: FighterSnapshot, punch: PunchIntent, tick?: number): PunchTiming {
   const base = punchTiming(punch.class, punch.target, punch.power);
