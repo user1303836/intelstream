@@ -424,6 +424,24 @@ describe("knockouts on the fighter", () => {
     expect(THREE.MathUtils.radToDeg(worst)).toBeLessThan(45);
   });
 
+  it("falls at his place after a gap in drawing, already down if the count has started", () => {
+    // Last drawn standing at x = -1.1 m, the next frame drawn has him down at +0.91 m (the Activity was hidden, or a
+    // spectator joined mid-count). The fall used to start where he was last drawn, 1.9 m from his place: the referee
+    // counted over empty canvas and the get-up later slid him across the ring.
+    for (const count of [3, 0]) {
+      const { boxer, graph, opponent, time } = standing(-180, 0);
+      const downed = { ...facing(baseFighter("one"), 149, 0), is_downed: true, get_up_count: count };
+      graph.react("hit", "head", 1, "straight", "right", 120);
+      frames(graph, downed, { ...opponent, x: 149 }, 1, time + 30);
+      // With the count running he is already down; otherwise he falls from there.
+      if (count > 0) expect(graph.fallBody!.body.asleep).toBe(true);
+      frames(graph, downed, { ...opponent, x: 149 }, 300, time + 30 + 1 / 60);
+      const pelvis = graph.fallBody!.pelvis(new THREE.Vector3());
+      expect(boxer.root.position.x, `count ${count}`).toBeCloseTo(mapping.x(149), 2);
+      expect(Math.hypot(pelvis.x - boxer.root.position.x, pelvis.z - boxer.root.position.z), `count ${count}`).toBeLessThan(0.7);
+    }
+  });
+
   it("keeps the authored fall under reduced motion", () => {
     const { boxer, graph, fighter, opponent, time } = standing();
     graph.react("hit", "head", 1, "straight", "right", 420);

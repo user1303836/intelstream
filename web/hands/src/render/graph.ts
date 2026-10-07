@@ -461,6 +461,8 @@ const RISE_SINK_RATE = 0.4;
 const RISE_ROLL_RATE = 0.7;
 /** Seconds over which the get-up takes the body over from the pose the knockout physics left it in. */
 const RISE_BLEND_SECONDS = 0.2;
+/** A root this far from the fighter's place when he goes down was drawn there before a gap: he falls at his place. */
+const FALL_ROOT_JUMP = 0.5;
 /** Metres per second he walks back to his place after getting up where the physics left him. */
 const RISE_WALK_SPEED = 1.2;
 
@@ -543,6 +545,8 @@ export class BoxingGraph {
    * body somewhere else: he gets up where he lies, then walks back. `riseRootVelocity` is that walk's, for the feet.
    */
   private readonly riseRoot = new THREE.Vector3();
+  /** Where the engine has the fighter this frame (with the glove-touch walk and the walk back from a fall). */
+  private readonly place = new THREE.Vector3();
   private readonly riseRootVelocity = new THREE.Vector3();
   private readonly liveOpponentHead = new THREE.Vector3();
   private hasLiveHead = false;
@@ -1302,6 +1306,7 @@ export class BoxingGraph {
     this.walkBackFromTheFall(dt);
     const worldX = this.mapping.x(fighter.x) + touch.x + this.riseRoot.x;
     const worldZ = this.mapping.z(fighter.y) + touch.z + this.riseRoot.z;
+    this.place.set(worldX, 0, worldZ);
     if (this.rootX === null) {
       this.rootX = worldX;
       this.rootZ = worldZ;
@@ -2185,7 +2190,7 @@ export class BoxingGraph {
         // where he was), unless the animation does: a body shot to one knee, or reduced motion.
         this.ragdoll?.clearRise();
         if (this.authoredNextFall) this.ragdoll?.forget();
-        else if (!reducedMotion) this.ragdoll?.start("crumple");
+        else if (!reducedMotion) this.startFall(fighter);
         this.authoredNextFall = false;
       } else if (this.downState === "falling") {
         this.fallAge += dt;
@@ -2223,6 +2228,26 @@ export class BoxingGraph {
     if (this.riseProgress >= 1) {
       this.downState = "up";
       this.fallKneel = false;
+    }
+  }
+
+  /**
+   * Starts the knockout physics. After a gap in drawing (the Activity hidden, a reconnect, a spectator joining
+   * mid-count) the fighter was last drawn where he stood then, which can be metres from his place: he falls at his
+   * place instead, and when the count is already running he is put down where that fall ends.
+   */
+  private startFall(fighter: FighterSnapshot): void {
+    const ragdoll = this.ragdoll;
+    if (ragdoll === null) return;
+    if (this.rootX !== null && Math.hypot(this.place.x - this.rootX, this.place.z - this.rootZ) > FALL_ROOT_JUMP) {
+      this.rootX = this.place.x;
+      this.rootZ = this.place.z;
+      this.boxer.root.position.set(this.rootX, 0, this.rootZ);
+    }
+    ragdoll.start("crumple");
+    if (fighter.get_up_count > 0) {
+      ragdoll.settle();
+      this.fallAge = KNOCKDOWN_FALL_SECONDS;
     }
   }
 

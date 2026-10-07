@@ -1127,6 +1127,8 @@ const LATE_BLOW_SECONDS = 0.35;
 /** A blow presented this soon before the fall is the one that caused it. */
 const EARLY_BLOW_SECONDS = 0.6;
 const MAX_STEPS_PER_UPDATE = 10;
+/** A root this far from where the pose was last sampled was drawn somewhere else: the samples are not his motion. */
+const STALE_SHIFT = 0.35;
 /** Steps a frame the fall a replay cut short is run on ahead of it, so it has come to rest by the time the replay ends. */
 const AHEAD_STEPS = 6;
 /** How long a fall is run on at most, from where it is, to show where it ends. */
@@ -1189,6 +1191,8 @@ export class KnockoutRagdoll {
   private accumulator = 0;
   private readonly sampleNow = new Float64Array(PARTICLES * 3);
   private readonly sampleBefore = new Float64Array(PARTICLES * 3);
+  /** Where the root was when the pose was last sampled. */
+  private readonly sampleRoot = new THREE.Vector3();
   private sampleSeconds = 0;
   private samples = 0;
   private readonly drawn = new Float64Array(PARTICLES * 3);
@@ -1276,6 +1280,7 @@ export class KnockoutRagdoll {
     if (this.ragdolling || dt <= 0) return;
     this.sampleBefore.set(this.sampleNow);
     this.read(this.sampleNow);
+    this.sampleRoot.setFromMatrixPosition(this.root.matrixWorld);
     this.sampleSeconds = dt;
     this.samples = Math.min(2, this.samples + 1);
   }
@@ -1330,8 +1335,23 @@ export class KnockoutRagdoll {
       if (record.rest.steps < 0) this.runAhead(record, 0);
     } else {
       this.replaying = null;
-      if (this.samples === 0) this.read(this.sampleNow);
-      const seconds = this.samples >= 2 && this.sampleSeconds > 0 ? this.sampleSeconds : 0;
+      // The samples are the pose the last frames drew. If the root has been put somewhere else since (a gap in drawing,
+      // or the fighter put back at his place), they are not his motion: the fall starts from the pose as it is now, at
+      // rest. Otherwise they move along with the root's last small step, which the bones have already taken.
+      const moved = this.point.setFromMatrixPosition(this.root.matrixWorld).sub(this.sampleRoot);
+      const fresh = this.samples > 0 && moved.lengthSq() <= STALE_SHIFT * STALE_SHIFT;
+      if (!fresh) this.read(this.sampleNow);
+      else {
+        for (let i = 0; i < PARTICLES; i += 1) {
+          for (const samples of [this.sampleNow, this.sampleBefore]) {
+            samples[i * 3] = samples[i * 3]! + moved.x;
+            samples[i * 3 + 1] = samples[i * 3 + 1]! + moved.y;
+            samples[i * 3 + 2] = samples[i * 3 + 2]! + moved.z;
+          }
+        }
+      }
+      const seconds = fresh && this.samples >= 2 && this.sampleSeconds > 0 ? this.sampleSeconds : 0;
+      this.samples = 0;
       for (let i = 0; i < PARTICLES * 3; i += 1) {
         const speed = seconds > 0 ? (this.sampleNow[i]! - this.sampleBefore[i]!) / seconds : 0;
         this.velocities[i] = Math.max(-MAX_START_SPEED, Math.min(MAX_START_SPEED, speed));
