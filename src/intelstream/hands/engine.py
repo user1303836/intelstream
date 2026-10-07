@@ -1775,7 +1775,10 @@ class BoxingEngine:
         if self.tick > downed.get_up_window_end_tick:
             self._schedule_get_up_prompt(downed)
         required = self._get_up_required(downed)
-        if downed.get_up_meter >= required and count >= 1:
+        if self.phase_ticks_remaining <= 0:
+            # Ten: the count is over, however full the meter got on its last tick.
+            self._complete(winner.player_id, FinishMethod.KO)
+        elif downed.get_up_meter >= required and count >= 1:
             downed.poise = min(poise_ceiling(downed.trauma.head), MAX_POISE // 2)
             downed.stamina = max(downed.stamina, min(downed.maximum_stamina, GET_UP_STAMINA))
             downed.get_up_prompt = None
@@ -1784,8 +1787,6 @@ class BoxingEngine:
             self._count_at_rise = count
             self.phase_ticks_remaining = self._box_tick - self.tick
             self._emit("get_up", downed.player_id, amount=count)
-        elif self.phase_ticks_remaining <= 0:
-            self._complete(winner.player_id, FinishMethod.KO)
         elif new_second:
             self._emit("count", target_id=downed.player_id, amount=count)
 

@@ -2921,6 +2921,29 @@ def test_a_late_get_up_still_gets_the_referee_s_look_before_the_box() -> None:
         assert {view.get_up_count for view in engine.step().fighters} == {9}
 
 
+def test_a_meter_filled_as_the_count_reaches_ten_is_too_late() -> None:
+    engine = make_engine(round_ticks=2000)
+    _down_two(engine)
+    two = engine.fighter("two")
+    while engine._knockdown_count_ticks < 10 * COUNT_TICK_INTERVAL - 1:
+        engine.step()
+    two.get_up_meter = engine._get_up_required(two)
+    events = engine.step().events
+    assert "get_up" not in [event.kind for event in events]
+    assert engine.result is not None
+    assert engine.result.finish_method is FinishMethod.KO
+    assert engine.phase is MatchPhase.COMPLETE
+
+    # A tick earlier, at nine and a bit, he still beats it.
+    engine = make_engine(round_ticks=2000)
+    _down_two(engine)
+    while engine._knockdown_count_ticks < 10 * COUNT_TICK_INTERVAL - 2:
+        engine.step()
+    engine.fighter("two").get_up_meter = engine._get_up_required(engine.fighter("two"))
+    assert [event.amount for event in engine.step().events if event.kind == "get_up"] == [9]
+    assert engine.result is None
+
+
 def test_round_one_opens_with_the_introductions_and_later_rounds_with_the_bell() -> None:
     opening = _manifest()["countdown"]["opening_ticks"]
     assert opening >= 8 * COUNT_TICK_INTERVAL
