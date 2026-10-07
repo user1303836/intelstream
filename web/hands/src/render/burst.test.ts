@@ -150,3 +150,24 @@ describe("flesh over a cut that has a front", () => {
     expect(uvAt(new THREE.Vector3(0, 1, 0)).v).toBeLessThan(0.25);
   });
 });
+
+describe("what a cut shows", () => {
+  it("is the inside of the limb or neck it went through: the wrist its two bones, the neck its spine, the jaw its teeth", () => {
+    const effects = new Effects3D(new THREE.Scene(), 256);
+    const inner = effects as unknown as { stumps: { mesh: THREE.Mesh }[]; handStumps: { mesh: THREE.Mesh }[]; hands: { cap: THREE.Mesh }[]; heads: { cap: THREE.Mesh }[] };
+    const map = (mesh: THREE.Mesh): THREE.Texture | null => (mesh.material as THREE.MeshStandardMaterial).map;
+    const neck = map(inner.stumps[0]!.mesh);
+    const wrist = map(inner.handStumps[0]!.mesh);
+    expect(neck).not.toBeNull();
+    expect(wrist).not.toBeNull();
+    expect(wrist).not.toBe(neck);
+    expect(map(inner.hands[0]!.cap)).toBe(wrist);
+    expect(map(inner.heads[0]!.cap)).toBe(neck);
+    effects.burstHead(0, new THREE.Vector3(0, 1.6, 0), 1, 3);
+    const jaw = map(inner.stumps[0]!.mesh);
+    expect(jaw).not.toBe(neck);
+    effects.restoreFighter(0);
+    expect(map(inner.stumps[0]!.mesh)).toBe(neck);
+    effects.dispose();
+  });
+});

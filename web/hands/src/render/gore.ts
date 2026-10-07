@@ -265,6 +265,61 @@ export function woundTexture(): THREE.CanvasTexture {
       const distance = rand() * 60;
       disc(64 + Math.cos(angle) * distance, 64 + Math.sin(angle) * distance, 0.6 + rand() * 1.6, rand() < 0.4 ? "rgba(190,60,50,0.5)" : "rgba(20,2,4,0.55)");
     }
+    skinAndFat(ctx);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+/** The layers just under the edge of any cut: a rim of skin, then a band of yellow fat over the muscle. */
+function skinAndFat(ctx: CanvasRenderingContext2D): void {
+  ctx.lineWidth = 7;
+  ctx.strokeStyle = "rgba(214,178,92,0.85)";
+  ctx.beginPath();
+  ctx.arc(64, 64, 55, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = "#b8775c";
+  ctx.beginPath();
+  ctx.arc(64, 64, 61, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
+/** Cross-section of a forearm cut through at the wrist: the two bones with their marrow, tendons and vessels round them. */
+export function wristWoundTexture(): THREE.CanvasTexture {
+  const size = 128;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  if (ctx !== null) {
+    const base = ctx.createRadialGradient(64, 64, 6, 64, 64, 64);
+    base.addColorStop(0, "#741014");
+    base.addColorStop(0.7, "#52090d");
+    base.addColorStop(1, "#300407");
+    ctx.fillStyle = base;
+    ctx.fillRect(0, 0, size, size);
+    const disc = (x: number, y: number, radius: number, fill: string): void => {
+      ctx.fillStyle = fill;
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fill();
+    };
+    // Radius and ulna: bone with a ring of hard cortex round the marrow.
+    for (const [x, y, radius] of [[46, 60, 13], [84, 66, 10]] as const) {
+      disc(x, y, radius, "#e4d8c0");
+      disc(x, y, radius * 0.62, "#a4483c");
+      disc(x - radius * 0.2, y - radius * 0.2, radius * 0.25, "rgba(220,110,90,0.6)");
+    }
+    for (let tendon = 0; tendon < 9; tendon += 1) {
+      const angle = Math.PI * (0.15 + (tendon / 8) * 0.7);
+      disc(64 + Math.cos(angle) * 34, 64 + Math.sin(angle) * 34, 3.2, "#d9c9b3");
+    }
+    disc(30, 84, 3.4, "#1a0204");
+    disc(98, 46, 3, "#1a0204");
+    disc(66, 30, 2.6, "#1a0204");
+    skinAndFat(ctx);
   }
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
@@ -367,6 +422,7 @@ export function jawWoundTexture(): THREE.CanvasTexture {
       ctx.arc(rand() * size, rand() * size, 0.8 + rand() * 2.2, 0, Math.PI * 2);
       ctx.fill();
     }
+    skinAndFat(ctx);
   }
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;

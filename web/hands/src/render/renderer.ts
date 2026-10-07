@@ -795,7 +795,7 @@ export class FightRenderer {
     this.scene.add(this.ring.group);
     this.arena = buildArena();
     this.scene.add(this.arena.group);
-    this.effects = new Effects3D(this.scene, coarsePointer() ? 512 : 1024);
+    this.effects = new Effects3D(this.scene, coarsePointer() ? 1024 : 2048);
 
     this.blobTexture = blobShadowTexture();
     const blobGeometry = new THREE.PlaneGeometry(1, 1);

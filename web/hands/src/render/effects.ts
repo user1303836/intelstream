@@ -3,7 +3,7 @@ import type { BloodLevel } from "../settings";
 import type { CombatEvent, Hand } from "../types";
 import { CanvasBlood } from "./canvas-blood";
 import { wearCornerColour } from "./gear";
-import { HARD_SHOT, bloodDropsFor, bloodShade, buildChunkGeometry, buildDropletGeometry, buildShardGeometry, buildWoundGeometry, closeCut, dropletShape, eyeTexture, jawWoundTexture, woundTexture } from "./gore";
+import { HARD_SHOT, bloodDropsFor, bloodShade, buildChunkGeometry, buildDropletGeometry, buildShardGeometry, buildWoundGeometry, closeCut, dropletShape, eyeTexture, jawWoundTexture, woundTexture, wristWoundTexture } from "./gore";
 import { LookShading, SCANNED_LOOK, type FighterLook } from "./looks";
 import { SHIELD_RADIUS, buildMouthpieceGeometry, idleShield, stepShield, type ShieldState } from "./mouthpiece";
 import { CANVAS_TOP, RING_FIGHT_HALF, ROPE_LINE } from "./world";
@@ -264,6 +264,8 @@ export class Effects3D {
   private readonly wristStumpGeometry: THREE.BufferGeometry;
   private readonly stumpMaterial: THREE.MeshStandardMaterial;
   private readonly stumpMap: THREE.CanvasTexture;
+  private readonly wristMaterial: THREE.MeshStandardMaterial;
+  private readonly wristMap: THREE.CanvasTexture;
   private readonly jawMaterial: THREE.MeshStandardMaterial;
   private readonly jawMap: THREE.CanvasTexture;
   private readonly stumpAcross = new THREE.Vector3();
@@ -376,6 +378,8 @@ export class Effects3D {
     this.wristStumpGeometry = buildWoundGeometry(0.038, 0.042, 0.006);
     this.stumpMap = woundTexture();
     this.stumpMaterial = new THREE.MeshStandardMaterial({ map: this.stumpMap, roughness: 0.3, metalness: 0 });
+    this.wristMap = wristWoundTexture();
+    this.wristMaterial = new THREE.MeshStandardMaterial({ map: this.wristMap, roughness: 0.3, metalness: 0 });
     this.jawMap = jawWoundTexture();
     this.jawMaterial = new THREE.MeshStandardMaterial({ map: this.jawMap, roughness: 0.28, metalness: 0 });
     for (let i = 0; i < MAX_HEADS; i += 1) {
@@ -433,14 +437,14 @@ export class Effects3D {
       handMesh.castShadow = true;
       handMesh.visible = false;
       scene.add(handMesh);
-      const cap = new THREE.Mesh(this.wristStumpGeometry, this.stumpMaterial);
+      const cap = new THREE.Mesh(this.wristStumpGeometry, this.wristMaterial);
       cap.rotation.x = Math.PI;
       cap.position.y = 0.02;
       cap.visible = false;
       handMesh.add(cap);
       this.hands.push({ mesh: handMesh, defaultGeometry: this.handGeometry, defaultScale: handMesh.scale.clone(), cap, defaultCap: this.wristStumpGeometry, look: null, baked: null, bakedFlesh: null, radius: HAND_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
 
-      const stumpMesh = new THREE.Mesh(this.wristStumpGeometry, this.stumpMaterial);
+      const stumpMesh = new THREE.Mesh(this.wristStumpGeometry, this.wristMaterial);
       stumpMesh.visible = false;
       scene.add(stumpMesh);
       this.handStumps.push({ mesh: stumpMesh, flesh: new THREE.BufferGeometry(), active: false, fountainLife: 0, accumulator: 0, seed: 1, direction: 1 });
@@ -1796,6 +1800,8 @@ export class Effects3D {
     for (const mesh of [...this.eyeMeshes, ...this.nerveMeshes]) this.scene.remove(mesh);
     this.stumpMaterial.dispose();
     this.stumpMap.dispose();
+    this.wristMaterial.dispose();
+    this.wristMap.dispose();
     for (const head of this.heads) this.scene.remove(head.mesh);
     for (const hand of this.hands) this.scene.remove(hand.mesh);
     for (const stump of [...this.stumps, ...this.handStumps]) this.scene.remove(stump.mesh);
