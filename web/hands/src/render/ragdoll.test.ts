@@ -6,7 +6,7 @@ import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
 import { NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE } from "./injury";
 import { KnockoutRagdoll, P, PARTICLES, RADIUS, RagdollBody, blowImpulse, fallStyleFor, type ImpulseRecord } from "./ragdoll";
 import { closeUpAngle } from "./renderer";
-import { worldPosition } from "./rig";
+import { worldPosition, worldQuaternion } from "./rig";
 import { ROPE_LINE, RING_FIGHT_HALF, worldMapping } from "./world";
 
 const mapping = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 });
@@ -215,6 +215,36 @@ describe("knockouts on the fighter", () => {
     // The skeleton follows the particles: the head bone sits on the head particle.
     const particle = graph.fallBody!.bodyPoint(0, new THREE.Vector3());
     expect(head.distanceTo(particle)).toBeLessThan(0.06);
+  });
+
+  it("turns the body into the fall from its first frame instead of holding the pose and then snapping", () => {
+    // The blend-in from the standing pose used to slerp each bone into itself, so the bones held that pose for the
+    // whole blend and then snapped: the chest turned 15 degrees and the head jumped 21 cm in one frame.
+    for (const punchClass of ["straight", "hook"] as const) {
+      const { boxer, graph, fighter, opponent, time } = standing();
+      const bones = boxer.rig.bones;
+      graph.react("hit", "head", 1, punchClass, "right", 120);
+      let now = time;
+      let chest = worldQuaternion(bones.chest, new THREE.Quaternion());
+      let head = worldPosition(bones.head, new THREE.Vector3());
+      let early = 0;
+      let turn = 0;
+      let move = 0;
+      for (let frame = 1; frame <= 12; frame += 1) {
+        now = frames(graph, { ...fighter, is_downed: true }, opponent, 1, now);
+        const turned = worldQuaternion(bones.chest, new THREE.Quaternion());
+        const moved = worldPosition(bones.head, new THREE.Vector3());
+        const angle = THREE.MathUtils.radToDeg(turned.angleTo(chest));
+        if (frame <= 5) early += angle;
+        turn = Math.max(turn, angle);
+        move = Math.max(move, moved.distanceTo(head));
+        chest = turned;
+        head = moved;
+      }
+      expect(early, punchClass).toBeGreaterThan(2);
+      expect(turn, punchClass).toBeLessThan(8);
+      expect(move, punchClass).toBeLessThan(0.12);
+    }
   });
 
   it("brings the head back onto the neck when the fall starts with it thrown off by a slip or a blow", () => {
