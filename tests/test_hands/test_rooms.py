@@ -1555,15 +1555,25 @@ async def test_a_rematch_reaches_a_new_room_while_the_old_one_is_still_closing(
 ) -> None:
     hold = 0.2
     delivery = 0.3
+    spectator_seated = asyncio.Event()
+
+    async def sleep_once_the_spectator_is_seated(delay: float) -> None:
+        # The first tick only ends the countdown, so however coarse the platform's timer, the
+        # two-tick bout cannot finish before the spectator is in.
+        await spectator_seated.wait()
+        await asyncio.sleep(delay)
+
     manager = HandsRoomManager(
         repository,
         config=room_config(result_hold=hold, final_delivery_timeout=delivery),
+        sleep=sleep_once_the_spectator_is_seated,
     )
     first, second = FakeSocket(), FakeSocket()
     stalled = FakeSocket(block_send=asyncio.Event())
     one = await manager.join(player("one"), first)
     two = await manager.join(player("two"), second)
     await manager.join(player("spectator"), stalled)
+    spectator_seated.set()
     await wait_until(
         lambda: any(json.loads(message)["type"] == "final" for message in first.messages),
         deadline_seconds=2.0,
