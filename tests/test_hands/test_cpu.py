@@ -6,7 +6,16 @@ from itertools import pairwise
 from math import hypot
 
 import pytest
-from scripts.hands_balance import HUMAN_REACTION_TICKS, ScriptedHuman, bout_styles, play
+from scripts.hands_balance import (
+    HUMAN_REACTION_TICKS,
+    Lag,
+    LaggedPlayer,
+    ScriptedHuman,
+    bout_styles,
+    make_player,
+    play,
+    style_matrix,
+)
 
 from intelstream.hands.cpu import (
     CPU_STYLES,
@@ -660,6 +669,77 @@ def test_the_scripted_counter_puncher_minds_its_breath_guards_low_and_talks_to_i
     engine.phase = MatchPhase.REST
     command = ScriptedHuman("counter", "human", "cpu").decide(engine)
     assert command is not None and kinds([command]) == [ActionKind.CORNER_BREATH]
+
+
+def first_guard_tick(human: str, lag: Lag | None, seed: int) -> int:
+    """Ticks from the start of a slow body hook to the first low guard the server hears for it.
+
+    Thrown from across the ring, so nothing the human does on the way in can stop it first."""
+    engine = engine_at(300, seed=seed)
+    # Worn out, the puncher is slow enough that every reaction sees the hook before it lands.
+    engine.fighter("cpu").conditioning = 0
+    player = make_player(human, "human", "cpu", seed, lag=lag)
+    hook = PunchAction(Hand.LEFT, PunchClass.HOOK, Target.BODY, Power.POWER)
+    engine.submit_input("cpu", InputCommand(1, engine.tick, actions=(hook,)))
+    started = engine.tick + 1
+    for _ in range(30):
+        command = player.decide(engine)
+        if command is not None:
+            engine.submit_input("human", command)
+            if command.defense is DefensivePose.GUARD_LOW:
+                return engine.tick + 1 - started
+        engine.step()
+    raise AssertionError("the hook was never guarded")
+
+
+@pytest.mark.parametrize("human", ["skilled", "counter"])
+def test_a_scripted_human_on_a_connection_sees_each_punch_late_and_is_heard_late(
+    human: str,
+) -> None:
+    assert {first_guard_tick(human, None, seed) for seed in range(6)} == {HUMAN_REACTION_TICKS + 1}
+    lag = Lag(reaction=(6, 9), latency_ticks=2, uplink_ticks=1)
+    delays = {first_guard_tick(human, lag, seed) for seed in range(12)}
+    # His reaction to each punch is his own, then the connection shows it late and carries the
+    # guard back late: the server hears it between 6+2+1 and 9+2+1 ticks after the punch starts.
+    assert delays <= set(range(6 + 2 + 1 + 1, 9 + 2 + 1 + 2))
+    assert len(delays) >= 3
+
+
+def test_a_lagged_player_delivers_every_command_in_order_and_late() -> None:
+    class Counting:
+        def __init__(self) -> None:
+            self.sequence = 0
+
+        def decide(self, engine: BoxingEngine) -> InputCommand:
+            self.sequence += 1
+            return InputCommand(self.sequence, engine.tick)
+
+    engine = engine_at(150)
+    lagged = LaggedPlayer(Counting(), 2)
+    heard = [lagged.decide(engine) for _ in range(5)]
+    assert [None if command is None else command.sequence for command in heard] == [
+        None,
+        None,
+        1,
+        2,
+        3,
+    ]
+    assert Lag.over(50, (6, 9)) == Lag((6, 9), 1, 1)
+    assert Lag.over(100, (6, 9)) == Lag((6, 9), 2, 2)
+
+
+def test_a_style_matrix_plays_two_strategies_with_each_style_on_each_side() -> None:
+    config = EngineConfig(rounds=1, round_ticks=240, countdown_ticks=0)
+    table = style_matrix(
+        "skilled:brawler",
+        [FighterStyle.BALANCED, FighterStyle.SWARMER],
+        range(101, 102),
+        config,
+        Lag(reaction=(6, 9), uplink_ticks=1),
+    )
+    assert table.splitlines()[0].startswith("skilled:brawler: win % of the row's style")
+    assert "2 bouts a pair, seeds 101-101" in table
+    assert "+-" in table.splitlines()[2]
 
 
 def test_profiles_get_better_with_the_level() -> None:
