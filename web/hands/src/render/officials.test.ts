@@ -90,3 +90,40 @@ describe("referee clinch break", () => {
     expect(refereeSpacing(true, false, true)).toEqual(refereeSpacing(true, false));
   });
 });
+
+describe("referee count", () => {
+  it("chops the counting arm down onto each number as it changes", () => {
+    const referee = official();
+    const graph = new BoxingGraph(referee, mapping, { referee: true });
+    const self: FighterSnapshot = { ...baseFighter("referee"), x: 0, y: 160, facing_x: 0, facing_y: -1000 };
+    const focus: FighterSnapshot = { ...baseFighter("focus"), x: 0, y: -140 };
+    // Knocked down on tick 308: the engine counts a number every 30 ticks after that, and the numbers
+    // change a quarter of a second past each whole second of the clock (where a free-running beat sits high).
+    const knockdownTick = 308;
+    const heights: number[] = [];
+    const changes: number[] = [];
+    let renderTick = 280;
+    let shown = -1;
+    for (let frame = 0; frame < 330; frame += 1) {
+      renderTick += 0.5;
+      const presentedTick = Math.ceil(renderTick);
+      const counting = presentedTick >= knockdownTick;
+      const count = counting ? Math.floor((presentedTick - knockdownTick) / 30) : 0;
+      if (counting && count !== shown) {
+        if (shown >= 0) changes.push(frame);
+        shown = count;
+      }
+      graph.setRefereeCount(counting, count);
+      graph.update(self, focus, 1 / 60, renderTick / 30, false, "off", renderTick);
+      referee.root.updateMatrixWorld(true);
+      heights.push(worldPosition(referee.rig.bones.gloveR, new THREE.Vector3()).y);
+    }
+    expect(changes.length).toBeGreaterThanOrEqual(4);
+    for (const change of changes) {
+      const around = heights.slice(change - 20, change + 21);
+      // At its lowest as the number changes, having come down hard into it.
+      expect(heights[change]!).toBeLessThan(Math.min(...around) + 0.005);
+      expect(heights[change - 6]! - heights[change]!).toBeGreaterThan(0.05);
+    }
+  });
+});

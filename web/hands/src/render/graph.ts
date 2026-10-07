@@ -436,6 +436,8 @@ export class BoxingGraph {
   private readonly referee: boolean;
   private refereeCount = 0;
   private refereeCounting = false;
+  /** Render tick the referee's count last changed on; the counting arm is timed from it. */
+  private countChangedTick: number | null = null;
 
   constructor(boxer: SkinnedBoxer, private readonly mapping: WorldMapping, options: { referee?: boolean } = {}) {
     this.boxer = boxer;
@@ -555,6 +557,7 @@ export class BoxingGraph {
   }
 
   setRefereeCount(counting: boolean, count: number): void {
+    if (counting !== this.refereeCounting || count !== this.refereeCount) this.countChangedTick = null;
     this.refereeCounting = counting;
     this.refereeCount = count;
   }
@@ -961,7 +964,7 @@ export class BoxingGraph {
       else shrugRear = shrug;
     }
 
-    if (this.referee) this.applyRefereePose(mirror, leadHand, rearHand, lead, rear, headRest, time);
+    if (this.referee) this.applyRefereePose(mirror, leadHand, rearHand, lead, rear, headRest, time, sampledTick);
 
     // Special states.
     if (this.clinchWeight > 0.001) this.applyClinchPose(this.clinchWeight, time, mirror, fighter, opponent, leadHand, rearHand, headRest);
@@ -1401,6 +1404,7 @@ export class BoxingGraph {
     rear: { position: THREE.Vector3; toe: THREE.Vector3; heel: number; pole: THREE.Vector3 },
     headRest: THREE.Vector3,
     time: number,
+    sampledTick: number,
   ): void {
     const torso = this.torso;
     torso.hipsYaw = 0;
@@ -1426,8 +1430,10 @@ export class BoxingGraph {
     leadHand.palm.set(-0.9 * mirror, 0.1, 0.35).normalize();
     rearHand.palm.set(0.9 * mirror, 0.1, 0.35).normalize();
     if (this.refereeCounting) {
-      const beat = time * 2 * Math.PI;
-      const pump = 0.5 + 0.5 * Math.sin(beat);
+      // The arm comes up through each second of the count and chops down onto the next number.
+      this.countChangedTick ??= sampledTick;
+      const beat = clamp((sampledTick - this.countChangedTick) / COUNT_TICKS, 0, 1);
+      const pump = beat < COUNT_DROP_START ? easeOut(beat / COUNT_DROP_START) : 1 - easeIn((beat - COUNT_DROP_START) / (1 - COUNT_DROP_START), 2);
       rearHand.position.set(-0.22 * mirror, headRest.y - 0.05 + pump * 0.12, 0.34 + pump * 0.08);
       rearHand.pole.set(-0.9 * mirror, -0.3, 0.2).normalize();
       rearHand.knuckles.set(0, 0.7, 0.7).normalize();
@@ -1435,7 +1441,6 @@ export class BoxingGraph {
       torso.spinePitch += 0.12;
       torso.headPitch += 0.18;
       leadHand.position.set(0.24 * mirror, 0.95, 0.08);
-      void this.refereeCount;
     }
   }
 
@@ -1894,6 +1899,9 @@ export class BoxingGraph {
 const STOOL_SEAT_HEIGHT = 0.44;
 /** Seated weight below which a rising fighter's hips are about 0.2 m clear of the seat. */
 const STOOL_CLEAR_SEATED = 0.2;
+/** The engine counts a knockdown one number a second; the counting arm starts down this far into each second. */
+const COUNT_TICKS = 30;
+const COUNT_DROP_START = 0.75;
 /** Where the referee's palms press to break a clinch: on each fighter's chest, this far toward the other from his centre, at sternum height. */
 const BREAK_CHEST_DEPTH = 0.26;
 const BREAK_CHEST_HEIGHT = 1.2;
