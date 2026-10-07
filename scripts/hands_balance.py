@@ -367,6 +367,8 @@ class BoutStats:
     chained_stuns: int
     stunned_knockdowns: int
     corner_picks: Counter[str] = field(default_factory=Counter)
+    landed_by_round: list[list[int]] = field(default_factory=list)
+    """Each seat's clean punches in each round fought."""
 
 
 def make_player(
@@ -417,6 +419,7 @@ def play(
     ids = ("one", "two")
     thrown = [0, 0]
     landed = [0, 0]
+    landed_by_round = [[0] * config.rounds, [0] * config.rounds]
     stunned_ticks = fight_ticks = stuns = chained = stunned_knockdowns = 0
     corner_picks: Counter[str] = Counter()
     while engine.result is None:
@@ -442,6 +445,7 @@ def play(
             elif event.kind in ("hit", "counter_hit") and seat is not None:
                 if event.action_id not in blocked_punches:
                     landed[seat] += 1
+                    landed_by_round[seat][snapshot.round_number - 1] += 1
             elif event.kind == "stun" and event.target_id in ids:
                 stuns += 1
                 if before[event.target_id] > 0:
@@ -467,6 +471,7 @@ def play(
         chained_stuns=chained,
         stunned_knockdowns=stunned_knockdowns,
         corner_picks=corner_picks,
+        landed_by_round=[seat[: result.round_number] for seat in landed_by_round],
     )
 
 
@@ -499,6 +504,10 @@ def summarise(one: str, two: str, bouts: list[BoutStats], elapsed: float) -> str
     picks: Counter[str] = Counter()
     for bout in bouts:
         picks.update(bout.corner_picks)
+    blank = [
+        sum(punches == 0 for bout in bouts for punches in bout.landed_by_round[seat])
+        for seat in (0, 1)
+    ]
     per_round = [
         (
             sum(bout.thrown[seat] for bout in bouts) / max(1, rounds),
@@ -517,6 +526,7 @@ def summarise(one: str, two: str, bouts: list[BoutStats], elapsed: float) -> str
         f" | stuns {stuns / count:.1f}/bout, {100 * chained / max(1, stuns):.0f}% re-stunned",
         f"  per round thrown/landed clean: one {per_round[0][0]:.0f}/{per_round[0][1]:.0f}"
         f", two {per_round[1][0]:.0f}/{per_round[1][1]:.0f}"
+        f" | rounds landing nothing: one {blank[0]}/{rounds}, two {blank[1]}/{rounds}"
         + (f" | corner picks {dict(picks)}" if picks else ""),
     ]
     return "\n".join(lines)

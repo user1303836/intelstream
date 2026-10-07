@@ -127,6 +127,8 @@ class CpuProfile:
     """Chance to aim a hook or uppercut at the side of the opponent's shut eye."""
     corner_percent: int
     """Chance to give the corner the instruction the fighter needs rather than none."""
+    waits_out_a_busy_opponent: bool
+    """Leads only at a man covering up or not punching: an open, busy opponent makes him wait."""
 
 
 PROFILES: dict[CpuLevel, CpuProfile] = {
@@ -138,10 +140,10 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         read_percent=15,
         perfect_percent=0,
         guard_percent=15,
-        aggression_percent=5,
-        attack_interval=100,
+        aggression_percent=14,
+        attack_interval=34,
         combo_length=2,
-        combo_percent=35,
+        combo_percent=0,
         reach_margin=-8,
         leads_target=False,
         stamina_reserve=60,
@@ -149,10 +151,10 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         outside_distance=130,
         jab_bias=60,
         counter_percent=0,
-        power_percent=6,
+        power_percent=0,
         body_percent=15,
         finish_percent=0,
-        admire_ticks=150,
+        admire_ticks=60,
         head_movement_percent=4,
         get_up_percent=70,
         get_up_jitter=6,
@@ -160,6 +162,7 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         taunt_percent=3,
         exploit_percent=0,
         corner_percent=60,
+        waits_out_a_busy_opponent=True,
     ),
     CpuLevel.CONTENDER: CpuProfile(
         name="Marcus 'Hammer' Reed",
@@ -191,6 +194,7 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         taunt_percent=2,
         exploit_percent=50,
         corner_percent=90,
+        waits_out_a_busy_opponent=False,
     ),
     CpuLevel.CHAMPION: CpuProfile(
         name="Viktor 'Iron' Volkov",
@@ -222,6 +226,7 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         taunt_percent=1,
         exploit_percent=80,
         corner_percent=100,
+        waits_out_a_busy_opponent=False,
     ),
 }
 
@@ -812,6 +817,16 @@ class CpuBrain:
     ) -> PunchAction | None:
         profile = self.profile
         countering = me.counter_ticks > 0
+        guarding = them.defense in (DefensivePose.GUARD_HIGH, DefensivePose.GUARD_LOW)
+        if (
+            profile.waits_out_a_busy_opponent
+            and not countering
+            and not guarding
+            and self._opponent_punches
+        ):
+            # A beginner pecks at a man who covers up or stands off; one who keeps throwing with
+            # his hands free makes him wait.
+            return None
         punishing = (
             self._punish_start >= 0
             and them.attack is not None

@@ -772,6 +772,31 @@ def test_a_newcomer_mashing_every_punch_button_can_beat_the_rookie() -> None:
     assert sum(bout.winner_seat == 0 for bout in bouts) >= 5
 
 
+def test_the_rookie_lands_punches_on_a_turtle_every_round_and_the_turtle_still_wins() -> None:
+    """A newcomer who covers up still has to defend: the rookie pecks at his guard every round."""
+    for seed in (1, 2, 3):
+        bout = play("turtle", "rookie", seed, EngineConfig(), bout_styles("turtle", "rookie", seed))
+        assert bout.winner_seat == 0
+        assert bout.rounds == 3 and min(bout.landed_by_round[1]) >= 1
+
+
+def test_a_rookie_pecks_at_a_guard_or_a_quiet_man_but_waits_out_a_busy_open_one() -> None:
+    def leads(level: CpuLevel, defense: DefensivePose, *, busy: bool) -> bool:
+        engine = engine_at(110)
+        brain = always(CpuBrain("cpu", "human", level, 3))
+        human = engine.fighter("human")
+        human.defense = defense
+        brain._opponent_punches = [engine.tick - 10] if busy else []
+        punch = brain._attack(engine.tick, engine.fighter("cpu"), human, 110.0, False, False, False)
+        # Leading is throwing now or stepping in to throw.
+        return punch is not None or brain._step_in is not None
+
+    assert leads(CpuLevel.ROOKIE, DefensivePose.GUARD_HIGH, busy=True)
+    assert leads(CpuLevel.ROOKIE, DefensivePose.NONE, busy=False)
+    assert not leads(CpuLevel.ROOKIE, DefensivePose.NONE, busy=True)
+    assert leads(CpuLevel.CONTENDER, DefensivePose.NONE, busy=True)
+
+
 def test_a_skilled_player_beats_the_rookie_on_the_cards_and_not_by_cutting_him_up() -> None:
     """Sixty-odd clean jabs on one eye used to split it open before the final bell in every bout."""
     bout = play("skilled", "rookie", 1, EngineConfig())
