@@ -1,9 +1,11 @@
 """Computer opponent for Hands: a boxer that plays through the same inputs a person sends.
 
 The brain reads both fighters from the authoritative engine once per tick and answers with one
-`InputCommand`. It only reacts to the opponent's punch after a human-like delay, so the fast lead
-jab can only be met with a guard that is already up, while a champion slips, weaves or times a
-perfect block against anything slower. Everything it does goes through `BoxingEngine.submit_input`
+`InputCommand`. It only notices the opponent's punch after a reaction drawn afresh for each punch,
+so the fast lead jab can only be met with a guard that is already up, while a champion slips,
+weaves or times a perfect block against anything slower. It reads the server's state as it is,
+where a player sees each punch a connection's trip late, so even a champion's reactions are kept
+within a few ticks of a sharp player's. Everything it does goes through `BoxingEngine.submit_input`
 under the same rules as a player's input.
 """
 
@@ -12,7 +14,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from math import hypot
+from math import atan2, cos, hypot, radians, sin
 
 from intelstream.hands.engine import (
     EVASION_TICKS,
@@ -25,13 +27,17 @@ from intelstream.hands.rules import (
     BODY_COLLAPSE_STAMINA,
     BODY_COLLAPSE_TRAUMA,
     COMPATIBLE_COMBO_CHAINS,
+    FACING_SCALE,
+    FACING_TURN_DEGREES_PER_SECOND,
     FIGHTER_RADIUS,
     GUARD_BLOCK_MINIMUM,
+    PERFECT_BLOCK_REARM_TICKS,
     PUNCH_RULES,
     RING_CORNER_REACH,
     RING_HALF_HEIGHT,
     RING_HALF_WIDTH,
     STYLE_RULES,
+    TICKS_PER_SECOND,
     PunchRule,
     poise_ceiling,
     style_punch_rule,
@@ -64,13 +70,20 @@ HURT_POISE = 160
 # A battered head lowers the poise a fighter can get back, so "nearly out of it" is a share of that.
 HURT_CEILING_PERCENT = 70
 OPPONENT_HURT_POISE = 200
-GUARD_SETTLED_TICKS = 8
 CORNER_CUT_AT = 400
 CORNER_BLEEDING_AT = 200
 CORNER_EYE_AT = 500
 CORNER_SWELLING_AT = 450
 GET_UP_ACCURACY_TRAUMA_DIVISOR = 45
 GET_UP_KNOCKDOWN_PENALTY = 14
+# The most a fighter turns toward the other man in a tick.
+_TURN_PER_TICK = radians(FACING_TURN_DEGREES_PER_SECOND / TICKS_PER_SECOND)
+# The quickest punch the computer loads up: it never throws a power jab.
+QUICKEST_POWER_STARTUP = min(
+    rule.startup
+    for (punch_class, _target, power), rule in PUNCH_RULES.items()
+    if power is Power.POWER and punch_class is not PunchClass.JAB
+)
 _LIMIT_X = RING_HALF_WIDTH - FIGHTER_RADIUS
 _LIMIT_Y = RING_HALF_HEIGHT - FIGHTER_RADIUS
 
@@ -86,7 +99,9 @@ class CpuProfile:
     name: str
     rating: int
     reaction_ticks: int
-    """Ticks before the opponent's punch is noticed."""
+    """Ticks before the opponent's punch can be noticed."""
+    reaction_spread: int
+    """Up to this many more ticks, drawn for each punch: nobody reacts to every punch alike."""
     read_percent: int
     """Chance to answer a noticed punch with a defence that works against it."""
     perfect_percent: int
@@ -123,6 +138,9 @@ class CpuProfile:
     """Chance to aim a hook or uppercut at the side of the opponent's shut eye."""
     corner_percent: int
     """Chance to give the corner the instruction the fighter needs rather than none."""
+    busy_lead_percent: int
+    """Chance per look to lead at a man throwing punches with his hands free; a beginner mostly
+    waits him out, and leads at one who covers up or stands off."""
 
 
 PROFILES: dict[CpuLevel, CpuProfile] = {
@@ -130,13 +148,14 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         name="Kid Cole",
         rating=850,
         reaction_ticks=10,
+        reaction_spread=4,
         read_percent=15,
         perfect_percent=0,
         guard_percent=15,
-        aggression_percent=5,
-        attack_interval=100,
+        aggression_percent=14,
+        attack_interval=34,
         combo_length=2,
-        combo_percent=35,
+        combo_percent=0,
         reach_margin=-8,
         leads_target=False,
         stamina_reserve=60,
@@ -144,10 +163,10 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         outside_distance=130,
         jab_bias=60,
         counter_percent=0,
-        power_percent=6,
-        body_percent=15,
+        power_percent=0,
+        body_percent=25,
         finish_percent=0,
-        admire_ticks=150,
+        admire_ticks=60,
         head_movement_percent=4,
         get_up_percent=70,
         get_up_jitter=6,
@@ -155,14 +174,16 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         taunt_percent=3,
         exploit_percent=0,
         corner_percent=60,
+        busy_lead_percent=17,
     ),
     CpuLevel.CONTENDER: CpuProfile(
         name="Marcus 'Hammer' Reed",
         rating=1100,
-        reaction_ticks=6,
+        reaction_ticks=7,
+        reaction_spread=3,
         read_percent=64,
         perfect_percent=35,
-        guard_percent=60,
+        guard_percent=70,
         aggression_percent=55,
         attack_interval=7,
         combo_length=3,
@@ -174,7 +195,7 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         outside_distance=160,
         jab_bias=10,
         counter_percent=65,
-        power_percent=40,
+        power_percent=55,
         body_percent=45,
         finish_percent=20,
         admire_ticks=6,
@@ -185,14 +206,16 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         taunt_percent=2,
         exploit_percent=50,
         corner_percent=90,
+        busy_lead_percent=100,
     ),
     CpuLevel.CHAMPION: CpuProfile(
         name="Viktor 'Iron' Volkov",
         rating=1400,
-        reaction_ticks=4,
-        read_percent=66,
-        perfect_percent=45,
-        guard_percent=65,
+        reaction_ticks=5,
+        reaction_spread=3,
+        read_percent=80,
+        perfect_percent=80,
+        guard_percent=80,
         aggression_percent=60,
         attack_interval=7,
         combo_length=4,
@@ -205,7 +228,7 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         jab_bias=0,
         counter_percent=80,
         power_percent=35,
-        body_percent=22,
+        body_percent=43,
         finish_percent=30,
         admire_ticks=0,
         head_movement_percent=14,
@@ -215,6 +238,7 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         taunt_percent=1,
         exploit_percent=80,
         corner_percent=100,
+        busy_lead_percent=100,
     ),
 }
 
@@ -254,10 +278,9 @@ def styled_profile(profile: CpuProfile, style: FighterStyle) -> CpuProfile:
         return replace(
             profile,
             outside_distance=profile.outside_distance + 10,
-            jab_bias=profile.jab_bias + 25,
-            aggression_percent=_percent(profile.aggression_percent - 6),
-            power_percent=_percent(profile.power_percent - 10),
-            body_percent=_percent(profile.body_percent - 10),
+            footwork_percent=_percent(profile.footwork_percent + 10),
+            jab_bias=profile.jab_bias + 5,
+            aggression_percent=_percent(profile.aggression_percent + 4),
         )
     if style is FighterStyle.SLUGGER:
         return replace(
@@ -272,10 +295,8 @@ def styled_profile(profile: CpuProfile, style: FighterStyle) -> CpuProfile:
     if style is FighterStyle.SWARMER:
         return replace(
             profile,
-            outside_distance=profile.outside_distance - 20,
-            aggression_percent=_percent(profile.aggression_percent + 4),
-            body_percent=_percent(profile.body_percent + 20),
-            head_movement_percent=_percent(profile.head_movement_percent + 10),
+            outside_distance=profile.outside_distance - 8,
+            head_movement_percent=_percent(profile.head_movement_percent + 5),
             clinch_percent=_percent(profile.clinch_percent - 10),
         )
     if style is FighterStyle.COUNTER_PUNCHER:
@@ -369,6 +390,8 @@ class CpuBrain:
         self._rng = random.Random(seed)  # nosec B311
         self._sequence = 0
         self._read_attack: tuple[int, str] | None = None
+        self._seen_attack: tuple[int, str] | None = None
+        self._reaction = 0
         self._guard_pose = DefensivePose.NONE
         self._guard_from = 0
         self._guard_until = -1
@@ -494,7 +517,7 @@ class CpuBrain:
                 if profile.admire_ticks:
                     pause = profile.admire_ticks + self._rng.randrange(profile.admire_ticks + 1)
                     self._admire_until = tick + pause
-            follow_up = self._follow_up(me, them, distance, opponent_hurt)
+            follow_up = self._follow_up(me, them, opponent_hurt)
             move = self._movement(tick, me, them, distance, hurt, tired, opponent_hurt)
             if follow_up is not None:
                 return self._command(tick, move, held, (follow_up,))
@@ -538,11 +561,14 @@ class CpuBrain:
         return self._command(tick, move, self._defense(tick, me, distance, hurt), ())
 
     def _reserve(self, me: FighterState) -> int:
-        """Stamina kept back: more once the body is broken down, where an empty tank means a knee."""
+        """Stamina kept back: more once the body is broken down, where an empty tank means a knee.
+
+        Never more than a battered body can still hold, or the fighter would rest for good.
+        """
         reserve = self.profile.stamina_reserve
         if me.trauma.body >= BODY_COLLAPSE_TRAUMA:
             reserve = max(reserve, BODY_COLLAPSE_STAMINA + 50)
-        return reserve
+        return min(reserve, me.maximum_stamina * 2 // 3)
 
     def _note_opponent(self, tick: int, them: FighterState) -> None:
         attack = them.attack
@@ -561,7 +587,13 @@ class CpuBrain:
         if attack is None or attack.resolved:
             return None
         key = (attack.start_tick, attack.action.punch_class.value)
-        if key == self._read_attack or tick - attack.start_tick < self.profile.reaction_ticks:
+        if key == self._read_attack:
+            return None
+        if key != self._seen_attack:
+            self._seen_attack = key
+            spread = self.profile.reaction_spread
+            self._reaction = self.profile.reaction_ticks + self._rng.randrange(spread + 1)
+        if tick - attack.start_tick < self._reaction:
             return None
         self._read_attack = key
         if _blind_to(me, attack.action.hand):
@@ -602,15 +634,33 @@ class CpuBrain:
             assert evasion is not None
             self._punish_start = attack.start_tick
             return _EVASION_ACTIONS[evasion]
+        held = me.defense is guard
+        window = PERFECT_BLOCK_TICKS + self.style_rule.perfect_block_ticks
+        # Only a guard let down long enough parries, so a parry is tried only when the late raise
+        # will be one; otherwise the guard simply goes up and blocks.
+        perfect = (
+            not held
+            and self._rearmed(me, contact - window)
+            and self._roll(self.profile.perfect_percent)
+        )
+        late = contact - (tick + 1) <= window
+        if not held and not perfect and late and self._rearmed(me, tick + 1):
+            # Raised now, the guard would be a fresh one when the punch lands: a parry, which the
+            # roll did not give. There is no time left for an ordinary block.
+            return None
         self._guard_pose = guard
         self._guard_until = contact + attack.rule.active
-        perfect = me.defense is not guard and self._roll(self.profile.perfect_percent)
-        window = PERFECT_BLOCK_TICKS + self.style_rule.perfect_block_ticks
         self._guard_from = contact - window - 1 if perfect else tick
         if self._roll(self.profile.counter_percent):
             # Blocked, he is still in his recovery when the guard comes down.
             self._punish_start = attack.start_tick
         return None
+
+    @staticmethod
+    def _rearmed(me: FighterState, raise_tick: int) -> bool:
+        """Whether a guard raised on `raise_tick` would come up after being let down long enough
+        to parry, if it is not held again before then."""
+        return raise_tick - me.guard_held_tick > PERFECT_BLOCK_REARM_TICKS
 
     @staticmethod
     def _incoming(me: FighterState, them: FighterState, lead: int) -> tuple[float, float]:
@@ -678,22 +728,43 @@ class CpuBrain:
         """How far this punch carries for this boxer: swollen eyes shorten it, as in the engine."""
         return rule.reach * (100 - _vision_penalty(me)) // 100 - self.profile.reach_margin
 
-    def _reaches(self, me: FighterState, them: FighterState, action: PunchAction) -> bool:
+    def _reaches(
+        self,
+        me: FighterState,
+        them: FighterState,
+        action: PunchAction,
+        delay: int = 0,
+        turning: int | None = None,
+    ) -> bool:
+        """Whether the punch, started `delay` ticks from now, lands: judged along the way the boxer
+        will face after `turning` ticks of turning (every tick until it starts, by default), as
+        the engine judges it, where the other man will be by then."""
         startup, rule = self._timing(me, action)
         vision = _vision_penalty(me)
         reach = self._reach(me, rule)
         arc = rule.lateral_arc * (100 - vision) // 100 - max(0, self.profile.reach_margin)
         tx, ty = float(them.x), float(them.y)
         if self.profile.leads_target:
-            tx += them.velocity_x * (startup + 1)
-            ty += them.velocity_y * (startup + 1)
-        aim_x, aim_y = them.x - me.x, them.y - me.y
-        aim = max(1.0, hypot(aim_x, aim_y))
-        fx, fy = aim_x / aim, aim_y / aim
+            tx += them.velocity_x * (delay + startup + 1)
+            ty += them.velocity_y * (delay + startup + 1)
+        fx, fy = self._facing_at_start(me, them, delay + 1 if turning is None else turning)
         dx, dy = tx - me.x, ty - me.y
         forward = dx * fx + dy * fy
         lateral = abs(dx * fy - dy * fx)
         return FIGHTER_RADIUS // 3 < forward <= reach and hypot(dx, dy) <= reach and lateral <= arc
+
+    @staticmethod
+    def _facing_at_start(me: FighterState, them: FighterState, ticks: int) -> tuple[float, float]:
+        """The way a punch is thrown along that starts after `ticks` of turning: the facing turned
+        toward the other man by at most that many ticks' turn, which the engine then holds through
+        the punch and judges it along."""
+        fx, fy = me.facing_x / FACING_SCALE, me.facing_y / FACING_SCALE
+        off = atan2(
+            fx * (them.y - me.y) - fy * (them.x - me.x), fx * (them.x - me.x) + fy * (them.y - me.y)
+        )
+        most = _TURN_PER_TICK * ticks
+        turn = max(-most, min(most, off))
+        return fx * cos(turn) - fy * sin(turn), fx * sin(turn) + fy * cos(turn)
 
     def _affordable(self, me: FighterState, action: PunchAction, reserve: int) -> bool:
         return me.stamina >= self._rule(action).stamina_cost + reserve
@@ -767,15 +838,18 @@ class CpuBrain:
         )
 
     def _parry_risk(self, them: FighterState) -> bool:
-        """A power punch at a guard that is down, or only just up, can be parried by a late raise.
+        """A power punch at a guard that is down can be parried by a late raise, once the guard
+        has been down long enough to come up fresh before the punch lands.
 
-        A guard that has been up a while only blocks it, and a man punching or stunned cannot raise
-        one in time.
+        A guard that is up only blocks it, since the punch lands too long after the raise, and a
+        man punching or stunned cannot raise one in time.
         """
         if them.stunned_ticks > 0 or them.attack is not None:
             return False
-        guarded = them.defense in (DefensivePose.GUARD_HIGH, DefensivePose.GUARD_LOW)
-        return not (guarded and self._tick - them.defense_started_tick >= GUARD_SETTLED_TICKS)
+        if them.defense in (DefensivePose.GUARD_HIGH, DefensivePose.GUARD_LOW):
+            return False
+        latest_raise = self._tick + QUICKEST_POWER_STARTUP - 1
+        return latest_raise - them.guard_held_tick > PERFECT_BLOCK_REARM_TICKS
 
     def _attack(
         self,
@@ -817,6 +891,12 @@ class CpuBrain:
         if hurt and not countering:
             return None
         self._next_attack_tick = tick + 2 + self._rng.randrange(2)
+        guarding = them.defense in (DefensivePose.GUARD_HIGH, DefensivePose.GUARD_LOW)
+        busy = not guarding and bool(self._opponent_punches)
+        if busy and profile.busy_lead_percent < 100 and not self._roll(profile.busy_lead_percent):
+            # A beginner pecks at a man who covers up or stands off, and mostly waits out one who
+            # keeps throwing with his hands free.
+            return None
         aggression = profile.aggression_percent + (profile.finish_percent if opponent_hurt else 0)
         if not self._roll(aggression):
             return None
@@ -850,7 +930,7 @@ class CpuBrain:
         return action
 
     def _follow_up(
-        self, me: FighterState, them: FighterState, distance: float, opponent_hurt: bool
+        self, me: FighterState, them: FighterState, opponent_hurt: bool
     ) -> PunchAction | None:
         attack = me.attack
         assert attack is not None
@@ -871,8 +951,14 @@ class CpuBrain:
             PunchAction(_other_hand(attack.action.hand), punch_class, Target.HEAD), them, power
         )
         rule = self._rule(action)
-        discounted = max(1, rule.stamina_cost * 90 // 100)
-        if distance > self._reach(me, rule) or me.stamina < discounted:
+        # It goes at the cancel point, along the facing the recovery has turned by then. The
+        # engine charges the full price before a combination's discount: short of it, the punch
+        # would wait out the recovery or come as a slow arm punch.
+        # The facing holds through the punch's startup and active ticks and turns after them.
+        held = attack.rule.startup + attack.rule.active
+        delay = max(1, attack.cancel_age - attack.age)
+        turning = max(1, attack.cancel_age - max(attack.age, held))
+        if not self._reaches(me, them, action, delay, turning) or me.stamina < rule.stamina_cost:
             self._combo_left = 0
             return None
         return action

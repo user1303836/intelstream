@@ -6,24 +6,36 @@ rounds of two minutes, fifteen-second rests) between computer levels, or between
 human strategy and a computer level, and prints how the bouts end, how long they last, the
 knockdowns, the punch output and how much of the fight is spent stunned. Every bout is
 deterministic for its seed. With --style-matrix it plays every pair of fighting styles against
-each other at one computer level, from both corners, and prints how often each style wins.
+each other, from both corners, and prints how often each style wins with the standard error of
+that share: between two computers of one level, two copies of a scripted strategy, or two
+strategies ("skilled:brawler"), each style taking each side. A matrix plays held-out seeds, from
+101, unless --first-seed says otherwise.
+
+A scripted human answers a punch 7 ticks after it starts and is heard at once, as if he sat in
+the server. --reaction draws his reaction to each punch from a range, and a connection makes him
+later still: he sees a punch --latency-ticks late (a client shows the opponent's punch when its
+snapshot arrives) and his input reaches the server --uplink-ticks after he sends it. --rtt-ms
+sets both from a round trip.
 
     uv run python scripts/hands_balance.py --seeds 12
     uv run python scripts/hands_balance.py --humans jabs,hooks,turtle,brawler,counter,mash --seeds 8
-    uv run python scripts/hands_balance.py --style-matrix contender,champion --seeds 12
+    uv run python scripts/hands_balance.py --humans skilled,counter --reaction 6-9 --rtt-ms 50
+    uv run python scripts/hands_balance.py --style-matrix contender,champion --seeds 24
+    uv run python scripts/hands_balance.py --style-matrix skilled:brawler --reaction 6-9 --rtt-ms 50
 """
 
 from __future__ import annotations
 
 import argparse
+import random
 import time
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass, field
-from math import hypot
+from math import hypot, sqrt
 from typing import ClassVar, Protocol
 
 from intelstream.hands.cpu import CpuBrain, CpuLevel, cpu_style
-from intelstream.hands.engine import BoxingEngine, EngineConfig, FighterState
+from intelstream.hands.engine import AttackState, BoxingEngine, EngineConfig, FighterState
 from intelstream.hands.rules import TICKS_PER_SECOND
 from intelstream.hands.types import (
     ActionKind,
@@ -49,10 +61,59 @@ DEFAULT_MATCHUPS = (
 )
 HUMAN_STRATEGIES = ("jabs", "hooks", "turtle", "brawler", "counter", "mash", "skilled")
 HUMAN_REACTION_TICKS = 7
+HELD_OUT_FIRST_SEED = 101
 
 
 class Player(Protocol):
     def decide(self, engine: BoxingEngine) -> InputCommand | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class Lag:
+    """How late a scripted human answers: a reaction drawn for each punch from `reaction`, a punch
+    seen `latency_ticks` late and input heard `uplink_ticks` after he sends it. A lagged human's
+    other scripted choices start from a seeded offset, so each seed plays a different bout."""
+
+    reaction: tuple[int, int] = (HUMAN_REACTION_TICKS, HUMAN_REACTION_TICKS)
+    latency_ticks: int = 0
+    uplink_ticks: int = 0
+
+    @classmethod
+    def over(cls, rtt_ms: float, reaction: tuple[int, int]) -> Lag:
+        """A connection with this round trip: half of it each way, in whole ticks."""
+        one_way = round(rtt_ms / 2 * TICKS_PER_SECOND / 1000)
+        return cls(reaction, one_way, one_way)
+
+
+class _Eyes:
+    """Whether a scripted human has seen a punch yet: his reaction to it, drawn once per punch,
+    plus the ticks his connection shows it late."""
+
+    def __init__(self, lag: Lag | None, rng: random.Random) -> None:
+        self._lag = lag
+        self._rng = rng
+        self._punch = -1
+        self._delay = HUMAN_REACTION_TICKS
+
+    def see(self, attack: AttackState, tick: int) -> bool:
+        if self._lag is not None and attack.start_tick != self._punch:
+            self._punch = attack.start_tick
+            low, high = self._lag.reaction
+            self._delay = self._rng.randint(low, high) + self._lag.latency_ticks
+        return tick - attack.start_tick >= self._delay
+
+
+class LaggedPlayer:
+    """A scripted human on a connection: he sees and answers each punch as his `Lag` says, and
+    every command he sends reaches the server `uplink_ticks` later."""
+
+    def __init__(self, human: Player, uplink_ticks: int) -> None:
+        self.human = human
+        self._in_flight: deque[InputCommand | None] = deque([None] * uplink_ticks)
+
+    def decide(self, engine: BoxingEngine) -> InputCommand | None:
+        self._in_flight.append(self.human.decide(engine))
+        return self._in_flight.popleft()
 
 
 def _corner_pick(fighter: FighterState) -> tuple[SemanticAction, ...]:
@@ -75,9 +136,14 @@ class SkilledHuman:
     instruction between rounds.
     """
 
-    def __init__(self, player_id: str, opponent_id: str) -> None:
+    def __init__(
+        self, player_id: str, opponent_id: str, lag: Lag | None = None, seed: int = 0
+    ) -> None:
         self.player_id = player_id
         self.opponent_id = opponent_id
+        rng = random.Random(seed)  # nosec B311
+        self._eyes = _Eyes(lag, rng)
+        self._start = 0 if lag is None else rng.randrange(1000)
         self._sequence = 0
         self._seen = -1
         self._answered = -1
@@ -106,7 +172,7 @@ class SkilledHuman:
         hurt = me.stunned_ticks > 12 or me.poise < 200
         wanted = 210.0 if hurt else 150.0
         radial = max(-1.0, min(1.0, (distance - wanted) / 30))
-        side = 1 if (tick // 75) % 2 == 0 else -1
+        side = 1 if ((tick + self._start) // 75) % 2 == 0 else -1
         if abs(me.x) + abs(me.y) > 520:
             # Off the ropes: circle the way that leads back to the middle.
             side = 1 if -(me.x * -uy + me.y * ux) >= 0 else -1
@@ -122,7 +188,7 @@ class SkilledHuman:
             attack is not None
             and not attack.resolved
             and attack.start_tick != self._seen
-            and tick - attack.start_tick >= HUMAN_REACTION_TICKS
+            and self._eyes.see(attack, tick)
         ):
             self._seen = attack.start_tick
             head = attack.action.target is Target.HEAD
@@ -134,7 +200,7 @@ class SkilledHuman:
             attack is not None
             and attack.resolved
             and attack.start_tick != self._answered
-            and tick - attack.start_tick >= HUMAN_REACTION_TICKS
+            and self._eyes.see(attack, tick)
             and free
             and distance <= 165
             and me.stamina >= 120
@@ -145,7 +211,7 @@ class SkilledHuman:
             action = PunchAction(Hand.RIGHT, punch, Target.HEAD, power)
             return InputCommand(self._sequence, tick, actions=(action,))
         if tick >= self._next_jab and free and distance <= 150 and me.stamina >= 300:
-            self._next_jab = tick + 24 + (tick * 7919) % 18
+            self._next_jab = tick + 24 + (tick * 7919 + self._start) % 18
             jab = PunchAction(Hand.LEFT, PunchClass.JAB, Target.HEAD)
             return InputCommand(self._sequence, tick, move[0], move[1], actions=(jab,))
         rest_arms = distance > 175
@@ -175,12 +241,17 @@ class ScriptedHuman:
         "mash": 110,
     }
 
-    def __init__(self, kind: str, player_id: str, opponent_id: str) -> None:
+    def __init__(
+        self, kind: str, player_id: str, opponent_id: str, lag: Lag | None = None, seed: int = 0
+    ) -> None:
         if kind not in self.WANTED_DISTANCE:
             raise ValueError(f"unknown strategy {kind!r}")
         self.kind = kind
         self.player_id = player_id
         self.opponent_id = opponent_id
+        rng = random.Random(seed)  # nosec B311
+        self._eyes = _Eyes(lag, rng)
+        self._start = 0 if lag is None else rng.randrange(1000)
         self._sequence = 0
         self._next_tick = 0
         self._flip = False
@@ -216,13 +287,13 @@ class ScriptedHuman:
         move = toward if distance > wanted else (0, 0)
         guarded = self.kind in ("turtle", "brawler", "counter")
         defense = DefensivePose.GUARD_HIGH if guarded else DefensivePose.NONE
-        roll = (tick * 2654435761 + self._sequence) % 1000
+        roll = (tick * 2654435761 + self._sequence + self._start) % 1000
         free = me.attack is None and not me.pending_actions
         if self.kind == "counter":
             if distance < wanted - 10:
                 move = (-toward[0], -toward[1])
             attack = them.attack
-            seen = attack is not None and tick - attack.start_tick >= HUMAN_REACTION_TICKS
+            seen = attack is not None and self._eyes.see(attack, tick)
             answer = seen and attack is not None and attack.resolved and me.stamina >= 120
             if answer and free and distance <= 160:
                 punch = PunchClass.STRAIGHT if distance > 120 else PunchClass.HOOK
@@ -296,6 +367,8 @@ class BoutStats:
     chained_stuns: int
     stunned_knockdowns: int
     corner_picks: Counter[str] = field(default_factory=Counter)
+    landed_by_round: list[list[int]] = field(default_factory=list)
+    """Each seat's clean punches in each round fought."""
 
 
 def make_player(
@@ -304,12 +377,18 @@ def make_player(
     opponent_id: str,
     seed: int,
     style: FighterStyle = FighterStyle.BALANCED,
+    lag: Lag | None = None,
 ) -> Player:
+    human: Player
     if spec == "skilled":
-        return SkilledHuman(player_id, opponent_id)
-    if spec in HUMAN_STRATEGIES:
-        return ScriptedHuman(spec, player_id, opponent_id)
-    return CpuBrain(player_id, opponent_id, CpuLevel(spec), seed, style)
+        human = SkilledHuman(player_id, opponent_id, lag, seed)
+    elif spec in HUMAN_STRATEGIES:
+        human = ScriptedHuman(spec, player_id, opponent_id, lag, seed)
+    else:
+        return CpuBrain(player_id, opponent_id, CpuLevel(spec), seed, style)
+    if lag is None or lag.uplink_ticks == 0:
+        return human
+    return LaggedPlayer(human, lag.uplink_ticks)
 
 
 def play(
@@ -318,7 +397,9 @@ def play(
     seed: int,
     config: EngineConfig,
     styles: tuple[FighterStyle, FighterStyle] = (FighterStyle.BALANCED, FighterStyle.BALANCED),
+    lag: Lag | None = None,
 ) -> BoutStats:
+    """One bout; `lag` puts any scripted human on a connection."""
     engine = BoxingEngine(
         match_id=f"balance-{seed}",
         activity_instance_id="balance",
@@ -329,13 +410,16 @@ def play(
         config=config,
         styles=styles,
     )
+    # Nothing here reads a checksum, and hashing each tick's state is most of what a bout costs.
+    engine.checksums = False
     players = (
-        ("one", make_player(one, "one", "two", seed * 2 + 1, styles[0])),
-        ("two", make_player(two, "two", "one", seed * 2 + 2, styles[1])),
+        ("one", make_player(one, "one", "two", seed * 2 + 1, styles[0], lag)),
+        ("two", make_player(two, "two", "one", seed * 2 + 2, styles[1], lag)),
     )
     ids = ("one", "two")
     thrown = [0, 0]
     landed = [0, 0]
+    landed_by_round = [[0] * config.rounds, [0] * config.rounds]
     stunned_ticks = fight_ticks = stuns = chained = stunned_knockdowns = 0
     corner_picks: Counter[str] = Counter()
     while engine.result is None:
@@ -361,6 +445,7 @@ def play(
             elif event.kind in ("hit", "counter_hit") and seat is not None:
                 if event.action_id not in blocked_punches:
                     landed[seat] += 1
+                    landed_by_round[seat][snapshot.round_number - 1] += 1
             elif event.kind == "stun" and event.target_id in ids:
                 stuns += 1
                 if before[event.target_id] > 0:
@@ -386,6 +471,7 @@ def play(
         chained_stuns=chained,
         stunned_knockdowns=stunned_knockdowns,
         corner_picks=corner_picks,
+        landed_by_round=[seat[: result.round_number] for seat in landed_by_round],
     )
 
 
@@ -397,10 +483,16 @@ def bout_styles(one: str, two: str, seed: int) -> tuple[FighterStyle, FighterSty
     return FighterStyle.BALANCED, FighterStyle.BALANCED
 
 
+def standard_error(share: float, count: int) -> float:
+    """The standard error of a share measured over `count` bouts."""
+    return sqrt(share * (1 - share) / max(1, count))
+
+
 def summarise(one: str, two: str, bouts: list[BoutStats], elapsed: float) -> str:
     count = len(bouts)
     methods = Counter(bout.method for bout in bouts)
     wins = Counter(bout.winner_seat for bout in bouts)
+    share = (wins[0] + wins[None] / 2) / max(1, count)
     rounds = sum(bout.rounds for bout in bouts)
     fight_seconds = sum(bout.fight_seconds for bout in bouts)
     knockdowns = sum(bout.knockdowns for bout in bouts)
@@ -412,6 +504,10 @@ def summarise(one: str, two: str, bouts: list[BoutStats], elapsed: float) -> str
     picks: Counter[str] = Counter()
     for bout in bouts:
         picks.update(bout.corner_picks)
+    blank = [
+        sum(punches == 0 for bout in bouts for punches in bout.landed_by_round[seat])
+        for seat in (0, 1)
+    ]
     per_round = [
         (
             sum(bout.thrown[seat] for bout in bouts) / max(1, rounds),
@@ -422,20 +518,37 @@ def summarise(one: str, two: str, bouts: list[BoutStats], elapsed: float) -> str
     finishes = ", ".join(f"{method} {methods[method]}" for method in sorted(methods))
     lines = [
         f"{one} v {two}: {count} bouts in {elapsed:.0f}s | wins {wins[0]}-{wins[1]}"
-        f" (draws {wins[None]}) | {finishes}",
+        f" (draws {wins[None]}), {one} {100 * share:.0f}% +-{100 * standard_error(share, count):.0f}"
+        f" | {finishes}",
         f"  rounds {rounds / count:.2f} | fight time {fight_seconds / count:.0f}s"
         f" | knockdowns {knockdowns / count:.2f}/bout ({stunned_knockdowns} while stunned)"
         f" | stunned {100 * stunned / (2 * fight_ticks):.1f}% of fighter-time"
         f" | stuns {stuns / count:.1f}/bout, {100 * chained / max(1, stuns):.0f}% re-stunned",
         f"  per round thrown/landed clean: one {per_round[0][0]:.0f}/{per_round[0][1]:.0f}"
         f", two {per_round[1][0]:.0f}/{per_round[1][1]:.0f}"
+        f" | rounds landing nothing: one {blank[0]}/{rounds}, two {blank[1]}/{rounds}"
         + (f" | corner picks {dict(picks)}" if picks else ""),
     ]
     return "\n".join(lines)
 
 
-def style_matrix(level: str, styles: list[FighterStyle], seeds: range, config: EngineConfig) -> str:
-    """Every pair of styles at one level, each seed from both corners; a draw counts as half."""
+def matrix_sides(spec: str) -> tuple[str, str]:
+    """The players a matrix spec names: one level or strategy on both sides, or "one:two"."""
+    one, _, two = spec.partition(":")
+    return one, two or one
+
+
+def style_matrix(
+    spec: str,
+    styles: list[FighterStyle],
+    seeds: range,
+    config: EngineConfig,
+    lag: Lag | None = None,
+) -> str:
+    """Every pair of styles between the players `spec` names, each seed with each style on each
+    side, so neither style gains from the stronger side; a draw counts as half."""
+    one, two = matrix_sides(spec)
+    count = 2 * len(seeds)
     share: dict[tuple[FighterStyle, FighterStyle], float] = {}
     lines = []
     for index, first in enumerate(styles):
@@ -445,32 +558,48 @@ def style_matrix(level: str, styles: list[FighterStyle], seeds: range, config: E
             methods: Counter[str] = Counter()
             for seed in seeds:
                 for corners in ((first, second), (second, first)):
-                    bout = play(level, level, seed, config, corners)
+                    bout = play(one, two, seed, config, corners, lag)
                     methods[bout.method] += 1
                     if bout.winner_seat is None:
                         points += 0.5
                     elif corners[bout.winner_seat] is first:
                         points += 1
-            share[first, second] = 100 * points / (2 * len(seeds))
-            share[second, first] = 100 - share[first, second]
+            share[first, second] = points / count
+            share[second, first] = 1 - share[first, second]
             finishes = ", ".join(f"{method} {methods[method]}" for method in sorted(methods))
             lines.append(
-                f"  {first.value} v {second.value}: {share[first, second]:.0f}%"
+                f"  {first.value} v {second.value}: {cell(share[first, second], count)}"
                 f" | {finishes} | {time.perf_counter() - started:.0f}s"
             )
     width = max(len(style.value) for style in styles) + 2
     table = [
-        f"{level}: win % of the row's style against the column's, {2 * len(seeds)} bouts a pair",
+        f"{spec}: win % of the row's style against the column's, +- one standard error,"
+        f" {count} bouts a pair, seeds {seeds.start}-{seeds.stop - 1}",
         " " * width + "".join(f"{style.value[:8]:>9}" for style in styles),
     ]
     for row in styles:
         cells = "".join(
-            f"{'-':>9}" if row is column else f"{share[row, column]:>9.0f}" for column in styles
+            f"{'-' if row is column else cell(share[row, column], count):>9}" for column in styles
         )
         table.append(f"{row.value:<{width}}{cells}")
     worst = max(share, key=lambda pair: share[pair])
-    table.append(f"widest: {worst[0].value} beats {worst[1].value} {share[worst]:.0f}%")
+    table.append(f"widest: {worst[0].value} beats {worst[1].value} {cell(share[worst], count)}")
     return "\n".join(table + lines)
+
+
+def cell(share: float, count: int) -> str:
+    return f"{100 * share:.0f}+-{100 * standard_error(share, count):.0f}"
+
+
+def parse_lag(args: argparse.Namespace) -> Lag | None:
+    """The connection the scripted humans play on, or None for none at all."""
+    if not (args.reaction or args.latency_ticks or args.uplink_ticks or args.rtt_ms is not None):
+        return None
+    low, _, high = (args.reaction or str(HUMAN_REACTION_TICKS)).partition("-")
+    reaction = (int(low), int(high or low))
+    if args.rtt_ms is not None:
+        return Lag.over(args.rtt_ms, reaction)
+    return Lag(reaction, args.latency_ticks, args.uplink_ticks)
 
 
 def main() -> None:
@@ -479,16 +608,32 @@ def main() -> None:
     parser.add_argument("--humans", default="", help="scripted strategies to play every level")
     parser.add_argument("--levels", default=",".join(level.value for level in CpuLevel))
     parser.add_argument("--seeds", type=int, default=12)
-    parser.add_argument("--first-seed", type=int, default=1)
-    parser.add_argument("--style-matrix", default="", help="levels to play every style pair at")
+    parser.add_argument("--first-seed", type=int, default=None, help="1, or 101 for a matrix")
+    parser.add_argument(
+        "--style-matrix",
+        default="",
+        help="levels, strategies or strategy pairs (skilled:brawler) to play every style pair at",
+    )
     parser.add_argument("--styles", default=",".join(style.value for style in FighterStyle))
+    parser.add_argument("--reaction", default="", help="a human's reaction to a punch, e.g. 6-9")
+    parser.add_argument("--latency-ticks", type=int, default=0, help="ticks late he sees a punch")
+    parser.add_argument("--uplink-ticks", type=int, default=0, help="ticks before he is heard")
+    parser.add_argument("--rtt-ms", type=float, default=None, help="a round trip, half each way")
     args = parser.parse_args()
     config = EngineConfig()
+    lag = parse_lag(args)
+    if lag is not None:
+        print(
+            f"scripted humans react in {lag.reaction[0]}-{lag.reaction[1]} ticks, see a punch"
+            f" {lag.latency_ticks} late and are heard {lag.uplink_ticks} late",
+            flush=True,
+        )
     if args.style_matrix:
         styles = [FighterStyle(style) for style in args.styles.split(",")]
-        seeds = range(args.first_seed, args.first_seed + args.seeds)
-        for level in args.style_matrix.split(","):
-            print(style_matrix(level, styles, seeds, config), flush=True)
+        first = HELD_OUT_FIRST_SEED if args.first_seed is None else args.first_seed
+        seeds = range(first, first + args.seeds)
+        for spec in args.style_matrix.split(","):
+            print(style_matrix(spec, styles, seeds, config, lag), flush=True)
         return
     if args.humans:
         pairs = [
@@ -498,9 +643,10 @@ def main() -> None:
         pairs = [tuple(matchup.split(":", 1)) for matchup in args.matchups.split(",")]  # type: ignore[misc]
     for one, two in pairs:
         started = time.perf_counter()
+        first = 1 if args.first_seed is None else args.first_seed
         bouts = [
-            play(one, two, seed, config, bout_styles(one, two, seed))
-            for seed in range(args.first_seed, args.first_seed + args.seeds)
+            play(one, two, seed, config, bout_styles(one, two, seed), lag)
+            for seed in range(first, first + args.seeds)
         ]
         print(summarise(one, two, bouts, time.perf_counter() - started), flush=True)
 

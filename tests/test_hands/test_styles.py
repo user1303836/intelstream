@@ -160,8 +160,8 @@ def test_a_slugger_hits_harder_and_the_others_softer() -> None:
     straight = punch(PunchClass.STRAIGHT)
     balanced = landed(BALANCED, straight)
     assert landed(SLUGGER, straight) > balanced
-    assert landed(BOXER, straight) < landed(COUNTER, straight) < balanced
-    assert landed(SWARMER, straight) == landed(COUNTER, straight)
+    assert landed(SWARMER, straight) == landed(COUNTER, straight) < landed(BOXER, straight)
+    assert landed(BOXER, straight) < balanced
 
 
 def test_a_swarmer_works_the_body_harder_than_the_head() -> None:
@@ -184,7 +184,9 @@ def test_a_slugger_pays_more_for_a_punch_and_a_swarmer_tires_less() -> None:
     slugger_stamina, _ = spent(SLUGGER)
     _, swarmer_conditioning = spent(SWARMER)
     # One tick of recovery is folded into each figure; it is the same for all three.
-    assert slugger_stamina - balanced_stamina == base_cost * 110 // 100 - base_cost
+    price = STYLE_RULES[SLUGGER].stamina_cost_percent
+    assert price > 100
+    assert slugger_stamina - balanced_stamina == base_cost * price // 100 - base_cost
     assert swarmer_conditioning < balanced_conditioning
 
 
@@ -205,7 +207,7 @@ def test_a_miss_costs_a_slugger_more_and_tires_a_swarmer_less() -> None:
     slugger_cost, _ = whiffed(SLUGGER)
     _, swarmer_conditioning = whiffed(SWARMER)
     assert balanced_cost == base_whiff
-    assert slugger_cost == base_whiff * 110 // 100
+    assert slugger_cost == base_whiff * STYLE_RULES[SLUGGER].stamina_cost_percent // 100
     assert swarmer_conditioning < balanced_conditioning
 
 
@@ -275,6 +277,36 @@ def test_a_slugger_breaks_a_man_down_faster_and_takes_it_better() -> None:
     assert poise_lost(BALANCED, SLUGGER) < balanced
 
 
+def poise_and_damage(attacker: FighterStyle, *, counter: bool = False) -> tuple[int, int]:
+    """Poise and damage a straight from `attacker` takes off a balanced fighter."""
+    engine = styled_engine(attacker, BALANCED)
+    if counter:
+        engine.fighter("one").counter_ticks = 30
+    before = engine.fighter("two").poise
+    engine.step({"one": command(1, action=punch(PunchClass.STRAIGHT))})
+    damage = first_event(engine, {"hit", "counter_hit"}).amount
+    return before - engine.fighter("two").poise, damage
+
+
+@pytest.mark.parametrize("style", [BOXER, SLUGGER, SWARMER, COUNTER])
+def test_a_style_hits_as_hard_into_a_mans_legs_as_into_his_face(style: FighterStyle) -> None:
+    """A style's power is one number: the poise its punches take is scaled like their damage."""
+    rule = STYLE_RULES[style]
+    assert rule.poise_damage_percent == rule.impact_percent
+    balanced_poise, balanced_damage = poise_and_damage(BALANCED)
+    poise, damage = poise_and_damage(style)
+    assert abs(poise * 100 // balanced_poise - damage * 100 // balanced_damage) <= 2
+
+
+def test_a_counter_punchers_counters_land_a_little_harder_but_not_into_the_legs_of_a_stronger_man() -> (
+    None
+):
+    balanced_poise, balanced_damage = poise_and_damage(BALANCED, counter=True)
+    poise, damage = poise_and_damage(COUNTER, counter=True)
+    assert balanced_damage < damage <= balanced_damage * 104 // 100
+    assert balanced_poise <= poise <= balanced_poise * 104 // 100
+
+
 def test_a_swarmer_is_quicker_on_the_feet_and_a_slugger_slower() -> None:
     def travelled(style: FighterStyle) -> int:
         engine = styled_engine(style, gap=600)
@@ -284,7 +316,9 @@ def test_a_swarmer_is_quicker_on_the_feet_and_a_slugger_slower() -> None:
         return engine.fighter("one").x - start
 
     balanced = travelled(BALANCED)
-    assert travelled(SWARMER) > balanced * 105 // 100
+    quicker = STYLE_RULES[SWARMER].move_speed_percent
+    assert 100 < quicker <= 105
+    assert balanced * (quicker - 1) // 100 <= travelled(SWARMER) <= balanced * (quicker + 1) // 100
     assert travelled(SLUGGER) < balanced * 98 // 100
     assert travelled(BOXER) == balanced
 
