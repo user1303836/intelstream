@@ -2805,7 +2805,8 @@ async def test_a_held_seat_nobody_comes_back_for_goes_to_whoever_waits_for_it(
 
     # Two never comes back: once the window is over, his seat goes to the one watching.
     await wait_until(lambda: one.room.player_ids == ("one", "three"), deadline_seconds=2)
-    assert message_types(watcher_socket)[-2:] == ["welcome", "select"]
+    # The seat changes hands before the socket's writer has sent the new welcome and select.
+    await wait_until(lambda: message_types(watcher_socket)[-2:] == ["welcome", "select"])
     assert payloads(watcher_socket, "welcome")[-1]["role"] == "fighter"
     await wait_until(lambda: "select" in message_types(first_socket))
     assert [entry["id"] for entry in payloads(first_socket, "select")[-1]["players"]] == [
