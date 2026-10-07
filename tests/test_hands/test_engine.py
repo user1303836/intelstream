@@ -713,6 +713,34 @@ def test_clinch_draws_the_fighters_to_the_hold_distance_before_the_break() -> No
     assert gap >= MINIMUM_SEPARATION
 
 
+def test_a_clinch_stops_both_fighters_for_the_whole_hold() -> None:
+    engine = make_engine(round_ticks=2000)
+    one = engine.fighter("one")
+    two = engine.fighter("two")
+    one.x, two.x = 0, 100
+    # Two walks in at full speed and keeps holding forward through the tie-up.
+    engine.step(
+        {
+            "one": command(1, action=MovementAction(ActionKind.CLINCH)),
+            "two": command(1, move_x=-1000),
+        }
+    )
+    assert advance_until(engine, {"clinch"}, limit=12) == "clinch"
+    for fighter in (one, two):
+        assert (fighter.velocity_x, fighter.velocity_y) == (0, 0)
+        assert (fighter.velocity_fixed_x, fighter.velocity_fixed_y) == (0, 0)
+        assert (fighter.position_remainder_x, fighter.position_remainder_y) == (0, 0)
+
+    control = two.performance.control
+    while two.clinch_ticks:
+        snapshot = engine.step()
+        assert {(fighter.velocity_x, fighter.velocity_y) for fighter in snapshot.fighters} == {
+            (0, 0)
+        }
+    # Farther from the centre than the man he is tied to, so only pressure could score.
+    assert two.performance.control == control
+
+
 def test_out_of_range_clinch_is_denied_and_still_costs_stamina() -> None:
     engine = make_engine(round_ticks=2000)
     engine.fighter("one").x = -300

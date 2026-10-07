@@ -982,6 +982,12 @@ class BoxingEngine:
         opponent.clinch_startup_ticks = 0
         fighter.clinch_ticks = CLINCH_TICKS
         opponent.clinch_ticks = CLINCH_TICKS
+        for held in (fighter, opponent):
+            # Tied up, neither walks on. Only the draw moves them now, and the speed they came in
+            # with must not count as pressure or carry their feet through the hold.
+            held.velocity_x = held.velocity_y = 0
+            held.velocity_fixed_x = held.velocity_fixed_y = 0
+            held.position_remainder_x = held.position_remainder_y = 0
         self._retain_action(fighter)
         self._retain_action(opponent)
         fighter.pending_actions.clear()
