@@ -39,12 +39,19 @@ const HOUSE_LIGHT = 0.26;
 /** The broadcast camera pulls back as far as 14 m on a tall screen, over the first three rows. */
 export const CAMERA_PLATFORM_REACH = 14.5;
 export const CAMERA_PLATFORM_HALF_ANGLE = 0.3;
-/** A camera this far out on the platform's side is up in the stands, in front of the first row's seats. */
+/**
+ * A camera this far out on the platform's side is up in the stands, in front of the first row's seats, and
+ * once there it has to come this much nearer to leave, so a shot hovering at the edge does not flicker them.
+ */
 export const CAMERA_PLATFORM_START = 6.2;
+const CAMERA_PLATFORM_LEAVE = 0.3;
 
-/** Whether a camera at (x, z) stands on the broadcast platform, where the seats on it would be in its way. */
-export function cameraOnPlatform(x: number, z: number): boolean {
-  return z > 0 && Math.hypot(x, z) > CAMERA_PLATFORM_START && Math.abs(Math.atan2(x, z)) < CAMERA_PLATFORM_HALF_ANGLE;
+/**
+ * Whether a camera at (x, z) stands on the broadcast platform, where the seats on it would be in its way:
+ * whatever the shot (the broadcast, the decision, the arm raised after a stoppage), by where it stands.
+ */
+export function cameraOnPlatform(x: number, z: number, from = CAMERA_PLATFORM_START): boolean {
+  return z > 0 && Math.hypot(x, z) > from && Math.abs(Math.atan2(x, z)) < CAMERA_PLATFORM_HALF_ANGLE;
 }
 const RIG_HEIGHT = 7.5;
 
@@ -364,7 +371,7 @@ export function buildCrowd(rand: () => number, tiers: readonly CrowdTier[] = CRO
   // Only at a cut: the seats on the platform are written at once, in the pose of the last update (reduced
   // motion stops updating the crowd), and the whole crowd is uploaded with them.
   const makeRoomForCamera = (camera: { readonly x: number; readonly z: number }): void => {
-    const clear = cameraOnPlatform(camera.x, camera.z);
+    const clear = cameraOnPlatform(camera.x, camera.z, platformClear ? CAMERA_PLATFORM_START - CAMERA_PLATFORM_LEAVE : CAMERA_PLATFORM_START);
     if (clear === platformClear) return;
     platformClear = clear;
     for (const index of platformSeats) place(index, true);

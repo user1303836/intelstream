@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import { buildArena } from "./arena";
+import { ceremonyShot } from "./camera";
 import { CAMERA_PLATFORM_HALF_ANGLE, CAMERA_PLATFORM_REACH, CROWD_TIERS, PARAPET_HEIGHT, PARAPET_SETBACK, buildArmGeometry, buildCrowd, buildHairGeometry, buildHeadGeometry, buildStandsGeometry, buildTorsoGeometry, cameraOnPlatform, seatSpectators, spectatorPose } from "./crowd";
 
 const seeded = (seed: number): (() => number) => () => {
@@ -86,6 +87,46 @@ describe("the broadcast camera's platform", () => {
     for (const index of platform) expect(scaleOf(meshes[0]!, index)).toBe(0);
     crowd.makeRoomForCamera(inside);
     for (const mesh of meshes) for (const index of platform) expect(scaleOf(mesh, index)).toBeGreaterThan(0.5);
+    crowd.dispose();
+  });
+
+  it("clears them for every shot from among or behind them: the decision and the arm raised after a stoppage too", () => {
+    // Those shots stand in front of the result card's free space, centred on the fighters (clamped to 1.4 m
+    // across), at the distance that frames them, drifting by up to 6% of it; on a wide screen and a phone.
+    const firstSeats = CROWD_TIERS[0]!.radius - 0.25;
+    let among = 0;
+    for (const [aspect, fov] of [[16 / 9, 36], [390 / 844, 36 * Math.min(1.3, Math.sqrt(2.2))]] as const) {
+      for (const covered of [0.15, 0.3, 0.45, 0.6]) {
+        const shot = ceremonyShot(aspect, fov, covered);
+        for (const centreX of [-2.3, 0, 2.3]) {
+          for (const centreZ of [-2.3, 0, 1.2, 2.3]) {
+            for (const drift of [-0.06, 0, 0.06]) {
+              const x = THREE.MathUtils.clamp(centreX, -1.4, 1.4) + drift * shot.distance;
+              const z = centreZ + shot.distance;
+              // Any shot standing among the seats on the platform, or further out, has them cleared.
+              if (Math.hypot(x, z) < firstSeats) continue;
+              among += 1;
+              expect(cameraOnPlatform(x, z), `${x.toFixed(2)}, ${z.toFixed(2)}`).toBe(true);
+            }
+          }
+        }
+      }
+    }
+    expect(among).toBeGreaterThan(10);
+  });
+
+  it("keeps them clear while a shot hovers at the edge of the platform, rather than flickering", () => {
+    const crowd = buildCrowd(seeded(3));
+    const [torsos] = meshesOf(crowd);
+    const platform = crowd.spectators.findIndex((spectator) => spectator.platform);
+    crowd.makeRoomForCamera({ x: 0, z: 6.3 });
+    expect(scaleOf(torsos!, platform)).toBe(0);
+    const version = torsos!.instanceMatrix.version;
+    for (const z of [6.15, 6.25, 6.05, 6.2]) crowd.makeRoomForCamera({ x: 0, z });
+    expect(torsos!.instanceMatrix.version).toBe(version);
+    expect(scaleOf(torsos!, platform)).toBe(0);
+    crowd.makeRoomForCamera({ x: 0, z: 5.5 });
+    expect(scaleOf(torsos!, platform)).toBeGreaterThan(0.5);
     crowd.dispose();
   });
 
