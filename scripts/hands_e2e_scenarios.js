@@ -295,8 +295,21 @@ async function main() {
           await wait(60);
           continue;
         }
-        // A keeps pressure: step in, throw power hooks and uppercuts, occasionally straights.
-        await A.page.keyboard.down('d'); await wait(120); await A.page.keyboard.up('d');
+        // A keeps pressure: walk at B (after a count A comes back from a neutral corner), then throw
+        // power hooks and uppercuts, occasionally straights.
+        const gap = await A.page.evaluate(() => {
+          const app = window.__handsApp;
+          const fighters = app?.state?.snapshot?.fighters ?? [];
+          const me = fighters.find((fighter) => fighter.player_id === app.state.playerId);
+          const other = fighters.find((fighter) => fighter.player_id !== app.state.playerId);
+          return me && other ? { dx: other.x - me.x, dy: other.y - me.y, stamina: me.stamina } : null;
+        });
+        const steps = gap === null ? ['d'] : [gap.dx > 60 ? 'd' : gap.dx < -60 ? 'a' : null, gap.dy > 60 ? 'w' : gap.dy < -60 ? 's' : null].filter(Boolean);
+        for (const step of steps) await A.page.keyboard.down(step);
+        await wait(gap !== null && Math.hypot(gap.dx, gap.dy) > 180 ? 320 : 120);
+        for (const step of steps) await A.page.keyboard.up(step);
+        // A tired fighter's punches are weak arm punches, so A gets the breath back before the next one.
+        if (gap !== null && gap.stamina < 350) { await wait(500); continue; }
         const key = ['g', 't', 'h', 'y', 'u'][Math.floor(Math.random() * 5)];
         await A.page.keyboard.press(key);
         await wait(380);
@@ -332,6 +345,9 @@ async function main() {
       for (let i = 0; i < 6; i += 1) { await A.page.keyboard.press('f'); await B.page.keyboard.press('j'); await wait(400); }
       note('before drop A:', (await status(A.page)).status, '| B:', (await status(B.page)).status);
       await B.context.setOffline(true);
+      // Chrome's offline mode stops new connections but leaves an open websocket alone, so the
+      // drop itself is a socket that dies without a goodbye, as a lost connection does.
+      await B.page.evaluate(() => window.__handsApp?.network?.socket?.close?.(4000, 'e2e drop'));
       note('B offline');
       const paused = await waitFor(A.page, (s) => /paused|reconnect/i.test((s.status ?? '') + (s.live ?? '')), 30000, 'opponent pause on A');
       note('A during drop:', paused?.status, '|', paused?.live);
