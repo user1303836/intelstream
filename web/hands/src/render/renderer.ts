@@ -65,6 +65,26 @@ export function compileForComposer(
   return compiled;
 }
 
+const KEY_SHADOW_BIAS = -0.0004;
+/** Past the shadow camera's far plane, so every lit pixel skips the shadow lookups. */
+const SKIPPED_SHADOW_BIAS = 10;
+
+/**
+ * Sets the key light's shadow for a quality tier without touching castShadow, which is part of every
+ * material's program key: flipping it would recompile every shader in one frame on the slowest
+ * devices. Turned off, the shadow stops being drawn, its depth target is freed, and it is hidden.
+ */
+export function setKeyShadowTier(shadow: THREE.LightShadow, off: boolean, size: number): void {
+  shadow.autoUpdate = !off;
+  shadow.intensity = off ? 0 : 1;
+  shadow.bias = off ? SKIPPED_SHADOW_BIAS : KEY_SHADOW_BIAS;
+  if ((off && shadow.map !== null) || shadow.mapSize.x !== size) {
+    shadow.mapSize.set(size, size);
+    shadow.map?.dispose();
+    shadow.map = null;
+  }
+}
+
 export function contactParticipants(event: CombatEvent, snapshot: EngineSnapshot): {
   recipientIndex: number;
   puncherIndex: number;
@@ -1143,14 +1163,7 @@ export class FightRenderer {
     // At the bottom of the scale the client is struggling: drop bloom and the key shadow entirely.
     const low = this.scaler.scale <= LOW_TIER_SCALE;
     this.bloomPass.enabled = !low;
-    if (this.keyLight !== null) this.keyLight.castShadow = !low;
-    const shadowSize = this.scaler.scale < 0.8 ? 1024 : 2048;
-    const shadow = this.keyLight?.shadow;
-    if (shadow !== undefined && shadow.mapSize.x !== shadowSize) {
-      shadow.mapSize.set(shadowSize, shadowSize);
-      shadow.map?.dispose();
-      shadow.map = null;
-    }
+    if (this.keyLight !== null) setKeyShadowTier(this.keyLight.shadow, low, this.scaler.scale < 0.8 ? 1024 : 2048);
   }
 
   private setupLights(): void {
@@ -1163,7 +1176,7 @@ export class FightRenderer {
     key.target.position.set(0, 0.6, 0);
     key.castShadow = true;
     key.shadow.mapSize.set(2048, 2048);
-    key.shadow.bias = -0.0004;
+    key.shadow.bias = KEY_SHADOW_BIAS;
     key.shadow.camera.near = 3;
     key.shadow.camera.far = 14;
     this.keyLight = key;
