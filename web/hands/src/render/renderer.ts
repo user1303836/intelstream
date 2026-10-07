@@ -1000,13 +1000,17 @@ export class FightRenderer {
     this.graphs?.[index]?.predict(action, performance.now() / 1000, this.simulation.tick_rate, leadTicks, predictedPunchTiming(fighter, action, latest.tick + 1), sequence);
   }
 
-  /** Every snapshot, as it arrives, tells the viewer's own punches whether the server took them and how they met the opponent. */
+  /**
+   * Every snapshot, as it arrives, tells the viewer's own punches whether the server took them, and
+   * both fighters' punches how they met the opponent.
+   */
   private acknowledgeActions(snapshot: EngineSnapshot, events: readonly CombatEvent[]): void {
-    if (this.viewerId === null) return;
-    const index = snapshot.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
-    if (index < 0) return;
-    const contacts = events.filter((event) => contactParticipants(event, snapshot).puncherIndex === index);
-    this.graphs?.[index]?.acknowledge(snapshot.fighters[index]!, snapshot.phase === "fight", contacts);
+    const graphs = this.graphs;
+    if (graphs === null) return;
+    for (const [index, fighter] of snapshot.fighters.entries()) {
+      const contacts = events.filter((event) => contactParticipants(event, snapshot).puncherIndex === index);
+      graphs[index]?.acknowledge(fighter, snapshot.phase === "fight", contacts);
+    }
   }
 
   push(snapshot: EngineSnapshot): void {

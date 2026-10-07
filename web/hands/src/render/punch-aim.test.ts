@@ -1,8 +1,9 @@
 import * as THREE from "three";
 import { GLOVE_HITBOX_RADIUS, HURTBOXES, punchTiming } from "../manifest";
 import { fighter as baseFighter } from "../test/fixtures";
-import type { FighterSnapshot, Hand, PunchClass, Target } from "../types";
+import type { DefensivePose, FighterSnapshot, Hand, PunchClass, Target } from "../types";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
+import { worldPosition } from "./rig";
 import { worldMapping } from "./world";
 
 const mapping = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 });
@@ -91,5 +92,61 @@ describe("punch pose allocations", () => {
       const count = (timing.startup + timing.active + timing.recovery) * 2 - 2;
       expect(frames(punch, count) / count, punchClass).toBe(perIdleFrame);
     }
+  });
+});
+
+describe("punches at an evading head", () => {
+  /**
+   * Throws a left `punchClass` at a defender `units` away who goes into `defense` the tick after it
+   * starts, with two graphs handing each other their heads a frame late as the renderer does. Returns
+   * the glove and the defender's head at the contact tick. `connects` reports a hit for the punch, as
+   * the server does when the evasion was the wrong one.
+   */
+  function throwAt(punchClass: PunchClass, defense: DefensivePose, units: number, connects: boolean): { glove: THREE.Vector3; head: THREE.Vector3 } {
+    const attacker = new BoxingGraph(new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 }), mapping);
+    const defender = new BoxingGraph(new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0xb91c1c }), mapping);
+    const attackerIdle = facingOpponent(baseFighter("one"));
+    const defenderIdle = opponentAt(units);
+    const timing = punchTiming(punchClass, "head", "normal");
+    const start = 100;
+    const punch: FighterSnapshot = {
+      ...attackerIdle, action: punchClass, action_hand: "left", action_target: "head", action_power: "normal", action_id: "p1", action_key: `${punchClass}:left:head:normal`,
+      action_start_tick: start, action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery,
+    };
+    const hit = { event_id: 3, tick: start + timing.startup, kind: "hit", actor_id: "one", target_id: "two", amount: 30, detail: `${punchClass}:head`, blood: 0, direction: 1, action_id: "p1" };
+    const attackerHead = new THREE.Vector3();
+    const defenderHead = new THREE.Vector3();
+    const glove = new THREE.Vector3();
+    for (let tick = start - 10; tick <= start + timing.startup; tick += 0.5) {
+      const shownAttacker = tick >= start ? punch : attackerIdle;
+      const shownDefender = tick >= start + 1 && tick < start + 11 ? { ...defenderIdle, defense } : defenderIdle;
+      // The newest snapshot reaches the client a couple of ticks before the contact is shown.
+      if (connects && tick === start + timing.startup - 2) attacker.acknowledge(punch, true, [hit]);
+      attacker.update(shownAttacker, shownDefender, 1 / 60, tick / 30, false, "full", tick, tick > start - 10 ? defenderHead : undefined);
+      defender.update(shownDefender, shownAttacker, 1 / 60, tick / 30, false, "full", tick, tick > start - 10 ? attackerHead : undefined);
+      attacker.boxer.root.updateMatrixWorld(true);
+      defender.boxer.root.updateMatrixWorld(true);
+      worldPosition(attacker.boxer.rig.bones.head, attackerHead);
+      worldPosition(defender.boxer.rig.bones.head, defenderHead);
+      worldPosition(attacker.boxer.rig.bones.gloveL, glove);
+    }
+    return { glove, head: defenderHead };
+  }
+
+  it("sends the glove where the head was when a slip or weave worked, and after the head when the punch still connected", () => {
+    const cleanJab = throwAt("jab", "none", 150, true);
+    const cleanReach = cleanJab.glove.distanceTo(cleanJab.head);
+    // A left jab is slipped to the defender's right: the glove goes where it would have met him and misses.
+    const slipped = throwAt("jab", "slip_right", 150, false);
+    expect(slipped.glove.distanceTo(cleanJab.glove)).toBeLessThan(0.02);
+    expect(slipped.glove.distanceTo(slipped.head)).toBeGreaterThan(cleanReach + 0.08);
+    // Slipping left does not get away from it: the server reports the hit and the glove follows the head.
+    const caught = throwAt("jab", "slip_left", 150, true);
+    expect(Math.abs(caught.glove.distanceTo(caught.head) - cleanReach)).toBeLessThan(0.05);
+    // A weave ducks a hook: the glove ends where it would on a defender standing still, never deeper.
+    const cleanHook = throwAt("hook", "none", 110, true);
+    const weaved = throwAt("hook", "weave", 110, false);
+    expect(weaved.glove.distanceTo(cleanHook.glove)).toBeLessThan(0.02);
+    expect(weaved.glove.distanceTo(weaved.head)).toBeGreaterThan(cleanHook.glove.distanceTo(cleanHook.head));
   });
 });

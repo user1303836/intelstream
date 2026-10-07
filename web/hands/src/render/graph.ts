@@ -368,6 +368,16 @@ export class BoxingGraph {
   private fallProne = false;
   private readonly liveOpponentHead = new THREE.Vector3();
   private hasLiveHead = false;
+  /**
+   * Where the opponent's head would be without a slip, weave or pull: its offset from his root, learnt
+   * while he stands his ground, is held from the moment he evades until his head is back.
+   */
+  private readonly guardOpponentHead = new THREE.Vector3();
+  private readonly opponentHeadOffset = new THREE.Vector3();
+  private opponentSteadySeconds = 0;
+  /** How far the punch's aim has moved from that head onto the live one: only once the punch is known to have met him. */
+  private followHead = 0;
+  private aimActionId: string | null = null;
   private readonly headKick: Spring3 = { value: new THREE.Vector3(), velocity: new THREE.Vector3() };
   private readonly torsoKick: Spring3 = { value: new THREE.Vector3(), velocity: new THREE.Vector3() };
   private readonly rootKick: Spring3 = { value: new THREE.Vector3(), velocity: new THREE.Vector3() };
@@ -880,10 +890,7 @@ export class BoxingGraph {
       this.boxer.bodyInjury.update(simDt);
     }
 
-    if (opponentHeadWorld !== undefined) {
-      this.liveOpponentHead.copy(opponentHeadWorld);
-      this.hasLiveHead = true;
-    }
+    if (opponentHeadWorld !== undefined) this.trackOpponentHead(opponent, opponentHeadWorld, dt);
 
     const velocityWorld = this.scratchB.set(this.mapping.x(fighter.velocity_x) * 30, 0, this.mapping.z(fighter.velocity_y) * 30);
     const speed = velocityWorld.length();
@@ -1293,6 +1300,23 @@ export class BoxingGraph {
       this.ownQueued = null;
     }
     this.releaseQueuedPress(simDt, ended);
+    // A punch the server says met the opponent, hit or block, follows his head wherever it went.
+    const aimed = this.actionId ?? this.ownActionId;
+    if (aimed !== this.aimActionId) {
+      this.aimActionId = aimed;
+      this.followHead = 0;
+    }
+    this.followHead = smooth(this.followHead, aimed !== null && aimed === this.contactId ? 1 : 0, FOLLOW_HEAD_RATE, simDt);
+  }
+
+  /** Takes the opponent's head as drawn and keeps where it would be without his slip, weave or pull. */
+  private trackOpponentHead(opponent: FighterSnapshot, head: THREE.Vector3, dt: number): void {
+    const root = this.guardOpponentHead.set(this.mapping.x(opponent.x), 0, this.mapping.z(opponent.y));
+    this.opponentSteadySeconds = EVASION_POSES.has(opponent.defense) ? 0 : this.opponentSteadySeconds + dt;
+    if (!this.hasLiveHead || this.opponentSteadySeconds >= HEAD_SETTLE_SECONDS) this.opponentHeadOffset.copy(head).sub(root);
+    root.add(this.opponentHeadOffset);
+    this.liveOpponentHead.copy(head);
+    this.hasLiveHead = true;
   }
 
   /**
@@ -1413,7 +1437,8 @@ export class BoxingGraph {
     const target = this.scratch;
     const rootPosition = this.scratchB.set(this.rootX ?? 0, 0, this.rootZ);
     if (this.hasLiveHead) {
-      target.copy(this.liveOpponentHead).sub(rootPosition).applyQuaternion(this.scratchQ.setFromAxisAngle(worldUpVector, -this.yaw));
+      // An evading head is aimed at where it was, so a slip or weave that worked shows the glove go by.
+      target.copy(this.guardOpponentHead).lerp(this.liveOpponentHead, this.followHead).sub(rootPosition).applyQuaternion(this.scratchQ.setFromAxisAngle(worldUpVector, -this.yaw));
       if (body === 1) target.y -= 0.42;
       else target.y -= 0.04;
     } else {
@@ -2049,6 +2074,11 @@ const OWN_PUNCH_PULL_RATE = 1.5;
 const SAME_STEP_TICKS = 0.5;
 /** Contact events in which a punch met the opponent: a hit or a block, a parry included. */
 const CONNECTING_CONTACTS: ReadonlySet<string> = new Set(["hit", "counter_hit", "block", "perfect_block"]);
+const EVASION_POSES: ReadonlySet<string> = new Set(["slip_left", "slip_right", "weave", "pull"]);
+/** Seconds after an evasion ends for the head to settle back (the slip, weave and pull ease at 14-16 a second). */
+const HEAD_SETTLE_SECONDS = 0.25;
+/** Rate at which a punch known to connect turns its aim onto the head where it actually is. */
+const FOLLOW_HEAD_RATE = 30;
 
 /** Age in `to`'s timing at the same progress through the same phase as `age` in `from`'s. */
 export function remapPunchAge(age: number, from: PunchTiming, to: PunchTiming): number {
