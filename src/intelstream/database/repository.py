@@ -43,7 +43,7 @@ from intelstream.hands.rating import (
     calculate_elo,
     repeat_pairing_k_factor,
 )
-from intelstream.hands.types import FinishMethod, MatchResult
+from intelstream.hands.types import FighterStyle, FinishMethod, MatchResult
 
 logger = structlog.get_logger()
 
@@ -964,12 +964,22 @@ class Repository:
             )
             return result.scalar_one_or_none()
 
-    async def record_hands_match(self, match_result: MatchResult) -> HandsMatch:
+    async def record_hands_match(
+        self,
+        match_result: MatchResult,
+        *,
+        styles: tuple[FighterStyle, FighterStyle] | None = None,
+    ) -> HandsMatch:
+        """Records a rated bout; `styles` are the two fighters' styles, in player order."""
         self._validate_hands_result(match_result)
         async with self._hands_write_lock:
-            return await self._record_hands_match_locked(match_result)
+            return await self._record_hands_match_locked(match_result, styles)
 
-    async def _record_hands_match_locked(self, match_result: MatchResult) -> HandsMatch:
+    async def _record_hands_match_locked(
+        self,
+        match_result: MatchResult,
+        styles: tuple[FighterStyle, FighterStyle] | None,
+    ) -> HandsMatch:
         try:
             async with self.session() as session, session.begin():
                 existing_result = await session.execute(
@@ -1043,16 +1053,17 @@ class Repository:
                     separators=(",", ":"),
                     sort_keys=True,
                 )
-                result_json = json.dumps(
-                    {
-                        "player_one_damage": match_result.player_one_damage,
-                        "player_one_knockdowns": match_result.player_one_knockdowns,
-                        "player_two_damage": match_result.player_two_damage,
-                        "player_two_knockdowns": match_result.player_two_knockdowns,
-                    },
-                    separators=(",", ":"),
-                    sort_keys=True,
-                )
+                result_details: dict[str, object] = {
+                    "player_one_damage": match_result.player_one_damage,
+                    "player_one_knockdowns": match_result.player_one_knockdowns,
+                    "player_two_damage": match_result.player_two_damage,
+                    "player_two_knockdowns": match_result.player_two_knockdowns,
+                }
+                if styles is not None:
+                    # Win rates by style in rated play are what a balance change is checked against.
+                    result_details["player_one_style"] = styles[0].value
+                    result_details["player_two_style"] = styles[1].value
+                result_json = json.dumps(result_details, separators=(",", ":"), sort_keys=True)
                 match = HandsMatch(
                     match_id=match_result.match_id,
                     activity_instance_id=match_result.activity_instance_id,

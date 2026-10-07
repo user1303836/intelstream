@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -29,7 +30,7 @@ from intelstream.database.models import (
     SuckBoobsStats,
 )
 from intelstream.database.repository import Repository
-from intelstream.hands.types import FinishMethod, JudgeCard, MatchResult
+from intelstream.hands.types import FighterStyle, FinishMethod, JudgeCard, MatchResult
 
 
 @pytest.fixture
@@ -2271,6 +2272,22 @@ class TestHandsRatings:
         assert match.player_one_rating_before == 1000
         assert match.player_two_rating_after == 984
         assert repr(match) == "<HandsMatch(match_id='match-1', finish='ko')>"
+
+    async def test_a_rated_bout_stores_both_fighters_styles(self, repository: Repository) -> None:
+        styled = await repository.record_hands_match(
+            self.result("styled"), styles=(FighterStyle.SWARMER, FighterStyle.COUNTER_PUNCHER)
+        )
+        plain = await repository.record_hands_match(self.result("plain"))
+
+        assert json.loads(styled.result_json) == {
+            "player_one_damage": 250,
+            "player_one_knockdowns": 0,
+            "player_one_style": "swarmer",
+            "player_two_damage": 100,
+            "player_two_knockdowns": 2,
+            "player_two_style": "counter_puncher",
+        }
+        assert "player_one_style" not in json.loads(plain.result_json)
 
     async def test_a_doctor_stoppage_counts_as_a_knockout_in_the_record(
         self, repository: Repository

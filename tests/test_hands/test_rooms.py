@@ -1276,10 +1276,10 @@ async def test_shutdown_after_result_shields_persistence_from_cancelled_waiter(
     entered = asyncio.Event()
     release = asyncio.Event()
 
-    async def delayed_record(result):
+    async def delayed_record(result, **details):
         entered.set()
         await release.wait()
-        return await original_record(result)
+        return await original_record(result, **details)
 
     repository.record_hands_match = delayed_record
     manager = HandsRoomManager(
@@ -1670,10 +1670,10 @@ async def test_reconnect_during_result_persistence_gets_snapshot_then_exact_fina
     persistence_entered = asyncio.Event()
     persistence_release = asyncio.Event()
 
-    async def delayed_record(result):
+    async def delayed_record(result, **details):
         persistence_entered.set()
         await persistence_release.wait()
-        return await original_record(result)
+        return await original_record(result, **details)
 
     repository.record_hands_match = delayed_record
     manager = HandsRoomManager(
@@ -2532,6 +2532,38 @@ async def test_a_flood_of_style_picks_is_throttled_with_the_fighters_inputs(
             )
     await one.room.choose_style("one", one.connection, ready_choice(FighterStyle.SWARMER))
     assert one.room.engine is None
+    await manager.close()
+
+
+async def test_a_rated_bout_records_and_logs_both_fighters_styles(
+    repository: Repository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    safe_logger = MagicMock()
+    monkeypatch.setattr(rooms_module, "logger", safe_logger)
+    manager = HandsRoomManager(
+        repository,
+        config=room_config(style_select=5.0),
+        match_id_factory=lambda: "match-styles",
+    )
+    first_socket = FakeSocket()
+    one = await manager.join(player("one"), first_socket)
+    two = await manager.join(player("two"), FakeSocket())
+    await one.room.choose_style("one", one.connection, ready_choice(FighterStyle.SWARMER))
+    await two.room.choose_style("two", two.connection, ready_choice(FighterStyle.SLUGGER))
+    await wait_until(lambda: "final" in message_types(first_socket), deadline_seconds=5)
+
+    match = await repository.get_hands_match("match-styles")
+    assert match is not None
+    stored = json.loads(match.result_json)
+    assert (stored["player_one_style"], stored["player_two_style"]) == ("swarmer", "slugger")
+    safe_logger.info.assert_any_call(
+        "Hands bout started",
+        instance_id="instance-1",
+        match_id="match-styles",
+        cpu_level=None,
+        player_one_style="swarmer",
+        player_two_style="slugger",
+    )
     await manager.close()
 
 

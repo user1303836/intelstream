@@ -875,6 +875,14 @@ class HandsRoom:
                 seed ^ CPU_SEED_SALT,
                 self._cpu.style,
             )
+        logger.info(
+            "Hands bout started",
+            instance_id=self.instance_id,
+            match_id=self._engine.match_id,
+            cpu_level=None if self._cpu is None else self._cpu.level.value,
+            player_one_style=styles[players[0]].value,
+            player_two_style=styles[players[1]].value,
+        )
         self._enqueue_all(self._message("ready", players=self._public_players()))
         self._tick_task = asyncio.create_task(
             self._run_match(), name=f"hands-match-{self._engine.match_id}"
@@ -1246,7 +1254,15 @@ class HandsRoom:
         # A bout against the computer is unrated and leaves no record.
         if self._cpu is not None:
             return None
-        return await self.repository.record_hands_match(result)
+        engine = self._engine
+        assert engine is not None
+        return await self.repository.record_hands_match(
+            result,
+            styles=(
+                engine.fighter(result.player_one_id).style,
+                engine.fighter(result.player_two_id).style,
+            ),
+        )
 
     async def _finish_abandoned(self) -> None:
         self._finished = True
