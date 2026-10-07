@@ -274,9 +274,15 @@ export class NetworkController {
       this.setInputActive(true);
       this.attempts = 0;
       this.clearOpponentPause(true);
+    } else if (message.type === "select") {
+      // A pause belongs to the bout. Before the bell the pick itself says who is connected, and an
+      // empty seat at the bell comes with a fresh pause after the ready.
+      this.clearOpponentPause(true);
     } else if (message.type === "ready") {
+      this.clearOpponentPause(true);
       this.setInputActive(true);
     } else if (message.type === "waiting") {
+      this.clearOpponentPause(true);
       this.setInputActive(false);
     } else if (message.type === "final" || message.type === "error") {
       this.active = false;

@@ -1,6 +1,6 @@
 import { snapshot } from "./test/fixtures";
 import { NetworkController, websocketUrl } from "./network";
-import type { ServerMessage } from "./types";
+import { PROTOCOL_VERSION, type ServerMessage } from "./types";
 
 class FakeSocket {
   readyState = 1;
@@ -337,6 +337,27 @@ describe("same-origin WebSocket controller", () => {
     vi.advanceTimersByTime(3_000);
     expect(reconnect).toHaveBeenCalledTimes(calls);
     controller.dispose();
+  });
+
+  it("lets the pick and the bell end an opponent pause, so no countdown runs over the picker or the bout", () => {
+    vi.useFakeTimers();
+    const reconnect = vi.fn();
+    const socket = new FakeSocket();
+    const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks({ onReconnect: reconnect }), () => socket, () => Date.now());
+    controller.start(); socket.open(); socket.message(welcome());
+    const select = { version: PROTOCOL_VERSION, type: "select", deadline_ms: 9_000, players: ready.players, ready: [] };
+    for (const ends of [select, ready, { version: PROTOCOL_VERSION, type: "waiting", open_seats: 1 }]) {
+      socket.message({ version: PROTOCOL_VERSION, type: "paused", player_id: "two", grace_ms: 8_500 });
+      vi.advanceTimersByTime(250);
+      expect(reconnect).toHaveBeenLastCalledWith(8_250);
+      socket.message(ends);
+      expect(reconnect).toHaveBeenLastCalledWith(0);
+      const calls = reconnect.mock.calls.length;
+      vi.advanceTimersByTime(9_000);
+      expect(reconnect).toHaveBeenCalledTimes(calls);
+    }
+    controller.dispose();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("gives its own dropped transport a fresh grace while the opponent is paused", () => {

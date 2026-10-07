@@ -179,6 +179,20 @@ describe("the style picker", () => {
     picker.destroy();
   });
 
+  it("says who the pick is waiting on when the other corner drops, and that he is back", () => {
+    const picker = make();
+    const away = choosing({ players: [publicPlayers[0], { ...publicPlayers[1], connected: false }] });
+    show(picker, away);
+    expect(status(picker)).toBe("Waiting for Two to reconnect. Tap a style or press Enter to settle on yours.");
+    card(picker, "slugger").click();
+    expect(status(picker)).toBe("Ready as Slugger. Waiting for Two to reconnect.");
+    show(picker, choosing());
+    expect(status(picker)).toBe("Ready as Slugger. Waiting for your opponent.");
+    show(picker, away, null, "spectator");
+    expect(status(picker)).toBe("The fighters are choosing. Waiting for Two to reconnect.");
+    picker.destroy();
+  });
+
   it("shows the room's settled pick after a reconnect", () => {
     const picker = make("balanced");
     show(picker, choosing({ players: [{ ...publicPlayers[0], style: "swarmer" }, publicPlayers[1]], ready: ["one"] }));

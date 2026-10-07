@@ -459,10 +459,11 @@ class HandsRoom:
             if self._final_payload is not None:
                 self._enqueue(connection, self._final_payload)
             elif not final_recovery and self._select is not None:
-                self._enqueue(
-                    connection,
-                    self._select_message(identity.user_id if role == "fighter" else None),
-                )
+                if existing_fighter is not None:
+                    # Back during the pick: the other corner sees him connected again.
+                    self._broadcast_select(bounded_update=True)
+                else:
+                    self._enqueue(connection, self._select_message(None))
             elif (
                 not final_recovery
                 and role == "fighter"
@@ -504,20 +505,8 @@ class HandsRoom:
             elif not final_recovery and len(self._slots) == 1:
                 self._enqueue(connection, self._message("waiting", open_seats=1))
             elif not final_recovery and self._engine is None:
+                # An opponent still away shows as disconnected in the pick itself.
                 self._begin_select()
-                disconnected = [
-                    current for current in self._slots.values() if current.connection is None
-                ]
-                if disconnected:
-                    opponent = disconnected[0]
-                    self._enqueue(
-                        connection,
-                        self._message(
-                            "paused",
-                            player_id=opponent.identity.user_id,
-                            grace_ms=max(0, int(opponent.grace_remaining * 1000)),
-                        ),
-                    )
             return RoomMembership(
                 self,
                 identity.user_id,
@@ -902,6 +891,17 @@ class HandsRoom:
             player_two_style=styles[players[1]].value,
         )
         self._enqueue_all(self._message("ready", players=self._public_players()))
+        absent = [slot for slot in self._slots.values() if slot.connection is None]
+        if absent:
+            # A seat still empty at the bell: the bout opens paused until he is back or forfeits.
+            self._enqueue_all(
+                self._message(
+                    "paused",
+                    player_id=absent[0].identity.user_id,
+                    grace_ms=max(0, int(absent[0].grace_remaining * 1000)),
+                ),
+                bounded_update=True,
+            )
         self._tick_task = asyncio.create_task(
             self._run_match(), name=f"hands-match-{self._engine.match_id}"
         )
@@ -1086,6 +1086,9 @@ class HandsRoom:
                             name=f"hands-waiting-grace-{player_id}",
                         )
                     slot.pre_match_grace_event.set()
+                    if self._select is not None and not self._closed:
+                        # The pick goes on; the other corner sees him disconnected in it.
+                        self._broadcast_select(bounded_update=True)
                 elif not self._finished:
                     self._enqueue_all(
                         self._message(

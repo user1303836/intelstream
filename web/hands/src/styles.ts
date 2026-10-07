@@ -207,10 +207,10 @@ export class StylePicker {
     const clock = `${seconds}s`;
     if (this.clock.textContent !== clock) this.clock.textContent = clock;
     // Who has settled, never on what: the styles are revealed together at the bell, since showing a
-    // settled one would reward waiting to pick its counter.
+    // settled one would reward waiting to pick its counter. Who has dropped, while the pick goes on.
     const named = select.players
-      .filter((player) => player.id !== viewerId && select.ready.includes(player.id))
-      .map((player) => `${player.name} is ready.`)
+      .filter((player) => player.id !== viewerId && (!player.connected || select.ready.includes(player.id)))
+      .map((player) => (player.connected ? `${player.name} is ready.` : `Waiting for ${player.name} to reconnect.`))
       .join(" ");
     const text = !this.choosing
       ? named.length > 0 ? `The fighters are choosing. ${named}` : "The fighters are choosing their styles."

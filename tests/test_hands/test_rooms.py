@@ -2501,6 +2501,87 @@ async def test_an_opponent_who_never_comes_back_returns_the_room_to_waiting(
     await manager.close()
 
 
+def connected_flags(message: dict[str, object]) -> dict[str, bool]:
+    return {entry["id"]: entry["connected"] for entry in message["players"]}
+
+
+async def test_a_drop_and_a_return_during_the_pick_reach_the_other_corner(
+    repository: Repository,
+) -> None:
+    manager = HandsRoomManager(
+        repository, config=room_config(round_ticks=600, style_select=5.0, reconnect_grace=5.0)
+    )
+    first_socket, second_socket = FakeSocket(), FakeSocket()
+    one = await manager.join(player("one"), first_socket)
+    two = await manager.join(player("two"), second_socket)
+    await wait_until(lambda: "select" in message_types(first_socket))
+
+    await manager.leave(two)
+    await wait_until(lambda: len(payloads(first_socket, "select")) == 2)
+    assert connected_flags(payloads(first_socket, "select")[-1]) == {"one": True, "two": False}
+    # The pick goes on: a pause belongs to the bout, which has not started.
+    assert "paused" not in message_types(first_socket)
+
+    returning = FakeSocket()
+    await manager.join(player("two"), returning)
+    await wait_until(lambda: len(payloads(first_socket, "select")) == 3)
+    assert connected_flags(payloads(first_socket, "select")[-1]) == {"one": True, "two": True}
+    assert message_types(returning) == ["welcome", "select"]
+    assert connected_flags(payloads(returning, "select")[0]) == {"one": True, "two": True}
+    assert one.room.engine is None
+    await manager.close()
+
+
+async def test_a_fighter_who_arrives_while_the_other_is_away_sees_him_away_in_the_pick(
+    repository: Repository,
+) -> None:
+    manager = HandsRoomManager(
+        repository, config=room_config(round_ticks=600, style_select=5.0, reconnect_grace=5.0)
+    )
+    one = await manager.join(player("one"), FakeSocket())
+    await manager.leave(one)
+    second_socket = FakeSocket()
+    await manager.join(player("two"), second_socket)
+    await wait_until(lambda: "select" in message_types(second_socket))
+    assert message_types(second_socket) == ["welcome", "select"]
+    assert connected_flags(payloads(second_socket, "select")[0]) == {"one": False, "two": True}
+
+    first_again = FakeSocket()
+    await manager.join(player("one"), first_again)
+    await wait_until(lambda: len(payloads(second_socket, "select")) == 2)
+    assert connected_flags(payloads(second_socket, "select")[-1]) == {"one": True, "two": True}
+    assert "paused" not in message_types(second_socket)
+    await manager.close()
+
+
+async def test_a_seat_still_empty_at_the_bell_opens_the_bout_paused(
+    repository: Repository,
+) -> None:
+    manager = HandsRoomManager(
+        repository, config=room_config(round_ticks=600, style_select=0.1, reconnect_grace=5.0)
+    )
+    first_socket = FakeSocket()
+    one = await manager.join(player("one"), first_socket)
+    two = await manager.join(player("two"), FakeSocket())
+    await manager.leave(two)
+    await wait_until(lambda: "paused" in message_types(first_socket))
+    after_pick = message_types(first_socket)[message_types(first_socket).index("ready") :]
+    assert after_pick[:2] == ["ready", "paused"]
+    paused = payloads(first_socket, "paused")[0]
+    assert paused["player_id"] == "two"
+    assert 3000 < paused["grace_ms"] <= 5000
+    engine = one.room.engine
+    assert engine is not None
+    paused_at = engine.tick
+    await asyncio.sleep(0.05)
+    assert engine.tick == paused_at
+
+    await manager.join(player("two"), FakeSocket())
+    await wait_until(lambda: "resumed" in message_types(first_socket))
+    await wait_until(lambda: engine.tick > paused_at)
+    await manager.close()
+
+
 async def test_a_style_sent_after_the_bell_changes_nothing(repository: Repository) -> None:
     manager = HandsRoomManager(repository, config=room_config(round_ticks=600))
     one = await manager.join(player("one"), FakeSocket())
