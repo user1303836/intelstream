@@ -135,3 +135,72 @@ describe("own punch the server refuses", () => {
     expect((graph as unknown as { ownPulled: boolean }).ownPulled).toBe(false);
   });
 });
+
+const serverPunch = (base: FighterSnapshot, id: string, action: PunchAction, startTick: number): FighterSnapshot => {
+  const timing = predictedPunchTiming(base, action);
+  return {
+    ...base, action: action.class, action_hand: action.hand, action_target: action.target, action_power: action.power, action_id: id,
+    action_key: `${action.class}:${action.hand}:${action.target}:${action.power}`, action_start_tick: startTick,
+    action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery,
+  };
+};
+
+describe("two presses inside one server tick", () => {
+  const jab = press("own-1", "jab", "left");
+  const straight = press("own-2", "straight", "right");
+
+  it("predicts the newer press when both ride the same input frame, as the server only ever sees that one", () => {
+    const graph = makeGraph();
+    graph.predict(jab, 10, 30, 4, predictedPunchTiming(idle, jab), 41);
+    graph.predict(straight, 10.005, 30, 4, predictedPunchTiming(idle, straight), 41);
+    expect(state(graph).punchClass).toBe("straight");
+    expect(state(graph).ownActionId).toBe("own-2");
+  });
+
+  it("predicts the newer press when it comes less than half a tick after the first, in the next frame", () => {
+    const graph = makeGraph();
+    graph.predict(jab, 10, 30, 4, predictedPunchTiming(idle, jab), 41);
+    graph.predict(straight, 10 + 0.4 / 30, 30, 4, predictedPunchTiming(idle, straight), 42);
+    expect(state(graph).punchClass).toBe("straight");
+    expect(state(graph).ownActionId).toBe("own-2");
+  });
+
+  it("keeps the first press once a tick has gone by, or once the server shows it started", () => {
+    const later = makeGraph();
+    later.predict(jab, 10, 30, 4, predictedPunchTiming(idle, jab), 41);
+    const step = stepper(later, 100);
+    step(idle);
+    step(idle);
+    later.predict(straight, 10 + 1 / 30, 30, 4, predictedPunchTiming(idle, straight), 43);
+    expect(state(later).punchClass).toBe("jab");
+    expect(state(later).ownActionId).toBe("own-1");
+    const started = makeGraph();
+    started.predict(jab, 10, 30, 4, predictedPunchTiming(idle, jab), 41);
+    started.acknowledge(serverPunch({ ...idle, last_input_sequence: 41 }, "own-1", jab, 100), true);
+    started.predict(straight, 10 + 0.4 / 30, 30, 4, predictedPunchTiming(idle, straight), 42);
+    expect(state(started).ownActionId).toBe("own-1");
+  });
+
+  it("never snaps the glove back when the server confirms the newer press, and plays the first if the server threw it after all", () => {
+    const graph = makeGraph();
+    graph.predict(jab, 10, 30, 4, predictedPunchTiming(idle, jab), 41);
+    graph.predict(straight, 10.005, 30, 4, predictedPunchTiming(idle, straight), 41);
+    const step = stepper(graph, 100);
+    const ages: number[] = [];
+    for (let frame = 0; frame < 4; frame += 1) { step(idle); ages.push(state(graph).punchAgeTicks); }
+    const confirmed = serverPunch(idle, "own-2", straight, 101);
+    for (let frame = 0; frame < 10; frame += 1) {
+      step(confirmed);
+      expect(state(graph).ownActionId).toBe("own-2");
+      expect((graph as unknown as { punchHand: string }).punchHand).toBe("right");
+      ages.push(state(graph).punchAgeTicks);
+    }
+    for (let index = 1; index < ages.length; index += 1) expect(ages[index]!).toBeGreaterThanOrEqual(ages[index - 1]!);
+    const other = makeGraph();
+    other.predict(jab, 10, 30, 4, predictedPunchTiming(idle, jab), 41);
+    other.predict(straight, 10.005, 30, 4, predictedPunchTiming(idle, straight), 41);
+    stepper(other, 200)(serverPunch(idle, "own-1", jab, 199));
+    expect(state(other).punchClass).toBe("jab");
+    expect(state(other).punchActive).toBe(true);
+  });
+});

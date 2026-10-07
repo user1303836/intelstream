@@ -333,6 +333,8 @@ export class BoxingGraph {
   private ownPulled = false;
   /** Input frame that carried the press: once a snapshot has it, the punch has started there or never will. */
   private ownSequence: number | null = null;
+  /** When the key was pressed, in seconds. */
+  private ownPressedAt = 0;
   /** The server refused the punch or cut it off before contact, so the pull-back is final. */
   private ownRefused = false;
   /** Own punches already played or cut short here; the server's copy of them is not played again. */
@@ -555,11 +557,17 @@ export class BoxingGraph {
    */
   predict(action: SemanticAction, timeSeconds: number, tickRate: number, leadTicks = 0, expected?: PunchTiming, sequence?: number): void {
     if (action.kind !== "punch" || action.id === undefined) return;
-    void timeSeconds;
-    void tickRate;
+    // The server keeps one press waiting and a newer one takes its place. Two presses in the same
+    // input frame, or less than half a tick apart, usually reach it before the same step, so only the
+    // second starts there: it replaces the first here too, unless the server has already started it.
+    const unstarted = this.punchActive && this.ownActionId !== null && this.ownAuthoritativeAge === null && !this.ownPulled
+      && (sequence === undefined || this.ownSequence !== null);
+    const replaces = unstarted && (sequence === this.ownSequence || (timeSeconds - this.ownPressedAt) * tickRate < SAME_STEP_TICKS);
+    // Not retired: if the first did start after all, it plays on the server's timeline.
+    if (replaces) this.ownActionId = null;
     // Mid-punch the server queues the press, so it plays on the server's timeline. Late in the
     // recovery the follow-up cuts in at once, and a punch on its way back holds nothing up.
-    const busy = this.punchActive && !this.ownPulled;
+    const busy = this.punchActive && !this.ownPulled && !replaces;
     const remaining = busy ? this.punchTotalTicks - this.punchAgeTicks : 0;
     if (busy && this.punchAgeTicks / this.punchTotalTicks <= 0.55) return;
     this.retirePunch();
@@ -576,6 +584,7 @@ export class BoxingGraph {
     this.ownLeadTicks = clamp(leadTicks, 0, MAX_OWN_LEAD_TICKS);
     this.ownExpectedTicks = Math.max(0, leadTicks) + remaining;
     this.ownSequence = sequence ?? null;
+    this.ownPressedAt = timeSeconds;
   }
 
   /** True while the viewer's own punch, started on the key press, is playing. */
@@ -1932,6 +1941,8 @@ const worldUpVector = new THREE.Vector3(0, 1, 0);
 const MAX_OWN_LEAD_TICKS = 6;
 const OWN_PUNCH_GRACE_TICKS = 5;
 const OWN_PUNCH_PULL_RATE = 1.5;
+/** Presses closer together than this usually reach the server before the same step, where the newer one replaces the older. */
+const SAME_STEP_TICKS = 0.5;
 
 /** Age in `to`'s timing at the same progress through the same phase as `age` in `from`'s. */
 export function remapPunchAge(age: number, from: PunchTiming, to: PunchTiming): number {

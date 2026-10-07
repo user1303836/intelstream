@@ -280,7 +280,7 @@ describe("own punch prediction", () => {
     const step = (fighter: FighterSnapshot): void => { tick += 0.5; graph.update(fighter, opponentFor("two"), 1 / 60, tick / 30, false, "full", tick, undefined); };
     for (let frame = 0; frame < 3; frame += 1) step(idle);
     const before = age(graph);
-    graph.predict({ ...jab, id: "own-2", class: "straight" }, 0, 30, 4);
+    graph.predict({ ...jab, id: "own-2", class: "straight" }, 3 / 60, 30, 4);
     expect(state(graph).punchClass).toBe("jab");
     expect(state(graph).ownActionId).toBe("own-1");
     expect(age(graph)).toBe(before);
