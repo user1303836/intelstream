@@ -178,7 +178,7 @@ export class HandsApp {
     if (this.rematchButton.disabled || this.state.stage !== "complete") return;
     this.rematchAttempts = 1;
     // Named while the old bout's players are still known, for the wait in the new room.
-    this.rematchOpponent = this.cpuBout ? null : Object.values(this.state.players).find((player) => player.id !== this.state.playerId)?.name ?? null;
+    this.rematchOpponent = this.cpuBout || this.state.role !== "fighter" ? null : Object.values(this.state.players).find((player) => player.id !== this.state.playerId)?.name ?? null;
     void this.authorize();
   };
 
@@ -206,12 +206,14 @@ export class HandsApp {
 
   private startRematchCountdown(): void {
     this.clearRematchTimers();
-    if (this.state.role !== "fighter") return;
+    // A spectator can stay for the channel's next bout: the fighters keep their seats for a
+    // rematch, so he watches it, or takes a seat they leave empty.
+    const label = this.state.role === "fighter" ? "Rematch" : "Next bout";
     const tick = (): void => {
       const remaining = Math.ceil((this.finalReceivedAt + REMATCH_HOLD_MS - Date.now()) / 1000);
       this.rematchButton.hidden = this.state.stage !== "complete";
       this.rematchButton.disabled = remaining > 0;
-      this.setText(this.rematchButton, remaining > 0 ? `Rematch in ${remaining}s` : "Rematch");
+      this.setText(this.rematchButton, remaining > 0 ? `${label} in ${remaining}s` : label);
       if (remaining <= 0 && this.rematchCountdownTimer !== null) {
         window.clearInterval(this.rematchCountdownTimer);
         this.rematchCountdownTimer = null;
@@ -376,7 +378,7 @@ export class HandsApp {
       bootstrapping: "Loading…",
       authorizing: "Authorizing with Discord…",
       connecting: "Connecting securely…",
-      waiting: this.cpuLevel !== null ? "Calling in the computer…" : this.rematchOpponent !== null ? `Waiting for ${this.rematchOpponent} to take the rematch…` : "Waiting for an opponent. Anyone in this channel can join with Play now.",
+      waiting: this.state.role === "spectator" ? "Waiting for the fighters…" : this.cpuLevel !== null ? "Calling in the computer…" : this.rematchOpponent !== null ? `Waiting for ${this.rematchOpponent} to take the rematch…` : "Waiting for an opponent. Anyone in this channel can join with Play now.",
       select: "Pick how your fighter boxes.",
       countdown: "Bout countdown.",
       fight: `Round ${this.state.snapshot?.round_number ?? 1} in progress.`,

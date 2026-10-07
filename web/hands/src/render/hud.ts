@@ -613,7 +613,8 @@ export function drawHud(
   }
   if (final !== null) {
     const punches = snapshot.fighters.map((fighter) => roundStats?.total(fighter.player_id) ?? blankPunches()) as [RoundPunchStats, RoundPunchStats];
-    drawResultCard(ctx, width, height, resultCard(final, snapshot.fighters, players, punches), snapshot.fighters.some((fighter) => fighter.player_id === viewerId), [pictureOf(snapshot.fighters[0]), pictureOf(snapshot.fighters[1])]);
+    // Every viewer gets a button under the card: Rematch for a fighter, Next bout for a spectator.
+    drawResultCard(ctx, width, height, resultCard(final, snapshot.fighters, players, punches), true, [pictureOf(snapshot.fighters[0]), pictureOf(snapshot.fighters[1])]);
   }
   ctx.restore();
 }

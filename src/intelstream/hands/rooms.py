@@ -97,6 +97,8 @@ class RoomConfig:
     max_spectators: int = 20
     style_select_seconds: float = 10.0
     """How long the fighters have to pick a style once both corners are filled; 0 starts at once."""
+    rematch_seat_seconds: float = 60.0
+    """How long an instance's next room holds the seats of the people who fought its last bout."""
     engine_config: EngineConfig = field(default_factory=EngineConfig)
 
     def __post_init__(self) -> None:
@@ -121,8 +123,8 @@ class RoomConfig:
             raise ValueError("room durations are invalid")
         if self.max_spectators < 0:
             raise ValueError("spectator bound must not be negative")
-        if self.style_select_seconds < 0:
-            raise ValueError("style select time must not be negative")
+        if self.style_select_seconds < 0 or self.rematch_seat_seconds < 0:
+            raise ValueError("style select and rematch seat times must not be negative")
         if self.max_input_frames_per_second < self.max_inputs_per_second:
             raise ValueError("input frame bound must not be below the accepted input bound")
 
@@ -265,6 +267,14 @@ class RoomMembership:
     reconnect_ticket: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class _HeldSeats:
+    """The people who fought an instance's last bout, whose seats its next room holds."""
+
+    fighters: frozenset[str]
+    until: float
+
+
 @dataclass(slots=True)
 class UserRoomReservation:
     room: HandsRoom
@@ -286,6 +296,8 @@ class HandsRoom:
         on_finished: Callable[[HandsRoom], Awaitable[None]],
         match_id_factory: Callable[[], str],
         seed_factory: Callable[[], int],
+        held_seats: frozenset[str] = frozenset(),
+        held_until: float = 0.0,
     ) -> None:
         self.instance_id = instance_id
         self.guild_id = guild_id
@@ -313,6 +325,16 @@ class HandsRoom:
         self._lock = asyncio.Lock()
         self._admission_lock = asyncio.Lock()
         self._background_tasks: set[asyncio.Task[None]] = set()
+        # The last bout's fighters, whose seats this room holds for a rematch until held_until.
+        self._held_seats = held_seats
+        self._held_until = held_until
+        self._seated_ids: set[str] = set()
+        self._rematch_ids: tuple[str, ...] = ()
+        self._held_seats_task: asyncio.Task[None] | None = None
+        if held_seats and held_until > monotonic_clock():
+            self._held_seats_task = self._spawn(
+                self._release_held_seats(), name=f"hands-held-seats-{instance_id}"
+            )
 
     @property
     def engine(self) -> BoxingEngine | None:
@@ -345,6 +367,8 @@ class HandsRoom:
     def retire(self) -> None:
         """The manager no longer routes joins here; a join already on its way must not land."""
         self._retired = True
+        if self._held_seats_task is not None:
+            self._held_seats_task.cancel()
 
     async def add(
         self,
@@ -392,7 +416,7 @@ class HandsRoom:
                 role = "fighter"
             elif existing_spectator is not None:
                 role = "spectator"
-            elif self._seat_open():
+            elif self._seat_open_for(identity.user_id):
                 role = "fighter"
             else:
                 role = "spectator"
@@ -433,6 +457,7 @@ class HandsRoom:
                         record=record,
                     )
                     self._slots[identity.user_id] = fighter
+                    self._seated_ids.add(identity.user_id)
                 seat = tuple(self._slots).index(identity.user_id) + 1
                 welcome: dict[str, object] = {
                     "role": role,
@@ -518,11 +543,15 @@ class HandsRoom:
                             grace_ms=max(0, int(opponent.grace_remaining * 1000)),
                         ),
                     )
-            elif not final_recovery and len(self._slots) == 1:
-                self._enqueue(connection, self._message("waiting", open_seats=1))
             elif not final_recovery and self._engine is None:
-                # An opponent still away shows as disconnected in the pick itself.
-                self._begin_select()
+                if len(self._slots) == 2:
+                    # An opponent still away shows as disconnected in the pick itself.
+                    self._begin_select()
+                else:
+                    # A fighter waiting for an opponent, or someone watching an empty corner.
+                    self._enqueue(
+                        connection, self._message("waiting", open_seats=2 - len(self._slots))
+                    )
             return RoomMembership(
                 self,
                 identity.user_id,
@@ -555,13 +584,40 @@ class HandsRoom:
                 connection.ticket_refresh_queued = True
                 connection.outbox.put_nowait(_OutboundMessage(ticket_refresh=True))
 
-    def _seat_open(self) -> bool:
-        """Whether a newcomer can take a fighter's seat.
+    def _seat_open_for(self, player_id: str) -> bool:
+        """Whether this person can take a fighter's seat.
 
         Seats are taken before the bell. The computer holds its seat only once the bout is on:
         until then a person who arrives takes it, since bouts against the computer are unrated.
+        A seat held for one of the last bout's fighters is his alone until the rematch window ends.
         """
-        return self._engine is None and len(self._slots) < 2
+        if self._engine is not None:
+            return False
+        held = 0
+        if self._clock() < self._held_until:
+            held = len(self._held_seats - self._seated_ids - {player_id})
+        return len(self._slots) + held < 2
+
+    @property
+    def rematch_fighters(self) -> tuple[str, ...]:
+        """The people still in the ring when the bout reached its result."""
+        return self._rematch_ids
+
+    async def _release_held_seats(self) -> None:
+        """The rematch window is over: a held seat nobody came back for goes to whoever waits."""
+        await self._sleep(max(0.0, self._held_until - self._clock()))
+        async with self._lock:
+            self._held_seats = frozenset()
+            if not self._closed and self._engine is None:
+                self._fill_open_seats()
+
+    def _fill_open_seats(self, *, collapsed: bool = False) -> None:
+        """Seats whoever waits for an open seat, then tells the room where the pick stands."""
+        seated = self._seat_waiting_spectators()
+        if self._engine is None and self._select is None and len(self._slots) == 2:
+            self._begin_select()
+        elif collapsed or seated:
+            self._enqueue_all(self._message("waiting", open_seats=2 - len(self._slots)))
 
     def _seat_waiting_spectators(self) -> bool:
         """A fighter's seat that opens before the bell goes to whoever has watched longest.
@@ -571,9 +627,13 @@ class HandsRoom:
         seated.
         """
         seated = False
-        while self._seat_open() and self._spectators and not self._closed:
-            player_id, spectator = next(iter(self._spectators.items()))
-            del self._spectators[player_id]
+        while not self._closed:
+            player_id = next(
+                (waiting for waiting in self._spectators if self._seat_open_for(waiting)), None
+            )
+            if player_id is None:
+                break
+            spectator = self._spectators.pop(player_id)
             if self._cpu is not None:
                 self._cancel_select()
                 self._cpu = None
@@ -585,6 +645,7 @@ class HandsRoom:
                 record=spectator.record,
             )
             self._slots[player_id] = slot
+            self._seated_ids.add(player_id)
             welcome: dict[str, object] = {
                 "role": "fighter",
                 "player_id": player_id,
@@ -1213,13 +1274,7 @@ class HandsRoom:
                                 # The corner is empty again: the pick is off.
                                 self._cancel_select()
                                 self._cpu = None
-                            seated = self._seat_waiting_spectators()
-                            if len(self._slots) == 2:
-                                self._begin_select()
-                            elif collapsed or seated:
-                                self._enqueue_all(
-                                    self._message("waiting", open_seats=2 - len(self._slots))
-                                )
+                            self._fill_open_seats(collapsed=collapsed)
                         else:
                             delay = slot.grace_remaining
                 if expired:
@@ -1328,6 +1383,9 @@ class HandsRoom:
         if result is None:
             return None
         if self._persistence_task is None:
+            self._rematch_ids = tuple(
+                player_id for player_id, slot in self._slots.items() if slot.connection is not None
+            )
             self._persistence_task = asyncio.create_task(
                 self._persist(result),
                 name=f"hands-persist-{result.match_id}",
@@ -1571,6 +1629,7 @@ class HandsRoomManager:
         self._seed_factory = seed_factory
         self._rooms: dict[str, HandsRoom] = {}
         self._user_rooms: dict[str, UserRoomReservation] = {}
+        self._held_seats: dict[str, _HeldSeats] = {}
         self._lock = asyncio.Lock()
         self._closed = False
 
@@ -1615,6 +1674,11 @@ class HandsRoomManager:
                 raise RoomError("already_in_room")
             room = self._rooms.get(player.instance_id)
             if room is None:
+                # A rematch: the last bout's fighters keep their seats for a while, so nobody who
+                # arrives first can take one; everyone else watches until then.
+                held = self._held_seats.pop(player.instance_id, None)
+                if held is not None and held.until <= self._clock():
+                    held = None
                 room = HandsRoom(
                     instance_id=player.instance_id,
                     guild_id=player.guild_id,
@@ -1625,6 +1689,8 @@ class HandsRoomManager:
                     on_finished=self._room_finished,
                     match_id_factory=self._match_id_factory,
                     seed_factory=self._seed_factory,
+                    held_seats=frozenset() if held is None else held.fighters,
+                    held_until=0.0 if held is None else held.until,
                 )
                 self._rooms[player.instance_id] = room
             if reservation is None:
@@ -1698,7 +1764,7 @@ class HandsRoomManager:
     async def _room_finished(self, room: HandsRoom) -> None:
         async with self._lock:
             active_member_ids = set(room.member_ids)
-            if not room.finished and room.player_ids:
+            if not room.finished and active_member_ids:
                 for player_id, reservation in list(self._user_rooms.items()):
                     if reservation.room is room and player_id not in active_member_ids:
                         self._user_rooms.pop(player_id, None)
@@ -1706,7 +1772,20 @@ class HandsRoomManager:
             for player_id, reservation in list(self._user_rooms.items()):
                 if reservation.room is room:
                     self._user_rooms.pop(player_id, None)
+            if room.finished and self._rooms.get(room.instance_id) is room:
+                self._hold_rematch_seats(room)
             self._retire_room(room)
+
+    def _hold_rematch_seats(self, room: HandsRoom) -> None:
+        now = self._clock()
+        for instance_id, held in list(self._held_seats.items()):
+            if held.until <= now:
+                self._held_seats.pop(instance_id, None)
+        fighters = frozenset(room.rematch_fighters)
+        if fighters and self.config.rematch_seat_seconds > 0:
+            self._held_seats[room.instance_id] = _HeldSeats(
+                fighters, now + self.config.rematch_seat_seconds
+            )
 
     async def leave(self, membership: RoomMembership) -> None:
         await membership.room.disconnect(membership.player_id, membership.connection)
@@ -1733,6 +1812,7 @@ class HandsRoomManager:
             rooms = list(self._rooms.values())
             self._rooms.clear()
             self._user_rooms.clear()
+            self._held_seats.clear()
         results = await asyncio.gather(*(room.close() for room in rooms), return_exceptions=True)
         first_error = next(
             (result for result in results if isinstance(result, BaseException)), None

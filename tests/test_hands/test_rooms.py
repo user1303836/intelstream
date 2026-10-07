@@ -139,9 +139,11 @@ def room_config(
     max_catch_up_ticks: int = 2,
     max_spectators: int = 20,
     style_select: float = 0.0,
+    rematch_seat: float = 60.0,
 ) -> RoomConfig:
     return RoomConfig(
         style_select_seconds=style_select,
+        rematch_seat_seconds=rematch_seat,
         tick_interval_seconds=tick_interval,
         broadcast_every_ticks=1,
         reconnect_grace_seconds=reconnect_grace,
@@ -2700,6 +2702,100 @@ async def test_a_seated_spectator_who_leaves_keeps_his_seat_through_the_grace(
     returning = FakeSocket()
     again = await manager.join(player("three"), returning)
     assert again.role == "fighter" and again.room is room
+    await manager.close()
+
+
+async def finished_bout(
+    manager: HandsRoomManager, first: str = "one", second: str | None = "two"
+) -> HandsRoom:
+    """A bout fought to its result in instance-1, whose room is then retired."""
+    socket = FakeSocket()
+    one = await manager.join(player(first), socket)
+    if second is None:
+        assert await one.room.request_cpu(first, one.connection, CpuLevel.ROOKIE)
+    else:
+        two = await manager.join(player(second), FakeSocket())
+        await two.room.choose_style(second, two.connection, ready_choice(FighterStyle.BOXER))
+    await one.room.choose_style(first, one.connection, ready_choice(FighterStyle.BOXER))
+    await wait_until(lambda: "final" in message_types(socket), deadline_seconds=5)
+    await wait_until(lambda: manager.room_count == 0)
+    return one.room
+
+
+async def test_the_rematch_room_holds_the_fighters_seats_and_seats_others_as_spectators(
+    repository: Repository,
+) -> None:
+    manager = HandsRoomManager(repository, config=room_config(style_select=5.0))
+    old = await finished_bout(manager)
+    assert set(old.rematch_fighters) == {"one", "two"}
+
+    # Somebody who relaunches before the fighters are back cannot take a seat.
+    early_socket = FakeSocket()
+    early = await manager.join(player("three"), early_socket)
+    assert early.role == "spectator" and early.room is not old
+    await wait_until(lambda: message_types(early_socket) == ["welcome", "waiting"])
+    welcome, waiting = (json.loads(message) for message in early_socket.messages)
+    assert welcome["players"] == []
+    assert waiting["open_seats"] == 2
+
+    first_socket = FakeSocket()
+    one = await manager.join(player("one"), first_socket)
+    assert one.role == "fighter" and one.room is early.room
+    latecomer = await manager.join(player("four"), FakeSocket())
+    assert latecomer.role == "spectator"
+    await manager.join(player("two"), FakeSocket())
+    assert one.room.player_ids == ("one", "two")
+    assert one.room.spectator_ids == ("three", "four")
+    await wait_until(lambda: "select" in message_types(early_socket))
+    await manager.close()
+
+
+async def test_a_held_seat_nobody_comes_back_for_goes_to_whoever_waits_for_it(
+    repository: Repository,
+) -> None:
+    manager = HandsRoomManager(repository, config=room_config(style_select=5.0, rematch_seat=0.2))
+    await finished_bout(manager)
+    watcher_socket = FakeSocket()
+    watcher = await manager.join(player("three"), watcher_socket)
+    first_socket = FakeSocket()
+    one = await manager.join(player("one"), first_socket)
+    assert (watcher.role, one.role) == ("spectator", "fighter")
+
+    # Two never comes back: once the window is over, his seat goes to the one watching.
+    await wait_until(lambda: one.room.player_ids == ("one", "three"), deadline_seconds=2)
+    assert message_types(watcher_socket)[-2:] == ["welcome", "select"]
+    assert payloads(watcher_socket, "welcome")[-1]["role"] == "fighter"
+    await wait_until(lambda: "select" in message_types(first_socket))
+    assert [entry["id"] for entry in payloads(first_socket, "select")[-1]["players"]] == [
+        "one",
+        "three",
+    ]
+    await manager.close()
+
+
+async def test_a_seat_is_held_only_for_those_still_in_the_ring_at_the_result(
+    repository: Repository,
+) -> None:
+    manager = HandsRoomManager(repository, config=room_config(style_select=5.0))
+    # Against the computer, only the person's seat is held: a friend can take the other.
+    await finished_bout(manager, second=None)
+    friend = await manager.join(player("two"), FakeSocket())
+    assert friend.role == "fighter"
+    await manager.close()
+
+    manager = HandsRoomManager(
+        repository, config=room_config(round_ticks=100_000, reconnect_grace=0.05)
+    )
+    first_socket = FakeSocket()
+    one = await manager.join(player("one"), first_socket)
+    two = await manager.join(player("two"), FakeSocket())
+    # Two walks out and forfeits: nobody holds his seat for him.
+    await manager.leave(two)
+    await wait_until(lambda: "final" in message_types(first_socket), deadline_seconds=5)
+    await wait_until(lambda: manager.room_count == 0)
+    assert one.room.rematch_fighters == ("one",)
+    newcomer = await manager.join(player("three"), FakeSocket())
+    assert newcomer.role == "fighter"
     await manager.close()
 
 

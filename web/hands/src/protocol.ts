@@ -107,9 +107,9 @@ function publicPlayer(value: unknown): PublicPlayer {
   const record = o.record === undefined ? {} : { record: fighterRecord(o.record) };
   return { id: string(o.id, "player.id"), name: string(o.name, "player.name", 80), avatar: nullableString(o.avatar, "player.avatar", 128), rating: integer(o.rating, "rating"), connected: bool(o.connected, "connected"), ...cpu, ...record, ...style };
 }
-function players(value: unknown, exactLength?: number): PublicPlayer[] {
+function players(value: unknown, exactLength?: number, minLength = 1): PublicPlayer[] {
   const result = array(value, "players", 2).map(publicPlayer);
-  if (result.length < 1 || (exactLength !== undefined && result.length !== exactLength) || new Set(result.map((p) => p.id)).size !== result.length) throw new ProtocolError("players must be present and distinct");
+  if (result.length < minLength || (exactLength !== undefined && result.length !== exactLength) || new Set(result.map((p) => p.id)).size !== result.length) throw new ProtocolError("players must be present and distinct");
   return result;
 }
 function trauma(value: unknown): TraumaSnapshot {
@@ -224,12 +224,13 @@ export function decodeServerFrame(frame: string | ArrayBuffer | Uint8Array): Ser
       return { version: 3, type, role, player_id: playerId, seat: integer(o.seat, "seat", 1, 2) as 1 | 2, rating: integer(o.rating, "rating"), players: decodedPlayers, server_tick: integer(o.server_tick, "server_tick"), next_sequence: integer(o.next_sequence, "next_sequence"), ...reconnect };
     }
     exact(o, ["version", "type", "role", "player_id", "players", "server_tick"], ["reconnect_ticket"]);
-    const decodedPlayers = players(o.players, 2);
+    // Before the bell a spectator can arrive while the corners are still filling.
+    const decodedPlayers = players(o.players, undefined, 0);
     if (decodedPlayers.some((player) => player.id === playerId)) throw new ProtocolError("spectator cannot be a fighter");
-    return { version: 3, type, role, player_id: playerId, players: [decodedPlayers[0]!, decodedPlayers[1]!], server_tick: integer(o.server_tick, "server_tick"), ...reconnect };
+    return { version: 3, type, role, player_id: playerId, players: decodedPlayers, server_tick: integer(o.server_tick, "server_tick"), ...reconnect };
   }
   if (type === "ticket") { exact(o, ["version", "type", "reconnect_ticket", "refresh_id"]); return { version: 3, type, reconnect_ticket: string(o.reconnect_ticket, "reconnect_ticket", 4096), refresh_id: string(o.refresh_id, "refresh_id", 128, 16) }; }
-  if (type === "waiting") { exact(o, ["version", "type", "open_seats"]); if (o.open_seats !== 1) throw new ProtocolError("invalid open seats"); return { version: 3, type, open_seats: 1 }; }
+  if (type === "waiting") { exact(o, ["version", "type", "open_seats"]); if (o.open_seats !== 1 && o.open_seats !== 2) throw new ProtocolError("invalid open seats"); return { version: 3, type, open_seats: o.open_seats }; }
   if (type === "select") {
     exact(o, ["version", "type", "deadline_ms", "players", "ready"]);
     const ps = players(o.players, 2);

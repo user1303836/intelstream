@@ -68,10 +68,12 @@ export interface EngineSnapshot { readonly tick: number; readonly phase: MatchPh
 
 interface WelcomeBase { readonly version: 3; readonly type: "welcome"; readonly player_id: string; readonly players: readonly PublicPlayer[]; readonly server_tick: number; readonly reconnect_ticket?: string }
 export interface FighterWelcomeMessage extends WelcomeBase { readonly role: "fighter"; readonly seat: 1 | 2; readonly rating: number; readonly next_sequence: number }
-export interface SpectatorWelcomeMessage extends WelcomeBase { readonly role: "spectator"; readonly players: readonly [PublicPlayer, PublicPlayer] }
+/** A spectator who arrives before the bell can find one corner, or both, still empty. */
+export interface SpectatorWelcomeMessage extends WelcomeBase { readonly role: "spectator" }
 export type WelcomeMessage = FighterWelcomeMessage | SpectatorWelcomeMessage;
 export interface TicketMessage { readonly version: 3; readonly type: "ticket"; readonly reconnect_ticket: string; readonly refresh_id: string }
-export interface WaitingMessage { readonly version: 3; readonly type: "waiting"; readonly open_seats: 1 }
+/** A fighter waits for an opponent (one open seat); a spectator can be watching both corners fill. */
+export interface WaitingMessage { readonly version: 3; readonly type: "waiting"; readonly open_seats: 1 | 2 }
 /** The fighters pick their styles before the bout: a style shows once its fighter is ready. */
 /** The fighters pick their styles; a player's `style` is present once they have settled on it. */
 export interface SelectMessage { readonly version: 3; readonly type: "select"; readonly deadline_ms: number; readonly players: readonly [PublicPlayer, PublicPlayer]; readonly ready: readonly string[] }

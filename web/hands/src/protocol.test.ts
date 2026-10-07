@@ -1,7 +1,7 @@
 import manifestJson from "../../../src/intelstream/hands/combat-manifest.json";
 import { GET_UP_REQUIRED_MAX, GET_UP_REQUIRED_MIN } from "./manifest";
 import { decodeBootstrap, decodeServerFrame, decodeToken, encodeCpuRequest, encodeInput, encodeStyleChoice, ProtocolError } from "./protocol";
-import type { CpuLevel, FighterStyle } from "./types";
+import { PROTOCOL_VERSION, type CpuLevel, type FighterStyle } from "./types";
 import { envelope, publicPlayers, snapshot } from "./test/fixtures";
 
 describe("strict protocol v3", () => {
@@ -42,6 +42,16 @@ describe("strict protocol v3", () => {
     expect(() => decodeServerFrame(JSON.stringify({ ...spectator, player_id: "one" }))).toThrow(/spectator/u);
     const fighterWithoutRole = { version: 3, type: "welcome", player_id: "one", seat: 1, rating: 1500, players: [publicPlayers[0]], server_tick: 0, next_sequence: 0 };
     expect(() => decodeServerFrame(JSON.stringify(fighterWithoutRole))).toThrow(ProtocolError);
+  });
+  it("lets a spectator arrive before the corners are filled, and a waiting room show both seats open", () => {
+    const early = { version: PROTOCOL_VERSION, type: "welcome", role: "spectator", player_id: "viewer", players: [], server_tick: 0, reconnect_ticket: "spectator-ticket" };
+    expect(decodeServerFrame(JSON.stringify(early))).toEqual(early);
+    expect(decodeServerFrame(JSON.stringify({ ...early, players: [publicPlayers[0]] }))).toEqual({ ...early, players: [publicPlayers[0]] });
+    expect(() => decodeServerFrame(JSON.stringify({ ...early, players: [publicPlayers[0], publicPlayers[0]] }))).toThrow(/distinct/u);
+    expect(decodeServerFrame(JSON.stringify({ version: PROTOCOL_VERSION, type: "waiting", open_seats: 2 }))).toEqual({ version: PROTOCOL_VERSION, type: "waiting", open_seats: 2 });
+    for (const open of [0, 3, "1"]) expect(() => decodeServerFrame(JSON.stringify({ version: PROTOCOL_VERSION, type: "waiting", open_seats: open }))).toThrow(/open seats/u);
+    // A fighter's welcome still names him among the players.
+    expect(() => decodeServerFrame(JSON.stringify({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [], server_tick: 0, next_sequence: 0 }))).toThrow(ProtocolError);
   });
   it("decodes a fully populated embedded result", () => {
     const value = snapshot(); value.events as unknown as unknown[];

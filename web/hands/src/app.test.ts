@@ -1,5 +1,5 @@
 import type { NetworkCallbacks } from "./network";
-import type { EngineSnapshot, ServerMessage } from "./types";
+import { PROTOCOL_VERSION, type EngineSnapshot, type ServerMessage } from "./types";
 import { fighter } from "./test/fixtures";
 
 const mocks = vi.hoisted(() => {
@@ -390,6 +390,41 @@ describe("browser lifecycle and accessible overlays", () => {
     expect(root.querySelector("[data-overlay]")?.hasAttribute("data-result")).toBe(true);
     expect(button.hidden).toBe(false);
     expect(button.disabled).toBe(true);
+    app.destroy();
+  });
+
+  it("lets a spectator stay for the next bout: he watches the corners fill, or takes a seat left empty", async () => {
+    history.replaceState({}, "", "/?instance_id=launch");
+    const root = document.createElement("div");
+    const app = new HandsApp(root);
+    app.start();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "spectator", player_id: "viewer", players: [...players], server_tick: 100, reconnect_ticket: "watching" });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(100) });
+    vi.useFakeTimers();
+    send({ version: PROTOCOL_VERSION, type: "final", match_id: "m1", winner_id: "one", method: "decision", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } });
+    const button = root.querySelector<HTMLButtonElement>("[data-rematch]")!;
+    expect(button.hidden).toBe(false);
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toContain("Next bout in");
+    vi.advanceTimersByTime(11_500);
+    expect(button.textContent).toBe("Next bout");
+    const first = mocks.callbacks;
+    button.click();
+    vi.useRealTimers();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBe(first));
+    // The fighters' seats are held for their rematch, so he watches the corners fill.
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "spectator", player_id: "viewer", players: [], server_tick: 0, reconnect_ticket: "again" });
+    send({ version: PROTOCOL_VERSION, type: "waiting", open_seats: 2 });
+    expect(root.querySelector("[data-status]")?.textContent).toBe("Spectating — Waiting for the fighters…");
+    expect(root.querySelector<HTMLElement>("[data-cpu]")!.hidden).toBe(true);
+    expect(mocks.cpuRequests).toEqual([]);
+    // Nobody came back for a seat: it is his, on the connection he has.
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "viewer", seat: 1, rating: 1500, players: [{ id: "viewer", name: "Viewer", avatar: null, rating: 1500, connected: true }], server_tick: 0, next_sequence: 0, reconnect_ticket: "seated" });
+    send({ version: PROTOCOL_VERSION, type: "waiting", open_seats: 1 });
+    expect(root.querySelector("[data-status]")?.textContent).toBe("Waiting for an opponent. Anyone in this channel can join with Play now.");
+    expect(root.querySelector<HTMLElement>("[data-cpu]")!.hidden).toBe(false);
+    expect(root.querySelector<HTMLElement>("[data-role]")!.hidden).toBe(true);
     app.destroy();
   });
 
