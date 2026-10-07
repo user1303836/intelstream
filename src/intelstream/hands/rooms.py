@@ -7,7 +7,7 @@ import secrets
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Never, Protocol
 from uuid import uuid4
 
 import structlog
@@ -196,6 +196,7 @@ class HandsRoom:
         self._cleanup_task: asyncio.Task[None] | None = None
         self._closed = False
         self._finished = False
+        self._retired = False
         self._accepting_reconnects = True
         self._final_payload: str | None = None
         self._lock = asyncio.Lock()
@@ -226,6 +227,10 @@ class HandsRoom:
     def finished(self) -> bool:
         return self._finished
 
+    def retire(self) -> None:
+        """The manager no longer routes joins here; a join already on its way must not land."""
+        self._retired = True
+
     async def add(
         self,
         identity: AuthenticatedPlayer,
@@ -250,7 +255,7 @@ class HandsRoom:
                 or self._persistence_task is not None
                 or self._finished
             )
-            if self._closed or (final_recovery and not self._accepting_reconnects):
+            if self._closed or self._retired or (final_recovery and not self._accepting_reconnects):
                 raise RoomError("room_closed")
             if final_recovery and existing is None:
                 raise RoomError("room_closed")
@@ -278,18 +283,16 @@ class HandsRoom:
                 if len(self._spectators) >= self.config.max_spectators:
                     raise RoomError("room_full")
 
-            if existing is not None and existing.connection is not None:
-                await self._stop_connection(existing.connection, code=4001, reason=b"replaced")
-                final_recovery = self._engine is not None and (
-                    self._engine.result is not None
-                    or self._persistence_task is not None
-                    or self._finished
-                )
-                if final_recovery and not self._accepting_reconnects:
-                    raise RoomError("room_closed")
             if reconnect_ticket_factory is not None:
                 reconnect_ticket = reconnect_ticket_factory()
             connection = self._new_connection(identity.user_id, role, socket)
+            if existing is not None and existing.connection is not None:
+                # The replaced socket may belong to a phone that stopped reading, so it is closed
+                # in the background; the new connection takes its place below, under the lock.
+                self._spawn(
+                    self._stop_connection(existing.connection, code=4001, reason=b"replaced"),
+                    name=f"hands-replace-{role}-{identity.user_id}",
+                )
 
             if role == "fighter":
                 if existing_fighter is not None:
@@ -1128,11 +1131,10 @@ class HandsRoomManager:
                         and reservation.owner is owner
                     )
                     if not valid:
-                        if self._closed:
-                            raise RoomError("server_shutting_down")
-                        if room.finished and self._rooms.get(player.instance_id) is not room:
-                            raise _RoomRetiredError
-                        raise RoomError("room_closed")
+                        self._raise_unavailable(player, room)
+                # Admission into one room never holds up joins anywhere else; the room's own
+                # admission lock still orders joins into it.
+                try:
                     membership = await room.add(
                         player,
                         socket,
@@ -1140,18 +1142,38 @@ class HandsRoomManager:
                         reconnect_ticket=reconnect_ticket,
                         reconnect_ticket_factory=reconnect_ticket_factory,
                     )
-                    reservation.established = True
-                    reservation.connection = membership.connection
+                except RoomError as exc:
+                    if exc.code != "room_closed":
+                        raise
+                    # The room may have finished and been retired after the check above.
+                    async with self._lock:
+                        self._raise_unavailable(player, room)
+                async with self._lock:
+                    if self._user_rooms.get(player.user_id) is reservation:
+                        reservation.established = True
+                        reservation.connection = membership.connection
         except BaseException:
             async with self._lock:
                 current = self._user_rooms.get(player.user_id)
                 if current is reservation and reservation.owner is owner:
                     if not reservation.established:
                         self._user_rooms.pop(player.user_id, None)
-                    if not room.member_ids and self._rooms.get(player.instance_id) is room:
-                        self._rooms.pop(player.instance_id, None)
+                    if not room.member_ids:
+                        self._retire_room(room)
             raise
         return membership
+
+    def _raise_unavailable(self, player: AuthenticatedPlayer, room: HandsRoom) -> Never:
+        if self._closed:
+            raise RoomError("server_shutting_down")
+        if room.finished and self._rooms.get(player.instance_id) is not room:
+            raise _RoomRetiredError
+        raise RoomError("room_closed")
+
+    def _retire_room(self, room: HandsRoom) -> None:
+        if self._rooms.get(room.instance_id) is room:
+            self._rooms.pop(room.instance_id, None)
+            room.retire()
 
     async def _room_finished(self, room: HandsRoom) -> None:
         async with self._lock:
@@ -1164,8 +1186,7 @@ class HandsRoomManager:
             for player_id, reservation in list(self._user_rooms.items()):
                 if reservation.room is room:
                     self._user_rooms.pop(player_id, None)
-            if self._rooms.get(room.instance_id) is room:
-                self._rooms.pop(room.instance_id, None)
+            self._retire_room(room)
 
     async def leave(self, membership: RoomMembership) -> None:
         await membership.room.disconnect(
@@ -1182,13 +1203,11 @@ class HandsRoomManager:
                     reservation is not None
                     and reservation.room is membership.room
                     and reservation.connection is membership.connection
+                    and membership.player_id not in membership.room.member_ids
                 ):
                     self._user_rooms.pop(membership.player_id, None)
-                if (
-                    not membership.room.member_ids
-                    and self._rooms.get(membership.room.instance_id) is membership.room
-                ):
-                    self._rooms.pop(membership.room.instance_id, None)
+                if not membership.room.member_ids:
+                    self._retire_room(membership.room)
 
     async def close(self) -> None:
         async with self._lock:

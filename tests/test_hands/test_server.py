@@ -591,6 +591,65 @@ async def test_a_fighter_whose_socket_stops_reading_is_paused_then_forfeits(
     await server.close()
 
 
+async def test_reconnecting_over_a_stalled_socket_does_not_hold_up_any_join(
+    repository: Repository,
+) -> None:
+    auth = FakeAuth()
+    auth.tickets = {
+        "one": AuthenticatedPlayer("one", GUILD, "room", "One", None),
+        "two": AuthenticatedPlayer("two", GUILD, "room", "Two", None),
+        "elsewhere": AuthenticatedPlayer("three", GUILD, "other-room", "Three", None),
+    }
+    # A generous outbound bound keeps the stalled socket attached until the player reconnects.
+    rooms = stalled_reader_rooms(repository, "stalled-reconnect", outbound_queue_size=100_000)
+    server, _auth, base = await start_server(repository, auth=auth, rooms=rooms)
+    assert server.bound_port is not None
+    async with aiohttp.ClientSession() as client:
+        one = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
+        await one.send_json({"version": 3, "type": "authenticate", "ticket": "one"})
+        await receive_until(one, "waiting")
+        stalled, frames = await connect_reader_that_stalls(server.bound_port, "two", read_frames=1)
+        try:
+            assert frames[0]["type"] == "welcome"
+            room = rooms._rooms["room"]
+            old_connection = room._slots["two"].connection
+            assert old_connection is not None
+            old_socket = old_connection.socket
+            assert isinstance(old_socket, server_module._RoomSocket)
+            async with asyncio.timeout(10):
+                while not old_socket._request.protocol.writing_paused:  # noqa: ASYNC110
+                    await asyncio.sleep(0.01)
+
+            replacement = await client.ws_connect(
+                f"{base}/api/hands/ws", headers={"Origin": ORIGIN}
+            )
+            elsewhere = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
+            await replacement.send_json(
+                {"version": 3, "type": "authenticate", "ticket": frames[0]["reconnect_ticket"]}
+            )
+            await elsewhere.send_json({"version": 3, "type": "authenticate", "ticket": "elsewhere"})
+            welcome = await receive_until(replacement, "welcome", deadline_seconds=2)
+            assert welcome["player_id"] == "two"
+            await receive_until(replacement, "resumed", deadline_seconds=2)
+            elsewhere_welcome = await receive_until(elsewhere, "welcome", deadline_seconds=2)
+            assert elsewhere_welcome["player_id"] == "three"
+
+            # The stalled socket is aborted once its close times out.
+            loop = asyncio.get_running_loop()
+            async with asyncio.timeout(10):
+                while True:
+                    try:
+                        if not await loop.sock_recv(stalled, 65536):
+                            break
+                    except ConnectionError:
+                        break
+        finally:
+            stalled.close()
+        for socket_ in (one, replacement, elsewhere):
+            await socket_.close()
+    await server.close()
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [

@@ -11,7 +11,13 @@ from intelstream.database.repository import Repository
 from intelstream.hands.auth import AuthenticatedPlayer
 from intelstream.hands.engine import EngineConfig
 from intelstream.hands.protocol import encode_client_input
-from intelstream.hands.rooms import HandsRoomManager, RoomConfig, RoomError, RoomMembership
+from intelstream.hands.rooms import (
+    HandsRoom,
+    HandsRoomManager,
+    RoomConfig,
+    RoomError,
+    RoomMembership,
+)
 from intelstream.hands.types import ActionKind, InputCommand, MovementAction
 
 
@@ -333,9 +339,9 @@ async def test_same_spectator_reconnect_replaces_connection_without_promotion(
 
     replacement = await manager.join(player("three"), new_socket)
     await wait_until(lambda: "snapshot" in message_types(new_socket))
+    await wait_until(lambda: old_socket.closed)
 
     assert old.role == replacement.role == "spectator"
-    assert old_socket.closed is True
     assert old_socket.close_code == 4001
     assert replacement.room.player_ids == ("one", "two")
     assert replacement.room.spectator_ids == ("three",)
@@ -821,7 +827,7 @@ async def test_critical_initial_burst_is_ordered_despite_blocked_writer(
 
 
 @pytest.mark.parametrize("outbound_size", [1, 2])
-async def test_reconnect_waits_for_old_close_then_sends_welcome_snapshot_and_resumed(
+async def test_reconnect_over_a_socket_still_closing_gets_welcome_snapshot_and_resumed(
     repository: Repository, outbound_size: int
 ) -> None:
     sleep_release = asyncio.Event()
@@ -835,8 +841,9 @@ async def test_reconnect_waits_for_old_close_then_sends_welcome_snapshot_and_res
         sleep=controlled_sleep,
         match_id_factory=lambda: "match-ordered-reconnect",
     )
+    close_entered = asyncio.Event()
     close_release = asyncio.Event()
-    old_socket = FakeSocket(block_close=close_release)
+    old_socket = FakeSocket(block_close=close_release, close_entered=close_entered)
     old = await manager.join(player("one"), old_socket, reconnect_ticket="old-rotation")
     await manager.join(player("two"), FakeSocket())
     engine = old.room.engine
@@ -844,14 +851,16 @@ async def test_reconnect_waits_for_old_close_then_sends_welcome_snapshot_and_res
     engine.fighter("two").get_up_meter = 77
 
     replacement_socket = FakeSocket()
-    replacement_task = asyncio.create_task(
-        manager.join(player("one"), replacement_socket, reconnect_ticket="new-rotation")
-    )
-    await asyncio.sleep(0)
-    assert replacement_socket.messages == []
-    close_release.set()
-    replacement = await replacement_task
+    async with asyncio.timeout(1):
+        replacement = await manager.join(
+            player("one"), replacement_socket, reconnect_ticket="new-rotation"
+        )
     await wait_until(lambda: len(replacement_socket.messages) >= 3)
+    await close_entered.wait()
+    assert not old_socket.closed
+    close_release.set()
+    await wait_until(lambda: old_socket.closed)
+    assert old_socket.close_code == 4001
 
     messages = [json.loads(message) for message in replacement_socket.messages[:3]]
     assert [message["type"] for message in messages] == ["welcome", "snapshot", "resumed"]
@@ -924,7 +933,7 @@ async def test_one_of_two_disconnected_players_recovers_into_paused_state(
     await manager.close()
 
 
-async def test_reconnect_rechecks_final_state_after_waiting_for_old_socket_close(
+async def test_a_replaced_socket_that_never_closes_is_aborted_without_holding_up_the_bout(
     repository: Repository,
 ) -> None:
     sleep_entered = asyncio.Event()
@@ -936,13 +945,12 @@ async def test_reconnect_rechecks_final_state_after_waiting_for_old_socket_close
 
     manager = HandsRoomManager(
         repository,
-        config=room_config(round_ticks=1000),
+        config=room_config(round_ticks=1000, close_timeout=0.05),
         sleep=controlled_sleep,
         match_id_factory=lambda: "match-final-during-reconnect",
     )
     close_entered = asyncio.Event()
-    close_release = asyncio.Event()
-    old_socket = FakeSocket(block_close=close_release, close_entered=close_entered)
+    old_socket = FakeSocket(block_close=asyncio.Event(), close_entered=close_entered)
     membership = await manager.join(player("one"), old_socket)
     await manager.join(player("two"), FakeSocket())
     await sleep_entered.wait()
@@ -951,18 +959,68 @@ async def test_reconnect_rechecks_final_state_after_waiting_for_old_socket_close
     engine.phase_ticks_remaining = 1
 
     reconnect_socket = FakeSocket()
-    reconnect_task = asyncio.create_task(
-        manager.join(player("one"), reconnect_socket, reconnect_ticket="final-rotation")
-    )
+    async with asyncio.timeout(1):
+        await manager.join(player("one"), reconnect_socket, reconnect_ticket="final-rotation")
     await close_entered.wait()
     sleep_release.set()
-    await wait_until(lambda: engine.result is not None)
-    close_release.set()
-    await reconnect_task
+    await wait_until(lambda: old_socket.aborted)
     await wait_until(lambda: "final" in message_types(reconnect_socket))
 
-    assert message_types(reconnect_socket)[:3] == ["welcome", "snapshot", "final"]
-    assert "resumed" not in message_types(reconnect_socket)
+    assert message_types(reconnect_socket)[:3] == ["welcome", "snapshot", "resumed"]
+    assert old_socket.close_code is None
+    await manager.close()
+
+
+async def test_reconnect_over_a_socket_parked_on_a_stalled_transport(
+    repository: Repository,
+) -> None:
+    sleep_release = asyncio.Event()
+
+    async def controlled_sleep(_delay: float) -> None:
+        await sleep_release.wait()
+
+    manager = HandsRoomManager(
+        repository,
+        config=room_config(round_ticks=1000, outbound_size=1000),
+        sleep=controlled_sleep,
+        match_id_factory=lambda: "match-parked-reconnect",
+    )
+    stalled = StalledSocket()
+    await manager.join(player("one"), stalled)
+    await manager.join(player("two"), FakeSocket())
+    await wait_until(lambda: stalled.drain_waiter is not None)
+
+    replacement_socket = FakeSocket()
+    async with asyncio.timeout(1):
+        await manager.join(player("one"), replacement_socket)
+    await wait_until(lambda: len(replacement_socket.messages) >= 3)
+    assert message_types(replacement_socket)[:3] == ["welcome", "snapshot", "resumed"]
+    await wait_until(lambda: stalled.aborted)
+    await manager.close()
+
+
+async def test_admission_into_one_room_does_not_hold_up_joins_elsewhere(
+    repository: Repository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = HandsRoomManager(repository, config=room_config(round_ticks=1000))
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    original_add = HandsRoom.add
+
+    async def stuck_add(room: HandsRoom, identity: AuthenticatedPlayer, *args, **kwargs):
+        if identity.instance_id == "stuck-room":
+            entered.set()
+            await release.wait()
+        return await original_add(room, identity, *args, **kwargs)
+
+    monkeypatch.setattr(HandsRoom, "add", stuck_add)
+    stuck = asyncio.create_task(manager.join(player("one", "stuck-room"), FakeSocket()))
+    await entered.wait()
+    async with asyncio.timeout(0.5):
+        elsewhere = await manager.join(player("two", "other-room"), FakeSocket())
+    assert elsewhere.role == "fighter"
+    release.set()
+    assert (await stuck).role == "fighter"
     await manager.close()
 
 
