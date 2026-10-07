@@ -268,7 +268,7 @@ describe("get-up", () => {
       return tick;
     };
     step(standing, 20);
-    // Measured from where he stands: after the physics' fall he gets up where his body lies and walks back.
+    // Measured from where he stands: after the physics' fall he gets up where his body lies and steps back as he rises.
     const guardZ = bone(boxer, "gloveL").z - boxer.root.position.z;
     graph.react("hit", "head", 1, "uppercut", "right", 120);
     const downed = { ...standing, is_downed: true };

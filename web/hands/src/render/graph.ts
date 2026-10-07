@@ -2396,7 +2396,7 @@ export class BoxingGraph {
     ragdoll.handOver();
     this.riseBlendAge = 0;
     // The drawn fighter's root moves under the body, which gets up where it lies; the fitted pose and the pose
-    // the physics left move with it the other way, so nothing jumps. He walks back to his place once up.
+    // the physics left move with it the other way, so nothing jumps. He steps back to his place as he rises.
     const shift = this.scratchE.set(ragdoll.pelvis(this.scratchD).x - (this.rootX ?? 0), 0, this.scratchD.z - this.rootZ);
     const local = this.scratchB.copy(shift).applyQuaternion(inverse);
     for (const point of [fallen.hips, fallen.leadHand, fallen.rearHand, fallen.leadFoot, fallen.rearFoot]) {
