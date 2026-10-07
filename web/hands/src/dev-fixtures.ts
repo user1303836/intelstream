@@ -3,6 +3,7 @@ import * as THREE from "three";
 import { SharedActionIntent } from "./input/action-buffer";
 import { TouchInput, coarsePointer } from "./input/touch";
 import { FightRenderer } from "./render/renderer";
+import { CAMERA_MODES } from "./settings";
 import type { CombatEvent, EngineSnapshot, FighterSnapshot, PublicPlayer } from "./types";
 
 type Draft = { -readonly [K in keyof FighterSnapshot]: FighterSnapshot[K] };
@@ -27,10 +28,12 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
   root.innerHTML = `<section class="activity"><canvas class="fight"></canvas><header class="topbar"><strong>HANDS · DEV FIXTURE</strong><span>Production never enters this harness</span></header></section>`;
   const bloodParam = new URLSearchParams(window.location.search).get("blood");
   const blood = bloodParam === "reduced" || bloodParam === "off" ? bloodParam : "full";
+  const cameraParam = new URLSearchParams(window.location.search).get("camera");
+  const camera = CAMERA_MODES.find((mode) => mode === cameraParam) ?? "broadcast";
   const renderer = new FightRenderer(
     root.querySelector("canvas")!,
     { tick_rate: 30, ring_half_width: 500, ring_half_height: 500 },
-    () => ({ volume: 0, haptics: false, reducedMotion: false, blood, commentary: true, announcer: false }),
+    () => ({ volume: 0, haptics: false, reducedMotion: false, blood, commentary: true, announcer: false, camera }),
   );
   renderer.setBloodLevel(blood);
   // `avatars=<discord id>:<avatar hash>,<discord id>:<avatar hash>` draws real pictures on the plates.

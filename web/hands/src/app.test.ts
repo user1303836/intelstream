@@ -47,6 +47,7 @@ vi.mock("./render/renderer", () => ({
     setReconnect(): void {}
     setBloodLevel(): void {}
     setReducedMotion(): void {}
+    viewForward(): null { return null; }
     push(snapshot: EngineSnapshot): void { this.pushes.push(snapshot.tick); }
     destroy(): void { mocks.rendererDestroy(); }
     setInputLatency(): void {}
@@ -83,6 +84,34 @@ describe("browser lifecycle and accessible overlays", () => {
     mocks.cpuRequests.length = 0;
     mocks.cpuAccepted = true;
     vi.clearAllMocks();
+  });
+
+  it("cycles the camera with K, keeps the settings panel in step and ignores K while typing", () => {
+    localStorage.clear();
+    const root = document.createElement("div");
+    document.body.append(root);
+    const app = new HandsApp(root);
+    const select = root.querySelector<HTMLSelectElement>("[data-camera]")!;
+    const press = (target: EventTarget = window): void => { target.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyK", bubbles: true, cancelable: true })); };
+    const saved = (): unknown => JSON.parse(localStorage.getItem("hands.preferences.v1") ?? "{}").camera;
+    expect(select.value).toBe("broadcast");
+    press();
+    expect(select.value).toBe("close");
+    press();
+    expect(select.value).toBe("fighter");
+    expect(saved()).toBe("fighter");
+    press();
+    expect(select.value).toBe("broadcast");
+    press(root.querySelector<HTMLInputElement>("[data-volume]")!);
+    expect(select.value).toBe("broadcast");
+    select.value = "fighter";
+    select.dispatchEvent(new Event("change"));
+    expect(saved()).toBe("fighter");
+    app.destroy();
+    press();
+    expect(saved()).toBe("fighter");
+    root.remove();
+    localStorage.clear();
   });
 
   it("labels graphic full mode and exposes the required model attribution", () => {

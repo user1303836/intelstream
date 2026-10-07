@@ -38,7 +38,7 @@ describe("the announcer's voice", () => {
   const make = (): AnnouncerVoice => new AnnouncerVoice(() => settings, synthesis, FakeUtterance as unknown as new (text: string) => SpeechSynthesisUtterance);
 
   beforeEach(() => {
-    settings = { volume: 0.6, haptics: true, reducedMotion: false, blood: "full", commentary: true, announcer: true };
+    settings = { volume: 0.6, haptics: true, reducedMotion: false, blood: "full", camera: "broadcast", commentary: true, announcer: true };
     synthesis = new FakeSynthesis();
   });
 

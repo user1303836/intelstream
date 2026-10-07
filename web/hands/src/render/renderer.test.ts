@@ -3,7 +3,7 @@ import { fighter, mockHudContext, snapshot, type DrawnPicture } from "../test/fi
 import { Avatars } from "./avatars";
 import { RoundClock } from "./hud";
 import type { CombatEvent, EngineSnapshot, MatchResult } from "../types";
-import { arcadeInjuryFor, canStartPunch, CEREMONY_MARKS, ceremonyStep, contactParticipants, contactPresentationPlan, cornersAtWork, FightRenderer, isArcadeInjuryCandidate, presentationTickFor, refereeSpacing, replayCameraSide, replayReattaches, visualSeparation } from "./renderer";
+import { arcadeInjuryFor, canStartPunch, CEREMONY_MARKS, ceremonyStep, contactParticipants, contactPresentationPlan, cornersAtWork, FightRenderer, ownViewPhase, isArcadeInjuryCandidate, presentationTickFor, refereeSpacing, replayCameraSide, replayReattaches, visualSeparation } from "./renderer";
 import { RockedVision } from "./rocked";
 import { worldMapping } from "./world";
 
@@ -522,5 +522,17 @@ describe("hurt vision in the broadcast finish", () => {
     }
     expect(reduced.finishPass.uniforms.uRocked.value).toBe(0);
     expect(replaying.finishPass.uniforms.uRocked.value).toBe(0);
+  });
+});
+
+describe("the player's own camera", () => {
+  it("is used only while the fighters are boxing", () => {
+    expect(ownViewPhase({ phase: "fight" })).toBe(true);
+    expect(ownViewPhase({ phase: "countdown" })).toBe(true);
+    expect(ownViewPhase({ phase: "foul_recovery" })).toBe(true);
+    expect(ownViewPhase({ phase: "knockdown" })).toBe(false);
+    expect(ownViewPhase({ phase: "rest" })).toBe(false);
+    expect(ownViewPhase({ phase: "complete" })).toBe(false);
+    expect(ownViewPhase(null)).toBe(false);
   });
 });
