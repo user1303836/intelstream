@@ -131,12 +131,12 @@ describe("knockdown punch", () => {
   it("leaves the punch's own dent in the face, not the knockdown's minimum one", async () => {
     const { fight, internals } = await mount({ blood: "reduced" });
     const time = settle(fight);
-    const hit = punch(51, 20);
+    const hit = { ...punch(51, 20), amount: 90 };
     const knockdown: CombatEvent = { ...hit, event_id: 52, kind: "knockdown", amount: 1, detail: "", blood: 0, direction: 0, action_id: null };
     land(fight, 20, [hit, knockdown], exchange(20, "head", true));
     fight.labFrame(time + 0.1);
-    // A straight to the head dents the mouth 1.1 cm plus a centimetre for every 220 of damage.
-    expect(internals.graphs[1].boxer.headInjury.impactDepth).toBeCloseTo(1.1 + hit.amount / 220, 2);
+    // A straight to the head dents the mouth 1.1 cm, plus up to 2.1 cm more as the damage nears the engine's hardest hit (150).
+    expect(internals.graphs[1].boxer.headInjury.impactDepth).toBeCloseTo(1.1 + (2.1 * hit.amount) / 150, 2);
   });
 });
 
