@@ -4,7 +4,7 @@ import { AudioFeedback } from "./audio";
 import { ClientError, safeError } from "./api";
 import { DiscordActivity, type ActivityAuthorizer, type DiscordSession } from "./discord";
 import { CornerPanel } from "./corner";
-import { StylePicker } from "./styles";
+import { saveStyle, StylePicker } from "./styles";
 import { describeError } from "./errors";
 import { HapticFeedback } from "./haptics";
 import { CONTROL_SECTIONS } from "./input/bindings";
@@ -18,7 +18,7 @@ import { FightRenderer } from "./render/renderer";
 import { rockedLevel } from "./render/rocked";
 import { CAMERA_MODES, SettingsStore, type BloodLevel } from "./settings";
 import { initialState, reduceState, type GameState } from "./state";
-import type { CpuLevel, EngineSnapshot, ServerMessage } from "./types";
+import type { CpuLevel, EngineSnapshot, PublicPlayer, ServerMessage } from "./types";
 
 const CONTACT_FEEDBACK_KINDS = new Set(["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown", "parry", "body_collapse", "eye_shut"]);
 // The room keeps the finished bout for its result hold (ten seconds by default); a rejoin inside
@@ -313,6 +313,7 @@ export class HandsApp {
     const rematching = this.rematchAttempts > 0;
     if (message.type === "waiting" || message.type === "ready") this.rematchAttempts = 0;
     if (message.type === "ready") this.rematchOpponent = null;
+    if (message.type === "ready") this.rememberStyle(message.players);
     if (message.type === "final" && this.rematchAttempts > 0 && message.match_id === this.lastFinalMatchId) {
       this.scheduleRematchRetry();
       return;
@@ -364,6 +365,12 @@ export class HandsApp {
       this.audio.event(event);
       this.haptics.event(event);
     }
+  }
+
+  /** The style the room says this fighter boxes in, whether he settled on it or the deadline chose it, is offered first next time. */
+  private rememberStyle(players: readonly PublicPlayer[]): void {
+    const style = players.find((player) => player.id === this.state.playerId)?.style;
+    if (this.state.role === "fighter" && style !== undefined) saveStyle(style);
   }
 
   private dispatch(action: Parameters<typeof reduceState>[1]): void {

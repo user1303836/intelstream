@@ -61,6 +61,13 @@ function safeStorage(): Storage | null {
   }
 }
 
+/**
+ * The pick closes on this page this long before the room's deadline: the deadline was measured when
+ * its message left the room, so this clock runs half a round trip behind, and a pick made in that last
+ * stretch would reach a room that had already started the bout with the earlier choice.
+ */
+const CLOSING_MS = 400;
+
 const STYLE_KEYS: Readonly<Record<string, number>> = { Digit1: 0, Digit2: 1, Digit3: 2, Digit4: 3, Digit5: 4, Numpad1: 0, Numpad2: 1, Numpad3: 2, Numpad4: 3, Numpad5: 4 };
 
 /**
@@ -171,7 +178,7 @@ export class StylePicker {
       return;
     }
     const begun = this.context === null;
-    if (this.context?.select !== select) this.deadlineAt = this.now() + select.deadline_ms;
+    if (this.context?.select !== select) this.deadlineAt = this.now() + select.deadline_ms - CLOSING_MS;
     this.context = { select, viewerId };
     this.choosing = role === "fighter" && viewerId !== null;
     // A settled pick is final, here as in the room, even before the room has echoed it.
@@ -186,14 +193,17 @@ export class StylePicker {
   }
 
   private pick(style: FighterStyle, ready: boolean): void {
-    if (!this.choosing || this.settled) return;
+    if (!this.choosing || this.settled || this.closed) return;
     this.highlighted = style;
     if (!this.send(style, ready)) return;
-    if (ready) {
-      this.settled = true;
-      saveStyle(style);
-    }
+    // Remembered for next time from the room's ready, which says the style he actually boxes in.
+    if (ready) this.settled = true;
     this.render();
+  }
+
+  /** Too late for a pick to reach the room before it closes. */
+  private get closed(): boolean {
+    return this.now() >= this.deadlineAt;
   }
 
   /** Moves the choice, and the keyboard focus with it, so Enter, Space and Tab all mean the card that is lit. */
@@ -209,7 +219,7 @@ export class StylePicker {
     for (const card of STYLE_CARDS) {
       const button = this.buttons.get(card.style)!;
       const mine = this.choosing && card.style === this.highlighted;
-      button.disabled = !this.choosing || this.settled;
+      button.disabled = !this.choosing || this.settled || this.closed;
       button.setAttribute("aria-pressed", String(mine));
       button.toggleAttribute("data-chosen", mine);
       // Tab reaches only the lit card; the arrows move between them.

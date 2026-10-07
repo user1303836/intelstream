@@ -145,13 +145,14 @@ describe("the style picker", () => {
     picker.destroy();
   });
 
-  it("settles on Enter, then holds the pick and remembers it for next time", () => {
+  it("settles on Enter, then holds the pick, and leaves remembering it to the room's word", () => {
     const picker = make();
     show(picker);
     press("ArrowRight");
     press("Enter");
     expect(sent).toEqual(["balanced:false", "boxer:false", "boxer:true"]);
-    expect(loadStyle()).toBe("boxer");
+    // Remembered once the room's ready says it is the style he boxes in (app.ts).
+    expect(loadStyle()).toBe("balanced");
     expect(card(picker, "slugger").disabled).toBe(true);
     expect(status(picker)).toBe("Ready as Boxer. Waiting for your opponent.");
     press("Digit3");
@@ -222,8 +223,29 @@ describe("the style picker", () => {
     show(tapped);
     card(tapped, "counter_puncher").click();
     expect(sent).toEqual(["balanced:false", "counter_puncher:true"]);
-    expect(loadStyle()).toBe("counter_puncher");
     tapped.destroy();
+  });
+
+  it("stops taking picks in the last moments, when one would reach the room after it closed", () => {
+    vi.useFakeTimers();
+    const picker = make();
+    show(picker);
+    // 300 ms of the room's 9.5 s are left on this page's clock: half a round trip from now, none.
+    clock += 9_200;
+    vi.advanceTimersByTime(250);
+    expect(clockText(picker)).toBe("0s");
+    expect([...picker.element.querySelectorAll<HTMLButtonElement>("[data-style]")].every((button) => button.disabled)).toBe(true);
+    press("Digit3");
+    press("ArrowRight");
+    press("Enter");
+    card(picker, "slugger").click();
+    expect(sent).toEqual(["balanced:false"]);
+    // A fresh deadline from the room opens the pick again.
+    show(picker, choosing({ deadline_ms: 4_000 }));
+    expect(card(picker, "slugger").disabled).toBe(false);
+    press("Digit3");
+    expect(sent).toEqual(["balanced:false", "slugger:true"]);
+    picker.destroy();
   });
 
   it("does not settle a pick that could not be sent", () => {

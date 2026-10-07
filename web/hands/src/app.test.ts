@@ -798,10 +798,28 @@ describe("the pick of styles", () => {
     expect(picker.textContent).toContain("Two: Boxer");
     picker.querySelector<HTMLButtonElement>('[data-style="slugger"]')!.click();
     expect(mocks.styleChoices.at(-1)).toBe("slugger:true");
-    expect(localStorage.getItem("hands.style.v1")).toBe("slugger");
     send({ version: 3, type: "ready", players: [{ ...players[0], style: "slugger" }, { ...players[1], style: "boxer" }] });
+    expect(localStorage.getItem("hands.style.v1")).toBe("slugger");
     expect(picker.hidden).toBe(true);
     app.destroy();
+  });
+
+  it("remembers the style the room says the fighter boxes in, picked or left to the deadline", async () => {
+    localStorage.setItem("hands.style.v1", "boxer");
+    const { app, root } = await launch("styles-remember");
+    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [players[0]], server_tick: 0, next_sequence: 0 });
+    send({ version: 3, type: "select", deadline_ms: 9_000, players: [...players], ready: [] });
+    root.querySelector<HTMLButtonElement>('[data-style="slugger"]')!.click();
+    // The tap reached the room after it closed: it boxes, and next time offers, the style the room used.
+    expect(localStorage.getItem("hands.style.v1")).toBe("boxer");
+    send({ version: 3, type: "ready", players: [{ ...players[0], style: "counter_puncher" }, { ...players[1], style: "swarmer" }] });
+    expect(localStorage.getItem("hands.style.v1")).toBe("counter_puncher");
+    app.destroy();
+    const watcher = await launch("styles-remember-watch");
+    send({ version: 3, type: "welcome", role: "spectator", player_id: "viewer", players: [...players], server_tick: 0 });
+    send({ version: 3, type: "ready", players: [{ ...players[0], style: "slugger" }, { ...players[1], style: "swarmer" }] });
+    expect(localStorage.getItem("hands.style.v1")).toBe("counter_puncher");
+    watcher.app.destroy();
   });
 });
 
