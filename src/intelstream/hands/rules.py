@@ -52,6 +52,10 @@ CLINCH_DRAW_SPEED: int = _MANIFEST["clinch"]["draw_speed"]
 REST_WALK_SPEED: int = _MANIFEST["rest"]["walk_speed"]
 BLIND_SIDE_EYE_THRESHOLD: int = _MANIFEST["blind_side"]["eye_threshold"]
 BLIND_SIDE_IMPACT_PERCENT: int = _MANIFEST["blind_side"]["impact_percent"]
+# The ringside doctor stops a bout on a cut or a swelling this bad, unless a bout's config says
+# otherwise. The client reads the same values to call a cut by how near it is to his limit.
+DOCTOR_CUT_THRESHOLD: int = _MANIFEST["doctor"]["cut"]
+DOCTOR_SWELLING_THRESHOLD: int = _MANIFEST["doctor"]["swelling"]
 PARRY_STAGGER_TICKS: int = _MANIFEST["parry"]["stagger_ticks"]
 BODY_WIND_PERCENT: int = _MANIFEST["body"]["wind_percent"]
 BODY_COLLAPSE_TRAUMA: int = _MANIFEST["body"]["collapse_body_trauma"]

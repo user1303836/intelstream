@@ -27,6 +27,8 @@ from intelstream.hands.rules import (
     COUNTDOWN_TICKS,
     CUT_PER_DAMAGE_PERCENT,
     DEFAULT_ROUNDS,
+    DOCTOR_CUT_THRESHOLD,
+    DOCTOR_SWELLING_THRESHOLD,
     EYE_TRAUMA_PER_DAMAGE_PERCENT,
     FACING_SCALE,
     FACING_TURN_COS,
@@ -150,8 +152,8 @@ class EngineConfig:
     round_ticks: int = ROUND_TICKS
     rest_ticks: int = REST_TICKS
     countdown_ticks: int = COUNTDOWN_TICKS
-    doctor_cut_threshold: int = 800
-    doctor_swelling_threshold: int = 900
+    doctor_cut_threshold: int = DOCTOR_CUT_THRESHOLD
+    doctor_swelling_threshold: int = DOCTOR_SWELLING_THRESHOLD
     flash_ko_enabled: bool = True
 
     def __post_init__(self) -> None:
