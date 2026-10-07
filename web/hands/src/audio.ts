@@ -33,6 +33,9 @@ const OOH_COOLDOWN_SECONDS = 2.5;
 const CHANT_COOLDOWN_SECONDS = 20;
 /** Murmur level at full tension. */
 const MURMUR_GAIN = 0.05;
+/** The master bus is open to here, and muffled down to here when the player's fighter is badly rocked. */
+const MUFFLE_OPEN = 20_000;
+const MUFFLE_CLOSED = 650;
 
 interface ToneSpec {
   readonly from: number;
@@ -49,6 +52,11 @@ const WHOOSH: Record<PunchClass, { from: number; to: number; duration: number }>
   hook: { from: 300, to: 880, duration: 0.14 },
   uppercut: { from: 240, to: 820, duration: 0.15 },
 };
+
+/** Ticks between heartbeats while rocked: racing at first, slowing as the fighter recovers. */
+export function rockedBeatTicks(level: number): number {
+  return Math.round(14 + (1 - Math.max(0, Math.min(1, level))) * 22);
+}
 
 export class AudioFeedback {
   private context: AudioContext | null = null;
@@ -68,6 +76,9 @@ export class AudioFeedback {
   private murmurLevel = 0;
   private lastOohAt = -Infinity;
   private lastChantAt = -Infinity;
+  private muffle: BiquadFilterNode | null = null;
+  private rockedLevel = 0;
+  private lastRockedBeat = -300;
 
   private readonly unlockListener = (): void => {
     void this.unlock().catch(() => undefined);
@@ -102,9 +113,14 @@ export class AudioFeedback {
       context = new AudioContext();
       const master = context.createGain();
       master.gain.value = Math.min(0.8, Math.max(0, this.settings().volume));
-      master.connect(context.destination);
+      const muffle = context.createBiquadFilter();
+      muffle.type = "lowpass";
+      muffle.frequency.value = MUFFLE_OPEN;
+      muffle.Q.value = 0.7;
+      master.connect(muffle).connect(context.destination);
       this.context = context;
       this.master = master;
+      this.muffle = muffle;
     }
     if (context.state === "suspended") await context.resume();
     if (this.destroyed || this.context !== context) return;
@@ -257,6 +273,24 @@ export class AudioFeedback {
     murmur.gain.setTargetAtTime(target * MURMUR_GAIN, context.currentTime, rising ? 0.3 : 0.8);
   }
 
+  /** The player's own fighter is rocked: the world goes muffled and the heartbeat pounds, slowing as the head clears. */
+  rocked(level: number, tick: number): void {
+    const context = this.context;
+    const muffle = this.muffle;
+    if (!this.unlocked || context === null || muffle === null) return;
+    const target = Math.max(0, Math.min(1, level));
+    if (Math.abs(target - this.rockedLevel) >= 0.02 || (target === 0 && this.rockedLevel !== 0)) {
+      const rising = target > this.rockedLevel;
+      this.rockedLevel = target;
+      muffle.frequency.setTargetAtTime(MUFFLE_OPEN * Math.pow(MUFFLE_CLOSED / MUFFLE_OPEN, target), context.currentTime, rising ? 0.05 : 0.9);
+    }
+    if (target > 0.15 && tick - this.lastRockedBeat >= rockedBeatTicks(target)) {
+      this.lastRockedBeat = tick;
+      this.tone({ from: 58, to: 40, duration: 0.12, type: "sine", gain: 0.09 + target * 0.08 });
+      this.tone({ from: 50, to: 36, duration: 0.14, type: "sine", gain: 0.07 + target * 0.06, delay: 0.16 });
+    }
+  }
+
   snapshot(tick: number, stamina: number, maximumStamina: number, trauma: number): void {
     if (!this.unlocked) return;
     const fatigue = 1 - stamina / Math.max(1, maximumStamina);
@@ -264,7 +298,7 @@ export class AudioFeedback {
       this.lastBreathTick = tick;
       this.noise({ duration: 0.18, frequency: 420, gain: 0.045 + fatigue * 0.04 });
     }
-    if ((fatigue > 0.72 || trauma > 500) && tick - this.lastHeartbeatTick >= 24) {
+    if ((fatigue > 0.72 || trauma > 500) && this.rockedLevel <= 0.15 && tick - this.lastHeartbeatTick >= 24) {
       this.lastHeartbeatTick = tick;
       this.tone({ from: 52, duration: 0.09, type: "sine", gain: 0.055 });
     }
@@ -528,6 +562,7 @@ export class AudioFeedback {
     this.injuryBuffers = new Map();
     this.crowdGain = null;
     this.murmurGain = null;
+    this.muffle = null;
     this.unlocked = false;
     if (context !== null) void context.close().catch(() => undefined);
   }

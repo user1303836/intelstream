@@ -4,6 +4,7 @@ import { Avatars } from "./avatars";
 import { RoundClock } from "./hud";
 import type { CombatEvent, EngineSnapshot, MatchResult } from "../types";
 import { arcadeInjuryFor, canStartPunch, CEREMONY_MARKS, ceremonyStep, contactParticipants, contactPresentationPlan, cornersAtWork, FightRenderer, isArcadeInjuryCandidate, presentationTickFor, refereeSpacing, replayCameraSide, replayReattaches, visualSeparation } from "./renderer";
+import { RockedVision } from "./rocked";
 import { worldMapping } from "./world";
 
 const event = (kind: string, detail: string): CombatEvent => ({
@@ -485,5 +486,40 @@ describe("the broadcast caption", () => {
     draw.call(self, mockHudContext([]), 1280, 720, snapshot());
     draw.call(self, mockHudContext([]), 1280, 720, snapshot());
     expect(self.commentary.resultShown).toHaveBeenCalledOnce();
+  });
+});
+
+describe("hurt vision in the broadcast finish", () => {
+  const update = (FightRenderer.prototype as unknown as { updateRocked(this: unknown, latest: EngineSnapshot | null, dt: number, reducedMotion: boolean): void }).updateRocked;
+  const rig = (viewerId: string | null, replay: unknown = null) => ({ viewerId, replay, rocked: new RockedVision(), finishPass: { uniforms: { uRocked: { value: 0 } } } });
+  const rocked = (): EngineSnapshot => ({ ...snapshot(), fighters: [{ ...fighter("one", -100), stunned_ticks: 60 }, { ...fighter("two", 100), stunned_ticks: 60 }] });
+
+  it("blurs the picture for the fighter who is rocked", () => {
+    const self = rig("one");
+    for (let frame = 0; frame < 20; frame += 1) update.call(self, rocked(), 1 / 60, false);
+    expect(self.finishPass.uniforms.uRocked.value).toBeGreaterThan(0.85);
+  });
+
+  it("never blurs it for a spectator, or for a fighter whose opponent is the one rocked", () => {
+    const spectator = rig(null);
+    const other = rig("one");
+    const opponentRocked: EngineSnapshot = { ...snapshot(), fighters: [fighter("one", -100), { ...fighter("two", 100), stunned_ticks: 60 }] };
+    for (let frame = 0; frame < 20; frame += 1) {
+      update.call(spectator, rocked(), 1 / 60, false);
+      update.call(other, opponentRocked, 1 / 60, false);
+    }
+    expect(spectator.finishPass.uniforms.uRocked.value).toBe(0);
+    expect(other.finishPass.uniforms.uRocked.value).toBe(0);
+  });
+
+  it("is off with reduced motion and during the knockout replay", () => {
+    const reduced = rig("one");
+    const replaying = rig("one", {});
+    for (let frame = 0; frame < 20; frame += 1) {
+      update.call(reduced, rocked(), 1 / 60, true);
+      update.call(replaying, rocked(), 1 / 60, false);
+    }
+    expect(reduced.finishPass.uniforms.uRocked.value).toBe(0);
+    expect(replaying.finishPass.uniforms.uRocked.value).toBe(0);
   });
 });

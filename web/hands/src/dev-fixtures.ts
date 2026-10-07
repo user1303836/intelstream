@@ -127,6 +127,8 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
         events.push({ event_id: eventId, tick, kind: "knockdown", actor_id: one.player_id, target_id: two.player_id, amount: 420, detail: "knockdown", blood: 60, direction: 1, action_id: null });
       }
     }
+    // `rocked=1` keeps the viewer's fighter stunned, for the hurt vision.
+    if (search.get("rocked") === "1") one.stunned_ticks = 60;
     if (pinned) {
       two.x = 460;
       two.y = 40;

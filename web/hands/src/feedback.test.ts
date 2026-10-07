@@ -1,4 +1,4 @@
-import { AudioFeedback } from "./audio";
+import { AudioFeedback, rockedBeatTicks } from "./audio";
 import { INJURY_SOUNDS } from "./assets/injury-sounds";
 import { HapticFeedback } from "./haptics";
 
@@ -309,6 +309,44 @@ describe("the crowd", () => {
     feedback.event(crowdEvent("get_up", 6));
     expect((crowd.gain.setValueAtTime as unknown as ReturnType<typeof vi.fn>).mock.lastCall![0]).toBeCloseTo(0.15);
     expect(ramp).toHaveBeenLastCalledWith(0.022, 4.5);
+    feedback.destroy();
+  });
+});
+
+describe("rocked", () => {
+  beforeEach(() => {
+    MockAudioContext.filters = [];
+    MockAudioContext.oscillatorStarts = 0;
+    vi.stubGlobal("AudioContext", MockAudioContext);
+  });
+
+  it("muffles the arena while the player's fighter is rocked and opens it up again after", async () => {
+    const feedback = new AudioFeedback(() => settings);
+    await feedback.unlock();
+    const muffle = MockAudioContext.filters.find((filter) => filter.type === "lowpass" && (filter.frequency as unknown as { value: number }).value === 20_000)!;
+    const target = muffle.frequency.setTargetAtTime as unknown as ReturnType<typeof vi.fn>;
+    feedback.rocked(1, 100);
+    expect(target.mock.lastCall![0]).toBeCloseTo(650);
+    expect(target.mock.lastCall![2]).toBe(0.05);
+    feedback.rocked(0, 200);
+    expect(target.mock.lastCall![0]).toBeCloseTo(20_000);
+    expect(target.mock.lastCall![2]).toBe(0.9);
+    feedback.destroy();
+  });
+
+  it("pounds a heartbeat that slows as the fighter recovers", async () => {
+    const feedback = new AudioFeedback(() => settings);
+    await feedback.unlock();
+    const beatsOver = (level: number, from: number): number => {
+      const before = MockAudioContext.oscillatorStarts;
+      for (let tick = from; tick < from + 60; tick += 1) feedback.rocked(level, tick);
+      return (MockAudioContext.oscillatorStarts - before) / 2;
+    };
+    expect(rockedBeatTicks(1)).toBe(14);
+    expect(rockedBeatTicks(0.3)).toBe(29);
+    expect(beatsOver(1, 1000)).toBe(5);
+    expect(beatsOver(0.3, 2000)).toBe(3);
+    expect(beatsOver(0.1, 3000)).toBe(0);
     feedback.destroy();
   });
 });

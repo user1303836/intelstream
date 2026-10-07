@@ -12,6 +12,7 @@ import { EventDeduplicator } from "./interpolation";
 import { NetworkController } from "./network";
 import { crowdTension } from "./render/commentary";
 import { FightRenderer } from "./render/renderer";
+import { rockedLevel } from "./render/rocked";
 import { SettingsStore, type BloodLevel } from "./settings";
 import { initialState, reduceState, type GameState } from "./state";
 import type { EngineSnapshot, ServerMessage } from "./types";
@@ -276,6 +277,7 @@ export class HandsApp {
     this.input.setKnockdown(viewer?.is_downed === true);
     if (viewer !== undefined) {
       this.audio.snapshot(snapshot.tick, viewer.stamina, viewer.maximum_stamina, viewer.trauma.head + viewer.trauma.body);
+      this.audio.rocked(rockedLevel(viewer, snapshot.phase), snapshot.tick);
     }
     this.audio.roundClock(snapshot.phase, snapshot.round_number, snapshot.phase_ticks_remaining, this.state.simulation?.tick_rate ?? 30);
     this.audio.tension(crowdTension(snapshot));

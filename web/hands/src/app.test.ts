@@ -380,6 +380,26 @@ describe("the broadcast", () => {
     app.destroy();
   });
 
+  it("muffles the sound only when the player's own fighter is rocked, never for a spectator", async () => {
+    const rocked = vi.spyOn(AudioFeedback.prototype, "rocked");
+    const { app } = await launch();
+    send({ version: 3, type: "ready", players: [...players] });
+    const hit = makeSnapshot(40);
+    send({ version: 3, type: "snapshot", payload: { ...hit, fighters: [{ ...hit.fighters[0], stunned_ticks: 45 }, hit.fighters[1]] } });
+    expect(rocked).toHaveBeenLastCalledWith(1, 40);
+    app.destroy();
+    rocked.mockClear();
+    history.replaceState({}, "", "/?instance_id=watch");
+    const root = document.createElement("div");
+    const watcher = new HandsApp(root);
+    watcher.start();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
+    send({ version: 3, type: "welcome", role: "spectator", player_id: "three", players: [...players], server_tick: 0 });
+    send({ version: 3, type: "snapshot", payload: { ...hit, fighters: [{ ...hit.fighters[0], stunned_ticks: 45 }, hit.fighters[1]] } });
+    expect(rocked).not.toHaveBeenCalled();
+    watcher.destroy();
+  });
+
   it("lets the crowd follow the fight", async () => {
     const tension = vi.spyOn(AudioFeedback.prototype, "tension");
     const chant = vi.spyOn(AudioFeedback.prototype, "chant");
