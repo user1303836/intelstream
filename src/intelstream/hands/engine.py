@@ -77,6 +77,9 @@ from intelstream.hands.rules import (
     STUNNED_SPEED_PERCENT,
     SWELLING_PER_DAMAGE_PERCENT,
     TICKS_PER_SECOND,
+    TIRED_IMPACT_PERCENT,
+    TIRED_RECOVERY_TICKS,
+    TIRED_STARTUP_TICKS,
     JudgeProfile,
     PunchRule,
     fatigue_factor,
@@ -697,12 +700,12 @@ class BoxingEngine:
         return (
             isinstance(follow_up, PunchAction)
             and (attack.action.punch_class, follow_up.punch_class) in COMPATIBLE_COMBO_CHAINS
-            # `_start_punch` refuses a punch the fighter cannot pay for in full.
+            # A punch the fighter cannot pay for in full is a tired one, and no combination.
             and fighter.stamina
             >= PUNCH_RULES[(follow_up.punch_class, follow_up.target, follow_up.power)].stamina_cost
         )
 
-    def _start_punch(self, fighter: FighterState, action: PunchAction) -> bool:
+    def _start_punch(self, fighter: FighterState, action: PunchAction) -> None:
         base_rule = PUNCH_RULES[(action.punch_class, action.target, action.power)]
         cost = base_rule.stamina_cost
         lead_hand = "left" if fighter.stance is Stance.ORTHODOX else "right"
@@ -712,11 +715,13 @@ class BoxingEngine:
         rear_power_bonus = (
             8 if action.hand.value != lead_hand and action.punch_class is PunchClass.STRAIGHT else 0
         )
-        if fighter.stamina < cost:
-            self._emit("exhausted", fighter.player_id)
-            return False
+        # Arms too heavy for the punch still throw it: a slow, weak arm punch on what breath is left.
+        tired = fighter.stamina < cost
         combo_bonus = 0
-        if (
+        if tired:
+            self._emit("exhausted", fighter.player_id)
+            cost = fighter.stamina
+        elif (
             fighter.combo_ticks > 0
             and fighter.last_punch is not None
             and (fighter.last_punch.punch_class, action.punch_class) in COMPATIBLE_COMBO_CHAINS
@@ -728,17 +733,21 @@ class BoxingEngine:
         speed = fighter.fatigue
         startup = max(2, base_rule.startup * 100 // speed - hand_speed_bonus)
         recovery = max(4, base_rule.recovery * 100 // speed)
+        strength = TIRED_IMPACT_PERCENT if tired else 100
+        if tired:
+            startup += TIRED_STARTUP_TICKS
+            recovery += TIRED_RECOVERY_TICKS
         rule = PunchRule(
             startup=startup,
             active=base_rule.active,
             recovery=recovery,
             reach=base_rule.reach,
             lateral_arc=base_rule.lateral_arc,
-            impact=base_rule.impact + rear_power_bonus,
+            impact=(base_rule.impact + rear_power_bonus) * strength // 100,
             stamina_cost=base_rule.stamina_cost,
             whiff_cost=base_rule.whiff_cost,
-            guard_damage=base_rule.guard_damage,
-            poise_damage=base_rule.poise_damage,
+            guard_damage=base_rule.guard_damage * strength // 100,
+            poise_damage=base_rule.poise_damage * strength // 100,
             combo_window=base_rule.combo_window,
             startup_vulnerability=base_rule.startup_vulnerability,
             recovery_vulnerability=base_rule.recovery_vulnerability,
@@ -752,7 +761,6 @@ class BoxingEngine:
             detail=f"{action.hand.value}:{action.punch_class.value}:{action.target.value}",
             action_id=self._action_id(fighter, fighter.attack),
         )
-        return True
 
     @staticmethod
     def _action_key(action: PunchAction) -> str:

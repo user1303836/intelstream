@@ -51,6 +51,11 @@
     "get_up_per_knockdown": 20,
     "get_up_trauma_divisor": 18
   },
+  "tired": {
+    "startup_ticks": 3,
+    "recovery_ticks": 5,
+    "impact_percent": 40
+  },
   "hitstop_ms": {
     "hit": 78,
     "block": 45

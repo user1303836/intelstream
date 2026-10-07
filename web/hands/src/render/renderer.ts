@@ -7,7 +7,7 @@ import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { EventDeduplicator, SnapshotBuffer } from "../interpolation";
 import { coarsePointer } from "../input/touch";
 import { FIGHTER_RADIUS, REST_CORNER_OFFSET, RING_HALF_HEIGHT, RING_HALF_WIDTH, punchTiming } from "../manifest";
-import { canAffordPunch, constrainPrediction, predictMovement, predictedPunchTiming, type HeldInput } from "../prediction";
+import { constrainPrediction, predictMovement, predictedPunchTiming, type HeldInput } from "../prediction";
 import type { BloodLevel, Settings } from "../settings";
 import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, Hand, MatchResult, PublicPlayer, PunchClass, SemanticAction, SimulationInfo } from "../types";
 import { buildArena, type BuiltArena } from "./arena";
@@ -1578,9 +1578,9 @@ export class FightRenderer {
     if (latest === null || this.viewerId === null || this.replay !== null) return;
     const index = latest.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
     if (index < 0) return;
-    // The server turns a punch down outside the fight phase and while the fighter cannot act or pay for it.
+    // The server turns a punch down outside the fight phase and while the fighter cannot act.
     const fighter = latest.fighters[index]!;
-    if (action.kind !== "punch" || latest.phase !== "fight" || !canStartPunch(fighter) || !canAffordPunch(fighter, action)) return;
+    if (action.kind !== "punch" || latest.phase !== "fight" || !canStartPunch(fighter)) return;
     const leadTicks = ((this.inputLatencyMs ?? 60) / 1000) * this.simulation.tick_rate + this.buffer.interpolationDelayTicks;
     this.graphs?.[index]?.predict(action, performance.now() / 1000, this.simulation.tick_rate, leadTicks, predictedPunchTiming(fighter, action, latest.tick + 1));
   }

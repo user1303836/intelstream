@@ -11,6 +11,7 @@ import pytest
 from intelstream.hands.engine import (
     ACTION_BUFFER_TICKS,
     MAX_PENDING_ACTIONS,
+    AttackState,
     BoxingEngine,
     EngineConfig,
     FighterState,
@@ -33,9 +34,13 @@ from intelstream.hands.rules import (
     RING_HALF_HEIGHT,
     RING_HALF_WIDTH,
     STUNNED_SPEED_PERCENT,
+    TIRED_IMPACT_PERCENT,
+    TIRED_RECOVERY_TICKS,
+    TIRED_STARTUP_TICKS,
 )
 from intelstream.hands.types import (
     ActionKind,
+    CombatEvent,
     CornerChoice,
     DefensivePose,
     FinishMethod,
@@ -2557,3 +2562,90 @@ def test_two_body_collapses_on_one_tick_favour_neither_seat(
         fighter.body_collapse_action_id = "trade"
     knockdowns = [event for event in engine.step().events if event.kind == "knockdown"]
     assert [event.target_id for event in knockdowns] == [first_down]
+
+
+def _straight_from(stamina: int) -> tuple[BoxingEngine, int, list[CombatEvent]]:
+    engine = make_engine(round_ticks=2000)
+    one = engine.fighter("one")
+    one.stamina = stamina
+    events = list(engine.step({"one": command(1, action=punch(PunchClass.STRAIGHT))}).events)
+    left = one.stamina
+    attack = one.attack
+    assert attack is not None
+    while not attack.resolved:
+        events.extend(engine.step().events)
+    return engine, left, events
+
+
+def test_a_fighter_out_of_breath_still_throws_a_slow_weak_arm_punch() -> None:
+    cost = PUNCH_RULES[(PunchClass.STRAIGHT, Target.HEAD, Power.NORMAL)].stamina_cost
+    fresh, fresh_left, fresh_events = _straight_from(cost)
+    tired, tired_left, tired_events = _straight_from(cost - 1)
+    assert "exhausted" not in [event.kind for event in fresh_events]
+    assert "exhausted" in [event.kind for event in tired_events]
+    # He pays with what breath he has left.
+    assert tired_left == fresh_left
+    fresh_attack, tired_attack = fresh.fighter("one").attack, tired.fighter("one").attack
+    assert fresh_attack is not None and tired_attack is not None
+    assert tired_attack.rule.startup == fresh_attack.rule.startup + TIRED_STARTUP_TICKS
+    assert tired_attack.rule.recovery == fresh_attack.rule.recovery + TIRED_RECOVERY_TICKS
+    assert tired_attack.rule.impact == fresh_attack.rule.impact * TIRED_IMPACT_PERCENT // 100
+    assert tired_attack.landed and fresh_attack.landed
+    fresh_two, tired_two = fresh.fighter("two"), tired.fighter("two")
+    assert 0 < tired_two.trauma.head < fresh_two.trauma.head
+    assert fresh_two.poise < tired_two.poise < 600
+
+
+def _hook_after_a_jab(stamina: int) -> tuple[AttackState, int]:
+    engine = make_engine(round_ticks=2000)
+    one = engine.fighter("one")
+    engine.step({"one": command(1, action=punch(PunchClass.JAB, hand=Hand.LEFT))})
+    jab = one.attack
+    assert jab is not None
+    while not jab.resolved:
+        engine.step()
+    assert jab.landed
+    one.stamina = stamina
+    hook = punch(PunchClass.HOOK, hand=Hand.LEFT)
+    engine.step({"one": command(2, action=hook)})
+    for _ in range(40):
+        if one.attack is not None and one.attack.action == hook:
+            return one.attack, one.attack.start_tick - jab.start_tick
+        engine.step()
+    raise AssertionError("the hook was never thrown")
+
+
+def test_a_tired_punch_is_no_combination() -> None:
+    fresh, fresh_gap = _hook_after_a_jab(1000)
+    tired, tired_gap = _hook_after_a_jab(10)
+    assert fresh.combo_bonus > 0 and tired.combo_bonus == 0
+    # It cannot cut the jab's recovery short either: it waits for the jab to finish.
+    assert tired_gap > fresh_gap
+
+
+def _counter_hook(stamina: int) -> list[str]:
+    engine = make_engine(seed=11, flash=True)
+    one, two = engine.fighter("one"), engine.fighter("two")
+    two.trauma.head = 300
+    one.counter_ticks = 30
+    one.stamina = stamina
+    kinds = [
+        event.kind
+        for event in engine.step(
+            {"one": command(1, action=punch(PunchClass.HOOK, power=Power.POWER))}
+        ).events
+    ]
+    attack = one.attack
+    assert attack is not None
+    # His breath back by the time it lands, so only the punch itself decides.
+    one.stamina = 1000
+    while not attack.resolved:
+        kinds.extend(event.kind for event in engine.step().events)
+    assert attack.landed
+    return kinds
+
+
+def test_a_tired_punch_never_carries_a_flash_knockout() -> None:
+    assert "flash_roll" in _counter_hook(1000)
+    tired = _counter_hook(10)
+    assert "exhausted" in tired and "flash_roll" not in tired

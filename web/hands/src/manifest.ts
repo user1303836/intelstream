@@ -73,6 +73,9 @@ export const GET_UP_REQUIRED_MIN = knockdownRules.get_up_base;
 export const GET_UP_REQUIRED_MAX = knockdownRules.get_up_base + KNOCKDOWN_LIMIT * knockdownRules.get_up_per_knockdown + Math.floor(HEAD_TRAUMA_LIMIT / knockdownRules.get_up_trauma_divisor);
 /** A stunned fighter's footwork, as a share of his speed. */
 export const STUNNED_SPEED_PERCENT = manifestJson.stun.moving_speed_percent;
+/** A punch the fighter cannot pay for in full is thrown tired: this much slower to land and to recover. */
+export const TIRED_STARTUP_TICKS = manifestJson.tired.startup_ticks;
+export const TIRED_RECOVERY_TICKS = manifestJson.tired.recovery_ticks;
 
 export function punchTiming(punchClass: PunchClass, target: Target, power: Power): PunchTiming {
   const base = punches[punchClass];
