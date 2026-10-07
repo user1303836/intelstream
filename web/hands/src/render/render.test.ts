@@ -5,6 +5,7 @@ import { CameraDirector, ceremonyShot, cornerFrame, cornerPoint, cornerShot, cor
 import { bloodPatternFor, Effects3D } from "./effects";
 import { CLOCK_PORTRAIT_RADIUS, cardRows, decisionLabel, drawHud, finalRevealDelay as revealDelay, hudScale, plateDetail, REFEREE_REVEAL_DELAY_SECONDS, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, PLATE_PORTRAIT_RADIUS, RESULT_CARD_FOOTER, resultCard, resultCardLayout, RoundClock, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
 import { buildRing, disposeRing, nearRopeOpacityFor, ROPE_FLEX_GLSL, ROPE_GIVE_GLSL, ropePress } from "./ring";
+import { GloveTrail } from "./trails";
 import { resizeHighDpi } from "./viewport";
 import { CORNER_COLORS, PALETTES, ROPE_HEIGHTS, ROPE_LINE, worldMapping } from "./world";
 import { fighter, mockHudContext, publicPlayers, snapshot, type DrawnPicture } from "../test/fixtures";
@@ -657,6 +658,32 @@ describe("near ropes", () => {
     ring.setNearRopeOpacity(0);
     expect(faded.every((material) => !material.visible)).toBe(true);
     expect(ring.materials.filter((material) => !material.visible)).toHaveLength(faded.length);
+    disposeRing(ring);
+  });
+
+  it("blend last and write no depth while faded, so the blob shadows and glove trails seen through them are not cut", () => {
+    const ring = buildRing();
+    ring.setNearRopeOpacity(0.26);
+    const faded = ring.materials.filter((material) => material.transparent && material.opacity < 1);
+    expect(faded).toHaveLength(3 + 1);
+    for (const material of faded) expect(material.depthWrite).toBe(false);
+    const trail = new GloveTrail(new THREE.Color(0xffffff));
+    const blobShadowOrder = 1;
+    let near = 0;
+    ring.group.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      if (faded.includes(object.material as THREE.Material)) {
+        near += 1;
+        expect(object.renderOrder).toBeGreaterThan(Math.max(trail.mesh.renderOrder, blobShadowOrder));
+      } else {
+        expect(object.renderOrder).toBe(0);
+      }
+    });
+    // Three ropes and two straps on the side that faces the broadcast camera.
+    expect(near).toBe(5);
+    // Solid again for the shots from inside the ring, they write depth as before.
+    ring.setNearRopeOpacity(1);
+    for (const material of faded) expect(material.depthWrite).toBe(true);
     disposeRing(ring);
   });
 });

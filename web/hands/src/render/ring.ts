@@ -21,6 +21,11 @@ function smoothstep(edge0: number, edge1: number, value: number): number {
 
 /** The side of the ring that faces the broadcast camera. */
 const NEAR_SIDE = 3;
+/**
+ * The near side's ropes and straps blend last, after the blob shadows (1) and the glove trails (4) seen
+ * through them, which would otherwise be cut where a faded rope crosses them.
+ */
+const NEAR_ROPE_RENDER_ORDER = 5;
 
 /** How solid the near ropes are drawn for fighters whose nearest point to the camera is `z` metres from the centre. */
 export function nearRopeOpacityFor(z: number): number {
@@ -278,6 +283,7 @@ export function buildRing(): BuiltRing {
       geometries.push(ropeGeo);
       const rope = new THREE.Mesh(ropeGeo, (side === NEAR_SIDE ? nearMaterials : ropeMats)[ropeIndex]!);
       rope.castShadow = true;
+      if (side === NEAR_SIDE) rope.renderOrder = NEAR_ROPE_RENDER_ORDER;
       group.add(rope);
     }
     for (const t of TIE_POSITIONS) {
@@ -286,6 +292,7 @@ export function buildRing(): BuiltRing {
       const tie = new THREE.Mesh(tieGeo, side === NEAR_SIDE ? nearTieMat : tieMat);
       tie.position.set(x, (tieLow + tieHigh) / 2, z);
       tie.lookAt(0, tie.position.y, 0);
+      if (side === NEAR_SIDE) tie.renderOrder = NEAR_ROPE_RENDER_ORDER;
       group.add(tie);
     }
   }
@@ -296,6 +303,9 @@ export function buildRing(): BuiltRing {
       material.opacity = THREE.MathUtils.clamp(opacity, 0, 1);
       // Faded right out they are not drawn at all, or they would still write depth and catch the bloom.
       material.visible = material.opacity > 0.03;
+      // Faded, they blend over what is behind them without cutting it out of anything drawn later. Depth
+      // writing is render state, not part of the shader, so switching it compiles nothing.
+      material.depthWrite = material.opacity >= 1;
     }
   };
 
