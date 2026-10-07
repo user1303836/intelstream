@@ -405,6 +405,14 @@ export class BoxingGraph {
   private readonly scratchQ = new THREE.Quaternion();
   private readonly headWorld = new THREE.Vector3();
   private readonly hand = { L: this.makeHand(), R: this.makeHand() };
+  /** Scratch for the punch path, so a punch allocates nothing per frame. */
+  private readonly punchGuard = this.makeHand();
+  private readonly punchDir = new THREE.Vector3();
+  private readonly punchContact = new THREE.Vector3();
+  private readonly punchStart = new THREE.Vector3();
+  private readonly punchSweepFrom = new THREE.Vector3();
+  private readonly punchSweepTo = new THREE.Vector3();
+  private readonly punchMid = new THREE.Vector3();
   private readonly foot = { L: this.makeFoot(), R: this.makeFoot() };
   private readonly torso = {
     hips: new THREE.Vector3(),
@@ -1200,10 +1208,10 @@ export class BoxingGraph {
     const travel = phase === "recovery" ? 1 : e;
     const retract = phase === "recovery" ? 1 - e : 0;
 
-    const guard = hand.position.clone();
-    const guardKnuckles = hand.knuckles.clone();
-    const guardPalm = hand.palm.clone();
-    const guardPole = hand.pole.clone();
+    const guard = this.punchGuard.position.copy(hand.position);
+    const guardKnuckles = this.punchGuard.knuckles.copy(hand.knuckles);
+    const guardPalm = this.punchGuard.palm.copy(hand.palm);
+    const guardPole = this.punchGuard.pole.copy(hand.pole);
 
     // Torso rotation: lead punches blade further, rear punches square up.
     const blade = STANCE.bladeYaw * mirror;
@@ -1269,15 +1277,15 @@ export class BoxingGraph {
       headRest.y - 0.22,
       torso.hips.z + 0.04 + torso.spinePitch * 0.25 - shoulderSpan * Math.sin(torso.shouldersYaw),
     );
-    const toTarget = target.clone().sub(shoulderChar);
-    const distance = toTarget.length();
-    const dir = toTarget.normalize();
+    const dir = this.punchDir.copy(target).sub(shoulderChar);
+    const distance = dir.length();
+    dir.normalize();
     const reach = 0.5 + 0.04 * power + (this.punchClass === "straight" ? 0.06 : 0) + (this.punchClass === "jab" ? 0.03 : 0)
       - (this.punchClass === "hook" ? 0.08 : 0) - (this.punchClass === "uppercut" ? 0.08 : 0);
     const contactDistance = Math.min(distance - HURTBOXES.head.radius - GLOVE_HITBOX_RADIUS + PUNCH_CONTACT_OFFSET, reach);
     // Pressed together there is little room: the punch shortens and the elbow stays bent rather than
     // the glove going past the contact point into the face.
-    const contact = shoulderChar.clone().addScaledVector(dir, Math.max(0, contactDistance));
+    const contact = this.punchContact.copy(shoulderChar).addScaledVector(dir, Math.max(0, contactDistance));
     rear.heel = heelRear * e;
     lead.heel = heelLead * e;
     if (leadPivot > 0) {
@@ -1307,18 +1315,20 @@ export class BoxingGraph {
         windupOffset.set(0, -0.01, -0.05 - 0.04 * power);
         break;
     }
-    const start = guard.clone().addScaledVector(windupOffset, Math.max(windup, this.punchClass === "hook" || this.punchClass === "uppercut" ? (1 - travel) * 0.6 : 0));
+    const start = this.punchStart.copy(guard).addScaledVector(windupOffset, Math.max(windup, this.punchClass === "hook" || this.punchClass === "uppercut" ? (1 - travel) * 0.6 : 0));
     if (this.punchClass === "hook") {
       // Horizontal sweep around the shoulder from the wide windup into the target. The radius runs
       // from the windup's to the contact's, measured flat, so the sweep ends on the contact point.
       const startRadius = Math.hypot(start.x - shoulderChar.x, start.z - shoulderChar.z);
       const contactRadius = Math.hypot(contact.x - shoulderChar.x, contact.z - shoulderChar.z);
-      const startDir = start.clone().sub(shoulderChar).setY(0).normalize();
-      const endDir = contact.clone().sub(shoulderChar).setY(0).normalize();
+      const startDir = this.punchSweepFrom.copy(start).sub(shoulderChar).setY(0).normalize();
+      const endDir = this.punchSweepTo.copy(contact).sub(shoulderChar).setY(0).normalize();
       const angle = Math.acos(clamp(startDir.dot(endDir), -1, 1));
-      const turn = new THREE.Vector3().crossVectors(startDir, endDir).y >= 0 ? 1 : -1;
+      // The sign of the cross product's vertical component: which way round the shoulder the sweep turns.
+      const turn = startDir.z * endDir.x - startDir.x * endDir.z >= 0 ? 1 : -1;
       const sweep = smoothstep(0, 1, travel);
-      const rotated = startDir.clone().applyAxisAngle(worldUpVector, angle * sweep * turn).normalize();
+      // The start direction is not needed again, so it turns in place.
+      const rotated = startDir.applyAxisAngle(worldUpVector, angle * sweep * turn).normalize();
       hand.position.copy(shoulderChar).addScaledVector(rotated, THREE.MathUtils.lerp(startRadius, contactRadius, sweep));
       hand.position.y = THREE.MathUtils.lerp(start.y, contact.y, sweep);
       hand.pole.set(0.95 * side * mirror, 0.08, 0.3).normalize();
@@ -1326,8 +1336,8 @@ export class BoxingGraph {
       hand.palm.set(0, -1, 0);
     } else if (this.punchClass === "uppercut") {
       const rise = smoothstep(0, 1, travel);
-      const low = start.clone();
-      const mid = contact.clone().lerp(low, 0.5);
+      const low = start;
+      const mid = this.punchMid.copy(contact).lerp(low, 0.5);
       mid.y = Math.min(low.y, contact.y) - 0.04;
       mid.z += 0.08;
       hand.position.copy(low).lerp(mid, rise * 2 > 1 ? 1 : rise * 2);

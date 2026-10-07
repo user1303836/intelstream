@@ -62,3 +62,34 @@ describe("close range punches", () => {
     }
   });
 });
+
+describe("punch pose allocations", () => {
+  it("clones no vectors per frame for any punch beyond what an idle frame does", () => {
+    const graph = new BoxingGraph(new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 }), mapping);
+    const opponent = opponentAt(120);
+    const head = new THREE.Vector3(0, 1.5, mapping.z(-120));
+    const idle = facingOpponent(baseFighter("one"));
+    let tick = 0;
+    const frames = (fighter: FighterSnapshot, count: number): number => {
+      const clones = vi.spyOn(THREE.Vector3.prototype, "clone");
+      for (let frame = 0; frame < count; frame += 1) {
+        tick += 0.5;
+        graph.update(fighter, opponent, 1 / 60, tick / 30, false, "full", tick, head);
+      }
+      const calls = clones.mock.calls.length;
+      clones.mockRestore();
+      return calls;
+    };
+    frames(idle, 20);
+    const perIdleFrame = frames(idle, 30) / 30;
+    for (const punchClass of ["jab", "straight", "hook", "uppercut"] as const) {
+      const timing = punchTiming(punchClass, "head", "normal");
+      const punch: FighterSnapshot = {
+        ...idle, action: punchClass, action_hand: "left", action_target: "head", action_power: "normal", action_id: `a-${punchClass}`, action_key: `${punchClass}:left:head:normal`,
+        action_start_tick: tick, action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery,
+      };
+      const count = (timing.startup + timing.active + timing.recovery) * 2 - 2;
+      expect(frames(punch, count) / count, punchClass).toBe(perIdleFrame);
+    }
+  });
+});
