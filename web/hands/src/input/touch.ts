@@ -66,8 +66,9 @@ export class TouchInput {
 
   private bind(): void {
     const zone = this.stickZone;
+    // The stick and the hold buttons track fingers while input is off but shown (the rest, a pause); presses wait for input.
     zone.addEventListener("pointerdown", (event) => {
-      if (!this.enabled || this.stickPointer !== null) return;
+      if (this.stickPointer !== null) return;
       event.preventDefault();
       this.stickPointer = event.pointerId;
       this.stickOrigin = { x: event.clientX, y: event.clientY };
@@ -112,7 +113,6 @@ export class TouchInput {
     }
     for (const mod of this.root.querySelectorAll<HTMLButtonElement>("[data-mod], [data-guard]")) {
       const press = (event: PointerEvent): void => {
-        if (!this.enabled) return;
         event.preventDefault();
         mod.setPointerCapture(event.pointerId);
         const key = mod.dataset.mod ?? mod.dataset.guard ?? "";
@@ -174,13 +174,20 @@ export class TouchInput {
     }
   }
 
-  setEnabled(enabled: boolean): void {
+  /**
+   * Off and hidden outside a bout. Through the rest and pauses the controls stay shown, dimmed: a
+   * thumb resting on the stick or a hold button counts from the first frame after the bell.
+   */
+  setEnabled(enabled: boolean, shown = enabled): void {
     this.enabled = enabled;
-    this.root.classList.toggle("disabled", !enabled);
-    if (!enabled) this.reset();
+    this.root.classList.toggle("disabled", !shown);
+    this.root.classList.toggle("resting", shown && !enabled);
+    if (!shown) this.reset();
+    else if (!enabled) this.sharedActions.clearSource("touch");
   }
 
   frame(): InputFrame {
+    if (!this.enabled) return { moveX: 0, moveY: 0, defense: "none", actions: [] };
     return { moveX: this.moveX, moveY: this.moveY, defense: this.guard, actions: [] };
   }
 

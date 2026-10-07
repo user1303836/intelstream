@@ -6,8 +6,11 @@ export class KeyboardInput {
   private readonly held = new Set<string>(); private readonly queue: SemanticAction[] = [];
   private enabled = true;
   private readonly keydown = (event: KeyboardEvent): void => {
-    if (!this.enabled || !ACTIVE_CODES.has(event.code)) return;
-    event.preventDefault(); if (event.repeat) return; this.held.add(event.code);
+    if (!ACTIVE_CODES.has(event.code)) return;
+    // Keys stay tracked while input is off (the rest, a pause), so one held through the bell counts from the first frame.
+    if (!this.enabled) { this.held.add(event.code); return; }
+    // A repeat takes the hold of a key pressed before the page had focus, never the press.
+    event.preventDefault(); if (event.repeat) { this.held.add(event.code); return; } this.held.add(event.code);
     if (event.code === "KeyQ" || event.code === "KeyE") this.clearActions();
     const punch = PUNCH_KEYS[event.code];
     if (punch !== undefined) this.push({ kind: "punch", hand: punch[0], class: punch[1], target: this.hasShift() ? "body" : "head", power: this.hasAlt() ? "power" : "normal" });
@@ -23,8 +26,10 @@ export class KeyboardInput {
   private hasAlt(): boolean { return this.held.has("AltLeft") || this.held.has("AltRight"); }
   private push(action: SemanticAction): void { if (this.sharedActions === undefined) pushActionIntent(this.queue, action, this.maximumQueue); else this.sharedActions.push("keyboard", action); }
   private clearActions(): void { this.queue.length = 0; this.sharedActions?.clear(); }
-  setEnabled(enabled: boolean): void { this.enabled = enabled; if (!enabled) this.reset(); }
+  /** Off drops queued presses but keeps the held keys; the frame stays neutral until input is on again. */
+  setEnabled(enabled: boolean): void { this.enabled = enabled; if (!enabled) { this.queue.length = 0; this.sharedActions?.clearSource("keyboard"); } }
   frame(maxActions = 4): InputFrame {
+    if (!this.enabled) return { moveX: 0, moveY: 0, defense: "none", actions: [] };
     let x = (this.held.has("KeyD") ? 1000 : 0) - (this.held.has("KeyA") ? 1000 : 0);
     let y = (this.held.has("KeyW") ? 1000 : 0) - (this.held.has("KeyS") ? 1000 : 0);
     if (x !== 0 && y !== 0) { x = Math.sign(x) * 707; y = Math.sign(y) * 707; }

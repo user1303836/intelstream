@@ -61,4 +61,35 @@ describe("touch controls", () => {
     touch.destroy();
     expect(container.querySelector(".touch-controls")).toBeNull();
   });
+
+  it("stays up through the rest and holds a resting thumb from the first frame after the bell", () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const actions = new SharedActionIntent(4);
+    const touch = new TouchInput(container, actions);
+    const root = container.querySelector<HTMLElement>(".touch-controls")!;
+    touch.setEnabled(false, true);
+    expect(root.classList.contains("resting")).toBe(true);
+    expect(root.classList.contains("disabled")).toBe(false);
+    pointer("pointerdown", container.querySelector("[data-guard='guard_high']")!, { pointerId: 4 });
+    const zone = container.querySelector<HTMLElement>("[data-stick]")!;
+    zone.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 400, right: 400, bottom: 400, x: 0, y: 0, toJSON: () => undefined });
+    pointer("pointerdown", zone, { pointerId: 5, clientX: 100, clientY: 200 });
+    pointer("pointermove", zone, { pointerId: 5, clientX: 156, clientY: 200 });
+    const jab = container.querySelector<HTMLButtonElement>("[data-punch='jab']")!;
+    jab.getBoundingClientRect = () => ({ left: 100, top: 0, width: 96, height: 64, right: 196, bottom: 64, x: 100, y: 0, toJSON: () => undefined });
+    pointer("pointerdown", jab, { pointerId: 6, clientX: 110 });
+    expect(touch.frame()).toEqual({ moveX: 0, moveY: 0, defense: "none", actions: [] });
+    expect(actions.drain(4)).toEqual([]);
+
+    touch.setEnabled(true);
+    expect(root.classList.contains("resting")).toBe(false);
+    expect(touch.frame()).toMatchObject({ moveX: 1000, moveY: 0, defense: "guard_high" });
+
+    touch.setEnabled(false);
+    expect(root.classList.contains("disabled")).toBe(true);
+    touch.setEnabled(true);
+    expect(touch.frame()).toMatchObject({ moveX: 0, moveY: 0, defense: "none" });
+    touch.destroy();
+  });
 });

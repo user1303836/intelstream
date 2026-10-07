@@ -420,6 +420,31 @@ describe("browser lifecycle and accessible overlays", () => {
     app.destroy();
   });
 
+  it("keeps the touch controls up but inert through the rest, and hides them outside the bout", async () => {
+    vi.mocked(window.matchMedia).mockImplementation((query: string) => ({ matches: query === "(pointer: coarse)", media: query, onchange: null, addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn() }));
+    history.replaceState({}, "", "/?instance_id=launch");
+    const root = document.createElement("div");
+    const app = new HandsApp(root);
+    app.start();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
+    const controls = root.querySelector<HTMLElement>(".touch-controls")!;
+    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [players[0]], server_tick: 0, next_sequence: 0, reconnect_ticket: "rotated" });
+    send({ version: 3, type: "waiting", open_seats: 1 });
+    expect(controls.classList.contains("disabled")).toBe(true);
+    send({ version: 3, type: "ready", players: [...players] });
+    send({ version: 3, type: "snapshot", payload: makeSnapshot(100) });
+    expect(controls.classList.contains("disabled")).toBe(false);
+    expect(controls.classList.contains("resting")).toBe(false);
+    send({ version: 3, type: "snapshot", payload: makeSnapshot(101, "rest") });
+    expect(controls.classList.contains("disabled")).toBe(false);
+    expect(controls.classList.contains("resting")).toBe(true);
+    send({ version: 3, type: "snapshot", payload: makeSnapshot(102, "fight") });
+    expect(controls.classList.contains("resting")).toBe(false);
+    send({ version: 3, type: "snapshot", payload: makeSnapshot(103, "complete") });
+    expect(controls.classList.contains("disabled")).toBe(true);
+    app.destroy();
+  });
+
   it("keeps the page's one Discord SDK open through a rematch and a retried failure, and closes it at teardown", async () => {
     const { DiscordActivity } = await vi.importActual<typeof import("./discord")>("./discord");
     history.replaceState({}, "", "/?instance_id=launch&frame_id=frame&platform=mobile");

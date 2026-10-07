@@ -347,7 +347,9 @@ export class HandsApp {
     this.hint.hidden = !showHint;
     if (showHint) this.setText(this.hint, coarsePointer() ? CONTROL_HINT_TOUCH : CONTROL_HINT_KEYBOARD);
     const active = !spectating && ["countdown", "fight", "knockdown", "foul_recovery"].includes(this.state.stage);
-    this.input.setActive(active);
+    // Between rounds and through pauses the touch controls stay up, inert, so a thumb already in place counts at the bell.
+    const resting = !spectating && this.state.snapshot !== null && (this.state.stage === "rest" || this.state.stage === "paused");
+    this.input.setActive(active, active || resting);
     this.network?.setActive(active);
     this.renderFightSummary();
     if (this.state.final !== null) {
