@@ -5,6 +5,7 @@ import type { TraumaSnapshot } from "../types";
 import { wearCornerColour } from "./gear";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
 import { BODY_SITES, EYE_LIDS, EYE_SHUT_TRAUMA, HEAD_SITES, InjuryShading, applyHeadTrauma, eyeShut, trunksBloodFor } from "./injury";
+import { REFEREE_OUTFIT } from "./outfit";
 import { worldMapping } from "./world";
 
 const gltf = await loadBoxerGlb();
@@ -19,6 +20,27 @@ function compile(material: THREE.Material): { uniforms: Record<string, { value: 
   material.onBeforeCompile(shader as unknown as THREE.WebGLProgramParametersWithUniforms, null as unknown as THREE.WebGLRenderer);
   return shader;
 }
+
+
+describe("the inside of a head", () => {
+  it("is drawn only for a fighter, whose head can be cut open, and a whole head's back faces do no work", () => {
+    const fighterHead = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
+    const referee = new SkinnedBoxer(gltf, { skin: 0xc79b76, gear: 0x3b57b8, outfit: REFEREE_OUTFIT });
+    const headOf = (boxer: SkinnedBoxer): THREE.Material => {
+      let found: THREE.Material | null = null;
+      boxer.root.traverse((object) => { if (object instanceof THREE.SkinnedMesh && object.name === "BoxerHead") found = object.material as THREE.Material; });
+      return found!;
+    };
+    expect(headOf(fighterHead).side).toBe(THREE.DoubleSide);
+    expect(headOf(referee).side).toBe(THREE.FrontSide);
+    const material = new THREE.MeshStandardMaterial();
+    new InjuryShading(material, HEAD_SITES);
+    const shader = { uniforms: {} as Record<string, { value: unknown }>, vertexShader: SHADER.vertexShader, fragmentShader: "#include <common>\nvoid main() {\n#include <clipping_planes_fragment>\n#include <map_fragment>\n#include <roughnessmap_fragment>\n}" };
+    material.onBeforeCompile(shader as unknown as THREE.WebGLProgramParametersWithUniforms, null as unknown as THREE.WebGLRenderer);
+    const lines = shader.fragmentShader.split("\n");
+    expect(lines[lines.indexOf("#include <clipping_planes_fragment>") + 1]).toMatch(/^if \(!gl_FrontFacing && uInjurySever >= \d+\.0\) discard;$/u);
+  });
+});
 
 const trauma = (values: Partial<TraumaSnapshot>): TraumaSnapshot => ({ head: 0, body: 0, left_eye: 0, right_eye: 0, left_cut: 0, right_cut: 0, swelling: 0, bleeding: 0, ...values });
 

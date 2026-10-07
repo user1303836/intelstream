@@ -158,6 +158,9 @@ ${SEVER}
 float injuryHash(float n) { return fract(sin(n) * 43758.5453123); }
 `;
 
+/** A head drawn from both sides only shows its inside once it is cut open: until then a back face does no work. */
+const CLOSED_BACK_FACE = /* glsl */ `if (!gl_FrontFacing && uInjurySever >= ${UNCUT}.0) discard;`;
+
 const FRAGMENT_BODY = /* glsl */ `
 {
   vec3 injuryPos = vInjuryPos;
@@ -336,6 +339,7 @@ export class InjuryShading {
         .replace("#include <begin_vertex>", `#include <begin_vertex>\n${VERTEX_BODY}`);
       shader.fragmentShader = shader.fragmentShader
         .replace("#include <common>", `#include <common>\n${FRAGMENT_DECLARATIONS}`)
+        .replace("#include <clipping_planes_fragment>", `#include <clipping_planes_fragment>\n${CLOSED_BACK_FACE}`)
         .replace("#include <map_fragment>", `#include <map_fragment>\n${FRAGMENT_BODY}`)
         .replace("#include <roughnessmap_fragment>", `#include <roughnessmap_fragment>\n${ROUGHNESS_BODY}`);
     };
