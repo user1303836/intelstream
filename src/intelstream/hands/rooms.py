@@ -599,6 +599,9 @@ class HandsRoom:
             engine = self._engine
             if engine is None:
                 raise RoomError("match_not_started")
+            paused = any(current.connection is None for current in self._slots.values())
+            # A paused bout drops inputs; none is held back to fire once it resumes.
+            held = None if paused else frame
             now = self._clock()
             while slot.frame_times and slot.frame_times[0] <= now - 1.0:
                 slot.frame_times.popleft()
@@ -612,17 +615,17 @@ class HandsRoom:
                     or now - slot.flood_started >= FLOOD_GRACE_SECONDS
                 ):
                     raise RoomError("rate_limited")
-                slot.deferred_frame = frame
+                slot.deferred_frame = held
                 return
             slot.flood_started = None
             if not self._spend_input_budget(slot, now):
                 # A stalled connection delivers its backlog in one burst. The frames past the
                 # budget are not applied, but the newest is kept and goes in as soon as there is
                 # room, so the player's latest input is never the one that is lost.
-                slot.deferred_frame = frame
+                slot.deferred_frame = held
                 return
             slot.deferred_frame = None
-            if any(current.connection is None for current in self._slots.values()):
+            if paused:
                 return
             try:
                 command = parse_client_input(
@@ -695,8 +698,12 @@ class HandsRoom:
                 slot.connection = None
                 slot.grace_remaining = self.config.reconnect_grace_seconds
                 slot.reconnect_deadline = self._clock() + self.config.reconnect_grace_seconds
+                # Nothing queued before the pause fires after it, including a frame either
+                # fighter had held back by the input budget.
                 if self._engine is not None:
                     self._engine.clear_action_buffers()
+                for current in self._slots.values():
+                    current.deferred_frame = None
                 if self._engine is None:
                     if slot.pre_match_grace_task is None or slot.pre_match_grace_task.done():
                         slot.pre_match_grace_task = self._spawn(

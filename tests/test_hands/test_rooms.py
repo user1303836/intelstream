@@ -18,7 +18,15 @@ from intelstream.hands.rooms import (
     RoomError,
     RoomMembership,
 )
-from intelstream.hands.types import ActionKind, InputCommand, MovementAction
+from intelstream.hands.types import (
+    ActionKind,
+    Hand,
+    InputCommand,
+    MovementAction,
+    PunchAction,
+    PunchClass,
+    Target,
+)
 
 
 @dataclass
@@ -1669,6 +1677,60 @@ async def test_a_new_connection_gets_its_own_frame_allowance(repository: Reposit
             encode_client_input(InputCommand(sequence=sequence + offset, client_tick=engine.tick)),
         )
     assert engine.fighter("one").last_sequence == sequence + 4
+    sleep_release.set()
+    await manager.close()
+
+
+@pytest.mark.parametrize("held_back", ["before the pause", "during the pause"])
+async def test_a_frame_held_back_by_the_input_budget_never_fires_after_a_pause(
+    repository: Repository, held_back: str
+) -> None:
+    clock = MutableClock()
+    sleep_entered = asyncio.Event()
+    sleep_release = asyncio.Event()
+
+    async def controlled_sleep(_delay: float) -> None:
+        sleep_entered.set()
+        await sleep_release.wait()
+
+    manager = HandsRoomManager(
+        repository,
+        config=room_config(round_ticks=1000, reconnect_grace=30.0),
+        monotonic_clock=clock,
+        sleep=controlled_sleep,
+        match_id_factory=lambda: "match-held-across-pause",
+    )
+    one = await manager.join(player("one"), FakeSocket())
+    two = await manager.join(player("two"), FakeSocket())
+    await sleep_entered.wait()
+    room = one.room
+    engine = room.engine
+    assert engine is not None
+    for sequence in range(1, 6):
+        await room.submit_frame(
+            "one",
+            one.connection,
+            encode_client_input(InputCommand(sequence=sequence, client_tick=engine.tick)),
+        )
+    jab = PunchAction(hand=Hand.LEFT, punch_class=PunchClass.JAB, target=Target.HEAD)
+    held = encode_client_input(
+        InputCommand(sequence=6, client_tick=engine.tick, move_x=1000, actions=(jab,))
+    )
+    if held_back == "before the pause":
+        await room.submit_frame("one", one.connection, held)
+        await manager.leave(two)
+    else:
+        await manager.leave(two)
+        await room.submit_frame("one", one.connection, held)
+    assert engine.fighter("one").last_sequence == 5
+
+    clock.value += 10.0
+    await manager.join(player("two"), FakeSocket())
+    room._apply_deferred_inputs(clock())
+    fighter = engine.fighter("one")
+    assert fighter.last_sequence == 5
+    assert not fighter.pending_actions
+    assert fighter.held_input.move_x == 0
     sleep_release.set()
     await manager.close()
 
