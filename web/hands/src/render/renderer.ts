@@ -855,7 +855,7 @@ export class FightRenderer {
     const keyParts = puncher?.action_key?.split(":") ?? [];
     const punchClass = (keyParts[0] ?? null) as PunchClass | null;
     const hand = (keyParts[1] ?? null) as Hand | null;
-    this.graphs?.[recipientIndex]?.react("hit", event.detail.endsWith(":body") ? "body" : "head", event.direction, punchClass, hand, Math.max(300, event.amount));
+    this.graphs?.[recipientIndex]?.react("hit", event.detail.endsWith(":body") ? "body" : "head", event.direction, punchClass, hand, event.amount);
     if (puncherIndex >= 0) this.graphs?.[puncherIndex]?.landedHit(false);
     this.onContact?.(event);
     this.reapplyReplayInjuries(spray);
