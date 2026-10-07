@@ -606,6 +606,29 @@ function posedHeadVertex(boxer: SkinnedBoxer, vertex: number, out: THREE.Vector3
   return mesh.applyBoneTransform(vertex, out).applyMatrix4(mesh.matrixWorld);
 }
 
+const skinIndexScratch = new THREE.Vector4();
+const skinWeightScratch = new THREE.Vector4();
+const boneScratch = new THREE.Matrix4();
+
+/**
+ * The matrix a skinned vertex is posed by, into `out` (in the mesh's own space): its bones' matrices blended by
+ * its weights, as the skinning shader blends them for the vertex's normal.
+ */
+function skinMatrixOf(mesh: THREE.SkinnedMesh, vertex: number, out: THREE.Matrix4): THREE.Matrix4 {
+  const geometry = mesh.geometry;
+  skinIndexScratch.fromBufferAttribute(geometry.getAttribute("skinIndex") as THREE.BufferAttribute, vertex);
+  skinWeightScratch.fromBufferAttribute(geometry.getAttribute("skinWeight") as THREE.BufferAttribute, vertex);
+  out.set(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+  for (let influence = 0; influence < 4; influence += 1) {
+    const weight = skinWeightScratch.getComponent(influence);
+    if (weight === 0) continue;
+    const bone = skinIndexScratch.getComponent(influence);
+    boneScratch.multiplyMatrices(mesh.skeleton.bones[bone]!.matrixWorld, mesh.skeleton.boneInverses[bone]!);
+    for (let element = 0; element < 16; element += 1) out.elements[element]! += boneScratch.elements[element]! * weight;
+  }
+  return out.premultiply(mesh.bindMatrixInverse).multiply(mesh.bindMatrix);
+}
+
 /** True for the part of the head mesh that leaves with the head. */
 export function aboveNeckCut(bind: THREE.Vector3): boolean {
   return bind.y > NECK_CUT_HEIGHT - NECK_CUT_SLOPE * (bind.z - NECK_CUT_DEPTH) - 0.3;
@@ -651,6 +674,13 @@ export function bakeSkinnedPart(
   mesh.updateMatrixWorld(true);
   const bone = rigid === undefined ? -1 : mesh.skeleton.bones.indexOf(rigid);
   const follow = bone < 0 ? null : new THREE.Matrix4().multiplyMatrices(mesh.bindMatrixInverse, new THREE.Matrix4().multiplyMatrices(mesh.skeleton.bones[bone]!.matrixWorld, mesh.skeleton.boneInverses[bone]!)).multiply(mesh.bindMatrix);
+  // The scan's own normals go along, posed as the skin is: recomputed, every UV seam of its fragmented atlas
+  // would split the shading into facets, as each side of a seam would be averaged over its own island only.
+  const normals = source.getAttribute("normal");
+  const bakedNormals = normals === undefined ? null : new Float32Array(kept.length * 3);
+  const normalTurn = new THREE.Matrix3();
+  const skinned = new THREE.Matrix4();
+  if (follow !== null) normalTurn.getNormalMatrix(skinned.multiplyMatrices(mesh.matrixWorld, follow));
   for (const [target, from] of kept.entries()) {
     vertex.fromBufferAttribute(positions, from);
     // A head is drawn reshaped by its owner's look; the severed head keeps that shape.
@@ -661,6 +691,12 @@ export function bakeSkinnedPart(
     baked[target * 3] = vertex.x;
     baked[target * 3 + 1] = vertex.y;
     baked[target * 3 + 2] = vertex.z;
+    if (normals === undefined || bakedNormals === null) continue;
+    if (follow === null) normalTurn.getNormalMatrix(skinned.multiplyMatrices(mesh.matrixWorld, skinMatrixOf(mesh, from, skinned)));
+    vertex.fromBufferAttribute(normals, from).applyMatrix3(normalTurn).applyQuaternion(inverse).normalize();
+    bakedNormals[target * 3] = vertex.x;
+    bakedNormals[target * 3 + 1] = vertex.y;
+    bakedNormals[target * 3 + 2] = vertex.z;
   }
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.BufferAttribute(baked, 3));
@@ -691,7 +727,8 @@ export function bakeSkinnedPart(
     }
     geometry.setIndex(whole);
   } else if (triangles !== null) geometry.setIndex(triangles);
-  geometry.computeVertexNormals();
+  if (bakedNormals !== null) geometry.setAttribute("normal", new THREE.BufferAttribute(bakedNormals, 3));
+  else geometry.computeVertexNormals();
   const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
   const map = material instanceof THREE.MeshStandardMaterial ? material.map : null;
   const color = material instanceof THREE.MeshStandardMaterial ? material.color.getHex() : 0xffffff;

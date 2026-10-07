@@ -215,6 +215,80 @@ describe("neck cut", () => {
     boxer.dispose();
   });
 
+  /** Vertices sharing a place on the surface: the two sides of the scan's UV seams. */
+  const seamGroups = (geometry: THREE.BufferGeometry): number[][] => {
+    const position = geometry.getAttribute("position");
+    const used = new Set<number>();
+    const index = geometry.getIndex()!;
+    for (let at = 0; at < index.count; at += 1) used.add(index.getX(at));
+    const groups = new Map<string, number[]>();
+    for (const vertex of used) {
+      const key = `${Math.round(position.getX(vertex) * 1e4)},${Math.round(position.getY(vertex) * 1e4)},${Math.round(position.getZ(vertex) * 1e4)}`;
+      groups.set(key, [...(groups.get(key) ?? []), vertex]);
+    }
+    return [...groups.values()];
+  };
+  /** Angles (degrees) between each vertex's normal and its surface's, its faces' normals summed across the seams. */
+  const offSurface = (geometry: THREE.BufferGeometry): number[] => {
+    const position = geometry.getAttribute("position");
+    const normal = geometry.getAttribute("normal");
+    const index = geometry.getIndex()!;
+    const groups = seamGroups(geometry);
+    const groupOf = new Map<number, number>();
+    for (const [at, group] of groups.entries()) for (const vertex of group) groupOf.set(vertex, at);
+    const sums = groups.map(() => new THREE.Vector3());
+    const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+    for (let at = 0; at < index.count; at += 3) {
+      a.fromBufferAttribute(position, index.getX(at));
+      b.fromBufferAttribute(position, index.getX(at + 1));
+      c.fromBufferAttribute(position, index.getX(at + 2));
+      const face = c.sub(b).cross(a.sub(b));
+      for (let corner = 0; corner < 3; corner += 1) sums[groupOf.get(index.getX(at + corner))!]!.add(face);
+    }
+    const angles: number[] = [];
+    for (const [at, group] of groups.entries()) {
+      for (const vertex of group) angles.push(THREE.MathUtils.radToDeg(a.fromBufferAttribute(normal, vertex).angleTo(sums[at]!)));
+    }
+    return angles.sort((x, y) => x - y);
+  };
+
+  it("keeps the scan's own smooth shading across its UV seams on a severed head and glove", () => {
+    const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
+    const head = boxer.bone("head")!;
+    // Posed as a knockout leaves it: the head snapped back on a body doubled over, the arm raised.
+    boxer.rig.bones.chest.rotateX(0.5);
+    boxer.rig.bones.neck.rotateX(0.6);
+    head.rotateX(-1.2);
+    boxer.rig.bones.shoulderL.rotateZ(0.9);
+    boxer.root.updateMatrixWorld(true);
+    const severed = bakeSeveredHead(boxer, head.getWorldPosition(new THREE.Vector3()), head.getWorldQuaternion(new THREE.Quaternion())).geometry;
+    const glove = boxer.bone("gloveL")!;
+    const hand = bakeSkinnedPart(boxer.gloveMesh("left"), glove.getWorldPosition(new THREE.Vector3()), glove.getWorldQuaternion(new THREE.Quaternion())).geometry;
+    for (const geometry of [severed, hand]) {
+      const normal = geometry.getAttribute("normal");
+      let seams = 0;
+      let split = 0;
+      for (const group of seamGroups(geometry)) {
+        for (let i = 1; i < group.length; i += 1) {
+          seams += 1;
+          const angle = THREE.MathUtils.radToDeg(new THREE.Vector3().fromBufferAttribute(normal, group[0]!).angleTo(new THREE.Vector3().fromBufferAttribute(normal, group[i]!)));
+          if (angle > 5) split += 1;
+        }
+      }
+      expect(seams).toBeGreaterThan(50);
+      expect(split).toBe(0);
+      // Turned with the part as it was posed: they agree with the surface they shade.
+      const angles = offSurface(geometry);
+      expect(angles[Math.floor(angles.length / 2)]!).toBeLessThan(12);
+      expect(angles[Math.floor(angles.length * 0.95)]!).toBeLessThan(35);
+    }
+    // The cut's rim indexes the head mesh's own numbering, which the severed head keeps.
+    expect(severed.getAttribute("position").count).toBe(boxer.headMesh.geometry.getAttribute("position").count);
+    severed.dispose();
+    hand.dispose();
+    boxer.dispose();
+  });
+
   it("closes both sides of the cut with flesh that meets the skin all the way round and faces out", () => {
     const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
     const graph = new BoxingGraph(boxer, worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }));
