@@ -1,9 +1,13 @@
 import * as THREE from "three";
 import { describe, expect, it, vi } from "vitest";
+import boutJson from "../test/gore-bout.json";
+import type { CombatEvent } from "../types";
 import { CANVAS_BLOOD_UPLOAD_INTERVAL, CanvasBlood, splatRecipe } from "./canvas-blood";
 import { Effects3D } from "./effects";
+import { teethFor } from "./gore";
+import { mouthpieceFlies } from "./mouthpiece";
 import { poolRadius } from "./renderer";
-import { CANVAS_TOP, RING_FIGHT_HALF } from "./world";
+import { CANVAS_TOP, RING_FIGHT_HALF, worldMapping } from "./world";
 
 interface Shape { x: number; y: number; rx: number; ry: number; turn: number }
 
@@ -87,6 +91,140 @@ function paintedCanvases<T>(make: () => T): { made: T; painted: Map<HTMLCanvasEl
   const made = make();
   getContext.mockRestore();
   return { made, painted };
+}
+
+/** A real bout as the engine played it; `about` in the file says how it was recorded and how it reads. */
+interface RecordedBout {
+  readonly sampleTicks: number;
+  readonly rounds: readonly number[];
+  readonly samples: readonly (readonly number[])[];
+  readonly events: readonly (readonly [number, string, number, number, number, string, number])[];
+}
+const BOUT = boutJson as unknown as RecordedBout;
+const BOUT_KINDS: Readonly<Record<string, string>> = { h: "hit", c: "counter_hit", b: "block", p: "perfect_block", k: "knockdown", l: "bleed" };
+const BOUT_PUNCHES: Readonly<Record<string, string>> = { j: "jab", s: "straight", h: "hook", u: "uppercut" };
+
+/** A stain as it was painted, or the dark middle of a pool. */
+interface PaintedStain { x: number; z: number; width: number; depth: number; turn: number; opacity: number; stamp: number; pool?: number }
+
+/**
+ * Plays a real bout's blood through the effects as the renderer does: its punches, blocks, knockdowns
+ * and bleeding as they land, a cut fighter's drip and a downed one's pool. Records every stain, how
+ * many there were at the end of each round, and where each pool was spilled.
+ */
+function playBout(): { stains: PaintedStain[]; roundEnds: number[]; pools: THREE.Vector2[] } {
+  const mapping = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 });
+  const effects = new Effects3D(new THREE.Scene(), 1024);
+  const stains: PaintedStain[] = [];
+  const pools: THREE.Vector2[] = [];
+  vi.spyOn(CanvasBlood.prototype, "stain").mockImplementation((x, z, width, depth, turn, opacity, _color, stamp) => {
+    if (Math.abs(x) <= RING_FIGHT_HALF && Math.abs(z) <= RING_FIGHT_HALF) stains.push({ x, z, width, depth, turn, opacity, stamp: stamp ?? stains.length });
+  });
+  const pool = CanvasBlood.prototype.pool;
+  vi.spyOn(CanvasBlood.prototype, "pool").mockImplementation(function (this: CanvasBlood, x, z, radius, opacity, stamp) {
+    pool.call(this, x, z, radius, opacity, stamp);
+    stains.push({ x, z, width: 0, depth: 0, turn: stamp * 0.9, opacity, stamp, pool: radius });
+    pools.push(new THREE.Vector2(x, z));
+  });
+  const fighter = (tick: number, index: number): { x: number; z: number; severity: number; down: boolean } => {
+    const at = Math.min(BOUT.samples.length - 1.001, tick / BOUT.sampleTicks);
+    const a = BOUT.samples[Math.floor(at)]!;
+    const b = BOUT.samples[Math.floor(at) + 1] ?? a;
+    const along = at - Math.floor(at);
+    const lerp = (column: number): number => a[column]! + (b[column]! - a[column]!) * along;
+    // The renderer's drip and pool measure a fighter's bleeding and both cuts against 380.
+    return { x: mapping.x(lerp(index * 2)), z: mapping.z(lerp(index * 2 + 1)), severity: a[4 + index]! / 380, down: (a[6]! & (index + 1)) !== 0 };
+  };
+  const roundEnds: number[] = [];
+  const pooled = [0, 0];
+  const spills = [0, 0];
+  const head = new THREE.Vector3();
+  const target = new THREE.Vector3();
+  const endTick = (BOUT.samples.length - 1) * BOUT.sampleTicks;
+  let next = 0;
+  for (let frame = 0; frame / 2 <= endTick; frame += 1) {
+    const tick = frame / 2;
+    if (BOUT.rounds.slice(1).includes(tick)) roundEnds.push(stains.length);
+    for (const index of [0, 1]) {
+      const self = fighter(tick, index);
+      if (self.severity > 0.05 && !self.down) {
+        pooled[index] = 0;
+        spills[index] = 0;
+        effects.drip(head.set(self.x, 1.56, self.z), self.severity, false, index);
+      } else if (self.severity > 0.2 && self.down) {
+        // Two spills a second from under his head, which lies away from the man who put him down.
+        effects.stopDrip(index);
+        pooled[index]! += 2 / 60;
+        const other = fighter(tick, 1 - index);
+        const apart = Math.hypot(self.x - other.x, self.z - other.z) || 1;
+        while (pooled[index]! >= 1) {
+          pooled[index]! -= 1;
+          const count = spills[index]!;
+          spills[index] = count + 1;
+          const spread = poolRadius(count, self.severity);
+          const angle = count * 2.399_963 + index * Math.PI;
+          effects.pool(self.x + ((self.x - other.x) / apart) * 0.6 + Math.sin(angle) * spread * 0.25, self.z + ((self.z - other.z) / apart) * 0.6 + Math.cos(angle) * spread * 0.25, spread, count + index * 7);
+        }
+      } else {
+        effects.stopDrip(index);
+        pooled[index] = 0;
+      }
+    }
+    for (; next < BOUT.events.length && BOUT.events[next]![0] <= tick; next += 1) {
+      const [at, code, recipient, amount, blood, punch, direction] = BOUT.events[next]!;
+      const kind = BOUT_KINDS[code]!;
+      const hurt = fighter(at, recipient);
+      const puncher = fighter(at, 1 - recipient);
+      const apart = Math.hypot(hurt.x - puncher.x, hurt.z - puncher.z);
+      const spray = kind === "bleed" || apart < 1e-3 ? undefined : { x: (hurt.x - puncher.x) / apart, z: (hurt.z - puncher.z) / apart };
+      const detail = punch.length === 2 ? `${BOUT_PUNCHES[punch[0]!]}:${punch[1] === "b" ? "body" : "head"}` : "";
+      const event: CombatEvent = { event_id: next + 1, tick: at, kind, actor_id: null, target_id: null, amount, detail, blood, direction, action_id: null };
+      effects.addEvent(event, target.set(hurt.x, 0, hurt.z), false, spray);
+      const teeth = teethFor(kind, amount, detail.endsWith(":head"));
+      if (teeth > 0) effects.spawnTeeth(head.set(hurt.x, 1.49, hurt.z), spray ?? direction, teeth, event.event_id);
+      if (mouthpieceFlies(kind, amount, detail.endsWith(":head"))) effects.ejectMouthpiece(recipient, head.set(hurt.x, 1.48, hurt.z), new THREE.Quaternion(), spray ?? direction, event.event_id, 0x1d4ed8);
+    }
+    effects.update(1 / 60);
+  }
+  roundEnds.push(stains.length);
+  vi.restoreAllMocks();
+  effects.dispose();
+  return { stains, roundEnds, pools };
+}
+
+/** The canvas a bout leaves, a centimetre a cell. */
+const CELL = 0.01;
+const CELLS = Math.round((RING_FIGHT_HALF * 2) / CELL);
+
+/** Composites stains into `canvas` (alpha a cell) over what is there, as the blood canvas paints them. */
+function composite(canvas: Float32Array, stains: readonly PaintedStain[], stamps: readonly Float32Array[]): void {
+  for (const stain of stains) {
+    const reach = stain.pool === undefined ? Math.hypot(stain.width, stain.depth) / 2 : stain.pool * 1.15;
+    const cos = Math.cos(stain.turn);
+    const sin = Math.sin(stain.turn);
+    for (let row = Math.max(0, Math.floor((stain.z - reach + RING_FIGHT_HALF) / CELL)); row < Math.min(CELLS, (stain.z + reach + RING_FIGHT_HALF) / CELL); row += 1) {
+      for (let column = Math.max(0, Math.floor((stain.x - reach + RING_FIGHT_HALF) / CELL)); column < Math.min(CELLS, (stain.x + reach + RING_FIGHT_HALF) / CELL); column += 1) {
+        const dx = (column + 0.5) * CELL - RING_FIGHT_HALF - stain.x;
+        const dz = (row + 0.5) * CELL - RING_FIGHT_HALF - stain.z;
+        const u = dx * cos + dz * sin;
+        const v = -dx * sin + dz * cos;
+        let alpha: number;
+        if (stain.pool !== undefined) {
+          // The pool's middle: 0.9 at the centre, 0.65 two thirds of the way out and nothing at its edge.
+          const out = Math.hypot(u, v / 0.86) / reach;
+          if (out > 1) continue;
+          alpha = stain.opacity * (out < 0.65 ? 0.9 - (0.25 * out) / 0.65 : (0.65 * (1 - out)) / 0.35);
+        } else {
+          const x = Math.floor((u / stain.width + 0.5) * 128);
+          const y = Math.floor((v / stain.depth + 0.5) * 128);
+          if (x < 0 || y < 0 || x >= 128 || y >= 128) continue;
+          alpha = stamps[stain.stamp % stamps.length]![y * 128 + x]! * stain.opacity;
+        }
+        const cell = row * CELLS + column;
+        canvas[cell] = canvas[cell]! + alpha * (1 - canvas[cell]!);
+      }
+    }
+  }
 }
 
 describe("blood on the canvas", () => {
@@ -294,6 +432,42 @@ describe("blood on the canvas", () => {
     expect(pooled("reduced")).toBe(1);
     expect(pooled("off")).toBe(0);
   });
+
+  it("gets bloodier round by round through a real bout, where it once painted the ring solid in the first", () => {
+    const { made: blood, painted } = paintedCanvases(() => new CanvasBlood(new THREE.Scene(), 256));
+    const stamps = (blood as unknown as { stamps: HTMLCanvasElement[] }).stamps.map((stamp) => painted.get(stamp)!.alpha);
+    blood.dispose();
+    const { stains, roundEnds, pools } = playBout();
+    expect(roundEnds).toHaveLength(3);
+    const canvas = new Float32Array(CELLS * CELLS);
+    /** Square metres of the canvas at least this dark. */
+    const area = (alpha: number): number => canvas.filter((cell) => cell >= alpha).length * CELL * CELL;
+    const after: { stained: number; soaked: number }[] = [];
+    for (const [round, end] of roundEnds.entries()) {
+      composite(canvas, stains.slice(round === 0 ? 0 : roundEnds[round - 1], end), stamps);
+      after.push({ stained: area(0.25), soaked: area(0.8) });
+      if (round > 0) continue;
+      // The knockdown late in round 1 leaves a pool soaked through where it started.
+      const first = pools[0]!;
+      let darkest = 0;
+      for (let cell = 0; cell < canvas.length; cell += 1) {
+        const x = ((cell % CELLS) + 0.5) * CELL - RING_FIGHT_HALF;
+        const z = (Math.floor(cell / CELLS) + 0.5) * CELL - RING_FIGHT_HALF;
+        if (Math.hypot(x - first.x, z - first.y) <= 0.1) darkest = Math.max(darkest, canvas[cell]!);
+      }
+      expect(darkest).toBeGreaterThan(0.9);
+    }
+    const [one, two, three] = after as [{ stained: number; soaked: number }, { stained: number; soaked: number }, { stained: number; soaked: number }];
+    // A cut opens 21 s into round 1: by the bell a couple of square metres of the 37 show blood, and
+    // little but the knockdown's pool is soaked through, where the old pacing painted 4,176 stains.
+    expect(roundEnds[0]).toBeLessThan(1500);
+    expect(one.stained).toBeLessThan(4);
+    expect(one.soaked).toBeLessThan(0.5);
+    // Every round leaves more, the worst of the cut in round 2 most of all.
+    expect(two.stained).toBeGreaterThan(one.stained * 2);
+    expect(three.stained).toBeGreaterThan(one.stained * 3);
+    expect(three.soaked).toBeGreaterThan(one.soaked * 3);
+  }, 60_000);
 
   it("spreads fast at first and then slower, wider the worse the fighter bleeds, to under half a metre", () => {
     expect(poolRadius(0, 1)).toBeCloseTo(0.05, 5);

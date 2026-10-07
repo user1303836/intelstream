@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import manifestJson from "../../../../src/intelstream/hands/combat-manifest.json";
 
 /** A lump of torn flesh: an irregular, smooth, slightly flattened blob about 6 cm across before scaling. */
 export function buildChunkGeometry(): THREE.BufferGeometry {
@@ -29,6 +30,8 @@ export function buildChunkGeometry(): THREE.BufferGeometry {
  */
 export const HARD_SHOT = 70;
 export const BIG_SHOT = 95;
+/** A counter this heavy rocks a man, as the engine reckons it, as a hard shot does. */
+export const ROCKING_COUNTER = manifestJson.stun.rocked_counter_damage;
 
 /** Teeth a blow to the head knocks out: two more as the punch floors a man, one or two by a big counter or a huge shot, none otherwise. */
 export function teethFor(kind: string, amount: number, head: boolean): number {

@@ -248,7 +248,8 @@ describe("shaders for effects that start hidden", () => {
     const { gl, fight, internals } = await mount();
     let time = settle(fight);
     const programs = gl.created.programs;
-    land(fight, 20, [punch(41, 20)], exchange(20, "head"));
+    // A straight on an open cut, the bleeding behind most of its blood, splashes the canvas as it lands.
+    land(fight, 20, [{ ...punch(41, 20), amount: 90, blood: 60 }], exchange(20, "head"));
     fight.labFrame((time += 0.1));
     expect(internals.effects.canvasStains).toBeGreaterThan(0);
     land(fight, 22, [punch(42, 22)], exchange(22, "head", true), knockout(22));

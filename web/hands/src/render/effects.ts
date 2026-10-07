@@ -3,7 +3,7 @@ import type { BloodLevel } from "../settings";
 import type { CombatEvent, Hand } from "../types";
 import { CanvasBlood, type RegionUploader } from "./canvas-blood";
 import { wearCornerColour } from "./gear";
-import { HARD_SHOT, bloodDropsFor, bloodShade, buildChunkGeometry, buildDropletGeometry, buildShardGeometry, buildWoundGeometry, closeCut, dropletShape, eyeTexture, jawWoundTexture, woundTexture, wristWoundTexture } from "./gore";
+import { BIG_SHOT, HARD_SHOT, ROCKING_COUNTER, bloodDropsFor, bloodShade, buildChunkGeometry, buildDropletGeometry, buildShardGeometry, buildWoundGeometry, closeCut, dropletShape, eyeTexture, jawWoundTexture, woundTexture, wristWoundTexture } from "./gore";
 import { LookShading, SCANNED_LOOK, type FighterLook } from "./looks";
 import { SHIELD_RADIUS, buildMouthpieceGeometry, idleShield, stepShield, type ShieldState } from "./mouthpiece";
 import { CANVAS_TOP, RING_FIGHT_HALF, ROPE_LINE } from "./world";
@@ -30,6 +30,19 @@ const STRAND_PERIOD = 5;
 const STRAND_LINKS = 2;
 const STRAND_LAG = 0.09;
 const STRAND_THINNING = 0.22;
+/**
+ * How dark a stain soaks into the canvas: a drop leaves a dark spot, the spray off a cut a lighter
+ * splash, and the canvas goes solid only where blood lands again and again, so it gets bloodier round
+ * by round instead of the first round painting it solid. A knockdown and a finisher soak in darker.
+ */
+const DROP_STAIN = 0.7;
+const SPLASH_STAIN = 0.45;
+const KNOCKDOWN_STAIN = 0.6;
+const FINISHER_STAIN = 0.9;
+/** A cut's share of a punch's blood (the engine's bleeding over eight) once it is open: bleeding of about 60. */
+const OPEN_WOUND = 8;
+/** A drop the size of a gob of blood (this radius, in metres) always stains where it lands; fine spray does one time in four. */
+const GOB = 0.015;
 /** The neck is close to round where it is cut. */
 export const NECK_WOUND_RADIUS = 0.068;
 const HAND_RADIUS = 0.085;
@@ -970,7 +983,7 @@ export class Effects3D {
       Math.max(0.01, finite(scaleX, 0.2)) * 0.28,
       Math.max(0.01, finite(scaleZ, 0.15)) * 0.28,
       finite(rotation),
-      THREE.MathUtils.clamp(finite(opacity, 0.4) * 2.1, 0, 0.95),
+      THREE.MathUtils.clamp(finite(opacity, 0.4), 0, 0.95),
       color,
     );
   }
@@ -981,10 +994,15 @@ export class Effects3D {
     return ((this.ambientSeed ^ (this.ambientSeed >>> 14)) >>> 0) / 4294967296;
   }
 
-  splatter(x: number, z: number, scale: number, rand: () => number = () => this.ambientRandom()): void {
+  /**
+   * Blood thrown onto the canvas round `x`, `z`: `stamps` blots of about `opacity` each (a quarter as
+   * many, smaller and fainter, with reduced blood). One splash is a stain the canvas shows through, and
+   * where splashes land on each other it darkens, so the canvas gets bloodier as the bout goes on.
+   */
+  splatter(x: number, z: number, scale: number, rand: () => number = () => this.ambientRandom(), stamps = 12, opacity = FINISHER_STAIN): void {
     if (this.bloodLevel === "off") return;
     const reduced = this.bloodLevel === "reduced";
-    const drops = reduced ? 3 : 12;
+    const drops = reduced ? Math.ceil(stamps / 4) : stamps;
     const modeScale = reduced ? 0.35 : 1;
     for (let i = 0; i < drops; i += 1) {
       const angle = rand() * Math.PI * 2;
@@ -995,7 +1013,7 @@ export class Effects3D {
         (0.35 + rand() * 0.9) * scale * modeScale,
         (0.2 + rand() * 0.65) * scale * modeScale,
         rand() * Math.PI,
-        (0.34 + rand() * 0.24) * modeScale,
+        opacity * (0.75 + rand() * 0.5) * (reduced ? 0.6 : 1),
         i === 0 ? 0x4c070b : 0x6e0d13,
       );
     }
@@ -1021,14 +1039,25 @@ export class Effects3D {
     // Sweat and chunks are pushed along the punch as hard as the event's sign says (a block may carry none).
     const push = spray === undefined ? Math.abs(finite(event.direction)) : 1;
     const origin = { x: finite(targetWorld.x), y: event.detail.endsWith(":body") ? 1.05 : 1.58, z: finite(targetWorld.z) };
-    const sweatCount = reducedMotion ? 0 : Math.round((blocked ? 6 : 16) + Math.min(20, Math.max(0, event.amount) / 20));
+    // A cut's beat throws no sweat and shakes nothing: no punch landed.
+    const beat = event.kind === "bleed";
+    const sweatCount = reducedMotion || beat ? 0 : Math.round((blocked ? 6 : 16) + Math.min(20, Math.max(0, event.amount) / 20));
     const strand = { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, life: 0, radius: 0, color: bloodShade(0) };
+    // The engine's blood is the cut's bleeding over eight plus the damage over four: the first part is
+    // what an open wound throws. A block's amount is the guard's damage and a knockdown's its count,
+    // neither the weight of the punch.
+    const landed = event.kind === "hit" || event.kind === "counter_hit";
+    const wound = landed ? Math.max(0, event.blood - Math.floor(Math.max(0, event.amount) / 4)) : 0;
     const bloodCount = reducedMotion || event.blood <= 0 || this.bloodLevel === "off"
       ? 0
-      : this.bloodLevel === "reduced"
-        ? Math.min(24, Math.round(event.blood * 0.24))
-        : bloodDropsFor(event.blood, event.kind === "knockdown" ? 0 : event.amount);
-    this.shake = Math.min(0.09, this.shake + (blocked ? 0.008 : Math.max(0.012, event.amount / 2600)));
+      : beat
+        // The drip from the face carries the bleeding, and the beat adds a few drops.
+        ? (this.bloodLevel === "reduced" ? 1 : Math.min(5, 2 + Math.floor(Math.max(0, event.amount) / 12)))
+        : this.bloodLevel === "reduced"
+          ? Math.min(24, Math.round(event.blood * (blocked ? 0.12 : 0.24)))
+          // The guard takes the punch, and half the blood it would have thrown.
+          : blocked ? Math.round(bloodDropsFor(event.blood, 0) / 2) : bloodDropsFor(event.blood, landed ? event.amount : 0);
+    if (!beat) this.shake = Math.min(0.09, this.shake + (blocked ? 0.008 : Math.max(0.012, event.amount / 2600)));
     if (event.kind === "knockdown") this.shake = Math.min(0.14, this.shake + 0.06);
 
     for (let i = 0; i < sweatCount; i += 1) {
@@ -1109,23 +1138,27 @@ export class Effects3D {
       strand.radius = 0.008 + rand() * 0.008;
       this.spawnDroplet(x, y, z, vx, vy, vz, color, life, true, strand.radius);
     }
-    if (!reducedMotion && event.blood > 0 && this.bloodLevel !== "off" && ((event.kind === "hit" && event.amount >= HARD_SHOT) || event.kind === "knockdown" || event.kind === "counter_hit")) {
-      const puffs = this.bloodLevel === "reduced" ? (event.kind === "knockdown" ? 3 : 2) : (event.kind === "knockdown" ? 14 : 10);
+    const misty = (event.kind === "hit" && event.amount >= HARD_SHOT) || event.kind === "knockdown" || event.kind === "counter_hit" || wound >= OPEN_WOUND * 2;
+    if (!reducedMotion && event.blood > 0 && this.bloodLevel !== "off" && misty) {
+      // The worse the cut, the thicker the mist off every punch, so the blood in the air grows round by round.
+      const puffs = this.bloodLevel === "reduced" ? (event.kind === "knockdown" ? 3 : 2) : (event.kind === "knockdown" ? 14 : 10 + Math.min(8, Math.floor(wound / 4)));
       const scale = this.bloodLevel === "reduced" ? 0.35 : 1;
       for (let i = 0; i < puffs; i += 1) {
         this.spawnMist(origin.x + (rand() - 0.5) * 0.34, origin.y + (rand() - 0.5) * 0.26, origin.z + (rand() - 0.5) * 0.34, (0.9 + rand() * 1.2) * scale, 0.55 + rand() * 0.55);
       }
     }
-    if (event.blood > 6 && this.bloodLevel !== "off") {
-      this.splatter(origin.x + (rand() - 0.5) * 0.6, origin.z + (rand() - 0.5) * 0.6, 1 + Math.min(2, event.blood / 55), rand);
+    // The canvas is splashed by what an open wound throws and by a man going down, not by every punch
+    // that draws a little blood: the drops that land paint the rest.
+    const stamps = event.kind === "knockdown" ? 12 : Math.min(8, Math.round(wound / 4));
+    if (stamps > 0 && this.bloodLevel !== "off") {
+      const knockdown = event.kind === "knockdown";
+      this.splatter(origin.x + (rand() - 0.5) * 0.6, origin.z + (rand() - 0.5) * 0.6, knockdown ? 1 + Math.min(2, event.blood / 55) : 0.8 + Math.min(1.2, wound / 30), rand, stamps, knockdown ? KNOCKDOWN_STAIN : SPLASH_STAIN);
     }
-    if (
-      this.bloodLevel === "full"
-      && !reducedMotion
-      && event.blood >= 40
-      && ["hit", "counter_hit", "knockdown"].includes(event.kind)
-    ) {
-      const chunks = Math.min(12, Math.max(4, Math.round(event.blood / 9)));
+    // A punch that rocks him tears flesh from an open cut, and a big counter tears it from any face.
+    const rocking = event.amount >= HARD_SHOT || (event.kind === "counter_hit" && event.amount >= ROCKING_COUNTER);
+    const tearing = landed && ((rocking && wound >= OPEN_WOUND) || (event.kind === "counter_hit" && event.amount >= BIG_SHOT));
+    if (this.bloodLevel === "full" && !reducedMotion && tearing && !event.detail.endsWith(":body")) {
+      const chunks = Math.min(8, Math.max(2, Math.round((event.amount - 30) / 10)));
       for (let index = 0; index < chunks; index += 1) {
         const angle = rand() * Math.PI * 2;
         const speed = 0.5 + rand() * 1.8;
@@ -1277,7 +1310,7 @@ export class Effects3D {
     for (let i = 0; i < 14; i += 1) {
       this.spawnMist(head.mesh.position.x + (rand() - 0.5) * 0.35, head.mesh.position.y + (rand() - 0.5) * 0.25, head.mesh.position.z + (rand() - 0.5) * 0.35, 1 + rand() * 1.4, 0.65 + rand() * 0.55);
     }
-    this.splatter(head.mesh.position.x, head.mesh.position.z, 1.5, rand);
+    this.splatter(head.mesh.position.x, head.mesh.position.z, 1.5, rand, 18);
   }
 
   /**
@@ -1338,7 +1371,7 @@ export class Effects3D {
     for (let puff = 0; puff < 24; puff += 1) {
       this.spawnMist(x + (rand() - 0.5) * 0.5, y + (rand() - 0.3) * 0.4, z + (rand() - 0.5) * 0.5, 1.2 + rand() * 1.6, 0.8 + rand() * 0.7);
     }
-    this.splatter(x + launch.x * 0.3, z + launch.z * 0.3, 2.2, rand);
+    this.splatter(x + launch.x * 0.3, z + launch.z * 0.3, 2.2, rand, 18);
     this.shake = Math.min(0.16, this.shake + 0.1);
     stump.mesh.material = this.jawMaterial;
     stump.active = true;
@@ -1656,7 +1689,7 @@ export class Effects3D {
         gib.y = CANVAS_TOP + 0.015;
         if (!gib.stained && this.bloodLevel === "full" && gib.kind !== "tooth") {
           gib.stained = true;
-          this.placeDecal(gib.x, gib.z, 0.24 + gib.scale * 0.16, 0.14 + gib.scale * 0.1, gib.rz, 0.42, 0x620a10);
+          this.placeDecal(gib.x, gib.z, 0.24 + gib.scale * 0.16, 0.14 + gib.scale * 0.1, gib.rz, 0.55, 0x620a10);
         }
         if (gib.bounces < DEBRIS_BOUNCES[gib.kind] && Math.abs(gib.vy) > 0.35) {
           gib.bounces += 1;
@@ -1724,7 +1757,7 @@ export class Effects3D {
         if (!part.stained && this.bloodLevel === "full") {
           part.stained = true;
           const stainScale = part.radius === HEAD_RADIUS ? 1 : 0.55;
-          this.placeDecal(part.mesh.position.x, part.mesh.position.z, 1.3 * stainScale, 0.9 * stainScale, part.mesh.rotation.z, 0.58, 0x430507);
+          this.placeDecal(part.mesh.position.x, part.mesh.position.z, 1.3 * stainScale, 0.9 * stainScale, part.mesh.rotation.z, 0.85, 0x430507);
         }
         if (part.bounces < 2 && Math.abs(part.vy) > 0.42) {
           part.bounces += 1;
@@ -1831,9 +1864,12 @@ export class Effects3D {
       const droplet = this.droplets[i]!;
       droplet.life -= step;
       if (droplet.life <= 0 || droplet.y < CANVAS_TOP) {
-        if (droplet.y < CANVAS_TOP && droplet.blood && this.bloodLevel !== "off" && this.ambientRandom() < (this.bloodLevel === "full" ? 0.48 : 0.18)) {
-          const scale = this.bloodLevel === "full" ? 1 : 0.35;
-          this.placeDecal(droplet.x, droplet.z, (0.22 + this.ambientRandom() * 0.38) * scale, (0.14 + this.ambientRandom() * 0.24) * scale, this.ambientRandom() * Math.PI, 0.38 * scale, 0x6e0d13);
+        // A drop leaves a spot the size of the drop: fine spray soaks in unseen, a gob of blood splashes.
+        const lands = THREE.MathUtils.clamp(droplet.radius / GOB, 0.25, 1) * (this.bloodLevel === "full" ? 1 : 0.4);
+        if (droplet.y < CANVAS_TOP && droplet.blood && this.bloodLevel !== "off" && this.ambientRandom() < lands) {
+          const scale = this.bloodLevel === "full" ? 1 : 0.6;
+          const size = droplet.radius * (40 + this.ambientRandom() * 20) * scale;
+          this.placeDecal(droplet.x, droplet.z, size, size * (0.55 + this.ambientRandom() * 0.35), this.ambientRandom() * Math.PI, this.bloodLevel === "full" ? DROP_STAIN : DROP_STAIN * 0.6, 0x6e0d13);
         }
         // The last live droplet takes this slot and is stepped next.
         this.retireDroplet(i);
