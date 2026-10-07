@@ -44,6 +44,11 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 MAX_HTTP_BODY_BYTES = 16_384
 MAX_AUTH_FRAME_BYTES = 4096
+# aiohttp pings a socket after this long without a frame from it and drops it when no pong comes
+# within half as long again, so a fighter who vanishes without a close (lost Wi-Fi, a phone that
+# suspended the app) pauses the bout about 7.5 s after his last frame. The browser's network stack
+# answers pings by itself, so a fighter whose page is blurred or hidden is never dropped for it.
+WEBSOCKET_HEARTBEAT_SECONDS = 5.0
 SECURITY_HEADERS = {
     "Content-Security-Policy": (
         "default-src 'self'; base-uri 'none'; object-src 'none'; "
@@ -395,9 +400,12 @@ class HandsServer:
         ticket_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         admission: AdmissionConfig | None = None,
         monotonic_clock: Callable[[], float] = time.monotonic,
+        websocket_heartbeat_seconds: float = WEBSOCKET_HEARTBEAT_SECONDS,
     ) -> None:
         if auth_timeout_seconds <= 0:
             raise ValueError("auth timeout must be positive")
+        if not math.isfinite(websocket_heartbeat_seconds) or websocket_heartbeat_seconds <= 0:
+            raise ValueError("websocket heartbeat must be finite and positive")
         self.repository = repository
         self.application_id = application_id
         self.guild_id = guild_id
@@ -406,6 +414,7 @@ class HandsServer:
         self.bound_port: int | None = None
         self.dev_mode = dev_mode
         self.auth_timeout_seconds = auth_timeout_seconds
+        self.websocket_heartbeat_seconds = websocket_heartbeat_seconds
         ticket_ttl_seconds = (
             auth.ticket_ttl_seconds if auth is not None else DEFAULT_TICKET_TTL_SECONDS
         )
@@ -729,7 +738,7 @@ class HandsServer:
             return _json_response({"error": "service_busy"}, status=503)
         websocket = web.WebSocketResponse(
             autoping=True,
-            heartbeat=15.0,
+            heartbeat=self.websocket_heartbeat_seconds,
             max_msg_size=MAX_FRAME_BYTES,
             compress=True,
         )

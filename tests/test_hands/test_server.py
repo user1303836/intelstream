@@ -128,6 +128,7 @@ async def start_server(
     admission: AdmissionConfig | None = None,
     monotonic_clock: Callable[[], float] = time.monotonic,
     static_root: Path | None = None,
+    websocket_heartbeat: float = server_module.WEBSOCKET_HEARTBEAT_SECONDS,
 ) -> tuple[HandsServer, FakeAuth, str]:
     fake_auth = auth or FakeAuth()
     server = HandsServer(
@@ -147,6 +148,7 @@ async def start_server(
         admission=admission,
         monotonic_clock=monotonic_clock,
         static_root=static_root,
+        websocket_heartbeat_seconds=websocket_heartbeat,
     )
     await server.start()
     assert server.bound_port is not None
@@ -1733,6 +1735,65 @@ async def test_a_flood_of_computer_requests_is_cut_off_like_a_flood_of_inputs(
         for _ in range(4000):
             await flooder.send_str(frame)
         assert await _errors_until_closed(flooder, 2.0) == ["rate_limited", "closed"]
+    async with asyncio.timeout(1):
+        await server.close()
+
+
+async def test_a_fighter_who_vanishes_without_a_close_pauses_the_bout_within_the_heartbeat(
+    repository: Repository,
+) -> None:
+    # In production a silent drop pauses the bout about 7.5 s after the fighter's last frame.
+    assert server_module.WEBSOCKET_HEARTBEAT_SECONDS == 5.0
+    heartbeat = 0.2
+    auth = FakeAuth()
+    rooms = _cpu_bout_rooms(repository)
+    server, _auth, base = await start_server(
+        repository, auth=auth, rooms=rooms, websocket_heartbeat=heartbeat
+    )
+    async with aiohttp.ClientSession() as client:
+        # A page that sends nothing (blurred, hidden) but whose browser answers pings stays.
+        idle = await _bout_against_the_computer(client, base, auth, "idle")
+        deadline = asyncio.get_running_loop().time() + 6 * heartbeat
+        while asyncio.get_running_loop().time() < deadline:
+            message = await idle.receive(timeout=1)
+            assert message.type == aiohttp.WSMsgType.TEXT
+        await idle.close()
+
+        auth.tickets["vanish"] = AuthenticatedPlayer("vanish", GUILD, "room-vanish", "V", None)
+        vanish = await client.ws_connect(
+            f"{base}/api/hands/ws", headers={"Origin": ORIGIN}, autoping=False
+        )
+        await vanish.send_json(
+            {"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": "vanish"}
+        )
+        for request, until in (
+            ({"version": PROTOCOL_VERSION, "type": "cpu", "level": "rookie"}, "select"),
+            (
+                {"version": PROTOCOL_VERSION, "type": "style", "style": "boxer", "ready": True},
+                "ready",
+            ),
+        ):
+            await vanish.send_json(request)
+            async with asyncio.timeout(2):
+                while True:
+                    message = await vanish.receive()
+                    text = message.data if message.type == aiohttp.WSMsgType.TEXT else "{}"
+                    if json.loads(text).get("type") == until:
+                        break
+        room = rooms._rooms["room-vanish"]
+        engine = room.engine
+        assert engine is not None
+        # The fighter's connection goes quiet: no frames, no pongs, no close.
+        silent_since = asyncio.get_running_loop().time()
+        async with asyncio.timeout(3):
+            while room._slots["vanish"].connection is not None:  # noqa: ASYNC110
+                await asyncio.sleep(0.01)
+        noticed_after = asyncio.get_running_loop().time() - silent_since
+        assert noticed_after < 1.5 * heartbeat + 0.3
+        paused_at = engine.tick
+        await asyncio.sleep(0.1)
+        assert engine.tick == paused_at
+        await vanish.close()
     async with asyncio.timeout(1):
         await server.close()
 
