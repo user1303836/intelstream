@@ -2067,7 +2067,8 @@ export class FightRenderer {
       const spray = sprayDirection(this.buffer.latest()?.fighters[puncherIndex], target, this.mapping);
       this.presentFightEvent(event, recipientIndex, puncherIndex);
       if (presentImpact && target !== undefined) {
-        this.contactPoint.set(this.mapping.x(target.x), 0, this.mapping.z(target.y));
+        // Blood leaves the fighter where he is drawn, which stands apart from the engine's spot.
+        this.contactPoint.copy(recipientIndex === 0 ? this.tmpA : this.tmpB);
         this.effects.addEvent(presentationEvent, this.contactPoint, this.settings().reducedMotion, spray);
       }
       const currentSettings = this.settings();

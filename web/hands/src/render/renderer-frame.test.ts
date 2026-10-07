@@ -434,7 +434,7 @@ describe("around the fight", () => {
     const event = combat("counter_hit", { event_id: 9, detail: "hook:head", amount: 120 });
     const stub = prototypeOf({
       pendingContacts: [{ event, presentationEvent: event, presentImpact: true, reactAmount: event.amount, contactTick: 40, recipientIndex: 1, puncherIndex: 0, injury: null }],
-      buffer: { latest: () => snapshot() }, presentFightEvent: vi.fn(), mapping: worldMapping(SIMULATION), contactPoint: new THREE.Vector3(), mouthPoint: new THREE.Vector3(),
+      buffer: { latest: () => snapshot() }, presentFightEvent: vi.fn(), mapping: worldMapping(SIMULATION), contactPoint: new THREE.Vector3(), mouthPoint: new THREE.Vector3(), tmpA: new THREE.Vector3(), tmpB: new THREE.Vector3(),
       effects: { addEvent: vi.fn(), spawnTeeth: vi.fn() }, settings: () => ({ reducedMotion: false, blood: "full" }), arena: { excite: vi.fn() }, viewerId: null,
       arcadeInjuries: [null, null], graphs: null, headWorldPose: () => null, knockOutMouthpiece, onContact: null, viewerHitFlash: 0,
     });
