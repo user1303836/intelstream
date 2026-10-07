@@ -2671,7 +2671,7 @@ export class FightRenderer {
     const resultTop = final === null ? null : resultCardTop(final, width, height, snapshot.fighters, this.players, this.roundStats, this.viewerId) / scale;
     const callout = this.frameSeconds < this.roundCalloutUntil || (this.eventCallout !== null && this.frameSeconds < this.eventCallout.until);
     const cornerPanelTop = this.cornerPanelTop === null ? null : this.cornerPanelTop / scale;
-    const slot = captionSlot({ width: width / scale, height: height / scale, phase: snapshot.phase, resultTop, touch: this.touchControls && viewer !== undefined, hint: snapshot.phase === "countdown" && viewer !== undefined, viewerDown: viewer?.is_downed === true, replay: this.replay !== null, cornerPanelTop, callout, lag: this.lagWarned });
+    const slot = captionSlot({ width: width / scale, height: height / scale, phase: snapshot.phase, resultTop, touch: this.touchControls && viewer !== undefined, hint: snapshot.phase === "countdown" && viewer !== undefined, viewerDown: viewer?.is_downed === true, replay: this.replay !== null, cornerPanelTop, callout, lag: this.lagWarned, paused: this.reconnectMs > 0 });
     if (slot === null) return;
     ctx.save();
     ctx.scale(scale, scale);

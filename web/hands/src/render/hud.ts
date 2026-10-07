@@ -732,9 +732,11 @@ export function drawHud(
     centerPanel(ctx, topPanel(width, height, touch), "CORNERS · RECOVER", corners ?? (statsLine.length > 0 ? `Landed this round: ${statsLine}` : "Conditioning governs recovery"));
   }
   if (reconnectMs > 0) {
+    // Mid-screen, or with the touch pads up in the centre panels' place, which they never reach.
     const pauseWidth = Math.min(320, width - 24);
     const pauseHeight = panelHeightFor(height);
-    centerPanel(ctx, { x: width / 2 - pauseWidth / 2, y: height / 2 - pauseHeight / 2, width: pauseWidth, height: pauseHeight }, `OPPONENT RECONNECTING · ${Math.ceil(reconnectMs / 1000)}s`, "The bout is paused");
+    const pause = touch ? topPanel(width, height, true) : { x: width / 2 - pauseWidth / 2, y: height / 2 - pauseHeight / 2, width: pauseWidth, height: pauseHeight };
+    centerPanel(ctx, pause, `OPPONENT RECONNECTING · ${Math.ceil(reconnectMs / 1000)}s`, "The bout is paused");
   }
   if (final !== null) {
     const punches = snapshot.fighters.map((fighter) => roundStats?.total(fighter.player_id) ?? blankPunches()) as [RoundPunchStats, RoundPunchStats];

@@ -189,6 +189,37 @@ describe("caption placement", () => {
     }
   });
 
+  it("keeps the paused bout's panel, and the captions with it, clear of the touch pads", () => {
+    const named = Object.fromEntries(publicPlayers.map((player) => [player.id, player]));
+    const longest = line("Crimson Geometry is just covering up as Azure Vector lets the hands go, and the referee is taking a long look!");
+    for (const [width, height] of PHONES) {
+      for (const phase of ["fight", "rest", "countdown"] as const) {
+        const panels: Array<{ x: number; y: number; w: number; h: number }> = [];
+        let fill = "";
+        const hud = Object.assign(mockHudContext([]), { fillRect: (x: number, y: number, w: number, h: number) => { if (fill === "rgba(3,6,12,0.88)") panels.push({ x, y, w, h }); } });
+        Object.defineProperty(hud, "fillStyle", { set: (value: string) => { fill = value; } });
+        drawHud(hud, width, height, { ...snapshot(), phase }, named, "one", null, 4000, 30, null, null, null, null, null, null, null, true);
+        // The pause is drawn last, over the countdown's or the rest's panel.
+        const pause = panels.at(-1)!;
+        const boxes = [pause];
+        const slot = captionSlot(scene(width, height, phase, { touch: true, paused: true }));
+        if (slot !== null) {
+          const plates: Array<{ x: number; y: number; w: number; h: number }> = [];
+          drawCaption(Object.assign(mockHudContext([]), { fillRect: (x: number, y: number, w: number, h: number) => plates.push({ x, y, w, h }) }), shown(longest), slot, true);
+          const plate = plates[0]!;
+          expect(plate.y >= pause.y + pause.h || plate.y + plate.h <= pause.y, `${width}x${height} ${phase}: the caption over the pause`).toBe(true);
+          boxes.push(plate);
+        }
+        for (const box of boxes) {
+          const where = `${width}x${height} ${phase}: ${JSON.stringify(box)}`;
+          for (const pad of padRects(width, height)) expect(box.x + box.w <= pad.left || box.x >= pad.right || box.y + box.h <= pad.top - 8 || box.y >= pad.bottom, `${where} under the pads ${JSON.stringify(pad)}`).toBe(true);
+          expect(box.y >= 54, where).toBe(true);
+          if (width < 640) expect(box.x + box.w <= width / 2 - 84 || box.x >= width / 2 + 84 || box.y >= 112, `${where} on the round card`).toBe(true);
+        }
+      }
+    }
+  });
+
   it("keeps clear of the replay tag", () => {
     expect(captionSlot(scene(390, 844, "complete", { touch: true, replay: true }))!.y).toBe(120 + 34 + 8);
   });

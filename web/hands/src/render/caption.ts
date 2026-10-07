@@ -22,6 +22,8 @@ export interface CaptionScene {
   readonly callout?: boolean;
   /** The slow-connection warning is up: beside the touch pads it stands at the top left (hud.ts). */
   readonly lag?: boolean;
+  /** The bout is paused for a reconnection: with the touch pads up its panel stands in the centre panels' place (hud.ts). */
+  readonly paused?: boolean;
 }
 
 export interface CaptionSlot {
@@ -75,6 +77,8 @@ export function captionSlot(scene: CaptionScene): CaptionSlot | null {
   // The pads are part of the page, over the canvas, until the bout is over.
   const pads = result === null && scene.touch && scene.phase !== "complete";
   const panel = topPanel(width, height, pads);
+  // With the pads up a pause's panel stands where the introductions would cover it.
+  if (pads && scene.paused === true && scene.phase === "countdown") return null;
   if (result === null && scene.phase === "countdown") {
     // The introductions take the countdown panel's place, and on a phone on its side stay as clear of the pads as it.
     const centre = panel.x + panel.width / 2;
@@ -90,7 +94,7 @@ export function captionSlot(scene: CaptionScene): CaptionSlot | null {
   if (result === null && scene.viewerDown) return null;
   let top = result === null && compact ? COMPACT_TOP : TOP_CLEARANCE;
   if (result === null) {
-    if (scene.phase === "rest" || scene.phase === "foul_recovery") top = Math.max(top, panel.y + panel.height + 8);
+    if (scene.phase === "rest" || scene.phase === "foul_recovery" || (pads && scene.paused === true)) top = Math.max(top, panel.y + panel.height + 8);
     else if (scene.phase === "knockdown") top = Math.max(top, headlineBaseline(height, compact) + BELOW_COUNT);
     if (scene.replay && width / 2 - maxWidth / 2 < REPLAY_TAG.right + 8) top = Math.max(top, (compact ? REPLAY_TAG.compactTop : REPLAY_TAG.wideTop) + REPLAY_TAG.height + 8);
     if (scene.callout === true && scene.phase === "fight") top = Math.max(top, height * CALLOUT_BASELINE + CALLOUT_BELOW_BASELINE + 8);
