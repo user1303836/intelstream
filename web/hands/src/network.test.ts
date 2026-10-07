@@ -327,7 +327,7 @@ describe("same-origin WebSocket controller", () => {
     const other = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks({ onFatal: protocolFatal }), () => malformed);
     other.start();
     malformed.open();
-    malformed.message({ version: 3, type: "waiting", open_seats: 2 });
+    malformed.message({ version: 3, type: "waiting", open_seats: 3 });
     expect(protocolFatal).toHaveBeenCalledWith("protocol_error");
     other.dispose();
   });
