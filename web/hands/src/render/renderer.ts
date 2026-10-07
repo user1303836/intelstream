@@ -1506,7 +1506,9 @@ export class FightRenderer {
   private updateBlobShadows(): void {
     const anchors = [this.tmpA, this.tmpB, this.refereePosition];
     for (const [index, blob] of this.blobShadows.entries()) {
-      const anchor = anchors[index]!;
+      // A fighter's blob sits under the rendered fighter, who walks in from his mark for the glove touch.
+      const graph = index < 2 ? this.graphs?.[index] : undefined;
+      const anchor = graph?.boxer.root.visible === true ? graph.currentRoot : anchors[index]!;
       blob.position.x = anchor.x;
       blob.position.z = anchor.z;
       const downed = index < 2 && this.buffer.latest()?.fighters[index]?.is_downed === true;

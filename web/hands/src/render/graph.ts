@@ -390,7 +390,12 @@ export class BoxingGraph {
   private attending = false;
   private attendWeight = 0;
   private countdownTicks: number | null = null;
+  /** Render tick the opening countdown ends on (see latchEndTick). */
+  private countdownEnd: number | null = null;
   private touchWeight = 0;
+  /** The walk in to the glove touch: offset from the engine position, and its velocity for the footwork. */
+  private readonly touchOffset = new THREE.Vector3();
+  private readonly touchVelocity = new THREE.Vector3();
   /** Pose lab: keep the impact dent at full depth for review. */
   debugHoldImpact = false;
   private readonly feet: [FootState, FootState] = [
@@ -721,8 +726,9 @@ export class BoxingGraph {
     const mirror = fighter.stance === "orthodox" ? 1 : -1;
     const motionScale = reducedMotion ? 0.35 : 1;
 
-    const worldX = this.mapping.x(fighter.x);
-    const worldZ = this.mapping.z(fighter.y);
+    const touch = this.touchWalk(fighter, opponent, dt, sampledTick);
+    const worldX = this.mapping.x(fighter.x) + touch.x;
+    const worldZ = this.mapping.z(fighter.y) + touch.z;
     if (this.rootX === null) {
       this.rootX = worldX;
       this.rootZ = worldZ;
@@ -755,7 +761,7 @@ export class BoxingGraph {
       this.hasLiveHead = true;
     }
 
-    const velocityWorld = this.scratchB.set(this.mapping.x(fighter.velocity_x) * 30, 0, this.mapping.z(fighter.velocity_y) * 30);
+    const velocityWorld = this.scratchB.set(this.mapping.x(fighter.velocity_x) * 30, 0, this.mapping.z(fighter.velocity_y) * 30).add(this.touchVelocity);
     const speed = velocityWorld.length();
     this.lastSpeed = speed;
     this.stillTime = speed < 0.03 ? this.stillTime + dt : 0;
@@ -1465,6 +1471,22 @@ export class BoxingGraph {
     rearHand.pole.lerp(seatedScratch.set(-0.7 * mirror, -0.7, 0), blend).normalize();
   }
 
+  /**
+   * Through the opening countdown the engine holds both fighters 2.2 m apart, so for the glove touch
+   * the rendered fighter walks in until the gloves meet and is back on his mark before the bell.
+   * Returns the offset from the engine position, and keeps the walk's velocity for the footwork.
+   */
+  private touchWalk(fighter: FighterSnapshot, opponent: FighterSnapshot, dt: number, sampledTick: number): THREE.Vector3 {
+    this.countdownEnd = latchEndTick(this.countdownEnd, sampledTick, this.countdownTicks);
+    const walk = this.countdownEnd === null ? 0 : touchWalkProgress(this.countdownEnd - sampledTick);
+    const towardX = this.mapping.x(opponent.x) - this.mapping.x(fighter.x);
+    const towardZ = this.mapping.z(opponent.y) - this.mapping.z(fighter.y);
+    const gap = Math.hypot(towardX, towardZ);
+    const share = gap > TOUCH_GLOVES_GAP ? ((gap - TOUCH_GLOVES_GAP) / 2 / gap) * walk : 0;
+    this.touchVelocity.set(towardX * share - this.touchOffset.x, 0, towardZ * share - this.touchOffset.z).divideScalar(Math.max(dt, 1e-3));
+    return this.touchOffset.set(towardX * share, 0, towardZ * share);
+  }
+
   private applyCelebratePose(
     blend: number,
     time: number,
@@ -1842,6 +1864,13 @@ const STOOL_SEAT_HEIGHT = 0.44;
 const STOOL_CLEAR_SEATED = 0.2;
 const TOUCH_GLOVES_START_TICKS = 48;
 const TOUCH_GLOVES_END_TICKS = 14;
+/** Root-to-root distance at which the touch pose's gloves meet: each glove's front reaches 0.68 m ahead. */
+const TOUCH_GLOVES_GAP = 1.34;
+/** Countdown ticks left over which the fighters walk in to the touch, and back onto their marks for the bell. */
+const TOUCH_WALK_IN_START_TICKS = 80;
+const TOUCH_WALK_IN_END_TICKS = 56;
+const TOUCH_WALK_BACK_START_TICKS = 24;
+const TOUCH_WALK_BACK_END_TICKS = 4;
 /** The engine's taunt length in ticks, over which the lead glove beckons TAUNT_BECKONS times. */
 const TAUNT_TICKS = 60;
 const TAUNT_BECKONS = 4;
@@ -1860,6 +1889,11 @@ function latchEndTick(held: number | null, sampledTick: number, remaining: numbe
   if (remaining === null) return null;
   const end = sampledTick + remaining;
   return held === null || Math.abs(end - held) > LATCH_SLACK_TICKS ? end : held;
+}
+
+/** How far through the walk in to the glove touch a fighter is, by countdown ticks left: 0 on his mark, 1 at the touch. */
+function touchWalkProgress(ticksLeft: number): number {
+  return (1 - smoothstep(TOUCH_WALK_IN_END_TICKS, TOUCH_WALK_IN_START_TICKS, ticksLeft)) * smoothstep(TOUCH_WALK_BACK_END_TICKS, TOUCH_WALK_BACK_START_TICKS, ticksLeft);
 }
 
 function buildEnswell(): { group: THREE.Group; dispose: () => void } {

@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { fighter as baseFighter } from "../test/fixtures";
 import type { FighterSnapshot } from "../types";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
+import { FightRenderer } from "./renderer";
 import { worldPosition, type CanonicalBone } from "./rig";
 import { worldMapping } from "./world";
 
@@ -12,6 +13,22 @@ const bone = (boxer: SkinnedBoxer, name: CanonicalBone, out = new THREE.Vector3(
   boxer.root.updateMatrixWorld(true);
   return worldPosition(boxer.rig.bones[name], out);
 };
+
+/** World x of the front of a fighter's gloves: the skinned glove surface furthest along `toward` (+1 or -1). */
+function gloveFront(boxer: SkinnedBoxer, toward: number): number {
+  boxer.root.updateMatrixWorld(true);
+  let front = -Infinity;
+  const vertex = new THREE.Vector3();
+  for (const side of ["left", "right"] as const) {
+    const mesh = boxer.gloveMesh(side);
+    const count = mesh.geometry.getAttribute("position").count;
+    for (let index = 0; index < count; index += 3) {
+      mesh.getVertexPosition(index, vertex).applyMatrix4(mesh.matrixWorld);
+      front = Math.max(front, vertex.x * toward);
+    }
+  }
+  return front * toward;
+}
 
 function makeGraph(palette = { skin: 0xb0703f, gear: 0x1d4ed8 }): { boxer: SkinnedBoxer; graph: BoxingGraph } {
   const boxer = new SkinnedBoxer(gltf, palette);
@@ -92,5 +109,51 @@ describe("taunt", () => {
       }
     }
     expect(beckons).toBe(4);
+  });
+});
+
+describe("glove touch", () => {
+  it("walks both fighters in from their marks until the gloves meet, and back onto them before the bell", () => {
+    const blue = makeGraph();
+    const red = makeGraph({ skin: 0x6e4128, gear: 0xb91c1c });
+    // Through the three-second countdown the engine holds both fighters on their marks, 2.2 m apart.
+    const left: FighterSnapshot = { ...baseFighter("one"), x: -180, y: 0, facing_x: 1000, facing_y: 0 };
+    const right: FighterSnapshot = { ...baseFighter("two"), x: 180, y: 0, facing_x: -1000, facing_y: 0 };
+    const marks = [mapping.x(-180), mapping.x(180)];
+    const blobs = [0, 1, 2].map(() => new THREE.Mesh());
+    const renderer = {
+      blobShadows: blobs, tmpA: new THREE.Vector3(marks[0], 0, 0), tmpB: new THREE.Vector3(marks[1], 0, 0), refereePosition: new THREE.Vector3(0, 0, -2),
+      graphs: [blue.graph, red.graph], buffer: { latest: () => null },
+    };
+    const updateBlobShadows = (FightRenderer.prototype as unknown as { updateBlobShadows: () => void }).updateBlobShadows;
+    let renderTick = 0;
+    let closest = Infinity;
+    let fastest = 0;
+    let atBell: number[] | null = null;
+    for (let frame = 0; frame < 240; frame += 1) {
+      renderTick += 0.5;
+      const ticksLeft = 90 - Math.ceil(renderTick);
+      const countdown = ticksLeft > 0 ? ticksLeft : null;
+      const before = [blue.boxer.root.position.x, red.boxer.root.position.x];
+      blue.graph.setCountdown(countdown);
+      red.graph.setCountdown(countdown);
+      blue.graph.update(left, right, 1 / 60, renderTick / 30, false, "full", renderTick);
+      red.graph.update(right, left, 1 / 60, renderTick / 30, false, "full", renderTick);
+      if (frame > 0) fastest = Math.max(fastest, Math.abs(blue.boxer.root.position.x - before[0]!), Math.abs(red.boxer.root.position.x - before[1]!));
+      if (ticksLeft <= 40 && ticksLeft >= 24) closest = Math.min(closest, gloveFront(red.boxer, -1) - gloveFront(blue.boxer, 1));
+      if (ticksLeft === 30) {
+        updateBlobShadows.call(renderer);
+        expect(blobs[0]!.position.x).toBeCloseTo(blue.boxer.root.position.x, 6);
+        expect(blobs[1]!.position.x).toBeCloseTo(red.boxer.root.position.x, 6);
+        expect(blobs[0]!.position.x - marks[0]!).toBeGreaterThan(0.3);
+      }
+      if (countdown === null && atBell === null) atBell = [blue.boxer.root.position.x, red.boxer.root.position.x];
+    }
+    expect(closest).toBeLessThan(0.02);
+    expect(closest).toBeGreaterThan(-0.03);
+    expect(fastest).toBeLessThan(0.025);
+    expect(Math.abs(atBell![0]! - marks[0]!)).toBeLessThan(1e-3);
+    expect(Math.abs(atBell![1]! - marks[1]!)).toBeLessThan(1e-3);
+    expect(Math.abs(blue.boxer.root.position.x - marks[0]!)).toBeLessThan(1e-3);
   });
 });
