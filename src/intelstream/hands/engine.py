@@ -292,22 +292,32 @@ class RoundScores:
     player_two: int
 
 
+RING_CONTROL_SECONDS: Final = 30
+"""The most ring generalship a judge counts in a round, in seconds."""
+
+
 def score_round(
     player_one: RoundPerformance,
     player_two: RoundPerformance,
     profile: JudgeProfile,
 ) -> RoundScores:
+    # Ring generalship counts in seconds, up to half a minute, and only in a round in which a clean
+    # punch landed: it settles a close round of boxing but never outweighs a clean punch, and a
+    # round in which nobody lands is even however long one man held the centre of the ring.
+    boxed = player_one.clean_hits + player_two.clean_hits > 0
+    one_control = min(player_one.control // TICKS_PER_SECOND, RING_CONTROL_SECONDS) if boxed else 0
+    two_control = min(player_two.control // TICKS_PER_SECOND, RING_CONTROL_SECONDS) if boxed else 0
     one_value = (
         player_one.damage * profile.damage_weight
         + player_one.clean_hits * 18 * profile.clean_weight
         + (player_one.blocked_hits + player_one.evasions * 2) * 7 * profile.defense_weight
-        + player_one.control * profile.control_weight
+        + one_control * profile.control_weight
     )
     two_value = (
         player_two.damage * profile.damage_weight
         + player_two.clean_hits * 18 * profile.clean_weight
         + (player_two.blocked_hits + player_two.evasions * 2) * 7 * profile.defense_weight
-        + player_two.control * profile.control_weight
+        + two_control * profile.control_weight
     )
     margin = one_value - two_value
     if player_one.knockdowns != player_two.knockdowns:
