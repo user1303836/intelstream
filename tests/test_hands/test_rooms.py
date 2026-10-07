@@ -2009,6 +2009,9 @@ async def test_the_computer_picks_at_once_and_waits_for_the_fighter(
     assert engine is not None
     assert engine.fighter("cpu:champion").style is computer_style
     assert engine.fighter("one").style is FighterStyle.SWARMER
+    computer = one.room.cpu
+    assert computer is not None and computer.brain is not None
+    assert computer.brain.style is computer_style
     await manager.close()
 
 

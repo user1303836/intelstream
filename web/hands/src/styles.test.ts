@@ -200,9 +200,14 @@ describe("the style picker", () => {
   });
 
   it("stops listening for keys once destroyed", () => {
+    const added = vi.spyOn(window, "addEventListener");
+    const removed = vi.spyOn(window, "removeEventListener");
     const picker = make();
     show(picker);
+    const listener = added.mock.calls.find(([type]) => type === "keydown")?.[1];
     picker.destroy();
+    expect(listener).toBeDefined();
+    expect(removed).toHaveBeenCalledWith("keydown", listener);
     press("Digit1");
     expect(sent).toEqual(["balanced:false"]);
     expect(parent.contains(picker.element)).toBe(false);

@@ -707,8 +707,7 @@ class HandsRoom:
     async def choose_style(
         self, player_id: str, connection: PlayerConnection, choice: StyleChoice
     ) -> None:
-        """A fighter's style during the pick before the bout. Outside the pick, or once the fighter
-        has settled, it changes nothing."""
+        """A fighter's style during the pick; outside it, or once settled, it changes nothing."""
         async with self._lock:
             spectator = self._spectators.get(player_id)
             if spectator is not None:
@@ -718,8 +717,8 @@ class HandsRoom:
             slot = self._slots.get(player_id)
             if slot is None or slot.connection is not connection:
                 raise RoomError("connection_replaced")
-            # Counted with the fighter's input frames: every pick is broadcast, so a flood of them
-            # is throttled and then refused like a flood of inputs.
+            # Counted with the fighter's input frames, so a flood of picks is throttled and then
+            # refused like a flood of inputs.
             now = self._clock()
             while slot.frame_times and slot.frame_times[0] <= now - 1.0:
                 slot.frame_times.popleft()
@@ -800,7 +799,6 @@ class HandsRoom:
                 or self._finished
                 or self._engine is not None
                 or self._select is not None
-                or self._cpu is not None
             ):
                 return False
             self._cpu = CpuOpponent(level)

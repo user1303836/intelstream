@@ -250,10 +250,9 @@ def styled_profile(profile: CpuProfile, style: FighterStyle) -> CpuProfile:
     if style is FighterStyle.BOXER:
         return replace(
             profile,
-            outside_distance=profile.outside_distance + 18,
+            outside_distance=profile.outside_distance + 10,
             jab_bias=profile.jab_bias + 25,
             aggression_percent=_percent(profile.aggression_percent - 6),
-            footwork_percent=_percent(profile.footwork_percent + 10),
             power_percent=_percent(profile.power_percent - 10),
             body_percent=_percent(profile.body_percent - 10),
         )
@@ -265,24 +264,25 @@ def styled_profile(profile: CpuProfile, style: FighterStyle) -> CpuProfile:
             power_percent=_percent(profile.power_percent + 20),
             combo_percent=_percent(profile.combo_percent - 10),
             aggression_percent=_percent(profile.aggression_percent + 5),
+            footwork_percent=_percent(profile.footwork_percent - 15),
         )
     if style is FighterStyle.SWARMER:
         return replace(
             profile,
-            outside_distance=profile.outside_distance - 35,
-            aggression_percent=_percent(profile.aggression_percent + 12),
+            outside_distance=profile.outside_distance - 20,
+            aggression_percent=_percent(profile.aggression_percent + 4),
             body_percent=_percent(profile.body_percent + 20),
-            combo_length=profile.combo_length + 1,
+            head_movement_percent=_percent(profile.head_movement_percent + 10),
             clinch_percent=_percent(profile.clinch_percent - 10),
         )
     if style is FighterStyle.COUNTER_PUNCHER:
         return replace(
             profile,
             outside_distance=profile.outside_distance + 6,
-            aggression_percent=_percent(profile.aggression_percent - 14),
-            counter_percent=_percent(profile.counter_percent + 20),
-            read_percent=_percent(profile.read_percent + 6),
-            perfect_percent=_percent(profile.perfect_percent + 10),
+            aggression_percent=_percent(profile.aggression_percent - 10),
+            counter_percent=_percent(profile.counter_percent + 6),
+            read_percent=_percent(profile.read_percent + 3),
+            perfect_percent=_percent(profile.perfect_percent + 4),
         )
     return profile
 

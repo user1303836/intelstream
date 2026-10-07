@@ -5,10 +5,12 @@ Runs whole bouts in-process through the authoritative engine under the default r
 rounds of two minutes, fifteen-second rests) between computer levels, or between a scripted
 human strategy and a computer level, and prints how the bouts end, how long they last, the
 knockdowns, the punch output and how much of the fight is spent stunned. Every bout is
-deterministic for its seed.
+deterministic for its seed. With --style-matrix it plays every pair of fighting styles against
+each other at one computer level, from both corners, and prints how often each style wins.
 
     uv run python scripts/hands_balance.py --seeds 12
     uv run python scripts/hands_balance.py --humans jabs,hooks,turtle,brawler,counter --seeds 8
+    uv run python scripts/hands_balance.py --style-matrix contender,champion --seeds 12
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from intelstream.hands.rules import TICKS_PER_SECOND
 from intelstream.hands.types import (
     ActionKind,
     DefensivePose,
+    FighterStyle,
     Hand,
     InputCommand,
     MatchPhase,
@@ -269,15 +272,27 @@ class BoutStats:
     corner_picks: Counter[str] = field(default_factory=Counter)
 
 
-def make_player(spec: str, player_id: str, opponent_id: str, seed: int) -> Player:
+def make_player(
+    spec: str,
+    player_id: str,
+    opponent_id: str,
+    seed: int,
+    style: FighterStyle = FighterStyle.BALANCED,
+) -> Player:
     if spec == "skilled":
         return SkilledHuman(player_id, opponent_id)
     if spec in HUMAN_STRATEGIES:
         return ScriptedHuman(spec, player_id, opponent_id)
-    return CpuBrain(player_id, opponent_id, CpuLevel(spec), seed)
+    return CpuBrain(player_id, opponent_id, CpuLevel(spec), seed, style)
 
 
-def play(one: str, two: str, seed: int, config: EngineConfig) -> BoutStats:
+def play(
+    one: str,
+    two: str,
+    seed: int,
+    config: EngineConfig,
+    styles: tuple[FighterStyle, FighterStyle] = (FighterStyle.BALANCED, FighterStyle.BALANCED),
+) -> BoutStats:
     engine = BoxingEngine(
         match_id=f"balance-{seed}",
         activity_instance_id="balance",
@@ -286,10 +301,11 @@ def play(one: str, two: str, seed: int, config: EngineConfig) -> BoutStats:
         player_two_id="two",
         seed=seed,
         config=config,
+        styles=styles,
     )
     players = (
-        ("one", make_player(one, "one", "two", seed * 2 + 1)),
-        ("two", make_player(two, "two", "one", seed * 2 + 2)),
+        ("one", make_player(one, "one", "two", seed * 2 + 1, styles[0])),
+        ("two", make_player(two, "two", "one", seed * 2 + 2, styles[1])),
     )
     ids = ("one", "two")
     thrown = [0, 0]
@@ -384,6 +400,45 @@ def summarise(one: str, two: str, bouts: list[BoutStats], elapsed: float) -> str
     return "\n".join(lines)
 
 
+def style_matrix(level: str, styles: list[FighterStyle], seeds: range, config: EngineConfig) -> str:
+    """Every pair of styles at one level, each seed from both corners; a draw counts as half."""
+    share: dict[tuple[FighterStyle, FighterStyle], float] = {}
+    lines = []
+    for index, first in enumerate(styles):
+        for second in styles[index + 1 :]:
+            started = time.perf_counter()
+            points = 0.0
+            methods: Counter[str] = Counter()
+            for seed in seeds:
+                for corners in ((first, second), (second, first)):
+                    bout = play(level, level, seed, config, corners)
+                    methods[bout.method] += 1
+                    if bout.winner_seat is None:
+                        points += 0.5
+                    elif corners[bout.winner_seat] is first:
+                        points += 1
+            share[first, second] = 100 * points / (2 * len(seeds))
+            share[second, first] = 100 - share[first, second]
+            finishes = ", ".join(f"{method} {methods[method]}" for method in sorted(methods))
+            lines.append(
+                f"  {first.value} v {second.value}: {share[first, second]:.0f}%"
+                f" | {finishes} | {time.perf_counter() - started:.0f}s"
+            )
+    width = max(len(style.value) for style in styles) + 2
+    table = [
+        f"{level}: win % of the row's style against the column's, {2 * len(seeds)} bouts a pair",
+        " " * width + "".join(f"{style.value[:8]:>9}" for style in styles),
+    ]
+    for row in styles:
+        cells = "".join(
+            f"{'-':>9}" if row is column else f"{share[row, column]:>9.0f}" for column in styles
+        )
+        table.append(f"{row.value:<{width}}{cells}")
+    worst = max(share, key=lambda pair: share[pair])
+    table.append(f"widest: {worst[0].value} beats {worst[1].value} {share[worst]:.0f}%")
+    return "\n".join(table + lines)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--matchups", default=",".join(DEFAULT_MATCHUPS))
@@ -391,8 +446,16 @@ def main() -> None:
     parser.add_argument("--levels", default=",".join(level.value for level in CpuLevel))
     parser.add_argument("--seeds", type=int, default=12)
     parser.add_argument("--first-seed", type=int, default=1)
+    parser.add_argument("--style-matrix", default="", help="levels to play every style pair at")
+    parser.add_argument("--styles", default=",".join(style.value for style in FighterStyle))
     args = parser.parse_args()
     config = EngineConfig()
+    if args.style_matrix:
+        styles = [FighterStyle(style) for style in args.styles.split(",")]
+        seeds = range(args.first_seed, args.first_seed + args.seeds)
+        for level in args.style_matrix.split(","):
+            print(style_matrix(level, styles, seeds, config), flush=True)
+        return
     if args.humans:
         pairs = [
             (human, level) for human in args.humans.split(",") for level in args.levels.split(",")

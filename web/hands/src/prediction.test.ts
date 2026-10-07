@@ -107,11 +107,13 @@ describe("local movement prediction", () => {
     expect(mismatches).toEqual([]);
   });
 
-  it("moves a swarmer as much quicker as the engine does", () => {
+  it("moves a swarmer as much quicker, and a slugger as much slower, as the engine does", () => {
     const held = { moveX: 1000, moveY: 0, defense: "none" as const };
     const balanced = predictMovement({ ...fighter("one"), conditioning: 1000 }, held, 20);
     const swarmer = predictMovement({ ...fighter("one"), conditioning: 1000, style: "swarmer" }, held, 20);
-    expect(swarmer.dx / balanced.dx).toBeCloseTo(1.08, 2);
+    const slugger = predictMovement({ ...fighter("one"), conditioning: 1000, style: "slugger" }, held, 20);
+    expect(swarmer.dx / balanced.dx).toBeCloseTo(1.1, 2);
+    expect(slugger.dx / balanced.dx).toBeCloseTo(0.96, 2);
   });
 
   it("charges a punch thrown inside the combination window at the engine's discount", () => {

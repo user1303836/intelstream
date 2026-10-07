@@ -18,7 +18,7 @@ from intelstream.hands.cpu import (
     cpu_style,
     styled_profile,
 )
-from intelstream.hands.engine import BoxingEngine, EngineConfig
+from intelstream.hands.engine import EVASION_TICKS, BoxingEngine, EngineConfig
 from intelstream.hands.rules import (
     BLIND_SIDE_EYE_THRESHOLD,
     BODY_COLLAPSE_STAMINA,
@@ -698,10 +698,12 @@ def test_each_style_boxes_its_own_way(level: CpuLevel) -> None:
     assert boxer.jab_bias > base.jab_bias
     slugger = styled_profile(base, FighterStyle.SLUGGER)
     assert slugger.power_percent > base.power_percent
+    assert slugger.footwork_percent < base.footwork_percent
     swarmer = styled_profile(base, FighterStyle.SWARMER)
     assert swarmer.outside_distance < base.outside_distance
     assert swarmer.body_percent > base.body_percent
     assert swarmer.aggression_percent > base.aggression_percent
+    assert swarmer.head_movement_percent > base.head_movement_percent
     counter = styled_profile(base, FighterStyle.COUNTER_PUNCHER)
     assert counter.counter_percent > base.counter_percent
     assert counter.aggression_percent < base.aggression_percent
@@ -745,3 +747,29 @@ def test_a_counter_puncher_raises_its_guard_earlier_for_the_perfect_block() -> N
         return brain._guard_from
 
     assert guard_from(FighterStyle.COUNTER_PUNCHER) == guard_from(FighterStyle.BALANCED) - 1
+
+
+def test_the_brain_boxes_in_the_style_it_is_given() -> None:
+    for style in FighterStyle:
+        brain = CpuBrain("cpu", "human", CpuLevel.CONTENDER, 1, style)
+        assert brain.profile == styled_profile(PROFILES[CpuLevel.CONTENDER], style)
+        assert (brain.profile == PROFILES[CpuLevel.CONTENDER]) is (style is FighterStyle.BALANCED)
+
+
+def test_a_counter_puncher_still_slips_a_slow_punch_it_reads_early() -> None:
+    def answer(style: FighterStyle) -> ActionKind | None:
+        engine = engine_at(120)
+        human = engine.fighter("human")
+        # A worn-out puncher is slow enough that the punch is read long before it lands.
+        human.conditioning = 0
+        brain = always(CpuBrain("cpu", "human", CpuLevel.CHAMPION, 2, style))
+        throw(engine, PunchAction(Hand.RIGHT, PunchClass.STRAIGHT, Target.HEAD, Power.POWER))
+        engine.step()
+        attack = human.attack
+        assert attack is not None
+        while attack.start_tick + attack.rule.startup - engine.tick > EVASION_TICKS + 1:
+            engine.step()
+        return brain._read(engine.tick, engine.fighter("cpu"), human)
+
+    assert answer(FighterStyle.BALANCED) is None
+    assert answer(FighterStyle.COUNTER_PUNCHER) is ActionKind.SLIP_LEFT

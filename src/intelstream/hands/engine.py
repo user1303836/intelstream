@@ -1533,8 +1533,6 @@ class BoxingEngine:
         )
         base = 1 if active else max(1, fighter.fatigue // 25)
         regen = max(1, base * 3 // 4) if fighter.movement_load else base
-        # Rounded to the nearest point: regen is a handful of points a tick.
-        regen = (regen * fighter.style_rule.stamina_regen_percent + 50) // 100
         if fighter.defense in (DefensivePose.GUARD_HIGH, DefensivePose.GUARD_LOW):
             regen = regen * GUARD_STAMINA_REGEN_PERCENT // 100
         fighter.stamina = min(fighter.maximum_stamina, fighter.stamina + regen)

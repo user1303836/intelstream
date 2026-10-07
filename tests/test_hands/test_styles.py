@@ -4,7 +4,7 @@ import pytest
 
 from intelstream.hands.engine import BoxingEngine, EngineConfig
 from intelstream.hands.protocol import encode_snapshot
-from intelstream.hands.rules import PUNCH_RULES, STYLE_RULES, StyleRule
+from intelstream.hands.rules import PUNCH_RULES, STYLE_RULES, StyleRule, style_punch_rule
 from intelstream.hands.types import (
     ActionKind,
     CombatEvent,
@@ -104,8 +104,8 @@ def test_every_style_is_in_the_manifest_and_balanced_changes_nothing() -> None:
 @pytest.mark.parametrize(
     ("style", "punch_class", "startup_delta", "recovery_delta"),
     [
-        (BOXER, PunchClass.JAB, -1, 0),
-        (BOXER, PunchClass.STRAIGHT, -1, 0),
+        (BOXER, PunchClass.JAB, 0, -1),
+        (BOXER, PunchClass.STRAIGHT, 0, 0),
         (BOXER, PunchClass.HOOK, 0, 0),
         (SLUGGER, PunchClass.HOOK, 0, 1),
         (SLUGGER, PunchClass.UPPERCUT, 0, 1),
@@ -132,7 +132,7 @@ def test_a_style_changes_the_timing_of_its_own_punches(
     assert recovery - base_recovery == recovery_delta
 
 
-def test_a_boxer_reaches_further_and_a_swarmer_less_far() -> None:
+def test_a_boxer_reaches_further() -> None:
     def reach(style: FighterStyle) -> int:
         engine = styled_engine(style)
         engine.step({"one": command(1, action=punch(PunchClass.JAB, hand=Hand.LEFT))})
@@ -142,32 +142,30 @@ def test_a_boxer_reaches_further_and_a_swarmer_less_far() -> None:
 
     base = PUNCH_RULES[(PunchClass.JAB, Target.HEAD, Power.NORMAL)].reach
     assert reach(BALANCED) == base
-    assert reach(BOXER) == base * 104 // 100
-    assert reach(SWARMER) == base * 96 // 100
+    assert reach(BOXER) == base * 102 // 100
+    assert reach(SWARMER) == base
 
     # A jab that falls just short of a balanced fighter's reach still lands for a boxer.
-    gap = base + 3
+    gap = base + 2
     for style, expected in ((BALANCED, "whiff"), (BOXER, "hit")):
         engine = styled_engine(style, gap=gap)
         engine.step({"one": command(1, action=punch(PunchClass.JAB, hand=Hand.LEFT))})
         assert first_event(engine, {"hit", "whiff"}).kind == expected
 
 
-def test_a_slugger_hits_harder_and_a_boxer_and_counter_puncher_softer() -> None:
+def test_a_slugger_hits_harder_and_the_others_softer() -> None:
     straight = punch(PunchClass.STRAIGHT)
     balanced = landed(BALANCED, straight)
     assert landed(SLUGGER, straight) > balanced
-    assert landed(BOXER, straight) < balanced
-    assert landed(COUNTER, straight) < balanced
-    assert landed(SWARMER, straight) == balanced
+    assert landed(BOXER, straight) < landed(COUNTER, straight) < balanced
+    assert landed(SWARMER, straight) == landed(COUNTER, straight)
 
 
-def test_a_swarmer_works_the_body_harder() -> None:
+def test_a_swarmer_works_the_body_harder_than_the_head() -> None:
     body = punch(PunchClass.HOOK, target=Target.BODY)
-    balanced = landed(BALANCED, body)
-    swarmer = landed(SWARMER, body)
-    assert swarmer == balanced * 115 // 100
-    assert landed(SWARMER, punch(PunchClass.HOOK)) == landed(BALANCED, punch(PunchClass.HOOK))
+    head = punch(PunchClass.HOOK)
+    assert landed(SWARMER, body) > landed(BALANCED, body)
+    assert landed(SWARMER, head) < landed(BALANCED, head)
 
 
 def test_a_slugger_pays_more_for_a_punch_and_a_swarmer_tires_less() -> None:
@@ -187,6 +185,51 @@ def test_a_slugger_pays_more_for_a_punch_and_a_swarmer_tires_less() -> None:
     assert swarmer_conditioning < balanced_conditioning
 
 
+def test_a_miss_costs_a_slugger_more_and_tires_a_swarmer_less() -> None:
+    def whiffed(style: FighterStyle) -> tuple[int, int]:
+        engine = styled_engine(style, gap=400)
+        fighter = engine.fighter("one")
+        engine.step({"one": command(1, action=punch(PunchClass.HOOK, power=Power.POWER))})
+        for _ in range(60):
+            conditioning = fighter.conditioning
+            for event in engine.step().events:
+                if event.kind == "whiff":
+                    return event.amount, conditioning - fighter.conditioning
+        raise AssertionError("the hook never missed")
+
+    base_whiff = PUNCH_RULES[(PunchClass.HOOK, Target.HEAD, Power.POWER)].whiff_cost
+    balanced_cost, balanced_conditioning = whiffed(BALANCED)
+    slugger_cost, _ = whiffed(SLUGGER)
+    _, swarmer_conditioning = whiffed(SWARMER)
+    assert balanced_cost == base_whiff
+    assert slugger_cost == base_whiff * 110 // 100
+    assert swarmer_conditioning < balanced_conditioning
+
+
+def test_a_combination_waits_out_a_punch_the_style_cannot_yet_pay_for() -> None:
+    straight = (PunchClass.STRAIGHT, Target.HEAD, Power.NORMAL)
+    base_cost = PUNCH_RULES[straight].stamina_cost
+    slugger_cost = style_punch_rule(PUNCH_RULES[straight], STYLE_RULES[SLUGGER]).stamina_cost
+    assert base_cost < slugger_cost - 3
+
+    def jab_ran_its_course(style: FighterStyle) -> bool:
+        engine = styled_engine(style)
+        fighter = engine.fighter("one")
+        engine.step({"one": command(1, action=punch(PunchClass.JAB, hand=Hand.LEFT))})
+        engine.step({"one": command(2, action=punch(PunchClass.STRAIGHT))})
+        jab = fighter.attack
+        assert jab is not None and fighter.pending_actions
+        while fighter.attack is jab:
+            # Enough for a balanced fighter's straight, not for a slugger's.
+            fighter.stamina = base_cost
+            engine.step()
+        assert jab.landed
+        return jab.age >= jab.total_ticks
+
+    assert not jab_ran_its_course(BALANCED)
+    assert jab_ran_its_course(SLUGGER)
+
+
 def test_a_slugger_breaks_a_man_down_faster_and_takes_it_better() -> None:
     def poise_lost(attacker: FighterStyle, defender: FighterStyle) -> int:
         engine = styled_engine(attacker, defender)
@@ -200,7 +243,7 @@ def test_a_slugger_breaks_a_man_down_faster_and_takes_it_better() -> None:
     assert poise_lost(BALANCED, SLUGGER) < balanced
 
 
-def test_a_swarmer_is_quicker_on_the_feet() -> None:
+def test_a_swarmer_is_quicker_on_the_feet_and_a_slugger_slower() -> None:
     def travelled(style: FighterStyle) -> int:
         engine = styled_engine(style, gap=600)
         start = engine.fighter("one").x
@@ -210,6 +253,7 @@ def test_a_swarmer_is_quicker_on_the_feet() -> None:
 
     balanced = travelled(BALANCED)
     assert travelled(SWARMER) > balanced * 105 // 100
+    assert travelled(SLUGGER) < balanced * 98 // 100
     assert travelled(BOXER) == balanced
 
 
@@ -220,18 +264,6 @@ def test_a_quick_fighter_still_reports_a_velocity_clients_accept() -> None:
         fighter = snapshot.fighters[0]
         assert -7 <= fighter.velocity_x <= 7
         assert -7 <= fighter.velocity_y <= 7
-
-
-def test_a_boxer_gets_his_wind_back_sooner() -> None:
-    def recovered(style: FighterStyle) -> int:
-        engine = styled_engine(style, gap=400)
-        fighter = engine.fighter("one")
-        fighter.stamina = 400
-        for _ in range(30):
-            engine.step()
-        return fighter.stamina - 400
-
-    assert recovered(BOXER) > recovered(BALANCED)
 
 
 def test_a_counter_puncher_makes_a_miss_cost_more() -> None:
@@ -251,8 +283,8 @@ def test_a_counter_puncher_makes_a_miss_cost_more() -> None:
 
     balanced_slip, balanced_window, balanced_counter = counter_after_a_slip(BALANCED)
     counter_slip, counter_window, counter_counter = counter_after_a_slip(COUNTER)
-    assert counter_slip == balanced_slip + 2
-    assert counter_window == balanced_window + 6
+    assert counter_slip == balanced_slip + 1
+    assert counter_window == balanced_window + 3
     assert counter_counter > balanced_counter
 
 

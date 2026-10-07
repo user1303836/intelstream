@@ -200,7 +200,6 @@ class StyleRule:
     poise_taken_percent: int = 100
     """Poise damage this fighter takes: the chin."""
     stamina_cost_percent: int = 100
-    stamina_regen_percent: int = 100
     conditioning_loss_percent: int = 100
     move_speed_percent: int = 100
     body_damage_percent: int = 100
