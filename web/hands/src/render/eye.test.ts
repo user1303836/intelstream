@@ -116,12 +116,38 @@ describe("an eye forced out", () => {
       closeUpTarget: new THREE.Vector3(), closeUpFacing: new THREE.Vector3(), closeUpPosition: new THREE.Vector3(), replayLookAt: new THREE.Vector3(),
       tmpA: new THREE.Vector3(-1.6, 0, -1.2), tmpB: new THREE.Vector3(-1.2, 0, 0.1), refereePosition: new THREE.Vector3(-0.6, 0, -1.9),
       headWorldPose: () => ({ position: new THREE.Vector3(0.5, 0.3, 0.2), quaternion: new THREE.Quaternion() }),
+      eyeInSight: (FightRenderer.prototype as unknown as { eyeInSight: unknown }).eyeInSight,
     };
     const shot = (FightRenderer.prototype as unknown as { closeUpFrame(this: unknown, seconds: number): { position: THREE.Vector3; lookAt: THREE.Vector3 } }).closeUpFrame.call(stub, 100.2);
     expect(shot.lookAt.distanceTo(eye)).toBeLessThan(1e-6);
     expect(Math.hypot(shot.position.x - eye.x, shot.position.z - eye.z)).toBeLessThan(0.5);
     // The eye hangs on the +X side of the head, and the camera is there with it.
     expect(shot.position.x).toBeGreaterThan(eye.x);
+    effects.dispose();
+  });
+
+  it("shoots the head instead when the eye hangs under a face that lies on the canvas", () => {
+    const effects = new Effects3D(new THREE.Scene(), 256);
+    const socket = new THREE.Vector3(0.5, 0.16, 0.2);
+    const down = new THREE.Vector3(0, -1, 0);
+    effects.gougeEye(1, socket, down, 1, 40);
+    effects.anchorEye(1, socket, down, new THREE.Vector3(0.5, 0.26, 0.2), new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), down));
+    for (let frame = 0; frame < 60; frame += 1) effects.update(1 / 60);
+    const eye = new THREE.Vector3();
+    effects.eyePosition(1, eye);
+    const head = new THREE.Vector3(0.5, 0.3, 0.2);
+    const stub = {
+      finishCloseUpUntil: 101.7, finishCloseUpIndex: 1, finishCloseUpBearing: null as number | null, headCacheValid: [true, true],
+      headCache: [new THREE.Vector3(), head], arcadeInjuries: [null, "eye_right"], effects, graphs: null,
+      closeUpTarget: new THREE.Vector3(), closeUpFacing: new THREE.Vector3(), closeUpPosition: new THREE.Vector3(), replayLookAt: new THREE.Vector3(),
+      tmpA: new THREE.Vector3(-1.6, 0, -1.2), tmpB: new THREE.Vector3(-1.2, 0, 0.1), refereePosition: new THREE.Vector3(-0.6, 0, -1.9),
+      headWorldPose: () => ({ position: new THREE.Vector3(0.5, 0.26, 0.2), quaternion: new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), down) }),
+      eyeInSight: (FightRenderer.prototype as unknown as { eyeInSight: unknown }).eyeInSight,
+    };
+    const shot = (FightRenderer.prototype as unknown as { closeUpFrame(this: unknown, seconds: number): { position: THREE.Vector3; lookAt: THREE.Vector3 } }).closeUpFrame.call(stub, 100.2);
+    expect(eye.y).toBeLessThan(0.2);
+    expect(shot.lookAt.distanceTo(head)).toBeLessThan(1e-6);
+    expect(shot.position.y).toBeGreaterThan(head.y + 0.6);
     effects.dispose();
   });
 });

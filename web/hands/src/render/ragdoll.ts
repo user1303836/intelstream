@@ -1007,6 +1007,7 @@ export class KnockoutRagdoll {
   private readonly velocities = new Float64Array(PARTICLES * 3);
   private readonly offsets = DRIVEN.map(() => new THREE.Quaternion());
   private readonly fromLocal = DRIVEN.map(() => new THREE.Quaternion());
+  private readonly fromPositions = DRIVEN.map(() => new THREE.Vector3());
   private readonly fromHips = new THREE.Vector3();
   private readonly riseLocal = DRIVEN.map(() => new THREE.Quaternion());
   private readonly riseHips = new THREE.Vector3();
@@ -1247,7 +1248,10 @@ export class KnockoutRagdoll {
   }
 
   private captureLocals(out: readonly THREE.Quaternion[], hips: THREE.Vector3): void {
-    for (let index = 0; index < this.bones.length; index += 1) out[index]!.copy(this.bones[index]!.quaternion);
+    for (let index = 0; index < this.bones.length; index += 1) {
+      out[index]!.copy(this.bones[index]!.quaternion);
+      this.fromPositions[index]!.copy(this.bones[index]!.position);
+    }
     hips.copy(this.rig.bones.hips.position);
   }
 
@@ -1257,6 +1261,7 @@ export class KnockoutRagdoll {
     for (let index = 0; index < this.bones.length; index += 1) {
       const bone = this.bones[index]!;
       bone.quaternion.slerpQuaternions(from[index]!, bone.quaternion, w);
+      if (bone !== this.rig.bones.hips) bone.position.lerpVectors(this.fromPositions[index]!, bone.position, w);
     }
     this.rig.bones.hips.position.lerpVectors(hips, this.rig.bones.hips.position, w);
     this.root.updateMatrixWorld(true);
@@ -1308,6 +1313,11 @@ export class KnockoutRagdoll {
   }
 
   private drive(positions: Float64Array): void {
+    // The poser moves the head off the neck for slips and blows; the body on the canvas has its own neck.
+    for (let index = 0; index < this.bones.length; index += 1) {
+      const bone = this.bones[index]!;
+      if (bone !== this.rig.bones.hips) bone.position.copy(this.rig.restLocalPosition(bone));
+    }
     this.root.updateMatrixWorld(true);
     const hips = this.rig.bones.hips;
     this.rig.setWorldPosition(hips, v(positions, P.pelvis, this.point));

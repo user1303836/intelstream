@@ -20,6 +20,7 @@ const MAX_HANDS = 4;
 const GIBS_PER_DECAPITATION = 24;
 const GIBS_PER_HAND = 16;
 const HEAD_RADIUS = 0.12;
+const HEAD_SETTLE_SECONDS = 0.35;
 const SEVERED_PART_MARGIN = 0.04;
 /** Inward speed of a part beyond the ropes, per metre it is beyond them. */
 const ROPE_RETURN_RATE = 4;
@@ -107,6 +108,15 @@ interface SeveredHead {
   vrx: number; vry: number; vrz: number;
   bounces: number;
   stained: boolean;
+  /** A head rolls onto an ear once it stops: 0 to 1 through the roll, -1 when it is not rolling. */
+  settle: number;
+  readonly settleFrom: THREE.Quaternion;
+  readonly settleTo: THREE.Quaternion;
+  settleFromY: number;
+  settleToY: number;
+  /** How far the part reaches to either side of its pivot, along its own side-to-side axis. */
+  sideLow: number;
+  sideHigh: number;
 }
 
 interface Stump {
@@ -273,6 +283,8 @@ export class Effects3D {
   private readonly jawMaterial: THREE.MeshStandardMaterial;
   private readonly jawMap: THREE.CanvasTexture;
   private readonly stumpAcross = new THREE.Vector3();
+  private readonly settleAxis = new THREE.Vector3();
+  private readonly settleUp = new THREE.Vector3();
   private dropletCloseness = 1;
   private readonly stumpOutward = new THREE.Vector3();
   private readonly stumps: Stump[] = [];
@@ -398,7 +410,7 @@ export class Effects3D {
       const cap = new THREE.Mesh(this.stumpGeometry, this.stumpMaterial);
       cap.visible = false;
       headMesh.add(cap);
-      this.heads.push({ mesh: headMesh, defaultGeometry: this.headGeometry, defaultScale: headMesh.scale.clone(), cap, defaultCap: this.stumpGeometry, look: headLook, blood: null, baked: null, bakedFlesh: null, radius: HEAD_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
+      this.heads.push({ mesh: headMesh, defaultGeometry: this.headGeometry, defaultScale: headMesh.scale.clone(), cap, defaultCap: this.stumpGeometry, look: headLook, blood: null, baked: null, bakedFlesh: null, radius: HEAD_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false, settle: -1, settleFrom: new THREE.Quaternion(), settleTo: new THREE.Quaternion(), settleFromY: 0, settleToY: 0, sideLow: -HEAD_RADIUS, sideHigh: HEAD_RADIUS });
 
       const stumpMesh = new THREE.Mesh(this.stumpGeometry, this.stumpMaterial);
       stumpMesh.visible = false;
@@ -446,7 +458,7 @@ export class Effects3D {
       cap.position.y = 0.02;
       cap.visible = false;
       handMesh.add(cap);
-      this.hands.push({ mesh: handMesh, defaultGeometry: this.handGeometry, defaultScale: handMesh.scale.clone(), cap, defaultCap: this.wristStumpGeometry, look: null, blood, baked: null, bakedFlesh: null, radius: HAND_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
+      this.hands.push({ mesh: handMesh, defaultGeometry: this.handGeometry, defaultScale: handMesh.scale.clone(), cap, defaultCap: this.wristStumpGeometry, look: null, blood, baked: null, bakedFlesh: null, radius: HAND_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false, settle: -1, settleFrom: new THREE.Quaternion(), settleTo: new THREE.Quaternion(), settleFromY: 0, settleToY: 0, sideLow: -HAND_RADIUS, sideHigh: HAND_RADIUS });
 
       const stumpMesh = new THREE.Mesh(this.wristStumpGeometry, this.wristMaterial);
       stumpMesh.visible = false;
@@ -1035,10 +1047,23 @@ export class Effects3D {
     part.cap.geometry = part.defaultCap;
     part.cap.quaternion.identity();
     const material = part.mesh.material as THREE.MeshStandardMaterial;
+    part.sideLow = -part.radius;
+    part.sideHigh = part.radius;
     if (baked !== undefined) {
       part.mesh.geometry = baked.geometry;
       part.baked = baked.geometry;
       part.mesh.scale.setScalar(1);
+      const position = baked.geometry.getAttribute("position");
+      const used = baked.geometry.getIndex();
+      if (used !== null && used.count > 0) {
+        part.sideLow = Infinity;
+        part.sideHigh = -Infinity;
+        for (let at = 0; at < used.count; at += 1) {
+          const x = position.getX(used.getX(at));
+          part.sideLow = Math.min(part.sideLow, x);
+          part.sideHigh = Math.max(part.sideHigh, x);
+        }
+      }
       material.map = baked.map;
       part.look?.set(baked.look ?? SCANNED_LOOK);
       if (part.blood !== null) part.blood.value = baked.gloveBlood ?? 0;
@@ -1096,6 +1121,7 @@ export class Effects3D {
     head.vrz = (rand() - 0.5) * 12;
     head.bounces = 0;
     head.stained = false;
+    head.settle = -1;
     head.mesh.position.set(finite(position.x), finite(position.y, 1.55), finite(position.z));
     copyFiniteQuaternion(head.mesh.quaternion, quaternion);
     head.mesh.visible = true;
@@ -1550,6 +1576,12 @@ export class Effects3D {
 
   private updateDetachedParts(parts: readonly SeveredHead[], dt: number): void {
     for (const part of parts) {
+      if (part.active && part.settle >= 0 && part.settle < 1) {
+        part.settle = Math.min(1, part.settle + dt / HEAD_SETTLE_SECONDS);
+        const eased = part.settle * part.settle * (3 - 2 * part.settle);
+        part.mesh.quaternion.slerpQuaternions(part.settleFrom, part.settleTo, eased);
+        part.mesh.position.y = part.settleFromY + (part.settleToY - part.settleFromY) * eased;
+      }
       if (!part.active || !part.moving) continue;
       const fromX = part.mesh.position.x;
       const fromZ = part.mesh.position.z;
@@ -1591,6 +1623,7 @@ export class Effects3D {
           part.vrx = 0;
           part.vry = 0;
           part.vrz = 0;
+          if (part.look !== null) this.rollOntoEar(part);
         }
       }
       if (!Number.isFinite(part.mesh.position.x) || !Number.isFinite(part.mesh.position.y) || !Number.isFinite(part.mesh.position.z) || !Number.isFinite(part.mesh.quaternion.x) || !Number.isFinite(part.mesh.quaternion.y) || !Number.isFinite(part.mesh.quaternion.z) || !Number.isFinite(part.mesh.quaternion.w)) {
@@ -1602,6 +1635,20 @@ export class Effects3D {
         part.vz = 0;
       }
     }
+  }
+
+  /**
+   * A head left on the canvas rolls the short way onto an ear, as a head does: its face turns to the
+   * side, where a camera can find it, and it lies on the canvas rather than on the ball it bounced as.
+   */
+  private rollOntoEar(part: SeveredHead): void {
+    const side = this.settleAxis.set(1, 0, 0).applyQuaternion(part.mesh.quaternion);
+    const up = side.y >= 0 ? 1 : -1;
+    part.settleFrom.copy(part.mesh.quaternion);
+    part.settleTo.setFromUnitVectors(side, this.settleUp.set(0, up, 0)).multiply(part.mesh.quaternion);
+    part.settleFromY = part.mesh.position.y;
+    part.settleToY = CANVAS_TOP + (up > 0 ? -part.sideLow : part.sideHigh);
+    part.settle = 0;
   }
 
   private stumpRandom(stump: Stump): number {

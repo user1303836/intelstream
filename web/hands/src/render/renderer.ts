@@ -541,7 +541,8 @@ const DEFAULT_SIM: SimulationInfo = { tick_rate: 30, ring_half_width: 500, ring_
 
 /**
  * Freezes a skinned mesh's current deformed surface into a static geometry
- * expressed relative to `pivot` so it can fly as a rigid severed part.
+ * expressed relative to `pivot` so it can fly as a rigid severed part. With `rigid`, every vertex
+ * follows that bone alone, so skin the part shares with the next bone keeps the part's own shape.
  */
 export function bakeSkinnedPart(
   mesh: THREE.SkinnedMesh,
@@ -549,6 +550,7 @@ export function bakeSkinnedPart(
   pivotQuaternion: THREE.Quaternion,
   keep?: (bind: THREE.Vector3) => boolean,
   look?: FighterLook,
+  rigid?: THREE.Bone,
 ): BakedPart {
   const source = mesh.geometry;
   const positions = source.getAttribute("position");
@@ -556,11 +558,14 @@ export function bakeSkinnedPart(
   const vertex = new THREE.Vector3();
   const inverse = pivotQuaternion.clone().invert();
   mesh.updateMatrixWorld(true);
+  const bone = rigid === undefined ? -1 : mesh.skeleton.bones.indexOf(rigid);
+  const follow = bone < 0 ? null : new THREE.Matrix4().multiplyMatrices(mesh.bindMatrixInverse, new THREE.Matrix4().multiplyMatrices(mesh.skeleton.bones[bone]!.matrixWorld, mesh.skeleton.boneInverses[bone]!)).multiply(mesh.bindMatrix);
   for (let index = 0; index < positions.count; index += 1) {
     vertex.fromBufferAttribute(positions, index);
     // A head is drawn reshaped by its owner's look; the severed head keeps that shape.
     if (look !== undefined) lookShape(vertex, look, vertex);
-    mesh.applyBoneTransform(index, vertex);
+    if (follow !== null) vertex.applyMatrix4(follow);
+    else mesh.applyBoneTransform(index, vertex);
     vertex.applyMatrix4(mesh.matrixWorld).sub(pivotPosition).applyQuaternion(inverse);
     baked[index * 3] = vertex.x;
     baked[index * 3 + 1] = vertex.y;
@@ -603,6 +608,11 @@ export function bakeSkinnedPart(
   const flesh = new THREE.BufferGeometry();
   closeCut(flesh, edge, position, position.clone().sub(middle).normalize());
   return { geometry, map, color, cut: { position, flesh } };
+}
+
+/** A severed head as it leaves the neck: the head bone's own shape of it, in its owner's look, measured from the given pivot. */
+export function bakeSeveredHead(boxer: SkinnedBoxer, pivotPosition: THREE.Vector3, pivotQuaternion: THREE.Quaternion): BakedPart {
+  return { ...bakeSkinnedPart(boxer.headMesh, pivotPosition, pivotQuaternion, aboveNeckCut, boxer.look, boxer.bone("head") ?? undefined), look: boxer.look };
 }
 
 function blankFighter(playerId: string): FighterSnapshot {
@@ -1227,8 +1237,10 @@ export class FightRenderer {
     if (seconds >= this.finishCloseUpUntil || this.finishCloseUpIndex < 0 || !this.headCacheValid[this.finishCloseUpIndex]) return null;
     const injury = this.arcadeInjuries[this.finishCloseUpIndex];
     const severed = injury === "decapitation" && this.effects.severedHeadPosition(this.finishCloseUpIndex, this.closeUpTarget);
-    // An eye out of its socket is shot close, on the side the face points to.
-    const hanging = !severed && (injury === "eye_left" || injury === "eye_right") && this.effects.eyePosition(this.finishCloseUpIndex, this.closeUpTarget);
+    // An eye out of its socket is shot close, on the side the face points to; one hanging under a face on
+    // the canvas cannot be seen from any side, and the shot is the head's own.
+    const hanging = !severed && (injury === "eye_left" || injury === "eye_right") && this.effects.eyePosition(this.finishCloseUpIndex, this.closeUpTarget)
+      && this.eyeInSight(this.closeUpTarget);
     const head = severed || hanging ? this.closeUpTarget : this.headCache[this.finishCloseUpIndex]!;
     const reach = severed ? 0.8 : hanging ? 0.45 : 1.05;
     const drift = (seconds - (this.finishCloseUpUntil - FINISH_CLOSE_UP_SECONDS)) * 0.25 - 0.2;
@@ -1263,6 +1275,14 @@ export class FightRenderer {
     );
     this.replayLookAt.copy(head);
     return { position: this.closeUpPosition, lookAt: this.replayLookAt, tight: true };
+  }
+
+  /** Whether an eye hanging at `eye` is clear of the beaten fighter's skull from above, rather than under his face. */
+  private eyeInSight(eye: THREE.Vector3): boolean {
+    const skull = this.headWorldPose(this.finishCloseUpIndex);
+    if (skull === null) return false;
+    const fromSkull = this.closeUpFacing.copy(eye).sub(skull.position);
+    return fromSkull.y > -0.5 * fromSkull.length();
   }
 
   /** Replays the recorded snapshots around the knockdown from a close camera before the result panel. */
@@ -1446,7 +1466,7 @@ export class FightRenderer {
       const pose = this.headWorldPose(index);
       if (pose !== null) {
         const graph = this.graphs?.[index];
-        const baked = graph === undefined ? undefined : { ...bakeSkinnedPart(graph.boxer.headMesh, pose.position, pose.quaternion, aboveNeckCut, graph.boxer.look), look: graph.boxer.look };
+        const baked = graph === undefined ? undefined : bakeSeveredHead(graph.boxer, pose.position, pose.quaternion);
         this.effects.decapitate(
           index,
           pose.position,

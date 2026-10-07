@@ -6,8 +6,8 @@ import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
 import { HEAD_SITES, InjuryShading, NECK_CUT_HEIGHT } from "./injury";
 import { SCANNED_LOOK } from "./looks";
 import { Effects3D, confineToRopes } from "./effects";
-import { FightRenderer, aboveNeckCut, bakeSkinnedPart, closeUpAngle, keepClear } from "./renderer";
-import { ROPE_LINE, worldMapping } from "./world";
+import { FightRenderer, aboveNeckCut, bakeSeveredHead, bakeSkinnedPart, closeUpAngle, keepClear } from "./renderer";
+import { CANVAS_TOP, ROPE_LINE, worldMapping } from "./world";
 
 const gltf = await loadBoxerGlb();
 
@@ -152,6 +152,65 @@ describe("neck cut", () => {
     expect(boxer.headMesh.customDepthMaterial).toBeInstanceOf(THREE.MeshDepthMaterial);
     boxer.setDecapitated(false);
     expect(boxer.headInjury.uniforms.uInjurySever.value).toBeGreaterThan(500);
+    boxer.dispose();
+  });
+
+  it("leaves a severed head on an ear, its face turned to the side and the head on the canvas, however it spun", () => {
+    const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
+    boxer.rig.resetToRest();
+    boxer.root.updateMatrixWorld(true);
+    const head = boxer.bone("head")!;
+    const at = head.getWorldPosition(new THREE.Vector3());
+    const turn = head.getWorldQuaternion(new THREE.Quaternion());
+    const scene = new THREE.Scene();
+    const effects = new Effects3D(scene);
+    const face = new THREE.Vector3();
+    const point = new THREE.Vector3();
+    for (let event = 1; event <= 12; event += 1) {
+      effects.clearDynamic();
+      const baked = bakeSeveredHead(boxer, at, turn);
+      effects.decapitate(1, at, turn, event % 2 === 0 ? 1 : -1, event * 7, 0xb0703f, baked);
+      for (let frame = 0; frame < 240; frame += 1) effects.update(1 / 60);
+      expect(effects.severedHeadFacing(1, face)).toBe(true);
+      expect(Math.abs(face.y)).toBeLessThan(0.05);
+      const mesh = scene.children.find((child): child is THREE.Mesh => child instanceof THREE.Mesh && child.geometry === baked.geometry)!;
+      mesh.updateMatrixWorld(true);
+      const position = baked.geometry.getAttribute("position");
+      const used = baked.geometry.getIndex()!;
+      let lowest = Infinity;
+      for (let index = 0; index < used.count; index += 1) lowest = Math.min(lowest, point.fromBufferAttribute(position, used.getX(index)).applyMatrix4(mesh.matrixWorld).y);
+      expect(Math.abs(lowest - CANVAS_TOP)).toBeLessThan(0.005);
+    }
+    effects.dispose();
+    boxer.dispose();
+  });
+
+  it("takes the head off whole, without the skin it shares with the neck and chest trailing after the body", () => {
+    const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
+    const head = boxer.bone("head")!;
+    const bake = (): THREE.BufferGeometry => {
+      boxer.root.updateMatrixWorld(true);
+      return bakeSeveredHead(boxer, head.getWorldPosition(new THREE.Vector3()), head.getWorldQuaternion(new THREE.Quaternion())).geometry;
+    };
+    boxer.rig.resetToRest();
+    const whole = bake();
+    // A head snapped back on a body doubled over, as a knockout blow leaves it.
+    boxer.rig.bones.chest.rotateX(0.5);
+    boxer.rig.bones.upperChest.rotateX(0.4);
+    boxer.rig.bones.neck.rotateX(0.6);
+    head.rotateX(-1.2);
+    const posed = bake();
+    const index = posed.getIndex()!;
+    const before = whole.getAttribute("position");
+    const after = posed.getAttribute("position");
+    let drift = 0;
+    for (let at = 0; at < index.count; at += 1) {
+      const vertex = index.getX(at);
+      drift = Math.max(drift, new THREE.Vector3().fromBufferAttribute(after, vertex).distanceTo(new THREE.Vector3().fromBufferAttribute(before, vertex)));
+    }
+    expect(drift).toBeLessThan(0.001);
+    whole.dispose();
+    posed.dispose();
     boxer.dispose();
   });
 

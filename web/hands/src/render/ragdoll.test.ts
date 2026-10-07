@@ -216,6 +216,22 @@ describe("knockouts on the fighter", () => {
     expect(head.distanceTo(particle)).toBeLessThan(0.06);
   });
 
+  it("brings the head back onto the neck when the fall starts with it thrown off by a slip or a blow", () => {
+    const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
+    const ragdoll = new KnockoutRagdoll(boxer.rig, boxer.root);
+    boxer.rig.resetToRest();
+    boxer.root.updateMatrixWorld(true);
+    const bones = boxer.rig.bones;
+    const onTheNeck = bones.head.position.clone();
+    // The poser moves the head itself for slips and big blows; the fall takes over from that frame.
+    bones.head.position.add(new THREE.Vector3(-4.2, -0.9, -7.4));
+    boxer.root.updateMatrixWorld(true);
+    expect(ragdoll.start("crumple")).toBe(true);
+    for (let frame = 0; frame < 150; frame += 1) ragdoll.update(1 / 60, null);
+    const where = bones.neck.localToWorld(onTheNeck.clone());
+    expect(worldPosition(bones.head, new THREE.Vector3()).distanceTo(where)).toBeLessThan(0.001);
+  });
+
   it("keeps the authored fall under reduced motion", () => {
     const { boxer, graph, fighter, opponent, time } = standing();
     graph.react("hit", "head", 1, "straight", "right", 420);
