@@ -81,8 +81,14 @@ const CORNERMAN_APRON_DISTANCE = 3.42;
 const TIGHT_SHOT_LIMIT = 2.2;
 /** How far the referee keeps from a head on the canvas. */
 const HEAD_CLEARANCE = 0.9;
+/** Knockdown detail for a body shot that drops a fighter to one knee. */
+const BODY_KNOCKDOWN = "body";
+/** The referee keeps this far from any part of a fighter lying on the canvas. */
+const BODY_CLEARANCE = 0.55;
 /** How far from someone on their feet a close-up has to pass to see past them. */
 const STANDING_BLOCK_RADIUS = 0.5;
+/** Parts of a body lying on the canvas that a close-up of its head does not shoot across. */
+const FALLEN_BLOCK_RADIUS = 0.28;
 /** The engine lets fighters stand 76 units apart, which puts two drawn bodies inside each other. */
 const DRAWN_MINIMUM_GAP = 104;
 const CORNERMAN_WORK_DISTANCE = 2.95;
@@ -607,6 +613,9 @@ export class FightRenderer {
   private readonly roundStats = new RoundStatsTracker();
   private readonly history: EngineSnapshot[] = [];
   private lastKnockdown: { readonly knockdown: CombatEvent; readonly hit: CombatEvent | null } | null = null;
+  /** A flash knockout ends the bout without a knockdown: the punch that did it and the fighter it put down. */
+  private flashKnockout: { readonly hitEventId: number; readonly loserId: string } | null = null;
+  private readonly bodyPoint = new THREE.Vector3();
   private replay: { readonly plan: ReplayPlan; readonly buffer: SnapshotBuffer; readonly startedAt: number; impactFired: boolean; side: 1 | -1 | null } | null = null;
   private readonly finishPass: ShaderPass;
   private readonly bloomPass: UnrealBloomPass;
@@ -921,9 +930,17 @@ export class FightRenderer {
     const toCentre = Math.atan2(-head.x, -head.z);
     // The side is chosen once: a head still tumbling would swing the camera round it.
     if (this.finishCloseUpBearing === null) {
-      const facing = severed && this.effects.severedHeadFacing(this.finishCloseUpIndex, this.closeUpFacing) ? this.closeUpFacing : null;
+      // A head on the canvas is shot from the side its face turns to, and never across its own body.
+      const fallen = severed ? null : this.graphs?.[this.finishCloseUpIndex]?.fallBody ?? null;
+      const facing = severed && this.effects.severedHeadFacing(this.finishCloseUpIndex, this.closeUpFacing) ? this.closeUpFacing : fallen?.faceDirection(this.closeUpFacing) ?? null;
       const winner = this.finishCloseUpIndex === 0 ? this.tmpB : this.tmpA;
       const blockers = [{ x: winner.x, z: winner.z, radius: STANDING_BLOCK_RADIUS }, { x: this.refereePosition.x, z: this.refereePosition.z, radius: STANDING_BLOCK_RADIUS }];
+      if (fallen !== null) {
+        for (const point of [1, 2, 3, 4] as const) {
+          fallen.bodyPoint(point, this.bodyPoint);
+          blockers.push({ x: this.bodyPoint.x, z: this.bodyPoint.z, radius: FALLEN_BLOCK_RADIUS });
+        }
+      }
       this.finishCloseUpBearing = closeUpAngle(head.x, head.z, facing, reach, TIGHT_SHOT_LIMIT, Math.hypot(head.x, head.z) > 0.4 ? toCentre : 0.9, blockers);
     }
     const angle = this.finishCloseUpBearing + drift;
@@ -951,7 +968,12 @@ export class FightRenderer {
         this.restoreInjury(index);
       }
     }
-    for (const graph of this.graphs ?? []) graph.resetTransient(false);
+    const victim = plan.snapshots[0]?.fighters.findIndex((fighter) => fighter.player_id === plan.impact.target_id) ?? -1;
+    for (const [index, graph] of (this.graphs ?? []).entries()) {
+      graph.resetTransient(false);
+      graph.primeReplayFall();
+      if (index === victim && plan.impact.detail === BODY_KNOCKDOWN) graph.useAuthoredFall();
+    }
     this.finalRevealAt = this.frameSeconds + plan.durationSeconds + finalRevealDelay(this.final);
   }
 
@@ -959,7 +981,12 @@ export class FightRenderer {
     this.replay = null;
     this.reapplyReplayInjuries();
     const live = this.buffer.latest();
-    for (const [index, graph] of (this.graphs ?? []).entries()) graph.resetTransient(live?.fighters[index]?.is_downed === true);
+    for (const [index, graph] of (this.graphs ?? []).entries()) {
+      const fighter = live?.fighters[index];
+      const knockedOut = fighter !== undefined && fighter.player_id === this.flashKnockout?.loserId;
+      graph.resetTransient(fighter?.is_downed === true || knockedOut);
+      if (knockedOut) graph.knockOut();
+    }
     if (this.final !== null) this.presentFinish(this.final);
   }
 
@@ -977,6 +1004,7 @@ export class FightRenderer {
     const punchClass = (keyParts[0] ?? null) as PunchClass | null;
     const hand = (keyParts[1] ?? null) as Hand | null;
     this.graphs?.[recipientIndex]?.react("hit", event.detail.endsWith(":body") ? "body" : "head", event.direction, punchClass, hand, Math.max(300, event.amount));
+    if (recipient.player_id === this.flashKnockout?.loserId) this.graphs?.[recipientIndex]?.knockOut();
     if (puncherIndex >= 0) this.graphs?.[puncherIndex]?.landedHit(false);
     this.onContact?.(event);
     this.reapplyReplayInjuries();
@@ -996,8 +1024,11 @@ export class FightRenderer {
     this.replayFollowAt = elapsed;
     this.replayFollow += ((falling ? 1 : 0) - this.replayFollow) * follow;
     const favour = victim < 0 ? 0 : Math.max(this.portraitPull > 1.3 ? 0.7 : 0, this.replayFollow * 0.8);
-    const midX = (ax + bx) / 2 + ((victim === 1 ? bx : ax) - (ax + bx) / 2) * favour;
-    const midZ = (az + bz) / 2 + ((victim === 1 ? bz : az) - (az + bz) / 2) * favour;
+    // Once he is falling, the shot follows his head wherever the fall takes it.
+    const victimX = falling ? this.headCache[victim]!.x : victim === 1 ? bx : ax;
+    const victimZ = falling ? this.headCache[victim]!.z : victim === 1 ? bz : az;
+    const midX = (ax + bx) / 2 + (victimX - (ax + bx) / 2) * favour;
+    const midZ = (az + bz) / 2 + (victimZ - (az + bz) / 2) * favour;
     let nx = -(bz - az);
     let nz = bx - ax;
     const length = Math.hypot(nx, nz) || 1;
@@ -1229,6 +1260,16 @@ export class FightRenderer {
       if (event.kind === "knockdown") {
         const hit = accepted.find((candidate) => (candidate.kind === "hit" || candidate.kind === "counter_hit") && candidate.target_id === event.target_id) ?? null;
         this.lastKnockdown = { knockdown: event, hit };
+        // A body shot that takes him to one knee is played by the animation, not by the knockout physics.
+        if (event.detail === BODY_KNOCKDOWN) this.graphs?.[snapshot.fighters.findIndex((fighter) => fighter.player_id === event.target_id)]?.useAuthoredFall();
+      }
+      if (event.kind === "result" && event.detail === "flash_ko") {
+        const hit = accepted.findLast((candidate) => (candidate.kind === "hit" || candidate.kind === "counter_hit") && candidate.actor_id === event.actor_id) ?? null;
+        if (hit !== null && hit.target_id !== null) {
+          this.flashKnockout = { hitEventId: hit.event_id, loserId: hit.target_id };
+          // The replay shows the knockout punch and the fall as it would a knockdown.
+          this.lastKnockdown = { knockdown: { ...hit, kind: "knockdown" }, hit };
+        }
       }
       if (event.kind === "referee_break") this.referee?.breakClinch();
     }
@@ -1321,6 +1362,7 @@ export class FightRenderer {
           const punchClass = (keyParts[0] ?? presentationEvent.detail.split(":")[0] ?? null) as PunchClass | null;
           const punchHand = (keyParts[1] ?? null) as Hand | null;
           graphs[recipientIndex]!.react(blocked ? "block" : "hit", targetKind, presentationEvent.direction, punchClass, punchHand, event.amount);
+          if (this.flashKnockout?.hitEventId === event.event_id) graphs[recipientIndex]!.knockOut();
         }
       }
       if (
@@ -1510,6 +1552,9 @@ export class FightRenderer {
         if (snapshot.phase === "rest" && this.lastPhase !== "rest") this.restStartedAt = seconds;
         this.lastPhase = snapshot.phase;
         this.anticipatePunches(latest, sampledTick);
+        // A fighter going down falls against his standing opponent, not through him.
+        graphs[0].setObstacle(graphs[1].boxer.root.position.x, graphs[1].boxer.root.position.z);
+        graphs[1].setObstacle(graphs[0].boxer.root.position.x, graphs[0].boxer.root.position.z);
         graphs[0].update(a, b, actorDt, seconds, current.reducedMotion, current.blood, sampledTick, headB);
         graphs[1].update(b, a, actorDt, seconds, current.reducedMotion, current.blood, sampledTick, headA);
         for (const [index, graph] of graphs.entries()) {
@@ -1538,7 +1583,11 @@ export class FightRenderer {
       const bz = this.mapping.z(b.y);
       separation = Math.hypot(ax - bx, az - bz);
       knockdown = a.is_downed || b.is_downed;
-      this.ring.setRopeContacts({ x: ax, z: az }, { x: bx, z: bz });
+      const fallenA = this.graphs?.[0]?.fallBody?.centre(this.bodyPoint) ?? null;
+      const contactA = fallenA === null ? { x: ax, z: az } : { x: fallenA.x, z: fallenA.z };
+      const fallenB = this.graphs?.[1]?.fallBody?.centre(this.bodyPoint) ?? null;
+      const contactB = fallenB === null ? { x: bx, z: bz } : { x: fallenB.x, z: fallenB.z };
+      this.ring.setRopeContacts(contactA, contactB);
       this.tmpA.set(ax, 0, az);
       this.tmpB.set(bx, 0, bz);
       for (const [index, fighter] of snapshot.fighters.entries()) {
@@ -1678,7 +1727,8 @@ export class FightRenderer {
   private updateBlobShadows(): void {
     const anchors = [this.tmpA, this.tmpB, this.refereePosition];
     for (const [index, blob] of this.blobShadows.entries()) {
-      const anchor = anchors[index]!;
+      const fallen = index < 2 ? this.graphs?.[index]?.fallBody?.centre(this.bodyPoint) ?? null : null;
+      const anchor = fallen ?? anchors[index]!;
       blob.position.x = anchor.x;
       blob.position.z = anchor.z;
       const downed = index < 2 && this.buffer.latest()?.fighters[index]?.is_downed === true;
@@ -1722,6 +1772,17 @@ export class FightRenderer {
         this.refereePosition.z = fighter.z + (dz / distance) * clearance;
       }
     }
+    // Nor on a fighter lying where the fall took him.
+    for (const graph of ceremony !== null ? [] : this.graphs ?? []) {
+      const body = graph.fallBody;
+      if (body === null) continue;
+      for (const point of [0, 1, 2, 3, 4] as const) {
+        body.bodyPoint(point, this.bodyPoint);
+        const step = keepClear(this.refereePosition.x, this.refereePosition.z, this.bodyPoint.x, this.bodyPoint.z, BODY_CLEARANCE);
+        this.refereePosition.x = step.x;
+        this.refereePosition.z = step.z;
+      }
+    }
     // Nobody stands over a head on the canvas.
     for (const index of [0, 1]) {
       if (!this.effects.severedHeadPosition(index, this.closeUpTarget)) continue;
@@ -1753,7 +1814,7 @@ export class FightRenderer {
           continue;
         }
         graph.boxer.rig.bones[bone].getWorldPosition(this.trailGlove);
-        trail.update(this.trailGlove, dt, this.camera.position, !reducedMotion && this.replay === null);
+        trail.update(this.trailGlove, dt, this.camera.position, !reducedMotion && this.replay === null && !graph.isDown);
       }
     }
   }
