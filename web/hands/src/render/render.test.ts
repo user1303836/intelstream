@@ -768,6 +768,28 @@ describe("rope give", () => {
     disposeRing(ring);
   });
 
+  it("casts the ropes' shadows from where they have given, not from where they hang", () => {
+    const ring = buildRing();
+    const casting: THREE.Mesh[] = [];
+    ring.group.traverse((object) => {
+      if (object instanceof THREE.Mesh && object.geometry.type === "TubeGeometry" && object.castShadow) casting.push(object);
+    });
+    expect(casting).toHaveLength(12);
+    const depth = casting[0]!.customDepthMaterial;
+    expect(depth).toBeInstanceOf(THREE.MeshDepthMaterial);
+    for (const rope of casting) expect(rope.customDepthMaterial).toBe(depth);
+    // It is the ring's to free, with its other materials.
+    expect(ring.materials).toContain(depth);
+    const shader = { uniforms: {} as Record<string, { value: unknown }>, vertexShader: "#include <common>\nvoid main() {\n#include <begin_vertex>\n#include <project_vertex>\n}", fragmentShader: "" };
+    depth!.onBeforeCompile(shader as unknown as THREE.WebGLProgramParametersWithUniforms, null as unknown as THREE.WebGLRenderer);
+    expect(shader.vertexShader).toContain(ROPE_GIVE_GLSL);
+    expect(shader.vertexShader).toContain(ROPE_FLEX_GLSL);
+    expect(shader.vertexShader.indexOf(ROPE_FLEX_GLSL)).toBeLessThan(shader.vertexShader.indexOf("#include <project_vertex>"));
+    expect(shader.uniforms.uRopeContactA!.value).toBe(ring.ropeContacts[0]);
+    expect(shader.uniforms.uRopeContactB!.value).toBe(ring.ropeContacts[1]);
+    disposeRing(ring);
+  });
+
   it("writes fighter contacts into the rope shader uniforms and clears them", () => {
     const ring = buildRing();
     ring.setRopeContacts({ x: 2.82, z: 0.4 }, null);

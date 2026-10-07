@@ -232,18 +232,25 @@ export function buildRing(): BuiltRing {
   const ropeContacts: [THREE.Vector4, THREE.Vector4] = [new THREE.Vector4(0, 0, 0, 0), new THREE.Vector4(0, 0, 0, 0)];
   const ropeUniforms = { uRopeContactA: { value: ropeContacts[0] }, uRopeContactB: { value: ropeContacts[1] } };
   const ropeColors = [0xb91c1c, 0xe5e7eb, 0x1d4ed8];
+  const bendRopes = (shader: THREE.WebGLProgramParametersWithUniforms): void => {
+    shader.uniforms.uRopeContactA = ropeUniforms.uRopeContactA;
+    shader.uniforms.uRopeContactB = ropeUniforms.uRopeContactB;
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", `#include <common>\nuniform vec4 uRopeContactA;\nuniform vec4 uRopeContactB;\n${ROPE_GIVE_GLSL}`)
+      .replace("#include <begin_vertex>", `#include <begin_vertex>${ROPE_FLEX_GLSL}`);
+  };
   const flexMaterial = (parameters: THREE.MeshStandardMaterialParameters): THREE.MeshStandardMaterial => {
     const material = new THREE.MeshStandardMaterial(parameters);
-    material.onBeforeCompile = (shader) => {
-      shader.uniforms.uRopeContactA = ropeUniforms.uRopeContactA;
-      shader.uniforms.uRopeContactB = ropeUniforms.uRopeContactB;
-      shader.vertexShader = shader.vertexShader
-        .replace("#include <common>", `#include <common>\nuniform vec4 uRopeContactA;\nuniform vec4 uRopeContactB;\n${ROPE_GIVE_GLSL}`)
-        .replace("#include <begin_vertex>", `#include <begin_vertex>${ROPE_FLEX_GLSL}`);
-    };
+    material.onBeforeCompile = bendRopes;
     materials.push(material);
     return material;
   };
+  // The key light's shadow pass draws a mesh with three's own depth material unless it has one: the ropes'
+  // bends them as they give, so their shadows move with them off a fighter pinned on them.
+  const ropeDepth = new THREE.MeshDepthMaterial();
+  ropeDepth.onBeforeCompile = bendRopes;
+  ropeDepth.customProgramCacheKey = () => "hands-rope-depth";
+  materials.push(ropeDepth);
   const ropeMaterial = (color: number): THREE.MeshStandardMaterial => flexMaterial({ color, roughness: 0.42, metalness: 0.05 });
   const ropeMats = ropeColors.map(ropeMaterial);
   const nearMaterials: THREE.MeshStandardMaterial[] = ropeColors.map(ropeMaterial);
@@ -283,6 +290,7 @@ export function buildRing(): BuiltRing {
       geometries.push(ropeGeo);
       const rope = new THREE.Mesh(ropeGeo, (side === NEAR_SIDE ? nearMaterials : ropeMats)[ropeIndex]!);
       rope.castShadow = true;
+      rope.customDepthMaterial = ropeDepth;
       if (side === NEAR_SIDE) rope.renderOrder = NEAR_ROPE_RENDER_ORDER;
       group.add(rope);
     }
