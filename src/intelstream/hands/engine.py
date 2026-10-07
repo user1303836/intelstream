@@ -74,6 +74,7 @@ from intelstream.hands.rules import (
     ROUND_TICKS,
     STUN_CHAIN_MAX_TICKS,
     STUN_IMMUNITY_TICKS,
+    STUNNED_SPEED_PERCENT,
     SWELLING_PER_DAMAGE_PERCENT,
     TICKS_PER_SECOND,
     JudgeProfile,
@@ -562,7 +563,8 @@ class BoxingEngine:
         self._update_facing(one, two)
         self._update_facing(two, one)
 
-        for fighter, opponent in ((one, two), (two, one)):
+        # Seat order alternates by tick, as for punches, so a trade of body shots favours nobody.
+        for fighter, opponent in ((one, two), (two, one))[:: 1 if self.tick % 2 == 0 else -1]:
             if fighter.body_collapse_ticks > 0:
                 fighter.body_collapse_ticks -= 1
                 if fighter.body_collapse_ticks == 0:
@@ -822,8 +824,10 @@ class BoxingEngine:
         guarding = (
             action.target is Target.HEAD and defender.defense is DefensivePose.GUARD_HIGH
         ) or (action.target is Target.BODY and defender.defense is DefensivePose.GUARD_LOW)
+        # Arms too tired to hold a real guard stop nothing, and cannot be broken again.
+        blocked = guarding and defender.guard >= GUARD_BLOCK_MINIMUM
         perfect = (
-            guarding
+            blocked
             and not blind
             and self.tick - defender.defense_started_tick <= PERFECT_BLOCK_TICKS
         )
@@ -839,8 +843,6 @@ class BoxingEngine:
             impact = impact * BLIND_SIDE_IMPACT_PERCENT // 100
         impact = max(1, impact)
 
-        # Arms too tired to hold a real guard stop nothing, and cannot be broken again.
-        blocked = guarding and defender.guard >= GUARD_BLOCK_MINIMUM
         if blocked:
             guard_damage = rule.guard_damage * GUARD_DAMAGE_PERCENT // 100
             if perfect:
@@ -939,7 +941,7 @@ class BoxingEngine:
         if shut_eye is not None:
             self._emit("eye_shut", attacker.player_id, defender.player_id, detail=shut_eye)
 
-        if self._qualifies_for_flash(attacker, defender, action, rule, counter, guarding):
+        if self._qualifies_for_flash(attacker, defender, action, rule, counter, blocked):
             chance = self._flash_chance(attacker, defender, damage)
             roll = self._rng.randrange(10_000)
             self._emit(
@@ -1268,11 +1270,15 @@ class BoxingEngine:
         speed = max(2, 7 * fighter.fatigue // 100)
         if fighter.defense in (DefensivePose.GUARD_HIGH, DefensivePose.GUARD_LOW):
             speed = max(2, speed * 70 // 100)
+        if fighter.stunned_ticks > 0:
+            # A stunned fighter stumbles: still on his feet, at a fraction of his footwork.
+            speed = max(2, speed * STUNNED_SPEED_PERCENT // 100)
         if (
             fighter.attack is not None
             or fighter.evasion_ticks > 0
             or fighter.clinch_startup_ticks > 0
             or fighter.taunt_ticks > 0
+            or fighter.body_collapse_ticks > 0
         ):
             move_x = 0
             move_y = 0
@@ -1521,6 +1527,7 @@ class BoxingEngine:
             return
         fighter.trauma.head = min(1400, fighter.trauma.head + fighter.trauma.bleeding // 100)
         fighter.conditioning = max(0, fighter.conditioning - fighter.trauma.bleeding // 250)
+        fighter.stamina = min(fighter.stamina, fighter.maximum_stamina)
         self._emit("bleed", fighter.player_id, amount=fighter.trauma.bleeding // 10, blood=25)
         opponent = self._other(fighter.player_id)
         if self._needs_doctor_stoppage(fighter):
@@ -1540,7 +1547,7 @@ class BoxingEngine:
         action: PunchAction,
         rule: PunchRule,
         counter: bool,
-        guarding: bool,
+        blocked: bool,
     ) -> bool:
         return (
             self.config.flash_ko_enabled
@@ -1549,7 +1556,7 @@ class BoxingEngine:
             and action.punch_class is not PunchClass.JAB
             and rule.impact >= 50
             and counter
-            and not guarding
+            and not blocked
             and attacker.stamina >= 100
             and (defender.trauma.head >= 180 or defender.conditioning <= 760)
         )
@@ -1937,6 +1944,9 @@ class BoxingEngine:
             return
         self.phase = MatchPhase.COMPLETE
         self.phase_ticks_remaining = 0
+        for fighter in self._fighters.values():
+            fighter.poise = max(0, fighter.poise)
+            fighter.stamina = min(fighter.stamina, fighter.maximum_stamina)
         self.result = self._build_result(winner_id, method)
         self._emit("result", winner_id, detail=method.value)
 
@@ -2159,6 +2169,8 @@ class BoxingEngine:
                         fighter.combo_ticks,
                         fighter.taunt_ticks,
                         fighter.last_action_until_tick,
+                        fighter.stun_chain_ticks,
+                        fighter.stun_immune_until_tick,
                     ],
                     "attack": fighter.attack,
                     "last_punch": fighter.last_punch,
@@ -2194,6 +2206,7 @@ class BoxingEngine:
                     "body_collapse": [
                         fighter.body_collapse_ticks,
                         fighter.body_collapse_action_id,
+                        fighter.body_collapse_at_tick,
                     ],
                 }
             )

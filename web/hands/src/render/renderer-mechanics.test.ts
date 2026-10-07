@@ -150,3 +150,25 @@ describe("the cutman's work", () => {
     expect(cutmanWork(undefined)).toMatchObject({ prop: "enswell" });
   });
 });
+
+describe("the player's own fighter folding over a body shot", () => {
+  const predict = (FightRenderer.prototype as unknown as { applyLocalPrediction(this: unknown, state: EngineSnapshot, dt: number): EngineSnapshot }).applyLocalPrediction;
+
+  it("is held still from the body shot until he drops, then moves with the controls again", () => {
+    const stub = { ...pushStub(fakeGraphs()), viewerId: "two", ownCollapseUntil: 0 };
+    methods.push.call(stub, { ...snapshot(30), events: [combat("body_collapse", { event_id: 5, tick: 30, actor_id: "one", target_id: "two", amount: 10 })] });
+    expect(stub.ownCollapseUntil).toBe(40);
+
+    const viewer = { localInput: () => ({ moveX: 1000, moveY: 0, defense: "none" as const }), viewerId: "two", graphs: null, buffer: { interpolationDelayTicks: 2 }, localOffset: { dx: 0, dy: 0 }, ownCollapseUntil: 40 };
+    const held = { ...snapshot(35), phase: "fight" as const };
+    expect(predict.call(viewer, held, 1 / 30).fighters[1].x).toBe(held.fighters[1].x);
+    viewer.ownCollapseUntil = 0;
+    expect(predict.call(viewer, held, 1 / 30).fighters[1].x).toBeGreaterThan(held.fighters[1].x);
+  });
+
+  it("is not set by a body shot folding the opponent", () => {
+    const stub = { ...pushStub(fakeGraphs()), viewerId: "one", ownCollapseUntil: 0 };
+    methods.push.call(stub, { ...snapshot(30), events: [combat("body_collapse", { event_id: 6, tick: 30, actor_id: "one", target_id: "two", amount: 10 })] });
+    expect(stub.ownCollapseUntil).toBe(0);
+  });
+});

@@ -6,6 +6,7 @@ import {
   type Power, type PublicPlayer, type PunchClass, type SemanticAction, type ServerMessage,
   type Stance, type Target, type TokenResponse, type TraumaSnapshot,
 } from "./types";
+import { GET_UP_REQUIRED_MAX, GET_UP_REQUIRED_MIN } from "./manifest";
 
 export class ProtocolError extends Error { override name = "ProtocolError" }
 const MAX_INT = 2_147_483_647;
@@ -143,13 +144,13 @@ function fighter(value: unknown): FighterSnapshot {
   const prompt = o.get_up_prompt === null ? null : oneOf(o.get_up_prompt, ["get_up_left", "get_up_right"] as const, "get-up prompt");
   const maximumStamina = integer(o.maximum_stamina, "maximum_stamina", 330, 1000);
   const stamina = integer(o.stamina, "stamina", 0, maximumStamina);
-  const getUpRequired = integer(o.get_up_required, "get_up_required", 0, 169);
+  const getUpRequired = integer(o.get_up_required, "get_up_required", 0, GET_UP_REQUIRED_MAX);
   const facing = integer(o.facing, "facing", -1, 1);
   if (facing === 0) throw new ProtocolError("invalid facing");
   const facingX = integer(o.facing_x, "facing_x", -1000, 1000);
   const facingY = integer(o.facing_y, "facing_y", -1000, 1000);
   if (facingX === 0 && facingY === 0) throw new ProtocolError("invalid facing vector");
-  if (getUpRequired !== 0 && getUpRequired < 34) throw new ProtocolError("invalid get-up requirement");
+  if (getUpRequired !== 0 && getUpRequired < GET_UP_REQUIRED_MIN) throw new ProtocolError("invalid get-up requirement");
   return {
     player_id: string(o.player_id, "player_id"), x: integer(o.x, "x", -462, 462), y: integer(o.y, "y", -462, 462),
     facing, facing_x: facingX, facing_y: facingY, velocity_x: integer(o.velocity_x, "velocity_x", -7, 7), velocity_y: integer(o.velocity_y, "velocity_y", -7, 7),

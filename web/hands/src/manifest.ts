@@ -64,6 +64,15 @@ export function comboWindow(punchClass: PunchClass): number {
 /** A stun this long or longer is a fighter rocked by a big shot rather than a flinch. */
 export const ROCKED_BASE_TICKS = manifestJson.stun.rocked_base_ticks;
 export const ROCKED_MAX_TICKS = manifestJson.stun.rocked_max_ticks;
+const knockdownRules = manifestJson.knockdown;
+/** The engine caps head trauma here and stops a bout at the third knockdown. */
+const HEAD_TRAUMA_LIMIT = 1400;
+const KNOCKDOWN_LIMIT = 3;
+/** The fewest get-up presses the engine asks for, and the most: three knockdowns on a head beaten to the cap. */
+export const GET_UP_REQUIRED_MIN = knockdownRules.get_up_base;
+export const GET_UP_REQUIRED_MAX = knockdownRules.get_up_base + KNOCKDOWN_LIMIT * knockdownRules.get_up_per_knockdown + Math.floor(HEAD_TRAUMA_LIMIT / knockdownRules.get_up_trauma_divisor);
+/** A stunned fighter's footwork, as a share of his speed. */
+export const STUNNED_SPEED_PERCENT = manifestJson.stun.moving_speed_percent;
 
 export function punchTiming(punchClass: PunchClass, target: Target, power: Power): PunchTiming {
   const base = punches[punchClass];

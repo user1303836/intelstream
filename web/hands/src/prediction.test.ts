@@ -22,7 +22,7 @@ describe("local movement prediction", () => {
     expect(Math.hypot(diagonal.dx, diagonal.dy)).toBeLessThanOrEqual(7 * 4 + 1e-9);
     expect(diagonal.dx).toBeCloseTo(diagonal.dy, 9);
   });
-  it("slows while guarding and stops entirely while punching, stunned, or down", () => {
+  it("slows while guarding and stops entirely while punching, slipping, or down", () => {
     const still = { ...fighter("one"), conditioning: 1000 };
     const guarded = predictMovement(still, { moveX: 1000, moveY: 0, defense: "guard_high" }, 4);
     const open = predictMovement(still, { moveX: 1000, moveY: 0, defense: "none" }, 4);
@@ -30,7 +30,6 @@ describe("local movement prediction", () => {
     expect(guarded.dx).toBeGreaterThan(0);
     for (const locked of [
       { ...still, action: "jab" as const },
-      { ...still, stunned_ticks: 5 },
       { ...still, is_downed: true },
       { ...still, defense: "weave" as const },
     ]) {
@@ -38,6 +37,21 @@ describe("local movement prediction", () => {
       expect(predictMovement(locked, { moveX: 1000, moveY: 0, defense: "none" }, 4)).toEqual({ dx: 0, dy: 0 });
     }
     expect(movementLocked(still)).toBe(false);
+  });
+  it("lets a stunned fighter stumble at the engine's share of his speed, with his guard down", () => {
+    const still = { ...fighter("one"), conditioning: 1000, velocity_x: 0, velocity_y: 0 };
+    const held = { moveX: 1000, moveY: 0, defense: "none" as const };
+    const free = predictMovement(still, held, 6);
+    const stunned = { ...still, stunned_ticks: 20 };
+    const stumbling = predictMovement(stunned, held, 6);
+    expect(movementLocked(stunned)).toBe(false);
+    expect(stumbling.dx).toBeGreaterThan(0);
+    expect(stumbling.dx).toBeLessThan(free.dx * 0.75);
+    // Engine order: the stun counts down before the footwork, and a stunned fighter's guard is down.
+    const lastStunnedTick = predictMovement({ ...still, stunned_ticks: 1 }, held, 1);
+    expect(lastStunnedTick.dx).toBeCloseTo(free.dx === 0 ? 0 : predictMovement(still, held, 1).dx, 9);
+    const guardDropped = predictMovement(stunned, { ...held, defense: "guard_high" }, 6);
+    expect(guardDropped.dx).toBeCloseTo(stumbling.dx, 9);
   });
   it("frees the fighter when the punch ends even though the snapshot still presents it", () => {
     const still = { ...fighter("one"), conditioning: 1000 };
@@ -53,7 +67,9 @@ describe("local movement prediction", () => {
     const leaving = predictMovement(hook, held, 4, 120);
     expect(leaving.dx).toBeGreaterThan(0);
     expect(leaving.dx).toBeCloseTo(predictMovement(still, held, 2).dx);
-    expect(predictMovement({ ...hook, stunned_ticks: 5 }, held, 4, 130)).toEqual({ dx: 0, dy: 0 });
+    const stumbling = predictMovement({ ...hook, stunned_ticks: 5 }, held, 4, 130);
+    expect(stumbling.dx).toBeGreaterThan(0);
+    expect(stumbling.dx).toBeLessThan(predictMovement(still, held, 4).dx);
     expect(predictMovement({ ...hook, queued_actions: 1 }, held, 4, 130)).toEqual({ dx: 0, dy: 0 });
     expect(movementLocked({ ...still, queued_actions: 1 }, 130)).toBe(true);
   });
