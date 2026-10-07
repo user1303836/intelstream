@@ -6,6 +6,7 @@ import json
 import math
 import mimetypes
 import secrets
+import struct
 import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
@@ -206,8 +207,27 @@ class _TicketRefreshState:
         self.acknowledged.set()
 
 
+def _text_frame(payload: bytes) -> bytes:
+    """One final, unmasked and uncompressed websocket text frame (RFC 6455 section 5.2)."""
+    length = len(payload)
+    if length < 126:
+        header = struct.pack("!BB", 0x81, length)
+    elif length < 1 << 16:
+        header = struct.pack("!BBH", 0x81, 126, length)
+    else:
+        header = struct.pack("!BBQ", 0x81, 127, length)
+    return header + payload
+
+
 class _RoomSocket:
-    """The room's handle on one websocket, with the transport underneath it for abort()."""
+    """The room's handle on one websocket, with the transport underneath it.
+
+    Room traffic is deflated through aiohttp with the connection's shared context when the client
+    negotiated permessage-deflate. A frame that carries a reconnect ticket is written uncompressed,
+    which RFC 7692 allows per message, so the ticket never shares a context with player-chosen
+    text such as display names. aiohttp cannot send it that way itself: its per-message option
+    deflates with a fresh context, which the client's inflater cannot follow.
+    """
 
     __slots__ = ("_request", "_websocket")
 
@@ -221,6 +241,19 @@ class _RoomSocket:
 
     async def send_str(self, data: str) -> None:
         await self._websocket.send_str(data)
+
+    async def send_uncompressed(self, data: str) -> None:
+        if not self._websocket.compress:
+            await self._websocket.send_str(data)
+            return
+        transport = self._request.transport
+        if self._websocket.closed or transport is None or transport.is_closing():
+            raise ConnectionResetError("websocket is closed")
+        transport.write(_text_frame(data.encode()))
+
+    def write_buffer_size(self) -> int:
+        transport = self._request.transport
+        return 0 if transport is None else transport.get_write_buffer_size()
 
     async def close(self, *, code: int = 1000, message: bytes = b"") -> None:
         await self._websocket.close(code=code, message=message)
@@ -694,7 +727,7 @@ class HandsServer:
             autoping=True,
             heartbeat=15.0,
             max_msg_size=MAX_FRAME_BYTES,
-            compress=False,
+            compress=True,
         )
         try:
             await websocket.prepare(request)

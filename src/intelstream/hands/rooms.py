@@ -6,7 +6,7 @@ import json
 import secrets
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal, Never, Protocol
 from uuid import uuid4
 
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from intelstream.database.models import HandsMatch
     from intelstream.database.repository import Repository
     from intelstream.hands.auth import AuthenticatedPlayer
-    from intelstream.hands.types import MatchResult
+    from intelstream.hands.types import CombatEvent, EngineSnapshot, MatchResult
 
 logger = structlog.get_logger(__name__)
 
@@ -36,6 +36,12 @@ JOIN_ATTEMPTS = 3
 # the bout only ends for a flood that lasts this long or one this many times past the limit.
 FLOOD_GRACE_SECONDS = 3.0
 FLOOD_HARD_LIMIT_FACTOR = 4
+# A connection is only ever sent its newest snapshot, and not while its transport already holds
+# more than about two frames: a slow client sees the fight late instead of an ever older fight.
+SNAPSHOT_BACKLOG_BYTES = 4096
+# The events of snapshots a connection never got ride on the next one, newest kept, well inside
+# the client's limit of 256 per snapshot.
+MAX_CARRIED_EVENTS = 128
 
 ConnectionRole = Literal["fighter", "spectator"]
 
@@ -45,6 +51,12 @@ class SocketLike(Protocol):
     def closed(self) -> bool: ...
 
     async def send_str(self, data: str) -> object: ...
+
+    async def send_uncompressed(self, data: str) -> object:
+        """Sends a frame that carries a secret and must never share a compression context."""
+        ...
+
+    def write_buffer_size(self) -> int: ...
 
     async def close(self, *, code: int = 1000, message: bytes = b"") -> object: ...
 
@@ -75,6 +87,8 @@ class RoomConfig:
     max_catch_up_ticks: int = 4
     max_inputs_per_second: int = 60
     max_input_frames_per_second: int = 180
+    # A connection is dropped as a slow consumer once this many control updates wait unsent, or
+    # this many snapshots in a row were replaced before it could be sent one.
     outbound_queue_size: int = 16
     max_spectators: int = 20
     engine_config: EngineConfig = field(default_factory=EngineConfig)
@@ -110,6 +124,16 @@ class _OutboundMessage:
     message: str | None = None
     bounded_update: bool = False
     ticket_refresh: bool = False
+    snapshot: bool = False
+    uncompressed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingSnapshot:
+    snapshot: EngineSnapshot
+    viewer_id: str | None
+    message: str
+    carried_events: tuple[CombatEvent, ...] = ()
 
 
 @dataclass(slots=True)
@@ -121,6 +145,9 @@ class PlayerConnection:
     slow_drop_task: asyncio.Task[None] | None = None
     ticket_refresh_queued: bool = False
     latest_ticket_refresh: str | None = None
+    pending_snapshot: _PendingSnapshot | None = None
+    snapshot_queued: bool = False
+    missed_snapshots: int = 0
     writer_task: asyncio.Task[None] | None = None
 
 
@@ -336,7 +363,7 @@ class HandsRoom:
 
             if reconnect_ticket is not None:
                 welcome["reconnect_ticket"] = reconnect_ticket
-            self._enqueue(connection, self._message("welcome", **welcome))
+            self._enqueue(connection, self._message("welcome", **welcome), uncompressed=True)
             if (existing is not None and self._engine is not None) or role == "spectator":
                 assert self._engine is not None
                 self._enqueue(
@@ -455,15 +482,24 @@ class HandsRoom:
                 outbound = await connection.outbox.get()
                 try:
                     message = outbound.message
-                    if outbound.ticket_refresh:
+                    uncompressed = outbound.uncompressed
+                    if outbound.snapshot:
+                        message = await self._take_snapshot(connection)
+                        if message is None:
+                            continue
+                    elif outbound.ticket_refresh:
                         message = connection.latest_ticket_refresh
                         connection.latest_ticket_refresh = None
                         connection.ticket_refresh_queued = False
                         if message is None:
                             continue
+                        uncompressed = True
                     elif message is None:
                         return
-                    await connection.socket.send_str(message)
+                    if uncompressed:
+                        await connection.socket.send_uncompressed(message)
+                    else:
+                        await connection.socket.send_str(message)
                 finally:
                     if outbound.bounded_update:
                         connection.pending_updates -= 1
@@ -502,21 +538,72 @@ class HandsRoom:
         ]
 
     def _enqueue(
-        self, connection: PlayerConnection, message: str, *, bounded_update: bool = False
+        self,
+        connection: PlayerConnection,
+        message: str,
+        *,
+        bounded_update: bool = False,
+        uncompressed: bool = False,
     ) -> None:
         if bounded_update:
             if connection.pending_updates >= self.config.outbound_queue_size:
-                if not connection.slow_drop_started:
-                    connection.slow_drop_started = True
-                    connection.slow_drop_task = self._spawn(
-                        self._drop_slow_connection(connection),
-                        name=f"hands-slow-drop-{self.instance_id}",
-                    )
+                self._suspect_slow_connection(connection)
                 return
             connection.pending_updates += 1
         connection.outbox.put_nowait(
-            _OutboundMessage(message=message, bounded_update=bounded_update)
+            _OutboundMessage(
+                message=message, bounded_update=bounded_update, uncompressed=uncompressed
+            )
         )
+
+    def _offer_snapshot(
+        self,
+        connection: PlayerConnection,
+        snapshot: EngineSnapshot,
+        viewer_id: str | None,
+        message: str,
+    ) -> None:
+        pending = connection.pending_snapshot
+        carried: tuple[CombatEvent, ...] = ()
+        if pending is not None:
+            # The snapshot this one replaces is never sent, so its events travel on.
+            carried = (*pending.carried_events, *pending.snapshot.events)[-MAX_CARRIED_EVENTS:]
+            connection.missed_snapshots += 1
+            if connection.missed_snapshots >= self.config.outbound_queue_size:
+                self._suspect_slow_connection(connection)
+        connection.pending_snapshot = _PendingSnapshot(snapshot, viewer_id, message, carried)
+        if not connection.snapshot_queued:
+            connection.snapshot_queued = True
+            connection.outbox.put_nowait(_OutboundMessage(snapshot=True))
+
+    async def _take_snapshot(self, connection: PlayerConnection) -> str | None:
+        # Newer snapshots replace the pending one while the transport drains. A transport only
+        # signals at its own watermarks, so the backlog is checked once a tick instead.
+        while connection.socket.write_buffer_size() > SNAPSHOT_BACKLOG_BYTES:  # noqa: ASYNC110
+            await asyncio.sleep(self.config.tick_interval_seconds)
+        pending = connection.pending_snapshot
+        connection.pending_snapshot = None
+        connection.snapshot_queued = False
+        if pending is None:
+            return None
+        connection.missed_snapshots = 0
+        if not pending.carried_events:
+            return pending.message
+        events = (*pending.carried_events, *pending.snapshot.events)
+        try:
+            return encode_snapshot(
+                replace(pending.snapshot, events=events), viewer_id=pending.viewer_id
+            )
+        except ProtocolError:
+            return pending.message
+
+    def _suspect_slow_connection(self, connection: PlayerConnection) -> None:
+        if not connection.slow_drop_started:
+            connection.slow_drop_started = True
+            connection.slow_drop_task = self._spawn(
+                self._drop_slow_connection(connection),
+                name=f"hands-slow-drop-{self.instance_id}",
+            )
 
     def _connected_members(self) -> list[tuple[str, ConnectionRole, PlayerConnection]]:
         members: list[tuple[str, ConnectionRole, PlayerConnection]] = [
@@ -533,7 +620,10 @@ class HandsRoom:
     async def _drop_slow_connection(self, connection: PlayerConnection) -> None:
         try:
             await asyncio.sleep(self.config.tick_interval_seconds)
-            if connection.pending_updates < self.config.outbound_queue_size:
+            if (
+                connection.pending_updates < self.config.outbound_queue_size
+                and connection.missed_snapshots < self.config.outbound_queue_size
+            ):
                 connection.slow_drop_started = False
                 return
             for player_id, role, current in self._connected_members():
@@ -854,19 +944,16 @@ class HandsRoom:
         assert isinstance(snapshot, EngineSnapshot)
         for player_id, slot in self._slots.items():
             if slot.connection is not None:
-                self._enqueue(
+                self._offer_snapshot(
                     slot.connection,
+                    snapshot,
+                    player_id,
                     encode_snapshot(snapshot, viewer_id=player_id),
-                    bounded_update=True,
                 )
         if self._spectators:
             message = encode_snapshot(snapshot, viewer_id=None)
             for spectator in self._spectators.values():
-                self._enqueue(
-                    spectator.connection,
-                    message,
-                    bounded_update=True,
-                )
+                self._offer_snapshot(spectator.connection, snapshot, None, message)
 
     def _ensure_finish_task(self, result: MatchResult | None) -> asyncio.Task[None] | None:
         if result is None:

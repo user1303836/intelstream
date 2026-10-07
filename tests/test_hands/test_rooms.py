@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -13,6 +13,7 @@ from intelstream.hands.auth import AuthenticatedPlayer
 from intelstream.hands.engine import EngineConfig
 from intelstream.hands.protocol import encode_client_input
 from intelstream.hands.rooms import (
+    SNAPSHOT_BACKLOG_BYTES,
     HandsRoom,
     HandsRoomManager,
     RoomConfig,
@@ -21,6 +22,7 @@ from intelstream.hands.rooms import (
 )
 from intelstream.hands.types import (
     ActionKind,
+    CombatEvent,
     DefensivePose,
     EngineSnapshot,
     Hand,
@@ -38,6 +40,8 @@ class FakeSocket:
     closed: bool = False
     close_code: int | None = None
     aborted: bool = False
+    uncompressed: list[str] = field(default_factory=list)
+    buffered: int = 0
     block_send: asyncio.Event | None = None
     block_close: asyncio.Event | None = None
     close_entered: asyncio.Event | None = None
@@ -51,6 +55,13 @@ class FakeSocket:
         self.messages.append(data)
         if self.timeline is not None:
             self.timeline.append(f"send:{json.loads(data)['type']}")
+
+    async def send_uncompressed(self, data: str) -> None:
+        await self.send_str(data)
+        self.uncompressed.append(json.loads(data)["type"])
+
+    def write_buffer_size(self) -> int:
+        return self.buffered
 
     async def close(self, *, code: int = 1000, message: bytes = b"") -> None:
         _ = message
@@ -707,6 +718,123 @@ async def test_transient_queue_pressure_recovers_and_can_debounce_again(
     await manager.close()
 
 
+async def started_room_with_blocked_ticks(
+    repository: Repository, socket: FakeSocket, *, outbound_size: int = 16
+) -> tuple[HandsRoomManager, HandsRoom, asyncio.Event]:
+    """A started bout whose tick loop is parked, so the test broadcasts snapshots itself."""
+    sleep_entered = asyncio.Event()
+    sleep_release = asyncio.Event()
+
+    async def controlled_sleep(_delay: float) -> None:
+        sleep_entered.set()
+        await sleep_release.wait()
+
+    manager = HandsRoomManager(
+        repository,
+        config=room_config(round_ticks=1000, outbound_size=outbound_size),
+        sleep=controlled_sleep,
+    )
+    membership = await manager.join(player("one"), socket)
+    await manager.join(player("two"), FakeSocket())
+    await sleep_entered.wait()
+    return manager, membership.room, sleep_release
+
+
+def snapshot_payloads(socket: FakeSocket) -> list[dict[str, object]]:
+    return [
+        json.loads(message)["payload"]
+        for message in socket.messages
+        if json.loads(message)["type"] == "snapshot"
+    ]
+
+
+async def test_a_backed_up_connection_gets_the_newest_snapshot_with_the_events_it_missed(
+    repository: Repository,
+) -> None:
+    send_release = asyncio.Event()
+    socket = FakeSocket(block_send=send_release)
+    manager, room, sleep_release = await started_room_with_blocked_ticks(repository, socket)
+    engine = room.engine
+    assert engine is not None
+    base = engine.snapshot()
+    hit = CombatEvent(event_id=900, tick=base.tick + 1, kind="hit", actor_id="two", amount=12)
+    for offset in range(1, 6):
+        room._broadcast_snapshot(
+            replace(base, tick=base.tick + offset, events=(hit,) if offset == 1 else ())
+        )
+
+    send_release.set()
+    await wait_until(lambda: bool(snapshot_payloads(socket)))
+    await asyncio.sleep(0.02)
+    snapshots = snapshot_payloads(socket)
+    assert [payload["tick"] for payload in snapshots] == [base.tick + 5]
+    events = snapshots[0]["events"]
+    assert isinstance(events, list)
+    assert 900 in {event["event_id"] for event in events}
+    sleep_release.set()
+    await manager.close()
+
+
+async def test_snapshots_wait_while_the_transport_is_backed_up_and_then_send_the_newest(
+    repository: Repository,
+) -> None:
+    socket = FakeSocket()
+    manager, room, sleep_release = await started_room_with_blocked_ticks(repository, socket)
+    engine = room.engine
+    assert engine is not None
+    await wait_until(lambda: bool(snapshot_payloads(socket)))
+    sent = len(snapshot_payloads(socket))
+    base = engine.snapshot()
+
+    socket.buffered = SNAPSHOT_BACKLOG_BYTES + 1
+    room._broadcast_snapshot(replace(base, tick=base.tick + 1))
+    await asyncio.sleep(0.05)
+    assert len(snapshot_payloads(socket)) == sent
+    room._broadcast_snapshot(replace(base, tick=base.tick + 2))
+    socket.buffered = 0
+    await wait_until(lambda: len(snapshot_payloads(socket)) == sent + 1)
+    assert snapshot_payloads(socket)[-1]["tick"] == base.tick + 2
+    sleep_release.set()
+    await manager.close()
+
+
+async def test_a_connection_whose_transport_never_drains_is_dropped(
+    repository: Repository,
+) -> None:
+    socket = FakeSocket()
+    manager, room, sleep_release = await started_room_with_blocked_ticks(
+        repository, socket, outbound_size=3
+    )
+    engine = room.engine
+    assert engine is not None
+    await wait_until(lambda: bool(snapshot_payloads(socket)))
+    base = engine.snapshot()
+
+    socket.buffered = SNAPSHOT_BACKLOG_BYTES + 1
+    for offset in range(1, 6):
+        room._broadcast_snapshot(replace(base, tick=base.tick + offset))
+    await wait_until(lambda: socket.closed)
+    assert room._slots["one"].connection is None
+    sleep_release.set()
+    await manager.close()
+
+
+async def test_frames_that_carry_a_reconnect_ticket_are_never_compressed(
+    repository: Repository,
+) -> None:
+    socket = FakeSocket()
+    manager = HandsRoomManager(repository, config=room_config(round_ticks=1000))
+    membership = await manager.join(player("one"), socket, reconnect_ticket="first-rotation")
+    await manager.join(player("two"), FakeSocket())
+    await membership.room.refresh_ticket(
+        "one", membership.connection, "next-rotation", "refresh-id-000001"
+    )
+    await wait_until(lambda: {"ticket", "snapshot"} <= set(message_types(socket)))
+
+    assert socket.uncompressed == ["welcome", "ticket"]
+    await manager.close()
+
+
 async def test_ticket_refresh_queue_coalesces_and_rejects_replaced_connection(
     repository: Repository,
 ) -> None:
@@ -793,7 +921,9 @@ async def test_reconnect_churn_cannot_grow_blocked_peer_control_queue(
     await wait_until(lambda: slow_socket.closed)
     maximum_queued = max(maximum_queued, slow.connection.outbox.qsize())
     assert slow.connection.slow_drop_started
-    assert maximum_queued <= outbound_size + 3
+    # The initial burst (waiting, ready), one snapshot slot and the stop sentinel, plus at most
+    # outbound_size control updates, however long the churn goes on.
+    assert maximum_queued <= outbound_size + 4
     active_hands_tasks = {
         task.get_name()
         for task in asyncio.all_tasks()

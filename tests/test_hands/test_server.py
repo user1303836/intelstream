@@ -7,6 +7,7 @@ import os
 import socket
 import struct
 import time
+import zlib
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
@@ -198,6 +199,47 @@ async def connect_reader_that_stalls(
         assert first & 0x40 == 0, "a raw reader does not negotiate compression"
         frames.append(json.loads(await read_exactly(length)))
     return raw, frames
+
+
+async def connect_deflate_client(
+    port: int, ticket: str
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter, str]:
+    """Authenticates over a raw socket that offers permessage-deflate, as browsers do."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    key = base64.b64encode(os.urandom(16)).decode()
+    writer.write(
+        (
+            "GET /api/hands/ws HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\nOrigin: {ORIGIN}\r\n"
+            "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n\r\n"
+        ).encode()
+    )
+    head = (await reader.readuntil(b"\r\n\r\n")).decode()
+    assert " 101 " in head.split("\r\n", 1)[0]
+    extensions = next(
+        (
+            line.split(":", 1)[1].strip()
+            for line in head.split("\r\n")
+            if line.lower().startswith("sec-websocket-extensions:")
+        ),
+        "",
+    )
+    payload = json.dumps({"version": 3, "type": "authenticate", "ticket": ticket}).encode()
+    mask = os.urandom(4)
+    masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+    writer.write(bytes([0x81, 0x80 | len(payload)]) + mask + masked)
+    return reader, writer, extensions
+
+
+async def read_server_frame(reader: asyncio.StreamReader) -> tuple[bool, int, bytes]:
+    first, second = await reader.readexactly(2)
+    length = second & 0x7F
+    if length == 126:
+        (length,) = struct.unpack("!H", await reader.readexactly(2))
+    elif length == 127:
+        (length,) = struct.unpack("!Q", await reader.readexactly(8))
+    return bool(first & 0x40), first & 0x0F, await reader.readexactly(length)
 
 
 async def receive_until(
@@ -599,6 +641,70 @@ async def test_two_websockets_start_and_third_is_read_only_spectator(
         await server.close()
 
 
+async def test_state_updates_are_deflated_but_frames_carrying_a_ticket_never_are(
+    repository: Repository,
+) -> None:
+    refresh_now = asyncio.Event()
+    never = asyncio.Event()
+    refreshes = 0
+
+    async def ticket_sleep(_delay: float) -> None:
+        nonlocal refreshes
+        refreshes += 1
+        await (refresh_now if refreshes == 1 else never).wait()
+
+    auth = FakeAuth()
+    auth.tickets = {
+        "one": AuthenticatedPlayer("one", GUILD, "room", "One", None),
+        "two": AuthenticatedPlayer("two", GUILD, "room", "Two", None),
+    }
+    rooms = stalled_reader_rooms(repository, "deflated")
+    server, _auth, base = await start_server(
+        repository, auth=auth, rooms=rooms, ticket_refresh=1.0, ticket_sleep=ticket_sleep
+    )
+    assert server.bound_port is not None
+    reader, writer, extensions = await connect_deflate_client(server.bound_port, "one")
+    assert extensions.startswith("permessage-deflate")
+    # One inflater for the whole stream: the server keeps its deflate context between messages.
+    inflater = zlib.decompressobj(-15)
+    received: list[tuple[dict[str, object], bool]] = []
+
+    async def read_until(kind: str, count: int = 1) -> None:
+        async with asyncio.timeout(10):
+            while sum(1 for message, _ in received if message["type"] == kind) < count:
+                compressed, opcode, payload = await read_server_frame(reader)
+                if opcode != 0x1:
+                    continue
+                if compressed:
+                    payload = inflater.decompress(payload + b"\x00\x00\xff\xff")
+                received.append((json.loads(payload), compressed))
+
+    async with aiohttp.ClientSession() as client:
+        two = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
+        await two.send_json({"version": 3, "type": "authenticate", "ticket": "two"})
+        await read_until("snapshot", 3)
+        refresh_now.set()
+        await read_until("ticket")
+        snapshots_before = sum(1 for message, _ in received if message["type"] == "snapshot")
+        await read_until("snapshot", snapshots_before + 3)
+        await two.close()
+    writer.close()
+    await server.close()
+
+    welcome, welcome_compressed = received[0]
+    assert welcome["type"] == "welcome"
+    assert isinstance(welcome["reconnect_ticket"], str)
+    assert not welcome_compressed
+    ticket, ticket_compressed = next(item for item in received if item[0]["type"] == "ticket")
+    assert isinstance(ticket["reconnect_ticket"], str)
+    assert not ticket_compressed
+    assert all(
+        compressed
+        for message, compressed in received
+        if message["type"] not in {"welcome", "ticket"}
+    )
+
+
 async def test_a_fighter_whose_socket_stops_reading_is_paused_then_forfeits(
     repository: Repository,
 ) -> None:
@@ -653,6 +759,11 @@ async def test_reconnecting_over_a_stalled_socket_does_not_hold_up_any_join(
             assert old_connection is not None
             old_socket = old_connection.socket
             assert isinstance(old_socket, server_module._RoomSocket)
+            # The room holds snapshots back once a few kilobytes are buffered, short of the
+            # transport's own pause; a lower mark gets the paused transport a dead peer leaves.
+            transport = old_socket._request.transport
+            assert transport is not None
+            transport.set_write_buffer_limits(high=1024)
             async with asyncio.timeout(10):
                 while not old_socket._request.protocol.writing_paused:  # noqa: ASYNC110
                     await asyncio.sleep(0.01)
