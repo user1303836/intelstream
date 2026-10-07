@@ -149,6 +149,58 @@ describe("impact dent", () => {
   });
 });
 
+describe("body shots", () => {
+  // Two fighters in lockstep, one hit and one not (or hit differently), so the idle sway cancels out.
+  const pair = (react: (graph: BoxingGraph) => void, other: (graph: BoxingGraph) => void, sample: (boxer: SkinnedBoxer) => number[]): number[][] => {
+    const hit = makeGraph();
+    const reference = makeGraph();
+    const fighter = facingOpponent(baseFighter("one"));
+    const opponent = opponentFor("two");
+    run(hit.graph, fighter, opponent, 30, undefined);
+    run(reference.graph, fighter, opponent, 30, undefined);
+    react(hit.graph);
+    other(reference.graph);
+    const frames: number[][] = [];
+    for (let frame = 0; frame < 30; frame += 1) {
+      for (const { graph } of [hit, reference]) graph.update(fighter, opponent, 1 / 60, 0.5 + frame / 60, false, "full", 15 + frame / 2);
+      const a = sample(hit.boxer);
+      const b = sample(reference.boxer);
+      frames.push(a.map((value, index) => value - b[index]!));
+    }
+    return frames;
+  };
+  const hipsAxis = (boxer: SkinnedBoxer, x: number, z: number): THREE.Vector3 =>
+    new THREE.Vector3(x, 0, z).applyQuaternion(worldQuaternion(boxer.rig.bones.hips, new THREE.Quaternion()));
+  const fromHips = (boxer: SkinnedBoxer, name: CanonicalBone): THREE.Vector3 => bone(boxer, name).sub(bone(boxer, "hips"));
+
+  it("bend the fighter toward the ribs a hook lands on and drop the elbow on that side", () => {
+    // A left hook lands on the right ribs, the fighter's -x side; a straight to the solar plexus does not lean him.
+    const frames = pair(
+      (graph) => graph.react("hit", "body", 1, "hook", "left", 120),
+      (graph) => graph.react("hit", "body", 1, "straight", "left", 120),
+      (boxer) => [fromHips(boxer, "neck").dot(hipsAxis(boxer, 1, 0)), bone(boxer, "elbowR").y, bone(boxer, "elbowL").y, bone(boxer, "hips").x],
+    );
+    expect(Math.min(...frames.map(([lean]) => lean!))).toBeLessThan(-0.03);
+    expect(Math.min(...frames.map(([, right]) => right!))).toBeLessThan(-0.04);
+    expect(Math.min(...frames.map(([, , left]) => left!))).toBeGreaterThan(-0.02);
+    expect(Math.max(...frames.map(([, , , hips]) => hips!))).toBeGreaterThan(0.02);
+  });
+
+  it("lift the fighter onto his toes on an uppercut before he folds over it", () => {
+    const frames = pair(
+      (graph) => graph.react("hit", "body", 1, "uppercut", "right", 120),
+      () => undefined,
+      (boxer) => [bone(boxer, "hips").y, fromHips(boxer, "head").dot(hipsAxis(boxer, 0, 1))],
+    );
+    const lifts = frames.map(([lift]) => lift!);
+    const folds = frames.map(([, fold]) => fold!);
+    expect(Math.max(...lifts)).toBeGreaterThan(0.04);
+    expect(Math.min(...folds.slice(0, 6))).toBeLessThan(-0.02);
+    expect(Math.max(...folds)).toBeGreaterThan(0.06);
+    expect(folds.indexOf(Math.max(...folds))).toBeGreaterThan(lifts.indexOf(Math.max(...lifts)));
+  });
+});
+
 describe("transient reset", () => {
   it("snaps back to standing after a fall and can seed the lying pose directly", () => {
     const { boxer, graph } = makeGraph();

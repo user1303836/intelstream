@@ -347,6 +347,11 @@ export class BoxingGraph {
   private readonly headKick: Spring3 = { value: new THREE.Vector3(), velocity: new THREE.Vector3() };
   private readonly torsoKick: Spring3 = { value: new THREE.Vector3(), velocity: new THREE.Vector3() };
   private readonly rootKick: Spring3 = { value: new THREE.Vector3(), velocity: new THREE.Vector3() };
+  /** x: how far the elbow on the side a body hook struck drops to cover the ribs (+ right, - left). */
+  private readonly coverKick: Spring3 = { value: new THREE.Vector3(), velocity: new THREE.Vector3() };
+  /** A body uppercut folds the fighter over it once the lift has peaked. */
+  private foldDelay = 0;
+  private pendingFold = 0;
   private guardKick = 0;
   private guardHigh = 0;
   private guardLow = 0;
@@ -464,10 +469,12 @@ export class BoxingGraph {
     this.riseAge = 0;
     this.hitstop = 0;
     this.hitstopScale = 1;
-    for (const spring of [this.headKick, this.torsoKick, this.rootKick]) {
+    for (const spring of [this.headKick, this.torsoKick, this.rootKick, this.coverKick]) {
       spring.value.set(0, 0, 0);
       spring.velocity.set(0, 0, 0);
     }
+    this.foldDelay = 0;
+    this.pendingFold = 0;
     this.guardKick = 0;
     this.stunAmount = 0;
     this.celebrateTime = 0;
@@ -607,7 +614,26 @@ export class BoxingGraph {
     const scale = (0.55 + force * 1.05) * (kind === "block" ? 0.35 : 1);
     const lateral = hand === "left" ? 1 : hand === "right" ? -1 : direction >= 0 ? -1 : 1;
     if (target === "body") {
-      this.torsoKick.velocity.x += 4.6 * scale;
+      switch (punchClass) {
+        case "hook":
+          // Into the ribs from the side: the trunk bends around the fist, the hips give way from it and
+          // the elbow on that side drops to cover.
+          this.torsoKick.velocity.x += 3 * scale;
+          this.torsoKick.velocity.z += 4.6 * scale * lateral;
+          this.rootKick.velocity.x += 0.5 * scale * lateral;
+          this.coverKick.velocity.x += 2.2 * scale * lateral;
+          break;
+        case "uppercut":
+          // Up under the ribs: the blow lifts him onto his toes and straightens him, then he folds over it.
+          this.rootKick.velocity.y += 0.9 * scale;
+          this.torsoKick.velocity.x -= 1.6 * scale;
+          this.foldDelay = 0.1;
+          this.pendingFold = 5.2 * scale;
+          break;
+        default:
+          this.torsoKick.velocity.x += 4.6 * scale;
+          break;
+      }
       this.rootKick.velocity.z -= 0.45 * scale;
       this.headKick.velocity.z -= 0.6 * scale;
       this.headKick.velocity.y -= 0.7 * scale;
@@ -794,6 +820,14 @@ export class BoxingGraph {
     springStep(this.headKick, dt, 190, 7.5, 0.24);
     springStep(this.torsoKick, dt, 150, 7, 0.7);
     springStep(this.rootKick, dt, 120, 8, 0.12);
+    springStep(this.coverKick, dt, 110, 15, 0.3);
+    if (this.foldDelay > 0) {
+      this.foldDelay -= dt;
+      if (this.foldDelay <= 0) {
+        this.torsoKick.velocity.x += this.pendingFold;
+        this.pendingFold = 0;
+      }
+    }
     this.guardKick = Math.max(0, this.guardKick - dt * 2.4);
 
     this.updateDownState(fighter, dt);
@@ -915,12 +949,26 @@ export class BoxingGraph {
     torso.headRoll += -this.headKick.value.x * 0.9;
     torso.spinePitch += this.torsoKick.value.x;
     torso.spineRoll += this.torsoKick.value.z * 0.5;
+    torso.hips.x += this.rootKick.value.x;
     torso.hips.z += this.rootKick.value.z;
     torso.hips.y -= Math.max(0, this.torsoKick.value.x) * 0.08;
     if (this.torsoKick.value.x > 0.05) {
       leadHand.position.y -= this.torsoKick.value.x * 0.25;
       rearHand.position.y -= this.torsoKick.value.x * 0.2;
       leadHand.position.z -= this.torsoKick.value.x * 0.1;
+    }
+    // A body uppercut lifts the fighter onto his toes.
+    const lift = Math.max(0, this.rootKick.value.y);
+    torso.hips.y += lift;
+    lead.heel += lift * 6;
+    rear.heel += lift * 6;
+    const cover = this.coverKick.value.x;
+    if (Math.abs(cover) > 0.002) {
+      const near = cover > 0 ? this.hand.R : this.hand.L;
+      near.position.y -= Math.abs(cover) * 0.9;
+      near.position.x += cover * 0.2;
+      near.position.z -= Math.abs(cover) * 0.25;
+      near.pole.y -= Math.abs(cover) * 3;
     }
 
     // Punch.
