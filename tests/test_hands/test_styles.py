@@ -243,6 +243,36 @@ def test_a_slugger_breaks_a_man_down_faster_and_takes_it_better() -> None:
     assert poise_lost(BALANCED, SLUGGER) < balanced
 
 
+def poise_and_damage(attacker: FighterStyle, *, counter: bool = False) -> tuple[int, int]:
+    """Poise and damage a straight from `attacker` takes off a balanced fighter."""
+    engine = styled_engine(attacker, BALANCED)
+    if counter:
+        engine.fighter("one").counter_ticks = 30
+    before = engine.fighter("two").poise
+    engine.step({"one": command(1, action=punch(PunchClass.STRAIGHT))})
+    damage = first_event(engine, {"hit", "counter_hit"}).amount
+    return before - engine.fighter("two").poise, damage
+
+
+@pytest.mark.parametrize("style", [BOXER, SLUGGER, SWARMER, COUNTER])
+def test_a_style_hits_as_hard_into_a_mans_legs_as_into_his_face(style: FighterStyle) -> None:
+    """A style's power is one number: the poise its punches take is scaled like their damage."""
+    rule = STYLE_RULES[style]
+    assert rule.poise_damage_percent == rule.impact_percent
+    balanced_poise, balanced_damage = poise_and_damage(BALANCED)
+    poise, damage = poise_and_damage(style)
+    assert abs(poise * 100 // balanced_poise - damage * 100 // balanced_damage) <= 2
+
+
+def test_a_counter_punchers_counters_land_a_little_harder_but_not_into_the_legs_of_a_stronger_man() -> (
+    None
+):
+    balanced_poise, balanced_damage = poise_and_damage(BALANCED, counter=True)
+    poise, damage = poise_and_damage(COUNTER, counter=True)
+    assert balanced_damage < damage <= balanced_damage * 104 // 100
+    assert balanced_poise <= poise <= balanced_poise * 104 // 100
+
+
 def test_a_swarmer_is_quicker_on_the_feet_and_a_slugger_slower() -> None:
     def travelled(style: FighterStyle) -> int:
         engine = styled_engine(style, gap=600)
