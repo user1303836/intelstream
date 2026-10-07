@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { GLTFLoader, type GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
-import { GLOVE_HITBOX_RADIUS, HURTBOXES, cancelsRecovery, punchTiming, recoveryCancelAge, totalTicks, type PunchTiming } from "../manifest";
+import { GLOVE_HITBOX_RADIUS, GUARD_BLOCK_MINIMUM, HURTBOXES, cancelsRecovery, punchTiming, recoveryCancelAge, totalTicks, type PunchTiming } from "../manifest";
 import type { BloodLevel } from "../settings";
 import type { CombatEvent, FighterSnapshot, Hand, Power, PunchAction, PunchClass, SemanticAction, Target } from "../types";
 import { FIGHTER_GLB_GZIP_BASE64 } from "../assets/fighter-glb";
@@ -608,6 +608,8 @@ export class BoxingGraph {
   private guardKick = 0;
   private guardHigh = 0;
   private guardLow = 0;
+  /** The guard is spent, worn below what can stop a punch: the gloves sag toward the chest. */
+  private guardSpent = 0;
   private slip = 0;
   private weave = 0;
   private weaveTime = 0;
@@ -1430,6 +1432,7 @@ export class BoxingGraph {
     const defending = fighter.defense;
     this.guardHigh = smooth(this.guardHigh, defending === "guard_high" ? 1 : 0, 14, dt);
     this.guardLow = smooth(this.guardLow, defending === "guard_low" ? 1 : 0, 14, dt);
+    this.guardSpent = smooth(this.guardSpent, fighter.guard < GUARD_BLOCK_MINIMUM ? 1 : 0, 10, dt);
     const slipTarget = defending === "slip_left" ? 1 : defending === "slip_right" ? -1 : 0;
     this.slip = smooth(this.slip, slipTarget, 16, dt);
     const weaving = defending === "weave";
@@ -1539,6 +1542,11 @@ export class BoxingGraph {
     const rearTarget = this.scratchB.copy(STANCE.relaxedRear).lerp(STANCE.guardHighRear, this.guardHigh).lerp(STANCE.guardLowRear, this.guardLow);
     leadTarget.y -= this.tired * 0.12 + this.stunAmount * 0.22;
     rearTarget.y -= this.tired * 0.1 + this.stunAmount * 0.2;
+    // A spent guard, raised or not, sags from the cheekbones toward the chest: the opening shows.
+    leadTarget.y -= this.guardSpent * GUARD_SPENT_DROP;
+    rearTarget.y -= this.guardSpent * GUARD_SPENT_DROP;
+    leadTarget.z -= this.guardSpent * 0.04;
+    rearTarget.z -= this.guardSpent * 0.03;
     leadTarget.z += this.feint * 0.1 + Math.sin(time * 2.3) * 0.012 * motionScale;
     leadTarget.x += Math.sin(time * 1.9) * 0.01 * motionScale;
     rearTarget.y += Math.cos(time * 2.7) * 0.01 * motionScale;
@@ -3039,6 +3047,8 @@ const TOUCH_WALK_TOP_SPEED = 1.5;
 /** The engine's taunt length in ticks, over which the lead glove beckons TAUNT_BECKONS times. */
 const TAUNT_TICKS = 60;
 const TAUNT_BECKONS = 4;
+/** How far a spent guard's gloves sag, in metres: from the cheekbones to about the collarbones. */
+const GUARD_SPENT_DROP = 0.15;
 const seatedScratch = new THREE.Vector3();
 const JAW_DISLOCATION = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.08, 0.2, -0.22));
 

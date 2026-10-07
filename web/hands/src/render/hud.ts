@@ -1,4 +1,4 @@
-import { EYE_SHUT_TRAUMA } from "../manifest";
+import { EYE_SHUT_TRAUMA, GUARD_BLOCK_MINIMUM } from "../manifest";
 import { isDebut, recordLine } from "../record";
 import { styleTag } from "../styles";
 import type { CombatEvent, CornerChoice, EngineSnapshot, FighterSnapshot, FinalMessage, FinishMethod, PublicPlayer, PunchTotals, RatingDelta, TraumaSnapshot } from "../types";
@@ -31,29 +31,54 @@ interface BarSpec {
   readonly maximum: number;
   readonly from: string;
   readonly to: string;
+  /** Below this the bar's resource is spent: it is marked on the bar, which shows spent while under it. */
+  readonly spentBelow?: number;
 }
+
+/** Spent: a red frame, mark and label, a dimmed fill and red hatching across the bar. */
+const SPENT_RED = "#ff7066";
 
 function broadcastBar(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, spec: BarSpec, mirror: boolean): void {
   const height = 9;
+  const spent = spec.spentBelow !== undefined && spec.value < spec.spentBelow;
   ctx.fillStyle = "rgba(2,4,9,0.85)";
   ctx.fillRect(x - 1, y - 1, width + 2, height + 2);
   const frame = ctx.createLinearGradient(0, y, 0, y + height);
   frame.addColorStop(0, "rgba(210,220,235,0.5)");
   frame.addColorStop(0.5, "rgba(90,100,120,0.25)");
   frame.addColorStop(1, "rgba(30,36,50,0.4)");
-  ctx.strokeStyle = frame;
+  ctx.strokeStyle = spent ? SPENT_RED : frame;
   ctx.lineWidth = 1;
   ctx.strokeRect(x - 1.5, y - 1.5, width + 3, height + 3);
   const ratio = Math.max(0, Math.min(1, spec.value / Math.max(1, spec.maximum)));
   const fill = ctx.createLinearGradient(0, y, 0, y + height);
-  fill.addColorStop(0, spec.from);
-  fill.addColorStop(1, spec.to);
+  fill.addColorStop(0, spent ? "#7b8494" : spec.from);
+  fill.addColorStop(1, spent ? "#434a57" : spec.to);
   ctx.fillStyle = fill;
   const fillWidth = width * ratio;
   ctx.fillRect(mirror ? x + width - fillWidth : x, y, fillWidth, height);
   ctx.fillStyle = "rgba(255,255,255,0.22)";
   ctx.fillRect(mirror ? x + width - fillWidth : x, y, fillWidth, 2);
-  ctx.fillStyle = "#dfe7f5";
+  if (spent) {
+    // Hatched across the whole bar, so even a 40 px phone bar reads as spent at a glance.
+    ctx.beginPath();
+    for (let start = -height; start < width; start += 5) {
+      const from = Math.max(0, start);
+      const to = Math.min(width, start + height);
+      ctx.moveTo(x + from, y + height - (from - start));
+      ctx.lineTo(x + to, y + height - (to - start));
+    }
+    ctx.strokeStyle = SPENT_RED;
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+  }
+  if (spec.spentBelow !== undefined) {
+    // The line it has to stay over, standing proud of the bar.
+    const at = width * Math.min(1, spec.spentBelow / Math.max(1, spec.maximum));
+    ctx.fillStyle = spent ? SPENT_RED : "#f6d57a";
+    ctx.fillRect((mirror ? x + width - at : x + at) - 0.75, y - 2, 1.5, height + 4);
+  }
+  ctx.fillStyle = spent ? SPENT_RED : "#dfe7f5";
   ctx.font = "700 9px Inter, system-ui, sans-serif";
   ctx.textAlign = mirror ? "right" : "left";
   ctx.fillText(spec.label, mirror ? x + width : x, y - 4);
@@ -278,21 +303,27 @@ export const topPanelOffset = (width: number, height: number): number =>
  * The touch pads (style.css .touch-pads). Held upright they are one column 118 px up from the bottom, 274 px
  * tall: the moves, the modifiers and the punch pads. On its side the modifiers and punch pads stand 196 px tall
  * and the moves have their own column to their left, 102 px tall at the foot; on a screen 350 px tall or less
- * all of them are smaller, 154 and 86 px tall, and 112 px up. `reach` is how far in from the right edge the
- * modifiers' column comes, and `movesReach` how much further the moves' column does, with a little to spare.
+ * all of them are smaller, 154 and 86 px tall, and 112 px up. `grid` is the height of the punch pads at the foot,
+ * the only ones shown while the player is down, when they are the get-up pads. `reach` is how far in from the
+ * right edge the modifiers' and punch pads' column comes, and `movesReach` how much further the moves' column
+ * does, with a little to spare.
  */
 export const TOUCH_PADS = {
-  upright: { bottom: 118, height: 274, moves: 0 },
-  landscape: { bottom: 118, height: 196, moves: 102 },
-  short: { bottom: 112, height: 154, moves: 86 },
+  upright: { bottom: 118, height: 274, moves: 0, grid: 118 },
+  landscape: { bottom: 118, height: 196, moves: 102, grid: 118 },
+  short: { bottom: 112, height: 154, moves: 86, grid: 92 },
   shortHeight: 350,
   reach: 12 + 190 + 14,
   movesReach: 122 + 12,
 } as const;
 
+/** The touch pads as they stand on a screen this size. */
+const touchPadsFor = (width: number, height: number): (typeof TOUCH_PADS)["upright" | "landscape" | "short"] =>
+  width <= height ? TOUCH_PADS.upright : height <= TOUCH_PADS.shortHeight ? TOUCH_PADS.short : TOUCH_PADS.landscape;
+
 /** How far in from the right edge the touch pads come beside something that ends at `bottom`: 0 while it stays above them. */
 export function touchPadsReach(width: number, height: number, bottom: number): number {
-  const pads = width <= height ? TOUCH_PADS.upright : height <= TOUCH_PADS.shortHeight ? TOUCH_PADS.short : TOUCH_PADS.landscape;
+  const pads = touchPadsFor(width, height);
   if (bottom <= height - pads.bottom - pads.height) return 0;
   // Upright the pads are one column; on its side the moves only come out at the foot of the block.
   return TOUCH_PADS.reach + (pads.moves > 0 && bottom > height - pads.bottom - pads.moves ? TOUCH_PADS.movesReach : 0);
@@ -332,6 +363,36 @@ export function topPanel(width: number, height: number, touch = false): PanelRec
     }
   }
   return { x: right - panelWidth, y, width: panelWidth, height: panelHeight };
+}
+
+/** The downed viewer's get-up panel: the count, the rhythm prompt and its meter. */
+const GET_UP_PANEL = { width: 380, height: 150 } as const;
+/** The plates' guard and poise bars, with their labels, come this far up from the bottom. */
+const PLATE_BARS_TOP = 84 + 12 + 16;
+
+/**
+ * Where the downed viewer's get-up panel goes: under the knockdown headline and above the plates' guard and poise
+ * bars. While he is down the touch pads show only the get-up pads (style.css), and the panel keeps clear of them
+ * and of the thumbs on them: above them on a phone held upright, left of them on its side. Where there is too
+ * little room under the headline it moves up over it, and on a narrow screen on its side over the round card,
+ * whose clock stands still through the count.
+ */
+export function getUpPanel(width: number, height: number, touch = false): PanelRect {
+  const pads = touchPadsFor(width, height);
+  const getUpPadsTop = height - pads.bottom - pads.grid;
+  const upright = width <= height;
+  const bottom = touch && upright ? Math.min(height - PLATE_BARS_TOP, getUpPadsTop - 8) : height - PLATE_BARS_TOP;
+  const y = Math.max(56, Math.min(Math.max(height * 0.24, headlineBaseline(height, width < 640) + 34), bottom - GET_UP_PANEL.height));
+  let panelWidth = Math.min(GET_UP_PANEL.width, width - 24);
+  let right = width / 2 + panelWidth / 2;
+  if (touch && !upright && y + GET_UP_PANEL.height > getUpPadsTop) {
+    const limit = width - TOUCH_PADS.reach;
+    if (right > limit) {
+      panelWidth = Math.min(panelWidth, limit - 12);
+      right = limit;
+    }
+  }
+  return { x: right - panelWidth, y, width: panelWidth, height: GET_UP_PANEL.height };
 }
 
 function centerPanel(ctx: CanvasRenderingContext2D, panel: PanelRect, title: string, subtitle: string): void {
@@ -526,7 +587,8 @@ export function drawHud(
     const bars: BarSpec[] = [
       { label: `${compact ? "STA" : "STAMINA"} ${Math.round(fighter.stamina)}`, value: fighter.stamina, maximum: fighter.maximum_stamina, from: "#ffe08a", to: "#d9a53a" },
       { label: `${compact ? "HP" : "HEALTH"} ${Math.round(fighter.conditioning)}`, value: fighter.conditioning, maximum: HUD_MAX_CONDITIONING, from: "#ff8a7a", to: "#b02a20" },
-      { label: "GUARD", value: fighter.guard, maximum: HUD_MAX_GUARD, from: "#9ec7ff", to: "#3d6fb8" },
+      // Under the mark a guard stops nothing: a block that takes it there breaks it (guard_break).
+      { label: "GUARD", value: fighter.guard, maximum: HUD_MAX_GUARD, from: "#9ec7ff", to: "#3d6fb8", spentBelow: GUARD_BLOCK_MINIMUM },
       { label: `POISE ${Math.round(fighter.poise)}`, value: fighter.poise, maximum: HUD_MAX_POISE, from: "#e8c890", to: "#8a6a34" },
     ];
     const accent = index === 0 ? "#3d6fb8" : "#b02a20";
@@ -545,7 +607,11 @@ export function drawHud(
 
   const seconds = Math.floor((clockTicks ?? snapshot.phase_ticks_remaining) / tickRate);
   const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-  if (final === null) roundCard(ctx, width / 2, compact ? 54 : height - 84, clock, `ROUND ${snapshot.round_number}`, snapshot.phase === "complete" ? "FINAL" : snapshot.phase.replace("_", " ").toUpperCase());
+  // A downed viewer's get-up panel takes the room it needs from the knockdown headline, and on a narrow screen on
+  // its side from the round card too, whose clock stands still through the count.
+  const getUp = snapshot.phase === "knockdown" && replayLabel === null && snapshot.fighters.some((fighter) => fighter.player_id === viewerId && fighter.is_downed) ? getUpPanel(width, height, touch) : null;
+  const cardCovered = getUp !== null && compact && getUp.y < 54 + 58;
+  if (final === null && !cardCovered) roundCard(ctx, width / 2, compact ? 54 : height - 84, clock, `ROUND ${snapshot.round_number}`, snapshot.phase === "complete" ? "FINAL" : snapshot.phase.replace("_", " ").toUpperCase());
   // Only a connection slow enough to feel is worth the broadcast screen; Settings, Diagnostics always shows it.
   // A phone has no free corner for it beside the clock, the centre panels and the captions. With the touch pads up
   // it goes top left, where they never reach and where the knockout replay's tag has the corner to itself.
@@ -601,14 +667,17 @@ export function drawHud(
     ctx.font = "900 44px Inter, system-ui, sans-serif";
     ctx.lineWidth = 6;
     ctx.strokeStyle = "rgba(0,0,0,0.75)";
-    ctx.strokeText("KNOCKDOWN", width / 2, headline);
-    ctx.fillStyle = "#ff4d4d";
-    ctx.fillText("KNOCKDOWN", width / 2, headline);
+    // A downed viewer's own get-up panel says it all where it needs the headline's room.
+    if (getUp === null || getUp.y >= headline + 6) {
+      ctx.strokeText("KNOCKDOWN", width / 2, headline);
+      ctx.fillStyle = "#ff4d4d";
+      ctx.fillText("KNOCKDOWN", width / 2, headline);
+    }
     ctx.font = "700 15px Inter, system-ui, sans-serif";
     ctx.fillStyle = "#e6ecf7";
     const verb = downed === undefined ? " BEAT THE COUNT" : " IS DOWN";
     const line = name === null ? "STANDING EIGHT" : `${fit(ctx, name, Math.min(width * 0.5, width - 32 - ctx.measureText(verb).width))}${verb}`;
-    ctx.fillText(line, width / 2, headline + 24);
+    if (getUp === null || getUp.y >= headline + 30) ctx.fillText(line, width / 2, headline + 24);
     ctx.restore();
   }
   if (snapshot.phase === "knockdown" && replayLabel === null) {
@@ -628,10 +697,8 @@ export function drawHud(
         ctx.restore();
       }
     } else {
-      const panelWidth = Math.min(380, width - 24);
-      const panelHeight = 150;
-      const x = width / 2 - panelWidth / 2;
-      const y = Math.max(height * 0.24, headline + 34);
+      const { x, y, width: panelWidth, height: panelHeight } = getUp ?? getUpPanel(width, height, touch);
+      const centre = x + panelWidth / 2;
       ctx.fillStyle = "rgba(3,6,12,0.88)";
       ctx.fillRect(x, y, panelWidth, panelHeight);
       ctx.strokeStyle = "rgba(246,213,122,0.5)";
@@ -640,7 +707,7 @@ export function drawHud(
       ctx.textAlign = "center";
       ctx.fillStyle = "#ffd77a";
       ctx.font = "800 30px Inter, system-ui, sans-serif";
-      ctx.fillText(count >= 1 ? `COUNT ${count}` : "GET UP!", width / 2, y + 40);
+      ctx.fillText(count >= 1 ? `COUNT ${count}` : "GET UP!", centre, y + 40);
       const prompt = viewer?.is_downed === true ? viewer.get_up_prompt : null;
       if (prompt !== null && prompt !== undefined && viewer !== undefined) {
         const inWindow = snapshot.tick >= viewer.get_up_window_start_tick && snapshot.tick <= viewer.get_up_window_end_tick;
@@ -648,14 +715,14 @@ export function drawHud(
         if (inWindow) {
           ctx.fillStyle = "#ffe9a8";
           ctx.font = "900 64px Inter, system-ui, sans-serif";
-          ctx.fillText(arrow, width / 2 - 90, y + 106);
+          ctx.fillText(arrow, centre - 90, y + 106);
           ctx.fillStyle = "#7dffa8";
           ctx.font = "900 34px Inter, system-ui, sans-serif";
-          ctx.fillText("NOW!", width / 2 + 62, y + 100);
+          ctx.fillText("NOW!", centre + 62, y + 100);
         } else {
           ctx.fillStyle = "#8fa3c8";
           ctx.font = "800 30px Inter, system-ui, sans-serif";
-          ctx.fillText(`GET READY ${arrow}`, width / 2, y + 98);
+          ctx.fillText(`GET READY ${arrow}`, centre, y + 98);
         }
         const meterWidth = panelWidth - 60;
         const ratio = Math.max(0, Math.min(1, viewer.get_up_meter / Math.max(1, viewer.get_up_required)));
@@ -672,7 +739,7 @@ export function drawHud(
       } else {
         ctx.fillStyle = "#c8d3e6";
         ctx.font = "600 14px Inter, system-ui, sans-serif";
-        ctx.fillText("Waiting for your rhythm instruction…", width / 2, y + 100);
+        ctx.fillText(fit(ctx, "Waiting for your rhythm instruction…", panelWidth - 24), centre, y + 100);
       }
     }
   }
@@ -691,9 +758,11 @@ export function drawHud(
     centerPanel(ctx, topPanel(width, height, touch), "CORNERS · RECOVER", corners ?? (statsLine.length > 0 ? `Landed this round: ${statsLine}` : "Conditioning governs recovery"));
   }
   if (reconnectMs > 0) {
+    // Mid-screen, or with the touch pads up in the centre panels' place, which they never reach.
     const pauseWidth = Math.min(320, width - 24);
     const pauseHeight = panelHeightFor(height);
-    centerPanel(ctx, { x: width / 2 - pauseWidth / 2, y: height / 2 - pauseHeight / 2, width: pauseWidth, height: pauseHeight }, `OPPONENT RECONNECTING · ${Math.ceil(reconnectMs / 1000)}s`, "The bout is paused");
+    const pause = touch ? topPanel(width, height, true) : { x: width / 2 - pauseWidth / 2, y: height / 2 - pauseHeight / 2, width: pauseWidth, height: pauseHeight };
+    centerPanel(ctx, pause, `OPPONENT RECONNECTING · ${Math.ceil(reconnectMs / 1000)}s`, "The bout is paused");
   }
   if (final !== null) {
     const punches = snapshot.fighters.map((fighter) => roundStats?.total(fighter.player_id) ?? blankPunches()) as [RoundPunchStats, RoundPunchStats];
