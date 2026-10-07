@@ -116,6 +116,10 @@ const HISTORY_LIMIT = 480;
 const LOW_TIER_SCALE = 0.56;
 const ROUND_CALLOUT_SECONDS = 1.8;
 const FINISH_CLOSE_UP_SECONDS = 1.7;
+/** After a stoppage the winner celebrates until the bout is gone, and the referee lifts his arm once the fight is waved off. */
+const WINNER_CELEBRATION_SECONDS = 600;
+const STOPPAGE_RAISE_DELAY_SECONDS = 2.8;
+const STOPPAGE_RAISE_SPACING = 0.6;
 const CORNERMAN_APRON_DISTANCE = 3.42;
 /** Close cameras stay inside the rope line (posts stand at 2.46 m) so a rope never fills the lens. */
 const TIGHT_SHOT_LIMIT = 2.2;
@@ -866,6 +870,11 @@ export class FightRenderer {
   private finishCloseUpUntil = 0;
   private finishCloseUpIndex = -1;
   private finishCloseUpBearing: number | null = null;
+  /** The seat whose arm the referee lifts after a stoppage, from `stoppageRaiseAt`; -1 for none. */
+  private stoppageWinner = -1;
+  private stoppageRaiseAt = Number.POSITIVE_INFINITY;
+  private readonly stoppageWrist = new THREE.Vector3();
+  private readonly stoppageOtherWrist = new THREE.Vector3();
   private readonly closeUpPosition = new THREE.Vector3();
   private roundCalloutUntil = 0;
   private roundCalloutRound = 0;
@@ -1093,6 +1102,8 @@ export class FightRenderer {
   /** A stoppage's result panel waits for the slow-motion fall; decisions show at once. */
   setFinal(final: FinalMessage | null): void {
     this.final = final;
+    this.stoppageWinner = -1;
+    this.stoppageRaiseAt = Number.POSITIVE_INFINITY;
     this.ceremony = this.ceremonyFor(final);
     this.finalRevealAt = this.frameSeconds + (this.ceremony === null ? finalRevealDelay(final) : CEREMONY_REVEAL_LIMIT_SECONDS);
     this.ovationUntil = final === null ? 0 : this.frameSeconds + CROWD_OVATION_SECONDS;
@@ -1218,7 +1229,10 @@ export class FightRenderer {
     }
     if (final.winner_id === null) return;
     const index = fighters?.findIndex((fighter) => fighter.player_id === final.winner_id) ?? -1;
-    if (index >= 0) this.graphs?.[index]?.celebrate();
+    if (index < 0) return;
+    this.graphs?.[index]?.celebrate(WINNER_CELEBRATION_SECONDS);
+    this.stoppageWinner = index;
+    this.stoppageRaiseAt = this.frameSeconds + STOPPAGE_RAISE_DELAY_SECONDS;
   }
 
   /** Between rounds the broadcast cuts to each corner in turn, the viewer's own first, once its fighter is seated. */
@@ -1277,6 +1291,14 @@ export class FightRenderer {
     );
     this.replayLookAt.copy(head);
     return { position: this.closeUpPosition, lookAt: this.replayLookAt, tight: true };
+  }
+
+  /** The winner's glove nearer the referee, in world space. */
+  private nearerGlove(left: THREE.Bone, right: THREE.Bone): THREE.Vector3 {
+    left.getWorldPosition(this.stoppageWrist);
+    right.getWorldPosition(this.stoppageOtherWrist);
+    const reach = (glove: THREE.Vector3): number => Math.hypot(glove.x - this.refereePosition.x, glove.z - this.refereePosition.z);
+    return reach(this.stoppageOtherWrist) < reach(this.stoppageWrist) ? this.stoppageOtherWrist : this.stoppageWrist;
   }
 
   /** Whether an eye hanging at `eye` is clear of the beaten fighter's skull from above, rather than under his face. */
@@ -2219,7 +2241,18 @@ export class FightRenderer {
     const previousX = this.refereePosition.x;
     const previousZ = this.refereePosition.z;
     const ceremony = this.replay === null && this.ceremony?.positions !== null ? this.ceremony : null;
-    if (ceremony !== null) {
+    // Once the fight is waved off, the referee goes to the winner's side, the side nearer the middle of the ring.
+    const winner = ceremony === null && this.replay === null && this.stoppageWinner >= 0 && this.frameSeconds >= this.stoppageRaiseAt
+      ? (this.stoppageWinner === 0 ? this.tmpA : this.tmpB)
+      : null;
+    const side = winner !== null && winner.x > 0 ? -1 : 1;
+    let beside = false;
+    if (winner !== null) {
+      const step = ceremonyStep(this.refereePosition.x, this.refereePosition.z, { x: winner.x + side * STOPPAGE_RAISE_SPACING, y: winner.z }, CEREMONY_REFEREE_SPEED * dt);
+      this.refereePosition.x = step.x;
+      this.refereePosition.z = step.y;
+      beside = step.arrived;
+    } else if (ceremony !== null) {
       // The referee walks to the mark between the fighters and turns to the camera.
       const step = ceremonyStep(this.refereePosition.x, this.refereePosition.z, { x: CEREMONY_REFEREE.x, y: CEREMONY_REFEREE.z }, CEREMONY_REFEREE_SPEED * dt);
       this.refereePosition.x = step.x;
@@ -2230,7 +2263,7 @@ export class FightRenderer {
       this.refereePosition.x += (targetX - this.refereePosition.x) * rate;
       this.refereePosition.z += (targetZ - this.refereePosition.z) * rate;
     }
-    const keepOff = ceremony === null ? clearance : ceremony.refereeArrived ? 0 : CEREMONY_WALK_CLEARANCE;
+    const keepOff = winner !== null ? STOPPAGE_RAISE_SPACING * 0.85 : ceremony === null ? clearance : ceremony.refereeArrived ? 0 : CEREMONY_WALK_CLEARANCE;
     for (const fighter of keepOff > 0 ? [this.tmpA, this.tmpB] : []) {
       const dx = this.refereePosition.x - fighter.x;
       const dz = this.refereePosition.z - fighter.z;
@@ -2262,8 +2295,15 @@ export class FightRenderer {
       this.refereeVelocity.set((this.refereePosition.x - previousX) / dt, 0, (this.refereePosition.z - previousZ) / dt);
     }
     const walking = ceremony !== null && !ceremony.refereeArrived;
-    const yaw = ceremony === null ? Math.atan2(focusX - this.refereePosition.x, focusZ - this.refereePosition.z)
-      : walking ? Math.atan2(CEREMONY_REFEREE.x - this.refereePosition.x, CEREMONY_REFEREE.z - this.refereePosition.z) : 0;
+    const yaw = winner !== null ? (beside ? 0 : Math.atan2(winner.x - this.refereePosition.x, winner.z - this.refereePosition.z))
+      : ceremony === null ? Math.atan2(focusX - this.refereePosition.x, focusZ - this.refereePosition.z)
+        : walking ? Math.atan2(CEREMONY_REFEREE.x - this.refereePosition.x, CEREMONY_REFEREE.z - this.refereePosition.z) : 0;
+    if (winner !== null) {
+      // Facing the camera, the referee's left hand is the one on the +x side.
+      const gloves = this.graphs?.[this.stoppageWinner]?.boxer.rig.bones;
+      const wrist = beside && gloves !== undefined ? this.nearerGlove(gloves.gloveL, gloves.gloveR) : null;
+      referee.raise(side < 0 ? wrist : null, side > 0 ? wrist : null);
+    }
     const yawDelta = ((yaw - this.refereeYaw + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
     this.refereeYaw += yawDelta * (1 - Math.exp(-3 * dt));
     const state = refereeSnapshot(this.refereePosition, this.refereeYaw, this.refereeVelocity, this.mapping);

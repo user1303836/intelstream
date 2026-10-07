@@ -684,7 +684,7 @@ export class BoxingGraph {
     this.anticipatedId = null;
   }
 
-  /** Referee wave-off: both arms sweep crossing overhead to call the fight. */
+  /** Referee wave-off: both arms sweep crossing in front of the chest to call the fight. */
   waveOff(seconds = 2.6): void {
     this.waveTime = seconds;
   }
@@ -2015,8 +2015,10 @@ export class BoxingGraph {
     torso.hipsPitch = lerp(torso.hipsPitch, 0.08, blend);
     torso.spinePitch = lerp(torso.spinePitch, 0.05, blend);
     torso.headPitch = lerp(torso.headPitch, -0.1, blend);
-    leadHand.position.lerp(seatedScratch.set(0.42 * sweep * mirror, 1.66 + Math.abs(sweep) * 0.08, 0.34), blend);
-    rearHand.position.lerp(seatedScratch.set(-0.42 * sweep * mirror, 1.62 + Math.abs(sweep) * 0.08, 0.24), blend);
+    // Arms all but straight, crossing below the chin and swinging wide past the shoulders, so the call
+    // reads from any side and the hands never come up over the face.
+    leadHand.position.lerp(seatedScratch.set(0.62 * sweep * mirror, 1.3 + Math.abs(sweep) * 0.1, 0.44), blend);
+    rearHand.position.lerp(seatedScratch.set(-0.62 * sweep * mirror, 1.24 + Math.abs(sweep) * 0.1, 0.36), blend);
     leadHand.palm.lerp(seatedScratch.set(0, 0, 1), blend).normalize();
     rearHand.palm.lerp(seatedScratch.set(0, 0, 1), blend).normalize();
     leadHand.knuckles.lerp(seatedScratch.set(0, 1, 0), blend).normalize();

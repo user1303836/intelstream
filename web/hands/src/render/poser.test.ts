@@ -748,18 +748,22 @@ describe("clinch hold", () => {
 });
 
 describe("wave-off", () => {
-  it("sweeps both gloves across overhead while waving the fight off", () => {
+  it("sweeps both gloves wide across the chest, below the face, while waving the fight off", () => {
     const { boxer, graph } = makeGraph();
     const fighter = facingOpponent(baseFighter("one"));
     const opponent = opponentFor("two");
     graph.waveOff(4);
-    run(graph, fighter, opponent, 60, undefined);
-    const first = bone(boxer, "gloveL").clone();
-    expect(first.y).toBeGreaterThan(1.45);
-    run(graph, fighter, opponent, 12, undefined, 30, 1);
-    const later = bone(boxer, "gloveL");
-    expect(later.y).toBeGreaterThan(1.45);
-    expect(Math.abs(later.x - first.x)).toBeGreaterThan(0.15);
+    const xs: number[] = [];
+    for (let frame = 0; frame < 120; frame += 1) {
+      run(graph, fighter, opponent, 1, undefined, frame * 0.5, frame / 60);
+      if (frame < 40) continue;
+      const glove = bone(boxer, "gloveL");
+      const head = bone(boxer, "head");
+      xs.push(glove.x);
+      expect(glove.y).toBeGreaterThan(0.95);
+      expect(glove.y).toBeLessThan(head.y - 0.05);
+    }
+    expect(Math.max(...xs) - Math.min(...xs)).toBeGreaterThan(0.6);
   });
 });
 
