@@ -25,7 +25,7 @@ from intelstream.hands.protocol import (
     ProtocolError,
     parse_ticket_ack,
 )
-from intelstream.hands.rooms import HandsRoomManager, RoomError, RoomMembership
+from intelstream.hands.rooms import HandsRoomManager, RoomError, RoomMembership, SocketLike
 from intelstream.hands.rules import RING_HALF_HEIGHT, RING_HALF_WIDTH, TICKS_PER_SECOND
 
 if TYPE_CHECKING:
@@ -206,6 +206,31 @@ class _TicketRefreshState:
         self.acknowledged.set()
 
 
+class _RoomSocket:
+    """The room's handle on one websocket, with the transport underneath it for abort()."""
+
+    __slots__ = ("_request", "_websocket")
+
+    def __init__(self, request: web.Request, websocket: web.WebSocketResponse) -> None:
+        self._request = request
+        self._websocket = websocket
+
+    @property
+    def closed(self) -> bool:
+        return self._websocket.closed
+
+    async def send_str(self, data: str) -> None:
+        await self._websocket.send_str(data)
+
+    async def close(self, *, code: int = 1000, message: bytes = b"") -> None:
+        await self._websocket.close(code=code, message=message)
+
+    def abort(self) -> None:
+        transport = self._request.transport
+        if transport is not None:
+            transport.abort()
+
+
 class AuthBackend(Protocol):
     application_id: str
 
@@ -229,7 +254,7 @@ class RoomsBackend(Protocol):
     async def join(
         self,
         player: AuthenticatedPlayer,
-        socket: web.WebSocketResponse,
+        socket: SocketLike,
         *,
         reconnect_ticket: str | None = None,
         reconnect_ticket_factory: Callable[[], str] | None = None,
@@ -693,7 +718,7 @@ class HandsServer:
             try:
                 membership = await self.rooms.join(
                     player,
-                    websocket,
+                    _RoomSocket(request, websocket),
                     reconnect_ticket_factory=lambda: self.auth.issue_ticket(player),
                 )
             except (HandsAuthError, RoomError) as exc:

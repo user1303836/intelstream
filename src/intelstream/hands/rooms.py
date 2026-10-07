@@ -48,6 +48,8 @@ class SocketLike(Protocol):
 
     async def close(self, *, code: int = 1000, message: bytes = b"") -> object: ...
 
+    def abort(self) -> None: ...
+
 
 class RoomError(Exception):
     def __init__(self, code: str) -> None:
@@ -69,6 +71,7 @@ class RoomConfig:
     reconnect_grace_seconds: float = 20.0
     result_hold_seconds: float = 10.0
     final_delivery_timeout_seconds: float = 1.0
+    close_timeout_seconds: float = 1.0
     max_catch_up_ticks: int = 4
     max_inputs_per_second: int = 60
     max_input_frames_per_second: int = 180
@@ -93,6 +96,7 @@ class RoomConfig:
             self.reconnect_grace_seconds <= 0
             or self.result_hold_seconds < 0
             or self.final_delivery_timeout_seconds <= 0
+            or self.close_timeout_seconds <= 0
         ):
             raise ValueError("room durations are invalid")
         if self.max_spectators < 0:
@@ -679,34 +683,34 @@ class HandsRoom:
                 if spectator is None or spectator.connection is not connection:
                     return
                 self._spectators.pop(player_id, None)
-                await self._stop_connection(connection, code=1001, reason=b"disconnected")
-                return
-
-            slot = self._slots.get(player_id)
-            if slot is None or slot.connection is not connection:
-                return
-            slot.connection = None
-            await self._stop_connection(connection, code=1001, reason=b"disconnected")
-            slot.grace_remaining = self.config.reconnect_grace_seconds
-            slot.reconnect_deadline = self._clock() + self.config.reconnect_grace_seconds
-            if self._engine is not None:
-                self._engine.clear_action_buffers()
-            if self._engine is None:
-                if slot.pre_match_grace_task is None or slot.pre_match_grace_task.done():
-                    slot.pre_match_grace_task = self._spawn(
-                        self._expire_pre_match_fighter(player_id, slot),
-                        name=f"hands-waiting-grace-{player_id}",
+            else:
+                slot = self._slots.get(player_id)
+                if slot is None or slot.connection is not connection:
+                    return
+                # The pause and its deadline are settled before the socket is touched: closing
+                # a stalled socket can wait or fail, and the bout must not depend on it.
+                slot.connection = None
+                slot.grace_remaining = self.config.reconnect_grace_seconds
+                slot.reconnect_deadline = self._clock() + self.config.reconnect_grace_seconds
+                if self._engine is not None:
+                    self._engine.clear_action_buffers()
+                if self._engine is None:
+                    if slot.pre_match_grace_task is None or slot.pre_match_grace_task.done():
+                        slot.pre_match_grace_task = self._spawn(
+                            self._expire_pre_match_fighter(player_id, slot),
+                            name=f"hands-waiting-grace-{player_id}",
+                        )
+                    slot.pre_match_grace_event.set()
+                elif not self._finished:
+                    self._enqueue_all(
+                        self._message(
+                            "paused",
+                            player_id=player_id,
+                            grace_ms=max(0, int(slot.grace_remaining * 1000)),
+                        ),
+                        bounded_update=True,
                     )
-                slot.pre_match_grace_event.set()
-            elif not self._finished:
-                self._enqueue_all(
-                    self._message(
-                        "paused",
-                        player_id=player_id,
-                        grace_ms=max(0, int(slot.grace_remaining * 1000)),
-                    ),
-                    bounded_update=True,
-                )
+        await self._stop_connection(connection, code=1001, reason=b"disconnected")
 
     async def _wait_for_pre_match_change(
         self,
@@ -942,23 +946,49 @@ class HandsRoom:
         self, connection: PlayerConnection, *, code: int, reason: bytes
     ) -> None:
         current = asyncio.current_task()
-        slow_drop_task = connection.slow_drop_task
-        connection.slow_drop_task = None
-        if slow_drop_task is not None and slow_drop_task is not current:
-            slow_drop_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await slow_drop_task
-        connection.latest_ticket_refresh = None
-        connection.ticket_refresh_queued = False
-        connection.outbox.put_nowait(_OutboundMessage())
-        writer_task = connection.writer_task
-        if writer_task is not None and writer_task is not current:
-            writer_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await writer_task
-        if not connection.socket.closed:
-            with contextlib.suppress(ConnectionError, RuntimeError):
-                await connection.socket.close(code=code, message=reason[:120])
+        try:
+            slow_drop_task = connection.slow_drop_task
+            connection.slow_drop_task = None
+            if slow_drop_task is not None and slow_drop_task is not current:
+                await self._cancel_and_wait(slow_drop_task)
+            connection.latest_ticket_refresh = None
+            connection.ticket_refresh_queued = False
+            connection.outbox.put_nowait(_OutboundMessage())
+            writer_task = connection.writer_task
+            if writer_task is not None and writer_task is not current:
+                await self._cancel_and_wait(writer_task)
+            if not connection.socket.closed:
+                await self._close_socket(connection.socket, code=code, reason=reason)
+        except asyncio.CancelledError:
+            connection.socket.abort()
+            raise
+
+    @staticmethod
+    async def _cancel_and_wait(task: asyncio.Task[None]) -> None:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise
+
+    async def _close_socket(self, socket: SocketLike, *, code: int, reason: bytes) -> None:
+        current = asyncio.current_task()
+        try:
+            async with asyncio.timeout(self.config.close_timeout_seconds):
+                await socket.close(code=code, message=reason[:120])
+            return
+        except asyncio.CancelledError:
+            if current is not None and current.cancelling():
+                raise
+            # aiohttp parks every write on one drain waiter per transport. Cancelling a writer
+            # parked there cancels that waiter, and close() then fails on it: that cancellation
+            # belongs to the writer, not to this task.
+        except (ConnectionError, RuntimeError, TimeoutError):
+            pass
+        # A peer that stopped reading never lets a graceful close finish.
+        socket.abort()
 
     async def _close_now(self, *, code: int, reason: bytes) -> None:
         async with self._lock:
@@ -972,8 +1002,12 @@ class HandsRoom:
             for slot in self._slots.values():
                 slot.connection = None
             self._spectators.clear()
-        for connection in connections:
-            await self._stop_connection(connection, code=code, reason=reason)
+        await asyncio.gather(
+            *(
+                self._stop_connection(connection, code=code, reason=reason)
+                for connection in connections
+            )
+        )
         tick_task = self._tick_task
         if tick_task is not None and tick_task is not asyncio.current_task():
             tick_task.cancel()

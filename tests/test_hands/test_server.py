@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import os
+import socket
+import struct
 import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -140,6 +144,94 @@ async def start_server(
     await server.start()
     assert server.bound_port is not None
     return server, fake_auth, f"http://127.0.0.1:{server.bound_port}"
+
+
+async def connect_reader_that_stalls(
+    port: int, ticket: str, *, read_frames: int = 0
+) -> tuple[socket.socket, list[dict[str, object]]]:
+    """Authenticates over a raw socket, reads `read_frames` server frames, then never reads again.
+
+    The small receive buffer and the absent reads fill the server's transport within a fraction of
+    a second of per-tick snapshots, as a phone that switched networks or went to the background
+    would.
+    """
+    loop = asyncio.get_running_loop()
+    raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    raw.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    raw.setblocking(False)
+    await loop.sock_connect(raw, ("127.0.0.1", port))
+    key = base64.b64encode(os.urandom(16)).decode()
+    await loop.sock_sendall(
+        raw,
+        (
+            "GET /api/hands/ws HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\nOrigin: {ORIGIN}\r\n\r\n"
+        ).encode(),
+    )
+    received = b""
+    while b"\r\n\r\n" not in received:
+        received += await loop.sock_recv(raw, 1)
+    assert b" 101 " in received.split(b"\r\n", 1)[0]
+    payload = json.dumps({"version": 3, "type": "authenticate", "ticket": ticket}).encode()
+    assert len(payload) < 126
+    mask = os.urandom(4)
+    masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+    await loop.sock_sendall(raw, bytes([0x81, 0x80 | len(payload)]) + mask + masked)
+
+    async def read_exactly(count: int) -> bytes:
+        data = b""
+        while len(data) < count:
+            chunk = await loop.sock_recv(raw, count - len(data))
+            assert chunk, "server closed the socket"
+            data += chunk
+        return data
+
+    frames: list[dict[str, object]] = []
+    for _ in range(read_frames):
+        first, second = await read_exactly(2)
+        length = second & 0x7F
+        if length == 126:
+            (length,) = struct.unpack("!H", await read_exactly(2))
+        elif length == 127:
+            (length,) = struct.unpack("!Q", await read_exactly(8))
+        assert first & 0x40 == 0, "a raw reader does not negotiate compression"
+        frames.append(json.loads(await read_exactly(length)))
+    return raw, frames
+
+
+async def receive_until(
+    socket: aiohttp.ClientWebSocketResponse, kind: str, *, deadline_seconds: float = 10.0
+) -> dict[str, object]:
+    async with asyncio.timeout(deadline_seconds):
+        while True:
+            message = await socket.receive()
+            assert message.type == aiohttp.WSMsgType.TEXT, message
+            payload = json.loads(message.data)
+            if payload["type"] == kind:
+                return payload
+
+
+def stalled_reader_rooms(
+    repository: Repository, match_id: str, *, outbound_queue_size: int = 16
+) -> HandsRoomManager:
+    return HandsRoomManager(
+        repository,
+        config=RoomConfig(
+            tick_interval_seconds=0.002,
+            reconnect_grace_seconds=0.5,
+            result_hold_seconds=0.0,
+            outbound_queue_size=outbound_queue_size,
+            engine_config=EngineConfig(
+                rounds=1,
+                round_ticks=1_000_000,
+                rest_ticks=0,
+                countdown_ticks=1,
+                flash_ko_enabled=False,
+            ),
+        ),
+        match_id_factory=lambda: match_id,
+    )
 
 
 async def post_bootstrap(
@@ -468,6 +560,35 @@ async def test_two_websockets_start_and_third_is_read_only_spectator(
                 await ws.close()
     async with asyncio.timeout(1):
         await server.close()
+
+
+async def test_a_fighter_whose_socket_stops_reading_is_paused_then_forfeits(
+    repository: Repository,
+) -> None:
+    auth = FakeAuth()
+    auth.tickets = {
+        "one": AuthenticatedPlayer("one", GUILD, "room", "One", None),
+        "two": AuthenticatedPlayer("two", GUILD, "room", "Two", None),
+    }
+    rooms = stalled_reader_rooms(repository, "stalled-reader")
+    server, _auth, base = await start_server(repository, auth=auth, rooms=rooms)
+    assert server.bound_port is not None
+    async with aiohttp.ClientSession() as client:
+        one = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
+        await one.send_json({"version": 3, "type": "authenticate", "ticket": "one"})
+        await receive_until(one, "waiting")
+        stalled, _frames = await connect_reader_that_stalls(server.bound_port, "two")
+        try:
+            paused = await receive_until(one, "paused")
+            assert paused["player_id"] == "two"
+            final = await receive_until(one, "final")
+        finally:
+            stalled.close()
+        assert final["winner_id"] == "one"
+        assert final["method"] == "forfeit"
+        await one.close()
+    assert await repository.get_hands_match("stalled-reader") is not None
+    await server.close()
 
 
 @pytest.mark.parametrize(

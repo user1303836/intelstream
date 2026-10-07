@@ -20,6 +20,7 @@ class FakeSocket:
     messages: list[str] = field(default_factory=list)
     closed: bool = False
     close_code: int | None = None
+    aborted: bool = False
     block_send: asyncio.Event | None = None
     block_close: asyncio.Event | None = None
     close_entered: asyncio.Event | None = None
@@ -45,6 +46,43 @@ class FakeSocket:
         if self.timeline is not None:
             self.timeline.append("close")
 
+    def abort(self) -> None:
+        self.closed = True
+        self.aborted = True
+
+
+@dataclass
+class StalledSocket(FakeSocket):
+    """A socket whose peer stopped reading, modelled on aiohttp's flow control.
+
+    Once the transport pauses, every write parks on one shared drain waiter, and close() drains
+    through the same waiter. Cancelling a writer parked there cancels the waiter itself.
+    """
+
+    paused: bool = True
+    drain_waiter: asyncio.Future[None] | None = None
+
+    async def _drain(self) -> None:
+        if not self.paused:
+            return
+        if self.drain_waiter is None:
+            self.drain_waiter = asyncio.get_running_loop().create_future()
+        await self.drain_waiter
+
+    async def send_str(self, data: str) -> None:
+        if self.closed:
+            raise ConnectionError
+        self.messages.append(data)
+        await self._drain()
+
+    async def close(self, *, code: int = 1000, message: bytes = b"") -> None:
+        _ = message
+        if self.closed:
+            return
+        self.closed = True
+        self.close_code = code
+        await self._drain()
+
 
 @pytest.fixture
 async def repository() -> Repository:
@@ -66,6 +104,7 @@ def room_config(
     result_hold: float = 0.0,
     outbound_size: int = 16,
     final_delivery_timeout: float = 1.0,
+    close_timeout: float = 1.0,
     max_catch_up_ticks: int = 2,
     max_spectators: int = 20,
 ) -> RoomConfig:
@@ -75,6 +114,7 @@ def room_config(
         reconnect_grace_seconds=reconnect_grace,
         result_hold_seconds=result_hold,
         final_delivery_timeout_seconds=final_delivery_timeout,
+        close_timeout_seconds=close_timeout,
         max_catch_up_ticks=max_catch_up_ticks,
         max_inputs_per_second=5,
         max_input_frames_per_second=8,
@@ -588,6 +628,32 @@ async def test_bounded_periodic_snapshots_drop_slow_consumer(
         and not task.done()
         and task.get_name().startswith("hands-")
     }
+
+
+async def test_a_fighter_dropped_as_a_slow_consumer_still_pauses_and_forfeits(
+    repository: Repository,
+) -> None:
+    manager = HandsRoomManager(
+        repository,
+        config=room_config(round_ticks=1_000_000, reconnect_grace=0.05),
+        match_id_factory=lambda: "match-stalled",
+    )
+    stalled = StalledSocket()
+    opponent = FakeSocket()
+    stalled_membership = await manager.join(player("stalled"), stalled)
+    await manager.join(player("opponent"), opponent)
+
+    await wait_until(lambda: "paused" in message_types(opponent), deadline_seconds=2.0)
+    slot = stalled_membership.room._slots["stalled"]
+    assert slot.connection is None
+    assert slot.reconnect_deadline is not None
+    await wait_until(lambda: stalled.aborted)
+    await wait_until(lambda: "final" in message_types(opponent))
+    match = await repository.get_hands_match("match-stalled")
+    assert match is not None
+    assert match.finish_method == "forfeit"
+    assert match.winner_id == "opponent"
+    await manager.close()
 
 
 async def test_transient_queue_pressure_recovers_and_can_debounce_again(
