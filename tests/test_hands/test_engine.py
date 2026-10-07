@@ -4,6 +4,7 @@ import dataclasses
 import json
 import math
 import re
+from enum import Enum
 from importlib import resources
 from math import hypot
 
@@ -54,6 +55,7 @@ from intelstream.hands.types import (
     CombatEvent,
     CornerChoice,
     DefensivePose,
+    FighterStyle,
     FinishMethod,
     Foul,
     FoulAction,
@@ -2707,6 +2709,43 @@ def test_checksum_covers_every_number_a_fighter_carries() -> None:
             continue
         setattr(fighter, state_field.name, value + 1)
         assert changed.snapshot().checksum != base, state_field.name
+
+
+def test_checksum_covers_every_choice_a_fighter_carries() -> None:
+    base = make_engine(seed=303).snapshot().checksum
+    checked = []
+    for state_field in dataclasses.fields(FighterState):
+        changed = make_engine(seed=303)
+        fighter = changed.fighter("one")
+        value = getattr(fighter, state_field.name)
+        if isinstance(value, bool):
+            setattr(fighter, state_field.name, not value)
+        elif isinstance(value, Enum):
+            other = next(member for member in type(value) if member is not value)
+            setattr(fighter, state_field.name, other)
+        else:
+            continue
+        checked.append(state_field.name)
+        assert changed.snapshot().checksum != base, state_field.name
+    assert {"stance", "style", "defense"} <= set(checked)
+
+
+def test_engines_that_differ_only_in_the_styles_never_share_a_checksum() -> None:
+    def checksums(styles: tuple[FighterStyle, FighterStyle]) -> list[str]:
+        engine = BoxingEngine(
+            match_id="styles",
+            activity_instance_id="instance-1",
+            guild_id="guild-1",
+            player_one_id="one",
+            player_two_id="two",
+            seed=5,
+            styles=styles,
+        )
+        return [engine.step().checksum for _ in range(20)]
+
+    balanced = checksums((FighterStyle.BALANCED, FighterStyle.BALANCED))
+    styled = checksums((FighterStyle.COUNTER_PUNCHER, FighterStyle.SLUGGER))
+    assert all(one != two for one, two in zip(balanced, styled, strict=True))
 
 
 def test_a_bout_ended_on_the_punch_leaves_no_poise_below_zero() -> None:

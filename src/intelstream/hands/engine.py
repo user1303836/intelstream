@@ -2235,6 +2235,7 @@ class BoxingEngine:
                         fighter.position_remainder_y,
                     ],
                     "stance": fighter.stance,
+                    "style": fighter.style,
                     "resources": [
                         fighter.stamina,
                         fighter.conditioning,
