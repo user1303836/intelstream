@@ -6,7 +6,7 @@ import { bloodPatternFor, Effects3D } from "./effects";
 import { CLOCK_PORTRAIT_RADIUS, cardRows, decisionLabel, drawHud, finalRevealDelay as revealDelay, hudScale, plateDetail, REFEREE_REVEAL_DELAY_SECONDS, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, PLATE_PORTRAIT_RADIUS, RESULT_CARD_FOOTER, resultCard, resultCardLayout, RoundClock, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
 import { buildRing, disposeRing, nearRopeOpacityFor, ROPE_FLEX_GLSL, ROPE_GIVE_GLSL, ropePress } from "./ring";
 import { resizeHighDpi } from "./viewport";
-import { CORNER_COLORS, PALETTES, ROPE_LINE, worldMapping } from "./world";
+import { CORNER_COLORS, PALETTES, ROPE_HEIGHTS, ROPE_LINE, worldMapping } from "./world";
 import { fighter, mockHudContext, publicPlayers, snapshot, type DrawnPicture } from "../test/fixtures";
 
 const mapping = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 });
@@ -713,12 +713,32 @@ describe("rope give", () => {
     ring.group.traverse((object) => {
       if (!(object instanceof THREE.Mesh)) return;
       if (object.geometry.type === "TubeGeometry") ropes.push(object.material as THREE.Material);
-      if (object.geometry.type === "BoxGeometry" && (object.geometry as THREE.BoxGeometry).parameters.height === 0.82) straps.push(object);
+      if (object.geometry.type === "BoxGeometry" && (object.geometry as THREE.BoxGeometry).parameters.width === 0.035) straps.push(object);
     });
-    expect(straps).toHaveLength(24);
     const flex = (ropes[0] as THREE.MeshStandardMaterial).onBeforeCompile.toString();
     for (const strap of straps) expect((strap.material as THREE.MeshStandardMaterial).onBeforeCompile.toString()).toBe(flex);
     expect(new Set(straps.map((strap) => strap.geometry)).size).toBe(1);
+  });
+
+  it("ties the ropes with one strap at each tie, from under the bottom rope to over the top one, that bends with them", () => {
+    const ring = buildRing();
+    ring.group.updateMatrixWorld(true);
+    const straps: THREE.Mesh[] = [];
+    ring.group.traverse((object) => {
+      if (object instanceof THREE.Mesh && object.geometry.type === "BoxGeometry" && (object.geometry as THREE.BoxGeometry).parameters.width === 0.035) straps.push(object);
+    });
+    // Two ties on each side; a strap per tie rather than three overlapping ones, which banded as the near side faded.
+    expect(straps).toHaveLength(8);
+    expect(new Set(straps.map((strap) => `${strap.position.x.toFixed(3)},${strap.position.z.toFixed(3)}`)).size).toBe(8);
+    const ropeRadius = 0.028;
+    const box = new THREE.Box3();
+    for (const strap of straps) {
+      box.setFromObject(strap);
+      expect(box.min.y).toBeLessThan(ROPE_HEIGHTS[0] - 0.02 - ropeRadius);
+      expect(box.max.y).toBeGreaterThan(ROPE_HEIGHTS[2] - 0.02 + ropeRadius);
+    }
+    expect((straps[0]!.geometry as THREE.BoxGeometry).parameters.heightSegments).toBeGreaterThanOrEqual(4);
+    disposeRing(ring);
   });
 
   it("writes fighter contacts into the rope shader uniforms and clears them", () => {

@@ -41,6 +41,13 @@ const ROPE_GIVE_REACH = 1.15;
 const ROPE_TIE = 0.5;
 /** The bottom rope is pushed by the legs, which lean back less than the shoulders. */
 const ROPE_LOW_GIVE = 0.6;
+/** The ropes sag this far in the middle of a side. */
+const ROPE_SAG = 0.045;
+/** Where along each side the straps tie the ropes together. */
+const TIE_POSITIONS = [0.33, 0.66] as const;
+/** How far the ropes have sagged at the ties, and how far past a rope's middle a strap wraps round it. */
+const TIE_SAG = ROPE_SAG * 2 * 0.33 * 0.67;
+const TIE_WRAP = 0.04;
 
 /**
  * How far, in metres, a fighter at (x, z) pushes the ropes on the x and z sides outward. The engine
@@ -235,11 +242,14 @@ export function buildRing(): BuiltRing {
   const ropeMaterial = (color: number): THREE.MeshStandardMaterial => flexMaterial({ color, roughness: 0.42, metalness: 0.05 });
   const ropeMats = ropeColors.map(ropeMaterial);
   const nearMaterials: THREE.MeshStandardMaterial[] = ropeColors.map(ropeMaterial);
-  // The straps tie the ropes together, so they give with them where a fighter presses into the ropes.
+  // The straps tie the ropes together, so they give with them where a fighter presses into the ropes: one
+  // strap at each tie, from under the bottom rope to over the top one, in enough pieces to bend with them.
   const tieMat = flexMaterial({ color: 0xd8dee8, roughness: 0.6 });
   const nearTieMat = flexMaterial({ color: 0xd8dee8, roughness: 0.6 });
   nearMaterials.push(nearTieMat);
-  const tieGeo = new THREE.BoxGeometry(0.035, 0.82, 0.012);
+  const tieLow = ROPE_HEIGHTS[0] - TIE_SAG - TIE_WRAP;
+  const tieHigh = ROPE_HEIGHTS[ROPE_HEIGHTS.length - 1]! - TIE_SAG + TIE_WRAP;
+  const tieGeo = new THREE.BoxGeometry(0.035, tieHigh - tieLow, 0.012, 1, 6, 1);
   geometries.push(tieGeo);
   const setRopeContacts = (a: { x: number; z: number } | null, b: { x: number; z: number } | null): void => {
     for (const [index, contact] of [a, b].entries()) {
@@ -257,7 +267,7 @@ export function buildRing(): BuiltRing {
     const to = corners[(side + 1) % 4]!;
     for (const [ropeIndex, height] of ROPE_HEIGHTS.entries()) {
       const middle = from.clone().add(to).multiplyScalar(0.5);
-      middle.y = height - 0.045;
+      middle.y = height - ROPE_SAG;
       const curve = new THREE.QuadraticBezierCurve3(
         new THREE.Vector3(from.x, height, from.z),
         middle,
@@ -269,13 +279,14 @@ export function buildRing(): BuiltRing {
       const rope = new THREE.Mesh(ropeGeo, (side === NEAR_SIDE ? nearMaterials : ropeMats)[ropeIndex]!);
       rope.castShadow = true;
       group.add(rope);
-      for (const t of [0.33, 0.66]) {
-        const point = curve.getPoint(t);
-        const tie = new THREE.Mesh(tieGeo, side === NEAR_SIDE ? nearTieMat : tieMat);
-        tie.position.set(point.x, height - 0.36, point.z);
-        tie.lookAt(0, height - 0.36, 0);
-        group.add(tie);
-      }
+    }
+    for (const t of TIE_POSITIONS) {
+      const x = from.x + (to.x - from.x) * t;
+      const z = from.z + (to.z - from.z) * t;
+      const tie = new THREE.Mesh(tieGeo, side === NEAR_SIDE ? nearTieMat : tieMat);
+      tie.position.set(x, (tieLow + tieHigh) / 2, z);
+      tie.lookAt(0, tie.position.y, 0);
+      group.add(tie);
     }
   }
 
