@@ -83,6 +83,9 @@ export class StylePicker {
 
   private readonly keydown = (event: KeyboardEvent): void => {
     if (!this.visible || !this.choosing || event.repeat || event.ctrlKey || event.metaKey || event.altKey) return;
+    // A key pressed in Settings, or on any other control that has the focus, belongs to that control.
+    const target = event.target;
+    if (target instanceof HTMLElement && target !== document.body && !this.element.contains(target)) return;
     const index = STYLE_CARDS.findIndex((card) => card.style === this.highlighted);
     const shortcut = STYLE_KEYS[event.code];
     if (shortcut !== undefined) {
@@ -90,11 +93,12 @@ export class StylePicker {
       this.pick(STYLE_CARDS[shortcut]!.style, true);
     } else if (event.code === "ArrowRight" || event.code === "ArrowDown") {
       event.preventDefault();
-      this.pick(STYLE_CARDS[(index + 1) % STYLE_CARDS.length]!.style, false);
+      this.move(STYLE_CARDS[(index + 1) % STYLE_CARDS.length]!.style);
     } else if (event.code === "ArrowLeft" || event.code === "ArrowUp") {
       event.preventDefault();
-      this.pick(STYLE_CARDS[(index + STYLE_CARDS.length - 1) % STYLE_CARDS.length]!.style, false);
-    } else if (event.code === "Enter" || event.code === "Space") {
+      this.move(STYLE_CARDS[(index + STYLE_CARDS.length - 1) % STYLE_CARDS.length]!.style);
+    } else if ((event.code === "Enter" || event.code === "Space") && !(target instanceof HTMLButtonElement)) {
+      // On a focused card the browser's own click settles that card.
       event.preventDefault();
       this.pick(this.highlighted, true);
     }
@@ -192,6 +196,12 @@ export class StylePicker {
     this.render();
   }
 
+  /** Moves the choice, and the keyboard focus with it, so Enter, Space and Tab all mean the card that is lit. */
+  private move(style: FighterStyle): void {
+    this.pick(style, false);
+    if (!this.settled) this.buttons.get(this.highlighted)?.focus();
+  }
+
   private render(): void {
     const context = this.context;
     if (context === null) return;
@@ -202,6 +212,8 @@ export class StylePicker {
       button.disabled = !this.choosing || this.settled;
       button.setAttribute("aria-pressed", String(mine));
       button.toggleAttribute("data-chosen", mine);
+      // Tab reaches only the lit card; the arrows move between them.
+      button.tabIndex = card.style === this.highlighted ? 0 : -1;
     }
     const seconds = Math.max(0, Math.ceil((this.deadlineAt - this.now()) / 1000));
     const clock = `${seconds}s`;

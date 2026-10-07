@@ -163,6 +163,54 @@ describe("the style picker", () => {
     picker.destroy();
   });
 
+  it("lets Enter or Space on a focused card settle that card, not the highlighted one", () => {
+    const picker = make();
+    show(picker);
+    const slugger = card(picker, "slugger");
+    slugger.focus();
+    for (const code of ["Enter", "Space"]) {
+      const key = new KeyboardEvent("keydown", { code, bubbles: true, cancelable: true });
+      slugger.dispatchEvent(key);
+      // The browser's own activation of the focused button does the settling.
+      expect(key.defaultPrevented).toBe(false);
+    }
+    expect(sent).toEqual(["balanced:false"]);
+    slugger.click();
+    expect(sent).toEqual(["balanced:false", "slugger:true"]);
+    picker.destroy();
+  });
+
+  it("leaves keys typed into Settings or another control to that control", () => {
+    const picker = make();
+    show(picker);
+    const panel = document.createElement("aside");
+    panel.className = "panel";
+    panel.innerHTML = `<input data-volume type="range"><input data-haptics type="checkbox"><button type="button">Settings</button>`;
+    parent.append(panel);
+    for (const [selector, code] of [["[data-volume]", "ArrowRight"], ["[data-volume]", "Digit3"], ["[data-haptics]", "Space"], ["button", "Enter"]] as const) {
+      const control = panel.querySelector<HTMLElement>(selector)!;
+      control.focus();
+      const key = new KeyboardEvent("keydown", { code, bubbles: true, cancelable: true });
+      control.dispatchEvent(key);
+      expect(key.defaultPrevented).toBe(false);
+    }
+    expect(sent).toEqual(["balanced:false"]);
+    picker.destroy();
+  });
+
+  it("moves the keyboard focus with the highlight, so Tab and the arrows agree", () => {
+    const picker = make("boxer");
+    show(picker);
+    const tabbable = (): string[] => [...picker.element.querySelectorAll<HTMLButtonElement>("[data-style]")].filter((button) => button.tabIndex === 0).map((button) => button.dataset.style!);
+    expect(tabbable()).toEqual(["boxer"]);
+    card(picker, "boxer").focus();
+    card(picker, "boxer").dispatchEvent(new KeyboardEvent("keydown", { code: "ArrowRight", bubbles: true, cancelable: true }));
+    expect(sent.at(-1)).toBe("slugger:false");
+    expect(document.activeElement).toBe(card(picker, "slugger"));
+    expect(tabbable()).toEqual(["slugger"]);
+    picker.destroy();
+  });
+
   it("settles at once on a number key or a tap", () => {
     const keyed = make();
     show(keyed);
