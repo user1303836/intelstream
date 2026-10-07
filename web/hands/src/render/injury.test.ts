@@ -4,7 +4,7 @@ import { fighter } from "../test/fixtures";
 import type { TraumaSnapshot } from "../types";
 import { wearCornerColour } from "./gear";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
-import { BODY_SITES, EYE_LIDS, HEAD_SITES, InjuryShading, applyHeadTrauma, eyeShut, trunksBloodFor } from "./injury";
+import { BODY_SITES, EYE_LIDS, EYE_SHUT_TRAUMA, HEAD_SITES, InjuryShading, applyHeadTrauma, eyeShut, trunksBloodFor } from "./injury";
 import { worldMapping } from "./world";
 
 const gltf = await loadBoxerGlb();
@@ -49,11 +49,14 @@ describe("swelling", () => {
 });
 
 describe("an eye swelling shut", () => {
-  it("starts to close once the eye has taken a beating and is shut before a doctor would stop the bout", () => {
+  it("starts to close once the eye has taken a beating and is fully shut at the eye damage that shuts it", () => {
+    expect(EYE_SHUT_TRAUMA).toBe(700);
     expect(eyeShut(0, 0)).toBe(0);
     expect(eyeShut(330, 200)).toBe(0);
     expect(eyeShut(500, 0)).toBeGreaterThan(0.3);
     expect(eyeShut(500, 0)).toBeLessThan(0.7);
+    expect(eyeShut(EYE_SHUT_TRAUMA, 0)).toBe(1);
+    expect(eyeShut(EYE_SHUT_TRAUMA - 1, 0)).toBeLessThan(1);
     expect(eyeShut(700, 200)).toBe(1);
     expect(eyeShut(500, 800)).toBeGreaterThan(eyeShut(500, 0));
     expect(eyeShut(1000, 1000)).toBe(1);

@@ -110,10 +110,12 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       const trigger = finisher === null ? knockdownCycle > 11 && knockdownCycle < 11.15 : t >= 2.5 && t < 2.65;
       if (trigger) {
         eventId += 1;
-        if (finisher !== null && eventId % 2 === 1) eventId += 1;
-        // `finisher=head` severs the head, `burst` bursts it with a big counter, `hand` takes a hand.
+        // `finisher=head` severs the head, `burst` bursts it with a big counter, `eye` forces an eye out
+        // with a hook, `hand` takes a hand. Finishers are picked by the event id, so it is made even or odd.
         const burst = finisher === "burst";
-        events.push({ event_id: eventId, tick, kind: finisher === "head" ? "hit" : "counter_hit", actor_id: one.player_id, target_id: two.player_id, amount: burst ? 130 : finisher === "head" ? 90 : 500, detail: finisher === "hand" ? "left:hook:body" : "right:uppercut:head", blood: 100, direction: 1, action_id: null });
+        const eye = finisher === "eye";
+        if (finisher !== null && eventId % 2 === (eye ? 0 : 1)) eventId += 1;
+        events.push({ event_id: eventId, tick, kind: finisher === "head" || eye ? "hit" : "counter_hit", actor_id: one.player_id, target_id: two.player_id, amount: burst ? 130 : finisher === "head" || eye ? 90 : 500, detail: finisher === "hand" ? "left:hook:body" : eye ? "left:hook:head" : "right:uppercut:head", blood: 100, direction: 1, action_id: null });
         eventId += 1;
         events.push({ event_id: eventId, tick, kind: "knockdown", actor_id: one.player_id, target_id: two.player_id, amount: 420, detail: "knockdown", blood: 60, direction: 1, action_id: null });
       }
@@ -193,6 +195,8 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       severedHands: renderer.labEffects.activeHands,
       mouthpieces: [renderer.labEffects.mouthpieceOut(0), renderer.labEffects.mouthpieceOut(1)],
       bursts: [renderer.labEffects.headBurst(0), renderer.labEffects.headBurst(1)],
+      eyes: [renderer.labEffects.eyeOut(0), renderer.labEffects.eyeOut(1)],
+      eyeAt: (() => { const at = new THREE.Vector3(); return renderer.labEffects.eyePosition(1, at) ? at.toArray().map((value) => Number(value.toFixed(3))) : null; })(),
       rigs: renderer.labRigs.length,
       resolutionScale: renderer.resolutionScale,
       heads: renderer.labRigs.map((root) => {

@@ -372,3 +372,52 @@ export function jawWoundTexture(): THREE.CanvasTexture {
   texture.colorSpace = THREE.SRGBColorSpace;
   return texture;
 }
+
+/**
+ * An eye torn from its socket, for a sphere's own mapping: the iris and pupil face +Z (a quarter of the
+ * way round the texture), white veined with red round them, and the torn back of it raw.
+ */
+export function eyeTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = 128;
+  canvas.height = 64;
+  const ctx = canvas.getContext("2d");
+  if (ctx !== null) {
+    const sclera = ctx.createLinearGradient(0, 0, 128, 0);
+    sclera.addColorStop(0, "#e9ddd4");
+    sclera.addColorStop(0.42, "#e9ddd4");
+    sclera.addColorStop(0.62, "#8a2a2c");
+    sclera.addColorStop(0.85, "#4a070b");
+    sclera.addColorStop(1, "#e9ddd4");
+    ctx.fillStyle = sclera;
+    ctx.fillRect(0, 0, 128, 64);
+    ctx.strokeStyle = "rgba(170,20,26,0.75)";
+    ctx.lineWidth = 0.8;
+    for (let vein = 0; vein < 14; vein += 1) {
+      const angle = (vein / 14) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.moveTo(32 + Math.cos(angle) * 30, 32 + Math.sin(angle) * 26);
+      ctx.quadraticCurveTo(32 + Math.cos(angle + 0.3) * 20, 32 + Math.sin(angle + 0.3) * 18, 32 + Math.cos(angle) * 11, 32 + Math.sin(angle) * 11);
+      ctx.stroke();
+    }
+    const iris = ctx.createRadialGradient(32, 32, 2, 32, 32, 9);
+    iris.addColorStop(0, "#6b4524");
+    iris.addColorStop(0.8, "#4a2d14");
+    iris.addColorStop(1, "#1e1208");
+    ctx.fillStyle = iris;
+    ctx.beginPath();
+    ctx.arc(32, 32, 9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#050302";
+    ctx.beginPath();
+    ctx.arc(32, 32, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.beginPath();
+    ctx.arc(29.5, 29.5, 1.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}

@@ -95,7 +95,8 @@ describe("arcade injury candidate routing", () => {
     const leftPunch = { ...fighter("one"), action_key: "hook:left:body:heavy" };
     const rightPunch = { ...fighter("one"), action_key: "hook:right:body:heavy" };
     expect(arcadeInjuryFor({ ...event("hit", "hook:head"), event_id: 0 }, downed, tko, leftPunch)).toBe("decapitation");
-    expect(arcadeInjuryFor({ ...event("hit", "hook:head"), event_id: 1 }, downed, tko, leftPunch)).toBe("jaw_dislocation");
+    expect(arcadeInjuryFor({ ...event("hit", "hook:head"), event_id: 1 }, downed, tko, leftPunch)).toBe("eye_right");
+    expect(arcadeInjuryFor({ ...event("hit", "uppercut:head"), event_id: 1 }, downed, tko, leftPunch)).toBe("jaw_dislocation");
     expect(arcadeInjuryFor({ ...event("hit", "hook:body"), event_id: 0 }, downed, tko, leftPunch)).toBe("dismember_right");
     expect(arcadeInjuryFor({ ...event("hit", "hook:body"), event_id: 1 }, downed, tko, leftPunch)).toBe("shoulder_right");
     expect(arcadeInjuryFor({ ...event("hit", "hook:body"), event_id: 0 }, downed, tko, rightPunch)).toBe("dismember_left");

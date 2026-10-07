@@ -16,7 +16,7 @@ import { Avatars } from "./avatars";
 import { Effects3D, type BakedPart } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, type ArcadeDislocation } from "./graph";
 import { drawHud, finalRevealDelay, resultCard, resultCardLayout, RoundStatsTracker, STOPPAGE_METHODS, RoundClock, type RoundPunchStats } from "./hud";
-import { BURST_CUT_HEIGHT, NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE } from "./injury";
+import { BURST_CUT_HEIGHT, EYE_LIDS, NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE } from "./injury";
 import { BIG_SHOT, closeCut, cutRim, teethFor } from "./gore";
 import { mouthpieceFlies } from "./mouthpiece";
 import { OFFICIAL_LOOKS, lookFor } from "./looks";
@@ -28,6 +28,8 @@ import { GloveTrail } from "./trails";
 export type ArcadeInjury =
   | "decapitation"
   | "head_burst"
+  | "eye_left"
+  | "eye_right"
   | "dismember_left"
   | "dismember_right"
   | "jaw_dislocation"
@@ -234,6 +236,13 @@ export function arcadeInjuryFor(
   if (event.detail.endsWith(":head")) {
     // A flash knockout or a big counter bursts the head.
     if (result?.finish_method === "flash_ko" || (event.kind === "counter_hit" && event.amount >= BIG_SHOT)) return "head_burst";
+    const key = puncher?.action_key?.split(":");
+    const punch = event.detail.split(":").find((part) => ["jab", "straight", "hook", "uppercut"].includes(part)) ?? key?.[0];
+    if (punch === "hook" && selection % 2 === 1) {
+      // A hook drives the eye on the side it lands out of its socket.
+      const struck = key?.[1] === "left" ? "right" : key?.[1] === "right" ? "left" : Math.floor(selection / 2) % 2 === 0 ? "left" : "right";
+      return `eye_${struck}`;
+    }
     return selection % 2 === 0 ? "decapitation" : "jaw_dislocation";
   }
   const hand = puncher?.action_key?.split(":")[1];
@@ -559,7 +568,52 @@ export function poolRadius(count: number, severity: number): number {
 
 /** Whether the knockout replay puts this injury back so it can happen again on screen. */
 export function replayReattaches(injury: ArcadeInjury): boolean {
-  return injury === "decapitation" || injury === "head_burst" || injury === "dismember_left" || injury === "dismember_right";
+  return injury === "decapitation" || injury === "head_burst" || injury === "eye_left" || injury === "eye_right" || injury === "dismember_left" || injury === "dismember_right";
+}
+
+const eyeVertices = new WeakMap<THREE.BufferGeometry, readonly [number, number]>();
+
+/** The vertex of a head mesh nearest the middle of each eye: left, then right. */
+function eyeVertex(geometry: THREE.BufferGeometry, side: "left" | "right"): number {
+  let found = eyeVertices.get(geometry);
+  if (found === undefined) {
+    const position = geometry.getAttribute("position");
+    const vertex = new THREE.Vector3();
+    const target = new THREE.Vector3();
+    const nearest = EYE_LIDS.map((lid) => {
+      let best = 0;
+      let bestDistance = Infinity;
+      target.set(lid[0], lid[1], lid[2]);
+      for (let index = 0; index < position.count; index += 1) {
+        const distance = vertex.fromBufferAttribute(position, index).distanceToSquared(target);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          best = index;
+        }
+      }
+      return best;
+    });
+    found = [nearest[0]!, nearest[1]!];
+    eyeVertices.set(geometry, found);
+  }
+  return found[side === "left" ? 0 : 1];
+}
+
+/**
+ * Where an eye sits in its socket, on the skin as it is posed, and the way the face points. False when
+ * the fighter has no head bone.
+ */
+export function eyeSocket(boxer: SkinnedBoxer, side: "left" | "right", position: THREE.Vector3, forward: THREE.Vector3, turn: THREE.Quaternion): boolean {
+  const head = boxer.bone("head");
+  if (head === null) return false;
+  boxer.root.updateMatrixWorld(true);
+  const mesh = boxer.headMesh;
+  const vertex = eyeVertex(mesh.geometry, side);
+  mesh.applyBoneTransform(vertex, position.fromBufferAttribute(mesh.geometry.getAttribute("position"), vertex)).applyMatrix4(mesh.matrixWorld);
+  head.getWorldQuaternion(turn);
+  forward.set(0, 0, 1).applyQuaternion(turn);
+  position.addScaledVector(forward, -0.004);
+  return true;
 }
 
 /** How far the referee stands from the action and how close he may get to a fighter: tight over a count, in close for a clinch, otherwise out of the way. */
@@ -1004,15 +1058,24 @@ export class FightRenderer {
   /** A short high three-quarter close-up on the beaten fighter's face, or on the head where it came to rest, before the result panel. */
   private closeUpFrame(seconds: number): { position: THREE.Vector3; lookAt: THREE.Vector3; tight: boolean } | null {
     if (seconds >= this.finishCloseUpUntil || this.finishCloseUpIndex < 0 || !this.headCacheValid[this.finishCloseUpIndex]) return null;
-    const severed = this.arcadeInjuries[this.finishCloseUpIndex] === "decapitation" && this.effects.severedHeadPosition(this.finishCloseUpIndex, this.closeUpTarget);
-    const head = severed ? this.closeUpTarget : this.headCache[this.finishCloseUpIndex]!;
-    const reach = severed ? 0.8 : 1.05;
+    const injury = this.arcadeInjuries[this.finishCloseUpIndex];
+    const severed = injury === "decapitation" && this.effects.severedHeadPosition(this.finishCloseUpIndex, this.closeUpTarget);
+    // An eye out of its socket is shot close, on the side the face points to.
+    const hanging = !severed && (injury === "eye_left" || injury === "eye_right") && this.effects.eyePosition(this.finishCloseUpIndex, this.closeUpTarget);
+    const head = severed || hanging ? this.closeUpTarget : this.headCache[this.finishCloseUpIndex]!;
+    const reach = severed ? 0.8 : hanging ? 0.45 : 1.05;
     const drift = (seconds - (this.finishCloseUpUntil - FINISH_CLOSE_UP_SECONDS)) * 0.25 - 0.2;
     // Shoot from the ring-centre side of the fighter so the ropes stay behind the face.
     const toCentre = Math.atan2(-head.x, -head.z);
     // The side is chosen once: a head still tumbling would swing the camera round it.
     if (this.finishCloseUpBearing === null) {
-      const facing = severed && this.effects.severedHeadFacing(this.finishCloseUpIndex, this.closeUpFacing) ? this.closeUpFacing : null;
+      const skull = hanging ? this.headWorldPose(this.finishCloseUpIndex) : null;
+      // A hanging eye is shot from the side of the head it hangs on.
+      const facing = severed && this.effects.severedHeadFacing(this.finishCloseUpIndex, this.closeUpFacing)
+        ? this.closeUpFacing
+        : skull !== null
+          ? this.closeUpFacing.copy(head).sub(skull.position).normalize()
+          : null;
       const winner = this.finishCloseUpIndex === 0 ? this.tmpB : this.tmpA;
       const blockers = [{ x: winner.x, z: winner.z, radius: STANDING_BLOCK_RADIUS }, { x: this.refereePosition.x, z: this.refereePosition.z, radius: STANDING_BLOCK_RADIUS }];
       this.finishCloseUpBearing = closeUpAngle(head.x, head.z, facing, reach, TIGHT_SHOT_LIMIT, Math.hypot(head.x, head.z) > 0.4 ? toCentre : 0.9, blockers);
@@ -1020,7 +1083,7 @@ export class FightRenderer {
     const angle = this.finishCloseUpBearing + drift;
     this.closeUpPosition.set(
       THREE.MathUtils.clamp(head.x + Math.sin(angle) * reach, -TIGHT_SHOT_LIMIT, TIGHT_SHOT_LIMIT),
-      head.y + (severed ? 0.42 : 0.75),
+      head.y + (severed ? 0.42 : hanging ? 0.5 : 0.75),
       THREE.MathUtils.clamp(head.z + Math.cos(angle) * reach, -TIGHT_SHOT_LIMIT, TIGHT_SHOT_LIMIT),
     );
     this.replayLookAt.copy(head);
@@ -1153,6 +1216,7 @@ export class FightRenderer {
       const graph = graphs[index]!;
       if (injury === "head_burst") graph.boxer.setHeadBurst(true);
       else graph.boxer.setDecapitated(injury === "decapitation");
+      graph.boxer.headInjury.setEyeOut(injury === "eye_left" ? "left" : injury === "eye_right" ? "right" : null);
       graph.boxer.setHandDismembered("left", injury === "dismember_left");
       graph.boxer.setHandDismembered("right", injury === "dismember_right");
       const dislocation: ArcadeDislocation | null = injury === "jaw_dislocation"
@@ -1192,6 +1256,12 @@ export class FightRenderer {
         this.effects.burstHead(index, pose.position, event.direction, event.event_id);
         const jaw = this.burstStumpPose(index);
         if (jaw !== null) this.effects.anchorStump(index, jaw.position, jaw.quaternion, jaw.rim, jaw.across);
+        applied = true;
+      }
+    } else if (injury === "eye_left" || injury === "eye_right") {
+      const boxer = this.graphs?.[index]?.boxer;
+      if (boxer !== undefined && eyeSocket(boxer, injury === "eye_left" ? "left" : "right", this.tmpPart, this.tmpStumpOffset, this.tmpPartQuaternion)) {
+        this.effects.gougeEye(index, this.tmpPart, this.tmpStumpOffset, event.direction, event.event_id);
         applied = true;
       }
     } else if (injury === "dismember_left" || injury === "dismember_right") {
@@ -1650,6 +1720,10 @@ export class FightRenderer {
         } else if (injury === "head_burst") {
           const jaw = this.burstStumpPose(index);
           if (jaw !== null) this.effects.anchorStump(index, jaw.position, jaw.quaternion, jaw.rim, jaw.across);
+        } else if (injury === "eye_left" || injury === "eye_right") {
+          const boxer = this.graphs?.[index]?.boxer;
+          const skull = this.headWorldPose(index);
+          if (boxer !== undefined && skull !== null && eyeSocket(boxer, injury === "eye_left" ? "left" : "right", this.tmpPart, this.tmpStumpOffset, this.tmpPartQuaternion)) this.effects.anchorEye(index, this.tmpPart, this.tmpStumpOffset, skull.position, skull.quaternion);
         } else if (injury === "dismember_left" || injury === "dismember_right") {
           const side = injury === "dismember_left" ? "left" : "right";
           const pose = this.handWorldPose(index, side);

@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { Effects3D } from "../render/effects";
-import { measureBurstStump } from "../render/renderer";
+import { eyeSocket, measureBurstStump } from "../render/renderer";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "../render/graph";
 import { OFFICIAL_LOOKS, lookFor, type FighterLook } from "../render/looks";
 import { BLUE_CORNER_OUTFIT, CUTMAN_OUTFIT, RED_CORNER_OUTFIT, REFEREE_OUTFIT, type OfficialOutfit } from "../render/outfit";
@@ -207,7 +207,7 @@ export class ModelLab {
         this.skeletonHelper = new THREE.SkeletonHelper(this.boxer.root);
         this.scene.add(this.skeletonHelper);
       }
-      if (this.params.get("mouthpiece") === "1" || this.params.get("burst") === "1") this.effects = new Effects3D(this.scene);
+      if (this.params.get("mouthpiece") === "1" || this.params.get("burst") === "1" || this.params.has("eye")) this.effects = new Effects3D(this.scene);
       if (this.params.get("burst") === "1") this.boxer.setHeadBurst(true);
       const dislocation = this.params.get("dislocation");
       if (dislocation === "jaw" || dislocation === "shoulder_left" || dislocation === "shoulder_right") this.graph.setArcadeDislocation(dislocation);
@@ -282,6 +282,13 @@ export class ModelLab {
         if (!this.effects.headBurst(0)) this.effects.burstHead(0, this.burstStump.position, 1, 7);
         this.effects.anchorStump(0, this.burstStump.position, this.burstStump.quaternion, rim, this.burstStump.across);
       }
+    }
+    // `eye=left|right` forces that eye out and lets it hang.
+    const eye = this.params.get("eye");
+    if (this.effects !== null && (eye === "left" || eye === "right") && eyeSocket(this.boxer!, eye, this.mouth, this.burstStump.scratch, this.headTurn)) {
+      this.boxer!.headInjury.setEyeOut(eye);
+      if (!this.effects.eyeOut(0)) this.effects.gougeEye(0, this.mouth, this.burstStump.scratch, 1, 9);
+      this.effects.anchorEye(0, this.mouth, this.burstStump.scratch, this.boxer!.bone("head")!.getWorldPosition(this.burstStump.position).add(new THREE.Vector3(0, 0.12, 0.02).applyQuaternion(this.headTurn)), this.headTurn);
     }
     if (this.effects !== null && this.params.get("mouthpiece") === "1") {
       this.shieldClock += dt;

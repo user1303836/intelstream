@@ -3,7 +3,7 @@ import type { BloodLevel } from "../settings";
 import type { CombatEvent, Hand } from "../types";
 import { CanvasBlood } from "./canvas-blood";
 import { wearCornerColour } from "./gear";
-import { HARD_SHOT, bloodDropsFor, bloodShade, buildChunkGeometry, buildDropletGeometry, buildShardGeometry, buildWoundGeometry, closeCut, dropletShape, jawWoundTexture, woundTexture } from "./gore";
+import { HARD_SHOT, bloodDropsFor, bloodShade, buildChunkGeometry, buildDropletGeometry, buildShardGeometry, buildWoundGeometry, closeCut, dropletShape, eyeTexture, jawWoundTexture, woundTexture } from "./gore";
 import { LookShading, SCANNED_LOOK, type FighterLook } from "./looks";
 import { SHIELD_RADIUS, buildMouthpieceGeometry, idleShield, stepShield, type ShieldState } from "./mouthpiece";
 import { CANVAS_TOP, RING_FIGHT_HALF, ROPE_LINE } from "./world";
@@ -116,6 +116,23 @@ interface Stump {
   direction: number;
 }
 
+/** An eye hanging out of its socket on its nerve, swinging as a weight on a cord. */
+interface HangingEye {
+  active: boolean;
+  eventId: number | null;
+  readonly position: THREE.Vector3;
+  readonly previous: THREE.Vector3;
+  readonly socket: THREE.Vector3;
+  /** The way the face points, which the pupil half turns to as it hangs. */
+  readonly facing: THREE.Vector3;
+  /** The middle of the skull and how the head is turned: the eye lies against the head rather than hanging through it. */
+  readonly skull: THREE.Vector3;
+  readonly skullTurn: THREE.Quaternion;
+  hasSkull: boolean;
+  bleeding: number;
+  accumulator: number;
+}
+
 interface DripEmitter {
   readonly position: THREE.Vector3;
   active: boolean;
@@ -132,8 +149,17 @@ const seeded = (seed: number): (() => number) => () => {
 const finite = (value: number, fallback = 0): number => Number.isFinite(value) ? value : fallback;
 const idleGib = (): Gib => ({ alive: false, x: 0, y: -50, z: 0, vx: 0, vy: 0, vz: 0, rx: 0, ry: 0, rz: 0, vrx: 0, vry: 0, vrz: 0, life: 0, scale: 0, stretch: 1, bounces: 0, stained: false, kind: "flesh" });
 const SHIELD_WHITE = new THREE.Color(0xf4f7fb);
+const EYE_RADIUS = 0.012;
+/** How far an eye forced out hangs below its socket on the nerve. */
+export const EYE_NERVE_LENGTH = 0.055;
+const EYE_DAMPING = 0.985;
+/** Half the width and height of the head about the middle of the skull, plus the eye, for a hanging eye. */
+const SKULL_RADII = new THREE.Vector2(0.085 + EYE_RADIUS, 0.12 + EYE_RADIUS);
+/** How far in front of the socket's plane a hanging eye lies on the face, for the cheekbone and the lids. */
+const FACE_CLEARANCE = 0.012;
 const SALIVA = { r: 0.82, g: 0.86, b: 0.9 } as const;
 const unitY = new THREE.Vector3(0, 1, 0);
+const UNIT_Z = new THREE.Vector3(0, 0, 1);
 const safeStep = (dt: number): number => Number.isFinite(dt) ? THREE.MathUtils.clamp(dt, 0, MAX_STEP) : 0;
 const IMPACT_KINDS = new Set(["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown", "bleed"]);
 
@@ -249,6 +275,17 @@ export class Effects3D {
   private readonly lastBurstEvent = [null, null] as Array<number | null>;
   private readonly lastDismembermentEvent = Array<number | null>(MAX_HANDS).fill(null);
 
+  private readonly eyeGeometry: THREE.SphereGeometry;
+  private readonly eyeMap: THREE.CanvasTexture;
+  private readonly eyeMaterial: THREE.MeshStandardMaterial;
+  private readonly nerveGeometry: THREE.CylinderGeometry;
+  private readonly nerveMaterial: THREE.MeshStandardMaterial;
+  private readonly eyeMeshes: THREE.Mesh[] = [];
+  private readonly nerveMeshes: THREE.Mesh[] = [];
+  private readonly eyes: HangingEye[] = [];
+  private readonly eyeDirection = new THREE.Vector3();
+  private readonly eyeTurn = new THREE.Quaternion();
+  private readonly eyeSocketLocal = new THREE.Vector3();
   private readonly shieldGeometry: THREE.BufferGeometry;
   private readonly shieldMaterials: THREE.MeshStandardMaterial[] = [];
   private readonly shieldMeshes: THREE.Mesh[] = [];
@@ -359,6 +396,23 @@ export class Effects3D {
       stumpMesh.visible = false;
       scene.add(stumpMesh);
       this.stumps.push({ mesh: stumpMesh, flesh: new THREE.BufferGeometry(), active: false, fountainLife: 0, accumulator: 0, seed: 1, direction: 1 });
+    }
+    this.eyeGeometry = new THREE.SphereGeometry(EYE_RADIUS, 16, 12);
+    this.eyeMap = eyeTexture();
+    this.eyeMaterial = new THREE.MeshStandardMaterial({ map: this.eyeMap, roughness: 0.18, metalness: 0 });
+    this.nerveGeometry = new THREE.CylinderGeometry(0.0034, 0.0045, 1, 8, 1, true);
+    this.nerveGeometry.translate(0, 0.5, 0);
+    this.nerveMaterial = new THREE.MeshStandardMaterial({ color: 0xb04048, roughness: 0.25, metalness: 0, side: THREE.DoubleSide });
+    for (let index = 0; index < MAX_HEADS; index += 1) {
+      const eye = new THREE.Mesh(this.eyeGeometry, this.eyeMaterial);
+      const nerve = new THREE.Mesh(this.nerveGeometry, this.nerveMaterial);
+      eye.visible = false;
+      nerve.visible = false;
+      eye.castShadow = true;
+      scene.add(eye, nerve);
+      this.eyeMeshes.push(eye);
+      this.nerveMeshes.push(nerve);
+      this.eyes.push({ active: false, eventId: null, position: new THREE.Vector3(), previous: new THREE.Vector3(), socket: new THREE.Vector3(), facing: new THREE.Vector3(0, 0, 1), skull: new THREE.Vector3(), skullTurn: new THREE.Quaternion(), hasSkull: false, bleeding: 0, accumulator: 0 });
     }
     this.shieldGeometry = buildMouthpieceGeometry();
     for (let index = 0; index < MAX_HEADS; index += 1) {
@@ -530,6 +584,139 @@ export class Effects3D {
       );
     }
     return true;
+  }
+
+  /**
+   * Forces a fighter's eye out of its socket at `socket`, along `forward` (the way the face points):
+   * it springs out, then hangs and swings on its nerve, bleeding from the empty socket.
+   */
+  gougeEye(fighterIndex: number, socket: THREE.Vector3, forward: THREE.Vector3, direction: number, eventId: number): void {
+    if (this.bloodLevel !== "full" || fighterIndex < 0 || fighterIndex >= MAX_HEADS) return;
+    const index = Math.trunc(fighterIndex);
+    const eye = this.eyes[index]!;
+    const safeEventId = Number.isSafeInteger(eventId) ? eventId : 0;
+    if (eye.active || eye.eventId === safeEventId) return;
+    eye.active = true;
+    eye.eventId = safeEventId;
+    eye.socket.set(finite(socket.x), finite(socket.y, 1.6), finite(socket.z));
+    eye.facing.copy(forward);
+    eye.hasSkull = false;
+    eye.position.copy(eye.socket).addScaledVector(forward, EYE_RADIUS * 1.5);
+    // It leaves at about a metre and a half a second, out of the face and away from the punch.
+    this.eyeDirection.copy(forward).multiplyScalar(1.3);
+    this.eyeDirection.x += (direction < 0 ? -1 : 1) * 0.5;
+    eye.previous.copy(eye.position).addScaledVector(this.eyeDirection, -SIMULATION_STEP);
+    eye.bleeding = 2;
+    eye.accumulator = 0;
+    this.eyeMeshes[index]!.visible = true;
+    this.nerveMeshes[index]!.visible = true;
+    const rand = seeded(safeEventId * 52_711 + index * 3571 + 13);
+    for (let drop = 0; drop < 36; drop += 1) {
+      const angle = rand() * Math.PI * 2;
+      this.spawnDroplet(eye.socket.x, eye.socket.y, eye.socket.z, forward.x * (0.8 + rand()) + Math.sin(angle) * 0.6, 0.4 + rand() * 1.2, forward.z * (0.8 + rand()) + Math.cos(angle) * 0.6, bloodShade(rand()), 0.6 + rand() * 0.6, true);
+    }
+    for (let puff = 0; puff < 4; puff += 1) this.spawnMist(eye.socket.x + (rand() - 0.5) * 0.1, eye.socket.y + (rand() - 0.5) * 0.08, eye.socket.z + (rand() - 0.5) * 0.1, 0.7 + rand() * 0.6, 0.5 + rand() * 0.4);
+    this.writeEye(index);
+  }
+
+  /**
+   * Keeps the nerve of a hanging eye in its socket as the head moves; `facing` is the way the face
+   * points and `skull` the middle of the head, which the eye lies against.
+   */
+  anchorEye(fighterIndex: number, socket: THREE.Vector3, facing?: THREE.Vector3, skull?: THREE.Vector3, skullTurn?: THREE.Quaternion): void {
+    const eye = this.eyes[Math.trunc(fighterIndex)];
+    if (eye === undefined || !eye.active) return;
+    eye.socket.set(finite(socket.x), finite(socket.y, 1.6), finite(socket.z));
+    if (facing !== undefined && facing.lengthSq() > 1e-8) eye.facing.copy(facing).normalize();
+    if (skull !== undefined && skullTurn !== undefined) {
+      eye.skull.set(finite(skull.x), finite(skull.y, 1.6), finite(skull.z));
+      copyFiniteQuaternion(eye.skullTurn, skullTurn);
+      eye.hasSkull = true;
+    }
+  }
+
+  eyeOut(fighterIndex: number): boolean {
+    return this.eyes[Math.trunc(fighterIndex)]?.active === true;
+  }
+
+  /** Copies where a fighter's hanging eye is into `out`; false while it is in his head. */
+  eyePosition(fighterIndex: number, out: THREE.Vector3): boolean {
+    const eye = this.eyes[Math.trunc(fighterIndex)];
+    if (eye === undefined || !eye.active) return false;
+    out.copy(eye.position);
+    return true;
+  }
+
+  private updateEyes(step: number): void {
+    for (const [index, eye] of this.eyes.entries()) {
+      if (!eye.active) continue;
+      // Verlet: what it moved last step, a little damped, plus gravity; then the nerve holds it.
+      this.eyeDirection.copy(eye.position).sub(eye.previous).multiplyScalar(EYE_DAMPING);
+      eye.previous.copy(eye.position);
+      eye.position.add(this.eyeDirection);
+      eye.position.y -= DROPLET_GRAVITY * step * step;
+      this.eyeDirection.copy(eye.position).sub(eye.socket);
+      const stretch = this.eyeDirection.length();
+      if (stretch > EYE_NERVE_LENGTH) eye.position.copy(eye.socket).addScaledVector(this.eyeDirection, EYE_NERVE_LENGTH / stretch);
+      if (eye.hasSkull && this.restOnFace(eye)) {
+        // It rests where it touches rather than sliding round the head, and the nerve still holds it.
+        eye.previous.lerp(eye.position, 0.6);
+        this.eyeDirection.copy(eye.position).sub(eye.socket);
+        const held = this.eyeDirection.length();
+        if (held > EYE_NERVE_LENGTH) eye.position.copy(eye.socket).addScaledVector(this.eyeDirection, EYE_NERVE_LENGTH / held);
+      }
+      if (eye.position.y < CANVAS_TOP + EYE_RADIUS) eye.position.y = CANVAS_TOP + EYE_RADIUS;
+      if (this.bloodLevel === "full" && eye.bleeding > 0) {
+        eye.bleeding = Math.max(0, eye.bleeding - step);
+        eye.accumulator += step * 14;
+        while (eye.accumulator >= 1) {
+          eye.accumulator -= 1;
+          this.spawnDroplet(eye.socket.x, eye.socket.y - 0.005, eye.socket.z, (this.ambientRandom() - 0.5) * 0.2, -0.2 - this.ambientRandom() * 0.3, (this.ambientRandom() - 0.5) * 0.2, bloodShade(this.ambientRandom()), 0.9, true);
+        }
+      }
+      this.writeEye(index);
+    }
+  }
+
+  /**
+   * Keeps a hanging eye out of the head. Seen in the head's own frame the head behind the face is a
+   * column as wide and tall as the skull, ending in the plane of the face just in front of the socket;
+   * an eye inside it goes out the shorter way, to the face or to the side. True when it was moved.
+   */
+  private restOnFace(eye: HangingEye): boolean {
+    this.eyeTurn.copy(eye.skullTurn).invert();
+    const local = this.eyeDirection.copy(eye.position).sub(eye.skull).applyQuaternion(this.eyeTurn);
+    const face = this.eyeSocketLocal.copy(eye.socket).sub(eye.skull).applyQuaternion(this.eyeTurn).z + EYE_RADIUS + FACE_CLEARANCE;
+    if (local.z >= face) return false;
+    const across = Math.hypot(local.x / SKULL_RADII.x, local.y / SKULL_RADII.y);
+    if (across >= 1) return false;
+    const toFace = face - local.z;
+    const toSide = (1 - across) * Math.min(SKULL_RADII.x, SKULL_RADII.y);
+    if (toFace <= toSide || across < 1e-6) local.z = face;
+    else {
+      local.x /= across;
+      local.y /= across;
+    }
+    eye.position.copy(eye.skull).add(local.applyQuaternion(eye.skullTurn));
+    return true;
+  }
+
+  private writeEye(index: number): void {
+    const eye = this.eyes[index]!;
+    const ball = this.eyeMeshes[index]!;
+    const nerve = this.nerveMeshes[index]!;
+    ball.position.copy(eye.position);
+    // The nerve leaves the back of the eye, so the pupil looks away from the socket.
+    this.eyeDirection.copy(eye.position).sub(eye.socket);
+    const length = this.eyeDirection.length();
+    if (length > 1e-5) {
+      this.eyeDirection.multiplyScalar(1 / length);
+      nerve.quaternion.setFromUnitVectors(unitY, this.eyeDirection);
+      this.eyeDirection.addScaledVector(eye.facing, 0.9).normalize();
+      ball.quaternion.setFromUnitVectors(UNIT_Z, this.eyeDirection);
+    }
+    nerve.position.copy(eye.socket);
+    nerve.scale.set(1, Math.max(0.001, length - EYE_RADIUS * 0.8), 1);
   }
 
   /** The corner puts the gum shield back in between rounds. */
@@ -1133,6 +1320,11 @@ export class Effects3D {
     stump.mesh.visible = false;
     stump.mesh.position.y = -50;
     stump.mesh.material = this.stumpMaterial;
+    const eye = this.eyes[index]!;
+    eye.active = false;
+    eye.bleeding = 0;
+    this.eyeMeshes[index]!.visible = false;
+    this.nerveMeshes[index]!.visible = false;
     for (const handIndex of [index * 2, index * 2 + 1]) {
       const hand = this.hands[handIndex]!;
       hand.active = false;
@@ -1433,6 +1625,7 @@ export class Effects3D {
     this.updateDetachedParts(this.heads, step);
     this.updateDetachedParts(this.hands, step);
     this.updateShields(step);
+    this.updateEyes(step);
     this.updateDebris(this.gibs, this.gibMesh, step);
     this.updateDebris(this.shards, this.shardMesh, step);
 
@@ -1595,6 +1788,12 @@ export class Effects3D {
     this.shieldGeometry.dispose();
     for (const material of this.shieldMaterials) material.dispose();
     for (const mesh of this.shieldMeshes) this.scene.remove(mesh);
+    this.eyeGeometry.dispose();
+    this.eyeMap.dispose();
+    this.eyeMaterial.dispose();
+    this.nerveGeometry.dispose();
+    this.nerveMaterial.dispose();
+    for (const mesh of [...this.eyeMeshes, ...this.nerveMeshes]) this.scene.remove(mesh);
     this.stumpMaterial.dispose();
     this.stumpMap.dispose();
     for (const head of this.heads) this.scene.remove(head.mesh);

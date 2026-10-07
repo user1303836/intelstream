@@ -98,6 +98,8 @@ const VERTEX_DECLARATIONS = /* glsl */ `
 uniform vec4 uInjurySite[${INJURY_SITE_COUNT}];
 uniform float uInjurySwell[${INJURY_SITE_COUNT}];
 uniform vec4 uInjuryCore;
+uniform vec4 uInjuryLid[2];
+uniform vec2 uInjuryEyeOut;
 uniform float uInjuryJaw;
 uniform float uInjuryJawLevel;
 uniform vec4 uInjuryImpact;
@@ -125,6 +127,13 @@ vInjuryPos = transformed;
   float impactDistance = distance(transformed, uInjuryImpact.xyz);
   float impactWeight = 1.0 - smoothstep(0.0, max(uInjuryImpact.w, 0.001), impactDistance);
   transformed += uInjuryImpactPush * (impactWeight * impactWeight);
+  // An eye forced out leaves its socket hollow.
+  for (int e = 0; e < 2; e++) {
+    float gone = e == 0 ? uInjuryEyeOut.x : uInjuryEyeOut.y;
+    if (gone <= 0.0) continue;
+    float socket = 1.0 - smoothstep(0.0, 1.7, distance(transformed, uInjuryLid[e].xyz));
+    transformed.z -= 1.1 * socket * socket * gone;
+  }
   float jawMask = (1.0 - smoothstep(uInjuryJawLevel - 2.5, uInjuryJawLevel + 1.5, transformed.y)) * smoothstep(-6.0, 0.0, transformed.z);
   transformed.x += uInjuryJaw * 1.7 * jawMask;
   transformed.y -= uInjuryJaw * 0.9 * jawMask;
@@ -140,6 +149,7 @@ uniform float uInjuryBlood[${INJURY_SITE_COUNT}];
 uniform float uInjuryWetness;
 uniform float uInjuryWash;
 uniform vec4 uInjuryLid[2];
+uniform vec2 uInjuryEyeOut;
 varying vec3 vInjuryPos;
 float injuryWet = 0.0;
 ${SEVER}
@@ -213,6 +223,17 @@ const FRAGMENT_BODY = /* glsl */ `
     float crease = (1.0 - smoothstep(0.035, 0.07 + 0.12 * (1.0 - lid.w), abs(lifted + 0.12))) * (1.0 - smoothstep(0.55, 0.95, abs(across)));
     diffuseColor.rgb = mix(diffuseColor.rgb, mix(puffed, vec3(0.03, 0.006, 0.01), crease * 0.92), closed);
     injuryWet = max(injuryWet, closed * 0.35 * (1.0 - crease));
+  }
+  // An empty socket: a raw red rim round a dark hollow where the eye was.
+  for (int e = 0; e < 2; e++) {
+    float gone = e == 0 ? uInjuryEyeOut.x : uInjuryEyeOut.y;
+    if (gone <= 0.0) continue;
+    vec3 q = injuryPos - uInjuryLid[e].xyz;
+    float reach = length(vec2(q.x / 1.45, (q.y + 0.1 * q.x * q.x) / 1.0)) + max(0.0, -q.z - 1.6) * 1.5;
+    float hollow = (1.0 - smoothstep(0.7, 1.05, reach)) * gone;
+    vec3 inside = mix(vec3(0.03, 0.0, 0.004), rawFlesh * 1.15, smoothstep(0.3, 0.85, reach));
+    diffuseColor.rgb = mix(diffuseColor.rgb, inside, hollow);
+    injuryWet = max(injuryWet, hollow);
   }
   for (int i = 0; i < ${INJURY_SITE_COUNT}; i++) {
     float radius = uInjurySite[i].w;
@@ -288,6 +309,7 @@ export class InjuryShading {
     uInjuryCore: { value: new THREE.Vector4(...HEAD_SWELL_CORE) },
     uInjuryWash: { value: 0 },
     uInjuryLid: { value: [new THREE.Vector4(0, -1000, 0, 0), new THREE.Vector4(0, -1000, 0, 0)] },
+    uInjuryEyeOut: { value: new THREE.Vector2() },
   };
   private readonly index = new Map<string, number>();
 
@@ -400,6 +422,22 @@ export class InjuryShading {
     if (rightLid!.y > -500) rightLid!.w = THREE.MathUtils.clamp(right, 0, 1) || 0;
   }
 
+  /** Hollows a socket whose eye has been forced out: `side` is the fighter's own. */
+  setEyeOut(side: "left" | "right" | null): void {
+    const lids = this.uniforms.uInjuryLid.value;
+    const left = side === "left" && lids[0]!.y > -500;
+    const right = side === "right" && lids[1]!.y > -500;
+    this.uniforms.uInjuryEyeOut.value.set(left ? 1 : 0, right ? 1 : 0);
+    // The empty socket runs with blood down the cheek.
+    if (this.index.has("leftEye")) this.set("leftEye", { blood: left ? 1.3 : 0 });
+    if (this.index.has("rightEye")) this.set("rightEye", { blood: right ? 1.3 : 0 });
+  }
+
+  get eyeOut(): "left" | "right" | null {
+    const out = this.uniforms.uInjuryEyeOut.value;
+    return out.x > 0 ? "left" : out.y > 0 ? "right" : null;
+  }
+
   get eyesShut(): readonly [number, number] {
     return [this.uniforms.uInjuryLid.value[0]!.w, this.uniforms.uInjuryLid.value[1]!.w];
   }
@@ -411,6 +449,7 @@ export class InjuryShading {
     for (const cut of this.uniforms.uInjuryCut.value) cut.y = 0;
     this.uniforms.uInjuryJaw.value = 0;
     for (const lid of this.uniforms.uInjuryLid.value) lid.w = 0;
+    this.uniforms.uInjuryEyeOut.value.set(0, 0);
   }
 
   level(name: string): { bruise: number; swell: number; cut: number; blood: number } {
@@ -426,9 +465,14 @@ export class InjuryShading {
 
 const bloodScale = (blood: BloodLevel): number => (blood === "off" ? 0 : blood === "reduced" ? 0.35 : 1);
 
-/** An eye starts to close once it has taken a beating and is shut well before a doctor would stop the bout. */
+/** Eye damage at which an eye is swollen fully shut, whatever the rest of the face. */
+export const EYE_SHUT_TRAUMA = 700;
+/** Eye damage at which the lids start to swell together. */
+const EYE_CLOSING_TRAUMA = 330;
+
+/** An eye starts to close once it has taken a beating, sooner as the face swells, and is shut at `EYE_SHUT_TRAUMA`. */
 export function eyeShut(eyeTrauma: number, swelling: number): number {
-  return THREE.MathUtils.clamp((eyeTrauma - 330) / 370 + Math.max(0, swelling - 200) / 1600, 0, 1);
+  return THREE.MathUtils.clamp((eyeTrauma - EYE_CLOSING_TRAUMA) / (EYE_SHUT_TRAUMA - EYE_CLOSING_TRAUMA) + Math.max(0, swelling - 200) / 1600, 0, 1);
 }
 
 /** Maps authoritative trauma onto head injury sites. */
