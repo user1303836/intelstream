@@ -127,8 +127,9 @@ class CpuProfile:
     """Chance to aim a hook or uppercut at the side of the opponent's shut eye."""
     corner_percent: int
     """Chance to give the corner the instruction the fighter needs rather than none."""
-    waits_out_a_busy_opponent: bool
-    """Leads only at a man covering up or not punching: an open, busy opponent makes him wait."""
+    busy_lead_percent: int
+    """Chance per look to lead at a man throwing punches with his hands free; a beginner mostly
+    waits him out, and leads at one who covers up or stands off."""
 
 
 PROFILES: dict[CpuLevel, CpuProfile] = {
@@ -162,7 +163,7 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         taunt_percent=3,
         exploit_percent=0,
         corner_percent=60,
-        waits_out_a_busy_opponent=True,
+        busy_lead_percent=20,
     ),
     CpuLevel.CONTENDER: CpuProfile(
         name="Marcus 'Hammer' Reed",
@@ -184,7 +185,7 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         jab_bias=10,
         counter_percent=65,
         power_percent=40,
-        body_percent=45,
+        body_percent=42,
         finish_percent=20,
         admire_ticks=6,
         head_movement_percent=12,
@@ -194,16 +195,16 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         taunt_percent=2,
         exploit_percent=50,
         corner_percent=90,
-        waits_out_a_busy_opponent=False,
+        busy_lead_percent=100,
     ),
     CpuLevel.CHAMPION: CpuProfile(
         name="Viktor 'Iron' Volkov",
         rating=1400,
         reaction_ticks=5,
         reaction_spread=3,
-        read_percent=66,
-        perfect_percent=45,
-        guard_percent=65,
+        read_percent=80,
+        perfect_percent=80,
+        guard_percent=80,
         aggression_percent=60,
         attack_interval=7,
         combo_length=4,
@@ -216,7 +217,7 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         jab_bias=0,
         counter_percent=80,
         power_percent=35,
-        body_percent=22,
+        body_percent=38,
         finish_percent=30,
         admire_ticks=0,
         head_movement_percent=14,
@@ -226,7 +227,7 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         taunt_percent=1,
         exploit_percent=80,
         corner_percent=100,
-        waits_out_a_busy_opponent=False,
+        busy_lead_percent=100,
     ),
 }
 
@@ -818,16 +819,6 @@ class CpuBrain:
     ) -> PunchAction | None:
         profile = self.profile
         countering = me.counter_ticks > 0
-        guarding = them.defense in (DefensivePose.GUARD_HIGH, DefensivePose.GUARD_LOW)
-        if (
-            profile.waits_out_a_busy_opponent
-            and not countering
-            and not guarding
-            and self._opponent_punches
-        ):
-            # A beginner pecks at a man who covers up or stands off; one who keeps throwing with
-            # his hands free makes him wait.
-            return None
         punishing = (
             self._punish_start >= 0
             and them.attack is not None
@@ -856,6 +847,12 @@ class CpuBrain:
         if hurt and not countering:
             return None
         self._next_attack_tick = tick + 2 + self._rng.randrange(2)
+        guarding = them.defense in (DefensivePose.GUARD_HIGH, DefensivePose.GUARD_LOW)
+        busy = not guarding and bool(self._opponent_punches)
+        if busy and profile.busy_lead_percent < 100 and not self._roll(profile.busy_lead_percent):
+            # A beginner pecks at a man who covers up or stands off, and mostly waits out one who
+            # keeps throwing with his hands free.
+            return None
         aggression = profile.aggression_percent + (profile.finish_percent if opponent_hurt else 0)
         if not self._roll(aggression):
             return None

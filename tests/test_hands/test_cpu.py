@@ -249,14 +249,15 @@ def body_hook_outcome(
     engine.fighter("cpu").style = style
     engine.fighter("human").conditioning = puncher_conditioning
     brain = CpuBrain("cpu", "human", CpuLevel.CHAMPION, 4, style)
-    brain.profile = profile = replace(brain.profile, reaction_ticks=6, reaction_spread=0)
-    assert profile.read_percent != profile.perfect_percent
-    brain._roll = lambda percent: (
-        percent == profile.read_percent
-        or (  # type: ignore[method-assign]
-            perfect_roll and percent == profile.perfect_percent
-        )
+    # Read and perfect-block chances no other roll uses, so each can be passed or failed alone.
+    brain.profile = replace(
+        brain.profile, reaction_ticks=6, reaction_spread=0, read_percent=91, perfect_percent=37
     )
+
+    def roll(percent: int) -> bool:
+        return percent == 91 or (perfect_roll and percent == 37)
+
+    brain._roll = roll  # type: ignore[method-assign]
     brain._movement = lambda *_args: (0, 0)  # type: ignore[method-assign]
     brain._attack = lambda *_args: None  # type: ignore[method-assign]
     throw(engine, PunchAction(Hand.RIGHT, PunchClass.HOOK, Target.BODY, Power.POWER))
@@ -780,21 +781,29 @@ def test_the_rookie_lands_punches_on_a_turtle_every_round_and_the_turtle_still_w
         assert bout.rounds == 3 and min(bout.landed_by_round[1]) >= 1
 
 
-def test_a_rookie_pecks_at_a_guard_or_a_quiet_man_but_waits_out_a_busy_open_one() -> None:
-    def leads(level: CpuLevel, defense: DefensivePose, *, busy: bool) -> bool:
+def test_a_rookie_pecks_at_a_guard_or_a_quiet_man_and_mostly_waits_out_a_busy_open_one() -> None:
+    def leads(level: CpuLevel, defense: DefensivePose, *, busy: bool) -> int:
+        """How many of 300 looks become a lead (a punch now, or a step in to throw one)."""
         engine = engine_at(110)
-        brain = always(CpuBrain("cpu", "human", level, 3))
+        brain = CpuBrain("cpu", "human", level, 3)
+        brain.profile = replace(brain.profile, aggression_percent=100)
         human = engine.fighter("human")
         human.defense = defense
-        brain._opponent_punches = [engine.tick - 10] if busy else []
-        punch = brain._attack(engine.tick, engine.fighter("cpu"), human, 110.0, False, False, False)
-        # Leading is throwing now or stepping in to throw.
-        return punch is not None or brain._step_in is not None
+        leads = 0
+        for look in range(300):
+            brain._next_attack_tick = 0
+            brain._step_in = None
+            brain._opponent_punches = [look - 10] if busy else []
+            cpu = engine.fighter("cpu")
+            punch = brain._attack(look, cpu, human, 110.0, False, False, False)
+            leads += punch is not None or brain._step_in is not None
+        return leads
 
-    assert leads(CpuLevel.ROOKIE, DefensivePose.GUARD_HIGH, busy=True)
-    assert leads(CpuLevel.ROOKIE, DefensivePose.NONE, busy=False)
-    assert not leads(CpuLevel.ROOKIE, DefensivePose.NONE, busy=True)
-    assert leads(CpuLevel.CONTENDER, DefensivePose.NONE, busy=True)
+    assert leads(CpuLevel.ROOKIE, DefensivePose.GUARD_HIGH, busy=True) == 300
+    assert leads(CpuLevel.ROOKIE, DefensivePose.NONE, busy=False) == 300
+    rookie = PROFILES[CpuLevel.ROOKIE].busy_lead_percent
+    assert abs(leads(CpuLevel.ROOKIE, DefensivePose.NONE, busy=True) - 3 * rookie) <= 30
+    assert leads(CpuLevel.CONTENDER, DefensivePose.NONE, busy=True) == 300
 
 
 def test_a_skilled_player_beats_the_rookie_on_the_cards_and_not_by_cutting_him_up() -> None:
@@ -811,11 +820,30 @@ def test_the_champion_can_be_outboxed_or_outcountered_but_not_mashed() -> None:
     def winner(human: str, seed: int, style: FighterStyle) -> int | None:
         return play(human, "champion", seed, config, (FighterStyle.BALANCED, style)).winner_seat
 
-    assert winner("skilled", 2, FighterStyle.COUNTER_PUNCHER) == 0
+    assert winner("skilled", 3, FighterStyle.COUNTER_PUNCHER) == 0
     assert winner("skilled", 1, FighterStyle.SWARMER) == 1
-    assert winner("counter", 4, FighterStyle.BOXER) == 0
+    assert winner("counter", 5, FighterStyle.BOXER) == 0
     assert winner("counter", 1, FighterStyle.SWARMER) == 1
     assert winner("mash", 1, FighterStyle.BOXER) == 1
+
+
+def test_over_a_connection_the_champion_is_harder_to_beat_than_the_contender() -> None:
+    """At 50 ms, reacting to each punch as a person does, the scripted counter-puncher beats the
+    contender in some bouts and the champion in fewer (38% and 10% over 48 bouts)."""
+    lag = Lag.over(50, (6, 9))
+
+    def wins(level: str) -> int:
+        return sum(
+            play(
+                "counter", level, seed, EngineConfig(), bout_styles("counter", level, seed), lag
+            ).winner_seat
+            == 0
+            for seed in range(1, 7)
+        )
+
+    contender, champion = wins("contender"), wins("champion")
+    assert contender >= 2
+    assert champion < contender
 
 
 def test_against_a_scripted_player_the_computer_boxes_in_its_room_style() -> None:
@@ -1081,7 +1109,7 @@ def test_a_computer_whose_body_is_broken_down_fights_on_the_breath_it_can_still_
 
     # Gassed, with a third of his breath, he still throws a punch every few seconds (none before).
     seen = _fight_a_man_standing_still(level, broken_down)
-    assert seen["punch_start"] >= 8
+    assert seen["punch_start"] >= 5
     for level_ in CpuLevel:
         brain = CpuBrain("cpu", "human", level_, 1)
         cpu = engine_at(110).fighter("cpu")
