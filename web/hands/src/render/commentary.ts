@@ -1,7 +1,7 @@
 import { ROCKED_MAX_TICKS } from "../manifest";
 import { isDebut, recordCard } from "../record";
 import { styleTag, styleTitle } from "../styles";
-import type { CombatEvent, EngineSnapshot, FighterRecord, FighterSnapshot, FinalMessage, MatchPhase, PublicPlayer } from "../types";
+import type { CombatEvent, EngineSnapshot, FighterRecord, FighterSnapshot, FighterStyle, FinalMessage, MatchPhase, PublicPlayer } from "../types";
 import { decisionLabel, wasBlocked } from "./hud";
 
 export type Speaker = "play" | "colour" | "announcer";
@@ -169,16 +169,67 @@ const COOLDOWN: Readonly<Partial<Record<LineKey, number>>> = {
 
 const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen"] as const;
 const numberWord = (value: number): string => NUMBER_WORDS[value] ?? String(value);
-const counted = (value: number, one: string, many: string): string => `${numberWord(value)} ${value === 1 ? one : many}`;
 
-/** How the ring announcer reads a record out loud, after the corner and before the name. */
-export function recordSpoken(record: FighterRecord | undefined): string {
-  if (record === undefined) return "";
-  if (isDebut(record)) return ", making a professional debut";
-  const results = [counted(record.wins, "win", "wins"), counted(record.losses, "loss", "losses")];
-  if (record.draws > 0) results.push(counted(record.draws, "draw", "draws"));
-  const tail = results.length === 3 ? `${results[0]}, ${results[1]} and ${results[2]}` : `${results[0]} and ${results[1]}`;
-  return `, with a record of ${tail}${record.knockouts > 0 ? `, ${numberWord(record.knockouts)} by knockout` : ""}`;
+const UNITS = [...NUMBER_WORDS, "sixteen", "seventeen", "eighteen", "nineteen"] as const;
+const TENS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"] as const;
+
+/** A number in words, as the ring announcer says it: "thirty-six", "one hundred and four". */
+export function spokenNumber(value: number): string {
+  if (!Number.isInteger(value) || value < 0 || value >= 1000) return String(value);
+  if (value < 20) return UNITS[value]!;
+  if (value < 100) return `${TENS[Math.floor(value / 10)]}${value % 10 === 0 ? "" : `-${UNITS[value % 10]}`}`;
+  return `${UNITS[Math.floor(value / 100)]} hundred${value % 100 === 0 ? "" : ` and ${spokenNumber(value % 100)}`}`;
+}
+
+/** A record as the ring announcer reads it when there is time: "twelve and three, eight by knockout", "making a pro debut". */
+export function recordSpoken(record: FighterRecord, knockouts = true): string {
+  if (isDebut(record)) return "making a pro debut";
+  const results = record.draws > 0
+    ? `${spokenNumber(record.wins)}, ${spokenNumber(record.losses)} and ${spokenNumber(record.draws)}`
+    : `${spokenNumber(record.wins)} and ${record.losses === 0 ? "oh" : spokenNumber(record.losses)}`;
+  return knockouts && record.knockouts > 0 ? `${results}, ${spokenNumber(record.knockouts)} by knockout` : results;
+}
+
+/**
+ * Seconds the announcer's voice takes to read `text`, on the slow side. Windows' default voice
+ * (Microsoft David) at the page's rate of 0.96 reads about 13 characters a second, breathes at each
+ * "...", and leaves most of a second around every line.
+ */
+export function spokenSeconds(text: string): number {
+  return 0.85 + text.length * 0.077 + (text.split("...").length - 1) * 0.35;
+}
+
+/** Left over at the opening bell for a voice slower than the estimate. */
+const SPOKEN_MARGIN_SECONDS = 0.3;
+
+export interface IntroducedCorner {
+  readonly name: string;
+  readonly record: FighterRecord | undefined;
+  readonly style: FighterStyle | undefined;
+}
+
+/**
+ * What the ring announcer says in the `seconds` the opening countdown has: each corner's record and style
+ * before the name where there is time for both lines, otherwise the names alone, otherwise one
+ * "Azure Vector... versus Crimson Geometry!", otherwise nothing, as the cards carry it all.
+ */
+export function introductionScript(corners: readonly [IntroducedCorner, IntroducedCorner], seconds: number): readonly string[] {
+  const budget = seconds - SPOKEN_MARGIN_SECONDS;
+  const levels: readonly ((corner: IntroducedCorner) => readonly (string | null)[])[] = [
+    (corner) => [corner.record === undefined ? null : recordSpoken(corner.record), styleTitle(corner.style)],
+    (corner) => [styleTitle(corner.style)],
+    () => [],
+  ];
+  for (const level of levels) {
+    const lines = corners.map((corner, seat) => {
+      const opening = seat === 0 ? "In the blue corner" : "And in the red corner";
+      const parts = level(corner).filter((part): part is string => part !== null);
+      return parts.length === 0 ? `${opening}, ${corner.name}!` : `${opening}, ${parts.join(", ")}... ${corner.name}!`;
+    });
+    if (lines.reduce((total, line) => total + spokenSeconds(line), 0) <= budget) return lines;
+  }
+  const versus = `${corners[0].name}... versus ${corners[1].name}!`;
+  return spokenSeconds(versus) <= budget ? [versus] : [];
 }
 
 type Vars = Partial<Record<"a" | "b" | "n" | "side" | "punch" | "r" | "x" | "y" | "z" | "w", string | number>>;
@@ -239,6 +290,8 @@ interface Queued {
   moment: string | null;
   /** The phases in which the line still makes sense, or null for any. */
   phases: ReadonlySet<MatchPhase> | null;
+  /** What the ring announcer reads as the line comes up, if anything. */
+  spoken: string | null;
 }
 
 interface Showing {
@@ -414,6 +467,8 @@ export class CommentaryDirector {
       if (start) {
         this.queue.splice(this.queue.indexOf(best), 1);
         this.showing = { line: best.line, start: now, end: now + best.line.hold, moment: best.moment, phases: best.phases };
+        // The ring announcer reads a corner's introduction as its card comes up.
+        if (best.spoken !== null) this.hooks.speak?.([best.spoken]);
       }
     }
     const showing = this.showing;
@@ -446,20 +501,20 @@ export class CommentaryDirector {
   private introduce(snapshot: EngineSnapshot, now: number): void {
     const seconds = snapshot.phase_ticks_remaining / this.tickRate;
     if (seconds < 1.2) return;
-    const hold = Math.max(1.4, seconds / 2);
     const names = snapshot.fighters.map((fighter) => this.nameOf(fighter.player_id));
+    const corners = snapshot.fighters.map((fighter, seat) => ({ name: names[seat]!, record: this.players[fighter.player_id]?.record, style: fighter.style }));
+    // Only what fits the countdown is read; the bell would cut the rest, names last.
+    const script = introductionScript([corners[0]!, corners[1]!], seconds);
+    // The red card comes up as the blue corner's line ends, so each line is read with its own card.
+    const blueHold = Math.max(1.4, script.length === 2 ? spokenSeconds(script[0]!) : seconds / 2);
+    const holds = [blueHold, Math.max(1.4, seconds - blueHold)] as const;
     for (const seat of [0, 1] as const) {
       const corner = seat === 0 ? "blue" : "red";
       const player = this.players[snapshot.fighters[seat].player_id];
       const style = styleTag(snapshot.fighters[seat].style);
       const detail = player === undefined ? "" : `${style === null ? "" : `${style} · `}${player.record === undefined ? "" : `${recordCard(player.record)} · `}${player.cpu === true ? "COMPUTER" : `RATED ${player.rating}`}`;
-      this.enqueue(this.announcement(`In the ${corner} corner, ${names[seat]}.`, { kicker: `IN THE ${corner.toUpperCase()} CORNER`, title: names[seat]!.toUpperCase(), detail, corner: seat }, hold, 97), now + seat * hold, null, 30, COUNTDOWN_ONLY);
+      this.enqueue(this.announcement(`In the ${corner} corner, ${names[seat]}.`, { kicker: `IN THE ${corner.toUpperCase()} CORNER`, title: names[seat]!.toUpperCase(), detail, corner: seat }, holds[seat], 97), now + seat * blueHold, null, 30, COUNTDOWN_ONLY, script[seat] ?? null);
     }
-    const spoken = snapshot.fighters.map((fighter) => {
-      const title = styleTitle(fighter.style);
-      return `${recordSpoken(this.players[fighter.player_id]?.record)}...${title === null ? "" : ` ${title},`}`;
-    });
-    this.hooks.speak?.([`In the blue corner${spoken[0]} ${names[0]}!`, `And in the red corner${spoken[1]} ${names[1]}!`]);
   }
 
   private consider(event: CombatEvent, snapshot: EngineSnapshot, result: CombatEvent | null, now: number): void {
@@ -742,13 +797,13 @@ export class CommentaryDirector {
     return options[index]!;
   }
 
-  private enqueue(line: BroadcastLine, at: number, moment: string | null, expiresAfter?: number, phases: ReadonlySet<MatchPhase> | null = null): boolean {
+  private enqueue(line: BroadcastLine, at: number, moment: string | null, expiresAfter?: number, phases: ReadonlySet<MatchPhase> | null = null, spoken: string | null = null): boolean {
     if (moment !== null) {
       if (this.queue.some((entry) => entry.moment === moment && entry.line.priority >= line.priority)) return false;
       if (this.showing?.moment === moment && this.showing.line.priority >= line.priority) return false;
       for (let index = this.queue.length - 1; index >= 0; index -= 1) if (this.queue[index]!.moment === moment) this.queue.splice(index, 1);
     }
-    this.queue.push({ line, at, expires: at + (expiresAfter ?? (line.urgent ? URGENT_STALE_SECONDS : STALE_SECONDS)), moment, phases });
+    this.queue.push({ line, at, expires: at + (expiresAfter ?? (line.urgent ? URGENT_STALE_SECONDS : STALE_SECONDS)), moment, phases, spoken });
     if (this.queue.length > MAX_QUEUE) {
       let lowest = 0;
       for (let index = 1; index < this.queue.length; index += 1) if (this.queue[index]!.line.priority < this.queue[lowest]!.line.priority) lowest = index;

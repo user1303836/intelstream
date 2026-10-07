@@ -26,6 +26,8 @@ const CONTACT_FEEDBACK_KINDS = new Set(["hit", "counter_hit", "block", "perfect_
 const CONTROL_HINT_KEYBOARD = "Move WASD · Jab F/J · Straight R/U · Hook G/H · Uppercut T/Y · Guard Q/E · Body Shift · Power Alt";
 const CONTROL_HINT_TOUCH = "Drag on the left to move · Tap the pads to punch, L or R hand · Hold BODY, POWER or GUARD · Tap SLIP, WEAVE, PULL or CLINCH";
 const REMATCH_HOLD_MS = 11_000;
+/** How long the announcer may run on past the opening bell to finish the name it is reading. */
+const BELL_GRACE_MS = 1_500;
 /** How long the finish plays without the overlay while the result is still on its way. */
 const RESULT_WAIT_MS = 4_000;
 const REMATCH_RETRY_MS = 3_000;
@@ -343,8 +345,9 @@ export class HandsApp {
   }
 
   private receiveSnapshot(snapshot: EngineSnapshot): void {
-    // The introductions belong to the countdown: the opening bell cuts the announcer off.
-    if (this.lastPhase === "countdown" && snapshot.phase !== "countdown") this.voice.cancel();
+    // The introductions belong to the countdown: at the opening bell the rest of the script goes
+    // unsaid, and a line still being read by a slow voice gets a moment to finish its name.
+    if (this.lastPhase === "countdown" && snapshot.phase !== "countdown") this.voice.finishLine(BELL_GRACE_MS);
     this.lastPhase = snapshot.phase;
     this.renderer?.setInputLatency(this.network?.inputLatencyMs ?? null);
     this.renderer?.push(snapshot);

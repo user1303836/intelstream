@@ -1,7 +1,12 @@
+import manifest from "../../../../src/intelstream/hands/combat-manifest.json";
 import { ROCKED_BASE_TICKS, ROCKED_MAX_TICKS } from "../manifest";
+import { FIGHTER_STYLES } from "../protocol";
 import { fighter } from "../test/fixtures";
 import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, MatchPhase, PublicPlayer } from "../types";
-import { CommentaryDirector, crowdTension, fillLine, holdFor, punchName, type CommentaryHooks } from "./commentary";
+import { CommentaryDirector, crowdTension, fillLine, holdFor, introductionScript, punchName, recordSpoken, spokenNumber, spokenSeconds, type CommentaryHooks } from "./commentary";
+
+/** The opening countdown the room gives the introductions, in ticks. */
+const OPENING_TICKS = manifest.countdown.opening_ticks;
 
 const players: Record<string, PublicPlayer> = {
   one: { id: "one", name: "Azure Vector", avatar: null, rating: 1512, connected: true },
@@ -164,38 +169,87 @@ describe("the commentary team", () => {
 });
 
 describe("the ring announcer", () => {
-  it("introduces both corners during the opening countdown and reads them aloud", () => {
+  it("introduces both corners during the opening countdown, reading each one as its card comes up", () => {
     const speak = vi.fn();
     const director = new CommentaryDirector({ speak });
-    feed(director, state(1, "countdown", [{}, {}], { phase_ticks_remaining: 90 }), [], 0);
-    const blue = director.current(0.05);
+    feed(director, state(1, "countdown", [{}, {}], { phase_ticks_remaining: OPENING_TICKS }), [], 0);
+    expect(speak).not.toHaveBeenCalled();
+    const blue = director.current(0);
     expect(blue?.line.card).toEqual({ kicker: "IN THE BLUE CORNER", title: "AZURE VECTOR", detail: "RATED 1512", corner: 0 });
-    const red = director.current(1.6);
+    expect(speak.mock.calls).toEqual([[["In the blue corner, Azure Vector!"]]]);
+    // The red card comes up as the blue corner's line ends, and its line is read with it.
+    const redAt = spokenSeconds("In the blue corner, Azure Vector!");
+    expect(director.current(redAt - 0.05)?.line.card?.corner).toBe(0);
+    expect(speak).toHaveBeenCalledOnce();
+    const red = director.current(redAt + 0.01);
     expect(red?.line.card).toMatchObject({ kicker: "IN THE RED CORNER", title: "CRIMSON GEOMETRY", corner: 1 });
-    expect(speak).toHaveBeenCalledTimes(1);
-    expect(speak.mock.calls[0]![0]).toEqual(["In the blue corner... Azure Vector!", "And in the red corner... Crimson Geometry!"]);
+    expect(speak.mock.calls.at(-1)).toEqual([["And in the red corner, Crimson Geometry!"]]);
+    // Both are read before the opening bell, with room to spare for a slower voice.
+    expect(redAt + spokenSeconds("And in the red corner, Crimson Geometry!")).toBeLessThanOrEqual(OPENING_TICKS / 30 - 0.3);
   });
 
-  it("reads each fighter's record in the introduction", () => {
+  it("keeps the records and styles on the cards, and reads them before the names only when the countdown has the time", () => {
     const speak = vi.fn();
     const director = new CommentaryDirector({ speak });
     const recorded = { one: { ...players.one!, record: { wins: 12, losses: 3, draws: 1, knockouts: 8 } }, two: { ...players.two!, record: { wins: 0, losses: 0, draws: 0, knockouts: 0 } } };
-    director.observe({ ...state(1, "countdown", [{}, {}], { phase_ticks_remaining: 90 }), events: [] }, [], recorded, 30, 0);
-    expect(director.current(0.05)?.line.card?.detail).toBe("12-3-1 (8 KO) · RATED 1512");
-    expect(director.current(1.6)?.line.card?.detail).toBe("PRO DEBUT · RATED 1494");
-    expect(speak.mock.calls[0]![0]).toEqual([
-      "In the blue corner, with a record of twelve wins, three losses and one draw, eight by knockout... Azure Vector!",
-      "And in the red corner, making a professional debut... Crimson Geometry!",
+    director.observe({ ...state(1, "countdown", [{ style: "boxer" }, { style: "swarmer" }], { phase_ticks_remaining: OPENING_TICKS }), events: [] }, [], recorded, 30, 0);
+    expect(watch(director, 0, 8)).toEqual(["In the blue corner, Azure Vector.", "In the red corner, Crimson Geometry."]);
+    const cards = new CommentaryDirector();
+    cards.observe({ ...state(1, "countdown", [{ style: "boxer" }, { style: "swarmer" }], { phase_ticks_remaining: OPENING_TICKS }), events: [] }, [], recorded, 30, 0);
+    expect(cards.current(0.05)?.line.card?.detail).toBe("BOXER · 12-3-1 (8 KO) · RATED 1512");
+    expect(cards.current(5)?.line.card?.detail).toBe("SWARMER · PRO DEBUT · RATED 1494");
+    // Eight seconds hold the names; the bell would cut a record or a style off before them.
+    expect(speak.mock.calls.flatMap((call) => call[0] as string[])).toEqual(["In the blue corner, Azure Vector!", "And in the red corner, Crimson Geometry!"]);
+    const corners = [{ name: "Azure Vector", record: recorded.one.record, style: "boxer" }, { name: "Crimson Geometry", record: recorded.two.record, style: "swarmer" }] as const;
+    expect(introductionScript(corners, 20)).toEqual([
+      "In the blue corner, twelve, three and one, eight by knockout, the boxer... Azure Vector!",
+      "And in the red corner, making a pro debut, the swarmer... Crimson Geometry!",
+    ]);
+    expect(introductionScript([{ ...corners[0], record: undefined, style: "slugger" }, { ...corners[1], record: undefined, style: "balanced" }], 10)).toEqual([
+      "In the blue corner, the slugger... Azure Vector!",
+      "And in the red corner, Crimson Geometry!",
     ]);
   });
 
-  it("names each fighter's style in the introduction, and none for a balanced fighter", () => {
-    const speak = vi.fn();
-    const director = new CommentaryDirector({ speak });
-    feed(director, state(1, "countdown", [{ style: "slugger" }, {}], { phase_ticks_remaining: 90 }), [], 0);
-    expect(director.current(0.05)?.line.card?.detail).toBe("SLUGGER · RATED 1512");
-    expect(director.current(1.6)?.line.card?.detail).toBe("RATED 1494");
-    expect(speak.mock.calls[0]![0]).toEqual(["In the blue corner... the slugger, Azure Vector!", "And in the red corner... Crimson Geometry!"]);
+  it("fits the spoken introductions inside the opening countdown, names and all, for every pairing the room can make", () => {
+    const names = ["Kid Cole", "Azure Vector", "Crimson Geometry", "Viktor 'Iron' Volkov", "Marcus 'Hammer' Reed", "W".repeat(32)];
+    const records = [undefined, { wins: 0, losses: 0, draws: 0, knockouts: 0 }, { wins: 12, losses: 3, draws: 1, knockouts: 8 }, { wins: 36, losses: 1, draws: 0, knockouts: 29 }];
+    const styles = [undefined, ...FIGHTER_STYLES];
+    const budget = OPENING_TICKS / 30 - 0.3;
+    for (const blue of names) for (const red of names) for (const record of records) for (const style of styles) {
+      const script = introductionScript([{ name: blue, record, style }, { name: red, record, style }], OPENING_TICKS / 30);
+      expect(script.length).toBeGreaterThan(0);
+      expect(script.reduce((total, line) => total + spokenSeconds(line), 0)).toBeLessThanOrEqual(budget);
+      expect(script.join(" ")).toContain(`${blue}`);
+      expect(script.join(" ")).toContain(`${red}!`);
+    }
+    // The computer is introduced from its own corner, from the first snapshot of the countdown a player sees.
+    const contender = { name: "Marcus 'Hammer' Reed", record: { wins: 19, losses: 5, draws: 1, knockouts: 12 }, style: "swarmer" } as const;
+    expect(introductionScript([{ name: "Azure Vector", record: records[1], style: "boxer" }, contender], (OPENING_TICKS - 1) / 30)).toEqual(["In the blue corner, Azure Vector!", "And in the red corner, Marcus 'Hammer' Reed!"]);
+    // A late arrival with too little countdown left hears nothing rather than half a name.
+    expect(introductionScript([{ name: "Azure Vector", record: undefined, style: undefined }, { name: "Crimson Geometry", record: undefined, style: undefined }], 3)).toEqual([]);
+  });
+
+  it("estimates the announcer's voice on the slow side", () => {
+    // Seconds Windows' default voice (Microsoft David, SAPI rate 0) takes; the page reads at 0.96.
+    const timed: Array<[string, number]> = [
+      ["In the blue corner, Azure Vector!", 2.95],
+      ["And in the red corner, Crimson Geometry!", 3.54],
+      ["And in the red corner, Viktor 'Iron' Volkov!", 3.6],
+      ["Azure Vector... versus Crimson Geometry!", 3.7],
+      ["In the blue corner, twelve and three, eight by knockout, the boxer... Azure Vector!", 7.15],
+      ["And in the red corner, thirty-six and one, twenty-nine by knockout, the counter-puncher... Viktor 'Iron' Volkov!", 8.76],
+    ];
+    for (const [line, seconds] of timed) expect(spokenSeconds(line)).toBeGreaterThanOrEqual(seconds / 0.96);
+  });
+
+  it("says a record the way a ring announcer does", () => {
+    expect([7, 19, 20, 29, 36, 104, 120, 999, 1000].map(spokenNumber)).toEqual(["seven", "nineteen", "twenty", "twenty-nine", "thirty-six", "one hundred and four", "one hundred and twenty", "nine hundred and ninety-nine", "1000"]);
+    expect(recordSpoken({ wins: 0, losses: 0, draws: 0, knockouts: 0 })).toBe("making a pro debut");
+    expect(recordSpoken({ wins: 12, losses: 0, draws: 0, knockouts: 8 })).toBe("twelve and oh, eight by knockout");
+    expect(recordSpoken({ wins: 19, losses: 5, draws: 1, knockouts: 12 })).toBe("nineteen, five and one, twelve by knockout");
+    expect(recordSpoken({ wins: 36, losses: 1, draws: 0, knockouts: 29 }, false)).toBe("thirty-six and one");
+    expect(recordSpoken({ wins: 3, losses: 4, draws: 0, knockouts: 0 })).toBe("three and four");
   });
 
   it("does not introduce the fighters to someone who arrives after the opening bell", () => {

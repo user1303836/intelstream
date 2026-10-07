@@ -143,6 +143,30 @@ describe("the announcer's voice", () => {
     }
   });
 
+  it("lets the line being read finish its name, briefly, when its moment ends, and drops the rest", () => {
+    vi.useFakeTimers();
+    const announcer = make();
+    announcer.speak(["In the blue corner, Azure Vector!", "And in the red corner, Crimson Geometry!"]);
+    announcer.finishLine(1_500);
+    expect(synthesis.cancels).toBe(0);
+    synthesis.finishLast();
+    expect(synthesis.spoken).toHaveLength(1);
+    vi.advanceTimersByTime(2_000);
+    expect(synthesis.cancels).toBe(0);
+    // A voice too slow to finish in time is cut off once the grace is over.
+    announcer.speak(["And in the red corner, Crimson Geometry!"]);
+    announcer.finishLine(1_500);
+    vi.advanceTimersByTime(1_499);
+    expect(synthesis.cancels).toBe(0);
+    vi.advanceTimersByTime(1);
+    expect(synthesis.cancels).toBe(1);
+    announcer.finishLine(1_500);
+    announcer.speak(["Ladies and gentlemen, we go to the scorecards."]);
+    vi.advanceTimersByTime(5_000);
+    expect(synthesis.cancels).toBe(1);
+    vi.useRealTimers();
+  });
+
   it("does nothing where the browser cannot speak", () => {
     const announcer = new AnnouncerVoice(() => settings, null, null);
     expect(announcer.supported).toBe(false);

@@ -888,18 +888,28 @@ describe("the broadcast", () => {
     app.destroy();
   });
 
-  it("cuts the ring announcer off at the opening bell", async () => {
+  it("lets the announcer finish the name it is reading at the opening bell, then stops it and drops the rest", async () => {
+    const spoken: string[] = [];
     const cancel = vi.fn();
-    Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { speak: () => undefined, cancel, getVoices: () => deviceVoices } });
+    Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { speak: (utterance: { text: string }) => spoken.push(utterance.text), cancel, getVoices: () => deviceVoices } });
     Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: class { onend = null; onerror = null; constructor(readonly text: string) {} } });
     const { app } = await launch();
+    vi.useFakeTimers();
     send({ version: 3, type: "snapshot", payload: makeSnapshot(1, "countdown") });
-    mocks.renderers.at(-1)!.onAnnouncement!(["In the blue corner... One!", "And in the red corner... Two!"]);
+    mocks.renderers.at(-1)!.onAnnouncement!(["In the blue corner, One!"]);
+    mocks.renderers.at(-1)!.onAnnouncement!(["And in the red corner, Two!"]);
     cancel.mockClear();
     send({ version: 3, type: "snapshot", payload: makeSnapshot(2, "countdown") });
-    expect(cancel).not.toHaveBeenCalled();
     send({ version: 3, type: "snapshot", payload: makeSnapshot(3, "fight") });
-    expect(cancel).toHaveBeenCalled();
+    // A slow voice still reading the blue corner's name at the bell gets to finish it, briefly.
+    expect(cancel).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1_499);
+    expect(cancel).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(cancel).toHaveBeenCalledOnce();
+    // The line still waiting was never started: round 1 is under way.
+    expect(spoken).toEqual(["In the blue corner, One!"]);
+    vi.useRealTimers();
     app.destroy();
   });
 

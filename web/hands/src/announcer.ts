@@ -34,6 +34,8 @@ export class AnnouncerVoice {
   private voicesListed = false;
   /** Called when the device's voices change, so Settings can offer the announcer or say why it cannot. */
   onVoicesChanged: (() => void) | null = null;
+  /** Cuts off a line allowed to run on past its moment (finishLine). */
+  private cutoff: number | null = null;
 
   private readonly voicesChanged = (): void => {
     this.listVoices();
@@ -84,9 +86,22 @@ export class AnnouncerVoice {
     if (!settings.announcer || settings.volume <= 0) this.cancel();
   }
 
+  /** Forgets the lines still to come and lets the one being read finish, for `graceMs` at most, so a name is not cut in half. */
+  finishLine(graceMs: number): void {
+    this.queue.length = 0;
+    this.clearCutoff();
+    const line = this.speaking;
+    if (line === null) return;
+    this.cutoff = window.setTimeout(() => {
+      this.cutoff = null;
+      if (this.speaking === line) this.cancel();
+    }, graceMs);
+  }
+
   /** Stops the current announcement and forgets the rest. */
   cancel(): void {
     this.queue.length = 0;
+    this.clearCutoff();
     const speaking = this.speaking;
     this.speaking = null;
     if (speaking !== null) {
@@ -102,6 +117,11 @@ export class AnnouncerVoice {
     document.removeEventListener("visibilitychange", this.visibility);
     this.onVoicesChanged = null;
     this.cancel();
+  }
+
+  private clearCutoff(): void {
+    if (this.cutoff !== null) window.clearTimeout(this.cutoff);
+    this.cutoff = null;
   }
 
   private listVoices(): void {
@@ -131,6 +151,7 @@ export class AnnouncerVoice {
     const finished = (): void => {
       if (this.speaking !== utterance) return;
       this.speaking = null;
+      this.clearCutoff();
       this.next();
     };
     utterance.onend = finished;
