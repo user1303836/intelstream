@@ -274,24 +274,80 @@ export const panelHeightFor = (height: number): number => (height < 480 ? SHORT_
 export const topPanelOffset = (width: number, height: number): number =>
   Math.max(width < 640 ? 112 : 56, height * 0.1) + panelHeightFor(height) / 2 - height / 2;
 
-function centerPanel(ctx: CanvasRenderingContext2D, width: number, height: number, title: string, subtitle: string, yOffset = 0): void {
-  const panelWidth = Math.min(320, width - 24);
-  const panelHeight = panelHeightFor(height);
-  const short = panelHeight === SHORT_PANEL_HEIGHT;
-  const x = width / 2 - panelWidth / 2;
-  const y = height / 2 - panelHeight / 2 + yOffset;
+/**
+ * The touch pads (style.css .touch-pads). Held upright they are one column 118 px up from the bottom, 274 px
+ * tall: the moves, the modifiers and the punch pads. On its side the modifiers and punch pads stand 196 px tall
+ * and the moves have their own column to their left, 102 px tall at the foot; on a screen 350 px tall or less
+ * all of them are smaller, 154 and 86 px tall, and 112 px up. `reach` is how far in from the right edge the
+ * modifiers' column comes, and `movesReach` how much further the moves' column does, with a little to spare.
+ */
+export const TOUCH_PADS = {
+  upright: { bottom: 118, height: 274, moves: 0 },
+  landscape: { bottom: 118, height: 196, moves: 102 },
+  short: { bottom: 112, height: 154, moves: 86 },
+  shortHeight: 350,
+  reach: 12 + 190 + 14,
+  movesReach: 122 + 12,
+} as const;
+
+/** How far in from the right edge the touch pads come beside something that ends at `bottom`: 0 while it stays above them. */
+export function touchPadsReach(width: number, height: number, bottom: number): number {
+  const pads = width <= height ? TOUCH_PADS.upright : height <= TOUCH_PADS.shortHeight ? TOUCH_PADS.short : TOUCH_PADS.landscape;
+  if (bottom <= height - pads.bottom - pads.height) return 0;
+  // Upright the pads are one column; on its side the moves only come out at the foot of the block.
+  return TOUCH_PADS.reach + (pads.moves > 0 && bottom > height - pads.bottom - pads.moves ? TOUCH_PADS.movesReach : 0);
+}
+
+export interface PanelRect {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+/** A centre panel moved up beside the round card is no narrower than this. */
+const BESIDE_CARD_MIN_WIDTH = 160;
+
+/**
+ * Where a centre panel goes for the countdown, a foul's recovery and the rest: under the top bar, or under the
+ * round card on a narrow screen. With the touch pads up it keeps clear of them: held upright it is the short
+ * panel where the pads come up to within 8 px of it, and on its side it moves left of them, narrower where it
+ * must. A narrow screen on its side has room for it up beside the round card, above the controls hint.
+ */
+export function topPanel(width: number, height: number, touch = false): PanelRect {
+  let panelHeight = panelHeightFor(height);
+  let y = height / 2 + topPanelOffset(width, height) - panelHeight / 2;
+  let panelWidth = Math.min(320, width - 24);
+  let right = width / 2 + panelWidth / 2;
+  if (touch && width <= height) {
+    if (touchPadsReach(width, height, y + panelHeight + 8) > 0) panelHeight = SHORT_PANEL_HEIGHT;
+  } else if (touch) {
+    const besideCard = width < 640 ? Math.min(width / 2 - ROUND_CARD_WIDTH / 2 - 8, width - touchPadsReach(width, height, 56 + panelHeight)) : 0;
+    const up = besideCard - 12 >= BESIDE_CARD_MIN_WIDTH;
+    if (up) y = 56;
+    const limit = up ? besideCard : width - touchPadsReach(width, height, y + panelHeight);
+    if (right > limit) {
+      panelWidth = Math.min(panelWidth, limit - 12);
+      right = limit;
+    }
+  }
+  return { x: right - panelWidth, y, width: panelWidth, height: panelHeight };
+}
+
+function centerPanel(ctx: CanvasRenderingContext2D, panel: PanelRect, title: string, subtitle: string): void {
+  const short = panel.height === SHORT_PANEL_HEIGHT;
+  const centre = panel.x + panel.width / 2;
   ctx.fillStyle = "rgba(3,6,12,0.88)";
-  ctx.fillRect(x, y, panelWidth, panelHeight);
+  ctx.fillRect(panel.x, panel.y, panel.width, panel.height);
   ctx.strokeStyle = "rgba(246,213,122,0.45)";
   ctx.lineWidth = 1.5;
-  ctx.strokeRect(x + 2, y + 2, panelWidth - 4, panelHeight - 4);
+  ctx.strokeRect(panel.x + 2, panel.y + 2, panel.width - 4, panel.height - 4);
   ctx.textAlign = "center";
   ctx.fillStyle = "#ffd77a";
-  ctx.font = `800 ${short ? 17 : 22}px Inter, system-ui, sans-serif`;
-  ctx.fillText(title, width / 2, y + (short ? 22 : 34));
+  fitted(ctx, title, centre, panel.y + (short ? 22 : 34), panel.width - 24, 800, short ? 17 : 22, 12);
   ctx.fillStyle = "#c8d3e6";
   ctx.font = `600 ${short ? 11 : 12}px Inter, system-ui, sans-serif`;
-  ctx.fillText(fit(ctx, subtitle, panelWidth - 24), width / 2, y + (short ? 39 : 58));
+  ctx.fillText(fit(ctx, subtitle, panel.width - 24), centre, panel.y + (short ? 39 : 58));
 }
 
 /** Holds the round clock while a knockdown count or a foul timeout runs its own timer. */
@@ -530,7 +586,7 @@ export function drawHud(
     ctx.restore();
   }
   if (snapshot.phase === "countdown") {
-    centerPanel(ctx, width, height, `ROUND ${snapshot.round_number}`, "Touch gloves. Protect yourself at all times.", topPanelOffset(width, height));
+    centerPanel(ctx, topPanel(width, height, touch), `ROUND ${snapshot.round_number}`, "Touch gloves. Protect yourself at all times.");
   }
   // The replay's own tag says what it shows; the live count panel would only cover it.
   const headline = headlineBaseline(height, compact);
@@ -622,7 +678,7 @@ export function drawHud(
   }
   if (snapshot.phase === "foul_recovery") {
     const victim = snapshot.fighters.find((fighter) => fighter.is_foul_recovery_target);
-    centerPanel(ctx, width, height, "FOUL RECOVERY", `${players[victim?.player_id ?? ""]?.name ?? "Fighter"} is recovering`, topPanelOffset(width, height));
+    centerPanel(ctx, topPanel(width, height, touch), "FOUL RECOVERY", `${players[victim?.player_id ?? ""]?.name ?? "Fighter"} is recovering`);
   }
   if (snapshot.phase === "rest") {
     // By corner rather than by name, so two long names cannot push the second fighter's numbers off the panel.
@@ -632,10 +688,12 @@ export function drawHud(
       .map(({ corner, stats }) => `${corner} ${stats.landed} of ${stats.thrown}`)
       .join("  ·  ");
     const corners = cornerWorkLine(snapshot.fighters);
-    centerPanel(ctx, width, height, "CORNERS · RECOVER", corners ?? (statsLine.length > 0 ? `Landed this round: ${statsLine}` : "Conditioning governs recovery"), topPanelOffset(width, height));
+    centerPanel(ctx, topPanel(width, height, touch), "CORNERS · RECOVER", corners ?? (statsLine.length > 0 ? `Landed this round: ${statsLine}` : "Conditioning governs recovery"));
   }
   if (reconnectMs > 0) {
-    centerPanel(ctx, width, height, `OPPONENT RECONNECTING · ${Math.ceil(reconnectMs / 1000)}s`, "The bout is paused");
+    const pauseWidth = Math.min(320, width - 24);
+    const pauseHeight = panelHeightFor(height);
+    centerPanel(ctx, { x: width / 2 - pauseWidth / 2, y: height / 2 - pauseHeight / 2, width: pauseWidth, height: pauseHeight }, `OPPONENT RECONNECTING · ${Math.ceil(reconnectMs / 1000)}s`, "The bout is paused");
   }
   if (final !== null) {
     const punches = snapshot.fighters.map((fighter) => roundStats?.total(fighter.player_id) ?? blankPunches()) as [RoundPunchStats, RoundPunchStats];

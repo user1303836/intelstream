@@ -7,7 +7,7 @@ import { CornerPanel } from "./corner";
 import { saveStyle, StylePicker } from "./styles";
 import { describeError } from "./errors";
 import { HapticFeedback } from "./haptics";
-import { CONTROL_SECTIONS } from "./input/bindings";
+import { CONTROL_SECTIONS, controlHint } from "./input/bindings";
 import { coarsePointer } from "./input/touch";
 import { InputController } from "./input/input";
 import { EventDeduplicator } from "./interpolation";
@@ -22,8 +22,6 @@ import type { CpuLevel, EngineSnapshot, PublicPlayer, ServerMessage } from "./ty
 const CONTACT_FEEDBACK_KINDS = new Set(["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown", "parry", "body_collapse", "eye_shut"]);
 // The room keeps the finished bout for its result hold (ten seconds by default); a rejoin inside
 // that window only replays the old final, so the rematch waits it out and retries if it still hits it.
-const CONTROL_HINT_KEYBOARD = "Move WASD · Jab F/J · Straight R/U · Hook G/H · Uppercut T/Y · Guard Q/E · Body Shift · Power Alt";
-const CONTROL_HINT_TOUCH = "Drag on the left to move · Tap the pads to punch, L or R hand · Hold BODY, POWER or GUARD · Tap SLIP, WEAVE, PULL or CLINCH";
 const REMATCH_HOLD_MS = 11_000;
 /** How long the announcer may run on past the opening bell to finish the name it is reading. */
 const BELL_GRACE_MS = 1_500;
@@ -443,7 +441,7 @@ export class HandsApp {
     this.setText(this.cpuPrompt, this.rematchOpponent !== null ? "Or fight the computer instead:" : "No one here yet? Fight the computer.");
     const showHint = !spectating && (this.state.stage === "waiting" || this.state.stage === "countdown");
     this.hint.hidden = !showHint;
-    if (showHint) this.setText(this.hint, coarsePointer() ? CONTROL_HINT_TOUCH : CONTROL_HINT_KEYBOARD);
+    if (showHint) this.setText(this.hint, controlHint(coarsePointer(), window.innerWidth));
     // Once the pads are up for the countdown, the touch hint moves to the empty stick side so it covers no pad.
     this.overlay.toggleAttribute("data-touch-hint", showHint && this.state.stage === "countdown" && coarsePointer());
     const active = !spectating && ["countdown", "fight", "knockdown", "foul_recovery"].includes(this.state.stage);
