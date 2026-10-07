@@ -20,6 +20,21 @@ const bone = (boxer: SkinnedBoxer, name: CanonicalBone | string, out = new THREE
   return worldPosition(found, out);
 };
 
+const skinnedVertex = new THREE.Vector3();
+/** Height of the lowest skinned vertex, of every mesh or only those with the given material. */
+function lowestVertex(boxer: SkinnedBoxer, material?: string): number {
+  boxer.root.updateMatrixWorld(true);
+  let lowest = Infinity;
+  boxer.root.traverse((object) => {
+    if (!(object instanceof THREE.SkinnedMesh) || (material !== undefined && (object.material as THREE.Material).name !== material)) return;
+    const count = object.geometry.getAttribute("position").count;
+    for (let index = 0; index < count; index += 1) {
+      lowest = Math.min(lowest, object.getVertexPosition(index, skinnedVertex).applyMatrix4(object.matrixWorld).y);
+    }
+  });
+  return lowest;
+}
+
 function makeGraph(palette = { skin: 0xb0703f, gear: 0x1d4ed8 }): { boxer: SkinnedBoxer; graph: BoxingGraph } {
   const boxer = new SkinnedBoxer(gltf, palette);
   return { boxer, graph: new BoxingGraph(boxer, mapping) };
@@ -525,6 +540,32 @@ describe("runtime boxing graph", () => {
     }
     expect(contactDistance).toBeLessThan(0.13 + 0.11 + 0.02);
     expect(contactDistance).toBeGreaterThan(0.08);
+  });
+
+  it("keeps the toes flat on the canvas when the heel lifts", () => {
+    const { boxer, graph } = makeGraph();
+    const opponent = opponentFor("two");
+    const head = new THREE.Vector3(0, 1.5, mapping.z(-150));
+    const timing = punchTiming("straight", "head", "power");
+    const idle = facingOpponent(baseFighter("one"));
+    run(graph, idle, opponent, 20, head);
+    expect(lowestVertex(boxer, "ShoesMat0")).toBeGreaterThan(-0.02);
+    const straight = {
+      ...idle,
+      action: "straight" as const, action_hand: "right" as const, action_target: "head" as const, action_power: "power" as const, action_id: "p1", action_key: "straight:right:head:power",
+      action_start_tick: 10, action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery,
+    };
+    let lowest = Infinity;
+    let tick = 10;
+    for (let frame = 0; frame < (timing.startup + timing.active) * 2; frame += 1) {
+      tick += 0.5;
+      graph.update(straight, opponent, 1 / 60, 1 + frame / 60, false, "full", tick, head);
+      if (tick >= 10 + timing.startup) lowest = Math.min(lowest, lowestVertex(boxer, "ShoesMat0"));
+    }
+    expect(lowest).toBeGreaterThan(-0.02);
+    graph.celebrate(2);
+    run(graph, idle, opponent, 60, undefined, 40, 2);
+    expect(lowestVertex(boxer, "ShoesMat0")).toBeGreaterThan(-0.02);
   });
 
   it("retracts a hook straight back to the guard instead of swinging back out wide", () => {

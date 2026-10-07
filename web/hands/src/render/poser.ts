@@ -211,9 +211,8 @@ export class PoseSolver {
     }
     rig.setWorldFrame(ankle, scratchD, worldUp, "z");
     toe.updateWorldMatrix(false, false);
-    scratchB.copy(scratchC);
-    if (foot.heel !== 0) scratchB.applyQuaternion(scratchQ);
-    rig.setWorldFrame(toe, scratchB, worldUp, "z");
+    // The toes bend at the ball, so they stay flat on the canvas however far the heel is raised.
+    rig.setWorldFrame(toe, scratchC, worldUp, "z");
   }
 }
 
