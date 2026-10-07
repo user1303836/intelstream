@@ -279,10 +279,8 @@ def styled_profile(profile: CpuProfile, style: FighterStyle) -> CpuProfile:
             profile,
             outside_distance=profile.outside_distance + 10,
             footwork_percent=_percent(profile.footwork_percent + 10),
-            jab_bias=profile.jab_bias + 25,
-            aggression_percent=_percent(profile.aggression_percent - 6),
-            power_percent=_percent(profile.power_percent - 10),
-            body_percent=_percent(profile.body_percent - 10),
+            jab_bias=profile.jab_bias + 5,
+            aggression_percent=_percent(profile.aggression_percent + 4),
         )
     if style is FighterStyle.SLUGGER:
         return replace(
@@ -297,10 +295,8 @@ def styled_profile(profile: CpuProfile, style: FighterStyle) -> CpuProfile:
     if style is FighterStyle.SWARMER:
         return replace(
             profile,
-            outside_distance=profile.outside_distance - 20,
-            aggression_percent=_percent(profile.aggression_percent + 4),
-            body_percent=_percent(profile.body_percent + 20),
-            head_movement_percent=_percent(profile.head_movement_percent + 10),
+            outside_distance=profile.outside_distance - 8,
+            head_movement_percent=_percent(profile.head_movement_percent + 5),
             clinch_percent=_percent(profile.clinch_percent - 10),
         )
     if style is FighterStyle.COUNTER_PUNCHER:

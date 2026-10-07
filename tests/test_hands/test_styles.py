@@ -160,8 +160,8 @@ def test_a_slugger_hits_harder_and_the_others_softer() -> None:
     straight = punch(PunchClass.STRAIGHT)
     balanced = landed(BALANCED, straight)
     assert landed(SLUGGER, straight) > balanced
-    assert landed(BOXER, straight) < landed(COUNTER, straight) < balanced
-    assert landed(SWARMER, straight) == landed(COUNTER, straight)
+    assert landed(SWARMER, straight) == landed(COUNTER, straight) < landed(BOXER, straight)
+    assert landed(BOXER, straight) < balanced
 
 
 def test_a_swarmer_works_the_body_harder_than_the_head() -> None:
@@ -184,7 +184,9 @@ def test_a_slugger_pays_more_for_a_punch_and_a_swarmer_tires_less() -> None:
     slugger_stamina, _ = spent(SLUGGER)
     _, swarmer_conditioning = spent(SWARMER)
     # One tick of recovery is folded into each figure; it is the same for all three.
-    assert slugger_stamina - balanced_stamina == base_cost * 110 // 100 - base_cost
+    price = STYLE_RULES[SLUGGER].stamina_cost_percent
+    assert price > 100
+    assert slugger_stamina - balanced_stamina == base_cost * price // 100 - base_cost
     assert swarmer_conditioning < balanced_conditioning
 
 
@@ -205,7 +207,7 @@ def test_a_miss_costs_a_slugger_more_and_tires_a_swarmer_less() -> None:
     slugger_cost, _ = whiffed(SLUGGER)
     _, swarmer_conditioning = whiffed(SWARMER)
     assert balanced_cost == base_whiff
-    assert slugger_cost == base_whiff * 110 // 100
+    assert slugger_cost == base_whiff * STYLE_RULES[SLUGGER].stamina_cost_percent // 100
     assert swarmer_conditioning < balanced_conditioning
 
 
@@ -314,7 +316,9 @@ def test_a_swarmer_is_quicker_on_the_feet_and_a_slugger_slower() -> None:
         return engine.fighter("one").x - start
 
     balanced = travelled(BALANCED)
-    assert balanced * 104 // 100 <= travelled(SWARMER) <= balanced * 106 // 100
+    quicker = STYLE_RULES[SWARMER].move_speed_percent
+    assert 100 < quicker <= 105
+    assert balanced * (quicker - 1) // 100 <= travelled(SWARMER) <= balanced * (quicker + 1) // 100
     assert travelled(SLUGGER) < balanced * 98 // 100
     assert travelled(BOXER) == balanced
 

@@ -239,14 +239,14 @@
         "jab": -1
       },
       "reach_percent": 102,
-      "impact_percent": 92,
-      "poise_damage_percent": 92
+      "impact_percent": 98,
+      "poise_damage_percent": 98
     },
     "slugger": {
       "impact_percent": 108,
       "poise_damage_percent": 108,
-      "poise_taken_percent": 90,
-      "stamina_cost_percent": 110,
+      "poise_taken_percent": 95,
+      "stamina_cost_percent": 115,
       "recovery_ticks": {
         "hook": 1,
         "uppercut": 1
@@ -254,13 +254,13 @@
       "move_speed_percent": 96
     },
     "swarmer": {
-      "move_speed_percent": 105,
+      "move_speed_percent": 103,
       "startup_ticks": {
         "hook": -1,
         "uppercut": -1
       },
-      "body_damage_percent": 115,
-      "conditioning_loss_percent": 80,
+      "body_damage_percent": 110,
+      "conditioning_loss_percent": 85,
       "impact_percent": 96,
       "poise_damage_percent": 96,
       "evasion_ticks": 1

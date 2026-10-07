@@ -15,7 +15,7 @@ export const STAT_NAMES = ["Power", "Hand speed", "Footwork", "Reach", "Stamina"
 
 export const STYLE_CARDS: readonly StyleCard[] = [
   { style: "balanced", name: "Balanced", tag: "BALANCED", detail: "Even at everything, no holes to exploit.", stats: [3, 3, 3, 3, 3, 3] },
-  { style: "boxer", name: "Boxer", tag: "BOXER", detail: "Snappy jab and long reach, lighter hands.", stats: [1, 4, 3, 4, 3, 3] },
+  { style: "boxer", name: "Boxer", tag: "BOXER", detail: "Snappy jab and long reach, lighter hands.", stats: [2, 4, 3, 4, 3, 3] },
   { style: "slugger", name: "Slugger", tag: "SLUGGER", detail: "Heavy hands, hard chin, slow feet, tires sooner.", stats: [5, 2, 2, 3, 2, 4] },
   { style: "swarmer", name: "Swarmer", tag: "SWARMER", detail: "Quick feet and head, digs to the body, never stops.", stats: [2, 4, 4, 3, 4, 3] },
   { style: "counter_puncher", name: "Counter-puncher", tag: "COUNTER", detail: "Slips and parries, makes every miss cost.", stats: [2, 3, 3, 3, 3, 5] },
