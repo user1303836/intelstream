@@ -16,8 +16,8 @@ import { Avatars } from "./avatars";
 import { Effects3D, type BakedPart } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, type ArcadeDislocation } from "./graph";
 import { drawHud, finalRevealDelay, resultCard, resultCardLayout, RoundStatsTracker, STOPPAGE_METHODS, RoundClock, type RoundPunchStats } from "./hud";
-import { NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE } from "./injury";
-import { closeCut, cutRim, teethFor } from "./gore";
+import { BURST_CUT_HEIGHT, NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE } from "./injury";
+import { BIG_SHOT, closeCut, cutRim, teethFor } from "./gore";
 import { mouthpieceFlies } from "./mouthpiece";
 import { OFFICIAL_LOOKS, lookFor } from "./looks";
 import { BLUE_CORNER_OUTFIT, CUTMAN_OUTFIT, RED_CORNER_OUTFIT, REFEREE_OUTFIT } from "./outfit";
@@ -27,6 +27,7 @@ import { GloveTrail } from "./trails";
 
 export type ArcadeInjury =
   | "decapitation"
+  | "head_burst"
   | "dismember_left"
   | "dismember_right"
   | "jaw_dislocation"
@@ -230,7 +231,11 @@ export function arcadeInjuryFor(
 ): ArcadeInjury | null {
   if (!isArcadeInjuryCandidate(event, target, result)) return null;
   const selection = Math.abs(event.event_id);
-  if (event.detail.endsWith(":head")) return selection % 2 === 0 ? "decapitation" : "jaw_dislocation";
+  if (event.detail.endsWith(":head")) {
+    // A flash knockout or a big counter bursts the head.
+    if (result?.finish_method === "flash_ko" || (event.kind === "counter_hit" && event.amount >= BIG_SHOT)) return "head_burst";
+    return selection % 2 === 0 ? "decapitation" : "jaw_dislocation";
+  }
   const hand = puncher?.action_key?.split(":")[1];
   const recipientSide = hand === "left" ? "right" : hand === "right" ? "left" : Math.floor(selection / 2) % 2 === 0 ? "left" : "right";
   return selection % 2 === 0 ? `dismember_${recipientSide}` : `shoulder_${recipientSide}`;
@@ -268,6 +273,55 @@ function neckRim(geometry: THREE.BufferGeometry): number[] {
     neckRims.set(geometry, rim);
   }
   return rim;
+}
+
+/** True for the part of the head mesh a burst takes away: everything above the jaw, below the deepest dip of its ragged edge. */
+export function aboveBurstCut(bind: THREE.Vector3): boolean {
+  return bind.y > BURST_CUT_HEIGHT - 1.4;
+}
+
+const burstRims = new WeakMap<THREE.BufferGeometry, number[]>();
+
+/** The edges of a head mesh round what a burst leaves on the neck. */
+function burstRim(geometry: THREE.BufferGeometry): number[] {
+  let rim = burstRims.get(geometry);
+  if (rim === undefined) {
+    rim = cutRim(geometry, aboveBurstCut);
+    burstRims.set(geometry, rim);
+  }
+  return rim;
+}
+
+/**
+ * What a burst leaves on the neck, measured on the skin as it is posed: the middle of the opening,
+ * facing up the head, the head's own sideways axis so the jaw's teeth stay at the front, and the
+ * edge, both ends of each of its edges in turn, written into `rim` (or a new array of the right size).
+ */
+export function measureBurstStump(
+  boxer: SkinnedBoxer,
+  rim: Float32Array<ArrayBuffer>,
+  out: { readonly position: THREE.Vector3; readonly quaternion: THREE.Quaternion; readonly across: THREE.Vector3; readonly scratch: THREE.Vector3 },
+): Float32Array<ArrayBuffer> | null {
+  const head = boxer.bone("head");
+  if (head === null) return null;
+  boxer.root.updateMatrixWorld(true);
+  const mesh = boxer.headMesh;
+  const edges = burstRim(mesh.geometry);
+  if (edges.length === 0) return null;
+  const written = rim.length === edges.length * 3 ? rim : new Float32Array(edges.length * 3);
+  const bind = mesh.geometry.getAttribute("position");
+  out.position.set(0, 0, 0);
+  for (const [at, corner] of edges.entries()) {
+    mesh.applyBoneTransform(corner, out.scratch.fromBufferAttribute(bind, corner)).applyMatrix4(mesh.matrixWorld);
+    out.scratch.toArray(written, at * 3);
+    out.position.add(out.scratch);
+  }
+  out.position.multiplyScalar(1 / edges.length);
+  head.getWorldQuaternion(out.quaternion);
+  out.across.set(1, 0, 0).applyQuaternion(out.quaternion);
+  out.scratch.set(0, 1, 0).applyQuaternion(out.quaternion);
+  out.quaternion.setFromUnitVectors(UP, out.scratch);
+  return written;
 }
 
 /** The place nearest to (x, z) that is at least `clearance` from (fromX, fromZ). */
@@ -505,7 +559,7 @@ export function poolRadius(count: number, severity: number): number {
 
 /** Whether the knockout replay puts this injury back so it can happen again on screen. */
 export function replayReattaches(injury: ArcadeInjury): boolean {
-  return injury === "decapitation" || injury === "dismember_left" || injury === "dismember_right";
+  return injury === "decapitation" || injury === "head_burst" || injury === "dismember_left" || injury === "dismember_right";
 }
 
 /** How far the referee stands from the action and how close he may get to a fighter: tight over a count, in close for a clinch, otherwise out of the way. */
@@ -608,6 +662,7 @@ export class FightRenderer {
   private readonly hudViewport = { width: 1280, height: 720 };
   private readonly ceremonyWrists = [new THREE.Vector3(), new THREE.Vector3()] as const;
   private stumpRim = new Float32Array(0);
+  private readonly burstStump = { position: new THREE.Vector3(), quaternion: new THREE.Quaternion(), across: new THREE.Vector3(), scratch: new THREE.Vector3() };
   private ovationUntil = 0;
   private finalRevealAt = 0;
   private portraitPull = 1;
@@ -1096,7 +1151,8 @@ export class FightRenderer {
     const graphs = this.graphs;
     if (graphs !== null) {
       const graph = graphs[index]!;
-      graph.boxer.setDecapitated(injury === "decapitation");
+      if (injury === "head_burst") graph.boxer.setHeadBurst(true);
+      else graph.boxer.setDecapitated(injury === "decapitation");
       graph.boxer.setHandDismembered("left", injury === "dismember_left");
       graph.boxer.setHandDismembered("right", injury === "dismember_right");
       const dislocation: ArcadeDislocation | null = injury === "jaw_dislocation"
@@ -1128,6 +1184,14 @@ export class FightRenderer {
         );
         const stumpPose = this.stumpWorldPose(index);
         if (stumpPose !== null) this.effects.anchorStump(index, stumpPose.position, stumpPose.quaternion, stumpPose.rim);
+        applied = true;
+      }
+    } else if (injury === "head_burst") {
+      const pose = this.headWorldPose(index);
+      if (pose !== null) {
+        this.effects.burstHead(index, pose.position, event.direction, event.event_id);
+        const jaw = this.burstStumpPose(index);
+        if (jaw !== null) this.effects.anchorStump(index, jaw.position, jaw.quaternion, jaw.rim, jaw.across);
         applied = true;
       }
     } else if (injury === "dismember_left" || injury === "dismember_right") {
@@ -1243,6 +1307,15 @@ export class FightRenderer {
     head.getWorldPosition(this.tmpStumpOffset).sub(this.tmpStump).normalize();
     this.tmpStumpQuaternion.setFromUnitVectors(UP, this.tmpStumpOffset);
     return { position: this.tmpStump, quaternion: this.tmpStumpQuaternion, rim: this.stumpRim };
+  }
+
+  private burstStumpPose(index: number): { position: THREE.Vector3; quaternion: THREE.Quaternion; rim: Float32Array; across: THREE.Vector3 } | null {
+    const boxer = this.graphs?.[index]?.boxer;
+    if (boxer === undefined) return null;
+    const rim = measureBurstStump(boxer, this.stumpRim, this.burstStump);
+    if (rim === null) return null;
+    this.stumpRim = rim;
+    return { position: this.burstStump.position, quaternion: this.burstStump.quaternion, rim, across: this.burstStump.across };
   }
 
   predictAction(action: SemanticAction): void {
@@ -1574,6 +1647,9 @@ export class FightRenderer {
         if (injury === "decapitation") {
           const pose = this.stumpWorldPose(index);
           if (pose !== null) this.effects.anchorStump(index, pose.position, pose.quaternion, pose.rim);
+        } else if (injury === "head_burst") {
+          const jaw = this.burstStumpPose(index);
+          if (jaw !== null) this.effects.anchorStump(index, jaw.position, jaw.quaternion, jaw.rim, jaw.across);
         } else if (injury === "dismember_left" || injury === "dismember_right") {
           const side = injury === "dismember_left" ? "left" : "right";
           const pose = this.handWorldPose(index, side);

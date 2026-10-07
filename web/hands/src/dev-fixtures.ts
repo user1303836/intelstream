@@ -111,7 +111,9 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       if (trigger) {
         eventId += 1;
         if (finisher !== null && eventId % 2 === 1) eventId += 1;
-        events.push({ event_id: eventId, tick, kind: "counter_hit", actor_id: one.player_id, target_id: two.player_id, amount: 500, detail: finisher === "hand" ? "left:hook:body" : "right:uppercut:head", blood: 100, direction: 1, action_id: null });
+        // `finisher=head` severs the head, `burst` bursts it with a big counter, `hand` takes a hand.
+        const burst = finisher === "burst";
+        events.push({ event_id: eventId, tick, kind: finisher === "head" ? "hit" : "counter_hit", actor_id: one.player_id, target_id: two.player_id, amount: burst ? 130 : finisher === "head" ? 90 : 500, detail: finisher === "hand" ? "left:hook:body" : "right:uppercut:head", blood: 100, direction: 1, action_id: null });
         eventId += 1;
         events.push({ event_id: eventId, tick, kind: "knockdown", actor_id: one.player_id, target_id: two.player_id, amount: 420, detail: "knockdown", blood: 60, direction: 1, action_id: null });
       }
@@ -190,6 +192,7 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       severedHeads: renderer.labEffects.activeHeads,
       severedHands: renderer.labEffects.activeHands,
       mouthpieces: [renderer.labEffects.mouthpieceOut(0), renderer.labEffects.mouthpieceOut(1)],
+      bursts: [renderer.labEffects.headBurst(0), renderer.labEffects.headBurst(1)],
       rigs: renderer.labRigs.length,
       resolutionScale: renderer.resolutionScale,
       heads: renderer.labRigs.map((root) => {

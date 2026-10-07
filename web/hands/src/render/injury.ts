@@ -59,14 +59,18 @@ export const BODY_SITES: readonly InjurySite[] = [
 export const NECK_CUT_HEIGHT = 112.4;
 export const NECK_CUT_SLOPE = 0.3;
 export const NECK_CUT_DEPTH = -4;
+/** Where a head that bursts is gone above: level with the mouth, so the lower jaw and its teeth stay on the neck. */
+export const BURST_CUT_HEIGHT = 114.5;
+const BURST_RAGGED = 1.8;
 const UNCUT = 1000;
 
-/** The cut line, shared by the skin and the shadow pass. */
+/** The cut line, shared by the skin and the shadow pass. `uInjurySeverShape` is its slope toward the throat and how ragged it is. */
 const SEVER = /* glsl */ `
 uniform float uInjurySever;
+uniform vec2 uInjurySeverShape;
 float injuryCutLine(vec3 p) {
   float around = atan(p.z + 3.6, p.x);
-  return uInjurySever - ${NECK_CUT_SLOPE.toFixed(2)} * (p.z - (${NECK_CUT_DEPTH.toFixed(1)})) + 0.4 * sin(around * 6.0) + 0.22 * sin(around * 13.0 + 1.7);
+  return uInjurySever - uInjurySeverShape.x * (p.z - (${NECK_CUT_DEPTH.toFixed(1)})) + uInjurySeverShape.y * (0.4 * sin(around * 6.0) + 0.22 * sin(around * 13.0 + 1.7));
 }
 `;
 
@@ -251,6 +255,11 @@ const FRAGMENT_BODY = /* glsl */ `
     }
     injuryWet = max(injuryWet, w);
   }
+  // Where a cut or a burst opens the head, its inside shows as raw flesh rather than nothing.
+  if (!gl_FrontFacing) {
+    diffuseColor.rgb = vec3(0.2, 0.012, 0.022);
+    injuryWet = 1.0;
+  }
   injuryWet *= uInjuryWetness;
 }
 `;
@@ -275,6 +284,7 @@ export class InjuryShading {
     uInjuryNose: { value: new THREE.Vector4(0, -1000, 0, 0) },
     uInjuryWetness: { value: 1 },
     uInjurySever: { value: UNCUT },
+    uInjurySeverShape: { value: new THREE.Vector2(NECK_CUT_SLOPE, 1) },
     uInjuryCore: { value: new THREE.Vector4(...HEAD_SWELL_CORE) },
     uInjuryWash: { value: 0 },
     uInjuryLid: { value: [new THREE.Vector4(0, -1000, 0, 0), new THREE.Vector4(0, -1000, 0, 0)] },
@@ -353,12 +363,19 @@ export class InjuryShading {
   /** Removes everything above a cut through the neck, leaving a torn, bloodied edge. */
   setSevered(severed: boolean): void {
     this.uniforms.uInjurySever.value = severed ? NECK_CUT_HEIGHT : UNCUT;
+    this.uniforms.uInjurySeverShape.value.set(NECK_CUT_SLOPE, 1);
+  }
+
+  /** Removes everything above the mouth in a ragged tear, as when the head bursts. */
+  setBurst(burst: boolean): void {
+    this.uniforms.uInjurySever.value = burst ? BURST_CUT_HEIGHT : UNCUT;
+    this.uniforms.uInjurySeverShape.value.set(burst ? 0 : NECK_CUT_SLOPE, burst ? BURST_RAGGED : 1);
   }
 
   /** Shadow pass material for the same mesh, so a severed head casts no shadow from the shoulders. */
   shadowMaterial(): THREE.MeshDepthMaterial {
     const material = new THREE.MeshDepthMaterial();
-    const uniforms = { uInjurySever: this.uniforms.uInjurySever };
+    const uniforms = { uInjurySever: this.uniforms.uInjurySever, uInjurySeverShape: this.uniforms.uInjurySeverShape };
     material.onBeforeCompile = (shader) => {
       Object.assign(shader.uniforms, uniforms);
       shader.vertexShader = shader.vertexShader

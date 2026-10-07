@@ -172,9 +172,10 @@ const cutFace = new THREE.Vector3();
 /**
  * Closes the opening a cut leaves with flesh: a fan from the middle of the cut, raised a little, to
  * every edge of its rim, so it meets the skin all the way round. `rim` holds both ends of each edge
- * in turn. The surface is written into `geometry`, measured from `centre`, and faces `outward`.
+ * in turn. The surface is written into `geometry`, measured from `centre`, and faces `outward`. The
+ * texture runs along `across` when it is given, so a wound with a front and back turns with the body.
  */
-export function closeCut(geometry: THREE.BufferGeometry, rim: ArrayLike<number>, centre: THREE.Vector3, outward: THREE.Vector3, rise = 0.01): void {
+export function closeCut(geometry: THREE.BufferGeometry, rim: ArrayLike<number>, centre: THREE.Vector3, outward: THREE.Vector3, rise = 0.01, across?: THREE.Vector3): void {
   const edges = Math.floor(rim.length / 6);
   let position = geometry.getAttribute("position") as THREE.BufferAttribute | undefined;
   let normal = geometry.getAttribute("normal") as THREE.BufferAttribute | undefined;
@@ -189,6 +190,7 @@ export function closeCut(geometry: THREE.BufferGeometry, rim: ArrayLike<number>,
   }
   cutAcross.set(1, 0, 0);
   if (Math.abs(outward.x) > 0.9) cutAcross.set(0, 0, 1);
+  if (across !== undefined && across.lengthSq() > 1e-8 && Math.abs(across.dot(outward)) < 0.95 * across.length()) cutAcross.copy(across);
   cutAlong.crossVectors(outward, cutAcross).normalize();
   cutAcross.crossVectors(cutAlong, outward).normalize();
   let reach = 1e-6;
@@ -262,6 +264,108 @@ export function woundTexture(): THREE.CanvasTexture {
       const angle = rand() * Math.PI * 2;
       const distance = rand() * 60;
       disc(64 + Math.cos(angle) * distance, 64 + Math.sin(angle) * distance, 0.6 + rand() * 1.6, rand() < 0.4 ? "rgba(190,60,50,0.5)" : "rgba(20,2,4,0.55)");
+    }
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+/**
+ * A piece of skull blown out of a bursting head: a curved plate of bone with a ragged outline, scalp
+ * outside and bone and blood inside, about five centimetres across, centred on its middle. Faceted,
+ * with vertex colours.
+ */
+export function buildShardGeometry(): THREE.BufferGeometry {
+  const skull = 0.09;
+  const thickness = 0.007;
+  const sides = 9;
+  const spread = 0.32;
+  const outline: [number, number][] = [];
+  for (let side = 0; side < sides; side += 1) {
+    const angle = (side / sides) * Math.PI * 2;
+    const reach = spread * (0.62 + 0.38 * Math.abs(Math.sin(side * 2.3 + 0.4)));
+    outline.push([Math.cos(angle) * reach, Math.sin(angle) * reach]);
+  }
+  const on = (u: number, v: number, radius: number): [number, number, number] => {
+    const length = Math.hypot(u, v, 1);
+    return [(u / length) * radius, (v / length) * radius, (1 / length) * radius - skull];
+  };
+  const positions: number[] = [];
+  const colors: number[] = [];
+  const scalp = [0.07, 0.035, 0.025];
+  const bone = [0.78, 0.7, 0.58];
+  const bloodied = [0.42, 0.05, 0.05];
+  const triangle = (a: [number, number, number], b: [number, number, number], c: [number, number, number], color: number[]): void => {
+    positions.push(...a, ...b, ...c);
+    for (let corner = 0; corner < 3; corner += 1) colors.push(...color);
+  };
+  for (let side = 0; side < sides; side += 1) {
+    const [u0, v0] = outline[side]!;
+    const [u1, v1] = outline[(side + 1) % sides]!;
+    triangle(on(0, 0, skull), on(u0, v0, skull), on(u1, v1, skull), scalp);
+    triangle(on(0, 0, skull - thickness), on(u1, v1, skull - thickness), on(u0, v0, skull - thickness), side % 3 === 0 ? bone : bloodied);
+    triangle(on(u0, v0, skull), on(u0, v0, skull - thickness), on(u1, v1, skull), bone);
+    triangle(on(u1, v1, skull), on(u0, v0, skull - thickness), on(u1, v1, skull - thickness), bone);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  geometry.computeVertexNormals();
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
+/**
+ * What is left on the neck when a head bursts, seen from above: the tongue at the back, the lower
+ * teeth in an arch toward the front (the bottom of the texture) and the jawbone round them.
+ */
+export function jawWoundTexture(): THREE.CanvasTexture {
+  const size = 128;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  if (ctx !== null) {
+    const base = ctx.createRadialGradient(64, 60, 6, 64, 64, 66);
+    base.addColorStop(0, "#7a1016");
+    base.addColorStop(0.75, "#530a0e");
+    base.addColorStop(1, "#300408");
+    ctx.fillStyle = base;
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = "#8a2a2e";
+    ctx.beginPath();
+    ctx.ellipse(64, 50, 22, 17, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "rgba(220,120,120,0.35)";
+    ctx.beginPath();
+    ctx.ellipse(60, 45, 9, 5, -0.3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#a99c86";
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.ellipse(64, 62, 50, 50, 0, Math.PI * 0.08, Math.PI * 0.92);
+    ctx.stroke();
+    for (let tooth = 0; tooth < 12; tooth += 1) {
+      const angle = Math.PI * (0.14 + (tooth / 11) * 0.72);
+      ctx.save();
+      ctx.translate(64 + Math.cos(angle) * 42, 62 + Math.sin(angle) * 42);
+      ctx.rotate(angle + Math.PI / 2);
+      ctx.fillStyle = tooth % 5 === 2 ? "#3a0508" : "#ece4cf";
+      ctx.fillRect(-3.5, -4.5, 7, 9);
+      ctx.restore();
+    }
+    let seed = 0x2545f491;
+    const rand = (): number => {
+      seed = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      seed ^= seed + Math.imul(seed ^ (seed >>> 7), 61 | seed);
+      return ((seed ^ (seed >>> 14)) >>> 0) / 4294967296;
+    };
+    for (let fleck = 0; fleck < 60; fleck += 1) {
+      ctx.fillStyle = rand() < 0.5 ? "rgba(150,20,24,0.6)" : "rgba(20,2,4,0.5)";
+      ctx.beginPath();
+      ctx.arc(rand() * size, rand() * size, 0.8 + rand() * 2.2, 0, Math.PI * 2);
+      ctx.fill();
     }
   }
   const texture = new THREE.CanvasTexture(canvas);

@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { Effects3D } from "../render/effects";
+import { measureBurstStump } from "../render/renderer";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "../render/graph";
 import { OFFICIAL_LOOKS, lookFor, type FighterLook } from "../render/looks";
 import { BLUE_CORNER_OUTFIT, CUTMAN_OUTFIT, RED_CORNER_OUTFIT, REFEREE_OUTFIT, type OfficialOutfit } from "../render/outfit";
@@ -71,6 +72,9 @@ export class ModelLab {
   private shieldEvent = 0;
   private readonly mouth = new THREE.Vector3();
   private readonly headTurn = new THREE.Quaternion();
+  /** `burst=1` shows what a burst leaves on the neck. */
+  private burstRim = new Float32Array(0);
+  private readonly burstStump = { position: new THREE.Vector3(), quaternion: new THREE.Quaternion(), across: new THREE.Vector3(), scratch: new THREE.Vector3() };
   private raf = 0;
   private previous = performance.now();
   private elapsed = 0;
@@ -203,7 +207,8 @@ export class ModelLab {
         this.skeletonHelper = new THREE.SkeletonHelper(this.boxer.root);
         this.scene.add(this.skeletonHelper);
       }
-      if (this.params.get("mouthpiece") === "1") this.effects = new Effects3D(this.scene);
+      if (this.params.get("mouthpiece") === "1" || this.params.get("burst") === "1") this.effects = new Effects3D(this.scene);
+      if (this.params.get("burst") === "1") this.boxer.setHeadBurst(true);
       const dislocation = this.params.get("dislocation");
       if (dislocation === "jaw" || dislocation === "shoulder_left" || dislocation === "shoulder_right") this.graph.setArcadeDislocation(dislocation);
       this.statusEl.textContent = `pose ${this.params.get("pose") ?? "idle"}`;
@@ -270,7 +275,15 @@ export class ModelLab {
     graph.attend(this.params.get("pose") === "attend");
     graph.treat(this.params.get("pose") === "treat" ? this.treatEye : null, this.treatFacing, 1);
     graph.update(fighter, opponent, dt, this.elapsed, false, "full", sampledTick, head);
-    if (this.effects !== null) {
+    if (this.effects !== null && this.params.get("burst") === "1") {
+      const rim = measureBurstStump(this.boxer!, this.burstRim, this.burstStump);
+      if (rim !== null) {
+        this.burstRim = rim;
+        if (!this.effects.headBurst(0)) this.effects.burstHead(0, this.burstStump.position, 1, 7);
+        this.effects.anchorStump(0, this.burstStump.position, this.burstStump.quaternion, rim, this.burstStump.across);
+      }
+    }
+    if (this.effects !== null && this.params.get("mouthpiece") === "1") {
       this.shieldClock += dt;
       if (this.shieldClock > 3) {
         this.shieldClock = 0;
@@ -280,8 +293,8 @@ export class ModelLab {
         head.getWorldPosition(this.mouth).add(new THREE.Vector3(0, 0.045, 0.12).applyQuaternion(this.headTurn));
         this.effects.ejectMouthpiece(0, this.mouth, this.headTurn, 1, this.shieldEvent, 0x1d4ed8, true);
       }
-      this.effects.update(dt);
     }
+    this.effects?.update(dt);
     for (const [index, bone] of (["gloveL", "gloveR"] as const).entries()) {
       this.boxer!.rig.bones[bone].getWorldPosition(this.trailGlove);
       this.trails[index]?.update(this.trailGlove, dt, this.camera.position, dt > 0);

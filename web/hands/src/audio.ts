@@ -1,5 +1,8 @@
 import { INJURY_SOUNDS } from "./assets/injury-sounds";
 import type { ArcadeInjury } from "./render/renderer";
+
+/** Finishers without a voice of their own borrow the nearest one. */
+const BORROWED_VOICE: Partial<Readonly<Record<ArcadeInjury, ArcadeInjury>>> = { head_burst: "decapitation" };
 import type { Settings } from "./settings";
 import type { CombatEvent, FinalMessage, PunchClass } from "./types";
 
@@ -225,7 +228,7 @@ export class AudioFeedback {
   injury(injury: ArcadeInjury): void {
     const context = this.context;
     const master = this.master;
-    const buffer = this.injuryBuffers.get(injury);
+    const buffer = this.injuryBuffers.get(BORROWED_VOICE[injury] ?? injury);
     const current = this.settings();
     if (!this.unlocked || context === null || master === null || buffer === undefined) return;
     if (current.blood !== "full" || current.reducedMotion) return;

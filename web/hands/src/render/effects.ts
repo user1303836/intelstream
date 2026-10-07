@@ -3,7 +3,7 @@ import type { BloodLevel } from "../settings";
 import type { CombatEvent, Hand } from "../types";
 import { CanvasBlood } from "./canvas-blood";
 import { wearCornerColour } from "./gear";
-import { HARD_SHOT, bloodDropsFor, bloodShade, buildChunkGeometry, buildDropletGeometry, buildWoundGeometry, closeCut, dropletShape, woundTexture } from "./gore";
+import { HARD_SHOT, bloodDropsFor, bloodShade, buildChunkGeometry, buildDropletGeometry, buildShardGeometry, buildWoundGeometry, closeCut, dropletShape, jawWoundTexture, woundTexture } from "./gore";
 import { LookShading, SCANNED_LOOK, type FighterLook } from "./looks";
 import { SHIELD_RADIUS, buildMouthpieceGeometry, idleShield, stepShield, type ShieldState } from "./mouthpiece";
 import { CANVAS_TOP, RING_FIGHT_HALF, ROPE_LINE } from "./world";
@@ -11,6 +11,10 @@ import { CANVAS_TOP, RING_FIGHT_HALF, ROPE_LINE } from "./world";
 const MAX_DROPLETS = 900;
 const MAX_MIST = 90;
 const MAX_GIBS = 48;
+const MAX_SHARDS = 24;
+const SHARDS_PER_BURST = 18;
+const BRAIN_PER_BURST = 14;
+const TEETH_PER_BURST = 5;
 const MAX_HEADS = 2;
 const MAX_HANDS = 4;
 const GIBS_PER_DECAPITATION = 24;
@@ -73,8 +77,13 @@ interface Gib {
   stretch: number;
   bounces: number;
   stained: boolean;
-  tooth: boolean;
+  kind: DebrisKind;
 }
+
+/** Flesh is gone once it lands; teeth, brain and skull lie on the canvas a while. */
+type DebrisKind = "flesh" | "tooth" | "brain" | "shard";
+const DEBRIS_LIFE: Readonly<Record<DebrisKind, number>> = { flesh: 3, tooth: 6, brain: 14, shard: 14 };
+const DEBRIS_BOUNCES: Readonly<Record<DebrisKind, number>> = { flesh: 1, tooth: 3, brain: 1, shard: 2 };
 
 interface SeveredHead {
   readonly mesh: THREE.Mesh;
@@ -121,6 +130,7 @@ const seeded = (seed: number): (() => number) => () => {
 };
 
 const finite = (value: number, fallback = 0): number => Number.isFinite(value) ? value : fallback;
+const idleGib = (): Gib => ({ alive: false, x: 0, y: -50, z: 0, vx: 0, vy: 0, vz: 0, rx: 0, ry: 0, rz: 0, vrx: 0, vry: 0, vrz: 0, life: 0, scale: 0, stretch: 1, bounces: 0, stained: false, kind: "flesh" });
 const SHIELD_WHITE = new THREE.Color(0xf4f7fb);
 const SALIVA = { r: 0.82, g: 0.86, b: 0.9 } as const;
 const unitY = new THREE.Vector3(0, 1, 0);
@@ -204,6 +214,11 @@ export class Effects3D {
   private readonly gibGeometry: THREE.BufferGeometry;
   private readonly gibMaterial: THREE.MeshStandardMaterial;
   private readonly gibMesh: THREE.InstancedMesh;
+  private readonly shardGeometry: THREE.BufferGeometry;
+  private readonly shardMaterial: THREE.MeshStandardMaterial;
+  private readonly shardMesh: THREE.InstancedMesh;
+  private readonly shards: Gib[] = [];
+  private shardIndex = 0;
   private readonly gibColor = new THREE.Color();
   private readonly gibs: Gib[] = [];
   private gibIndex = 0;
@@ -223,11 +238,15 @@ export class Effects3D {
   private readonly wristStumpGeometry: THREE.BufferGeometry;
   private readonly stumpMaterial: THREE.MeshStandardMaterial;
   private readonly stumpMap: THREE.CanvasTexture;
+  private readonly jawMaterial: THREE.MeshStandardMaterial;
+  private readonly jawMap: THREE.CanvasTexture;
+  private readonly stumpAcross = new THREE.Vector3();
   private dropletCloseness = 1;
   private readonly stumpOutward = new THREE.Vector3();
   private readonly stumps: Stump[] = [];
   private readonly handStumps: Stump[] = [];
   private readonly lastDecapitationEvent = [null, null] as Array<number | null>;
+  private readonly lastBurstEvent = [null, null] as Array<number | null>;
   private readonly lastDismembermentEvent = Array<number | null>(MAX_HANDS).fill(null);
 
   private readonly shieldGeometry: THREE.BufferGeometry;
@@ -286,18 +305,33 @@ export class Effects3D {
     this.canvasBlood = new CanvasBlood(scene, bloodCanvasSize);
 
     this.gibGeometry = buildChunkGeometry();
-    this.gibMaterial = new THREE.MeshStandardMaterial({ color: 0x5c0a10, roughness: 0.34, metalness: 0 });
+    // Each piece carries its whole colour, so teeth are white and brain is grey beside the flesh.
+    this.gibMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.34, metalness: 0 });
     this.gibMesh = new THREE.InstancedMesh(this.gibGeometry, this.gibMaterial, MAX_GIBS);
     this.gibMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.gibMesh.frustumCulled = false;
     scene.add(this.gibMesh);
     for (let i = 0; i < MAX_GIBS; i += 1) {
-      const gib: Gib = { alive: false, x: 0, y: -50, z: 0, vx: 0, vy: 0, vz: 0, rx: 0, ry: 0, rz: 0, vrx: 0, vry: 0, vrz: 0, life: 0, scale: 0, stretch: 1, bounces: 0, stained: false, tooth: false };
+      const gib = idleGib();
       this.gibs.push(gib);
-      this.gibMesh.setColorAt(i, this.gibColor.setHex(0xffffff));
-      this.writeGibMatrix(i, gib);
+      this.gibMesh.setColorAt(i, this.gibColor.setHex(0x5c0a10));
+      this.writeDebrisMatrix(this.gibMesh, i, gib);
     }
     this.gibMesh.instanceMatrix.needsUpdate = true;
+    this.shardGeometry = buildShardGeometry();
+    this.shardMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5, metalness: 0, vertexColors: true, side: THREE.DoubleSide });
+    this.shardMesh = new THREE.InstancedMesh(this.shardGeometry, this.shardMaterial, MAX_SHARDS);
+    this.shardMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.shardMesh.frustumCulled = false;
+    this.shardMesh.castShadow = true;
+    scene.add(this.shardMesh);
+    for (let i = 0; i < MAX_SHARDS; i += 1) {
+      const shard = idleGib();
+      this.shards.push(shard);
+      this.shardMesh.setColorAt(i, this.gibColor.setHex(0xffffff));
+      this.writeDebrisMatrix(this.shardMesh, i, shard);
+    }
+    this.shardMesh.instanceMatrix.needsUpdate = true;
 
     this.headGeometry = new THREE.SphereGeometry(HEAD_RADIUS, 18, 14);
     this.handGeometry = new THREE.CapsuleGeometry(0.055, 0.09, 6, 12);
@@ -305,6 +339,8 @@ export class Effects3D {
     this.wristStumpGeometry = buildWoundGeometry(0.038, 0.042, 0.006);
     this.stumpMap = woundTexture();
     this.stumpMaterial = new THREE.MeshStandardMaterial({ map: this.stumpMap, roughness: 0.3, metalness: 0 });
+    this.jawMap = jawWoundTexture();
+    this.jawMaterial = new THREE.MeshStandardMaterial({ map: this.jawMap, roughness: 0.28, metalness: 0 });
     for (let i = 0; i < MAX_HEADS; i += 1) {
       const headMaterial = new THREE.MeshStandardMaterial({ color: 0x8a4d32, roughness: 0.76, metalness: 0 });
       this.headMaterials.push(headMaterial);
@@ -397,8 +433,23 @@ export class Effects3D {
     return this.gibs.filter((gib) => gib.alive).length;
   }
 
+  get liveShards(): number {
+    return this.shards.filter((shard) => shard.alive).length;
+  }
+
+  /** How many teeth, pieces of brain and pieces of skull are out, by kind. */
+  debrisCount(kind: DebrisKind): number {
+    return [...this.gibs, ...this.shards].filter((gib) => gib.alive && gib.kind === kind).length;
+  }
+
   get activeHeads(): number {
     return this.heads.filter((head) => head.active).length;
+  }
+
+  /** Whether a fighter's head has burst, leaving the jaw on his neck. */
+  headBurst(fighterIndex: number): boolean {
+    const stump = this.stumps[Math.trunc(fighterIndex)];
+    return stump !== undefined && stump.active && stump.mesh.material === this.jawMaterial;
   }
 
   /** Copies the world position of a fighter's severed head into `out`; false when the head is still on. */
@@ -834,6 +885,7 @@ export class Effects3D {
     head.mesh.visible = true;
 
     const stump = this.stumps[index]!;
+    stump.mesh.material = this.stumpMaterial;
     stump.active = true;
     stump.fountainLife = 1.25;
     stump.accumulator = 0;
@@ -876,6 +928,76 @@ export class Effects3D {
       this.spawnMist(head.mesh.position.x + (rand() - 0.5) * 0.35, head.mesh.position.y + (rand() - 0.5) * 0.25, head.mesh.position.z + (rand() - 0.5) * 0.35, 1 + rand() * 1.4, 0.65 + rand() * 0.55);
     }
     this.splatter(head.mesh.position.x, head.mesh.position.z, 1.5, rand);
+  }
+
+  /**
+   * The head bursts above the mouth: pieces of skull and brain, teeth and a great spray of blood go out
+   * from the middle of the skull at `position`, and the lower jaw is left on the neck.
+   */
+  burstHead(fighterIndex: number, position: THREE.Vector3, direction: number, eventId: number): void {
+    if (this.bloodLevel !== "full" || fighterIndex < 0 || fighterIndex >= MAX_HEADS) return;
+    const index = Math.trunc(fighterIndex);
+    const safeEventId = Number.isSafeInteger(eventId) ? eventId : 0;
+    const stump = this.stumps[index]!;
+    if (stump.active || this.lastBurstEvent[index] === safeEventId) return;
+    this.lastBurstEvent[index] = safeEventId;
+    const rand = seeded(safeEventId * 91_813 + index * 6151 + 41);
+    const launch = direction < 0 ? -1 : 1;
+    const x = finite(position.x);
+    const y = finite(position.y, 1.6);
+    const z = finite(position.z);
+    const scatter = (count: number, kind: DebrisKind, speed: number, spread: number, lift: number): void => {
+      for (let piece = 0; piece < count; piece += 1) {
+        const around = rand() * Math.PI * 2;
+        const up = rand() * 1.2 - 0.2;
+        const flat = Math.sqrt(Math.max(0, 1 - up * up));
+        const pace = speed + rand() * spread;
+        this.spawnGib(
+          x + Math.cos(around) * flat * 0.06,
+          y + up * 0.05 - (kind === "tooth" ? 0.07 : 0),
+          z + Math.sin(around) * flat * 0.06,
+          Math.cos(around) * flat * pace + launch * pace * 0.45,
+          up * pace + lift,
+          Math.sin(around) * flat * pace,
+          rand,
+          kind,
+        );
+      }
+    };
+    scatter(SHARDS_PER_BURST, "shard", 2.2, 2.4, 1);
+    scatter(BRAIN_PER_BURST, "brain", 1.2, 1.8, 0.8);
+    scatter(TEETH_PER_BURST, "tooth", 1, 1.4, 0.6);
+    for (let drop = 0; drop < 180; drop += 1) {
+      const around = rand() * Math.PI * 2;
+      const up = rand() * 1.3 - 0.3;
+      const flat = Math.sqrt(Math.max(0, 1 - Math.min(1, up * up)));
+      const pace = 1.4 + rand() * 3.2;
+      this.spawnDroplet(
+        x + (rand() - 0.5) * 0.1,
+        y + (rand() - 0.5) * 0.1,
+        z + (rand() - 0.5) * 0.1,
+        Math.cos(around) * flat * pace + launch * pace * 0.35,
+        up * pace + 0.8,
+        Math.sin(around) * flat * pace,
+        bloodShade(rand()),
+        0.8 + rand() * 1.1,
+        true,
+        0.004 + rand() ** 2 * 0.014,
+      );
+    }
+    for (let puff = 0; puff < 24; puff += 1) {
+      this.spawnMist(x + (rand() - 0.5) * 0.5, y + (rand() - 0.3) * 0.4, z + (rand() - 0.5) * 0.5, 1.2 + rand() * 1.6, 0.8 + rand() * 0.7);
+    }
+    this.splatter(x + launch * 0.3, z, 2.2, rand);
+    this.shake = Math.min(0.16, this.shake + 0.1);
+    stump.mesh.material = this.jawMaterial;
+    stump.active = true;
+    stump.fountainLife = 1.8;
+    stump.accumulator = 0;
+    stump.seed = safeEventId | 1;
+    stump.direction = launch;
+    stump.mesh.position.set(x, y - 0.08, z);
+    stump.mesh.visible = true;
   }
 
   dismemberHand(
@@ -980,7 +1102,7 @@ export class Effects3D {
    * Keeps the wound on the neck. `rim` is the edge of the cut as the skin is posed, both ends of each
    * edge in turn: with it the wound closes the opening exactly, and without it a disc stands in.
    */
-  anchorStump(fighterIndex: number, position: THREE.Vector3, quaternion: THREE.Quaternion, rim?: ArrayLike<number>): void {
+  anchorStump(fighterIndex: number, position: THREE.Vector3, quaternion: THREE.Quaternion, rim?: ArrayLike<number>, across?: THREE.Vector3): void {
     if (this.bloodLevel !== "full" || fighterIndex < 0 || fighterIndex >= MAX_HEADS) return;
     const stump = this.stumps[Math.trunc(fighterIndex)]!;
     if (!stump.active) return;
@@ -990,7 +1112,7 @@ export class Effects3D {
       copyFiniteQuaternion(stump.mesh.quaternion, quaternion);
       return;
     }
-    closeCut(stump.flesh, rim, stump.mesh.position, this.stumpOutward.set(0, 1, 0).applyQuaternion(quaternion));
+    closeCut(stump.flesh, rim, stump.mesh.position, this.stumpOutward.set(0, 1, 0).applyQuaternion(quaternion), 0.01, across);
     stump.mesh.geometry = stump.flesh;
     stump.mesh.quaternion.identity();
   }
@@ -1010,6 +1132,7 @@ export class Effects3D {
     stump.accumulator = 0;
     stump.mesh.visible = false;
     stump.mesh.position.y = -50;
+    stump.mesh.material = this.stumpMaterial;
     for (const handIndex of [index * 2, index * 2 + 1]) {
       const hand = this.hands[handIndex]!;
       hand.active = false;
@@ -1081,7 +1204,7 @@ export class Effects3D {
         1.1 + rand() * 1.4,
         Math.cos(angle) * 0.7,
         rand,
-        true,
+        "tooth",
       );
     }
     for (let i = 0; i < 18; i += 1) {
@@ -1090,17 +1213,24 @@ export class Effects3D {
     }
   }
 
-  private spawnGib(x: number, y: number, z: number, vx: number, vy: number, vz: number, rand: () => number, tooth = false): void {
-    const index = this.gibIndex % MAX_GIBS;
-    this.gibIndex += 1;
-    const gib = this.gibs[index]!;
+  private spawnGib(x: number, y: number, z: number, vx: number, vy: number, vz: number, rand: () => number, kind: DebrisKind = "flesh"): void {
+    const shard = kind === "shard";
+    const pool = shard ? this.shards : this.gibs;
+    const mesh = shard ? this.shardMesh : this.gibMesh;
+    const index = shard ? this.shardIndex++ % MAX_SHARDS : this.gibIndex++ % MAX_GIBS;
+    const gib = pool[index]!;
     gib.alive = true;
-    gib.tooth = tooth;
+    gib.kind = kind;
     const shade = 0.55 + rand() * 0.45;
-    if (tooth) this.gibColor.setHex(0xf3ead6);
-    else this.gibColor.setRGB(shade, shade * (0.75 + rand() * 0.25), shade);
-    this.gibMesh.setColorAt(index, this.gibColor);
-    if (this.gibMesh.instanceColor !== null) this.gibMesh.instanceColor.needsUpdate = true;
+    if (kind === "tooth") this.gibColor.setHex(0xf3ead6);
+    else if (kind === "brain") this.gibColor.setHex(rand() < 0.3 ? 0x8a3a3c : 0xb7918e).multiplyScalar(0.8 + shade * 0.25);
+    else if (shard) this.gibColor.setScalar(0.85 + shade * 0.15);
+    else {
+      this.gibColor.setHex(0x5c0a10).multiplyScalar(shade);
+      this.gibColor.g *= 0.75 + rand() * 0.25;
+    }
+    mesh.setColorAt(index, this.gibColor);
+    if (mesh.instanceColor !== null) mesh.instanceColor.needsUpdate = true;
     gib.x = finite(x);
     gib.y = finite(y, 1.5);
     gib.z = finite(z);
@@ -1113,16 +1243,16 @@ export class Effects3D {
     gib.vrx = (rand() - 0.5) * 18;
     gib.vry = (rand() - 0.5) * 18;
     gib.vrz = (rand() - 0.5) * 18;
-    gib.life = tooth ? 6 : 1.8 + rand() * 1.2;
-    gib.scale = tooth ? 0.22 + rand() * 0.12 : 0.3 + rand() * 0.6;
-    gib.stretch = tooth ? 1 : 0.7 + rand() * 0.9;
+    gib.life = kind === "flesh" ? 1.8 + rand() * 1.2 : DEBRIS_LIFE[kind];
+    gib.scale = kind === "tooth" ? 0.22 + rand() * 0.12 : shard ? 0.6 + rand() * 0.6 : kind === "brain" ? 0.45 + rand() * 0.55 : 0.3 + rand() * 0.6;
+    gib.stretch = kind === "tooth" ? 1 : 0.7 + rand() * 0.9;
     gib.bounces = 0;
     gib.stained = false;
-    this.writeGibMatrix(index, gib);
-    this.gibMesh.instanceMatrix.needsUpdate = true;
+    this.writeDebrisMatrix(mesh, index, gib);
+    mesh.instanceMatrix.needsUpdate = true;
   }
 
-  private writeGibMatrix(index: number, gib: Gib): void {
+  private writeDebrisMatrix(mesh: THREE.InstancedMesh, index: number, gib: Gib): void {
     if (!gib.alive) {
       this.gibPosition.set(0, -50, 0);
       this.gibQuaternion.identity();
@@ -1134,18 +1264,18 @@ export class Effects3D {
       this.gibScale.set(gib.scale * gib.stretch, gib.scale, gib.scale / Math.sqrt(gib.stretch));
     }
     this.gibMatrix.compose(this.gibPosition, this.gibQuaternion, this.gibScale);
-    this.gibMesh.setMatrixAt(index, this.gibMatrix);
+    mesh.setMatrixAt(index, this.gibMatrix);
   }
 
-  private updateGibs(dt: number): void {
+  private updateDebris(pool: readonly Gib[], mesh: THREE.InstancedMesh, dt: number): void {
     let changed = false;
-    for (const [index, gib] of this.gibs.entries()) {
+    for (const [index, gib] of pool.entries()) {
       if (!gib.alive) continue;
       changed = true;
       gib.life -= dt;
       if (gib.life <= 0) {
         gib.alive = false;
-        this.writeGibMatrix(index, gib);
+        this.writeDebrisMatrix(mesh, index, gib);
         continue;
       }
       gib.vy -= 6.4 * dt;
@@ -1158,11 +1288,11 @@ export class Effects3D {
       this.confineGib(gib);
       if (gib.y <= CANVAS_TOP + 0.015) {
         gib.y = CANVAS_TOP + 0.015;
-        if (!gib.stained && this.bloodLevel === "full" && !gib.tooth) {
+        if (!gib.stained && this.bloodLevel === "full" && gib.kind !== "tooth") {
           gib.stained = true;
           this.placeDecal(gib.x, gib.z, 0.24 + gib.scale * 0.16, 0.14 + gib.scale * 0.1, gib.rz, 0.42, 0x620a10);
         }
-        if (gib.bounces < (gib.tooth ? 3 : 1) && Math.abs(gib.vy) > 0.35) {
+        if (gib.bounces < DEBRIS_BOUNCES[gib.kind] && Math.abs(gib.vy) > 0.35) {
           gib.bounces += 1;
           gib.vy = Math.abs(gib.vy) * 0.3;
           gib.vx *= 0.68;
@@ -1170,18 +1300,20 @@ export class Effects3D {
           gib.vrx *= 0.7;
           gib.vry *= 0.7;
           gib.vrz *= 0.7;
-        } else if (gib.tooth) {
+        } else if (gib.kind !== "flesh") {
+          // It lies where it came down; a piece of skull settles on its back or its face.
           gib.vx = 0;
           gib.vy = 0;
           gib.vz = 0;
           gib.vrx = gib.vry = gib.vrz = 0;
+          if (gib.kind === "shard") gib.rx = Math.round(gib.rx / Math.PI) * Math.PI;
         } else {
           gib.alive = false;
         }
       }
-      this.writeGibMatrix(index, gib);
+      this.writeDebrisMatrix(mesh, index, gib);
     }
-    if (changed) this.gibMesh.instanceMatrix.needsUpdate = true;
+    if (changed) mesh.instanceMatrix.needsUpdate = true;
   }
 
   private confineGib(gib: Gib): void {
@@ -1301,7 +1433,8 @@ export class Effects3D {
     this.updateDetachedParts(this.heads, step);
     this.updateDetachedParts(this.hands, step);
     this.updateShields(step);
-    this.updateGibs(step);
+    this.updateDebris(this.gibs, this.gibMesh, step);
+    this.updateDebris(this.shards, this.shardMesh, step);
 
     let dropletsChanged = false;
     for (const [i, droplet] of this.droplets.entries()) {
@@ -1389,14 +1522,16 @@ export class Effects3D {
   }
 
   private clearGibs(): void {
-    let changed = false;
-    for (const [index, gib] of this.gibs.entries()) {
-      if (!gib.alive) continue;
-      gib.alive = false;
-      this.writeGibMatrix(index, gib);
-      changed = true;
+    for (const [pool, mesh] of [[this.gibs, this.gibMesh], [this.shards, this.shardMesh]] as const) {
+      let changed = false;
+      for (const [index, gib] of pool.entries()) {
+        if (!gib.alive) continue;
+        gib.alive = false;
+        this.writeDebrisMatrix(mesh, index, gib);
+        changed = true;
+      }
+      if (changed) mesh.instanceMatrix.needsUpdate = true;
     }
-    if (changed) this.gibMesh.instanceMatrix.needsUpdate = true;
   }
 
   clearDynamic(): void {
@@ -1431,6 +1566,7 @@ export class Effects3D {
     this.scene.remove(this.dropletMesh);
     this.scene.remove(this.mistPoints);
     this.scene.remove(this.gibMesh);
+    this.scene.remove(this.shardMesh);
     this.dropletMesh.dispose();
     this.dropletGeometry.dispose();
     this.dropletMaterial.dispose();
@@ -1445,6 +1581,11 @@ export class Effects3D {
     this.mistMap.dispose();
     this.gibGeometry.dispose();
     this.gibMaterial.dispose();
+    this.shardMesh.dispose();
+    this.shardGeometry.dispose();
+    this.shardMaterial.dispose();
+    this.jawMaterial.dispose();
+    this.jawMap.dispose();
     this.headGeometry.dispose();
     for (const material of this.headMaterials) material.dispose();
     this.handGeometry.dispose();

@@ -170,6 +170,7 @@ export class SkinnedBoxer {
   private readonly headMeshes: THREE.SkinnedMesh[] = [];
   private readonly handMeshes: Record<Hand, THREE.SkinnedMesh[]> = { left: [], right: [] };
   private decapitated = false;
+  private burst = false;
   private readonly dismemberedHands: Record<Hand, boolean> = { left: false, right: false };
   private readonly dressed: boolean;
   private readonly ownedGeometries: THREE.BufferGeometry[] = [];
@@ -205,6 +206,8 @@ export class SkinnedBoxer {
     if (this.headMeshes.length !== 1) throw new Error(`fighter GLB requires one BoxerHead mesh, found ${this.headMeshes.length}`);
     const headShadow = this.headInjury.shadowMaterial();
     this.headMeshes[0]!.customDepthMaterial = headShadow;
+    // Drawn from inside too, so a cut through the head shows flesh where it is open.
+    (this.headMeshes[0]!.material as THREE.Material).side = THREE.DoubleSide;
     this.ownedMaterials.push(headShadow);
     for (const side of ["left", "right"] as const) {
       if (this.handMeshes[side].length !== 1) {
@@ -270,7 +273,20 @@ export class SkinnedBoxer {
   /** Cuts the head off through the neck; the collar of the head mesh stays on the shoulders. */
   setDecapitated(value: boolean): void {
     this.decapitated = value;
+    this.burst = false;
     this.headInjury.setSevered(value);
+    this.bone("head")!.visible = !value;
+  }
+
+  get isHeadBurst(): boolean {
+    return this.burst;
+  }
+
+  /** Bursts the head above the mouth; the lower jaw stays on the neck. */
+  setHeadBurst(value: boolean): void {
+    this.burst = value;
+    this.decapitated = false;
+    this.headInjury.setBurst(value);
     this.bone("head")!.visible = !value;
   }
 
