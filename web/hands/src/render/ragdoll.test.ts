@@ -205,7 +205,7 @@ describe("knockout physics", () => {
 
   it("builds nothing while it steps or draws", () => {
     const source = readFileSync("src/render/ragdoll.ts", "utf8");
-    const hot = ["step", "carryHinges", "solveRigid", "solveRanges", "solveKnees", "solveTwist", "spinInertia", "solveElbows", "solveNeck", "solveFeet", "footNormal", "cone", "rotateAbout", "hinge", "satisfy", "hingeAxis", "solveArmsAgainstTorso", "closestOnSegment", "solveEnvironment", "applyFriction", "limitSpeed", "interpolate", "keepRest", "restore", "replayLosses", "runAhead", "drive", "tiltHips", "prepareFrames", "segment", "frameFor", "blend", "elbowAxis", "kneeAxis"];
+    const hot = ["step", "carryHinges", "solveRigid", "solveRanges", "solveKnees", "solveTwist", "spinInertia", "solveElbows", "solveNeck", "solveFeet", "footNormal", "cone", "rotateAbout", "hinge", "satisfy", "hingeAxis", "solveArmsAgainstTorso", "closestOnSegment", "solveEnvironment", "applyFriction", "limitSpeed", "interpolate", "keepRest", "restore", "replayLosses", "runAhead", "followPose", "drive", "tiltHips", "prepareFrames", "segment", "frameFor", "blend", "elbowAxis", "kneeAxis"];
     for (const name of hot) {
       const start = source.search(new RegExp(`\\n  (private )?(get )?${name}\\(`));
       expect(start, name).toBeGreaterThan(0);
@@ -460,15 +460,15 @@ describe("knockouts on the fighter", () => {
     let now = frames(graph, { ...fighter, is_downed: true }, opponent, 150, time);
     const pelvis = graph.fallBody!.pelvis(new THREE.Vector3());
     now = frames(graph, fighter, opponent, 1, now);
-    expect(graph.fallBody).toBeNull();
-    // The first frame of the get-up starts from the body on the canvas, not from the authored lying pose.
+    // The physics carries the body into the get-up (until he is on all fours), from where it lay.
+    expect(graph.fallBody?.handingOver).toBe(true);
     expect(worldPosition(boxer.rig.bones.hips, new THREE.Vector3()).distanceTo(pelvis)).toBeLessThan(0.08);
     frames(graph, fighter, opponent, 130, now);
     expect(graph.isDown).toBe(false);
     expect(worldPosition(boxer.rig.bones.head, new THREE.Vector3()).y).toBeGreaterThan(1.45);
   });
 
-  it("starts the get-up where the body lies, and only then walks back to his spot", () => {
+  it("starts the get-up where the body lies, and steps back to his spot as he rises", () => {
     const { boxer, graph, fighter, opponent, time } = standing();
     graph.react("hit", "head", 1, "straight", "right", 420);
     let now = frames(graph, { ...fighter, is_downed: true }, opponent, 200, time);
@@ -485,6 +485,65 @@ describe("knockouts on the fighter", () => {
     const standingHips = worldPosition(boxer.rig.bones.hips, new THREE.Vector3());
     expect(Math.hypot(standingHips.x - boxer.root.position.x, standingHips.z - boxer.root.position.z)).toBeLessThan(0.2);
   });
+
+  it("is carried by the physics into the get-up and stands up on his place, smoothly and above the canvas", () => {
+    // Handed to the get-up at the first press, the body froze and then snapped 1.3 m; turning each bone from the fall's
+    // pose to the get-up's then swung limbs up to 0.85 m in a frame and 0.5 m through the canvas, knees flipped across
+    // the leg 0.6 m in a frame, and once up he walked back to his place for up to half a second.
+    const vertex = new THREE.Vector3();
+    const lowest = (boxer: SkinnedBoxer): number => {
+      boxer.root.updateMatrixWorld(true);
+      let height = Infinity;
+      for (const mesh of [boxer.headMesh, boxer.gloveMesh("left"), boxer.gloveMesh("right")]) {
+        const count = mesh.geometry.getAttribute("position").count;
+        for (let index = 0; index < count; index += 2) height = Math.min(height, mesh.getVertexPosition(index, vertex).applyMatrix4(mesh.matrixWorld).y);
+      }
+      return height;
+    };
+    let move = { distance: 0, at: "" };
+    let under = { height: Infinity, at: "" };
+    let away = 0;
+    for (const defense of ["guard_high", "slip_left"] as const) {
+      for (const punchClass of ["jab", "straight", "hook", "uppercut"] as const) {
+        for (const hand of ["left", "right"] as const) {
+          const { boxer, graph, fighter, opponent, time } = standing(0, 0, defense);
+          const ready = { ...fighter, get_up_required: 66 };
+          graph.react("hit", "head", 1, punchClass, hand, 110);
+          let now = frames(graph, { ...ready, is_downed: true, defense: "none" }, opponent, 160, time);
+          const names = Object.keys(boxer.rig.bones) as (keyof typeof boxer.rig.bones)[];
+          let last = names.map((name) => worldPosition(boxer.rig.bones[name], new THREE.Vector3()));
+          let frame = 0;
+          for (const [stage, state, count] of [
+            ["first press", { ...ready, is_downed: true, defense: "none" as const, get_up_meter: 22 }, 30],
+            ["second press", { ...ready, is_downed: true, defense: "none" as const, get_up_meter: 44 }, 30],
+            ["up", { ...ready, get_up_meter: 66, stunned_ticks: 20 }, 40],
+          ] as const) {
+            for (let index = 0; index < count; index += 1) {
+              now = frames(graph, state, opponent, 1, now);
+              const label = `${defense} ${punchClass} ${hand} ${stage} frame ${index}`;
+              const here = names.map((name) => worldPosition(boxer.rig.bones[name], new THREE.Vector3()));
+              for (const [bone, position] of here.entries()) {
+                const distance = position.distanceTo(last[bone]!);
+                if (distance > move.distance) move = { distance, at: `${label} ${names[bone]}` };
+              }
+              last = here;
+              if (frame % 3 === 0) {
+                const height = lowest(boxer);
+                if (height < under.height) under = { height, at: label };
+              }
+              frame += 1;
+            }
+          }
+          away = Math.max(away, Math.hypot(boxer.root.position.x - mapping.x(0), boxer.root.position.z - mapping.z(0)));
+        }
+      }
+    }
+    expect(move.distance, move.at).toBeLessThan(0.16);
+    // A glove's padding reaches a few centimetres past the particles it lies on; no limb swings through the canvas.
+    expect(under.height, under.at).toBeGreaterThan(-0.06);
+    // Up off his knee he is on his place: the opponent's punches aim there.
+    expect(away).toBeLessThan(0.01);
+  }, 60_000);
 
   it("runs the recorded fall again for the replay and ends where the live fall ended", () => {
     const { graph, fighter, opponent, time } = standing();

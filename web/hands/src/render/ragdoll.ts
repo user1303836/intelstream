@@ -20,7 +20,7 @@ export const P = {
 export const PARTICLES = 26;
 
 const MASS = [9, 4, 4, 2, 10, 7, 2, 3.5, 3.5, 2.5, 1.5, 1, 1.6, 1, 1, 1.6, 1, 1, 3.6, 1.6, 0.4, 0.6, 3.6, 1.6, 0.4, 0.6];
-export const RADIUS = [0.12, 0.09, 0.09, 0.11, 0.14, 0.13, 0.06, 0.07, 0.07, 0.09, 0.085, 0.055, 0.05, 0.045, 0.08, 0.05, 0.045, 0.08, 0.06, 0.05, 0.035, 0.04, 0.06, 0.05, 0.035, 0.04];
+export const RADIUS = [0.12, 0.09, 0.09, 0.11, 0.14, 0.13, 0.06, 0.07, 0.07, 0.09, 0.085, 0.055, 0.05, 0.065, 0.08, 0.05, 0.065, 0.08, 0.06, 0.05, 0.035, 0.04, 0.06, 0.05, 0.035, 0.04];
 
 /** Helpers fixed to a bone, in metres along the bone's own axes. */
 const BELLY_FORWARD = 0.12;
@@ -302,6 +302,9 @@ export class RagdollBody {
   private obstacleZ = 0;
   private obstacleTrack: ObstacleTrack | null = null;
   private obstacleTrackLive = false;
+  /** Particle positions the body is drawn toward as it is handed to the get-up, and the share of the way each step. */
+  private pull: Float64Array | null = null;
+  private pullShare = 0;
 
   /**
    * A live fall writes where the opponent stood into `track` at every step; a replayed one reads each
@@ -473,6 +476,18 @@ export class RagdollBody {
     this.obstacleActive = active;
   }
 
+  /**
+   * Draws the body `share` of the way toward `targets` each step, keeping it awake, until called with null. The
+   * particles are moved rather than thrown: the pull leaves no speed behind it.
+   */
+  pullToward(targets: Float64Array | null, share: number): void {
+    this.pull = targets;
+    this.pullShare = share;
+    if (targets === null) return;
+    this.asleep = false;
+    this.stillSeconds = 0;
+  }
+
   /** Takes a blow now: a velocity change on the struck part. Returns it stamped with the step it landed before. */
   impulse(record: ImpulseRecord): ImpulseRecord {
     this.applyImpulse(record);
@@ -549,19 +564,39 @@ export class RagdollBody {
         position[index] = current + velocity - (k === 1 ? GRAVITY * h * h : 0);
       }
     }
+    const pull = this.pull;
+    if (pull !== null) {
+      for (let i = 0; i < PARTICLES; i += 1) {
+        const dx = (pull[i * 3]! - position[i * 3]!) * this.pullShare;
+        const dy = (pull[i * 3 + 1]! - position[i * 3 + 1]!) * this.pullShare;
+        const dz = (pull[i * 3 + 2]! - position[i * 3 + 2]!) * this.pullShare;
+        // No part is drawn faster than PULL_STEP a step, unless it is drawn all the way.
+        const length = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        const keep = this.pullShare < 1 && length > PULL_STEP ? PULL_STEP / length : 1;
+        for (let k = 0; k < 3; k += 1) {
+          const move = (k === 0 ? dx : k === 1 ? dy : dz) * keep;
+          position[i * 3 + k] = position[i * 3 + k]! + move;
+          previous[i * 3 + k] = previous[i * 3 + k]! + move;
+        }
+      }
+    }
     this.carryHinges();
     for (let iteration = 0; iteration < ITERATIONS; iteration += 1) {
       this.solveRigid();
-      this.solveRanges();
-      this.solveKnees();
-      this.solveTwist();
-      this.solveElbows();
-      this.solveNeck();
-      this.solveFeet();
-      this.solveArmsAgainstTorso();
+      // Drawn to a pose a skeleton has (the get-up's), the body keeps only its lengths and the canvas: the joints'
+      // limits are the physics' own idea of a body and would hold it back from the pose.
+      if (pull === null) {
+        this.solveRanges();
+        this.solveKnees();
+        this.solveTwist();
+        this.solveElbows();
+        this.solveNeck();
+        this.solveFeet();
+        this.solveArmsAgainstTorso();
+      }
       this.solveEnvironment();
     }
-    if (this.landedSeconds >= 0) this.toppleLegs();
+    if (this.landedSeconds >= 0 && pull === null) this.toppleLegs();
     this.applyFriction();
     this.limitSpeed();
     this.steps += 1;
@@ -582,7 +617,7 @@ export class RagdollBody {
       this.torsoStillSeconds = torsoFastest < LANDED_SPEED ? this.torsoStillSeconds + h : 0;
       if (this.torsoStillSeconds >= LANDED_SECONDS || this.fallSeconds >= LANDED_BY_SECONDS) this.landedSeconds = 0;
     }
-    if (this.stillSeconds >= SLEEP_SECONDS || this.landedSeconds >= SETTLE_SECONDS) this.asleep = true;
+    if (pull === null && (this.stillSeconds >= SLEEP_SECONDS || this.landedSeconds >= SETTLE_SECONDS)) this.asleep = true;
   }
 
   private solveRigid(): void {
@@ -1124,6 +1159,14 @@ const MAX_STEPS_PER_UPDATE = 10;
 const STALE_SHIFT = 0.35;
 /** Steps a frame the fall a replay cut short is run on ahead of it, so it has come to rest by the time the replay ends. */
 const AHEAD_STEPS = 6;
+/**
+ * The share of the way to the get-up pose a body being handed over is drawn each step, no part faster than PULL_STEP a
+ * step (6 m/s), and the seconds over which the bones' own turns go over to the get-up's; what is left when the physics
+ * lets go, the get-up blends out (see blendRise).
+ */
+const FOLLOW_PULL = 0.25;
+const PULL_STEP = 0.05;
+const FOLLOW_TURN_SECONDS = 0.3;
 /** How long a fall is run on at most, from where it is, to show where it ends. */
 const RUN_ON_SECONDS = 6;
 
@@ -1212,6 +1255,12 @@ export class KnockoutRagdoll {
   private readonly recordLosses: number[] = [];
   private readonly recordRest: FallRest = { position: new Float64Array(PARTICLES * 3), previous: new Float64Array(PARTICLES * 3), steps: -1 };
   private replaying: FallRecord | null = null;
+  /** The get-up pose's particles and the offsets that would put the bones on them, while the body is handed over. */
+  private readonly followTargets = new Float64Array(PARTICLES * 3);
+  private readonly followOffsets = DRIVEN.map(() => new THREE.Quaternion());
+  private readonly blendedOffsets = DRIVEN.map(() => new THREE.Quaternion());
+  private following = false;
+  private followAge = 0;
   private primed = false;
   private pending: (ImpulseRecord & { readonly at: number }) | null = null;
   private lost = 0;
@@ -1391,7 +1440,74 @@ export class KnockoutRagdoll {
     this.riseCaptured = false;
     this.age = 0;
     this.accumulator = 0;
+    this.following = false;
+    this.body.pullToward(null, 0);
     return true;
+  }
+
+  /**
+   * Starts handing the body to the get-up: from now until letGo() the physics follows the get-up pose solved onto the
+   * skeleton each frame (see followPose).
+   */
+  handOver(): void {
+    if (!this.ragdolling) return;
+    this.replaying = null;
+    this.following = true;
+    this.followAge = 0;
+    this.accumulator = 0;
+  }
+
+  /** Whether the physics is following the get-up pose on its way out. */
+  get handingOver(): boolean {
+    return this.ragdolling && this.following;
+  }
+
+  /** How long the physics has been following the get-up pose. */
+  get handOverSeconds(): number {
+    return this.handingOver ? this.followAge : 0;
+  }
+
+  /** Ends the hand-over: the physics stops where it has the body, and the get-up blends on from there (see blendRise). */
+  letGo(): void {
+    if (!this.handingOver) return;
+    this.following = false;
+    this.body.pullToward(null, 0);
+    this.stop();
+  }
+
+  /**
+   * One frame of the hand-over, with this frame's get-up pose solved onto the skeleton. The particles are drawn toward
+   * that pose's while the canvas, the ropes and the bones' lengths keep them a body, and the bones go on them with
+   * offsets turning from the fall's toward the get-up's. What is left between the two when it stops, the get-up blends
+   * out (see blendRise). Turning the bones straight from where the fall left them to the get-up pose swung limbs
+   * 30-50 cm through the canvas.
+   */
+  followPose(dt: number, obstacle: { readonly x: number; readonly z: number } | null): void {
+    if (!this.handingOver) return;
+    this.root.updateMatrixWorld(true);
+    this.read(this.followTargets);
+    this.prepareFrames(this.followTargets);
+    for (let index = 0; index < this.bones.length; index += 1) {
+      this.frameFor(index, this.followTargets, this.frame);
+      this.bones[index]!.matrixWorld.decompose(this.point, this.world, this.other);
+      this.followOffsets[index]!.copy(this.frame.invert()).multiply(this.world);
+    }
+    this.followAge += Math.max(0, dt);
+    const t = Math.min(1, this.followAge / FOLLOW_TURN_SECONDS);
+    const w = t * t * (3 - 2 * t);
+    this.body.setObstacle(obstacle?.x ?? 0, obstacle?.z ?? 0, obstacle !== null);
+    this.body.pullToward(this.followTargets, FOLLOW_PULL);
+    this.accumulator += Math.max(0, dt);
+    let steps = 0;
+    while (this.accumulator >= STEP_SECONDS && steps < MAX_STEPS_PER_UPDATE) {
+      this.body.step();
+      this.accumulator -= STEP_SECONDS;
+      steps += 1;
+    }
+    if (steps === MAX_STEPS_PER_UPDATE) this.accumulator = 0;
+    this.body.interpolate(this.accumulator / STEP_SECONDS, this.drawn);
+    for (let index = 0; index < this.bones.length; index += 1) this.blendedOffsets[index]!.slerpQuaternions(this.offsets[index]!, this.followOffsets[index]!, w);
+    this.drive(this.drawn, this.blendedOffsets);
   }
 
   /** Steps the physics by `dt` and writes the pose onto the skeleton. */
@@ -1451,6 +1567,8 @@ export class KnockoutRagdoll {
 
   /** Stops driving the skeleton; the pose it left is kept for the get-up blend. */
   stop(): void {
+    this.following = false;
+    this.body.pullToward(null, 0);
     if (this.ragdolling) {
       this.root.updateMatrixWorld(true);
       this.captureLocals(this.riseLocal, this.riseHips);
@@ -1652,7 +1770,7 @@ export class KnockoutRagdoll {
     }
   }
 
-  private drive(positions: Float64Array): void {
+  private drive(positions: Float64Array, offsets: readonly THREE.Quaternion[] = this.offsets): void {
     // The poser moves the head off the neck for slips and blows; the body on the canvas has its own neck.
     for (let index = 0; index < this.bones.length; index += 1) {
       const bone = this.bones[index]!;
@@ -1665,7 +1783,7 @@ export class KnockoutRagdoll {
     for (let index = 0; index < this.bones.length; index += 1) {
       const bone = this.bones[index]!;
       this.frameFor(index, positions, this.frame);
-      this.world.copy(this.frame).multiply(this.offsets[index]!);
+      this.world.copy(this.frame).multiply(offsets[index]!);
       this.rig.setWorldRotation(bone, this.world);
       if (bone === hips) this.tiltHips(positions);
       // The spine bone between the hips and the chest has no particle of its own, so the chest is put on its

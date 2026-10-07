@@ -1612,6 +1612,7 @@ describe("hand-over to the get-up", () => {
     let previous: THREE.Vector3[] = [];
     let tick = 0;
     let jump = { distance: 0, at: "" };
+    let under = Infinity;
     const step = (label: string, fighter: FighterSnapshot, frames: number, measure = true): void => {
       for (let frame = 0; frame < frames; frame += 1) {
         tick += 0.5;
@@ -1622,6 +1623,7 @@ describe("hand-over to the get-up", () => {
             const distance = position.distanceTo(previous[index]!);
             if (distance > jump.distance) jump = { distance, at: `${label} frame ${frame} ${names[index]}` };
           }
+          if (frame % 3 === 0) under = Math.min(under, lowestVertex(boxer, "MHeadMat0"), lowestVertex(boxer, "GlovesMat0"));
         }
         previous = now;
       }
@@ -1629,19 +1631,22 @@ describe("hand-over to the get-up", () => {
     step("guard", standing, 20, false);
     graph.react("hit", "head", 1, punchClass, hand, 120);
     step("fall", downed, 70, false);
-    return { boxer, graph, step, standing, downed, jump: () => jump };
+    return { boxer, graph, step, standing, downed, jump: () => jump, lowest: () => under };
   };
 
   it.each([["hook", "left"], ["uppercut", "right"]] as const)("takes the body a %s left on the canvas into the get-up with no snap", (punchClass, hand) => {
-    const { boxer, graph, step, standing, downed, jump } = knockedDown(punchClass, hand);
+    const { boxer, graph, step, standing, downed, jump, lowest } = knockedDown(punchClass, hand);
     expect(graph.fallBody).not.toBeNull();
     step("first press", { ...downed, get_up_meter: 22 }, 30);
-    expect(graph.fallBody).toBeNull();
+    // The physics follows the get-up off the canvas, and lets go once he is on all fours.
+    expect(graph.fallBody?.handingOver).toBe(true);
     step("second press", { ...downed, get_up_meter: 44 }, 30);
+    expect(graph.fallBody).toBeNull();
     step("up", { ...standing, get_up_meter: 66, stunned_ticks: 20 }, 40);
-    // The whole body used to freeze where the physics left it and then snap 1.3 m into the get-up. The blend in
-    // the body's frame is not yet seamless (a limb can still swing about 0.3 m in a frame), so this guards the snap.
-    expect(jump().distance, jump().at).toBeLessThan(0.45);
+    // The body used to freeze where the physics left it and then snap 1.3 m into the get-up; turning the bones
+    // straight from the fall's pose to the get-up's then swung limbs up to 0.85 m in a frame and 0.5 m through the canvas.
+    expect(jump().distance, jump().at).toBeLessThan(0.16);
+    expect(lowest(), "skin under the canvas").toBeGreaterThan(-0.03);
     expect(bone(boxer, "head").y).toBeGreaterThan(1.4);
   });
 
@@ -1652,6 +1657,6 @@ describe("hand-over to the get-up", () => {
     expect(graph.fallBody).not.toBeNull();
     graph.stayDown(false);
     step("pressing", { ...downed, get_up_meter: 44 }, 2, false);
-    expect(graph.fallBody).toBeNull();
+    expect(graph.fallBody?.handingOver).toBe(true);
   });
 });
