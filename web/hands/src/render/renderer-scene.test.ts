@@ -111,6 +111,14 @@ function frame(state: EngineSnapshot, overrides: Record<string, unknown> = {}) {
     pixelRatioCap: 2,
     basePixelRatio: 2,
     pendingFinish: null,
+    history: [],
+    drawnOffsets: [{ x: 0, y: 0 }, { x: 0, y: 0 }],
+    drawnTargets: [{ x: 0, y: 0 }, { x: 0, y: 0 }],
+    liveFallTicks: [null, null],
+    fallingLive: [false, false],
+    stoppageSpot: null,
+    raiseCentre: new THREE.Vector3(),
+    raiseFramed: false,
     ...overrides,
   });
   const draw = (FightRenderer.prototype as unknown as { draw(this: unknown, time: number, manual: boolean, render: boolean): void }).draw;

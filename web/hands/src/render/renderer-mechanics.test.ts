@@ -219,7 +219,10 @@ describe("a bout that ends on the punch itself", () => {
       tmpA: new THREE.Vector3(-0.6, 0, 0), tmpB: new THREE.Vector3(0.6, 0, 0),
       effects: { addEvent: (_event: CombatEvent, at: THREE.Vector3) => splashed.push(at.clone()), returnMouthpiece: vi.fn() },
     });
-    for (const graph of stub.graphs as unknown as Record<string, unknown>[]) Object.assign(graph, { react: vi.fn(), landedHit: vi.fn() });
+    // The graphs' rendered roots are where the frame draws the fighters.
+    for (const [index, graph] of (stub.graphs as unknown as Record<string, unknown>[]).entries()) {
+      Object.assign(graph, { react: vi.fn(), landedHit: vi.fn(), currentRoot: { x: index === 0 ? -0.6 : 0.6, z: 0 } });
+    }
     const replay = stub.replay as unknown as { plan: { snapshots: EngineSnapshot[] } };
     const fireContacts = (FightRenderer.prototype as unknown as { fireContacts(this: unknown, tick: number): void }).fireContacts;
     const fireReplayImpact = (FightRenderer.prototype as unknown as { fireReplayImpact(this: unknown, snapshot: EngineSnapshot): void }).fireReplayImpact;
