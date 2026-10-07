@@ -893,8 +893,12 @@ export class FightRenderer {
   private resultAnnounced = false;
   private captionText = "";
   private readonly rocked = new RockedVision();
+  /** The two fighters' places on the canvas for this frame: written by the frame setup only, read by the cameras, the follow spot and the officials. */
   private readonly tmpA = new THREE.Vector3();
   private readonly tmpB = new THREE.Vector3();
+  /** Where a contact's effects go, and the mouth teeth and a gum shield fly from; kept apart from the fighters' places above. */
+  private readonly contactPoint = new THREE.Vector3();
+  private readonly mouthPoint = new THREE.Vector3();
   private readonly tmpHead = new THREE.Vector3();
   private readonly tmpHeadQuaternion = new THREE.Quaternion();
   private readonly tmpStump = new THREE.Vector3();
@@ -1296,8 +1300,8 @@ export class FightRenderer {
     const { recipientIndex, puncherIndex } = contactParticipants(event, snapshot);
     const recipient = snapshot.fighters[recipientIndex];
     if (recipient === undefined) return;
-    this.tmpA.set(this.mapping.x(recipient.x), 0, this.mapping.z(recipient.y));
-    this.effects.addEvent(event, this.tmpA, this.settings().reducedMotion);
+    this.contactPoint.set(this.mapping.x(recipient.x), 0, this.mapping.z(recipient.y));
+    this.effects.addEvent(event, this.contactPoint, this.settings().reducedMotion);
     const puncher = puncherIndex >= 0 ? snapshot.fighters[puncherIndex] : undefined;
     const keyParts = puncher?.action_key?.split(":") ?? [];
     const punchClass = (keyParts[0] ?? null) as PunchClass | null;
@@ -1617,7 +1621,7 @@ export class FightRenderer {
         ?? snapshot.fighters[targetIndex]
         ?? snapshot.fighters[actorIndex]
         ?? snapshot.fighters[0];
-      this.tmpA.set(this.mapping.x(recipient.x), 0, this.mapping.z(recipient.y));
+      this.contactPoint.set(this.mapping.x(recipient.x), 0, this.mapping.z(recipient.y));
       if (CONTACT_KINDS.has(event.kind)) {
         const puncher = puncherIndex >= 0 ? snapshot.fighters[puncherIndex]! : null;
         this.pendingContacts.push({
@@ -1630,7 +1634,7 @@ export class FightRenderer {
           injury: arcadeInjuryFor(event, snapshot.fighters[recipientIndex], snapshot.result, puncher ?? undefined),
         });
       } else if (event.kind === "bleed") {
-        this.effects.addEvent(event, this.tmpA, this.settings().reducedMotion);
+        this.effects.addEvent(event, this.contactPoint, this.settings().reducedMotion);
       }
     }
   }
@@ -1649,8 +1653,8 @@ export class FightRenderer {
       const target = this.buffer.latest()?.fighters[recipientIndex];
       this.presentFightEvent(event, recipientIndex, puncherIndex);
       if (presentImpact && target !== undefined) {
-        this.tmpA.set(this.mapping.x(target.x), 0, this.mapping.z(target.y));
-        this.effects.addEvent(presentationEvent, this.tmpA, this.settings().reducedMotion);
+        this.contactPoint.set(this.mapping.x(target.x), 0, this.mapping.z(target.y));
+        this.effects.addEvent(presentationEvent, this.contactPoint, this.settings().reducedMotion);
       }
       const currentSettings = this.settings();
       if (pending.presentImpact || UNIMPACTFUL_KINDS.has(event.kind)) this.arena.excite(CROWD_EXCITEMENT[event.kind] ?? 0);
@@ -1680,8 +1684,8 @@ export class FightRenderer {
       if (teeth > 0 && !currentSettings.reducedMotion && currentSettings.blood !== "off") {
         const pose = this.headWorldPose(recipientIndex);
         if (pose !== null) {
-          this.tmpB.set(0, -0.07, 0.1).applyQuaternion(pose.quaternion).add(pose.position);
-          this.effects.spawnTeeth(this.tmpB, presentationEvent.direction, teeth, event.event_id);
+          this.mouthPoint.set(0, -0.07, 0.1).applyQuaternion(pose.quaternion).add(pose.position);
+          this.effects.spawnTeeth(this.mouthPoint, presentationEvent.direction, teeth, event.event_id);
         }
       }
       if (
@@ -1744,8 +1748,8 @@ export class FightRenderer {
   private knockOutMouthpiece(index: number, direction: number, eventId: number, again: boolean): void {
     const pose = this.headWorldPose(index);
     if (pose === null) return;
-    this.tmpB.set(0, -0.075, 0.1).applyQuaternion(pose.quaternion).add(pose.position);
-    this.effects.ejectMouthpiece(index, this.tmpB, pose.quaternion, direction, eventId, this.gearColor(index), again);
+    this.mouthPoint.set(0, -0.075, 0.1).applyQuaternion(pose.quaternion).add(pose.position);
+    this.effects.ejectMouthpiece(index, this.mouthPoint, pose.quaternion, direction, eventId, this.gearColor(index), again);
   }
 
   /** True once the result panel is on screen, after any knockout replay and close-up. */

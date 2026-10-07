@@ -28,7 +28,7 @@ function pushStub(graphs: [FakeGraph, FakeGraph]): Record<string, unknown> {
     referee: null,
     graphs,
     mapping: worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }),
-    tmpA: new THREE.Vector3(),
+    contactPoint: new THREE.Vector3(),
     pendingContacts: [] as unknown[],
     effects: { addEvent: vi.fn() },
     manualClock: true,
