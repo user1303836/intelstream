@@ -1,6 +1,6 @@
 import { safeError } from "./api";
 import { decodeServerFrame, encodeInput } from "./protocol";
-import { PROTOCOL_VERSION, type ConnectionRole, type EngineSnapshot, type InputFrame, type ServerMessage } from "./types";
+import { PROTOCOL_VERSION, type ConnectionRole, type CornerKind, type EngineSnapshot, type InputFrame, type ServerMessage } from "./types";
 
 export function websocketUrl(location: Location = window.location): string {
   const url = new URL("/api/hands/ws", location.origin);
@@ -60,6 +60,7 @@ export class NetworkController {
   private serverTick = 0;
   private role: ConnectionRole | null = null;
   private active = false;
+  private resting = false;
   private disposed = false;
   private terminal = false;
   private inputSuppressed = false;
@@ -203,6 +204,7 @@ export class NetworkController {
     } else if (message.type === "snapshot") {
       this.serverTick = Math.max(this.serverTick, message.payload.tick);
       this.active = ["countdown", "fight", "knockdown", "foul_recovery"].includes(message.payload.phase);
+      this.resting = message.payload.phase === "rest";
       this.observeAcknowledgement(message.payload);
     } else if (message.type === "paused") {
       this.active = false;
@@ -283,8 +285,18 @@ export class NetworkController {
   }
 
   private sendInput(frame: InputFrame): void {
+    if (this.active) this.transmit(frame);
+  }
+
+  /** Tells the corner what to work on. The rest is the one phase the input stream is off, so this frame goes on its own. */
+  sendCornerChoice(kind: CornerKind): boolean {
+    if (!this.resting) return false;
+    return this.transmit({ moveX: 0, moveY: 0, defense: "none", actions: [{ kind }] });
+  }
+
+  private transmit(frame: InputFrame): boolean {
     const socket = this.socket;
-    if (this.role !== "fighter" || !this.active || this.disposed || this.terminal || socket?.readyState !== OPEN) return;
+    if (this.role !== "fighter" || this.disposed || this.terminal || socket?.readyState !== OPEN) return false;
     try {
       socket.send(encodeInput(this.nextSequence, this.serverTick, { ...frame, actions: frame.actions.slice(0, 4) }));
       this.sentAt.set(this.nextSequence, this.now());
@@ -292,8 +304,10 @@ export class NetworkController {
       this.nextSequence += 1;
       this.lastInputSentAt = this.now();
       this.sendTimes.push(this.lastInputSentAt);
+      return true;
     } catch {
       this.handleClose(socket);
+      return false;
     }
   }
 

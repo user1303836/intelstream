@@ -147,6 +147,8 @@ const OUTFIT_PARTS: Readonly<Record<string, OutfitPart>> = { MHeadMat0: "head", 
 const SCANNED_SKIN = new THREE.Color().setRGB(0.6, 0.32, 0.19, THREE.LinearSRGBColorSpace);
 
 export type ArcadeDislocation = "jaw" | "shoulder_left" | "shoulder_right";
+/** What the cutman has in his hand: the enswell for a cut or a swelling, a water bottle for the breath. */
+export type CutmanProp = "enswell" | "bottle";
 
 const smooth = (current: number, target: number, rate: number, dt: number): number => current + (target - current) * (1 - Math.exp(-rate * dt));
 const smoothAngle = (current: number, target: number, rate: number, dt: number): number => {
@@ -395,6 +397,12 @@ export class BoxingGraph {
   private riseAge = 0;
   private fallSide = 0;
   private fallProne = false;
+  /** The knockdown was a body shot: the fighter goes to a knee instead of falling. */
+  private fallKneel = false;
+  /** Which side of the body took the shot that is putting him down: 1 his left, -1 his right. */
+  private windedSide = -1;
+  private windedTime = 0;
+  private winded = 0;
   private readonly liveOpponentHead = new THREE.Vector3();
   private hasLiveHead = false;
   private readonly headKick: Spring3 = { value: new THREE.Vector3(), velocity: new THREE.Vector3() };
@@ -422,6 +430,8 @@ export class BoxingGraph {
   private lastSpeed = 0;
   private readonly stool: { group: THREE.Group; dispose: () => void };
   private readonly enswell: { group: THREE.Group; dispose: () => void };
+  private readonly bottle: { group: THREE.Group; dispose: () => void };
+  private treatProp: CutmanProp = "enswell";
   private readonly treatTarget = new THREE.Vector3();
   private readonly treatScratch = new THREE.Vector3();
   private readonly treatFacing = new THREE.Vector3(0, 0, -1);
@@ -500,6 +510,8 @@ export class BoxingGraph {
     boxer.root.add(this.stool.group);
     this.enswell = buildEnswell();
     boxer.rig.bones.gloveL.add(this.enswell.group);
+    this.bottle = buildBottle();
+    boxer.rig.bones.gloveL.add(this.bottle.group);
   }
 
   /** Between rounds the fighter walks to the corner, and once still, sits on the stool. */
@@ -533,6 +545,8 @@ export class BoxingGraph {
     }
     this.guardKick = 0;
     this.stunAmount = 0;
+    this.windedTime = 0;
+    this.winded = 0;
     this.celebrateTime = 0;
     this.celebration = 0;
     this.waveTime = 0;
@@ -574,12 +588,13 @@ export class BoxingGraph {
    * Cutman: crouch by a seated fighter and press the enswell on the eye at `eye` (world). `facing` is
    * the direction the fighter's face points and `side` is 1 when the eye is the fighter's left.
    */
-  treat(eye: THREE.Vector3 | null, facing?: THREE.Vector3, side = 1): void {
+  treat(eye: THREE.Vector3 | null, facing?: THREE.Vector3, side = 1, prop: CutmanProp = "enswell"): void {
     this.treating = eye !== null;
     if (eye === null) return;
     this.treatTarget.copy(eye);
     if (facing !== undefined) this.treatFacing.copy(facing);
     this.treatSide = side;
+    this.treatProp = prop;
   }
 
   /**
@@ -762,6 +777,26 @@ export class BoxingGraph {
     }
   }
 
+  /** The puncher's power shot was parried: he is knocked back off balance with his hands thrown wide. */
+  stagger(): void {
+    this.torsoKick.velocity.x -= 2.6;
+    this.headKick.velocity.z -= 1.4;
+    this.headKick.velocity.y += 0.5;
+    this.rootKick.velocity.z -= 1.1;
+    this.guardKick = Math.max(this.guardKick, 1.1);
+  }
+
+  /** A body shot that is going to put him down: he freezes, folds over the shot and clutches it. `side` is 1 for his left. */
+  windedFor(seconds: number, side: number): void {
+    this.windedTime = Math.max(this.windedTime, seconds);
+    this.windedSide = side >= 0 ? 1 : -1;
+  }
+
+  /** Sets how the next knockdown looks: to a knee after a body shot, otherwise a fall. */
+  fallToKnee(knee: boolean): void {
+    this.fallKneel = knee;
+  }
+
   /** Transient compression of the struck surface at contact; the injury shading releases it. */
   private dentSurface(target: Target, lateral: number, punchClass: PunchClass | null, amount: number): void {
     const depth = THREE.MathUtils.clamp(1.1 + amount / 220, 1.1, 3.2);
@@ -891,7 +926,12 @@ export class BoxingGraph {
     this.bowedWeight = smooth(this.bowedWeight, this.verdictSide !== 0 && this.verdict === "loser" ? 1 : 0, 2.2, dt);
     for (const index of [0, 1] as const) this.wristWeights[index] = smooth(this.wristWeights[index], this.wrists[index] !== null ? 1 : 0, 3.2, dt);
     this.treatWeight = smooth(this.treatWeight, this.treating ? 1 : 0, 3, dt);
-    this.enswell.group.visible = this.treatWeight > 0.4;
+    this.windedTime = Math.max(0, this.windedTime - dt);
+    // Folded over the body shot until he is down on the knee, so the fall starts from the hunch.
+    const sinking = this.fallKneel && this.downState === "falling";
+    this.winded = smooth(this.winded, (this.windedTime > 0 && this.downState === "up") || sinking ? 1 : 0, this.windedTime > 0 || sinking ? 12 : 4, dt);
+    this.enswell.group.visible = this.treatWeight > 0.4 && this.treatProp === "enswell";
+    this.bottle.group.visible = this.treatWeight > 0.4 && this.treatProp === "bottle";
     const touching = this.countdownTicks !== null && this.countdownTicks <= TOUCH_GLOVES_START_TICKS && this.countdownTicks >= TOUCH_GLOVES_END_TICKS;
     this.touchWeight = smooth(this.touchWeight, touching ? 1 : 0, 6, dt);
     const stamina = fighter.stamina / Math.max(1, fighter.maximum_stamina);
@@ -1093,6 +1133,8 @@ export class BoxingGraph {
       hand.knuckles.set(0, -1, 0.1);
       hand.palm.set(-side, 0, 0.2);
     }
+
+    if (this.winded > 0.001 && (this.downState === "up" || sinking)) this.applyWindedPose(this.winded, time, mirror, leadHand, rearHand);
 
     // Knockdown overrides everything above.
     if (this.touchWeight > 0.001 && this.downState === "up") this.applyTouchGlovesPose(this.touchWeight, mirror, leadHand, rearHand);
@@ -1566,8 +1608,32 @@ export class BoxingGraph {
       if (this.riseAge >= GETUP_SECONDS) {
         this.downState = "up";
         this.feetInitialized = false;
+        this.fallKneel = false;
       }
     }
+  }
+
+  /** Folded over a body shot: knees giving, the glove on the struck side clamped over the ribs, the other hanging. */
+  private applyWindedPose(blend: number, time: number, mirror: number, leadHand: HandTarget, rearHand: HandTarget): void {
+    const torso = this.torso;
+    const lerp = THREE.MathUtils.lerp;
+    const side = this.windedSide;
+    const shudder = Math.sin(time * 23) * 0.006;
+    torso.hips.y = lerp(torso.hips.y, STANCE.hipsHeight - 0.1, blend);
+    torso.hips.z = lerp(torso.hips.z, -0.04, blend);
+    torso.hipsPitch = lerp(torso.hipsPitch, 0.2, blend);
+    torso.spinePitch = lerp(torso.spinePitch, 0.62 + shudder, blend);
+    torso.spineRoll = lerp(torso.spineRoll, side * 0.16, blend);
+    torso.headPitch = lerp(torso.headPitch, 0.38, blend);
+    const clutch = side > 0 ? this.hand.L : this.hand.R;
+    const free = clutch === leadHand ? rearHand : leadHand;
+    clutch.position.lerp(seatedScratch.set(side * 0.13, 0.98, 0.17), blend);
+    clutch.palm.lerp(seatedScratch.set(-side * 0.6, 0, -0.8), blend).normalize();
+    clutch.knuckles.lerp(seatedScratch.set(-side * 0.5, 0.5, 0.2), blend).normalize();
+    clutch.pole.lerp(seatedScratch.set(side * 0.9, -0.3, -0.3), blend).normalize();
+    free.position.lerp(seatedScratch.set(-side * 0.2, 0.86, 0.3), blend);
+    free.pole.lerp(seatedScratch.set(-side * 0.8, -0.6, 0), blend).normalize();
+    void mirror;
   }
 
   private applyTouchGlovesPose(
@@ -1684,10 +1750,13 @@ export class BoxingGraph {
     rear.toe.lerp(this.treatScratch.set(-0.1 * mirror, 0, 1), blend).normalize();
     lead.pole.lerp(this.treatScratch.set(0.25 * mirror, 0.4, 1), blend).normalize();
     rear.pole.lerp(this.treatScratch.set(-0.2 * mirror, 0.4, 1), blend).normalize();
-    const reach = 0.08 - press;
-    leadHand.position.lerp(this.treatScratch.set(eye.x + facing.x * reach, eye.y - 0.07, eye.z + facing.z * reach), blend);
-    leadHand.knuckles.lerp(this.treatScratch.set(0, 1, 0.05), blend).normalize();
-    leadHand.palm.lerp(this.treatScratch.set(-facing.x, 0, -facing.z), blend).normalize();
+    // The enswell's plate sits above the fist and presses on the eye; the bottle points from the fist into the mouth.
+    const bottle = this.treatProp === "bottle";
+    const reach = bottle ? 0.3 : 0.08 - press;
+    leadHand.position.lerp(this.treatScratch.set(eye.x + facing.x * reach, eye.y + (bottle ? 0.02 : -0.07), eye.z + facing.z * reach), blend);
+    if (bottle) leadHand.knuckles.lerp(this.treatScratch.set(-facing.x, -0.25, -facing.z), blend).normalize();
+    else leadHand.knuckles.lerp(this.treatScratch.set(0, 1, 0.05), blend).normalize();
+    leadHand.palm.lerp(bottle ? this.treatScratch.set(0, -1, 0) : this.treatScratch.set(-facing.x, 0, -facing.z), blend).normalize();
     leadHand.pole.lerp(this.treatScratch.set(0.85 * mirror, -0.35, 0.1), blend).normalize();
     const jaw = this.treatSide * 0.135;
     rearHand.position.lerp(this.treatScratch.set(eye.x - leftX * jaw + facing.x * 0.05, eye.y - 0.2, eye.z - leftZ * jaw + facing.z * 0.05), blend);
@@ -1872,7 +1941,26 @@ export class BoxingGraph {
       leadFoot: vec(0.16 * mirror + side * 0.04, 0.06, -0.5),
       rearFoot: vec(-0.15 * mirror + side * 0.04, 0.07, -0.55),
     };
-    const down = this.fallProne ? prone : lying;
+    // Taking a knee after a body shot: the rear knee on the canvas, folded over the shot with that
+    // side's glove clamped on the ribs and the other glove braced on the front knee.
+    const struck = this.windedSide;
+    const clutch = vec(struck * 0.13, 0.66, 0.2);
+    const brace = vec(0.13 * mirror, 0.66, 0.37);
+    const clutchLead = (struck > 0) === (mirror > 0);
+    const kneel = {
+      hips: vec(0.02 * mirror, 0.53, -0.06),
+      hipsYaw: STANCE.bladeYaw * mirror * 0.3,
+      hipsPitch: 0.24,
+      hipsRoll: 0,
+      shouldersYaw: STANCE.bladeYaw * mirror * 0.2,
+      spinePitch: 0.62,
+      headPitch: 0.48,
+      leadHand: clutchLead ? clutch : brace,
+      rearHand: clutchLead ? brace : clutch,
+      leadFoot: vec(0.16 * mirror, 0.125, 0.32),
+      rearFoot: vec(-0.12 * mirror, 0.12, -0.5),
+    };
+    const down = this.fallKneel ? kneel : this.fallProne ? prone : lying;
     const standing = {
       hips: torso.hips.clone(),
       hipsYaw: torso.hipsYaw,
@@ -1941,10 +2029,13 @@ export class BoxingGraph {
         rearFoot: a.rearFoot.clone().lerp(b.rearFoot, s),
       });
       let current: typeof lying;
-      if (u < 0.38) current = blend(down, fours, smoothstep(0, 0.38, u));
+      const stood = smoothstep(0.25, 1, u);
+      if (this.fallKneel) current = blend(kneel, standing, stood);
+      else if (u < 0.38) current = blend(down, fours, smoothstep(0, 0.38, u));
       else if (u < 0.72) current = blend(fours, knee, smoothstep(0.38, 0.72, u));
       else current = blend(knee, standing, smoothstep(0.72, 1, u));
       this.writeDown(current, leadHand, rearHand, lead, rear, 0);
+      if (this.fallKneel) this.orientKneel(1 - stood, mirror, clutchLead, leadHand, rearHand, lead, rear);
       return;
     }
     const mixed = {
@@ -1960,13 +2051,32 @@ export class BoxingGraph {
       leadFoot: standing.leadFoot.clone().lerp(down.leadFoot, t),
       rearFoot: standing.rearFoot.clone().lerp(down.rearFoot, t),
     };
-    if (this.downState === "falling") {
+    if (this.downState === "falling" && !this.fallKneel) {
       const flail = Math.sin(clamp(this.fallAge / KNOCKDOWN_FALL_SECONDS, 0, 1) * Math.PI) * 0.35;
       mixed.leadHand.y += flail;
       mixed.rearHand.y += flail * 0.8;
     }
     this.writeDown(mixed, leadHand, rearHand, lead, rear, headLag);
+    if (this.fallKneel) this.orientKneel(t, mirror, clutchLead, leadHand, rearHand, lead, rear);
     void headRest;
+  }
+
+  /** The knees, feet and gloves of the kneel, which the lying poses' orientations do not fit. */
+  private orientKneel(weight: number, mirror: number, clutchLead: boolean, leadHand: HandTarget, rearHand: HandTarget, lead: FootTarget, rear: FootTarget): void {
+    if (weight <= 0.001) return;
+    const struck = this.windedSide;
+    const clutch = clutchLead ? leadHand : rearHand;
+    const brace = clutchLead ? rearHand : leadHand;
+    lead.pole.lerp(seatedScratch.set(0.15 * mirror, 0.35, 1), weight).normalize();
+    rear.pole.lerp(seatedScratch.set(-0.1 * mirror, -1, 0.3), weight).normalize();
+    lead.toe.lerp(seatedScratch.set(0.15 * mirror, 0, 1), weight).normalize();
+    rear.toe.lerp(seatedScratch.set(0, -0.35, -1), weight).normalize();
+    clutch.palm.lerp(seatedScratch.set(-struck * 0.75, 0, -0.65), weight).normalize();
+    clutch.knuckles.lerp(seatedScratch.set(-struck * 0.35, 0.25, 0.9), weight).normalize();
+    clutch.pole.lerp(seatedScratch.set(struck * 0.9, -0.35, -0.25), weight).normalize();
+    brace.palm.lerp(seatedScratch.set(0, -1, 0.1), weight).normalize();
+    brace.knuckles.lerp(seatedScratch.set(0.2 * mirror, -0.2, 1), weight).normalize();
+    brace.pole.lerp(seatedScratch.set(mirror * 0.7, 0.1, -0.7), weight).normalize();
   }
 
   private writeDown(
@@ -2019,6 +2129,7 @@ export class BoxingGraph {
   dispose(): void {
     this.stool.dispose();
     this.enswell.dispose();
+    this.bottle.dispose();
     this.boxer.dispose();
   }
 }
@@ -2048,6 +2159,35 @@ function buildEnswell(): { group: THREE.Group; dispose: () => void } {
       plateGeometry.dispose();
       handleGeometry.dispose();
       metal.dispose();
+    },
+  };
+}
+
+/** A squeeze bottle held at its base, the spout along the fingers. Centimetres, in the glove bone's frame. */
+function buildBottle(): { group: THREE.Group; dispose: () => void } {
+  const group = new THREE.Group();
+  group.name = "bottle";
+  group.visible = false;
+  const bodyGeometry = new THREE.CylinderGeometry(3.3, 3.3, 15, 18);
+  const shoulderGeometry = new THREE.CylinderGeometry(1.3, 3.3, 3, 18);
+  const spoutGeometry = new THREE.CylinderGeometry(0.7, 1.1, 3.2, 10);
+  const plastic = new THREE.MeshStandardMaterial({ color: 0xd9e6ee, roughness: 0.32, metalness: 0 });
+  const cap = new THREE.MeshStandardMaterial({ color: 0x1d4ed8, roughness: 0.5, metalness: 0 });
+  const body = new THREE.Mesh(bodyGeometry, plastic);
+  body.position.set(0, 9, 2.6);
+  const shoulder = new THREE.Mesh(shoulderGeometry, plastic);
+  shoulder.position.set(0, 18, 2.6);
+  const spout = new THREE.Mesh(spoutGeometry, cap);
+  spout.position.set(0, 21, 2.6);
+  group.add(body, shoulder, spout);
+  return {
+    group,
+    dispose: () => {
+      bodyGeometry.dispose();
+      shoulderGeometry.dispose();
+      spoutGeometry.dispose();
+      plastic.dispose();
+      cap.dispose();
     },
   };
 }

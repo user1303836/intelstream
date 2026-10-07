@@ -107,3 +107,20 @@ describe("facing vector and input acknowledgement", () => {
     expect(decodeServerFrame(JSON.stringify({ version: 3, type: "snapshot", payload: { ...base, fighters: [turned, base.fighters[1]] } }))).toMatchObject({ payload: { fighters: [{ facing_y: -1000, last_input_sequence: 41 }, { facing_x: -1000 }] } });
   });
 });
+
+describe("corner instructions", () => {
+  it("decodes the corner's choice for each fighter and rejects anything else", () => {
+    const base = snapshot();
+    const treated = { ...base, phase: "rest", fighters: [{ ...base.fighters[0], corner_choice: "cut" }, { ...base.fighters[1], corner_choice: "balanced" }] };
+    expect(decodeServerFrame(JSON.stringify({ version: 3, type: "snapshot", payload: treated }))).toMatchObject({ payload: { fighters: [{ corner_choice: "cut" }, { corner_choice: "balanced" }] } });
+    const unknown = { ...base, fighters: [{ ...base.fighters[0], corner_choice: "towel" }, base.fighters[1]] };
+    expect(() => decodeServerFrame(JSON.stringify({ version: 3, type: "snapshot", payload: unknown }))).toThrow(/corner choice/u);
+    const { corner_choice: _dropped, ...withoutChoice } = base.fighters[1];
+    const missing = { ...base, fighters: [base.fighters[0], withoutChoice] };
+    expect(() => decodeServerFrame(JSON.stringify({ version: 3, type: "snapshot", payload: missing }))).toThrow(ProtocolError);
+  });
+  it("sends a corner instruction as an ordinary action", () => {
+    const encoded = JSON.parse(encodeInput(7, 40, { moveX: 0, moveY: 0, defense: "none", actions: [{ kind: "corner_swelling" }] })) as { actions: unknown[] };
+    expect(encoded.actions).toEqual([{ kind: "corner_swelling" }]);
+  });
+});

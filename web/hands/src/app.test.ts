@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   rendererPushes: [] as number[][],
   callbacks: null as NetworkCallbacks | null,
   resultVisible: true,
+  cornerPicks: [] as string[],
 }));
 vi.mock("./discord", () => ({
   authorizeDiscord: vi.fn(async () => ({
@@ -27,6 +28,7 @@ vi.mock("./network", () => ({
     start(): void {}
     setActive(active: boolean): void { mocks.networkSetActive(active); }
     notifyAction(): void {}
+    sendCornerChoice(kind: string): boolean { mocks.cornerPicks.push(kind); return true; }
     dispose(): void { mocks.networkDispose(); }
   },
 }));
@@ -322,4 +324,44 @@ describe("browser lifecycle and accessible overlays", () => {
     app.destroy();
   });
 
+});
+
+describe("the corner panel", () => {
+  beforeEach(() => {
+    mocks.callbacks = null;
+    mocks.cornerPicks.length = 0;
+    vi.clearAllMocks();
+  });
+
+  it("appears to a fighter between rounds and sends the pick to the corner", async () => {
+    history.replaceState({}, "", "/?instance_id=corner");
+    const root = document.createElement("div");
+    const app = new HandsApp(root);
+    app.start();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
+    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 0, next_sequence: 0, reconnect_ticket: "rotated" });
+    send({ version: 3, type: "ready", players: [...players] });
+    send({ version: 3, type: "snapshot", payload: makeSnapshot(10) });
+    const panel = root.querySelector<HTMLElement>("[data-corner]")!;
+    expect(panel.hidden).toBe(true);
+    send({ version: 3, type: "snapshot", payload: makeSnapshot(11, "rest") });
+    expect(panel.hidden).toBe(false);
+    root.querySelector<HTMLButtonElement>('[data-corner-pick="corner_cut"]')!.click();
+    expect(mocks.cornerPicks).toEqual(["corner_cut"]);
+    send({ version: 3, type: "snapshot", payload: makeSnapshot(12, "fight") });
+    expect(panel.hidden).toBe(true);
+    app.destroy();
+  });
+
+  it("is never shown to a spectator", async () => {
+    history.replaceState({}, "", "/?instance_id=corner-watch");
+    const root = document.createElement("div");
+    const app = new HandsApp(root);
+    app.start();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
+    send({ version: 3, type: "welcome", role: "spectator", player_id: "viewer", players: [...players], server_tick: 0, reconnect_ticket: "spectator" });
+    send({ version: 3, type: "snapshot", payload: makeSnapshot(11, "rest") });
+    expect(root.querySelector<HTMLElement>("[data-corner]")!.hidden).toBe(true);
+    app.destroy();
+  });
 });

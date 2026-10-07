@@ -3,7 +3,7 @@ from dataclasses import dataclass, replace
 from importlib import resources
 from typing import Any
 
-from intelstream.hands.types import Power, PunchClass, Target
+from intelstream.hands.types import CornerChoice, Power, PunchClass, Target
 
 
 def _load_manifest() -> dict[str, Any]:
@@ -36,6 +36,14 @@ REST_CORNER_OFFSET: int = _MANIFEST["rest"]["corner_offset"]
 CLINCH_HOLD_DISTANCE: int = _MANIFEST["clinch"]["hold_distance"]
 CLINCH_DRAW_SPEED: int = _MANIFEST["clinch"]["draw_speed"]
 REST_WALK_SPEED: int = _MANIFEST["rest"]["walk_speed"]
+BLIND_SIDE_EYE_THRESHOLD: int = _MANIFEST["blind_side"]["eye_threshold"]
+BLIND_SIDE_IMPACT_PERCENT: int = _MANIFEST["blind_side"]["impact_percent"]
+PARRY_STAGGER_TICKS: int = _MANIFEST["parry"]["stagger_ticks"]
+BODY_WIND_PERCENT: int = _MANIFEST["body"]["wind_percent"]
+BODY_COLLAPSE_TRAUMA: int = _MANIFEST["body"]["collapse_body_trauma"]
+BODY_COLLAPSE_STAMINA: int = _MANIFEST["body"]["collapse_stamina"]
+BODY_COLLAPSE_MINIMUM_DAMAGE: int = _MANIFEST["body"]["collapse_minimum_damage"]
+BODY_COLLAPSE_DELAY_TICKS: int = _MANIFEST["body"]["collapse_delay_ticks"]
 
 
 def _manifest_check() -> None:
@@ -138,6 +146,26 @@ PUNCH_RULES: dict[tuple[PunchClass, Target, Power], PunchRule] = {
 COMPATIBLE_COMBO_CHAINS: frozenset[tuple[PunchClass, PunchClass]] = frozenset(
     (PunchClass(first), PunchClass(second)) for first, second in _MANIFEST["combos"]["chains"]
 )
+
+
+@dataclass(frozen=True, slots=True)
+class CornerTreatment:
+    worse_cut: int = 0
+    other_cut: int = 0
+    bleeding_kept_percent: int = 100
+    swelling: int = 0
+    eyes: int = 0
+    conditioning: int = 0
+    body: int = 0
+    refresh: bool = False
+
+
+CORNER_TREATMENTS: dict[CornerChoice, CornerTreatment] = {
+    CornerChoice.CUT: CornerTreatment(**_MANIFEST["corner"]["cut"]),
+    CornerChoice.SWELLING: CornerTreatment(**_MANIFEST["corner"]["swelling"]),
+    CornerChoice.BREATH: CornerTreatment(**_MANIFEST["corner"]["breath"], refresh=True),
+    CornerChoice.BALANCED: CornerTreatment(**_MANIFEST["corner"]["balanced"]),
+}
 
 
 @dataclass(frozen=True, slots=True)

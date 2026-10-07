@@ -34,11 +34,12 @@ const base = (): Draft => ({
   knockdowns: 0, warnings: 0, deductions: 0, stunned_ticks: 0, is_downed: false,
   action: null, action_hand: null, action_target: null, action_power: null, action_id: null, action_key: null,
   action_start_tick: 0, action_startup_ticks: 0, action_active_ticks: 0, action_recovery_ticks: 0, action_contact_tick: null,
-  queued_actions: 0, clinch_startup_ticks: 0, clinch_ticks: 0, is_foul_recovery_target: false, taunt_ticks: 0,
+  queued_actions: 0, clinch_startup_ticks: 0, clinch_ticks: 0, is_foul_recovery_target: false, taunt_ticks: 0, corner_choice: null,
   get_up_prompt: null, get_up_meter: 0, get_up_required: 0, get_up_count: 0, get_up_window_start_tick: 0, get_up_window_end_tick: 0,
   last_input_sequence: -1,
 });
 
+const KNEEL_WINDED_SECONDS = 0.45;
 const CAMERAS: Record<string, [number, number, number]> = {
   face: [0.25, 1.55, 1.0],
   portrait: [0.12, 1.62, 0.62],
@@ -61,6 +62,7 @@ export class ModelLab {
   private readonly trailGlove = new THREE.Vector3();
   private readonly treatEye = new THREE.Vector3(0, 1.22, 0.78);
   private readonly treatFacing = new THREE.Vector3(0, 0, -1);
+  private readonly treatTarget = new THREE.Vector3();
   private skeletonHelper: THREE.SkeletonHelper | null = null;
   private raf = 0;
   private previous = performance.now();
@@ -144,6 +146,13 @@ export class ModelLab {
       fighter.defense = pose as FighterSnapshot["defense"];
     } else if (pose === "knockdown") {
       fighter.is_downed = seconds % 6 < 3.2;
+    } else if (pose === "kneel") {
+      // Folded over a body shot for a moment, then down on one knee, then back up.
+      const phase = seconds % 6;
+      fighter.is_downed = phase >= KNEEL_WINDED_SECONDS && phase < 3.4;
+      fighter.stunned_ticks = phase < KNEEL_WINDED_SECONDS ? 11 : 0;
+    } else if (pose === "winded" || pose === "stagger") {
+      fighter.stunned_ticks = 18;
     } else if (pose === "stunned") {
       fighter.stunned_ticks = 40;
     } else if (pose === "taunt") {
@@ -242,6 +251,17 @@ export class ModelLab {
     if (this.params.get("pose") === "knockdown" && this.params.get("fall") === "prone" && this.elapsed % 6 < dt * 1.5) {
       graph.react("hit", "head", 1, "hook", "left", 420);
     }
+    const struck = this.params.get("side") === "left" ? 1 : -1;
+    if (this.params.get("pose") === "kneel") {
+      graph.fallToKnee(true);
+      const phase = this.elapsed % 6;
+      if (phase < KNEEL_WINDED_SECONDS) graph.windedFor(KNEEL_WINDED_SECONDS - phase, struck);
+    }
+    if (this.params.get("pose") === "winded") graph.windedFor(1, struck);
+    if (this.params.get("pose") === "stagger" && (this.params.has("freeze") ? !this.reactionFired && this.elapsed >= 0.02 : this.elapsed % 1.6 < dt * 1.5)) {
+      this.reactionFired = true;
+      graph.stagger();
+    }
     graph.debugHoldImpact = this.params.get("dent") === "hold";
     graph.setResting(this.params.get("pose") === "seated");
     if (this.params.get("pose") === "celebrate") graph.celebrate(60);
@@ -250,7 +270,8 @@ export class ModelLab {
     graph.setCountdown(this.params.get("pose") === "touch_gloves" ? 30 : null);
     graph.setRefereeCount(this.params.get("pose") === "count", 3);
     graph.attend(this.params.get("pose") === "attend");
-    graph.treat(this.params.get("pose") === "treat" ? this.treatEye : null, this.treatFacing, 1);
+    const bottle = this.params.get("prop") === "bottle";
+    graph.treat(this.params.get("pose") === "treat" ? this.treatTarget.copy(this.treatEye).setY(this.treatEye.y - (bottle ? 0.075 : 0)) : null, this.treatFacing, 1, bottle ? "bottle" : "enswell");
     graph.update(fighter, opponent, dt, this.elapsed, false, "full", sampledTick, head);
     for (const [index, bone] of (["gloveL", "gloveR"] as const).entries()) {
       this.boxer!.rig.bones[bone].getWorldPosition(this.trailGlove);
@@ -262,6 +283,9 @@ export class ModelLab {
       gloveR: this.boxer!.bone("gloveR")!.getWorldPosition(new THREE.Vector3()).toArray().map((v) => Number(v.toFixed(3))),
       ankleL: this.boxer!.bone("ankleL")!.getWorldPosition(new THREE.Vector3()).toArray().map((v) => Number(v.toFixed(3))),
       ankleR: this.boxer!.bone("ankleR")!.getWorldPosition(new THREE.Vector3()).toArray().map((v) => Number(v.toFixed(3))),
+      kneeL: this.boxer!.bone("kneeL")!.getWorldPosition(new THREE.Vector3()).toArray().map((v) => Number(v.toFixed(3))),
+      kneeR: this.boxer!.bone("kneeR")!.getWorldPosition(new THREE.Vector3()).toArray().map((v) => Number(v.toFixed(3))),
+      metrics: this.boxer!.rig.metrics,
     };
   }
 

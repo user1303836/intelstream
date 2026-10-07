@@ -175,6 +175,41 @@
     "hold_distance": 60,
     "draw_speed": 6
   },
+  "corner": {
+    "cut": {
+      "worse_cut": 250,
+      "other_cut": 100,
+      "bleeding_kept_percent": 30
+    },
+    "swelling": {
+      "swelling": 250,
+      "eyes": 200
+    },
+    "breath": {
+      "conditioning": 180,
+      "body": 150
+    },
+    "balanced": {
+      "worse_cut": 80,
+      "bleeding_kept_percent": 75,
+      "swelling": 80,
+      "eyes": 60
+    }
+  },
+  "blind_side": {
+    "eye_threshold": 700,
+    "impact_percent": 120
+  },
+  "parry": {
+    "stagger_ticks": 20
+  },
+  "body": {
+    "wind_percent": 150,
+    "collapse_body_trauma": 650,
+    "collapse_stamina": 350,
+    "collapse_minimum_damage": 40,
+    "collapse_delay_ticks": 10
+  },
   "hitbox": {
     "glove_radius": 0.11
   }

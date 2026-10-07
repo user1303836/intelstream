@@ -137,6 +137,22 @@ export class AudioFeedback {
         this.tone({ from: 96, to: 74, duration: 0.22, type: "sine", gain: 0.1 });
         this.crowdSwell(0.3);
         break;
+      case "parry":
+        this.noise({ duration: 0.06, frequency: 2400, sweepTo: 1100, gain: 0.18, type: "bandpass", q: 1.8 });
+        this.tone({ from: 330, to: 180, duration: 0.09, type: "triangle", gain: 0.07 });
+        this.crowdSwell(0.35);
+        break;
+      case "body_collapse":
+        this.tone({ from: 118, to: 52, duration: 0.42, type: "sine", gain: 0.16 });
+        this.noise({ duration: 0.26, frequency: 420, sweepTo: 180, gain: 0.05, type: "bandpass", q: 0.9 });
+        this.crowdSwell(0.6);
+        break;
+      case "eye_shut":
+        this.crowdSwell(0.25);
+        break;
+      case "corner":
+        this.noise({ duration: 0.22, frequency: 2600, sweepTo: 1500, gain: 0.05, type: "bandpass", q: 0.8 });
+        break;
       case "knockdown":
         this.impact(0.34, false, 1);
         this.tone({ from: 60, to: 28, duration: 0.42, type: "sine", gain: 0.3 });

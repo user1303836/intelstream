@@ -979,3 +979,95 @@ describe("runtime boxing graph", () => {
     }
   });
 });
+
+describe("body-shot knockdown", () => {
+  const kneelAfterBodyShot = (): { boxer: SkinnedBoxer; graph: BoxingGraph; fighter: FighterSnapshot; opponent: FighterSnapshot } => {
+    const { boxer, graph } = makeGraph();
+    const fighter = facingOpponent(baseFighter("one"));
+    const opponent = opponentFor("two");
+    run(graph, fighter, opponent, 10, undefined);
+    graph.windedFor(0.35, -1);
+    run(graph, { ...fighter, stunned_ticks: 10 }, opponent, 20, undefined, 5, 10 / 60);
+    graph.fallToKnee(true);
+    run(graph, { ...fighter, is_downed: true }, opponent, 90, undefined, 15, 30 / 60);
+    return { boxer, graph, fighter, opponent };
+  };
+
+  it("takes a knee: the rear knee on the canvas, the glove on the struck side clamped on the ribs, the other on the front knee", () => {
+    const { boxer } = kneelAfterBodyShot();
+    const rearKnee = bone(boxer, "kneeR");
+    const frontKnee = bone(boxer, "kneeL");
+    const hips = bone(boxer, "hips");
+    expect(rearKnee.y).toBeLessThan(0.16);
+    expect(frontKnee.y).toBeGreaterThan(0.4);
+    expect(bone(boxer, "ankleL").y).toBeLessThan(0.2);
+    expect(hips.y).toBeGreaterThan(0.4);
+    expect(hips.y).toBeLessThan(0.65);
+    const head = bone(boxer, "head");
+    expect(head.y).toBeGreaterThan(0.75);
+    expect(head.y).toBeLessThan(1.25);
+    expect(bone(boxer, "gloveL").distanceTo(frontKnee)).toBeLessThan(0.25);
+    const clutch = bone(boxer, "gloveR");
+    expect(clutch.x).toBeLessThan(hips.x);
+    expect(clutch.y).toBeGreaterThan(0.5);
+    expect(clutch.y).toBeLessThan(0.85);
+  });
+
+  it("gets up off the knee, and the next knockdown that is not a body shot is a fall again", () => {
+    const { boxer, graph, fighter, opponent } = kneelAfterBodyShot();
+    run(graph, fighter, opponent, 140, undefined, 60, 2);
+    expect(bone(boxer, "hips").y).toBeGreaterThan(0.72);
+    graph.react("hit", "head", 1, "uppercut", "right", 420);
+    run(graph, { ...fighter, is_downed: true }, opponent, 70, undefined, 140, 5);
+    expect(bone(boxer, "head").y).toBeLessThan(0.45);
+  });
+
+  it("folds over the shot before he goes down", () => {
+    const { boxer, graph } = makeGraph();
+    const fighter = facingOpponent(baseFighter("one"));
+    const opponent = opponentFor("two");
+    run(graph, fighter, opponent, 30, undefined);
+    const upright = bone(boxer, "head").clone();
+    graph.windedFor(1, 1);
+    run(graph, { ...fighter, stunned_ticks: 20 }, opponent, 20, undefined, 15, 0.5);
+    const folded = bone(boxer, "head");
+    expect(folded.y).toBeLessThan(upright.y - 0.12);
+    const clutch = bone(boxer, "gloveL");
+    expect(clutch.y).toBeLessThan(1.1);
+    expect(clutch.x).toBeGreaterThan(bone(boxer, "hips").x);
+  });
+});
+
+describe("parry", () => {
+  it("knocks the puncher back with his guard thrown off", () => {
+    const { boxer, graph } = makeGraph();
+    const fighter = facingOpponent(baseFighter("one"));
+    const opponent = opponentFor("two");
+    run(graph, fighter, opponent, 40, undefined);
+    const head = bone(boxer, "head").clone();
+    const lean = head.z - bone(boxer, "hips").z;
+    const glove = bone(boxer, "gloveL").clone();
+    graph.stagger();
+    run(graph, fighter, opponent, 6, undefined, 20, 40 / 60);
+    expect(bone(boxer, "head").z).toBeLessThan(head.z - 0.03);
+    expect(bone(boxer, "head").z - bone(boxer, "hips").z).toBeLessThan(lean - 0.02);
+    expect(bone(boxer, "gloveL").y).toBeLessThan(glove.y - 0.02);
+  });
+});
+
+describe("cutman's bottle", () => {
+  it("holds a bottle at the mouth for the breath and the enswell for a cut", () => {
+    const { boxer, graph } = makeGraph();
+    const mouth = new THREE.Vector3(0.03, 1.1, 0.5);
+    graph.treat(mouth, new THREE.Vector3(0, 0, -1), 1, "bottle");
+    run(graph, facingOpponent(baseFighter("one")), opponentFor("two"), 90, undefined);
+    const glove = boxer.rig.bones.gloveL;
+    expect(glove.getObjectByName("bottle")?.visible).toBe(true);
+    expect(glove.getObjectByName("enswell")?.visible).toBe(false);
+    expect(bone(boxer, "gloveL").distanceTo(new THREE.Vector3(mouth.x, mouth.y + 0.02, mouth.z - 0.3))).toBeLessThan(0.12);
+    graph.treat(mouth, new THREE.Vector3(0, 0, -1), 1, "enswell");
+    run(graph, facingOpponent(baseFighter("one")), opponentFor("two"), 30, undefined, 45, 1.5);
+    expect(glove.getObjectByName("bottle")?.visible).toBe(false);
+    expect(glove.getObjectByName("enswell")?.visible).toBe(true);
+  });
+});

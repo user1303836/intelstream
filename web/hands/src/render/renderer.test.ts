@@ -373,6 +373,7 @@ describe("players' pictures", () => {
       inputLatencyMs: null,
       roundCalloutUntil: 0,
       roundCalloutRound: 1,
+      eventCallout: null,
       roundClock: new RoundClock(),
       avatars,
     };

@@ -24,4 +24,5 @@ export const CONTROL_HELP = [
   "Controller actions: left stick press clinch · right stick press switch stance · hold right trigger + right stick press to taunt · D-pad up weave · D-pad down pull · tap and release D-pad left/right to slip; while down, D-pad left/right performs the private get-up rhythm immediately.",
   "Controller fouls: View/Back low blow · Menu/Start headbutt.",
   "Right-stick gesture: horizontal 0–22.5° hook · 22.5–45° jab · 45–70° straight · 70–90° uppercut; left/right direction selects hand.",
+  "Between rounds, tell your corner what to work on: 1 close the cut · 2 bring down the swelling · 3 catch your breath (controller: left, top or right face button; or tap).",
 ] as const;
