@@ -452,14 +452,34 @@ describe("reading the fight", () => {
     expect(cue).toHaveBeenCalledWith("chant");
   });
 
-  it("notices a cut opening and getting worse", () => {
+  it("notices a cut opening and getting worse on the doctor's scale", async () => {
+    const { DOCTOR_CUT } = await import("../manifest");
     const director = new CommentaryDirector();
     const cut = (left_cut: number): Partial<FighterSnapshot> => ({ trauma: { ...fighter("two").trauma, left_cut } });
+    const worse = (text: string): boolean => /worse|pouring|badly/u.test(text);
     feed(director, state(100, "fight", [{}, cut(30)]), [], 0);
     feed(director, state(130, "fight", [{}, cut(70)]), [], 1);
     expect(watch(director, 1, 5).some((text) => /Crimson Geometry/u.test(text) && /left eye/u.test(text))).toBe(true);
-    feed(director, state(900, "fight", [{}, cut(430)]), [], 20);
-    expect(watch(director, 20, 25).some((text) => /worse|pouring|badly/u.test(text))).toBe(true);
+    // Worse at 60% of the cut the doctor stops a bout on: the old 420 mark, 60% of a 700 doctor, never moved with him.
+    feed(director, state(900, "fight", [{}, cut(Math.round(DOCTOR_CUT * 0.6) - 1)]), [], 20);
+    expect(watch(director, 20, 25).some(worse)).toBe(false);
+    feed(director, state(930, "fight", [{}, cut(Math.round(DOCTOR_CUT * 0.6))]), [], 30);
+    expect(watch(director, 30, 35).some(worse)).toBe(true);
+    feed(director, state(960, "fight", [{}, cut(Math.round(DOCTOR_CUT * 0.8))]), [], 40);
+    expect(watch(director, 40, 45).some((text) => /doctor/u.test(text))).toBe(true);
+  });
+
+  it("has the doctor look at a cut or a swelling near his stoppage at the bell", async () => {
+    const { DOCTOR_CUT, DOCTOR_SWELLING } = await import("../manifest");
+    const doctorLooks = (trauma: Partial<FighterSnapshot["trauma"]>): boolean => {
+      const director = new CommentaryDirector();
+      feed(director, state(3600, "rest", [{}, { trauma: { ...fighter("two").trauma, ...trauma } }]), [event("bell", 3600, { detail: "round_end" })], 0);
+      return watch(director, 0, 20).some((text) => /doctor/u.test(text) && /Crimson Geometry/u.test(text));
+    };
+    expect(doctorLooks({ left_cut: Math.round(DOCTOR_CUT * 0.7) })).toBe(true);
+    expect(doctorLooks({ left_cut: Math.round(DOCTOR_CUT * 0.7) - 1 })).toBe(false);
+    expect(doctorLooks({ swelling: Math.round(DOCTOR_SWELLING * 0.75) })).toBe(true);
+    expect(doctorLooks({ swelling: Math.round(DOCTOR_SWELLING * 0.75) - 1 })).toBe(false);
   });
 
   it("does not call a big shot that the guard took", () => {

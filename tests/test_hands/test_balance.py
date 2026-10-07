@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import pytest
+from scripts.hands_balance import bout_styles, make_player
 
-from intelstream.hands.engine import EngineConfig
+from intelstream.hands.engine import BoxingEngine, EngineConfig
 from intelstream.hands.rules import (
     BLOCK_POISE_PERCENT,
     BODY_COLLAPSE_COOLDOWN_TICKS,
@@ -40,6 +39,7 @@ from intelstream.hands.rules import (
 from intelstream.hands.types import (
     CombatEvent,
     DefensivePose,
+    FinishMethod,
     Hand,
     MatchPhase,
     Power,
@@ -48,9 +48,6 @@ from intelstream.hands.types import (
     Target,
 )
 from tests.test_hands.test_engine import command, make_engine, punch
-
-if TYPE_CHECKING:
-    from intelstream.hands.engine import BoxingEngine
 
 
 def land(
@@ -362,6 +359,49 @@ def test_by_default_the_doctor_lets_a_bad_cut_and_a_swollen_face_box_on() -> Non
     land(engine, punch(PunchClass.STRAIGHT))
     assert trauma.left_cut > 740 and trauma.swelling > 850
     assert engine.result is None
+
+
+@pytest.mark.parametrize("seed", [1, 2])
+def test_a_one_sided_three_rounder_leaves_a_visible_cut(
+    seed: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Three rounds of a skilled player outboxing the rookie mark the loser's face, short of the
+    doctor: a brow cut the client draws in full (220), an eye past where it starts to close (330)
+    and swollen shut at least once. Marking slowed so far once that faces stayed clean."""
+    # Nothing here reads a checksum, and hashing every tick is most of what a bout costs.
+    monkeypatch.setattr(BoxingEngine, "_checksum", lambda _engine, _fighters: "")
+    styles = bout_styles("skilled", "rookie", seed)
+    engine = BoxingEngine(
+        match_id=f"cut-{seed}",
+        activity_instance_id="balance",
+        guild_id="balance",
+        player_one_id="one",
+        player_two_id="two",
+        seed=seed,
+        config=EngineConfig(),
+        styles=styles,
+    )
+    players = (
+        ("one", make_player("skilled", "one", "two", seed * 2 + 1, styles[0])),
+        ("two", make_player("rookie", "two", "one", seed * 2 + 2, styles[1])),
+    )
+    worst_cut = worst_eye = eyes_shut = 0
+    while engine.result is None:
+        for player_id, player in players:
+            command = player.decide(engine)
+            if command is not None:
+                engine.submit_input(player_id, command)
+        snapshot = engine.step()
+        trauma = engine.fighter("two").trauma
+        worst_cut = max(worst_cut, trauma.left_cut, trauma.right_cut)
+        worst_eye = max(worst_eye, trauma.left_eye, trauma.right_eye)
+        eyes_shut += sum(event.kind == "eye_shut" for event in snapshot.events)
+
+    assert engine.result.winner_id == "one"
+    assert engine.result.finish_method is not FinishMethod.DOCTOR_STOPPAGE
+    assert worst_cut >= 220
+    assert worst_eye >= 330
+    assert eyes_shut >= 1
 
 
 def test_body_trauma_counts_the_damage_once() -> None:
