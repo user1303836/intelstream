@@ -5,6 +5,9 @@ const BASE_DISTANCE = 5.5;
 const LOOK_HEIGHT = 1.05;
 const CLOSE_HEIGHT = 1.78;
 const CLOSE_DISTANCE = 3.75;
+/** How far over a count the shot moves from between the fighters to the one on the canvas, and how low it looks. */
+const DOWNED_FOCUS = 0.85;
+const DOWNED_LOOK_HEIGHT = 0.45;
 const CLOSE_LOOK_HEIGHT = 1.18;
 
 export interface CameraFrame {
@@ -89,10 +92,14 @@ export class CameraDirector {
     shake: number,
     reducedMotion: boolean,
     close = false,
+    downed: { readonly x: number; readonly z: number } | null = null,
   ): CameraFrame {
     this.swayPhase += dt;
-    const midX = (fighterA.x + fighterB.x) / 2;
-    const midZ = (fighterA.z + fighterB.z) / 2;
+    // Over a count the shot centres on the man on the canvas, not on the gap between the two, where he
+    // would lie along the bottom of the picture behind the plates.
+    const onCanvas = knockdown && downed !== null ? DOWNED_FOCUS : 0;
+    const midX = (fighterA.x + fighterB.x) / 2 + ((downed?.x ?? 0) - (fighterA.x + fighterB.x) / 2) * onCanvas;
+    const midZ = (fighterA.z + fighterB.z) / 2 + ((downed?.z ?? 0) - (fighterA.z + fighterB.z) / 2) * onCanvas;
     const clampedX = THREE.MathUtils.clamp(midX, -1.4, 1.4);
     const clampedZ = THREE.MathUtils.clamp(midZ, -1.1, 1.1);
 
@@ -113,7 +120,7 @@ export class CameraDirector {
     this.current.z += (targetZ - this.current.z) * (1 - Math.exp(-followRate * dt));
 
     this.look.x += (clampedX - this.look.x) * (1 - Math.exp(-3.2 * dt));
-    this.look.y += ((knockdown ? 0.7 : close ? CLOSE_LOOK_HEIGHT : LOOK_HEIGHT) - this.look.y) * (1 - Math.exp(-3.2 * dt));
+    this.look.y += ((knockdown ? (onCanvas > 0 ? DOWNED_LOOK_HEIGHT : 0.7) : close ? CLOSE_LOOK_HEIGHT : LOOK_HEIGHT) - this.look.y) * (1 - Math.exp(-3.2 * dt));
     this.look.z += (clampedZ * 0.6 - this.look.z) * (1 - Math.exp(-3.2 * dt));
 
     if (!reducedMotion && shake > 0.0005) {

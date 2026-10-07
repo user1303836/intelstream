@@ -552,7 +552,7 @@ describe("referee and a head on the canvas", () => {
     effects.severedHeadPosition(1, head);
     const updated: unknown[] = [];
     const stub = {
-      referee: { setRefereeCount: () => {}, update: (...frame: unknown[]) => updated.push(frame) },
+      referee: { setRefereeCount: () => {}, update: (...frame: unknown[]) => updated.push(frame), boxer: { root: new THREE.Object3D() } }, blobShadows: [],
       mapping: worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }),
       tmpA: new THREE.Vector3(head.x - 0.4, 0, head.z + 2.2), tmpB: new THREE.Vector3(head.x + 0.4, 0, head.z + 2.2),
       refereePosition: new THREE.Vector3(head.x + 0.1, 0, head.z - 0.2), refereeVelocity: new THREE.Vector3(), refereeAway: new THREE.Vector3(), refereeYaw: 0,
@@ -565,6 +565,26 @@ describe("referee and a head on the canvas", () => {
     }
     expect(updated).toHaveLength(180);
     effects.dispose();
+  });
+
+  it("is left out of the knockout replay's close shot, and back for the live picture", () => {
+    const root = new THREE.Object3D();
+    const shadow = new THREE.Object3D();
+    const stub = {
+      referee: { setRefereeCount: () => {}, update: () => {}, boxer: { root } }, blobShadows: [new THREE.Object3D(), new THREE.Object3D(), shadow],
+      mapping: worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }),
+      tmpA: new THREE.Vector3(-0.5, 0, 0), tmpB: new THREE.Vector3(0.5, 0, 0),
+      refereePosition: new THREE.Vector3(0, 0, -1.5), refereeVelocity: new THREE.Vector3(), refereeAway: new THREE.Vector3(), refereeYaw: 0,
+      effects: { severedHeadPosition: () => false }, closeUpTarget: new THREE.Vector3(), replay: {} as unknown, ceremony: null,
+    };
+    const step = (FightRenderer.prototype as unknown as { updateReferee: (dt: number, time: number, snapshot: unknown, tick: number) => void }).updateReferee;
+    step.call(stub, 1 / 60, 0, null, 0);
+    expect(root.visible).toBe(false);
+    expect(shadow.visible).toBe(false);
+    stub.replay = null;
+    step.call(stub, 1 / 60, 1 / 60, null, 0.5);
+    expect(root.visible).toBe(true);
+    expect(shadow.visible).toBe(true);
   });
 
   it("steps back from it and is left alone when already clear", () => {

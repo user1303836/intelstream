@@ -116,6 +116,10 @@ const HISTORY_LIMIT = 480;
 const LOW_TIER_SCALE = 0.56;
 const ROUND_CALLOUT_SECONDS = 1.8;
 const FINISH_CLOSE_UP_SECONDS = 1.7;
+/** On a screen narrower than this (as a pull), the rest's wide shot looks down the ring's diagonal, from this far behind the near fighter and this high. */
+const REST_DIAGONAL_PULL = 1.6;
+const REST_DIAGONAL_BACK = 5;
+const REST_DIAGONAL_HEIGHT = 3.4;
 /** After a stoppage the winner celebrates until the bout is gone, and the referee lifts his arm once the fight is waved off. */
 const WINNER_CELEBRATION_SECONDS = 600;
 const STOPPAGE_RAISE_DELAY_SECONDS = 2.8;
@@ -1248,6 +1252,24 @@ export class FightRenderer {
     return { position: this.cornerPosition, lookAt: this.cornerLookAt };
   }
 
+  /**
+   * Between rounds the fighters sit in opposite corners, too far apart across a phone held upright for
+   * any shot from the side. The wide shot there looks down the diagonal from behind the blue corner,
+   * the near fighter low in the picture and the far one above him.
+   */
+  private restWideFrame(snapshot: EngineSnapshot | null): { position: THREE.Vector3; lookAt: THREE.Vector3; framed: boolean } | null {
+    if (snapshot?.phase !== "rest" || this.portraitPull <= REST_DIAGONAL_PULL) return null;
+    const near = this.tmpA;
+    const far = this.tmpB;
+    const dx = near.x - far.x;
+    const dz = near.z - far.z;
+    const apart = Math.hypot(dx, dz);
+    if (apart < 1e-3) return null;
+    this.cornerPosition.set(near.x + (dx / apart) * REST_DIAGONAL_BACK, REST_DIAGONAL_HEIGHT, near.z + (dz / apart) * REST_DIAGONAL_BACK);
+    this.cornerLookAt.set((near.x + far.x) / 2, 0.75, (near.z + far.z) / 2);
+    return { position: this.cornerPosition, lookAt: this.cornerLookAt, framed: true };
+  }
+
   /** A short high three-quarter close-up on the beaten fighter's face, or on the head where it came to rest, before the result panel. */
   private closeUpFrame(seconds: number): { position: THREE.Vector3; lookAt: THREE.Vector3; tight: boolean } | null {
     if (seconds >= this.finishCloseUpUntil || this.finishCloseUpIndex < 0 || !this.headCacheValid[this.finishCloseUpIndex]) return null;
@@ -1969,6 +1991,7 @@ export class FightRenderer {
     const actorDt = this.replay !== null ? dt * this.replay.plan.speed : dt;
     let separation = 1.8;
     let knockdown = false;
+    let downedAt: { x: number; z: number } | null = null;
     if (snapshot !== null) {
       const ceremony = this.replay === null ? this.ceremony : null;
       const [a, b] = ceremony !== null ? this.ceremonyFighters(ceremony, snapshot.fighters, actorDt, seconds) : this.standApart(snapshot.fighters);
@@ -2040,6 +2063,7 @@ export class FightRenderer {
       const contactA = fallenA === null ? { x: ax, z: az } : { x: fallenA.x, z: fallenA.z };
       const fallenB = this.graphs?.[1]?.fallBody?.centre(this.bodyPoint) ?? null;
       const contactB = fallenB === null ? { x: bx, z: bz } : { x: fallenB.x, z: fallenB.z };
+      downedAt = a.is_downed ? contactA : b.is_downed ? contactB : null;
       this.ring.setRopeContacts(contactA, contactB);
       this.tmpA.set(ax, 0, az);
       this.tmpB.set(bx, 0, bz);
@@ -2097,6 +2121,7 @@ export class FightRenderer {
       this.effects.shakeAmount,
       current.reducedMotion,
       current.camera === "close",
+      downedAt,
     );
     const viewerIndex = snapshot === null ? -1 : snapshot.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
     const ownView = current.camera === "fighter" && viewerIndex >= 0 && ownViewPhase(snapshot)
@@ -2104,7 +2129,7 @@ export class FightRenderer {
       : null;
     if (ownView === null) this.fighterCam.reset();
     const replaying = this.replay;
-    const frame: { position: THREE.Vector3; lookAt: THREE.Vector3; tight?: boolean; framed?: boolean } = this.cameraOverride ?? (replaying !== null && snapshot !== null ? this.replayFrame(snapshot, seconds - replaying.startedAt) : (this.closeUpFrame(seconds) ?? this.cornerShotFrame(seconds, snapshot, current.reducedMotion) ?? this.ceremonyFrame(seconds) ?? ownView ?? directed));
+    const frame: { position: THREE.Vector3; lookAt: THREE.Vector3; tight?: boolean; framed?: boolean } = this.cameraOverride ?? (replaying !== null && snapshot !== null ? this.replayFrame(snapshot, seconds - replaying.startedAt) : (this.closeUpFrame(seconds) ?? this.cornerShotFrame(seconds, snapshot, current.reducedMotion) ?? this.restWideFrame(snapshot) ?? this.ceremonyFrame(seconds) ?? ownView ?? directed));
     this.ownViewActive = ownView !== null && frame === ownView;
     const fov = this.ownViewActive ? this.baseFov * FIGHTER_CAM_FOV_SCALE : this.baseFov;
     if (this.camera.fov !== fov) {
@@ -2228,6 +2253,10 @@ export class FightRenderer {
   private updateReferee(dt: number, time: number, snapshot: EngineSnapshot | null, sampledTick: number): void {
     const referee = this.referee;
     if (referee === null) return;
+    // The replay isolates the two fighters: the referee, who would stand in its close shot, is left out of it.
+    referee.boxer.root.visible = this.replay === null;
+    const shadow = this.blobShadows[2];
+    if (shadow !== undefined) shadow.visible = this.replay === null;
     const downed = snapshot?.fighters.find((fighter) => fighter.is_downed) ?? null;
     const clinched = snapshot?.fighters.some((fighter) => fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0) ?? false;
     const focusX = downed !== null ? this.mapping.x(downed.x) : (this.tmpA.x + this.tmpB.x) / 2;
