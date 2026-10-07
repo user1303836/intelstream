@@ -1321,6 +1321,47 @@ describe("compact scoreboard mini bars", () => {
   });
 });
 
+describe("the guard bar", () => {
+  it("marks the line under which a guard stops nothing, and shows a guard worn under it as spent, on a desktop and a 320 px phone", async () => {
+    const { GUARD_BLOCK_MINIMUM } = await import("../manifest");
+    const players = Object.fromEntries(publicPlayers.map((player) => [player.id, player]));
+    const drawn = (width: number, height: number, guards: readonly [number, number]) => {
+      const fills: Array<{ x: number; y: number; w: number; h: number; style: string }> = [];
+      const labels: Array<{ text: string; style: string }> = [];
+      const strokes: string[] = [];
+      let fill = "";
+      let stroke = "";
+      const ctx = Object.assign(mockHudContext([]), {
+        fillRect: (x: number, y: number, w: number, h: number) => fills.push({ x, y, w, h, style: fill }),
+        fillText: (text: string) => labels.push({ text, style: fill }),
+        stroke: () => strokes.push(stroke),
+      });
+      Object.defineProperty(ctx, "fillStyle", { set: (value: unknown) => { fill = typeof value === "string" ? value : "gradient"; } });
+      Object.defineProperty(ctx, "strokeStyle", { set: (value: unknown) => { stroke = typeof value === "string" ? value : "gradient"; } });
+      const state = { ...snapshot(), fighters: [{ ...fighter("one", -100), guard: guards[0] }, { ...fighter("two", 100), guard: guards[1] }] as const };
+      drawHud(ctx, width, height, state, players, "one", null, 0, 30);
+      return { fills, labels: labels.filter((label) => label.text === "GUARD"), strokes };
+    };
+    for (const [width, height] of [[1280, 720], [320, 568]] as const) {
+      // The guard bars ride above the plates: the blue corner's fills from the left, the red corner's from the right.
+      const plateWidth = width < 640 ? (width - 56) / 2 : Math.min(300, width * 0.38, width / 2 - 84 - 8 - 24);
+      const bar = Math.min(64, (plateWidth - 52) / 2);
+      const line = (bar * GUARD_BLOCK_MINIMUM) / HUD_MAX_GUARD;
+      const { fills, labels, strokes } = drawn(width, height, [40, 650]);
+      const marks = fills.filter((rect) => rect.w === 1.5 && rect.y === height - 96 - 2);
+      expect(marks.map((mark) => mark.x + 0.75), `${width}x${height}`).toEqual([44 + line, width - 44 - bar - line]);
+      // Worn to 40 the blue corner's guard is spent: its label, its mark and hatching across its bar in one red.
+      const red = labels[0]!.style;
+      expect(labels[1]!.style).not.toBe(red);
+      expect(marks[0]!.style).toBe(red);
+      expect(marks[1]!.style).not.toBe(red);
+      expect(strokes.filter((style) => style === red)).toHaveLength(1);
+      // At the line itself the guard still stops punches.
+      expect(drawn(width, height, [GUARD_BLOCK_MINIMUM, 650]).strokes.filter((style) => style === red)).toHaveLength(0);
+    }
+  });
+});
+
 describe("the line under a fighter's name", () => {
   /** Records where each text and filled rectangle lands, measuring text at 0.55 em a character, about what a phone's system font gives these lines. */
   function measuring(): { ctx: CanvasRenderingContext2D; texts: { text: string; left: number; right: number }[]; rects: { x: number; y: number; w: number; h: number }[] } {

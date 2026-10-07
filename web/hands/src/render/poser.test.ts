@@ -554,6 +554,28 @@ describe("taunt", () => {
   });
 });
 
+describe("a spent guard", () => {
+  it("drops the gloves toward the chest once the guard is worn under what stops a punch, held up or not", async () => {
+    const { GUARD_BLOCK_MINIMUM } = await import("../manifest");
+    const gloves = (guard: number, defense: FighterSnapshot["defense"]) => {
+      const { boxer, graph } = makeGraph();
+      run(graph, { ...facingOpponent(baseFighter("one")), guard, defense }, opponentFor("two"), 45, undefined);
+      return { left: bone(boxer, "gloveL"), right: bone(boxer, "gloveR"), head: bone(boxer, "head") };
+    };
+    for (const defense of ["guard_high", "none"] as const) {
+      const fresh = gloves(80, defense);
+      const spent = gloves(40, defense);
+      expect(fresh.left.y - spent.left.y, defense).toBeGreaterThan(0.1);
+      expect(fresh.right.y - spent.right.y, defense).toBeGreaterThan(0.1);
+    }
+    // Held up but spent, the gloves sit under the chin: the opening shows.
+    const opening = gloves(40, "guard_high");
+    expect(Math.max(opening.left.y, opening.right.y)).toBeLessThan(gloves(80, "guard_high").head.y - 0.15);
+    // At the line itself the guard still stops punches, and stays up.
+    expect(gloves(GUARD_BLOCK_MINIMUM, "guard_high").left.y).toBeCloseTo(gloves(80, "guard_high").left.y, 3);
+  });
+});
+
 describe("cutman", () => {
   it("crouches before the seated fighter, presses the enswell on the eye, and stands back up when done", () => {
     const { boxer, graph } = makeGraph();

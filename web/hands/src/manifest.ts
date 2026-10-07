@@ -47,6 +47,8 @@ export const RING_HALF_HEIGHT = manifestJson.ring.half_height;
 export const FIGHTER_RADIUS = manifestJson.ring.fighter_radius;
 /** Eye trauma at which the eye is swollen shut and punches from that side go unseen. */
 export const EYE_SHUT_TRAUMA = manifestJson.blind_side.eye_threshold;
+/** A guard worn below this stops nothing: a block that takes it under breaks it, until it recovers past it. */
+export const GUARD_BLOCK_MINIMUM = manifestJson.guard.block_minimum;
 export const CORNER_TREATMENTS = manifestJson.corner;
 export const RING_CORNER_REACH = manifestJson.corners.reach;
 /** Percent of a punch's recovery that must pass before a chained follow-up may cut the rest of it short. */
