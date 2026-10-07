@@ -331,6 +331,17 @@ describe("reading the fight", () => {
     expect(watch(director, 20, 25).some((text) => /worse|pouring|badly/u.test(text))).toBe(true);
   });
 
+  it("does not call a big shot that the guard took", () => {
+    const blocked = new CommentaryDirector();
+    const block = event("block", 100, { actor_id: "two", target_id: "one", action_id: "p1" });
+    const leaked = { ...hit(100, "one", "hook:head", 70, "counter_hit"), action_id: "p1" };
+    feed(blocked, state(100), [block, leaked], 0);
+    expect(watch(blocked, 0, 4).some((text) => /counter|Big|thudding|flush|felt/u.test(text))).toBe(false);
+    const clean = new CommentaryDirector();
+    feed(clean, state(100), [{ ...hit(100, "one", "hook:head", 70, "counter_hit"), action_id: "p2" }], 0);
+    expect(watch(clean, 0, 4).some((text) => /counter|Big|thudding|flush|felt/u.test(text))).toBe(true);
+  });
+
   it("notices an eye swelling and calls it shut only when the engine says it has closed", () => {
     const director = new CommentaryDirector();
     const eye = (left_eye: number): Partial<FighterSnapshot> => ({ trauma: { ...fighter("two").trauma, left_eye } });

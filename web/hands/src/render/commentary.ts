@@ -1,7 +1,7 @@
 import { ROCKED_MAX_TICKS } from "../manifest";
 import { isDebut, recordCard } from "../record";
 import type { CombatEvent, EngineSnapshot, FighterRecord, FighterSnapshot, FinalMessage, PublicPlayer } from "../types";
-import { decisionLabel } from "./hud";
+import { decisionLabel, wasBlocked } from "./hud";
 
 export type Speaker = "play" | "colour" | "announcer";
 
@@ -447,7 +447,7 @@ export class CommentaryDirector {
         return;
       case "hit":
       case "counter_hit":
-        if (actor !== null && target !== null) this.landed(event, actor, target, snapshot, now);
+        if (actor !== null && target !== null && !wasBlocked(event, snapshot.events)) this.landed(event, actor, target, snapshot, now);
         return;
       case "stun": {
         if (target === null) return;

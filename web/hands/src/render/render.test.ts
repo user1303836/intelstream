@@ -613,6 +613,20 @@ describe("round stats", () => {
     expect(tracker.get("one")).toEqual({ thrown: 0, landed: 0, jabsThrown: 0, jabsLanded: 0 });
   });
 
+  it("does not count a punch the guard took as landed", () => {
+    const tracker = new RoundStatsTracker();
+    const thrown = { ...event("punch_start", "one", "right:straight:head"), action_id: "p1" };
+    const block = { ...event("block", "two"), target_id: "one", action_id: "p1" };
+    const leaked = { ...event("hit", "one", "straight:head"), target_id: "two", action_id: "p1" };
+    const clean = { ...event("hit", "one", "straight:head"), target_id: "two", action_id: "p2" };
+    tracker.record(thrown, [thrown]);
+    tracker.record(block, [block, leaked]);
+    tracker.record(leaked, [block, leaked]);
+    expect(tracker.get("one")).toMatchObject({ thrown: 1, landed: 0 });
+    tracker.record(clean, [clean]);
+    expect(tracker.get("one")).toMatchObject({ landed: 1 });
+  });
+
   it("counts jabs apart from power punches", () => {
     const tracker = new RoundStatsTracker();
     tracker.record(event("punch_start", "one", "left:jab:head"));

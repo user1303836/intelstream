@@ -280,12 +280,21 @@ export interface RoundPunchStats {
 
 const blankPunches = (): RoundPunchStats => ({ thrown: 0, landed: 0, jabsThrown: 0, jabsLanded: 0 });
 
+/**
+ * The engine reports a punch that met the guard twice: the defender's block, then the hit that leaked
+ * through. Only a hit with no block of the same punch beside it landed clean.
+ */
+export function wasBlocked(hit: CombatEvent, events: readonly CombatEvent[]): boolean {
+  return hit.action_id !== null && events.some((event) => (event.kind === "block" || event.kind === "perfect_block") && event.tick === hit.tick && event.action_id === hit.action_id && event.actor_id === hit.target_id);
+}
+
 /** Punches thrown and landed per fighter in the current round, reset on the round-start bell. */
 export class RoundStatsTracker {
   private readonly stats = new Map<string, RoundPunchStats>();
   private readonly totals = new Map<string, RoundPunchStats>();
 
-  record(event: CombatEvent): void {
+  /** `events` is the rest of the snapshot the event came in, to tell a punch that landed from one that was blocked. */
+  record(event: CombatEvent, events: readonly CombatEvent[] = []): void {
     if (event.kind === "bell") {
       if (event.detail === "round_start") this.stats.clear();
       return;
@@ -298,7 +307,7 @@ export class RoundStatsTracker {
         entry.thrown += 1;
         entry.jabsThrown += jab;
       }
-    } else if (event.kind === "hit" || event.kind === "counter_hit") {
+    } else if ((event.kind === "hit" || event.kind === "counter_hit") && !wasBlocked(event, events)) {
       // The detail is "class:target".
       const jab = event.detail.split(":")[0] === "jab" ? 1 : 0;
       for (const entry of [this.entry(this.stats, event.actor_id), this.entry(this.totals, event.actor_id)]) {

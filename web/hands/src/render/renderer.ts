@@ -1589,7 +1589,7 @@ export class FightRenderer {
     this.history.push(snapshot);
     if (this.history.length > HISTORY_LIMIT) this.history.shift();
     for (const event of accepted) {
-      this.roundStats.record(event);
+      this.roundStats.record(event, accepted);
       if (event.kind === "knockdown") {
         const hit = accepted.find((candidate) => (candidate.kind === "hit" || candidate.kind === "counter_hit") && candidate.target_id === event.target_id)
           ?? (event.detail === "body" ? this.recordedHit(event) : null);
