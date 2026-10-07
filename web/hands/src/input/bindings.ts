@@ -29,6 +29,16 @@ export const CONTROL_HELP = [
   "Touch: drag the left side to move · tap a punch pad's left or right half for that hand · hold BODY, POWER, GUARD or LOW · tap ◀ SLIP, SLIP ▶, WEAVE, PULL or CLINCH.",
 ] as const;
 
+const CONTROL_HINT_KEYBOARD = "Move WASD · Jab F/J · Straight R/U · Hook G/H · Uppercut T/Y · Guard Q/E · Body Shift · Power Alt";
+const CONTROL_HINT_TOUCH = "Drag on the left to move · Tap the pads to punch, L or R hand · Hold BODY, POWER or GUARD · Tap SLIP, WEAVE, PULL or CLINCH";
+/** A phone held upright has only a narrow column beside the pads for the hint: the essentials, which the pads' own labels fill in. */
+const CONTROL_HINT_TOUCH_SHORT = "Drag left to move · Tap pads to punch · Hold GUARD";
+/** Screens narrower than this, phones held upright, get the short touch hint. */
+export const SHORT_HINT_WIDTH = 480;
+
+/** The controls hint shown before and during the countdown, for a keyboard or for the touch pads on a screen this wide. */
+export const controlHint = (touch: boolean, width: number): string => (!touch ? CONTROL_HINT_KEYBOARD : width < SHORT_HINT_WIDTH ? CONTROL_HINT_TOUCH_SHORT : CONTROL_HINT_TOUCH);
+
 /** The Controls panel in sections instead of one list. */
 export const CONTROL_SECTIONS: readonly { readonly title: string; readonly items: readonly string[] }[] = [
   { title: "Keyboard", items: CONTROL_HELP.filter((item) => !item.startsWith("Controller") && !item.startsWith("Right-stick") && !item.startsWith("Between rounds") && !item.startsWith("Touch")) },
