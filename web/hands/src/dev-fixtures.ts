@@ -16,7 +16,7 @@ const base = (id: string): Draft => ({
     : { head: 150, body: 260, left_eye: 120, right_eye: 60, left_cut: 90, right_cut: 20, swelling: 100, bleeding: 70 },
   knockdowns: 0, warnings: 0, deductions: 0, stunned_ticks: 0, is_downed: false,
   action: null, action_hand: null, action_target: null, action_power: null, action_id: null, action_key: null, action_start_tick: 0, action_startup_ticks: 0, action_active_ticks: 0, action_recovery_ticks: 0, action_contact_tick: null, queued_actions: 0,
-  clinch_startup_ticks: 0, clinch_ticks: 0, is_foul_recovery_target: false, taunt_ticks: 0,
+  clinch_startup_ticks: 0, clinch_ticks: 0, is_foul_recovery_target: false, taunt_ticks: 0, corner_choice: null,
   get_up_prompt: null, get_up_meter: 0, get_up_required: 0, get_up_count: 0, get_up_window_start_tick: 0, get_up_window_end_tick: 0,
   last_input_sequence: -1,
 });
@@ -98,7 +98,34 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
     const forcedRest = search.get("phase") === "rest";
     const pinned = search.get("pin") === "1";
     const knockdownCycle = finisher === null ? t % 14 : (t < 2.5 ? 0 : 12);
-    if (knockdownCycle > 11 && knockdownCycle < 13.4) {
+    // A body shot that puts him on a knee a third of a second after it lands.
+    const bodyCollapse = finisher === "body" && t >= 2.5 && t < 2.85;
+    // The sparring stops for the body shot; a punch on a fighter who is down would be an arcade finisher.
+    if (finisher === "body" && t >= 2.5) events.length = 0;
+    if (bodyCollapse) {
+      two.stunned_ticks = 11;
+      two.x = 140;
+      two.y = 40;
+      one.x = 60;
+      one.y = 30;
+      if (t < 2.65) {
+        eventId += 1;
+        events.push({ event_id: eventId, tick, kind: "hit", actor_id: one.player_id, target_id: two.player_id, amount: 90, detail: "hook:body", blood: 30, direction: 1, action_id: "fixture-body" });
+        eventId += 1;
+        events.push({ event_id: eventId, tick, kind: "body_collapse", actor_id: one.player_id, target_id: two.player_id, amount: 10, detail: "", blood: 0, direction: 0, action_id: "fixture-body" });
+      }
+    } else if (finisher === "body" && t >= 2.85) {
+      two.is_downed = true;
+      two.action = null;
+      two.x = 140;
+      two.y = 40;
+      one.x = -60;
+      one.y = -30;
+      if (t < 3.0) {
+        eventId += 1;
+        events.push({ event_id: eventId, tick, kind: "knockdown", actor_id: one.player_id, target_id: two.player_id, amount: 1, detail: "body", blood: 0, direction: 0, action_id: "fixture-body" });
+      }
+    } else if (knockdownCycle > 11 && knockdownCycle < 13.4) {
       two.is_downed = true;
       two.action = null;
       two.x = 140;
@@ -137,7 +164,9 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       one.y = 284;
     }
     if (forcedRest) {
+      const corner = search.get("corner");
       for (const [fighter, sign] of [[one, -1], [two, 1]] as const) {
+        if (corner === "cut" || corner === "swelling" || corner === "breath") fighter.corner_choice = corner;
         fighter.x = sign * REST_CORNER_OFFSET;
         fighter.y = sign * REST_CORNER_OFFSET;
         fighter.velocity_x = fighter.velocity_y = 0;

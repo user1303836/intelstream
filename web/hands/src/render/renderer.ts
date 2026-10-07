@@ -14,7 +14,7 @@ import { buildArena, type BuiltArena } from "./arena";
 import { CameraDirector, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE, SECONDS_OUT, ceremonyShot, cornerFrame, cornerPoint, cornerShot, cornerShotProgress } from "./camera";
 import { Avatars } from "./avatars";
 import { Effects3D, type BakedPart } from "./effects";
-import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, type ArcadeDislocation } from "./graph";
+import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, type ArcadeDislocation, type CutmanProp } from "./graph";
 import { drawHud, finalRevealDelay, resultCard, resultCardLayout, RoundStatsTracker, STOPPAGE_METHODS, RoundClock, type RoundPunchStats } from "./hud";
 import { NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE } from "./injury";
 import { closeCut, cutRim } from "./gore";
@@ -147,7 +147,18 @@ interface Ceremony {
 /** The crowd stays on its feet from the result until the replay and the verdict have played out. */
 const CROWD_OVATION_SECONDS = 16;
 const CROWD_OVATION_RATE = 0.6;
-const CROWD_EXCITEMENT: Readonly<Record<string, number>> = { hit: 0.18, counter_hit: 0.3, guard_break: 0.25, knockdown: 1, block: 0.04, perfect_block: 0.1 };
+const CROWD_EXCITEMENT: Readonly<Record<string, number>> = { hit: 0.18, counter_hit: 0.3, guard_break: 0.25, knockdown: 1, block: 0.04, perfect_block: 0.1, parry: 0.22, body_collapse: 0.45 };
+/** Events presented on the contact tick of the punch they belong to, alongside its impact. */
+const CONTACT_KINDS = new Set(["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown", "parry", "body_collapse", "eye_shut"]);
+/** Events that change how a fighter moves or what the broadcast says, but carry no impact of their own. */
+const UNIMPACTFUL_KINDS = new Set(["parry", "body_collapse", "eye_shut"]);
+const EVENT_CALLOUTS: Readonly<Record<string, { readonly text: string; readonly seconds: number }>> = {
+  parry: { text: "PARRIED", seconds: 1 },
+  eye_shut: { text: "EYE SWOLLEN SHUT", seconds: 1.6 },
+};
+
+/** A knockdown from a body shot that put him down a moment after it landed, with no punch of its own to show. */
+export const isDelayedBodyKnockdown = (presentation: CombatEvent): boolean => presentation.kind === "knockdown" && presentation.detail === "body";
 
 function pairedBlock(event: CombatEvent, events: readonly CombatEvent[]): CombatEvent | undefined {
   if (!isHit(event) || event.action_id === null) return undefined;
@@ -170,6 +181,7 @@ export function contactPresentationPlan(
   snapshot: EngineSnapshot,
 ): readonly ContactPresentation[] {
   return events.map((event, eventIndex) => {
+    if (UNIMPACTFUL_KINDS.has(event.kind)) return { event, presentationEvent: event, presentImpact: false };
     const { puncherIndex } = contactParticipants(event, snapshot);
     const puncher = snapshot.fighters[puncherIndex];
     const actionParts = puncher?.action_key?.split(":") ?? [];
@@ -211,6 +223,30 @@ export function contactPresentationPlan(
     }
     return { event, presentationEvent: event, presentImpact: true };
   });
+}
+
+/**
+ * Where the cutman works and with what, from the corner's instruction: the brow of the worse cut, the
+ * worse eye, or the mouth with a bottle. `side` is 1 for the fighter's left, `lift` is metres above the head bone.
+ */
+export function cutmanWork(fighter: FighterSnapshot | undefined): { readonly side: number; readonly lift: number; readonly lateral: number; readonly prop: CutmanProp } {
+  const trauma = fighter?.trauma;
+  if (trauma === undefined) return { side: 1, lift: 0.08, lateral: 0.035, prop: "enswell" };
+  switch (fighter?.corner_choice) {
+    case "cut":
+      return { side: trauma.right_cut > trauma.left_cut ? -1 : 1, lift: 0.11, lateral: 0.04, prop: "enswell" };
+    case "swelling":
+      return { side: trauma.right_eye > trauma.left_eye ? -1 : 1, lift: 0.08, lateral: 0.035, prop: "enswell" };
+    case "breath":
+      return { side: 1, lift: -0.015, lateral: 0, prop: "bottle" };
+    default:
+      return { side: trauma.right_eye + trauma.right_cut > trauma.left_eye + trauma.left_cut ? -1 : 1, lift: 0.08, lateral: 0.035, prop: "enswell" };
+  }
+}
+
+/** The side of the body a punch lands on, from the puncher's action key: a left hand lands on his right side (-1). */
+export function bodySideStruck(actionKey: string | null): number {
+  return actionKey?.split(":")[1] === "right" ? 1 : -1;
 }
 
 export function presentationTickFor(snapshot: EngineSnapshot): number {
@@ -424,7 +460,7 @@ function blankFighter(playerId: string): FighterSnapshot {
     knockdowns: 0, warnings: 0, deductions: 0, stunned_ticks: 0, is_downed: false,
     action: null, action_hand: null, action_target: null, action_power: null, action_id: null, action_key: null,
     action_start_tick: 0, action_startup_ticks: 0, action_active_ticks: 0, action_recovery_ticks: 0, action_contact_tick: null,
-    queued_actions: 0, clinch_startup_ticks: 0, clinch_ticks: 0, is_foul_recovery_target: false, taunt_ticks: 0,
+    queued_actions: 0, clinch_startup_ticks: 0, clinch_ticks: 0, is_foul_recovery_target: false, taunt_ticks: 0, corner_choice: null,
     get_up_prompt: null, get_up_meter: 0, get_up_required: 0, get_up_count: 0, get_up_window_start_tick: 0, get_up_window_end_tick: 0,
     last_input_sequence: -1,
   };
@@ -505,7 +541,7 @@ function refereeSnapshot(position: THREE.Vector3, yaw: number, velocity: THREE.V
     knockdowns: 0, warnings: 0, deductions: 0, stunned_ticks: 0, is_downed: false,
     action: null, action_hand: null, action_target: null, action_power: null, action_id: null, action_key: null,
     action_start_tick: 0, action_startup_ticks: 0, action_active_ticks: 0, action_recovery_ticks: 0, action_contact_tick: null,
-    queued_actions: 0, clinch_startup_ticks: 0, clinch_ticks: 0, is_foul_recovery_target: false, taunt_ticks: 0,
+    queued_actions: 0, clinch_startup_ticks: 0, clinch_ticks: 0, is_foul_recovery_target: false, taunt_ticks: 0, corner_choice: null,
     get_up_prompt: null, get_up_meter: 0, get_up_required: 0, get_up_count: 0, get_up_window_start_tick: 0, get_up_window_end_tick: 0,
     last_input_sequence: -1,
   };
@@ -603,6 +639,7 @@ export class FightRenderer {
   private readonly closeUpPosition = new THREE.Vector3();
   private roundCalloutUntil = 0;
   private roundCalloutRound = 0;
+  private eventCallout: { text: string; until: number } | null = null;
   private readonly tmpCamera = new THREE.Vector3();
   private readonly roundStats = new RoundStatsTracker();
   private readonly history: EngineSnapshot[] = [];
@@ -801,7 +838,7 @@ export class FightRenderer {
     this.ovationUntil = final === null ? 0 : this.frameSeconds + CROWD_OVATION_SECONDS;
     if (this.ceremony === null) this.endCeremony();
     if (final === null || !STOPPAGE_METHODS.has(final.method)) return;
-    const plan = this.lastKnockdown === null ? null : planKnockoutReplay(this.history, this.lastKnockdown.knockdown, this.simulation.tick_rate);
+    const plan = this.lastKnockdown === null ? null : planKnockoutReplay(this.history, this.lastKnockdown.hit ?? this.lastKnockdown.knockdown, this.simulation.tick_rate);
     if (plan !== null && this.graphs !== null && !this.settings().reducedMotion) {
       this.startReplay(plan);
       return;
@@ -977,6 +1014,9 @@ export class FightRenderer {
     const punchClass = (keyParts[0] ?? null) as PunchClass | null;
     const hand = (keyParts[1] ?? null) as Hand | null;
     this.graphs?.[recipientIndex]?.react("hit", event.detail.endsWith(":body") ? "body" : "head", event.direction, punchClass, hand, Math.max(300, event.amount));
+    if (record.knockdown.detail === "body" && record.knockdown.tick > event.tick) {
+      this.graphs?.[recipientIndex]?.windedFor((record.knockdown.tick - event.tick) / this.simulation.tick_rate + 0.15, bodySideStruck(puncher?.action_key ?? null));
+    }
     if (puncherIndex >= 0) this.graphs?.[puncherIndex]?.landedHit(false);
     this.onContact?.(event);
     this.reapplyReplayInjuries();
@@ -1227,8 +1267,11 @@ export class FightRenderer {
     for (const event of accepted) {
       this.roundStats.record(event);
       if (event.kind === "knockdown") {
-        const hit = accepted.find((candidate) => (candidate.kind === "hit" || candidate.kind === "counter_hit") && candidate.target_id === event.target_id) ?? null;
+        const hit = accepted.find((candidate) => (candidate.kind === "hit" || candidate.kind === "counter_hit") && candidate.target_id === event.target_id)
+          ?? (event.detail === "body" ? this.recordedHit(event) : null);
         this.lastKnockdown = { knockdown: event, hit };
+        const downed = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.target_id);
+        this.graphs?.[downed]?.fallToKnee(event.detail === "body");
       }
       if (event.kind === "referee_break") this.referee?.breakClinch();
     }
@@ -1241,7 +1284,7 @@ export class FightRenderer {
         ?? snapshot.fighters[actorIndex]
         ?? snapshot.fighters[0];
       this.tmpA.set(this.mapping.x(recipient.x), 0, this.mapping.z(recipient.y));
-      if (["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown"].includes(event.kind)) {
+      if (CONTACT_KINDS.has(event.kind)) {
         const puncher = puncherIndex >= 0 ? snapshot.fighters[puncherIndex]! : null;
         this.pendingContacts.push({
           event,
@@ -1266,14 +1309,17 @@ export class FightRenderer {
         continue;
       }
       this.pendingContacts.splice(index, 1);
-      const { event, presentationEvent, presentImpact, recipientIndex, puncherIndex, injury } = pending;
+      const { event, presentationEvent, recipientIndex, puncherIndex, injury } = pending;
+      // A body shot that dropped him a moment later has already been shown landing.
+      const presentImpact = pending.presentImpact && !isDelayedBodyKnockdown(presentationEvent);
       const target = this.buffer.latest()?.fighters[recipientIndex];
+      this.presentFightEvent(event, recipientIndex, puncherIndex);
       if (presentImpact && target !== undefined) {
         this.tmpA.set(this.mapping.x(target.x), 0, this.mapping.z(target.y));
         this.effects.addEvent(presentationEvent, this.tmpA, this.settings().reducedMotion);
       }
       const currentSettings = this.settings();
-      if (presentImpact) this.arena.excite(CROWD_EXCITEMENT[event.kind] ?? 0);
+      if (pending.presentImpact || UNIMPACTFUL_KINDS.has(event.kind)) this.arena.excite(CROWD_EXCITEMENT[event.kind] ?? 0);
       if (
         presentImpact
         && recipientIndex >= 0
@@ -1332,6 +1378,29 @@ export class FightRenderer {
       }
       this.onContact?.(event);
     }
+  }
+
+  /** The parry's stagger, the body shot that is putting a fighter down, and the broadcast's callouts. */
+  private presentFightEvent(event: CombatEvent, recipientIndex: number, puncherIndex: number): void {
+    const callout = EVENT_CALLOUTS[event.kind];
+    if (callout !== undefined) this.eventCallout = { text: callout.text, until: this.frameSeconds + callout.seconds };
+    const graphs = this.graphs;
+    if (graphs === null || recipientIndex < 0) return;
+    if (event.kind === "parry") graphs[recipientIndex]?.stagger();
+    if (event.kind === "body_collapse") {
+      const puncher = puncherIndex >= 0 ? this.buffer.latest()?.fighters[puncherIndex] : undefined;
+      graphs[recipientIndex]?.windedFor(event.amount / this.simulation.tick_rate + 0.15, bodySideStruck(puncher?.action_key ?? null));
+    }
+  }
+
+  /** The punch that landed with this knockdown's action id, from the recorded snapshots. */
+  private recordedHit(knockdown: CombatEvent): CombatEvent | null {
+    if (knockdown.action_id === null) return null;
+    for (let index = this.history.length - 1; index >= 0; index -= 1) {
+      const hit = this.history[index]!.events.find((candidate) => (candidate.kind === "hit" || candidate.kind === "counter_hit") && candidate.action_id === knockdown.action_id && candidate.target_id === knockdown.target_id);
+      if (hit !== undefined) return hit;
+    }
+    return null;
   }
 
   /** True once the result panel is on screen, after any knockout replay and close-up. */
@@ -1805,16 +1874,15 @@ export class FightRenderer {
         : next >= CUTMAN_IN_PLACE
           ? (head !== null ? Math.atan2(head.x - this.cutmanTo.x, head.z - this.cutmanTo.z) : Math.atan2(sign, -sign))
           : Math.atan2(-this.cutmanFrom.x, -this.cutmanFrom.z);
-      const trauma = snapshot?.fighters[index]?.trauma;
-      const side = trauma !== undefined && trauma.right_eye + trauma.right_cut > trauma.left_eye + trauma.left_cut ? -1 : 1;
+      const work = cutmanWork(snapshot?.fighters[index]);
       if (next >= CUTMAN_IN_PLACE && head !== null) {
         const fighterYaw = graphs[index]!.boxer.root.rotation.y;
         this.cutmanFacing.set(Math.sin(fighterYaw), 0, Math.cos(fighterYaw));
         this.cutmanEye.copy(head).addScaledVector(this.cutmanFacing, 0.09);
-        this.cutmanEye.x += Math.cos(fighterYaw) * side * 0.035;
-        this.cutmanEye.z -= Math.sin(fighterYaw) * side * 0.035;
-        this.cutmanEye.y += 0.08;
-        graph.treat(this.cutmanEye, this.cutmanFacing, side);
+        this.cutmanEye.x += Math.cos(fighterYaw) * work.side * work.lateral;
+        this.cutmanEye.z -= Math.sin(fighterYaw) * work.side * work.lateral;
+        this.cutmanEye.y += work.lift;
+        graph.treat(this.cutmanEye, this.cutmanFacing, work.side, work.prop);
       } else {
         graph.treat(null);
       }
@@ -1846,7 +1914,7 @@ export class FightRenderer {
       ctx.fillStyle = vignette;
       ctx.fillRect(0, 0, viewport.width, viewport.height);
     }
-    drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.frameSeconds >= this.finalRevealAt ? this.final : null, this.reconnectMs, this.simulation.tick_rate, this.roundStats, this.replay !== null ? "KNOCKOUT REPLAY" : null, this.inputLatencyMs, this.frameSeconds < this.roundCalloutUntil ? `ROUND ${this.roundCalloutRound}` : null, this.roundClock.ticks(snapshot), (player) => this.avatars.get(player));
+    drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.frameSeconds >= this.finalRevealAt ? this.final : null, this.reconnectMs, this.simulation.tick_rate, this.roundStats, this.replay !== null ? "KNOCKOUT REPLAY" : null, this.inputLatencyMs, this.frameSeconds < this.roundCalloutUntil ? `ROUND ${this.roundCalloutRound}` : this.eventCallout !== null && this.frameSeconds < this.eventCallout.until ? this.eventCallout.text : null, this.roundClock.ticks(snapshot), (player) => this.avatars.get(player));
   }
 
   destroy(): void {

@@ -8,7 +8,10 @@ export type Power = "normal" | "power";
 export type Stance = "orthodox" | "southpaw";
 export type DefensivePose = "none" | "guard_high" | "guard_low" | "slip_left" | "slip_right" | "weave" | "pull";
 export type HeldDefense = "none" | "guard_high" | "guard_low";
-export type MovementKind = "slip_left" | "slip_right" | "weave" | "pull" | "clinch" | "switch_stance" | "get_up_left" | "get_up_right" | "taunt";
+export type CornerKind = "corner_cut" | "corner_swelling" | "corner_breath";
+export type MovementKind = "slip_left" | "slip_right" | "weave" | "pull" | "clinch" | "switch_stance" | "get_up_left" | "get_up_right" | "taunt" | CornerKind;
+/** What the corner did between rounds: the fighter's instruction, or the balanced treatment at the bell when none came. */
+export type CornerChoice = "cut" | "swelling" | "breath" | "balanced";
 export type ActionKind = "punch" | MovementKind | "foul";
 export type Foul = "low_blow" | "headbutt";
 export type MatchPhase = "countdown" | "fight" | "knockdown" | "foul_recovery" | "rest" | "complete";
@@ -42,6 +45,7 @@ export interface FighterSnapshot {
   readonly queued_actions: number; readonly clinch_startup_ticks: number;
   readonly clinch_ticks: number; readonly is_foul_recovery_target: boolean;
   readonly taunt_ticks: number;
+  readonly corner_choice: CornerChoice | null;
   readonly get_up_prompt: "get_up_left" | "get_up_right" | null;
   readonly get_up_meter: number; readonly get_up_required: number; readonly get_up_count: number;
   readonly get_up_window_start_tick: number; readonly get_up_window_end_tick: number;

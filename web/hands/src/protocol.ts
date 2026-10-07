@@ -1,6 +1,6 @@
 import {
   MAX_SERVER_FRAME_BYTES, PROTOCOL_VERSION,
-  type BootstrapResponse, type CombatEvent, type DefensivePose, type EngineSnapshot,
+  type BootstrapResponse, type CombatEvent, type CornerChoice, type DefensivePose, type EngineSnapshot,
   type FighterSnapshot, type FinalMessage, type FinishMethod, type Foul, type Hand,
   type HeldDefense, type JudgeCard, type MatchPhase, type MatchResult, type MovementKind,
   type Power, type PublicPlayer, type PunchClass, type SemanticAction, type ServerMessage,
@@ -87,7 +87,8 @@ const targets = ["head", "body"] as const; const powers = ["normal", "power"] as
 const stances = ["orthodox", "southpaw"] as const;
 const defenses = ["none", "guard_high", "guard_low", "slip_left", "slip_right", "weave", "pull"] as const;
 const heldDefenses = ["none", "guard_high", "guard_low"] as const;
-const movementKinds = ["slip_left", "slip_right", "weave", "pull", "clinch", "switch_stance", "get_up_left", "get_up_right", "taunt"] as const;
+const movementKinds = ["slip_left", "slip_right", "weave", "pull", "clinch", "switch_stance", "get_up_left", "get_up_right", "taunt", "corner_cut", "corner_swelling", "corner_breath"] as const;
+const cornerChoices = ["cut", "swelling", "breath", "balanced"] as const;
 const fouls = ["low_blow", "headbutt"] as const;
 const phases = ["countdown", "fight", "knockdown", "foul_recovery", "rest", "complete"] as const;
 const methods = ["ko", "flash_ko", "tko", "doctor_stoppage", "disqualification", "decision", "draw", "forfeit"] as const;
@@ -120,7 +121,7 @@ function fighter(value: unknown): FighterSnapshot {
     "action_target", "action_power", "action_id", "action_key", "action_start_tick",
     "action_startup_ticks", "action_active_ticks", "action_recovery_ticks", "action_contact_tick",
     "queued_actions", "clinch_startup_ticks", "clinch_ticks",
-    "is_foul_recovery_target", "taunt_ticks", "get_up_prompt", "get_up_meter", "get_up_required", "get_up_count",
+    "is_foul_recovery_target", "taunt_ticks", "corner_choice", "get_up_prompt", "get_up_meter", "get_up_required", "get_up_count",
     "get_up_window_start_tick", "get_up_window_end_tick", "last_input_sequence",
   ]);
   const action = o.action === null ? null : oneOf<PunchClass>(o.action, classes, "action");
@@ -159,7 +160,8 @@ function fighter(value: unknown): FighterSnapshot {
     action_recovery_ticks: integer(o.action_recovery_ticks, "action_recovery_ticks", 0, 40),
     action_contact_tick: o.action_contact_tick === null ? null : integer(o.action_contact_tick, "action_contact_tick", 0),
     queued_actions: integer(o.queued_actions, "queued_actions", 0, 1), clinch_startup_ticks: integer(o.clinch_startup_ticks, "clinch_startup_ticks", 0, 8), clinch_ticks: integer(o.clinch_ticks, "clinch_ticks", 0, 45),
-    is_foul_recovery_target: bool(o.is_foul_recovery_target, "is_foul_recovery_target"), taunt_ticks: integer(o.taunt_ticks, "taunt_ticks", 0, 60), get_up_prompt: prompt,
+    is_foul_recovery_target: bool(o.is_foul_recovery_target, "is_foul_recovery_target"), taunt_ticks: integer(o.taunt_ticks, "taunt_ticks", 0, 60),
+    corner_choice: o.corner_choice === null ? null : oneOf<CornerChoice>(o.corner_choice, cornerChoices, "corner choice"), get_up_prompt: prompt,
     get_up_meter: integer(o.get_up_meter, "get_up_meter", 0, 256), get_up_required: getUpRequired, get_up_count: integer(o.get_up_count, "get_up_count", 0, 10),
     get_up_window_start_tick: integer(o.get_up_window_start_tick, "get_up_window_start_tick"), get_up_window_end_tick: integer(o.get_up_window_end_tick, "get_up_window_end_tick"),
     last_input_sequence: integer(o.last_input_sequence, "last_input_sequence", -1),

@@ -44,6 +44,9 @@ export const REST_CORNER_OFFSET = manifestJson.rest.corner_offset;
 export const RING_HALF_WIDTH = manifestJson.ring.half_width;
 export const RING_HALF_HEIGHT = manifestJson.ring.half_height;
 export const FIGHTER_RADIUS = manifestJson.ring.fighter_radius;
+/** Eye trauma at which the eye is swollen shut and punches from that side go unseen. */
+export const EYE_SHUT_TRAUMA = manifestJson.blind_side.eye_threshold;
+export const CORNER_TREATMENTS = manifestJson.corner;
 
 export function punchTiming(punchClass: PunchClass, target: Target, power: Power): PunchTiming {
   const base = punches[punchClass];

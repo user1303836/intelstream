@@ -13,10 +13,14 @@ from intelstream.hands.engine import (
 )
 from intelstream.hands.protocol import encode_snapshot
 from intelstream.hands.rules import (
+    BLIND_SIDE_EYE_THRESHOLD,
+    BODY_COLLAPSE_DELAY_TICKS,
     CLINCH_HOLD_DISTANCE,
+    CORNER_TREATMENTS,
     FIGHTER_RADIUS,
     KNOCKDOWN_NEUTRAL_SEPARATION,
     MINIMUM_SEPARATION,
+    PARRY_STAGGER_TICKS,
     PUNCH_RULES,
     REST_CORNER_OFFSET,
     RING_CORNER_REACH,
@@ -25,6 +29,7 @@ from intelstream.hands.rules import (
 )
 from intelstream.hands.types import (
     ActionKind,
+    CornerChoice,
     DefensivePose,
     FinishMethod,
     Foul,
@@ -1945,3 +1950,354 @@ def test_identical_class_actions_get_distinct_fallback_ids() -> None:
     second = engine.snapshot().fighters[0].action_id
     assert first is not None and second is not None
     assert first != second
+
+
+def rest_engine(**trauma: int) -> BoxingEngine:
+    """An engine one tick into the rest after round one, with fighter one carrying `trauma`."""
+    engine = make_engine(round_ticks=20, rounds=2, rest_ticks=90)
+    one = engine.fighter("one")
+    for name, value in trauma.items():
+        setattr(one.trauma, name, value)
+    while engine.phase is not MatchPhase.REST:
+        engine.step()
+    return engine
+
+
+def corner(sequence: int, kind: ActionKind) -> InputCommand:
+    return command(sequence, action=MovementAction(kind))
+
+
+def test_corner_closes_the_worse_cut_once_per_rest() -> None:
+    engine = rest_engine(left_cut=600, right_cut=200, bleeding=300)
+    one = engine.fighter("one")
+    assert one.corner_choice is None
+    snapshot = engine.step({"one": corner(1, ActionKind.CORNER_CUT)})
+
+    treatment = CORNER_TREATMENTS[CornerChoice.CUT]
+    assert [(event.kind, event.detail) for event in snapshot.events] == [("corner", "cut")]
+    assert one.trauma.left_cut == 600 - treatment.worse_cut
+    assert one.trauma.right_cut == 200 - treatment.other_cut
+    assert one.trauma.bleeding <= 300 * treatment.bleeding_kept_percent // 100
+    assert snapshot.fighters[0].corner_choice is CornerChoice.CUT
+
+    cut_after = (one.trauma.left_cut, one.trauma.right_cut)
+    snapshot = engine.step({"one": corner(2, ActionKind.CORNER_BREATH)})
+    assert not [event for event in snapshot.events if event.kind == "corner"]
+    assert one.corner_choice is CornerChoice.CUT
+    while engine.phase is MatchPhase.REST:
+        engine.step()
+    assert (one.trauma.left_cut, one.trauma.right_cut) == cut_after
+    assert one.corner_choice is CornerChoice.CUT
+
+
+def test_corner_treats_the_right_cut_when_it_is_the_worse() -> None:
+    engine = rest_engine(left_cut=100, right_cut=500)
+    engine.step({"one": corner(1, ActionKind.CORNER_CUT)})
+    one = engine.fighter("one")
+    treatment = CORNER_TREATMENTS[CornerChoice.CUT]
+    assert one.trauma.right_cut == 500 - treatment.worse_cut
+    assert one.trauma.left_cut == max(0, 100 - treatment.other_cut)
+
+
+def test_corner_brings_down_the_swelling_and_can_open_a_shut_eye() -> None:
+    engine = rest_engine(right_eye=BLIND_SIDE_EYE_THRESHOLD + 50, left_eye=120, swelling=500)
+    engine.step({"one": corner(1, ActionKind.CORNER_SWELLING)})
+    one = engine.fighter("one")
+    treatment = CORNER_TREATMENTS[CornerChoice.SWELLING]
+    assert one.trauma.right_eye == BLIND_SIDE_EYE_THRESHOLD + 50 - treatment.eyes
+    assert one.trauma.right_eye < BLIND_SIDE_EYE_THRESHOLD
+    assert one.trauma.left_eye == max(0, 120 - treatment.eyes)
+    assert one.trauma.swelling == 500 - treatment.swelling
+
+
+def test_corner_catches_the_breath() -> None:
+    engine = rest_engine(body=600)
+    one = engine.fighter("one")
+    one.conditioning = 500
+    one.stamina = 100
+    one.poise = 50
+    engine.step({"one": corner(1, ActionKind.CORNER_BREATH)})
+    treatment = CORNER_TREATMENTS[CornerChoice.BREATH]
+    assert one.conditioning == 500 + treatment.conditioning
+    assert one.trauma.body == 600 - treatment.body
+    assert one.stamina == one.maximum_stamina
+    assert one.poise == 600
+
+
+def test_no_corner_instruction_gets_the_balanced_treatment_at_the_bell() -> None:
+    engine = rest_engine(left_cut=400, swelling=300, right_eye=500)
+    one = engine.fighter("one")
+    one.conditioning = 700
+    while engine.phase is MatchPhase.REST:
+        snapshot = engine.step()
+    treatment = CORNER_TREATMENTS[CornerChoice.BALANCED]
+    assert ("corner", "balanced") in [(event.kind, event.detail) for event in snapshot.events]
+    assert one.corner_choice is CornerChoice.BALANCED
+    assert one.trauma.left_cut == 400 - treatment.worse_cut
+    assert one.trauma.swelling == 300 - treatment.swelling
+    assert one.trauma.right_eye == 500 - treatment.eyes
+    assert one.conditioning == 700
+
+
+def test_corner_choice_resets_for_each_rest() -> None:
+    engine = make_engine(round_ticks=20, rounds=3, rest_ticks=40)
+    while engine.phase is not MatchPhase.REST:
+        engine.step()
+    engine.step({"one": corner(1, ActionKind.CORNER_CUT)})
+    while engine.phase is MatchPhase.REST:
+        engine.step()
+    while engine.phase is not MatchPhase.REST:
+        engine.step()
+    assert engine.fighter("one").corner_choice is None
+    assert engine.snapshot().fighters[0].corner_choice is None
+
+
+def test_corner_instructions_outside_the_rest_do_nothing() -> None:
+    engine = make_engine(round_ticks=200)
+    one = engine.fighter("one")
+    one.trauma.left_cut = 500
+    for sequence, kind in enumerate(
+        (ActionKind.CORNER_CUT, ActionKind.CORNER_SWELLING, ActionKind.CORNER_BREATH), start=1
+    ):
+        engine.step({"one": corner(sequence, kind)})
+        for _ in range(8):
+            engine.step()
+    assert not [event for event in engine.events if event.kind == "corner"]
+    assert one.trauma.left_cut == 500
+    assert one.corner_choice is None
+
+
+def test_a_bout_without_a_rest_has_no_corner() -> None:
+    engine = make_engine(round_ticks=20, rounds=2, rest_ticks=0)
+    while engine.round_number == 1:
+        engine.step()
+    assert not [event for event in engine.events if event.kind == "corner"]
+
+
+def blind_engine(right_eye: int) -> BoxingEngine:
+    engine = make_engine(round_ticks=2000)
+    engine.fighter("two").trauma.right_eye = right_eye
+    return engine
+
+
+def test_a_shut_eye_cannot_see_the_punch_coming() -> None:
+    lead_straight = punch(PunchClass.STRAIGHT, hand=Hand.LEFT)
+    slip = MovementAction(ActionKind.SLIP_RIGHT)
+
+    seeing = blind_engine(BLIND_SIDE_EYE_THRESHOLD - 1)
+    seeing.step({"one": command(1, action=lead_straight), "two": command(1, action=slip)})
+    assert advance_until(seeing, {"evade", "hit"}) == "evade"
+
+    blind = blind_engine(BLIND_SIDE_EYE_THRESHOLD)
+    blind.step({"one": command(1, action=lead_straight), "two": command(1, action=slip)})
+    assert advance_until(blind, {"evade", "hit"}) == "hit"
+    landed = [event for event in blind.events if event.kind == "blind_side"]
+    assert [(event.actor_id, event.target_id, event.detail) for event in landed] == [
+        ("one", "two", "right")
+    ]
+
+
+def test_a_punch_on_the_blind_side_lands_harder() -> None:
+    seeing = blind_engine(0)
+    blind = blind_engine(BLIND_SIDE_EYE_THRESHOLD)
+    for engine in (seeing, blind):
+        engine.step({"one": command(1, action=punch(PunchClass.STRAIGHT, hand=Hand.LEFT))})
+        advance_until(engine, {"hit"})
+    seen = next(event for event in seeing.events if event.kind == "hit")
+    unseen = next(event for event in blind.events if event.kind == "hit")
+    assert unseen.amount == seen.amount * 120 // 100
+    assert unseen.amount > seen.amount
+
+
+def test_the_open_side_is_still_seen() -> None:
+    engine = blind_engine(1000)
+    engine.step(
+        {
+            "one": command(1, action=punch(PunchClass.STRAIGHT, hand=Hand.RIGHT)),
+            "two": command(1, action=MovementAction(ActionKind.SLIP_LEFT)),
+        }
+    )
+    assert advance_until(engine, {"evade", "hit"}) == "evade"
+    assert not [event for event in engine.events if event.kind == "blind_side"]
+
+
+def perfect_guard_engine(power: Power, right_eye: int = 0) -> BoxingEngine:
+    """Fighter two raises the high guard two ticks before fighter one's left straight lands."""
+    engine = make_engine(round_ticks=2000)
+    engine.fighter("two").trauma.right_eye = right_eye
+    engine.step({"one": command(1, action=punch(PunchClass.STRAIGHT, hand=Hand.LEFT, power=power))})
+    attack = engine.fighter("one").attack
+    assert attack is not None
+    while attack.age < attack.rule.startup - 2:
+        engine.step()
+    engine.step({"two": command(1, defense=DefensivePose.GUARD_HIGH)})
+    return engine
+
+
+def test_no_perfect_block_on_the_blind_side() -> None:
+    assert advance_until(perfect_guard_engine(Power.NORMAL), {"block", "perfect_block"}) == (
+        "perfect_block"
+    )
+    blind = perfect_guard_engine(Power.NORMAL, right_eye=BLIND_SIDE_EYE_THRESHOLD)
+    assert advance_until(blind, {"block", "perfect_block"}) == "block"
+
+
+def test_an_eye_swelling_shut_is_announced_once() -> None:
+    engine = blind_engine(BLIND_SIDE_EYE_THRESHOLD - 60)
+    engine.step({"one": command(1, action=punch(PunchClass.HOOK, hand=Hand.LEFT))})
+    advance_until(engine, {"hit"})
+    shut = [event for event in engine.events if event.kind == "eye_shut"]
+    assert [(event.target_id, event.detail) for event in shut] == [("two", "right")]
+    while engine.fighter("one").attack is not None:
+        engine.step()
+    for _ in range(30):
+        engine.step()
+    engine.step({"one": command(2, action=punch(PunchClass.HOOK, hand=Hand.LEFT))})
+    advance_until(engine, {"hit"})
+    assert len([event for event in engine.events if event.kind == "eye_shut"]) == 1
+
+
+def test_parrying_a_power_punch_staggers_the_puncher() -> None:
+    engine = perfect_guard_engine(Power.POWER)
+    assert advance_until(engine, {"block", "perfect_block"}) == "perfect_block"
+    parries = [event for event in engine.events if event.kind == "parry"]
+    assert [(event.actor_id, event.target_id) for event in parries] == [("two", "one")]
+    one = engine.fighter("one")
+    assert one.stunned_ticks == PARRY_STAGGER_TICKS
+    assert one.attack is None
+
+    engine.step({"two": command(2, action=punch(PunchClass.JAB, hand=Hand.LEFT))})
+    assert advance_until(engine, {"counter_hit", "hit", "block", "perfect_block"}) == "counter_hit"
+
+
+def test_parrying_an_ordinary_punch_does_not_stagger() -> None:
+    engine = perfect_guard_engine(Power.NORMAL)
+    assert advance_until(engine, {"block", "perfect_block"}) == "perfect_block"
+    assert not [event for event in engine.events if event.kind == "parry"]
+    assert engine.fighter("one").stunned_ticks == 0
+
+
+def body_shot_engine(
+    *, body: int, stamina: int, guard: DefensivePose = DefensivePose.NONE, guard_meter: int = 700
+) -> BoxingEngine:
+    engine = make_engine(round_ticks=2000)
+    two = engine.fighter("two")
+    two.trauma.body = body
+    two.stamina = stamina
+    two.guard = guard_meter
+    engine.step(
+        {
+            "one": command(
+                1,
+                action=PunchAction(
+                    Hand.LEFT, PunchClass.HOOK, Target.BODY, client_action_id="liver"
+                ),
+            ),
+            "two": command(1, defense=guard),
+        }
+    )
+    return engine
+
+
+def test_a_broken_body_goes_down_after_a_moment() -> None:
+    engine = body_shot_engine(body=700, stamina=300)
+    advance_until(engine, {"hit"})
+    collapse = [event for event in engine.events if event.kind == "body_collapse"]
+    assert [(event.actor_id, event.target_id, event.action_id) for event in collapse] == [
+        ("one", "two", "liver")
+    ]
+    two = engine.fighter("two")
+    assert engine.phase is MatchPhase.FIGHT
+    assert two.stunned_ticks > 0
+    for _ in range(BODY_COLLAPSE_DELAY_TICKS - 1):
+        snapshot = engine.step()
+        assert engine.phase is MatchPhase.FIGHT
+        assert not [event for event in snapshot.events if event.kind == "knockdown"]
+    snapshot = engine.step()
+    knockdowns = [event for event in snapshot.events if event.kind == "knockdown"]
+    assert [(event.target_id, event.detail, event.action_id) for event in knockdowns] == [
+        ("two", "body", "liver")
+    ]
+    assert engine.phase is MatchPhase.KNOCKDOWN
+    assert two.knockdowns == 1
+
+
+@pytest.mark.parametrize(
+    ("body", "stamina", "guard", "guard_meter"),
+    [
+        (500, 300, DefensivePose.NONE, 700),
+        (700, 900, DefensivePose.NONE, 700),
+        # A worn guard leaks most of the shot, but a blocked shot still never drops him.
+        (700, 300, DefensivePose.GUARD_LOW, 100),
+    ],
+)
+def test_a_body_shot_only_drops_a_tired_broken_unguarded_fighter(
+    body: int, stamina: int, guard: DefensivePose, guard_meter: int
+) -> None:
+    engine = body_shot_engine(body=body, stamina=stamina, guard=guard, guard_meter=guard_meter)
+    contact = advance_until(engine, {"hit", "block", "perfect_block"})
+    if guard is not DefensivePose.NONE:
+        assert contact == "block"
+        blocked = next(event for event in engine.events if event.kind == "hit")
+        assert blocked.amount >= 40
+    for _ in range(BODY_COLLAPSE_DELAY_TICKS + 5):
+        engine.step()
+    assert not [event for event in engine.events if event.kind in ("body_collapse", "knockdown")]
+
+
+def test_the_bell_saves_a_fighter_who_is_going_down_from_a_body_shot() -> None:
+    engine = body_shot_engine(body=700, stamina=300)
+    advance_until(engine, {"hit"})
+    assert engine.fighter("two").body_collapse_ticks > 0
+    engine.phase_ticks_remaining = 2
+    while engine.phase is MatchPhase.FIGHT:
+        engine.step()
+    assert engine.phase is MatchPhase.REST
+    for _ in range(BODY_COLLAPSE_DELAY_TICKS + 5):
+        engine.step()
+    assert not [event for event in engine.events if event.kind == "knockdown"]
+    assert engine.fighter("two").body_collapse_ticks == 0
+
+
+def test_a_knockdown_from_a_body_shot_says_so() -> None:
+    engine = make_engine(round_ticks=2000)
+    engine.fighter("two").poise = 1
+    engine.step(
+        {
+            "one": command(
+                1,
+                action=PunchAction(
+                    Hand.RIGHT, PunchClass.UPPERCUT, Target.BODY, client_action_id="dig"
+                ),
+            )
+        }
+    )
+    advance_until(engine, {"knockdown"})
+    knockdown = next(event for event in engine.events if event.kind == "knockdown")
+    assert (knockdown.detail, knockdown.action_id) == ("body", "dig")
+
+    head = make_engine(round_ticks=2000)
+    head.fighter("two").poise = 1
+    head.step({"one": command(1, action=punch(PunchClass.UPPERCUT))})
+    advance_until(head, {"knockdown"})
+    knockdown = next(event for event in head.events if event.kind == "knockdown")
+    assert (knockdown.detail, knockdown.action_id) == ("", None)
+
+
+def test_a_clean_body_shot_takes_the_wind_and_a_blocked_one_does_not() -> None:
+    for guard, winded in ((DefensivePose.NONE, True), (DefensivePose.GUARD_LOW, False)):
+        engine = body_shot_engine(body=0, stamina=500, guard=guard)
+        attack = engine.fighter("one").attack
+        assert attack is not None
+        while attack.age + 1 < attack.rule.startup:
+            engine.step()
+        before = engine.fighter("two").stamina
+        snapshot = engine.step()
+        contact = next(event for event in snapshot.events if event.kind in ("hit", "block"))
+        lost = before - engine.fighter("two").stamina
+        if winded:
+            assert contact.kind == "hit"
+            assert lost >= contact.amount * 150 // 100 - 4
+        else:
+            assert contact.kind == "block"
+            assert lost <= 0

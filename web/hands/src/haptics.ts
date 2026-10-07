@@ -9,6 +9,7 @@ type VibratingPad = Gamepad & {
 const patterns: Readonly<Record<string, readonly [number, number, number]>> = {
   block: [55, 0.12, 0.22], hit: [85, 0.3, 0.42], counter_hit: [105, 0.38, 0.5],
   stun: [125, 0.42, 0.55], knockdown: [180, 0.62, 0.65],
+  parry: [60, 0.18, 0.4], body_collapse: [170, 0.55, 0.3],
 };
 
 export class HapticFeedback {

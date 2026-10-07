@@ -290,3 +290,30 @@ def test_client_action_id_validated_and_round_trips() -> None:
         ]
         with pytest.raises(ProtocolError, match="action id"):
             parse_client_input(json.dumps(payload), server_tick=10)
+
+
+def test_corner_instructions_and_choice_travel_on_the_wire() -> None:
+    payload = valid_payload()
+    payload["actions"] = [{"kind": "corner_cut"}, {"kind": "corner_swelling", "id": "rest-1"}]
+    command = parse_client_input(json.dumps(payload))
+    assert command.actions == (
+        MovementAction(ActionKind.CORNER_CUT),
+        MovementAction(ActionKind.CORNER_SWELLING, client_action_id="rest-1"),
+    )
+
+    engine = BoxingEngine(
+        match_id="match-1",
+        activity_instance_id="instance-1",
+        guild_id="guild-1",
+        player_one_id="one",
+        player_two_id="two",
+        seed=3,
+        config=EngineConfig(round_ticks=5, rounds=2, rest_ticks=30, countdown_ticks=0),
+    )
+    fresh = json.loads(encode_snapshot(engine.snapshot(), viewer_id=None))["payload"]
+    assert [fighter["corner_choice"] for fighter in fresh["fighters"]] == [None, None]
+    while engine.phase.value != "rest":
+        engine.step()
+    engine.step({"two": InputCommand(1, 0, actions=(MovementAction(ActionKind.CORNER_BREATH),))})
+    resting = json.loads(encode_snapshot(engine.snapshot(), viewer_id="one"))["payload"]
+    assert [fighter["corner_choice"] for fighter in resting["fighters"]] == [None, "breath"]

@@ -1,4 +1,5 @@
-import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, FinishMethod, PublicPlayer, RatingDelta } from "../types";
+import { EYE_SHUT_TRAUMA } from "../manifest";
+import type { CombatEvent, CornerChoice, EngineSnapshot, FighterSnapshot, FinalMessage, FinishMethod, PublicPlayer, RatingDelta, TraumaSnapshot } from "../types";
 import { monogram } from "./avatars";
 
 /** Hands out a player's picture once it has loaded. */
@@ -86,6 +87,39 @@ function portrait(ctx: CanvasRenderingContext2D, x: number, y: number, radius: n
   ctx.lineWidth = Math.max(1.5, radius / 9);
   ctx.strokeStyle = accent;
   ctx.stroke();
+  ctx.restore();
+}
+
+/** The plate's warning when an eye is swollen shut and that side is blind, or null while both eyes see. */
+export function shutEyeTag(trauma: TraumaSnapshot): string | null {
+  const left = trauma.left_eye >= EYE_SHUT_TRAUMA;
+  const right = trauma.right_eye >= EYE_SHUT_TRAUMA;
+  return left && right ? "BOTH EYES SHUT" : left ? "LEFT EYE SHUT" : right ? "RIGHT EYE SHUT" : null;
+}
+
+const CORNER_WORK: Readonly<Record<CornerChoice, string>> = {
+  cut: "closing the cut",
+  swelling: "icing the swelling",
+  breath: "catching breath",
+  balanced: "a little of everything",
+};
+
+/** What each corner is working on, for the rest panel; null until a corner has been told. Seat 0 is the blue corner. */
+export function cornerWorkLine(fighters: readonly FighterSnapshot[]): string | null {
+  const told = fighters.flatMap((fighter, seat) => (fighter.corner_choice === null ? [] : [`${seat === 0 ? "Blue" : "Red"}: ${CORNER_WORK[fighter.corner_choice]}`]));
+  return told.length === 0 ? null : told.join("  ·  ");
+}
+
+function warningTag(ctx: CanvasRenderingContext2D, x: number, y: number, text: string, mirror: boolean): void {
+  ctx.save();
+  ctx.font = "800 9px Inter, system-ui, sans-serif";
+  const width = ctx.measureText(text).width + 12;
+  const left = mirror ? x - width : x;
+  ctx.fillStyle = "rgba(150,22,18,0.92)";
+  ctx.fillRect(left, y, width, 14);
+  ctx.fillStyle = "#ffe8e3";
+  ctx.textAlign = "left";
+  ctx.fillText(text, left + 6, y + 10);
   ctx.restore();
 }
 
@@ -357,6 +391,8 @@ export function drawHud(
     const miniY = plateY - 12;
     broadcastBar(ctx, mirror ? x + plateWidth - 148 : x + 20, miniY, 64, bars[2]!, mirror);
     broadcastBar(ctx, mirror ? x + plateWidth - 72 : x + 96, miniY, 64, bars[3]!, mirror);
+    const eyeTag = shutEyeTag(fighter.trauma);
+    if (eyeTag !== null) warningTag(ctx, mirror ? x + plateWidth - 20 : x + 20, miniY - 34, eyeTag, mirror);
   });
 
   const seconds = Math.floor((clockTicks ?? snapshot.phase_ticks_remaining) / tickRate);
@@ -491,7 +527,8 @@ export function drawHud(
       .filter(({ stats }) => stats.thrown > 0 || stats.landed > 0)
       .map(({ name, stats }) => `${fit(ctx, name, width * 0.22)} ${stats.landed}/${stats.thrown}`)
       .join("  ·  ");
-    centerPanel(ctx, width, height, "CORNERS · RECOVER", statsLine.length > 0 ? `Landed this round: ${statsLine}` : "Conditioning governs recovery", topPanelOffset(width, height));
+    const corners = cornerWorkLine(snapshot.fighters);
+    centerPanel(ctx, width, height, "CORNERS · RECOVER", corners ?? (statsLine.length > 0 ? `Landed this round: ${statsLine}` : "Conditioning governs recovery"), topPanelOffset(width, height));
   }
   if (reconnectMs > 0) {
     centerPanel(ctx, width, height, `OPPONENT RECONNECTING · ${Math.ceil(reconnectMs / 1000)}s`, "The bout is paused");

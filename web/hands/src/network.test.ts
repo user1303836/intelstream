@@ -415,3 +415,43 @@ describe("edge-triggered action sends", () => {
     vi.useRealTimers();
   });
 });
+
+describe("corner instructions between rounds", () => {
+  it("sends the instruction on its own only during the rest, on the input sequence", () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket();
+    const getInput = vi.fn(() => ({ moveX: 1000, moveY: 0, defense: "none" as const, actions: [] }));
+    const controller = new NetworkController("ticket", getInput, callbacks(), () => socket);
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message(ready);
+    socket.message({ version: 3, type: "snapshot", payload: snapshot() });
+    expect(controller.sendCornerChoice("corner_cut")).toBe(false);
+
+    socket.message({ version: 3, type: "snapshot", payload: { ...snapshot(11), phase: "rest", phase_ticks_remaining: 300 } });
+    const before = socket.sent.length;
+    vi.advanceTimersByTime(200);
+    expect(socket.sent.length).toBe(before);
+    expect(controller.sendCornerChoice("corner_breath")).toBe(true);
+    const frame = JSON.parse(socket.sent.at(-1)!) as { type: string; sequence: number; move: unknown; defense: string; actions: unknown[] };
+    expect(frame).toMatchObject({ type: "input", move: { x: 0, y: 0 }, defense: "none", actions: [{ kind: "corner_breath" }] });
+    expect(frame.sequence).toBeGreaterThanOrEqual(5);
+
+    socket.message(final);
+    expect(controller.sendCornerChoice("corner_cut")).toBe(false);
+    controller.dispose();
+  });
+
+  it("never sends a corner instruction for a spectator", () => {
+    const socket = new FakeSocket();
+    const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none" as const, actions: [] }), callbacks(), () => socket);
+    controller.start();
+    socket.open();
+    socket.message({ version: 3, type: "welcome", role: "spectator", player_id: "viewer", players: ready.players, server_tick: 40, reconnect_ticket: "spectator-ticket" });
+    socket.message({ version: 3, type: "snapshot", payload: { ...snapshot(11), phase: "rest", phase_ticks_remaining: 300 } });
+    expect(controller.sendCornerChoice("corner_cut")).toBe(false);
+    expect(socket.sent.map((sent) => JSON.parse(sent).type)).toEqual(["authenticate"]);
+    controller.dispose();
+  });
+});

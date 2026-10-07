@@ -9,9 +9,17 @@ from math import isqrt
 from typing import Final
 
 from intelstream.hands.rules import (
+    BLIND_SIDE_EYE_THRESHOLD,
+    BLIND_SIDE_IMPACT_PERCENT,
+    BODY_COLLAPSE_DELAY_TICKS,
+    BODY_COLLAPSE_MINIMUM_DAMAGE,
+    BODY_COLLAPSE_STAMINA,
+    BODY_COLLAPSE_TRAUMA,
+    BODY_WIND_PERCENT,
     CLINCH_DRAW_SPEED,
     CLINCH_HOLD_DISTANCE,
     COMPATIBLE_COMBO_CHAINS,
+    CORNER_TREATMENTS,
     COUNTDOWN_TICKS,
     DEFAULT_ROUNDS,
     FACING_SCALE,
@@ -24,6 +32,7 @@ from intelstream.hands.rules import (
     MAX_POISE,
     MAX_STAMINA,
     MINIMUM_SEPARATION,
+    PARRY_STAGGER_TICKS,
     PUNCH_RULES,
     RECOVERY_CANCEL_PERCENT,
     REFEREE_WALK_SPEED,
@@ -43,6 +52,7 @@ from intelstream.hands.rules import (
 from intelstream.hands.types import (
     ActionKind,
     CombatEvent,
+    CornerChoice,
     DefensivePose,
     EngineSnapshot,
     FighterSnapshot,
@@ -97,6 +107,11 @@ GET_UP_WINDOW_START_OFFSET: Final = 3
 GET_UP_WINDOW_END_OFFSET: Final = 13
 TAUNT_TICKS: Final = 60
 MOVEMENT_FIXED_SCALE: Final = 1000
+CORNER_INSTRUCTIONS: Final = {
+    ActionKind.CORNER_CUT: CornerChoice.CUT,
+    ActionKind.CORNER_SWELLING: CornerChoice.SWELLING,
+    ActionKind.CORNER_BREATH: CornerChoice.BREATH,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,6 +235,9 @@ class FighterState:
     performance: RoundPerformance = field(default_factory=RoundPerformance)
     damage_dealt: int = 0
     movement_load: int = 0
+    corner_choice: CornerChoice | None = None
+    body_collapse_ticks: int = 0
+    body_collapse_action_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.facing_x == 0 and self.facing_y == 0:
@@ -506,6 +524,18 @@ class BoxingEngine:
         self._update_facing(one, two)
         self._update_facing(two, one)
 
+        for fighter, opponent in ((one, two), (two, one)):
+            if fighter.body_collapse_ticks > 0:
+                fighter.body_collapse_ticks -= 1
+                if fighter.body_collapse_ticks == 0:
+                    self._knock_down(
+                        fighter,
+                        opponent,
+                        detail="body",
+                        action_id=fighter.body_collapse_action_id,
+                    )
+                    return
+
         if one.clinch_ticks or two.clinch_ticks:
             self._advance_clinch(one, two)
         else:
@@ -732,7 +762,10 @@ class BoxingEngine:
             )
             return
 
-        if self._evades(defender, action, distance_squared, rule.reach, lateral_distance):
+        blind = self._blind_side(defender, action)
+        if not blind and self._evades(
+            defender, action, distance_squared, rule.reach, lateral_distance
+        ):
             defender.performance.evasions += 1
             defender.counter_ticks = COUNTER_WINDOW_TICKS
             self._emit(
@@ -743,7 +776,11 @@ class BoxingEngine:
         guarding = (
             action.target is Target.HEAD and defender.defense is DefensivePose.GUARD_HIGH
         ) or (action.target is Target.BODY and defender.defense is DefensivePose.GUARD_LOW)
-        perfect = guarding and self.tick - defender.defense_started_tick <= PERFECT_BLOCK_TICKS
+        perfect = (
+            guarding
+            and not blind
+            and self.tick - defender.defense_started_tick <= PERFECT_BLOCK_TICKS
+        )
         counter = attacker.counter_ticks > 0 or self._counter_vulnerable(defender.attack)
         attack.landed = True
         fatigue = attacker.fatigue
@@ -751,9 +788,12 @@ class BoxingEngine:
         impact = (
             rule.impact * counter_multiplier * fatigue * (100 + attack.combo_bonus) // 1_000_000
         )
+        if blind:
+            impact = impact * BLIND_SIDE_IMPACT_PERCENT // 100
         impact = max(1, impact)
 
-        if guarding and defender.guard > 0:
+        blocked = guarding and defender.guard > 0
+        if blocked:
             guard_damage = rule.guard_damage
             if perfect:
                 guard_damage //= 3
@@ -765,6 +805,17 @@ class BoxingEngine:
                     attacker.player_id,
                     action_id=self._action_id(attacker, attack),
                 )
+                if action.power is Power.POWER:
+                    attacker.stunned_ticks = max(attacker.stunned_ticks, PARRY_STAGGER_TICKS)
+                    attacker.stunned_at_tick = self.tick
+                    attacker.taunt_ticks = 0
+                    self._emit(
+                        "parry",
+                        defender.player_id,
+                        attacker.player_id,
+                        amount=PARRY_STAGGER_TICKS,
+                        action_id=self._action_id(attacker, attack),
+                    )
             else:
                 guard_leak = max(
                     18,
@@ -795,11 +846,15 @@ class BoxingEngine:
 
         damage = max(1, impact)
         poise_damage = rule.poise_damage * counter_multiplier // 100
+        shut_eye: str | None = None
         if action.target is Target.HEAD:
-            self._apply_head_damage(defender, action, damage)
+            shut_eye = self._apply_head_damage(defender, action, damage)
         else:
             defender.trauma.body = min(1200, defender.trauma.body + damage * 2)
             defender.conditioning = max(0, defender.conditioning - damage)
+            if not blocked:
+                # A clean shot to the body takes the wind out of a fighter as well as the legs.
+                defender.stamina = max(0, defender.stamina - damage * BODY_WIND_PERCENT // 100)
         defender.poise -= poise_damage
         attacker.performance.damage += damage
         attacker.damage_dealt += damage
@@ -817,6 +872,16 @@ class BoxingEngine:
             direction=attacker.facing,
             action_id=self._action_id(attacker, attack),
         )
+        if blind and not blocked:
+            self._emit(
+                "blind_side",
+                attacker.player_id,
+                defender.player_id,
+                detail="right" if action.hand is Hand.LEFT else "left",
+                action_id=self._action_id(attacker, attack),
+            )
+        if shut_eye is not None:
+            self._emit("eye_shut", attacker.player_id, defender.player_id, detail=shut_eye)
 
         if self._qualifies_for_flash(attacker, defender, action, rule, counter, guarding):
             chance = self._flash_chance(attacker, defender, damage)
@@ -838,14 +903,47 @@ class BoxingEngine:
         if defender.poise <= 0 or (
             action.target is Target.HEAD and defender.trauma.head > 850 and damage >= 40
         ):
-            self._knock_down(defender, attacker)
+            if action.target is Target.BODY:
+                self._knock_down(
+                    defender,
+                    attacker,
+                    detail="body",
+                    action_id=self._action_id(attacker, attack),
+                )
+            else:
+                self._knock_down(defender, attacker)
         elif action.target is Target.HEAD and damage >= 36:
             defender.stunned_ticks = min(90, 8 + damage // 2)
             defender.stunned_at_tick = self.tick
             defender.taunt_ticks = 0
             self._emit("stun", attacker.player_id, defender.player_id, amount=damage)
+        elif (
+            action.target is Target.BODY
+            and not blocked
+            and damage >= BODY_COLLAPSE_MINIMUM_DAMAGE
+            and defender.trauma.body >= BODY_COLLAPSE_TRAUMA
+            and defender.stamina <= BODY_COLLAPSE_STAMINA
+            and defender.body_collapse_ticks == 0
+        ):
+            # The delayed body knockdown: the fighter stands frozen for a moment, then goes to a knee.
+            defender.body_collapse_ticks = BODY_COLLAPSE_DELAY_TICKS
+            defender.body_collapse_action_id = self._action_id(attacker, attack)
+            defender.stunned_ticks = max(defender.stunned_ticks, BODY_COLLAPSE_DELAY_TICKS + 1)
+            defender.stunned_at_tick = self.tick
+            defender.taunt_ticks = 0
+            self._emit(
+                "body_collapse",
+                attacker.player_id,
+                defender.player_id,
+                amount=BODY_COLLAPSE_DELAY_TICKS,
+                action_id=self._action_id(attacker, attack),
+            )
 
-    def _apply_head_damage(self, defender: FighterState, action: PunchAction, damage: int) -> None:
+    def _apply_head_damage(
+        self, defender: FighterState, action: PunchAction, damage: int
+    ) -> str | None:
+        """Applies a head shot and returns the side of an eye it has just swollen shut, if any."""
+        eyes_before = (defender.trauma.left_eye, defender.trauma.right_eye)
         defender.trauma.head = min(1400, defender.trauma.head + damage * 2)
         eye_damage = damage * (2 if action.punch_class is PunchClass.HOOK else 1)
         if action.hand.value == "left":
@@ -862,6 +960,17 @@ class BoxingEngine:
             defender.trauma.bleeding
             + (defender.trauma.left_cut + defender.trauma.right_cut + 49) // 50,
         )
+        eyes_after = (defender.trauma.left_eye, defender.trauma.right_eye)
+        for side, before, after in zip(("left", "right"), eyes_before, eyes_after, strict=True):
+            if before < BLIND_SIDE_EYE_THRESHOLD <= after:
+                return side
+        return None
+
+    @staticmethod
+    def _blind_side(defender: FighterState, action: PunchAction) -> bool:
+        """A punch from this hand arrives on the side of an eye that is swollen shut."""
+        eye = defender.trauma.right_eye if action.hand is Hand.LEFT else defender.trauma.left_eye
+        return eye >= BLIND_SIDE_EYE_THRESHOLD
 
     @staticmethod
     def _counter_vulnerable(attack: AttackState | None) -> bool:
@@ -1348,7 +1457,17 @@ class BoxingEngine:
             + max(0, attacker.stamina - 500) // 25,
         )
 
-    def _knock_down(self, defender: FighterState, attacker: FighterState) -> None:
+    def _knock_down(
+        self,
+        defender: FighterState,
+        attacker: FighterState,
+        *,
+        detail: str = "",
+        action_id: str | None = None,
+    ) -> None:
+        for fighter in (defender, attacker):
+            fighter.body_collapse_ticks = 0
+            fighter.body_collapse_action_id = None
         defender.knockdowns += 1
         attacker.performance.knockdowns += 1
         defender.poise = 0
@@ -1368,7 +1487,14 @@ class BoxingEngine:
         self.phase = MatchPhase.KNOCKDOWN
         self.phase_ticks_remaining = 10 * COUNT_TICK_INTERVAL
         self._schedule_get_up_prompt(defender)
-        self._emit("knockdown", attacker.player_id, defender.player_id, amount=defender.knockdowns)
+        self._emit(
+            "knockdown",
+            attacker.player_id,
+            defender.player_id,
+            amount=defender.knockdowns,
+            detail=detail,
+            action_id=action_id,
+        )
         if defender.knockdowns >= 3:
             self._complete(attacker.player_id, FinishMethod.TKO)
 
@@ -1534,6 +1660,10 @@ class BoxingEngine:
     def _finish_round(self) -> None:
         one = self._fighters[self._player_ids[0]]
         two = self._fighters[self._player_ids[1]]
+        for fighter in (one, two):
+            # Saved by the bell: a body shot that has not yet put him down never will.
+            fighter.body_collapse_ticks = 0
+            fighter.body_collapse_action_id = None
         for profile in JUDGE_PROFILES:
             scores = score_round(one.performance, two.performance, profile)
             one_card, two_card = self._round_cards[profile.name]
@@ -1556,11 +1686,14 @@ class BoxingEngine:
                 fighter.stunned_ticks = 0
                 fighter.taunt_ticks = 0
                 fighter.defense = DefensivePose.NONE
+                fighter.corner_choice = None
 
     def _advance_rest(self) -> None:
         self.phase_ticks_remaining -= 1
         one = self._fighters[self._player_ids[0]]
         two = self._fighters[self._player_ids[1]]
+        for fighter in (one, two):
+            self._take_corner_instruction(fighter)
         self._walk_to_corner(one, -REST_CORNER_OFFSET, -REST_CORNER_OFFSET, two)
         self._walk_to_corner(two, REST_CORNER_OFFSET, REST_CORNER_OFFSET, one)
         for fighter in self._fighters.values():
@@ -1570,7 +1703,46 @@ class BoxingEngine:
             if self.tick % TICKS_PER_SECOND == 0:
                 fighter.trauma.bleeding = max(0, fighter.trauma.bleeding - 2)
         if self.phase_ticks_remaining <= 0:
+            for fighter in (one, two):
+                if fighter.corner_choice is None:
+                    self._treat(fighter, CornerChoice.BALANCED)
             self._start_next_round()
+
+    def _take_corner_instruction(self, fighter: FighterState) -> None:
+        """The corner takes one instruction per rest; anything else pressed between rounds is dropped."""
+        if not fighter.pending_actions:
+            return
+        actions = tuple(fighter.pending_actions)
+        fighter.pending_actions.clear()
+        fighter.pending_action_expires_tick = 0
+        if fighter.corner_choice is not None:
+            return
+        for action in actions:
+            choice = CORNER_INSTRUCTIONS.get(action.kind)
+            if choice is not None:
+                self._treat(fighter, choice)
+                return
+
+    def _treat(self, fighter: FighterState, choice: CornerChoice) -> None:
+        treatment = CORNER_TREATMENTS[choice]
+        trauma = fighter.trauma
+        if trauma.left_cut >= trauma.right_cut:
+            trauma.left_cut = max(0, trauma.left_cut - treatment.worse_cut)
+            trauma.right_cut = max(0, trauma.right_cut - treatment.other_cut)
+        else:
+            trauma.right_cut = max(0, trauma.right_cut - treatment.worse_cut)
+            trauma.left_cut = max(0, trauma.left_cut - treatment.other_cut)
+        trauma.bleeding = trauma.bleeding * treatment.bleeding_kept_percent // 100
+        trauma.swelling = max(0, trauma.swelling - treatment.swelling)
+        trauma.left_eye = max(0, trauma.left_eye - treatment.eyes)
+        trauma.right_eye = max(0, trauma.right_eye - treatment.eyes)
+        fighter.conditioning = min(MAX_CONDITIONING, fighter.conditioning + treatment.conditioning)
+        trauma.body = max(0, trauma.body - treatment.body)
+        if treatment.refresh:
+            fighter.stamina = fighter.maximum_stamina
+            fighter.poise = MAX_POISE
+        fighter.corner_choice = choice
+        self._emit("corner", fighter.player_id, detail=choice.value)
 
     def _walk_to_corner(
         self, fighter: FighterState, corner_x: int, corner_y: int, opponent: FighterState
@@ -1821,6 +1993,7 @@ class BoxingEngine:
             clinch_ticks=fighter.clinch_ticks,
             is_foul_recovery_target=fighter.player_id == self._foul_recovery_target,
             taunt_ticks=fighter.taunt_ticks,
+            corner_choice=fighter.corner_choice,
             get_up_prompt=fighter.get_up_prompt,
             get_up_meter=fighter.get_up_meter,
             get_up_required=self._get_up_required(fighter),
@@ -1897,6 +2070,11 @@ class BoxingEngine:
                     "performance": fighter.performance,
                     "damage_dealt": fighter.damage_dealt,
                     "movement_load": fighter.movement_load,
+                    "corner": fighter.corner_choice,
+                    "body_collapse": [
+                        fighter.body_collapse_ticks,
+                        fighter.body_collapse_action_id,
+                    ],
                 }
             )
         state = _canonical(

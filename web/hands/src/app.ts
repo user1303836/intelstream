@@ -2,6 +2,7 @@ import { RoundClock } from "./render/hud";
 import { AudioFeedback } from "./audio";
 import { ClientError, safeError } from "./api";
 import { authorizeDiscord, type DiscordSession } from "./discord";
+import { CornerPanel } from "./corner";
 import { describeError } from "./errors";
 import { HapticFeedback } from "./haptics";
 import { CONTROL_HELP } from "./input/bindings";
@@ -14,7 +15,7 @@ import { SettingsStore, type BloodLevel } from "./settings";
 import { initialState, reduceState, type GameState } from "./state";
 import type { EngineSnapshot, ServerMessage } from "./types";
 
-const CONTACT_FEEDBACK_KINDS = new Set(["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown"]);
+const CONTACT_FEEDBACK_KINDS = new Set(["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown", "parry", "body_collapse", "eye_shut"]);
 // The room keeps the finished bout for its result hold (ten seconds by default); a rejoin inside
 // that window only replays the old final, so the rematch waits it out and retries if it still hits it.
 const CONTROL_HINT_KEYBOARD = "Move WASD · Jab F/J · Straight R/U · Hook G/H · Uppercut T/Y · Guard Q/E · Body Shift · Power Alt";
@@ -62,6 +63,7 @@ export class HandsApp {
   private readonly fightSummary: HTMLElement;
   private readonly liveFightStatus: HTMLElement;
   private readonly finalSummary: HTMLElement;
+  private readonly corner: CornerPanel;
 
   constructor(
     private readonly root: HTMLElement,
@@ -86,6 +88,7 @@ export class HandsApp {
     this.bindPanels();
     this.syncSettings();
     this.input.attachTouch(root.querySelector<HTMLElement>(".activity")!);
+    this.corner = new CornerPanel(root.querySelector<HTMLElement>(".activity")!, (kind) => this.network?.sendCornerChoice(kind) ?? false);
   }
 
   start(): void {
@@ -339,6 +342,7 @@ export class HandsApp {
           ? "Connection paused."
           : labels[this.state.stage];
     this.setText(this.liveFightStatus, liveStatus);
+    this.corner.update(this.state.snapshot, this.state.playerId, this.state.role === "fighter" && this.state.stage === "rest");
     this.retry.hidden = this.state.stage !== "fatal";
     if (this.state.stage !== "complete") this.rematchButton.hidden = true;
     const showHint = !spectating && (this.state.stage === "waiting" || this.state.stage === "countdown");
@@ -496,6 +500,7 @@ export class HandsApp {
     this.session?.destroy();
     this.renderer?.destroy();
     this.input.destroy();
+    this.corner.destroy();
     this.audio.destroy();
     this.settings.destroy();
     this.retry.removeEventListener("click", this.onRetry);
