@@ -1,6 +1,7 @@
+import { readFileSync } from "node:fs";
 import { mockHudContext } from "../test/fixtures";
 import type { MatchPhase } from "../types";
-import { cardMetrics, captionSlot, drawCaption, splitLine, type CaptionScene } from "./caption";
+import { cardMetrics, captionSlot, drawCaption, splitLine, TOUCH_PADS, type CaptionScene } from "./caption";
 import type { BroadcastLine, Caption } from "./commentary";
 import { COUNT_BELOW_HEADLINE, headlineBaseline, panelHeightFor, topPanelOffset } from "./hud";
 
@@ -71,6 +72,39 @@ describe("caption placement", () => {
     expect(captionSlot(scene(390, 844, "knockdown", { touch: true }))?.y).toBeGreaterThanOrEqual(headlineBaseline(844, true) + COUNT_BELOW_HEADLINE + 4);
   });
 
+  it("never draws a caption under the touch pads, upright or on its side", () => {
+    // The pads as Edge lays out style.css: upright one 190 x 274 column 12 px in and 118 px up; on its side the
+    // modifiers and punch pads, 190 x 196, with the moves 122 x 102 at the foot, 12 px to their left; and on a
+    // screen 350 px tall or less, 188 x 154 and 120 x 86, 112 px up.
+    const pads = (width: number, height: number) => width <= height
+      ? [{ left: width - 202, right: width - 12, top: height - 392, bottom: height - 118 }]
+      : height <= 350
+        ? [{ left: width - 200, right: width - 12, top: height - 266, bottom: height - 112 }, { left: width - 332, right: width - 212, top: height - 198, bottom: height - 112 }]
+        : [{ left: width - 202, right: width - 12, top: height - 314, bottom: height - 118 }, { left: width - 336, right: width - 214, top: height - 220, bottom: height - 118 }];
+    // The longest line the commentary has, which wraps onto two rows.
+    const longest = line("Crimson Geometry is just covering up as Azure Vector lets the hands go, and the referee is taking a long look!");
+    let drawn = 0;
+    for (const [width, height] of [[320, 568], [360, 640], [375, 667], [390, 844], [412, 915], [568, 320], [640, 320], [640, 350], [640, 360], [667, 375], [740, 360], [844, 390], [932, 430]] as const) {
+      for (const phase of ["fight", "knockdown", "rest", "foul_recovery"] as const) {
+        for (const extra of [{}, { callout: true }, { replay: true }]) {
+          const slot = captionSlot(scene(width, height, phase, { touch: true, ...extra }));
+          if (slot === null) continue;
+          drawn += 1;
+          const plates: Array<{ x: number; y: number; w: number; h: number }> = [];
+          drawCaption(Object.assign(mockHudContext([]), { fillRect: (x: number, y: number, w: number, h: number) => plates.push({ x, y, w, h }) }), shown(longest), slot, true);
+          const plate = plates[0]!;
+          expect(plate.w, `${width}x${height} ${phase}`).toBeGreaterThan(0);
+          for (const pad of pads(width, height)) {
+            const clear = plate.x + plate.w <= pad.left || plate.x >= pad.right || plate.y + plate.h <= pad.top || plate.y >= pad.bottom;
+            expect(clear, `${width}x${height} ${phase} ${JSON.stringify(extra)}: caption ${JSON.stringify(plate)} under the pads ${JSON.stringify(pad)}`).toBe(true);
+          }
+        }
+      }
+    }
+    // Most of these still have their caption, beside the pads or above them.
+    expect(drawn).toBeGreaterThan(40);
+  });
+
   it("keeps clear of the replay tag", () => {
     expect(captionSlot(scene(390, 844, "complete", { touch: true, replay: true }))!.y).toBe(120 + 34 + 8);
   });
@@ -78,6 +112,50 @@ describe("caption placement", () => {
   it("goes above the result card once it is up, or nowhere", () => {
     expect(captionSlot(scene(1280, 720, "complete", { resultTop: 420 }))).toMatchObject({ anchor: "top", y: 54 });
     expect(captionSlot(scene(844, 390, "complete", { resultTop: 110 }))).toBeNull();
+  });
+});
+
+describe("the touch pads, as style.css lays them out", () => {
+  const sheet = readFileSync("src/style.css", "utf8");
+  /** A media block of the sheet, from its opening to its last rule. */
+  const media = (query: string): string => {
+    const start = sheet.indexOf(`@media${query}{`);
+    return start < 0 ? "" : sheet.slice(start, sheet.indexOf("}}", start) + 2);
+  };
+  const declarations = (css: string, selector: string): string => new RegExp(`[{}\\n]${selector.replace(/[.()[\]]/gu, "\\$&")}\\{([^}]*)\\}`, "u").exec(`\n${css}`)?.[1] ?? "";
+  const px = (css: string, property: string): number => Number(new RegExp(`(?:^|;)${property}:(?:max\\()?(\\d+)px`, "u").exec(css)?.[1]);
+  /** The width of a grid of fixed columns. */
+  const columns = (css: string, gap: number): number => {
+    const [, count, size] = /repeat\((\d+),(\d+)px\)/u.exec(css)!;
+    return Number(count) * Number(size) + (Number(count) - 1) * gap;
+  };
+  const rows = (count: number, height: number, gap: number): number => count * height + (count - 1) * gap;
+
+  it("are the size the captions keep clear of", () => {
+    const pads = declarations(sheet, ".touch-pads");
+    const grid = declarations(sheet, ".touch-grid");
+    const mods = declarations(sheet, ".touch-mods");
+    const moves = declarations(sheet, ".touch-moves");
+    const [pad, mod, move] = [".touch-pad", ".touch-mod", ".touch-move"].map((selector) => px(declarations(sheet, selector), "height")) as [number, number, number];
+    // Upright: two rows of moves, the modifiers and the punch pads, one above another.
+    const stack = rows(2, mod, px(mods, "gap")) + px(pads, "gap") + rows(2, pad, px(grid, "gap"));
+    expect({ bottom: px(pads, "bottom"), height: rows(2, move, px(moves, "gap")) + px(moves, "margin-bottom") + px(pads, "gap") + stack }).toEqual({ bottom: TOUCH_PADS.upright.bottom, height: TOUCH_PADS.upright.height });
+    expect(px(pads, "right") + columns(grid, px(grid, "gap")) + 14).toBe(TOUCH_PADS.reach);
+    // On its side the moves stand in three rows in a column of their own, to the left of the other two.
+    const side = media("(orientation:landscape)");
+    expect({ height: stack, moves: rows(3, move, px(moves, "gap")) }).toEqual({ height: TOUCH_PADS.landscape.height, moves: TOUCH_PADS.landscape.moves });
+    expect(columns(declarations(side, ".touch-moves"), px(moves, "gap")) + px(declarations(side, ".touch-pads"), "column-gap")).toBe(TOUCH_PADS.movesReach);
+    // A short screen on its side gets smaller ones, lower down.
+    const short = media(`(orientation:landscape) and (max-height:${TOUCH_PADS.shortHeight}px)`);
+    const gap = px(declarations(short, ".touch-grid,.touch-mods,.touch-moves"), "gap");
+    const [shortPad, shortMod] = [".touch-pad", ".touch-mod,.touch-move"].map((selector) => px(declarations(short, selector), "height")) as [number, number];
+    const shortPads = declarations(short, ".touch-pads");
+    expect({ bottom: px(shortPads, "bottom"), height: rows(2, shortMod, gap) + px(shortPads, "row-gap") + rows(2, shortPad, gap), moves: rows(3, shortMod, gap) }).toEqual(TOUCH_PADS.short);
+  });
+
+  it("let a tap between them through, so the block's empty corner never takes the top bar's buttons", () => {
+    expect(declarations(sheet, ".touch-pads")).toContain("pointer-events:none");
+    expect(declarations(sheet, ".touch-pad,.touch-mod,.touch-move")).toContain("pointer-events:auto");
   });
 });
 

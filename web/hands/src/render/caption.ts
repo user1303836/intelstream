@@ -49,8 +49,23 @@ const BELOW_COUNT = COUNT_BELOW_HEADLINE + 8;
 const REPLAY_TAG = { right: 220, wideTop: 64, compactTop: 120, height: 34 } as const;
 /** The HUD's centre panels are this wide at most (hud.ts centerPanel). */
 const PANEL_WIDTH = 320;
-/** The touch pads' column (style.css .touch-pads): its width with margins, its bottom offset and its height. */
-const TOUCH_PADS = { width: 216, bottom: 118, height: 196 } as const;
+/**
+ * The touch pads (style.css .touch-pads). Held upright they are one column 118 px up from the bottom, 274 px
+ * tall: the moves, the modifiers and the punch pads. On its side the modifiers and punch pads stand 196 px tall
+ * and the moves have their own column to their left, 102 px tall at the foot; on a screen 350 px tall or less
+ * all of them are smaller, 154 and 86 px tall, and 112 px up. `reach` is how far in from the right edge the
+ * modifiers' column comes, and `movesReach` how much further the moves' column does, with a little to spare.
+ */
+export const TOUCH_PADS = {
+  upright: { bottom: 118, height: 274, moves: 0 },
+  landscape: { bottom: 118, height: 196, moves: 102 },
+  short: { bottom: 112, height: 154, moves: 86 },
+  shortHeight: 350,
+  reach: 12 + 190 + 14,
+  movesReach: 122 + 12,
+} as const;
+/** A caption squeezed between the pads and their mirror image narrower than this gives way instead. */
+const BESIDE_PADS_MIN_WIDTH = 200;
 
 const BACKGROUND = "rgba(3,6,12,0.86)";
 const COVER_BACKGROUND = "rgb(4,7,13)";
@@ -92,9 +107,25 @@ export function captionSlot(scene: CaptionScene): CaptionSlot | null {
   }
   const limit = result !== null ? result - 8 : height * (short ? 0.46 : 0.5);
   if (top + CAPTION_ROOM * scale > limit) return null;
-  const padsTop = height - TOUCH_PADS.bottom - TOUCH_PADS.height;
-  const besidePads = result === null && scene.touch && top + CAPTION_ROOM * scale > padsTop;
-  return { x: width / 2, y: top, maxWidth: besidePads ? Math.min(maxWidth, width - TOUCH_PADS.width * 2) : maxWidth, anchor: "top", scale, cover: null };
+  // The pads are part of the page, over the canvas, until the bout is over.
+  const reach = result === null && scene.touch && scene.phase !== "complete" ? padsReach(width, height, top + lineRoom(scale)) : 0;
+  if (reach === 0) return { x: width / 2, y: top, maxWidth, anchor: "top", scale, cover: null };
+  const beside = Math.min(maxWidth, width - reach * 2);
+  return beside < BESIDE_PADS_MIN_WIDTH ? null : { x: width / 2, y: top, maxWidth: beside, anchor: "top", scale, cover: null };
+}
+
+/**
+ * The tallest commentary line, two rows at full size, as drawLine sets it. Only lines are shown while the touch
+ * pads are up: the announcer's cards come with the countdown, over its panel, and after the bout.
+ */
+const lineRoom = (s: number): number => Math.round(8 * s) + Math.round(10 * s) + Math.round(4 * s) + 2 * Math.round(Math.round(17 * s) * 1.3) + Math.round(5 * s);
+
+/** How far in from the right edge the touch pads come beside a caption that ends at `bottom`: 0 while it stays above them. */
+function padsReach(width: number, height: number, bottom: number): number {
+  const pads = width <= height ? TOUCH_PADS.upright : height <= TOUCH_PADS.shortHeight ? TOUCH_PADS.short : TOUCH_PADS.landscape;
+  if (bottom <= height - pads.bottom - pads.height) return 0;
+  // Upright the pads are one column; on its side the moves only come out at the foot of the block.
+  return TOUCH_PADS.reach + (pads.moves > 0 && bottom > height - pads.bottom - pads.moves ? TOUCH_PADS.movesReach : 0);
 }
 
 /** Draws the caption in its slot: faded and eased in unless motion is reduced, when it simply appears. */

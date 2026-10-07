@@ -437,6 +437,8 @@ export function drawHud(
   pictures: PictureSource | null = null,
   /** The fighter the referee is counting over, as the renderer saw him go down: he is no longer on the canvas once he has beaten the count. */
   countTarget: string | null = null,
+  /** The touch pads are up over the right of the screen. */
+  touch = false,
 ): void {
   ctx.save();
   const scale = hudScale(width, height);
@@ -466,9 +468,10 @@ export function drawHud(
       { label: `POISE ${Math.round(fighter.poise)}`, value: fighter.poise, maximum: HUD_MAX_POISE, from: "#e8c890", to: "#8a6a34" },
     ];
     const accent = index === 0 ? "#3d6fb8" : "#b02a20";
-    // A narrow plate has no room for a picture, so it goes beside the clock at the top.
+    // A narrow plate has no room for a picture, so it goes beside the clock at the top, unless the phone is on its
+    // side with the touch pads up, which stand where the red corner's would go.
     fighterPlate(ctx, x, plateY, plateWidth, player?.name ?? "Fighter", plateDetails(player, fighter, compact), bars.slice(0, 2), mirror, accent, compact ? undefined : pictureOf(fighter));
-    if (compact) portrait(ctx, width / 2 + (mirror ? 1 : -1) * (ROUND_CARD_WIDTH / 2 + 8 + CLOCK_PORTRAIT_RADIUS), 54 + 29, CLOCK_PORTRAIT_RADIUS, pictureOf(fighter), player?.name ?? "Fighter", accent);
+    if (compact && !(touch && width > height)) portrait(ctx, width / 2 + (mirror ? 1 : -1) * (ROUND_CARD_WIDTH / 2 + 8 + CLOCK_PORTRAIT_RADIUS), 54 + 29, CLOCK_PORTRAIT_RADIUS, pictureOf(fighter), player?.name ?? "Fighter", accent);
     const miniY = plateY - 12;
     // Guard and poise ride above the plate, as wide as the plate's own bars once the plate is narrow.
     const miniWidth = Math.min(64, (plateWidth - 52) / 2);

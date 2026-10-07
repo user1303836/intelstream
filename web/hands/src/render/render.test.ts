@@ -1193,6 +1193,18 @@ describe("players' pictures", () => {
     }
   });
 
+  it("stay off a narrow phone on its side while the touch pads stand where the red corner's would go", () => {
+    const clockRings = (width: number, height: number, touch: boolean): number => {
+      const arcs: Array<{ x: number; y: number; radius: number }> = [];
+      drawHud(mockHudContext([], [], arcs), width, height, snapshot(), players, "one", null, 0, 30, null, null, null, null, null, onlyOne, null, touch);
+      return new Set(arcs.filter((arc) => arc.radius === CLOCK_PORTRAIT_RADIUS).map((arc) => arc.x)).size;
+    };
+    // At 568x320 the red corner's picture (x 376-416, y 63-103) would sit under the modifiers and punch pads (from x 368).
+    expect(clockRings(568, 320, true)).toBe(0);
+    expect(clockRings(568, 320, false)).toBe(2);
+    expect(clockRings(390, 844, true)).toBe(2);
+  });
+
   it("head the columns of the result card", () => {
     const texts: string[] = [];
     const drawn: DrawnPicture[] = [];
