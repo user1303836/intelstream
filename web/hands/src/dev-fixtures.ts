@@ -179,6 +179,7 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       }
       events.length = 0;
     }
+    if (search.get("eye") === "shut") two.trauma = { ...two.trauma, right_eye: 760, swelling: Math.max(two.trauma.swelling, 420) };
     const decided = search.get("finish") === "decision" && t >= 3.4;
     if (decided) {
       for (const fighter of [one, two]) {

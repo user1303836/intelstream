@@ -24,7 +24,7 @@ const repo = path.resolve(__dirname, '..');
 const out = path.join(os.tmpdir(), 'hands-e2e');
 fs.mkdirSync(out, { recursive: true });
 const scenario = process.argv[2] || 'ko';
-const PORT = 8091;
+const PORT = Number(process.env.E2E_PORT ?? 8091);
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function healthz() {
@@ -141,7 +141,7 @@ async function main() {
   const server = await startServer(serverArgs, { oneWayDelayMs: scenario === 'latency' ? 110 : scenario === 'response' ? responseDelayMs : 0, jitterMs: scenario === 'response' ? responseJitterMs : 0 });
   try {
     const A = await open('Alpha');
-    const B = await open('Bravo', { mobile: scenario === 'touch' });
+    const B = await open('Bravo', { mobile: scenario === 'touch' || scenario === 'rest' });
     if (scenario === 'latency') note('both clients behind a TCP proxy adding 110 ms each way (220 ms round trip) to every frame');
     const startedState = await waitFor(A.page, (s) => /countdown|fight/.test(s.summary ?? ''), 60000, 'bout start');
     note('bout started:', startedState !== null);
@@ -228,10 +228,40 @@ async function main() {
       for (let i = 0; i < 8; i += 1) { await A.page.keyboard.press('f'); await B.page.keyboard.press('j'); await wait(400); }
       const rest = await waitFor(A.page, (s) => /\. rest\./.test(s.summary ?? ''), 40000, 'rest phase');
       note('rest reached:', rest !== null, '|', rest?.status, '|', rest?.live);
-      await wait(4500);
+      // Each corner gets an instruction: Alpha with the 3 key, Bravo by tapping the panel on a phone.
+      const own = (page) => page.evaluate(() => {
+        const app = window.__handsApp;
+        return app?.state?.snapshot?.fighters.find((fighter) => fighter.player_id === app.state.playerId) ?? null;
+      });
+      const panelShown = (page) => page.evaluate(() => document.querySelector('[data-corner]')?.hidden === false);
+      await wait(800);
+      note('corner panels shown:', await panelShown(A.page), await panelShown(B.page));
+      await A.page.screenshot({ path: `${out}/e2e-rest-A-panel.png` }); await B.page.screenshot({ path: `${out}/e2e-rest-B-panel.png` });
+      const beforeA = await own(A.page);
+      const beforeB = await own(B.page);
+      await A.page.keyboard.press('3');
+      await B.page.tap('[data-corner-pick="corner_cut"]');
+      await wait(1200);
+      const afterA = await own(A.page);
+      const afterB = await own(B.page);
+      const corner = await Promise.all([A.page, B.page].map((page) => page.evaluate(() => document.querySelector('.corner-status')?.textContent ?? null)));
+      note('corner choices:', afterA?.corner_choice, afterB?.corner_choice, '|', corner.join(' | '));
+      note('Alpha health', beforeA?.conditioning, '->', afterA?.conditioning, '| Bravo cuts', beforeB?.trauma.left_cut, beforeB?.trauma.right_cut, '->', afterB?.trauma.left_cut, afterB?.trauma.right_cut);
+      const cutBefore = Math.max(beforeB?.trauma.left_cut ?? 0, beforeB?.trauma.right_cut ?? 0);
+      const cutAfter = Math.max(afterB?.trauma.left_cut ?? 0, afterB?.trauma.right_cut ?? 0);
+      const cornerWorked = afterA?.corner_choice === 'breath' && afterB?.corner_choice === 'cut'
+        && afterA.conditioning === Math.min(1000, beforeA.conditioning + 180)
+        && cutAfter === Math.max(0, cutBefore - 250);
+      note('CORNER CHECK:', cornerWorked ? 'PASS' : 'FAIL');
+      if (!cornerWorked) report.errors.push('corner instructions did not take effect');
+      await wait(2500);
       await A.page.screenshot({ path: `${out}/e2e-rest-A.png` }); await B.page.screenshot({ path: `${out}/e2e-rest-B.png` });
+      await B.page.setViewportSize({ width: 390, height: 844 });
+      await wait(700);
+      await B.page.screenshot({ path: `${out}/e2e-rest-B-portrait.png` });
+      await B.page.setViewportSize({ width: 844, height: 390 });
       const round2 = await waitFor(A.page, (s) => /Round 2\. fight/.test(s.summary ?? ''), 40000, 'round 2');
-      note('round 2 reached:', round2 !== null, '|', round2?.summary?.slice(0, 60));
+      note('round 2 reached:', round2 !== null, '|', round2?.summary?.slice(0, 60), '| panels hidden:', !(await panelShown(A.page)) && !(await panelShown(B.page)));
       await A.page.keyboard.down('d'); await B.page.keyboard.down('a'); await wait(2500); await A.page.keyboard.up('d'); await B.page.keyboard.up('a');
       await A.page.screenshot({ path: `${out}/e2e-rest-A-round2.png` });
       const final = await waitFor(A.page, (s) => Boolean(s.final), 90000, 'final');
