@@ -16,6 +16,18 @@ class FakeSynthesis {
   readonly spoken: FakeUtterance[] = [];
   cancels = 0;
   voices: SpeechSynthesisVoice[] = [];
+  private readonly listeners = new Set<() => void>();
+  addEventListener(type: string, listener: () => void): void {
+    if (type === "voiceschanged") this.listeners.add(listener);
+  }
+  removeEventListener(type: string, listener: () => void): void {
+    if (type === "voiceschanged") this.listeners.delete(listener);
+  }
+  /** The browser (re)lists its voices, as Chrome does a moment after the page loads. */
+  listVoices(voices: SpeechSynthesisVoice[]): void {
+    this.voices = voices;
+    for (const listener of this.listeners) listener();
+  }
   speak(utterance: SpeechSynthesisUtterance): void {
     this.spoken.push(utterance as unknown as FakeUtterance);
   }
@@ -31,6 +43,7 @@ class FakeSynthesis {
 }
 
 const voice = (name: string, lang: string, localService: boolean, isDefault = false): SpeechSynthesisVoice => ({ name, lang, localService, default: isDefault, voiceURI: name }) as SpeechSynthesisVoice;
+const deviceVoice = voice("Microsoft David", "en-US", true, true);
 
 describe("the announcer's voice", () => {
   let settings: Settings;
@@ -40,6 +53,7 @@ describe("the announcer's voice", () => {
   beforeEach(() => {
     settings = { volume: 0.6, haptics: true, reducedMotion: false, blood: "full", camera: "broadcast", commentary: true, announcer: true };
     synthesis = new FakeSynthesis();
+    synthesis.voices = [deviceVoice];
   });
 
   it("speaks one line at a time, in order, at the player's volume", () => {
@@ -104,6 +118,55 @@ describe("the announcer's voice", () => {
     expect(synthesis.spoken).toHaveLength(1);
   });
 
+  it("says nothing while the Activity is hidden and stops the line it was reading when it hides", () => {
+    let hidden = true;
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+    try {
+      const announcer = make();
+      // The final arrives with the player in another app: the scorecards line is not read over it.
+      announcer.speak(["Ladies and gentlemen, we go to the scorecards."]);
+      expect(synthesis.spoken).toHaveLength(0);
+      hidden = false;
+      announcer.speak(["In the blue corner, Azure Vector!", "And in the red corner, Crimson Geometry!"]);
+      expect(synthesis.spoken).toHaveLength(1);
+      hidden = true;
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(synthesis.cancels).toBe(1);
+      synthesis.finishLast();
+      expect(synthesis.spoken).toHaveLength(1);
+      announcer.destroy();
+      hidden = false;
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(synthesis.cancels).toBe(1);
+    } finally {
+      Reflect.deleteProperty(document, "hidden");
+    }
+  });
+
+  it("lets the line being read finish its name, briefly, when its moment ends, and drops the rest", () => {
+    vi.useFakeTimers();
+    const announcer = make();
+    announcer.speak(["In the blue corner, Azure Vector!", "And in the red corner, Crimson Geometry!"]);
+    announcer.finishLine(1_500);
+    expect(synthesis.cancels).toBe(0);
+    synthesis.finishLast();
+    expect(synthesis.spoken).toHaveLength(1);
+    vi.advanceTimersByTime(2_000);
+    expect(synthesis.cancels).toBe(0);
+    // A voice too slow to finish in time is cut off once the grace is over.
+    announcer.speak(["And in the red corner, Crimson Geometry!"]);
+    announcer.finishLine(1_500);
+    vi.advanceTimersByTime(1_499);
+    expect(synthesis.cancels).toBe(0);
+    vi.advanceTimersByTime(1);
+    expect(synthesis.cancels).toBe(1);
+    announcer.finishLine(1_500);
+    announcer.speak(["Ladies and gentlemen, we go to the scorecards."]);
+    vi.advanceTimersByTime(5_000);
+    expect(synthesis.cancels).toBe(1);
+    vi.useRealTimers();
+  });
+
   it("does nothing where the browser cannot speak", () => {
     const announcer = new AnnouncerVoice(() => settings, null, null);
     expect(announcer.supported).toBe(false);
@@ -115,11 +178,43 @@ describe("the announcer's voice", () => {
     const local = voice("Local English", "en-GB", true);
     const french = voice("Local French", "fr-FR", true, true);
     expect(pickVoice([french, remote, local])).toBe(local);
-    expect(pickVoice([french, remote])).toBe(remote);
+    expect(pickVoice([french, remote])).toBeNull();
     expect(pickVoice([french])).toBeNull();
     synthesis.voices = [french, local];
     make().speak(["Azure Vector!"]);
     expect(synthesis.spoken[0]!.voice).toBe(local);
     expect(synthesis.spoken[0]!.lang).toBe("en-GB");
+  });
+
+  it("never reads the fighters' names with a voice that speaks from a vendor's servers", () => {
+    // Chrome's "Google US English" synthesizes online: the names would leave the Activity.
+    synthesis.voices = [voice("Google US English", "en-US", false, true), voice("Local French", "fr-FR", true)];
+    const announcer = make();
+    expect(announcer.hasVoice).toBe(false);
+    announcer.speak(["In the blue corner, Azure Vector!"]);
+    expect(synthesis.spoken).toHaveLength(0);
+  });
+
+  it("waits for voices the browser lists late, and reads with the device's own once they come", () => {
+    synthesis.voices = [];
+    const changed = vi.fn();
+    const announcer = make();
+    announcer.onVoicesChanged = changed;
+    // Nothing is listed yet: Settings still offers the voice, but no line goes to the browser's own choice.
+    expect(announcer.hasVoice).toBe(true);
+    announcer.speak(["In the blue corner, Azure Vector!"]);
+    expect(synthesis.spoken).toHaveLength(0);
+    synthesis.listVoices([voice("Google UK English Male", "en-GB", false), deviceVoice]);
+    expect(changed).toHaveBeenCalledOnce();
+    announcer.speak(["In the blue corner, Azure Vector!"]);
+    expect(synthesis.spoken[0]!.voice).toBe(deviceVoice);
+    // A device whose own voice goes away stops reading, and Settings is told.
+    synthesis.listVoices([voice("Google UK English Male", "en-GB", false)]);
+    expect(synthesis.cancels).toBe(1);
+    expect(announcer.hasVoice).toBe(false);
+    expect(changed).toHaveBeenCalledTimes(2);
+    announcer.destroy();
+    synthesis.listVoices([deviceVoice]);
+    expect(changed).toHaveBeenCalledTimes(2);
   });
 });

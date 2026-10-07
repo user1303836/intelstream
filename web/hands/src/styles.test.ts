@@ -1,7 +1,22 @@
+import manifest from "../../../src/intelstream/hands/combat-manifest.json";
+import { CONTROL_SECTIONS } from "./input/bindings";
 import { FIGHTER_STYLES } from "./protocol";
 import { loadStyle, saveStyle, STYLE_CARDS, StylePicker, styleTag, styleTitle } from "./styles";
 import { publicPlayers } from "./test/fixtures";
 import type { ConnectionRole, FighterStyle, SelectMessage } from "./types";
+
+/** A style's rule as the manifest gives it; every number it leaves out is the balanced fighter's. */
+interface ManifestStyle {
+  readonly impact_percent?: number;
+  readonly body_damage_percent?: number;
+  readonly poise_damage_percent?: number;
+  readonly reach_percent?: number;
+  readonly move_speed_percent?: number;
+  readonly stamina_cost_percent?: number;
+  readonly conditioning_loss_percent?: number;
+  readonly startup_ticks?: Readonly<Record<string, number>>;
+  readonly recovery_ticks?: Readonly<Record<string, number>>;
+}
 
 const choosing = (fields: Partial<SelectMessage> = {}): SelectMessage => ({ version: 3, type: "select", deadline_ms: 9_500, players: [publicPlayers[0], publicPlayers[1]], ready: [], ...fields });
 const press = (code: string, init: KeyboardEventInit = {}): void => { window.dispatchEvent(new KeyboardEvent("keydown", { code, cancelable: true, ...init })); };
@@ -14,6 +29,31 @@ describe("style cards", () => {
       expect(card.stats.every((value) => Number.isInteger(value) && value >= 1 && value <= 5)).toBe(true);
     }
     expect(STYLE_CARDS.find((card) => card.style === "balanced")?.stats).toEqual([3, 3, 3, 3, 3, 3]);
+  });
+
+  it("show the strengths the manifest's numbers give each style, so a change to either is caught", () => {
+    // A bar is three at the balanced fighter's number and moves a step for each `step` away from it.
+    const bar = (measure: number, neutral: number, step: number): number => Math.max(1, Math.min(5, 3 + Math.round((measure - neutral) / step)));
+    const rules = manifest.styles as Readonly<Record<string, ManifestStyle>>;
+    for (const card of STYLE_CARDS) {
+      const rule = rules[card.style] ?? {};
+      // Power: how hard the punches land, one in three to the body, and how much poise they take.
+      const power = ((rule.impact_percent ?? 100) * (200 + (rule.body_damage_percent ?? 100)) / 300) * (rule.poise_damage_percent ?? 100) / 100;
+      // Hand speed: the ticks a style takes off (or puts on) its punches' startup and recovery.
+      const ticks = [...Object.values(rule.startup_ticks ?? {}), ...Object.values(rule.recovery_ticks ?? {})].reduce((sum, value) => sum + value, 0);
+      // Stamina: what the punches cost, and how slowly the conditioning drains.
+      const stamina = (100 - (rule.stamina_cost_percent ?? 100)) + (100 - (rule.conditioning_loss_percent ?? 100)) / 2;
+      // Defence weighs the chin, head movement and parries against each other, so it is set by hand.
+      const [power_, speed, footwork, reach, endurance] = card.stats;
+      expect({ style: card.style, power: power_, speed, footwork, reach, stamina: endurance }).toEqual({
+        style: card.style,
+        power: bar(power, 100, 6),
+        speed: bar(-ticks, 0, 2),
+        footwork: bar(rule.move_speed_percent ?? 100, 100, 4),
+        reach: bar(rule.reach_percent ?? 100, 100, 2),
+        stamina: bar(stamina, 0, 10),
+      });
+    }
   });
 
   it("tag a name plate and title an introduction for every style but balanced", () => {
@@ -106,13 +146,14 @@ describe("the style picker", () => {
     picker.destroy();
   });
 
-  it("settles on Enter, then holds the pick and remembers it for next time", () => {
+  it("settles on Enter, then holds the pick, and leaves remembering it to the room's word", () => {
     const picker = make();
     show(picker);
     press("ArrowRight");
     press("Enter");
     expect(sent).toEqual(["balanced:false", "boxer:false", "boxer:true"]);
-    expect(loadStyle()).toBe("boxer");
+    // Remembered once the room's ready says it is the style he boxes in (app.ts).
+    expect(loadStyle()).toBe("balanced");
     expect(card(picker, "slugger").disabled).toBe(true);
     expect(status(picker)).toBe("Ready as Boxer. Waiting for your opponent.");
     press("Digit3");
@@ -122,6 +163,106 @@ describe("the style picker", () => {
     show(picker, choosing({ ready: [] }));
     expect(card(picker, "slugger").disabled).toBe(true);
     picker.destroy();
+  });
+
+  it("lets Enter or Space on a focused card settle that card, not the highlighted one", () => {
+    const picker = make();
+    show(picker);
+    const slugger = card(picker, "slugger");
+    slugger.focus();
+    for (const code of ["Enter", "Space"]) {
+      const key = new KeyboardEvent("keydown", { code, bubbles: true, cancelable: true });
+      slugger.dispatchEvent(key);
+      // The browser's own activation of the focused button does the settling.
+      expect(key.defaultPrevented).toBe(false);
+    }
+    expect(sent).toEqual(["balanced:false"]);
+    slugger.click();
+    expect(sent).toEqual(["balanced:false", "slugger:true"]);
+    picker.destroy();
+  });
+
+  it("leaves keys typed into Settings or another control to that control", () => {
+    const picker = make();
+    show(picker);
+    const panel = document.createElement("aside");
+    panel.className = "panel";
+    panel.innerHTML = `<input data-volume type="range"><input data-haptics type="checkbox"><button type="button">Settings</button>`;
+    parent.append(panel);
+    for (const [selector, code] of [["[data-volume]", "ArrowRight"], ["[data-volume]", "Digit3"], ["[data-haptics]", "Space"], ["button", "Enter"]] as const) {
+      const control = panel.querySelector<HTMLElement>(selector)!;
+      control.focus();
+      const key = new KeyboardEvent("keydown", { code, bubbles: true, cancelable: true });
+      control.dispatchEvent(key);
+      expect(key.defaultPrevented).toBe(false);
+    }
+    expect(sent).toEqual(["balanced:false"]);
+    picker.destroy();
+  });
+
+  it("moves the keyboard focus with the highlight, so Tab and the arrows agree", () => {
+    const picker = make("boxer");
+    show(picker);
+    const tabbable = (): string[] => [...picker.element.querySelectorAll<HTMLButtonElement>("[data-style]")].filter((button) => button.tabIndex === 0).map((button) => button.dataset.style!);
+    expect(tabbable()).toEqual(["boxer"]);
+    card(picker, "boxer").focus();
+    card(picker, "boxer").dispatchEvent(new KeyboardEvent("keydown", { code: "ArrowRight", bubbles: true, cancelable: true }));
+    expect(sent.at(-1)).toBe("slugger:false");
+    expect(document.activeElement).toBe(card(picker, "slugger"));
+    expect(tabbable()).toEqual(["slugger"]);
+    picker.destroy();
+  });
+
+  it("is chosen and settled with a controller, one move a press, and a button held as it opens is not a pick", () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => { frames.push(callback); return frames.length; });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
+    const held = new Set<number>();
+    let stick = 0;
+    const pad = { connected: true, mapping: "standard", get buttons() { return Array.from({ length: 17 }, (_unused, index) => ({ pressed: held.has(index) })); }, get axes() { return [stick, 0, 0, 0]; } } as unknown as Gamepad;
+    Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [pad] });
+    try {
+      const picker = make();
+      const frame = (): void => frames.shift()!(0);
+      // The bottom face button is still held from the last punch of the bout before.
+      held.add(0);
+      show(picker);
+      frame();
+      expect(sent).toEqual(["balanced:false"]);
+      held.delete(0);
+      frame();
+      // D-pad right held over two frames moves one card.
+      held.add(15);
+      frame();
+      frame();
+      expect(sent).toEqual(["balanced:false", "boxer:false"]);
+      held.delete(15);
+      frame();
+      stick = 0.9;
+      frame();
+      frame();
+      expect(sent.at(-1)).toBe("slugger:false");
+      stick = 0;
+      frame();
+      stick = -0.9;
+      frame();
+      expect(sent.at(-1)).toBe("boxer:false");
+      expect(document.activeElement).toBe(card(picker, "boxer"));
+      stick = 0;
+      held.add(0);
+      frame();
+      expect(sent).toEqual(["balanced:false", "boxer:false", "slugger:false", "boxer:false", "boxer:true"]);
+      // Once the pick is gone the controller is left alone.
+      picker.destroy();
+      held.delete(0);
+      stick = 0.9;
+      for (const callback of frames.splice(0)) callback(0);
+      expect(frames).toEqual([]);
+      expect(sent).toHaveLength(5);
+      expect(CONTROL_SECTIONS.find((section) => section.title === "Controller")?.items).toContain("Controller style pick: D-pad or left stick to choose · bottom face button settles.");
+    } finally {
+      Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [] });
+    }
   });
 
   it("settles at once on a number key or a tap", () => {
@@ -135,8 +276,29 @@ describe("the style picker", () => {
     show(tapped);
     card(tapped, "counter_puncher").click();
     expect(sent).toEqual(["balanced:false", "counter_puncher:true"]);
-    expect(loadStyle()).toBe("counter_puncher");
     tapped.destroy();
+  });
+
+  it("stops taking picks in the last moments, when one would reach the room after it closed", () => {
+    vi.useFakeTimers();
+    const picker = make();
+    show(picker);
+    // 300 ms of the room's 9.5 s are left on this page's clock: half a round trip from now, none.
+    clock += 9_200;
+    vi.advanceTimersByTime(250);
+    expect(clockText(picker)).toBe("0s");
+    expect([...picker.element.querySelectorAll<HTMLButtonElement>("[data-style]")].every((button) => button.disabled)).toBe(true);
+    press("Digit3");
+    press("ArrowRight");
+    press("Enter");
+    card(picker, "slugger").click();
+    expect(sent).toEqual(["balanced:false"]);
+    // A fresh deadline from the room opens the pick again.
+    show(picker, choosing({ deadline_ms: 4_000 }));
+    expect(card(picker, "slugger").disabled).toBe(false);
+    press("Digit3");
+    expect(sent).toEqual(["balanced:false", "slugger:true"]);
+    picker.destroy();
   });
 
   it("does not settle a pick that could not be sent", () => {

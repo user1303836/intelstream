@@ -1,4 +1,5 @@
 import { snapshot } from "./test/fixtures";
+import { SharedActionIntent } from "./input/action-buffer";
 import { NetworkController, websocketUrl } from "./network";
 import type { ServerMessage } from "./types";
 
@@ -631,19 +632,21 @@ describe("edge-triggered action sends", () => {
     vi.useRealTimers();
   });
 
-  it("stays under the server's input limit however fast the player mashes, without losing a press", () => {
+  it("stays under the server's input limit however fast the player mashes, and always sends the newest press", () => {
     vi.useFakeTimers();
     let now = 1000;
     const socket = new FakeSocket();
-    const queued: string[] = [];
-    let pressed = 0;
+    // The client's own press queue, as InputController builds it: it holds one press, the newest, as
+    // the engine keeps the newer of two presses in one tick, so a press the next one overtakes is dropped.
+    const presses = new SharedActionIntent(1);
     const controller = new NetworkController(
       "ticket",
-      () => ({ moveX: 0, moveY: 0, defense: "none" as const, actions: queued.splice(0, 4).map((id) => ({ kind: "punch" as const, hand: "left" as const, class: "jab" as const, target: "head" as const, power: "normal" as const, id })) }),
+      () => ({ moveX: 0, moveY: 0, defense: "none" as const, actions: presses.drain(4) }),
       callbacks(),
       () => socket,
       () => now,
     );
+    presses.setListener(() => controller.notifyAction());
     controller.start();
     socket.open();
     socket.message(welcome());
@@ -651,21 +654,37 @@ describe("edge-triggered action sends", () => {
     controller.setActive(true);
     const authenticated = socket.sent.length;
     const times: number[] = [];
-    const record = (): void => { while (times.length < socket.sent.length - authenticated) times.push(now); };
+    const delivered: string[] = [];
+    let pressed = 0;
+    // Each frame that leaves carries the newest press, or none once that has gone out.
+    const record = (): void => {
+      for (const frame of socket.sent.slice(authenticated + times.length)) {
+        times.push(now);
+        const ids = (JSON.parse(frame).actions as { id: string }[]).map((action) => action.id);
+        expect(ids.length).toBeLessThanOrEqual(1);
+        if (ids.length === 1) expect(ids[0]).toBe(`c${pressed}`);
+        delivered.push(...ids);
+      }
+    };
     for (let millisecond = 0; millisecond < 3000; millisecond += 1) {
       now += 1;
       vi.advanceTimersByTime(1);
       record();
       if (millisecond < 2000 && millisecond % 2 === 0) {
-        if (queued.length < 4) { pressed += 1; queued.push(`p${pressed}`); }
-        controller.notifyAction();
+        // Alternate hands, as a masher does, so no press repeats the one before it.
+        pressed += 1;
+        presses.push("keyboard", { kind: "punch", hand: pressed % 2 === 0 ? "right" : "left", class: "jab", target: "head", power: "normal" });
         record();
       }
     }
     for (const start of times) expect(times.filter((at) => at >= start && at < start + 1000).length).toBeLessThanOrEqual(50);
     expect(times.length).toBeGreaterThan(90);
-    const delivered = socket.sent.slice(authenticated).flatMap((frame) => (JSON.parse(frame).actions as { id: string }[]).map((action) => action.id));
-    expect(delivered).toEqual(Array.from({ length: pressed }, (_unused, index) => `p${index + 1}`));
+    // A thousand presses in two seconds: the ones overtaken before a frame could leave are dropped, never sent late.
+    expect(pressed).toBe(1000);
+    expect(delivered.length).toBeGreaterThan(90);
+    expect(delivered.length).toBeLessThan(pressed);
+    expect(delivered.map((id) => Number(id.slice(1)))).toEqual([...new Set(delivered.map((id) => Number(id.slice(1))))].sort((a, b) => a - b));
+    expect(delivered.at(-1)).toBe(`c${pressed}`);
     controller.dispose();
     vi.useRealTimers();
   });

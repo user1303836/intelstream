@@ -4,7 +4,7 @@ import { AudioFeedback } from "./audio";
 import { ClientError, safeError } from "./api";
 import { DiscordActivity, type ActivityAuthorizer, type DiscordSession } from "./discord";
 import { CornerPanel } from "./corner";
-import { StylePicker } from "./styles";
+import { saveStyle, StylePicker } from "./styles";
 import { describeError } from "./errors";
 import { HapticFeedback } from "./haptics";
 import { CONTROL_SECTIONS } from "./input/bindings";
@@ -18,7 +18,7 @@ import { FightRenderer } from "./render/renderer";
 import { rockedLevel } from "./render/rocked";
 import { CAMERA_MODES, SettingsStore, type BloodLevel } from "./settings";
 import { initialState, reduceState, type GameState } from "./state";
-import type { CpuLevel, EngineSnapshot, ServerMessage } from "./types";
+import type { CpuLevel, EngineSnapshot, PublicPlayer, ServerMessage } from "./types";
 
 const CONTACT_FEEDBACK_KINDS = new Set(["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown", "parry", "body_collapse", "eye_shut"]);
 // The room keeps the finished bout for its result hold (ten seconds by default); a rejoin inside
@@ -26,6 +26,8 @@ const CONTACT_FEEDBACK_KINDS = new Set(["hit", "counter_hit", "block", "perfect_
 const CONTROL_HINT_KEYBOARD = "Move WASD · Jab F/J · Straight R/U · Hook G/H · Uppercut T/Y · Guard Q/E · Body Shift · Power Alt";
 const CONTROL_HINT_TOUCH = "Drag on the left to move · Tap the pads to punch, L or R hand · Hold BODY, POWER or GUARD · Tap SLIP, WEAVE, PULL or CLINCH";
 const REMATCH_HOLD_MS = 11_000;
+/** How long the announcer may run on past the opening bell to finish the name it is reading. */
+const BELL_GRACE_MS = 1_500;
 /** How long the finish plays without the overlay while the result is still on its way. */
 const RESULT_WAIT_MS = 4_000;
 const REMATCH_RETRY_MS = 3_000;
@@ -311,6 +313,7 @@ export class HandsApp {
     const rematching = this.rematchAttempts > 0;
     if (message.type === "waiting" || message.type === "ready") this.rematchAttempts = 0;
     if (message.type === "ready") this.rematchOpponent = null;
+    if (message.type === "ready") this.rememberStyle(message.players);
     if (message.type === "final" && this.rematchAttempts > 0 && message.match_id === this.lastFinalMatchId) {
       this.scheduleRematchRetry();
       return;
@@ -343,8 +346,9 @@ export class HandsApp {
   }
 
   private receiveSnapshot(snapshot: EngineSnapshot): void {
-    // The introductions belong to the countdown: the opening bell cuts the announcer off.
-    if (this.lastPhase === "countdown" && snapshot.phase !== "countdown") this.voice.cancel();
+    // The introductions belong to the countdown: at the opening bell the rest of the script goes
+    // unsaid, and a line still being read by a slow voice gets a moment to finish its name.
+    if (this.lastPhase === "countdown" && snapshot.phase !== "countdown") this.voice.finishLine(BELL_GRACE_MS);
     this.lastPhase = snapshot.phase;
     this.renderer?.setInputLatency(this.network?.inputLatencyMs ?? null);
     this.renderer?.push(snapshot);
@@ -361,6 +365,12 @@ export class HandsApp {
       this.audio.event(event);
       this.haptics.event(event);
     }
+  }
+
+  /** The style the room says this fighter boxes in, whether he settled on it or the deadline chose it, is offered first next time. */
+  private rememberStyle(players: readonly PublicPlayer[]): void {
+    const style = players.find((player) => player.id === this.state.playerId)?.style;
+    if (this.state.role === "fighter" && style !== undefined) saveStyle(style);
   }
 
   private dispatch(action: Parameters<typeof reduceState>[1]): void {
@@ -584,11 +594,20 @@ export class HandsApp {
     this.root.querySelector<HTMLInputElement>("[data-motion]")!.checked = settings.reducedMotion;
     this.root.querySelector<HTMLSelectElement>("[data-blood]")!.value = settings.blood;
     this.root.querySelector<HTMLInputElement>("[data-commentary]")!.checked = settings.commentary;
-    const announcer = this.root.querySelector<HTMLInputElement>("[data-announcer]")!;
-    announcer.checked = settings.announcer && this.voice.supported;
-    announcer.disabled = !this.voice.supported;
-    if (!this.voice.supported) announcer.parentElement!.title = "This browser cannot speak";
+    this.syncAnnouncerSetting();
+    this.voice.onVoicesChanged = () => this.syncAnnouncerSetting();
     this.root.querySelector<HTMLSelectElement>("[data-camera]")!.value = settings.camera;
+  }
+
+  /** The voice is offered only where the device can read the names itself; it never uses an online voice. */
+  private syncAnnouncerSetting(): void {
+    const announcer = this.root.querySelector<HTMLInputElement>("[data-announcer]")!;
+    const usable = this.voice.hasVoice;
+    announcer.checked = this.settings.current.announcer && usable;
+    announcer.disabled = !usable;
+    const why = !this.voice.supported ? "This browser cannot speak" : usable ? null : "This device has no English voice of its own";
+    if (why === null) announcer.parentElement!.removeAttribute("title");
+    else announcer.parentElement!.title = why;
   }
 
   private fail(code: string): void {

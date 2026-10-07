@@ -9,6 +9,9 @@
  * $TMPDIR/hands-e2e. Set E2E_GPU=1 to render on the machine's GPU instead of the software renderer
  * (real frame pacing and input latency). The response scenario takes E2E_DELAY_MS and E2E_JITTER_MS.
  *
+ * The reconnect scenario drops one player's link the way a lost network does, with no close in either
+ * direction, through a TCP proxy, times how long the room takes to pause the other player, and checks
+ * both resume once the link is back.
  * The cpu scenario is one player against the computer (E2E_CPU_LEVEL, default contender) through to the
  * result card. The tko scenario gets the floored player up twice, so the bout ends on the punch of the
  * third knockdown, and fails unless the knockout replay still plays. The styles scenario has one fighter pick a style with the keyboard and the other by
@@ -18,7 +21,7 @@
  *   node scripts/hands_e2e_scenarios.js ko|tko|reconnect|rest|spectator|touch|mash|latency|soak|background|rematch|rematchloop|clinch|response|cpu|styles
  */
 const { chromium, devices } = require('playwright');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const http = require('node:http');
 const net = require('node:net');
 
@@ -32,6 +35,11 @@ fs.mkdirSync(out, { recursive: true });
 const scenario = process.argv[2] || 'ko';
 const PORT = Number(process.env.E2E_PORT ?? 8091);
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+/**
+ * A link lost without a goodbye is noticed only by the room's websocket heartbeat: a ping 15 s after
+ * the last frame, half that to answer, then the room's own close (23.7 s measured on Windows).
+ */
+const SILENT_DROP_NOTICE_MS = 30_000;
 
 function healthz() {
   return new Promise((resolve) => {
@@ -43,12 +51,18 @@ function healthz() {
 
 /**
  * TCP proxy that delays every chunk in both directions, so websocket frames see real latency.
- * `jitterMs` adds a random extra wait to each chunk while keeping them in order.
+ * `jitterMs` adds a random extra wait to each chunk while keeping them in order. `silence` and
+ * `restore` drop a player's link the way a lost connection does (see `silence`).
  */
 function delayProxy(listenPort, targetPort, delayMs, jitterMs = 0) {
+  const links = new Set();
   const server = net.createServer((client) => {
     const upstream = net.connect(targetPort, '127.0.0.1');
-    const pipe = (from, to) => {
+    // `head` keeps the start of what the page sent (its websocket handshake); `dark` swallows the link.
+    const link = { client, upstream, head: '', dark: false, upstreamGone: false };
+    links.add(link);
+    client.on('close', () => { if (!link.dark) links.delete(link); });
+    const pipe = (from, to, fromPage) => {
       const queue = [];
       let timer = null;
       const drain = () => {
@@ -61,29 +75,62 @@ function delayProxy(listenPort, targetPort, delayMs, jitterMs = 0) {
         if (queue.length > 0) timer = setTimeout(drain, Math.max(1, queue[0].due - Date.now()));
       };
       const hold = (chunk) => {
+        if (fromPage && chunk !== null && link.head.length < 8192) link.head += chunk.toString('latin1');
+        // A silenced link passes nothing, not even the room hanging up on it.
+        if (link.dark) {
+          if (chunk === null && !fromPage) link.upstreamGone = true;
+          return;
+        }
         const due = Math.max(queue.at(-1)?.due ?? 0, Date.now() + delayMs + Math.random() * jitterMs);
         queue.push({ chunk, due });
         if (timer === null) timer = setTimeout(drain, Math.max(1, queue[0].due - Date.now()));
       };
       from.on('data', hold);
       from.on('end', () => hold(null));
-      from.on('error', () => to.destroy());
+      from.on('error', () => {
+        if (!link.dark) to.destroy();
+        else if (!fromPage) link.upstreamGone = true;
+      });
     };
-    pipe(client, upstream);
-    pipe(upstream, client);
+    pipe(client, upstream, true);
+    pipe(upstream, client, false);
   });
   server.listen(listenPort, '127.0.0.1');
+  /**
+   * Every open websocket whose handshake carries `marker` goes silent in both directions, as when a
+   * phone loses its network: no close frame and no FIN either way, so the room learns of it only from
+   * its websocket heartbeat and the page goes on thinking it is connected. Returns how many it silenced.
+   */
+  server.silence = (marker) => {
+    let silenced = 0;
+    for (const link of links) {
+      if (!/upgrade:\s*websocket/i.test(link.head) || !link.head.includes(marker)) continue;
+      link.dark = true;
+      silenced += 1;
+    }
+    return silenced;
+  };
+  /** The network is back: a link the room gave up on meanwhile now fails on the page too, so it reconnects. */
+  server.restore = () => {
+    for (const link of links) {
+      if (!link.dark) continue;
+      link.dark = false;
+      links.delete(link);
+      if (link.upstreamGone || link.upstream.destroyed) link.client.destroy();
+    }
+  };
   return server;
 }
 
-async function startServer(args, { oneWayDelayMs = 0, jitterMs = 0 } = {}) {
-  const backendPort = oneWayDelayMs > 0 ? PORT + 1 : PORT;
+async function startServer(args, { oneWayDelayMs = 0, jitterMs = 0, proxy = false } = {}) {
+  const proxied = proxy || oneWayDelayMs > 0;
+  const backendPort = proxied ? PORT + 1 : PORT;
   const child = spawn('uv', ['run', 'python', 'scripts/hands_e2e_server.py', '--port', String(backendPort), ...args], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] });
   const log = [];
   child.stdout.on('data', (d) => log.push(String(d)));
   child.stderr.on('data', (d) => log.push(String(d)));
-  const proxy = oneWayDelayMs > 0 ? delayProxy(PORT, backendPort, oneWayDelayMs, jitterMs) : null;
-  for (let i = 0; i < 60; i += 1) { if (await healthz()) return { child, log, proxy }; await wait(500); }
+  const tcpProxy = proxied ? delayProxy(PORT, backendPort, oneWayDelayMs, jitterMs) : null;
+  for (let i = 0; i < 60; i += 1) { if (await healthz()) return { child, log, proxy: tcpProxy }; await wait(500); }
   throw new Error('server did not start: ' + log.join(''));
 }
 
@@ -178,6 +225,8 @@ async function main() {
   const instance = `e2e-${scenario}-${Date.now()}`;
   const open = async (name, options = {}) => {
     const context = await browser.newContext(options.mobile ? { ...devices['Pixel 7'], viewport: { width: 844, height: 390 } } : { viewport: { width: 1280, height: 720 } });
+    // Rides along on every request to the room, websocket handshake included, so the TCP proxy can tell the players apart.
+    await context.addCookies([{ name: 'hands_e2e_player', value: name, url: base }]);
     const page = await context.newPage();
     if (scenario === 'rematchloop') await page.addInitScript(countLiveGlObjects);
     if (scenario === 'response') {
@@ -220,7 +269,7 @@ async function main() {
   }[scenario];
   const responseDelayMs = Number(process.env.E2E_DELAY_MS ?? 60);
   const responseJitterMs = Number(process.env.E2E_JITTER_MS ?? 0);
-  const server = await startServer(serverArgs, { oneWayDelayMs: scenario === 'latency' ? 110 : scenario === 'response' ? responseDelayMs : 0, jitterMs: scenario === 'response' ? responseJitterMs : 0 });
+  const server = await startServer(serverArgs, { oneWayDelayMs: scenario === 'latency' ? 110 : scenario === 'response' ? responseDelayMs : 0, jitterMs: scenario === 'response' ? responseJitterMs : 0, proxy: scenario === 'reconnect' });
   try {
     const A = await open('Alpha');
     if (scenario === 'cpu') {
@@ -344,17 +393,21 @@ async function main() {
     if (scenario === 'reconnect') {
       for (let i = 0; i < 6; i += 1) { await A.page.keyboard.press('f'); await B.page.keyboard.press('j'); await wait(400); }
       note('before drop A:', (await status(A.page)).status, '| B:', (await status(B.page)).status);
-      await B.context.setOffline(true);
-      // Chrome's offline mode stops new connections but leaves an open websocket alone, so the
-      // drop itself is a socket that dies without a goodbye, as a lost connection does.
-      await B.page.evaluate(() => window.__handsApp?.network?.socket?.close?.(4000, 'e2e drop'));
-      note('B offline');
-      const paused = await waitFor(A.page, (s) => /paused|reconnect/i.test((s.status ?? '') + (s.live ?? '')), 30000, 'opponent pause on A');
-      note('A during drop:', paused?.status, '|', paused?.live);
-      await B.page.screenshot({ path: `${out}/e2e-reconnect-B-offline.png` });
+      // Bravo's network goes: nothing more passes either way and nobody hangs up, as when Wi-Fi drops
+      // or the phone suspends Discord. Only the room's websocket heartbeat can notice; a close() from
+      // the page would tell the room at once, which a lost connection never does.
+      const droppedAt = Date.now();
+      const silenced = server.proxy.silence('hands_e2e_player=Bravo');
+      note(`B's link goes silent (${silenced} websocket)`);
+      if (silenced !== 1) report.errors.push(`expected to silence Bravo's one websocket, silenced ${silenced}`);
+      const paused = await waitFor(A.page, (s) => /paused|reconnect/i.test((s.status ?? '') + (s.live ?? '')), SILENT_DROP_NOTICE_MS + 5000, 'opponent pause on A');
+      const noticedMs = Date.now() - droppedAt;
+      note(`A sees the pause ${(noticedMs / 1000).toFixed(1)} s after the drop:`, paused?.status, '|', paused?.live);
+      if (paused === null || noticedMs > SILENT_DROP_NOTICE_MS) report.errors.push(`the room took ${noticedMs} ms to pause for a silent drop (limit ${SILENT_DROP_NOTICE_MS} ms)`);
+      await B.page.screenshot({ path: `${out}/e2e-reconnect-B-dark.png` });
       await wait(3000);
-      await B.context.setOffline(false);
-      note('B online');
+      server.proxy.restore();
+      note('B network back');
       const resumed = await waitFor(A.page, (s) => /in progress|fight/i.test((s.status ?? '') + (s.summary ?? '')) && !/paused|reconnect/i.test(s.status ?? ''), 40000, 'resume on A');
       note('A after resume:', resumed?.status, '|', resumed?.live);
       const bBack = await waitFor(B.page, (s) => /in progress|fight/i.test((s.status ?? '') + (s.summary ?? '')) && !/Unable|paused|reconnect/i.test(s.status ?? ''), 40000, 'B resumed');
@@ -759,7 +812,10 @@ async function main() {
 
     report.errors.push(...A.errors, ...B.errors);
   } finally {
-    server.child.kill('SIGTERM');
+    // On Windows `uv run` starts the server two processes down; killing uv alone leaves it running
+    // with this script's pipes open, and the script never exits.
+    if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(server.child.pid), '/T', '/F'], { stdio: 'ignore' });
+    else server.child.kill('SIGTERM');
     server.proxy?.close();
     await browser.close();
     const serverErrors = server.log.join('').split('\n').filter((l) => /error|warning|Traceback/i.test(l) && !/healthz/.test(l));
@@ -853,6 +909,14 @@ async function pickStyles(A, B, open, note, report) {
   note('the spectator hears:', (await pickerState(C.page))?.status);
   await A.page.screenshot({ path: `${out}/e2e-styles-A-pick.png` });
   await B.page.screenshot({ path: `${out}/e2e-styles-B-pick.png` });
+  // A phone on its side, narrower than 700 px: the five cards in one row, each with its strengths.
+  for (const [width, height] of [[568, 320], [667, 375]]) {
+    await B.page.setViewportSize({ width, height });
+    const layout = await B.page.evaluate(() => [...document.querySelectorAll('.style-cards button')].map((button) => ({ top: Math.round(button.getBoundingClientRect().top), stats: getComputedStyle(button.querySelector('.style-stats')).display })));
+    note(`pick on a ${width}x${height} phone:`, JSON.stringify(layout));
+    if (new Set(layout.map((card) => card.top)).size !== 1 || layout.some((card) => card.stats === 'none')) report.errors.push(`the pick at ${width}x${height} does not show the five cards in a row with their strengths`);
+  }
+  await B.page.setViewportSize({ width: 844, height: 390 });
   await B.page.tap('[data-style="swarmer"]');
   const started = await waitFor(A.page, (s) => /countdown|\. fight\./.test(s.summary ?? ''), 20000, 'bout start after the pick');
   note('bout started once both settled:', started !== null);

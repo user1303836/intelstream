@@ -798,14 +798,35 @@ describe("the pick of styles", () => {
     expect(picker.textContent).toContain("Two: Boxer");
     picker.querySelector<HTMLButtonElement>('[data-style="slugger"]')!.click();
     expect(mocks.styleChoices.at(-1)).toBe("slugger:true");
-    expect(localStorage.getItem("hands.style.v1")).toBe("slugger");
     send({ version: 3, type: "ready", players: [{ ...players[0], style: "slugger" }, { ...players[1], style: "boxer" }] });
+    expect(localStorage.getItem("hands.style.v1")).toBe("slugger");
     expect(picker.hidden).toBe(true);
     app.destroy();
+  });
+
+  it("remembers the style the room says the fighter boxes in, picked or left to the deadline", async () => {
+    localStorage.setItem("hands.style.v1", "boxer");
+    const { app, root } = await launch("styles-remember");
+    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [players[0]], server_tick: 0, next_sequence: 0 });
+    send({ version: 3, type: "select", deadline_ms: 9_000, players: [...players], ready: [] });
+    root.querySelector<HTMLButtonElement>('[data-style="slugger"]')!.click();
+    // The tap reached the room after it closed: it boxes, and next time offers, the style the room used.
+    expect(localStorage.getItem("hands.style.v1")).toBe("boxer");
+    send({ version: 3, type: "ready", players: [{ ...players[0], style: "counter_puncher" }, { ...players[1], style: "swarmer" }] });
+    expect(localStorage.getItem("hands.style.v1")).toBe("counter_puncher");
+    app.destroy();
+    const watcher = await launch("styles-remember-watch");
+    send({ version: 3, type: "welcome", role: "spectator", player_id: "viewer", players: [...players], server_tick: 0 });
+    send({ version: 3, type: "ready", players: [{ ...players[0], style: "slugger" }, { ...players[1], style: "swarmer" }] });
+    expect(localStorage.getItem("hands.style.v1")).toBe("counter_puncher");
+    watcher.app.destroy();
   });
 });
 
 describe("the broadcast", () => {
+  /** An English voice that runs on the device, as Windows, macOS, iOS and Android list theirs. */
+  const deviceVoices = [{ name: "Microsoft David", lang: "en-US", localService: true, default: true, voiceURI: "David" }];
+
   beforeEach(() => {
     mocks.callbacks = null;
     mocks.renderers.length = 0;
@@ -843,7 +864,7 @@ describe("the broadcast", () => {
   it("reads the ring announcements aloud and stops when the voice is switched off", async () => {
     const spoken: string[] = [];
     const cancel = vi.fn();
-    Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { speak: (utterance: { text: string }) => spoken.push(utterance.text), cancel, getVoices: () => [] } });
+    Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { speak: (utterance: { text: string }) => spoken.push(utterance.text), cancel, getVoices: () => deviceVoices } });
     Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: class { onend = null; onerror = null; constructor(readonly text: string) {} } });
     const { root, app } = await launch();
     const voice = root.querySelector<HTMLInputElement>("[data-announcer]")!;
@@ -857,9 +878,24 @@ describe("the broadcast", () => {
     app.destroy();
   });
 
+  it("keeps the voice off where the device's only English voices speak from a vendor's servers", async () => {
+    const spoken: string[] = [];
+    const online = [{ name: "Google US English", lang: "en-US", localService: false, default: true, voiceURI: "Google US English" }];
+    Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { speak: (utterance: { text: string }) => spoken.push(utterance.text), cancel: vi.fn(), getVoices: () => online } });
+    Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: class { onend = null; onerror = null; constructor(readonly text: string) {} } });
+    const { root, app } = await launch();
+    const voice = root.querySelector<HTMLInputElement>("[data-announcer]")!;
+    expect(voice.disabled).toBe(true);
+    expect(voice.checked).toBe(false);
+    expect(voice.parentElement!.title).toBe("This device has no English voice of its own");
+    mocks.renderers.at(-1)!.onAnnouncement!(["In the blue corner, One!"]);
+    expect(spoken).toEqual([]);
+    app.destroy();
+  });
+
   it("stops the announcer mid-line when the player turns the volume down to nothing", async () => {
     const cancel = vi.fn();
-    Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { speak: () => undefined, cancel, getVoices: () => [] } });
+    Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { speak: () => undefined, cancel, getVoices: () => deviceVoices } });
     Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: class { onend = null; onerror = null; constructor(readonly text: string) {} } });
     const { root, app } = await launch();
     mocks.renderers.at(-1)!.onAnnouncement!(["In the blue corner... One!"]);
@@ -870,18 +906,28 @@ describe("the broadcast", () => {
     app.destroy();
   });
 
-  it("cuts the ring announcer off at the opening bell", async () => {
+  it("lets the announcer finish the name it is reading at the opening bell, then stops it and drops the rest", async () => {
+    const spoken: string[] = [];
     const cancel = vi.fn();
-    Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { speak: () => undefined, cancel, getVoices: () => [] } });
+    Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { speak: (utterance: { text: string }) => spoken.push(utterance.text), cancel, getVoices: () => deviceVoices } });
     Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: class { onend = null; onerror = null; constructor(readonly text: string) {} } });
     const { app } = await launch();
+    vi.useFakeTimers();
     send({ version: 3, type: "snapshot", payload: makeSnapshot(1, "countdown") });
-    mocks.renderers.at(-1)!.onAnnouncement!(["In the blue corner... One!", "And in the red corner... Two!"]);
+    mocks.renderers.at(-1)!.onAnnouncement!(["In the blue corner, One!"]);
+    mocks.renderers.at(-1)!.onAnnouncement!(["And in the red corner, Two!"]);
     cancel.mockClear();
     send({ version: 3, type: "snapshot", payload: makeSnapshot(2, "countdown") });
-    expect(cancel).not.toHaveBeenCalled();
     send({ version: 3, type: "snapshot", payload: makeSnapshot(3, "fight") });
-    expect(cancel).toHaveBeenCalled();
+    // A slow voice still reading the blue corner's name at the bell gets to finish it, briefly.
+    expect(cancel).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1_499);
+    expect(cancel).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(cancel).toHaveBeenCalledOnce();
+    // The line still waiting was never started: round 1 is under way.
+    expect(spoken).toEqual(["In the blue corner, One!"]);
+    vi.useRealTimers();
     app.destroy();
   });
 
