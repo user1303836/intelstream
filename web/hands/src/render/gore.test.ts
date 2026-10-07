@@ -603,31 +603,35 @@ describe("referee and a head on the canvas", () => {
 
 describe("the winner beside the beaten fighter", () => {
   const renderer = FightRenderer.prototype as unknown as {
-    standApart(this: unknown, fighters: readonly [FighterSnapshot, FighterSnapshot]): readonly [FighterSnapshot, FighterSnapshot];
-    clearOfTheFallen: unknown;
+    standApart(this: unknown, fighters: readonly [FighterSnapshot, FighterSnapshot], dt: number): readonly [FighterSnapshot, FighterSnapshot];
   };
   const lying = [new THREE.Vector3(0.3, 0.1, 0.2), new THREE.Vector3(0.1, 0.2, 0.25), new THREE.Vector3(-0.2, 0.15, 0.3), new THREE.Vector3(-0.5, 0.1, 0.2), new THREE.Vector3(-0.5, 0.1, 0.4)];
-  const rig = (replay: unknown) => ({
+  const rig = (replay: unknown) => Object.assign(Object.create(FightRenderer.prototype) as object, {
     graphs: [{ fallBody: null }, { fallBody: { bodyPoint: (index: number, out: THREE.Vector3) => out.copy(lying[index]!) } }],
     mapping: worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }), replay, bodyPoint: new THREE.Vector3(),
-    drawnFighters: [{ ...fighter("one") }, { ...fighter("two") }], clearOfTheFallen: renderer.clearOfTheFallen,
+    drawnFighters: [{ ...fighter("one") }, { ...fighter("two") }], drawnOffsets: [{ x: 0, y: 0 }, { x: 0, y: 0 }], drawnTargets: [{ x: 0, y: 0 }, { x: 0, y: 0 }],
   });
 
   it("stands clear of the body where the fall left it, never inside it", () => {
     const stub = rig(null);
     const winner = { ...fighter("one"), x: 0, y: -40 };
     const loser = { ...fighter("two"), x: 0, y: -40, is_downed: true };
-    const [drawn, beaten] = renderer.standApart.call(stub, [winner, loser]);
+    const [drawn, beaten] = renderer.standApart.call(stub, [winner, loser], 1 / 60);
     const at = new THREE.Vector3(stub.mapping.x(drawn.x), 0, stub.mapping.z(drawn.y));
     for (const point of lying) expect(Math.hypot(at.x - point.x, at.z - point.z)).toBeGreaterThanOrEqual(0.5 - 1e-6);
     expect(beaten).toBe(loser);
     const far = { ...fighter("one"), x: 300, y: 200 };
-    expect(renderer.standApart.call(stub, [far, loser])[0]).toBe(far);
+    expect(renderer.standApart.call(rig(null), [far, loser], 1 / 60)[0]).toBe(far);
   });
 
-  it("leaves the replay as it was recorded", () => {
+  it("stands off the body in the replay as he did live", () => {
+    // The live fall's obstacle was the pushed winner, so the replayed fall lies where he would stand in it unpushed.
     const winner = { ...fighter("one"), x: 0, y: -40 };
-    expect(renderer.standApart.call(rig({}), [winner, { ...fighter("two"), x: 0, y: -40, is_downed: true }])[0]).toBe(winner);
+    const loser = { ...fighter("two"), x: 0, y: -40, is_downed: true };
+    const live = { ...renderer.standApart.call(rig(null), [winner, loser], 1 / 60)[0] };
+    const replayed = renderer.standApart.call(rig({}), [winner, loser], 1 / 60)[0];
+    expect(replayed).not.toBe(winner);
+    expect({ x: replayed.x, y: replayed.y }).toEqual({ x: live.x, y: live.y });
   });
 });
 

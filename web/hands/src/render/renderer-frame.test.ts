@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { REST_CORNER_OFFSET } from "../manifest";
+import { REST_CORNER_OFFSET, RING_CORNER_REACH } from "../manifest";
 import { fighter, snapshot } from "../test/fixtures";
 import type { EngineSnapshot, FighterSnapshot, FinalMessage } from "../types";
 import { CameraDirector, ceremonyShot, cornerPoint, FIGHTER_CAM_FOV_SCALE, FighterCam } from "./camera";
@@ -64,6 +64,8 @@ function frame(state: EngineSnapshot, overrides: Record<string, unknown> = {}) {
     replay: null,
     ceremony: null,
     drawnFighters: [fighter("one"), fighter("two")],
+    drawnOffsets: [{ x: 0, y: 0 }, { x: 0, y: 0 }],
+    drawnTargets: [{ x: 0, y: 0 }, { x: 0, y: 0 }],
     arcadeInjuries: [null, null],
     observedInjuryDown: [false, false],
     restoreInjury: vi.fn(),
@@ -550,6 +552,93 @@ describe("around the fight", () => {
     const [left, right] = raise.mock.lastCall!;
     expect(right).toBeNull();
     expect((left as THREE.Vector3).distanceTo(new THREE.Vector3(0.8, 1.9, 0.3))).toBeLessThan(1e-6);
+  });
+
+  /** The two fighters as drawn, frame after frame, from where the engine has them. */
+  const drawing = (graphs: unknown = null) => {
+    const stub = prototypeOf({
+      graphs, mapping: worldMapping(SIMULATION), replay: null, bodyPoint: new THREE.Vector3(),
+      drawnFighters: [fighter("one"), fighter("two")], drawnOffsets: [{ x: 0, y: 0 }, { x: 0, y: 0 }], drawnTargets: [{ x: 0, y: 0 }, { x: 0, y: 0 }],
+    });
+    return (one: Partial<FighterSnapshot>, two: Partial<FighterSnapshot>) => {
+      const [a, b] = method("standApart").call(stub, [{ ...fighter("one"), ...one }, { ...fighter("two"), ...two }], 1 / 60) as [FighterSnapshot, FighterSnapshot];
+      return [{ x: a.x, y: a.y }, { x: b.x, y: b.y }] as const;
+    };
+  };
+  /** The most either fighter's drawn offset from his engine place changes in one frame, in metres, through a sequence of engine places. */
+  const steadiest = (frames: readonly (readonly [Partial<FighterSnapshot>, Partial<FighterSnapshot>])[]) => {
+    const draw = drawing();
+    const offsets = (one: Partial<FighterSnapshot>, two: Partial<FighterSnapshot>) => {
+      const drawn = draw(one, two);
+      return [{ x: drawn[0].x - (one.x ?? 0), y: drawn[0].y - (one.y ?? 0) }, { x: drawn[1].x - (two.x ?? 0), y: drawn[1].y - (two.y ?? 0) }] as const;
+    };
+    let previous = offsets(...frames[0]!);
+    let worst = 0;
+    for (const [one, two] of frames.slice(1)) {
+      const next = offsets(one, two);
+      for (const seat of [0, 1] as const) worst = Math.max(worst, Math.hypot(next[seat].x - previous[seat].x, next[seat].y - previous[seat].y) * (3.05 / 500));
+      previous = next;
+    }
+    return worst;
+  };
+  const hold = <T,>(count: number, frame: T): T[] => Array.from({ length: count }, () => frame);
+
+  it("eases fighters apart and together rather than jumping them at a clinch, on the ropes or in a corner", () => {
+    // Closing from 110 to the engine's 76 units, then holding on: the clinch drops the drawn gap.
+    const clinch = [...hold(20, [{ x: -55 }, { x: 55 }] as const), ...hold(20, [{ x: -38 }, { x: 38 }] as const), ...hold(30, [{ x: -30, clinch_ticks: 9 }, { x: 30, clinch_ticks: 9 }] as const)];
+    // Before: 8.5 cm in one frame for each fighter when the clinch began.
+    expect(steadiest(clinch)).toBeLessThan(0.02);
+    // Backed onto the ropes a unit at a time: before, both drawn fighters jumped 6.7 cm when the one on the
+    // ropes ran out of room to step back.
+    const ropes = Array.from({ length: 30 }, (_, step) => [{ x: 432 + step - 76 }, { x: 432 + step }] as const);
+    expect(steadiest(ropes)).toBeLessThan(0.02);
+    // Backed into a corner, drawn inside the corner pad's cut as the engine keeps him (before: 9 cm into it).
+    const draw = drawing();
+    let cornered = draw({ x: 382, y: 255 }, { x: 440, y: 293 });
+    for (let frame = 0; frame < 60; frame += 1) cornered = draw({ x: 382, y: 255 }, { x: 440, y: 293 });
+    expect(Math.abs(cornered[1].x) + Math.abs(cornered[1].y)).toBeLessThanOrEqual(RING_CORNER_REACH + 1e-6);
+    expect(Math.hypot(cornered[1].x - cornered[0].x, cornered[1].y - cornered[0].y)).toBeGreaterThan(103);
+  });
+
+  it("starts the decision's walk to the marks from where the fighters were drawn at the bell", () => {
+    // Engine places 60 units apart, drawn 104 apart.
+    const { renderer, run, graphs } = frame(fighting({ x: -30 }, { x: 30 }));
+    run(30);
+    // The drawn fighters are reused objects: keep the number, not the fighter.
+    const drawnApart = (graphs[0]!.update.mock.calls.at(-1)![0] as FighterSnapshot).x;
+    expect(drawnApart).toBeCloseTo(-52, 0);
+    (renderer as { ceremony: unknown }).ceremony = { winnerSeat: 0, positions: null, refereeArrived: false, arrivedAt: null, announced: false };
+    run(1);
+    // Before, the walk started from the engine's place (x = -30), 13 cm from where he stood a frame before.
+    const walking = (graphs[0]!.update.mock.calls.at(-1)![0] as FighterSnapshot).x;
+    expect(Math.abs(walking - drawnApart)).toBeLessThan(200 / 60 + 0.5);
+  });
+
+  it("keeps a fighter pushed off a body on the canvas inside the ropes, sliding along them", () => {
+    const limit = 3.05 * (462 / 500);
+    let seed = 2026;
+    const random = (): number => {
+      seed = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      seed ^= seed + Math.imul(seed ^ (seed >>> 7), 61 | seed);
+      return ((seed ^ (seed >>> 14)) >>> 0) / 4294967296;
+    };
+    let outside = 0;
+    let inside = 0;
+    for (let trial = 0; trial < 3000; trial += 1) {
+      const centre = { x: (random() * 2 - 1) * 2.6, z: (random() * 2 - 1) * 2.6 };
+      const angle = random() * Math.PI * 2;
+      const body = [0, 1, 2, 3, 4].map((point) => new THREE.Vector3(centre.x + Math.cos(angle) * (point - 2) * 0.4, 0, centre.z + Math.sin(angle) * (point - 2) * 0.4));
+      const standing = { x: (random() * 2 - 1) * 2.6, z: (random() * 2 - 1) * 2.6 };
+      const draw = drawing([{ fallBody: null }, { fallBody: { bodyPoint: (point: number, out: THREE.Vector3) => out.copy(body[point]!) } }]);
+      const [drawn] = draw({ x: standing.x / (3.05 / 500), y: -standing.z / (3.05 / 500) }, { x: 300, y: 300, is_downed: true });
+      const x = drawn.x * (3.05 / 500);
+      const z = -drawn.y * (3.05 / 500);
+      if (Math.abs(x) > limit + 1e-3 || Math.abs(z) > limit + 1e-3) outside += 1;
+      if (body.some((point) => Math.hypot(x - point.x, z - point.z) < 0.5 - 1e-3)) inside += 1;
+    }
+    // Before, 33 in 20,000 such pushes left him outside the ropes' limit, by up to 0.37 m.
+    expect(outside).toBe(0);
+    expect(inside).toBe(0);
   });
 
   /** A close-up on fighter two, beaten, with the winner and the referee out of the way. */

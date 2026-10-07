@@ -211,9 +211,13 @@ describe("a bout that ends on the punch itself", () => {
     const { stub } = fightTo("tko");
     const heard: string[] = [];
     const excite = vi.fn();
+    const splashed: THREE.Vector3[] = [];
     Object.assign(stub, {
       onContact: (event: CombatEvent) => heard.push(event.kind), arena: { excite }, viewerId: "two", viewerHitFlash: 0,
       knockOutMouthpiece: vi.fn(), headWorldPose: () => null, mouthPoint: new THREE.Vector3(), reapplyReplayInjuries: vi.fn(),
+      // Where the frame draws them, eased apart: fighter two 0.6 m out, his engine place 0.37 m.
+      tmpA: new THREE.Vector3(-0.6, 0, 0), tmpB: new THREE.Vector3(0.6, 0, 0),
+      effects: { addEvent: (_event: CombatEvent, at: THREE.Vector3) => splashed.push(at.clone()), returnMouthpiece: vi.fn() },
     });
     for (const graph of stub.graphs as unknown as Record<string, unknown>[]) Object.assign(graph, { react: vi.fn(), landedHit: vi.fn() });
     const replay = stub.replay as unknown as { plan: { snapshots: EngineSnapshot[] } };
@@ -226,6 +230,8 @@ describe("a bout that ends on the punch itself", () => {
     fireContacts.call(stub, 160.3);
     // Before, the knockdown's contact was dropped when the replay began: no thud, no roar, no rumble.
     expect(heard).toEqual(["counter_hit", "knockdown"]);
+    // The replayed punch's blood leaves the head where it is drawn.
+    expect(splashed[0]!.x).toBeCloseTo(0.6, 6);
     expect(excite).toHaveBeenCalledWith(1);
     expect(stub.viewerHitFlash).toBeGreaterThan(0);
     expect(stub.pendingContacts).toEqual([]);

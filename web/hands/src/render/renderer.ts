@@ -6,8 +6,8 @@ import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { EventDeduplicator, SnapshotBuffer } from "../interpolation";
 import { coarsePointer } from "../input/touch";
-import { FIGHTER_RADIUS, REST_CORNER_OFFSET, RING_HALF_HEIGHT, RING_HALF_WIDTH, punchTiming, styleTiming } from "../manifest";
-import { EVASION_STAMINA, EVASION_TICKS, EvasionPrediction, MovementPrediction, attackTicksRemaining, constrainPrediction, isEvasion, predictedDefense, predictedPunchTiming, type HeldInput } from "../prediction";
+import { FIGHTER_RADIUS, REST_CORNER_OFFSET, RING_CORNER_REACH, RING_HALF_HEIGHT, RING_HALF_WIDTH, punchTiming, styleTiming } from "../manifest";
+import { EVASION_STAMINA, EVASION_TICKS, EvasionPrediction, MovementPrediction, attackTicksRemaining, constrainPrediction, isEvasion, predictedDefense, predictedPunchTiming, ringPoint, type HeldInput } from "../prediction";
 import type { BloodLevel, Settings } from "../settings";
 import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, Hand, MatchResult, PublicPlayer, PunchClass, SemanticAction, SimulationInfo } from "../types";
 import { buildArena, type BuiltArena } from "./arena";
@@ -197,6 +197,16 @@ const STANDING_BLOCK_RADIUS = 0.5;
 const FALLEN_BLOCK_RADIUS = 0.28;
 /** The engine lets fighters stand 76 units apart, which puts two drawn bodies inside each other. */
 const DRAWN_MINIMUM_GAP = 104;
+/**
+ * How quickly (per second) a fighter drawn off his engine place follows where he should be drawn, and how
+ * fast at most (engine units per second, about a walk), so a clinch, a knockdown, the ropes or a body landing
+ * beside him never jump him.
+ */
+const DRAWN_SHIFT_RATE = 14;
+const DRAWN_SHIFT_SPEED = 260;
+/** How far, in metres, a fighter slides along the ropes at most to find a place clear of a body on the canvas, in steps of this much. */
+const ROPE_SLIDE_LIMIT = 2;
+const ROPE_SLIDE_STEP = 0.05;
 const CORNERMAN_WORK_DISTANCE = 2.95;
 /** Metres per second the referee steps in at to break a clinch. */
 const REFEREE_BREAK_SPEED = 2.4;
@@ -542,9 +552,27 @@ export function closeUpAngle(
 }
 
 /**
+ * How far a fighter at (x, y) can step along the unit direction (dx, dy) before the ropes or a corner pad
+ * stop him: inside |x| <= limitX, |y| <= limitY and |x| + |y| <= cornerReach.
+ */
+function roomAlong(x: number, y: number, dx: number, dy: number, limitX: number, limitY: number, cornerReach: number): number {
+  let room = Number.POSITIVE_INFINITY;
+  if (Math.abs(dx) > 1e-9) room = Math.min(room, (Math.sign(dx) * limitX - x) / dx);
+  if (Math.abs(dy) > 1e-9) room = Math.min(room, (Math.sign(dy) * limitY - y) / dy);
+  for (const sx of [-1, 1]) {
+    for (const sy of [-1, 1]) {
+      const toward = sx * dx + sy * dy;
+      if (toward > 1e-9) room = Math.min(room, (cornerReach - sx * x - sy * y) / toward);
+    }
+  }
+  return Math.max(0, room);
+}
+
+/**
  * Positions for drawing two fighters the engine has closer than `minimum`: both step back along the
- * line between them. One held by the ropes stays, and the other gives the whole way. Null when they
- * are already far enough apart.
+ * line between them. One held by the ropes or a corner pad steps back as far as he has room to, and the
+ * other gives the rest, so the split changes as smoothly as the room does. Null when they are already far
+ * enough apart.
  */
 export function visualSeparation(
   ax: number,
@@ -554,17 +582,18 @@ export function visualSeparation(
   minimum: number,
   limitX: number,
   limitY: number,
+  cornerReach = Number.POSITIVE_INFINITY,
 ): { ax: number; ay: number; bx: number; by: number } | null {
   const gap = Math.hypot(bx - ax, by - ay);
   if (gap >= minimum) return null;
   const ux = gap < 1e-6 ? 1 : (bx - ax) / gap;
   const uy = gap < 1e-6 ? 0 : (by - ay) / gap;
-  const inside = (x: number, y: number): boolean => Math.abs(x) <= limitX && Math.abs(y) <= limitY;
-  const back = (minimum - gap) / 2;
-  const aFree = inside(ax - ux * back, ay - uy * back);
-  const bFree = inside(bx + ux * back, by + uy * back);
-  const aBack = aFree ? (bFree ? back : back * 2) : 0;
-  const bBack = bFree ? (aFree ? back : back * 2) : 0;
+  const short = minimum - gap;
+  const roomA = roomAlong(ax, ay, -ux, -uy, limitX, limitY, cornerReach);
+  const roomB = roomAlong(bx, by, ux, uy, limitX, limitY, cornerReach);
+  let aBack = Math.min(short / 2, roomA);
+  const bBack = Math.min(short - aBack, roomB);
+  aBack = Math.min(short - bBack, roomA);
   const clamp = THREE.MathUtils.clamp;
   return {
     ax: clamp(ax - ux * aBack, -limitX, limitX),
@@ -951,6 +980,11 @@ export class FightRenderer {
   private readonly closeUpTarget = new THREE.Vector3();
   private readonly closeUpFacing = new THREE.Vector3();
   private readonly drawnFighters: [FighterSnapshot, FighterSnapshot] = [blankFighter("a"), blankFighter("b")];
+  /** How far each fighter is drawn from his engine place, in engine units, eased; and where it is heading. */
+  private readonly drawnOffsets: [{ x: number; y: number }, { x: number; y: number }] = [{ x: 0, y: 0 }, { x: 0, y: 0 }];
+  private readonly drawnTargets: [{ x: number; y: number }, { x: number; y: number }] = [{ x: 0, y: 0 }, { x: 0, y: 0 }];
+  /** False when the next frame takes the offsets as they are due, without easing: the first, and at a replay's cuts. */
+  private drawnOffsetsLive = false;
   private readonly lookIds: [string | null, string | null] = [null, null];
   private readonly downedPoolAccumulators: [number, number] = [0, 0];
   private readonly downedPoolCounts: [number, number] = [0, 0];
@@ -1317,11 +1351,17 @@ export class FightRenderer {
     this.referee?.raise(null, null);
   }
 
-  /** The fighters as drawn during the decision: walking to their marks, then standing square to the camera. */
-  private ceremonyFighters(ceremony: Ceremony, fighters: readonly [FighterSnapshot, FighterSnapshot], dt: number, seconds: number): readonly [FighterSnapshot, FighterSnapshot] {
+  /**
+   * The fighters as drawn during the decision: walking to their marks, then standing square to the camera.
+   * The walk starts where they were drawn at the bell, `drawnFrom` their engine places.
+   */
+  private ceremonyFighters(ceremony: Ceremony, fighters: readonly [FighterSnapshot, FighterSnapshot], dt: number, seconds: number, drawnFrom: readonly [{ readonly x: number; readonly y: number }, { readonly x: number; readonly y: number }] | null = null): readonly [FighterSnapshot, FighterSnapshot] {
     if (ceremony.positions === null) {
-      ceremony.positions = [{ x: fighters[0].x, y: fighters[0].y }, { x: fighters[1].x, y: fighters[1].y }];
-      ceremony.marks = fighters[0].x <= fighters[1].x ? [0, 1] : [1, 0];
+      ceremony.positions = [
+        { x: fighters[0].x + (drawnFrom?.[0].x ?? 0), y: fighters[0].y + (drawnFrom?.[0].y ?? 0) },
+        { x: fighters[1].x + (drawnFrom?.[1].x ?? 0), y: fighters[1].y + (drawnFrom?.[1].y ?? 0) },
+      ];
+      ceremony.marks = ceremony.positions[0].x <= ceremony.positions[1].x ? [0, 1] : [1, 0];
     }
     const marks = ceremony.marks ?? SEAT_MARKS;
     let arrived = ceremony.refereeArrived;
@@ -1563,6 +1603,8 @@ export class FightRenderer {
     const buffer = new SnapshotBuffer(plan.snapshots.length + 2, this.simulation.tick_rate);
     for (const snapshot of plan.snapshots) buffer.push(snapshot);
     this.replay = { plan, buffer, startedAt: this.frameSeconds, impactFired: false, side: null };
+    // The replay cuts to other moments: the fighters are drawn there at once, not eased across.
+    this.drawnOffsetsLive = false;
     this.commentary.replay(this.frameSeconds);
     this.replayFollow = 0;
     this.replayFollowAt = 0;
@@ -1606,6 +1648,7 @@ export class FightRenderer {
 
   private endReplay(): void {
     this.replay = null;
+    this.drawnOffsetsLive = false;
     this.reapplyReplayInjuries();
     const live = this.buffer.latest();
     for (const [index, graph] of (this.graphs ?? []).entries()) {
@@ -1624,7 +1667,8 @@ export class FightRenderer {
     const { recipientIndex, puncherIndex } = contactParticipants(event, snapshot);
     const recipient = snapshot.fighters[recipientIndex];
     if (recipient === undefined) return;
-    this.contactPoint.set(this.mapping.x(recipient.x), 0, this.mapping.z(recipient.y));
+    // Where he is drawn, apart from the puncher, rather than his engine place up to 17 cm into him.
+    this.contactPoint.copy(recipientIndex === 0 ? this.tmpA : this.tmpB);
     const spray = sprayDirection(snapshot.fighters[puncherIndex], recipient, this.mapping);
     this.effects.addEvent(event, this.contactPoint, this.settings().reducedMotion, spray);
     const puncher = puncherIndex >= 0 ? snapshot.fighters[puncherIndex] : undefined;
@@ -2273,7 +2317,7 @@ export class FightRenderer {
     let downedAt: { x: number; z: number } | null = null;
     if (snapshot !== null) {
       const ceremony = this.replay === null ? this.ceremony : null;
-      const [a, b] = ceremony !== null ? this.ceremonyFighters(ceremony, snapshot.fighters, actorDt, seconds) : this.standApart(snapshot.fighters);
+      const [a, b] = ceremony !== null ? this.ceremonyFighters(ceremony, snapshot.fighters, actorDt, seconds, this.drawnOffsets) : this.standApart(snapshot.fighters, actorDt);
       for (const [index, fighter] of snapshot.fighters.entries()) {
         if (this.arcadeInjuries[index] === null || this.replay !== null) continue;
         if (fighter.is_downed) this.observedInjuryDown[index] = true;
@@ -2502,33 +2546,100 @@ export class FightRenderer {
     this.graphs?.[index]?.boxer.setLook(lookFor(playerId));
   }
 
-  /** The fighters as drawn: eased apart when the engine has them closer than two bodies can stand, and off a fighter lying on the canvas. */
-  private standApart(fighters: readonly [FighterSnapshot, FighterSnapshot]): readonly [FighterSnapshot, FighterSnapshot] {
+  /**
+   * The fighters as drawn: apart when the engine has them closer than two bodies can stand, and off a
+   * fighter lying on the canvas (in the replay as live). Each is eased toward where he should be drawn, at
+   * no more than a walk, rather than jumped there.
+   */
+  private standApart(fighters: readonly [FighterSnapshot, FighterSnapshot], dt: number): readonly [FighterSnapshot, FighterSnapshot] {
     const [a, b] = fighters;
     const tied = [a, b].some((fighter) => fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0 || fighter.is_downed);
-    const apart = tied ? null : visualSeparation(a.x, a.y, b.x, b.y, DRAWN_MINIMUM_GAP, RING_HALF_WIDTH - FIGHTER_RADIUS, RING_HALF_HEIGHT - FIGHTER_RADIUS);
-    const drawn: readonly [FighterSnapshot, FighterSnapshot] = apart === null ? fighters : [Object.assign(this.drawnFighters[0], a, { x: apart.ax, y: apart.ay }), Object.assign(this.drawnFighters[1], b, { x: apart.bx, y: apart.by })];
-    return this.replay === null ? this.clearOfTheFallen(drawn) : drawn;
+    const apart = tied ? null : visualSeparation(a.x, a.y, b.x, b.y, DRAWN_MINIMUM_GAP, RING_HALF_WIDTH - FIGHTER_RADIUS, RING_HALF_HEIGHT - FIGHTER_RADIUS, RING_CORNER_REACH);
+    const [targetA, targetB] = this.drawnTargets;
+    targetA.x = apart === null ? 0 : apart.ax - a.x;
+    targetA.y = apart === null ? 0 : apart.ay - a.y;
+    targetB.x = apart === null ? 0 : apart.bx - b.x;
+    targetB.y = apart === null ? 0 : apart.by - b.y;
+    this.clearOfTheFallen(fighters);
+    const rate = 1 - Math.exp(-DRAWN_SHIFT_RATE * dt);
+    for (const seat of [0, 1] as const) {
+      const offset = this.drawnOffsets[seat];
+      const target = this.drawnTargets[seat];
+      let stepX = target.x - offset.x;
+      let stepY = target.y - offset.y;
+      if (this.drawnOffsetsLive) {
+        stepX *= rate;
+        stepY *= rate;
+        const step = Math.hypot(stepX, stepY);
+        if (step > DRAWN_SHIFT_SPEED * dt) {
+          stepX *= (DRAWN_SHIFT_SPEED * dt) / step;
+          stepY *= (DRAWN_SHIFT_SPEED * dt) / step;
+        }
+      }
+      offset.x += stepX;
+      offset.y += stepY;
+    }
+    this.drawnOffsetsLive = true;
+    return [this.drawnAt(0, a), this.drawnAt(1, b)];
   }
 
-  /** Whoever is still on his feet stands off the body of a fighter lying where the fall took him, never in it. */
-  private clearOfTheFallen(fighters: readonly [FighterSnapshot, FighterSnapshot]): readonly [FighterSnapshot, FighterSnapshot] {
+  /** A fighter where he is drawn this frame: his engine place and his offset, inside the ropes and corner pads. */
+  private drawnAt(seat: 0 | 1, fighter: FighterSnapshot): FighterSnapshot {
+    const offset = this.drawnOffsets[seat];
+    if (Math.abs(offset.x) < 0.01 && Math.abs(offset.y) < 0.01) return fighter;
+    const inside = ringPoint(fighter.x + offset.x, fighter.y + offset.y);
+    return Object.assign(this.drawnFighters[seat], fighter, { x: inside.x, y: inside.y });
+  }
+
+  /**
+   * Whoever is still on his feet stands off the body of a fighter lying where the fall took him, never in it,
+   * and inside the ropes: his drawn target moves by as much.
+   */
+  private clearOfTheFallen(fighters: readonly [FighterSnapshot, FighterSnapshot]): void {
     for (const lying of [0, 1] as const) {
       const body = this.graphs?.[lying]?.fallBody ?? null;
       const seat = lying === 0 ? 1 : 0;
       const standing = fighters[seat];
       if (body === null || standing.is_downed || (this.graphs?.[seat]?.fallBody ?? null) !== null) continue;
-      let x = this.mapping.x(standing.x);
-      let z = this.mapping.z(standing.y);
-      for (const point of [0, 1, 2, 3, 4] as const) {
-        body.bodyPoint(point, this.bodyPoint);
-        ({ x, z } = keepClear(x, z, this.bodyPoint.x, this.bodyPoint.z, STANDING_BODY_CLEARANCE));
-      }
-      if (x === this.mapping.x(standing.x) && z === this.mapping.z(standing.y)) continue;
-      const moved = Object.assign(this.drawnFighters[seat], standing, { x: x / this.mapping.x(1), y: z / this.mapping.z(1) });
-      return seat === 0 ? [moved, fighters[1]] : [fighters[0], moved];
+      const target = this.drawnTargets[seat];
+      const fromX = this.mapping.x(standing.x + target.x);
+      const fromZ = this.mapping.z(standing.y + target.y);
+      const clear = this.clearOf(body, fromX, fromZ);
+      target.x += (clear.x - fromX) / this.mapping.x(1);
+      target.y += (clear.z - fromZ) / this.mapping.z(1);
+      return;
     }
-    return fighters;
+  }
+
+  /**
+   * The place nearest (x, z) at least STANDING_BODY_CLEARANCE from every point of a body on the canvas, and
+   * inside the ropes: pushed off the body, then, where the ropes stop the push, slid along them.
+   */
+  private clearOf(body: Pick<NonNullable<BoxingGraph["fallBody"]>, "bodyPoint">, x: number, z: number): { x: number; z: number } {
+    let pushed = { x, z };
+    for (const point of [0, 1, 2, 3, 4] as const) {
+      body.bodyPoint(point, this.bodyPoint);
+      pushed = keepClear(pushed.x, pushed.z, this.bodyPoint.x, this.bodyPoint.z, STANDING_BODY_CLEARANCE);
+    }
+    const inside = this.insideRopes(pushed.x, pushed.z);
+    if (Math.hypot(inside.x - pushed.x, inside.z - pushed.z) < 1e-6) return pushed;
+    const clear = (at: { x: number; z: number }): boolean => ([0, 1, 2, 3, 4] as const).every((point) => {
+      body.bodyPoint(point, this.bodyPoint);
+      return Math.hypot(at.x - this.bodyPoint.x, at.z - this.bodyPoint.z) >= STANDING_BODY_CLEARANCE - 1e-6;
+    });
+    for (let slid = ROPE_SLIDE_STEP; slid <= ROPE_SLIDE_LIMIT + 1e-9; slid += ROPE_SLIDE_STEP) {
+      for (const [alongX, alongZ] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+        const along = this.insideRopes(inside.x + alongX * slid, inside.z + alongZ * slid);
+        if (clear(along)) return along;
+      }
+    }
+    return inside;
+  }
+
+  /** The nearest place inside the ropes and corner pads to (x, z), in world space. */
+  private insideRopes(x: number, z: number): { x: number; z: number } {
+    const inside = ringPoint(x / this.mapping.x(1), z / this.mapping.z(1));
+    return { x: this.mapping.x(inside.x), z: this.mapping.z(inside.y) };
   }
 
   private headHeightOf(index: number): number {
