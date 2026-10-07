@@ -1,6 +1,13 @@
+import * as THREE from "three";
 import { AudioFeedback, rockedBeatTicks } from "./audio";
 import { INJURY_SOUNDS } from "./assets/injury-sounds";
 import { HapticFeedback } from "./haptics";
+import { EventDeduplicator, SnapshotBuffer } from "./interpolation";
+import { RoundStatsTracker } from "./render/hud";
+import { contactParticipants, contactPresentationPlan, FightRenderer } from "./render/renderer";
+import { worldMapping } from "./render/world";
+import { fighter, snapshot } from "./test/fixtures";
+import type { CombatEvent, EngineSnapshot } from "./types";
 
 const settings = { volume: 1, haptics: true, reducedMotion: false, blood: "full" as const, camera: "broadcast" as const, commentary: true, announcer: true };
 const audioParam = (): AudioParam => ({ value: 0, setValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn(), cancelScheduledValues: vi.fn(), setTargetAtTime: vi.fn() } as unknown as AudioParam);
@@ -446,5 +453,78 @@ describe("rocked", () => {
     feedback.result({ version: 3, type: "final", match_id: "m", winner_id: "two", method: "forfeit", round: 1, scorecards: [], ratings: {} });
     expect(target.mock.lastCall![0]).toBeCloseTo(20_000);
     feedback.destroy();
+  });
+});
+
+describe("a punch the guard took", () => {
+  const SIMULATION = { tick_rate: 30, ring_half_width: 500, ring_half_height: 500 };
+  const renderer = FightRenderer.prototype as unknown as {
+    fireContacts(this: unknown, sampledTick: number): void;
+    push(this: unknown, snapshot: EngineSnapshot): void;
+    recordedHit(this: unknown, knockdown: CombatEvent): CombatEvent | null;
+  };
+  // The engine reports the defender's block, then the hit that leaked through it, under the punch's action id.
+  const block: CombatEvent = { event_id: 11, tick: 40, kind: "block", actor_id: "two", target_id: "one", amount: 30, detail: "", blood: 0, direction: 0, action_id: "one:7" };
+  const leaked: CombatEvent = { event_id: 12, tick: 40, kind: "counter_hit", actor_id: "one", target_id: "two", amount: 60, detail: "uppercut:head", blood: 12, direction: 1, action_id: "one:7" };
+  const clean: CombatEvent = { ...leaked, event_id: 21, amount: 120, blood: 30, action_id: "one:8" };
+
+  beforeEach(() => {
+    MockAudioContext.filters = [];
+    MockAudioContext.gains = [];
+    vi.stubGlobal("AudioContext", MockAudioContext);
+  });
+
+  it("is heard and felt as the block, not as a punch that landed", async () => {
+    const audio = new AudioFeedback(() => settings);
+    await audio.unlock();
+    const rumbles: number[] = [];
+    Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [{ connected: true, vibrationActuator: { playEffect: async (_type: string, pattern: { duration: number }) => { rumbles.push(pattern.duration); } } }] });
+    const haptics = new HapticFeedback(() => settings);
+    const sounds = Object.fromEntries((["impact", "crowdSwell", "ooh"] as const).map((name) => [name, vi.spyOn(AudioFeedback.prototype as unknown as Record<typeof name, () => void>, name)]));
+    // Through the renderer's real presentation, as push() queues contacts and the clock reaches them.
+    const present = (events: CombatEvent[]): string[] => {
+      const frame = snapshot(40);
+      const heard: string[] = [];
+      const stub = Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, {
+        pendingContacts: contactPresentationPlan(events, frame).map((entry) => ({ ...entry, contactTick: 40, ...contactParticipants(entry.event, frame), injury: null })),
+        buffer: { latest: () => frame }, presentFightEvent: vi.fn(), mapping: worldMapping(SIMULATION), contactPoint: new THREE.Vector3(), mouthPoint: new THREE.Vector3(),
+        effects: { addEvent: vi.fn(), spawnTeeth: vi.fn() }, settings: () => ({ reducedMotion: false, blood: "full" }), arena: { excite: vi.fn() }, viewerId: null,
+        arcadeInjuries: [null, null], graphs: null, headWorldPose: () => null, knockOutMouthpiece: vi.fn(), viewerHitFlash: 0,
+        onContact: (event: CombatEvent) => {
+          heard.push(event.kind);
+          audio.event(event);
+          haptics.event(event);
+        },
+      });
+      renderer.fireContacts.call(stub, 40);
+      return heard;
+    };
+    expect(present([block, leaked])).toEqual(["block"]);
+    for (const spy of Object.values(sounds)) expect(spy).not.toHaveBeenCalled();
+    expect(rumbles).toEqual([55]);
+    // The same counter landing clean is a punch, a swell and an ooh, and the counter's rumble.
+    expect(present([clean])).toEqual(["counter_hit"]);
+    for (const spy of Object.values(sounds)) expect(spy).toHaveBeenCalledOnce();
+    expect(rumbles).toEqual([55, 105]);
+    audio.destroy();
+  });
+
+  it("earns no finisher for the knockdown it causes, though the replay still shows it", () => {
+    const knockdown: CombatEvent = { event_id: 13, tick: 40, kind: "knockdown", actor_id: "one", target_id: "two", amount: 1, detail: "", blood: 0, direction: 0, action_id: null };
+    const pushed = (events: CombatEvent[]): { hit: CombatEvent | null; finisher: string | null } => {
+      const stub: Record<string, unknown> = {
+        buffer: new SnapshotBuffer(64, 30), dedupe: new EventDeduplicator(), history: [], roundStats: new RoundStatsTracker(), referee: null, graphs: null,
+        acknowledgeActions: vi.fn(), mapping: worldMapping(SIMULATION), contactPoint: new THREE.Vector3(), pendingContacts: [], effects: { addEvent: vi.fn() },
+        manualClock: true, lastManualTime: 0, lastKnockdown: null, recordedHit: renderer.recordedHit, settings: () => ({ reducedMotion: false, blood: "full" }),
+        commentary: { observe: vi.fn() }, simulation: SIMULATION, players: {}, frameSeconds: 0,
+      };
+      const floored = { ...snapshot(40), phase: "knockdown" as const, fighters: [{ ...fighter("one", -100), action_key: "uppercut:right:head:power" }, { ...fighter("two", 100), is_downed: true }] as const, events };
+      renderer.push.call(stub, floored);
+      return stub.lastKnockdown as { hit: CombatEvent | null; finisher: string | null };
+    };
+    expect(pushed([clean, { ...knockdown, event_id: 22 }]).finisher).not.toBeNull();
+    const blocked = pushed([block, leaked, knockdown]);
+    expect(blocked.finisher).toBeNull();
+    expect(blocked.hit).toEqual(leaked);
   });
 });

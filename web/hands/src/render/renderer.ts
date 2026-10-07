@@ -17,7 +17,7 @@ import { captionSlot, drawCaption } from "./caption";
 import { CommentaryDirector, type CrowdCue } from "./commentary";
 import { Effects3D, type BakedPart, type SprayDirection } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, releaseFighterGpu, type ArcadeDislocation, type CutmanProp } from "./graph";
-import { drawHud, finalRevealDelay, hudScale, resultCard, resultCardLayout, RoundStatsTracker, STOPPAGE_METHODS, RoundClock, type RoundPunchStats } from "./hud";
+import { drawHud, finalRevealDelay, hudScale, resultCard, resultCardLayout, RoundStatsTracker, STOPPAGE_METHODS, RoundClock, wasBlocked, type RoundPunchStats } from "./hud";
 import { BURST_CUT_HEIGHT, EYE_LIDS, NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE } from "./injury";
 import { BIG_SHOT, closeCut, cutRim, teethFor } from "./gore";
 import { mouthpieceFlies } from "./mouthpiece";
@@ -1839,9 +1839,12 @@ export class FightRenderer {
     for (const event of accepted) {
       this.roundStats.record(event, accepted);
       if (event.kind === "knockdown") {
-        const hit = accepted.find((candidate) => (candidate.kind === "hit" || candidate.kind === "counter_hit") && candidate.target_id === event.target_id)
+        // The punch that put him down landed on the knockdown's own tick; a snapshot can carry older ones too.
+        const hit = accepted.find((candidate) => isHit(candidate) && candidate.target_id === event.target_id && candidate.tick === event.tick)
           ?? (event.detail === "body" ? this.recordedHit(event) : null);
-        this.lastKnockdown = { knockdown: event, hit, finisher: knockdownFinisher(hit, snapshot) };
+        // A punch the guard took can still floor a fighter with no poise left. The replay shows it as it was,
+        // but it earns no finisher.
+        this.lastKnockdown = { knockdown: event, hit, finisher: hit !== null && wasBlocked(hit, snapshot.events) ? null : knockdownFinisher(hit, snapshot) };
         const downed = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.target_id);
         this.graphs?.[downed]?.fallToKnee(event.detail === BODY_KNOCKDOWN);
       }
@@ -1962,7 +1965,8 @@ export class FightRenderer {
       ) {
         graphs?.[puncherIndex]?.landedHit(event.kind === "block" || event.kind === "perfect_block");
       }
-      this.onContact?.(event);
+      // The hit that leaked through a block is heard and felt as the block it came with, not as a landed punch.
+      if (pending.presentImpact || !isHit(event)) this.onContact?.(event);
     }
   }
 
