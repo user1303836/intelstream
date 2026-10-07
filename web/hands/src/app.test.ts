@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   cornerPicks: [] as string[],
   cpuRequests: [] as string[],
   cpuAccepted: true,
+  renderers: [] as Array<{ onAnnouncement?: ((lines: readonly string[]) => void) | null; onCrowdCue?: ((cue: "chant") => void) | null }>,
 }));
 vi.mock("./discord", () => ({
   authorizeDiscord: vi.fn(async () => ({
@@ -38,7 +39,9 @@ vi.mock("./network", () => ({
 vi.mock("./render/renderer", () => ({
   FightRenderer: class {
     private readonly pushes: number[] = [];
-    constructor() { mocks.rendererPushes.push(this.pushes); }
+    onAnnouncement: ((lines: readonly string[]) => void) | null = null;
+    onCrowdCue: ((cue: "chant") => void) | null = null;
+    constructor() { mocks.rendererPushes.push(this.pushes); mocks.renderers.push(this); }
     setPlayers(): void {}
     setFinal(): void {}
     setReconnect(): void {}
@@ -53,6 +56,7 @@ vi.mock("./render/renderer", () => ({
 
 import { ClientError } from "./api";
 import { HandsApp } from "./app";
+import { AudioFeedback } from "./audio";
 import { authorizeDiscord } from "./discord";
 
 const send = (message: ServerMessage): void => { mocks.callbacks?.onMessage(message); };
@@ -475,6 +479,92 @@ describe("the corner panel", () => {
     send({ version: 3, type: "welcome", role: "spectator", player_id: "viewer", players: [...players], server_tick: 0, reconnect_ticket: "spectator" });
     send({ version: 3, type: "snapshot", payload: makeSnapshot(11, "rest") });
     expect(root.querySelector<HTMLElement>("[data-corner]")!.hidden).toBe(true);
+    app.destroy();
+  });
+});
+
+describe("the broadcast", () => {
+  beforeEach(() => {
+    mocks.callbacks = null;
+    mocks.renderers.length = 0;
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    Reflect.deleteProperty(window, "speechSynthesis");
+    Reflect.deleteProperty(window, "SpeechSynthesisUtterance");
+  });
+
+  const launch = async (): Promise<{ root: HTMLElement; app: HandsApp }> => {
+    history.replaceState({}, "", "/?instance_id=broadcast");
+    const root = document.createElement("div");
+    const app = new HandsApp(root);
+    app.start();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
+    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 0, next_sequence: 0 });
+    return { root, app };
+  };
+
+  it("offers caption and announcer settings, with the voice switched off where the browser cannot speak", async () => {
+    const { root, app } = await launch();
+    const captions = root.querySelector<HTMLInputElement>("[data-commentary]")!;
+    const voice = root.querySelector<HTMLInputElement>("[data-announcer]")!;
+    expect(captions.checked).toBe(true);
+    expect(voice.disabled).toBe(true);
+    expect(voice.checked).toBe(false);
+    captions.checked = false;
+    captions.dispatchEvent(new Event("change"));
+    expect(JSON.parse(localStorage.getItem("hands.preferences.v1")!)).toMatchObject({ commentary: false });
+    app.destroy();
+  });
+
+  it("reads the ring announcements aloud and stops when the voice is switched off", async () => {
+    const spoken: string[] = [];
+    const cancel = vi.fn();
+    Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { speak: (utterance: { text: string }) => spoken.push(utterance.text), cancel, getVoices: () => [] } });
+    Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: class { onend = null; onerror = null; constructor(readonly text: string) {} } });
+    const { root, app } = await launch();
+    const voice = root.querySelector<HTMLInputElement>("[data-announcer]")!;
+    expect(voice.disabled).toBe(false);
+    expect(voice.checked).toBe(true);
+    mocks.renderers.at(-1)!.onAnnouncement!(["In the blue corner... One!", "And in the red corner... Two!"]);
+    expect(spoken).toEqual(["In the blue corner... One!"]);
+    voice.checked = false;
+    voice.dispatchEvent(new Event("change"));
+    expect(cancel).toHaveBeenCalled();
+    app.destroy();
+  });
+
+  it("muffles the sound only when the player's own fighter is rocked, never for a spectator", async () => {
+    const rocked = vi.spyOn(AudioFeedback.prototype, "rocked");
+    const { app } = await launch();
+    send({ version: 3, type: "ready", players: [...players] });
+    const hit = makeSnapshot(40);
+    send({ version: 3, type: "snapshot", payload: { ...hit, fighters: [{ ...hit.fighters[0], stunned_ticks: 45 }, hit.fighters[1]] } });
+    expect(rocked).toHaveBeenLastCalledWith(1, 40);
+    app.destroy();
+    rocked.mockClear();
+    history.replaceState({}, "", "/?instance_id=watch");
+    const root = document.createElement("div");
+    const watcher = new HandsApp(root);
+    watcher.start();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
+    send({ version: 3, type: "welcome", role: "spectator", player_id: "three", players: [...players], server_tick: 0 });
+    send({ version: 3, type: "snapshot", payload: { ...hit, fighters: [{ ...hit.fighters[0], stunned_ticks: 45 }, hit.fighters[1]] } });
+    expect(rocked).not.toHaveBeenCalled();
+    watcher.destroy();
+  });
+
+  it("lets the crowd follow the fight", async () => {
+    const tension = vi.spyOn(AudioFeedback.prototype, "tension");
+    const chant = vi.spyOn(AudioFeedback.prototype, "chant");
+    const { app } = await launch();
+    send({ version: 3, type: "ready", players: [...players] });
+    const hurt = makeSnapshot(40);
+    send({ version: 3, type: "snapshot", payload: { ...hurt, fighters: [hurt.fighters[0], { ...hurt.fighters[1], stunned_ticks: 12 }] } });
+    expect(tension).toHaveBeenLastCalledWith(0.75);
+    mocks.renderers.at(-1)!.onCrowdCue!("chant");
+    expect(chant).toHaveBeenCalledOnce();
     app.destroy();
   });
 });

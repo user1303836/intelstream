@@ -227,7 +227,7 @@ function roundCard(ctx: CanvasRenderingContext2D, centerX: number, y: number, cl
 
 const PANEL_HEIGHT = 78;
 const SHORT_PANEL_HEIGHT = 50;
-const panelHeightFor = (height: number): number => (height < 480 ? SHORT_PANEL_HEIGHT : PANEL_HEIGHT);
+export const panelHeightFor = (height: number): number => (height < 480 ? SHORT_PANEL_HEIGHT : PANEL_HEIGHT);
 
 /** Offset that parks a centre panel under the top bar, or under the round card on narrow screens, clear of the fighters. */
 export const topPanelOffset = (width: number, height: number): number =>

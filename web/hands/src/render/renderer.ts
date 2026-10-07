@@ -13,6 +13,8 @@ import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, Hand, 
 import { buildArena, type BuiltArena } from "./arena";
 import { CameraDirector, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE, SECONDS_OUT, ceremonyShot, cornerFrame, cornerPoint, cornerShot, cornerShotProgress } from "./camera";
 import { Avatars } from "./avatars";
+import { captionSlot, drawCaption } from "./caption";
+import { CommentaryDirector, type CrowdCue } from "./commentary";
 import { Effects3D, type BakedPart } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, type ArcadeDislocation, type CutmanProp } from "./graph";
 import { drawHud, finalRevealDelay, resultCard, resultCardLayout, RoundStatsTracker, STOPPAGE_METHODS, RoundClock, type RoundPunchStats } from "./hud";
@@ -21,6 +23,7 @@ import { closeCut, cutRim } from "./gore";
 import { OFFICIAL_LOOKS, lookFor } from "./looks";
 import { BLUE_CORNER_OUTFIT, CUTMAN_OUTFIT, RED_CORNER_OUTFIT, REFEREE_OUTFIT } from "./outfit";
 import { ResolutionScaler } from "./quality";
+import { RockedVision, rockedLevel } from "./rocked";
 import { planKnockoutReplay, replayTick, type ReplayPlan } from "./replay";
 import { GloveTrail } from "./trails";
 
@@ -90,7 +93,7 @@ const CUTMAN_WALK_SECONDS = 1.6;
 const CUTMAN_IN_PLACE = 0.98;
 // Broadcast finish: a soft vignette and a whisper of grain, applied before tone mapping.
 const BROADCAST_FINISH_SHADER = {
-  uniforms: { tDiffuse: { value: null }, uTime: { value: 0 }, uVignette: { value: 0.32 }, uGrain: { value: 0.035 } },
+  uniforms: { tDiffuse: { value: null }, uTime: { value: 0 }, uVignette: { value: 0.32 }, uGrain: { value: 0.035 }, uRocked: { value: 0 } },
   vertexShader: `
 varying vec2 vUv;
 void main() {
@@ -102,6 +105,7 @@ uniform sampler2D tDiffuse;
 uniform float uTime;
 uniform float uVignette;
 uniform float uGrain;
+uniform float uRocked;
 varying vec2 vUv;
 float hash(vec2 p) {
   return fract(sin(dot(p, vec2(127.1, 311.7)) + uTime * 43.7) * 43758.5453);
@@ -109,8 +113,17 @@ float hash(vec2 p) {
 void main() {
   vec4 color = texture2D(tDiffuse, vUv);
   vec2 centered = vUv - 0.5;
+  if (uRocked > 0.001) {
+    // Hurt vision: a softened picture with a second image drifting off it, drained of colour.
+    vec2 spread = vec2(0.0035, 0.0) * uRocked;
+    vec3 soft = (texture2D(tDiffuse, vUv + spread).rgb + texture2D(tDiffuse, vUv - spread).rgb + texture2D(tDiffuse, vUv + spread.yx * 1.6).rgb + texture2D(tDiffuse, vUv - spread.yx * 1.6).rgb) * 0.25;
+    vec3 ghost = texture2D(tDiffuse, vUv + vec2(sin(uTime * 2.3), cos(uTime * 1.7)) * 0.011 * uRocked).rgb;
+    color.rgb = mix(color.rgb, mix(soft, ghost, 0.5), 0.75 * uRocked);
+    color.rgb = mix(color.rgb, vec3(dot(color.rgb, vec3(0.299, 0.587, 0.114))), 0.65 * uRocked);
+  }
   float falloff = smoothstep(0.35, 0.95, dot(centered, centered) * 2.2);
   color.rgb *= 1.0 - falloff * uVignette;
+  color.rgb *= mix(vec3(1.0), vec3(0.5, 0.1, 0.08), smoothstep(0.08, 0.9, dot(centered, centered) * 2.2) * uRocked * 0.85);
   float grain = (hash(floor(vUv * vec2(960.0, 540.0))) - 0.5) * uGrain;
   color.rgb += grain * (0.15 + color.rgb);
   gl_FragColor = color;
@@ -664,6 +677,14 @@ export class FightRenderer {
   }> = [];
   onContact: ((event: CombatEvent) => void) | null = null;
   onArcadeInjury: ((injury: ArcadeInjury, event: CombatEvent) => void) | null = null;
+  /** The ring announcer's lines for a voice to read. */
+  onAnnouncement: ((lines: readonly string[]) => void) | null = null;
+  onCrowdCue: ((cue: CrowdCue) => void) | null = null;
+  private readonly commentary = new CommentaryDirector({ speak: (lines) => this.onAnnouncement?.(lines), cue: (cue) => this.onCrowdCue?.(cue) });
+  private readonly touchControls = coarsePointer();
+  private resultAnnounced = false;
+  private captionText = "";
+  private readonly rocked = new RockedVision();
   private readonly tmpA = new THREE.Vector3();
   private readonly tmpB = new THREE.Vector3();
   private readonly tmpHead = new THREE.Vector3();
@@ -836,6 +857,7 @@ export class FightRenderer {
     this.ceremony = this.ceremonyFor(final);
     this.finalRevealAt = this.frameSeconds + (this.ceremony === null ? finalRevealDelay(final) : CEREMONY_REVEAL_LIMIT_SECONDS);
     this.ovationUntil = final === null ? 0 : this.frameSeconds + CROWD_OVATION_SECONDS;
+    if (final !== null) this.commentary.finish(final, this.players, this.ceremony !== null, this.frameSeconds);
     if (this.ceremony === null) this.endCeremony();
     if (final === null || !STOPPAGE_METHODS.has(final.method)) return;
     const plan = this.lastKnockdown === null ? null : planKnockoutReplay(this.history, this.lastKnockdown.hit ?? this.lastKnockdown.knockdown, this.simulation.tick_rate);
@@ -889,6 +911,7 @@ export class FightRenderer {
     if (arrived) ceremony.arrivedAt ??= seconds;
     if (!ceremony.announced && ceremony.arrivedAt !== null && seconds - ceremony.arrivedAt >= CEREMONY_PAUSE_SECONDS) {
       ceremony.announced = true;
+      this.commentary.verdict(this.frameSeconds);
       for (const seat of [0, 1] as const) this.graphs?.[seat]?.announce(ceremony.winnerSeat === null ? "level" : ceremony.winnerSeat === seat ? "winner" : "loser");
       this.finalRevealAt = Math.min(this.finalRevealAt, this.frameSeconds + 0.35);
       this.arena.excite(1);
@@ -978,6 +1001,7 @@ export class FightRenderer {
     const buffer = new SnapshotBuffer(plan.snapshots.length + 2, this.simulation.tick_rate);
     for (const snapshot of plan.snapshots) buffer.push(snapshot);
     this.replay = { plan, buffer, startedAt: this.frameSeconds, impactFired: false, side: null };
+    this.commentary.replay(this.frameSeconds);
     this.replayFollow = 0;
     this.replayFollowAt = 0;
     for (const index of [0, 1] as const) {
@@ -1275,6 +1299,7 @@ export class FightRenderer {
       }
       if (event.kind === "referee_break") this.referee?.breakClinch();
     }
+    this.commentary.observe(snapshot, accepted, this.players, this.simulation.tick_rate, this.frameSeconds);
     for (const { event, presentationEvent, presentImpact } of contactPresentationPlan(accepted, snapshot)) {
       const targetIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.target_id);
       const actorIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.actor_id);
@@ -1516,6 +1541,7 @@ export class FightRenderer {
     this.setBloodLevel(current.blood);
 
     const latest = this.buffer.latest();
+    this.updateRocked(latest, dt, current.reducedMotion);
     const finishing = latest?.result !== null && latest?.result !== undefined
       && STOPPAGE_METHODS.has(latest.result.finish_method);
     this.cheer(seconds, dt);
@@ -1915,6 +1941,36 @@ export class FightRenderer {
       ctx.fillRect(0, 0, viewport.width, viewport.height);
     }
     drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.frameSeconds >= this.finalRevealAt ? this.final : null, this.reconnectMs, this.simulation.tick_rate, this.roundStats, this.replay !== null ? "KNOCKOUT REPLAY" : null, this.inputLatencyMs, this.frameSeconds < this.roundCalloutUntil ? `ROUND ${this.roundCalloutRound}` : this.eventCallout !== null && this.frameSeconds < this.eventCallout.until ? this.eventCallout.text : null, this.roundClock.ticks(snapshot), (player) => this.avatars.get(player));
+    this.drawCaption(ctx, viewport.width, viewport.height, snapshot);
+  }
+
+  /** Hurt vision while the viewer's own fighter is rocked; never for a spectator, in a replay or with reduced motion. */
+  private updateRocked(latest: EngineSnapshot | null, dt: number, reducedMotion: boolean): void {
+    const viewer = latest?.fighters.find((fighter) => fighter.player_id === this.viewerId);
+    const target = latest === null || this.replay !== null || reducedMotion ? 0 : rockedLevel(viewer, latest.phase);
+    const level = this.rocked.update(target, dt);
+    this.finishPass.uniforms.uRocked!.value = reducedMotion ? 0 : level;
+  }
+
+  /** The broadcast caption: commentary, the ring announcer and the decision read-out. */
+  private drawCaption(ctx: CanvasRenderingContext2D, width: number, height: number, snapshot: EngineSnapshot): void {
+    const final = this.final !== null && this.frameSeconds >= this.finalRevealAt ? this.final : null;
+    if (final !== null && !this.resultAnnounced) {
+      this.resultAnnounced = true;
+      this.commentary.resultShown(this.frameSeconds);
+    }
+    const caption = this.commentary.current(this.frameSeconds);
+    const settings = this.settings();
+    const text = caption === null || !settings.commentary ? "" : caption.line.text;
+    if (text !== this.captionText) {
+      this.captionText = text;
+      this.hudCanvas.dataset.caption = text;
+    }
+    if (caption === null || !settings.commentary) return;
+    const viewer = snapshot.fighters.find((fighter) => fighter.player_id === this.viewerId);
+    const resultTop = final === null ? null : resultCardLayout(width, height, resultCard(final, snapshot.fighters, this.players, snapshot.fighters.map((fighter) => this.roundStats.total(fighter.player_id)) as [RoundPunchStats, RoundPunchStats]), viewer !== undefined).y;
+    const slot = captionSlot({ width, height, phase: snapshot.phase, resultTop, touch: this.touchControls && viewer !== undefined, hint: snapshot.phase === "countdown" && viewer !== undefined, viewerDown: viewer?.is_downed === true, replay: this.replay !== null });
+    if (slot !== null) drawCaption(ctx, caption, slot, settings.reducedMotion);
   }
 
   destroy(): void {

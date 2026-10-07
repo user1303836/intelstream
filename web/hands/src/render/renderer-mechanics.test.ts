@@ -36,6 +36,10 @@ function pushStub(graphs: [FakeGraph, FakeGraph]): Record<string, unknown> {
     lastKnockdown: null,
     recordedHit: methods.recordedHit,
     settings: () => ({ reducedMotion: false, blood: "full" }),
+    commentary: { observe: vi.fn() },
+    simulation: { tick_rate: 30 },
+    players: {},
+    frameSeconds: 0,
   };
 }
 
