@@ -1088,7 +1088,12 @@ export class FightRenderer {
       this.startReplay(plan);
       return;
     }
-    if (finisher !== null) this.applyArcadeInjury(finisher.index, finisher.injury, finisher.event);
+    if (finisher !== null) {
+      // A finisher whose punch the clock has not shown yet goes with that punch, never ahead of it.
+      const waiting = this.pendingContacts.find((contact) => contact.event.event_id === finisher.event.event_id);
+      if (waiting !== undefined) waiting.injury ??= finisher.injury;
+      else this.applyArcadeInjury(finisher.index, finisher.injury, finisher.event);
+    }
     this.presentFinish(final);
   }
 
@@ -1269,7 +1274,17 @@ export class FightRenderer {
         this.restoreInjury(index);
       }
     }
+    // The replay shows the punch that ended the bout. A contact still waiting for the live clock is not
+    // shown live as well; the injury it carried lands at the replay's impact instead.
+    for (const pending of this.pendingContacts.splice(0)) {
+      const index = pending.recipientIndex;
+      if (pending.injury !== null && (index === 0 || index === 1) && this.replayInjuries[index] === null && this.arcadeInjuries[index] === null) {
+        this.replayInjuries[index] = { injury: pending.injury, event: pending.event };
+      }
+    }
     const victim = plan.snapshots[0]?.fighters.findIndex((fighter) => fighter.player_id === plan.impact.target_id) ?? -1;
+    // The replay's punch knocks the gum shield out again, so it is back in his mouth for the lead-up.
+    if (victim >= 0 && plan.impact.detail.endsWith(":head")) this.effects.returnMouthpiece(victim);
     // The impact is the body punch itself, so the knockdown it caused says whether he went to one knee.
     const kneels = this.lastKnockdown?.knockdown.detail === BODY_KNOCKDOWN;
     for (const [index, graph] of (this.graphs ?? []).entries()) {

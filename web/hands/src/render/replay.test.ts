@@ -12,6 +12,20 @@ const history = (from: number, to: number): EngineSnapshot[] => {
 const knockdown = (tick: number): CombatEvent => ({ event_id: 9, tick, kind: "knockdown", actor_id: "one", target_id: "two", amount: 1, detail: "", blood: 0, direction: 1, action_id: null });
 
 describe("knockout replay plan", () => {
+  it("holds the last picture when the bout ended on the punch itself, and still needs the lead-up", () => {
+    const ended = history(40, 100);
+    const final = { ...ended.at(-1)!, phase: "complete" as const, events: [knockdown(100)], result: { match_id: "m", activity_instance_id: "i", guild_id: "g", player_one_id: "one", player_two_id: "two", winner_id: "one", finish_method: "tko" as const, round_number: 1, tick: 100, scorecards: [], player_one_knockdowns: 0, player_two_knockdowns: 3, player_one_damage: 1, player_two_damage: 1 } };
+    ended[ended.length - 1] = final;
+    const plan = planKnockoutReplay(ended, knockdown(100));
+    expect(plan).not.toBeNull();
+    expect(plan!.toTick).toBe(100 + REPLAY_AFTER_TICKS);
+    const after = plan!.snapshots.filter((snapshot) => snapshot.tick > 100);
+    expect(after).toHaveLength(REPLAY_AFTER_TICKS);
+    for (const held of after) expect(held).toMatchObject({ phase: "complete", fighters: final.fighters, events: [] });
+    expect(planKnockoutReplay(ended.slice(-5), knockdown(100))).toBeNull();
+    expect(planKnockoutReplay(history(40, 100), knockdown(100))).toBeNull();
+  });
+
   it("covers the ticks before and after the knockdown at replay speed", () => {
     const plan = planKnockoutReplay(history(0, 200), knockdown(100));
     expect(plan).not.toBeNull();

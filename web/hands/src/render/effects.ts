@@ -727,6 +727,16 @@ export class Effects3D {
     nerve.scale.set(1, Math.max(0.001, length - EYE_RADIUS * 0.8), 1);
   }
 
+  /** Puts one fighter's gum shield back in his mouth, for a replay that knocks it out again. */
+  returnMouthpiece(fighterIndex: number): void {
+    const index = Math.trunc(fighterIndex);
+    const shield = this.shields[index];
+    if (shield === undefined) return;
+    Object.assign(shield, idleShield());
+    this.shieldMeshes[index]!.visible = false;
+    this.lastShieldEvent[index] = null;
+  }
+
   /** The corner puts the gum shield back in between rounds. */
   clearMouthpieces(): void {
     for (const [index, shield] of this.shields.entries()) {

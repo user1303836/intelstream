@@ -305,11 +305,25 @@ describe("around the fight", () => {
     const stub = prototypeOf({
       frameSeconds: 5, buffer: { latest: () => snapshot() }, commentary: { finish: vi.fn() }, endCeremony: vi.fn(), players: {}, history: [], simulation: SIMULATION,
       graphs: null, settings: () => ({ reducedMotion: false, blood: "full" }), arcadeInjuries: [null, null],
-      lastKnockdown: { knockdown: combat("knockdown", { event_id: 8, amount: 1 }), hit, finisher: "decapitation" }, applyArcadeInjury, presentFinish,
+      lastKnockdown: { knockdown: combat("knockdown", { event_id: 8, amount: 1 }), hit, finisher: "decapitation" }, applyArcadeInjury, presentFinish, pendingContacts: [],
     });
     method("setFinal").call(stub, { version: 3, type: "final", match_id: "m", winner_id: "one", method: "ko", round: 2, scorecards: [], ratings: {} });
     expect(applyArcadeInjury).toHaveBeenCalledWith(1, "decapitation", hit);
     expect(presentFinish).toHaveBeenCalledOnce();
+  });
+
+  it("leaves a finishing injury to its punch while the clock has not shown that punch yet", () => {
+    const hit = combat("counter_hit", { event_id: 7, detail: "right:uppercut:head", amount: 140 });
+    const applyArcadeInjury = vi.fn(() => true);
+    const waiting = { event: hit, presentationEvent: hit, presentImpact: true, contactTick: 160, recipientIndex: 1, puncherIndex: 0, injury: null as string | null };
+    const stub = prototypeOf({
+      frameSeconds: 5, buffer: { latest: () => snapshot() }, commentary: { finish: vi.fn() }, endCeremony: vi.fn(), players: {}, history: [], simulation: SIMULATION,
+      graphs: null, settings: () => ({ reducedMotion: false, blood: "full" }), arcadeInjuries: [null, null],
+      lastKnockdown: { knockdown: combat("knockdown", { event_id: 8, amount: 3 }), hit, finisher: "decapitation" }, applyArcadeInjury, presentFinish: vi.fn(), pendingContacts: [waiting],
+    });
+    method("setFinal").call(stub, { version: 3, type: "final", match_id: "m", winner_id: "one", method: "tko", round: 2, scorecards: [], ratings: {} });
+    expect(applyArcadeInjury).not.toHaveBeenCalled();
+    expect(waiting.injury).toBe("decapitation");
   });
 
   it("knocks the gum shield out with a big counter to the head", () => {
