@@ -996,6 +996,8 @@ export class FightRenderer {
   /** The ring announcer's lines for a voice to read. */
   onAnnouncement: ((lines: readonly string[]) => void) | null = null;
   onCrowdCue: ((cue: CrowdCue) => void) | null = null;
+  /** Every frame, how rocked the viewer's own fighter is on screen (0 to 1) and the newest server tick; never for a spectator. */
+  onRocked: ((level: number, tick: number) => void) | null = null;
   private readonly commentary = new CommentaryDirector({ speak: (lines) => this.onAnnouncement?.(lines), cue: (cue) => this.onCrowdCue?.(cue) });
   private readonly touchControls = coarsePointer();
   private resultAnnounced = false;
@@ -2118,7 +2120,7 @@ export class FightRenderer {
     this.setBloodLevel(current.blood);
 
     const latest = this.buffer.latest();
-    this.updateRocked(latest, dt, current.reducedMotion);
+    const frameDt = dt;
     const finishing = latest?.result !== null && latest?.result !== undefined
       && STOPPAGE_METHODS.has(latest.result.finish_method);
     this.cheer(seconds, dt);
@@ -2134,6 +2136,11 @@ export class FightRenderer {
     }
     this.viewerHitFlash = Math.max(0, this.viewerHitFlash - dt * 3.2);
     let sampledTick = latest === null ? 0 : manual ? presentationTickFor(latest) : this.buffer.renderTick(time);
+    // The hurt vision and the muffle start with the punch that rocked him, when the render clock shows it,
+    // not when the snapshot carrying the stun arrives a playback delay earlier. The sound follows the
+    // newest server tick, which its own clocks count.
+    const rocked = this.updateRocked(latest === null ? null : this.shownAt(sampledTick), frameDt, current.reducedMotion);
+    if (rocked !== null && latest !== null) this.onRocked?.(rocked, latest.tick);
     let snapshot = latest === null ? null : this.applyLocalPrediction(this.buffer.sample(sampledTick), dt, time);
     const replay = this.replay;
     if (replay !== null) {
@@ -2637,12 +2644,25 @@ export class FightRenderer {
     this.drawCaption(ctx, viewport.width, viewport.height, snapshot);
   }
 
-  /** Hurt vision while the viewer's own fighter is rocked; never for a spectator, in a replay or with reduced motion. */
-  private updateRocked(latest: EngineSnapshot | null, dt: number, reducedMotion: boolean): void {
-    const viewer = latest?.fighters.find((fighter) => fighter.player_id === this.viewerId);
-    const target = latest === null || this.replay !== null || this.final !== null || reducedMotion ? 0 : rockedLevel(viewer, latest.phase);
-    const level = this.rocked.update(target, dt);
+  /**
+   * Hurt vision while the viewer's own fighter is rocked; never for a spectator, in a replay or with reduced
+   * motion. `shown` is the snapshot on screen, so it starts with the punch that rocked him. Returns how rocked
+   * he is for the sound, or null for a spectator.
+   */
+  private updateRocked(shown: EngineSnapshot | null, dt: number, reducedMotion: boolean): number | null {
+    const viewer = shown?.fighters.find((fighter) => fighter.player_id === this.viewerId);
+    const rocked = shown === null || this.replay !== null || this.final !== null ? 0 : rockedLevel(viewer, shown.phase);
+    const level = this.rocked.update(reducedMotion ? 0 : rocked, dt);
     this.finishPass.uniforms.uRocked!.value = reducedMotion ? 0 : level;
+    return viewer === undefined ? null : rocked;
+  }
+
+  /** The newest snapshot the render clock has reached: the fight as the screen has shown it so far. */
+  private shownAt(tick: number): EngineSnapshot | null {
+    for (let index = this.history.length - 1; index >= 0; index -= 1) {
+      if (this.history[index]!.tick <= tick) return this.history[index]!;
+    }
+    return null;
   }
 
   /** The broadcast caption: commentary, the ring announcer and the decision read-out. */

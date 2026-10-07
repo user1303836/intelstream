@@ -5,6 +5,7 @@ import { CameraDirector, ceremonyShot, FIGHTER_CAM_FOV_SCALE, FighterCam } from 
 import { RoundStatsTracker } from "./hud";
 import { lookFor } from "./looks";
 import { FightRenderer, resultCardTop } from "./renderer";
+import { RockedVision } from "./rocked";
 import { worldMapping } from "./world";
 
 /**
@@ -50,6 +51,7 @@ function frame(state: EngineSnapshot, overrides: Record<string, unknown> = {}) {
     settings: () => settings,
     setBloodLevel: vi.fn(),
     buffer: { latest: () => latest.current, sample: () => latest.current, renderTick: () => latest.current.tick, interpolationDelayTicks: 2 },
+    history: [state],
     updateRocked: vi.fn(),
     finishSeen: false,
     finishSlowMotion: 0,
@@ -226,6 +228,36 @@ describe("a rendered frame", () => {
     const { renderer, run } = frame(fighting());
     run(2);
     expect(renderer.updateRocked).toHaveBeenCalledTimes(2);
+  });
+
+  it("starts the hurt vision and the muffle with the punch that rocked him, not when its snapshot arrives", () => {
+    const updateRocked = (FightRenderer.prototype as unknown as { updateRocked: unknown }).updateRocked;
+    const calm = { ...fighting(), tick: 40 };
+    const stunned = (tick: number): EngineSnapshot => ({ ...fighting({ stunned_ticks: 36 }), tick });
+    const watch = (viewerId: string | null) => {
+      const heard: number[] = [];
+      const finishPass = { uniforms: { uTime: { value: 0 }, uRocked: { value: 0 } } };
+      const harness = frame(calm, { viewerId, updateRocked, rocked: new RockedVision(), finishPass, onRocked: (level: number) => heard.push(level) });
+      const arrive = (next: EngineSnapshot): void => {
+        harness.latest.current = next;
+        (harness.renderer.history as EngineSnapshot[]).push(next);
+      };
+      harness.run(3);
+      // The snapshot carrying the stun arrives; the render clock is still a tick short of the punch.
+      arrive(stunned(41));
+      harness.run(3);
+      const early = { vision: finishPass.uniforms.uRocked.value, sound: heard.at(-1) };
+      // The clock reaches it.
+      arrive(stunned(42));
+      harness.run(3);
+      return { early, vision: finishPass.uniforms.uRocked.value, sound: heard.at(-1), heard };
+    };
+    const own = watch("one");
+    expect(own.early).toEqual({ vision: 0, sound: 0 });
+    expect(own.vision).toBeGreaterThan(0.2);
+    expect(own.sound).toBe(1);
+    // A spectator's sound is never muffled.
+    expect(watch(null).heard).toEqual([]);
   });
 
   it("fades the near ropes for the broadcast camera as the fighters come toward it", () => {

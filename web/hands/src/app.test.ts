@@ -1,5 +1,5 @@
 import type { NetworkCallbacks } from "./network";
-import type { EngineSnapshot, ServerMessage } from "./types";
+import { PROTOCOL_VERSION, type EngineSnapshot, type ServerMessage } from "./types";
 import { fighter } from "./test/fixtures";
 
 const mocks = vi.hoisted(() => {
@@ -26,7 +26,7 @@ const mocks = vi.hoisted(() => {
     styleChoices: [] as string[],
     cpuRequests: [] as string[],
     cpuAccepted: true,
-    renderers: [] as Array<{ onAnnouncement?: ((lines: readonly string[]) => void) | null; onCrowdCue?: ((cue: "chant") => void) | null }>,
+    renderers: [] as Array<{ onAnnouncement?: ((lines: readonly string[]) => void) | null; onCrowdCue?: ((cue: "chant") => void) | null; onRocked?: ((level: number, tick: number) => void) | null }>,
     input: null as (() => { moveX: number; moveY: number }) | null,
     viewForward: null as { x: number; z: number } | null,
   };
@@ -54,6 +54,7 @@ vi.mock("./render/renderer", () => ({
     private readonly pushes: number[] = [];
     onAnnouncement: ((lines: readonly string[]) => void) | null = null;
     onCrowdCue: ((cue: "chant") => void) | null = null;
+    onRocked: ((level: number, tick: number) => void) | null = null;
     constructor() { mocks.rendererPushes.push(this.pushes); mocks.renderers.push(this); }
     setPlayers(): void {}
     setFinal(): void {}
@@ -885,24 +886,18 @@ describe("the broadcast", () => {
     app.destroy();
   });
 
-  it("muffles the sound only when the player's own fighter is rocked, never for a spectator", async () => {
+  it("muffles the sound as the renderer shows the player's own fighter rocked, not as the snapshot arrives", async () => {
+    // The stun arrives a playback delay before the punch that caused it is on screen; the renderer, which
+    // shows that punch, says when he is rocked (and never does for a spectator).
     const rocked = vi.spyOn(AudioFeedback.prototype, "rocked");
     const { app } = await launch();
-    send({ version: 3, type: "ready", players: [...players] });
+    send({ version: PROTOCOL_VERSION, type: "ready", players: [...players] });
     const hit = makeSnapshot(40);
-    send({ version: 3, type: "snapshot", payload: { ...hit, fighters: [{ ...hit.fighters[0], stunned_ticks: 45 }, hit.fighters[1]] } });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: { ...hit, fighters: [{ ...hit.fighters[0], stunned_ticks: 45 }, hit.fighters[1]] } });
+    expect(rocked).not.toHaveBeenCalled();
+    mocks.renderers.at(-1)!.onRocked!(1, 40);
     expect(rocked).toHaveBeenLastCalledWith(1, 40);
     app.destroy();
-    rocked.mockClear();
-    history.replaceState({}, "", "/?instance_id=watch");
-    const root = document.createElement("div");
-    const watcher = new HandsApp(root);
-    watcher.start();
-    await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
-    send({ version: 3, type: "welcome", role: "spectator", player_id: "three", players: [...players], server_tick: 0 });
-    send({ version: 3, type: "snapshot", payload: { ...hit, fighters: [{ ...hit.fighters[0], stunned_ticks: 45 }, hit.fighters[1]] } });
-    expect(rocked).not.toHaveBeenCalled();
-    watcher.destroy();
   });
 
   it("lets the crowd follow the fight", async () => {
