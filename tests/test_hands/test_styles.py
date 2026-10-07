@@ -286,6 +286,24 @@ def test_a_counter_puncher_makes_a_miss_cost_more() -> None:
     assert counter_slip == balanced_slip + 1
     assert counter_window == balanced_window + 3
     assert counter_counter > balanced_counter
+    swarmer_slip, swarmer_window, _ = counter_after_a_slip(SWARMER)
+    assert swarmer_slip == balanced_slip + 1
+    assert swarmer_window == balanced_window
+
+
+def test_a_counter_puncher_has_longer_to_counter_after_a_parry() -> None:
+    def window_after_parry(style: FighterStyle) -> int:
+        engine = styled_engine(BALANCED, style)
+        engine.step({"one": command(1, action=punch(PunchClass.STRAIGHT, power=Power.POWER))})
+        attack = engine.fighter("one").attack
+        assert attack is not None
+        while attack.age < attack.rule.startup - 2:
+            engine.step()
+        engine.step({"two": command(1, defense=DefensivePose.GUARD_HIGH)})
+        assert first_event(engine, {"block", "perfect_block", "hit"}).kind == "perfect_block"
+        return engine.fighter("two").counter_ticks
+
+    assert window_after_parry(COUNTER) == window_after_parry(BALANCED) + 3
 
 
 def test_a_counter_puncher_has_a_wider_perfect_block() -> None:

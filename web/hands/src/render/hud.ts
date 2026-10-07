@@ -179,8 +179,13 @@ function fighterPlate(
   ctx.font = `800 ${nameSize}px Inter, system-ui, sans-serif`;
   ctx.fillText(fit(ctx, label, nameWidth), textX, y + 21);
   ctx.fillStyle = "#93a3bd";
-  ctx.font = "600 10px Inter, system-ui, sans-serif";
-  ctx.fillText(detail, textX, y + 35);
+  const detailWidth = width - inset - 14;
+  const detailSize = fitFontSize((size) => {
+    ctx.font = `600 ${size}px Inter, system-ui, sans-serif`;
+    return ctx.measureText(detail).width;
+  }, detailWidth, 10, 8);
+  ctx.font = `600 ${detailSize}px Inter, system-ui, sans-serif`;
+  ctx.fillText(fit(ctx, detail, detailWidth), textX, y + 35);
 
   const barWidth = (width - 52) / bars.length;
   const groupWidth = bars.length * barWidth + (bars.length - 1) * 12;
@@ -401,9 +406,11 @@ export function drawHud(
     const mirror = index === 1;
     const x = mirror ? width - 24 - plateWidth : 24;
     const player = players[fighter.player_id];
-    const record = player?.record === undefined ? "" : `${isDebut(player.record) ? "DEBUT" : recordLine(player.record)} · `;
-    const tag = styleTag(fighter.style);
-    const detail = `${tag === null ? "" : `${tag} · `}${record}${player?.cpu === true ? "CPU" : `ELO ${player?.rating ?? "—"}`} · KD ${fighter.knockdowns} · W ${fighter.warnings} · −${fighter.deductions}`;
+    const record = player?.record === undefined ? null : isDebut(player.record) ? "DEBUT" : recordLine(player.record);
+    const standing = `KD ${fighter.knockdowns} · W ${fighter.warnings} · −${fighter.deductions}`;
+    // A phone's plate only has room for the style and the bout's own count; the introductions give the record.
+    const parts = compact ? [styleTag(fighter.style), standing] : [styleTag(fighter.style), record, player?.cpu === true ? "CPU" : `ELO ${player?.rating ?? "—"}`, standing];
+    const detail = parts.filter((part) => part !== null).join(" · ");
     const bars: BarSpec[] = [
       { label: `${compact ? "STA" : "STAMINA"} ${Math.round(fighter.stamina)}`, value: fighter.stamina, maximum: fighter.maximum_stamina, from: "#ffe08a", to: "#d9a53a" },
       { label: `${compact ? "HP" : "HEALTH"} ${Math.round(fighter.conditioning)}`, value: fighter.conditioning, maximum: HUD_MAX_CONDITIONING, from: "#ff8a7a", to: "#b02a20" },

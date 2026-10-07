@@ -853,6 +853,18 @@ describe("compact scoreboard labels", () => {
     expect(texts.some((text) => text.startsWith("HP "))).toBe(true);
     expect(texts.some((text) => text.startsWith("STAMINA"))).toBe(false);
   });
+
+  it("keeps a phone's plates to the style and the bout's count so the two lines do not run together", () => {
+    const texts: string[] = [];
+    const players = Object.fromEntries(publicPlayers.map((p) => [p.id, { ...p, record: { wins: 12, losses: 3, draws: 1, knockouts: 8 } }]));
+    const styled = snapshot();
+    drawHud(mockHudContext(texts), 390, 844, { ...styled, fighters: [{ ...styled.fighters[0], style: "counter_puncher" }, styled.fighters[1]] }, players, "one", null, 0, 30);
+    expect(texts.some((text) => text.startsWith("COUNTER · KD 0"))).toBe(true);
+    expect(texts.some((text) => text.startsWith("KD 0 · W 0"))).toBe(true);
+    expect(texts.some((text) => text.includes("ELO") || text.includes("12-3-1"))).toBe(false);
+    // 7 px a character in this context: every line stays inside its 167 px plate.
+    expect(texts.filter((text) => text.includes("KD")).every((text) => text.length * 7 <= 167 - 20 - 14)).toBe(true);
+  });
 });
 
 describe("players' pictures", () => {
