@@ -853,6 +853,14 @@ async function pickStyles(A, B, open, note, report) {
   note('the spectator hears:', (await pickerState(C.page))?.status);
   await A.page.screenshot({ path: `${out}/e2e-styles-A-pick.png` });
   await B.page.screenshot({ path: `${out}/e2e-styles-B-pick.png` });
+  // A phone on its side, narrower than 700 px: the five cards in one row, each with its strengths.
+  for (const [width, height] of [[568, 320], [667, 375]]) {
+    await B.page.setViewportSize({ width, height });
+    const layout = await B.page.evaluate(() => [...document.querySelectorAll('.style-cards button')].map((button) => ({ top: Math.round(button.getBoundingClientRect().top), stats: getComputedStyle(button.querySelector('.style-stats')).display })));
+    note(`pick on a ${width}x${height} phone:`, JSON.stringify(layout));
+    if (new Set(layout.map((card) => card.top)).size !== 1 || layout.some((card) => card.stats === 'none')) report.errors.push(`the pick at ${width}x${height} does not show the five cards in a row with their strengths`);
+  }
+  await B.page.setViewportSize({ width: 844, height: 390 });
   await B.page.tap('[data-style="swarmer"]');
   const started = await waitFor(A.page, (s) => /countdown|\. fight\./.test(s.summary ?? ''), 20000, 'bout start after the pick');
   note('bout started once both settled:', started !== null);
