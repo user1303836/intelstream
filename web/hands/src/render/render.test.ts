@@ -3,7 +3,7 @@ import { punchTiming, REST_CORNER_OFFSET, totalTicks } from "../manifest";
 import { buildArena } from "./arena";
 import { CameraDirector, ceremonyShot, cornerFrame, cornerPoint, cornerShot, cornerShotProgress, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE } from "./camera";
 import { bloodPatternFor, Effects3D } from "./effects";
-import { CLOCK_PORTRAIT_RADIUS, cardRows, decisionLabel, drawHud, finalRevealDelay as revealDelay, hudScale, plateDetail, REFEREE_REVEAL_DELAY_SECONDS, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, PLATE_PORTRAIT_RADIUS, RESULT_CARD_FOOTER, resultCard, resultCardLayout, RoundClock, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
+import { CLOCK_PORTRAIT_RADIUS, cardRows, decisionLabel, drawHud, finalRevealDelay as revealDelay, hudScale, plateDetails, REFEREE_REVEAL_DELAY_SECONDS, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, PLATE_PORTRAIT_RADIUS, RESULT_CARD_FOOTER, resultCard, resultCardLayout, RoundClock, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
 import { buildRing, disposeRing, nearRopeOpacityFor, ROPE_FLEX_GLSL, ROPE_GIVE_GLSL, ropePress } from "./ring";
 import { resizeHighDpi } from "./viewport";
 import { CORNER_COLORS, PALETTES, ROPE_LINE, worldMapping } from "./world";
@@ -859,10 +859,21 @@ describe("the broadcast HUD after the QA pass", () => {
 
   it("writes the plate detail plainly, with warnings and points taken only when there are any", () => {
     const record = { wins: 19, losses: 5, draws: 1, knockouts: 12 };
-    const clean = { knockdowns: 0, warnings: 0, deductions: 0 };
-    expect(plateDetail({ ...publicPlayers[0]!, record }, clean, false)).toBe("19-5-1 · ELO 1500");
-    expect(plateDetail({ ...publicPlayers[0]!, cpu: true, record }, { knockdowns: 1, warnings: 2, deductions: 1 }, false)).toBe("19-5-1 · CPU · 1 KD · 2 WARNINGS · −1 PT");
-    expect(plateDetail({ ...publicPlayers[0]!, record }, { knockdowns: 1, warnings: 2, deductions: 1 }, true)).toBe("19-5-1 · ELO 1500 · 1 KD");
+    const clean = { style: "balanced" as const, knockdowns: 0, warnings: 0, deductions: 0 };
+    const fouled = { style: "counter_puncher" as const, knockdowns: 1, warnings: 2, deductions: 1 };
+    expect(plateDetails({ ...publicPlayers[0]!, record }, clean, false)).toEqual(["19-5-1 · ELO 1500", "ELO 1500"]);
+    expect(plateDetails({ ...publicPlayers[0]!, cpu: true, record }, { ...fouled, style: "balanced" }, false)[0]).toBe("19-5-1 · CPU · 1 KD · 2 WARNINGS · −1 PT");
+    // Too long for its plate, a line drops the record, then the rating, then shortens the counts, then drops the style.
+    expect(plateDetails({ ...publicPlayers[0]!, record }, fouled, false)).toEqual([
+      "COUNTER · 19-5-1 · ELO 1500 · 1 KD · 2 WARNINGS · −1 PT",
+      "COUNTER · ELO 1500 · 1 KD · 2 WARNINGS · −1 PT",
+      "COUNTER · 1 KD · 2 WARNINGS · −1 PT",
+      "COUNTER · 1 KD · W2 · −1",
+      "1 KD · W2 · −1",
+    ]);
+    // A phone's plate is the style and the counts, which it keeps all of.
+    expect(plateDetails({ ...publicPlayers[0]!, record }, fouled, true)).toEqual(["COUNTER · 1 KD · W2 · −1", "1 KD · W2 · −1"]);
+    expect(plateDetails({ ...publicPlayers[0]!, record }, clean, true)).toEqual([]);
   });
 
   it("keeps the plate detail inside its plate on a phone", () => {
@@ -1212,6 +1223,61 @@ describe("compact scoreboard mini bars", () => {
     drawHud(ctx, 1280, 720, snapshot(), Object.fromEntries(publicPlayers.map((p) => [p.id, p])), "one", null, 0, 30);
     const bars = rects.filter((rect) => rect.y === 720 - 84 - 12 - 1 && rect.h === 11).sort((a, b) => a.x - b.x);
     expect(bars.map((bar) => [bar.x + 1, bar.w - 2])).toEqual([[44, 64], [120, 64], [1280 - 24 - 148, 64], [1280 - 24 - 72, 64]]);
+  });
+});
+
+describe("the line under a fighter's name", () => {
+  /** Records where each text and filled rectangle lands, measuring text at 0.55 em a character, about what a phone's system font gives these lines. */
+  function measuring(): { ctx: CanvasRenderingContext2D; texts: { text: string; left: number; right: number }[]; rects: { x: number; y: number; w: number; h: number }[] } {
+    const texts: { text: string; left: number; right: number }[] = [];
+    const rects: { x: number; y: number; w: number; h: number }[] = [];
+    let size = 10;
+    let align: CanvasTextAlign = "left";
+    const width = (text: string): number => text.length * size * 0.55;
+    const ctx = Object.assign(mockHudContext([]), {
+      fillRect: (x: number, y: number, w: number, h: number) => rects.push({ x, y, w, h }),
+      fillText: (text: string, x: number) => {
+        const left = align === "right" ? x - width(text) : align === "center" ? x - width(text) / 2 : x;
+        texts.push({ text, left, right: left + width(text) });
+      },
+      measureText: (text: string) => ({ width: width(text) }),
+    });
+    Object.defineProperty(ctx, "font", { set: (font: string) => { size = Number(/(\d+)px/.exec(font)?.[1] ?? 10); } });
+    Object.defineProperty(ctx, "textAlign", { set: (value: CanvasTextAlign) => { align = value; } });
+    return { ctx, texts, rects };
+  }
+  const players = Object.fromEntries(publicPlayers.map((player) => [player.id, { ...player, name: player.id === "one" ? "Azure Vector" : "Crimson Geometry", record: { wins: 12, losses: 3, draws: 1, knockouts: 8 } }]));
+  const fouled = { ...snapshot(), fighters: [{ ...fighter("one", -100), style: "counter_puncher" as const, knockdowns: 2, warnings: 2, deductions: 1 }, { ...fighter("two", 100), style: "swarmer" as const, knockdowns: 1, warnings: 1, deductions: 0 }] as const };
+
+  it("keeps every count on a phone's plate, in short, and stays inside the plate", () => {
+    for (const [width, height, lines] of [[360, 640, ["COUNTER · 2 KD · W2 · −1", "SWARMER · 1 KD · W1"]], [320, 568, ["2 KD · W2 · −1", "SWARMER · 1 KD · W1"]]] as const) {
+      const { ctx, texts } = measuring();
+      drawHud(ctx, width, height, fouled, players, "one", null, 0, 30);
+      const details = texts.filter((text) => text.text.includes("KD"));
+      // At 320 px the style is the part that gives way, never a count.
+      expect(details.map((text) => text.text)).toEqual(lines);
+      const plate = (width - 56) / 2;
+      expect(details[0]!.left).toBeGreaterThanOrEqual(24 + 20);
+      expect(details[0]!.right).toBeLessThanOrEqual(24 + plate - 14);
+      expect(details[1]!.left).toBeGreaterThanOrEqual(width - 24 - plate + 14);
+      expect(details[1]!.right).toBeLessThanOrEqual(width - 24 - 20);
+    }
+  });
+
+  it("keeps the counts on a landscape plate and the whole plate clear of the round card", () => {
+    for (const [width, height] of [[640, 360], [667, 375], [740, 360], [800, 600]] as const) {
+      const { ctx, texts, rects } = measuring();
+      drawHud(ctx, width, height, fouled, players, "one", null, 0, 30);
+      const card = { left: width / 2 - 84, right: width / 2 + 84 };
+      const [left, right] = texts.filter((text) => text.text.includes("KD"));
+      expect(left!.text, `${width}x${height}`).toMatch(/2 KD · (2 WARNINGS|W2) · −1/u);
+      expect(right!.text, `${width}x${height}`).toMatch(/1 KD · (1 WARNING|W1)$/u);
+      // Nothing on a plate runs under the card, which is drawn over them: not the line, the name or the bars.
+      const names = texts.filter((text) => text.text.startsWith("AZURE") || text.text.startsWith("CRIMSON"));
+      for (const text of [left!, ...names.slice(0, 1)]) expect(text.right, `${width}x${height} ${text.text}`).toBeLessThanOrEqual(card.left - 8);
+      for (const text of [right!, ...names.slice(1)]) expect(text.left, `${width}x${height} ${text.text}`).toBeGreaterThanOrEqual(card.right + 8);
+      for (const bar of rects.filter((rect) => rect.y === height - 84 + 47 && rect.h === 11)) expect(bar.x + bar.w <= card.left - 8 || bar.x >= card.right + 8, `${width}x${height} bar at ${bar.x}`).toBe(true);
+    }
   });
 });
 

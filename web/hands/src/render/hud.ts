@@ -131,17 +131,24 @@ export function hudScale(width: number, height: number): number {
 }
 
 /**
- * The line under a fighter's name: the record, the rating (or CPU), then knockdowns, warnings and points taken
- * only when there are any. A narrow phone plate keeps the record, the rating and the knockdowns.
+ * The line under a fighter's name, fullest first: the style, the record, the rating (or CPU), then knockdowns,
+ * warnings and points taken only when there are any. A plate too narrow for the whole line takes the next one
+ * that fits: without the record, then without the rating, then with the counts in short ("W2", "−1"), then
+ * without the style, so the counts, which can decide a close round, are the last thing a plate gives up. A
+ * phone's plate is only the style and the counts in short: the introductions give the record.
  */
-export function plateDetail(player: PublicPlayer | undefined, fighter: Pick<FighterSnapshot, "knockdowns" | "warnings" | "deductions">, compact: boolean): string {
-  const parts: string[] = [];
-  if (player?.record !== undefined) parts.push(isDebut(player.record) ? "DEBUT" : recordLine(player.record));
-  parts.push(player?.cpu === true ? "CPU" : `ELO ${player?.rating ?? "—"}`);
-  if (fighter.knockdowns > 0) parts.push(`${fighter.knockdowns} KD`);
-  if (!compact && fighter.warnings > 0) parts.push(`${fighter.warnings} WARNING${fighter.warnings === 1 ? "" : "S"}`);
-  if (!compact && fighter.deductions > 0) parts.push(`−${fighter.deductions} PT${fighter.deductions === 1 ? "" : "S"}`);
-  return parts.join(" · ");
+export function plateDetails(player: PublicPlayer | undefined, fighter: Pick<FighterSnapshot, "style" | "knockdowns" | "warnings" | "deductions">, compact: boolean): readonly string[] {
+  const style = styleTag(fighter.style);
+  const record = player?.record === undefined ? null : isDebut(player.record) ? "DEBUT" : recordLine(player.record);
+  const rating = player?.cpu === true ? "CPU" : `ELO ${player?.rating ?? "—"}`;
+  const knockdowns = fighter.knockdowns > 0 ? `${fighter.knockdowns} KD` : null;
+  const counts = [knockdowns, fighter.warnings > 0 ? `${fighter.warnings} WARNING${fighter.warnings === 1 ? "" : "S"}` : null, fighter.deductions > 0 ? `−${fighter.deductions} PT${fighter.deductions === 1 ? "" : "S"}` : null];
+  const short = [knockdowns, fighter.warnings > 0 ? `W${fighter.warnings}` : null, fighter.deductions > 0 ? `−${fighter.deductions}` : null];
+  const line = (...parts: (string | null)[]): string => parts.filter((part) => part !== null).join(" · ");
+  const lines = compact
+    ? [line(style, ...short), line(...short)]
+    : [line(style, record, rating, ...counts), line(style, rating, ...counts), line(style, ...counts), line(style, ...short), line(...short)];
+  return lines.filter((text, index) => text !== "" && lines.indexOf(text) === index);
 }
 
 export const PLATE_PORTRAIT_RADIUS = 16;
@@ -154,7 +161,8 @@ function fighterPlate(
   y: number,
   width: number,
   name: string,
-  detail: string,
+  /** The line under the name, fullest first (plateDetails). */
+  details: readonly string[],
   bars: readonly BarSpec[],
   mirror: boolean,
   accent: string,
@@ -199,10 +207,13 @@ function fighterPlate(
   ctx.fillText(fit(ctx, label, nameWidth), textX, y + 21);
   ctx.fillStyle = "#93a3bd";
   const detailWidth = width - inset - 14;
-  const detailSize = fitFontSize((size) => {
+  const measureDetail = (text: string, size: number): number => {
     ctx.font = `600 ${size}px Inter, system-ui, sans-serif`;
-    return ctx.measureText(detail).width;
-  }, detailWidth, 10, 8);
+    return ctx.measureText(text).width;
+  };
+  // The fullest line that fits at the smallest size, set as large as it fits; whole parts go, never letters.
+  const detail = details.find((text) => measureDetail(text, 8) <= detailWidth) ?? details.at(-1) ?? "";
+  const detailSize = fitFontSize((size) => measureDetail(detail, size), detailWidth, 10, 8);
   ctx.font = `600 ${detailSize}px Inter, system-ui, sans-serif`;
   ctx.fillText(fit(ctx, detail, detailWidth), textX, y + 35);
 
@@ -433,9 +444,10 @@ export function drawHud(
     const player = players[fighter.player_id];
     return player === undefined || pictures === null ? null : pictures(player);
   };
-  // Below 640 px the two plates share the bottom edge and the round card moves under the top bar.
+  // Below 640 px the two plates share the bottom edge and the round card moves under the top bar. Wider, each
+  // plate ends 8 px short of the round card between them.
   const compact = width < 640;
-  const plateWidth = compact ? (width - 56) / 2 : Math.min(300, width * 0.38);
+  const plateWidth = compact ? (width - 56) / 2 : Math.min(300, width * 0.38, width / 2 - ROUND_CARD_WIDTH / 2 - 8 - 24);
   const plateY = height - 84;
 
   // The result card takes the place of the plates and the clock once the bout is over.
@@ -443,10 +455,6 @@ export function drawHud(
     const mirror = index === 1;
     const x = mirror ? width - 24 - plateWidth : 24;
     const player = players[fighter.player_id];
-    // A phone's plate only has room for the style and the bout's own knockdowns; the introductions give the record.
-    const detail = (compact ? [styleTag(fighter.style), fighter.knockdowns > 0 ? `${fighter.knockdowns} KD` : null] : [styleTag(fighter.style), plateDetail(player, fighter, false)])
-      .filter((part) => part !== null && part !== "")
-      .join(" · ");
     const bars: BarSpec[] = [
       { label: `${compact ? "STA" : "STAMINA"} ${Math.round(fighter.stamina)}`, value: fighter.stamina, maximum: fighter.maximum_stamina, from: "#ffe08a", to: "#d9a53a" },
       { label: `${compact ? "HP" : "HEALTH"} ${Math.round(fighter.conditioning)}`, value: fighter.conditioning, maximum: HUD_MAX_CONDITIONING, from: "#ff8a7a", to: "#b02a20" },
@@ -455,7 +463,7 @@ export function drawHud(
     ];
     const accent = index === 0 ? "#3d6fb8" : "#b02a20";
     // A narrow plate has no room for a picture, so it goes beside the clock at the top.
-    fighterPlate(ctx, x, plateY, plateWidth, player?.name ?? "Fighter", detail, bars.slice(0, 2), mirror, accent, compact ? undefined : pictureOf(fighter));
+    fighterPlate(ctx, x, plateY, plateWidth, player?.name ?? "Fighter", plateDetails(player, fighter, compact), bars.slice(0, 2), mirror, accent, compact ? undefined : pictureOf(fighter));
     if (compact) portrait(ctx, width / 2 + (mirror ? 1 : -1) * (ROUND_CARD_WIDTH / 2 + 8 + CLOCK_PORTRAIT_RADIUS), 54 + 29, CLOCK_PORTRAIT_RADIUS, pictureOf(fighter), player?.name ?? "Fighter", accent);
     const miniY = plateY - 12;
     // Guard and poise ride above the plate, as wide as the plate's own bars once the plate is narrow.
