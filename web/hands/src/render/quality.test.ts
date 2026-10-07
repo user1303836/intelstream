@@ -62,6 +62,40 @@ describe("ResolutionScaler", () => {
     expect(scaler.scale).toBeCloseTo(0.85);
   });
 
+  it("settles one step down on a client that needs exactly one step instead of pumping between two scales", () => {
+    // 26 ms a frame at full resolution and a steady 60 fps one step down, for two minutes.
+    const scaler = new ResolutionScaler();
+    let changes = 0;
+    let slowMs = 0;
+    for (let elapsed = 0; elapsed < 120_000;) {
+      const frameMs = scaler.scale > 0.9 ? 26 : 16.7;
+      if (scaler.record(frameMs)) changes += 1;
+      if (frameMs > 24) slowMs += frameMs;
+      elapsed += frameMs;
+    }
+    expect(changes).toBeLessThanOrEqual(10);
+    expect(slowMs).toBeLessThan(6_000);
+    expect(scaler.scale).toBeCloseTo(0.85);
+  });
+
+  it("keeps a raise that holds up and tries a failed one again only after a doubling hold", () => {
+    const scaler = new ResolutionScaler();
+    feed(scaler, 40, 25);
+    expect(scaler.scale).toBeCloseTo(0.85);
+    expect(feed(scaler, 16, 63 * 3)).toBe(1);
+    expect(scaler.scale).toBe(1);
+    expect(feed(scaler, 40, 25)).toBe(1);
+    expect(scaler.scale).toBeCloseTo(0.85);
+    expect(feed(scaler, 16, 63 * 10)).toBe(0);
+    expect(feed(scaler, 16, 63)).toBe(1);
+    expect(scaler.scale).toBe(1);
+    expect(feed(scaler, 16, 63 * 3)).toBe(0);
+    expect(feed(scaler, 40, 25)).toBe(1);
+    expect(scaler.scale).toBeCloseTo(0.85);
+    expect(feed(scaler, 16, 63 * 3)).toBe(1);
+    expect(scaler.scale).toBe(1);
+  });
+
   it("ignores hidden-tab gaps and non-positive intervals", () => {
     const scaler = new ResolutionScaler();
     expect(scaler.record(0)).toBe(false);

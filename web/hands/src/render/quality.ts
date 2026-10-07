@@ -17,8 +17,10 @@ export const DEFAULT_SCALER_OPTIONS: ResolutionScalerOptions = {
 };
 
 const HOLD_WINDOWS_AFTER_NO_GAIN = 10;
+const HOLD_WINDOWS_AFTER_FAILED_RAISE = 10;
 const MAXIMUM_HOLD_WINDOWS = 160;
 const FAST_WINDOWS_BEFORE_RAISE = 3;
+const RAISE_TRIAL_WINDOWS = 3;
 
 /**
  * Dynamic render-resolution controller. Frame times are averaged over a
@@ -26,7 +28,10 @@ const FAST_WINDOWS_BEFORE_RAISE = 3;
  * row raise it again. A downscale that does not make the next window at least
  * ten percent faster is reverted and further downscales are held off, with
  * the hold doubling on every fruitless attempt, so a client whose frame time
- * is capped by its display or by the CPU keeps its full resolution.
+ * is capped by its display or by the CPU keeps its full resolution. A raise
+ * that brings a slow window back within three windows is undone at once and
+ * further raises are held off the same way, so a client that needs exactly one
+ * step down settles there instead of pumping between two scales.
  */
 export class ResolutionScaler {
   scale: number;
@@ -36,6 +41,9 @@ export class ResolutionScaler {
   private holdWindows = 0;
   private fruitlessAttempts = 0;
   private pending: { readonly before: number; readonly previous: number } | null = null;
+  private raised: { readonly previous: number; windows: number } | null = null;
+  private raiseHoldWindows = 0;
+  private failedRaises = 0;
 
   constructor(private readonly options: ResolutionScalerOptions = DEFAULT_SCALER_OPTIONS) {
     this.scale = options.maximum;
@@ -61,6 +69,22 @@ export class ResolutionScaler {
       }
       this.fruitlessAttempts = 0;
     }
+    if (this.raised !== null) {
+      const raised = this.raised;
+      if (average > this.options.slowMs) {
+        this.raised = null;
+        this.scale = raised.previous;
+        this.fastWindows = 0;
+        this.raiseHoldWindows = Math.min(MAXIMUM_HOLD_WINDOWS, HOLD_WINDOWS_AFTER_FAILED_RAISE * 2 ** this.failedRaises);
+        this.failedRaises += 1;
+        return true;
+      }
+      raised.windows += 1;
+      if (raised.windows >= RAISE_TRIAL_WINDOWS) {
+        this.raised = null;
+        this.failedRaises = 0;
+      }
+    }
     if (average > this.options.slowMs) {
       this.fastWindows = 0;
       if (this.holdWindows > 0) {
@@ -75,8 +99,13 @@ export class ResolutionScaler {
     }
     if (average < this.options.fastMs) {
       this.fastWindows += 1;
+      if (this.raiseHoldWindows > 0) {
+        this.raiseHoldWindows -= 1;
+        return false;
+      }
       if (this.fastWindows >= FAST_WINDOWS_BEFORE_RAISE && this.scale < this.options.maximum) {
         this.fastWindows = 0;
+        this.raised = { previous: this.scale, windows: 0 };
         this.scale = Math.min(this.options.maximum, this.scale + this.options.step);
         return true;
       }
