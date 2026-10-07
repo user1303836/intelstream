@@ -8,7 +8,7 @@ knockdowns, the punch output and how much of the fight is spent stunned. Every b
 deterministic for its seed.
 
     uv run python scripts/hands_balance.py --seeds 12
-    uv run python scripts/hands_balance.py --humans jabs,hooks,turtle,brawler,counter --seeds 8
+    uv run python scripts/hands_balance.py --humans jabs,hooks,turtle,brawler,counter,mash --seeds 8
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ DEFAULT_MATCHUPS = (
     "champion:rookie",
     "contender:rookie",
 )
-HUMAN_STRATEGIES = ("jabs", "hooks", "turtle", "brawler", "counter", "skilled")
+HUMAN_STRATEGIES = ("jabs", "hooks", "turtle", "brawler", "counter", "mash", "skilled")
 HUMAN_REACTION_TICKS = 7
 
 
@@ -158,6 +158,7 @@ class ScriptedHuman:
     - turtle: walks in behind a high guard and jabs now and then.
     - brawler: straights, hooks, uppercuts and the odd body shot from behind a high guard.
     - counter: holds a guard at range and answers each punch once a human could have seen it.
+    - mash: a newcomer pressing every punch button as fast as he can, never guarding.
     """
 
     WANTED_DISTANCE: ClassVar[dict[str, int]] = {
@@ -166,6 +167,7 @@ class ScriptedHuman:
         "turtle": 120,
         "brawler": 112,
         "counter": 150,
+        "mash": 110,
     }
 
     def __init__(self, kind: str, player_id: str, opponent_id: str) -> None:
@@ -222,6 +224,21 @@ class ScriptedHuman:
                 jab = PunchAction(Hand.LEFT, PunchClass.JAB, Target.HEAD)
                 return self._command(tick, move, actions=(jab,))
             return self._command(tick, move, defense)
+        if self.kind == "mash":
+            if tick < self._next_tick or distance > 150:
+                return self._command(tick, move)
+            hand, punch = (
+                (Hand.LEFT, PunchClass.JAB),
+                (Hand.RIGHT, PunchClass.STRAIGHT),
+                (Hand.LEFT, PunchClass.HOOK),
+                (Hand.RIGHT, PunchClass.HOOK),
+                (Hand.RIGHT, PunchClass.UPPERCUT),
+            )[roll % 5]
+            power = Power.POWER if roll % 3 == 0 else Power.NORMAL
+            self._next_tick = tick + 4
+            return self._command(
+                tick, move, actions=(PunchAction(hand, punch, Target.HEAD, power),)
+            )
         if tick < self._next_tick or not free:
             return self._command(tick, move, defense)
         if self.kind == "brawler" and distance <= 125:

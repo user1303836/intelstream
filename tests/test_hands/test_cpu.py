@@ -6,6 +6,7 @@ from itertools import pairwise
 from math import hypot
 
 import pytest
+from scripts.hands_balance import play
 
 from intelstream.hands.cpu import (
     PROFILES,
@@ -570,6 +571,16 @@ def test_a_champion_beats_a_rookie() -> None:
         bout(CpuLevel.CHAMPION, CpuLevel.ROOKIE, seed).result.winner_id for seed in range(5)
     )  # type: ignore[union-attr]
     assert winners["one"] >= 4
+
+
+def test_a_newcomer_mashing_every_punch_button_can_beat_the_rookie() -> None:
+    """Never guarding and never stopping, he out-lands the rookie and is not stopped."""
+    bouts = [
+        play("mash", "rookie", seed, EngineConfig(rounds=1, countdown_ticks=0))
+        for seed in (1, 2, 3)
+    ]
+    assert [bout.method for bout in bouts] == ["decision"] * 3
+    assert sum(bout.winner_seat == 0 for bout in bouts) >= 2
 
 
 def test_profiles_get_better_with_the_level() -> None:
