@@ -150,3 +150,40 @@ describe("punches at an evading head", () => {
     expect(weaved.glove.distanceTo(weaved.head)).toBeGreaterThan(cleanHook.glove.distanceTo(cleanHook.head));
   });
 });
+
+describe("punch onset", () => {
+  it("starts every punch from the guard and eases into the windup instead of jumping on its first frame", () => {
+    for (const punchClass of ["jab", "straight", "hook", "uppercut"] as const) {
+      for (const hand of ["left", "right"] as const) {
+        const graph = new BoxingGraph(new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 }), mapping);
+        const opponent = opponentAt(120);
+        const head = new THREE.Vector3(0, 1.5, mapping.z(-120));
+        const idle = facingOpponent(baseFighter("one"));
+        const timing = punchTiming(punchClass, "head", "normal");
+        const punch: FighterSnapshot = {
+          ...idle, action: punchClass, action_hand: hand, action_target: "head", action_power: "normal", action_id: "p1", action_key: `${punchClass}:${hand}:head:normal`,
+          action_start_tick: 100, action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery,
+        };
+        const bones = hand === "left" ? (["gloveL", "elbowL"] as const) : (["gloveR", "elbowR"] as const);
+        const last = bones.map(() => new THREE.Vector3());
+        const now = new THREE.Vector3();
+        // Glove and elbow travel on each of the punch's first four frames, out of the guard into the windup.
+        const moves: number[] = [];
+        for (let tick = 90; tick < 102; tick += 0.5) {
+          graph.update(tick < 100 ? idle : punch, opponent, 1 / 60, tick / 30, false, "full", tick - 0.5, head);
+          graph.boxer.root.updateMatrixWorld(true);
+          const step = Math.max(...bones.map((name, index) => {
+            const travel = worldPosition(graph.boxer.rig.bones[name], now).distanceTo(last[index]!);
+            last[index]!.copy(now);
+            return travel;
+          }));
+          if (tick >= 100) moves.push(step);
+        }
+        expect(moves[0], `${hand} ${punchClass} first frame`).toBeLessThan(0.05);
+        // No faster than the punches themselves move near contact, and building up rather than starting there.
+        expect(Math.max(...moves), `${hand} ${punchClass} windup`).toBeLessThan(0.15);
+        expect(moves[0]!, `${hand} ${punchClass} eases in`).toBeLessThan(Math.max(...moves));
+      }
+    }
+  });
+});

@@ -1377,12 +1377,18 @@ export class BoxingGraph {
     let extend: number;
     let windup: number;
     let phase: "startup" | "active" | "recovery";
+    // Every punch leaves the guard and eases into its windup instead of jumping on its first frame:
+    // the hand over the windup, its turn and the elbow over twice that.
+    let windupIn = 1;
+    let onset = 1;
     if (age < startup) {
       phase = "startup";
       const u = age / startup;
       const windupEnd = this.punchClass === "hook" ? 0.3 : this.punchClass === "uppercut" ? 0.45 : 0.18;
       windup = smoothstep(0, windupEnd, u) * (1 - smoothstep(windupEnd, Math.min(1, windupEnd + 0.4), u));
       extend = u <= windupEnd ? 0 : easeIn((u - windupEnd) / (1 - windupEnd), 1.65);
+      windupIn = smoothstep(0, windupEnd, u);
+      onset = smoothstep(0, Math.min(1, windupEnd * 2), u);
     } else if (age < startup + active) {
       phase = "active";
       windup = 0;
@@ -1506,7 +1512,8 @@ export class BoxingGraph {
         windupOffset.set(0, -0.01, -0.05 - 0.04 * power);
         break;
     }
-    const start = this.punchStart.copy(guard).addScaledVector(windupOffset, Math.max(windup, this.punchClass === "hook" || this.punchClass === "uppercut" ? (1 - travel) * 0.6 : 0));
+    // A hook or uppercut keeps part of its windup until it travels, once the windup has eased in.
+    const start = this.punchStart.copy(guard).addScaledVector(windupOffset, Math.max(windup, this.punchClass === "hook" || this.punchClass === "uppercut" ? (1 - travel) * 0.6 * windupIn : 0));
     if (this.punchClass === "hook") {
       // Horizontal sweep around the shoulder from the wide windup into the target. The radius runs
       // from the windup's to the contact's, measured flat, so the sweep ends on the contact point.
@@ -1550,6 +1557,15 @@ export class BoxingGraph {
       hand.knuckles.lerp(guardKnuckles, retract).normalize();
       hand.palm.lerp(guardPalm, retract).normalize();
       hand.pole.lerp(guardPole, retract).normalize();
+    }
+    if (onset < 1) {
+      // The hand turns and the elbow lifts out of the guard over the windup too. The further the elbow
+      // has to turn, the more it swings out on the way, so its pull never lines up with the arm, which
+      // would flip it in a frame.
+      const turn = (1 - hand.pole.dot(guardPole) / Math.max(1e-6, hand.pole.length() * guardPole.length())) / 2;
+      hand.knuckles.lerp(guardKnuckles, 1 - onset).normalize();
+      hand.palm.lerp(guardPalm, 1 - onset).normalize();
+      hand.pole.lerp(guardPole, 1 - onset).addScaledVector(this.scratchC.set(side * mirror, 0, 0), ONSET_ELBOW_FLARE * turn * Math.sin(Math.PI * onset)).normalize();
     }
 
     // Non-punching hand protects the chin.
@@ -2097,6 +2113,8 @@ const EVASION_POSES: ReadonlySet<string> = new Set(["slip_left", "slip_right", "
 const HEAD_SETTLE_SECONDS = 0.25;
 /** Rate at which a punch known to connect turns its aim onto the head where it actually is. */
 const FOLLOW_HEAD_RATE = 30;
+/** How far the elbow's pull swings out while it turns from the guard's to the punch's. */
+const ONSET_ELBOW_FLARE = 2;
 
 /** Age in `to`'s timing at the same progress through the same phase as `age` in `from`'s. */
 export function remapPunchAge(age: number, from: PunchTiming, to: PunchTiming): number {
