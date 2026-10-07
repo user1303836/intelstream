@@ -819,6 +819,28 @@ describe("gore from a real punch", () => {
     expect(torn(punchOn("counter_hit", 140, 300))).toBeGreaterThan(torn(punchOn("counter_hit", 60, 300)));
   });
 
+  it("keeps a knockdown, teeth and gum shield included, to one reduced spray of blood with reduced blood", () => {
+    const thrown = (level: "full" | "reduced"): number => {
+      const effects = new Effects3D(new THREE.Scene(), 256);
+      effects.setBloodLevel(level);
+      const mouth = new THREE.Vector3(0, 1.5, 0);
+      effects.addEvent({ ...punchOn("knockdown", 1, 0), blood: 30 }, origin, false);
+      effects.spawnTeeth(mouth, 1, 2, 7);
+      effects.ejectMouthpiece(1, mouth, new THREE.Quaternion(), 1, 7, 0x1d4ed8);
+      // Nothing thrown has come down yet a third of a second on, while the gum shield trails its thread.
+      let most = effects.liveBloodParticles;
+      for (let frame = 0; frame < 18; frame += 1) {
+        effects.update(1 / 60);
+        most = Math.max(most, effects.liveBloodParticles);
+      }
+      effects.dispose();
+      return most;
+    };
+    // Reduced caps a single spray at 24 drops.
+    expect(thrown("reduced")).toBeLessThanOrEqual(24);
+    expect(thrown("full")).toBeGreaterThan(60);
+  });
+
   it("throws a thicker mist off a punch the worse the cut it lands on", () => {
     const mist = (event: CombatEvent): number => after(event, (effects) => effects.liveMist);
     expect(mist(punchOn("hit", 75, 0))).toBe(10);

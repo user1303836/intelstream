@@ -4,7 +4,7 @@ import { fighter } from "../test/fixtures";
 import type { TraumaSnapshot } from "../types";
 import { wearCornerColour } from "./gear";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
-import { BODY_SITES, EYE_LIDS, EYE_SHUT_TRAUMA, HEAD_SITES, InjuryShading, applyHeadTrauma, eyeShut, trunksBloodFor } from "./injury";
+import { BODY_SITES, EYE_LIDS, EYE_SHUT_TRAUMA, HEAD_SITES, HEAD_SWELL_CORE, InjuryShading, applyHeadTrauma, eyeShut, trunksBloodFor } from "./injury";
 import { REFEREE_OUTFIT } from "./outfit";
 import { worldMapping } from "./world";
 
@@ -126,6 +126,29 @@ describe("blood running from a wound", () => {
     expect(boxer.headInjury.uniforms.uInjuryWash.value).toBe(0);
     expect(new InjuryShading(new THREE.MeshStandardMaterial(), BODY_SITES, { core: [0, 0, -2, 1] }).uniforms.uInjuryWash.value).toBe(0);
     boxer.dispose();
+  });
+});
+
+describe("a cut with blood off", () => {
+  it("is still drawn, as a closed dark line with no raw lips and nothing wet, and bleeds nowhere", () => {
+    const shading = new InjuryShading(new THREE.MeshStandardMaterial(), HEAD_SITES, { core: HEAD_SWELL_CORE, lids: EYE_LIDS });
+    const beaten = trauma({ head: 600, left_eye: 500, right_eye: 300, left_cut: 300, right_cut: 120, swelling: 400, bleeding: 120 });
+    applyHeadTrauma(shading, beaten, "off");
+    expect(shading.level("leftBrow").cut).toBe(1);
+    expect(shading.level("mouth").cut).toBeGreaterThan(0.2);
+    for (const site of HEAD_SITES) expect(shading.level(site.name).blood).toBe(0);
+    expect(shading.uniforms.uInjuryRaw.value).toBe(0);
+    applyHeadTrauma(shading, beaten, "reduced");
+    expect(shading.uniforms.uInjuryRaw.value).toBeGreaterThan(0);
+    expect(shading.uniforms.uInjuryRaw.value).toBeLessThan(1);
+    applyHeadTrauma(shading, beaten, "full");
+    expect(shading.uniforms.uInjuryRaw.value).toBe(1);
+    // The raw lips, the width of the gash and its wetness all go with it.
+    const head = compile(shading.material!);
+    expect(head.uniforms.uInjuryRaw).toBe(shading.uniforms.uInjuryRaw);
+    expect(head.fragmentShader).toContain("float lip = (1.0 - smoothstep(0.1 * taper, (0.22 + cut * 0.12) * taper, slit)) * (1.0 - gash) * uInjuryRaw;");
+    expect(head.fragmentShader).toContain("(0.03 + cut * 0.05 * uInjuryRaw) * taper");
+    expect(head.fragmentShader).toContain("injuryWet = max(injuryWet, cut * max(gash, lip * 0.6) * uInjuryRaw);");
   });
 });
 

@@ -152,6 +152,7 @@ uniform float uInjuryBruise[${INJURY_SITE_COUNT}];
 uniform float uInjuryBlood[${INJURY_SITE_COUNT}];
 uniform float uInjuryWetness;
 uniform float uInjuryWash;
+uniform float uInjuryRaw;
 uniform vec4 uInjuryLid[2];
 uniform vec2 uInjuryEyeOut;
 varying vec3 vInjuryPos;
@@ -200,17 +201,18 @@ const FRAGMENT_BODY = /* glsl */ `
     float cut = uInjuryCut[i].y;
     float halfLength = uInjuryCut[i].x;
     if (cut > 0.001 && halfLength > 0.0) {
-      // A split: a dark gash between swollen raw lips, tapering to its ends.
+      // A split: a dark gash between swollen raw lips, tapering to its ends. Without blood it is closed,
+      // a thin dark line with no raw flesh and nothing wet about it.
       vec3 local = injuryPos - site;
       float along = clamp(local.x, -halfLength, halfLength);
       float taper = 1.0 - 0.6 * (abs(along) / halfLength) * (abs(along) / halfLength);
       vec2 delta = vec2(local.x - along, local.y - 0.18 * sin(local.x * 3.0));
       float slit = length(delta) + abs(local.z) * 0.25;
-      float gash = 1.0 - smoothstep((0.03 + cut * 0.05) * taper, (0.09 + cut * 0.09) * taper, slit);
-      float lip = (1.0 - smoothstep(0.1 * taper, (0.22 + cut * 0.12) * taper, slit)) * (1.0 - gash);
+      float gash = 1.0 - smoothstep((0.03 + cut * 0.05 * uInjuryRaw) * taper, (0.09 + cut * 0.09 * uInjuryRaw) * taper, slit);
+      float lip = (1.0 - smoothstep(0.1 * taper, (0.22 + cut * 0.12) * taper, slit)) * (1.0 - gash) * uInjuryRaw;
       diffuseColor.rgb = mix(diffuseColor.rgb, rawFlesh, cut * lip * 0.75);
-      diffuseColor.rgb = mix(diffuseColor.rgb, cutColor, cut * gash);
-      injuryWet = max(injuryWet, cut * max(gash, lip * 0.6));
+      diffuseColor.rgb = mix(diffuseColor.rgb, mix(vec3(0.12, 0.06, 0.05), cutColor, uInjuryRaw), cut * gash);
+      injuryWet = max(injuryWet, cut * max(gash, lip * 0.6) * uInjuryRaw);
     }
   }
   // An eye swollen shut: the lids meet over it in a tight, shiny, purple-red mound closed to a dark slit.
@@ -311,6 +313,7 @@ export class InjuryShading {
     uInjuryImpactPush: { value: new THREE.Vector3() },
     uInjuryNose: { value: new THREE.Vector4(0, -1000, 0, 0) },
     uInjuryWetness: { value: 1 },
+    uInjuryRaw: { value: 1 },
     uInjurySever: { value: UNCUT },
     uInjurySeverShape: { value: new THREE.Vector2(NECK_CUT_SLOPE, 1) },
     uInjuryCore: { value: new THREE.Vector4(...HEAD_SWELL_CORE) },
@@ -421,6 +424,11 @@ export class InjuryShading {
     return material;
   }
 
+  /** How open and raw the cuts are drawn, from 1 (gashes between raw lips) to 0 (closed dark lines, for blood off). */
+  setRawCuts(raw: number): void {
+    this.uniforms.uInjuryRaw.value = THREE.MathUtils.clamp(raw, 0, 1) || 0;
+  }
+
   setJaw(amount: number): void {
     this.uniforms.uInjuryJaw.value = THREE.MathUtils.clamp(amount, 0, 1);
   }
@@ -489,6 +497,7 @@ export function eyeShut(eyeTrauma: number, swelling: number): number {
 export function applyHeadTrauma(shading: InjuryShading, trauma: TraumaSnapshot, blood: BloodLevel): void {
   const bleed = bloodScale(blood);
   const graphic = blood === "full" ? 1 : 0.6;
+  shading.setRawCuts(blood === "full" ? 1 : blood === "reduced" ? 0.6 : 0);
   const eye = (value: number): number => Math.min(1.2, value / 380 + trauma.swelling / 900);
   const swell = (value: number): number => Math.min(1.25, (value / 600 + trauma.swelling / 900) * graphic);
   shading.set("leftEye", { bruise: eye(trauma.left_eye), swell: swell(trauma.left_eye) });

@@ -644,7 +644,7 @@ export class Effects3D {
   /**
    * Knocks a fighter's gum shield out of his mouth along the punch: it tumbles, bounces and slides on
    * the canvas and lies there until the round ends. Once out it stays out, unless `again` replays the
-   * blow. A spray of spit, and of blood when blood is shown, follows it.
+   * blow. A spray of spit follows it, two thirds of it blood with full blood and a third with reduced.
    */
   ejectMouthpiece(fighterIndex: number, mouth: THREE.Vector3, quaternion: THREE.Quaternion, direction: number | SprayDirection, eventId: number, color: number, again = false): boolean {
     if (fighterIndex < 0 || fighterIndex >= MAX_HEADS) return false;
@@ -676,10 +676,10 @@ export class Effects3D {
     mesh.visible = true;
     const material = this.shieldMaterials[index]!;
     material.color.setHex(color).lerp(SHIELD_WHITE, 0.55);
-    const bloody = this.bloodLevel !== "off";
-    for (let drop = 0; drop < (bloody ? 22 : 12); drop += 1) {
+    const full = this.bloodLevel === "full";
+    for (let drop = 0; drop < (full ? 22 : 12); drop += 1) {
       const angle = rand() * Math.PI * 2;
-      const blood = bloody && drop % 3 !== 0;
+      const blood = full ? drop % 3 !== 0 : this.bloodLevel === "reduced" && drop % 3 === 0;
       this.spawnDroplet(
         shield.x + (rand() - 0.5) * 0.03,
         shield.y + (rand() - 0.5) * 0.03,
@@ -867,7 +867,7 @@ export class Effects3D {
       mesh.position.set(shield.x, shield.y, shield.z);
       // A thread of spit and blood trails it for the first moments of its flight.
       if (flying && this.ambientRandom() < step * 40) {
-        const blood = this.bloodLevel !== "off" && this.ambientRandom() < 0.6;
+        const blood = this.ambientRandom() < (this.bloodLevel === "full" ? 0.6 : this.bloodLevel === "reduced" ? 0.15 : 0);
         this.spawnDroplet(shield.x, shield.y, shield.z, shield.vx * 0.6, shield.vy * 0.6, shield.vz * 0.6, blood ? bloodShade(this.ambientRandom()) : SALIVA, 0.45, blood, 0.003);
       }
     }
@@ -1599,7 +1599,7 @@ export class Effects3D {
     }
   }
 
-  /** Ejects teeth from the mouth on heavy head contact. */
+  /** Ejects teeth from the mouth on heavy head contact, in a spray of blood that reduced blood cuts to a few drops. */
   spawnTeeth(mouthWorld: THREE.Vector3, direction: number | SprayDirection, count: number, eventId: number): void {
     if (this.bloodLevel === "off") return;
     const rand = seeded((Number.isSafeInteger(eventId) ? eventId : 0) * 7331 + 91);
@@ -1619,7 +1619,7 @@ export class Effects3D {
         "tooth",
       );
     }
-    for (let i = 0; i < 18; i += 1) {
+    for (let i = 0; i < (this.bloodLevel === "reduced" ? 4 : 18); i += 1) {
       const angle = rand() * Math.PI * 2;
       this.sprayDroplet(launch, finite(mouthWorld.x), finite(mouthWorld.y, 1.4), finite(mouthWorld.z), 0.8 + rand() * 1.4 + Math.sin(angle) * 0.5, 0.6 + rand() * 1.3, Math.cos(angle) * 0.5, bloodShade(rand()), 0.6 + rand() * 0.6, true);
     }
