@@ -460,7 +460,8 @@ export class FightRenderer {
   private raf = 0;
   private previous = performance.now();
   private readonly scaler = new ResolutionScaler();
-  private readonly basePixelRatio = Math.min(coarsePointer() ? 1.5 : 2, window.devicePixelRatio || 1);
+  private readonly pixelRatioCap = coarsePointer() ? 1.5 : 2;
+  private basePixelRatio = Math.min(this.pixelRatioCap, window.devicePixelRatio || 1);
   private players: Readonly<Record<string, PublicPlayer>> = {};
   private playerOrder: readonly string[] = [];
   private viewerId: string | null = null;
@@ -1217,6 +1218,12 @@ export class FightRenderer {
     this.previous = time;
     if (!manual && this.scaler.record(frameMs)) this.applyResolutionScale();
     if (!manual && frameMs > 0 && frameMs < 1000) this.frameMsAverage += (frameMs - this.frameMsAverage) * 0.05;
+    // Zooming or moving the window to another monitor changes the pixel ratio, often without a resize.
+    const pixelRatio = Math.min(this.pixelRatioCap, window.devicePixelRatio || 1);
+    if (pixelRatio !== this.basePixelRatio) {
+      this.basePixelRatio = pixelRatio;
+      this.applyResolutionScale();
+    }
 
     const width = this.canvas.clientWidth;
     const height = this.canvas.clientHeight;

@@ -90,6 +90,30 @@ describe("quality tiers on the graphics card", () => {
   });
 });
 
+describe("device pixel ratio", () => {
+  const setDevicePixelRatio = (ratio: number): void => {
+    Object.defineProperty(window, "devicePixelRatio", { configurable: true, value: ratio });
+  };
+  afterEach(() => setDevicePixelRatio(2));
+
+  it("follows a zoom or a move to another monitor, capped and scaled by the quality tier", async () => {
+    const { fight, internals } = await mount();
+    fight.labFrame(0.1);
+    expect(internals.renderer.getPixelRatio()).toBe(2);
+    setDevicePixelRatio(1.25);
+    fight.labFrame(0.2);
+    expect(internals.renderer.getPixelRatio()).toBe(1.25);
+    setDevicePixelRatio(3);
+    fight.labFrame(0.3);
+    expect(internals.renderer.getPixelRatio()).toBe(2);
+    internals.scaler.scale = 0.7;
+    internals.applyResolutionScale();
+    setDevicePixelRatio(1);
+    fight.labFrame(0.4);
+    expect(internals.renderer.getPixelRatio()).toBeCloseTo(0.7);
+  });
+});
+
 describe("graphics memory across rematches on a shared context", () => {
   it("leaves nothing on the context but what three itself keeps per renderer", async () => {
     // A bare renderer's own leftovers: its state's placeholder textures and its copy framebuffers.
