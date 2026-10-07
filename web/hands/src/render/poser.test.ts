@@ -68,18 +68,20 @@ describe("celebration", () => {
 });
 
 describe("fall direction", () => {
-  it("drops face down after a hook and onto the back after an uppercut", () => {
-    for (const [punchClass, faceDown] of [["hook", true], ["uppercut", false]] as const) {
+  it("goes down the way the blow drove him: a hook to the side, an uppercut or a straight onto his back", () => {
+    for (const [punchClass, hand] of [["hook", "left"], ["hook", "right"], ["uppercut", "left"], ["straight", "right"]] as const) {
       const { boxer, graph } = makeGraph();
       const fighter = facingOpponent(baseFighter("one"));
       const opponent = opponentFor("two");
       run(graph, fighter, opponent, 10, undefined);
-      graph.react("hit", "head", 1, punchClass, "left", 420);
+      graph.react("hit", "head", 1, punchClass, hand, 420);
       run(graph, { ...fighter, is_downed: true }, opponent, 70, undefined, 5, 10 / 60);
       const head = bone(boxer, "head");
       const hips = bone(boxer, "hips");
       expect(head.y).toBeLessThan(0.45);
-      expect(head.z > hips.z).toBe(faceDown);
+      // The fighter faces +z; a left hook drives the head toward his own left (+x), a right hook toward -x.
+      if (punchClass === "hook") expect(Math.sign(head.x - hips.x)).toBe(hand === "left" ? 1 : -1);
+      else expect(head.z).toBeLessThan(hips.z);
     }
   });
 });

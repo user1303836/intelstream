@@ -114,6 +114,9 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
     const bellAt = search.get("phase") === "bell" ? 10.5 : null;
     const forcedRest = search.get("phase") === "rest" || (bellAt !== null && t >= bellAt);
     const introducing = search.get("intro") === "1" && t < 3;
+    // `ko=<jab|straight|hook|uppercut|body>` chooses the finishing punch; `finisher=flash` ends the bout on it without a count.
+    const ko = search.get("ko");
+    const flash = finisher === "flash";
     const pinned = search.get("pin") === "1";
     const knockdownCycle = finisher === null ? t % 14 : (t < 2.5 ? 0 : 12);
     // A body shot that puts him on a knee a third of a second after it lands.
@@ -144,7 +147,7 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
         events.push({ event_id: eventId, tick, kind: "knockdown", actor_id: one.player_id, target_id: two.player_id, amount: 1, detail: "body", blood: 0, direction: 0, action_id: "fixture-body" });
       }
     } else if (knockdownCycle > 11 && knockdownCycle < 13.4) {
-      two.is_downed = true;
+      two.is_downed = !flash;
       two.action = null;
       two.x = 140;
       two.y = 40;
@@ -158,9 +161,18 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
         const burst = finisher === "burst";
         const eye = finisher === "eye";
         if (finisher !== null && eventId % 2 === (eye ? 0 : 1)) eventId += 1;
-        events.push({ event_id: eventId, tick, kind: finisher === "head" || eye ? "hit" : "counter_hit", actor_id: one.player_id, target_id: two.player_id, amount: burst ? 130 : finisher === "head" || eye ? 90 : 500, detail: finisher === "hand" ? "left:hook:body" : eye ? "left:hook:head" : "right:uppercut:head", blood: 100, direction: 1, action_id: null });
+        let detail = finisher === "hand" ? "left:hook:body" : eye ? "left:hook:head" : "right:uppercut:head";
+        if (ko !== null) {
+          const target = ko === "body" ? "body" : "head";
+          const punch = ko === "body" ? "hook" : ko === "jab" || ko === "straight" || ko === "hook" ? ko : "uppercut";
+          const hand = ko === "jab" ? "left" : "right";
+          Object.assign(one, { action: punch, action_hand: hand, action_target: target, action_power: "power", action_key: `${punch}:${hand}:${target}:power` });
+          detail = `${punch}:${target}`;
+        }
+        events.push({ event_id: eventId, tick, kind: finisher === "head" || eye ? "hit" : "counter_hit", actor_id: one.player_id, target_id: two.player_id, amount: burst ? 130 : finisher === "head" || eye ? 90 : 500, detail, blood: 100, direction: 1, action_id: null });
         eventId += 1;
-        events.push({ event_id: eventId, tick, kind: "knockdown", actor_id: one.player_id, target_id: two.player_id, amount: 420, detail: "knockdown", blood: 60, direction: 1, action_id: null });
+        if (flash) events.push({ event_id: eventId, tick, kind: "result", actor_id: one.player_id, target_id: null, amount: 0, detail: "flash_ko", blood: 0, direction: 0, action_id: null });
+        else events.push({ event_id: eventId, tick, kind: "knockdown", actor_id: one.player_id, target_id: two.player_id, amount: 420, detail: "knockdown", blood: 60, direction: 1, action_id: null });
       }
     }
     // `rocked=1` keeps the viewer's fighter stunned, for the hurt vision.
@@ -234,9 +246,15 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       }
       events.length = 0;
     }
+    const flashOver = flash && t >= 2.5;
     const snapshot: EngineSnapshot = {
-      tick, phase: decided ? "complete" : introducing ? "countdown" : forcedRest ? "rest" : "fight", round_number: search.get("intro") === "1" ? 1 : 3, phase_ticks_remaining: decided ? 0 : introducing ? Math.max(0, 90 - tick) : forcedRest ? Math.max(0, 450 - tick) : Math.max(0, 5400 - tick),
-      fighters: [{ ...one }, { ...two }], events, result: null, checksum: "a".repeat(64),
+      tick, phase: decided || flashOver ? "complete" : introducing ? "countdown" : forcedRest ? "rest" : "fight", round_number: search.get("intro") === "1" ? 1 : 3, phase_ticks_remaining: decided ? 0 : introducing ? Math.max(0, 90 - tick) : forcedRest ? Math.max(0, 450 - tick) : Math.max(0, 5400 - tick),
+      fighters: [{ ...one }, { ...two }], events,
+      result: flashOver ? {
+        match_id: "fixture", activity_instance_id: "fixture", guild_id: "fixture", player_one_id: one.player_id, player_two_id: two.player_id, winner_id: one.player_id,
+        finish_method: "flash_ko", round_number: 3, tick, scorecards: [], player_one_knockdowns: 0, player_two_knockdowns: 0, player_one_damage: 900, player_two_damage: 400,
+      } : null,
+      checksum: "a".repeat(64),
     };
     renderer.push(snapshot);
     if (decided && !finalSent) {
@@ -251,7 +269,7 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
     }
     if (finisher !== null && t >= 3.4 && !finalSent) {
       finalSent = true;
-      renderer.setFinal({ version: 3, type: "final", match_id: "fixture", winner_id: one.player_id, method: "ko", round: 3, scorecards: [], ratings: {} });
+      renderer.setFinal({ version: 3, type: "final", match_id: "fixture", winner_id: one.player_id, method: flash ? "flash_ko" : "ko", round: 3, scorecards: [], ratings: {} });
     }
     (window as unknown as Record<string, unknown>).__fixtureRenderer = renderer;
     (window as unknown as Record<string, unknown>).__fixtureDebug = {

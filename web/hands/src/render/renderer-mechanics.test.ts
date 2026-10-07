@@ -10,8 +10,8 @@ const combat = (kind: string, overrides: Partial<CombatEvent> = {}): CombatEvent
   event_id: 1, tick: 10, kind, actor_id: "one", target_id: "two", amount: 0, detail: "", blood: 0, direction: 1, action_id: null, ...overrides,
 });
 
-interface FakeGraph { stagger: ReturnType<typeof vi.fn>; windedFor: ReturnType<typeof vi.fn>; fallToKnee: ReturnType<typeof vi.fn> }
-const fakeGraphs = (): [FakeGraph, FakeGraph] => [0, 1].map(() => ({ stagger: vi.fn(), windedFor: vi.fn(), fallToKnee: vi.fn() })) as [FakeGraph, FakeGraph];
+interface FakeGraph { stagger: ReturnType<typeof vi.fn>; windedFor: ReturnType<typeof vi.fn>; fallToKnee: ReturnType<typeof vi.fn>; resetTransient: ReturnType<typeof vi.fn>; primeReplayFall: ReturnType<typeof vi.fn> }
+const fakeGraphs = (): [FakeGraph, FakeGraph] => [0, 1].map(() => ({ stagger: vi.fn(), windedFor: vi.fn(), fallToKnee: vi.fn(), resetTransient: vi.fn(), primeReplayFall: vi.fn() })) as [FakeGraph, FakeGraph];
 
 const methods = FightRenderer.prototype as unknown as {
   push(this: unknown, snapshot: EngineSnapshot): void;
@@ -98,6 +98,25 @@ describe("fight mechanics on screen", () => {
     methods.push.call(stub, { ...snapshot(70), fighters: [fighter("one"), { ...fighter("two"), is_downed: true }] as const, events: [headHit, headDown] });
     expect(graphs[1].fallToKnee).toHaveBeenLastCalledWith(false);
     expect((stub.lastKnockdown as { hit: CombatEvent | null }).hit).toEqual(headHit);
+  });
+
+  it("replays a body-shot knockdown on one knee, as it was seen live", () => {
+    const startReplay = (FightRenderer.prototype as unknown as { startReplay(this: unknown, plan: unknown): void }).startReplay;
+    const replayFor = (detail: string) => {
+      const graphs = fakeGraphs();
+      const hit = combat("hit", { event_id: 3, tick: 30, detail: "hook:body", amount: 70, action_id: "liver" });
+      const stub = {
+        simulation: { tick_rate: 30 }, frameSeconds: 0, final: null, graphs,
+        commentary: { replay: vi.fn() }, arcadeInjuries: [null, null], arcadeInjuryEvents: [null, null], replayInjuries: [null, null],
+        lastKnockdown: { knockdown: combat("knockdown", { event_id: 9, tick: 40, detail, amount: 1, action_id: "liver" }), hit, finisher: null },
+      };
+      startReplay.call(stub, { snapshots: [snapshot(20), snapshot(40)], impact: hit, durationSeconds: 3 });
+      return graphs;
+    };
+    const body = replayFor("body");
+    expect(body[1].fallToKnee).toHaveBeenCalledWith(true);
+    expect(body[0].fallToKnee).not.toHaveBeenCalled();
+    expect(replayFor("")[1].fallToKnee).not.toHaveBeenCalled();
   });
 
   it("queues the parry and the body collapse to be shown with their punch", () => {
