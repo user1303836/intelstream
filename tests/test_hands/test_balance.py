@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from intelstream.hands.engine import EngineConfig
 from intelstream.hands.rules import (
     BLOCK_POISE_PERCENT,
     BODY_COLLAPSE_COOLDOWN_TICKS,
@@ -19,6 +20,8 @@ from intelstream.hands.rules import (
     GUARD_BLOCK_MINIMUM,
     GUARD_DAMAGE_PERCENT,
     HEAD_TRAUMA_PER_DAMAGE_PERCENT,
+    JAB_CUT_PERCENT,
+    JAB_SWELLING_PERCENT,
     MAX_POISE,
     POISE_CEILING_FLOOR,
     POISE_DAMAGE_PERCENT,
@@ -267,6 +270,30 @@ def test_a_cut_opens_by_half_the_damage_once_the_eye_is_marked() -> None:
     engine.fighter("two").trauma.left_eye = 300
     damage = hit_amount(land(engine, punch(PunchClass.STRAIGHT)))
     assert engine.fighter("two").trauma.left_cut == damage * CUT_PER_DAMAGE_PERCENT // 100
+
+
+def test_a_jab_seldom_splits_the_skin_and_swells_the_face_less() -> None:
+    engine = make_engine()
+    engine.fighter("two").trauma.right_eye = 300
+    damage = hit_amount(land(engine, punch(PunchClass.JAB, hand=Hand.LEFT)))
+    trauma = engine.fighter("two").trauma
+    cut = damage * CUT_PER_DAMAGE_PERCENT // 100 * JAB_CUT_PERCENT // 100
+    swelling = damage * SWELLING_PER_DAMAGE_PERCENT // 100 * JAB_SWELLING_PERCENT // 100
+    assert trauma.right_cut == cut < damage * CUT_PER_DAMAGE_PERCENT // 100
+    assert trauma.swelling == swelling < damage * SWELLING_PER_DAMAGE_PERCENT // 100
+
+
+def test_by_default_the_doctor_lets_a_bad_cut_and_a_swollen_face_box_on() -> None:
+    defaults = EngineConfig()
+    engine = make_engine(
+        doctor_cut_threshold=defaults.doctor_cut_threshold,
+        doctor_swelling_threshold=defaults.doctor_swelling_threshold,
+    )
+    trauma = engine.fighter("two").trauma
+    trauma.left_eye, trauma.left_cut, trauma.swelling = 500, 740, 850
+    land(engine, punch(PunchClass.STRAIGHT))
+    assert trauma.left_cut > 740 and trauma.swelling > 850
+    assert engine.result is None
 
 
 def test_body_trauma_counts_the_damage_once() -> None:

@@ -24,7 +24,7 @@ const WORKING: Readonly<Record<CornerChoice, string>> = {
 const PENDING_MS = 1500;
 const MAX_CONDITIONING = 1000;
 
-/** A cut in the words a corner would use; the ringside doctor stops a bout at about 700. */
+/** A cut in the words a corner would use; the ringside doctor stops a bout at about 800. */
 export function cutWord(cut: number): string {
   return cut < 150 ? "small" : cut < 350 ? "nasty" : cut < 550 ? "deep" : "dangerous";
 }

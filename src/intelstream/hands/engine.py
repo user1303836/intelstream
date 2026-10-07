@@ -47,6 +47,8 @@ from intelstream.hands.rules import (
     GUARD_LEAK_MINIMUM_PERCENT,
     GUARD_STAMINA_REGEN_PERCENT,
     HEAD_TRAUMA_PER_DAMAGE_PERCENT,
+    JAB_CUT_PERCENT,
+    JAB_SWELLING_PERCENT,
     JUDGE_PROFILES,
     MANDATORY_COUNT,
     MAX_CONDITIONING,
@@ -144,8 +146,8 @@ class EngineConfig:
     round_ticks: int = ROUND_TICKS
     rest_ticks: int = REST_TICKS
     countdown_ticks: int = COUNTDOWN_TICKS
-    doctor_cut_threshold: int = 700
-    doctor_swelling_threshold: int = 820
+    doctor_cut_threshold: int = 800
+    doctor_swelling_threshold: int = 900
     flash_ko_enabled: bool = True
 
     def __post_init__(self) -> None:
@@ -1083,6 +1085,8 @@ class BoxingEngine:
             // 100
         )
         cut = damage * CUT_PER_DAMAGE_PERCENT // 100
+        if action.punch_class is PunchClass.JAB:
+            cut = cut * JAB_CUT_PERCENT // 100
         if action.hand.value == "left":
             defender.trauma.right_eye = min(1000, defender.trauma.right_eye + eye_damage)
             if defender.trauma.right_eye > 260:
@@ -1091,9 +1095,10 @@ class BoxingEngine:
             defender.trauma.left_eye = min(1000, defender.trauma.left_eye + eye_damage)
             if defender.trauma.left_eye > 260:
                 defender.trauma.left_cut = min(1000, defender.trauma.left_cut + cut)
-        defender.trauma.swelling = min(
-            1000, defender.trauma.swelling + damage * SWELLING_PER_DAMAGE_PERCENT // 100
-        )
+        swelling = damage * SWELLING_PER_DAMAGE_PERCENT // 100
+        if action.punch_class is PunchClass.JAB:
+            swelling = swelling * JAB_SWELLING_PERCENT // 100
+        defender.trauma.swelling = min(1000, defender.trauma.swelling + swelling)
         defender.trauma.bleeding = min(
             1000,
             defender.trauma.bleeding

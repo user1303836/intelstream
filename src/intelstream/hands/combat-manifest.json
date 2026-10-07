@@ -295,6 +295,8 @@
     "head_per_damage_percent": 100,
     "eye_per_damage_percent": 70,
     "cut_per_damage_percent": 50,
+    "jab_cut_percent": 25,
+    "jab_swelling_percent": 50,
     "swelling_per_damage_percent": 33,
     "poise_ceiling_per_head_percent": 30,
     "poise_ceiling_floor": 220,
