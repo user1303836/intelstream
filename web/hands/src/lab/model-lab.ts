@@ -42,6 +42,7 @@ const base = (): Draft => ({
 const CAMERAS: Record<string, [number, number, number]> = {
   face: [0.25, 1.55, 1.0],
   portrait: [0.12, 1.62, 0.62],
+  eyes: [-0.2, 1.65, 0.44],
   hand: [0.55, 1.05, 0.75],
   front: [0, 1.35, 3.4],
   side: [3.4, 1.3, 0.2],
@@ -85,6 +86,7 @@ export class ModelLab {
     this.camera.position.set(...cam);
     if (this.params.get("cam") === "hand") this.camera.lookAt(0.27, 0.84, 0.12);
     else if (this.params.get("cam") === "portrait") this.camera.lookAt(0, 1.6, 0.05);
+    else if (this.params.get("cam") === "eyes") this.camera.lookAt(0.01, 1.6, 0.06);
     else this.camera.lookAt(0, this.params.get("cam") === "face" ? 1.5 : 1.0, 0);
     this.setupLighting();
   }
@@ -117,6 +119,12 @@ export class ModelLab {
     if (trauma === "light") fighter.trauma = { head: 220, body: 260, left_eye: 190, right_eye: 60, left_cut: 40, right_cut: 0, swelling: 120, bleeding: 60 };
     if (trauma === "heavy") fighter.trauma = { head: 900, body: 700, left_eye: 720, right_eye: 380, left_cut: 520, right_cut: 190, swelling: 620, bleeding: 520 };
     if (trauma === "cut") fighter.trauma = { head: 420, body: 120, left_eye: 380, right_eye: 120, left_cut: 300, right_cut: 0, swelling: 260, bleeding: 380 };
+    // `trauma=head,body,left_eye,right_eye,left_cut,right_cut,swelling,bleeding` sets every value.
+    const values = trauma?.split(",").map(Number) ?? [];
+    if (values.length === 8 && values.every(Number.isFinite)) {
+      const [head, body, leftEye, rightEye, leftCut, rightCut, swelling, bleeding] = values as [number, number, number, number, number, number, number, number];
+      fighter.trauma = { head, body, left_eye: leftEye, right_eye: rightEye, left_cut: leftCut, right_cut: rightCut, swelling, bleeding };
+    }
     const opponent = { ...base(), player_id: "other", x: 0, y: -150, facing_x: 0, facing_y: 1000 } as FighterSnapshot;
     const tick = Math.floor(seconds * 30);
     const punch = /^(jab|straight|hook|uppercut)_(left|right)(_body)?(_power)?$/.exec(pose);
