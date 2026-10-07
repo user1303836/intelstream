@@ -71,7 +71,7 @@ describe("swelling", () => {
   it("pushes tissue out from inside the skull, so the hollow round an eye cannot fold over itself", () => {
     const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
     const head = compile(boxer.headMesh.material as THREE.Material);
-    expect(head.vertexShader).toContain("transformed += normalize(transformed - injuryCore");
+    expect(head.vertexShader).toContain("injuryMoved += normalize(injuryMoved - injuryCore");
     expect(head.vertexShader).not.toContain("objectNormal * injurySwell");
     const core = boxer.headInjury.uniforms.uInjuryCore.value;
     expect(core.w).toBe(0);

@@ -694,9 +694,9 @@ export function bakeSkinnedPart(
   return { geometry, map, color, cut: { position, flesh } };
 }
 
-/** A severed head as it leaves the neck: the head bone's own shape of it, in its owner's look, measured from the given pivot. */
+/** A severed head as it leaves the neck: the head bone's own shape of it, in its owner's look and with his injuries, measured from the given pivot. */
 export function bakeSeveredHead(boxer: SkinnedBoxer, pivotPosition: THREE.Vector3, pivotQuaternion: THREE.Quaternion): BakedPart {
-  return { ...bakeSkinnedPart(boxer.headMesh, pivotPosition, pivotQuaternion, aboveNeckCut, boxer.look, boxer.bone("head") ?? undefined), look: boxer.look };
+  return { ...bakeSkinnedPart(boxer.headMesh, pivotPosition, pivotQuaternion, aboveNeckCut, boxer.look, boxer.bone("head") ?? undefined), look: boxer.look, injury: boxer.headInjury };
 }
 
 function blankFighter(playerId: string): FighterSnapshot {

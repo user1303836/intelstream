@@ -4,7 +4,8 @@ import type { CombatEvent, Hand } from "../types";
 import { CanvasBlood, type RegionUploader } from "./canvas-blood";
 import { wearCornerColour } from "./gear";
 import { BIG_SHOT, HARD_SHOT, ROCKING_COUNTER, bloodDropsFor, bloodShade, buildChunkGeometry, buildDropletGeometry, buildShardGeometry, buildWoundGeometry, closeCut, dropletShape, eyeTexture, jawWoundTexture, woundTexture, wristWoundTexture } from "./gore";
-import { LookShading, SCANNED_LOOK, type FighterLook } from "./looks";
+import { EYE_LIDS, HEAD_SITES, HEAD_SWELL_CORE, InjuryShading } from "./injury";
+import { LookShading, SCANNED_LOOK, lookShape, type FighterLook } from "./looks";
 import { SHIELD_RADIUS, buildMouthpieceGeometry, idleShield, stepShield, type ShieldState } from "./mouthpiece";
 import { CANVAS_TOP, RING_FIGHT_HALF, ROPE_LINE } from "./world";
 
@@ -71,6 +72,8 @@ export interface BakedPart {
   readonly look?: FighterLook;
   /** How soaked a severed glove was with the opponent's blood (0..1), so it stays that way. */
   readonly gloveBlood?: number;
+  /** The injuries of the head it was cut from, which it keeps once it is off. */
+  readonly injury?: InjuryShading;
 }
 
 interface Mist {
@@ -119,6 +122,8 @@ interface SeveredHead {
   readonly defaultCap: THREE.BufferGeometry;
   /** Hair and beard of a severed head; null for a hand. */
   readonly look: LookShading | null;
+  /** The bruises, swelling, cuts and blood a severed head keeps; null for a hand. */
+  readonly injury: InjuryShading | null;
   /** The blood soaked into a severed glove; null for a head. */
   readonly blood: { value: number } | null;
   baked: THREE.BufferGeometry | null;
@@ -245,6 +250,57 @@ function copyFiniteQuaternion(target: THREE.Quaternion, source: THREE.Quaternion
   else target.normalize();
 }
 
+/** A severed head's skin, as the live head's is made (graph.ts applyFighterSkin): it is drawn by the same shader once baked. */
+function severedHeadMaterial(): THREE.MeshPhysicalMaterial {
+  return new THREE.MeshPhysicalMaterial({ color: 0x8a4d32, roughness: 0.58, metalness: 0.02, clearcoat: 0.25, clearcoatRoughness: 0.6 });
+}
+
+/**
+ * The turn and scale that carry bind space (centimetres) into a baked part's own frame, fitted to the
+ * baked positions: the bind positions reshaped by the look, then posed. A part baked rigid fits exactly.
+ */
+function bindToPart(geometry: THREE.BufferGeometry, look: FighterLook, out: THREE.Matrix3): THREE.Matrix3 {
+  out.identity();
+  const position = geometry.getAttribute("position");
+  const bind = geometry.getAttribute("bindPosition");
+  const index = geometry.getIndex();
+  if (bind === undefined || bind.count !== position.count) return out;
+  const used = new Uint8Array(position.count);
+  if (index === null) used.fill(1);
+  else for (let corner = 0; corner < index.count; corner += 1) used[index.getX(corner)] = 1;
+  const posed = new THREE.Vector3();
+  const shaped = new THREE.Vector3();
+  const posedMean = new THREE.Vector3();
+  const shapedMean = new THREE.Vector3();
+  let count = 0;
+  for (let vertex = 0; vertex < position.count; vertex += 1) {
+    if (used[vertex] === 0) continue;
+    posedMean.add(posed.fromBufferAttribute(position, vertex));
+    shapedMean.add(lookShape(shaped.fromBufferAttribute(bind, vertex), look, shaped));
+    count += 1;
+  }
+  if (count < 4) return out;
+  posedMean.divideScalar(count);
+  shapedMean.divideScalar(count);
+  // Least squares: the map M with posed = M * shaped (both about their means) is across * spread^-1.
+  const across = new Array<number>(9).fill(0);
+  const spread = new Array<number>(9).fill(0);
+  for (let vertex = 0; vertex < position.count; vertex += 1) {
+    if (used[vertex] === 0) continue;
+    posed.fromBufferAttribute(position, vertex).sub(posedMean);
+    lookShape(shaped.fromBufferAttribute(bind, vertex), look, shaped).sub(shapedMean);
+    for (let row = 0; row < 3; row += 1) {
+      for (let column = 0; column < 3; column += 1) {
+        across[row * 3 + column]! += posed.getComponent(row) * shaped.getComponent(column);
+        spread[row * 3 + column]! += shaped.getComponent(row) * shaped.getComponent(column);
+      }
+    }
+  }
+  const spreadMatrix = new THREE.Matrix3().set(...(spread as [number, number, number, number, number, number, number, number, number]));
+  if (Math.abs(spreadMatrix.determinant()) < 1e-9) return out;
+  return out.set(...(across as [number, number, number, number, number, number, number, number, number])).multiply(spreadMatrix.invert());
+}
+
 function mistTexture(): THREE.CanvasTexture {
   const canvas = document.createElement("canvas");
   canvas.width = 64;
@@ -323,6 +379,7 @@ export class Effects3D {
   private readonly jawMaterial: THREE.MeshStandardMaterial;
   private readonly jawMap: THREE.CanvasTexture;
   private readonly stumpAcross = new THREE.Vector3();
+  private readonly bindToPartMatrix = new THREE.Matrix3();
   private readonly settleAxis = new THREE.Vector3();
   private readonly settleUp = new THREE.Vector3();
   private dropletCloseness = 1;
@@ -443,8 +500,10 @@ export class Effects3D {
     this.jawMap = jawWoundTexture();
     this.jawMaterial = new THREE.MeshStandardMaterial({ map: this.jawMap, roughness: 0.28, metalness: 0 });
     for (let i = 0; i < MAX_HEADS; i += 1) {
-      const headMaterial = new THREE.MeshStandardMaterial({ color: 0x8a4d32, roughness: 0.76, metalness: 0 });
+      // The skin of the live head: clear-coated for sweat, beaten as it was, and in its owner's look.
+      const headMaterial = severedHeadMaterial();
       this.headMaterials.push(headMaterial);
+      const headInjury = new InjuryShading(headMaterial, HEAD_SITES, { core: HEAD_SWELL_CORE, lids: EYE_LIDS, baked: true });
       const headLook = new LookShading(headMaterial, true);
       const headMesh = new THREE.Mesh(this.headGeometry, headMaterial);
       headMesh.scale.set(0.82, 1.08, 0.9);
@@ -454,7 +513,7 @@ export class Effects3D {
       const cap = new THREE.Mesh(this.stumpGeometry, this.stumpMaterial);
       cap.visible = false;
       headMesh.add(cap);
-      this.heads.push({ mesh: headMesh, defaultGeometry: this.headGeometry, defaultScale: headMesh.scale.clone(), cap, defaultCap: this.stumpGeometry, look: headLook, blood: null, baked: null, bakedFlesh: null, radius: HEAD_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false, settle: -1, settleFrom: new THREE.Quaternion(), settleTo: new THREE.Quaternion(), settleFromY: 0, settleToY: 0, sideLow: -HEAD_RADIUS, sideHigh: HEAD_RADIUS });
+      this.heads.push({ mesh: headMesh, defaultGeometry: this.headGeometry, defaultScale: headMesh.scale.clone(), cap, defaultCap: this.stumpGeometry, look: headLook, injury: headInjury, blood: null, baked: null, bakedFlesh: null, radius: HEAD_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false, settle: -1, settleFrom: new THREE.Quaternion(), settleTo: new THREE.Quaternion(), settleFromY: 0, settleToY: 0, sideLow: -HEAD_RADIUS, sideHigh: HEAD_RADIUS });
 
       const stumpMesh = new THREE.Mesh(this.stumpGeometry, this.stumpMaterial);
       stumpMesh.visible = false;
@@ -502,7 +561,7 @@ export class Effects3D {
       cap.position.y = 0.02;
       cap.visible = false;
       handMesh.add(cap);
-      this.hands.push({ mesh: handMesh, defaultGeometry: this.handGeometry, defaultScale: handMesh.scale.clone(), cap, defaultCap: this.wristStumpGeometry, look: null, blood, baked: null, bakedFlesh: null, radius: HAND_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false, settle: -1, settleFrom: new THREE.Quaternion(), settleTo: new THREE.Quaternion(), settleFromY: 0, settleToY: 0, sideLow: -HAND_RADIUS, sideHigh: HAND_RADIUS });
+      this.hands.push({ mesh: handMesh, defaultGeometry: this.handGeometry, defaultScale: handMesh.scale.clone(), cap, defaultCap: this.wristStumpGeometry, look: null, injury: null, blood, baked: null, bakedFlesh: null, radius: HAND_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false, settle: -1, settleFrom: new THREE.Quaternion(), settleTo: new THREE.Quaternion(), settleFromY: 0, settleToY: 0, sideLow: -HAND_RADIUS, sideHigh: HAND_RADIUS });
 
       const stumpMesh = new THREE.Mesh(this.wristStumpGeometry, this.wristMaterial);
       stumpMesh.visible = false;
@@ -542,7 +601,9 @@ export class Effects3D {
     // shader of its own, compiled here on materials in that state, which share its program.
     if (this.bakedStandIns === null) {
       const map = new THREE.Texture();
-      const head = new THREE.MeshStandardMaterial({ color: 0x8a4d32, roughness: 0.76, metalness: 0, map });
+      const head = severedHeadMaterial();
+      head.map = map;
+      new InjuryShading(head, HEAD_SITES, { core: HEAD_SWELL_CORE, lids: EYE_LIDS, baked: true });
       new LookShading(head, true);
       const glove = new THREE.MeshStandardMaterial({ color: 0x1d4ed8, roughness: 0.38, metalness: 0.03, map });
       wearCornerColour(glove, true);
@@ -1214,6 +1275,14 @@ export class Effects3D {
       }
       material.map = baked.map;
       part.look?.set(baked.look ?? SCANNED_LOOK);
+      if (part.injury !== null) {
+        // A severed head keeps the face it was beaten into, and the sheen of its sweat.
+        if (baked.injury === undefined) part.injury.clear();
+        else part.injury.copyFrom(baked.injury);
+        const live = baked.injury?.material;
+        if (live instanceof THREE.MeshPhysicalMaterial && material instanceof THREE.MeshPhysicalMaterial) material.clearcoat = live.clearcoat;
+        part.injury.setBindToPart(bindToPart(baked.geometry, baked.look ?? SCANNED_LOOK, this.bindToPartMatrix));
+      }
       if (part.blood !== null) part.blood.value = baked.gloveBlood ?? 0;
       material.color.setHex(baked.color);
       if (baked.cut !== undefined) {
@@ -1233,6 +1302,8 @@ export class Effects3D {
       part.mesh.scale.copy(part.defaultScale);
       material.map = null;
       material.color.setHex(fallbackColor);
+      part.injury?.clear();
+      part.injury?.setBindToPart(this.bindToPartMatrix.identity());
       if (part.blood !== null) part.blood.value = 0;
       part.cap.visible = false;
     }

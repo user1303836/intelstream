@@ -4,8 +4,8 @@ import { fighter } from "../test/fixtures";
 import type { CombatEvent, FighterSnapshot } from "../types";
 import { BIG_SHOT, BLOOD_SHADES, HARD_SHOT, ROCKING_COUNTER, bloodDropsFor, bloodShade, buildChunkGeometry, buildDropletGeometry, buildWoundGeometry, closeCut, cutRim, dropletShape, teethFor } from "./gore";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
-import { HEAD_SITES, InjuryShading, NECK_CUT_HEIGHT } from "./injury";
-import { SCANNED_LOOK } from "./looks";
+import { HEAD_SITES, InjuryShading, NECK_CUT_HEIGHT, applyHeadTrauma } from "./injury";
+import { SCANNED_LOOK, lookShape } from "./looks";
 import { Effects3D, confineToRopes } from "./effects";
 import { FightRenderer, aboveNeckCut, bakeSeveredHead, bakeSkinnedPart, closeUpAngle, keepClear } from "./renderer";
 import { CANVAS_TOP, ROPE_LINE, worldMapping } from "./world";
@@ -182,6 +182,64 @@ describe("neck cut", () => {
       for (let index = 0; index < used.count; index += 1) lowest = Math.min(lowest, point.fromBufferAttribute(position, used.getX(index)).applyMatrix4(mesh.matrixWorld).y);
       expect(Math.abs(lowest - CANVAS_TOP)).toBeLessThan(0.005);
     }
+    effects.dispose();
+    boxer.dispose();
+  });
+
+  it("keeps the face it was beaten into once the head is off: the live skin, bruises, swelling, cuts and blood", () => {
+    const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
+    applyHeadTrauma(boxer.headInjury, { head: 900, body: 0, left_eye: 600, right_eye: 200, left_cut: 300, right_cut: 0, swelling: 400, bleeding: 200 }, "full");
+    boxer.rig.resetToRest();
+    boxer.root.rotation.y = 0.7;
+    boxer.root.updateMatrixWorld(true);
+    const head = boxer.bone("head")!;
+    const at = head.getWorldPosition(new THREE.Vector3());
+    const turn = head.getWorldQuaternion(new THREE.Quaternion());
+    const scene = new THREE.Scene();
+    const effects = new Effects3D(scene);
+    const baked = bakeSeveredHead(boxer, at, turn);
+    effects.decapitate(0, at, turn, 1, 8, 0xb0703f, baked);
+    const severed = scene.children.find((child): child is THREE.Mesh => child instanceof THREE.Mesh && child.geometry === baked.geometry)!;
+    const material = severed.material as THREE.MeshPhysicalMaterial;
+    const live = boxer.headMesh.material as THREE.MeshPhysicalMaterial;
+    expect(material).toBeInstanceOf(THREE.MeshPhysicalMaterial);
+    expect([material.roughness, material.metalness, material.clearcoat, material.clearcoatRoughness]).toEqual([live.roughness, live.metalness, live.clearcoat, live.clearcoatRoughness]);
+    expect(material.map).toBe(live.map);
+    const shader = { uniforms: {} as Record<string, { value: unknown }>, vertexShader: "#include <common>\n#include <begin_vertex>\n#include <morphtarget_vertex>", fragmentShader: "#include <common>\n#include <map_fragment>\n#include <roughnessmap_fragment>" };
+    material.onBeforeCompile(shader as unknown as THREE.WebGLProgramParametersWithUniforms, null as unknown as THREE.WebGLRenderer);
+    expect(shader.vertexShader).toContain("vec3 injuryBind = bindPosition;");
+    expect(shader.fragmentShader).toContain("uniform vec4 uInjuryCut");
+    // The look's hair and beard first, then the injuries over them, as on the live head.
+    expect(shader.fragmentShader.indexOf("uLookGroom.y")).toBeLessThan(shader.fragmentShader.indexOf("float cut = uInjuryCut[i].y;"));
+    const own = shader.uniforms;
+    const theirs = boxer.headInjury.uniforms;
+    expect(own.uInjuryBruise!.value).toEqual(theirs.uInjuryBruise.value);
+    expect(own.uInjurySwell!.value).toEqual(theirs.uInjurySwell.value);
+    expect(own.uInjuryBlood!.value).toEqual(theirs.uInjuryBlood.value);
+    expect(own.uInjuryCut!.value).toEqual(theirs.uInjuryCut.value);
+    expect(own.uInjuryLid!.value).toEqual(theirs.uInjuryLid.value);
+    expect(own.uInjuryNose!.value).toEqual(theirs.uInjuryNose.value);
+    expect(Math.max(...(own.uInjurySwell!.value as Float32Array))).toBeGreaterThan(1);
+    // Not cut open itself: the cut is the flesh closing its neck.
+    expect(material.defines).not.toHaveProperty("HANDS_INJURY_OPEN");
+    // The swelling and the broken nose are offsets in bind space, turned into the head's own frame as it
+    // was baked: the bind positions, reshaped by the look and turned so, land on the baked ones.
+    const toPart = own.uInjuryBindToPart!.value as THREE.Matrix3;
+    const position = baked.geometry.getAttribute("position");
+    const bind = baked.geometry.getAttribute("bindPosition");
+    const used = baked.geometry.getIndex()!;
+    const origin = used.getX(0);
+    const shapedOrigin = lookShape(new THREE.Vector3().fromBufferAttribute(bind, origin), boxer.look, new THREE.Vector3());
+    let worst = 0;
+    for (let corner = 0; corner < used.count; corner += 97) {
+      const vertex = used.getX(corner);
+      const offset = lookShape(new THREE.Vector3().fromBufferAttribute(bind, vertex), boxer.look, new THREE.Vector3()).sub(shapedOrigin).applyMatrix3(toPart);
+      const actual = new THREE.Vector3().fromBufferAttribute(position, vertex).sub(new THREE.Vector3().fromBufferAttribute(position, origin));
+      worst = Math.max(worst, offset.distanceTo(actual));
+    }
+    expect(worst).toBeLessThan(1e-4);
+    effects.restoreFighter(0);
+    expect(Math.max(...(own.uInjuryBruise!.value as Float32Array))).toBe(0);
     effects.dispose();
     boxer.dispose();
   });
