@@ -153,6 +153,21 @@ describe("the touch pads, as style.css lays them out", () => {
     expect({ bottom: px(shortPads, "bottom"), height: rows(2, shortMod, gap) + px(shortPads, "row-gap") + rows(2, shortPad, gap), moves: rows(3, shortMod, gap) }).toEqual(TOUCH_PADS.short);
   });
 
+  it("keep the touch hint 12 px to their left, held upright or on its side", () => {
+    // max-width: min(44vw, 300px, calc(100vw - Npx - the side insets)), and the hint stands 12 px in from the left.
+    const cap = (css: string): [number, number, number] => {
+      const [, vw, most, offset] = /max-width:min\((\d+)vw,(\d+)px,calc\(100vw - (\d+)px - env\(safe-area-inset-left\) - env\(safe-area-inset-right\)\)\)/u.exec(css) ?? [];
+      return [Number(vw), Number(most), Number(offset)];
+    };
+    const upright = cap(declarations(sheet, ".overlay[data-touch-hint]"));
+    const sideways = cap(declarations(sheet.slice(sheet.indexOf("@media(orientation:landscape){.overlay[data-touch-hint]")), ".overlay[data-touch-hint]"));
+    const right = ([vw, most, offset]: [number, number, number], width: number): number => 12 + Math.min((vw / 100) * width, most, width - offset);
+    // Where the pads start: TOUCH_PADS.reach has 14 px to spare beyond them.
+    const pads = (width: number, onItsSide: boolean): number => width - (TOUCH_PADS.reach - 14) - (onItsSide ? TOUCH_PADS.movesReach : 0);
+    for (const width of [320, 360, 375, 390, 412]) expect(right(upright, width), `${width} upright`).toBeLessThanOrEqual(pads(width, false) - 12);
+    for (const width of [568, 640, 667, 740, 844, 932]) expect(right(sideways, width), `${width} on its side`).toBeLessThanOrEqual(pads(width, true) - 12);
+  });
+
   it("let a tap between them through, so the block's empty corner never takes the top bar's buttons", () => {
     expect(declarations(sheet, ".touch-pads")).toContain("pointer-events:none");
     expect(declarations(sheet, ".touch-pad,.touch-mod,.touch-move")).toContain("pointer-events:auto");
