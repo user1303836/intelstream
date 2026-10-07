@@ -433,6 +433,8 @@ export function drawHud(
   roundCallout: string | null = null,
   clockTicks: number | null = null,
   pictures: PictureSource | null = null,
+  /** The fighter the referee is counting over, as the renderer saw him go down: he is no longer on the canvas once he has beaten the count. */
+  countTarget: string | null = null,
 ): void {
   ctx.save();
   const scale = hudScale(width, height);
@@ -521,9 +523,11 @@ export function drawHud(
   // The replay's own tag says what it shows; the live count panel would only cover it.
   const headline = headlineBaseline(height, compact);
   if (snapshot.phase === "knockdown" && replayLabel === null) {
-    const viewer = snapshot.fighters.find((fighter) => fighter.player_id === viewerId);
-    const downed = snapshot.fighters.find((fighter) => fighter.is_downed) ?? viewer;
-    const downedName = players[downed?.player_id ?? ""]?.name ?? "Fighter";
+    // Once he has beaten the count he stands for the rest of the eight, and the snapshot no longer says who went
+    // down: it is the fighter the renderer saw fall, or nobody by name for a spectator who arrived after it.
+    const downed = snapshot.fighters.find((fighter) => fighter.is_downed);
+    const counted = downed ?? snapshot.fighters.find((fighter) => fighter.player_id === countTarget);
+    const name = counted === undefined ? null : (players[counted.player_id]?.name ?? "Fighter").toUpperCase();
     ctx.save();
     ctx.textAlign = "center";
     ctx.font = "900 44px Inter, system-ui, sans-serif";
@@ -534,7 +538,9 @@ export function drawHud(
     ctx.fillText("KNOCKDOWN", width / 2, headline);
     ctx.font = "700 15px Inter, system-ui, sans-serif";
     ctx.fillStyle = "#e6ecf7";
-    ctx.fillText(`${fit(ctx, downedName.toUpperCase(), width * 0.5)} IS DOWN`, width / 2, headline + 24);
+    const verb = downed === undefined ? " BEAT THE COUNT" : " IS DOWN";
+    const line = name === null ? "STANDING EIGHT" : `${fit(ctx, name, Math.min(width * 0.5, width - 32 - ctx.measureText(verb).width))}${verb}`;
+    ctx.fillText(line, width / 2, headline + 24);
     ctx.restore();
   }
   if (snapshot.phase === "knockdown" && replayLabel === null) {

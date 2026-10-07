@@ -903,6 +903,27 @@ describe("the broadcast HUD after the QA pass", () => {
     }
   });
 
+  it("names the fighter who beat the count through the rest of the eight, and never the viewer for want of one", () => {
+    const named = Object.fromEntries(publicPlayers.map((player) => [player.id, { ...player, name: player.id === "one" ? "Azure Vector" : "Crimson Geometry" }]));
+    // Up at the count of three, the referee counts on to eight with the phase still the knockdown's.
+    const standing = { ...snapshot(), phase: "knockdown" as const, fighters: [{ ...fighter("one", -100), get_up_count: 6 }, { ...fighter("two", 100), get_up_count: 6 }] as const };
+    const countLines = (texts: string[]) => texts.filter((text) => /IS DOWN$|BEAT THE COUNT$|^STANDING EIGHT$/u.test(text));
+    for (const viewer of ["one", "two", null]) {
+      const texts: string[] = [];
+      drawHud(mockHudContext(texts), 390, 844, standing, named, viewer, null, 0, 30, null, null, null, null, null, null, "two");
+      expect(countLines(texts), `viewer ${viewer}`).toEqual(["CRIMSON GEOMETRY BEAT THE COUNT"]);
+      expect(texts).toContain("COUNT 6");
+      // A spectator who arrived after the knockdown saw nobody go down, and is told no name.
+      const late: string[] = [];
+      drawHud(mockHudContext(late), 390, 844, standing, named, viewer, null, 0, 30);
+      expect(countLines(late), `viewer ${viewer}`).toEqual(["STANDING EIGHT"]);
+    }
+    // While he is on the canvas the snapshot says who it is.
+    const texts: string[] = [];
+    drawHud(mockHudContext(texts), 390, 844, { ...standing, fighters: [standing.fighters[0], { ...standing.fighters[1], is_downed: true }] as const }, named, "one", null, 0, 30, null, null, null, null, null, null, "one");
+    expect(countLines(texts)).toEqual(["CRIMSON GEOMETRY IS DOWN"]);
+  });
+
   it("leaves the knockdown banner off the knockout replay", () => {
     const texts: string[] = [];
     drawHud(mockHudContext(texts), 1280, 720, down(3, false), players, "one", null, 0, 30, null, "KNOCKOUT REPLAY");
