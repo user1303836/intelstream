@@ -58,7 +58,8 @@ const JAB_WINDOW_SECONDS = 8;
 const TAKEOVER_WINDOW_SECONDS = 15;
 const EVASION_WINDOW_SECONDS = 10;
 const CUT_MARKS = [60, 420, 560] as const;
-const EYE_SHUT = 640;
+/** Below the engine's shut eye (manifest blind_side.eye_threshold, 700), so the swelling is noticed first. */
+const EYE_SWELLING = 500;
 const TIRED_RATIO = 0.2;
 const RECOVERED_RATIO = 0.3;
 const HURT_POISE = 120;
@@ -79,7 +80,15 @@ const LINES = {
   cut: ["{b} is cut over the {side} eye.", "There's blood now. A cut over {b}'s {side} eye.", "That's opened a cut over the {side} eye of {b}."],
   cutWorse: ["That cut over {b}'s {side} eye is getting worse.", "The blood is pouring from that {side} eye now.", "{b} is bleeding badly from the {side} eye."],
   cutDoctor: ["The doctor will be watching that cut very closely.", "If that cut gets any worse, the doctor could stop this."],
-  eyeShut: ["{b}'s {side} eye is swelling shut.", "{b} can barely see out of that {side} eye."],
+  eyeSwelling: ["{b}'s {side} eye is swelling badly.", "{b} is having trouble seeing out of that {side} eye."],
+  eyeShut: ["{b}'s {side} eye has closed completely!", "That {side} eye is shut! {b} can't see them coming from that side.", "{b} is fighting with one eye now."],
+  blindSide: ["{a} is working the blind side.", "{b} never saw that one. Nothing is getting through that {side} eye.", "Smart from {a}, punching where {b} can't see."],
+  parried: ["{a} picks it off and {b} is wide open!", "Beautiful parry from {a}! {b} is off balance.", "{a} slaps it away and {b} is left stranded."],
+  bodyCollapse: ["Body shot! {b} is going down!", "{a} digs to the body and {b} is folding!", "Oh, that body shot! {b} is in agony!"],
+  knockdownBody: ["Down goes {b} from the body shot!", "{b} takes a knee! That body shot took everything out!", "{a} goes downstairs and {b} can't take it!"],
+  cornerCut: ["{a}'s cutman is working on that cut.", "They're working hard on the cut in {a}'s corner."],
+  cornerSwelling: ["{a}'s corner is getting the swelling down.", "Ice and the enswell on that eye in {a}'s corner."],
+  cornerBreath: ["{a}'s corner wants the breath back first. Big drink of water.", "{a} is told to breathe and settle down."],
   combo: ["A three-punch combination from {a}!", "{a} puts it together beautifully.", "Lovely combination from {a}!"],
   unanswered: ["Five unanswered punches from {a}!", "{a} is unloading! {b} has to fire back!", "{b} is just covering up as {a} lets the hands go!"],
   jab: ["{a}'s jab is finding a home.", "Stiff jab from {a}, and another.", "{a} keeps popping that jab in {b}'s face."],
@@ -124,14 +133,15 @@ type LineKey = keyof typeof LINES;
 
 const RESULT_LINES: Readonly<Partial<Record<string, LineKey>>> = { ko: "ko", flash_ko: "flashKo", tko: "tko", doctor_stoppage: "doctorStop", disqualification: "disqualified", forfeit: "forfeit" };
 
-const URGENT: ReadonlySet<LineKey> = new Set<LineKey>(["knockdown", "knockdownAgain", "knockdownCounter", "upLate", "upEarly", "hurt", "hurtBadly", "lowBlow", "headbutt", "deduction", "ko", "flashKo", "tko", "doctorStop", "disqualified", "forfeit", "replay", "savedByBell", "finalBell", "roundEnd", "roundStart"]);
+const URGENT: ReadonlySet<LineKey> = new Set<LineKey>(["knockdown", "knockdownAgain", "knockdownCounter", "knockdownBody", "bodyCollapse", "upLate", "upEarly", "hurt", "hurtBadly", "lowBlow", "headbutt", "deduction", "ko", "flashKo", "tko", "doctorStop", "disqualified", "forfeit", "replay", "savedByBell", "finalBell", "roundEnd", "roundStart"]);
 
 /** Knockdowns over hurt fighters over big counters over cuts over combinations over colour. */
 const PRIORITY: Readonly<Record<LineKey, number>> = {
   ko: 98, flashKo: 98, tko: 98, doctorStop: 98, disqualified: 98, forfeit: 98,
-  knockdown: 95, knockdownAgain: 95, knockdownCounter: 95, upLate: 90, upEarly: 90, replay: 88,
+  knockdown: 95, knockdownAgain: 95, knockdownCounter: 95, knockdownBody: 95, bodyCollapse: 86, upLate: 90, upEarly: 90, replay: 88,
   deduction: 84, lowBlow: 82, headbutt: 82, hurt: 80, hurtBadly: 80, holdingOn: 76, savedByBell: 74, finalBell: 72, struggle: 70,
-  guardBreak: 65, counter: 60, bigShot: 55, roundEnd: 52, cut: 50, cutWorse: 50, summary: 50, cutDoctor: 48, doctor: 48, eyeShut: 48,
+  guardBreak: 65, eyeShut: 62, counter: 60, parried: 58, bigShot: 55, roundEnd: 52, cut: 50, cutWorse: 50, summary: 50, cutDoctor: 48, doctor: 48, eyeSwelling: 48,
+  cornerCut: 47, cornerSwelling: 47, cornerBreath: 47, blindSide: 42,
   roundFor: 46, roundBig: 46, roundClose: 46, pullingAway: 46, unanswered: 45, finishCall: 44, warning: 42,
   combo: 40, payoff: 40, takeover: 38, body: 35, jab: 30, tiring: 30, roundStart: 28, taunt: 25, parry: 22, evade: 20, clinch: 20,
   whiff: 18, refBreak: 12, southpaw: 10, orthodox: 10, resume: 10,
@@ -139,12 +149,12 @@ const PRIORITY: Readonly<Record<LineKey, number>> = {
 
 const SPEAKER: Readonly<Partial<Record<LineKey, Speaker>>> = {
   finishCall: "colour", payoff: "colour", tiring: "colour", takeover: "colour", holdingOn: "colour", taunt: "colour", parry: "colour", evade: "colour",
-  warning: "colour", roundFor: "colour", roundBig: "colour", roundClose: "colour", pullingAway: "colour", doctor: "colour", cutDoctor: "colour", jab: "colour",
+  warning: "colour", blindSide: "colour", cornerCut: "colour", cornerSwelling: "colour", cornerBreath: "colour", roundFor: "colour", roundBig: "colour", roundClose: "colour", pullingAway: "colour", doctor: "colour", cutDoctor: "colour", jab: "colour",
 };
 
 /** Seconds before the same kind of line about the same fighter may come again. */
 const COOLDOWN: Readonly<Partial<Record<LineKey, number>>> = {
-  combo: 6, jab: 20, body: 18, evade: 12, parry: 15, whiff: 12, clinch: 15, refBreak: 20, taunt: 10, southpaw: 15, orthodox: 15, bigShot: 4, counter: 3, unanswered: 15, takeover: 25,
+  combo: 6, jab: 20, body: 18, evade: 12, parry: 15, parried: 8, blindSide: 20, whiff: 12, clinch: 15, refBreak: 20, taunt: 10, southpaw: 15, orthodox: 15, bigShot: 4, counter: 3, unanswered: 15, takeover: 25,
 };
 
 const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen"] as const;
@@ -238,11 +248,12 @@ interface FighterNotes {
   payoffRound: number;
   cutMarks: [number, number];
   eyeShut: [boolean, boolean];
+  eyeSwelling: [boolean, boolean];
   rounds: number;
 }
 
 const blankTally = (): RoundTally => ({ thrown: 0, landed: 0, damage: 0, knockdowns: 0, body: 0 });
-const blankNotes = (): FighterNotes => ({ jabs: [], window: [], evasions: [], run: 0, runTick: -1000, unanswered: 0, stunnedAt: -1000, knockedDownAt: -100_000, lowSince: null, tiredRound: 0, takeoverRound: 0, payoffRound: 0, cutMarks: [0, 0], eyeShut: [false, false], rounds: 0 });
+const blankNotes = (): FighterNotes => ({ jabs: [], window: [], evasions: [], run: 0, runTick: -1000, unanswered: 0, stunnedAt: -1000, knockedDownAt: -100_000, lowSince: null, tiredRound: 0, takeoverRound: 0, payoffRound: 0, cutMarks: [0, 0], eyeShut: [false, false], eyeSwelling: [false, false], rounds: 0 });
 
 /**
  * The broadcast team: turns the fight's events into a paced stream of lines from a play-by-play caller,
@@ -441,7 +452,27 @@ export class CommentaryDirector {
         if (actor !== null) this.tally(actor).knockdowns += 1;
         if (result !== null) return;
         const countered = snapshot.events.some((other) => other.kind === "counter_hit" && other.tick === event.tick && other.target_id === target);
-        this.say(event.amount >= 2 ? "knockdownAgain" : countered ? "knockdownCounter" : "knockdown", event.event_id, now, names, moment);
+        this.say(event.amount >= 2 ? "knockdownAgain" : event.detail === "body" ? "knockdownBody" : countered ? "knockdownCounter" : "knockdown", event.event_id, now, names, moment);
+        return;
+      }
+      case "body_collapse":
+        this.say("bodyCollapse", event.event_id, now, names, moment);
+        return;
+      case "parry":
+        this.say("parried", event.event_id, now, names, moment, REACTION_SECONDS, undefined, actor);
+        return;
+      case "eye_shut":
+        if (target === null || (event.detail !== "left" && event.detail !== "right")) return;
+        this.notesFor(target).eyeShut[event.detail === "left" ? 0 : 1] = true;
+        this.say("eyeShut", event.event_id, now, { ...names, side: event.detail }, moment);
+        return;
+      case "blind_side":
+        if (event.detail !== "left" && event.detail !== "right") return;
+        this.say("blindSide", event.event_id, now, { ...names, side: event.detail }, null, REACTION_SECONDS, undefined, actor);
+        return;
+      case "corner": {
+        const key = event.detail === "cut" ? "cornerCut" : event.detail === "swelling" ? "cornerSwelling" : event.detail === "breath" ? "cornerBreath" : null;
+        if (key !== null) this.say(key, event.event_id, now, names, null, REACTION_SECONDS, undefined, actor);
         return;
       }
       case "count":
@@ -614,9 +645,9 @@ export class CommentaryDirector {
           this.say(mark === 0 ? "cut" : mark === 1 ? "cutWorse" : "cutDoctor", snapshot.tick + eye, now, { ...name, side }, null);
         }
         const swelling = eye === 0 ? fighter.trauma.left_eye : fighter.trauma.right_eye;
-        if (!notes.eyeShut[eye] && swelling >= EYE_SHUT) {
-          notes.eyeShut[eye] = true;
-          this.say("eyeShut", snapshot.tick + eye, now, { ...name, side }, null);
+        if (!notes.eyeSwelling[eye] && !notes.eyeShut[eye] && swelling >= EYE_SWELLING) {
+          notes.eyeSwelling[eye] = true;
+          this.say("eyeSwelling", snapshot.tick + eye, now, { ...name, side }, null);
         }
       }
       const ratio = fighter.stamina / Math.max(1, fighter.maximum_stamina);

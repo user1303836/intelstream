@@ -304,6 +304,41 @@ describe("reading the fight", () => {
     expect(watch(director, 20, 25).some((text) => /worse|pouring|badly/u.test(text))).toBe(true);
   });
 
+  it("notices an eye swelling and calls it shut only when the engine says it has closed", () => {
+    const director = new CommentaryDirector();
+    const eye = (left_eye: number): Partial<FighterSnapshot> => ({ trauma: { ...fighter("two").trauma, left_eye } });
+    feed(director, state(100, "fight", [{}, eye(520)]), [], 0);
+    const early = watch(director, 0, 4);
+    expect(early.some((text) => /Crimson Geometry/u.test(text) && /left eye/u.test(text) && /swelling|trouble seeing/u.test(text))).toBe(true);
+    feed(director, state(400, "fight", [{}, eye(760)]), [], 10);
+    expect(watch(director, 10, 14).some((text) => /closed|shut|one eye/u.test(text))).toBe(false);
+    feed(director, state(430, "fight", [{}, eye(780)]), [event("eye_shut", 430, { actor_id: "one", target_id: "two", detail: "left" })], 20);
+    expect(watch(director, 20, 24).some((text) => /closed|shut|one eye/u.test(text))).toBe(true);
+  });
+
+  it("calls the blind side, a parry and the corner's work", () => {
+    const blind = new CommentaryDirector();
+    feed(blind, state(100), [event("blind_side", 100, { actor_id: "one", target_id: "two", detail: "left" })], 0);
+    expect(watch(blind, 0, 4).some((text) => /blind side|can't see|left eye/u.test(text))).toBe(true);
+    const parry = new CommentaryDirector();
+    feed(parry, state(100), [event("parry", 100, { actor_id: "one", target_id: "two", amount: 20 })], 0);
+    expect(watch(parry, 0, 4).some((text) => /^(Azure Vector picks|Beautiful parry from Azure Vector|Azure Vector slaps)/u.test(text))).toBe(true);
+    for (const [pick, pattern] of [["cut", /cut/u], ["swelling", /swelling|enswell/u], ["breath", /breath/u]] as const) {
+      const corner = new CommentaryDirector();
+      feed(corner, state(100, "rest"), [event("corner", 100, { actor_id: "two", detail: pick })], 0);
+      expect(watch(corner, 0, 4).some((text) => /Crimson Geometry/u.test(text) && pattern.test(text))).toBe(true);
+    }
+  });
+
+  it("calls a body shot folding a fighter and the knockdown it causes", () => {
+    const director = new CommentaryDirector();
+    feed(director, state(100), [event("body_collapse", 100, { actor_id: "one", target_id: "two", amount: 10 })], 0);
+    expect(watch(director, 0, 3).some((text) => /body/iu.test(text) && /Crimson Geometry/u.test(text))).toBe(true);
+    const down = new CommentaryDirector();
+    feed(down, state(110, "knockdown", [{}, { is_downed: true }]), [event("knockdown", 110, { actor_id: "one", target_id: "two", amount: 1, detail: "body" })], 0);
+    expect(watch(down, 0, 3).some((text) => /body shot|takes a knee|downstairs/u.test(text))).toBe(true);
+  });
+
   it("says once a round that a fighter has run out of gas", () => {
     const director = new CommentaryDirector();
     const tired: [Partial<FighterSnapshot>, Partial<FighterSnapshot>] = [{ stamina: 150, maximum_stamina: 1000 }, {}];
