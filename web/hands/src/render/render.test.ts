@@ -388,6 +388,36 @@ describe("effects", () => {
     expect(simulate(1 / 30)).toEqual(simulate(1 / 60));
   });
 
+  it("draws and uploads only the droplets in flight", () => {
+    const effects = new Effects3D(new THREE.Scene());
+    const mesh = effects.dropletMesh;
+    const matrices = mesh.instanceMatrix;
+    expect(mesh.count).toBe(0);
+    effects.addEvent(severeHit(40), new THREE.Vector3(), false);
+    expect(mesh.count).toBe(effects.liveParticles);
+    // A step moves every live droplet and uploads just their matrices, packed at the front of the pool.
+    matrices.clearUpdateRanges();
+    effects.update(1 / 60);
+    const live = mesh.count;
+    expect(live).toBe(effects.liveParticles);
+    expect(matrices.updateRanges).toEqual([{ start: 0, count: live * 16 }]);
+    const positions = effects.dropletBuffers.position;
+    for (let index = 0; index < 900; index += 1) expect(positions.getY(index) > -10).toBe(index < live);
+    // Once the blood has landed nothing is drawn or uploaded.
+    for (let frame = 0; frame < 180; frame += 1) effects.update(1 / 60);
+    expect(effects.liveParticles).toBe(0);
+    expect(mesh.count).toBe(0);
+    matrices.clearUpdateRanges();
+    const version = matrices.version;
+    effects.update(1 / 60);
+    expect(matrices.version).toBe(version);
+    // A full pool keeps reusing its slots.
+    for (let eventId = 0; eventId < 12; eventId += 1) effects.addEvent(severeHit(100 + eventId), new THREE.Vector3(), false);
+    expect(mesh.count).toBe(900);
+    expect(effects.liveParticles).toBe(900);
+    effects.dispose();
+  });
+
   it("sprays blood, teeth and severed parts along the line the punch travelled", () => {
     const towardsAway = { x: 0, z: -1 };
     /** Mean horizontal position of the airborne blood droplets, or of the airborne gibs. */
@@ -405,7 +435,7 @@ describe("effects", () => {
       return centre.divideScalar(Math.max(1, count));
     };
     const gibCentre = (scene: THREE.Scene): THREE.Vector2 => {
-      const gibs = scene.children.find((child) => child instanceof THREE.InstancedMesh && child.count === 48) as THREE.InstancedMesh;
+      const gibs = scene.children.find((child) => child instanceof THREE.InstancedMesh && child.geometry instanceof THREE.IcosahedronGeometry) as THREE.InstancedMesh;
       const matrix = new THREE.Matrix4();
       const position = new THREE.Vector3();
       const centre = new THREE.Vector2();

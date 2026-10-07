@@ -194,6 +194,8 @@ export class Effects3D {
   private readonly dropletColor = new THREE.Color();
   private readonly splatMaps: THREE.CanvasTexture[] = [];
   private dropletIndex = 0;
+  /** Live droplets fill the front of the pool, and only they are drawn and uploaded. */
+  private liveDroplets = 0;
 
   readonly mistPoints: THREE.Points;
   private readonly mists: Mist[] = [];
@@ -263,7 +265,9 @@ export class Effects3D {
       this.dropletMesh.setColorAt(i, this.dropletColor.setRGB(0.5, 0.02, 0.04));
       this.writeDropletMatrix(i, this.droplets[i]!);
     }
+    this.dropletMesh.instanceColor?.setUsage(THREE.DynamicDrawUsage);
     this.dropletMesh.instanceMatrix.needsUpdate = true;
+    this.dropletMesh.count = 0;
     for (let i = 0; i < 4; i += 1) this.splatMaps.push(splatTexture(0x3a1f_00d1 + i * 977));
 
     this.mistPositions = new Float32Array(MAX_MIST * 3);
@@ -413,8 +417,8 @@ export class Effects3D {
   }
 
   private spawnDroplet(x: number, y: number, z: number, vx: number, vy: number, vz: number, color: { r: number; g: number; b: number }, life: number, blood: boolean, radius = blood ? 0.006 + this.ambientRandom() * 0.009 : 0.004 + this.ambientRandom() * 0.004): void {
-    const index = this.dropletIndex % MAX_DROPLETS;
-    this.dropletIndex += 1;
+    // A new droplet joins the live ones at the front; a full pool reuses its slots in turn.
+    const index = this.liveDroplets < MAX_DROPLETS ? this.liveDroplets++ : this.dropletIndex++ % MAX_DROPLETS;
     const droplet = this.droplets[index]!;
     droplet.alive = true;
     droplet.blood = blood;
@@ -437,9 +441,39 @@ export class Effects3D {
     this.dropletColors[index * 3 + 1] = droplet.g;
     this.dropletColors[index * 3 + 2] = droplet.b;
     this.dropletMesh.setColorAt(index, this.dropletColor.setRGB(droplet.r, droplet.g, droplet.b));
-    if (this.dropletMesh.instanceColor !== null) this.dropletMesh.instanceColor.needsUpdate = true;
     this.writeDropletMatrix(index, droplet);
+    this.uploadDroplets(index, index + 1, true);
+  }
+
+  /** Draws only the live droplets and uploads the instances from `from` up to `to`. */
+  private uploadDroplets(from: number, to: number, colors: boolean): void {
+    this.dropletMesh.count = this.liveDroplets;
+    if (to <= from) return;
+    this.dropletMesh.instanceMatrix.addUpdateRange(from * 16, (to - from) * 16);
     this.dropletMesh.instanceMatrix.needsUpdate = true;
+    const instanceColor = this.dropletMesh.instanceColor;
+    if (!colors || instanceColor === null) return;
+    instanceColor.addUpdateRange(from * 3, (to - from) * 3);
+    instanceColor.needsUpdate = true;
+  }
+
+  /** Retires the droplet in slot `index` and moves the last live droplet into its place. */
+  private retireDroplet(index: number): void {
+    const last = this.liveDroplets - 1;
+    const retired = this.droplets[index]!;
+    retired.alive = false;
+    this.liveDroplets = last;
+    if (index !== last) {
+      const moved = this.droplets[last]!;
+      this.droplets[index] = moved;
+      this.droplets[last] = retired;
+      this.dropletPositions.copyWithin(index * 3, last * 3, last * 3 + 3);
+      this.dropletColors.copyWithin(index * 3, last * 3, last * 3 + 3);
+      this.dropletMesh.setColorAt(index, this.dropletColor.setRGB(moved.r, moved.g, moved.b));
+      this.writeDropletMatrix(index, moved);
+    }
+    this.dropletPositions[last * 3 + 1] = -50;
+    this.writeDropletMatrix(last, retired);
   }
 
   /** Spawns a droplet whose horizontal velocity is given along the spray and across it. */
@@ -1188,19 +1222,19 @@ export class Effects3D {
     this.updateDetachedParts(this.hands, step);
     this.updateGibs(step);
 
-    let dropletsChanged = false;
-    for (const [i, droplet] of this.droplets.entries()) {
-      if (!droplet.alive) continue;
-      dropletsChanged = true;
+    const live = this.liveDroplets;
+    let retired = false;
+    for (let i = 0; i < this.liveDroplets;) {
+      const droplet = this.droplets[i]!;
       droplet.life -= step;
       if (droplet.life <= 0 || droplet.y < CANVAS_TOP) {
         if (droplet.y < CANVAS_TOP && droplet.blood && this.bloodLevel !== "off" && this.ambientRandom() < (this.bloodLevel === "full" ? 0.48 : 0.18)) {
           const scale = this.bloodLevel === "full" ? 1 : 0.35;
           this.placeDecal(droplet.x, droplet.z, (0.22 + this.ambientRandom() * 0.38) * scale, (0.14 + this.ambientRandom() * 0.24) * scale, this.ambientRandom() * Math.PI, 0.38 * scale, 0x6e0d13);
         }
-        droplet.alive = false;
-        this.dropletPositions[i * 3 + 1] = -50;
-        this.writeDropletMatrix(i, droplet);
+        // The last live droplet takes this slot and is stepped next.
+        this.retireDroplet(i);
+        retired = true;
         continue;
       }
       droplet.vy -= 4.6 * step;
@@ -1215,11 +1249,12 @@ export class Effects3D {
       this.dropletColors[i * 3 + 1] = droplet.g * fade;
       this.dropletColors[i * 3 + 2] = droplet.b * fade;
       this.writeDropletMatrix(i, droplet);
+      i += 1;
     }
-    if (dropletsChanged) {
+    if (live > 0) {
       this.dropletBuffers.position.needsUpdate = true;
       this.dropletBuffers.color.needsUpdate = true;
-      this.dropletMesh.instanceMatrix.needsUpdate = true;
+      this.uploadDroplets(0, this.liveDroplets, retired);
     }
 
     let mistChanged = false;
@@ -1248,17 +1283,14 @@ export class Effects3D {
   }
 
   private clearDroplets(bloodOnly: boolean): void {
-    let changed = false;
-    for (const [index, droplet] of this.droplets.entries()) {
-      if (!droplet.alive || (bloodOnly && !droplet.blood)) continue;
-      droplet.alive = false;
-      this.dropletPositions[index * 3 + 1] = -50;
-      this.writeDropletMatrix(index, droplet);
-      changed = true;
+    const live = this.liveDroplets;
+    for (let index = 0; index < this.liveDroplets;) {
+      if (bloodOnly && !this.droplets[index]!.blood) index += 1;
+      else this.retireDroplet(index);
     }
-    if (changed) {
+    if (this.liveDroplets !== live) {
       this.dropletBuffers.position.needsUpdate = true;
-      this.dropletMesh.instanceMatrix.needsUpdate = true;
+      this.uploadDroplets(0, this.liveDroplets, true);
     }
   }
 
