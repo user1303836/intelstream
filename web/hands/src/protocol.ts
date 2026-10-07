@@ -1,6 +1,6 @@
 import {
   MAX_SERVER_FRAME_BYTES, PROTOCOL_VERSION,
-  type BootstrapResponse, type CombatEvent, type CornerChoice, type DefensivePose, type EngineSnapshot,
+  type BootstrapResponse, type CombatEvent, type CornerChoice, type CpuLevel, type DefensivePose, type EngineSnapshot,
   type FighterSnapshot, type FinalMessage, type FinishMethod, type Foul, type Hand,
   type HeldDefense, type JudgeCard, type MatchPhase, type MatchResult, type MovementKind,
   type Power, type PublicPlayer, type PunchClass, type SemanticAction, type ServerMessage,
@@ -94,8 +94,9 @@ const phases = ["countdown", "fight", "knockdown", "foul_recovery", "rest", "com
 const methods = ["ko", "flash_ko", "tko", "doctor_stoppage", "disqualification", "decision", "draw", "forfeit"] as const;
 
 function publicPlayer(value: unknown): PublicPlayer {
-  const o = object(value, "player"); exact(o, ["id", "name", "avatar", "rating", "connected"]);
-  return { id: string(o.id, "player.id"), name: string(o.name, "player.name", 80), avatar: nullableString(o.avatar, "player.avatar", 128), rating: integer(o.rating, "rating"), connected: bool(o.connected, "connected") };
+  const o = object(value, "player"); exact(o, ["id", "name", "avatar", "rating", "connected"], ["cpu"]);
+  const cpu = o.cpu === undefined ? {} : { cpu: bool(o.cpu, "cpu") };
+  return { id: string(o.id, "player.id"), name: string(o.name, "player.name", 80), avatar: nullableString(o.avatar, "player.avatar", 128), rating: integer(o.rating, "rating"), connected: bool(o.connected, "connected"), ...cpu };
 }
 function players(value: unknown, exactLength?: number): PublicPlayer[] {
   const result = array(value, "players", 2).map(publicPlayer);
@@ -246,6 +247,11 @@ export function encodeInput(sequence: number, clientTick: number, frame: { moveX
     return { kind: oneOf<MovementKind>(raw.kind, movementKinds, "action"), ...id };
   };
   return JSON.stringify({ version: 3, type: "input", sequence: integer(sequence, "sequence"), client_tick: integer(clientTick, "client tick"), move: { x: Math.max(-1000, Math.min(1000, Math.round(Number.isFinite(frame.moveX) ? frame.moveX : 0))), y: Math.max(-1000, Math.min(1000, Math.round(Number.isFinite(frame.moveY) ? frame.moveY : 0))) }, defense: oneOf<HeldDefense>(frame.defense, heldDefenses, "held defense"), actions: frame.actions.slice(0, 4).map(action) });
+}
+
+export const CPU_LEVELS = ["rookie", "contender", "champion"] as const;
+export function encodeCpuRequest(level: CpuLevel): string {
+  return JSON.stringify({ version: 3, type: "cpu", level: oneOf<CpuLevel>(level, CPU_LEVELS, "computer level") });
 }
 
 export function decodeBootstrap(value: unknown): BootstrapResponse {

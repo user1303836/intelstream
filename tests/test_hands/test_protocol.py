@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from intelstream.hands.cpu import CpuLevel
 from intelstream.hands.engine import BoxingEngine, EngineConfig
 from intelstream.hands.protocol import (
     MAX_ACTIONS_PER_INPUT,
@@ -12,6 +13,7 @@ from intelstream.hands.protocol import (
     encode_client_input,
     encode_snapshot,
     parse_client_input,
+    parse_cpu_request,
     parse_ticket_ack,
     snapshot_for_viewer,
 )
@@ -184,6 +186,26 @@ def test_ticket_ack_is_strict_and_distinct_from_semantic_input() -> None:
     ):
         with pytest.raises(ProtocolError):
             parse_ticket_ack(malformed)
+
+
+def test_computer_request_is_strict_and_distinct_from_other_frames() -> None:
+    for level in CpuLevel:
+        frame = json.dumps({"version": 3, "type": "cpu", "level": level.value})
+        assert parse_cpu_request(frame) is level
+    assert parse_cpu_request(json.dumps(valid_payload())) is None
+    assert parse_cpu_request('{"version":3,"type":"ticket_ack","refresh_id":"refresh-id"}') is None
+    for malformed in (
+        '{"version":3,"type":"cpu","level":"legend"}',
+        '{"version":3,"type":"cpu"}',
+        '{"version":3,"type":"cpu","level":1}',
+        '{"version":3,"type":"cpu","level":"rookie","extra":1}',
+        '{"version":2,"type":"cpu","level":"rookie"}',
+        '{"version":3,"type":"cpu","level":"rookie","level":"champion"}',
+        "not json",
+        "x" * (MAX_FRAME_BYTES + 1),
+    ):
+        with pytest.raises(ProtocolError):
+            parse_cpu_request(malformed)
 
 
 def test_snapshot_encoding_is_required_and_redacted_per_viewer() -> None:

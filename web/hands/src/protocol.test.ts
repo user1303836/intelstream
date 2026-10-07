@@ -1,4 +1,5 @@
-import { decodeBootstrap, decodeServerFrame, decodeToken, encodeInput, ProtocolError } from "./protocol";
+import { decodeBootstrap, decodeServerFrame, decodeToken, encodeCpuRequest, encodeInput, ProtocolError } from "./protocol";
+import type { CpuLevel } from "./types";
 import { envelope, publicPlayers, snapshot } from "./test/fixtures";
 
 describe("strict protocol v3", () => {
@@ -12,6 +13,17 @@ describe("strict protocol v3", () => {
       { version: 3, type: "final", match_id: "m", winner_id: "one", method: "decision", round: 12, scorecards: [{ judge: "A", player_one: [10], player_two: [9] }, { judge: "B", player_one: [9], player_two: [10] }, { judge: "C", player_one: [10], player_two: [9] }], ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } },
     ];
     expect(messages.map((message) => decodeServerFrame(JSON.stringify(message)).type)).toEqual(["welcome", "ticket", "waiting", "ready", "paused", "resumed", "error", "snapshot", "final"]);
+  });
+  it("marks the computer opponent and accepts nothing but true or false for it", () => {
+    const computer = { id: "cpu:champion", name: "Viktor 'Iron' Volkov", avatar: null, rating: 1400, connected: true, cpu: true };
+    const ready = { version: 3, type: "ready", players: [publicPlayers[0], computer] };
+    expect(decodeServerFrame(JSON.stringify(ready))).toEqual(ready);
+    expect(() => decodeServerFrame(JSON.stringify({ ...ready, players: [publicPlayers[0], { ...computer, cpu: "yes" }] }))).toThrow(ProtocolError);
+    expect(() => decodeServerFrame(JSON.stringify({ ...ready, players: [publicPlayers[0], { ...computer, level: "champion" }] }))).toThrow(ProtocolError);
+  });
+  it("asks for a computer opponent by level only", () => {
+    expect(JSON.parse(encodeCpuRequest("contender"))).toEqual({ version: 3, type: "cpu", level: "contender" });
+    expect(() => encodeCpuRequest("legend" as CpuLevel)).toThrow(ProtocolError);
   });
   it("decodes spectators without granting fighter fields", () => {
     const spectator = { version: 3, type: "welcome", role: "spectator", player_id: "viewer", players: publicPlayers, server_tick: 40, reconnect_ticket: "spectator-ticket" };

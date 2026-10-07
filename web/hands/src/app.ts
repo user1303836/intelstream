@@ -10,10 +10,11 @@ import { coarsePointer } from "./input/touch";
 import { InputController } from "./input/input";
 import { EventDeduplicator } from "./interpolation";
 import { NetworkController } from "./network";
+import { CPU_LEVELS } from "./protocol";
 import { FightRenderer } from "./render/renderer";
 import { SettingsStore, type BloodLevel } from "./settings";
 import { initialState, reduceState, type GameState } from "./state";
-import type { EngineSnapshot, ServerMessage } from "./types";
+import type { CpuLevel, EngineSnapshot, ServerMessage } from "./types";
 
 const CONTACT_FEEDBACK_KINDS = new Set(["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown", "parry", "body_collapse", "eye_shut"]);
 // The room keeps the finished bout for its result hold (ten seconds by default); a rejoin inside
@@ -25,6 +26,12 @@ const REMATCH_HOLD_MS = 11_000;
 const RESULT_WAIT_MS = 4_000;
 const REMATCH_RETRY_MS = 3_000;
 const REMATCH_MAX_ATTEMPTS = 6;
+const CPU_CHOICES: readonly { readonly level: CpuLevel; readonly label: string; readonly detail: string }[] = [
+  { level: "rookie", label: "Rookie", detail: "Slow hands, leaves openings" },
+  { level: "contender", label: "Contender", detail: "Works the body, punishes mistakes" },
+  { level: "champion", label: "Champion", detail: "Slips, counters, finishes" },
+];
+const isCpuLevel = (value: string | undefined): value is CpuLevel => CPU_LEVELS.includes(value as CpuLevel);
 
 export class HandsApp {
   private state: GameState = initialState;
@@ -50,6 +57,10 @@ export class HandsApp {
   private readonly retry: HTMLButtonElement;
   private readonly rematchButton: HTMLButtonElement;
   private readonly hint: HTMLElement;
+  private readonly cpuPicker: HTMLElement;
+  /** The computer asked for in this bout, and the one a rematch asks for again. */
+  private cpuLevel: CpuLevel | null = null;
+  private cpuRematchLevel: CpuLevel | null = null;
   private diagnosticsTimer: number | null = null;
   private finalReceivedAt = 0;
   private lastFinalMatchId: string | null = null;
@@ -70,7 +81,7 @@ export class HandsApp {
     private readonly reloadPage: () => void = () => window.location.reload(),
     private readonly authorizer: (signal: AbortSignal) => Promise<DiscordSession> = authorizeDiscord,
   ) {
-    root.innerHTML = `<section class="activity" aria-label="Hands boxing activity"><canvas class="fight" aria-label="Two-player boxing match"></canvas><header class="topbar"><strong>HANDS</strong><span>two-player boxing</span><span class="spectator-role" data-role hidden>SPECTATING · READ ONLY</span><button type="button" data-controls aria-expanded="false">Controls</button><button type="button" data-settings aria-expanded="false">Settings</button></header><section class="overlay" data-overlay><p class="status" data-status></p><p class="hint" data-hint hidden></p><button type="button" class="primary" data-retry hidden>Retry securely</button><button type="button" class="primary" data-rematch hidden>Rematch</button></section><aside class="panel" data-controls-panel hidden aria-label="Controls"><h2>Controls</h2><ul>${CONTROL_HELP.map((item) => `<li>${item}</li>`).join("")}</ul></aside><aside class="panel settings" data-settings-panel hidden aria-label="Accessibility and feedback settings"><h2>Settings</h2><label>Volume <input data-volume type="range" min="0" max="1" step="0.05"></label><label><input data-haptics type="checkbox"> Haptics</label><label><input data-motion type="checkbox"> Reduced motion</label><label>Blood <select data-blood><option value="full">Full (arcade gore)</option><option value="reduced">Reduced</option><option value="off">Off</option></select></label><section class="diagnostics"><h3>Diagnostics</h3><pre data-diagnostics></pre><button type="button" data-copy-diagnostics>Copy diagnostics</button></section><p class="model-credit"><a href="https://sketchfab.com/3d-models/boxer-84767168720948b38728ff78ee6f6090" target="_blank" rel="noreferrer">“Boxer” by Texel, Inc.</a> · <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">CC BY 4.0</a> · modified</p></aside><section class="sr-summary" data-fight-summary aria-label="Fight summary"></section><p class="sr-summary" data-fight-status role="status" aria-live="polite" aria-atomic="true"></p><section class="sr-summary" data-final aria-live="polite" aria-label="Final result"></section></section>`;
+    root.innerHTML = `<section class="activity" aria-label="Hands boxing activity"><canvas class="fight" aria-label="Two-player boxing match"></canvas><header class="topbar"><strong>HANDS</strong><span>two-player boxing</span><span class="spectator-role" data-role hidden>SPECTATING · READ ONLY</span><button type="button" data-controls aria-expanded="false">Controls</button><button type="button" data-settings aria-expanded="false">Settings</button></header><section class="overlay" data-overlay><p class="status" data-status></p><p class="hint" data-hint hidden></p><section class="cpu-picker" data-cpu hidden aria-label="Fight the computer"><p>No one here yet? Fight the computer.</p><div class="cpu-levels">${CPU_CHOICES.map((choice) => `<button type="button" data-cpu-level="${choice.level}"><strong>${choice.label}</strong><span>${choice.detail}</span></button>`).join("")}</div></section><button type="button" class="primary" data-retry hidden>Retry securely</button><button type="button" class="primary" data-rematch hidden>Rematch</button></section><aside class="panel" data-controls-panel hidden aria-label="Controls"><h2>Controls</h2><ul>${CONTROL_HELP.map((item) => `<li>${item}</li>`).join("")}</ul></aside><aside class="panel settings" data-settings-panel hidden aria-label="Accessibility and feedback settings"><h2>Settings</h2><label>Volume <input data-volume type="range" min="0" max="1" step="0.05"></label><label><input data-haptics type="checkbox"> Haptics</label><label><input data-motion type="checkbox"> Reduced motion</label><label>Blood <select data-blood><option value="full">Full (arcade gore)</option><option value="reduced">Reduced</option><option value="off">Off</option></select></label><section class="diagnostics"><h3>Diagnostics</h3><pre data-diagnostics></pre><button type="button" data-copy-diagnostics>Copy diagnostics</button></section><p class="model-credit"><a href="https://sketchfab.com/3d-models/boxer-84767168720948b38728ff78ee6f6090" target="_blank" rel="noreferrer">“Boxer” by Texel, Inc.</a> · <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">CC BY 4.0</a> · modified</p></aside><section class="sr-summary" data-fight-summary aria-label="Fight summary"></section><p class="sr-summary" data-fight-status role="status" aria-live="polite" aria-atomic="true"></p><section class="sr-summary" data-final aria-live="polite" aria-label="Final result"></section></section>`;
     this.canvas = root.querySelector<HTMLCanvasElement>("canvas")!;
     this.status = root.querySelector<HTMLElement>("[data-status]")!;
     this.overlay = root.querySelector<HTMLElement>("[data-overlay]")!;
@@ -80,6 +91,8 @@ export class HandsApp {
     this.retry = root.querySelector<HTMLButtonElement>("[data-retry]")!;
     this.rematchButton = root.querySelector<HTMLButtonElement>("[data-rematch]")!;
     this.hint = root.querySelector<HTMLElement>("[data-hint]")!;
+    this.cpuPicker = root.querySelector<HTMLElement>("[data-cpu]")!;
+    this.cpuPicker.addEventListener("click", this.onCpuPick);
     this.rematchButton.addEventListener("click", this.onRematch);
     this.fightSummary = root.querySelector<HTMLElement>("[data-fight-summary]")!;
     this.liveFightStatus = root.querySelector<HTMLElement>("[data-fight-status]")!;
@@ -114,6 +127,23 @@ export class HandsApp {
     this.liveFightStatus.textContent = "";
     this.clearRematchTimers();
     this.rematchButton.hidden = true;
+    this.cpuLevel = null;
+  }
+
+  private readonly onCpuPick = (event: Event): void => {
+    const level = (event.target as Element | null)?.closest<HTMLElement>("[data-cpu-level]")?.dataset.cpuLevel;
+    if (!isCpuLevel(level) || this.state.stage !== "waiting" || this.state.role !== "fighter" || this.cpuLevel !== null) return;
+    this.callCpu(level);
+  };
+
+  private callCpu(level: CpuLevel): void {
+    if (this.network?.requestCpu(level) !== true) return;
+    this.cpuLevel = level;
+    this.renderState();
+  }
+
+  private get cpuBout(): boolean {
+    return Object.values(this.state.players).some((player) => player.cpu === true);
   }
 
   private readonly onRematch = (): void => {
@@ -247,7 +277,13 @@ export class HandsApp {
     }
     this.dispatch({ type: "message", message });
     if (message.type === "snapshot") this.receiveSnapshot(message.payload);
+    if (message.type === "waiting") {
+      // Asked again after a reconnect lost the request, and on a rematch against the computer.
+      const level = this.cpuLevel ?? (this.rematchAttempts > 0 ? this.cpuRematchLevel : null);
+      if (level !== null) this.callCpu(level);
+    }
     if (message.type === "final") {
+      this.cpuRematchLevel = this.cpuBout ? this.cpuLevel : null;
       this.rematchAttempts = 0;
       this.lastFinalMatchId = message.match_id;
       this.finalReceivedAt = Date.now();
@@ -295,14 +331,14 @@ export class HandsApp {
       bootstrapping: "Loading…",
       authorizing: "Authorizing with Discord…",
       connecting: "Connecting securely…",
-      waiting: "Waiting for one opponent to use Play now in this channel.",
+      waiting: this.cpuLevel === null ? "Waiting for one opponent to use Play now in this channel." : "Calling in the computer…",
       countdown: "Bout countdown.",
       fight: `Round ${this.state.snapshot?.round_number ?? 1} in progress.`,
       knockdown: `Knockdown count ${this.state.snapshot?.fighters.find((fighter) => fighter.player_id === this.state.playerId)?.get_up_count ?? 0}.`,
       foul_recovery: "Foul recovery in progress.",
       rest: "Between-round rest.",
       paused: `Connection paused. ${Math.ceil(this.state.reconnectMs / 1000)} seconds remain.`,
-      complete: "Bout complete. Scorecards and rating changes are displayed.",
+      complete: this.cpuBout ? "Bout complete. Scorecards are displayed. Bouts against the computer are unrated." : "Bout complete. Scorecards and rating changes are displayed.",
       fatal: describeError(this.state.safeError ?? "safe_error"),
     };
     const spectating = this.state.role === "spectator";
@@ -345,6 +381,7 @@ export class HandsApp {
     this.corner.update(this.state.snapshot, this.state.playerId, this.state.role === "fighter" && this.state.stage === "rest");
     this.retry.hidden = this.state.stage !== "fatal";
     if (this.state.stage !== "complete") this.rematchButton.hidden = true;
+    this.cpuPicker.hidden = spectating || this.state.stage !== "waiting" || this.cpuLevel !== null;
     const showHint = !spectating && (this.state.stage === "waiting" || this.state.stage === "countdown");
     this.hint.hidden = !showHint;
     if (showHint) this.setText(this.hint, coarsePointer() ? CONTROL_HINT_TOUCH : CONTROL_HINT_KEYBOARD);
@@ -354,7 +391,7 @@ export class HandsApp {
     this.renderFightSummary();
     if (this.state.final !== null) {
       const final = this.state.final;
-      this.setText(this.finalSummary, `${final.method.replaceAll("_", " ")}. ${final.winner_id === null ? "Draw" : `${this.state.players[final.winner_id]?.name ?? "Winner"} wins`}. Scorecards: ${final.scorecards.map((card) => `${card.judge}: ${card.player_one.reduce((a, b) => a + b, 0)} to ${card.player_two.reduce((a, b) => a + b, 0)}`).join("; ")}. Ratings: ${Object.entries(final.ratings).map(([id, rating]) => `${this.state.players[id]?.name ?? "fighter"} ${rating.before} to ${rating.after}`).join("; ")}.`);
+      this.setText(this.finalSummary, `${final.method.replaceAll("_", " ")}. ${final.winner_id === null ? "Draw" : `${this.state.players[final.winner_id]?.name ?? "Winner"} wins`}. Scorecards: ${final.scorecards.map((card) => `${card.judge}: ${card.player_one.reduce((a, b) => a + b, 0)} to ${card.player_two.reduce((a, b) => a + b, 0)}`).join("; ")}. ${this.cpuBout ? "Unrated bout against the computer." : `Ratings: ${Object.entries(final.ratings).map(([id, rating]) => `${this.state.players[id]?.name ?? "fighter"} ${rating.before} to ${rating.after}`).join("; ")}.`}`);
     }
   }
 
@@ -366,7 +403,7 @@ export class HandsApp {
     const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
     const fighters = snapshot.fighters.map((fighter) => {
       const player = this.state.players[fighter.player_id];
-      return `${player?.name ?? "Fighter"}, ELO ${player?.rating ?? "unknown"}, stamina ${Math.round(fighter.stamina)} of ${Math.round(fighter.maximum_stamina)}, guard ${Math.round(fighter.guard)}, poise ${Math.round(fighter.poise)}, conditioning ${Math.round(fighter.conditioning)}, ${fighter.warnings} warnings, ${fighter.knockdowns} knockdowns`;
+      return `${player?.name ?? "Fighter"}, ${player?.cpu === true ? "computer opponent" : `ELO ${player?.rating ?? "unknown"}`}, stamina ${Math.round(fighter.stamina)} of ${Math.round(fighter.maximum_stamina)}, guard ${Math.round(fighter.guard)}, poise ${Math.round(fighter.poise)}, conditioning ${Math.round(fighter.conditioning)}, ${fighter.warnings} warnings, ${fighter.knockdowns} knockdowns`;
     });
     const viewer = snapshot.fighters.find((fighter) => fighter.player_id === this.state.playerId);
     const getUp = viewer?.is_downed === true
@@ -505,6 +542,7 @@ export class HandsApp {
     this.settings.destroy();
     this.retry.removeEventListener("click", this.onRetry);
     this.rematchButton.removeEventListener("click", this.onRematch);
+    this.cpuPicker.removeEventListener("click", this.onCpuPick);
     this.clearRematchTimers();
     if (this.diagnosticsTimer !== null) window.clearInterval(this.diagnosticsTimer);
     if (this.resultRevealTimer !== null) window.clearInterval(this.resultRevealTimer);

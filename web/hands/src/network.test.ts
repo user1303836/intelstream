@@ -307,6 +307,37 @@ describe("same-origin WebSocket controller", () => {
   });
 });
 
+describe("calling in the computer", () => {
+  const neutral = () => ({ moveX: 0, moveY: 0, defense: "none" as const, actions: [] });
+
+  it("asks on the open connection as a fighter, and not once that connection is gone", () => {
+    const socket = new FakeSocket();
+    const controller = new NetworkController("ticket", neutral, callbacks(), () => socket);
+    expect(controller.requestCpu("rookie")).toBe(false);
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message({ version: 3, type: "waiting", open_seats: 1 });
+    expect(controller.requestCpu("champion")).toBe(true);
+    expect(JSON.parse(socket.sent.at(-1)!)).toEqual({ version: 3, type: "cpu", level: "champion" });
+    socket.readyState = 3;
+    expect(controller.requestCpu("champion")).toBe(false);
+    expect(socket.sent.filter((frame) => JSON.parse(frame).type === "cpu")).toHaveLength(1);
+    controller.dispose();
+  });
+
+  it("never asks for a spectator", () => {
+    const socket = new FakeSocket();
+    const controller = new NetworkController("ticket", neutral, callbacks(), () => socket);
+    controller.start();
+    socket.open();
+    socket.message({ version: 3, type: "welcome", role: "spectator", player_id: "viewer", players: ready.players, server_tick: 40, reconnect_ticket: "spectator-ticket" });
+    expect(controller.requestCpu("rookie")).toBe(false);
+    expect(socket.sent.map((frame) => JSON.parse(frame).type)).toEqual(["authenticate"]);
+    controller.dispose();
+  });
+});
+
 describe("edge-triggered action sends", () => {
   it("flushes immediately on notifyAction and coalesces bursts", () => {
     vi.useFakeTimers();

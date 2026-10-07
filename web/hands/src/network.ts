@@ -1,6 +1,6 @@
 import { safeError } from "./api";
-import { decodeServerFrame, encodeInput } from "./protocol";
-import { PROTOCOL_VERSION, type ConnectionRole, type CornerKind, type EngineSnapshot, type InputFrame, type ServerMessage } from "./types";
+import { decodeServerFrame, encodeCpuRequest, encodeInput } from "./protocol";
+import { PROTOCOL_VERSION, type ConnectionRole, type CornerKind, type CpuLevel, type EngineSnapshot, type InputFrame, type ServerMessage } from "./types";
 
 export function websocketUrl(location: Location = window.location): string {
   const url = new URL("/api/hands/ws", location.origin);
@@ -265,6 +265,19 @@ export class NetworkController {
       this.callbacks.onReconnect(Math.max(0, this.reconnectDeadline - this.now()));
       this.connect();
     }, delay);
+  }
+
+  /** Asks the room to put the computer in the empty seat; false when there is no open connection to ask on. */
+  requestCpu(level: CpuLevel): boolean {
+    const socket = this.socket;
+    if (this.role !== "fighter" || this.disposed || this.terminal || socket?.readyState !== OPEN) return false;
+    try {
+      socket.send(encodeCpuRequest(level));
+      return true;
+    } catch {
+      this.handleClose(socket);
+      return false;
+    }
   }
 
   /** Smoothed round trip from an input send to the first snapshot acknowledging it, in milliseconds. */

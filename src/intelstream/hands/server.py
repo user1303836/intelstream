@@ -23,6 +23,7 @@ from intelstream.hands.protocol import (
     MAX_FRAME_BYTES,
     PROTOCOL_VERSION,
     ProtocolError,
+    parse_cpu_request,
     parse_ticket_ack,
 )
 from intelstream.hands.rooms import HandsRoomManager, RoomError, RoomMembership
@@ -721,6 +722,12 @@ class HandsServer:
                             continue
                         if membership.role == "spectator":
                             raise RoomError("spectator_read_only")
+                        cpu_level = parse_cpu_request(message.data)
+                        if cpu_level is not None:
+                            await membership.room.request_cpu(
+                                membership.player_id, membership.connection, cpu_level
+                            )
+                            continue
                         await membership.room.submit_frame(
                             membership.player_id,
                             membership.connection,

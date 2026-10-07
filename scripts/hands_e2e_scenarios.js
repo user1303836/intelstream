@@ -9,7 +9,10 @@
  * $TMPDIR/hands-e2e. Set E2E_GPU=1 to render on the machine's GPU instead of the software renderer
  * (real frame pacing and input latency). The response scenario takes E2E_DELAY_MS and E2E_JITTER_MS.
  *
- *   node scripts/hands_e2e_scenarios.js ko|reconnect|rest|spectator|touch|mash|latency|soak|background|rematch|rematchloop|clinch|response
+ * The cpu scenario is one player against the computer (E2E_CPU_LEVEL, default contender) through to the
+ * result card. E2E_PORT moves the server off 8091.
+ *
+ *   node scripts/hands_e2e_scenarios.js ko|reconnect|rest|spectator|touch|mash|latency|soak|background|rematch|rematchloop|clinch|response|cpu
  */
 const { chromium, devices } = require('playwright');
 const { spawn } = require('node:child_process');
@@ -135,12 +138,18 @@ async function main() {
     rematchloop: ['--rounds', '1', '--round-seconds', '20', '--rest-seconds', '5'],
     clinch: ['--rounds', '1', '--round-seconds', '30', '--rest-seconds', '5'],
     response: ['--rounds', '1', '--round-seconds', '40', '--rest-seconds', '5'],
+    cpu: ['--rounds', '2', '--round-seconds', '40', '--rest-seconds', '6'],
   }[scenario];
   const responseDelayMs = Number(process.env.E2E_DELAY_MS ?? 60);
   const responseJitterMs = Number(process.env.E2E_JITTER_MS ?? 0);
   const server = await startServer(serverArgs, { oneWayDelayMs: scenario === 'latency' ? 110 : scenario === 'response' ? responseDelayMs : 0, jitterMs: scenario === 'response' ? responseJitterMs : 0 });
   try {
     const A = await open('Alpha');
+    if (scenario === 'cpu') {
+      await runCpu(A, note);
+      report.errors.push(...A.errors);
+      return;
+    }
     const B = await open('Bravo', { mobile: scenario === 'touch' || scenario === 'rest' });
     if (scenario === 'latency') note('both clients behind a TCP proxy adding 110 ms each way (220 ms round trip) to every frame');
     const startedState = await waitFor(A.page, (s) => /countdown|fight/.test(s.summary ?? ''), 60000, 'bout start');
@@ -587,10 +596,60 @@ async function main() {
     server.child.kill('SIGTERM');
     server.proxy?.close();
     await browser.close();
+    const serverErrors = server.log.join('').split('\n').filter((l) => /error|warning|Traceback/i.test(l) && !/healthz/.test(l));
+    if (scenario === 'cpu') {
+      console.log('client errors:', JSON.stringify(report.errors.filter((e) => !/GL Driver/.test(e)).slice(0, 20), null, 1));
+      console.log('server log lines of interest:', JSON.stringify(serverErrors.slice(0, 20), null, 1));
+    }
   }
+  if (scenario === 'cpu') return;
   const serverErrors = server.log.join('').split('\n').filter((l) => /error|warning|Traceback/i.test(l) && !/healthz/.test(l));
   console.log('client errors:', JSON.stringify(report.errors.filter((e) => !/GL Driver/.test(e)).slice(0, 20), null, 1));
   console.log('server log lines of interest:', JSON.stringify(serverErrors.slice(0, 20), null, 1));
+}
+
+/** One player calls in the computer from the waiting screen and boxes it to the result card. */
+async function runCpu(A, note) {
+  const level = process.env.E2E_CPU_LEVEL || 'contender';
+  const picker = await A.page.waitForSelector('[data-cpu]:not([hidden])', { timeout: 60000 });
+  note('computer offered while waiting:', picker !== null, '|', (await status(A.page)).status);
+  await A.page.screenshot({ path: `${out}/e2e-cpu-waiting.png` });
+  await A.page.click(`[data-cpu-level="${level}"]`);
+  note('asked for:', level, '|', (await status(A.page)).status);
+  const started = await waitFor(A.page, (s) => /\. fight\./.test(s.summary ?? ''), 30000, 'fight phase');
+  note('bout started against:', /computer opponent/.test(started?.summary ?? '') ? 'the computer' : 'someone else', '|', started?.summary?.slice(0, 160));
+  const begun = Date.now();
+  let final = null; let downs = 0; let shots = 0;
+  while (Date.now() - begun < 240000) {
+    const s = await status(A.page);
+    if (s.final) { final = s; break; }
+    if (/You are down/.test(s.summary ?? '')) {
+      const press = /Press left/.test(s.summary) ? 'ArrowLeft' : /Press right/.test(s.summary) ? 'ArrowRight' : null;
+      if (press) { await A.page.keyboard.press(press); downs += 1; }
+      await wait(120);
+      continue;
+    }
+    // A plain plan: step in, jab and follow with a right, keep the guard up between.
+    await A.page.keyboard.down('d'); await wait(150); await A.page.keyboard.up('d');
+    await A.page.keyboard.press('f'); await wait(120); await A.page.keyboard.press(['u', 'h', 'y'][shots % 3]);
+    await A.page.keyboard.down('q'); await wait(450); await A.page.keyboard.up('q');
+    if (shots % 10 === 4) await A.page.screenshot({ path: `${out}/e2e-cpu-bout-${shots}.png` });
+    shots += 1;
+  }
+  note('get-up presses:', downs);
+  if (final === null) final = await waitFor(A.page, (s) => Boolean(s.final), 120000, 'final');
+  note('FINAL:', final?.final);
+  for (let i = 0; i < 80; i += 1) { if (await A.page.evaluate(() => window.__handsApp?.renderer?.resultVisible ?? false)) break; await wait(250); }
+  await wait(800);
+  await A.page.screenshot({ path: `${out}/e2e-cpu-result.png` });
+  note('result card shown:', await A.page.evaluate(() => window.__handsApp?.renderer?.resultVisible ?? false), '| status:', (await status(A.page)).status);
+  const rematch = await A.page.waitForSelector('[data-rematch]:not([disabled]):not([hidden])', { timeout: 30000 }).catch(() => null);
+  note('rematch offered:', rematch !== null);
+  if (rematch !== null) {
+    await A.page.click('[data-rematch]');
+    const again = await waitFor(A.page, (s) => /countdown|\. fight\./.test(s.summary ?? '') && !s.final, 60000, 'rematch start');
+    note('rematch against the computer started:', /computer opponent/.test(again?.summary ?? ''));
+  }
 }
 
 main().catch((e) => { console.error('ERR', e.stack || e.message); process.exit(1); });
