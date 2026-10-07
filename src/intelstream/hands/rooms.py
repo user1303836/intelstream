@@ -95,6 +95,12 @@ class RoomConfig:
     # this many snapshots in a row were replaced before it could be sent one.
     outbound_queue_size: int = 16
     max_spectators: int = 20
+    # Every bout in progress steps a 30 Hz engine and encodes a snapshot per viewer on the bot's one
+    # event loop (about 1 ms a tick for a computer bout measured on a dev machine, so ~30 ms of
+    # every second), and one person alone can start a computer bout. Past these, a new room or a
+    # computer is refused as service_busy rather than slowing every bout down.
+    max_rooms: int = 64
+    max_cpu_rooms: int = 16
     style_select_seconds: float = 10.0
     """How long the fighters have to pick a style once both corners are filled; 0 starts at once."""
     rematch_seat_seconds: float = 60.0
@@ -123,6 +129,8 @@ class RoomConfig:
             raise ValueError("room durations are invalid")
         if self.max_spectators < 0:
             raise ValueError("spectator bound must not be negative")
+        if self.max_rooms < 1 or self.max_cpu_rooms < 0:
+            raise ValueError("room bounds are invalid")
         if self.style_select_seconds < 0 or self.rematch_seat_seconds < 0:
             raise ValueError("style select and rematch seat times must not be negative")
         if self.max_input_frames_per_second < self.max_inputs_per_second:
@@ -298,6 +306,7 @@ class HandsRoom:
         seed_factory: Callable[[], int],
         held_seats: frozenset[str] = frozenset(),
         held_until: float = 0.0,
+        cpu_allowed: Callable[[], bool] = lambda: True,
     ) -> None:
         self.instance_id = instance_id
         self.guild_id = guild_id
@@ -308,6 +317,7 @@ class HandsRoom:
         self._on_finished = on_finished
         self._match_id_factory = match_id_factory
         self._seed_factory = seed_factory
+        self._cpu_allowed = cpu_allowed
         self._slots: dict[str, PlayerSlot] = {}
         self._spectators: dict[str, SpectatorSlot] = {}
         self._cpu: CpuOpponent | None = None
@@ -1058,6 +1068,8 @@ class HandsRoom:
                 or self._select is not None
             ):
                 return False
+            if not self._cpu_allowed():
+                raise RoomError("service_busy")
             self._cpu = CpuOpponent(level)
             self._begin_select()
             return True
@@ -1680,6 +1692,13 @@ class HandsRoomManager:
             if reservation is not None and reservation.room.instance_id != player.instance_id:
                 raise RoomError("already_in_room")
             room = self._rooms.get(player.instance_id)
+            if room is None and len(self._rooms) >= self.config.max_rooms:
+                logger.warning(
+                    "Hands room refused at the cap",
+                    rooms=len(self._rooms),
+                    cpu_rooms=self._cpu_room_count(),
+                )
+                raise RoomError("service_busy")
             if room is None:
                 # A rematch: the last bout's fighters keep their seats for a while, so nobody who
                 # arrives first can take one; everyone else watches until then.
@@ -1698,6 +1717,7 @@ class HandsRoomManager:
                     seed_factory=self._seed_factory,
                     held_seats=frozenset() if held is None else held.fighters,
                     held_until=0.0 if held is None else held.until,
+                    cpu_allowed=self._cpu_allowed,
                 )
                 self._rooms[player.instance_id] = room
             if reservation is None:
@@ -1755,6 +1775,19 @@ class HandsRoomManager:
                         self._retire_room(room)
             raise
         return membership
+
+    def _cpu_room_count(self) -> int:
+        return sum(room.cpu is not None for room in self._rooms.values())
+
+    def _cpu_allowed(self) -> bool:
+        if self._cpu_room_count() < self.config.max_cpu_rooms:
+            return True
+        logger.warning(
+            "Hands computer refused at the cap",
+            rooms=len(self._rooms),
+            cpu_rooms=self._cpu_room_count(),
+        )
+        return False
 
     def _raise_unavailable(self, player: AuthenticatedPlayer, room: HandsRoom) -> Never:
         if self._closed:

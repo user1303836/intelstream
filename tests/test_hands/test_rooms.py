@@ -165,6 +165,46 @@ def room_config(
     )
 
 
+def test_room_config_rejects_room_caps_that_could_never_open_a_room() -> None:
+    assert RoomConfig(max_cpu_rooms=0).max_cpu_rooms == 0
+    for bounds in ({"max_rooms": 0}, {"max_cpu_rooms": -1}):
+        with pytest.raises(ValueError, match="room bounds"):
+            RoomConfig(**bounds)
+
+
+async def test_rooms_past_the_cap_are_refused_as_busy_until_one_closes(
+    repository: Repository,
+) -> None:
+    manager = HandsRoomManager(repository, config=replace(room_config(), max_rooms=2))
+    first = await manager.join(player("one", "instance-1"), FakeSocket())
+    await manager.join(player("two", "instance-2"), FakeSocket())
+    with pytest.raises(RoomError, match="service_busy"):
+        await manager.join(player("three", "instance-3"), FakeSocket())
+    # A room that already exists still takes its second fighter.
+    await manager.join(player("four", "instance-1"), FakeSocket())
+    await wait_until(lambda: manager.room_count == 1)
+    assert first.room.finished
+    await manager.join(player("three", "instance-3"), FakeSocket())
+    assert manager.room_count == 2
+    await manager.close()
+
+
+async def test_computer_bouts_past_the_cap_are_refused_as_busy(repository: Repository) -> None:
+    manager = HandsRoomManager(
+        repository, config=replace(room_config(round_ticks=100_000), max_cpu_rooms=1)
+    )
+    first = await manager.join(player("one", "instance-1"), FakeSocket())
+    second = await manager.join(player("two", "instance-2"), FakeSocket())
+    assert await first.room.request_cpu("one", first.connection, CpuLevel.ROOKIE)
+    with pytest.raises(RoomError, match="service_busy"):
+        await second.room.request_cpu("two", second.connection, CpuLevel.ROOKIE)
+    assert second.room.cpu is None
+    # Two people still box each other: the cap is on bouts one person can start alone.
+    await manager.join(player("three", "instance-2"), FakeSocket())
+    assert second.room.engine is not None
+    await manager.close()
+
+
 def test_room_config_allows_no_spectators_but_rejects_negative_bound() -> None:
     assert RoomConfig(max_spectators=0).max_spectators == 0
     with pytest.raises(ValueError, match="spectator bound"):
