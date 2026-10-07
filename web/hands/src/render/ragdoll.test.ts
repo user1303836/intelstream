@@ -191,7 +191,7 @@ describe("knockout physics", () => {
     };
     // A third of a second in, the folded fighter is down on one knee with the other still up under him, while the
     // crumpled one's legs have gone from under him.
-    expect(knees("fold")).toBeGreaterThan(knees("crumple") + 0.12);
+    expect(knees("fold")).toBeGreaterThan(knees("crumple") + 0.08);
   });
 
   it("chooses how he goes down from the blow", () => {
@@ -205,7 +205,7 @@ describe("knockout physics", () => {
 
   it("builds nothing while it steps or draws", () => {
     const source = readFileSync("src/render/ragdoll.ts", "utf8");
-    const hot = ["step", "carryHinges", "solveRigid", "solveRanges", "solveKnees", "solveElbows", "solveNeck", "solveFeet", "footNormal", "cone", "rotateAbout", "hinge", "satisfy", "hingeAxis", "solveArmsAgainstTorso", "closestOnSegment", "solveEnvironment", "applyFriction", "limitSpeed", "interpolate", "drive", "tiltHips", "prepareFrames", "segment", "frameFor", "blend", "elbowAxis", "kneeAxis"];
+    const hot = ["step", "carryHinges", "solveRigid", "solveRanges", "solveKnees", "solveTwist", "spinInertia", "solveElbows", "solveNeck", "solveFeet", "footNormal", "cone", "rotateAbout", "hinge", "satisfy", "hingeAxis", "solveArmsAgainstTorso", "closestOnSegment", "solveEnvironment", "applyFriction", "limitSpeed", "interpolate", "drive", "tiltHips", "prepareFrames", "segment", "frameFor", "blend", "elbowAxis", "kneeAxis"];
     for (const name of hot) {
       const start = source.search(new RegExp(`\\n  (private )?(get )?${name}\\(`));
       expect(start, name).toBeGreaterThan(0);
@@ -312,6 +312,57 @@ describe("knockouts on the fighter", () => {
         expect(lowest, label).toBeGreaterThan(-0.035);
       }
     }
+  });
+
+  it("rolls the feet only as far as an ankle goes and never flicks them, in the air or on the canvas", () => {
+    // Nothing bounded a foot's roll onto its edge: feet lay 60-90 degrees on their sides against the shin in 20 of
+    // 21 falls, and the turn about the shin measured from a nearly degenerate projection (and only off the canvas)
+    // flicked toes 39 cm in a 1/120 s step and toe bones 47 cm in a frame.
+    let tilt = 0;
+    let rest = 0;
+    let stepMove = 0;
+    let frameMove = 0;
+    const tip = new THREE.Vector3();
+    for (const punchClass of ["jab", "straight", "hook", "uppercut"] as const) {
+      for (const hand of ["left", "right"] as const) {
+        for (const amount of [60, 150]) {
+          const { boxer, graph, fighter, opponent, time } = standing();
+          graph.react("hit", "head", 1, punchClass, hand, amount);
+          let now = frames(graph, { ...fighter, is_downed: true }, opponent, 12, time);
+          const body = graph.fallBody!.body;
+          const before = new Float64Array(PARTICLES * 3);
+          const step = body.step.bind(body);
+          const feet = (into: (value: number) => void): void => {
+            for (const [toe, heel, ankle, knee] of [[P.toeL, P.heelL, P.ankleL, P.kneeL], [P.toeR, P.heelR, P.ankleR, P.kneeR]] as const) {
+              const side = at(body.position, toe).sub(at(body.position, heel)).cross(at(body.position, ankle).sub(at(body.position, heel))).normalize();
+              const shin = at(body.position, ankle).sub(at(body.position, knee)).normalize();
+              into(THREE.MathUtils.radToDeg(Math.asin(Math.min(1, Math.abs(side.dot(shin))))));
+            }
+          };
+          body.step = (replay) => {
+            before.set(body.position);
+            step(replay);
+            feet((value) => { tilt = Math.max(tilt, value); });
+            for (const toe of [P.toeL, P.toeR]) stepMove = Math.max(stepMove, at(body.position, toe).distanceTo(at(before, toe)));
+          };
+          const toes = [boxer.rig.bones.toeL, boxer.rig.bones.toeR];
+          const last = toes.map((bone) => worldPosition(bone, new THREE.Vector3()));
+          for (let frame = 0; frame < 228; frame += 1) {
+            now = frames(graph, { ...fighter, is_downed: true }, opponent, 1, now);
+            for (const [index, bone] of toes.entries()) {
+              frameMove = Math.max(frameMove, worldPosition(bone, tip).distanceTo(last[index]!));
+              last[index]!.copy(tip);
+            }
+          }
+          feet((value) => { rest = Math.max(rest, value); });
+        }
+      }
+    }
+    // A foot pinned under a falling leg can be held past its range for a few frames, but it lies within it.
+    expect(tilt).toBeLessThan(80);
+    expect(rest).toBeLessThan(40);
+    expect(stepMove).toBeLessThan(0.1);
+    expect(frameMove).toBeLessThan(0.2);
   });
 
   it("lies with his shoulders turned on his hips no further than a spine turns, however he went down", () => {

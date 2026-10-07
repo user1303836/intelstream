@@ -80,6 +80,7 @@ const BODY_SHARES = Float64Array.from([P.belly, 1, P.chest, 0.6, P.pelvis, 0.4, 
 const HEAD_PARTS = [P.head, P.crown, P.face] as const;
 const SKULL_PARTS = [P.crown, P.face] as const;
 const FOOT_PARTS = [[P.toeL, P.heelL], [P.toeR, P.heelR]] as const;
+const HEEL_PARTS = [[P.heelL], [P.heelR]] as const;
 const LOST_HEAD = [P.head, P.crown, P.face] as const;
 const LOST_LEFT_HAND = [P.fistL] as const;
 const LOST_RIGHT_HAND = [P.fistR] as const;
@@ -134,8 +135,18 @@ const HINGE_STIFFNESS = 0.5;
 /** The neck leans this far from the line of the spine, and the skull this far again on the neck. */
 const NECK_CONE = (30 * Math.PI) / 180;
 const SKULL_CONE = (32 * Math.PI) / 180;
-/** The foot rolls onto its edge only this far from the plane the knee bends in. */
+/** The foot turns in or out on the shin only this far from the plane the knee bends in. */
 const FOOT_ROLL = (28 * Math.PI) / 180;
+/** And rolls onto its outer edge (inversion) or its inner edge (eversion) only this far, as an ankle does. */
+const FOOT_INVERSION = (35 * Math.PI) / 180;
+const FOOT_EVERSION = (20 * Math.PI) / 180;
+/**
+ * A foot on the canvas is held to its range more gently, and no foot is turned further than this in one pass:
+ * onto its edge a little faster, since a falling leg rolls the foot quickly and that measure has no blind spot.
+ */
+const FOOT_GROUNDED = 0.5;
+const FOOT_TURN = 0.01;
+const FOOT_ROLL_TURN = 0.04;
 const CONE_STIFFNESS = 0.4;
 
 interface StyleStiffness {
@@ -670,10 +681,28 @@ export class RagdollBody {
     const twist = Math.atan2(this.d.crossVectors(hips, shoulders).dot(spine), hips.dot(shoulders));
     const excess = Math.abs(twist) - SPINE_TWIST;
     if (excess <= 0) return;
-    // The shoulders and the hips each turn half the way back, the legs with the hips.
-    const turn = Math.sign(twist) * excess * CONE_STIFFNESS * 0.5;
-    this.rotateAbout(UPPER_BODY, P.chest, spine, -turn);
-    this.rotateAbout(LOWER_BODY, P.chest, spine, turn);
+    // The shoulders and the hips (the legs with them) share the turn back by how hard each is to turn about the
+    // spine: legs folded out to the side are, so they no longer whip the feet round with half the correction.
+    const upper = this.spinInertia(UPPER_BODY, spine);
+    const lower = this.spinInertia(LOWER_BODY, spine);
+    const turn = Math.sign(twist) * excess * CONE_STIFFNESS;
+    this.rotateAbout(UPPER_BODY, P.chest, spine, -turn * (lower / (upper + lower)));
+    this.rotateAbout(LOWER_BODY, P.chest, spine, turn * (upper / (upper + lower)));
+  }
+
+  /** The particles' mass times the square of their distance from the line through the chest along `axis`. */
+  private spinInertia(parts: readonly number[], axis: THREE.Vector3): number {
+    const p = this.position;
+    let inertia = 1e-6;
+    for (let k = 0; k < parts.length; k += 1) {
+      const i = parts[k]!;
+      const dx = p[i * 3]! - p[P.chest * 3]!;
+      const dy = p[i * 3 + 1]! - p[P.chest * 3 + 1]!;
+      const dz = p[i * 3 + 2]! - p[P.chest * 3 + 2]!;
+      const along = dx * axis.x + dy * axis.y + dz * axis.z;
+      inertia += (dx * dx + dy * dy + dz * dz - along * along) / this.invMass[i]!;
+    }
+    return inertia;
   }
 
   /** The neck and the skull lean from the line of the spine only so far, whatever the blow. */
@@ -684,29 +713,57 @@ export class RagdollBody {
     this.cone(neck, P.head, P.crown, SKULL_CONE, P.head, SKULL_PARTS);
   }
 
-  /** A foot in the air rolls onto its edge only a little from the plane its knee bends in; on the canvas it lies as it falls. */
+  /**
+   * A foot rolls onto its edge only as far as an ankle lets it, and turns in or out on the shin only a little from
+   * the plane its knee bends in, on the canvas as well as off it. Each pass turns a foot at most FOOT_TURN, so a
+   * foot held at its range is never flicked back to it in one step.
+   */
   private solveFeet(): void {
     this.pelvisFrame(this.position);
     const p = this.position;
     for (let side = 0; side < 2; side += 1) {
       const toe = side === 0 ? P.toeL : P.toeR;
       const heel = side === 0 ? P.heelL : P.heelR;
-      if (p[toe * 3 + 1]! <= RADIUS[toe]! + 0.01 || p[heel * 3 + 1]! <= RADIUS[heel]! + 0.01) continue;
       const hip = side === 0 ? P.hipL : P.hipR;
       const knee = side === 0 ? P.kneeL : P.kneeR;
       const ankle = side === 0 ? P.ankleL : P.ankleR;
+      const grounded = p[toe * 3 + 1]! <= RADIUS[toe]! + 0.01 || p[heel * 3 + 1]! <= RADIUS[heel]! + 0.01;
+      const stiffness = grounded ? CONE_STIFFNESS * FOOT_GROUNDED : CONE_STIFFNESS;
+      const shin = this.dir(knee, ankle, this.c);
+      // Onto its edge: the foot's side axis (to the fighter's left on both feet) leans along the shin as the foot rolls,
+      // the left foot's onto its outer edge, the right foot's the other way. The heel swings round the ankle-toe line.
+      const foot = this.footNormal(side === 0 ? 0 : 1, this.d).multiplyScalar(this.footSign[side]!);
+      const lean = foot.dot(shin);
+      const outward = Math.sin(FOOT_INVERSION);
+      const inward = Math.sin(FOOT_EVERSION);
+      const leanTo = side === 0 ? Math.min(outward, Math.max(-inward, lean)) : Math.min(inward, Math.max(-outward, lean));
+      if (leanTo !== lean) {
+        // Turned by `a` about the ankle-toe line, the side axis's lean is lean cos a + ((line x side) . shin) sin a.
+        const line = this.dir(ankle, toe, this.a);
+        const swing = this.e.crossVectors(line, foot).dot(shin);
+        const reach = Math.hypot(lean, swing);
+        if (reach > Math.abs(leanTo) + 1e-6) {
+          const phase = Math.atan2(swing, lean);
+          const spread = Math.acos(leanTo / reach);
+          const first = wrapAngle(phase - spread);
+          const second = wrapAngle(phase + spread);
+          const turn = (Math.abs(first) <= Math.abs(second) ? first : second) * stiffness;
+          this.rotateAbout(HEEL_PARTS[side]!, ankle, line, Math.min(FOOT_ROLL_TURN, Math.max(-FOOT_ROLL_TURN, turn)));
+        }
+      }
+      // In or out on the shin: the knee's hinge and the foot's side axis, both seen across the shin. A side axis
+      // nearly along the shin has no direction across it, so the foot is left as it is rather than spun.
       const thigh = this.dir(hip, knee, this.a);
       const hinge = this.hingeAxis(side, thigh, this.fx, this.fy, this.fz, this.b);
-      const shin = this.dir(knee, ankle, this.c);
-      const foot = this.footNormal(side === 0 ? 0 : 1, this.d).multiplyScalar(this.footSign[side]!);
+      const across = this.footNormal(side === 0 ? 0 : 1, this.d).multiplyScalar(this.footSign[side]!);
       hinge.addScaledVector(shin, -hinge.dot(shin));
-      foot.addScaledVector(shin, -foot.dot(shin));
-      if (hinge.lengthSq() < 1e-6 || foot.lengthSq() < 1e-6) continue;
+      across.addScaledVector(shin, -across.dot(shin));
+      if (hinge.lengthSq() < 0.09 || across.lengthSq() < 0.09) continue;
       hinge.normalize();
-      foot.normalize();
-      const roll = Math.atan2(this.e.crossVectors(hinge, foot).dot(shin), hinge.dot(foot));
+      across.normalize();
+      const roll = Math.atan2(this.e.crossVectors(hinge, across).dot(shin), hinge.dot(across));
       const bounded = Math.min(FOOT_ROLL, Math.max(-FOOT_ROLL, roll));
-      if (bounded !== roll) this.rotateAbout(FOOT_PARTS[side]!, ankle, shin, (bounded - roll) * CONE_STIFFNESS);
+      if (bounded !== roll) this.rotateAbout(FOOT_PARTS[side]!, ankle, shin, Math.min(FOOT_TURN, Math.max(-FOOT_TURN, (bounded - roll) * stiffness)));
     }
   }
 
