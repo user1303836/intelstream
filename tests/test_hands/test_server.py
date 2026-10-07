@@ -21,6 +21,7 @@ from intelstream.database.repository import Repository
 from intelstream.hands import server as server_module
 from intelstream.hands.auth import AuthenticatedPlayer, AuthExchange, HandsAuth, HandsAuthError
 from intelstream.hands.engine import EngineConfig
+from intelstream.hands.protocol import PROTOCOL_VERSION
 from intelstream.hands.rooms import (
     SNAPSHOT_BACKLOG_BYTES,
     HandsRoomManager,
@@ -824,6 +825,70 @@ async def test_fighters_pick_their_styles_over_the_socket_and_a_spectator_cannot
         await watcher.close()
         async with asyncio.timeout(1):
             for ws in sockets.values():
+                await ws.close()
+    async with asyncio.timeout(1):
+        await server.close()
+
+
+async def test_a_spectator_seated_before_the_bell_fights_over_the_same_socket(
+    repository: Repository,
+) -> None:
+    auth = FakeAuth()
+    auth.tickets = {
+        name: AuthenticatedPlayer(name, GUILD, "room", name.title(), None)
+        for name in ("one", "two", "three")
+    }
+    rooms = HandsRoomManager(
+        repository,
+        config=RoomConfig(
+            style_select_seconds=5.0,
+            tick_interval_seconds=0.002,
+            reconnect_grace_seconds=0.1,
+            result_hold_seconds=0.05,
+            engine_config=EngineConfig(rounds=1, round_ticks=5000, rest_ticks=0, countdown_ticks=1),
+        ),
+    )
+    server, _auth, base = await start_server(repository, auth=auth, rooms=rooms)
+
+    async def receive_type(ws: aiohttp.ClientWebSocketResponse, kind: str) -> dict:
+        async with asyncio.timeout(2):
+            while True:
+                message = await ws.receive()
+                if message.type != aiohttp.WSMsgType.TEXT:
+                    raise AssertionError(f"socket closed before {kind}")
+                payload = json.loads(message.data)
+                assert payload["type"] != "error", payload
+                if payload["type"] == kind:
+                    return payload
+
+    async def connect(name: str) -> aiohttp.ClientWebSocketResponse:
+        ws = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
+        await ws.send_json({"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": name})
+        return ws
+
+    def choice(style: str) -> dict:
+        return {"version": PROTOCOL_VERSION, "type": "style", "style": style, "ready": True}
+
+    async with aiohttp.ClientSession() as client:
+        one = await connect("one")
+        two = await connect("two")
+        await receive_type(one, "select")
+        three = await connect("three")
+        assert (await receive_type(three, "welcome"))["role"] == "spectator"
+        await two.close()
+        seated = await receive_type(three, "welcome")
+        assert (seated["role"], seated["seat"]) == ("fighter", 2)
+        assert seated["reconnect_ticket"] in auth.tickets
+        await three.send_json(choice("slugger"))
+        await one.send_json(choice("boxer"))
+        ready = await receive_type(three, "ready")
+        assert {player["id"]: player["style"] for player in ready["players"]} == {
+            "one": "boxer",
+            "three": "slugger",
+        }
+        await receive_type(three, "snapshot")
+        async with asyncio.timeout(1):
+            for ws in (one, three):
                 await ws.close()
     async with asyncio.timeout(1):
         await server.close()

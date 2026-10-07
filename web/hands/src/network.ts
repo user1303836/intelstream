@@ -103,13 +103,17 @@ export class NetworkController {
 
   start(): void {
     if (this.disposed || this.listenersBound) return;
+    this.bindInputListeners();
+    this.connect();
+    if (!this.disposed && !this.terminal) this.inputTimer = window.setInterval(() => this.flushInput(), INPUT_FLUSH_MS);
+  }
+
+  private bindInputListeners(): void {
     this.listenersBound = true;
     window.addEventListener("blur", this.onInputLoss);
     window.addEventListener("focus", this.onInputRegain);
     window.addEventListener("pointerdown", this.onPagePointer, true);
     document.addEventListener("visibilitychange", this.onVisibilityChange);
-    this.connect();
-    if (!this.disposed && !this.terminal) this.inputTimer = window.setInterval(() => this.flushInput(), INPUT_FLUSH_MS);
   }
 
   setActive(active: boolean): void {
@@ -253,11 +257,17 @@ export class NetworkController {
       if (message.reconnect_ticket === undefined) throw new Error("missing_reconnect_ticket");
       this.reconnectTicket = message.reconnect_ticket;
       this.serverTick = message.server_tick;
+      // A seat that opens before the bell goes to a spectator, who is welcomed again as a fighter.
+      const seated = this.role === "spectator" && message.role === "fighter";
       this.role = message.role;
       this.playerId = message.role === "fighter" ? message.player_id : null;
       this.sentAt.clear();
       if (message.role === "fighter") this.nextSequence = Math.max(this.nextSequence, message.next_sequence);
       else this.stopInputLifecycle();
+      if (seated) {
+        if (!this.listenersBound) this.bindInputListeners();
+        this.inputTimer ??= window.setInterval(() => this.flushInput(), INPUT_FLUSH_MS);
+      }
       this.attempts = 0;
       this.clearTransportReconnect(true);
     } else if (message.type === "ticket") {

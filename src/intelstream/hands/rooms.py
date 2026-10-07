@@ -248,6 +248,10 @@ class StyleSelect:
 class SpectatorSlot:
     identity: AuthenticatedPlayer
     connection: PlayerConnection
+    # What seating him needs, if a fighter's seat opens before the bell.
+    rating: int = 0
+    record: FighterRecord | None = None
+    reconnect_ticket_factory: Callable[[], str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,6 +259,8 @@ class RoomMembership:
     room: HandsRoom
     player_id: str
     role: ConnectionRole
+    """The role the connection joined in. A spectator can be seated before the bell, so the room
+    itself decides what each frame may do."""
     connection: PlayerConnection
     reconnect_ticket: str | None
 
@@ -441,8 +447,13 @@ class HandsRoom:
                 if existing_spectator is not None:
                     existing_spectator.connection = connection
                     existing_spectator.identity = identity
+                    existing_spectator.rating = rating
+                    existing_spectator.record = record
+                    existing_spectator.reconnect_ticket_factory = reconnect_ticket_factory
                 else:
-                    self._spectators[identity.user_id] = SpectatorSlot(identity, connection)
+                    self._spectators[identity.user_id] = SpectatorSlot(
+                        identity, connection, rating, record, reconnect_ticket_factory
+                    )
                 welcome = {
                     "role": role,
                     "player_id": identity.user_id,
@@ -552,6 +563,46 @@ class HandsRoom:
         """
         return self._engine is None and len(self._slots) < 2
 
+    def _seat_waiting_spectators(self) -> bool:
+        """A fighter's seat that opens before the bell goes to whoever has watched longest.
+
+        The spectator keeps his connection and is welcomed again as a fighter; whoever else is in
+        the room hears of it from the waiting or select that follows. Returns whether anyone was
+        seated.
+        """
+        seated = False
+        while self._seat_open() and self._spectators and not self._closed:
+            player_id, spectator = next(iter(self._spectators.items()))
+            del self._spectators[player_id]
+            if self._cpu is not None:
+                self._cancel_select()
+                self._cpu = None
+            slot = PlayerSlot(
+                identity=spectator.identity,
+                rating=spectator.rating,
+                connection=spectator.connection,
+                grace_remaining=self.config.reconnect_grace_seconds,
+                record=spectator.record,
+            )
+            self._slots[player_id] = slot
+            welcome: dict[str, object] = {
+                "role": "fighter",
+                "player_id": player_id,
+                "seat": tuple(self._slots).index(player_id) + 1,
+                "rating": slot.rating,
+                "players": self._public_players(player_id),
+                "server_tick": 0,
+                "next_sequence": 0,
+            }
+            if spectator.reconnect_ticket_factory is not None:
+                welcome["reconnect_ticket"] = spectator.reconnect_ticket_factory()
+            self._enqueue(
+                spectator.connection, self._message("welcome", **welcome), uncompressed=True
+            )
+            logger.info("Hands spectator seated", instance_id=self.instance_id)
+            seated = True
+        return seated
+
     def _new_connection(
         self, player_id: str, role: ConnectionRole, socket: SocketLike
     ) -> PlayerConnection:
@@ -597,7 +648,7 @@ class HandsRoom:
         except (ConnectionError, RuntimeError, asyncio.CancelledError):
             if not self._closed:
                 self._spawn(
-                    self.disconnect(player_id, role, connection),
+                    self.disconnect(player_id, connection),
                     name=f"hands-disconnect-{role}-{player_id}",
                 )
 
@@ -745,9 +796,9 @@ class HandsRoom:
             ):
                 connection.slow_drop_started = False
                 return
-            for player_id, role, current in self._connected_members():
+            for player_id, _role, current in self._connected_members():
                 if current is connection:
-                    await self.disconnect(player_id, role, connection)
+                    await self.disconnect(player_id, connection)
                     return
         finally:
             if connection.slow_drop_task is asyncio.current_task():
@@ -928,6 +979,11 @@ class HandsRoom:
         is already starting, so the request is dropped rather than treated as a protocol error.
         """
         async with self._lock:
+            spectator = self._spectators.get(player_id)
+            if spectator is not None:
+                if spectator.connection is not connection:
+                    raise RoomError("connection_replaced")
+                raise RoomError("spectator_read_only")
             slot = self._slots.get(player_id)
             if slot is None or slot.connection is not connection:
                 raise RoomError("connection_replaced")
@@ -1066,19 +1122,16 @@ class HandsRoom:
             slot.last_sequence = command.sequence
             engine.submit_input(player_id, command)
 
-    async def disconnect(
-        self, player_id: str, role: ConnectionRole, connection: PlayerConnection
-    ) -> None:
+    async def disconnect(self, player_id: str, connection: PlayerConnection) -> None:
         async with self._lock:
-            if role == "spectator":
+            slot = self._slots.get(player_id)
+            if slot is None or slot.connection is not connection:
+                # Not (or no longer) a fighter on this connection: a spectator leaving, if any.
                 spectator = self._spectators.get(player_id)
                 if spectator is None or spectator.connection is not connection:
                     return
                 self._spectators.pop(player_id, None)
             else:
-                slot = self._slots.get(player_id)
-                if slot is None or slot.connection is not connection:
-                    return
                 # The pause and its deadline are settled before the socket is touched: closing
                 # a stalled socket can wait or fail, and the bout must not depend on it.
                 slot.connection = None
@@ -1155,11 +1208,18 @@ class HandsRoom:
                         if slot.grace_remaining <= 0:
                             self._slots.pop(player_id, None)
                             expired = True
-                            if self._select is not None:
-                                # Back to waiting for an opponent: the corner is empty again.
+                            collapsed = self._select is not None
+                            if collapsed:
+                                # The corner is empty again: the pick is off.
                                 self._cancel_select()
                                 self._cpu = None
-                                self._enqueue_all(self._message("waiting", open_seats=1))
+                            seated = self._seat_waiting_spectators()
+                            if len(self._slots) == 2:
+                                self._begin_select()
+                            elif collapsed or seated:
+                                self._enqueue_all(
+                                    self._message("waiting", open_seats=2 - len(self._slots))
+                                )
                         else:
                             delay = slot.grace_remaining
                 if expired:
@@ -1649,14 +1709,10 @@ class HandsRoomManager:
             self._retire_room(room)
 
     async def leave(self, membership: RoomMembership) -> None:
-        await membership.room.disconnect(
-            membership.player_id,
-            membership.role,
-            membership.connection,
-        )
-        if membership.role == "spectator" or (
-            not membership.room.started and membership.player_id not in membership.room.player_ids
-        ):
+        await membership.room.disconnect(membership.player_id, membership.connection)
+        # A fighter keeps his place through the grace; a spectator, or a fighter whose place is
+        # already gone, leaves the room.
+        if membership.player_id not in membership.room.member_ids:
             async with self._lock:
                 reservation = self._user_rooms.get(membership.player_id)
                 if (

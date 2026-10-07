@@ -85,6 +85,16 @@ describe("the style picker", () => {
     picker.destroy();
   });
 
+  it("begins choosing, with last time's style, when a spectator is seated before the bell", () => {
+    const picker = make("swarmer");
+    show(picker, choosing(), "one", "spectator");
+    expect(sent).toEqual([]);
+    show(picker, choosing({ deadline_ms: 9_000 }));
+    expect(sent).toEqual(["swarmer:false"]);
+    expect(card(picker, "swarmer").disabled).toBe(false);
+    picker.destroy();
+  });
+
   it("starts on last time's pick and moves with the arrow keys without settling", () => {
     const picker = make("slugger");
     show(picker);

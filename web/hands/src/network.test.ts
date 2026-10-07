@@ -139,6 +139,29 @@ describe("same-origin WebSocket controller", () => {
     controller.dispose();
   });
 
+  it("starts sending input once a spectator is seated as a fighter before the bell", () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket();
+    const getInput = vi.fn(() => ({ moveX: 1000, moveY: 0, defense: "none" as const, actions: [] }));
+    const controller = new NetworkController("ticket", getInput, callbacks(), () => socket);
+    controller.start();
+    socket.open();
+    const watching = [{ ...ready.players[1] }, { id: "three", name: "Three", avatar: null, rating: 1500, connected: false }];
+    socket.message({ version: PROTOCOL_VERSION, type: "welcome", role: "spectator", player_id: "one", players: watching, server_tick: 0, reconnect_ticket: "spectator-ticket" });
+    vi.advanceTimersByTime(200);
+    expect(getInput).not.toHaveBeenCalled();
+    socket.message({ ...welcome("seated-ticket"), server_tick: 0, next_sequence: 0 });
+    socket.message(ready);
+    vi.advanceTimersByTime(100);
+    const frames = socket.sent.map((frame) => JSON.parse(frame) as { type: string; sequence?: number });
+    expect(frames[0]?.type).toBe("authenticate");
+    expect(frames.slice(1).length).toBeGreaterThan(0);
+    expect(frames.slice(1).every((frame) => frame.type === "input")).toBe(true);
+    expect(frames[1]?.sequence).toBe(0);
+    controller.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("uses the latest in-memory ticket refresh without exposing it to app callbacks", () => {
     vi.useFakeTimers();
     const sockets: FakeSocket[] = [];

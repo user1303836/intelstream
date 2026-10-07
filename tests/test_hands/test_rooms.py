@@ -2629,6 +2629,80 @@ async def test_a_seat_still_empty_at_the_bell_opens_the_bout_paused(
     await manager.close()
 
 
+async def test_a_seat_that_opens_during_the_pick_goes_to_the_waiting_spectator(
+    repository: Repository,
+) -> None:
+    tickets = iter(f"seat-ticket-{index}" for index in range(10))
+    manager = HandsRoomManager(
+        repository,
+        config=room_config(style_select=5.0, reconnect_grace=0.05),
+        match_id_factory=lambda: "match-seated",
+    )
+    first_socket = FakeSocket()
+    one = await manager.join(player("one"), first_socket)
+    two = await manager.join(player("two"), FakeSocket())
+    watcher_socket = FakeSocket()
+    watcher = await manager.join(
+        player("three"), watcher_socket, reconnect_ticket_factory=lambda: next(tickets)
+    )
+    assert watcher.role == "spectator"
+    with pytest.raises(RoomError, match="spectator_read_only"):
+        await watcher.room.request_cpu("three", watcher.connection, CpuLevel.ROOKIE)
+
+    # Two never comes back: his seat goes to the spectator, on the connection he already has.
+    await manager.leave(two)
+    await wait_until(lambda: one.room.player_ids == ("one", "three"))
+    assert one.room.spectator_ids == ()
+    await wait_until(lambda: message_types(watcher_socket)[-2:] == ["welcome", "select"])
+    # Watching: the pick, then two dropping out of it. Seated: welcomed again, and a fresh pick.
+    assert message_types(watcher_socket) == ["welcome", "select", "select", "welcome", "select"]
+    seated = payloads(watcher_socket, "welcome")[1]
+    assert (seated["role"], seated["seat"], seated["next_sequence"]) == ("fighter", 2, 0)
+    assert seated["reconnect_ticket"] == "seat-ticket-1"
+    assert watcher_socket.uncompressed == ["welcome", "welcome"]
+    fresh = payloads(first_socket, "select")[-1]
+    assert [entry["id"] for entry in fresh["players"]] == ["one", "three"]
+    assert fresh["ready"] == [] and fresh["deadline_ms"] > 4000
+
+    # He picks through the membership he joined with, and the bout is his.
+    await one.room.choose_style("one", one.connection, ready_choice(FighterStyle.BOXER))
+    await watcher.room.choose_style("three", watcher.connection, ready_choice(FighterStyle.SWARMER))
+    engine = one.room.engine
+    assert engine is not None and engine.players == ("one", "three")
+    assert engine.fighter("three").style is FighterStyle.SWARMER
+    await wait_until(lambda: "final" in message_types(watcher_socket), deadline_seconds=5)
+    assert await repository.get_hands_match("match-seated") is not None
+    await manager.close()
+
+
+async def test_a_seated_spectator_who_leaves_keeps_his_seat_through_the_grace(
+    repository: Repository,
+) -> None:
+    manager = HandsRoomManager(
+        repository, config=room_config(style_select=5.0, reconnect_grace=0.05)
+    )
+    first_socket = FakeSocket()
+    one = await manager.join(player("one"), first_socket)
+    two = await manager.join(player("two"), FakeSocket())
+    watcher = await manager.join(player("three"), FakeSocket())
+    await manager.leave(two)
+    await wait_until(lambda: one.room.player_ids == ("one", "three"))
+    room = one.room
+
+    await manager.leave(watcher)
+    # A fighter's place now, so leaving is a drop with a grace, as for anyone seated.
+    assert room.player_ids == ("one", "three")
+    await wait_until(
+        lambda: (
+            connected_flags(payloads(first_socket, "select")[-1]) == {"one": True, "three": False}
+        )
+    )
+    returning = FakeSocket()
+    again = await manager.join(player("three"), returning)
+    assert again.role == "fighter" and again.room is room
+    await manager.close()
+
+
 async def test_a_style_sent_after_the_bell_changes_nothing(repository: Repository) -> None:
     manager = HandsRoomManager(repository, config=room_config(round_ticks=600))
     one = await manager.join(player("one"), FakeSocket())

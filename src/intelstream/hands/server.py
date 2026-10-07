@@ -802,8 +802,8 @@ class HandsServer:
                             self.auth.activate_ticket(reconnect_ticket, player)
                             ticket_refresh_state.confirm()
                             continue
-                        if membership.role == "spectator":
-                            raise RoomError("spectator_read_only")
+                        # The room decides what a frame may do: a spectator can be seated as a
+                        # fighter before the bell.
                         cpu_level = parse_cpu_request(envelope)
                         if cpu_level is not None:
                             await membership.room.request_cpu(

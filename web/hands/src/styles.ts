@@ -166,7 +166,8 @@ export class StylePicker {
       this.settled = false;
       return;
     }
-    const begun = this.context === null;
+    // A spectator seated before the bell begins choosing then.
+    const begun = this.context === null || (!this.choosing && role === "fighter");
     if (this.context?.select !== select) this.deadlineAt = this.now() + select.deadline_ms;
     this.context = { select, viewerId };
     this.choosing = role === "fighter" && viewerId !== null;
