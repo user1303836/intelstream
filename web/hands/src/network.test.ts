@@ -394,6 +394,43 @@ describe("edge-triggered action sends", () => {
     vi.useRealTimers();
   });
 
+  it("sends a press at once however soon after a periodic flush it comes", () => {
+    vi.useFakeTimers();
+    let now = 1000;
+    const socket = new FakeSocket();
+    const queued: string[] = [];
+    const controller = new NetworkController(
+      "ticket",
+      () => ({ moveX: 0, moveY: 0, defense: "none" as const, actions: queued.splice(0, 4).map((id) => ({ kind: "punch" as const, hand: "left" as const, class: "jab" as const, target: "head" as const, power: "normal" as const, id })) }),
+      callbacks(),
+      () => socket,
+      () => now,
+    );
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message(ready);
+    controller.setActive(true);
+    const step = (): void => { now += 1; vi.advanceTimersByTime(1); };
+    const carried = (id: string): boolean => socket.sent.some((frame) => (JSON.parse(frame).actions ?? []).some((action: { id?: string }) => action.id === id));
+    const waits: number[] = [];
+    for (let offset = 0; offset < 33; offset += 1) {
+      for (let rest = 0; rest < 100; rest += 1) step();
+      const sent = socket.sent.length;
+      while (socket.sent.length === sent) step();
+      for (let elapsed = 0; elapsed < offset; elapsed += 1) step();
+      const id = `p${offset}`;
+      queued.push(id);
+      controller.notifyAction();
+      let waited = 0;
+      while (!carried(id)) { step(); waited += 1; }
+      waits.push(waited);
+    }
+    expect(waits).toEqual(Array.from({ length: 33 }, () => 0));
+    controller.dispose();
+    vi.useRealTimers();
+  });
+
   it("keeps room for the periodic flush when presses come in a burst", () => {
     vi.useFakeTimers();
     let now = 1000;

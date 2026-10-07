@@ -111,7 +111,9 @@ export class NetworkController {
 
   /** Sends the pending input frame on the action edge instead of waiting for the periodic flush. */
   notifyAction(): void {
-    if (this.now() - this.lastInputSentAt < MIN_EDGE_SEND_GAP_MS) return;
+    // The gap merges presses that land together. It counts edge sends only: measured from the
+    // periodic flush too, a press in the 8 ms after each flush waited a whole flush period.
+    if (this.now() - (this.edgeSendTimes.at(-1) ?? -Infinity) < MIN_EDGE_SEND_GAP_MS) return;
     // Past the budget the press stays queued and leaves with the next periodic flush.
     if (this.withinLastSecond(this.edgeSendTimes) >= MAX_EDGE_SENDS_PER_SECOND) return;
     if (this.flushInput()) this.edgeSendTimes.push(this.lastInputSentAt);
