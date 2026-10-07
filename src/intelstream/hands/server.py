@@ -307,6 +307,20 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
+def _authentication_version(raw: bytes) -> int | None:
+    """The protocol version an authentication frame claims, before its shape is checked."""
+    try:
+        value = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(value, dict) or value.get("type") != "authenticate":
+        return None
+    version = value.get("version")
+    if isinstance(version, bool) or not isinstance(version, int) or not 0 < version < 2**31:
+        return None
+    return version
+
+
 def _strict_object(raw: bytes, *, fields: set[str]) -> dict[str, object]:
     if len(raw) > MAX_HTTP_BODY_BYTES:
         raise web.HTTPRequestEntityTooLarge(
@@ -690,6 +704,7 @@ class HandsServer:
         membership: RoomMembership | None = None
         ticket_refresh_state: _TicketRefreshState | None = None
         ticket_refresh_task: asyncio.Task[None] | None = None
+        reply_version = PROTOCOL_VERSION
         try:
             try:
                 async with asyncio.timeout(self.auth_timeout_seconds):
@@ -699,6 +714,12 @@ class HandsServer:
                     encoded = first.data.encode() if isinstance(first.data, str) else first.data
                     if not isinstance(encoded, bytes) or len(encoded) > MAX_AUTH_FRAME_BYTES:
                         raise HandsAuthError("authentication_required")
+                    client_version = _authentication_version(encoded)
+                    if client_version is not None and client_version != PROTOCOL_VERSION:
+                        # A window still running an older build after a deploy: it must reload,
+                        # and is told so in its own version, which its decoder still reads.
+                        reply_version = client_version
+                        raise HandsAuthError("client_outdated")
                     payload = _strict_object(encoded, fields={"version", "type", "ticket"})
                     if payload["version"] != PROTOCOL_VERSION or payload["type"] != "authenticate":
                         raise HandsAuthError("invalid_ticket")
@@ -707,7 +728,7 @@ class HandsServer:
                 await self._ws_error(websocket, "authentication_timeout", close_code=4003)
                 return websocket
             except HandsAuthError as exc:
-                await self._ws_error(websocket, exc.code, close_code=4003)
+                await self._ws_error(websocket, exc.code, close_code=4003, version=reply_version)
                 return websocket
             except web.HTTPException:
                 await self._ws_error(websocket, "invalid_request", close_code=4004)
@@ -805,12 +826,18 @@ class HandsServer:
             logger.error("Hands ticket refresh failed", error_type=type(exc).__name__)
 
     @staticmethod
-    async def _ws_error(websocket: web.WebSocketResponse, code: str, *, close_code: int) -> None:
+    async def _ws_error(
+        websocket: web.WebSocketResponse,
+        code: str,
+        *,
+        close_code: int,
+        version: int = PROTOCOL_VERSION,
+    ) -> None:
         if not websocket.closed:
             with contextlib.suppress(ConnectionError, RuntimeError):
                 await websocket.send_str(
                     json.dumps(
-                        {"version": PROTOCOL_VERSION, "type": "error", "code": code},
+                        {"version": version, "type": "error", "code": code},
                         separators=(",", ":"),
                         sort_keys=True,
                     )

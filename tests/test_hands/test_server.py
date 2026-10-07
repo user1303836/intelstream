@@ -418,6 +418,39 @@ async def test_websocket_requires_ticket_first_without_query_and_times_out(
     await server.close()
 
 
+async def test_an_outdated_client_is_told_in_its_own_version_without_spending_its_ticket(
+    repository: Repository,
+) -> None:
+    auth = FakeAuth()
+    auth.tickets["valid"] = AuthenticatedPlayer("one", GUILD, "room", "One", None)
+    server, _auth, base = await start_server(repository, auth=auth)
+    async with aiohttp.ClientSession() as client:
+        for frame in (
+            {"version": 2, "type": "authenticate", "ticket": "valid"},
+            {"version": 4, "type": "authenticate", "ticket": "valid", "build": "next"},
+        ):
+            socket = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
+            await socket.send_json(frame)
+            error = json.loads((await socket.receive(timeout=1)).data)
+            assert error == {
+                "code": "client_outdated",
+                "type": "error",
+                "version": frame["version"],
+            }
+            closing = await socket.receive(timeout=1)
+            assert closing.type == aiohttp.WSMsgType.CLOSE
+            assert closing.data == 4003
+            await socket.close()
+        assert "valid" in auth.tickets
+
+        socket = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
+        await socket.send_json({"version": 3, "type": "resume", "ticket": "valid"})
+        error = json.loads((await socket.receive(timeout=1)).data)
+        assert error == {"code": "invalid_ticket", "type": "error", "version": 3}
+        await socket.close()
+    await server.close()
+
+
 async def test_authenticated_room_admission_is_not_part_of_first_frame_timeout(
     repository: Repository,
 ) -> None:
