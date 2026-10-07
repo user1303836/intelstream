@@ -1,13 +1,25 @@
 import { readFileSync } from "node:fs";
-import { mockHudContext } from "../test/fixtures";
+import { mockHudContext, publicPlayers, snapshot } from "../test/fixtures";
 import type { MatchPhase } from "../types";
-import { cardMetrics, captionSlot, drawCaption, splitLine, TOUCH_PADS, type CaptionScene } from "./caption";
+import { cardMetrics, captionSlot, drawCaption, splitLine, type CaptionScene } from "./caption";
 import type { BroadcastLine, Caption } from "./commentary";
-import { COUNT_BELOW_HEADLINE, headlineBaseline, panelHeightFor, topPanelOffset } from "./hud";
+import { COUNT_BELOW_HEADLINE, drawHud, headlineBaseline, panelHeightFor, topPanelOffset, TOUCH_PADS } from "./hud";
 
 const scene = (width: number, height: number, phase: MatchPhase = "fight", extra: Partial<CaptionScene> = {}): CaptionScene => ({ width, height, phase, resultTop: null, touch: false, hint: false, viewerDown: false, replay: false, ...extra });
 const line = (text: string, extra: Partial<BroadcastLine> = {}): BroadcastLine => ({ speaker: "play", text, priority: 50, urgent: false, hold: 3, card: null, ...extra });
 const shown = (value: BroadcastLine, opacity = 1, entering = 0): Caption => ({ line: value, opacity, entering });
+/**
+ * The touch pads as Edge lays out style.css: upright one 190 x 274 column 12 px in and 118 px up; on its side the
+ * modifiers and punch pads, 190 x 196, with the moves 122 x 102 at the foot, 12 px to their left; and on a screen
+ * 350 px tall or less, 188 x 154 and 120 x 86, 112 px up.
+ */
+const padRects = (width: number, height: number) => width <= height
+  ? [{ left: width - 202, right: width - 12, top: height - 392, bottom: height - 118 }]
+  : height <= 350
+    ? [{ left: width - 200, right: width - 12, top: height - 266, bottom: height - 112 }, { left: width - 332, right: width - 212, top: height - 198, bottom: height - 112 }]
+    : [{ left: width - 202, right: width - 12, top: height - 314, bottom: height - 118 }, { left: width - 336, right: width - 214, top: height - 220, bottom: height - 118 }];
+/** Phones held upright and on their side, from the smallest to the largest. */
+const PHONES = [[320, 568], [360, 640], [375, 667], [360, 740], [375, 812], [390, 844], [412, 915], [568, 320], [600, 330], [640, 320], [640, 360], [667, 375], [740, 360], [812, 375], [844, 390], [915, 412], [932, 430]] as const;
 
 describe("caption placement", () => {
   it("sits in the lower third above the plates on a desktop, and above the controls hint in the countdown", () => {
@@ -84,14 +96,6 @@ describe("caption placement", () => {
   });
 
   it("never draws a caption under the touch pads, upright or on its side", () => {
-    // The pads as Edge lays out style.css: upright one 190 x 274 column 12 px in and 118 px up; on its side the
-    // modifiers and punch pads, 190 x 196, with the moves 122 x 102 at the foot, 12 px to their left; and on a
-    // screen 350 px tall or less, 188 x 154 and 120 x 86, 112 px up.
-    const pads = (width: number, height: number) => width <= height
-      ? [{ left: width - 202, right: width - 12, top: height - 392, bottom: height - 118 }]
-      : height <= 350
-        ? [{ left: width - 200, right: width - 12, top: height - 266, bottom: height - 112 }, { left: width - 332, right: width - 212, top: height - 198, bottom: height - 112 }]
-        : [{ left: width - 202, right: width - 12, top: height - 314, bottom: height - 118 }, { left: width - 336, right: width - 214, top: height - 220, bottom: height - 118 }];
     // The longest line the commentary has, which wraps onto two rows.
     const longest = line("Crimson Geometry is just covering up as Azure Vector lets the hands go, and the referee is taking a long look!");
     let drawn = 0;
@@ -105,7 +109,7 @@ describe("caption placement", () => {
           drawCaption(Object.assign(mockHudContext([]), { fillRect: (x: number, y: number, w: number, h: number) => plates.push({ x, y, w, h }) }), shown(longest), slot, true);
           const plate = plates[0]!;
           expect(plate.w, `${width}x${height} ${phase}`).toBeGreaterThan(0);
-          for (const pad of pads(width, height)) {
+          for (const pad of padRects(width, height)) {
             const clear = plate.x + plate.w <= pad.left || plate.x >= pad.right || plate.y + plate.h <= pad.top || plate.y >= pad.bottom;
             expect(clear, `${width}x${height} ${phase} ${JSON.stringify(extra)}: caption ${JSON.stringify(plate)} under the pads ${JSON.stringify(pad)}`).toBe(true);
           }
@@ -114,6 +118,35 @@ describe("caption placement", () => {
     }
     // Most of these still have their caption, beside the pads or above them.
     expect(drawn).toBeGreaterThan(40);
+  });
+
+  it("keeps the centre panel and the introductions drawn over it clear of the touch pads, upright or on its side", () => {
+    const players = Object.fromEntries(publicPlayers.map((player) => [player.id, { ...player, name: player.id === "one" ? "Azure Vector" : "Crimson Geometry" }]));
+    const card = line("In the red corner, Crimson Geometry.", { speaker: "announcer", urgent: true, card: { kicker: "IN THE RED CORNER", title: "CRIMSON GEOMETRY", detail: "SWARMER · 19-5-1 (12 KO) · RATED 1512", corner: 1 } });
+    for (const [width, height] of PHONES) {
+      for (const phase of ["countdown", "rest", "foul_recovery"] as const) {
+        // The panel is the HUD's one fill of its colour in these phases; the introduction's plate is the caption's first.
+        const panels: Array<{ x: number; y: number; w: number; h: number }> = [];
+        let fill = "";
+        const hud = Object.assign(mockHudContext([]), { fillRect: (x: number, y: number, w: number, h: number) => { if (fill === "rgba(3,6,12,0.88)") panels.push({ x, y, w, h }); } });
+        Object.defineProperty(hud, "fillStyle", { set: (value: string) => { fill = value; } });
+        drawHud(hud, width, height, { ...snapshot(), phase }, players, "one", null, 0, 30, null, null, null, null, null, null, null, true);
+        expect(panels, `${width}x${height} ${phase}`).toHaveLength(1);
+        const boxes = [panels[0]!];
+        if (phase === "countdown") {
+          const plates: Array<{ x: number; y: number; w: number; h: number }> = [];
+          drawCaption(Object.assign(mockHudContext([]), { fillRect: (x: number, y: number, w: number, h: number) => plates.push({ x, y, w, h }) }), shown(card), captionSlot(scene(width, height, "countdown", { touch: true, hint: true }))!, true);
+          boxes.push(plates[0]!);
+        }
+        for (const box of boxes) {
+          const where = `${width}x${height} ${phase}: ${JSON.stringify(box)}`;
+          for (const pad of padRects(width, height)) expect(box.x + box.w <= pad.left || box.x >= pad.right || box.y + box.h <= pad.top - 8 || box.y >= pad.bottom, `${where} under the pads ${JSON.stringify(pad)}`).toBe(true);
+          // Under the top bar, on the screen, and clear of the round card a narrow screen puts under the top bar.
+          expect(box.y >= 54 && box.x >= 12 && box.x + box.w <= width - 12, where).toBe(true);
+          if (width < 640) expect(box.x + box.w <= width / 2 - 84 || box.x >= width / 2 + 84 || box.y >= 112, `${where} on the round card`).toBe(true);
+        }
+      }
+    }
   });
 
   it("keeps clear of the replay tag", () => {
