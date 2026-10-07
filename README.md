@@ -473,8 +473,12 @@ Keyboard controls use physical key positions (`KeyboardEvent.code`):
 | Slip left / slip right | `Z` / `X` |
 | Weave / pull | `C` / `V` |
 | Clinch / switch stance | `B` / `N` |
-| Low blow / headbutt | `1` / `2` |
+| Taunt | `M` |
+| Low blow / headbutt (deliberate fouls) | `Shift+1` / `Shift+2` |
 | Private get-up rhythm | `Left Arrow` / `Right Arrow` |
+| Corner instruction, between rounds | `1` close the cut · `2` bring down the swelling · `3` catch your breath |
+| Style, in the pick before the bout | Arrow keys choose, `Enter` settles; `1`–`5` settle on that card at once |
+| Camera | `K` cycles broadcast, close and over the shoulder |
 
 Standard-controller controls are:
 
@@ -490,6 +494,7 @@ Standard-controller controls are:
 | Clinch / switch stance | Left-stick press / right-stick press |
 | Low blow / headbutt | View/Back / Menu/Start |
 | Private get-up rhythm | While down, press D-pad left / right; it registers immediately rather than waiting for release |
+| Corner instruction, between rounds | Left (`X`/Square) close the cut · top (`Y`/Triangle) bring down the swelling · right (`B`/Circle) catch your breath |
 
 The right stick also performs one punch after a center→peak→center gesture. Left/right direction selects the hand. Using the absolute angle from horizontal: **0–22.5° hook**, **22.5–45° jab**, **45–70° straight**, and **70–90° uppercut**. The gesture fires once only after returning to center; trigger modifiers are captured at gesture start. Face/D-pad punches are the accessibility alternative when stick gestures are impractical.
 
