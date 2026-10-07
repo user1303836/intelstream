@@ -540,7 +540,9 @@ def test_every_command_is_valid_input() -> None:
         )
 
 
-def bout(one: CpuLevel, two: CpuLevel, seed: int) -> BoxingEngine:
+def bout(
+    one: CpuLevel, two: CpuLevel, seed: int, *, round_ticks: int = 90 * 30, checksums: bool = False
+) -> BoxingEngine:
     engine = BoxingEngine(
         match_id="sim",
         activity_instance_id="instance",
@@ -548,8 +550,9 @@ def bout(one: CpuLevel, two: CpuLevel, seed: int) -> BoxingEngine:
         player_one_id="one",
         player_two_id="two",
         seed=seed,
-        config=EngineConfig(rounds=1, round_ticks=90 * 30, countdown_ticks=0),
+        config=EngineConfig(rounds=1, round_ticks=round_ticks, countdown_ticks=0),
     )
+    engine.checksums = checksums
     brains = (CpuBrain("one", "two", one, seed * 2), CpuBrain("two", "one", two, seed * 2 + 1))
     while engine.result is None:
         for brain in brains:
@@ -558,6 +561,13 @@ def bout(one: CpuLevel, two: CpuLevel, seed: int) -> BoxingEngine:
                 engine.submit_input(brain.player_id, command)
         engine.step()
     return engine
+
+
+def test_a_bout_without_checksums_plays_out_the_same() -> None:
+    hashed = bout(CpuLevel.CHAMPION, CpuLevel.CONTENDER, 8, round_ticks=600, checksums=True)
+    fast = bout(CpuLevel.CHAMPION, CpuLevel.CONTENDER, 8, round_ticks=600)
+    assert hashed.events == fast.events and hashed.result == fast.result
+    assert hashed.snapshot().checksum and fast.snapshot().checksum == ""
 
 
 @pytest.mark.parametrize("level", list(CpuLevel))

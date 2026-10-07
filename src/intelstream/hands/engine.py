@@ -423,6 +423,9 @@ def _canonical(value: object) -> object:
 
 
 class BoxingEngine:
+    checksums = True
+    """Off, snapshots carry no checksum: for offline simulation that never reads one."""
+
     def __init__(
         self,
         *,
@@ -2107,7 +2110,7 @@ class BoxingEngine:
         )
         assert len(fighters) == 2
         typed_fighters = (fighters[0], fighters[1])
-        checksum = self._checksum(typed_fighters)
+        checksum = self._checksum(typed_fighters) if self.checksums else ""
         return EngineSnapshot(
             tick=self.tick,
             phase=self.phase,

@@ -329,6 +329,8 @@ def play(
         config=config,
         styles=styles,
     )
+    # Nothing here reads a checksum, and hashing each tick's state is most of what a bout costs.
+    engine.checksums = False
     players = (
         ("one", make_player(one, "one", "two", seed * 2 + 1, styles[0])),
         ("two", make_player(two, "two", "one", seed * 2 + 2, styles[1])),
