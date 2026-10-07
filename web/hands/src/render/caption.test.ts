@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { mockHudContext, publicPlayers, snapshot } from "../test/fixtures";
+import { fighter, mockHudContext, publicPlayers, snapshot } from "../test/fixtures";
 import type { MatchPhase } from "../types";
 import { cardMetrics, captionSlot, drawCaption, splitLine, type CaptionScene } from "./caption";
 import type { BroadcastLine, Caption } from "./commentary";
@@ -149,6 +149,46 @@ describe("caption placement", () => {
     }
   });
 
+  it("keeps a downed player's get-up panel clear of the get-up pads and his thumbs on them", () => {
+    // While he is down only the punch pads show (style.css), as the get-up pads: as Edge lays them out, 190 x 118
+    // at the foot of the block, or 188 x 92 on a screen on its side 350 px tall or less; 8 px round them for thumbs.
+    const getUpPads = (width: number, height: number) => (width > height && height <= 350
+      ? { left: width - 200 - 8, right: width - 12 + 8, top: height - 204 - 8, bottom: height - 112 + 8 }
+      : { left: width - 202 - 8, right: width - 12 + 8, top: height - 236 - 8, bottom: height - 118 + 8 });
+    const named = Object.fromEntries(publicPlayers.map((player) => [player.id, { ...player, name: player.id === "one" ? "Azure Vector" : "Crimson Geometry" }]));
+    for (const [width, height] of PHONES) {
+      const fills: Array<{ x: number; y: number; w: number; h: number; style: string }> = [];
+      const texts: Array<{ text: string; x: number; y: number; font: string }> = [];
+      let style = "";
+      let font = "";
+      const hud = Object.assign(mockHudContext([]), {
+        fillRect: (x: number, y: number, w: number, h: number) => fills.push({ x, y, w, h, style }),
+        fillText: (text: string, x: number, y: number) => texts.push({ text, x, y, font }),
+      });
+      Object.defineProperty(hud, "fillStyle", { set: (value: string) => { style = value; } });
+      Object.defineProperty(hud, "font", { set: (value: string) => { font = value; } });
+      // Down, in his rhythm window: the count, the arrow, NOW! and the meter.
+      const down = { ...snapshot(100), phase: "knockdown" as const, fighters: [{ ...fighter("one", -100), is_downed: true, get_up_count: 3, get_up_prompt: "get_up_left" as const, get_up_meter: 18, get_up_required: 40, get_up_window_start_tick: 95, get_up_window_end_tick: 105 }, { ...fighter("two", 100), get_up_count: 3 }] as const };
+      drawHud(hud, width, height, down, named, "one", null, 0, 30, null, null, null, null, null, null, "one", true);
+      const where = `${width}x${height}`;
+      const panels = fills.filter((fill) => fill.style === "rgba(3,6,12,0.88)");
+      expect(panels, where).toHaveLength(1);
+      const panel = panels[0]!;
+      const meter = fills.find((fill) => fill.style === "rgba(2,4,9,0.9)")!;
+      const pads = getUpPads(width, height);
+      for (const box of [panel, meter]) expect(box.x + box.w <= pads.left || box.x >= pads.right || box.y + box.h <= pads.top || box.y >= pads.bottom, `${where}: ${JSON.stringify(box)} at the get-up pads`).toBe(true);
+      // On the screen, under the top bar and above the plates' guard and poise bars.
+      expect(panel.x >= 12 && panel.x + panel.w <= width - 12 && panel.y >= 54 && panel.y + panel.h <= height - 112, `${where}: ${JSON.stringify(panel)}`).toBe(true);
+      for (const prompt of ["COUNT 3", "←", "NOW!"]) {
+        const text = texts.find((candidate) => candidate.text === prompt && candidate.y > panel.y);
+        expect(text !== undefined && text.x > panel.x && text.x < panel.x + panel.w && text.y < panel.y + panel.h, `${where}: ${prompt} in the panel`).toBe(true);
+      }
+      // The headline it gives way to is not drawn under it, nor the round card's clock on a narrow screen.
+      for (const text of texts.filter((candidate) => candidate.text === "KNOCKDOWN" && candidate.font.includes("44px") || candidate.text.endsWith("IS DOWN"))) expect(text.y + 2, `${where}: ${text.text}`).toBeLessThanOrEqual(panel.y);
+      if (width < 640 && panel.y < 112 && panel.x < width / 2 + 84 && panel.x + panel.w > width / 2 - 84) expect(texts.some((text) => /^\d:\d\d$/u.test(text.text)), `${where}: the clock under the panel`).toBe(false);
+    }
+  });
+
   it("keeps clear of the replay tag", () => {
     expect(captionSlot(scene(390, 844, "complete", { touch: true, replay: true }))!.y).toBe(120 + 34 + 8);
   });
@@ -183,18 +223,18 @@ describe("the touch pads, as style.css lays them out", () => {
     const [pad, mod, move] = [".touch-pad", ".touch-mod", ".touch-move"].map((selector) => px(declarations(sheet, selector), "height")) as [number, number, number];
     // Upright: two rows of moves, the modifiers and the punch pads, one above another.
     const stack = rows(2, mod, px(mods, "gap")) + px(pads, "gap") + rows(2, pad, px(grid, "gap"));
-    expect({ bottom: px(pads, "bottom"), height: rows(2, move, px(moves, "gap")) + px(moves, "margin-bottom") + px(pads, "gap") + stack }).toEqual({ bottom: TOUCH_PADS.upright.bottom, height: TOUCH_PADS.upright.height });
+    expect({ bottom: px(pads, "bottom"), height: rows(2, move, px(moves, "gap")) + px(moves, "margin-bottom") + px(pads, "gap") + stack, grid: rows(2, pad, px(grid, "gap")) }).toEqual({ bottom: TOUCH_PADS.upright.bottom, height: TOUCH_PADS.upright.height, grid: TOUCH_PADS.upright.grid });
     expect(px(pads, "right") + columns(grid, px(grid, "gap")) + 14).toBe(TOUCH_PADS.reach);
     // On its side the moves stand in three rows in a column of their own, to the left of the other two.
     const side = media("(orientation:landscape)");
-    expect({ height: stack, moves: rows(3, move, px(moves, "gap")) }).toEqual({ height: TOUCH_PADS.landscape.height, moves: TOUCH_PADS.landscape.moves });
+    expect({ height: stack, moves: rows(3, move, px(moves, "gap")), grid: rows(2, pad, px(grid, "gap")) }).toEqual({ height: TOUCH_PADS.landscape.height, moves: TOUCH_PADS.landscape.moves, grid: TOUCH_PADS.landscape.grid });
     expect(columns(declarations(side, ".touch-moves"), px(moves, "gap")) + px(declarations(side, ".touch-pads"), "column-gap")).toBe(TOUCH_PADS.movesReach);
     // A short screen on its side gets smaller ones, lower down.
     const short = media(`(orientation:landscape) and (max-height:${TOUCH_PADS.shortHeight}px)`);
     const gap = px(declarations(short, ".touch-grid,.touch-mods,.touch-moves"), "gap");
     const [shortPad, shortMod] = [".touch-pad", ".touch-mod,.touch-move"].map((selector) => px(declarations(short, selector), "height")) as [number, number];
     const shortPads = declarations(short, ".touch-pads");
-    expect({ bottom: px(shortPads, "bottom"), height: rows(2, shortMod, gap) + px(shortPads, "row-gap") + rows(2, shortPad, gap), moves: rows(3, shortMod, gap) }).toEqual(TOUCH_PADS.short);
+    expect({ bottom: px(shortPads, "bottom"), height: rows(2, shortMod, gap) + px(shortPads, "row-gap") + rows(2, shortPad, gap), moves: rows(3, shortMod, gap), grid: rows(2, shortPad, gap) }).toEqual(TOUCH_PADS.short);
   });
 
   it("keep the touch hint 12 px to their left, held upright or on its side", () => {
@@ -215,6 +255,11 @@ describe("the touch pads, as style.css lays them out", () => {
   it("let a tap between them through, so the block's empty corner never takes the top bar's buttons", () => {
     expect(declarations(sheet, ".touch-pads")).toContain("pointer-events:none");
     expect(declarations(sheet, ".touch-pad,.touch-mod,.touch-move")).toContain("pointer-events:auto");
+  });
+
+  it("show only the get-up pads while the player is down, where they stood", () => {
+    // Hidden, not removed: the get-up pads keep their place under his thumbs, and a held guard still hears its finger lift.
+    expect(declarations(sheet, ".touch-controls.knockdown .touch-move,.touch-controls.knockdown .touch-mod")).toBe("visibility:hidden");
   });
 });
 
