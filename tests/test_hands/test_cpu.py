@@ -924,6 +924,28 @@ def test_a_battered_computer_at_the_poise_it_can_still_have_keeps_fighting(level
 
 
 @pytest.mark.parametrize("level", [CpuLevel.CONTENDER, CpuLevel.CHAMPION])
+def test_a_computer_whose_body_is_broken_down_fights_on_the_breath_it_can_still_hold(
+    level: CpuLevel,
+) -> None:
+    """Saving stamina against a body knockdown must not ask for more than a battered body holds."""
+
+    def broken_down(cpu) -> None:  # type: ignore[no-untyped-def]
+        cpu.trauma.body = 800
+        cpu.conditioning = 100
+
+    # Gassed, with a third of his breath, he still throws a punch every few seconds (none before).
+    seen = _fight_a_man_standing_still(level, broken_down)
+    assert seen["punch_start"] >= 8
+    for level_ in CpuLevel:
+        brain = CpuBrain("cpu", "human", level_, 1)
+        cpu = engine_at(110).fighter("cpu")
+        for body in range(0, 1201, 100):
+            for conditioning in range(0, 1001, 100):
+                cpu.trauma.body, cpu.conditioning = body, conditioning
+                assert brain._reserve(cpu) < cpu.maximum_stamina
+
+
+@pytest.mark.parametrize("level", [CpuLevel.CONTENDER, CpuLevel.CHAMPION])
 def test_with_swollen_eyes_it_steps_into_its_shorter_reach(level: CpuLevel) -> None:
     def swollen(cpu) -> None:  # type: ignore[no-untyped-def]
         cpu.trauma.left_eye = cpu.trauma.right_eye = 800

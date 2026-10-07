@@ -538,11 +538,14 @@ class CpuBrain:
         return self._command(tick, move, self._defense(tick, me, distance, hurt), ())
 
     def _reserve(self, me: FighterState) -> int:
-        """Stamina kept back: more once the body is broken down, where an empty tank means a knee."""
+        """Stamina kept back: more once the body is broken down, where an empty tank means a knee.
+
+        Never more than a battered body can still hold, or the fighter would rest for good.
+        """
         reserve = self.profile.stamina_reserve
         if me.trauma.body >= BODY_COLLAPSE_TRAUMA:
             reserve = max(reserve, BODY_COLLAPSE_STAMINA + 50)
-        return reserve
+        return min(reserve, me.maximum_stamina * 2 // 3)
 
     def _note_opponent(self, tick: int, them: FighterState) -> None:
         attack = them.attack
