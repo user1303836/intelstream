@@ -211,6 +211,47 @@ describe("same-origin WebSocket controller", () => {
     controller.dispose();
   });
 
+  it("sends touch input from a frame that never gets document focus, and still stops for a hidden page", () => {
+    vi.useFakeTimers();
+    vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    const focus = vi.spyOn(window, "focus").mockImplementation(() => undefined);
+    let hidden = false;
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+    try {
+      const socket = new FakeSocket();
+      const controller = new NetworkController("ticket", () => ({ moveX: 1000, moveY: 0, defense: "none", actions: [] }), callbacks(), () => socket);
+      const inputs = (): Record<string, unknown>[] => socket.sent.map((frame) => JSON.parse(frame) as Record<string, unknown>).filter((frame) => frame.type === "input");
+      const touch = (): void => { document.body.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true })); };
+      controller.start();
+      socket.open();
+      socket.message(welcome());
+      socket.message(ready);
+      vi.advanceTimersByTime(100);
+      expect(inputs()).toHaveLength(0);
+      touch();
+      expect(focus).toHaveBeenCalledOnce();
+      vi.advanceTimersByTime(100);
+      expect(inputs().length).toBeGreaterThanOrEqual(2);
+      expect(inputs().at(-1)).toMatchObject({ move: { x: 1000, y: 0 } });
+
+      hidden = true;
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(inputs().at(-1)).toMatchObject({ move: { x: 0, y: 0 }, defense: "none" });
+      const stopped = inputs().length;
+      vi.advanceTimersByTime(200);
+      hidden = false;
+      document.dispatchEvent(new Event("visibilitychange"));
+      vi.advanceTimersByTime(200);
+      expect(inputs()).toHaveLength(stopped);
+      touch();
+      vi.advanceTimersByTime(100);
+      expect(inputs().length).toBeGreaterThan(stopped);
+      controller.dispose();
+    } finally {
+      delete (document as { hidden?: boolean }).hidden;
+    }
+  });
+
   it("sends nothing before the bout starts, even on a focus loss, since the server ends the connection for it", () => {
     vi.useFakeTimers();
     const socket = new FakeSocket();

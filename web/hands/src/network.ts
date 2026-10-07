@@ -82,6 +82,8 @@ export class NetworkController {
   private disposed = false;
   private terminal = false;
   private inputSuppressed = false;
+  /** A pointer pressed in the page since the last blur or hidden page; it stands in for document focus. */
+  private pointerFocus = false;
   private listenersBound = false;
   private lastInputSentAt = -Infinity;
   private readonly sendTimes: number[] = [];
@@ -102,6 +104,7 @@ export class NetworkController {
     this.listenersBound = true;
     window.addEventListener("blur", this.onInputLoss);
     window.addEventListener("focus", this.onInputRegain);
+    window.addEventListener("pointerdown", this.onPagePointer, true);
     document.addEventListener("visibilitychange", this.onVisibilityChange);
     this.connect();
     if (!this.disposed && !this.terminal) this.inputTimer = window.setInterval(() => this.flushInput(), INPUT_FLUSH_MS);
@@ -148,10 +151,28 @@ export class NetworkController {
     // Sent while input is off too (the rest, a pause); before the bout starts the server refuses input.
     this.sendInput(NEUTRAL_INPUT, this.boutStarted);
     this.inputSuppressed = true;
+    this.pointerFocus = false;
   };
 
   private readonly onInputRegain = (): void => {
     if (!document.hidden && document.hasFocus()) this.inputSuppressed = false;
+  };
+
+  /**
+   * Inside Discord the page is a frame, and a touch may never focus it: the touch controls cancel
+   * pointerdown, and the focus change with it. A pointer pressed in the page counts as focus until
+   * a blur or a hidden page.
+   */
+  private readonly onPagePointer = (): void => {
+    if (document.hidden) return;
+    this.pointerFocus = true;
+    this.inputSuppressed = false;
+    if (document.hasFocus()) return;
+    try {
+      window.focus();
+    } catch {
+      // The host can refuse focus; the press still counts.
+    }
   };
 
   private readonly onVisibilityChange = (): void => {
@@ -339,7 +360,7 @@ export class NetworkController {
   }
 
   private flushInput(): boolean {
-    if (this.inputSuppressed || document.hidden || !document.hasFocus()) return false;
+    if (this.inputSuppressed || document.hidden || !(this.pointerFocus || document.hasFocus())) return false;
     if (this.sendsInLastSecond() >= MAX_SENDS_PER_SECOND) return false;
     // While the connection is stalled the input stays here, current, instead of joining a queue
     // of stale frames; presses wait in the input buffer and leave with the next frame that goes.
@@ -404,6 +425,7 @@ export class NetworkController {
     if (this.listenersBound) {
       window.removeEventListener("blur", this.onInputLoss);
       window.removeEventListener("focus", this.onInputRegain);
+      window.removeEventListener("pointerdown", this.onPagePointer, true);
       document.removeEventListener("visibilitychange", this.onVisibilityChange);
       this.listenersBound = false;
     }
