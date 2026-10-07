@@ -225,7 +225,10 @@ export class HandsApp {
    */
   private ensureRenderer(): void {
     if (this.renderer !== null || this.session === null || this.destroyed) return;
-    const renderer = new FightRenderer(this.canvas, this.session.bootstrap.simulation, () => this.settings.current, { localInput: () => this.input.held() });
+    const renderer = new FightRenderer(this.canvas, this.session.bootstrap.simulation, () => this.settings.current, {
+      localInput: () => this.input.held(),
+      inputSequenceOf: (actionId) => this.network?.sequenceOf(actionId) ?? null,
+    });
     renderer.onContact = (event) => {
       this.audio.event(event);
       this.haptics.event(event);
