@@ -846,11 +846,15 @@ async function pickStyles(A, B, open, note, report) {
   await A.page.keyboard.press('ArrowRight');
   note('Alpha moves to:', (await pickerState(A.page))?.chosen);
   await A.page.keyboard.press('Enter');
+  // Bravo learns that Alpha has settled, never on what: both styles are revealed at the bell.
   let heard = null;
-  for (let i = 0; i < 40 && heard === null; i += 1) { const state = await pickerState(B.page); if (/Alpha: Slugger/.test(state?.status ?? '')) heard = state; else await wait(250); }
+  for (let i = 0; i < 40 && heard === null; i += 1) { const state = await pickerState(B.page); if (/Alpha is ready/.test(state?.status ?? '')) heard = state; else await wait(250); }
   note('Bravo hears:', heard?.status ?? 'nothing');
-  if (heard === null) report.errors.push("Bravo never saw Alpha's settled style");
-  note('the spectator hears:', (await pickerState(C.page))?.status);
+  if (heard === null) report.errors.push('Bravo never heard that Alpha had settled');
+  else if (/slugger/i.test(heard.status ?? '')) report.errors.push("Bravo saw Alpha's style before the bell");
+  const watched = (await pickerState(C.page))?.status ?? '';
+  note('the spectator hears:', watched);
+  if (/slugger/i.test(watched)) report.errors.push("the spectator saw Alpha's style before the bell");
   await A.page.screenshot({ path: `${out}/e2e-styles-A-pick.png` });
   await B.page.screenshot({ path: `${out}/e2e-styles-B-pick.png` });
   await B.page.tap('[data-style="swarmer"]');
