@@ -51,6 +51,7 @@ vi.mock("./render/renderer", () => ({
 
 import { ClientError } from "./api";
 import { HandsApp } from "./app";
+import { AudioFeedback } from "./audio";
 import { authorizeDiscord } from "./discord";
 
 const send = (message: ServerMessage): void => { mocks.callbacks?.onMessage(message); };
@@ -376,6 +377,19 @@ describe("the broadcast", () => {
     voice.checked = false;
     voice.dispatchEvent(new Event("change"));
     expect(cancel).toHaveBeenCalled();
+    app.destroy();
+  });
+
+  it("lets the crowd follow the fight", async () => {
+    const tension = vi.spyOn(AudioFeedback.prototype, "tension");
+    const chant = vi.spyOn(AudioFeedback.prototype, "chant");
+    const { app } = await launch();
+    send({ version: 3, type: "ready", players: [...players] });
+    const hurt = makeSnapshot(40);
+    send({ version: 3, type: "snapshot", payload: { ...hurt, fighters: [hurt.fighters[0], { ...hurt.fighters[1], stunned_ticks: 12 }] } });
+    expect(tension).toHaveBeenLastCalledWith(0.75);
+    mocks.renderers.at(-1)!.onCrowdCue!("chant");
+    expect(chant).toHaveBeenCalledOnce();
     app.destroy();
   });
 });

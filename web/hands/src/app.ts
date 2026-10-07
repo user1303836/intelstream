@@ -10,6 +10,7 @@ import { coarsePointer } from "./input/touch";
 import { InputController } from "./input/input";
 import { EventDeduplicator } from "./interpolation";
 import { NetworkController } from "./network";
+import { crowdTension } from "./render/commentary";
 import { FightRenderer } from "./render/renderer";
 import { SettingsStore, type BloodLevel } from "./settings";
 import { initialState, reduceState, type GameState } from "./state";
@@ -233,6 +234,7 @@ export class HandsApp {
     };
     renderer.onArcadeInjury = (injury) => this.audio.injury(injury);
     renderer.onAnnouncement = (lines) => this.voice.speak(lines);
+    renderer.onCrowdCue = () => this.audio.chant();
     this.renderer = renderer;
   }
 
@@ -276,6 +278,7 @@ export class HandsApp {
       this.audio.snapshot(snapshot.tick, viewer.stamina, viewer.maximum_stamina, viewer.trauma.head + viewer.trauma.body);
     }
     this.audio.roundClock(snapshot.phase, snapshot.round_number, snapshot.phase_ticks_remaining, this.state.simulation?.tick_rate ?? 30);
+    this.audio.tension(crowdTension(snapshot));
     for (const event of this.feedbackEvents.accept(snapshot.events)) {
       if (CONTACT_FEEDBACK_KINDS.has(event.kind)) continue;
       this.audio.event(event);
