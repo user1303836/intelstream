@@ -587,6 +587,27 @@ def test_a_newcomer_mashing_every_punch_button_can_beat_the_rookie() -> None:
     assert sum(bout.winner_seat == 0 for bout in bouts) >= 2
 
 
+def test_a_skilled_player_beats_the_rookie_on_the_cards_and_not_by_cutting_him_up() -> None:
+    """Sixty-odd clean jabs on one eye used to split it open before the final bell in every bout."""
+    bout = play("skilled", "rookie", 1, EngineConfig())
+    assert (bout.winner_seat, bout.method) == (0, "decision")
+
+
+def test_the_champion_can_be_outboxed_or_outcountered_but_not_mashed() -> None:
+    """Measured with every style alike, a skilled player beats the champion about a third of the
+    time and a counter-puncher about one bout in eight; a button masher next to never."""
+    config = EngineConfig()
+
+    def winner(human: str, seed: int, style: FighterStyle) -> int | None:
+        return play(human, "champion", seed, config, (FighterStyle.BALANCED, style)).winner_seat
+
+    assert winner("skilled", 2, FighterStyle.COUNTER_PUNCHER) == 0
+    assert winner("skilled", 2, FighterStyle.SWARMER) == 1
+    assert winner("counter", 4, FighterStyle.BOXER) == 0
+    assert winner("counter", 3, FighterStyle.SLUGGER) == 1
+    assert winner("mash", 1, FighterStyle.BOXER) == 1
+
+
 def test_against_a_scripted_player_the_computer_boxes_in_its_room_style() -> None:
     assert bout_styles("skilled", "champion", 5) == (
         FighterStyle.BALANCED,
