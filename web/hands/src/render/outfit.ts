@@ -293,7 +293,7 @@ export function applyOutfitShading(material: THREE.MeshStandardMaterial, part: O
 const UP = new THREE.Vector3(0, 1, 0);
 
 function segment(from: THREE.Vector3, direction: THREE.Vector3, length: number, radius: number): THREE.BufferGeometry {
-  const geometry = new THREE.CapsuleGeometry(radius, length, 4, 10);
+  const geometry = new THREE.CapsuleGeometry(radius, length, 1, 6);
   geometry.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(UP, direction));
   geometry.translate(from.x + direction.x * length * 0.5, from.y + direction.y * length * 0.5, from.z + direction.z * length * 0.5);
   return geometry;
@@ -306,10 +306,11 @@ function segment(from: THREE.Vector3, direction: THREE.Vector3, length: number, 
 export function buildHandGeometry(side: Hand): THREE.BufferGeometry {
   const thumb = side === "left" ? -1 : 1;
   const parts: THREE.BufferGeometry[] = [];
-  const palm = new RoundedBoxGeometry(8.4, 9.2, 2.8, 3, 1.25);
+  // From the broadcast camera a hand covers a few pixels, so it is built to a few hundred triangles.
+  const palm = new RoundedBoxGeometry(8.4, 9.2, 2.8, 1, 1.25);
   palm.translate(0, 5.2, 0);
   parts.push(palm);
-  const wrist = new THREE.CapsuleGeometry(2.2, 2.2, 4, 12);
+  const wrist = new THREE.CapsuleGeometry(2.2, 2.2, 1, 6);
   wrist.scale(1.3, 1, 0.9);
   wrist.translate(0, 0.4, 0);
   parts.push(wrist);
@@ -330,7 +331,7 @@ export function buildHandGeometry(side: Hand): THREE.BufferGeometry {
       bend += more;
     }
   }
-  const heel = new THREE.SphereGeometry(1.9, 12, 10);
+  const heel = new THREE.SphereGeometry(1.9, 6, 4);
   heel.scale(1.15, 1.5, 0.95);
   heel.translate(2.7 * thumb, 3.3, 0.9);
   parts.push(heel);

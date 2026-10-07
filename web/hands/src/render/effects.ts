@@ -55,6 +55,8 @@ export interface BakedPart {
   readonly cut?: { readonly position: THREE.Vector3; readonly flesh: THREE.BufferGeometry };
   /** Whose head it is, so it keeps its hair and beard once it is off. */
   readonly look?: FighterLook;
+  /** How soaked a severed glove was with the opponent's blood (0..1), so it stays that way. */
+  readonly gloveBlood?: number;
 }
 
 interface Mist {
@@ -93,6 +95,8 @@ interface SeveredHead {
   readonly defaultCap: THREE.BufferGeometry;
   /** Hair and beard of a severed head; null for a hand. */
   readonly look: LookShading | null;
+  /** The blood soaked into a severed glove; null for a head. */
+  readonly blood: { value: number } | null;
   baked: THREE.BufferGeometry | null;
   bakedFlesh: THREE.BufferGeometry | null;
   readonly radius: number;
@@ -394,7 +398,7 @@ export class Effects3D {
       const cap = new THREE.Mesh(this.stumpGeometry, this.stumpMaterial);
       cap.visible = false;
       headMesh.add(cap);
-      this.heads.push({ mesh: headMesh, defaultGeometry: this.headGeometry, defaultScale: headMesh.scale.clone(), cap, defaultCap: this.stumpGeometry, look: headLook, baked: null, bakedFlesh: null, radius: HEAD_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
+      this.heads.push({ mesh: headMesh, defaultGeometry: this.headGeometry, defaultScale: headMesh.scale.clone(), cap, defaultCap: this.stumpGeometry, look: headLook, blood: null, baked: null, bakedFlesh: null, radius: HEAD_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
 
       const stumpMesh = new THREE.Mesh(this.stumpGeometry, this.stumpMaterial);
       stumpMesh.visible = false;
@@ -430,7 +434,7 @@ export class Effects3D {
     }
     for (let index = 0; index < MAX_HANDS; index += 1) {
       const material = new THREE.MeshStandardMaterial({ color: 0x1d4ed8, roughness: 0.38, metalness: 0.03 });
-      wearCornerColour(material, true);
+      const blood = wearCornerColour(material, true);
       this.handMaterials.push(material);
       const handMesh = new THREE.Mesh(this.handGeometry, material);
       handMesh.scale.set(1.15, 1, 1.35);
@@ -442,7 +446,7 @@ export class Effects3D {
       cap.position.y = 0.02;
       cap.visible = false;
       handMesh.add(cap);
-      this.hands.push({ mesh: handMesh, defaultGeometry: this.handGeometry, defaultScale: handMesh.scale.clone(), cap, defaultCap: this.wristStumpGeometry, look: null, baked: null, bakedFlesh: null, radius: HAND_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
+      this.hands.push({ mesh: handMesh, defaultGeometry: this.handGeometry, defaultScale: handMesh.scale.clone(), cap, defaultCap: this.wristStumpGeometry, look: null, blood, baked: null, bakedFlesh: null, radius: HAND_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
 
       const stumpMesh = new THREE.Mesh(this.wristStumpGeometry, this.wristMaterial);
       stumpMesh.visible = false;
@@ -1018,6 +1022,7 @@ export class Effects3D {
       part.mesh.scale.setScalar(1);
       material.map = baked.map;
       part.look?.set(baked.look ?? SCANNED_LOOK);
+      if (part.blood !== null) part.blood.value = baked.gloveBlood ?? 0;
       material.color.setHex(baked.color);
       if (baked.cut !== undefined) {
         part.cap.geometry = baked.cut.flesh;
@@ -1036,6 +1041,7 @@ export class Effects3D {
       part.mesh.scale.copy(part.defaultScale);
       material.map = null;
       material.color.setHex(fallbackColor);
+      if (part.blood !== null) part.blood.value = 0;
       part.cap.visible = false;
     }
     material.needsUpdate = true;

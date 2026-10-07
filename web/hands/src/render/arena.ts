@@ -8,6 +8,8 @@ export interface BuiltArena {
   /** Raises crowd excitement (0..1); it decays over a few seconds. */
   readonly excite: (amount: number) => void;
   readonly excitement: () => number;
+  /** Sheds the crowd's most expensive work when the client is struggling. */
+  readonly setLowTier: (low: boolean) => void;
   readonly dispose: () => void;
 }
 
@@ -202,5 +204,5 @@ export function buildArena(): BuiltArena {
     excitement = Math.min(1, excitement + Math.max(0, amount));
   };
 
-  return { group, update, excite, excitement: () => excitement, dispose };
+  return { group, update, excite, excitement: () => excitement, setLowTier: crowd.setLowTier, dispose };
 }

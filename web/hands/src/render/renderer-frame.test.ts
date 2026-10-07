@@ -1,0 +1,298 @@
+import * as THREE from "three";
+import { fighter, snapshot } from "../test/fixtures";
+import type { EngineSnapshot, FighterSnapshot, FinalMessage } from "../types";
+import { CameraDirector, ceremonyShot, FIGHTER_CAM_FOV_SCALE, FighterCam } from "./camera";
+import { RoundStatsTracker } from "./hud";
+import { lookFor } from "./looks";
+import { FightRenderer, resultCardTop } from "./renderer";
+import { worldMapping } from "./world";
+
+/**
+ * Runs the renderer's real frame (draw) against stand-ins for the GPU and the scene, so that what the
+ * frame decides and whether it calls each of its parts is tested, not only the parts on their own.
+ */
+const SIMULATION = { tick_rate: 30, ring_half_width: 500, ring_half_height: 500 };
+
+type Settings = { reducedMotion: boolean; blood: "full" | "reduced" | "off"; camera: "broadcast" | "close" | "fighter"; commentary: boolean; announcer: boolean; volume: number; haptics: boolean };
+
+function graph() {
+  return {
+    boxer: { root: new THREE.Object3D(), bone: () => null, setLook: vi.fn(), metrics: { headRestY: 1.52 }, rig: { bones: { gloveL: new THREE.Object3D(), gloveR: new THREE.Object3D() } } },
+    awaitVerdict: vi.fn(),
+    announce: vi.fn(),
+    setResting: vi.fn(),
+    setCountdown: vi.fn(),
+    setObstacle: vi.fn(),
+    update: vi.fn(),
+    fallBody: null,
+    stoolVisible: false,
+  };
+}
+
+function frame(state: EngineSnapshot, overrides: Record<string, unknown> = {}) {
+  const settings: Settings = { reducedMotion: false, blood: "full", camera: "broadcast", commentary: true, announcer: true, volume: 0, haptics: false };
+  const latest = { current: state };
+  const camera = new THREE.PerspectiveCamera(36, 16 / 9, 0.1, 100);
+  const renderer = Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, {
+    destroyed: false,
+    previous: 0,
+    canvas: { clientWidth: 1280, clientHeight: 720 },
+    renderer: { getSize: (out: THREE.Vector2) => out.set(1280, 720), setSize: vi.fn() },
+    composer: { setSize: vi.fn(), render: vi.fn() },
+    camera,
+    portraitPull: 1,
+    baseFov: 36,
+    sizeCheck: new THREE.Vector2(),
+    frameSeconds: 0,
+    finishPass: { uniforms: { uTime: { value: 0 } } },
+    lastManualTime: 0,
+    settings: () => settings,
+    setBloodLevel: vi.fn(),
+    buffer: { latest: () => latest.current, sample: () => latest.current, renderTick: () => latest.current.tick, interpolationDelayTicks: 2 },
+    updateRocked: vi.fn(),
+    finishSeen: false,
+    finishSlowMotion: 0,
+    ovationUntil: 0,
+    arena: { excite: vi.fn(), update: vi.fn() },
+    viewerHitFlash: 0,
+    localInput: null,
+    replay: null,
+    ceremony: null,
+    drawnFighters: [fighter("one"), fighter("two")],
+    arcadeInjuries: [null, null],
+    observedInjuryDown: [false, false],
+    restoreInjury: vi.fn(),
+    graphs: [graph(), graph()],
+    lookIds: [null, null],
+    headCache: [new THREE.Vector3(), new THREE.Vector3()],
+    headCacheValid: [false, false],
+    simulation: SIMULATION,
+    lastPhase: state.phase,
+    roundCalloutUntil: 0,
+    roundCalloutRound: 0,
+    enterRest: vi.fn(),
+    anticipatePunches: vi.fn(),
+    mapping: worldMapping(SIMULATION),
+    bodyPoint: new THREE.Vector3(),
+    ring: { setRopeContacts: vi.fn(), setNearRopeOpacity: vi.fn(), nearRopeOpacity: () => 1 },
+    tmpA: new THREE.Vector3(),
+    tmpB: new THREE.Vector3(),
+    tmpHead: new THREE.Vector3(),
+    tmpCamera: new THREE.Vector3(),
+    downedPoolAccumulators: [0, 0],
+    downedPoolCounts: [0, 0],
+    effects: { drip: vi.fn(), stopDrip: vi.fn(), pool: vi.fn(), update: vi.fn(), shakeAmount: 0, setViewDistance: vi.fn() },
+    updateIdleFighters: vi.fn(),
+    updateTrails: vi.fn(),
+    updateReferee: vi.fn(),
+    updateCornermen: vi.fn(),
+    updateCutmen: vi.fn(),
+    updateBlobShadows: vi.fn(),
+    fireContacts: vi.fn(),
+    followSpot: null,
+    director: new CameraDirector(),
+    viewerId: "one",
+    fighterCam: new FighterCam(),
+    ownViewActive: false,
+    ownForward: { x: 0, z: -1 },
+    cameraOverride: null,
+    finishCloseUpUntil: 0,
+    finishCloseUpIndex: -1,
+    restStartedAt: 0,
+    cutmen: null,
+    cutmanProgress: [0, 0],
+    cornerPosition: new THREE.Vector3(),
+    cornerLookAt: new THREE.Vector3(),
+    final: null,
+    players: {},
+    roundStats: new RoundStatsTracker(),
+    hudViewport: { width: 1280, height: 720 },
+    manualClock: true,
+    ...overrides,
+  });
+  const draw = (FightRenderer.prototype as unknown as { draw(this: unknown, time: number, manual: boolean, render: boolean): void }).draw;
+  let time = 1000;
+  const run = (frames = 1): void => {
+    for (let index = 0; index < frames; index += 1) {
+      time += 1000 / 60;
+      draw.call(renderer, time, true, false);
+    }
+  };
+  return { renderer, settings, camera, latest, run, graphs: renderer.graphs as ReturnType<typeof graph>[] };
+}
+
+const fighting = (one: Partial<FighterSnapshot> = {}, two: Partial<FighterSnapshot> = {}, extra: Partial<EngineSnapshot> = {}): EngineSnapshot => {
+  const base = snapshot(40);
+  return { ...base, fighters: [{ ...base.fighters[0], ...one }, { ...base.fighters[1], ...two }], ...extra };
+};
+
+describe("a rendered frame", () => {
+  it("dresses each fighter in the look of the player in that seat", () => {
+    const { run, graphs } = frame(fighting());
+    run(3);
+    expect(graphs[0]!.boxer.setLook).toHaveBeenCalledOnce();
+    expect(graphs[0]!.boxer.setLook).toHaveBeenCalledWith(lookFor("one"));
+    expect(graphs[1]!.boxer.setLook).toHaveBeenCalledWith(lookFor("two"));
+  });
+
+  it("eases apart fighters standing in each other, but not two in a clinch or one who is down", () => {
+    const drawnGap = (one: Partial<FighterSnapshot>): number => {
+      const { run, graphs } = frame(fighting({ x: -30, ...one }, { x: 30 }));
+      run();
+      const [a, b] = graphs[0]!.update.mock.calls[0]! as [FighterSnapshot, FighterSnapshot];
+      return b.x - a.x;
+    };
+    expect(drawnGap({})).toBeGreaterThanOrEqual(103);
+    expect(drawnGap({ clinch_ticks: 20 })).toBe(60);
+    expect(drawnGap({ is_downed: true })).toBe(60);
+  });
+
+  it("seats the fighters through the rest until the seconds are called out", () => {
+    const seated = (remaining: number): unknown => {
+      const { run, graphs } = frame(fighting({}, {}, { phase: "rest", phase_ticks_remaining: remaining }));
+      run();
+      return graphs[0]!.setResting.mock.calls.at(-1)?.[0];
+    };
+    expect(seated(300)).toBe(true);
+    expect(seated(60)).toBe(false);
+  });
+
+  it("offers each fighter's next punch from the newest snapshot every frame", () => {
+    const { renderer, run, latest } = frame(fighting());
+    run(2);
+    expect(renderer.anticipatePunches).toHaveBeenCalledTimes(2);
+    expect((renderer.anticipatePunches as ReturnType<typeof vi.fn>).mock.calls[0]![0]).toBe(latest.current);
+  });
+
+  it("keeps the crowd cheering through the ovation", () => {
+    const { renderer, run } = frame(fighting(), { ovationUntil: 999 });
+    run();
+    expect((renderer.arena as { excite: ReturnType<typeof vi.fn> }).excite).toHaveBeenCalled();
+  });
+
+  it("tells the blood how far the camera is from what it looks at", () => {
+    const { renderer, run } = frame(fighting());
+    run();
+    const [distance] = (renderer.effects as { setViewDistance: ReturnType<typeof vi.fn> }).setViewDistance.mock.calls.at(-1)! as [number];
+    expect(distance).toBeGreaterThan(3);
+    expect(distance).toBeLessThan(12);
+  });
+
+  it("hurts the viewer's own vision every frame it is due", () => {
+    const { renderer, run } = frame(fighting());
+    run(2);
+    expect(renderer.updateRocked).toHaveBeenCalledTimes(2);
+  });
+
+  it("fades the near ropes for the broadcast camera as the fighters come toward it", () => {
+    const opacity = (y: number): number => {
+      const { renderer, run } = frame(fighting({ y }, { y }));
+      run();
+      return (renderer.ring as { setNearRopeOpacity: ReturnType<typeof vi.fn> }).setNearRopeOpacity.mock.calls.at(-1)![0] as number;
+    };
+    expect(opacity(-420)).toBeLessThan(0.99);
+    expect(opacity(420)).toBeCloseTo(1, 6);
+  });
+
+  it("uses the close broadcast camera when the player chose it", () => {
+    const director = new CameraDirector();
+    const update = vi.spyOn(director, "update");
+    const { settings, run } = frame(fighting(), { director });
+    settings.camera = "close";
+    run();
+    expect(update.mock.calls.at(-1)!.at(-1)).toBe(true);
+    settings.camera = "broadcast";
+    run();
+    expect(update.mock.calls.at(-1)!.at(-1)).toBe(false);
+  });
+
+  it("puts the camera over the player's own shoulder when chosen, but never for a spectator", () => {
+    const own = frame(fighting());
+    own.settings.camera = "fighter";
+    own.run(2);
+    expect((own.renderer as unknown as FightRenderer).viewForward()).not.toBeNull();
+    expect(own.camera.fov).toBeCloseTo(36 * FIGHTER_CAM_FOV_SCALE, 6);
+    const watching = frame(fighting(), { viewerId: null });
+    watching.settings.camera = "fighter";
+    watching.run(2);
+    expect((watching.renderer as unknown as FightRenderer).viewForward()).toBeNull();
+    expect(watching.camera.fov).toBe(36);
+  });
+
+  it("spreads a pool of blood under a bleeding fighter who is down", () => {
+    const bleeding = { ...fighter("two").trauma, bleeding: 500, left_cut: 300 };
+    const { renderer, run } = frame(fighting({}, { is_downed: true, trauma: bleeding }, { phase: "knockdown" }));
+    run(40);
+    expect((renderer.effects as { pool: ReturnType<typeof vi.fn> }).pool).toHaveBeenCalled();
+  });
+
+  it("frames the decision above the result card, looking through the near ropes", () => {
+    const final: FinalMessage = { version: 3, type: "final", match_id: "m", winner_id: "one", method: "decision", round: 3, scorecards: [], ratings: {} };
+    const state = fighting({}, {}, { phase: "complete" });
+    const ceremony = { winnerSeat: 0, positions: [{ x: -102, y: -16 }, { x: 102, y: -16 }], marks: [0, 1], refereeArrived: true, arrivedAt: 0.5, announced: true };
+    const { renderer, run, camera } = frame(state, { ceremony, final, settings: () => ({ reducedMotion: true, blood: "full", camera: "broadcast" }), referee: { raise: vi.fn() }, ceremonyWrists: [new THREE.Vector3(), new THREE.Vector3()], commentary: { verdict: vi.fn() } });
+    run();
+    const top = resultCardTop(final, 1280, 720, state.fighters, {}, new RoundStatsTracker(), "one");
+    const shot = ceremonyShot(16 / 9, 36, (720 - top) / 720);
+    expect(camera.position.z).toBeCloseTo(shot.distance, 4);
+    expect(camera.position.y).toBeCloseTo(shot.height + 0.05 * shot.distance, 4);
+    expect((renderer.ring as { setNearRopeOpacity: ReturnType<typeof vi.fn> }).setNearRopeOpacity.mock.calls.at(-1)![0]).toBeLessThan(0.99);
+  });
+});
+
+describe("around the fight", () => {
+  const combat = (kind: string, fields: Record<string, unknown> = {}) => ({ event_id: 1, tick: 40, kind, actor_id: "one", target_id: "two", amount: 0, detail: "", blood: 0, direction: 1, action_id: null, ...fields });
+  const prototypeOf = (fields: Record<string, unknown>) => Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, fields);
+  const method = <T extends string>(name: T) => (FightRenderer.prototype as unknown as Record<T, (this: unknown, ...args: unknown[]) => unknown>)[name];
+
+  it("draws the commentary caption on top of the HUD", async () => {
+    const { mockHudContext } = await import("../test/fixtures");
+    const drawCaption = vi.fn();
+    const stub = prototypeOf({
+      hudCanvas: { getBoundingClientRect: () => ({ width: 1280, height: 720 }), width: 0, height: 0, getContext: () => mockHudContext([]) },
+      hudViewport: { width: 0, height: 0 }, viewerHitFlash: 0, settings: () => ({ reducedMotion: false }), players: {}, viewerId: "one", final: null,
+      frameSeconds: 0, finalRevealAt: 0, reconnectMs: 0, simulation: SIMULATION, roundStats: new RoundStatsTracker(), replay: null, inputLatencyMs: null,
+      roundCalloutUntil: 0, roundCalloutRound: 0, eventCallout: null, roundClock: { ticks: () => null }, avatars: { get: () => null }, drawCaption,
+    });
+    method("drawHudOverlay").call(stub, snapshot());
+    expect(drawCaption).toHaveBeenCalledOnce();
+  });
+
+  it("does a knockout's finishing injury at once when there is no replay to show it in", () => {
+    const hit = combat("counter_hit", { event_id: 7, detail: "right:uppercut:head", amount: 140 });
+    const applyArcadeInjury = vi.fn(() => true);
+    const presentFinish = vi.fn();
+    const stub = prototypeOf({
+      frameSeconds: 5, buffer: { latest: () => snapshot() }, commentary: { finish: vi.fn() }, endCeremony: vi.fn(), players: {}, history: [], simulation: SIMULATION,
+      graphs: null, settings: () => ({ reducedMotion: false, blood: "full" }), arcadeInjuries: [null, null],
+      lastKnockdown: { knockdown: combat("knockdown", { event_id: 8, amount: 1 }), hit, finisher: "decapitation" }, applyArcadeInjury, presentFinish,
+    });
+    method("setFinal").call(stub, { version: 3, type: "final", match_id: "m", winner_id: "one", method: "ko", round: 2, scorecards: [], ratings: {} });
+    expect(applyArcadeInjury).toHaveBeenCalledWith(1, "decapitation", hit);
+    expect(presentFinish).toHaveBeenCalledOnce();
+  });
+
+  it("knocks the gum shield out with a big counter to the head", () => {
+    const knockOutMouthpiece = vi.fn();
+    const event = combat("counter_hit", { event_id: 9, detail: "hook:head", amount: 120 });
+    const stub = prototypeOf({
+      pendingContacts: [{ event, presentationEvent: event, presentImpact: true, contactTick: 40, recipientIndex: 1, puncherIndex: 0, injury: null }],
+      buffer: { latest: () => snapshot() }, presentFightEvent: vi.fn(), mapping: worldMapping(SIMULATION), tmpA: new THREE.Vector3(), tmpB: new THREE.Vector3(),
+      effects: { addEvent: vi.fn(), spawnTeeth: vi.fn() }, settings: () => ({ reducedMotion: false, blood: "full" }), arena: { excite: vi.fn() }, viewerId: null,
+      arcadeInjuries: [null, null], graphs: null, headWorldPose: () => null, knockOutMouthpiece, onContact: null, viewerHitFlash: 0,
+    });
+    method("fireContacts").call(stub, 50);
+    expect(knockOutMouthpiece).toHaveBeenCalledWith(1, 1, 9, false);
+  });
+
+  it("has the winner celebrate when the bout is over", () => {
+    const celebrate = [vi.fn(), vi.fn()];
+    const stub = prototypeOf({
+      referee: { waveOff: vi.fn() }, buffer: { latest: () => snapshot() }, headCacheValid: [false, false], settings: () => ({ reducedMotion: false }), frameSeconds: 0,
+      graphs: [{ celebrate: celebrate[0] }, { celebrate: celebrate[1] }],
+    });
+    method("presentFinish").call(stub, { version: 3, type: "final", match_id: "m", winner_id: "two", method: "tko", round: 2, scorecards: [], ratings: {} });
+    expect(celebrate[1]).toHaveBeenCalledOnce();
+    expect(celebrate[0]).not.toHaveBeenCalled();
+  });
+});

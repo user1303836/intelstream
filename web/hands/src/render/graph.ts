@@ -366,7 +366,8 @@ export class SkinnedBoxer {
       ] as const) {
         const mesh = new THREE.Mesh(part, material);
         mesh.name = name;
-        mesh.castShadow = true;
+        // Too small to throw a shadow anyone would see; it would only cost a draw in the shadow pass.
+        mesh.castShadow = false;
         mesh.receiveShadow = true;
         bone.add(mesh);
       }

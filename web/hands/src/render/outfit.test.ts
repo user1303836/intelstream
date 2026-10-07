@@ -51,6 +51,14 @@ describe("official hands", () => {
     for (let index = 0; index < normal.count; index += 97) expect(n.fromBufferAttribute(normal, index).length()).toBeCloseTo(1, 3);
   });
 
+  it("is cheap enough to give five officials two hands each", () => {
+    for (const side of ["left", "right"] as const) {
+      const geometry = buildHandGeometry(side);
+      expect(geometry.getAttribute("position").count / 3).toBeLessThan(700);
+      geometry.dispose();
+    }
+  });
+
   it("covers the end of the forearm up to the wrist with the cuff", () => {
     const box = bounds(buildCuffGeometry());
     expect(box.min.y).toBeLessThan(19);

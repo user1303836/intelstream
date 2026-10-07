@@ -64,7 +64,8 @@ export function lookFor(id: string): FighterLook {
 /** The scanned face in linear light: what a shaved scalp is painted with. */
 const SKIN = "vec3(0.84, 0.39, 0.175)";
 
-const MASKS = /* glsl */ `
+/** Shared with the CPU port below; exported so a test can check the two agree. */
+export const LOOK_MASKS_GLSL = /* glsl */ `
 uniform vec3 uLookHair;
 uniform vec4 uLookFace;
 uniform vec2 uLookGroom;
@@ -79,7 +80,7 @@ float lookHairZone(vec3 p) {
 }
 `;
 
-const VERTEX_SHAPE = /* glsl */ `
+export const LOOK_SHAPE_GLSL = /* glsl */ `
 {
   vec3 p = position;
   vLookPos = p;
@@ -94,9 +95,51 @@ const VERTEX_SHAPE = /* glsl */ `
   // A shaved head loses the thickness of the scanned hair.
   float crown = lookHairZone(p) * uLookGroom.x;
   float fringe = smoothstep(-1.0, 3.0, p.z) * smoothstep(123.5, 126.0, p.y);
-  transformed -= normalize(vec3(p.x, (p.y - 120.0) * 1.1, p.z + 2.5)) * mix(0.9, 1.9, fringe) * crown;
+  float crownDepth = mix(0.9, 1.9, fringe) * crown;
+  vec3 crownAway = normalize(vec3(p.x, (p.y - 120.0) * 1.1, p.z + 2.5));
+  transformed.x -= crownAway.x * crownDepth;
+  transformed.y -= crownAway.y * crownDepth;
+  transformed.z -= crownAway.z * crownDepth;
 }
 `;
+
+const smooth = (edge0: number, edge1: number, x: number): number => {
+  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+};
+const mix = (a: number, b: number, t: number): number => a + (b - a) * t;
+
+/** `lookHairZone` from the shader, for a bind-space point. */
+function hairZone(x: number, y: number, z: number): number {
+  const behind = mix(115.3, 120.6, smooth(-6.8, -4.6, z));
+  const line = mix(behind, 125.5, smooth(-4.6, 1.6, z));
+  const nape = smooth(116.0, 121.0, y);
+  const reach = mix(3.8, 9.0, nape);
+  return smooth(line - 0.5, line + 0.5, y) * (1 - smooth(reach, reach + 1, Math.abs(x)) * (1 - nape));
+}
+
+/**
+ * The look's reshaping of a bind-space head vertex, as LOOK_SHAPE_GLSL does it on the GPU. The CPU poses
+ * the head itself for a severed head and for the rims of its wounds, and they must match what is drawn.
+ */
+export function lookShape(bind: THREE.Vector3, look: FighterLook, out: THREE.Vector3): THREE.Vector3 {
+  const { x, y, z } = bind;
+  const jaw = (1 - smooth(113.5, 118.0, y)) * smooth(108.5, 112.0, y) * smooth(-7.0, -2.0, z);
+  const nose = 1 - smooth(0, 2.6, Math.hypot(x, y - 117.2, z - 5.0));
+  const brow = (1 - smooth(0, 2.2, Math.abs(y - 123.2))) * smooth(1.5, 3.5, z);
+  let dx = x * 0.12 * look.jaw * jaw + x * 0.4 * look.nose * nose + x * 0.06 * look.skull * smooth(112.0, 116.0, y);
+  let dy = 0;
+  let dz = 0.5 * look.nose * nose + 0.55 * look.brow * brow;
+  const crownDepth = mix(0.9, 1.9, smooth(-1.0, 3.0, z) * smooth(123.5, 126.0, y)) * hairZone(x, y, z) * look.shaved;
+  const ax = x;
+  const ay = (y - 120) * 1.1;
+  const az = z + 2.5;
+  const length = Math.hypot(ax, ay, az) || 1;
+  dx -= (ax / length) * crownDepth;
+  dy -= (ay / length) * crownDepth;
+  dz -= (az / length) * crownDepth;
+  return out.set(x + dx, y + dy, z + dz);
+}
 
 const VERTEX_BAKED = /* glsl */ `
 vLookPos = bindPosition;
@@ -141,10 +184,10 @@ export class LookShading {
       before.call(material, shader, renderer);
       Object.assign(shader.uniforms, uniforms);
       shader.vertexShader = shader.vertexShader
-        .replace("#include <common>", `#include <common>\n${baked ? "attribute vec3 bindPosition;" : ""}\n${MASKS}`)
-        .replace("#include <morphtarget_vertex>", `${baked ? VERTEX_BAKED : VERTEX_SHAPE}\n#include <morphtarget_vertex>`);
+        .replace("#include <common>", `#include <common>\n${baked ? "attribute vec3 bindPosition;" : ""}\n${LOOK_MASKS_GLSL}`)
+        .replace("#include <morphtarget_vertex>", `${baked ? VERTEX_BAKED : LOOK_SHAPE_GLSL}\n#include <morphtarget_vertex>`);
       shader.fragmentShader = shader.fragmentShader
-        .replace("#include <common>", `#include <common>\n${MASKS}`)
+        .replace("#include <common>", `#include <common>\n${LOOK_MASKS_GLSL}`)
         .replace("#include <map_fragment>", `#include <map_fragment>\n${FRAGMENT_GROOM}`);
     };
     material.customProgramCacheKey = () => `${beforeKey}-look-${baked ? "baked" : "live"}`;

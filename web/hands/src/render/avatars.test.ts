@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { Avatars, avatarUrl, monogram } from "./avatars";
 
 const ID = "123456789012345678";
@@ -125,5 +125,28 @@ describe("avatars", () => {
     expect(made[0]!.onload).toBeNull();
     expect(avatars.get(player)).toBeNull();
     expect(made).toHaveLength(2);
+  });
+});
+
+describe("avatars asked for on every frame", () => {
+  const Original = URL;
+  afterEach(() => {
+    globalThis.URL = Original;
+  });
+
+  it("work the address out once per picture, and again when the picture changes", () => {
+    let built = 0;
+    globalThis.URL = class extends Original {
+      constructor(url: string | URL, base?: string | URL) {
+        super(url, base);
+        built += 1;
+      }
+    } as typeof URL;
+    const avatars = new Avatars(() => ({}) as HTMLImageElement);
+    for (let frame = 0; frame < 120; frame += 1) avatars.get({ id: ID, avatar: HASH });
+    expect(built).toBe(1);
+    avatars.get({ id: ID, avatar: "b_1" });
+    expect(built).toBe(2);
+    avatars.dispose();
   });
 });
