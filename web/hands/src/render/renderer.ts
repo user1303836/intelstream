@@ -110,6 +110,8 @@ const HISTORY_LIMIT = 480;
 const LOW_TIER_SCALE = 0.56;
 const ROUND_CALLOUT_SECONDS = 1.8;
 const FINISH_CLOSE_UP_SECONDS = 1.7;
+/** Longest a finish waits for its punch to be shown (the render clock runs at most 6 ticks behind). */
+const FINISH_WAIT_LIMIT_SECONDS = 0.5;
 const CORNERMAN_APRON_DISTANCE = 3.42;
 /** Close cameras stay inside the rope line (posts stand at 2.46 m) so a rope never fills the lens. */
 const TIGHT_SHOT_LIMIT = 2.2;
@@ -508,6 +510,7 @@ export class FightRenderer {
   private finishSlowMotion = 0;
   private finishSeen = false;
   private finalRevealAt = 0;
+  private pendingFinish: { readonly final: FinalMessage; readonly tick: number; readonly latestAt: number } | null = null;
   private portraitPull = 1;
   private lastPhase: string | null = null;
   private restStartedAt = 0;
@@ -719,13 +722,26 @@ export class FightRenderer {
   setFinal(final: FinalMessage | null): void {
     this.final = final;
     this.finalRevealAt = this.frameSeconds + finalRevealDelay(final);
+    this.pendingFinish = null;
     if (final === null || !STOPPAGE_METHODS.has(final.method)) return;
     const plan = this.lastKnockdown === null ? null : planKnockoutReplay(this.history, this.lastKnockdown.knockdown, this.simulation.tick_rate);
     if (plan !== null && this.graphs !== null && !this.settings().reducedMotion) {
       this.startReplay(plan);
       return;
     }
-    this.presentFinish(final);
+    // The result arrives while the screen is still a few ticks behind it, so the finish waits for the
+    // punch that ended the bout to be shown.
+    const resultTick = this.buffer.latest()?.result?.tick;
+    if (resultTick === undefined) this.presentFinish(final);
+    else this.pendingFinish = { final, tick: resultTick, latestAt: this.frameSeconds + FINISH_WAIT_LIMIT_SECONDS };
+  }
+
+  /** Presents a finish waiting for its punch once the presented tick reaches the result (or the wait runs out). */
+  private presentFinishWhenShown(sampledTick: number): void {
+    const pending = this.pendingFinish;
+    if (pending === null || (sampledTick < pending.tick && this.frameSeconds < pending.latestAt)) return;
+    this.pendingFinish = null;
+    this.presentFinish(pending.final);
   }
 
   private presentFinish(final: FinalMessage): void {
@@ -1396,6 +1412,7 @@ export class FightRenderer {
     this.updateCutmen(actorDt, seconds, snapshot, sampledTick);
     this.updateBlobShadows();
     this.fireContacts(sampledTick);
+    this.presentFinishWhenShown(sampledTick);
     if (this.followSpot !== null) {
       this.followSpot.target.position.set((this.tmpA.x + this.tmpB.x) / 2, 1.0, (this.tmpA.z + this.tmpB.z) / 2);
     }

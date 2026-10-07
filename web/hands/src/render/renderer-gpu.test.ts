@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import type { Settings } from "../settings";
 import { fighter, snapshot } from "../test/fixtures";
-import type { CombatEvent, FighterSnapshot } from "../types";
+import type { CombatEvent, FighterSnapshot, FinalMessage, MatchResult } from "../types";
 import { attachFakeWebGl, type FakeWebGl } from "../test/webgl";
 import type { Effects3D } from "./effects";
 import { FightRenderer } from "./renderer";
@@ -45,12 +45,12 @@ function settle(fight: FightRenderer, from = 0): number {
   return from + 0.6;
 }
 
-async function mount(settings: Partial<Settings> = {}): Promise<{ gl: FakeWebGl; fight: FightRenderer; internals: Internals }> {
+async function mount(settings: Partial<Settings> = {}, manualClock = true): Promise<{ gl: FakeWebGl; fight: FightRenderer; internals: Internals }> {
   const canvas = document.createElement("canvas");
   document.body.append(canvas);
   const gl = attachFakeWebGl(canvas);
   const current: Settings = { volume: 0, haptics: false, reducedMotion: false, blood: "full", ...settings };
-  const fight = new FightRenderer(canvas, undefined, () => current, { manualClock: true });
+  const fight = new FightRenderer(canvas, undefined, () => current, { manualClock });
   mounted.push(fight);
   await fight.ready;
   return { gl, fight, internals: fight as unknown as Internals };
@@ -87,6 +87,39 @@ describe("quality tiers on the graphics card", () => {
     expect(key.shadow.intensity).toBe(1);
     expect(key.shadow.map).not.toBeNull();
     expect(key.shadow.map?.width).toBe(1024);
+  });
+});
+
+describe("stoppage without a replay", () => {
+  it("cuts to the finish only once the punch that ended the bout is on screen", async () => {
+    const now = vi.spyOn(performance, "now").mockReturnValue(0);
+    const { fight } = await mount({}, false);
+    const draw = (time: number): void => (fight as unknown as { draw(time: number): void }).draw(time);
+    const presentFinish = vi.spyOn(fight as unknown as { presentFinish(final: FinalMessage): void }, "presentFinish");
+    const shown: number[] = [];
+    fight.onContact = (event) => shown.push(event.event_id);
+    // Thirty ticks a second; the third knockdown ends the bout on tick 30, and the server stops there.
+    const finisher = { ...punch(300, 30, "hook:head"), amount: 520 };
+    const knockdown: CombatEvent = { ...finisher, event_id: 301, kind: "knockdown", amount: 3, detail: "", blood: 0, direction: 0, action_id: null };
+    const result: MatchResult = {
+      match_id: "m", activity_instance_id: "a", guild_id: "g", player_one_id: "one", player_two_id: "two", winner_id: "one", finish_method: "tko",
+      round_number: 1, tick: 30, scorecards: [], player_one_knockdowns: 0, player_two_knockdowns: 3, player_one_damage: 0, player_two_damage: 900,
+    };
+    for (let tick = 1; tick <= 30; tick += 1) {
+      now.mockReturnValue((tick * 1000) / 30);
+      if (tick < 30) fight.push(snapshot(tick));
+      else fight.push({ ...snapshot(30), phase: "complete", fighters: [{ ...exchange(30, "head")[0], action_key: "hook:left:head:power" }, { ...fighter("two", 60), is_downed: true, knockdowns: 3 }], events: [finisher, knockdown], result });
+      draw((tick * 1000) / 30);
+    }
+    // The final message lands a moment after the result, while the screen is still two ticks behind it.
+    fight.setFinal({ version: 3, type: "final", match_id: "m", winner_id: "one", method: "tko", round: 1, scorecards: [], ratings: {} });
+    expect(presentFinish).not.toHaveBeenCalled();
+    for (let time = 1000; time < 1500 && presentFinish.mock.calls.length === 0; time += 1000 / 60) {
+      now.mockReturnValue(time);
+      draw(time);
+    }
+    expect(presentFinish).toHaveBeenCalledOnce();
+    expect(shown).toContain(finisher.event_id);
   });
 });
 
