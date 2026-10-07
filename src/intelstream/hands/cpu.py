@@ -14,7 +14,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from math import hypot
+from math import atan2, cos, hypot, radians, sin
 
 from intelstream.hands.engine import (
     EVASION_TICKS,
@@ -27,6 +27,8 @@ from intelstream.hands.rules import (
     BODY_COLLAPSE_STAMINA,
     BODY_COLLAPSE_TRAUMA,
     COMPATIBLE_COMBO_CHAINS,
+    FACING_SCALE,
+    FACING_TURN_DEGREES_PER_SECOND,
     FIGHTER_RADIUS,
     GUARD_BLOCK_MINIMUM,
     PERFECT_BLOCK_REARM_TICKS,
@@ -35,6 +37,7 @@ from intelstream.hands.rules import (
     RING_HALF_HEIGHT,
     RING_HALF_WIDTH,
     STYLE_RULES,
+    TICKS_PER_SECOND,
     PunchRule,
     poise_ceiling,
     style_punch_rule,
@@ -73,6 +76,8 @@ CORNER_EYE_AT = 500
 CORNER_SWELLING_AT = 450
 GET_UP_ACCURACY_TRAUMA_DIVISOR = 45
 GET_UP_KNOCKDOWN_PENALTY = 14
+# The most a fighter turns toward the other man in a tick.
+_TURN_PER_TICK = radians(FACING_TURN_DEGREES_PER_SECOND / TICKS_PER_SECOND)
 # The quickest punch the computer loads up: it never throws a power jab.
 QUICKEST_POWER_STARTUP = min(
     rule.startup
@@ -516,7 +521,7 @@ class CpuBrain:
                 if profile.admire_ticks:
                     pause = profile.admire_ticks + self._rng.randrange(profile.admire_ticks + 1)
                     self._admire_until = tick + pause
-            follow_up = self._follow_up(me, them, distance, opponent_hurt)
+            follow_up = self._follow_up(me, them, opponent_hurt)
             move = self._movement(tick, me, them, distance, hurt, tired, opponent_hurt)
             if follow_up is not None:
                 return self._command(tick, move, held, (follow_up,))
@@ -727,22 +732,43 @@ class CpuBrain:
         """How far this punch carries for this boxer: swollen eyes shorten it, as in the engine."""
         return rule.reach * (100 - _vision_penalty(me)) // 100 - self.profile.reach_margin
 
-    def _reaches(self, me: FighterState, them: FighterState, action: PunchAction) -> bool:
+    def _reaches(
+        self,
+        me: FighterState,
+        them: FighterState,
+        action: PunchAction,
+        delay: int = 0,
+        turning: int | None = None,
+    ) -> bool:
+        """Whether the punch, started `delay` ticks from now, lands: judged along the way the boxer
+        will face after `turning` ticks of turning (every tick until it starts, by default), as
+        the engine judges it, where the other man will be by then."""
         startup, rule = self._timing(me, action)
         vision = _vision_penalty(me)
         reach = self._reach(me, rule)
         arc = rule.lateral_arc * (100 - vision) // 100 - max(0, self.profile.reach_margin)
         tx, ty = float(them.x), float(them.y)
         if self.profile.leads_target:
-            tx += them.velocity_x * (startup + 1)
-            ty += them.velocity_y * (startup + 1)
-        aim_x, aim_y = them.x - me.x, them.y - me.y
-        aim = max(1.0, hypot(aim_x, aim_y))
-        fx, fy = aim_x / aim, aim_y / aim
+            tx += them.velocity_x * (delay + startup + 1)
+            ty += them.velocity_y * (delay + startup + 1)
+        fx, fy = self._facing_at_start(me, them, delay + 1 if turning is None else turning)
         dx, dy = tx - me.x, ty - me.y
         forward = dx * fx + dy * fy
         lateral = abs(dx * fy - dy * fx)
         return FIGHTER_RADIUS // 3 < forward <= reach and hypot(dx, dy) <= reach and lateral <= arc
+
+    @staticmethod
+    def _facing_at_start(me: FighterState, them: FighterState, ticks: int) -> tuple[float, float]:
+        """The way a punch is thrown along that starts after `ticks` of turning: the facing turned
+        toward the other man by at most that many ticks' turn, which the engine then holds through
+        the punch and judges it along."""
+        fx, fy = me.facing_x / FACING_SCALE, me.facing_y / FACING_SCALE
+        off = atan2(
+            fx * (them.y - me.y) - fy * (them.x - me.x), fx * (them.x - me.x) + fy * (them.y - me.y)
+        )
+        most = _TURN_PER_TICK * ticks
+        turn = max(-most, min(most, off))
+        return fx * cos(turn) - fy * sin(turn), fx * sin(turn) + fy * cos(turn)
 
     def _affordable(self, me: FighterState, action: PunchAction, reserve: int) -> bool:
         return me.stamina >= self._rule(action).stamina_cost + reserve
@@ -908,7 +934,7 @@ class CpuBrain:
         return action
 
     def _follow_up(
-        self, me: FighterState, them: FighterState, distance: float, opponent_hurt: bool
+        self, me: FighterState, them: FighterState, opponent_hurt: bool
     ) -> PunchAction | None:
         attack = me.attack
         assert attack is not None
@@ -929,9 +955,14 @@ class CpuBrain:
             PunchAction(_other_hand(attack.action.hand), punch_class, Target.HEAD), them, power
         )
         rule = self._rule(action)
-        # The engine charges the full price before a combination's discount: short of it, the
-        # punch would wait out the recovery or come as a slow arm punch.
-        if distance > self._reach(me, rule) or me.stamina < rule.stamina_cost:
+        # It goes at the cancel point, along the facing the recovery has turned by then. The
+        # engine charges the full price before a combination's discount: short of it, the punch
+        # would wait out the recovery or come as a slow arm punch.
+        # The facing holds through the punch's startup and active ticks and turns after them.
+        held = attack.rule.startup + attack.rule.active
+        delay = max(1, attack.cancel_age - attack.age)
+        turning = max(1, attack.cancel_age - max(attack.age, held))
+        if not self._reaches(me, them, action, delay, turning) or me.stamina < rule.stamina_cost:
             self._combo_left = 0
             return None
         return action
