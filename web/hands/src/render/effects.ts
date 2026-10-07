@@ -130,6 +130,40 @@ interface Stump {
   direction: SprayDirection;
 }
 
+/**
+ * How long the artery of each stump pumps: a severed neck, the neck a burst head leaves and a wrist. Over the
+ * last FOUNTAIN_FADE_SECONDS the pressure falls away.
+ */
+export const NECK_FOUNTAIN_SECONDS = 6.5;
+export const BURST_FOUNTAIN_SECONDS = 7.5;
+export const WRIST_FOUNTAIN_SECONDS = 5;
+export const FOUNTAIN_FADE_SECONDS = 4;
+/** Beats a second of a heart going flat out, and how much of each beat (a share of it) the spurt lasts. */
+export const HEART_RATE = 1.7;
+const SPURT_WIDTH = 0.14;
+/** Drops a second at the top of a beat at full pressure, and the share of that still running between beats. */
+const FOUNTAIN_PEAK_RATE = 110;
+const FOUNTAIN_BETWEEN_BEATS = 0.12;
+/** Arterial blood leaves at 4 to 6 m/s at the top of a beat, within this angle (radians) of the wound's axis. */
+export const FOUNTAIN_SPEED_LOW = 4;
+export const FOUNTAIN_SPEED_HIGH = 6;
+export const FOUNTAIN_CONE = 0.35;
+const fountainAxis = new THREE.Vector3();
+const fountainSide = new THREE.Vector3();
+const fountainUp = new THREE.Vector3();
+const fountainVelocity = new THREE.Vector3();
+
+/**
+ * The way a stump's wound faces, into `out`: the raised middle of the flesh closing its cut faces out of it, and
+ * a disc standing in for a cut that was not measured faces up its own frame.
+ */
+function stumpAxis(stump: Stump, out: THREE.Vector3): THREE.Vector3 {
+  const normal = stump.mesh.geometry === stump.flesh ? stump.flesh.getAttribute("normal") : undefined;
+  if (normal !== undefined && normal.count > 0) out.fromBufferAttribute(normal, 0);
+  else out.set(0, 1, 0).applyQuaternion(stump.mesh.quaternion);
+  return out.lengthSq() > 1e-8 ? out.normalize() : out.set(0, 1, 0);
+}
+
 /** An eye hanging out of its socket on its nerve, swinging as a weight on a cord. */
 interface HangingEye {
   active: boolean;
@@ -1235,7 +1269,7 @@ export class Effects3D {
     const stump = this.stumps[index]!;
     stump.mesh.material = this.stumpMaterial;
     stump.active = true;
-    stump.fountainLife = 1.25;
+    stump.fountainLife = NECK_FOUNTAIN_SECONDS;
     stump.accumulator = 0;
     stump.seed = safeEventId | 1;
     stump.direction = launch;
@@ -1342,7 +1376,7 @@ export class Effects3D {
     this.shake = Math.min(0.16, this.shake + 0.1);
     stump.mesh.material = this.jawMaterial;
     stump.active = true;
-    stump.fountainLife = 1.8;
+    stump.fountainLife = BURST_FOUNTAIN_SECONDS;
     stump.accumulator = 0;
     stump.seed = safeEventId | 1;
     stump.direction = launch;
@@ -1388,7 +1422,7 @@ export class Effects3D {
 
     const stump = this.handStumps[index]!;
     stump.active = true;
-    stump.fountainLife = 0.9;
+    stump.fountainLife = WRIST_FOUNTAIN_SECONDS;
     stump.accumulator = 0;
     stump.seed = safeEventId | 1;
     stump.direction = launch;
@@ -1778,28 +1812,47 @@ export class Effects3D {
     return ((seed ^ (seed >>> 14)) >>> 0) / 4294967296;
   }
 
+  /**
+   * The severed artery pumps with the heart: a spurt with every beat, thrown at arterial speed along the way
+   * the wound faces (up from a standing neck, across the canvas from one lying there), weakening as he bleeds
+   * out over the fountain's last FOUNTAIN_FADE_SECONDS rather than stopping dead.
+   */
   private updateStumpFountains(dt: number): void {
     if (this.bloodLevel !== "full") return;
     for (const stump of [...this.stumps, ...this.handStumps]) {
       if (!stump.active || stump.fountainLife <= 0) continue;
       stump.fountainLife = Math.max(0, stump.fountainLife - dt);
-      stump.accumulator += dt * 36;
+      const pressure = Math.min(1, stump.fountainLife / FOUNTAIN_FADE_SECONDS);
+      const beat = (stump.fountainLife * HEART_RATE) % 1;
+      const spurt = Math.exp(-(((beat - 0.5) / SPURT_WIDTH) ** 2));
+      stump.accumulator += dt * FOUNTAIN_PEAK_RATE * pressure * (FOUNTAIN_BETWEEN_BEATS + (1 - FOUNTAIN_BETWEEN_BEATS) * spurt);
+      if (stump.accumulator < 1) continue;
+      const axis = stumpAxis(stump, fountainAxis);
+      fountainSide.set(Math.abs(axis.y) < 0.9 ? 0 : 1, Math.abs(axis.y) < 0.9 ? 1 : 0, 0).cross(axis).normalize();
+      fountainUp.crossVectors(axis, fountainSide);
       while (stump.accumulator >= 1) {
         stump.accumulator -= 1;
         const first = this.stumpRandom(stump);
         const second = this.stumpRandom(stump);
         const third = this.stumpRandom(stump);
-        this.sprayDroplet(
-          stump.direction,
-          stump.mesh.position.x + (first - 0.5) * 0.08,
-          stump.mesh.position.y + 0.015,
-          stump.mesh.position.z + (second - 0.5) * 0.08,
-          0.35 + first * 0.55,
-          1.3 + second * 1.45,
-          (third - 0.5) * 0.85,
+        // Within a cone round the wound's axis, faster at the top of a beat and as the pressure holds.
+        const tilt = Math.sqrt(first) * FOUNTAIN_CONE;
+        const around = second * Math.PI * 2;
+        fountainVelocity.copy(axis).multiplyScalar(Math.cos(tilt))
+          .addScaledVector(fountainSide, Math.sin(tilt) * Math.cos(around))
+          .addScaledVector(fountainUp, Math.sin(tilt) * Math.sin(around))
+          .multiplyScalar(THREE.MathUtils.lerp(FOUNTAIN_SPEED_LOW, FOUNTAIN_SPEED_HIGH, third) * (0.7 + 0.3 * spurt) * (0.55 + 0.45 * pressure));
+        this.spawnDroplet(
+          stump.mesh.position.x + axis.x * 0.015 + (first - 0.5) * 0.03,
+          stump.mesh.position.y + axis.y * 0.015,
+          stump.mesh.position.z + axis.z * 0.015 + (second - 0.5) * 0.03,
+          fountainVelocity.x,
+          fountainVelocity.y,
+          fountainVelocity.z,
           bloodShade(first),
-          0.65 + third * 0.5,
+          1.2 + third * 0.6,
           true,
+          0.004 + third * third * 0.01,
         );
       }
     }

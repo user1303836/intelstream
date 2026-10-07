@@ -403,6 +403,103 @@ describe("neck cut", () => {
   });
 });
 
+describe("an arterial fountain", () => {
+  type Spawn = { time: number; velocity: THREE.Vector3; at: THREE.Vector3 };
+  /** Every drop a stump throws, and when: from the cut until `seconds` later. */
+  const pump = (effects: Effects3D, seconds: number): Spawn[] => {
+    const spawns: Spawn[] = [];
+    let time = 0;
+    const spawn = vi.spyOn(effects as unknown as { spawnDroplet(...args: number[]): void }, "spawnDroplet").mockImplementation((x, y, z, vx, vy, vz) => {
+      spawns.push({ time, velocity: new THREE.Vector3(vx, vy, vz), at: new THREE.Vector3(x, y, z) });
+    });
+    for (; time < seconds; time += 1 / 60) effects.update(1 / 60);
+    spawn.mockRestore();
+    return spawns;
+  };
+  // A neck lying on the canvas, its wound facing along +x.
+  const along = new THREE.Vector3(1, 0, 0);
+  const lying = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), along);
+  const severed = (effects: Effects3D): void => {
+    effects.decapitate(0, new THREE.Vector3(0.4, 0.25, 0.2), new THREE.Quaternion(), 1, 8);
+    effects.anchorStump(0, new THREE.Vector3(0.4, 0.25, 0.2), lying);
+  };
+
+  it("pumps with the heart for seconds, in spurts that weaken as he bleeds out", () => {
+    const effects = new Effects3D(new THREE.Scene());
+    severed(effects);
+    const spawns = pump(effects, 9);
+    const between = (from: number, to: number): Spawn[] => spawns.filter((spawn) => spawn.time >= from && spawn.time < to);
+    expect(between(5, 6.5).length).toBeGreaterThan(5);
+    expect(between(6.6, 9)).toHaveLength(0);
+    expect(between(0, 1).length).toBeGreaterThan(between(4, 5).length * 1.5);
+    // Spurts at the heart's rate: tenths of a second at the top of a beat throw far more than those between beats.
+    const tenths = Array.from({ length: 24 }, (_, tenth) => between(tenth / 10, (tenth + 1) / 10).length);
+    expect(Math.max(...tenths)).toBeGreaterThanOrEqual(Math.max(4, 4 * Math.min(...tenths)));
+    let peaks = 0;
+    for (let tenth = 1; tenth + 1 < tenths.length; tenth += 1) if (tenths[tenth]! > tenths[tenth - 1]! && tenths[tenth]! >= tenths[tenth + 1]! && tenths[tenth]! >= Math.max(...tenths) / 2) peaks += 1;
+    // 1.7 beats a second: four beats in 2.4 s.
+    expect(peaks).toBeGreaterThanOrEqual(3);
+    expect(peaks).toBeLessThanOrEqual(5);
+    // Its heaviest spurts throw only so many drops, for the phones.
+    expect(spawns.length).toBeLessThan(260);
+    effects.dispose();
+  });
+
+  it("throws the blood at arterial speed along the wound's axis, not straight up", () => {
+    const effects = new Effects3D(new THREE.Scene());
+    severed(effects);
+    const spawns = pump(effects, 6.5);
+    const early = spawns.filter((spawn) => spawn.time < 1.5);
+    for (const spawn of spawns) {
+      expect(THREE.MathUtils.radToDeg(spawn.velocity.angleTo(along))).toBeLessThan(25);
+      expect(spawn.velocity.length()).toBeLessThanOrEqual(6 + 1e-9);
+    }
+    const fast = early.filter((spawn) => spawn.velocity.length() >= 4);
+    expect(fast.length).toBeGreaterThan(early.length * 0.3);
+    // Weaker as the pressure falls.
+    const late = spawns.filter((spawn) => spawn.time > 5.5);
+    const mean = (list: Spawn[]): number => list.reduce((sum, spawn) => sum + spawn.velocity.length(), 0) / Math.max(1, list.length);
+    expect(mean(late)).toBeLessThan(mean(early) * 0.8);
+    effects.dispose();
+  });
+
+  it("faces out of the flesh closing a measured cut", () => {
+    const effects = new Effects3D(new THREE.Scene());
+    effects.decapitate(0, new THREE.Vector3(0, 1.4, 0), new THREE.Quaternion(), 1, 8);
+    // The neck tipped over toward -z, its cut measured as a ring round the wound.
+    const outward = new THREE.Vector3(0, 0.5, -1).normalize();
+    const centre = new THREE.Vector3(0, 1.4, 0);
+    const turn = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), outward);
+    const rim: number[] = [];
+    for (let edge = 0; edge < 16; edge += 1) {
+      for (const end of [edge, edge + 1]) {
+        const angle = (end / 16) * Math.PI * 2;
+        rim.push(...new THREE.Vector3(Math.cos(angle) * 0.06, 0, Math.sin(angle) * 0.06).applyQuaternion(turn).add(centre).toArray());
+      }
+    }
+    effects.anchorStump(0, centre, turn, rim);
+    const spawns = pump(effects, 1);
+    expect(spawns.length).toBeGreaterThan(10);
+    for (const spawn of spawns) expect(THREE.MathUtils.radToDeg(spawn.velocity.angleTo(outward))).toBeLessThan(25);
+    effects.dispose();
+  });
+
+  it("pumps a severed wrist too, and stops with the blood turned down", () => {
+    const effects = new Effects3D(new THREE.Scene());
+    effects.dismemberHand(0, "left", new THREE.Vector3(0.3, 0.2, 0), new THREE.Quaternion(), 1, 21, 0x1d4ed8);
+    effects.anchorHandStump(0, "left", new THREE.Vector3(0.3, 0.2, 0), lying);
+    const spawns = pump(effects, 6);
+    expect(spawns.filter((spawn) => spawn.time > 3).length).toBeGreaterThan(5);
+    for (const spawn of spawns) expect(THREE.MathUtils.radToDeg(spawn.velocity.angleTo(along))).toBeLessThan(25);
+    const reduced = new Effects3D(new THREE.Scene());
+    severed(reduced);
+    reduced.setBloodLevel("reduced");
+    expect(pump(reduced, 3)).toHaveLength(0);
+    effects.dispose();
+    reduced.dispose();
+  });
+});
+
 describe("ropes and a severed part", () => {
   it("bounce a part that reaches them from inside", () => {
     expect(confineToRopes(2.35, 3, 2.28, 2.3)).toEqual({ position: 2.3, velocity: 3 * -0.42 });
