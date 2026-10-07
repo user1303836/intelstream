@@ -23,22 +23,45 @@ function compile(material: THREE.Material): { uniforms: Record<string, { value: 
 
 
 describe("the inside of a head", () => {
-  it("is drawn only for a fighter, whose head can be cut open, and a whole head's back faces do no work", () => {
-    const fighterHead = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
-    const referee = new SkinnedBoxer(gltf, { skin: 0xc79b76, gear: 0x3b57b8, outfit: REFEREE_OUTFIT });
-    const headOf = (boxer: SkinnedBoxer): THREE.Material => {
-      let found: THREE.Material | null = null;
-      boxer.root.traverse((object) => { if (object instanceof THREE.SkinnedMesh && object.name === "BoxerHead") found = object.material as THREE.Material; });
-      return found!;
+  /** A shader as the GPU compiles it while the head is whole: without the code a finisher opens it with. */
+  const whole = (shader: string): string => shader.replace(/#ifdef HANDS_INJURY_OPEN[\s\S]*?#endif/gu, "");
+
+  it("is drawn one-sided, by a shader that discards nothing, until a finisher opens the head", () => {
+    const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
+    const head = boxer.headMesh.material as THREE.MeshStandardMaterial;
+    const shadow = boxer.headMesh.customDepthMaterial!;
+    const closed = (): void => {
+      expect(head.side).toBe(THREE.FrontSide);
+      expect(head.defines).not.toHaveProperty("HANDS_INJURY_OPEN");
+      expect(shadow.defines ?? {}).not.toHaveProperty("HANDS_INJURY_OPEN");
+      expect(boxer.headInjury.open).toBe(false);
     };
-    expect(headOf(fighterHead).side).toBe(THREE.DoubleSide);
-    expect(headOf(referee).side).toBe(THREE.FrontSide);
-    const material = new THREE.MeshStandardMaterial();
-    new InjuryShading(material, HEAD_SITES);
-    const shader = { uniforms: {} as Record<string, { value: unknown }>, vertexShader: SHADER.vertexShader, fragmentShader: "#include <common>\nvoid main() {\n#include <clipping_planes_fragment>\n#include <map_fragment>\n#include <roughnessmap_fragment>\n}" };
-    material.onBeforeCompile(shader as unknown as THREE.WebGLProgramParametersWithUniforms, null as unknown as THREE.WebGLRenderer);
-    const lines = shader.fragmentShader.split("\n");
-    expect(lines[lines.indexOf("#include <clipping_planes_fragment>") + 1]).toMatch(/^if \(!gl_FrontFacing && uInjurySever >= \d+\.0\) discard;$/u);
+    closed();
+    const skin = compile(head);
+    expect(skin.fragmentShader).toContain("discard");
+    expect(whole(skin.fragmentShader)).not.toContain("discard");
+    expect(whole(skin.fragmentShader)).not.toContain("gl_FrontFacing");
+    const depth = { uniforms: {}, vertexShader: SHADER.vertexShader, fragmentShader: "#include <common>\n#include <clipping_planes_fragment>" };
+    shadow.onBeforeCompile(depth as unknown as THREE.WebGLProgramParametersWithUniforms, null as unknown as THREE.WebGLRenderer);
+    expect(whole(depth.fragmentShader)).not.toContain("discard");
+    for (const open of [() => boxer.setDecapitated(true), () => boxer.setHeadBurst(true)]) {
+      open();
+      expect(head.side).toBe(THREE.DoubleSide);
+      expect(head.shadowSide).toBe(THREE.BackSide);
+      expect(head.defines).toHaveProperty("HANDS_INJURY_OPEN");
+      expect(shadow.defines).toHaveProperty("HANDS_INJURY_OPEN");
+      // A replay puts the head back on.
+      boxer.setDecapitated(false);
+      closed();
+    }
+    // The body shares the shader and is never opened; an official's head never is either.
+    expect(boxer.bodyInjury.material!.defines).not.toHaveProperty("HANDS_INJURY_OPEN");
+    expect(boxer.bodyInjury.material!.side).toBe(THREE.FrontSide);
+    const referee = new SkinnedBoxer(gltf, { skin: 0xc79b76, gear: 0x3b57b8, outfit: REFEREE_OUTFIT });
+    referee.setDecapitated(true);
+    expect((referee.headMesh.material as THREE.Material).side).toBe(THREE.FrontSide);
+    referee.dispose();
+    boxer.dispose();
   });
 });
 

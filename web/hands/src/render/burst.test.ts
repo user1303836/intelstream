@@ -53,12 +53,12 @@ describe("a head that bursts", () => {
 
   it("shows raw flesh inside the head where it is open, drawing the head from inside too", () => {
     const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
-    expect((boxer.headMesh.material as THREE.Material).side).toBe(THREE.DoubleSide);
     expect((boxer.headMesh.material as THREE.Material).shadowSide).toBe(THREE.BackSide);
     const shader = { uniforms: {}, vertexShader: "#include <common>\n#include <begin_vertex>", fragmentShader: "#include <common>\n#include <map_fragment>\n#include <roughnessmap_fragment>" };
     boxer.headInjury.material!.onBeforeCompile(shader as unknown as THREE.WebGLProgramParametersWithUniforms, null as unknown as THREE.WebGLRenderer);
     expect(shader.fragmentShader).toContain("if (!gl_FrontFacing)");
     boxer.setHeadBurst(true);
+    expect((boxer.headMesh.material as THREE.Material).side).toBe(THREE.DoubleSide);
     expect(boxer.isHeadBurst).toBe(true);
     expect(boxer.isDecapitated).toBe(false);
     boxer.setDecapitated(true);

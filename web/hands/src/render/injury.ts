@@ -162,19 +162,25 @@ ${SEVER}
 float injuryHash(float n) { return fract(sin(n) * 43758.5453123); }
 `;
 
-/** A head drawn from both sides only shows its inside once it is cut open: until then a back face does no work. */
-const CLOSED_BACK_FACE = /* glsl */ `if (!gl_FrontFacing && uInjurySever >= ${UNCUT}.0) discard;`;
+/**
+ * Set on a head while a finisher has it open (cut off or burst): only then is its shader the one that
+ * cuts it away along the line and draws its inside, from both sides. A whole head, and the body, draw
+ * one-sided with nothing that can discard a pixel, which a tile-based phone GPU needs to cull early.
+ */
+const OPEN = "HANDS_INJURY_OPEN";
 
 const FRAGMENT_BODY = /* glsl */ `
 {
   vec3 injuryPos = vInjuryPos;
-  if (uInjurySever < ${UNCUT}.0) {
+#ifdef ${OPEN}
+  {
     float below = injuryCutLine(injuryPos) - injuryPos.y;
     if (below < 0.0) discard;
     float torn = 1.0 - smoothstep(0.0, 1.8, below);
     diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.2, 0.008, 0.012), torn * 0.94);
     injuryWet = max(injuryWet, torn);
   }
+#endif
   vec3 hematomaFresh = vec3(0.42, 0.09, 0.11);
   vec3 hematomaDeep = vec3(0.2, 0.04, 0.07);
   vec3 bloodColor = vec3(0.30, 0.008, 0.012);
@@ -285,11 +291,13 @@ const FRAGMENT_BODY = /* glsl */ `
     }
     injuryWet = max(injuryWet, w);
   }
+#ifdef ${OPEN}
   // Where a cut or a burst opens the head, its inside shows as raw flesh rather than nothing.
   if (!gl_FrontFacing) {
     diffuseColor.rgb = vec3(0.2, 0.012, 0.022);
     injuryWet = 1.0;
   }
+#endif
   injuryWet *= uInjuryWetness;
 }
 `;
@@ -322,6 +330,7 @@ export class InjuryShading {
     uInjuryEyeOut: { value: new THREE.Vector2() },
   };
   private readonly index = new Map<string, number>();
+  private shadow: THREE.MeshDepthMaterial | null = null;
 
   /** With no material the state is kept but shades nothing: an official, who never takes damage. */
   constructor(
@@ -347,7 +356,6 @@ export class InjuryShading {
         .replace("#include <begin_vertex>", `#include <begin_vertex>\n${VERTEX_BODY}`);
       shader.fragmentShader = shader.fragmentShader
         .replace("#include <common>", `#include <common>\n${FRAGMENT_DECLARATIONS}`)
-        .replace("#include <clipping_planes_fragment>", `#include <clipping_planes_fragment>\n${CLOSED_BACK_FACE}`)
         .replace("#include <map_fragment>", `#include <map_fragment>\n${FRAGMENT_BODY}`)
         .replace("#include <roughnessmap_fragment>", `#include <roughnessmap_fragment>\n${ROUGHNESS_BODY}`);
     };
@@ -399,12 +407,36 @@ export class InjuryShading {
   setSevered(severed: boolean): void {
     this.uniforms.uInjurySever.value = severed ? NECK_CUT_HEIGHT : UNCUT;
     this.uniforms.uInjurySeverShape.value.set(NECK_CUT_SLOPE, 1);
+    this.setOpen(severed);
   }
 
   /** Removes everything above the mouth in a ragged tear, as when the head bursts. */
   setBurst(burst: boolean): void {
     this.uniforms.uInjurySever.value = burst ? BURST_CUT_HEIGHT : UNCUT;
     this.uniforms.uInjurySeverShape.value.set(burst ? 0 : NECK_CUT_SLOPE, burst ? BURST_RAGGED : 1);
+    this.setOpen(burst);
+  }
+
+  /** Whether the head is drawn by the shader that cuts it open, from both sides. */
+  get open(): boolean {
+    return this.material?.defines?.[OPEN] !== undefined;
+  }
+
+  /**
+   * Switches the head and its shadow to the shaders that cut it open, or back. Each is a program of its
+   * own, which the renderer compiles before the bout so that a finisher compiles nothing.
+   */
+  setOpen(open: boolean): void {
+    const material = this.material;
+    if (material === null || open === this.open) return;
+    for (const variant of [material, this.shadow]) {
+      if (variant === null) continue;
+      const defines = (variant.defines ??= {});
+      if (open) defines[OPEN] = "";
+      else delete defines[OPEN];
+      variant.needsUpdate = true;
+    }
+    material.side = open ? THREE.DoubleSide : THREE.FrontSide;
   }
 
   /** Shadow pass material for the same mesh, so a severed head casts no shadow from the shoulders. */
@@ -418,9 +450,11 @@ export class InjuryShading {
         .replace("#include <begin_vertex>", "#include <begin_vertex>\nvInjuryPos = transformed;");
       shader.fragmentShader = shader.fragmentShader
         .replace("#include <common>", `#include <common>\nvarying vec3 vInjuryPos;\n${SEVER}`)
-        .replace("#include <clipping_planes_fragment>", `#include <clipping_planes_fragment>\nif (uInjurySever < ${UNCUT}.0 && vInjuryPos.y > injuryCutLine(vInjuryPos)) discard;`);
+        .replace("#include <clipping_planes_fragment>", `#include <clipping_planes_fragment>\n#ifdef ${OPEN}\nif (vInjuryPos.y > injuryCutLine(vInjuryPos)) discard;\n#endif`);
     };
     material.customProgramCacheKey = () => "hands-injury-shadow";
+    if (this.open) material.defines = { [OPEN]: "" };
+    this.shadow = material;
     return material;
   }
 

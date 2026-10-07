@@ -1107,6 +1107,10 @@ export class FightRenderer {
         // neither the first frame with fighters nor the first bloody hit stalls the page.
         const staging = new THREE.Group();
         staging.add(first.root, second.root, official.root, blueCorner.root, redCorner.root, blueCutman.root, redCutman.root, ...this.trails.map((trail) => trail.mesh), ...this.effects.compileStandIns());
+        // A finisher opens a head, which a shader of its own draws, and another its shadow: the first
+        // fighter's head is opened for the warm-up and closed again before it is drawn.
+        const opened = first.headInjury.open;
+        first.headInjury.setOpen(true);
         try {
           await compileForComposer(this.renderer, this.composer, staging, this.camera, this.scene);
         } catch {
@@ -1116,6 +1120,7 @@ export class FightRenderer {
         this.scene.add(first.root, second.root, official.root, blueCorner.root, redCorner.root, blueCutman.root, redCutman.root);
         for (const trail of this.trails) this.scene.add(trail.mesh);
         this.compileShadowsOf(staging);
+        first.headInjury.setOpen(opened);
       })
       .catch((error: unknown) => {
         this.glbLoading = false;
