@@ -16,6 +16,7 @@ export function mockHudContext(texts: string[], drawn?: DrawnPicture[], arcs?: A
     arc: (x: number, y: number, radius: number) => arcs?.push({ x, y, radius }),
     clip: () => {},
     setTransform: () => {},
+    scale: () => {},
     drawImage: (image: unknown, x: number, y: number, width: number, height: number) => drawn?.push({ image, x, y, width, height }),
     moveTo: () => {},
     lineTo: () => {},
