@@ -1286,6 +1286,7 @@ export class Effects3D {
     this.mistGeometry.dispose();
     this.mistMaterial.dispose();
     this.mistMap.dispose();
+    this.gibMesh.dispose();
     this.gibGeometry.dispose();
     this.gibMaterial.dispose();
     this.headGeometry.dispose();

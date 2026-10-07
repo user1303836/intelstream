@@ -1632,16 +1632,19 @@ export class FightRenderer {
     for (const light of this.lights) this.scene.remove(light);
     this.keyLight?.shadow.map?.dispose();
     this.keyLight?.shadow.dispose();
-    this.renderer.renderLists.dispose();
-    disposeComposer(this.composer);
-    releaseFighterGpu();
-    this.renderer.dispose();
     this.blobTexture.dispose();
     for (const blob of this.blobShadows) {
       this.scene.remove(blob);
       blob.geometry.dispose();
       (blob.material as THREE.Material).dispose();
     }
+    this.renderer.renderLists.dispose();
+    disposeComposer(this.composer);
+    // three's UnrealBloomPass.dispose leaves its bright-pass filter out.
+    this.bloomPass.materialHighPassFilter.dispose();
+    releaseFighterGpu();
+    // Last: a disposed renderer forgets what it allocated, so anything freed after it stays on the card.
+    this.renderer.dispose();
     this.hudCanvas.remove();
   }
 }

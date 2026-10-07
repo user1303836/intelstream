@@ -9,6 +9,7 @@ import { FightRenderer } from "./renderer";
 /** The renderer's private parts a test drives or inspects. */
 interface Internals {
   readonly renderer: THREE.WebGLRenderer;
+  readonly scene: THREE.Scene;
   readonly scaler: { scale: number };
   applyResolutionScale(): void;
   readonly keyLight: THREE.SpotLight;
@@ -86,6 +87,36 @@ describe("quality tiers on the graphics card", () => {
     expect(key.shadow.intensity).toBe(1);
     expect(key.shadow.map).not.toBeNull();
     expect(key.shadow.map?.width).toBe(1024);
+  });
+});
+
+describe("graphics memory across rematches on a shared context", () => {
+  it("leaves nothing on the context but what three itself keeps per renderer", async () => {
+    // A bare renderer's own leftovers: its state's placeholder textures and its copy framebuffers.
+    const bareCanvas = document.createElement("canvas");
+    const bare = attachFakeWebGl(bareCanvas);
+    new THREE.WebGLRenderer({ canvas: bareCanvas }).dispose();
+    const { gl, fight, internals } = await mount();
+    const time = settle(fight);
+    land(fight, 20, [punch(41, 20)], exchange(20, "head"));
+    fight.labFrame(time + 0.1);
+    expect(internals.effects.liveGibs).toBeGreaterThan(0);
+    // Upload every canvas-drawn texture the scene uses, as drawing it on a real card does.
+    internals.scene.traverse((object) => {
+      for (const material of [(object as THREE.Mesh).material ?? []].flat()) {
+        for (const value of Object.values(material)) if (value instanceof THREE.CanvasTexture) internals.renderer.initTexture(value);
+      }
+    });
+    // The shadow map's depth material belongs to three and is never disposed.
+    const threeOwned = internals.renderer.info.programs!.filter((program) => program.cacheKey.startsWith("depth,")).map((program) => (program as unknown as { program: unknown }).program);
+    fight.destroy();
+    const live = gl.live();
+    expect(live.buffers).toBe(0);
+    expect(live.vertexArrays).toBe(0);
+    expect(live.renderbuffers).toBe(0);
+    expect(live.textures).toBe(bare.live().textures);
+    expect(live.framebuffers).toBe(bare.live().framebuffers);
+    expect(live.programs).toBe(threeOwned.filter((program) => gl.alive(program)).length);
   });
 });
 
