@@ -467,6 +467,16 @@ describe("viewport and broadcast HUD", () => {
     expect(HUD_MAX_POISE).toBe(600);
   });
 
+  it("tags the computer's plate instead of showing a rating for it", () => {
+    const texts: string[] = [];
+    const ctx = mockHudContext(texts);
+    const players = Object.fromEntries(publicPlayers.map((p) => [p.id, p.id === "two" ? { ...p, cpu: true } : p]));
+    drawHud(ctx, 1280, 720, snapshot(), players, "one", null, 0, 30);
+    expect(texts.some((text) => text.startsWith("ELO ") && text.includes("KD"))).toBe(true);
+    expect(texts.some((text) => text.startsWith("CPU · KD"))).toBe(true);
+    expect(texts.filter((text) => text.startsWith("ELO "))).toHaveLength(1);
+  });
+
   it("uses the bootstrap tick rate for the authoritative HUD clock", () => {
     const texts: string[] = [];
     const ctx = mockHudContext(texts);
@@ -885,6 +895,12 @@ describe("result card", () => {
       { label: "ACCURACY", values: ["67%", "—"], lead: 0 },
       { label: "RATING", values: ["1016 (+16)", "984 (−16)"], lead: null, news: [true, false] },
     ]);
+  });
+
+  it("calls a bout against the computer unrated", () => {
+    const computer = { ...players, two: { ...players.two, cpu: true } };
+    const card = resultCard(result("decision", "one", [], { one: { before: 1000, after: 1000 }, two: { before: 1400, after: 1400 } }), fighters(), computer, [none, none]);
+    expect(card.rows).toEqual([{ label: "RATING", values: ["Unrated", "Unrated"], lead: null }]);
   });
 
   it("calls a draw a draw and names a winner who is not in either seat", () => {

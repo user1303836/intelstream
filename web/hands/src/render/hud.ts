@@ -343,7 +343,7 @@ export function drawHud(
     const mirror = index === 1;
     const x = mirror ? width - 24 - plateWidth : 24;
     const player = players[fighter.player_id];
-    const detail = `ELO ${player?.rating ?? "—"} · KD ${fighter.knockdowns} · W ${fighter.warnings} · −${fighter.deductions}`;
+    const detail = `${player?.cpu === true ? "CPU" : `ELO ${player?.rating ?? "—"}`} · KD ${fighter.knockdowns} · W ${fighter.warnings} · −${fighter.deductions}`;
     const bars: BarSpec[] = [
       { label: `${compact ? "STA" : "STAMINA"} ${Math.round(fighter.stamina)}`, value: fighter.stamina, maximum: fighter.maximum_stamina, from: "#ffe08a", to: "#d9a53a" },
       { label: `${compact ? "HP" : "HEALTH"} ${Math.round(fighter.conditioning)}`, value: fighter.conditioning, maximum: HUD_MAX_CONDITIONING, from: "#ff8a7a", to: "#b02a20" },
@@ -570,7 +570,9 @@ export function resultCard(
   }
   const ratings = fighters.map((fighter) => final.ratings[fighter.player_id]);
   const [first, second] = ratings;
-  if (first !== undefined && second !== undefined) {
+  if (fighters.some((fighter) => players[fighter.player_id]?.cpu === true)) {
+    rows.push({ label: "RATING", values: ["Unrated", "Unrated"], lead: null });
+  } else if (first !== undefined && second !== undefined) {
     const change = (rating: RatingDelta): string => `${rating.after} (${rating.after >= rating.before ? "+" : "−"}${Math.abs(rating.after - rating.before)})`;
     rows.push({ label: "RATING", values: [change(first), change(second)], lead: null, news: [first.after >= first.before, second.after >= second.before] });
   }

@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   rendererPushes: [] as number[][],
   callbacks: null as NetworkCallbacks | null,
   resultVisible: true,
+  cpuRequests: [] as string[],
+  cpuAccepted: true,
 }));
 vi.mock("./discord", () => ({
   authorizeDiscord: vi.fn(async () => ({
@@ -27,6 +29,7 @@ vi.mock("./network", () => ({
     start(): void {}
     setActive(active: boolean): void { mocks.networkSetActive(active); }
     notifyAction(): void {}
+    requestCpu(level: string): boolean { mocks.cpuRequests.push(level); return mocks.cpuAccepted; }
     dispose(): void { mocks.networkDispose(); }
   },
 }));
@@ -71,6 +74,8 @@ describe("browser lifecycle and accessible overlays", () => {
     mocks.callbacks = null;
     mocks.rendererPushes.length = 0;
     mocks.resultVisible = true;
+    mocks.cpuRequests.length = 0;
+    mocks.cpuAccepted = true;
     vi.clearAllMocks();
   });
 
@@ -239,6 +244,111 @@ describe("browser lifecycle and accessible overlays", () => {
     expect(button.hidden).toBe(false);
     expect(button.disabled).toBe(true);
     app.destroy();
+  });
+
+  describe("fighting the computer", () => {
+    const computer = { id: "cpu:champion", name: "Viktor 'Iron' Volkov", avatar: null, rating: 1400, connected: true, cpu: true };
+    const alone = (): void => {
+      send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [players[0]], server_tick: 0, next_sequence: 0, reconnect_ticket: "rotated" });
+      send({ version: 3, type: "waiting", open_seats: 1 });
+    };
+    const launch = async (): Promise<{ app: HandsApp; root: HTMLElement }> => {
+      history.replaceState({}, "", "/?instance_id=launch");
+      const root = document.createElement("div");
+      const app = new HandsApp(root);
+      app.start();
+      await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
+      return { app, root };
+    };
+    const pick = (root: HTMLElement, level: string): void => root.querySelector<HTMLButtonElement>(`[data-cpu-level="${level}"]`)!.click();
+
+    it("offers a fighter waiting alone the computer at three levels and calls the one chosen", async () => {
+      const { app, root } = await launch();
+      const picker = root.querySelector<HTMLElement>("[data-cpu]")!;
+      expect(picker.hidden).toBe(true);
+      alone();
+      expect(picker.hidden).toBe(false);
+      expect([...picker.querySelectorAll<HTMLButtonElement>("[data-cpu-level]")].map((button) => button.dataset.cpuLevel)).toEqual(["rookie", "contender", "champion"]);
+      pick(root, "contender");
+      expect(mocks.cpuRequests).toEqual(["contender"]);
+      expect(picker.hidden).toBe(true);
+      expect(root.querySelector("[data-status]")?.textContent).toBe("Calling in the computer…");
+      pick(root, "rookie");
+      expect(mocks.cpuRequests).toEqual(["contender"]);
+      send({ version: 3, type: "ready", players: [players[0], computer] });
+      expect(picker.hidden).toBe(true);
+      app.destroy();
+    });
+
+    it("keeps the offer away from spectators and from a bout already under way", async () => {
+      const { app, root } = await launch();
+      send({ version: 3, type: "welcome", role: "spectator", player_id: "viewer", players: [...players], server_tick: 40, reconnect_ticket: "spectator" });
+      send({ version: 3, type: "waiting", open_seats: 1 });
+      expect(root.querySelector<HTMLElement>("[data-cpu]")!.hidden).toBe(true);
+      pick(root, "rookie");
+      expect(mocks.cpuRequests).toEqual([]);
+      app.destroy();
+      const second = await launch();
+      send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 0, next_sequence: 0, reconnect_ticket: "rotated" });
+      send({ version: 3, type: "ready", players: [...players] });
+      expect(second.root.querySelector<HTMLElement>("[data-cpu]")!.hidden).toBe(true);
+      second.app.destroy();
+    });
+
+    it("asks again when a reconnect lands back in the empty ring, and keeps offering when it could not ask", async () => {
+      const { app, root } = await launch();
+      alone();
+      mocks.cpuAccepted = false;
+      pick(root, "rookie");
+      expect(root.querySelector<HTMLElement>("[data-cpu]")!.hidden).toBe(false);
+      expect(root.querySelector("[data-status]")?.textContent).toContain("Play now");
+      mocks.cpuAccepted = true;
+      pick(root, "rookie");
+      send({ version: 3, type: "waiting", open_seats: 1 });
+      expect(mocks.cpuRequests).toEqual(["rookie", "rookie", "rookie"]);
+      app.destroy();
+    });
+
+    it("calls the bout unrated and brings the same computer back for a rematch", async () => {
+      const { app, root } = await launch();
+      alone();
+      pick(root, "champion");
+      send({ version: 3, type: "ready", players: [players[0], computer] });
+      send({ version: 3, type: "snapshot", payload: { ...makeSnapshot(100), fighters: [fighter("one", -100), fighter("cpu:champion", 100)] } });
+      vi.useFakeTimers();
+      send({ version: 3, type: "final", match_id: "m1", winner_id: "cpu:champion", method: "decision", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1500 }, "cpu:champion": { before: 1400, after: 1400 } } });
+      expect(root.querySelector("[data-final]")?.textContent).toContain("Unrated bout against the computer.");
+      expect(root.querySelector("[data-final]")?.textContent).not.toContain("Ratings:");
+      expect(root.querySelector("[data-status]")?.textContent).toContain("unrated");
+      vi.advanceTimersByTime(11_500);
+      const first = mocks.callbacks;
+      root.querySelector<HTMLButtonElement>("[data-rematch]")!.click();
+      vi.useRealTimers();
+      await vi.waitFor(() => expect(mocks.callbacks).not.toBe(first));
+      expect(mocks.cpuRequests).toEqual(["champion"]);
+      alone();
+      expect(mocks.cpuRequests).toEqual(["champion", "champion"]);
+      expect(root.querySelector<HTMLElement>("[data-cpu]")!.hidden).toBe(true);
+      app.destroy();
+    });
+
+    it("does not call the computer for a rematch against a person", async () => {
+      const { app, root } = await launch();
+      alone();
+      send({ version: 3, type: "ready", players: [...players] });
+      vi.useFakeTimers();
+      send({ version: 3, type: "final", match_id: "m1", winner_id: "one", method: "decision", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } });
+      expect(root.querySelector("[data-final]")?.textContent).toContain("Ratings:");
+      vi.advanceTimersByTime(11_500);
+      const first = mocks.callbacks;
+      root.querySelector<HTMLButtonElement>("[data-rematch]")!.click();
+      vi.useRealTimers();
+      await vi.waitFor(() => expect(mocks.callbacks).not.toBe(first));
+      alone();
+      expect(mocks.cpuRequests).toEqual([]);
+      expect(root.querySelector<HTMLElement>("[data-cpu]")!.hidden).toBe(false);
+      app.destroy();
+    });
   });
 
   it("shows copyable diagnostics in the settings panel", async () => {
