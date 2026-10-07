@@ -255,6 +255,44 @@ describe("browser lifecycle and accessible overlays", () => {
     app.destroy();
   });
 
+  it("waits for the named opponent after Rematch, with the computer only as a fallback", async () => {
+    history.replaceState({}, "", "/?instance_id=launch");
+    const root = document.createElement("div");
+    const app = new HandsApp(root);
+    app.start();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
+    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 100, next_sequence: 8, reconnect_ticket: "rotated" });
+    send({ version: 3, type: "snapshot", payload: makeSnapshot(100) });
+    vi.useFakeTimers();
+    send({ version: 3, type: "final", match_id: "m1", winner_id: "one", method: "decision", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } });
+    vi.advanceTimersByTime(11_500);
+    const first = mocks.callbacks;
+    root.querySelector<HTMLButtonElement>("[data-rematch]")!.click();
+    vi.useRealTimers();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBe(first));
+    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1516, players: [players[0]], server_tick: 0, next_sequence: 0, reconnect_ticket: "again" });
+    send({ version: 3, type: "waiting", open_seats: 1 });
+    expect(root.querySelector("[data-status]")?.textContent).toBe("Waiting for Two to take the rematch…");
+    expect(root.querySelector("[data-cpu-prompt]")?.textContent).toBe("Or fight the computer instead:");
+    send({ version: 3, type: "ready", players: [...players] });
+    send({ version: 3, type: "snapshot", payload: makeSnapshot(1, "countdown") });
+    expect(root.querySelector("[data-cpu-prompt]")?.textContent).toBe("No one here yet? Fight the computer.");
+    app.destroy();
+  });
+
+  it("groups the controls into sections and keeps diagnostics behind a disclosure", () => {
+    const root = document.createElement("div");
+    const app = new HandsApp(root);
+    const headings = [...root.querySelectorAll("[data-controls-panel] h3")].map((heading) => heading.textContent);
+    expect(headings).toEqual(["Keyboard", "Between rounds", "Controller"]);
+    expect(root.querySelector("[data-controls-panel]")?.textContent).toContain("Shift+1 low blow");
+    const diagnostics = root.querySelector("details.diagnostics");
+    expect(diagnostics).not.toBeNull();
+    expect(diagnostics?.hasAttribute("open")).toBe(false);
+    expect(diagnostics?.querySelector("[data-diagnostics]")).not.toBeNull();
+    app.destroy();
+  });
+
   it("offers a rematch after the result hold and retries while the ring is still clearing", async () => {
     history.replaceState({}, "", "/?instance_id=launch");
     const root = document.createElement("div");
@@ -631,6 +669,21 @@ describe("the broadcast", () => {
     expect(spoken).toEqual(["In the blue corner... One!"]);
     voice.checked = false;
     voice.dispatchEvent(new Event("change"));
+    expect(cancel).toHaveBeenCalled();
+    app.destroy();
+  });
+
+  it("cuts the ring announcer off at the opening bell", async () => {
+    const cancel = vi.fn();
+    Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { speak: () => undefined, cancel, getVoices: () => [] } });
+    Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: class { onend = null; onerror = null; constructor(readonly text: string) {} } });
+    const { app } = await launch();
+    send({ version: 3, type: "snapshot", payload: makeSnapshot(1, "countdown") });
+    mocks.renderers.at(-1)!.onAnnouncement!(["In the blue corner... One!", "And in the red corner... Two!"]);
+    cancel.mockClear();
+    send({ version: 3, type: "snapshot", payload: makeSnapshot(2, "countdown") });
+    expect(cancel).not.toHaveBeenCalled();
+    send({ version: 3, type: "snapshot", payload: makeSnapshot(3, "fight") });
     expect(cancel).toHaveBeenCalled();
     app.destroy();
   });

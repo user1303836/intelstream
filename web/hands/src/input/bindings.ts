@@ -16,7 +16,7 @@ export const ACTIVE_CODES = new Set([...Object.keys(PUNCH_KEYS), ...Object.keys(
 export const CONTROL_HELP = [
   "Move: W up · S down · A left · D right", "High / low guard: Q / E", "Left/right jab: F / J", "Left/right straight: R / U",
   "Left/right hook: G / H", "Left/right uppercut: T / Y", "Body: Shift · Power: Alt",
-  "Slip: Z / X · Weave: C · Pull: V", "Clinch: B · Stance: N · Taunt: M · Fouls: 1 / 2", "Get-up rhythm: ← / →",
+  "Slip: Z / X · Weave: C · Pull: V", "Clinch: B · Stance: N · Taunt: M · Fouls (on purpose): Shift+1 low blow / Shift+2 headbutt", "Get-up rhythm: ← / →",
   "Camera: K cycles broadcast, close and over the shoulder (behind your fighter, W walks at the opponent and A / D circle him).",
   "Controller move: left stick. High / low guard: left / right shoulder (independent of punches).",
   "Controller face classes: bottom jab · right straight · left hook · top uppercut.",
@@ -27,3 +27,10 @@ export const CONTROL_HELP = [
   "Right-stick gesture: horizontal 0–22.5° hook · 22.5–45° jab · 45–70° straight · 70–90° uppercut; left/right direction selects hand.",
   "Between rounds, tell your corner what to work on: 1 close the cut · 2 bring down the swelling · 3 catch your breath (controller: left, top or right face button; or tap).",
 ] as const;
+
+/** The Controls panel in sections instead of one list. */
+export const CONTROL_SECTIONS: readonly { readonly title: string; readonly items: readonly string[] }[] = [
+  { title: "Keyboard", items: CONTROL_HELP.filter((item) => !item.startsWith("Controller") && !item.startsWith("Right-stick") && !item.startsWith("Between rounds")) },
+  { title: "Between rounds", items: CONTROL_HELP.filter((item) => item.startsWith("Between rounds")) },
+  { title: "Controller", items: CONTROL_HELP.filter((item) => item.startsWith("Controller") || item.startsWith("Right-stick")) },
+];
