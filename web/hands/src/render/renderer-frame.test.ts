@@ -54,7 +54,7 @@ function frame(state: EngineSnapshot, overrides: Record<string, unknown> = {}) {
     finishSeen: false,
     finishSlowMotion: 0,
     ovationUntil: 0,
-    arena: { excite: vi.fn(), update: vi.fn() },
+    arena: { excite: vi.fn(), update: vi.fn(), makeRoomForCamera: vi.fn() },
     viewerHitFlash: 0,
     localInput: null,
     replay: null,

@@ -2319,6 +2319,7 @@ export class FightRenderer {
       this.camera.lookAt(frame.lookAt);
     }
     this.effects.setViewDistance(this.camera.position.distanceTo(frame.lookAt));
+    this.arena.makeRoomForCamera(this.camera.position);
     // The broadcast camera and the announcement look through the near ropes; every other shot is from inside them.
     const solid = frame === directed ? nearRopeOpacityFor(Math.max(this.tmpA.z, this.tmpB.z)) : frame.framed === true ? ANNOUNCEMENT_ROPE_OPACITY : 1;
     this.ring.setNearRopeOpacity(this.ring.nearRopeOpacity() + (solid - this.ring.nearRopeOpacity()) * (1 - Math.exp(-6 * dt)));

@@ -39,6 +39,13 @@ const HOUSE_LIGHT = 0.26;
 /** The broadcast camera pulls back as far as 14 m on a tall screen, over the first three rows. */
 export const CAMERA_PLATFORM_REACH = 14.5;
 export const CAMERA_PLATFORM_HALF_ANGLE = 0.3;
+/** A camera this far out on the platform's side is up in the stands, in front of the first row's seats. */
+export const CAMERA_PLATFORM_START = 6.2;
+
+/** Whether a camera at (x, z) stands on the broadcast platform, where the seats on it would be in its way. */
+export function cameraOnPlatform(x: number, z: number): boolean {
+  return z > 0 && Math.hypot(x, z) > CAMERA_PLATFORM_START && Math.abs(Math.atan2(x, z)) < CAMERA_PLATFORM_HALF_ANGLE;
+}
 const RIG_HEIGHT = 7.5;
 
 const SPILL_VERTEX = /* glsl */ `
@@ -67,6 +74,8 @@ export interface Spectator {
   readonly keen: number;
   /** How much of the ring's light reaches this row. */
   readonly light: number;
+  /** Sits on the broadcast camera's platform, and makes way while the camera stands there. */
+  readonly platform: boolean;
 }
 
 export interface SpectatorPose {
@@ -92,8 +101,6 @@ export function seatSpectators(tiers: readonly CrowdTier[], rand: () => number):
       const x = Math.sin(angle) * reach;
       const z = Math.cos(angle) * reach;
       const spectator = { keen: rand(), phase: rand() * Math.PI * 2, scale: tier.scale * (0.92 + rand() * 0.2), lean: (rand() - 0.5) * 0.5, lift: (rand() - 0.5) * 0.06 };
-      // The broadcast camera works from a platform in the stands; nobody sits in front of it.
-      if (tier.radius < CAMERA_PLATFORM_REACH && z > 0 && Math.abs(Math.atan2(x, z)) < CAMERA_PLATFORM_HALF_ANGLE) continue;
       seated.push({
         x,
         y: tier.y + spectator.lift,
@@ -103,6 +110,8 @@ export function seatSpectators(tiers: readonly CrowdTier[], rand: () => number):
         phase: spectator.phase,
         keen: spectator.keen,
         light: Math.max(0.45, 1 - row * 0.17),
+        // The broadcast camera works from a platform in the stands: whoever sits in front of it makes way for it.
+        platform: tier.radius < CAMERA_PLATFORM_REACH && z > 0 && Math.abs(Math.atan2(x, z)) < CAMERA_PLATFORM_HALF_ANGLE,
       });
     }
   }
@@ -220,6 +229,11 @@ export interface BuiltCrowd {
   readonly update: (time: number, excitement: number, everyone?: boolean) => void;
   /** At the low quality tier the crowd moves a quarter at a time and drops the arms, which are a third of its triangles. */
   readonly setLowTier: (low: boolean) => void;
+  /**
+   * Clears the seats on the broadcast camera's platform while the camera stands there (see `cameraOnPlatform`),
+   * and fills them again for every other shot, which may look into that part of the stands.
+   */
+  readonly makeRoomForCamera: (camera: { readonly x: number; readonly z: number }) => void;
   readonly dispose: () => void;
 }
 
@@ -294,6 +308,28 @@ export function buildCrowd(rand: () => number, tiers: readonly CrowdTier[] = CRO
   let pass = 0;
   let lowTier = false;
   let refreshAll = false;
+  let platformClear = false;
+  let poseTime = 0;
+  let poseExcitement = 0;
+  const platformSeats = spectators.flatMap((spectator, index) => (spectator.platform ? [index] : []));
+  const hidden = new THREE.Matrix4().makeScale(0, 0, 0);
+  const place = (index: number, armed: boolean): void => {
+    const spectator = spectators[index]!;
+    if (platformClear && spectator.platform) {
+      for (const mesh of armed ? meshes : bodies) mesh.setMatrixAt(index, hidden);
+      return;
+    }
+    spectatorPose(spectator, poseTime, poseExcitement, pose);
+    turn.setFromAxisAngle(up, spectator.yaw + pose.sway);
+    body.compose(position.set(spectator.x, spectator.y + pose.rise * spectator.scale, spectator.z), turn, size.setScalar(spectator.scale));
+    torsos.setMatrixAt(index, body);
+    heads.setMatrixAt(index, body);
+    hair.setMatrixAt(index, body);
+    if (armed) {
+      hang(armsLeft, index, 1, pose.armLeft);
+      hang(armsRight, index, -1, pose.armRight);
+    }
+  };
   // Half the crowd moves on each call (a quarter at the low tier), which cannot be seen, and only the
   // block that moved is uploaded.
   const update = (time: number, excitement: number, everyone = false): void => {
@@ -304,22 +340,12 @@ export function buildCrowd(rand: () => number, tiers: readonly CrowdTier[] = CRO
     const first = (pass % parts) * block;
     const last = Math.min(total, first + block);
     pass += 1;
+    poseTime = time;
+    poseExcitement = excitement;
     // A pass over everyone poses the arms too, even while the low tier hides them: reduced motion seats the
     // crowd once and then stops updating it, so arms left raised would come back floating over seated bodies.
     const armed = !lowTier || all;
-    for (let index = first; index < last; index += 1) {
-      const spectator = spectators[index]!;
-      spectatorPose(spectator, time, excitement, pose);
-      turn.setFromAxisAngle(up, spectator.yaw + pose.sway);
-      body.compose(position.set(spectator.x, spectator.y + pose.rise * spectator.scale, spectator.z), turn, size.setScalar(spectator.scale));
-      torsos.setMatrixAt(index, body);
-      heads.setMatrixAt(index, body);
-      hair.setMatrixAt(index, body);
-      if (armed) {
-        hang(armsLeft, index, 1, pose.armLeft);
-        hang(armsRight, index, -1, pose.armRight);
-      }
-    }
+    for (let index = first; index < last; index += 1) place(index, armed);
     for (const mesh of armed ? meshes : bodies) {
       const matrices = mesh.instanceMatrix;
       matrices.clearUpdateRanges();
@@ -335,6 +361,18 @@ export function buildCrowd(rand: () => number, tiers: readonly CrowdTier[] = CRO
     // Arms that were not moved while hidden catch up with everyone else at once.
     if (!low) refreshAll = true;
   };
+  // Only at a cut: the seats on the platform are written at once, in the pose of the last update (reduced
+  // motion stops updating the crowd), and the whole crowd is uploaded with them.
+  const makeRoomForCamera = (camera: { readonly x: number; readonly z: number }): void => {
+    const clear = cameraOnPlatform(camera.x, camera.z);
+    if (clear === platformClear) return;
+    platformClear = clear;
+    for (const index of platformSeats) place(index, true);
+    for (const mesh of meshes) {
+      mesh.instanceMatrix.clearUpdateRanges();
+      mesh.instanceMatrix.needsUpdate = true;
+    }
+  };
   update(0, 0, true);
 
   const dispose = (): void => {
@@ -343,5 +381,5 @@ export function buildCrowd(rand: () => number, tiers: readonly CrowdTier[] = CRO
     face.dispose();
     for (const mesh of meshes) mesh.dispose();
   };
-  return { group, spectators, update, setLowTier, dispose };
+  return { group, spectators, update, setLowTier, makeRoomForCamera, dispose };
 }
