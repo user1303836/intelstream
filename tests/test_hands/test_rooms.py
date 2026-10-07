@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from intelstream.database.repository import Repository
+from intelstream.hands import rooms as rooms_module
 from intelstream.hands.auth import AuthenticatedPlayer
 from intelstream.hands.engine import EngineConfig
 from intelstream.hands.protocol import encode_client_input
@@ -20,6 +21,7 @@ from intelstream.hands.rooms import (
 )
 from intelstream.hands.types import (
     ActionKind,
+    EngineSnapshot,
     Hand,
     InputCommand,
     MovementAction,
@@ -1050,6 +1052,84 @@ async def test_persistence_failure_errors_closes_and_unregisters(repository: Rep
         errors = [json.loads(message) for message in socket.messages if '"type":"error"' in message]
         assert errors == [{"code": "persistence_failed", "type": "error", "version": 3}]
         assert all("database detail" not in message for message in socket.messages)
+    await manager.close()
+
+
+async def test_an_engine_failure_voids_the_bout_and_frees_the_instance(
+    repository: Repository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    safe_logger = MagicMock()
+    monkeypatch.setattr(rooms_module, "logger", safe_logger)
+    sleep_entered = asyncio.Event()
+    sleep_release = asyncio.Event()
+
+    async def controlled_sleep(_delay: float) -> None:
+        sleep_entered.set()
+        await sleep_release.wait()
+
+    manager = HandsRoomManager(
+        repository,
+        config=room_config(round_ticks=1000),
+        sleep=controlled_sleep,
+        match_id_factory=lambda: "match-engine-failure",
+    )
+    sockets = (FakeSocket(), FakeSocket())
+    one = await manager.join(player("one"), sockets[0])
+    await manager.join(player("two"), sockets[1])
+    await sleep_entered.wait()
+    engine = one.room.engine
+    assert engine is not None
+
+    def broken_step(*_args: object) -> None:
+        raise RuntimeError("engine bug")
+
+    monkeypatch.setattr(engine, "step", broken_step)
+    sleep_release.set()
+    await wait_until(lambda: manager.room_count == 0)
+
+    for socket in sockets:
+        assert socket.closed
+        assert socket.close_code == 1011
+        errors = [json.loads(message) for message in socket.messages if '"type":"error"' in message]
+        assert errors == [{"code": "internal_error", "type": "error", "version": 3}]
+    safe_logger.exception.assert_called_once()
+    assert await repository.get_hands_match("match-engine-failure") is None
+    for user_id in ("one", "two"):
+        rating = await repository.get_hands_rating("guild-1", user_id)
+        assert rating is not None
+        assert (rating.bouts, rating.rating) == (0, 1000)
+    again = await manager.join(player("one"), FakeSocket())
+    assert again.room is not one.room
+    await manager.close()
+
+
+async def test_a_result_the_engine_reached_is_recorded_even_if_broadcasting_it_fails(
+    repository: Repository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(rooms_module, "logger", MagicMock())
+    original_broadcast = HandsRoom._broadcast_snapshot
+
+    def broadcast_failing_on_the_result(room: HandsRoom, snapshot: EngineSnapshot) -> None:
+        if snapshot.result is not None:
+            raise RuntimeError("encoding bug")
+        original_broadcast(room, snapshot)
+
+    monkeypatch.setattr(HandsRoom, "_broadcast_snapshot", broadcast_failing_on_the_result)
+    manager = HandsRoomManager(
+        repository,
+        config=room_config(),
+        match_id_factory=lambda: "match-broadcast-failure",
+    )
+    sockets = (FakeSocket(), FakeSocket())
+    await manager.join(player("one"), sockets[0])
+    await manager.join(player("two"), sockets[1])
+    await wait_until(lambda: manager.room_count == 0)
+
+    match = await repository.get_hands_match("match-broadcast-failure")
+    assert match is not None
+    assert match.finish_method == "draw"
+    for socket in sockets:
+        assert "final" in message_types(socket)
     await manager.close()
 
 

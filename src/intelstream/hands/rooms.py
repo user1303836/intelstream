@@ -827,12 +827,24 @@ class HandsRoom:
                         break
                 if engine.result is None:
                     await self._sleep(max(0.0, next_tick - self._clock()))
+        except Exception as exc:
+            logger.exception(
+                "Hands match failed",
+                instance_id=self.instance_id,
+                match_id=engine.match_id,
+                error_type=type(exc).__name__,
+            )
+            # A result the engine had already reached stands; otherwise the bout is void.
+            if engine.result is not None:
+                self._ensure_finish_task(engine.result)
+            elif self._finish_task is None:
+                self._finish_task = asyncio.create_task(
+                    self._finish_failed(), name=f"hands-failed-{self.instance_id}"
+                )
 
-            finish_task = self._finish_task
-            if finish_task is not None and finish_task is not asyncio.current_task():
-                await asyncio.shield(finish_task)
-        except asyncio.CancelledError:
-            raise
+        finish_task = self._finish_task
+        if finish_task is not None and finish_task is not asyncio.current_task():
+            await asyncio.shield(finish_task)
 
     def _broadcast_snapshot(self, snapshot: object) -> None:
         from intelstream.hands.types import EngineSnapshot
@@ -879,6 +891,16 @@ class HandsRoom:
         self._enqueue_all(self._message("error", code="match_abandoned"))
         await self._drain_outboxes()
         await self._close_now(code=1001, reason=b"match abandoned")
+        await self._on_finished(self)
+
+    async def _finish_failed(self) -> None:
+        """The bout cannot go on: it ends as a no contest, nothing is recorded or rated."""
+        async with self._lock:
+            self._finished = True
+            self._accepting_reconnects = False
+            self._enqueue_all(self._message("error", code="internal_error"))
+        await self._drain_outboxes()
+        await self._close_now(code=1011, reason=b"match failed")
         await self._on_finished(self)
 
     async def _finish_result(self, result: MatchResult) -> None:
