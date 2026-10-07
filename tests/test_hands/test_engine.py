@@ -1503,32 +1503,30 @@ def test_counter_vulnerability_slip_sides_and_body_weave_are_skill_based() -> No
     )
     assert advance_until(wrong, {"hit", "counter_hit"}) in {"hit", "counter_hit"}
 
-    body = make_engine(round_ticks=2000)
-    body.fighter("one").y = -20
-    body.fighter("two").y = 20
-    body.step(
-        {
-            "one": command(1, action=punch(PunchClass.HOOK, target=Target.BODY)),
-            "two": command(1, action=MovementAction(ActionKind.WEAVE)),
-        }
-    )
-    assert advance_until(body, {"evade"}) == "evade"
+    def body_shot(punch_class: PunchClass, pose: ActionKind, *, steps_off_the_line: int) -> str:
+        engine = make_engine(round_ticks=2000)
+        one = engine.fighter("one")
+        two = engine.fighter("two")
+        one.x, one.y, two.x, two.y = -32, -24, 32, 24
+        for _ in range(20):
+            engine.step()
+        # Settled: the attacker has turned square onto the defender, along (4, 3).
+        assert abs(math.degrees(math.atan2(one.facing_y, one.facing_x)) - 36.87) < 1
+        shot = command(1, action=punch(punch_class, hand=Hand.RIGHT, target=Target.BODY))
+        evasion = command(2, action=MovementAction(pose))
+        # Square to the line, the defender steps off it once the punch has started.
+        step_aside = command(1, move_x=-600, move_y=800)
+        engine.step({"one": shot, "two": step_aside if steps_off_the_line else evasion})
+        if steps_off_the_line:
+            for _ in range(steps_off_the_line - 1):
+                engine.step()
+            engine.step({"two": evasion})
+        return advance_until(engine, {"hit", "counter_hit", "evade", "whiff"})
 
-    body_uppercut = make_engine(round_ticks=2000)
-    body_uppercut.fighter("one").x = -42
-    body_uppercut.fighter("one").y = -15
-    body_uppercut.fighter("two").x = 42
-    body_uppercut.fighter("two").y = 15
-    body_uppercut.step(
-        {
-            "one": command(
-                1,
-                action=punch(PunchClass.UPPERCUT, hand=Hand.RIGHT, target=Target.BODY),
-            ),
-            "two": command(1, action=MovementAction(ActionKind.SLIP_LEFT)),
-        }
-    )
-    assert advance_until(body_uppercut, {"evade"}) == "evade"
+    assert body_shot(PunchClass.HOOK, ActionKind.WEAVE, steps_off_the_line=0) == "hit"
+    assert body_shot(PunchClass.HOOK, ActionKind.WEAVE, steps_off_the_line=3) == "evade"
+    assert body_shot(PunchClass.UPPERCUT, ActionKind.SLIP_LEFT, steps_off_the_line=0) == "hit"
+    assert body_shot(PunchClass.UPPERCUT, ActionKind.SLIP_LEFT, steps_off_the_line=3) == "evade"
 
 
 def test_forward_cone_rejects_beside_and_opponent_who_circles_behind() -> None:

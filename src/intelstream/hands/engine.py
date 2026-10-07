@@ -743,6 +743,9 @@ class BoxingEngine:
             )
             return
 
+        # The facing holds still through a punch, so this is how far the defender is off the line
+        # the punch was thrown along. Only off that line can he weave a body hook or slip a body
+        # uppercut.
         if self._evades(defender, action, distance_squared, rule.reach, lateral_distance):
             defender.performance.evasions += 1
             defender.counter_ticks = COUNTER_WINDOW_TICKS
