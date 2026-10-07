@@ -294,6 +294,39 @@ describe("reading the fight", () => {
     expect(director.current(0.4 + shot.hold + 0.05)?.line.text).toMatch(/round 1/u);
   });
 
+  it("leaves the bell unsaid rather than calling it seconds late", () => {
+    const director = new CommentaryDirector();
+    feed(director, state(3590), [hit(3590, "one", "hook:head", 120)], 0);
+    const first = director.current(0.4)!.line;
+    feed(director, state(3595, "knockdown", [{}, { is_downed: true }]), [event("knockdown", 3595, { actor_id: "one", target_id: "two", amount: 1 })], 0.45);
+    feed(director, state(3600, "rest"), [event("bell", 3600, { detail: "round_end" })], 0.5);
+    const lines = watch(director, 0.5, 12);
+    expect(first.text).toMatch(/hook/u);
+    expect(lines.some((text) => /round 1/u.test(text))).toBe(false);
+  });
+
+  it("drops the count lines once the fighter is up and the introductions at the bell", () => {
+    const director = new CommentaryDirector();
+    feed(director, state(100, "knockdown", [{}, { is_downed: true }]), [event("knockdown", 100, { actor_id: "one", target_id: "two", amount: 1 })], 0);
+    feed(director, state(280, "knockdown", [{}, { is_downed: true }]), [event("count", 280, { target_id: "two", amount: 6 })], 6);
+    feed(director, state(281, "fight"), [event("get_up", 281, { actor_id: "two", amount: 6 })], 6.05);
+    expect(watch(director, 6, 14).some((text) => /beat the count|get up\?|trying to/u.test(text))).toBe(false);
+    const intro = new CommentaryDirector();
+    feed(intro, state(1, "countdown", [{}, {}], { phase_ticks_remaining: 240 }), [], 0);
+    expect(intro.current(0.05)?.line.card).not.toBeNull();
+    feed(intro, state(241, "fight"), [event("bell", 241, { detail: "round_start" })], 0.5);
+    expect(intro.current(1)).toBeNull();
+    expect(watch(intro, 1, 10).some((text) => text.startsWith("In the"))).toBe(false);
+  });
+
+  it("introduces the computer as the computer, not by a rating", () => {
+    const director = new CommentaryDirector();
+    const computer = { ...players, two: { ...players.two!, cpu: true, record: { wins: 19, losses: 5, draws: 1, knockouts: 12 } } };
+    director.observe({ ...state(1, "countdown", [{}, {}], { phase_ticks_remaining: 90 }), events: [] }, [], computer, 30, 0);
+    expect(director.current(0.05)?.line.card?.detail).toBe("RATED 1512");
+    expect(director.current(1.6)?.line.card?.detail).toBe("19-5-1 (12 KO) · COMPUTER");
+  });
+
   it("says a hurt fighter was saved by the bell", () => {
     const director = new CommentaryDirector();
     feed(director, state(3600, "rest", [{ stunned_ticks: 20 }, {}]), [event("bell", 3600, { detail: "round_end" })], 0);
