@@ -64,8 +64,8 @@ function safeStorage(): Storage | null {
 const STYLE_KEYS: Readonly<Record<string, number>> = { Digit1: 0, Digit2: 1, Digit3: 2, Digit4: 3, Digit5: 4, Numpad1: 0, Numpad2: 1, Numpad3: 2, Numpad4: 3, Numpad5: 4 };
 
 /**
- * The pick of styles before the bout: five cards with their strengths, a countdown, and the other
- * corner's style once it is settled. Arrow keys move the choice, a number or a tap picks a card and
+ * The pick of styles before the bout: five cards with their strengths, a countdown, and whether the
+ * other corner has settled (not on what). Arrow keys move the choice, a number or a tap picks a card and
  * Enter settles on the one chosen; every change is sent so the deadline uses the latest.
  */
 export class StylePicker {
@@ -206,15 +206,17 @@ export class StylePicker {
     const seconds = Math.max(0, Math.ceil((this.deadlineAt - this.now()) / 1000));
     const clock = `${seconds}s`;
     if (this.clock.textContent !== clock) this.clock.textContent = clock;
+    // Who has settled, never on what: the styles are revealed together at the bell, since showing a
+    // settled one would reward waiting to pick its counter.
     const named = select.players
-      .filter((player) => player.id !== viewerId && player.style !== undefined)
-      .map((player) => `${player.name}: ${cardOf(player.style!).name}`)
-      .join(" · ");
+      .filter((player) => player.id !== viewerId && select.ready.includes(player.id))
+      .map((player) => `${player.name} is ready.`)
+      .join(" ");
     const text = !this.choosing
       ? named.length > 0 ? `The fighters are choosing. ${named}` : "The fighters are choosing their styles."
       : this.settled
         ? named.length > 0 ? `Ready as ${cardOf(this.highlighted).name}. ${named}` : `Ready as ${cardOf(this.highlighted).name}. Waiting for your opponent.`
-        : named.length > 0 ? `${named}. Tap a style or press Enter to settle on yours.` : "Tap a style, or use the arrow keys and Enter.";
+        : named.length > 0 ? `${named} Tap a style or press Enter to settle on yours.` : "Tap a style, or use the arrow keys and Enter.";
     if (this.status.textContent !== text) this.status.textContent = text;
   }
 

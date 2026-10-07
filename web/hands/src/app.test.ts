@@ -791,11 +791,11 @@ describe("the pick of styles", () => {
     send({ version: 3, type: "waiting", open_seats: 1 });
     const picker = root.querySelector<HTMLElement>("[data-style-picker]")!;
     expect(picker.hidden).toBe(true);
-    send({ version: 3, type: "select", deadline_ms: 9_000, players: [players[0], { ...players[1], style: "boxer" }], ready: ["two"] });
+    send({ version: 3, type: "select", deadline_ms: 9_000, players: [...players], ready: ["two"] });
     expect(picker.hidden).toBe(false);
     expect(root.querySelector<HTMLElement>("[data-status]")!.hidden).toBe(true);
     expect(root.querySelector<HTMLElement>("[data-cpu]")!.hidden).toBe(true);
-    expect(picker.textContent).toContain("Two: Boxer");
+    expect(picker.textContent).toContain("Two is ready.");
     picker.querySelector<HTMLButtonElement>('[data-style="slugger"]')!.click();
     expect(mocks.styleChoices.at(-1)).toBe("slugger:true");
     expect(localStorage.getItem("hands.style.v1")).toBe("slugger");

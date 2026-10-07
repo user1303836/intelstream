@@ -428,7 +428,7 @@ class HandsRoom:
                     "player_id": identity.user_id,
                     "seat": seat,
                     "rating": fighter.rating,
-                    "players": self._public_players(),
+                    "players": self._public_players(identity.user_id),
                     "server_tick": self._engine.tick if self._engine is not None else 0,
                     "next_sequence": fighter.last_sequence + 1,
                 }
@@ -459,7 +459,10 @@ class HandsRoom:
             if self._final_payload is not None:
                 self._enqueue(connection, self._final_payload)
             elif not final_recovery and self._select is not None:
-                self._enqueue(connection, self._select_message())
+                self._enqueue(
+                    connection,
+                    self._select_message(identity.user_id if role == "fighter" else None),
+                )
             elif (
                 not final_recovery
                 and role == "fighter"
@@ -610,7 +613,7 @@ class HandsRoom:
             sort_keys=True,
         )
 
-    def _public_players(self) -> list[dict[str, object]]:
+    def _public_players(self, viewer_id: str | None = None) -> list[dict[str, object]]:
         players: list[dict[str, object]] = [
             {
                 "id": slot.identity.user_id,
@@ -618,7 +621,7 @@ class HandsRoom:
                 "avatar": slot.identity.avatar_hash,
                 "rating": slot.rating,
                 "connected": slot.connection is not None,
-                **self._public_style(slot.identity.user_id, slot.style),
+                **self._public_style(slot.identity.user_id, slot.style, viewer_id),
                 **({} if slot.record is None else {"record": slot.record.payload()}),
             }
             for slot in self._slots.values()
@@ -632,18 +635,24 @@ class HandsRoom:
                     "rating": self._cpu.rating,
                     "connected": True,
                     "cpu": True,
-                    **self._public_style(self._cpu.player_id, self._cpu.style),
+                    **self._public_style(self._cpu.player_id, self._cpu.style, viewer_id),
                     "record": self._cpu.record.payload(),
                 }
             )
         return players
 
-    def _public_style(self, player_id: str, style: FighterStyle) -> dict[str, object]:
-        """A style is shown to everyone once its fighter has settled on it or the bout is on."""
-        settled = self._engine is not None or (
-            self._select is not None and player_id in self._select.ready
-        )
-        return {"style": style.value} if settled else {}
+    def _public_style(
+        self, player_id: str, style: FighterStyle, viewer_id: str | None
+    ) -> dict[str, object]:
+        """Both styles are revealed together at the bell.
+
+        During the pick a settled style is shown only to its own fighter: showing it to the other
+        corner would reward waiting to pick its counter.
+        """
+        if self._engine is not None:
+            return {"style": style.value}
+        settled = self._select is not None and player_id in self._select.ready
+        return {"style": style.value} if settled and player_id == viewer_id else {}
 
     def _enqueue(
         self,
@@ -768,17 +777,26 @@ class HandsRoom:
         select.task = self._spawn(
             self._close_select_at_deadline(select), name=f"hands-style-select-{self.instance_id}"
         )
-        self._enqueue_all(self._select_message())
+        self._broadcast_select()
 
-    def _select_message(self) -> str:
+    def _select_message(self, viewer_id: str | None) -> str:
         select = self._select
         assert select is not None
         return self._message(
             "select",
             deadline_ms=max(0, int((select.deadline - self._clock()) * 1000)),
-            players=self._public_players(),
+            players=self._public_players(viewer_id),
             ready=sorted(select.ready),
         )
+
+    def _broadcast_select(self, *, bounded_update: bool = False) -> None:
+        """The pick as it stands, to everyone: each fighter's own settled style is his alone."""
+        for player_id, role, connection in self._connected_members():
+            self._enqueue(
+                connection,
+                self._select_message(player_id if role == "fighter" else None),
+                bounded_update=bounded_update,
+            )
 
     def _seated_styles(self) -> dict[str, FighterStyle]:
         styles = {player_id: slot.style for player_id, slot in self._slots.items()}
@@ -843,7 +861,7 @@ class HandsRoom:
             if set(self._seated_styles()) <= select.ready:
                 self._start_match(select.seed)
             else:
-                self._enqueue_all(self._select_message(), bounded_update=True)
+                self._broadcast_select(bounded_update=True)
 
     def _start_match(self, seed: int) -> None:
         self._cancel_select()

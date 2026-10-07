@@ -168,12 +168,14 @@ describe("the style picker", () => {
     picker.destroy();
   });
 
-  it("names the other corner's style once that fighter has settled", () => {
+  it("says the other corner has settled without saying on what", () => {
     const picker = make();
     show(picker);
     expect(status(picker)).toBe("Tap a style, or use the arrow keys and Enter.");
+    // Even a style the room let slip would not be named: the bell reveals both together.
     show(picker, choosing({ players: [publicPlayers[0], { ...publicPlayers[1], style: "slugger" }], ready: ["two"] }));
-    expect(status(picker)).toBe("Two: Slugger. Tap a style or press Enter to settle on yours.");
+    expect(status(picker)).toBe("Two is ready. Tap a style or press Enter to settle on yours.");
+    expect(status(picker)).not.toContain("Slugger");
     picker.destroy();
   });
 
@@ -195,7 +197,7 @@ describe("the style picker", () => {
     press("Enter");
     card(picker, "boxer").click();
     expect(sent).toEqual([]);
-    expect(status(picker)).toBe("The fighters are choosing. One: Boxer");
+    expect(status(picker)).toBe("The fighters are choosing. One is ready.");
     picker.destroy();
   });
 

@@ -2334,20 +2334,22 @@ async def test_fighters_pick_styles_and_the_bout_starts_when_both_are_ready(
 
     await room.choose_style("one", one.connection, ready_choice(FighterStyle.SLUGGER))
     await wait_until(lambda: len(payloads(second_socket, "select")) == 2)
-    # The other corner sees a style once its fighter has settled on it.
-    assert shown_styles(payloads(second_socket, "select")[1]) == {"one": "slugger"}
+    # The other corner learns that one has settled, never on what: both are revealed at the bell.
+    assert payloads(second_socket, "select")[1]["ready"] == ["one"]
+    assert shown_styles(payloads(second_socket, "select")[1]) == {}
+    assert shown_styles(payloads(first_socket, "select")[1]) == {"one": "slugger"}
     assert room.engine is None
 
     await room.choose_style(
         "two", two.connection, ready_choice(FighterStyle.COUNTER_PUNCHER, ready=False)
     )
     assert room.engine is None
-    # A style still being chosen is not shown to anyone.
+    # A style still being chosen is not shown to anyone, and a settled one only to its fighter.
     watcher_socket = FakeSocket()
     await manager.join(player("three"), watcher_socket)
     await wait_until(lambda: "select" in message_types(watcher_socket))
-    assert shown_styles(payloads(watcher_socket, "welcome")[0]) == {"one": "slugger"}
-    assert shown_styles(payloads(watcher_socket, "select")[0]) == {"one": "slugger"}
+    assert shown_styles(payloads(watcher_socket, "welcome")[0]) == {}
+    assert shown_styles(payloads(watcher_socket, "select")[0]) == {}
     await room.choose_style("two", two.connection, ready_choice(FighterStyle.BOXER))
     engine = room.engine
     assert engine is not None
@@ -2448,7 +2450,8 @@ async def test_the_computer_picks_at_once_and_waits_for_the_fighter(
     computer_style = cpu_style(CpuLevel.CHAMPION, 4242)
     select = payloads(socket, "select")[0]
     assert select["ready"] == ["cpu:champion"]
-    assert shown_styles(select) == {"cpu:champion": computer_style.value}
+    # The computer has settled, but its style is revealed at the bell like anyone's.
+    assert shown_styles(select) == {}
     assert [entry["id"] for entry in select["players"]] == ["one", "cpu:champion"]
     # Nobody else is seated beside the computer while the styles are picked.
     third = await manager.join(player("three"), FakeSocket())
