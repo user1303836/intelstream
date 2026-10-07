@@ -16,6 +16,18 @@ class FakeSynthesis {
   readonly spoken: FakeUtterance[] = [];
   cancels = 0;
   voices: SpeechSynthesisVoice[] = [];
+  private readonly listeners = new Set<() => void>();
+  addEventListener(type: string, listener: () => void): void {
+    if (type === "voiceschanged") this.listeners.add(listener);
+  }
+  removeEventListener(type: string, listener: () => void): void {
+    if (type === "voiceschanged") this.listeners.delete(listener);
+  }
+  /** The browser (re)lists its voices, as Chrome does a moment after the page loads. */
+  listVoices(voices: SpeechSynthesisVoice[]): void {
+    this.voices = voices;
+    for (const listener of this.listeners) listener();
+  }
   speak(utterance: SpeechSynthesisUtterance): void {
     this.spoken.push(utterance as unknown as FakeUtterance);
   }
@@ -31,6 +43,7 @@ class FakeSynthesis {
 }
 
 const voice = (name: string, lang: string, localService: boolean, isDefault = false): SpeechSynthesisVoice => ({ name, lang, localService, default: isDefault, voiceURI: name }) as SpeechSynthesisVoice;
+const deviceVoice = voice("Microsoft David", "en-US", true, true);
 
 describe("the announcer's voice", () => {
   let settings: Settings;
@@ -40,6 +53,7 @@ describe("the announcer's voice", () => {
   beforeEach(() => {
     settings = { volume: 0.6, haptics: true, reducedMotion: false, blood: "full", camera: "broadcast", commentary: true, announcer: true };
     synthesis = new FakeSynthesis();
+    synthesis.voices = [deviceVoice];
   });
 
   it("speaks one line at a time, in order, at the player's volume", () => {
@@ -115,11 +129,43 @@ describe("the announcer's voice", () => {
     const local = voice("Local English", "en-GB", true);
     const french = voice("Local French", "fr-FR", true, true);
     expect(pickVoice([french, remote, local])).toBe(local);
-    expect(pickVoice([french, remote])).toBe(remote);
+    expect(pickVoice([french, remote])).toBeNull();
     expect(pickVoice([french])).toBeNull();
     synthesis.voices = [french, local];
     make().speak(["Azure Vector!"]);
     expect(synthesis.spoken[0]!.voice).toBe(local);
     expect(synthesis.spoken[0]!.lang).toBe("en-GB");
+  });
+
+  it("never reads the fighters' names with a voice that speaks from a vendor's servers", () => {
+    // Chrome's "Google US English" synthesizes online: the names would leave the Activity.
+    synthesis.voices = [voice("Google US English", "en-US", false, true), voice("Local French", "fr-FR", true)];
+    const announcer = make();
+    expect(announcer.hasVoice).toBe(false);
+    announcer.speak(["In the blue corner, Azure Vector!"]);
+    expect(synthesis.spoken).toHaveLength(0);
+  });
+
+  it("waits for voices the browser lists late, and reads with the device's own once they come", () => {
+    synthesis.voices = [];
+    const changed = vi.fn();
+    const announcer = make();
+    announcer.onVoicesChanged = changed;
+    // Nothing is listed yet: Settings still offers the voice, but no line goes to the browser's own choice.
+    expect(announcer.hasVoice).toBe(true);
+    announcer.speak(["In the blue corner, Azure Vector!"]);
+    expect(synthesis.spoken).toHaveLength(0);
+    synthesis.listVoices([voice("Google UK English Male", "en-GB", false), deviceVoice]);
+    expect(changed).toHaveBeenCalledOnce();
+    announcer.speak(["In the blue corner, Azure Vector!"]);
+    expect(synthesis.spoken[0]!.voice).toBe(deviceVoice);
+    // A device whose own voice goes away stops reading, and Settings is told.
+    synthesis.listVoices([voice("Google UK English Male", "en-GB", false)]);
+    expect(synthesis.cancels).toBe(1);
+    expect(announcer.hasVoice).toBe(false);
+    expect(changed).toHaveBeenCalledTimes(2);
+    announcer.destroy();
+    synthesis.listVoices([deviceVoice]);
+    expect(changed).toHaveBeenCalledTimes(2);
   });
 });

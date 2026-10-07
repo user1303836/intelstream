@@ -806,6 +806,9 @@ describe("the pick of styles", () => {
 });
 
 describe("the broadcast", () => {
+  /** An English voice that runs on the device, as Windows, macOS, iOS and Android list theirs. */
+  const deviceVoices = [{ name: "Microsoft David", lang: "en-US", localService: true, default: true, voiceURI: "David" }];
+
   beforeEach(() => {
     mocks.callbacks = null;
     mocks.renderers.length = 0;
@@ -843,7 +846,7 @@ describe("the broadcast", () => {
   it("reads the ring announcements aloud and stops when the voice is switched off", async () => {
     const spoken: string[] = [];
     const cancel = vi.fn();
-    Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { speak: (utterance: { text: string }) => spoken.push(utterance.text), cancel, getVoices: () => [] } });
+    Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { speak: (utterance: { text: string }) => spoken.push(utterance.text), cancel, getVoices: () => deviceVoices } });
     Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: class { onend = null; onerror = null; constructor(readonly text: string) {} } });
     const { root, app } = await launch();
     const voice = root.querySelector<HTMLInputElement>("[data-announcer]")!;
@@ -857,9 +860,24 @@ describe("the broadcast", () => {
     app.destroy();
   });
 
+  it("keeps the voice off where the device's only English voices speak from a vendor's servers", async () => {
+    const spoken: string[] = [];
+    const online = [{ name: "Google US English", lang: "en-US", localService: false, default: true, voiceURI: "Google US English" }];
+    Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { speak: (utterance: { text: string }) => spoken.push(utterance.text), cancel: vi.fn(), getVoices: () => online } });
+    Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: class { onend = null; onerror = null; constructor(readonly text: string) {} } });
+    const { root, app } = await launch();
+    const voice = root.querySelector<HTMLInputElement>("[data-announcer]")!;
+    expect(voice.disabled).toBe(true);
+    expect(voice.checked).toBe(false);
+    expect(voice.parentElement!.title).toBe("This device has no English voice of its own");
+    mocks.renderers.at(-1)!.onAnnouncement!(["In the blue corner, One!"]);
+    expect(spoken).toEqual([]);
+    app.destroy();
+  });
+
   it("stops the announcer mid-line when the player turns the volume down to nothing", async () => {
     const cancel = vi.fn();
-    Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { speak: () => undefined, cancel, getVoices: () => [] } });
+    Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { speak: () => undefined, cancel, getVoices: () => deviceVoices } });
     Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: class { onend = null; onerror = null; constructor(readonly text: string) {} } });
     const { root, app } = await launch();
     mocks.renderers.at(-1)!.onAnnouncement!(["In the blue corner... One!"]);
@@ -872,7 +890,7 @@ describe("the broadcast", () => {
 
   it("cuts the ring announcer off at the opening bell", async () => {
     const cancel = vi.fn();
-    Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { speak: () => undefined, cancel, getVoices: () => [] } });
+    Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { speak: () => undefined, cancel, getVoices: () => deviceVoices } });
     Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: class { onend = null; onerror = null; constructor(readonly text: string) {} } });
     const { app } = await launch();
     send({ version: 3, type: "snapshot", payload: makeSnapshot(1, "countdown") });

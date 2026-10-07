@@ -584,11 +584,20 @@ export class HandsApp {
     this.root.querySelector<HTMLInputElement>("[data-motion]")!.checked = settings.reducedMotion;
     this.root.querySelector<HTMLSelectElement>("[data-blood]")!.value = settings.blood;
     this.root.querySelector<HTMLInputElement>("[data-commentary]")!.checked = settings.commentary;
-    const announcer = this.root.querySelector<HTMLInputElement>("[data-announcer]")!;
-    announcer.checked = settings.announcer && this.voice.supported;
-    announcer.disabled = !this.voice.supported;
-    if (!this.voice.supported) announcer.parentElement!.title = "This browser cannot speak";
+    this.syncAnnouncerSetting();
+    this.voice.onVoicesChanged = () => this.syncAnnouncerSetting();
     this.root.querySelector<HTMLSelectElement>("[data-camera]")!.value = settings.camera;
+  }
+
+  /** The voice is offered only where the device can read the names itself; it never uses an online voice. */
+  private syncAnnouncerSetting(): void {
+    const announcer = this.root.querySelector<HTMLInputElement>("[data-announcer]")!;
+    const usable = this.voice.hasVoice;
+    announcer.checked = this.settings.current.announcer && usable;
+    announcer.disabled = !usable;
+    const why = !this.voice.supported ? "This browser cannot speak" : usable ? null : "This device has no English voice of its own";
+    if (why === null) announcer.parentElement!.removeAttribute("title");
+    else announcer.parentElement!.title = why;
   }
 
   private fail(code: string): void {
