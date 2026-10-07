@@ -1,8 +1,9 @@
 import { cancelsRecovery, punchStaminaCost, punchTiming, recoveryCancelAge } from "./manifest";
-import { attackTicksRemaining, canAffordPunch, constrainPrediction, fatigueFactor, MINIMUM_SEPARATION, movementLocked, predictMovement, predictedPunchTiming } from "./prediction";
-import { fighter } from "./test/fixtures";
+import { SnapshotBuffer } from "./interpolation";
+import { attackTicksRemaining, canAffordPunch, constrainPrediction, fatigueFactor, MINIMUM_SEPARATION, MovementPrediction, movementLocked, predictMovement, predictedPunchTiming, type HeldInput } from "./prediction";
+import { fighter, snapshot } from "./test/fixtures";
 import timingTable from "./test/punch-timing-table.json";
-import type { FighterSnapshot, PunchClass } from "./types";
+import type { EngineSnapshot, FighterSnapshot, PunchClass } from "./types";
 
 describe("local movement prediction", () => {
   it("mirrors the authoritative fatigue factor", () => {
@@ -135,4 +136,90 @@ describe("local movement prediction", () => {
     expect(cancelsRecovery("straight", true, { ...hook, class: "jab" }, 900, false)).toBe(false);
     expect(cancelsRecovery("hook", true, { ...hook, class: "uppercut" }, 900, false)).toBe(true);
   });
+});
+
+describe("walking behind a round trip", () => {
+  const PRESS_MS = 500;
+  const RELEASE_MS = 1500;
+  const TICK_MS = 1000 / 30;
+
+  /**
+   * Walks right from PRESS_MS to RELEASE_MS behind a round trip of `rtt` ms. The engine's integrator
+   * steps at 30 Hz on inputs flushed at 30 Hz, `phase` ms out of step with its ticks; its snapshots go
+   * into the client's real buffer, the client measures the input latency as the network does, and
+   * 60 fps frames draw the fighter where the prediction puts him.
+   */
+  function walk(rtt: number, phase: number): { t: number; drawn: number; server: number }[] {
+    const buffer = new SnapshotBuffer(8, 30);
+    const prediction = new MovementPrediction();
+    const heldAt = (t: number): HeldInput => ({ moveX: t >= PRESS_MS && t < RELEASE_MS ? 1000 : 0, moveY: 0, defense: "none" });
+    const inputs: { arrives: number; held: HeldInput; sequence: number }[] = [];
+    const snapshots: { arrives: number; snapshot: EngineSnapshot; acknowledged: number }[] = [];
+    const sentAt = new Map<number, number>();
+    let x = -200;
+    let velocity = 0;
+    let tick = 0;
+    let applied = heldAt(0);
+    let acknowledged = -1;
+    let sequence = 0;
+    let latency: number | null = null;
+    let nextFlush = phase;
+    let nextTick = 0;
+    let lastFrame = -1;
+    const drawn: { t: number; drawn: number; server: number }[] = [];
+    for (let t = 0; t < 2600; t += 1) {
+      if (t >= nextFlush) {
+        sentAt.set(sequence, t);
+        inputs.push({ arrives: t + rtt / 2, held: heldAt(t), sequence });
+        sequence += 1;
+        nextFlush += TICK_MS;
+      }
+      while (inputs.length > 0 && inputs[0]!.arrives <= t) {
+        const frame = inputs.shift()!;
+        applied = frame.held;
+        acknowledged = frame.sequence;
+      }
+      if (t >= nextTick) {
+        tick += 1;
+        velocity = Math.max(-7, Math.min(7, (velocity + (applied.moveX * 7) / 1000) / 2));
+        x += velocity;
+        const base = snapshot(tick);
+        const self = { ...fighter("one", x), conditioning: 1000, velocity_x: velocity };
+        snapshots.push({ arrives: t + rtt / 2, snapshot: { ...base, fighters: [self, { ...base.fighters[1], x: 400 }] }, acknowledged });
+        nextTick += TICK_MS;
+      }
+      while (snapshots.length > 0 && snapshots[0]!.arrives <= t) {
+        const arrived = snapshots.shift()!;
+        buffer.push(arrived.snapshot, t);
+        const sent = sentAt.get(arrived.acknowledged);
+        if (sent !== undefined) latency = latency === null ? t - sent : latency * 0.8 + (t - sent) * 0.2;
+      }
+      const frame = Math.floor((t * 60) / 1000);
+      if (frame === lastFrame || buffer.latest() === null) continue;
+      lastFrame = frame;
+      const shown = buffer.sample(buffer.renderTick(t))!;
+      const self = shown.fighters[0];
+      const lead = ((latency ?? rtt) / 1000) * 30 + buffer.interpolationDelayTicks;
+      const offset = constrainPrediction(self, prediction.update(self, heldAt(t), false, t, lead, shown.tick, 1 / 60, 30), shown.fighters[1]);
+      drawn.push({ t, drawn: self.x + offset.dx, server: x });
+    }
+    return drawn;
+  }
+
+  for (const rtt of [120, 220]) {
+    for (const phase of [0, 17]) {
+      it(`sets off on the press and stops on the release at ${rtt} ms round trip (flush ${phase} ms off the tick)`, () => {
+        const frames = walk(rtt, phase);
+        const at = (ms: number): number => frames.find((frame) => frame.t >= ms)!.drawn;
+        // Walking speed is 7 units a tick, 210 a second.
+        expect(at(PRESS_MS + 150) - at(PRESS_MS)).toBeGreaterThan(20);
+        const stallEnd = PRESS_MS + rtt + 100;
+        expect(((at(stallEnd) - at(PRESS_MS + 150)) / (stallEnd - PRESS_MS - 150)) * 1000).toBeGreaterThan(0.75 * 210);
+        const afterRelease = frames.filter((frame) => frame.t >= RELEASE_MS).map((frame) => frame.drawn);
+        expect(Math.max(...afterRelease) - at(RELEASE_MS)).toBeLessThan(8);
+        for (let index = 1; index < frames.length; index += 1) expect(frames[index - 1]!.drawn - frames[index]!.drawn).toBeLessThan(2.5);
+        expect(Math.abs(frames.at(-1)!.drawn - frames.at(-1)!.server)).toBeLessThan(0.5);
+      });
+    }
+  }
 });

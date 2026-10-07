@@ -7,7 +7,7 @@ import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { EventDeduplicator, SnapshotBuffer } from "../interpolation";
 import { coarsePointer } from "../input/touch";
 import { REST_CORNER_OFFSET, punchTiming } from "../manifest";
-import { canAffordPunch, constrainPrediction, predictMovement, predictedPunchTiming, type HeldInput } from "../prediction";
+import { MovementPrediction, canAffordPunch, constrainPrediction, predictedPunchTiming, type HeldInput } from "../prediction";
 import type { BloodLevel, Settings } from "../settings";
 import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, Hand, MatchResult, PublicPlayer, PunchClass, SemanticAction, SimulationInfo } from "../types";
 import { buildArena, type BuiltArena } from "./arena";
@@ -425,7 +425,7 @@ export class FightRenderer {
   private readonly localInput: (() => HeldInput | null) | null;
   /** Sequence of the input frame that carried a press, once it has gone out; null before then. */
   private readonly inputSequenceOf: ((actionId: string) => number | null) | null;
-  private readonly localOffset = { dx: 0, dy: 0 };
+  private readonly movement = new MovementPrediction();
   private lastManualTime = 0;
   private readonly dedupe = new EventDeduplicator();
   private readonly hudCanvas: HTMLCanvasElement;
@@ -1258,7 +1258,7 @@ export class FightRenderer {
     }
     this.viewerHitFlash = Math.max(0, this.viewerHitFlash - dt * 3.2);
     let sampledTick = latest === null ? 0 : manual ? presentationTickFor(latest) : this.buffer.renderTick(time);
-    let snapshot = latest === null ? null : this.applyLocalPrediction(this.buffer.sample(sampledTick), dt);
+    let snapshot = latest === null ? null : this.applyLocalPrediction(this.buffer.sample(sampledTick), dt, time);
     const replay = this.replay;
     if (replay !== null) {
       const elapsed = seconds - replay.startedAt;
@@ -1409,21 +1409,19 @@ export class FightRenderer {
     if (!this.destroyed && !this.manualClock) this.raf = requestAnimationFrame((next) => this.draw(next));
   }
 
-  private applyLocalPrediction(snapshot: EngineSnapshot | null, dt: number): EngineSnapshot | null {
+  private applyLocalPrediction(snapshot: EngineSnapshot | null, dt: number, timeMs: number): EngineSnapshot | null {
     if (snapshot === null || this.localInput === null || this.viewerId === null) return snapshot;
     const index = snapshot.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
-    const held = this.localInput();
-    const rate = 1 - Math.exp(-14 * dt);
-    let target = { dx: 0, dy: 0 };
-    // The player's own punch starts here before the server has it, and holds the feet from then on.
-    if (index >= 0 && held !== null && snapshot.phase === "fight" && this.graphs?.[index]?.ownPunchActive !== true) {
-      target = predictMovement(snapshot.fighters[index]!, held, this.buffer.interpolationDelayTicks + 2, snapshot.tick);
-    }
-    this.localOffset.dx += (target.dx - this.localOffset.dx) * rate;
-    this.localOffset.dy += (target.dy - this.localOffset.dy) * rate;
-    if (index < 0 || (Math.abs(this.localOffset.dx) < 0.01 && Math.abs(this.localOffset.dy) < 0.01)) return snapshot;
+    const held = this.localInput() ?? { moveX: 0, moveY: 0, defense: "none" };
+    // Shown as far ahead of the snapshot on screen as an input pressed now takes to show up in it: the
+    // round trip plus the interpolation delay. The player's own punch starts here before the server
+    // has it, and holds the feet from then on.
+    const leadTicks = ((this.inputLatencyMs ?? 60) / 1000) * this.simulation.tick_rate + this.buffer.interpolationDelayTicks;
+    const fighting = index >= 0 && snapshot.phase === "fight" ? snapshot.fighters[index]! : null;
+    const local = this.movement.update(fighting, held, this.graphs?.[index]?.ownPunchActive === true, timeMs, leadTicks, snapshot.tick, dt, this.simulation.tick_rate);
+    if (index < 0 || (Math.abs(local.dx) < 0.01 && Math.abs(local.dy) < 0.01)) return snapshot;
     const viewer = snapshot.fighters[index]!;
-    const offset = constrainPrediction(viewer, this.localOffset, snapshot.fighters[index === 0 ? 1 : 0] ?? null);
+    const offset = constrainPrediction(viewer, local, snapshot.fighters[index === 0 ? 1 : 0] ?? null);
     const predicted = { ...viewer, x: viewer.x + offset.dx, y: viewer.y + offset.dy };
     const fighters: [FighterSnapshot, FighterSnapshot] = index === 0 ? [predicted, snapshot.fighters[1]] : [snapshot.fighters[0], predicted];
     return { ...snapshot, fighters };
