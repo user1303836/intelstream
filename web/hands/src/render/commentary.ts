@@ -139,6 +139,8 @@ const RESULT_LINES: Readonly<Partial<Record<string, LineKey>>> = { ko: "ko", fla
 
 /** Lines about a moment that ends with its phase: "can he beat the count?" means nothing once he is up. */
 const PHASES: Readonly<Partial<Record<LineKey, ReadonlySet<MatchPhase>>>> = { struggle: new Set<MatchPhase>(["knockdown"]) };
+/** The moment of "can he beat the count?", which ends when he gets up even though the phase runs on to the eight. */
+const STRUGGLE_MOMENT = "struggle";
 const COUNTDOWN_ONLY: ReadonlySet<MatchPhase> = new Set<MatchPhase>(["countdown"]);
 /** The bell is called as it rings, or straight after the line on screen, or not at all: seconds late reads as a mistake. */
 const BELL_FRESH_SECONDS = 3.2;
@@ -517,12 +519,17 @@ export class CommentaryDirector {
         return;
       }
       case "count":
-        if (event.amount >= 6 && this.struggleCalled !== this.lastKnockdown?.tick) {
+        // The referee counts on to the mandatory eight after the rise, when nobody is struggling to get up.
+        if (event.amount >= 6 && this.struggleCalled !== this.lastKnockdown?.tick && this.fighter(target)?.is_downed === true) {
           this.struggleCalled = this.lastKnockdown?.tick ?? event.tick;
-          this.say("struggle", event.event_id, now, { a: this.nameOf(this.otherId(target)), b: this.nameOf(target) }, moment);
+          this.say("struggle", event.event_id, now, { a: this.nameOf(this.otherId(target)), b: this.nameOf(target) }, STRUGGLE_MOMENT);
         }
         return;
       case "get_up": {
+        // He is up, and the phase is still the knockdown's: a "can he beat the count?" that is waiting or on
+        // screen is about a moment that has passed.
+        for (let index = this.queue.length - 1; index >= 0; index -= 1) if (this.queue[index]!.moment === STRUGGLE_MOMENT) this.queue.splice(index, 1);
+        if (this.showing?.moment === STRUGGLE_MOMENT) this.showing.end = Math.min(this.showing.end, now + FADE_SECONDS);
         const up = { a: this.nameOf(this.otherId(actor)), b: this.nameOf(actor), n: numberWord(event.amount) };
         this.say(event.amount >= 8 ? "upLate" : "upEarly", event.event_id, now, up, moment);
         this.say("finishCall", event.event_id, now, up, null, 3.4, 4);
