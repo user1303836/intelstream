@@ -1,4 +1,4 @@
-import { ROCKED_MAX_TICKS } from "../manifest";
+import { DOCTOR_CUT, DOCTOR_SWELLING, ROCKED_MAX_TICKS } from "../manifest";
 import { isDebut, recordCard } from "../record";
 import { styleTag, styleTitle } from "../styles";
 import type { CombatEvent, EngineSnapshot, FighterRecord, FighterSnapshot, FinalMessage, MatchPhase, PublicPlayer } from "../types";
@@ -60,7 +60,10 @@ const COMBO_GAP_TICKS = 42;
 const JAB_WINDOW_SECONDS = 8;
 const TAKEOVER_WINDOW_SECONDS = 15;
 const EVASION_WINDOW_SECONDS = 10;
-const CUT_MARKS = [60, 420, 560] as const;
+/** A cut is called as it opens, worse at 60% of the cut the doctor stops a bout on, and near his limit at 80%. */
+const CUT_MARKS = [60, Math.round(DOCTOR_CUT * 0.6), Math.round(DOCTOR_CUT * 0.8)] as const;
+/** At the bell the doctor looks at a cut or a swelling this near his stoppage. */
+const DOCTOR_LOOK = { cut: Math.round(DOCTOR_CUT * 0.7), swelling: Math.round(DOCTOR_SWELLING * 0.75) } as const;
 /** Below the engine's shut eye (manifest blind_side.eye_threshold, 700), so the swelling is noticed first. */
 const EYE_SWELLING = 500;
 const TIRED_RATIO = 0.2;
@@ -663,7 +666,7 @@ export class CommentaryDirector {
     const margin = winner === null || loser === null ? 0 : this.notesFor(winner.id).rounds - this.notesFor(loser.id).rounds;
     const opinion: LineKey = winner === null ? "roundClose" : one.tally.knockdowns !== two.tally.knockdowns ? "roundBig" : round >= 2 && margin >= 2 ? "pullingAway" : "roundFor";
     this.sayAt(opinion, event.event_id, now + 6.4, { a: this.nameOf(winner?.id ?? null), b: this.nameOf(loser?.id ?? null) }, 5);
-    const cut = snapshot.fighters.find((fighter) => Math.max(fighter.trauma.left_cut, fighter.trauma.right_cut) >= 450 || fighter.trauma.swelling >= 650);
+    const cut = snapshot.fighters.find((fighter) => Math.max(fighter.trauma.left_cut, fighter.trauma.right_cut) >= DOCTOR_LOOK.cut || fighter.trauma.swelling >= DOCTOR_LOOK.swelling);
     if (cut !== undefined) this.sayAt("doctor", event.event_id, now + 10, { b: this.nameOf(cut.player_id) }, 4);
   }
 

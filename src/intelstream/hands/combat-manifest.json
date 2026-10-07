@@ -15,7 +15,7 @@
   "action_buffer_ticks": 6,
   "facing": {
     "scale": 1000,
-    "turn_percent_per_update": 35
+    "turn_degrees_per_second": 75
   },
   "combos": {
     "recovery_cancel_percent": 50,
@@ -216,6 +216,10 @@
   "blind_side": {
     "eye_threshold": 700,
     "impact_percent": 120
+  },
+  "doctor": {
+    "cut": 800,
+    "swelling": 900
   },
   "parry": {
     "stagger_ticks": 20

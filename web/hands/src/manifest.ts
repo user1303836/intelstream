@@ -104,6 +104,9 @@ export const STUNNED_SPEED_PERCENT = manifestJson.stun.moving_speed_percent;
 /** A punch the fighter cannot pay for in full is thrown tired: this much slower to land and to recover. */
 export const TIRED_STARTUP_TICKS = manifestJson.tired.startup_ticks;
 export const TIRED_RECOVERY_TICKS = manifestJson.tired.recovery_ticks;
+/** The cut and the swelling at which the ringside doctor stops a bout (the engine's default). */
+export const DOCTOR_CUT = manifestJson.doctor.cut;
+export const DOCTOR_SWELLING = manifestJson.doctor.swelling;
 
 export function punchTiming(punchClass: PunchClass, target: Target, power: Power): PunchTiming {
   const base = punches[punchClass];
