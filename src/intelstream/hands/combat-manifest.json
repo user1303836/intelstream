@@ -44,7 +44,12 @@
   },
   "knockdown": {
     "neutral_separation": 230,
-    "referee_walk_speed": 4
+    "referee_walk_speed": 4,
+    "get_up_stun_ticks": 20,
+    "get_up_stamina": 500,
+    "get_up_base": 34,
+    "get_up_per_knockdown": 20,
+    "get_up_trauma_divisor": 18
   },
   "hitstop_ms": {
     "hit": 78,
@@ -204,11 +209,46 @@
     "stagger_ticks": 20
   },
   "body": {
-    "wind_percent": 150,
+    "wind_percent": 90,
     "collapse_body_trauma": 650,
     "collapse_stamina": 350,
     "collapse_minimum_damage": 40,
-    "collapse_delay_ticks": 10
+    "collapse_delay_ticks": 10,
+    "collapse_cooldown_ticks": 300
+  },
+  "stun": {
+    "flinch_minimum_damage": 36,
+    "flinch_base_ticks": 5,
+    "flinch_damage_divisor": 16,
+    "rocked_counter_damage": 50,
+    "rocked_power_damage": 70,
+    "rocked_hurt_poise": 180,
+    "rocked_base_ticks": 16,
+    "rocked_damage_divisor": 6,
+    "rocked_max_ticks": 36,
+    "chain_max_ticks": 45,
+    "immunity_ticks": 24
+  },
+  "guard": {
+    "block_poise_percent": 25,
+    "perfect_block_poise_percent": 0,
+    "leak_base_percent": 70,
+    "leak_minimum_percent": 10,
+    "block_minimum": 60,
+    "held_regen_every_ticks": 4,
+    "damage_percent": 60,
+    "stamina_regen_percent": 50
+  },
+  "trauma": {
+    "head_per_damage_percent": 100,
+    "eye_per_damage_percent": 70,
+    "cut_per_damage_percent": 50,
+    "swelling_per_damage_percent": 33,
+    "poise_ceiling_per_head_percent": 30,
+    "poise_ceiling_floor": 220,
+    "body_per_damage_percent": 100,
+    "poise_regen_every_ticks": 2,
+    "poise_damage_percent": 120
   },
   "hitbox": {
     "glove_radius": 0.11

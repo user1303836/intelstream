@@ -1,3 +1,4 @@
+import { ROCKED_MAX_TICKS } from "../manifest";
 import { isDebut, recordCard } from "../record";
 import type { CombatEvent, EngineSnapshot, FighterRecord, FighterSnapshot, FinalMessage, PublicPlayer } from "../types";
 import { decisionLabel } from "./hud";
@@ -452,7 +453,7 @@ export class CommentaryDirector {
         if (target === null) return;
         this.notesFor(target).stunnedAt = event.tick;
         const hurt = this.fighter(target);
-        const badly = hurt !== undefined && (hurt.poise < HURT_POISE || hurt.stunned_ticks >= 45);
+        const badly = hurt !== undefined && (hurt.poise < HURT_POISE || hurt.stunned_ticks >= ROCKED_MAX_TICKS - 6);
         this.say(badly ? "hurtBadly" : "hurt", event.event_id, now, names, moment);
         return;
       }

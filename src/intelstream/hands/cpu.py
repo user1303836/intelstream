@@ -21,8 +21,12 @@ from intelstream.hands.engine import (
     FighterState,
 )
 from intelstream.hands.rules import (
+    BLIND_SIDE_EYE_THRESHOLD,
+    BODY_COLLAPSE_STAMINA,
+    BODY_COLLAPSE_TRAUMA,
     COMPATIBLE_COMBO_CHAINS,
     FIGHTER_RADIUS,
+    GUARD_BLOCK_MINIMUM,
     PUNCH_RULES,
     RING_CORNER_REACH,
     RING_HALF_HEIGHT,
@@ -51,6 +55,16 @@ CLINCH_RANGE = 115
 CLINCH_STAMINA = 45
 THREAT_RANGE = 190
 TAUNT_RANGE = 230
+ROCKED_TICKS = 12
+HURT_POISE = 160
+OPPONENT_HURT_POISE = 200
+GUARD_SETTLED_TICKS = 8
+CORNER_CUT_AT = 400
+CORNER_BLEEDING_AT = 200
+CORNER_EYE_AT = 500
+CORNER_SWELLING_AT = 450
+GET_UP_ACCURACY_TRAUMA_DIVISOR = 45
+GET_UP_KNOCKDOWN_PENALTY = 14
 _LIMIT_X = RING_HALF_WIDTH - FIGHTER_RADIUS
 _LIMIT_Y = RING_HALF_HEIGHT - FIGHTER_RADIUS
 
@@ -99,6 +113,10 @@ class CpuProfile:
     get_up_jitter: int
     clinch_percent: int
     taunt_percent: int
+    exploit_percent: int
+    """Chance to aim a hook or uppercut at the side of the opponent's shut eye."""
+    corner_percent: int
+    """Chance to give the corner the instruction the fighter needs rather than none."""
 
 
 PROFILES: dict[CpuLevel, CpuProfile] = {
@@ -109,8 +127,8 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         read_percent=35,
         perfect_percent=0,
         guard_percent=30,
-        aggression_percent=32,
-        attack_interval=16,
+        aggression_percent=24,
+        attack_interval=20,
         combo_length=2,
         combo_percent=35,
         reach_margin=-8,
@@ -119,8 +137,8 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         footwork_percent=25,
         outside_distance=130,
         jab_bias=60,
-        counter_percent=15,
-        power_percent=12,
+        counter_percent=8,
+        power_percent=6,
         body_percent=15,
         finish_percent=0,
         admire_ticks=30,
@@ -129,34 +147,38 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         get_up_jitter=6,
         clinch_percent=15,
         taunt_percent=3,
+        exploit_percent=0,
+        corner_percent=60,
     ),
     CpuLevel.CONTENDER: CpuProfile(
         name="Marcus 'Hammer' Reed",
         rating=1100,
-        reaction_ticks=7,
-        read_percent=60,
-        perfect_percent=25,
-        guard_percent=55,
-        aggression_percent=50,
-        attack_interval=9,
+        reaction_ticks=6,
+        read_percent=70,
+        perfect_percent=35,
+        guard_percent=60,
+        aggression_percent=55,
+        attack_interval=7,
         combo_length=3,
-        combo_percent=60,
+        combo_percent=70,
         reach_margin=4,
         leads_target=True,
         stamina_reserve=180,
-        footwork_percent=60,
+        footwork_percent=70,
         outside_distance=160,
         jab_bias=10,
-        counter_percent=45,
-        power_percent=35,
-        body_percent=40,
-        finish_percent=15,
-        admire_ticks=12,
-        head_movement_percent=10,
+        counter_percent=65,
+        power_percent=40,
+        body_percent=45,
+        finish_percent=20,
+        admire_ticks=6,
+        head_movement_percent=12,
         get_up_percent=85,
         get_up_jitter=3,
         clinch_percent=40,
         taunt_percent=2,
+        exploit_percent=50,
+        corner_percent=90,
     ),
     CpuLevel.CHAMPION: CpuProfile(
         name="Viktor 'Iron' Volkov",
@@ -185,6 +207,8 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         get_up_jitter=1,
         clinch_percent=65,
         taunt_percent=1,
+        exploit_percent=80,
+        corner_percent=100,
     ),
 }
 
@@ -209,6 +233,12 @@ def _other_hand(hand: Hand) -> Hand:
 def _vision_penalty(fighter: FighterState) -> int:
     trauma = fighter.trauma
     return min(30, (trauma.left_eye + trauma.right_eye + trauma.swelling) // 70)
+
+
+def _blind_to(fighter: FighterState, hand: Hand) -> bool:
+    """A punch from `hand` arrives on the side of this fighter's eye that is swollen shut."""
+    eye = fighter.trauma.right_eye if hand is Hand.LEFT else fighter.trauma.left_eye
+    return eye >= BLIND_SIDE_EYE_THRESHOLD
 
 
 def _rope_room(x: int, y: int) -> float:
@@ -276,6 +306,8 @@ class CpuBrain:
         self._grab_until = -1
         self._next_look_tick = 0
         self._landed_start = -1
+        self._corner_round = -1
+        self._tick = 0
 
     def decide(self, engine: BoxingEngine) -> InputCommand | None:
         if engine.result is not None or engine.phase is MatchPhase.COMPLETE:
@@ -283,14 +315,40 @@ class CpuBrain:
         me = engine.fighter(self.player_id)
         them = engine.fighter(self.opponent_id)
         tick = engine.tick
+        self._tick = tick
         self._sequence += 1
         if engine.phase is MatchPhase.KNOCKDOWN:
             self._reset_exchange()
             return self._command(tick, actions=self._get_up(tick, me))
+        if engine.phase is MatchPhase.REST:
+            self._reset_exchange()
+            return self._command(tick, actions=self._corner(me, engine.round_number))
         if engine.phase is not MatchPhase.FIGHT or me.clinch_ticks or them.clinch_ticks:
             self._reset_exchange()
             return self._command(tick)
         return self._fight(tick, me, them)
+
+    def _corner(self, me: FighterState, round_number: int) -> tuple[SemanticAction, ...]:
+        """One instruction to the corner each rest, for the worst of what is wrong."""
+        if me.corner_choice is not None or self._corner_round == round_number:
+            return ()
+        self._corner_round = round_number
+        if not self._roll(self.profile.corner_percent):
+            return ()
+        trauma = me.trauma
+        if (
+            max(trauma.left_cut, trauma.right_cut) >= CORNER_CUT_AT
+            or trauma.bleeding >= CORNER_BLEEDING_AT
+        ):
+            kind = ActionKind.CORNER_CUT
+        elif (
+            max(trauma.left_eye, trauma.right_eye) >= CORNER_EYE_AT
+            or trauma.swelling >= CORNER_SWELLING_AT
+        ):
+            kind = ActionKind.CORNER_SWELLING
+        else:
+            kind = ActionKind.CORNER_BREATH
+        return (MovementAction(kind),)
 
     def _command(
         self,
@@ -321,9 +379,18 @@ class CpuBrain:
         profile = self.profile
         distance = max(1.0, hypot(them.x - me.x, them.y - me.y))
         self._note_opponent(tick, them)
-        hurt = me.stunned_ticks > 0 or me.poise < 150 or (me.trauma.head >= 900 and me.poise < 300)
-        tired = me.stamina < profile.stamina_reserve
-        opponent_hurt = them.stunned_ticks > 0 or them.poise < 170 or them.guard == 0
+        # A flinch is over in a few ticks; only a real stun, or a man nearly out of poise, is hurt.
+        hurt = (
+            me.stunned_ticks > ROCKED_TICKS
+            or me.poise < HURT_POISE
+            or (me.trauma.head >= 900 and me.poise < 280)
+        )
+        tired = me.stamina < self._reserve(me)
+        opponent_hurt = (
+            them.stunned_ticks > ROCKED_TICKS
+            or them.poise < OPPONENT_HURT_POISE
+            or them.guard < GUARD_BLOCK_MINIMUM
+        )
 
         evasion = self._read(tick, me, them)
         held = me.held_input.defense
@@ -380,6 +447,13 @@ class CpuBrain:
         move = self._movement(tick, me, them, distance, hurt, tired, opponent_hurt)
         return self._command(tick, move, self._defense(tick, me, distance, hurt), ())
 
+    def _reserve(self, me: FighterState) -> int:
+        """Stamina kept back: more once the body is broken down, where an empty tank means a knee."""
+        reserve = self.profile.stamina_reserve
+        if me.trauma.body >= BODY_COLLAPSE_TRAUMA:
+            reserve = max(reserve, BODY_COLLAPSE_STAMINA + 50)
+        return reserve
+
     def _note_opponent(self, tick: int, them: FighterState) -> None:
         attack = them.attack
         if attack is not None and attack.start_tick != self._last_opponent_start:
@@ -400,6 +474,9 @@ class CpuBrain:
         if key == self._read_attack or tick - attack.start_tick < self.profile.reaction_ticks:
             return None
         self._read_attack = key
+        if _blind_to(me, attack.action.hand):
+            # Thrown on the side of a shut eye: there is nothing to see it with.
+            return None
         contact = attack.start_tick + attack.rule.startup
         lead = contact - tick
         if lead < 2:
@@ -477,7 +554,13 @@ class CpuBrain:
         if tick >= self._guard_window_until:
             self._guard_window_until = tick + 15 + self._rng.randrange(16)
             busy = len(self._opponent_punches) >= 3
-            chance = self.profile.guard_percent + (30 if hurt else 0) + (15 if busy else 0)
+            blind = _blind_to(me, Hand.LEFT) or _blind_to(me, Hand.RIGHT)
+            chance = (
+                self.profile.guard_percent
+                + (30 if hurt else 0)
+                + (15 if busy else 0)
+                + (25 if blind else 0)
+            )
             self._hold_guard = self._roll(chance)
         if hurt and me.stunned_ticks == 0:
             return DefensivePose.GUARD_HIGH
@@ -552,6 +635,12 @@ class CpuBrain:
             hand = lead if self._roll(60) else rear
         else:
             hand = rear if self._roll(60) else lead
+        if punch_class in (PunchClass.HOOK, PunchClass.UPPERCUT):
+            for side in (Hand.LEFT, Hand.RIGHT):
+                shut = _blind_to(them, side) and not _blind_to(them, _other_hand(side))
+                if shut and self._roll(self.profile.exploit_percent):
+                    # Work the side he cannot see: a left hand lands on his right eye.
+                    hand = side
         return self._shaped(PunchAction(hand, punch_class, Target.HEAD), them, power_percent)
 
     def _shaped(self, action: PunchAction, them: FighterState, power_percent: int) -> PunchAction:
@@ -563,12 +652,25 @@ class CpuBrain:
         else:
             body = self._roll(body_percent // 3)
         power = action.punch_class is not PunchClass.JAB and self._roll(power_percent)
+        if power and self._parry_risk(them) and self._roll(self.profile.exploit_percent):
+            power = False
         return PunchAction(
             action.hand,
             action.punch_class,
             Target.BODY if body else Target.HEAD,
             Power.POWER if power else Power.NORMAL,
         )
+
+    def _parry_risk(self, them: FighterState) -> bool:
+        """A power punch at a guard that is down, or only just up, can be parried by a late raise.
+
+        A guard that has been up a while only blocks it, and a man punching or stunned cannot raise
+        one in time.
+        """
+        if them.stunned_ticks > 0 or them.attack is not None:
+            return False
+        guarded = them.defense in (DefensivePose.GUARD_HIGH, DefensivePose.GUARD_LOW)
+        return not (guarded and self._tick - them.defense_started_tick >= GUARD_SETTLED_TICKS)
 
     def _attack(
         self,
@@ -588,9 +690,7 @@ class CpuBrain:
             and them.attack.start_tick == self._punish_start
             and them.attack.resolved
         )
-        reserve = (
-            profile.stamina_reserve // 2 if countering or opponent_hurt else profile.stamina_reserve
-        )
+        reserve = self._reserve(me) // 2 if countering or opponent_hurt else self._reserve(me)
         if self._step_in is not None:
             if tick > self._step_in_until or hurt:
                 self._step_in = None
@@ -746,7 +846,9 @@ class CpuBrain:
             jitter = self.profile.get_up_jitter
             self._get_up_press_tick = centre + self._rng.randint(-jitter, jitter)
             accuracy = (
-                self.profile.get_up_percent - me.trauma.head // 40 - 8 * max(0, me.knockdowns - 1)
+                self.profile.get_up_percent
+                - me.trauma.head // GET_UP_ACCURACY_TRAUMA_DIVISOR
+                - GET_UP_KNOCKDOWN_PENALTY * max(0, me.knockdowns - 1)
             )
             wrong = (
                 ActionKind.GET_UP_RIGHT

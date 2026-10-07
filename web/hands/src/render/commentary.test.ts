@@ -1,3 +1,4 @@
+import { ROCKED_BASE_TICKS, ROCKED_MAX_TICKS } from "../manifest";
 import { fighter } from "../test/fixtures";
 import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, MatchPhase, PublicPlayer } from "../types";
 import { CommentaryDirector, crowdTension, fillLine, holdFor, punchName, type CommentaryHooks } from "./commentary";
@@ -78,6 +79,19 @@ describe("the commentary team", () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatch(/Crimson Geometry/u);
     expect(lines[0]).toMatch(/down|drops/iu);
+  });
+
+  it("calls a man badly hurt only when the shot has rocked him about as long as one can", () => {
+    const call = (stunned: number): string => {
+      const director = new CommentaryDirector();
+      feed(director, state(400, "fight", [{}, { stunned_ticks: stunned, poise: 400 }]), [
+        event("stun", 400, { actor_id: "one", target_id: "two", amount: 80 }),
+      ], 5);
+      return watch(director, 5.2, 12)[0] ?? "";
+    };
+    const badly = /out on their feet|all sorts of trouble|badly hurt/u;
+    expect(call(ROCKED_MAX_TICKS)).toMatch(badly);
+    expect(call(ROCKED_BASE_TICKS)).not.toMatch(badly);
   });
 
   it("never shows two lines at once and leaves a pause between lines", () => {

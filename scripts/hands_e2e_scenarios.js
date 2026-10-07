@@ -703,10 +703,18 @@ async function runCpu(A, note) {
   const started = await waitFor(A.page, (s) => /\. fight\./.test(s.summary ?? ''), 30000, 'fight phase');
   note('bout started against:', /computer opponent/.test(started?.summary ?? '') ? 'the computer' : 'someone else', '|', started?.summary?.slice(0, 160));
   const begun = Date.now();
-  let final = null; let downs = 0; let shots = 0;
+  let final = null; let downs = 0; let shots = 0; let rested = false; let cornered = null;
   while (Date.now() - begun < 240000) {
     const s = await status(A.page);
     if (s.final) { final = s; break; }
+    if (/\. rest\./.test(s.summary ?? '')) {
+      // Between rounds the computer gives its corner an instruction like a player does.
+      rested = true;
+      const choice = await A.page.evaluate(() => window.__handsApp?.state?.snapshot?.fighters.find((fighter) => fighter.player_id.startsWith('cpu:'))?.corner_choice ?? null);
+      if (choice !== null && choice !== 'balanced') cornered = choice;
+      await wait(250);
+      continue;
+    }
     if (/You are down/.test(s.summary ?? '')) {
       const press = /Press left/.test(s.summary) ? 'ArrowLeft' : /Press right/.test(s.summary) ? 'ArrowRight' : null;
       if (press) { await A.page.keyboard.press(press); downs += 1; }
@@ -721,6 +729,8 @@ async function runCpu(A, note) {
     shots += 1;
   }
   note('get-up presses:', downs);
+  note('computer corner instruction in the rest:', rested ? (cornered ?? 'none (a forgetful corner, or the rest was missed)') : 'no rest reached');
+  if (rested && cornered === null && level === 'champion') A.errors.push('the champion gave its corner no instruction');
   if (final === null) final = await waitFor(A.page, (s) => Boolean(s.final), 120000, 'final');
   note('FINAL:', final?.final);
   for (let i = 0; i < 80; i += 1) { if (await A.page.evaluate(() => window.__handsApp?.renderer?.resultVisible ?? false)) break; await wait(250); }

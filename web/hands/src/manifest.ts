@@ -61,6 +61,10 @@ export function comboWindow(punchClass: PunchClass): number {
   return punches[punchClass].combo_window;
 }
 
+/** A stun this long or longer is a fighter rocked by a big shot rather than a flinch. */
+export const ROCKED_BASE_TICKS = manifestJson.stun.rocked_base_ticks;
+export const ROCKED_MAX_TICKS = manifestJson.stun.rocked_max_ticks;
+
 export function punchTiming(punchClass: PunchClass, target: Target, power: Power): PunchTiming {
   const base = punches[punchClass];
   let startup = base.startup;
