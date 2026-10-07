@@ -103,6 +103,11 @@ function frame(state: EngineSnapshot, overrides: Record<string, unknown> = {}) {
     cameraOverride: null,
     finishCloseUpUntil: 0,
     finishCloseUpIndex: -1,
+    stoppageWinner: -1,
+    stoppageRaiseAt: Number.POSITIVE_INFINITY,
+    stoppageSpot: null,
+    raiseCentre: new THREE.Vector3(),
+    raiseFramed: false,
     restStartedAt: 0,
     cutmen: null,
     cutmanProgress: [0, 0],
@@ -317,6 +322,38 @@ describe("a rendered frame", () => {
         const shown = point.project(own.camera);
         expect(Math.abs(shown.x)).toBeLessThan(0.9);
         expect(Math.abs(shown.y)).toBeLessThan(0.9);
+      }
+    }
+  });
+
+  it("shows the winner and the referee lifting his arm after a knockout, not the count's shot of the body", () => {
+    const scale = 3.05 / 500;
+    const final: FinalMessage = { version: 3, type: "final", match_id: "m", winner_id: "one", method: "ko", round: 2, scorecards: [], ratings: {} };
+    const result = { match_id: "m", activity_instance_id: "i", guild_id: "g", player_one_id: "one", player_two_id: "two", winner_id: "one", finish_method: "ko" as const, round_number: 2, tick: 400, scorecards: [], player_one_knockdowns: 0, player_two_knockdowns: 1, player_one_damage: 1, player_two_damage: 1 };
+    const lying = [new THREE.Vector3(1.8, 0, 0), new THREE.Vector3(1.4, 0, 0), new THREE.Vector3(1.05, 0, 0), new THREE.Vector3(0.7, 0, 0.12), new THREE.Vector3(0.7, 0, -0.12)];
+    const screens = [{ width: 1280, height: 720, canvas: { clientWidth: 1280, clientHeight: 720 } }, { width: 390, height: 844, canvas: { clientWidth: 390, clientHeight: 844 } }];
+    for (const screen of screens) {
+      for (const camera of ["broadcast", "close"] as const) {
+        // The winner at x = -0.5, the beaten fighter's spot at 0.3 and his body toward +x; the referee is to lift the arm.
+        const knockedOut = fighting({ x: -0.5 / scale }, { x: 0.3 / scale, is_downed: true }, { phase: "complete", result });
+        const view = frame(knockedOut, {
+          final, stoppageWinner: 0, stoppageRaiseAt: 0, hudViewport: { width: screen.width, height: screen.height },
+          canvas: screen.canvas, renderer: { getSize: (out: THREE.Vector2) => out.set(1, 1), setSize: vi.fn() },
+        });
+        (view.graphs[1] as { fallBody: unknown }).fallBody = { centre: (out: THREE.Vector3) => out.set(1.05, 0, 0), bodyPoint: (index: number, out: THREE.Vector3) => out.copy(lying[index]!) };
+        view.settings.camera = camera;
+        view.run(400);
+        view.camera.updateMatrixWorld(true);
+        const top = resultCardTop(final, screen.width, screen.height, knockedOut.fighters, {}, new RoundStatsTracker(), "one");
+        const cardTop = 1 - (2 * top) / screen.height;
+        // Before, the winner's head was at y 0.97 and his raised glove at 1.38 (16:9, close), or his head at
+        // x -1.21 (390x844, close): above or past the edge of the picture.
+        for (const height of [1.55, 1.95]) {
+          const shown = new THREE.Vector3(-0.5, height, 0).project(view.camera);
+          expect(Math.abs(shown.x)).toBeLessThan(0.85);
+          expect(shown.y).toBeLessThan(0.82);
+          expect(shown.y).toBeGreaterThan(cardTop);
+        }
       }
     }
   });

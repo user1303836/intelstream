@@ -979,6 +979,9 @@ export class FightRenderer {
   private stoppageRaiseAt = Number.POSITIVE_INFINITY;
   /** Where the referee stands to lift the winner's arm, from the winner; chosen as he sets off for it. */
   private stoppageSpot: { readonly x: number; readonly z: number } | null = null;
+  /** The middle of the winner and the referee the arm-raise shot holds, eased, once it has started. */
+  private readonly raiseCentre = new THREE.Vector3();
+  private raiseFramed = false;
   private readonly stoppageWrist = new THREE.Vector3();
   private readonly stoppageOtherWrist = new THREE.Vector3();
   private readonly closeUpPosition = new THREE.Vector3();
@@ -1246,6 +1249,7 @@ export class FightRenderer {
     this.stoppageWinner = -1;
     this.stoppageRaiseAt = Number.POSITIVE_INFINITY;
     this.stoppageSpot = null;
+    this.raiseFramed = false;
     this.ceremony = this.ceremonyFor(final);
     this.finalRevealAt = this.frameSeconds + (this.ceremony === null ? finalRevealDelay(final) : CEREMONY_REVEAL_LIMIT_SECONDS);
     this.ovationUntil = final === null ? 0 : this.frameSeconds + CROWD_OVATION_SECONDS;
@@ -1370,6 +1374,31 @@ export class FightRenderer {
     const drift = this.settings().reducedMotion ? 0 : Math.sin((seconds - ceremony.arrivedAt) * 0.35) * 0.06 * shot.distance;
     this.cornerPosition.set(drift, shot.height + 0.05 * shot.distance, shot.distance);
     this.cornerLookAt.set(0, shot.height, 0);
+    return { position: this.cornerPosition, lookAt: this.cornerLookAt, framed: true };
+  }
+
+  /**
+   * After a stoppage, once the close-up of the beaten fighter is done, the broadcast holds the winner and
+   * the referee who lifts his arm, shot from the front in the part of the screen the result card leaves
+   * free, as the decision is. The count's framing, low over the body, put the raised glove off the top.
+   */
+  private raiseFrame(seconds: number, dt: number, reducedMotion: boolean): { position: THREE.Vector3; lookAt: THREE.Vector3; framed: boolean } | null {
+    const latest = this.buffer.latest();
+    if (this.stoppageWinner < 0 || this.final === null || this.replay !== null || this.ceremony !== null || latest === null || seconds < this.finishCloseUpUntil) return null;
+    const winner = this.stoppageWinner === 0 ? this.tmpA : this.tmpB;
+    // The referee's spot is chosen as he sets off; until then the one he would take first.
+    const spotX = this.stoppageSpot?.x ?? (winner.x > 0 ? -1 : 1) * STOPPAGE_RAISE_SPACING;
+    const spotZ = this.stoppageSpot?.z ?? 0;
+    if (!this.raiseFramed) this.raiseCentre.set(winner.x + spotX / 2, 0, winner.z + spotZ / 2);
+    this.raiseCentre.lerp(this.tmpCamera.set(winner.x + spotX / 2, 0, winner.z + spotZ / 2), 1 - Math.exp(-3 * dt));
+    this.raiseFramed = true;
+    const { width, height } = this.hudViewport;
+    const top = resultCardTop(this.final, width, height, latest.fighters, this.players, this.roundStats, this.viewerId);
+    const shot = ceremonyShot(this.camera.aspect, this.baseFov, (height - top) / Math.max(1, height));
+    const waved = seconds - (this.stoppageRaiseAt - STOPPAGE_RAISE_DELAY_SECONDS);
+    const drift = reducedMotion ? 0 : Math.sin(waved * 0.35) * 0.06 * shot.distance;
+    this.cornerPosition.set(THREE.MathUtils.clamp(this.raiseCentre.x, -1.4, 1.4) + drift, shot.height + 0.05 * shot.distance, this.raiseCentre.z + shot.distance);
+    this.cornerLookAt.set(this.raiseCentre.x, shot.height, this.raiseCentre.z);
     return { position: this.cornerPosition, lookAt: this.cornerLookAt, framed: true };
   }
 
@@ -2311,12 +2340,13 @@ export class FightRenderer {
       const bx = this.mapping.x(b.x);
       const bz = this.mapping.z(b.y);
       separation = Math.hypot(ax - bx, az - bz);
-      knockdown = a.is_downed || b.is_downed;
+      // Over a count the broadcast frames the man on the canvas; the result has its own shots (raiseFrame).
+      knockdown = snapshot.result === null && (a.is_downed || b.is_downed);
       const fallenA = this.graphs?.[0]?.fallBody?.centre(this.bodyPoint) ?? null;
       const contactA = fallenA === null ? { x: ax, z: az } : { x: fallenA.x, z: fallenA.z };
       const fallenB = this.graphs?.[1]?.fallBody?.centre(this.bodyPoint) ?? null;
       const contactB = fallenB === null ? { x: bx, z: bz } : { x: fallenB.x, z: fallenB.z };
-      downedAt = a.is_downed ? contactA : b.is_downed ? contactB : null;
+      downedAt = !knockdown ? null : a.is_downed ? contactA : contactB;
       this.ring.setRopeContacts(contactA, contactB);
       this.tmpA.set(ax, 0, az);
       this.tmpB.set(bx, 0, bz);
@@ -2383,7 +2413,7 @@ export class FightRenderer {
       : null;
     if (ownView === null) this.fighterCam.reset();
     const replaying = this.replay;
-    const frame: { position: THREE.Vector3; lookAt: THREE.Vector3; tight?: boolean; framed?: boolean } = this.cameraOverride ?? (replaying !== null && snapshot !== null ? this.replayFrame(snapshot, seconds - replaying.startedAt) : (this.closeUpFrame(seconds) ?? this.cornerShotFrame(seconds, snapshot, current.reducedMotion) ?? this.restWideFrame(snapshot) ?? this.ceremonyFrame(seconds) ?? ownView ?? directed));
+    const frame: { position: THREE.Vector3; lookAt: THREE.Vector3; tight?: boolean; framed?: boolean } = this.cameraOverride ?? (replaying !== null && snapshot !== null ? this.replayFrame(snapshot, seconds - replaying.startedAt) : (this.closeUpFrame(seconds) ?? this.raiseFrame(seconds, dt, current.reducedMotion) ?? this.cornerShotFrame(seconds, snapshot, current.reducedMotion) ?? this.restWideFrame(snapshot) ?? this.ceremonyFrame(seconds) ?? ownView ?? directed));
     this.ownViewActive = ownView !== null && frame === ownView;
     const fov = this.ownViewActive ? this.baseFov * FIGHTER_CAM_FOV_SCALE : this.baseFov;
     if (this.camera.fov !== fov) {
