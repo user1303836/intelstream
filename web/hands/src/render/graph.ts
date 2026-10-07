@@ -416,6 +416,10 @@ const springStep = (spring: Spring3, dt: number, stiffness: number, damping: num
 const PUNCH_CONTACT_OFFSET = 0.06;
 /** Between these gaps (metres between the fighters' feet) the stance closes up for infighting. */
 const CROWDED_GAP = 0.58;
+/** Two heads keep at least this far apart: closer, each leans his head and shoulders away from the other's, and eases back once they are clear. */
+const HEAD_SPACE = 0.25;
+const HEAD_SPACE_CLEAR = 0.32;
+const HEAD_SPACE_RATE = 9;
 const OPEN_GAP = 1;
 const KNOCKDOWN_FALL_SECONDS = 0.75;
 const GETUP_SECONDS = 1.7;
@@ -492,6 +496,9 @@ export class BoxingGraph {
   private foulWeight = 0;
   private tauntWeight = 0;
   private crowding = 0;
+  /** How far, in his own frame (x to the side, y ahead), the fighter is leaning his head away from the other's. */
+  private readonly headSpace = new THREE.Vector2();
+  private readonly ownHead = new THREE.Vector3();
   private lastSpeed = 0;
   private readonly stool: { group: THREE.Group; dispose: () => void };
   private readonly enswell: { group: THREE.Group; dispose: () => void };
@@ -1077,6 +1084,24 @@ export class BoxingGraph {
     const gap = Math.hypot(this.mapping.x(opponent.x) - this.mapping.x(fighter.x), this.mapping.z(opponent.y) - this.mapping.z(fighter.y));
     const crowded = this.referee || fighter.is_downed || opponent.is_downed ? 0 : 1 - smoothstep(CROWDED_GAP, OPEN_GAP, gap);
     this.crowding = smooth(this.crowding, crowded, 9, dt);
+    let apart = Number.POSITIVE_INFINITY;
+    if (this.hasLiveHead && !this.referee && this.downState === "up" && this.clinchWeight < 0.5) {
+      const own = this.boxer.rig.bones.head.getWorldPosition(this.ownHead);
+      const dx = own.x - this.liveOpponentHead.x;
+      const dz = own.z - this.liveOpponentHead.z;
+      const flat = Math.hypot(dx, dz);
+      apart = Math.hypot(dx, own.y - this.liveOpponentHead.y, dz);
+      if (apart < HEAD_SPACE && flat > 1e-4) {
+        // The lean builds while the heads are too close, in his own frame: x to his side, y ahead of him.
+        const push = ((HEAD_SPACE - apart) / HEAD_SPACE) * HEAD_SPACE_RATE * dt;
+        const cos = Math.cos(-this.yaw);
+        const sin = Math.sin(-this.yaw);
+        this.headSpace.x += ((dx * cos + dz * sin) / flat) * push;
+        this.headSpace.y += ((-dx * sin + dz * cos) / flat) * push;
+        if (this.headSpace.lengthSq() > 1) this.headSpace.normalize();
+      }
+    }
+    if (apart > HEAD_SPACE_CLEAR) this.headSpace.multiplyScalar(Math.exp(-3 * dt));
 
     springStep(this.headKick, dt, 190, 7.5, 0.24);
     springStep(this.torsoKick, dt, 150, 7, 0.7);
@@ -1208,6 +1233,20 @@ export class BoxingGraph {
       leadHand.position.z -= inside * 0.14;
       leadHand.position.x -= inside * 0.035 * mirror;
       rearHand.position.z -= inside * 0.07;
+    }
+
+    // Heads never pass through each other: the one too close leans away from the other's.
+    if (Math.abs(this.headSpace.x) + Math.abs(this.headSpace.y) > 0.001) {
+      const side = this.headSpace.x;
+      const ahead = this.headSpace.y;
+      torso.spinePitch += ahead * 0.7;
+      torso.spineRoll -= side * 0.7;
+      torso.hips.z += ahead * 0.1;
+      torso.hips.x += side * 0.05;
+      torso.headOffset.x += side * 0.05;
+      torso.headOffset.z += ahead * 0.05;
+      torso.headPitch += ahead * 0.2;
+      torso.headRoll -= side * 0.3;
     }
 
     // Reactions.

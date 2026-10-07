@@ -747,6 +747,24 @@ describe("clinch hold", () => {
   });
 });
 
+describe("two heads at close range", () => {
+  it("leans the head away from the other's rather than through it", () => {
+    const { boxer, graph } = makeGraph();
+    const fighter = facingOpponent(baseFighter("one"));
+    const opponent = opponentFor("two");
+    run(graph, fighter, opponent, 40, undefined);
+    const own = bone(boxer, "head").clone();
+    const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(boxer.root.getWorldQuaternion(new THREE.Quaternion()));
+    forward.y = 0;
+    const other = own.clone().addScaledVector(forward.normalize(), 0.06);
+    for (let frame = 0; frame < 60; frame += 1) run(graph, fighter, opponent, 1, other, 20 + frame * 0.5, (40 + frame) / 60);
+    expect(bone(boxer, "head").distanceTo(other)).toBeGreaterThan(0.15);
+    // Clear of it, he stands as he did.
+    for (let frame = 0; frame < 60; frame += 1) run(graph, fighter, opponent, 1, other.clone().addScaledVector(forward, 1), 50 + frame * 0.5, (100 + frame) / 60);
+    expect(bone(boxer, "head").distanceTo(own)).toBeLessThan(0.03);
+  });
+});
+
 describe("wave-off", () => {
   it("sweeps both gloves wide across the chest, below the face, while waving the fight off", () => {
     const { boxer, graph } = makeGraph();
