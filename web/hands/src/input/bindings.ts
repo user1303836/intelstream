@@ -17,6 +17,7 @@ export const CONTROL_HELP = [
   "Move: W up · S down · A left · D right", "High / low guard: Q / E", "Left/right jab: F / J", "Left/right straight: R / U",
   "Left/right hook: G / H", "Left/right uppercut: T / Y", "Body: Shift · Power: Alt",
   "Slip: Z / X · Weave: C · Pull: V", "Clinch: B · Stance: N · Taunt: M · Fouls: 1 / 2", "Get-up rhythm: ← / →",
+  "Camera: K cycles broadcast, close and over the shoulder (behind your fighter, W walks at the opponent and A / D circle him).",
   "Controller move: left stick. High / low guard: left / right shoulder (independent of punches).",
   "Controller face classes: bottom jab · right straight · left hook · top uppercut.",
   "Controller face hand: hold D-pad left for left hand or D-pad right for right hand, then press a face punch; otherwise punches use the right hand. A direction used for a punch is consumed and does not evade.",

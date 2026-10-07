@@ -10,7 +10,7 @@ import { InputController } from "./input/input";
 import { EventDeduplicator } from "./interpolation";
 import { NetworkController } from "./network";
 import { FightRenderer } from "./render/renderer";
-import { SettingsStore, type BloodLevel } from "./settings";
+import { CAMERA_MODES, SettingsStore, type BloodLevel } from "./settings";
 import { initialState, reduceState, type GameState } from "./state";
 import type { EngineSnapshot, ServerMessage } from "./types";
 
@@ -68,7 +68,7 @@ export class HandsApp {
     private readonly reloadPage: () => void = () => window.location.reload(),
     private readonly authorizer: (signal: AbortSignal) => Promise<DiscordSession> = authorizeDiscord,
   ) {
-    root.innerHTML = `<section class="activity" aria-label="Hands boxing activity"><canvas class="fight" aria-label="Two-player boxing match"></canvas><header class="topbar"><strong>HANDS</strong><span>two-player boxing</span><span class="spectator-role" data-role hidden>SPECTATING · READ ONLY</span><button type="button" data-controls aria-expanded="false">Controls</button><button type="button" data-settings aria-expanded="false">Settings</button></header><section class="overlay" data-overlay><p class="status" data-status></p><p class="hint" data-hint hidden></p><button type="button" class="primary" data-retry hidden>Retry securely</button><button type="button" class="primary" data-rematch hidden>Rematch</button></section><aside class="panel" data-controls-panel hidden aria-label="Controls"><h2>Controls</h2><ul>${CONTROL_HELP.map((item) => `<li>${item}</li>`).join("")}</ul></aside><aside class="panel settings" data-settings-panel hidden aria-label="Accessibility and feedback settings"><h2>Settings</h2><label>Volume <input data-volume type="range" min="0" max="1" step="0.05"></label><label><input data-haptics type="checkbox"> Haptics</label><label><input data-motion type="checkbox"> Reduced motion</label><label>Blood <select data-blood><option value="full">Full (arcade gore)</option><option value="reduced">Reduced</option><option value="off">Off</option></select></label><section class="diagnostics"><h3>Diagnostics</h3><pre data-diagnostics></pre><button type="button" data-copy-diagnostics>Copy diagnostics</button></section><p class="model-credit"><a href="https://sketchfab.com/3d-models/boxer-84767168720948b38728ff78ee6f6090" target="_blank" rel="noreferrer">“Boxer” by Texel, Inc.</a> · <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">CC BY 4.0</a> · modified</p></aside><section class="sr-summary" data-fight-summary aria-label="Fight summary"></section><p class="sr-summary" data-fight-status role="status" aria-live="polite" aria-atomic="true"></p><section class="sr-summary" data-final aria-live="polite" aria-label="Final result"></section></section>`;
+    root.innerHTML = `<section class="activity" aria-label="Hands boxing activity"><canvas class="fight" aria-label="Two-player boxing match"></canvas><header class="topbar"><strong>HANDS</strong><span>two-player boxing</span><span class="spectator-role" data-role hidden>SPECTATING · READ ONLY</span><button type="button" data-controls aria-expanded="false">Controls</button><button type="button" data-settings aria-expanded="false">Settings</button></header><section class="overlay" data-overlay><p class="status" data-status></p><p class="hint" data-hint hidden></p><button type="button" class="primary" data-retry hidden>Retry securely</button><button type="button" class="primary" data-rematch hidden>Rematch</button></section><aside class="panel" data-controls-panel hidden aria-label="Controls"><h2>Controls</h2><ul>${CONTROL_HELP.map((item) => `<li>${item}</li>`).join("")}</ul></aside><aside class="panel settings" data-settings-panel hidden aria-label="Accessibility and feedback settings"><h2>Settings</h2><label>Volume <input data-volume type="range" min="0" max="1" step="0.05"></label><label><input data-haptics type="checkbox"> Haptics</label><label><input data-motion type="checkbox"> Reduced motion</label><label>Blood <select data-blood><option value="full">Full (arcade gore)</option><option value="reduced">Reduced</option><option value="off">Off</option></select></label><label>Camera <select data-camera><option value="broadcast">Broadcast</option><option value="close">Close</option><option value="fighter">Over the shoulder</option></select></label><section class="diagnostics"><h3>Diagnostics</h3><pre data-diagnostics></pre><button type="button" data-copy-diagnostics>Copy diagnostics</button></section><p class="model-credit"><a href="https://sketchfab.com/3d-models/boxer-84767168720948b38728ff78ee6f6090" target="_blank" rel="noreferrer">“Boxer” by Texel, Inc.</a> · <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">CC BY 4.0</a> · modified</p></aside><section class="sr-summary" data-fight-summary aria-label="Fight summary"></section><p class="sr-summary" data-fight-status role="status" aria-live="polite" aria-atomic="true"></p><section class="sr-summary" data-final aria-live="polite" aria-label="Final result"></section></section>`;
     this.canvas = root.querySelector<HTMLCanvasElement>("canvas")!;
     this.status = root.querySelector<HTMLElement>("[data-status]")!;
     this.overlay = root.querySelector<HTMLElement>("[data-overlay]")!;
@@ -86,7 +86,19 @@ export class HandsApp {
     this.bindPanels();
     this.syncSettings();
     this.input.attachTouch(root.querySelector<HTMLElement>(".activity")!);
+    this.input.setViewForward(() => this.renderer?.viewForward() ?? null);
+    window.addEventListener("keydown", this.onCameraKey);
   }
+
+  private readonly onCameraKey = (event: KeyboardEvent): void => {
+    if (event.code !== "KeyK" || event.repeat || event.ctrlKey || event.metaKey || event.altKey) return;
+    const target = event.target;
+    if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement) return;
+    event.preventDefault();
+    const next = CAMERA_MODES[(CAMERA_MODES.indexOf(this.settings.current.camera) + 1) % CAMERA_MODES.length]!;
+    this.settings.update({ camera: next });
+    this.root.querySelector<HTMLSelectElement>("[data-camera]")!.value = next;
+  };
 
   start(): void {
     void this.authorize();
@@ -442,6 +454,10 @@ export class HandsApp {
       this.settings.update({ blood });
       this.renderer?.setBloodLevel(blood);
     });
+    this.root.querySelector<HTMLSelectElement>("[data-camera]")!.addEventListener("change", (event) => {
+      const camera = CAMERA_MODES.find((mode) => mode === (event.target as HTMLSelectElement).value);
+      if (camera !== undefined) this.settings.update({ camera });
+    });
   }
 
   /** One block of text a player can paste into the server when reporting a problem. */
@@ -472,6 +488,7 @@ export class HandsApp {
     this.root.querySelector<HTMLInputElement>("[data-haptics]")!.checked = settings.haptics;
     this.root.querySelector<HTMLInputElement>("[data-motion]")!.checked = settings.reducedMotion;
     this.root.querySelector<HTMLSelectElement>("[data-blood]")!.value = settings.blood;
+    this.root.querySelector<HTMLSelectElement>("[data-camera]")!.value = settings.camera;
   }
 
   private fail(code: string): void {
@@ -495,6 +512,7 @@ export class HandsApp {
     this.network?.dispose();
     this.session?.destroy();
     this.renderer?.destroy();
+    window.removeEventListener("keydown", this.onCameraKey);
     this.input.destroy();
     this.audio.destroy();
     this.settings.destroy();

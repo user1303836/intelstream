@@ -105,7 +105,7 @@ export class LabApp {
     this.renderer = new FightRenderer(
       this.canvas,
       { tick_rate: this.replay.tick_rate, ring_half_width: 500, ring_half_height: 500 },
-      () => ({ volume: 0, haptics: false, reducedMotion: false, blood: "full" as BloodLevel }),
+      () => ({ volume: 0, haptics: false, reducedMotion: false, blood: "full" as BloodLevel, camera: "broadcast" as const }),
       { manualClock: true },
     );
     const players = Object.fromEntries(this.replay.ticks[0]!.snapshot.payload.fighters.map((fighter) => [

@@ -3,7 +3,7 @@ import { fighter, mockHudContext, snapshot, type DrawnPicture } from "../test/fi
 import { Avatars } from "./avatars";
 import { RoundClock } from "./hud";
 import type { CombatEvent, MatchResult } from "../types";
-import { arcadeInjuryFor, canStartPunch, CEREMONY_MARKS, ceremonyStep, contactParticipants, contactPresentationPlan, cornersAtWork, FightRenderer, isArcadeInjuryCandidate, presentationTickFor, refereeSpacing, replayCameraSide, replayReattaches, visualSeparation } from "./renderer";
+import { arcadeInjuryFor, canStartPunch, CEREMONY_MARKS, ceremonyStep, contactParticipants, contactPresentationPlan, cornersAtWork, FightRenderer, ownViewPhase, isArcadeInjuryCandidate, presentationTickFor, refereeSpacing, replayCameraSide, replayReattaches, visualSeparation } from "./renderer";
 import { worldMapping } from "./world";
 
 const event = (kind: string, detail: string): CombatEvent => ({
@@ -433,5 +433,17 @@ describe("the rest between rounds", () => {
   it("is back on the wide shot once the seconds are out", () => {
     expect(shot.call(crew([1, 1]), 13, { ...resting, phase_ticks_remaining: 91 }, false)).not.toBeNull();
     expect(shot.call(crew([1, 1]), 13, { ...resting, phase_ticks_remaining: 89 }, false)).toBeNull();
+  });
+});
+
+describe("the player's own camera", () => {
+  it("is used only while the fighters are boxing", () => {
+    expect(ownViewPhase({ phase: "fight" })).toBe(true);
+    expect(ownViewPhase({ phase: "countdown" })).toBe(true);
+    expect(ownViewPhase({ phase: "foul_recovery" })).toBe(true);
+    expect(ownViewPhase({ phase: "knockdown" })).toBe(false);
+    expect(ownViewPhase({ phase: "rest" })).toBe(false);
+    expect(ownViewPhase({ phase: "complete" })).toBe(false);
+    expect(ownViewPhase(null)).toBe(false);
   });
 });

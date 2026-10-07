@@ -1,19 +1,21 @@
 export type BloodLevel = "full" | "reduced" | "off";
-export interface Settings { readonly volume: number; readonly haptics: boolean; readonly reducedMotion: boolean; readonly blood: BloodLevel }
+export type CameraMode = "broadcast" | "close" | "fighter";
+export const CAMERA_MODES: readonly CameraMode[] = ["broadcast", "close", "fighter"];
+export interface Settings { readonly volume: number; readonly haptics: boolean; readonly reducedMotion: boolean; readonly blood: BloodLevel; readonly camera: CameraMode }
 const STORAGE_KEY = "hands.preferences.v1";
 const unavailableStorage: Storage = { length: 0, clear: () => undefined, getItem: () => null, key: () => null, removeItem: () => undefined, setItem: () => undefined };
 const browserStorage = (): Storage => { try { return window.localStorage; } catch { return unavailableStorage; } };
-const defaults = (): Settings => ({ volume: 0.7, haptics: true, reducedMotion: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false, blood: "full" });
+const defaults = (): Settings => ({ volume: 0.7, haptics: true, reducedMotion: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false, blood: "full", camera: "broadcast" });
 export function loadSettings(storage: Storage = browserStorage()): Settings {
   const fallback = defaults();
   try {
     const raw: unknown = JSON.parse(storage.getItem(STORAGE_KEY) ?? "null"); if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return fallback;
     const value = raw as Record<string, unknown>; const volume = typeof value.volume === "number" && Number.isFinite(value.volume) ? Math.max(0, Math.min(1, value.volume)) : fallback.volume;
-    return { volume, haptics: typeof value.haptics === "boolean" ? value.haptics : fallback.haptics, reducedMotion: typeof value.reducedMotion === "boolean" ? value.reducedMotion : fallback.reducedMotion, blood: value.blood === "reduced" || value.blood === "off" || value.blood === "full" ? value.blood : fallback.blood };
+    return { volume, haptics: typeof value.haptics === "boolean" ? value.haptics : fallback.haptics, reducedMotion: typeof value.reducedMotion === "boolean" ? value.reducedMotion : fallback.reducedMotion, blood: value.blood === "reduced" || value.blood === "off" || value.blood === "full" ? value.blood : fallback.blood, camera: CAMERA_MODES.includes(value.camera as CameraMode) ? value.camera as CameraMode : fallback.camera };
   } catch { return fallback; }
 }
 export function saveSettings(settings: Settings, storage: Storage = browserStorage()): void {
-  try { storage.setItem(STORAGE_KEY, JSON.stringify({ volume: Math.max(0, Math.min(1, settings.volume)), haptics: settings.haptics, reducedMotion: settings.reducedMotion, blood: settings.blood })); } catch { /* Storage can be unavailable in embedded/privacy contexts. */ }
+  try { storage.setItem(STORAGE_KEY, JSON.stringify({ volume: Math.max(0, Math.min(1, settings.volume)), haptics: settings.haptics, reducedMotion: settings.reducedMotion, blood: settings.blood, camera: settings.camera })); } catch { /* Storage can be unavailable in embedded/privacy contexts. */ }
 }
 export class SettingsStore {
   private value: Settings; private readonly listeners = new Set<(settings: Settings) => void>();

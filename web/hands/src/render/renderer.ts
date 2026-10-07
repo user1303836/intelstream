@@ -11,7 +11,7 @@ import { canAffordPunch, predictMovement, predictedPunchTiming, type HeldInput }
 import type { BloodLevel, Settings } from "../settings";
 import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, Hand, MatchResult, PublicPlayer, PunchClass, SemanticAction, SimulationInfo } from "../types";
 import { buildArena, type BuiltArena } from "./arena";
-import { CameraDirector, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE, SECONDS_OUT, ceremonyShot, cornerFrame, cornerPoint, cornerShot, cornerShotProgress } from "./camera";
+import { CameraDirector, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE, FIGHTER_CAM_FOV_SCALE, FighterCam, SECONDS_OUT, ceremonyShot, cornerFrame, cornerPoint, cornerShot, cornerShotProgress } from "./camera";
 import { Avatars } from "./avatars";
 import { Effects3D, type BakedPart } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, type ArcadeDislocation } from "./graph";
@@ -31,6 +31,11 @@ export type ArcadeInjury =
   | "jaw_dislocation"
   | "shoulder_left"
   | "shoulder_right";
+
+/** Phases the player's own over-the-shoulder camera is used in; counts, rests and the finish go to the broadcast. */
+export function ownViewPhase(snapshot: Pick<EngineSnapshot, "phase"> | null): boolean {
+  return snapshot !== null && (snapshot.phase === "countdown" || snapshot.phase === "fight" || snapshot.phase === "foul_recovery");
+}
 
 /** Whether the corners are at work: through the rest until the seconds are called out before the bell. */
 export function cornersAtWork(snapshot: Pick<EngineSnapshot, "phase" | "phase_ticks_remaining"> | null, tickRate: number): boolean {
@@ -537,6 +542,10 @@ export class FightRenderer {
   private readonly refereeVelocity = new THREE.Vector3();
   private readonly effects: Effects3D;
   private readonly director = new CameraDirector();
+  private readonly fighterCam = new FighterCam();
+  private ownViewActive = false;
+  private readonly ownForward = { x: 0, z: -1 };
+  private baseFov = 36;
   private readonly mapping: WorldMapping;
   private readonly buffer: SnapshotBuffer;
   private readonly localInput: (() => HeldInput | null) | null;
@@ -764,6 +773,14 @@ export class FightRenderer {
 
   labFrame(virtualSeconds: number, render = true): void {
     this.draw(virtualSeconds * 1000, true, render);
+  }
+
+  /** The way the player's own camera faces along the canvas while it is in use, so the controls can turn with it. */
+  viewForward(): { readonly x: number; readonly z: number } | null {
+    if (!this.ownViewActive) return null;
+    this.ownForward.x = this.fighterCam.forwardX;
+    this.ownForward.z = this.fighterCam.forwardZ;
+    return this.ownForward;
   }
 
   setPlayers(players: Readonly<Record<string, PublicPlayer>>, viewerId: string | null, order: readonly string[] = Object.keys(players)): void {
@@ -1434,7 +1451,8 @@ export class FightRenderer {
         this.camera.aspect = width / height;
         // Narrow viewports widen the lens a little and pull the camera back (see the frame step below).
         this.portraitPull = THREE.MathUtils.clamp(1.2 / this.camera.aspect, 1, 2.2);
-        this.camera.fov = 36 * Math.min(1.3, Math.sqrt(this.portraitPull));
+        this.baseFov = 36 * Math.min(1.3, Math.sqrt(this.portraitPull));
+        this.camera.fov = this.baseFov;
         this.camera.updateProjectionMatrix();
       }
     }
@@ -1591,9 +1609,21 @@ export class FightRenderer {
       knockdown,
       this.effects.shakeAmount,
       current.reducedMotion,
+      current.camera === "close",
     );
+    const viewerIndex = snapshot === null ? -1 : snapshot.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
+    const ownView = current.camera === "fighter" && viewerIndex >= 0 && ownViewPhase(snapshot)
+      ? this.fighterCam.update(dt, seconds, viewerIndex === 0 ? this.tmpA : this.tmpB, viewerIndex === 0 ? this.tmpB : this.tmpA, this.effects.shakeAmount, current.reducedMotion)
+      : null;
+    if (ownView === null) this.fighterCam.reset();
     const replaying = this.replay;
-    const frame: { position: THREE.Vector3; lookAt: THREE.Vector3; tight?: boolean; framed?: boolean } = this.cameraOverride ?? (replaying !== null && snapshot !== null ? this.replayFrame(snapshot, seconds - replaying.startedAt) : (this.closeUpFrame(seconds) ?? this.cornerShotFrame(seconds, snapshot, current.reducedMotion) ?? this.ceremonyFrame(seconds) ?? directed));
+    const frame: { position: THREE.Vector3; lookAt: THREE.Vector3; tight?: boolean; framed?: boolean } = this.cameraOverride ?? (replaying !== null && snapshot !== null ? this.replayFrame(snapshot, seconds - replaying.startedAt) : (this.closeUpFrame(seconds) ?? this.cornerShotFrame(seconds, snapshot, current.reducedMotion) ?? this.ceremonyFrame(seconds) ?? ownView ?? directed));
+    this.ownViewActive = ownView !== null && frame === ownView;
+    const fov = this.ownViewActive ? this.baseFov * FIGHTER_CAM_FOV_SCALE : this.baseFov;
+    if (this.camera.fov !== fov) {
+      this.camera.fov = fov;
+      this.camera.updateProjectionMatrix();
+    }
     if (this.cameraOverride === null && this.portraitPull > 1 && frame.framed !== true) {
       const tight = frame.tight === true;
       const pull = this.portraitPull / Math.min(1.3, Math.sqrt(this.portraitPull));
