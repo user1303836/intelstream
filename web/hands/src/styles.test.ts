@@ -1,4 +1,5 @@
 import manifest from "../../../src/intelstream/hands/combat-manifest.json";
+import { CONTROL_SECTIONS } from "./input/bindings";
 import { FIGHTER_STYLES } from "./protocol";
 import { loadStyle, saveStyle, STYLE_CARDS, StylePicker, styleTag, styleTitle } from "./styles";
 import { publicPlayers } from "./test/fixtures";
@@ -210,6 +211,58 @@ describe("the style picker", () => {
     expect(document.activeElement).toBe(card(picker, "slugger"));
     expect(tabbable()).toEqual(["slugger"]);
     picker.destroy();
+  });
+
+  it("is chosen and settled with a controller, one move a press, and a button held as it opens is not a pick", () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => { frames.push(callback); return frames.length; });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
+    const held = new Set<number>();
+    let stick = 0;
+    const pad = { connected: true, mapping: "standard", get buttons() { return Array.from({ length: 17 }, (_unused, index) => ({ pressed: held.has(index) })); }, get axes() { return [stick, 0, 0, 0]; } } as unknown as Gamepad;
+    Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [pad] });
+    try {
+      const picker = make();
+      const frame = (): void => frames.shift()!(0);
+      // The bottom face button is still held from the last punch of the bout before.
+      held.add(0);
+      show(picker);
+      frame();
+      expect(sent).toEqual(["balanced:false"]);
+      held.delete(0);
+      frame();
+      // D-pad right held over two frames moves one card.
+      held.add(15);
+      frame();
+      frame();
+      expect(sent).toEqual(["balanced:false", "boxer:false"]);
+      held.delete(15);
+      frame();
+      stick = 0.9;
+      frame();
+      frame();
+      expect(sent.at(-1)).toBe("slugger:false");
+      stick = 0;
+      frame();
+      stick = -0.9;
+      frame();
+      expect(sent.at(-1)).toBe("boxer:false");
+      expect(document.activeElement).toBe(card(picker, "boxer"));
+      stick = 0;
+      held.add(0);
+      frame();
+      expect(sent).toEqual(["balanced:false", "boxer:false", "slugger:false", "boxer:false", "boxer:true"]);
+      // Once the pick is gone the controller is left alone.
+      picker.destroy();
+      held.delete(0);
+      stick = 0.9;
+      for (const callback of frames.splice(0)) callback(0);
+      expect(frames).toEqual([]);
+      expect(sent).toHaveLength(5);
+      expect(CONTROL_SECTIONS.find((section) => section.title === "Controller")?.items).toContain("Controller style pick: D-pad or left stick to choose · bottom face button settles.");
+    } finally {
+      Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [] });
+    }
   });
 
   it("settles at once on a number key or a tap", () => {

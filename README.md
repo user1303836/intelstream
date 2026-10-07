@@ -495,6 +495,7 @@ Standard-controller controls are:
 | Low blow / headbutt | View/Back / Menu/Start |
 | Private get-up rhythm | While down, press D-pad left / right; it registers immediately rather than waiting for release |
 | Corner instruction, between rounds | Left (`X`/Square) close the cut · top (`Y`/Triangle) bring down the swelling · right (`B`/Circle) catch your breath |
+| Style, in the pick before the bout | D-pad or left stick choose; bottom (`A`/Cross) settles |
 
 The right stick also performs one punch after a center→peak→center gesture. Left/right direction selects the hand. Using the absolute angle from horizontal: **0–22.5° hook**, **22.5–45° jab**, **45–70° straight**, and **70–90° uppercut**. The gesture fires once only after returning to center; trigger modifiers are captured at gesture start. Face/D-pad punches are the accessibility alternative when stick gestures are impractical.
 
