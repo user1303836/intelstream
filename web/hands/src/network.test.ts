@@ -207,6 +207,27 @@ describe("same-origin WebSocket controller", () => {
     controller.dispose();
   });
 
+  it("reports a frame from another protocol version as an outdated client, and a malformed one as a protocol error", () => {
+    const outdated = new FakeSocket();
+    const fatal = vi.fn();
+    const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks({ onFatal: fatal }), () => outdated);
+    controller.start();
+    outdated.open();
+    // A server that moved on answers authenticate with its own version, so the frame itself does not decode.
+    outdated.message({ version: 4, type: "error", code: "client_outdated" });
+    expect(fatal).toHaveBeenCalledWith("client_outdated");
+    controller.dispose();
+
+    const malformed = new FakeSocket();
+    const protocolFatal = vi.fn();
+    const other = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks({ onFatal: protocolFatal }), () => malformed);
+    other.start();
+    malformed.open();
+    malformed.message({ version: 3, type: "waiting", open_seats: 2 });
+    expect(protocolFatal).toHaveBeenCalledWith("protocol_error");
+    other.dispose();
+  });
+
   it("ticks an open-socket opponent pause from its current grace to zero", () => {
     vi.useFakeTimers();
     const reconnect = vi.fn();

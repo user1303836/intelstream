@@ -27,6 +27,14 @@ describe("strict same-origin HTTP response parsing", () => {
     await expect(bootstrap("launch")).rejects.toEqual(new ClientError("bootstrap_failed"));
   });
 
+  it("asks for a reload when the server speaks another protocol, and only then", async () => {
+    history.replaceState({}, "", "/");
+    vi.stubGlobal("fetch", vi.fn(async () => rawResponse('{"client_id":"123","state":"s","protocol":4,"simulation":{"tick_rate":30,"ring_half_width":500,"ring_half_height":500},"build":"next"}')));
+    await expect(bootstrap("launch")).rejects.toEqual(new ClientError("client_outdated", true));
+    vi.stubGlobal("fetch", vi.fn(async () => rawResponse('{"client_id":"123","state":"s","protocol":3,"simulation":{"tick_rate":30,"ring_half_width":500,"ring_half_height":500},"extra":1}')));
+    await expect(bootstrap("launch")).rejects.toEqual(new ClientError("invalid_bootstrap"));
+  });
+
   it("rejects nested duplicate token keys before schema decoding", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => rawResponse('{"access_token":"a","ticket":"t","player":{"id":"one","name":"One","name":"Forged","avatar":null,"rating":1500}}')));
     await expect(exchangeToken("code", "state")).rejects.toEqual(new ClientError("token_failed"));

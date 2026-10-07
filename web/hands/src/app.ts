@@ -341,6 +341,7 @@ export class HandsApp {
           : labels[this.state.stage];
     this.setText(this.liveFightStatus, liveStatus);
     this.retry.hidden = this.state.stage !== "fatal";
+    this.setText(this.retry, this.reloadOnRetry ? "Reload" : "Retry securely");
     if (this.state.stage !== "complete") this.rematchButton.hidden = true;
     const showHint = !spectating && (this.state.stage === "waiting" || this.state.stage === "countdown");
     this.hint.hidden = !showHint;
@@ -483,6 +484,8 @@ export class HandsApp {
       this.scheduleRematchRetry();
       return;
     }
+    // A server on a newer protocol cannot be played from this page; Retry reloads it.
+    if (code === "client_outdated") this.reloadOnRetry = true;
     this.dispatch({ type: "fatal", code });
     this.network?.dispose();
     this.network = null;

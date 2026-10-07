@@ -1,5 +1,5 @@
-import { safeError } from "./api";
-import { decodeServerFrame, encodeInput } from "./protocol";
+import { ClientError, safeError } from "./api";
+import { decodeServerFrame, encodeInput, parseStrictJson } from "./protocol";
 import { PROTOCOL_VERSION, type ConnectionRole, type EngineSnapshot, type InputFrame, type ServerMessage } from "./types";
 
 export function websocketUrl(location: Location = window.location): string {
@@ -42,6 +42,23 @@ const MAX_SENDS_PER_SECOND = 50;
 const MAX_EDGE_SENDS_PER_SECOND = 20;
 /** Bytes still waiting in the socket above which the connection is stalled; frames queued behind it would all land at once. */
 const BACKLOG_BYTES = 2048;
+
+/** Decodes a server frame. One that declares another protocol version means this page is out of date, not that the server misbehaved. */
+function decodeFrame(data: string | ArrayBuffer): ServerMessage {
+  try {
+    return decodeServerFrame(data);
+  } catch (error) {
+    let version: unknown;
+    try {
+      const value = parseStrictJson(data);
+      version = typeof value === "object" && value !== null && "version" in value ? value.version : undefined;
+    } catch {
+      // Not even JSON: the original error stands.
+    }
+    if (typeof version === "number" && version !== PROTOCOL_VERSION) throw new ClientError("client_outdated", true);
+    throw error;
+  }
+}
 
 export class NetworkController {
   private socket: SocketLike | null = null;
@@ -163,7 +180,7 @@ export class NetworkController {
     if (this.socket !== socket || this.disposed || this.terminal) return;
     try {
       if (typeof event.data !== "string" && !(event.data instanceof ArrayBuffer)) throw new Error("unsupported_frame");
-      const message = decodeServerFrame(event.data);
+      const message = decodeFrame(event.data);
       this.applyMessage(message);
       if (message.type === "ticket") {
         try {

@@ -12,6 +12,10 @@ describe("describeError", () => {
     expect(describeError("mystery_failure")).toBe("Unable to continue (mystery_failure).");
   });
 
+  it("tells the player to reload when Hands was updated", () => {
+    expect(describeError("client_outdated")).toBe("Hands was updated. Reload to continue (client_outdated).");
+  });
+
   it("explains a Discord RPC failure by its stage and keeps the RPC number", () => {
     expect(describeError("authorize_failed_4006")).toBe("Unable to continue: Discord did not authorize the session (authorize_failed_4006).");
     expect(describeError("sdk_ready_failed_4000")).toBe("Unable to continue: the Discord client did not respond (sdk_ready_failed_4000).");

@@ -47,6 +47,8 @@ const REASONS: Readonly<Record<string, string>> = {
 
 /** Plain-language failure text; the full code stays in parentheses for diagnosis. */
 export function describeError(code: string): string {
+  // Nothing failed: the server was updated, and reloading the page brings the matching client.
+  if (code === "client_outdated") return "Hands was updated. Reload to continue (client_outdated).";
   // Discord SDK failures carry the RPC error number (authorize_failed_4006); the stage gives the reason.
   const reason = REASONS[code] ?? REASONS[code.replace(/_\d+$/u, "")];
   return reason === undefined ? `Unable to continue (${code}).` : `Unable to continue: ${reason} (${code}).`;

@@ -178,6 +178,32 @@ describe("browser lifecycle and accessible overlays", () => {
     expect(mocks.activityClose).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["the bootstrap", (): void => { mocks.authorize.mockRejectedValueOnce(new ClientError("client_outdated", true)); }],
+    ["the socket", (): void => undefined],
+  ])("asks for a reload, not another sign-in, when %s shows Hands was updated", async (source, arrange) => {
+    arrange();
+    history.replaceState({}, "", "/?instance_id=launch");
+    const root = document.createElement("div");
+    const reload = vi.fn();
+    const app = new HandsApp(root, reload);
+    app.start();
+    if (source === "the socket") {
+      await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
+      send({ version: 3, type: "error", code: "client_outdated" });
+      mocks.callbacks?.onFatal("client_outdated");
+    }
+    await vi.waitFor(() => expect(root.querySelector("[data-status]")?.textContent).toBe("Hands was updated. Reload to continue (client_outdated)."));
+    const retry = root.querySelector<HTMLButtonElement>("[data-retry]")!;
+    expect(retry.hidden).toBe(false);
+    expect(retry.textContent).toBe("Reload");
+    const authorizations = mocks.authorize.mock.calls.length;
+    retry.click();
+    expect(reload).toHaveBeenCalledOnce();
+    expect(mocks.authorize.mock.calls.length).toBe(authorizations);
+    app.destroy();
+  });
+
   it("plays the finish without the overlay while the result is still on its way, but not forever", async () => {
     const root = document.createElement("main");
     const app = new HandsApp(root);
