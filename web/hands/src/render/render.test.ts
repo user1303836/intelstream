@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { FIGHTER_RADIUS, punchTiming, REST_CORNER_OFFSET, RING_HALF_WIDTH, totalTicks } from "../manifest";
 import { buildArena } from "./arena";
 import { CameraDirector, ceremonyShot, cornerFrame, cornerPoint, cornerShot, cornerShotProgress, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE } from "./camera";
-import { bloodPatternFor, Effects3D } from "./effects";
+import { bloodPatternFor, Effects3D, NECK_FOUNTAIN_SECONDS } from "./effects";
 import { CLOCK_PORTRAIT_RADIUS, cardRows, decisionLabel, drawHud, finalRevealDelay as revealDelay, hudScale, plateDetail, REFEREE_REVEAL_DELAY_SECONDS, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, PLATE_PORTRAIT_RADIUS, RESULT_CARD_FOOTER, resultCard, resultCardLayout, RoundClock, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
 import { buildRing, disposeRing, nearRopeOpacityFor, ROPE_BACK, ROPE_FLEX_GLSL, ROPE_GIVE_GLSL, ROPE_MAX_GIVE, ropeExcess, ropePress } from "./ring";
 import { GloveTrail } from "./trails";
@@ -365,6 +365,8 @@ describe("effects", () => {
     effects.anchorStump(0, new THREE.Vector3(0.4, 1.4, -0.2), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.4));
     for (let i = 0; i < 10; i += 1) effects.update(1 / 60);
     expect(effects.liveBloodParticles).toBeGreaterThan(initialBlood);
+    // The severed neck pumps for NECK_FOUNTAIN_SECONDS; what follows is once it has bled out.
+    for (let i = 0; i < NECK_FOUNTAIN_SECONDS * 60; i += 1) effects.update(1 / 60);
 
     for (let i = 0; i < 360; i += 1) effects.update(1 / 60);
     expect(effects.liveGibs).toBe(0);
