@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import math
+import random
 import re
 from enum import Enum
 from importlib import resources
@@ -448,6 +449,9 @@ def in_ring(fighter: object) -> bool:
         ((286, -229, 413, -209), (1000, -500), (1000, -500)),
         ((272, 304, 194, 326), (0, 1000), (707, 707)),
         ((-351, -314, -206, -413), (-1000, 0), (-1000, 0)),
+        # The man on the pad walks out at the other, who walks him back onto it.
+        ((-214, 328, -306, 364), (-931, 364), (981, 193)),
+        ((-162, -269, -251, -315), (-707, -707), (707, -707)),
     ],
 )
 def test_fighters_pressing_into_a_corner_come_to_rest(
@@ -472,6 +476,51 @@ def test_fighters_pressing_into_a_corner_come_to_rest(
         steps.append(max(abs(a - b) for a, b in zip(after, before, strict=True)))
 
     assert max(steps[-60:]) <= 3
+
+
+def test_a_fighter_walked_back_onto_a_corner_pad_settles_there_without_a_wobble() -> None:
+    def against_the_drift(values: list[int]) -> int:
+        """The largest step a coordinate takes back against where it has gone in the window."""
+        net = values[-1] - values[0]
+        steps = [values[index] - values[index - 1] for index in range(1, len(values))]
+        return max((abs(step) for step in steps if net == 0 or (step > 0) != (net > 0)), default=0)
+
+    def toward(walker: FighterState, target: FighterState) -> tuple[int, int]:
+        distance = max(1.0, hypot(target.x - walker.x, target.y - walker.y))
+        return (
+            round((target.x - walker.x) / distance * 1000),
+            round((target.y - walker.y) / distance * 1000),
+        )
+
+    rng = random.Random(2)
+    for _ in range(24):
+        engine = make_engine(seed=97, round_ticks=5000)
+        one, two = engine.fighter("one"), engine.fighter("two")
+        sign_x, sign_y = rng.choice((-1, 1)), rng.choice((-1, 1))
+        across = rng.randrange(RING_CORNER_REACH - 462, 463)
+        two.x = sign_x * across
+        two.y = sign_y * min(462, RING_CORNER_REACH - across - rng.randrange(80))
+        one.x = two.x - sign_x * rng.randrange(30, 100)
+        one.y = two.y - sign_y * rng.randrange(30, 100)
+        into_the_corner = rng.choice((True, False))
+        trail = []
+        for sequence in range(1, 161):
+            press = (sign_x * 707, sign_y * 707) if into_the_corner else toward(one, two)
+            out = toward(two, one)
+            engine.step(
+                {
+                    "one": command(sequence, move_x=press[0], move_y=press[1]),
+                    # Walking out at him behind a high guard, slower than the man pressing him.
+                    "two": command(
+                        sequence, move_x=out[0], move_y=out[1], defense=DefensivePose.GUARD_HIGH
+                    ),
+                }
+            )
+            assert in_ring(one) and in_ring(two)
+            assert (one.x - two.x) ** 2 + (one.y - two.y) ** 2 >= MINIMUM_SEPARATION**2
+            trail.append((one.x, one.y, two.x, two.y))
+        settled = trail[-48:]
+        assert max(against_the_drift([state[i] for state in settled]) for i in range(4)) <= 2
 
 
 def test_fighters_meeting_at_an_angle_are_not_thrown_apart() -> None:
@@ -767,6 +816,23 @@ def test_clinch_draws_the_fighters_to_the_hold_distance_before_the_break() -> No
     assert advance_until(engine, {"referee_break"}, limit=3) == "referee_break"
     gap = abs(engine.fighter("two").x - engine.fighter("one").x)
     assert gap >= MINIMUM_SEPARATION
+
+
+@pytest.mark.parametrize(("rounds", "rest_ticks"), [(2, 10), (2, 0), (1, 10)])
+def test_the_referee_breaks_a_clinch_still_on_at_the_bell(rounds: int, rest_ticks: int) -> None:
+    engine = make_engine(round_ticks=30, rounds=rounds, rest_ticks=rest_ticks)
+    engine.step({"one": command(1, action=MovementAction(ActionKind.CLINCH))})
+    assert advance_until(engine, {"clinch"}, limit=12) == "clinch"
+    one, two = engine.fighter("one"), engine.fighter("two")
+    assert one.clinch_ticks > 30 - engine.tick
+
+    snapshot = engine.step()
+    while not any(event.detail == "round_end" for event in snapshot.events):
+        snapshot = engine.step()
+
+    assert "referee_break" in [event.kind for event in snapshot.events]
+    assert [fighter.clinch_ticks for fighter in snapshot.fighters] == [0, 0]
+    assert hypot(two.x - one.x, two.y - one.y) >= MINIMUM_SEPARATION
 
 
 def test_a_clinch_stops_both_fighters_for_the_whole_hold() -> None:

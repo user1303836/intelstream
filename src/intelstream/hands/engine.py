@@ -433,6 +433,15 @@ def _ring_point(x: int, y: int) -> tuple[int, int, bool, bool, bool]:
     return sign_x * cut_x, sign_y * cut_y, False, False, True
 
 
+def _pad_stop(x: int, y: int, *, along_x: bool) -> tuple[int, int]:
+    """Where a push along one axis stops at the ropes and corner pads, the other coordinate held."""
+    if along_x:
+        reach = min(RING_HALF_WIDTH - FIGHTER_RADIUS, RING_CORNER_REACH - abs(y))
+        return max(-reach, min(reach, x)), y
+    reach = min(RING_HALF_HEIGHT - FIGHTER_RADIUS, RING_CORNER_REACH - abs(x))
+    return x, max(-reach, min(reach, y))
+
+
 def _canonical(value: object) -> object:
     if isinstance(value, Enum):
         return value.value
@@ -1346,14 +1355,19 @@ class BoxingEngine:
         two.conditioning = max(0, two.conditioning - (1 if self.tick % 10 == 0 else 0))
         if remaining > 0:
             self._draw_clinch_together(one, two)
-        if remaining == 0:
-            for fighter in (one, two):
-                fighter.x -= _symmetric_divide(fighter.facing_x * 45, FACING_SCALE)
-                fighter.y -= _symmetric_divide(fighter.facing_y * 45, FACING_SCALE)
-            self._clamp_to_ring(one)
-            self._clamp_to_ring(two)
-            self._separate_fighters(one, two)
-            self._emit("referee_break", one.player_id, two.player_id)
+        else:
+            self._break_clinch(one, two)
+
+    def _break_clinch(self, one: FighterState, two: FighterState) -> None:
+        """The referee steps in and parts a clinch, each fighter sent back from the other."""
+        one.clinch_ticks = two.clinch_ticks = 0
+        for fighter in (one, two):
+            fighter.x -= _symmetric_divide(fighter.facing_x * 45, FACING_SCALE)
+            fighter.y -= _symmetric_divide(fighter.facing_y * 45, FACING_SCALE)
+        self._clamp_to_ring(one)
+        self._clamp_to_ring(two)
+        self._separate_fighters(one, two)
+        self._emit("referee_break", one.player_id, two.player_id)
 
     def _draw_clinch_together(self, one: FighterState, two: FighterState) -> None:
         dx = two.x - one.x
@@ -1481,7 +1495,6 @@ class BoxingEngine:
         dy = two.y - one.y
         if dx * dx + dy * dy >= MINIMUM_SEPARATION**2:
             return
-        before = (one.x, one.y, two.x, two.y)
         if abs(dx) >= abs(dy):
             direction = 1 if dx > 0 or (dx == 0 and one.player_id < two.player_id) else -1
             center = (one.x + two.x) // 2
@@ -1504,15 +1517,14 @@ class BoxingEngine:
             shift = max(0, minimum - min(one.y, two.y)) - max(0, max(one.y, two.y) - maximum)
             one.y += shift
             two.y += shift
-        pushed = (one.x, one.y, two.x, two.y)
+        for fighter in (one, two):
+            # A corner pad stops the push where it meets him, without sliding him along it, and
+            # the one with room gives way by what is still missing. Starting again from where
+            # they met instead kept a fighter's step off the pad each tick, so a pair pressing
+            # into a corner crept onto it and bounced off every few ticks.
+            fighter.x, fighter.y = _pad_stop(fighter.x, fighter.y, along_x=abs(dx) >= abs(dy))
         self._clamp_to_ring(one)
         self._clamp_to_ring(two)
-        if (one.x, one.y, two.x, two.y) != pushed:
-            # A corner pad refused part of the push. Start again from where they met, so the
-            # same fighter gives way by the same amount every tick they keep pressing.
-            one.x, one.y, two.x, two.y = before
-            self._clamp_to_ring(one)
-            self._clamp_to_ring(two)
         self._resolve_rope_overlap(one, two)
 
     def _resolve_rope_overlap(self, one: FighterState, two: FighterState) -> None:
@@ -1903,6 +1915,10 @@ class BoxingEngine:
             one_card.append(scores.player_one)
             two_card.append(scores.player_two)
         self._emit("bell", detail="round_end")
+        if one.clinch_ticks or two.clinch_ticks:
+            # The bell ends a clinch too, and the referee parts them as he would one that ran its
+            # time: cleared without the break, they stood overlapped into the rest.
+            self._break_clinch(one, two)
         if self.round_number >= self.config.rounds:
             self._finish_decision()
             return
