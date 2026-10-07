@@ -357,9 +357,11 @@ describe("blood in the air", () => {
       vertex.fromBufferAttribute(position, index);
       if (vertex.y >= 0) expect(vertex.length()).toBeLessThan(1.001);
       tail = Math.min(tail, vertex.y);
-      if (vertex.y < -1) widestBehind = Math.max(widestBehind, Math.hypot(vertex.x, vertex.z));
+      if (vertex.y < -0.6) widestBehind = Math.max(widestBehind, Math.hypot(vertex.x, vertex.z));
     }
-    expect(tail).toBeLessThan(-1.8);
+    // A short tail: a drop, not a needle.
+    expect(tail).toBeLessThan(-0.9);
+    expect(tail).toBeGreaterThan(-1.3);
     expect(widestBehind).toBeGreaterThan(0.1);
     expect(widestBehind).toBeLessThan(0.62);
     geometry.dispose();
@@ -370,16 +372,17 @@ describe("blood in the air", () => {
     expect(still.width).toBeCloseTo(0.01, 6);
     expect(still.length).toBeCloseTo(0.01, 6);
     let last = { ...still };
-    for (const speed of [0.5, 1.5, 3, 4.5]) {
+    for (const speed of [0.5, 1.5, 2.5, 3.4]) {
       const shape = dropletShape(0.01, speed, { width: 0, length: 0 });
       expect(shape.length).toBeGreaterThan(last.length + 0.001);
       expect(shape.width).toBeLessThan(last.width - 0.0003);
       expect(shape.width * shape.width * shape.length).toBeCloseTo(1e-6, 9);
       last = { ...shape };
     }
+    // However fast, a drop stays a drop: no longer than a little over twice its size.
     const fastest = dropletShape(0.01, 40, { width: 0, length: 0 });
-    expect(fastest.length).toBeLessThan(0.045);
-    expect(fastest.width).toBeGreaterThan(0.0045);
+    expect(fastest.length).toBeLessThan(0.025);
+    expect(fastest.width).toBeGreaterThan(0.0065);
   });
 
   it("is dark red, never pink", () => {

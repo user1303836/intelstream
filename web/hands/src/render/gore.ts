@@ -44,10 +44,10 @@ export function bloodDropsFor(blood: number, amount: number): number {
   return Math.min(140, Math.round(Math.max(0, blood) * 1.4 + Math.max(0, amount - 50) * 0.5));
 }
 
-const DROPLET_TAIL = 2;
-const DROPLET_TAIL_TAPER = 0.45;
-const DROPLET_STRETCH_RATE = 0.6;
-const DROPLET_MAX_STRETCH = 3;
+const DROPLET_TAIL = 1.1;
+const DROPLET_TAIL_TAPER = 0.6;
+const DROPLET_STRETCH_RATE = 0.35;
+const DROPLET_MAX_STRETCH = 1.2;
 
 /** A drop in flight, travelling along +Y: a round head of unit radius and a tail that thins out behind it. */
 export function buildDropletGeometry(): THREE.BufferGeometry {
