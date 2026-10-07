@@ -14,6 +14,11 @@ export interface BuiltRing {
   readonly nearRopeOpacity: () => number;
 }
 
+function smoothstep(edge0: number, edge1: number, value: number): number {
+  const t = Math.min(1, Math.max(0, (value - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
 /** The side of the ring that faces the broadcast camera. */
 const NEAR_SIDE = 3;
 
@@ -37,11 +42,6 @@ const ROPE_TIE = 0.5;
 /** The bottom rope is pushed by the legs, which lean back less than the shoulders. */
 const ROPE_LOW_GIVE = 0.6;
 
-function smoothstep(edge0: number, edge1: number, value: number): number {
-  const t = Math.min(1, Math.max(0, (value - edge0) / (edge1 - edge0)));
-  return t * t * (3 - 2 * t);
-}
-
 /**
  * How far, in metres, a fighter at (x, z) pushes the ropes on the x and z sides outward. The engine
  * lets a fighter's middle pass the line of the ropes, so they give way to stay behind the back.
@@ -53,14 +53,19 @@ export function ropePress(x: number, z: number): RopePress {
   };
 }
 
-/** The share of that push a point of the rope takes: `along` the rope from the fighter, at `position` along the rope and at `height`. */
-export function ropeGive(along: number, position: number, height: number): number {
-  const near = 1 - smoothstep(ROPE_GIVE_FLAT, ROPE_GIVE_REACH, Math.abs(along));
-  const tied = smoothstep(0, ROPE_TIE, ROPE_LINE - Math.abs(position));
-  return near * tied * (ROPE_LOW_GIVE + (1 - ROPE_LOW_GIVE) * smoothstep(0.5, 0.88, height));
+/**
+ * The share of that push a point of the rope takes: `along` the rope from the fighter, at `position`
+ * along the rope and at `height`. It is the shader's own function, and a test runs this text.
+ */
+export const ROPE_GIVE_GLSL = `
+float ropeGive(float along, float position, float height) {
+  float near = 1.0 - smoothstep(${ROPE_GIVE_FLAT.toFixed(2)}, ${ROPE_GIVE_REACH.toFixed(2)}, abs(along));
+  float tied = smoothstep(0.0, ${ROPE_TIE.toFixed(2)}, ${ROPE_LINE.toFixed(4)} - abs(position));
+  return near * tied * (${ROPE_LOW_GIVE.toFixed(2)} + ${(1 - ROPE_LOW_GIVE).toFixed(2)} * smoothstep(0.5, 0.88, height));
 }
+`;
 
-const ROPE_FLEX_GLSL = `
+export const ROPE_FLEX_GLSL = `
 vec3 ropeWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;
 bool ropeSideX = abs(ropeWorld.x) > abs(ropeWorld.z);
 vec3 ropeOut = ropeSideX ? vec3(sign(ropeWorld.x), 0.0, 0.0) : vec3(0.0, 0.0, sign(ropeWorld.z));
@@ -71,11 +76,9 @@ for (int ropeIndex = 0; ropeIndex < 2; ropeIndex += 1) {
   float along = ropeSideX ? contact.y : contact.x;
   float press = ropeSideX ? contact.z : contact.w;
   float sameSide = ropeSideX ? step(0.0, ropeOut.x * contact.x) : step(0.0, ropeOut.z * contact.y);
-  ropeFlex = max(ropeFlex, press * sameSide * (1.0 - smoothstep(${ROPE_GIVE_FLAT.toFixed(2)}, ${ROPE_GIVE_REACH.toFixed(2)}, abs(ropeAlong - along))));
+  ropeFlex = max(ropeFlex, press * sameSide * ropeGive(ropeAlong - along, ropeAlong, ropeWorld.y));
 }
-float ropeTied = smoothstep(0.0, ${ROPE_TIE.toFixed(2)}, ${ROPE_LINE.toFixed(4)} - abs(ropeAlong));
-float ropeHeightWeight = ${ROPE_LOW_GIVE.toFixed(2)} + ${(1 - ROPE_LOW_GIVE).toFixed(2)} * smoothstep(0.5, 0.88, ropeWorld.y);
-transformed += ropeOut * ropeFlex * ropeHeightWeight * ropeTied;
+transformed += ropeOut * ropeFlex;
 `;
 
 function canvasTexture(size: number, draw: (ctx: CanvasRenderingContext2D, size: number) => void): THREE.CanvasTexture {
@@ -222,7 +225,7 @@ export function buildRing(): BuiltRing {
       shader.uniforms.uRopeContactA = ropeUniforms.uRopeContactA;
       shader.uniforms.uRopeContactB = ropeUniforms.uRopeContactB;
       shader.vertexShader = shader.vertexShader
-        .replace("#include <common>", "#include <common>\nuniform vec4 uRopeContactA;\nuniform vec4 uRopeContactB;")
+        .replace("#include <common>", `#include <common>\nuniform vec4 uRopeContactA;\nuniform vec4 uRopeContactB;\n${ROPE_GIVE_GLSL}`)
         .replace("#include <begin_vertex>", `#include <begin_vertex>${ROPE_FLEX_GLSL}`);
     };
     materials.push(material);

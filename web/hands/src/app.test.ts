@@ -15,6 +15,8 @@ const mocks = vi.hoisted(() => ({
   cpuRequests: [] as string[],
   cpuAccepted: true,
   renderers: [] as Array<{ onAnnouncement?: ((lines: readonly string[]) => void) | null; onCrowdCue?: ((cue: "chant") => void) | null }>,
+  input: null as (() => { moveX: number; moveY: number }) | null,
+  viewForward: null as { x: number; z: number } | null,
 }));
 vi.mock("./discord", () => ({
   authorizeDiscord: vi.fn(async () => ({
@@ -27,7 +29,7 @@ vi.mock("./discord", () => ({
 }));
 vi.mock("./network", () => ({
   NetworkController: class {
-    constructor(_ticket: string, _input: unknown, callbacks: NetworkCallbacks) { mocks.callbacks = callbacks; }
+    constructor(_ticket: string, input: unknown, callbacks: NetworkCallbacks) { mocks.callbacks = callbacks; mocks.input = input as () => { moveX: number; moveY: number }; }
     start(): void {}
     setActive(active: boolean): void { mocks.networkSetActive(active); }
     notifyAction(): void {}
@@ -47,7 +49,7 @@ vi.mock("./render/renderer", () => ({
     setReconnect(): void {}
     setBloodLevel(): void {}
     setReducedMotion(): void {}
-    viewForward(): null { return null; }
+    viewForward(): { x: number; z: number } | null { return mocks.viewForward; }
     push(snapshot: EngineSnapshot): void { this.pushes.push(snapshot.tick); }
     destroy(): void { mocks.rendererDestroy(); }
     setInputLatency(): void {}
@@ -112,6 +114,24 @@ describe("browser lifecycle and accessible overlays", () => {
     expect(saved()).toBe("fighter");
     root.remove();
     localStorage.clear();
+  });
+
+  it("turns the controls with the player's own camera", async () => {
+    history.replaceState({}, "", "/?instance_id=turned");
+    const root = document.createElement("div");
+    const app = new HandsApp(root);
+    app.start();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
+    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 0, next_sequence: 0, reconnect_ticket: "rotated" });
+    send({ version: 3, type: "ready", players: [...players] });
+    send({ version: 3, type: "snapshot", payload: makeSnapshot(10) });
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyW", bubbles: true, cancelable: true }));
+    expect(mocks.input!()).toMatchObject({ moveX: 0, moveY: 1000 });
+    mocks.viewForward = { x: 1, z: 0 };
+    expect(mocks.input!()).toMatchObject({ moveX: 1000, moveY: 0 });
+    window.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyW", bubbles: true, cancelable: true }));
+    mocks.viewForward = null;
+    app.destroy();
   });
 
   it("labels graphic full mode and exposes the required model attribution", () => {

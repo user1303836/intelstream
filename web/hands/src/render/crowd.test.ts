@@ -233,3 +233,19 @@ describe("crowd and reduced motion", () => {
     arena.dispose();
   });
 });
+
+describe("the advertising boards", () => {
+  it("read the right way round from inside the ring", () => {
+    const arena = buildArena();
+    const boards: THREE.Texture[] = [];
+    arena.group.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      const material = object.material as THREE.MeshBasicMaterial;
+      if (material.side === THREE.BackSide && material.map !== null && material.map.wrapS === THREE.RepeatWrapping) boards.push(material.map);
+    });
+    expect(boards.length).toBeGreaterThan(0);
+    // The boards are the inside of a cylinder, so the picture is mirrored back by a negative repeat.
+    for (const map of boards) expect(map.repeat.x).toBeLessThan(0);
+    arena.dispose();
+  });
+});

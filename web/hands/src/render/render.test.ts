@@ -4,7 +4,7 @@ import { buildArena } from "./arena";
 import { CameraDirector, ceremonyShot, cornerFrame, cornerPoint, cornerShot, cornerShotProgress, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE } from "./camera";
 import { bloodPatternFor, Effects3D } from "./effects";
 import { CLOCK_PORTRAIT_RADIUS, decisionLabel, drawHud, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, PLATE_PORTRAIT_RADIUS, RESULT_CARD_FOOTER, resultCard, resultCardLayout, RoundClock, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
-import { buildRing, disposeRing, nearRopeOpacityFor, ropeGive, ropePress } from "./ring";
+import { buildRing, disposeRing, nearRopeOpacityFor, ROPE_FLEX_GLSL, ROPE_GIVE_GLSL, ropePress } from "./ring";
 import { resizeHighDpi } from "./viewport";
 import { PALETTES, ROPE_LINE, worldMapping } from "./world";
 import { fighter, mockHudContext, publicPlayers, snapshot, type DrawnPicture } from "../test/fixtures";
@@ -529,6 +529,19 @@ describe("rope give", () => {
     expect(ropePress(0, -2.82).pressX).toBe(0);
   });
 
+  /** The shader's own function, run as JavaScript: its scalar GLSL is valid once the types are dropped. */
+  const ropeGive = new Function(`
+    const smoothstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+    const abs = Math.abs;
+    ${ROPE_GIVE_GLSL.replace(/\bfloat (\w+)\((float \w+(?:, )?)+\)/u, (signature) => signature.replace(/^float /u, "function ").replaceAll("float ", "")).replace(/\bfloat (?=\w+\s*=)/gu, "let ")}
+    return ropeGive;
+  `)() as (along: number, position: number, height: number) => number;
+
+  it("moves each part of a rope by the most any fighter pushes it there", () => {
+    expect(ROPE_FLEX_GLSL).toContain("ropeFlex = max(ropeFlex, press * sameSide * ropeGive(ropeAlong - along, ropeAlong, ropeWorld.y));");
+    expect(ROPE_FLEX_GLSL).toContain("transformed += ropeOut * ropeFlex;");
+  });
+
   it("keeps the top ropes behind the back of a fighter anywhere the engine lets one stand", () => {
     for (const x of [2.3, 2.5, 2.7, 2.82]) {
       for (const along of [-1.6, 0, 1.2]) {
@@ -545,8 +558,8 @@ describe("rope give", () => {
   it("gives less at the bottom rope, nothing at the posts and nothing away from the fighter", () => {
     expect(ropeGive(0, 0, 0.5)).toBeCloseTo(0.6, 9);
     expect(ropeGive(0, 0, 1.26)).toBe(1);
-    expect(ropeGive(0, ROPE_LINE, 1.26)).toBe(0);
-    expect(ropeGive(0, -ROPE_LINE, 1.26)).toBe(0);
+    expect(ropeGive(0, ROPE_LINE, 1.26)).toBeCloseTo(0, 9);
+    expect(ropeGive(0, -ROPE_LINE, 1.26)).toBeCloseTo(0, 9);
     expect(ropeGive(1.2, 0, 1.26)).toBe(0);
     expect(ropeGive(0.6, 0, 1.26)).toBeGreaterThan(0.3);
     expect(ropeGive(0.6, 0, 1.26)).toBeLessThan(0.9);

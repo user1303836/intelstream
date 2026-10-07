@@ -117,6 +117,15 @@ describe("a fighter wearing a look", () => {
     boxer.dispose();
   });
 
+  it("keeps an official's hands and cuffs out of the shadow map, where they are too small to show", () => {
+    const boxer = new SkinnedBoxer(gltf, { skin: 0xc79b76, gear: 0x1b2230, look: OFFICIAL_LOOKS.referee, outfit: REFEREE_OUTFIT });
+    const parts: THREE.Mesh[] = [];
+    boxer.root.traverse((object) => { if (object instanceof THREE.Mesh && /^(hand|cuff)-/u.test(object.name)) parts.push(object); });
+    expect(parts).toHaveLength(4);
+    for (const part of parts) expect(part.castShadow).toBe(false);
+    boxer.dispose();
+  });
+
   it("gives an official bare hands in the official's skin tone", () => {
     const boxer = new SkinnedBoxer(gltf, { skin: 0xc79b76, gear: 0x1b2230, look: OFFICIAL_LOOKS.blueCorner, outfit: REFEREE_OUTFIT });
     const hand = boxer.rig.bones.gloveL.getObjectByName("hand-left") as THREE.Mesh;

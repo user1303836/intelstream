@@ -114,9 +114,21 @@ describe("fight mechanics on screen", () => {
       return graphs;
     };
     const body = replayFor("body");
+    // Every fighter replays the fall he took live rather than a new one.
+    for (const replayed of body) expect(replayed.primeReplayFall).toHaveBeenCalledOnce();
     expect(body[1].fallToKnee).toHaveBeenCalledWith(true);
     expect(body[0].fallToKnee).not.toHaveBeenCalled();
     expect(replayFor("")[1].fallToKnee).not.toHaveBeenCalled();
+  });
+
+  it("lets the commentary team see every snapshot and the events in it", () => {
+    const stub = pushStub(fakeGraphs());
+    const state = { ...snapshot(30), events: [combat("hit", { event_id: 6, tick: 30, detail: "jab:head", amount: 30 })] };
+    methods.push.call(stub, state);
+    const observe = (stub.commentary as { observe: ReturnType<typeof vi.fn> }).observe;
+    expect(observe).toHaveBeenCalledOnce();
+    expect(observe.mock.calls[0]![0]).toBe(state);
+    expect((observe.mock.calls[0]![1] as CombatEvent[]).map((event) => event.event_id)).toEqual([6]);
   });
 
   it("queues the parry and the body collapse to be shown with their punch", () => {
