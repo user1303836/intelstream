@@ -493,13 +493,25 @@ export function eyeShut(eyeTrauma: number, swelling: number): number {
   return THREE.MathUtils.clamp((eyeTrauma - EYE_CLOSING_TRAUMA) / (EYE_SHUT_TRAUMA - EYE_CLOSING_TRAUMA) + Math.max(0, swelling - 200) / 1600, 0, 1);
 }
 
+/**
+ * The most an eye and a cheek swell, in bind-space centimetres pushed out from inside the skull: an eye
+ * beaten shut stands out two centimetres in a grotesque mound. The push is radial from the skull's core,
+ * so even this much folds no triangle of the face.
+ */
+export const EYE_SWELL = 2;
+export const CHEEK_SWELL = 1.8;
+/** A cheek cut is wide open by this much cut damage, short of the 800 at which the doctor stops the bout. */
+const CHEEK_CUT_OPEN = 750;
+/** Swelling at which the forehead splits: a face battered for a round or two, where 520 was all but out of reach. */
+const FOREHEAD_SPLITS = 380;
+
 /** Maps authoritative trauma onto head injury sites. */
 export function applyHeadTrauma(shading: InjuryShading, trauma: TraumaSnapshot, blood: BloodLevel): void {
   const bleed = bloodScale(blood);
   const graphic = blood === "full" ? 1 : 0.6;
   shading.setRawCuts(blood === "full" ? 1 : blood === "reduced" ? 0.6 : 0);
   const eye = (value: number): number => Math.min(1.2, value / 380 + trauma.swelling / 900);
-  const swell = (value: number): number => Math.min(1.25, (value / 600 + trauma.swelling / 900) * graphic);
+  const swell = (value: number): number => Math.min(EYE_SWELL, (value / 600 + trauma.swelling / 900) * graphic);
   shading.set("leftEye", { bruise: eye(trauma.left_eye), swell: swell(trauma.left_eye) });
   shading.set("rightEye", { bruise: eye(trauma.right_eye), swell: swell(trauma.right_eye) });
   shading.setEyesShut(eyeShut(trauma.left_eye, trauma.swelling), eyeShut(trauma.right_eye, trauma.swelling));
@@ -508,8 +520,10 @@ export function applyHeadTrauma(shading: InjuryShading, trauma: TraumaSnapshot, 
   shading.set("leftBrow", { bruise: Math.min(1, trauma.left_eye / 700), swell: Math.min(1.2, trauma.left_eye / 900) * graphic, cut: browCut(trauma.left_cut), blood: browBlood(trauma.left_cut) });
   shading.set("rightBrow", { bruise: Math.min(1, trauma.right_eye / 700), swell: Math.min(1.2, trauma.right_eye / 900) * graphic, cut: browCut(trauma.right_cut), blood: browBlood(trauma.right_cut) });
   const cheek = Math.min(1, trauma.head / 950 + trauma.swelling / 1100);
-  shading.set("leftCheek", { bruise: cheek * 0.9, swell: Math.min(1.4, trauma.swelling / 800) * graphic, cut: Math.min(1, Math.max(0, trauma.left_cut - 350) / 500), blood: Math.min(1, Math.max(0, trauma.left_cut - 350) / 400) * bleed });
-  shading.set("rightCheek", { bruise: cheek * 0.85, swell: Math.min(1.4, trauma.swelling / 800) * graphic, cut: Math.min(1, Math.max(0, trauma.right_cut - 350) / 500), blood: Math.min(1, Math.max(0, trauma.right_cut - 350) / 400) * bleed });
+  const cheekSwell = Math.min(CHEEK_SWELL, trauma.swelling / 520) * graphic;
+  const cheekCut = (cut: number): number => Math.min(1, Math.max(0, cut - 350) / (CHEEK_CUT_OPEN - 350));
+  shading.set("leftCheek", { bruise: cheek * 0.9, swell: cheekSwell, cut: cheekCut(trauma.left_cut), blood: Math.min(1, Math.max(0, trauma.left_cut - 350) / 400) * bleed });
+  shading.set("rightCheek", { bruise: cheek * 0.85, swell: cheekSwell, cut: cheekCut(trauma.right_cut), blood: Math.min(1, Math.max(0, trauma.right_cut - 350) / 400) * bleed });
   shading.set("nose", { bruise: Math.min(1, trauma.head / 800), swell: Math.min(0.8, trauma.head / 1400) * graphic, blood: Math.min(1.4, (Math.max(0, trauma.head - 160) / 520 + trauma.bleeding / 420) * bleed) });
   shading.set("mouth", { bruise: Math.min(0.8, trauma.head / 1100), cut: Math.min(1, Math.max(0, trauma.head - 420) / 700), blood: Math.min(1.2, (Math.max(0, trauma.head - 280) / 650 + trauma.bleeding / 500) * bleed) });
   shading.set("chin", { bruise: Math.min(0.7, trauma.head / 1300) });
@@ -517,7 +531,7 @@ export function applyHeadTrauma(shading: InjuryShading, trauma: TraumaSnapshot, 
   shading.setNoseShift(noseSide * Math.min(1.1, Math.max(0, trauma.head - 520) / 450) * graphic);
   shading.set("leftJaw", { bruise: Math.min(0.9, trauma.left_eye / 900 + trauma.head / 1600) });
   shading.set("rightJaw", { bruise: Math.min(0.9, trauma.right_eye / 900 + trauma.head / 1600) });
-  shading.set("forehead", { bruise: Math.min(0.6, trauma.swelling / 1200), cut: Math.min(1, Math.max(0, trauma.swelling - 520) / 480), blood: Math.min(1.2, Math.max(0, trauma.swelling - 520) / 420) * bleed });
+  shading.set("forehead", { bruise: Math.min(0.6, trauma.swelling / 1200), cut: Math.min(1, Math.max(0, trauma.swelling - FOREHEAD_SPLITS) / 400), blood: Math.min(1.2, Math.max(0, trauma.swelling - FOREHEAD_SPLITS) / 360) * bleed });
 }
 
 /** How far a fighter's own blood has run down into the front of the trunks, 0 to 1. */

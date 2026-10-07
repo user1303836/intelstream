@@ -4,7 +4,7 @@ import { fighter } from "../test/fixtures";
 import type { TraumaSnapshot } from "../types";
 import { wearCornerColour } from "./gear";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
-import { BODY_SITES, EYE_LIDS, EYE_SHUT_TRAUMA, HEAD_SITES, HEAD_SWELL_CORE, InjuryShading, applyHeadTrauma, eyeShut, trunksBloodFor } from "./injury";
+import { BODY_SITES, CHEEK_SWELL, EYE_LIDS, EYE_SHUT_TRAUMA, EYE_SWELL, HEAD_SITES, HEAD_SWELL_CORE, InjuryShading, applyHeadTrauma, eyeShut, trunksBloodFor } from "./injury";
 import { REFEREE_OUTFIT } from "./outfit";
 import { worldMapping } from "./world";
 
@@ -62,11 +62,61 @@ describe("swelling", () => {
     boxer.dispose();
   });
 
-  it("stays within a centimetre and a quarter however badly the face is beaten", () => {
+  it("swells a beaten eye into a two-centimetre mound that still folds no triangle of the face", () => {
     const shading = new InjuryShading(new THREE.MeshStandardMaterial(), HEAD_SITES);
     applyHeadTrauma(shading, trauma({ head: 1400, left_eye: 1000, right_eye: 1000, left_cut: 1000, right_cut: 1000, swelling: 1000, bleeding: 1000 }), "full");
-    expect(Math.max(...shading.uniforms.uInjurySwell.value)).toBeLessThanOrEqual(1.25);
-    expect(Math.max(...shading.uniforms.uInjurySwell.value)).toBeGreaterThan(1);
+    expect(Math.max(...shading.uniforms.uInjurySwell.value)).toBe(EYE_SWELL);
+    expect(EYE_SWELL).toBe(2);
+    expect(shading.level("rightCheek").swell).toBeCloseTo(CHEEK_SWELL, 6);
+    // The vertex shader's push, out from the skull's core, on the real head at the worst of it.
+    const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
+    const position = boxer.headMesh.geometry.getAttribute("position");
+    const index = boxer.headMesh.geometry.getIndex()!;
+    const core = new THREE.Vector3(...HEAD_SWELL_CORE.slice(0, 3) as [number, number, number]);
+    const smooth = (edge: number, x: number): number => {
+      const t = THREE.MathUtils.clamp(x / edge, 0, 1);
+      return t * t * (3 - 2 * t);
+    };
+    const swollen = Array.from({ length: position.count }, (_, vertex) => {
+      const at = new THREE.Vector3().fromBufferAttribute(position, vertex);
+      let push = 0;
+      for (const [site, place] of HEAD_SITES.entries()) {
+        const weight = 1 - smooth(place.radius * 1.15, at.distanceTo(new THREE.Vector3(...place.position)));
+        push += shading.uniforms.uInjurySwell.value[site]! * weight * weight;
+      }
+      return at.clone().addScaledVector(at.clone().sub(core).add(new THREE.Vector3(0, 0, 0.001)).normalize(), push);
+    });
+    let face = 0;
+    let folded = 0;
+    const [a, b, c] = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+    for (let corner = 0; corner < index.count; corner += 3) {
+      const [i, j, k] = [index.getX(corner), index.getX(corner + 1), index.getX(corner + 2)];
+      a.fromBufferAttribute(position, i);
+      b.fromBufferAttribute(position, j);
+      c.fromBufferAttribute(position, k);
+      // The front of the face, from the jaw up.
+      if ((a.y + b.y + c.y) / 3 < 113 || (a.z + b.z + c.z) / 3 < -1) continue;
+      const before = b.clone().sub(a).cross(c.clone().sub(a));
+      const after = swollen[j]!.clone().sub(swollen[i]!).cross(swollen[k]!.clone().sub(swollen[i]!));
+      if (before.lengthSq() < 1e-12) continue;
+      face += 1;
+      if (before.dot(after) <= 0) folded += 1;
+    }
+    expect(face).toBeGreaterThan(2000);
+    expect(folded).toBe(0);
+    boxer.dispose();
+  });
+
+  it("opens a cheek cut wide before the doctor stops the bout, and splits a forehead swollen for a round or two", () => {
+    const shading = new InjuryShading(new THREE.MeshStandardMaterial(), HEAD_SITES);
+    // The doctor stops a bout at a cut of 800.
+    applyHeadTrauma(shading, trauma({ left_cut: 760, swelling: 450 }), "full");
+    expect(shading.level("leftCheek").cut).toBe(1);
+    expect(shading.level("forehead").cut).toBeGreaterThan(0.15);
+    expect(shading.level("forehead").blood).toBeGreaterThan(0.15);
+    applyHeadTrauma(shading, trauma({ left_cut: 300, swelling: 360 }), "full");
+    expect(shading.level("leftCheek").cut).toBe(0);
+    expect(shading.level("forehead").cut).toBe(0);
   });
 });
 
