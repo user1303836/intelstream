@@ -19,7 +19,12 @@ from urllib.parse import urlsplit
 import structlog
 from aiohttp import WSMsgType, web
 
-from intelstream.hands.auth import DEFAULT_TICKET_TTL_SECONDS, HandsAuth, HandsAuthError
+from intelstream.hands.auth import (
+    DEFAULT_TICKET_TTL_SECONDS,
+    HandsAuth,
+    HandsAuthError,
+    validate_instance_id,
+)
 from intelstream.hands.protocol import (
     MAX_FRAME_BYTES,
     PROTOCOL_VERSION,
@@ -70,7 +75,9 @@ class AdmissionConfig:
     request_window_seconds: float = 60.0
     max_tracked_callers: int = 1024
     max_concurrent_upstream: int = 16
-    max_concurrent_upstream_per_caller: int = 2
+    # Sign-in calls are scoped to the Activity instance as well as the address (see _caller_key),
+    # so this is how many players in one voice channel can sign in at the same moment.
+    max_concurrent_upstream_per_caller: int = 4
     max_concurrent_ws_auth: int = 64
     max_concurrent_ws_auth_per_caller: int = 4
     trusted_proxy_cidrs: tuple[str, ...] = ()
@@ -288,6 +295,8 @@ class AuthBackend(Protocol):
     def verify_ticket(self, ticket: object) -> AuthenticatedPlayer: ...
 
     def activate_ticket(self, ticket: object, player: AuthenticatedPlayer) -> None: ...
+
+    def instance_for_state(self, state: object) -> str | None: ...
 
     async def close(self) -> None: ...
 
@@ -576,7 +585,20 @@ class HandsServer:
                 return
         raise web.HTTPForbidden(text="origin not allowed")
 
-    def _caller_key(self, request: web.Request) -> str:
+    def _caller_key(self, request: web.Request, instance_id: str | None = None) -> str:
+        """Who a request counts against for the per-caller ceilings.
+
+        Discord's Activity proxy hides players' addresses, so every player reaches Hands from the
+        proxy's few addresses and a per-address ceiling would be one ceiling for everybody. A
+        sign-in names its Activity instance (the bootstrap in its body, the token exchange through
+        the OAuth state the server issued for it), so its bucket is the address and that instance:
+        one voice channel's sign-ins cannot crowd out another's, and the global ceilings still bound
+        the total. Requests that name no instance stay keyed on the address alone.
+        """
+        address = self._caller_address(request)
+        return address if instance_id is None else f"{address} {instance_id}"
+
+    def _caller_address(self, request: web.Request) -> str:
         remote = request.remote
         try:
             peer = ip_address(remote) if remote is not None else None
@@ -651,14 +673,18 @@ class HandsServer:
 
     async def _bootstrap(self, request: web.Request) -> web.Response:
         self._require_origin(request)
-        caller = self._caller_key(request)
+        if request.content_type != "application/json":
+            raise web.HTTPUnsupportedMediaType(text="application/json required")
+        payload = _strict_object(await request.read(), fields={"instance_id"})
+        try:
+            instance_id: str | None = validate_instance_id(payload["instance_id"])
+        except HandsAuthError:
+            instance_id = None
+        caller = self._caller_key(request, instance_id)
         if not await self._admit_scoped(
             self._bootstrap_limit, self._bootstrap_caller_limit, caller
         ):
             return _json_response({"error": "rate_limited"}, status=429)
-        if request.content_type != "application/json":
-            raise web.HTTPUnsupportedMediaType(text="application/json required")
-        payload = _strict_object(await request.read(), fields={"instance_id"})
         if not await self._try_acquire_scoped(
             self._upstream_slots, self._upstream_caller_slots, caller
         ):
@@ -687,12 +713,13 @@ class HandsServer:
 
     async def _token(self, request: web.Request) -> web.Response:
         self._require_origin(request)
-        caller = self._caller_key(request)
-        if not await self._admit_scoped(self._token_limit, self._token_caller_limit, caller):
-            return _json_response({"error": "rate_limited"}, status=429)
         if request.content_type != "application/json":
             raise web.HTTPUnsupportedMediaType(text="application/json required")
         payload = _strict_object(await request.read(), fields={"code", "state"})
+        # Only a state this server issued names an instance; anything else counts against the address.
+        caller = self._caller_key(request, self.auth.instance_for_state(payload["state"]))
+        if not await self._admit_scoped(self._token_limit, self._token_caller_limit, caller):
+            return _json_response({"error": "rate_limited"}, status=429)
         logger.info("Hands OAuth token request received")
         if not await self._try_acquire_scoped(
             self._upstream_slots, self._upstream_caller_slots, caller

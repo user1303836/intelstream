@@ -82,6 +82,9 @@ class FakeAuth:
             if owner == player and candidate != ticket:
                 self.tickets.pop(candidate, None)
 
+    def instance_for_state(self, state: object) -> str | None:
+        return {"oauth-state": "instance", "other-state": "elsewhere"}.get(str(state))
+
     async def close(self) -> None:
         self.closed = True
 
@@ -1203,7 +1206,7 @@ async def test_http_admission_is_per_caller_and_forwarded_headers_require_trust(
         spoofed = await post_bootstrap(
             client,
             direct_base,
-            "two",
+            "one",
             headers={"Origin": ORIGIN, "X-Forwarded-For": "203.0.113.2"},
         )
         assert first.status == 200
@@ -1232,7 +1235,7 @@ async def test_http_admission_is_per_caller_and_forwarded_headers_require_trust(
         forged_left = await post_bootstrap(
             client,
             trusted_base,
-            "two",
+            "one",
             headers={
                 "Origin": ORIGIN,
                 "X-Forwarded-For": "192.0.2.99, 203.0.113.10",
@@ -1255,6 +1258,46 @@ async def test_http_admission_is_per_caller_and_forwarded_headers_require_trust(
         assert other.status == 200
         assert malformed.status == 400
     await trusted.close()
+
+
+async def test_players_behind_one_proxy_address_are_limited_per_activity_instance(
+    repository: Repository,
+) -> None:
+    # Discord's Activity proxy hides players' addresses: every request arrives from its address.
+    server, _auth, base = await start_server(
+        repository,
+        admission=AdmissionConfig(
+            request_limit=10,
+            per_caller_request_limit=1,
+            request_window_seconds=60,
+            trusted_proxy_cidrs=("127.0.0.0/8", "::1/128"),
+        ),
+    )
+    proxy = {"Origin": ORIGIN, "X-Forwarded-For": "162.159.0.1"}
+    async with aiohttp.ClientSession() as client:
+        statuses = [
+            (await post_bootstrap(client, base, instance, headers=proxy)).status
+            for instance in ("voice-a", "voice-b", "voice-a")
+        ]
+        # One voice channel's sign-ins cannot crowd out another's, and each is still limited.
+        assert statuses == [200, 200, 429]
+
+        async def token(state: str) -> int:
+            response = await client.post(
+                f"{base}/api/hands/token",
+                json={"code": "code", "state": state},
+                headers=proxy,
+            )
+            return response.status
+
+        # The exchange is scoped through the state the server issued for an instance; a state it
+        # never issued names nothing and counts against the address.
+        assert await token("oauth-state") == 200
+        assert await token("other-state") == 401
+        assert await token("oauth-state") == 429
+        assert await token("forged-one") == 401
+        assert await token("forged-two") == 429
+    await server.close()
 
 
 async def test_per_caller_window_capacity_purges_expired_callers(
@@ -1295,7 +1338,7 @@ async def test_per_caller_window_capacity_purges_expired_callers(
         assert len(server._bootstrap_caller_limit._requests) == 2
         clock.value = 11
         assert await bootstrap("203.0.113.3", "three") == 200
-        assert list(server._bootstrap_caller_limit._requests) == ["203.0.113.3"]
+        assert list(server._bootstrap_caller_limit._requests) == ["203.0.113.3 three"]
     await server.close()
 
 
@@ -1342,7 +1385,7 @@ async def test_per_caller_upstream_concurrency_does_not_block_other_callers(
         same = await post_bootstrap(
             client,
             base,
-            "same",
+            "one",
             headers={"Origin": ORIGIN, "X-Forwarded-For": "203.0.113.1"},
         )
         other = asyncio.create_task(
