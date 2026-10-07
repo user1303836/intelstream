@@ -445,6 +445,9 @@ const HEAD_SPACE = 0.25;
 const HEAD_SPACE_CLEAR = 0.32;
 const HEAD_SPACE_RATE = 9;
 const OPEN_GAP = 1;
+/** In a clinch each fighter rests his head this far to his own right (metres), leaning his shoulders that way (radians). */
+const CLINCH_HEAD_SIDE = 0.08;
+const CLINCH_HEAD_LEAN = 0.3;
 /** Within this gap (metres between them) an opponent on top of a fighter held on the ropes comes in with him, and from the second on not at all. */
 const ROPE_HOLD_CLOSE = 1;
 const ROPE_HOLD_OPEN = 1.6;
@@ -1440,7 +1443,7 @@ export class BoxingGraph {
     const crowded = this.referee || fighter.is_downed || opponent.is_downed ? 0 : 1 - smoothstep(CROWDED_GAP, OPEN_GAP, gap);
     this.crowding = smooth(this.crowding, crowded, 9, dt);
     let apart = Number.POSITIVE_INFINITY;
-    if (this.hasLiveHead && !this.referee && this.downState === "up" && this.clinchWeight < 0.5) {
+    if (this.hasLiveHead && !this.referee && this.downState === "up") {
       const own = this.boxer.rig.bones.head.getWorldPosition(this.ownHead);
       const dx = own.x - this.liveOpponentHead.x;
       const dz = own.z - this.liveOpponentHead.z;
@@ -1602,14 +1605,16 @@ export class BoxingGraph {
       rearHand.position.z -= inside * 0.07;
     }
 
-    // Heads never pass through each other: the one too close leans away from the other's.
+    // Heads never pass through each other: the one too close leans away from the other's. Tied up in a
+    // clinch, which already rests the heads on opposite shoulders, only the head moves.
     if (Math.abs(this.headSpace.x) + Math.abs(this.headSpace.y) > 0.001) {
       const side = this.headSpace.x;
       const ahead = this.headSpace.y;
-      torso.spinePitch += ahead * 0.7;
-      torso.spineRoll -= side * 0.7;
-      torso.hips.z += ahead * 0.1;
-      torso.hips.x += side * 0.05;
+      const free = 1 - this.clinchWeight;
+      torso.spinePitch += ahead * 0.7 * free;
+      torso.spineRoll -= side * 0.7 * free;
+      torso.hips.z += ahead * 0.1 * free;
+      torso.hips.x += side * 0.05 * free;
       torso.headOffset.x += side * 0.05;
       torso.headOffset.z += ahead * 0.05;
       torso.headPitch += ahead * 0.2;
@@ -1768,9 +1773,10 @@ export class BoxingGraph {
 
   /**
    * Tie-up: the fighter whose id sorts first hooks over the opponent's arms,
-   * the other digs under them around the ribs. Both lean in over the bladed
-   * chest line and rest the head to their own right, so the skulls pass on
-   * opposite shoulders, and both keep working for position while they hold.
+   * the other digs under them around the ribs. Both square up chest to chest,
+   * lean in and rest the head to their own right, so the skulls pass on
+   * opposite shoulders whatever their stances, and both keep working for
+   * position while they hold.
    */
   private applyClinchPose(c: number, time: number, mirror: number, fighter: FighterSnapshot, opponent: FighterSnapshot, leadHand: HandTarget, rearHand: HandTarget, headRest: THREE.Vector3): void {
     const torso = this.torso;
@@ -1784,6 +1790,10 @@ export class BoxingGraph {
     const forward = this.clinchForward.copy(centre).normalize();
     const acrossX = forward.z;
     const acrossZ = -forward.x;
+    // Bladed, a lean in takes the head toward the rear hand's side: an orthodox fighter's to his right, a
+    // southpaw's to his left, into the head of an orthodox opponent. Squared up, both rest it to the right.
+    torso.hipsYaw *= 1 - c;
+    torso.shouldersYaw *= 1 - c;
     torso.spinePitch += c * (over ? 0.28 : 0.42) + struggle * 0.025 * c;
     torso.hips.z += c * (over ? 0.04 : 0.06);
     torso.hips.x += struggle * 0.02 * c;
@@ -1791,7 +1801,8 @@ export class BoxingGraph {
     torso.hipsYaw += struggle * 0.06 * c;
     torso.headPitch += c * (over ? 0.15 : 0.3);
     torso.headYaw -= c * 0.3;
-    torso.headOffset.x -= c * 0.05;
+    torso.headOffset.x -= c * CLINCH_HEAD_SIDE;
+    torso.spineRoll += c * CLINCH_HEAD_LEAN;
     torso.headOffset.y -= c * (over ? 0.02 : 0.06);
     const metrics = this.boxer.rig.metrics;
     const reach = Math.min(metrics.armL.upper + metrics.armL.lower, metrics.armR.upper + metrics.armR.lower) * 0.92;
