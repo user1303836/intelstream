@@ -276,6 +276,36 @@ def stalled_reader_rooms(
     )
 
 
+async def start_capped_proxy(upstream_port: int, *, bytes_per_second: int) -> asyncio.Server:
+    """A TCP proxy whose server-to-client direction runs no faster than a weak mobile link."""
+
+    async def relay(
+        client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter
+    ) -> None:
+        upstream_reader, upstream_writer = await asyncio.open_connection("127.0.0.1", upstream_port)
+
+        async def up() -> None:
+            while data := await client_reader.read(65536):
+                upstream_writer.write(data)
+                await upstream_writer.drain()
+
+        async def down() -> None:
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            relayed = 0
+            while data := await upstream_reader.read(2048):
+                relayed += len(data)
+                client_writer.write(data)
+                await client_writer.drain()
+                await asyncio.sleep(max(0.0, relayed / bytes_per_second - (loop.time() - started)))
+
+        await asyncio.gather(up(), down(), return_exceptions=True)
+        client_writer.close()
+        upstream_writer.close()
+
+    return await asyncio.start_server(relay, "127.0.0.1", 0)
+
+
 async def post_bootstrap(
     client: aiohttp.ClientSession,
     base: str,
@@ -703,6 +733,65 @@ async def test_state_updates_are_deflated_but_frames_carrying_a_ticket_never_are
         for message, compressed in received
         if message["type"] not in {"welcome", "ticket"}
     )
+
+
+async def test_a_spectator_on_a_slow_mobile_link_keeps_up_with_the_fight(
+    repository: Repository,
+) -> None:
+    auth = FakeAuth()
+    for user in ("one", "two", "three"):
+        auth.tickets[user] = AuthenticatedPlayer(user, GUILD, "room", user.title(), None)
+    rooms = HandsRoomManager(
+        repository,
+        config=RoomConfig(
+            engine_config=EngineConfig(
+                rounds=1, round_ticks=1_000_000, countdown_ticks=1, flash_ko_enabled=False
+            )
+        ),
+        match_id_factory=lambda: "slow-link",
+    )
+    server, _auth, base = await start_server(repository, auth=auth, rooms=rooms)
+    assert server.bound_port is not None
+    proxy = await start_capped_proxy(server.bound_port, bytes_per_second=40_000)
+    proxy_port = proxy.sockets[0].getsockname()[1]
+
+    async def fight(socket: aiohttp.ClientWebSocketResponse) -> None:
+        async for _message in socket:
+            pass
+
+    async with aiohttp.ClientSession() as client:
+        fighters = []
+        for ticket in ("one", "two"):
+            socket = await client.ws_connect(
+                f"{base}/api/hands/ws", headers={"Origin": ORIGIN}, compress=15
+            )
+            await socket.send_json({"version": 3, "type": "authenticate", "ticket": ticket})
+            fighters.append(asyncio.create_task(fight(socket)))
+        spectator = await client.ws_connect(
+            f"http://127.0.0.1:{proxy_port}/api/hands/ws", headers={"Origin": ORIGIN}, compress=15
+        )
+        await spectator.send_json({"version": 3, "type": "authenticate", "ticket": "three"})
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        lag_ticks: list[int] = []
+        async with asyncio.timeout(10):
+            # Uncompressed per-tick snapshots need about 65 KB/s, so this link fell a third of a
+            # second further behind every second.
+            while loop.time() - started < 3.0:
+                payload = json.loads((await spectator.receive()).data)
+                if payload["type"] == "snapshot":
+                    engine = rooms._rooms["room"].engine
+                    assert engine is not None
+                    lag_ticks.append(engine.tick - payload["payload"]["tick"])
+        await spectator.close()
+        for task in fighters:
+            task.cancel()
+        await asyncio.gather(*fighters, return_exceptions=True)
+    proxy.close()
+    await server.close()
+
+    assert max(lag_ticks[-30:]) <= 6
+    assert len(lag_ticks) > 60
 
 
 async def test_a_fighter_whose_socket_stops_reading_is_paused_then_forfeits(
