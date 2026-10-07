@@ -7,6 +7,7 @@ import { BIG_SHOT, closeCut } from "./gore";
 import { SkinnedBoxer, loadBoxerGlb } from "./graph";
 import { BURST_CUT_HEIGHT, HEAD_SITES, InjuryShading, NECK_CUT_HEIGHT } from "./injury";
 import { aboveBurstCut, arcadeInjuryFor, measureBurstStump, replayReattaches } from "./renderer";
+import { CANVAS_TOP } from "./world";
 
 const gltf = await loadBoxerGlb();
 const hit = (kind: string, amount: number, detail = "uppercut:head", eventId = 2): CombatEvent => ({ event_id: eventId, tick: 10, kind, actor_id: "one", target_id: "two", amount, detail, blood: 30, direction: 1, action_id: null });
@@ -107,14 +108,70 @@ describe("a head that bursts", () => {
     reduced.dispose();
   });
 
-  it("leaves skull and brain lying on the canvas where flesh is gone as it lands", () => {
-    const effects = new Effects3D(new THREE.Scene(), 256);
+  it("leaves skull, brain, teeth and flesh lying where they land for the rest of the bout", () => {
+    const scene = new THREE.Scene();
+    const effects = new Effects3D(scene, 256);
     effects.burstHead(0, new THREE.Vector3(0, 1.6, 0), 1, 5);
-    for (let frame = 0; frame < 180; frame += 1) effects.update(1 / 60);
+    effects.decapitate(1, new THREE.Vector3(1, 1.6, 0), new THREE.Quaternion(), -1, 6);
+    // Half a minute on, through the replay and the result card, all of it is still there.
+    for (let frame = 0; frame < 60 * 30; frame += 1) effects.update(1 / 60);
     expect(effects.debrisCount("shard")).toBe(18);
     expect(effects.debrisCount("brain")).toBe(14);
-    for (let frame = 0; frame < 60 * 14; frame += 1) effects.update(1 / 60);
+    expect(effects.debrisCount("tooth")).toBe(5);
+    expect(effects.debrisCount("flesh")).toBe(24);
+    const matrix = new THREE.Matrix4();
+    const at = new THREE.Vector3();
+    for (const mesh of scene.children.filter((child): child is THREE.InstancedMesh => child instanceof THREE.InstancedMesh && child !== effects.dropletMesh)) {
+      for (let index = 0; index < mesh.count; index += 1) {
+        mesh.getMatrixAt(index, matrix);
+        if (at.setFromMatrixPosition(matrix).y > -10) expect(at.y).toBeCloseTo(CANVAS_TOP + 0.015, 6);
+      }
+      // Lying still, it is not sent to the graphics card again.
+      const version = mesh.instanceMatrix.version;
+      effects.update(1 / 60);
+      expect(mesh.instanceMatrix.version).toBe(version);
+    }
+    // A replay that puts the head back on takes up what its burst threw; the other man's flesh stays.
+    effects.restoreFighter(0);
     expect(effects.debrisCount("shard")).toBe(0);
+    expect(effects.debrisCount("brain")).toBe(0);
+    expect(effects.debrisCount("flesh")).toBe(24);
+    effects.clearDynamic();
+    expect(effects.debrisCount("flesh")).toBe(0);
+    effects.dispose();
+  });
+
+  it("makes room for more by shrinking the oldest piece on the canvas away, never popping one", () => {
+    const effects = new Effects3D(new THREE.Scene(), 256);
+    const gibs = (effects as unknown as { gibMesh: THREE.InstancedMesh }).gibMesh;
+    const matrix = new THREE.Matrix4();
+    const position = new THREE.Vector3();
+    const turn = new THREE.Quaternion();
+    const scale = new THREE.Vector3();
+    const read = (): { x: number; y: number; z: number; size: number }[] => Array.from({ length: gibs.count }, (_, index) => {
+      gibs.getMatrixAt(index, matrix);
+      matrix.decompose(position, turn, scale);
+      return { x: position.x, y: position.y, z: position.z, size: scale.y };
+    });
+    // A big counter tears flesh every two seconds for a minute: 240 pieces for 96 places.
+    let earlier = read();
+    let before = read();
+    let popped = 0;
+    const still = (a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): boolean => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) < 1e-6;
+    for (let frame = 0; frame < 60 * 60; frame += 1) {
+      if (frame % 120 === 0) effects.addEvent({ ...hit("counter_hit", 140, "hook:head", frame + 1), blood: 70 }, new THREE.Vector3(), false);
+      effects.update(1 / 60);
+      const after = read();
+      for (const [index, was] of before.entries()) {
+        // A piece that lay still on the canvas, gone the next frame at more than a fraction of its size.
+        const lying = Math.abs(was.y - (CANVAS_TOP + 0.015)) < 1e-6 && still(was, earlier[index]!);
+        if (lying && !still(was, after[index]!) && was.size > 0.15) popped += 1;
+      }
+      earlier = before;
+      before = after;
+    }
+    expect(effects.liveGibs).toBeGreaterThan(80);
+    expect(popped).toBe(0);
     effects.dispose();
   });
 

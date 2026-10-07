@@ -366,7 +366,8 @@ describe("effects", () => {
     expect(effects.liveBloodParticles).toBeGreaterThan(initialBlood);
 
     for (let i = 0; i < 360; i += 1) effects.update(1 / 60);
-    expect(effects.liveGibs).toBe(0);
+    // The flesh lies where it fell for the rest of the bout; the blood in the air has all come down.
+    expect(effects.liveGibs).toBe(24);
     expect(effects.liveBloodParticles).toBe(0);
     expect(effects.liveMist).toBe(0);
     expect(effects.activeHeads).toBe(1);
@@ -549,7 +550,7 @@ describe("effects", () => {
     expect(effects.liveBloodParticles).toBeLessThanOrEqual(900);
     expect(effects.liveMist).toBeLessThanOrEqual(90);
     expect(scene.children.length).toBe(children);
-    expect(effects.liveGibs).toBe(48);
+    expect(effects.liveGibs).toBe(96);
     expect(effects.activeHeads).toBeLessThanOrEqual(2);
     expect(effects.activeStumps).toBeLessThanOrEqual(2);
 

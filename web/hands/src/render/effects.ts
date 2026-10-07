@@ -10,7 +10,7 @@ import { CANVAS_TOP, RING_FIGHT_HALF, ROPE_LINE } from "./world";
 
 const MAX_DROPLETS = 900;
 const MAX_MIST = 90;
-const MAX_GIBS = 48;
+const MAX_GIBS = 96;
 const MAX_SHARDS = 24;
 const SHARDS_PER_BURST = 18;
 const BRAIN_PER_BURST = 14;
@@ -87,19 +87,29 @@ interface Gib {
   vx: number; vy: number; vz: number;
   rx: number; ry: number; rz: number;
   vrx: number; vry: number; vrz: number;
-  life: number;
   scale: number;
   /** Lengthens the chunk along one axis so no two look alike. */
   stretch: number;
   bounces: number;
   stained: boolean;
   kind: DebrisKind;
+  /** Lying still on the canvas, where it stays for the bout. */
+  resting: boolean;
+  /** When it was thrown, so the oldest piece gives way to new ones. */
+  born: number;
+  /** The fighter whose finisher threw it, or -1: it goes when his head or hand goes back on for a replay. */
+  owner: number;
+  /** Seconds left as it shrinks away to make room, or -1. */
+  fading: number;
 }
 
-/** Flesh is gone once it lands; teeth, brain and skull lie on the canvas a while. */
+/**
+ * Flesh, teeth, brain and skull lie where they land for the rest of the bout, as the blood under them
+ * does. Once a pool is all but full the oldest piece on the canvas shrinks away to make room.
+ */
 type DebrisKind = "flesh" | "tooth" | "brain" | "shard";
-const DEBRIS_LIFE: Readonly<Record<DebrisKind, number>> = { flesh: 3, tooth: 6, brain: 14, shard: 14 };
 const DEBRIS_BOUNCES: Readonly<Record<DebrisKind, number>> = { flesh: 1, tooth: 3, brain: 1, shard: 2 };
+const DEBRIS_FADE_SECONDS = 0.3;
 
 interface SeveredHead {
   readonly mesh: THREE.Mesh;
@@ -174,7 +184,7 @@ const seeded = (seed: number): (() => number) => () => {
 };
 
 const finite = (value: number, fallback = 0): number => Number.isFinite(value) ? value : fallback;
-const idleGib = (): Gib => ({ alive: false, x: 0, y: -50, z: 0, vx: 0, vy: 0, vz: 0, rx: 0, ry: 0, rz: 0, vrx: 0, vry: 0, vrz: 0, life: 0, scale: 0, stretch: 1, bounces: 0, stained: false, kind: "flesh" });
+const idleGib = (): Gib => ({ alive: false, x: 0, y: -50, z: 0, vx: 0, vy: 0, vz: 0, rx: 0, ry: 0, rz: 0, vrx: 0, vry: 0, vrz: 0, scale: 0, stretch: 1, bounces: 0, stained: false, kind: "flesh", resting: false, born: 0, owner: -1, fading: -1 });
 const SHIELD_WHITE = new THREE.Color(0xf4f7fb);
 const EYE_RADIUS = 0.012;
 /** How far an eye forced out hangs below its socket on the nerve. */
@@ -291,6 +301,7 @@ export class Effects3D {
   private readonly gibColor = new THREE.Color();
   private readonly gibs: Gib[] = [];
   private gibIndex = 0;
+  private debrisThrown = 0;
   private readonly gibMatrix = new THREE.Matrix4();
   private readonly gibPosition = new THREE.Vector3();
   private readonly gibQuaternion = new THREE.Quaternion();
@@ -1288,6 +1299,8 @@ export class Effects3D {
         0.8 + rand() * 2.4,
         Math.cos(angle) * speed,
         rand,
+        "flesh",
+        index,
       );
     }
     for (let i = 0; i < 120; i += 1) {
@@ -1344,6 +1357,7 @@ export class Effects3D {
           Math.sin(around) * flat * pace + launch.z * pace * 0.45,
           rand,
           kind,
+          index,
         );
       }
     };
@@ -1441,6 +1455,8 @@ export class Effects3D {
         0.5 + rand() * 1.9,
         Math.cos(angle) * speed,
         rand,
+        "flesh",
+        Math.trunc(fighterIndex),
       );
     }
     for (let drop = 0; drop < 80; drop += 1) {
@@ -1520,6 +1536,8 @@ export class Effects3D {
     stump.mesh.visible = false;
     stump.mesh.position.y = -50;
     stump.mesh.material = this.stumpMaterial;
+    // What his finisher threw goes with it, to be thrown again if a replay brings the finisher back.
+    this.clearGibs(index);
     const eye = this.eyes[index]!;
     eye.active = false;
     eye.bleeding = 0;
@@ -1607,14 +1625,18 @@ export class Effects3D {
     }
   }
 
-  private spawnGib(x: number, y: number, z: number, vx: number, vy: number, vz: number, rand: () => number, kind: DebrisKind = "flesh"): void {
+  private spawnGib(x: number, y: number, z: number, vx: number, vy: number, vz: number, rand: () => number, kind: DebrisKind = "flesh", owner = -1): void {
     const shard = kind === "shard";
     const pool = shard ? this.shards : this.gibs;
     const mesh = shard ? this.shardMesh : this.gibMesh;
-    const index = shard ? this.shardIndex++ % MAX_SHARDS : this.gibIndex++ % MAX_GIBS;
+    const index = this.debrisSlot(pool, shard);
     const gib = pool[index]!;
     gib.alive = true;
     gib.kind = kind;
+    gib.owner = owner;
+    gib.born = this.debrisThrown++;
+    gib.resting = false;
+    gib.fading = -1;
     const shade = 0.55 + rand() * 0.45;
     if (kind === "tooth") this.gibColor.setHex(0xf3ead6);
     else if (kind === "brain") this.gibColor.setHex(rand() < 0.3 ? 0x8a3a3c : 0xb7918e).multiplyScalar(0.8 + shade * 0.25);
@@ -1637,18 +1659,46 @@ export class Effects3D {
     gib.vrx = (rand() - 0.5) * 18;
     gib.vry = (rand() - 0.5) * 18;
     gib.vrz = (rand() - 0.5) * 18;
-    gib.life = kind === "flesh" ? 1.8 + rand() * 1.2 : DEBRIS_LIFE[kind];
     gib.scale = kind === "tooth" ? 0.22 + rand() * 0.12 : shard ? 0.6 + rand() * 0.6 : kind === "brain" ? 0.45 + rand() * 0.55 : 0.3 + rand() * 0.6;
     gib.stretch = kind === "tooth" ? 1 : 0.7 + rand() * 0.9;
     gib.bounces = 0;
     gib.stained = false;
     this.writeDebrisMatrix(mesh, index, gib);
     mesh.instanceMatrix.needsUpdate = true;
+    this.makeDebrisRoom(pool);
+  }
+
+  /** A free place in a pool, looking from the next in turn; with none free, the oldest piece's. */
+  private debrisSlot(pool: readonly Gib[], shard: boolean): number {
+    const start = shard ? this.shardIndex : this.gibIndex;
+    let slot = start % pool.length;
+    for (let step = 0; step < pool.length; step += 1) {
+      const index = (start + step) % pool.length;
+      if (!pool[index]!.alive) {
+        slot = index;
+        break;
+      }
+      if (pool[index]!.born < pool[slot]!.born) slot = index;
+    }
+    if (shard) this.shardIndex = slot + 1;
+    else this.gibIndex = slot + 1;
+    return slot;
+  }
+
+  /** Keeps an eighth of a pool free: once it is nearly full, the oldest piece lying on the canvas shrinks away. */
+  private makeDebrisRoom(pool: readonly Gib[]): void {
+    let free = 0;
+    let oldest: Gib | null = null;
+    for (const gib of pool) {
+      if (!gib.alive) free += 1;
+      else if (gib.resting && gib.fading < 0 && (oldest === null || gib.born < oldest.born)) oldest = gib;
+    }
+    if (free < Math.max(3, pool.length >> 3) && oldest !== null) oldest.fading = DEBRIS_FADE_SECONDS;
   }
 
   /** Spawns a piece of debris whose horizontal velocity is given along the spray and across it. */
-  private sprayGib(spray: SprayDirection, x: number, y: number, z: number, along: number, vy: number, across: number, rand: () => number, kind: DebrisKind = "flesh"): void {
-    this.spawnGib(x, y, z, along * spray.x - across * spray.z, vy, along * spray.z + across * spray.x, rand, kind);
+  private sprayGib(spray: SprayDirection, x: number, y: number, z: number, along: number, vy: number, across: number, rand: () => number, kind: DebrisKind = "flesh", owner = -1): void {
+    this.spawnGib(x, y, z, along * spray.x - across * spray.z, vy, along * spray.z + across * spray.x, rand, kind, owner);
   }
 
   private writeDebrisMatrix(mesh: THREE.InstancedMesh, index: number, gib: Gib): void {
@@ -1660,7 +1710,8 @@ export class Effects3D {
       this.gibPosition.set(gib.x, gib.y, gib.z);
       this.gibEuler.set(gib.rx, gib.ry, gib.rz);
       this.gibQuaternion.setFromEuler(this.gibEuler);
-      this.gibScale.set(gib.scale * gib.stretch, gib.scale, gib.scale / Math.sqrt(gib.stretch));
+      const size = gib.fading >= 0 ? (gib.scale * Math.max(0, gib.fading)) / DEBRIS_FADE_SECONDS : gib.scale;
+      this.gibScale.set(size * gib.stretch, size, size / Math.sqrt(gib.stretch));
     }
     this.gibMatrix.compose(this.gibPosition, this.gibQuaternion, this.gibScale);
     mesh.setMatrixAt(index, this.gibMatrix);
@@ -1669,11 +1720,12 @@ export class Effects3D {
   private updateDebris(pool: readonly Gib[], mesh: THREE.InstancedMesh, dt: number): void {
     let changed = false;
     for (const [index, gib] of pool.entries()) {
-      if (!gib.alive) continue;
+      // A piece lying still costs nothing until it is made to give way.
+      if (!gib.alive || (gib.resting && gib.fading < 0)) continue;
       changed = true;
-      gib.life -= dt;
-      if (gib.life <= 0) {
-        gib.alive = false;
+      if (gib.fading >= 0) {
+        gib.fading -= dt;
+        if (gib.fading <= 0) gib.alive = false;
         this.writeDebrisMatrix(mesh, index, gib);
         continue;
       }
@@ -1699,15 +1751,14 @@ export class Effects3D {
           gib.vrx *= 0.7;
           gib.vry *= 0.7;
           gib.vrz *= 0.7;
-        } else if (gib.kind !== "flesh") {
-          // It lies where it came down; a piece of skull settles on its back or its face.
+        } else {
+          // It lies where it came down for the rest of the bout; a piece of skull settles on its back or its face.
           gib.vx = 0;
           gib.vy = 0;
           gib.vz = 0;
           gib.vrx = gib.vry = gib.vrz = 0;
           if (gib.kind === "shard") gib.rx = Math.round(gib.rx / Math.PI) * Math.PI;
-        } else {
-          gib.alive = false;
+          gib.resting = true;
         }
       }
       this.writeDebrisMatrix(mesh, index, gib);
@@ -1944,11 +1995,12 @@ export class Effects3D {
     }
   }
 
-  private clearGibs(): void {
+  /** Clears the debris on the canvas, or only what `owner`'s finisher threw. */
+  private clearGibs(owner?: number): void {
     for (const [pool, mesh] of [[this.gibs, this.gibMesh], [this.shards, this.shardMesh]] as const) {
       let changed = false;
       for (const [index, gib] of pool.entries()) {
-        if (!gib.alive) continue;
+        if (!gib.alive || (owner !== undefined && gib.owner !== owner)) continue;
         gib.alive = false;
         this.writeDebrisMatrix(mesh, index, gib);
         changed = true;
