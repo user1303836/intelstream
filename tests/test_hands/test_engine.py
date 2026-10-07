@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from math import hypot
 
 import pytest
 
+from intelstream.hands import rules
 from intelstream.hands.engine import (
     ACTION_BUFFER_TICKS,
     MAX_PENDING_ACTIONS,
@@ -371,6 +373,22 @@ def test_corner_posts_keep_fighters_out_of_the_corner_pad() -> None:
     assert abs(fighter.x) + abs(fighter.y) >= RING_CORNER_REACH - 2
     assert abs(fighter.x - fighter.y) <= 2
     assert REST_CORNER_OFFSET * 2 <= RING_CORNER_REACH
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "key"),
+    [
+        ("FACING_SCALE", 1024, "facing.scale"),
+        ("REST_CORNER_OFFSET", RING_CORNER_REACH // 2 + 1, "rest.corner_offset"),
+    ],
+)
+def test_manifest_check_refuses_values_the_engine_cannot_honour(
+    monkeypatch: pytest.MonkeyPatch, name: str, value: int, key: str
+) -> None:
+    rules._manifest_check()
+    monkeypatch.setattr(rules, name, value)
+    with pytest.raises(RuntimeError, match=re.escape(key)):
+        rules._manifest_check()
 
 
 def test_side_ropes_are_still_reachable_away_from_the_corners() -> None:

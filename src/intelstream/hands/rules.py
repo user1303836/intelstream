@@ -30,7 +30,7 @@ FACING_SCALE: int = _MANIFEST["facing"]["scale"]
 # Share of the remaining turn toward the opponent taken per facing update. A fight tick makes two
 # updates (before the exchange and after footwork), about 58% per tick; knockdown and rest walks
 # make one.
-FACING_TURN_PERCENT: int = _MANIFEST["facing"]["turn_percent_per_tick"]
+FACING_TURN_PERCENT: int = _MANIFEST["facing"]["turn_percent_per_update"]
 RECOVERY_CANCEL_PERCENT: int = _MANIFEST["combos"]["recovery_cancel_percent"]
 KNOCKDOWN_NEUTRAL_SEPARATION: int = _MANIFEST["knockdown"]["neutral_separation"]
 REFEREE_WALK_SPEED: int = _MANIFEST["knockdown"]["referee_walk_speed"]
@@ -55,6 +55,12 @@ def _manifest_check() -> None:
         raise RuntimeError("combat-manifest.json limits mismatch with rules.py")
     if limits["max_guard"] != MAX_GUARD or limits["max_poise"] != MAX_POISE:
         raise RuntimeError("combat-manifest.json limits mismatch with rules.py")
+    # Not a tunable: the engine's fixed-point movement and compass, which the knockdown and rest
+    # walks feed facing vectors into, and the client's snapshot checks all count a unit as 1000.
+    if FACING_SCALE != 1000:
+        raise RuntimeError("combat-manifest.json facing.scale must stay 1000")
+    if REST_CORNER_OFFSET * 2 > RING_CORNER_REACH:
+        raise RuntimeError("combat-manifest.json rest.corner_offset is past the corner pads")
 
 
 _manifest_check()
