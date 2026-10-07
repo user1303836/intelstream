@@ -1,9 +1,12 @@
-import { punchStaminaCost, styledStaminaCost } from "./manifest";
-import { attackTicksRemaining, constrainPrediction, fatigueFactor, MINIMUM_SEPARATION, movementLocked, predictMovement, predictedPunchTiming } from "./prediction";
-import { fighter } from "./test/fixtures";
+import { cancelsRecovery, punchStaminaCost, punchTiming, recoveryCancelAge, styledStaminaCost, styleTiming } from "./manifest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { SnapshotBuffer } from "./interpolation";
+import { attackTicksRemaining, constrainPrediction, EVASION_STAMINA, EVASION_TICKS, EvasionPrediction, fatigueFactor, MINIMUM_SEPARATION, MovementPrediction, movementLocked, predictedDefense, predictMovement, predictedPunchTiming, type HeldInput } from "./prediction";
+import { fighter, snapshot } from "./test/fixtures";
 import timingTable from "./test/punch-timing-table.json";
 import styleTimingTable from "./test/style-timing-table.json";
-import type { FighterSnapshot, FighterStyle, PunchClass } from "./types";
+import type { EngineSnapshot, FighterSnapshot, FighterStyle, PunchClass } from "./types";
 
 describe("local movement prediction", () => {
   it("mirrors the authoritative fatigue factor", () => {
@@ -176,5 +179,186 @@ describe("local movement prediction", () => {
     const moving = { ...fighter("one"), conditioning: 1000, velocity_x: 6 };
     const coast = predictMovement(moving, { moveX: 0, moveY: 0, defense: "none" }, 3);
     expect(coast.dx).toBeCloseTo(3 + 1.5 + 0.75, 5);
+  });
+
+  it("mirrors the engine's recovery cancel: a landed, chained, affordable follow-up on a defender who is not stunned", () => {
+    expect(recoveryCancelAge(punchTiming("straight", "head", "normal"))).toBe(6 + 2 + 5);
+    expect(recoveryCancelAge(punchTiming("hook", "head", "normal"))).toBe(7 + 3 + 6);
+    expect(recoveryCancelAge({ startup: 4, active: 2, recovery: 9 })).toBe(4 + 2 + 4);
+    const hook = { class: "hook" as const, target: "head" as const, power: "normal" as const };
+    expect(cancelsRecovery("straight", true, hook, 900, false)).toBe(true);
+    expect(cancelsRecovery("straight", false, hook, 900, false)).toBe(false);
+    expect(cancelsRecovery("straight", true, hook, 900, true)).toBe(false);
+    expect(cancelsRecovery("straight", true, hook, punchStaminaCost("hook", "head", "normal") - 1, false)).toBe(false);
+    expect(cancelsRecovery("straight", true, { ...hook, class: "jab" }, 900, false)).toBe(false);
+    expect(cancelsRecovery("hook", true, { ...hook, class: "uppercut" }, 900, false)).toBe(true);
+    // The engine charges the style's price: a slugger short of it throws a tired follow-up, and no combination.
+    const sluggerCost = styledStaminaCost("slugger", "hook", "head", "normal");
+    expect(sluggerCost).toBeGreaterThan(punchStaminaCost("hook", "head", "normal"));
+    expect(cancelsRecovery("straight", true, hook, sluggerCost - 1, false, "slugger")).toBe(false);
+    expect(cancelsRecovery("straight", true, hook, sluggerCost - 1, false)).toBe(true);
+  });
+});
+
+describe("walking behind a round trip", () => {
+  const PRESS_MS = 500;
+  const RELEASE_MS = 1500;
+  const TICK_MS = 1000 / 30;
+
+  /**
+   * Walks right from PRESS_MS to RELEASE_MS behind a round trip of `rtt` ms. The engine's integrator
+   * steps at 30 Hz on inputs flushed at 30 Hz, `phase` ms out of step with its ticks; its snapshots go
+   * into the client's real buffer, the client measures the input latency as the network does, and
+   * 60 fps frames draw the fighter where the prediction puts him.
+   */
+  function walk(rtt: number, phase: number): { t: number; drawn: number; server: number }[] {
+    const buffer = new SnapshotBuffer(8, 30);
+    const prediction = new MovementPrediction();
+    const heldAt = (t: number): HeldInput => ({ moveX: t >= PRESS_MS && t < RELEASE_MS ? 1000 : 0, moveY: 0, defense: "none" });
+    const inputs: { arrives: number; held: HeldInput; sequence: number }[] = [];
+    const snapshots: { arrives: number; snapshot: EngineSnapshot; acknowledged: number }[] = [];
+    const sentAt = new Map<number, number>();
+    let x = -200;
+    let velocity = 0;
+    let tick = 0;
+    let applied = heldAt(0);
+    let acknowledged = -1;
+    let sequence = 0;
+    let latency: number | null = null;
+    let nextFlush = phase;
+    let nextTick = 0;
+    let lastFrame = -1;
+    const drawn: { t: number; drawn: number; server: number }[] = [];
+    for (let t = 0; t < 2600; t += 1) {
+      if (t >= nextFlush) {
+        sentAt.set(sequence, t);
+        inputs.push({ arrives: t + rtt / 2, held: heldAt(t), sequence });
+        sequence += 1;
+        nextFlush += TICK_MS;
+      }
+      while (inputs.length > 0 && inputs[0]!.arrives <= t) {
+        const frame = inputs.shift()!;
+        applied = frame.held;
+        acknowledged = frame.sequence;
+      }
+      if (t >= nextTick) {
+        tick += 1;
+        velocity = Math.max(-7, Math.min(7, (velocity + (applied.moveX * 7) / 1000) / 2));
+        x += velocity;
+        const base = snapshot(tick);
+        const self = { ...fighter("one", x), conditioning: 1000, velocity_x: velocity };
+        snapshots.push({ arrives: t + rtt / 2, snapshot: { ...base, fighters: [self, { ...base.fighters[1], x: 400 }] }, acknowledged });
+        nextTick += TICK_MS;
+      }
+      while (snapshots.length > 0 && snapshots[0]!.arrives <= t) {
+        const arrived = snapshots.shift()!;
+        buffer.push(arrived.snapshot, t);
+        const sent = sentAt.get(arrived.acknowledged);
+        if (sent !== undefined) latency = latency === null ? t - sent : latency * 0.8 + (t - sent) * 0.2;
+      }
+      const frame = Math.floor((t * 60) / 1000);
+      if (frame === lastFrame || buffer.latest() === null) continue;
+      lastFrame = frame;
+      const shown = buffer.sample(buffer.renderTick(t))!;
+      const self = shown.fighters[0];
+      const lead = ((latency ?? rtt) / 1000) * 30 + buffer.interpolationDelayTicks;
+      const offset = constrainPrediction(self, prediction.update(self, heldAt(t), false, t, lead, shown.tick, 1 / 60, 30), shown.fighters[1]);
+      drawn.push({ t, drawn: self.x + offset.dx, server: x });
+    }
+    return drawn;
+  }
+
+  for (const rtt of [120, 220]) {
+    for (const phase of [0, 17]) {
+      it(`sets off on the press and stops on the release at ${rtt} ms round trip (flush ${phase} ms off the tick)`, () => {
+        const frames = walk(rtt, phase);
+        const at = (ms: number): number => frames.find((frame) => frame.t >= ms)!.drawn;
+        // Walking speed is 7 units a tick, 210 a second.
+        expect(at(PRESS_MS + 150) - at(PRESS_MS)).toBeGreaterThan(20);
+        const stallEnd = PRESS_MS + rtt + 100;
+        expect(((at(stallEnd) - at(PRESS_MS + 150)) / (stallEnd - PRESS_MS - 150)) * 1000).toBeGreaterThan(0.75 * 210);
+        const afterRelease = frames.filter((frame) => frame.t >= RELEASE_MS).map((frame) => frame.drawn);
+        expect(Math.max(...afterRelease) - at(RELEASE_MS)).toBeLessThan(8);
+        for (let index = 1; index < frames.length; index += 1) expect(frames[index - 1]!.drawn - frames[index]!.drawn).toBeLessThan(2.5);
+        expect(Math.abs(frames.at(-1)!.drawn - frames.at(-1)!.server)).toBeLessThan(0.5);
+      });
+    }
+  }
+});
+
+describe("the player's own defence", () => {
+  const guarding: HeldInput = { moveX: 0, moveY: 0, defense: "guard_high" };
+  const open = fighter("one");
+
+  it("shows the guard held now instead of the one in the delayed snapshot, unless the server overrides it", () => {
+    expect(predictedDefense(open, guarding, null)).toBe("guard_high");
+    expect(predictedDefense({ ...open, defense: "guard_low" }, { ...guarding, defense: "none" }, null)).toBe("none");
+    // A stun drops the guard, a taunt has none and a clinch keeps what it had.
+    expect(predictedDefense({ ...open, stunned_ticks: 12 }, guarding, "weave")).toBe("none");
+    expect(predictedDefense({ ...open, taunt_ticks: 30 }, guarding, null)).toBe("none");
+    expect(predictedDefense({ ...open, clinch_ticks: 30, defense: "guard_low" }, guarding, null)).toBe("guard_low");
+    // An evasion the server is playing stands; one just pressed shows at once.
+    expect(predictedDefense({ ...open, defense: "slip_left" }, guarding, null)).toBe("slip_left");
+    expect(predictedDefense(open, guarding, "weave")).toBe("weave");
+  });
+
+  it("plays a slip from the press until the server's copy has played on screen, and keeps the feet still while the server does", () => {
+    const evasion = new EvasionPrediction();
+    const tick = 1000 / 30;
+    evasion.press("slip_left", "c7", 1000, 6, 30);
+    expect(evasion.pose(1000)).toBe("slip_left");
+    expect(evasion.holdsFeet(1000 + (EVASION_TICKS - 1) * tick, 30)).toBe(true);
+    expect(evasion.holdsFeet(1000 + EVASION_TICKS * tick, 30)).toBe(false);
+    // The server starts it and plays it out; the frame that carried it is long acknowledged by then.
+    evasion.acknowledge({ ...open, defense: "slip_left", last_input_sequence: 30 }, true, (id) => (id === "c7" ? 30 : null));
+    evasion.acknowledge({ ...open, last_input_sequence: 34 }, true, (id) => (id === "c7" ? 30 : null));
+    expect(evasion.pose(1000 + (6 + EVASION_TICKS - 1) * tick)).toBe("slip_left");
+    expect(evasion.pose(1000 + (6 + EVASION_TICKS) * tick)).toBeNull();
+  });
+
+  it("holds a style's longer evasion as long as the engine plays it", () => {
+    const tick = 1000 / 30;
+    const ticks = EVASION_TICKS + styleTiming("swarmer").evasionTicks;
+    expect(ticks).toBe(EVASION_TICKS + 1);
+    expect(styleTiming("balanced").evasionTicks).toBe(0);
+    const evasion = new EvasionPrediction();
+    evasion.press("weave", "c3", 0, 6, 30, ticks);
+    expect(evasion.holdsFeet((ticks - 1) * tick, 30)).toBe(true);
+    expect(evasion.holdsFeet(ticks * tick, 30)).toBe(false);
+    expect(evasion.pose((6 + ticks - 1) * tick)).toBe("weave");
+    expect(evasion.pose((6 + ticks) * tick)).toBeNull();
+  });
+
+  it("drops a slip the server turned down or a stun cut short", () => {
+    const sequenceOf = (id: string): number | null => (id === "c8" ? 41 : null);
+    const refused = new EvasionPrediction();
+    refused.press("pull", "c8", 0, 4, 30);
+    // Snapshots before the frame went out say nothing about it.
+    refused.acknowledge({ ...open, last_input_sequence: 40 }, true, sequenceOf);
+    expect(refused.pose(10)).toBe("pull");
+    // Not enough stamina there, or a punch pressed in the same tick took its place.
+    refused.acknowledge({ ...open, last_input_sequence: 41 }, true, sequenceOf);
+    expect(refused.pose(20)).toBeNull();
+    const waiting = new EvasionPrediction();
+    waiting.press("pull", "c8", 0, 4, 30);
+    waiting.acknowledge({ ...open, last_input_sequence: 41, queued_actions: 1 }, true, sequenceOf);
+    expect(waiting.pose(20)).toBe("pull");
+    const stunned = new EvasionPrediction();
+    stunned.press("weave", "c9", 0, 4, 30);
+    stunned.acknowledge({ ...open, defense: "weave" }, true, null);
+    stunned.acknowledge({ ...open, stunned_ticks: 20 }, true, null);
+    expect(stunned.pose(20)).toBeNull();
+    const bell = new EvasionPrediction();
+    bell.press("weave", "c9", 0, 4, 30);
+    bell.acknowledge(open, false, null);
+    expect(bell.pose(20)).toBeNull();
+  });
+
+  it("matches the engine's evasion length and stamina gate", () => {
+    // Tests run from the client's package root, two levels below the repository's.
+    const engine = readFileSync(resolve(process.cwd(), "../../src/intelstream/hands/engine.py"), "utf8");
+    expect(engine).toContain(`EVASION_TICKS: Final = ${EVASION_TICKS}`);
+    expect(engine).toContain(`if fighter.stamina < ${EVASION_STAMINA}:`);
+    expect(engine).toContain("fighter.evasion_ticks = EVASION_TICKS + fighter.style_rule.evasion_ticks");
   });
 });

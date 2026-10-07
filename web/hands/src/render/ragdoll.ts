@@ -1067,8 +1067,19 @@ export class KnockoutRagdoll {
   private readonly fromHips = new THREE.Vector3();
   private readonly riseLocal = DRIVEN.map(() => new THREE.Quaternion());
   private readonly riseHips = new THREE.Vector3();
+  /** Each driven bone's turn in the body's frame (under the root) as the fall left it, and as the get-up has it. */
+  private readonly riseTurns = DRIVEN.map(() => new THREE.Quaternion());
+  private readonly solvedTurns = DRIVEN.map(() => new THREE.Quaternion());
+  private readonly rootTurn = new THREE.Quaternion();
+  private readonly turn = new THREE.Quaternion();
   private riseCaptured = false;
   private lastFall: FallRecord | null = null;
+  /** The buffers the latest fall is recorded in, taken over by the next one: a knockdown builds nothing. */
+  private readonly recordPositions = new Float64Array(PARTICLES * 3);
+  private readonly recordVelocities = new Float64Array(PARTICLES * 3);
+  private readonly recordOffsets = DRIVEN.map(() => new THREE.Quaternion());
+  private readonly recordImpulses: ImpulseRecord[] = [];
+  private readonly recordObstacles: ObstacleTrack = { data: new Float64Array(TRACKED_STEPS * 3), steps: 0 };
   private replaying: FallRecord | null = null;
   private primed = false;
   private pending: (ImpulseRecord & { readonly at: number }) | null = null;
@@ -1181,16 +1192,21 @@ export class KnockoutRagdoll {
       const blow = this.pending !== null && this.clock - this.pending.at <= EARLY_BLOW_SECONDS ? this.pending : null;
       this.body.start(this.sampleNow, this.velocities, blow?.style ?? defaultStyle);
       this.computeOffsets();
-      const impulses: ImpulseRecord[] = [];
+      const impulses = this.recordImpulses;
+      impulses.length = 0;
       if (blow !== null) impulses.push(this.body.impulse({ step: 0, x: blow.x, y: blow.y, z: blow.z, driveX: blow.driveX, driveY: blow.driveY, driveZ: blow.driveZ, target: blow.target, twist: blow.twist }));
-      const obstacles: ObstacleTrack = { data: new Float64Array(TRACKED_STEPS * 3), steps: 0 };
+      const obstacles = this.recordObstacles;
+      obstacles.steps = 0;
       this.body.trackObstacle(obstacles, false);
+      this.recordPositions.set(this.sampleNow);
+      this.recordVelocities.set(this.velocities);
+      for (let index = 0; index < this.offsets.length; index += 1) this.recordOffsets[index]!.copy(this.offsets[index]!);
       this.lastFall = {
-        positions: Float64Array.from(this.sampleNow),
-        velocities: Float64Array.from(this.velocities),
+        positions: this.recordPositions,
+        velocities: this.recordVelocities,
         style: this.body.fallStyle,
         impulses,
-        offsets: this.offsets.map((offset) => offset.clone()),
+        offsets: this.recordOffsets,
         obstacles,
       };
     }
@@ -1244,10 +1260,23 @@ export class KnockoutRagdoll {
     if (this.ragdolling) {
       this.root.updateMatrixWorld(true);
       this.captureLocals(this.riseLocal, this.riseHips);
+      this.bodyTurns(this.riseTurns);
       this.riseCaptured = true;
     }
     this.ragdolling = false;
     this.replaying = null;
+  }
+
+  /** Moves the pose the fall left by `world` (a world-space offset): its root moved the other way. */
+  shiftRise(world: THREE.Vector3): void {
+    const parent = this.rig.bones.hips.parent;
+    if (parent === null) {
+      this.riseHips.add(world);
+      return;
+    }
+    parent.updateWorldMatrix(true, false);
+    const from = parent.worldToLocal(this.point.set(0, 0, 0));
+    this.riseHips.add(parent.worldToLocal(this.other.copy(world)).sub(from));
   }
 
   /** Forgets the pose left by the last fall, so nothing blends from it. */
@@ -1263,7 +1292,30 @@ export class KnockoutRagdoll {
   /** Blends the solved get-up pose from where the fall left the body; `weight` 1 is the solved pose. */
   blendRise(weight: number): void {
     if (!this.riseCaptured || weight >= 1) return;
-    this.blend(this.riseLocal, this.riseHips, weight);
+    // Each bone turns in the body's frame from where the fall left it to where the get-up has it, rather than
+    // joint by joint: blended against a parent that is itself still turning, a limb would swing through the canvas.
+    const w = Math.min(1, Math.max(0, weight));
+    this.bodyTurns(this.solvedTurns);
+    this.rig.bones.hips.position.lerpVectors(this.riseHips, this.rig.bones.hips.position, w);
+    for (let index = 0; index < this.bones.length; index += 1) {
+      const bone = this.bones[index]!;
+      if (bone !== this.rig.bones.hips) bone.position.lerpVectors(this.fromPositions[index]!, bone.position, w);
+      bone.updateWorldMatrix(false, false);
+      this.rig.setWorldRotation(bone, this.turn.slerpQuaternions(this.riseTurns[index]!, this.solvedTurns[index]!, w).premultiply(this.rootTurn));
+      if (DRIVEN[index] === "upperChest") {
+        this.rig.bones.clavicleL.updateWorldMatrix(false, false);
+        this.rig.bones.clavicleR.updateWorldMatrix(false, false);
+      }
+    }
+    this.root.updateMatrixWorld(true);
+  }
+
+  /** Every driven bone's world turn under the root's, into `out`; leaves the root's turn in `rootTurn`. */
+  private bodyTurns(out: readonly THREE.Quaternion[]): void {
+    this.root.updateMatrixWorld(true);
+    this.root.getWorldQuaternion(this.rootTurn);
+    this.turn.copy(this.rootTurn).invert();
+    for (let index = 0; index < this.bones.length; index += 1) this.bones[index]!.getWorldQuaternion(out[index]!).premultiply(this.turn);
   }
 
   /** Where the pelvis came to rest, in world space. */
@@ -1316,7 +1368,9 @@ export class KnockoutRagdoll {
     const w = Math.min(1, Math.max(0, weight));
     for (let index = 0; index < this.bones.length; index += 1) {
       const bone = this.bones[index]!;
-      bone.quaternion.slerpQuaternions(from[index]!, bone.quaternion, w);
+      // From the current pose back toward the stored one: slerpQuaternions(from, bone.quaternion, w) would copy
+      // `from` over the bone's own quaternion first and never leave the stored pose.
+      bone.quaternion.slerp(from[index]!, 1 - w);
       if (bone !== this.rig.bones.hips) bone.position.lerpVectors(this.fromPositions[index]!, bone.position, w);
     }
     this.rig.bones.hips.position.lerpVectors(hips, this.rig.bones.hips.position, w);

@@ -89,6 +89,12 @@ const scratchQ = new THREE.Quaternion();
 const scratchQ2 = new THREE.Quaternion();
 const scratchEuler = new THREE.Euler();
 const worldUp = new THREE.Vector3(0, 1, 0);
+/** Each spine bone's share of the shoulder twist and of the spine's pitch and roll. */
+const SPINE_SEGMENTS: readonly (readonly [CanonicalBone, number, number])[] = [
+  ["spine", 0.25, 0.2],
+  ["chest", 0.55, 0.5],
+  ["upperChest", 1.0, 1.0],
+];
 
 /** Applies a character-space pose to the rig in world space. */
 export class PoseSolver {
@@ -123,12 +129,8 @@ export class PoseSolver {
     rig.setWorldPosition(bones.hips, scratch);
     this.setYawPitchRoll(bones.hips, torso.hipsYaw, torso.hipsPitch, torso.hipsRoll);
     const twist = torso.shouldersYaw - torso.hipsYaw;
-    const segments: [CanonicalBone, number, number][] = [
-      ["spine", 0.25, 0.2],
-      ["chest", 0.55, 0.5],
-      ["upperChest", 1.0, 1.0],
-    ];
-    for (const [name, twistShare, pitchShare] of segments) {
+    for (let index = 0; index < SPINE_SEGMENTS.length; index += 1) {
+      const [name, twistShare, pitchShare] = SPINE_SEGMENTS[index]!;
       this.setYawPitchRoll(
         bones[name],
         torso.hipsYaw + twist * twistShare,
@@ -192,28 +194,24 @@ export class PoseSolver {
     const lengths = side === "L" ? rig.metrics.legL : rig.metrics.legR;
     this.toWorld(foot.position, scratch);
     this.dirToWorld(foot.toe, scratchC).normalize();
+    // Foot: +Y runs from the ankle down to the toe base, pitched by the heel lift.
+    const footLength = rig.metrics.footLength;
+    scratchD.copy(scratchC).multiplyScalar(footLength).addScaledVector(worldUp, -rig.metrics.ankleHeight).normalize();
     if (foot.heel !== 0) {
-      // Pivot on the ball of the foot: the toe stays planted while the ankle rises and drifts forward.
-      const pivot = rig.metrics.footLength * 0.72;
-      scratch.addScaledVector(worldUp, Math.sin(foot.heel) * pivot).addScaledVector(scratchC, (1 - Math.cos(foot.heel)) * pivot);
+      // Pivot on the ball of the foot: the toe base stays where the flat foot puts it while the ankle rises
+      // and drifts forward around it.
+      scratch.addScaledVector(scratchD, footLength);
+      scratchQ.setFromAxisAngle(scratchB.crossVectors(scratchC, worldUp).normalize(), -foot.heel);
+      scratchD.applyQuaternion(scratchQ);
+      scratch.addScaledVector(scratchD, -footLength);
     }
     this.dirToWorld(foot.pole, scratchB);
     rig.solveLimb(hip, knee, lengths, scratch, scratchB, "x", -1, 0.02);
     ankle.updateWorldMatrix(false, false);
-    // Foot: +Y runs from the ankle down to the toe base, pitched by the heel lift.
-    this.dirToWorld(foot.toe, scratchC).normalize();
-    const drop = rig.metrics.ankleHeight;
-    scratchD.copy(scratchC).multiplyScalar(rig.metrics.footLength).addScaledVector(worldUp, -drop);
-    scratchD.normalize();
-    if (foot.heel !== 0) {
-      scratchQ.setFromAxisAngle(scratchB.crossVectors(scratchC, worldUp).normalize(), -foot.heel);
-      scratchD.applyQuaternion(scratchQ);
-    }
     rig.setWorldFrame(ankle, scratchD, worldUp, "z");
     toe.updateWorldMatrix(false, false);
-    scratchB.copy(scratchC);
-    if (foot.heel !== 0) scratchB.applyQuaternion(scratchQ);
-    rig.setWorldFrame(toe, scratchB, worldUp, "z");
+    // The toes bend at the ball, so they stay flat on the canvas however far the heel is raised.
+    rig.setWorldFrame(toe, scratchC, worldUp, "z");
   }
 }
 

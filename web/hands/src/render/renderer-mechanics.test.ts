@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { EventDeduplicator, SnapshotBuffer } from "../interpolation";
+import { EvasionPrediction, MovementPrediction } from "../prediction";
 import { fighter, snapshot } from "../test/fixtures";
 import type { CombatEvent, EngineSnapshot } from "../types";
 import { RoundStatsTracker } from "./hud";
@@ -10,8 +11,8 @@ const combat = (kind: string, overrides: Partial<CombatEvent> = {}): CombatEvent
   event_id: 1, tick: 10, kind, actor_id: "one", target_id: "two", amount: 0, detail: "", blood: 0, direction: 1, action_id: null, ...overrides,
 });
 
-interface FakeGraph { stagger: ReturnType<typeof vi.fn>; windedFor: ReturnType<typeof vi.fn>; fallToKnee: ReturnType<typeof vi.fn>; resetTransient: ReturnType<typeof vi.fn>; primeReplayFall: ReturnType<typeof vi.fn> }
-const fakeGraphs = (): [FakeGraph, FakeGraph] => [0, 1].map(() => ({ stagger: vi.fn(), windedFor: vi.fn(), fallToKnee: vi.fn(), resetTransient: vi.fn(), primeReplayFall: vi.fn() })) as [FakeGraph, FakeGraph];
+interface FakeGraph { stagger: ReturnType<typeof vi.fn>; windedFor: ReturnType<typeof vi.fn>; fallToKnee: ReturnType<typeof vi.fn>; resetTransient: ReturnType<typeof vi.fn>; primeReplayFall: ReturnType<typeof vi.fn>; acknowledge: ReturnType<typeof vi.fn> }
+const fakeGraphs = (): [FakeGraph, FakeGraph] => [0, 1].map(() => ({ stagger: vi.fn(), windedFor: vi.fn(), fallToKnee: vi.fn(), resetTransient: vi.fn(), primeReplayFall: vi.fn(), acknowledge: vi.fn() })) as [FakeGraph, FakeGraph];
 
 const methods = FightRenderer.prototype as unknown as {
   push(this: unknown, snapshot: EngineSnapshot): void;
@@ -27,6 +28,7 @@ function pushStub(graphs: [FakeGraph, FakeGraph]): Record<string, unknown> {
     roundStats: new RoundStatsTracker(),
     referee: null,
     graphs,
+    acknowledgeActions: vi.fn(),
     mapping: worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }),
     contactPoint: new THREE.Vector3(),
     pendingContacts: [] as unknown[],
@@ -204,18 +206,21 @@ describe("a bout that ends on the punch itself", () => {
 });
 
 describe("the player's own fighter folding over a body shot", () => {
-  const predict = (FightRenderer.prototype as unknown as { applyLocalPrediction(this: unknown, state: EngineSnapshot, dt: number): EngineSnapshot }).applyLocalPrediction;
+  const predict = (FightRenderer.prototype as unknown as { applyLocalPrediction(this: unknown, state: EngineSnapshot, dt: number, timeMs: number): EngineSnapshot }).applyLocalPrediction;
 
   it("is held still from the body shot until he drops, then moves with the controls again", () => {
     const stub = { ...pushStub(fakeGraphs()), viewerId: "two", ownCollapseUntil: 0 };
     methods.push.call(stub, { ...snapshot(30), events: [combat("body_collapse", { event_id: 5, tick: 30, actor_id: "one", target_id: "two", amount: 10 })] });
     expect(stub.ownCollapseUntil).toBe(40);
 
-    const viewer = { localInput: () => ({ moveX: 1000, moveY: 0, defense: "none" as const }), viewerId: "two", graphs: null, buffer: { interpolationDelayTicks: 2 }, localOffset: { dx: 0, dy: 0 }, ownCollapseUntil: 40 };
+    const viewer = {
+      localInput: () => ({ moveX: 1000, moveY: 0, defense: "none" as const }), viewerId: "two", graphs: null, buffer: { interpolationDelayTicks: 2 },
+      movement: new MovementPrediction(), evasion: new EvasionPrediction(), simulation: { tick_rate: 30 }, inputLatencyMs: null, ownCollapseUntil: 40,
+    };
     const held = { ...snapshot(35), phase: "fight" as const };
-    expect(predict.call(viewer, held, 1 / 30).fighters[1].x).toBe(held.fighters[1].x);
+    expect(predict.call(viewer, held, 1 / 30, 1000).fighters[1].x).toBe(held.fighters[1].x);
     viewer.ownCollapseUntil = 0;
-    expect(predict.call(viewer, held, 1 / 30).fighters[1].x).toBeGreaterThan(held.fighters[1].x);
+    expect(predict.call(viewer, held, 1 / 30, 1033).fighters[1].x).toBeGreaterThan(held.fighters[1].x);
   });
 
   it("is not set by a body shot folding the opponent", () => {

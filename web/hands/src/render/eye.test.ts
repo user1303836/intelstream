@@ -42,7 +42,7 @@ describe("an eye forced out", () => {
     body.setEyeOut("left");
     expect(body.eyeOut).toBeNull();
     const shader = { uniforms: {} as Record<string, unknown>, vertexShader: "#include <common>\n#include <begin_vertex>", fragmentShader: "#include <common>\n#include <map_fragment>\n#include <roughnessmap_fragment>" };
-    head.material.onBeforeCompile(shader as unknown as THREE.WebGLProgramParametersWithUniforms, null as unknown as THREE.WebGLRenderer);
+    head.material!.onBeforeCompile(shader as unknown as THREE.WebGLProgramParametersWithUniforms, null as unknown as THREE.WebGLRenderer);
     expect(shader.uniforms.uInjuryEyeOut).toBe(head.uniforms.uInjuryEyeOut);
     expect(shader.vertexShader).toContain("uniform vec2 uInjuryEyeOut;");
     expect(shader.fragmentShader).toContain("uniform vec2 uInjuryEyeOut;");

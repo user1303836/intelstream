@@ -1,3 +1,4 @@
+import { coarsePointer } from "./input/touch";
 import type { Settings } from "./settings";
 import type { CombatEvent } from "./types";
 
@@ -18,16 +19,12 @@ export class HapticFeedback {
   event(event: CombatEvent): void {
     if (!this.settings().haptics) return;
     const pattern = patterns[event.kind];
-    if (pattern === undefined || typeof navigator.getGamepads !== "function") return;
-    let pads: (Gamepad | null)[];
-    try {
-      pads = [...navigator.getGamepads.call(navigator)];
-    } catch {
+    if (pattern === undefined) return;
+    const actuator = this.padActuator();
+    if (actuator === null) {
+      this.vibrate(pattern[0]);
       return;
     }
-    const pad = pads.find((item): item is VibratingPad => item !== null && item.connected && "vibrationActuator" in item);
-    const actuator = pad?.vibrationActuator;
-    if (actuator == null || typeof actuator.playEffect !== "function") return;
     try {
       void Promise.resolve(actuator.playEffect("dual-rumble", {
         duration: Math.min(180, Math.max(0, pattern[0])),
@@ -36,6 +33,29 @@ export class HapticFeedback {
       })).catch(() => undefined);
     } catch {
       // Some gamepad implementations throw before returning their advertised promise.
+    }
+  }
+
+  private padActuator(): NonNullable<VibratingPad["vibrationActuator"]> | null {
+    if (typeof navigator.getGamepads !== "function") return null;
+    let pads: (Gamepad | null)[];
+    try {
+      pads = [...navigator.getGamepads.call(navigator)];
+    } catch {
+      return null;
+    }
+    const pad = pads.find((item): item is VibratingPad => item !== null && item.connected && "vibrationActuator" in item);
+    const actuator = pad?.vibrationActuator;
+    return actuator == null || typeof actuator.playEffect !== "function" ? null : actuator;
+  }
+
+  /** Phones have no pad to rumble; Android vibrates instead (iOS has no vibration API, so nothing happens). */
+  private vibrate(duration: number): void {
+    if (!coarsePointer() || typeof navigator.vibrate !== "function") return;
+    try {
+      navigator.vibrate(Math.min(180, Math.max(0, duration)));
+    } catch {
+      // A host page can block vibration.
     }
   }
 }

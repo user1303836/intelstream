@@ -555,7 +555,7 @@ describe("referee and a head on the canvas", () => {
     effects.severedHeadPosition(1, head);
     const updated: unknown[] = [];
     const stub = {
-      referee: { setRefereeCount: () => {}, update: (...frame: unknown[]) => updated.push(frame), boxer: { root: new THREE.Object3D() } }, blobShadows: [],
+      referee: { setRefereeCount: () => {}, aimBreak: () => {}, update: (...frame: unknown[]) => updated.push(frame), boxer: { root: new THREE.Object3D() } }, blobShadows: [],
       mapping: worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }),
       tmpA: new THREE.Vector3(head.x - 0.4, 0, head.z + 2.2), tmpB: new THREE.Vector3(head.x + 0.4, 0, head.z + 2.2),
       refereePosition: new THREE.Vector3(head.x + 0.1, 0, head.z - 0.2), refereeVelocity: new THREE.Vector3(), refereeAway: new THREE.Vector3(), refereeYaw: 0,
@@ -574,7 +574,7 @@ describe("referee and a head on the canvas", () => {
     const root = new THREE.Object3D();
     const shadow = new THREE.Object3D();
     const stub = {
-      referee: { setRefereeCount: () => {}, update: () => {}, boxer: { root } }, blobShadows: [new THREE.Object3D(), new THREE.Object3D(), shadow],
+      referee: { setRefereeCount: () => {}, aimBreak: () => {}, update: () => {}, boxer: { root } }, blobShadows: [new THREE.Object3D(), new THREE.Object3D(), shadow],
       mapping: worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }),
       tmpA: new THREE.Vector3(-0.5, 0, 0), tmpB: new THREE.Vector3(0.5, 0, 0),
       refereePosition: new THREE.Vector3(0, 0, -1.5), refereeVelocity: new THREE.Vector3(), refereeAway: new THREE.Vector3(), refereeYaw: 0,

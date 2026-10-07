@@ -26,11 +26,13 @@ export const CONTROL_HELP = [
   "Controller fouls: View/Back low blow · Menu/Start headbutt.",
   "Right-stick gesture: horizontal 0–22.5° hook · 22.5–45° jab · 45–70° straight · 70–90° uppercut; left/right direction selects hand.",
   "Between rounds, tell your corner what to work on: 1 close the cut · 2 bring down the swelling · 3 catch your breath (controller: left, top or right face button; or tap).",
+  "Touch: drag the left side to move · tap a punch pad's left or right half for that hand · hold BODY, POWER, GUARD or LOW · tap ◀ SLIP, SLIP ▶, WEAVE, PULL or CLINCH.",
 ] as const;
 
 /** The Controls panel in sections instead of one list. */
 export const CONTROL_SECTIONS: readonly { readonly title: string; readonly items: readonly string[] }[] = [
-  { title: "Keyboard", items: CONTROL_HELP.filter((item) => !item.startsWith("Controller") && !item.startsWith("Right-stick") && !item.startsWith("Between rounds")) },
+  { title: "Keyboard", items: CONTROL_HELP.filter((item) => !item.startsWith("Controller") && !item.startsWith("Right-stick") && !item.startsWith("Between rounds") && !item.startsWith("Touch")) },
   { title: "Between rounds", items: CONTROL_HELP.filter((item) => item.startsWith("Between rounds")) },
   { title: "Controller", items: CONTROL_HELP.filter((item) => item.startsWith("Controller") || item.startsWith("Right-stick")) },
+  { title: "Touch", items: CONTROL_HELP.filter((item) => item.startsWith("Touch")) },
 ];

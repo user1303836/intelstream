@@ -55,7 +55,7 @@ describe("a head that bursts", () => {
     expect((boxer.headMesh.material as THREE.Material).side).toBe(THREE.DoubleSide);
     expect((boxer.headMesh.material as THREE.Material).shadowSide).toBe(THREE.BackSide);
     const shader = { uniforms: {}, vertexShader: "#include <common>\n#include <begin_vertex>", fragmentShader: "#include <common>\n#include <map_fragment>\n#include <roughnessmap_fragment>" };
-    boxer.headInjury.material.onBeforeCompile(shader as unknown as THREE.WebGLProgramParametersWithUniforms, null as unknown as THREE.WebGLRenderer);
+    boxer.headInjury.material!.onBeforeCompile(shader as unknown as THREE.WebGLProgramParametersWithUniforms, null as unknown as THREE.WebGLRenderer);
     expect(shader.fragmentShader).toContain("if (!gl_FrontFacing)");
     boxer.setHeadBurst(true);
     expect(boxer.isHeadBurst).toBe(true);

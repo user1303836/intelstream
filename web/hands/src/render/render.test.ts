@@ -432,6 +432,105 @@ describe("effects", () => {
     expect(simulate(1 / 30)).toEqual(simulate(1 / 60));
   });
 
+  it("draws and uploads only the droplets in flight", () => {
+    const effects = new Effects3D(new THREE.Scene());
+    const mesh = effects.dropletMesh;
+    const matrices = mesh.instanceMatrix;
+    expect(mesh.count).toBe(0);
+    effects.addEvent(severeHit(40), new THREE.Vector3(), false);
+    expect(mesh.count).toBe(effects.liveParticles);
+    // A step moves every live droplet and uploads just their matrices, packed at the front of the pool.
+    matrices.clearUpdateRanges();
+    effects.update(1 / 60);
+    const live = mesh.count;
+    expect(live).toBe(effects.liveParticles);
+    expect(matrices.updateRanges).toEqual([{ start: 0, count: live * 16 }]);
+    const positions = effects.dropletBuffers.position;
+    for (let index = 0; index < 900; index += 1) expect(positions.getY(index) > -10).toBe(index < live);
+    // Once the blood has landed nothing is drawn or uploaded.
+    for (let frame = 0; frame < 180; frame += 1) effects.update(1 / 60);
+    expect(effects.liveParticles).toBe(0);
+    expect(mesh.count).toBe(0);
+    matrices.clearUpdateRanges();
+    const version = matrices.version;
+    effects.update(1 / 60);
+    expect(matrices.version).toBe(version);
+    // A full pool keeps reusing its slots.
+    for (let eventId = 0; eventId < 12; eventId += 1) effects.addEvent(severeHit(100 + eventId), new THREE.Vector3(), false);
+    expect(mesh.count).toBe(900);
+    expect(effects.liveParticles).toBe(900);
+    effects.dispose();
+  });
+
+  it("sprays blood, teeth and severed parts along the line the punch travelled", () => {
+    const towardsAway = { x: 0, z: -1 };
+    /** Mean horizontal position of the airborne blood droplets, or of the airborne gibs. */
+    const bloodCentre = (effects: Effects3D): THREE.Vector2 => {
+      const positions = effects.dropletBuffers.position;
+      const colors = effects.dropletBuffers.color;
+      const centre = new THREE.Vector2();
+      let count = 0;
+      for (let index = 0; index < positions.count; index += 1) {
+        if (positions.getY(index) < -10 || colors.getY(index) >= 0.2) continue;
+        centre.x += positions.getX(index);
+        centre.y += positions.getZ(index);
+        count += 1;
+      }
+      return centre.divideScalar(Math.max(1, count));
+    };
+    const gibCentre = (scene: THREE.Scene): THREE.Vector2 => {
+      const gibs = scene.children.find((child) => child instanceof THREE.InstancedMesh && child.geometry instanceof THREE.IcosahedronGeometry) as THREE.InstancedMesh;
+      const matrix = new THREE.Matrix4();
+      const position = new THREE.Vector3();
+      const centre = new THREE.Vector2();
+      let count = 0;
+      for (let index = 0; index < gibs.count; index += 1) {
+        gibs.getMatrixAt(index, matrix);
+        position.setFromMatrixPosition(matrix);
+        if (position.y < -10) continue;
+        centre.x += position.x;
+        centre.y += position.z;
+        count += 1;
+      }
+      return centre.divideScalar(Math.max(1, count));
+    };
+    const run = (effects: Effects3D, seconds: number): void => {
+      for (let elapsed = 0; elapsed < seconds; elapsed += 1 / 60) effects.update(1 / 60);
+    };
+    const along = (centre: { x: number; y: number }): void => {
+      expect(centre.y).toBeLessThan(-0.15);
+      expect(Math.abs(centre.x)).toBeLessThan(Math.abs(centre.y));
+    };
+
+    const scene = new THREE.Scene();
+    const effects = new Effects3D(scene);
+    effects.addEvent({ ...severeHit(30), detail: "straight:head" }, new THREE.Vector3(), false, towardsAway);
+    run(effects, 0.25);
+    along(bloodCentre(effects));
+    along(gibCentre(scene));
+    effects.clearDynamic();
+    effects.spawnTeeth(new THREE.Vector3(0, 1.5, 0), towardsAway, 4, 31);
+    run(effects, 0.25);
+    along(gibCentre(scene));
+    const head = new THREE.Vector3();
+    effects.decapitate(0, new THREE.Vector3(0, 1.55, 0), new THREE.Quaternion(), towardsAway, 32);
+    run(effects, 0.3);
+    effects.severedHeadPosition(0, head);
+    along({ x: head.x, y: head.z });
+    effects.dismemberHand(1, "left", new THREE.Vector3(0, 1.3, 0), new THREE.Quaternion(), towardsAway, 33, 0x1d4ed8);
+    run(effects, 0.3);
+    const hand = scene.children.find((child) => child instanceof THREE.Mesh && child.visible && child.geometry instanceof THREE.CapsuleGeometry)!;
+    along({ x: hand.position.x, y: hand.position.z });
+    effects.dispose();
+
+    // Without the fighters' positions the event's world-x sign still decides.
+    const fallback = new Effects3D(new THREE.Scene());
+    fallback.addEvent({ ...severeHit(34), detail: "straight:head", direction: -1 }, new THREE.Vector3(), false);
+    run(fallback, 0.25);
+    expect(bloodCentre(fallback).x).toBeLessThan(-0.15);
+    fallback.dispose();
+  });
+
   it("never exceeds any fixed pool under repeated production-valid events", () => {
     const scene = new THREE.Scene();
     const effects = new Effects3D(scene);
@@ -1060,6 +1159,59 @@ describe("players' pictures", () => {
     expect(drawn[0]!.y).toBeGreaterThanOrEqual(layout.y + 14);
     expect(drawn[0]!.y + drawn[0]!.height).toBeLessThanOrEqual(layout.y + 14 + layout.rowHeight);
     expect(texts).toContain("B");
+  });
+});
+
+describe("compact scoreboard mini bars", () => {
+  /** Records filled rectangles and where each text lands, measuring text at 0.6 em per character. */
+  function layoutContext(): { ctx: CanvasRenderingContext2D; rects: { x: number; y: number; w: number; h: number }[]; texts: { text: string; left: number; right: number; y: number }[] } {
+    const rects: { x: number; y: number; w: number; h: number }[] = [];
+    const texts: { text: string; left: number; right: number; y: number }[] = [];
+    let size = 10;
+    let align: CanvasTextAlign = "left";
+    const width = (text: string): number => text.length * size * 0.6;
+    const ctx = Object.assign(mockHudContext([]), {
+      fillRect: (x: number, y: number, w: number, h: number) => rects.push({ x, y, w, h }),
+      fillText: (text: string, x: number, y: number) => {
+        const left = align === "right" ? x - width(text) : align === "center" ? x - width(text) / 2 : x;
+        texts.push({ text, left, right: left + width(text), y });
+      },
+      measureText: (text: string) => ({ width: width(text) }),
+    });
+    Object.defineProperty(ctx, "font", { set: (font: string) => { size = Number(/(\d+)px/.exec(font)?.[1] ?? 10); } });
+    Object.defineProperty(ctx, "textAlign", { set: (value: CanvasTextAlign) => { align = value; } });
+    return { ctx, rects, texts };
+  }
+
+  it("fit side by side inside their plates on a 320 px phone", () => {
+    const { ctx, rects, texts } = layoutContext();
+    const width = 320;
+    const height = 640;
+    drawHud(ctx, width, height, snapshot(), Object.fromEntries(publicPlayers.map((p) => [p.id, p])), "one", null, 0, 30);
+    const miniY = height - 84 - 12;
+    // Each bar first fills its frame, a pixel larger than the bar all round.
+    const bars = rects.filter((rect) => rect.y === miniY - 1 && rect.h === 11).sort((a, b) => a.x - b.x);
+    const labels = texts.filter((text) => text.y === miniY - 4).sort((a, b) => a.left - b.left);
+    expect(bars).toHaveLength(4);
+    expect(labels.map((label) => label.text.split(" ")[0])).toEqual(["GUARD", "POISE", "GUARD", "POISE"]);
+    const plateWidth = (width - 56) / 2;
+    const plates = [[24, 24 + plateWidth], [width - 24 - plateWidth, width - 24]] as const;
+    for (const [index, bar] of bars.entries()) {
+      const [left, right] = plates[index < 2 ? 0 : 1];
+      expect(bar.x + 1).toBeGreaterThanOrEqual(left);
+      expect(bar.x + bar.w - 1).toBeLessThanOrEqual(right);
+    }
+    for (let index = 1; index < 4; index += 1) {
+      expect(bars[index]!.x).toBeGreaterThanOrEqual(bars[index - 1]!.x + bars[index - 1]!.w);
+      expect(labels[index]!.left).toBeGreaterThanOrEqual(labels[index - 1]!.right);
+    }
+  });
+
+  it("keep their broadcast size and place on a desktop", () => {
+    const { ctx, rects } = layoutContext();
+    drawHud(ctx, 1280, 720, snapshot(), Object.fromEntries(publicPlayers.map((p) => [p.id, p])), "one", null, 0, 30);
+    const bars = rects.filter((rect) => rect.y === 720 - 84 - 12 - 1 && rect.h === 11).sort((a, b) => a.x - b.x);
+    expect(bars.map((bar) => [bar.x + 1, bar.w - 2])).toEqual([[44, 64], [120, 64], [1280 - 24 - 148, 64], [1280 - 24 - 72, 64]]);
   });
 });
 

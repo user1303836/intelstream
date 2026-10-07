@@ -4,7 +4,7 @@ import { Avatars } from "./avatars";
 import { RoundClock } from "./hud";
 import type { CombatEvent, EngineSnapshot, MatchResult } from "../types";
 import { releaseSharedGpu, disposeSkeletons } from "./graph";
-import { arcadeInjuryFor, canStartPunch, compileForComposer, CEREMONY_MARKS, ceremonyStep, contactParticipants, contactPresentationPlan, disposeComposer, cornersAtWork, FightRenderer, ownViewPhase, isArcadeInjuryCandidate, knockdownFinisher, presentationTickFor, refereeSpacing, replayCameraSide, replayReattaches, visualSeparation, resultCardTop } from "./renderer";
+import { arcadeInjuryFor, canStartPunch, compileForComposer, CEREMONY_MARKS, ceremonyStep, contactParticipants, contactPresentationPlan, disposeComposer, cornersAtWork, FightRenderer, ownViewPhase, isArcadeInjuryCandidate, knockdownFinisher, presentationTickFor, refereeSpacing, replayCameraSide, replayReattaches, sprayDirection, visualSeparation, resultCardTop } from "./renderer";
 import { RockedVision } from "./rocked";
 import { worldMapping } from "./world";
 
@@ -74,6 +74,34 @@ describe("contact presentation tick", () => {
     expect(plan.map((entry) => entry.presentImpact)).toEqual([true, false, true]);
     expect(plan[0]!.presentationEvent).toMatchObject({ kind: "block", detail: "straight:body", direction: -1, blood: 12 });
     expect(plan[2]!.presentationEvent).toMatchObject({ kind: "knockdown", detail: "straight:body", direction: -1, blood: 12 });
+  });
+
+  it("reacts once to the punch that knocks a fighter down, at the punch's own strength", () => {
+    const frame = snapshot(10);
+    const hit = event("hit", "straight:head");
+    const knockdown = { ...event("knockdown", ""), event_id: 2, amount: 1, blood: 0, direction: 0, action_id: null };
+    expect(contactPresentationPlan([hit, knockdown], frame).map((entry) => entry.reactAmount)).toEqual([500, null]);
+    // Through a block, the block's entry presents the punch, so the knockdown reacts for the hit that leaked.
+    const block = { ...event("block", ""), actor_id: "two", target_id: "one", amount: 30, blood: 0, direction: 0 };
+    expect(contactPresentationPlan([block, { ...hit, amount: 18 }, knockdown], frame).map((entry) => entry.reactAmount)).toEqual([30, 18, 18]);
+  });
+});
+
+describe("spray direction", () => {
+  const mapping = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 });
+
+  it("runs from the puncher to the recipient in the world, whichever way they face", () => {
+    const towards = (from: [number, number], to: [number, number]) => sprayDirection({ ...fighter("one"), x: from[0], y: from[1] }, { ...fighter("two"), x: to[0], y: to[1] }, mapping);
+    expect(towards([0, -60], [0, 60])).toEqual({ x: 0, z: -1 });
+    expect(towards([60, 0], [-60, 0])).toEqual({ x: -1, z: 0 });
+    const diagonal = towards([0, 0], [100, 100])!;
+    expect(diagonal.x).toBeCloseTo(Math.SQRT1_2);
+    expect(diagonal.z).toBeCloseTo(-Math.SQRT1_2);
+  });
+
+  it("leaves effects to the event's sign when a fighter is missing or both stand on one spot", () => {
+    expect(sprayDirection(undefined, fighter("two"), mapping)).toBeUndefined();
+    expect(sprayDirection(fighter("one", 40), fighter("two", 40), mapping)).toBeUndefined();
   });
 });
 

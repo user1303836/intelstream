@@ -49,6 +49,9 @@ interface ToneSpec {
   readonly delay?: number;
 }
 
+/** Gestures that may unlock audio. A touch pointerdown is not a user activation; the pointerup, touchend and click after it are. */
+const UNLOCK_EVENTS = ["pointerdown", "pointerup", "touchend", "click", "keydown"] as const;
+
 const WHOOSH: Record<PunchClass, { from: number; to: number; duration: number }> = {
   jab: { from: 520, to: 1500, duration: 0.09 },
   straight: { from: 420, to: 1150, duration: 0.12 },
@@ -85,6 +88,10 @@ export class AudioFeedback {
   private lastTick = -1;
 
   private readonly unlockListener = (): void => {
+    // Every gesture resumes the context itself until audio is unlocked: a resume() made during a
+    // touch press, which is not an activation, can stay pending, and the unlock waits on it.
+    const context = this.context;
+    if (context !== null && context.state !== "running") void context.resume().catch(() => undefined);
     void this.unlock().catch(() => undefined);
   };
 
@@ -96,8 +103,7 @@ export class AudioFeedback {
   };
 
   constructor(private readonly settings: () => Settings) {
-    window.addEventListener("pointerdown", this.unlockListener);
-    window.addEventListener("keydown", this.unlockListener);
+    for (const type of UNLOCK_EVENTS) window.addEventListener(type, this.unlockListener);
     document.addEventListener("visibilitychange", this.visibility);
   }
 
@@ -132,8 +138,7 @@ export class AudioFeedback {
     if (this.destroyed || this.context !== context) return;
     this.injuryBuffers = injuryBuffers;
     this.unlocked = true;
-    window.removeEventListener("pointerdown", this.unlockListener);
-    window.removeEventListener("keydown", this.unlockListener);
+    for (const type of UNLOCK_EVENTS) window.removeEventListener(type, this.unlockListener);
     if (!this.crowdStarted) {
       this.crowdStarted = true;
       this.crowdBed();
@@ -600,8 +605,7 @@ export class AudioFeedback {
 
   destroy(): void {
     this.destroyed = true;
-    window.removeEventListener("pointerdown", this.unlockListener);
-    window.removeEventListener("keydown", this.unlockListener);
+    for (const type of UNLOCK_EVENTS) window.removeEventListener(type, this.unlockListener);
     document.removeEventListener("visibilitychange", this.visibility);
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear();

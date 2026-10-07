@@ -135,7 +135,10 @@ vInjuryPos = transformed;
     float socket = 1.0 - smoothstep(0.0, 1.7, distance(transformed, uInjuryLid[e].xyz));
     transformed.z -= 1.1 * socket * socket * gone;
   }
-  float jawMask = (1.0 - smoothstep(uInjuryJawLevel - 2.5, uInjuryJawLevel + 1.5, transformed.y)) * smoothstep(-6.0, 0.0, transformed.z);
+  // Only the mandible: the mask fades out again under the chin, above the throat and the seam with the body.
+  float jawMask = (1.0 - smoothstep(uInjuryJawLevel - 2.5, uInjuryJawLevel + 1.5, transformed.y))
+    * smoothstep(uInjuryJawLevel - 6.0, uInjuryJawLevel - 4.0, transformed.y)
+    * smoothstep(-6.0, 0.0, transformed.z);
   transformed.x += uInjuryJaw * 1.7 * jawMask;
   transformed.y -= uInjuryJaw * 0.9 * jawMask;
   transformed.z -= uInjuryJaw * 0.4 * jawMask;
@@ -317,8 +320,9 @@ export class InjuryShading {
   };
   private readonly index = new Map<string, number>();
 
+  /** With no material the state is kept but shades nothing: an official, who never takes damage. */
   constructor(
-    readonly material: THREE.MeshStandardMaterial,
+    readonly material: THREE.MeshStandardMaterial | null,
     readonly sites: readonly InjurySite[],
     shape: { readonly core: readonly [number, number, number, number]; readonly lids?: readonly (readonly [number, number, number])[]; readonly wash?: boolean } = { core: HEAD_SWELL_CORE },
   ) {
@@ -331,6 +335,7 @@ export class InjuryShading {
       this.uniforms.uInjurySite.value.push(new THREE.Vector4(site.position[0], site.position[1], site.position[2], site.radius));
       this.uniforms.uInjuryCut.value.push(new THREE.Vector4(site.cutHalfLength, 0, 0, 0));
     }
+    if (material === null) return;
     const uniforms = this.uniforms;
     material.onBeforeCompile = (shader) => {
       Object.assign(shader.uniforms, uniforms);

@@ -20,6 +20,21 @@ const bone = (boxer: SkinnedBoxer, name: CanonicalBone | string, out = new THREE
   return worldPosition(found, out);
 };
 
+const skinnedVertex = new THREE.Vector3();
+/** Height of the lowest skinned vertex, of every mesh or only those with the given material. */
+function lowestVertex(boxer: SkinnedBoxer, material?: string): number {
+  boxer.root.updateMatrixWorld(true);
+  let lowest = Infinity;
+  boxer.root.traverse((object) => {
+    if (!(object instanceof THREE.SkinnedMesh) || (material !== undefined && (object.material as THREE.Material).name !== material)) return;
+    const count = object.geometry.getAttribute("position").count;
+    for (let index = 0; index < count; index += 1) {
+      lowest = Math.min(lowest, object.getVertexPosition(index, skinnedVertex).applyMatrix4(object.matrixWorld).y);
+    }
+  });
+  return lowest;
+}
+
 function makeGraph(palette = { skin: 0xb0703f, gear: 0x1d4ed8 }): { boxer: SkinnedBoxer; graph: BoxingGraph } {
   const boxer = new SkinnedBoxer(gltf, palette);
   return { boxer, graph: new BoxingGraph(boxer, mapping) };
@@ -49,6 +64,24 @@ describe("rest corner", () => {
     run(graph, fighter, opponent, 120, undefined, 75, 2.5);
     expect(graph.stoolVisible).toBe(false);
     expect(bone(boxer, "hips").y).toBeGreaterThan(0.72);
+  });
+
+  it("rests the seated fighter's feet on the canvas and keeps them there as he stands up", () => {
+    const { boxer, graph } = makeGraph();
+    const fighter = { ...facingOpponent(baseFighter("one")), x: -420, y: -420 };
+    const opponent = opponentFor("two");
+    graph.setResting(true);
+    run(graph, fighter, opponent, 150, undefined);
+    const seated = lowestVertex(boxer, "ShoesMat0");
+    expect(seated).toBeGreaterThan(-0.02);
+    expect(seated).toBeLessThan(0.02);
+    graph.setResting(false);
+    let lowest = Infinity;
+    for (let frame = 0; frame < 60; frame += 2) {
+      run(graph, fighter, opponent, 2, undefined, 75 + frame / 2, 2.5 + frame / 60);
+      lowest = Math.min(lowest, lowestVertex(boxer, "ShoesMat0"));
+    }
+    expect(lowest).toBeGreaterThan(-0.02);
   });
 });
 
@@ -84,6 +117,36 @@ describe("fall direction", () => {
       else expect(head.z).toBeLessThan(hips.z);
     }
   });
+
+  // The engine's hardest hit does about 153 damage, and the knockdown event that follows the hit carries
+  // the knockdown count (1-3) as its amount, so the fall must not depend on the amount at all. Live, the
+  // knockout physics plays the fall (above); these are the animated falls that reduced motion plays.
+  const fall = (punchClass: "hook" | "uppercut" | "straight", target: "head" | "body", hand: "left" | "right", damage: number): { head: THREE.Vector3; hips: THREE.Vector3 } => {
+    const { boxer, graph } = makeGraph();
+    const fighter = facingOpponent(baseFighter("one"));
+    const opponent = opponentFor("two");
+    run(graph, fighter, opponent, 10, undefined);
+    graph.useAuthoredFall();
+    graph.react("hit", target, 1, punchClass, hand, damage);
+    graph.react("hit", target, 1, punchClass, hand, 1);
+    run(graph, { ...fighter, is_downed: true }, opponent, 70, undefined, 5, 10 / 60);
+    return { head: bone(boxer, "head"), hips: bone(boxer, "hips") };
+  };
+
+  it("animates a face-down fall after a hook or a body shot and onto the back after an uppercut, whatever the damage", () => {
+    for (const [punchClass, target, faceDown] of [["hook", "head", true], ["uppercut", "head", false], ["straight", "body", true]] as const) {
+      for (const damage of [40, 153]) {
+        const { head, hips } = fall(punchClass, target, "left", damage);
+        expect(head.y).toBeLessThan(0.45);
+        expect(head.z > hips.z).toBe(faceDown);
+      }
+    }
+  });
+
+  it("falls away from the side the punch came from", () => {
+    expect(fall("hook", "head", "left", 90).head.x).toBeGreaterThan(fall("hook", "head", "right", 90).head.x + 0.2);
+    expect(fall("uppercut", "head", "left", 90).head.x).toBeGreaterThan(fall("uppercut", "head", "right", 90).head.x + 0.2);
+  });
 });
 
 describe("broken nose", () => {
@@ -112,6 +175,282 @@ describe("impact dent", () => {
     graph.react("hit", "body", 1, "straight", "right", 260);
     expect(boxer.bodyInjury.uniforms.uInjuryImpact.value.y).toBeCloseTo(96.5, 1);
     expect(boxer.bodyInjury.uniforms.uInjuryImpactPush.value.z).toBeLessThan(-1);
+  });
+
+  it("presses its deepest for the hardest hit the engine deals", () => {
+    const { boxer, graph } = makeGraph();
+    graph.react("hit", "head", 1, "straight", "right", 153);
+    expect(boxer.headInjury.impactDepth).toBeCloseTo(3.2, 1);
+    graph.react("hit", "head", 1, "straight", "right", 34);
+    expect(boxer.headInjury.impactDepth).toBeLessThan(1.8);
+  });
+});
+
+/** How far a knee bends along the pelvis' forward axis (1: straight ahead of it), or null when the leg is nearly straight. */
+function kneeBend(boxer: SkinnedBoxer, side: "L" | "R"): number | null {
+  const hip = bone(boxer, side === "L" ? "hipL" : "hipR");
+  const ankle = bone(boxer, side === "L" ? "ankleL" : "ankleR");
+  const bend = bone(boxer, side === "L" ? "kneeL" : "kneeR").sub(hip);
+  const along = ankle.sub(hip).normalize();
+  bend.addScaledVector(along, -bend.dot(along));
+  if (bend.length() < 0.02) return null;
+  return bend.normalize().dot(new THREE.Vector3(0, 0, 1).applyQuaternion(worldQuaternion(boxer.rig.bones.hips, new THREE.Quaternion())));
+}
+
+describe("down and get-up poses", () => {
+  /**
+   * Knocks a fighter down with `punchClass`, fills his get-up meter in two good presses while he is down,
+   * then lets him up, sampling every frame. These are the animated falls (reduced motion, and a body shot to
+   * one knee); the knockout physics' falls hand over to the same get-up (see "hand-over to the get-up").
+   */
+  const knockdown = (punchClass: "hook" | "uppercut", stance: "orthodox" | "southpaw", sample: (boxer: SkinnedBoxer, frame: number) => void): void => {
+    const { boxer, graph } = makeGraph();
+    const fighter = facingOpponent({ ...baseFighter("one"), stance, get_up_required: 60 });
+    const opponent = opponentFor("two");
+    run(graph, fighter, opponent, 20, undefined);
+    graph.useAuthoredFall();
+    graph.react("hit", "head", 1, punchClass, "left", 120);
+    let tick = 10;
+    for (let frame = 0; frame < 240; frame += 1) {
+      tick += 0.5;
+      const meter = frame < 60 ? 0 : frame < 100 ? 30 : 60;
+      graph.update(frame < 140 ? { ...fighter, is_downed: true, get_up_meter: meter } : { ...fighter, get_up_meter: 60, stunned_ticks: 20 }, opponent, 1 / 60, 1 + frame / 60, false, "full", tick);
+      sample(boxer, frame);
+    }
+  };
+
+  it("bends the knees the way the pelvis faces, on the back, face down, on all fours and on one knee", () => {
+    for (const punchClass of ["hook", "uppercut"] as const) {
+      for (const stance of ["orthodox", "southpaw"] as const) {
+        let worst = Infinity;
+        knockdown(punchClass, stance, (boxer) => {
+          for (const side of ["L", "R"] as const) worst = Math.min(worst, kneeBend(boxer, side) ?? Infinity);
+        });
+        expect(worst).toBeGreaterThan(0.3);
+      }
+    }
+  });
+
+  it("keeps the shoes out of the canvas and puts the gloves and knees on it to get up", () => {
+    for (const punchClass of ["hook", "uppercut"] as const) {
+      let lowest = Infinity;
+      let gloves = Infinity;
+      let knees = Infinity;
+      knockdown(punchClass, "orthodox", (boxer, frame) => {
+        if (frame % 3 !== 0) return;
+        lowest = Math.min(lowest, lowestVertex(boxer));
+        if (frame < 60) return;
+        // Up off the canvas (the hips are high) the gloves and then the trunks' knees must still reach it.
+        if (bone(boxer, "hips").y > 0.42) gloves = Math.min(gloves, lowestVertex(boxer, "GlovesMat0"));
+        if (bone(boxer, "head").y > 0.9) knees = Math.min(knees, lowestVertex(boxer, "PantsMat0"));
+      });
+      expect(lowest).toBeGreaterThan(-0.02);
+      expect(gloves).toBeLessThan(0.03);
+      expect(knees).toBeLessThan(0.03);
+    }
+  });
+});
+
+describe("get-up", () => {
+  // The engine puts a fighter straight back in the fight when he beats the count: he can walk at once and
+  // act once a 20-tick (0.67 s) stun runs out.
+  const knockedDown = (): { boxer: SkinnedBoxer; graph: BoxingGraph; step: (fighter: FighterSnapshot, frames: number) => number; standing: FighterSnapshot; downed: FighterSnapshot; guardZ: number } => {
+    const { boxer, graph } = makeGraph();
+    const opponent = opponentFor("two");
+    const head = new THREE.Vector3(0, 1.5, mapping.z(-150));
+    const standing = facingOpponent({ ...baseFighter("one"), get_up_required: 66 });
+    let tick = 0;
+    const step = (fighter: FighterSnapshot, frames: number): number => {
+      for (let frame = 0; frame < frames; frame += 1) {
+        tick += 0.5;
+        graph.update(fighter, opponent, 1 / 60, tick / 30, false, "full", tick, head);
+      }
+      return tick;
+    };
+    step(standing, 20);
+    // Measured from where he stands: after the physics' fall he gets up where his body lies and walks back.
+    const guardZ = bone(boxer, "gloveL").z - boxer.root.position.z;
+    graph.react("hit", "head", 1, "uppercut", "right", 120);
+    const downed = { ...standing, is_downed: true };
+    step(downed, 60);
+    return { boxer, graph, step, standing, downed, guardZ };
+  };
+
+  it("rises with the get-up meter while down, then stands inside the stun and throws at full reach", () => {
+    const { boxer, step, standing, downed, guardZ } = knockedDown();
+    const lying = bone(boxer, "head").y;
+    step({ ...downed, get_up_meter: 22 }, 30);
+    step({ ...downed, get_up_meter: 44 }, 30);
+    expect(bone(boxer, "head").y).toBeGreaterThan(lying + 0.3);
+    const released = { ...standing, get_up_meter: 66, stunned_ticks: 20 };
+    step(released, 33);
+    expect(bone(boxer, "head").y).toBeGreaterThan(1.4);
+    const startTick = step(released, 9);
+    const timing = punchTiming("jab", "head", "normal");
+    const jab = {
+      ...standing,
+      action: "jab" as const, action_hand: "left" as const, action_target: "head" as const, action_power: "normal" as const, action_id: "after-get-up", action_key: "jab:left:head:normal",
+      action_start_tick: startTick, action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery,
+    };
+    let reach = -Infinity;
+    for (let frame = 0; frame < (timing.startup + timing.active) * 2; frame += 1) {
+      step(jab, 1);
+      reach = Math.max(reach, bone(boxer, "gloveL").z - boxer.root.position.z);
+    }
+    expect(reach).toBeGreaterThan(guardZ + 0.25);
+  });
+
+  it("falls again from where the get-up had him when he is knocked down mid-rise", () => {
+    const { boxer, graph, step, standing, downed } = knockedDown();
+    step({ ...downed, get_up_meter: 22 }, 30);
+    step({ ...downed, get_up_meter: 44 }, 30);
+    step({ ...standing, get_up_meter: 66, stunned_ticks: 20 }, 8);
+    // The animated fall (reduced motion); the knockout physics starts its fall from the pose on screen too.
+    graph.useAuthoredFall();
+    const names = Object.keys(boxer.rig.bones) as CanonicalBone[];
+    let previous = names.map((name) => bone(boxer, name));
+    expect(previous[names.indexOf("head")]!.y).toBeLessThan(1.3);
+    let jump = 0;
+    for (let frame = 0; frame < 60; frame += 1) {
+      step(downed, 1);
+      const now = names.map((name) => bone(boxer, name));
+      for (const [index, position] of now.entries()) jump = Math.max(jump, position.distanceTo(previous[index]!));
+      previous = now;
+    }
+    expect(jump).toBeLessThan(0.12);
+    expect(bone(boxer, "head").y).toBeLessThan(0.5);
+  });
+
+  it("plants the feet under him as he gets up, so they do not jump when the get-up ends", () => {
+    const { boxer, step, standing, downed } = knockedDown();
+    step({ ...downed, get_up_meter: 22 }, 30);
+    step({ ...downed, get_up_meter: 44 }, 30);
+    // The engine turns him to face the opponent, who walked away during the count.
+    const turned = { ...standing, facing_x: 1000, facing_y: 0, get_up_meter: 66, stunned_ticks: 20 };
+    let previous = [bone(boxer, "ankleL"), bone(boxer, "ankleR")];
+    let jump = 0;
+    for (let frame = 0; frame < 60; frame += 1) {
+      step(turned, 1);
+      const now = [bone(boxer, "ankleL"), bone(boxer, "ankleR")];
+      for (const [index, ankle] of now.entries()) jump = Math.max(jump, ankle.distanceTo(previous[index]!));
+      previous = now;
+    }
+    expect(jump).toBeLessThan(0.12);
+  });
+
+  it("finishes the get-up at once when he walks off", () => {
+    const { boxer, step, standing, downed } = knockedDown();
+    step({ ...downed, get_up_meter: 22 }, 30);
+    step({ ...downed, get_up_meter: 44 }, 30);
+    let walking = { ...standing, get_up_meter: 66, stunned_ticks: 20, velocity_y: 6 };
+    for (let frame = 0; frame < 15; frame += 1) {
+      walking = { ...walking, y: walking.y + 3 };
+      step(walking, 1);
+    }
+    expect(bone(boxer, "head").y).toBeGreaterThan(1.4);
+  });
+});
+
+describe("falls near the ropes", () => {
+  // The rope line runs between the corner posts at 2.46 m from the centre; the engine lets a fighter's
+  // centre reach 2.82 m (pressing the ropes out).
+  const ropeLine = 2.46;
+  const skinned = new THREE.Vector3();
+  const furthest = (boxer: SkinnedBoxer): number => {
+    boxer.root.updateMatrixWorld(true);
+    let reach = 0;
+    boxer.root.traverse((object) => {
+      if (!(object instanceof THREE.SkinnedMesh)) return;
+      const count = object.geometry.getAttribute("position").count;
+      for (let index = 0; index < count; index += 2) {
+        object.getVertexPosition(index, skinned).applyMatrix4(object.matrixWorld);
+        reach = Math.max(reach, Math.abs(skinned.x), Math.abs(skinned.z));
+      }
+    });
+    return reach;
+  };
+  /** Knocks the fighter down; `reach` is where he lands, `overshoot` how far past the ropes (or his start, if out there) the fall went. */
+  const fall = (fighter: FighterSnapshot, punchClass: "hook" | "uppercut"): { boxer: SkinnedBoxer; reach: number; overshoot: number } => {
+    const { boxer, graph } = makeGraph();
+    const opponent = { ...baseFighter("two"), x: 0, y: 0 };
+    run(graph, fighter, opponent, 20, undefined);
+    const start = furthest(boxer);
+    // The animated landing (reduced motion): the knockout physics has the ropes and posts in its own world.
+    graph.useAuthoredFall();
+    graph.react("hit", "head", 1, punchClass, "left", 120);
+    let widest = 0;
+    for (let frame = 0; frame < 70; frame += 5) {
+      run(graph, { ...fighter, is_downed: true }, opponent, 5, undefined, 10 + frame / 2, 1 + frame / 60);
+      widest = Math.max(widest, furthest(boxer));
+    }
+    return { boxer, reach: furthest(boxer), overshoot: widest - Math.max(start, ropeLine) };
+  };
+
+  it("keeps a fighter knocked down against the ropes inside them", () => {
+    // Back to the ropes and facing the centre, an uppercut would lay him under the ropes or off the apron.
+    for (const x of [300, 400, 462]) {
+      const pinned = { ...baseFighter("one"), x, y: 0, facing_x: -1000, facing_y: 0 };
+      const { boxer, reach, overshoot } = fall(pinned, "uppercut");
+      expect(reach).toBeLessThan(ropeLine);
+      expect(overshoot).toBeLessThan(0.01);
+      expect(bone(boxer, "head").x).toBeLessThan(bone(boxer, "hips").x);
+    }
+    // Facing the ropes, a hook would put his head through them.
+    expect(fall({ ...baseFighter("one"), x: 400, y: 0, facing_x: 1000, facing_y: 0 }, "hook").reach).toBeLessThan(ropeLine);
+    // Wedged in a corner, neither fall fits as it is.
+    expect(fall({ ...baseFighter("one"), x: 380, y: 380, facing_x: 1000, facing_y: -1000 }, "uppercut").reach).toBeLessThan(ropeLine);
+  });
+});
+
+describe("body shots", () => {
+  // Two fighters in lockstep, one hit and one not (or hit differently), so the idle sway cancels out.
+  const pair = (react: (graph: BoxingGraph) => void, other: (graph: BoxingGraph) => void, sample: (boxer: SkinnedBoxer) => number[]): number[][] => {
+    const hit = makeGraph();
+    const reference = makeGraph();
+    const fighter = facingOpponent(baseFighter("one"));
+    const opponent = opponentFor("two");
+    run(hit.graph, fighter, opponent, 30, undefined);
+    run(reference.graph, fighter, opponent, 30, undefined);
+    react(hit.graph);
+    other(reference.graph);
+    const frames: number[][] = [];
+    for (let frame = 0; frame < 30; frame += 1) {
+      for (const { graph } of [hit, reference]) graph.update(fighter, opponent, 1 / 60, 0.5 + frame / 60, false, "full", 15 + frame / 2);
+      const a = sample(hit.boxer);
+      const b = sample(reference.boxer);
+      frames.push(a.map((value, index) => value - b[index]!));
+    }
+    return frames;
+  };
+  const hipsAxis = (boxer: SkinnedBoxer, x: number, z: number): THREE.Vector3 =>
+    new THREE.Vector3(x, 0, z).applyQuaternion(worldQuaternion(boxer.rig.bones.hips, new THREE.Quaternion()));
+  const fromHips = (boxer: SkinnedBoxer, name: CanonicalBone): THREE.Vector3 => bone(boxer, name).sub(bone(boxer, "hips"));
+
+  it("bend the fighter toward the ribs a hook lands on and drop the elbow on that side", () => {
+    // A left hook lands on the right ribs, the fighter's -x side; a straight to the solar plexus does not lean him.
+    const frames = pair(
+      (graph) => graph.react("hit", "body", 1, "hook", "left", 120),
+      (graph) => graph.react("hit", "body", 1, "straight", "left", 120),
+      (boxer) => [fromHips(boxer, "neck").dot(hipsAxis(boxer, 1, 0)), bone(boxer, "elbowR").y, bone(boxer, "elbowL").y, bone(boxer, "hips").x],
+    );
+    expect(Math.min(...frames.map(([lean]) => lean!))).toBeLessThan(-0.03);
+    expect(Math.min(...frames.map(([, right]) => right!))).toBeLessThan(-0.04);
+    expect(Math.min(...frames.map(([, , left]) => left!))).toBeGreaterThan(-0.02);
+    expect(Math.max(...frames.map(([, , , hips]) => hips!))).toBeGreaterThan(0.02);
+  });
+
+  it("lift the fighter onto his toes on an uppercut before he folds over it", () => {
+    const frames = pair(
+      (graph) => graph.react("hit", "body", 1, "uppercut", "right", 120),
+      () => undefined,
+      (boxer) => [bone(boxer, "hips").y, fromHips(boxer, "head").dot(hipsAxis(boxer, 0, 1))],
+    );
+    const lifts = frames.map(([lift]) => lift!);
+    const folds = frames.map(([, fold]) => fold!);
+    expect(Math.max(...lifts)).toBeGreaterThan(0.04);
+    expect(Math.min(...folds.slice(0, 6))).toBeLessThan(-0.02);
+    expect(Math.max(...folds)).toBeGreaterThan(0.06);
+    expect(folds.indexOf(Math.max(...folds))).toBeGreaterThan(lifts.indexOf(Math.max(...lifts)));
   });
 });
 
@@ -282,7 +621,7 @@ describe("own punch prediction", () => {
     const step = (fighter: FighterSnapshot): void => { tick += 0.5; graph.update(fighter, opponentFor("two"), 1 / 60, tick / 30, false, "full", tick, undefined); };
     for (let frame = 0; frame < 3; frame += 1) step(idle);
     const before = age(graph);
-    graph.predict({ ...jab, id: "own-2", class: "straight" }, 0, 30, 4);
+    graph.predict({ ...jab, id: "own-2", class: "straight" }, 3 / 60, 30, 4);
     expect(state(graph).punchClass).toBe("jab");
     expect(state(graph).ownActionId).toBe("own-1");
     expect(age(graph)).toBe(before);
@@ -292,14 +631,16 @@ describe("own punch prediction", () => {
     expect(state(graph).punchClass).toBe("jab");
   });
 
-  it("cuts a follow-up in late in the recovery without the first punch coming back", () => {
+  it("cuts a follow-up in at the cancel age of a landed combination without the first punch coming back", () => {
     const { graph } = makeGraph();
     const idle = facingOpponent(baseFighter("one"));
     run(graph, idle, opponentFor("two"), 10, undefined);
     let tick = 300;
     const hook = serverPunch(idle, "theirs-hook", "hook", tick);
     const step = (fighter: FighterSnapshot): void => { tick += 0.5; graph.update(fighter, opponentFor("two"), 1 / 60, tick / 30, false, "full", tick, undefined); };
-    while (age(graph) / punchTiming("hook", "head", "normal").startup < 1 || age(graph) < 14) step(hook);
+    graph.acknowledge(hook, true, [{ event_id: 1, tick: 307, kind: "hit", actor_id: "one", target_id: "two", amount: 30, detail: "hook:head", blood: 0, direction: 1, action_id: "theirs-hook" }]);
+    // The engine lets a chained follow-up cut a landed hook's recovery short from 7 + 3 + 12 / 2 ticks.
+    while (age(graph) < 16) step(hook);
     expect(state(graph).punchClass).toBe("hook");
     graph.predict({ ...jab, id: "own-3", class: "uppercut" }, 0, 30, 3);
     expect(state(graph).punchClass).toBe("uppercut");
@@ -879,6 +1220,32 @@ describe("runtime boxing graph", () => {
     expect(contactDistance).toBeGreaterThan(0.08);
   });
 
+  it("keeps the toes flat on the canvas when the heel lifts", () => {
+    const { boxer, graph } = makeGraph();
+    const opponent = opponentFor("two");
+    const head = new THREE.Vector3(0, 1.5, mapping.z(-150));
+    const timing = punchTiming("straight", "head", "power");
+    const idle = facingOpponent(baseFighter("one"));
+    run(graph, idle, opponent, 20, head);
+    expect(lowestVertex(boxer, "ShoesMat0")).toBeGreaterThan(-0.02);
+    const straight = {
+      ...idle,
+      action: "straight" as const, action_hand: "right" as const, action_target: "head" as const, action_power: "power" as const, action_id: "p1", action_key: "straight:right:head:power",
+      action_start_tick: 10, action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery,
+    };
+    let lowest = Infinity;
+    let tick = 10;
+    for (let frame = 0; frame < (timing.startup + timing.active) * 2; frame += 1) {
+      tick += 0.5;
+      graph.update(straight, opponent, 1 / 60, 1 + frame / 60, false, "full", tick, head);
+      if (tick >= 10 + timing.startup) lowest = Math.min(lowest, lowestVertex(boxer, "ShoesMat0"));
+    }
+    expect(lowest).toBeGreaterThan(-0.02);
+    graph.celebrate(2);
+    run(graph, idle, opponent, 60, undefined, 40, 2);
+    expect(lowestVertex(boxer, "ShoesMat0")).toBeGreaterThan(-0.02);
+  });
+
   it("retracts a hook straight back to the guard instead of swinging back out wide", () => {
     const { boxer, graph } = makeGraph();
     const opponent = opponentFor("two");
@@ -1093,5 +1460,198 @@ describe("cutman's bottle", () => {
     run(graph, facingOpponent(baseFighter("one")), opponentFor("two"), 30, undefined, 45, 1.5);
     expect(glove.getObjectByName("bottle")?.visible).toBe(false);
     expect(glove.getObjectByName("enswell")?.visible).toBe(true);
+  });
+});
+
+describe("per-frame allocations", () => {
+  /** Counts the vectors, quaternions and Euler angles built (clones included) while `body` runs. */
+  const constructions = (body: () => void): number => {
+    let count = 0;
+    const counted = [[THREE.Vector3.prototype, "x"], [THREE.Quaternion.prototype, "_x"], [THREE.Euler.prototype, "_x"]] as const;
+    for (const [prototype, key] of counted) {
+      // Each constructor assigns this field first: count it, then make it the instance's own plain field.
+      Object.defineProperty(prototype, key, {
+        configurable: true,
+        set(this: object, value: number) {
+          count += 1;
+          Object.defineProperty(this, key, { value, writable: true, enumerable: true, configurable: true });
+        },
+      });
+    }
+    try {
+      body();
+    } finally {
+      for (const [prototype, key] of counted) Reflect.deleteProperty(prototype, key);
+    }
+    return count;
+  };
+
+  it("builds no vectors while idle, falling, down or getting up, or with a dislocated jaw", () => {
+    const { graph } = makeGraph();
+    const fighter = facingOpponent(baseFighter("one"));
+    const opponent = opponentFor("two");
+    const downed = { ...fighter, is_downed: true };
+    run(graph, fighter, opponent, 30, undefined);
+    expect(constructions(() => run(graph, fighter, opponent, 10, undefined, 15, 0.5))).toBe(0);
+    graph.react("hit", "head", 1, "uppercut", "left", 120);
+    expect(constructions(() => run(graph, downed, opponent, 20, undefined, 20, 0.7))).toBe(0);
+    run(graph, downed, opponent, 60, undefined, 30, 1);
+    expect(constructions(() => run(graph, downed, opponent, 10, undefined, 60, 2))).toBe(0);
+    expect(constructions(() => run(graph, fighter, opponent, 60, undefined, 65, 2.2))).toBe(0);
+    graph.setArcadeDislocation("jaw");
+    expect(constructions(() => run(graph, fighter, opponent, 10, undefined, 100, 3.5))).toBe(0);
+  });
+});
+
+describe("transition sweep", () => {
+  const PUNCHES = ["jab", "straight", "hook", "uppercut"] as const;
+  // 9.6 m/s: a straight's glove peaks near 7 m/s and a hook's elbow from the crowded guard of fighters this close
+  // near 9.2 m/s, while the snaps this guards against moved bones 0.5 m in a frame.
+  const MAX_STEP = 0.16;
+
+  it("moves every bone smoothly, keeps the skin above the canvas and bends the knees forward from idle through punches, falls, get-ups, the corner stool and a taunt", () => {
+    const { boxer, graph } = makeGraph();
+    const opponent = opponentFor("two");
+    const head = new THREE.Vector3(0, 1.5, mapping.z(-150));
+    const idle = facingOpponent({ ...baseFighter("one"), get_up_required: 66 });
+    const downed = { ...idle, is_downed: true };
+    const released = { ...idle, get_up_meter: 66, stunned_ticks: 20 };
+    const bones = Object.entries(boxer.rig.bones);
+    const previous = bones.map(() => new THREE.Vector3());
+    const position = new THREE.Vector3();
+    const vertex = new THREE.Vector3();
+    const meshes: THREE.SkinnedMesh[] = [];
+    boxer.root.traverse((object) => {
+      if (object instanceof THREE.SkinnedMesh) meshes.push(object);
+    });
+    let tick = 0;
+    let frames = 0;
+    let jump = { distance: 0, at: "" };
+    let lowest = { height: Infinity, at: "" };
+    let knee = { along: Infinity, at: "" };
+    const step = (label: string, fighter: FighterSnapshot | ((frame: number) => FighterSnapshot), count: number): void => {
+      for (let frame = 0; frame < count; frame += 1) {
+        tick += 0.5;
+        graph.update(typeof fighter === "function" ? fighter(frame) : fighter, opponent, 1 / 60, tick / 30, false, "full", tick, head);
+        boxer.root.updateMatrixWorld(true);
+        for (const [index, [name, joint]] of bones.entries()) {
+          const distance = frames === 0 ? 0 : worldPosition(joint, position).distanceTo(previous[index]!);
+          if (distance > jump.distance) jump = { distance, at: `${label} frame ${frame} ${name}` };
+          worldPosition(joint, previous[index]!);
+        }
+        if (frames % 3 === 0) {
+          for (const mesh of meshes) {
+            const count = mesh.geometry.getAttribute("position").count;
+            for (let index = 0; index < count; index += 2) {
+              const height = mesh.getVertexPosition(index, vertex).applyMatrix4(mesh.matrixWorld).y;
+              if (height < lowest.height) lowest = { height, at: `${label} frame ${frame} ${mesh.name}` };
+            }
+          }
+        }
+        for (const side of ["L", "R"] as const) {
+          const along = kneeBend(boxer, side);
+          if (along !== null && along < knee.along) knee = { along, at: `${label} frame ${frame} knee${side}` };
+        }
+        frames += 1;
+      }
+    };
+    const punch = (punchClass: (typeof PUNCHES)[number], hand: "left" | "right"): FighterSnapshot => {
+      const timing = punchTiming(punchClass, "head", "normal");
+      return {
+        ...idle,
+        action: punchClass, action_hand: hand, action_target: "head", action_power: "normal", action_id: `${punchClass}-${tick}`, action_key: `${punchClass}:${hand}:head:normal`,
+        action_start_tick: tick + 0.5, action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery,
+      };
+    };
+    const getUp = (label: string): void => {
+      step(`${label} get-up meter`, (frame) => ({ ...downed, get_up_meter: frame < 30 ? 22 : 44 }), 60);
+      step(`${label} get-up`, released, 45);
+    };
+
+    step("idle", idle, 30);
+    for (const punchClass of PUNCHES) step(punchClass, punch(punchClass, punchClass === "jab" || punchClass === "hook" ? "left" : "right"), 40);
+    // The animated falls (reduced motion); "hand-over to the get-up" sweeps the knockout physics' ones.
+    graph.useAuthoredFall();
+    graph.react("hit", "head", 1, "hook", "left", 140);
+    step("fall face down", downed, 70);
+    getUp("first");
+    step("stand", idle, 30);
+    graph.useAuthoredFall();
+    graph.react("hit", "head", 1, "uppercut", "right", 120);
+    step("fall on the back", downed, 70);
+    step("get-up meter", (frame) => ({ ...downed, get_up_meter: frame < 30 ? 22 : 44 }), 60);
+    step("get-up", released, 8);
+    graph.useAuthoredFall();
+    step("knocked down rising", downed, 70);
+    getUp("second");
+    step("fight on", idle, 30);
+    graph.setResting(true);
+    step("rest", idle, 150);
+    graph.setResting(false);
+    step("round starts", idle, 90);
+    // The count steps once per engine tick, every second frame.
+    step("taunt", (frame) => ({ ...idle, taunt_ticks: Math.max(0, 60 - Math.floor(frame / 2)) }), 140);
+
+    expect(jump.distance, jump.at).toBeLessThan(MAX_STEP);
+    expect(lowest.height, lowest.at).toBeGreaterThan(-0.02);
+    expect(knee.along, knee.at).toBeGreaterThan(0.25);
+  });
+});
+
+describe("hand-over to the get-up", () => {
+  // Live, the knockout physics plays the fall. As the fighter starts to get up it hands the body to the animated
+  // get-up, which begins from the pose the fall left (hips, spine, gloves, ankles and the way each joint bends)
+  // and follows the meter from there.
+  const knockedDown = (punchClass: "hook" | "uppercut", hand: "left" | "right") => {
+    const { boxer, graph } = makeGraph();
+    const opponent = opponentFor("two");
+    const head = new THREE.Vector3(0, 1.5, mapping.z(-150));
+    const standing = facingOpponent({ ...baseFighter("one"), get_up_required: 66 });
+    const downed = { ...standing, is_downed: true };
+    const names = Object.keys(boxer.rig.bones) as CanonicalBone[];
+    let previous: THREE.Vector3[] = [];
+    let tick = 0;
+    let jump = { distance: 0, at: "" };
+    const step = (label: string, fighter: FighterSnapshot, frames: number, measure = true): void => {
+      for (let frame = 0; frame < frames; frame += 1) {
+        tick += 0.5;
+        graph.update(fighter, opponent, 1 / 60, tick / 30, false, "full", tick, head);
+        const now = names.map((name) => bone(boxer, name));
+        if (measure) {
+          for (const [index, position] of now.entries()) {
+            const distance = position.distanceTo(previous[index]!);
+            if (distance > jump.distance) jump = { distance, at: `${label} frame ${frame} ${names[index]}` };
+          }
+        }
+        previous = now;
+      }
+    };
+    step("guard", standing, 20, false);
+    graph.react("hit", "head", 1, punchClass, hand, 120);
+    step("fall", downed, 70, false);
+    return { boxer, graph, step, standing, downed, jump: () => jump };
+  };
+
+  it.each([["hook", "left"], ["uppercut", "right"]] as const)("takes the body a %s left on the canvas into the get-up with no snap", (punchClass, hand) => {
+    const { boxer, graph, step, standing, downed, jump } = knockedDown(punchClass, hand);
+    expect(graph.fallBody).not.toBeNull();
+    step("first press", { ...downed, get_up_meter: 22 }, 30);
+    expect(graph.fallBody).toBeNull();
+    step("second press", { ...downed, get_up_meter: 44 }, 30);
+    step("up", { ...standing, get_up_meter: 66, stunned_ticks: 20 }, 40);
+    // The whole body used to freeze where the physics left it and then snap 1.3 m into the get-up. The blend in
+    // the body's frame is not yet seamless (a limb can still swing about 0.3 m in a frame), so this guards the snap.
+    expect(jump().distance, jump().at).toBeLessThan(0.45);
+    expect(bone(boxer, "head").y).toBeGreaterThan(1.4);
+  });
+
+  it("leaves a fighter the bout is over for where the physics left him, whatever his meter says", () => {
+    const { graph, step, downed } = knockedDown("hook", "left");
+    graph.stayDown(true);
+    step("counted out", { ...downed, get_up_meter: 44 }, 30, false);
+    expect(graph.fallBody).not.toBeNull();
+    graph.stayDown(false);
+    step("pressing", { ...downed, get_up_meter: 44 }, 2, false);
+    expect(graph.fallBody).toBeNull();
   });
 });

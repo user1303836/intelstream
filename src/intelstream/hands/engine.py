@@ -489,6 +489,10 @@ class BoxingEngine:
             fighter.pending_actions.clear()
             fighter.pending_action_expires_tick = 0
 
+    def clear_held_input(self) -> None:
+        for fighter in self._fighters.values():
+            fighter.held_input = InputCommand(0, 0)
+
     def submit_input(self, player_id: str, command: InputCommand) -> bool:
         fighter = self.fighter(player_id)
         if self.result is not None or self.phase is MatchPhase.COMPLETE:
@@ -660,7 +664,7 @@ class BoxingEngine:
             if fighter.stunned_ticks > 0 or attack.age >= attack.total_ticks:
                 self._retain_action(fighter)
                 return
-            if not self._can_cancel_recovery(fighter, attack):
+            if not self._can_cancel_recovery(fighter, opponent, attack):
                 return
             self._retain_action(fighter)
 
@@ -691,8 +695,14 @@ class BoxingEngine:
         )
 
     @staticmethod
-    def _can_cancel_recovery(fighter: FighterState, attack: AttackState) -> bool:
+    def _can_cancel_recovery(
+        fighter: FighterState, opponent: FighterState, attack: AttackState
+    ) -> bool:
         if not attack.landed or attack.age < attack.cancel_age or not fighter.pending_actions:
+            return False
+        if opponent.stunned_ticks > 0:
+            # A stunned man is already open. Cutting the recovery short would only chain stun
+            # into stun before he has a tick to answer.
             return False
         follow_up = fighter.pending_actions[0]
         return (
@@ -841,6 +851,9 @@ class BoxingEngine:
             return
 
         blind = self._blind_side(defender, action)
+        # The facing holds still through a punch, so `lateral_distance` is how far the defender is
+        # off the line the punch was thrown along. Only off that line can he weave a body hook or
+        # slip a body uppercut.
         if not blind and self._evades(
             defender, action, distance_squared, rule.reach, lateral_distance
         ):
@@ -1047,20 +1060,19 @@ class BoxingEngine:
         """Stops a fighter for `ticks`, and says whether it took.
 
         A clean shot makes a fresh fighter flinch; only a big counter, a big power shot or a hurt
-        fighter is rocked. A flinch cannot land again in the moment after a stun wears off, and
-        no run of stuns lasts longer than the chain limit, so one clean punch cannot be strung
-        into a knockdown with the defender unable to answer.
+        fighter is rocked. A punch on a fighter who is still stunned does not start his stun again,
+        however hard it lands, and the attacker cannot cut his recovery short into him either, so a
+        run of punches cannot hold him past the stun the first one started. A flinch cannot land
+        again in the moment after a stun wears off, though a rocking shot can, and no stun runs
+        past the chain limit: one clean punch cannot be strung into a knockdown with the defender
+        unable to answer.
         """
         if fighter.stunned_ticks > 0:
-            room = STUN_CHAIN_MAX_TICKS - fighter.stun_chain_ticks
-            ticks = min(ticks, room)
-            if ticks <= fighter.stunned_ticks:
-                return False
-        elif not rocked and self.tick < fighter.stun_immune_until_tick:
             return False
-        else:
-            fighter.stun_chain_ticks = 0
-        fighter.stunned_ticks = ticks
+        if not rocked and self.tick < fighter.stun_immune_until_tick:
+            return False
+        fighter.stun_chain_ticks = 0
+        fighter.stunned_ticks = min(ticks, STUN_CHAIN_MAX_TICKS)
         fighter.stunned_at_tick = self.tick
         fighter.taunt_ticks = 0
         return True
@@ -1218,6 +1230,12 @@ class BoxingEngine:
         opponent.clinch_startup_ticks = 0
         fighter.clinch_ticks = CLINCH_TICKS
         opponent.clinch_ticks = CLINCH_TICKS
+        for held in (fighter, opponent):
+            # Tied up, neither walks on. Only the draw moves them now, and the speed they came in
+            # with must not count as pressure or carry their feet through the hold.
+            held.velocity_x = held.velocity_y = 0
+            held.velocity_fixed_x = held.velocity_fixed_y = 0
+            held.position_remainder_x = held.position_remainder_y = 0
         self._retain_action(fighter)
         self._retain_action(opponent)
         fighter.pending_actions.clear()
@@ -1854,6 +1872,10 @@ class BoxingEngine:
         if self.round_number >= self.config.rounds:
             self._finish_decision()
             return
+        for fighter in self._fighters.values():
+            # The bell ends whatever was held. Clients stop sending between rounds, so a walk or a
+            # guard held at the bell would otherwise carry the fighter into the next round.
+            fighter.held_input = InputCommand(0, 0)
         if self.config.rest_ticks == 0:
             self._start_next_round()
         else:

@@ -41,10 +41,15 @@ const REASONS: Readonly<Record<string, string>> = {
   invalid_guild: "this activity belongs to another server",
   persistence_failed: "the result could not be saved",
   rematch_unavailable: "the ring could not be cleared for a rematch; use Play now to start another bout",
+  network_unavailable: "the connection to the Hands server could not be opened",
+  match_abandoned: "both fighters lost their connection and the bout was called off",
 };
 
-/** Plain-language failure text; the code stays in parentheses for diagnosis. */
+/** Plain-language failure text; the full code stays in parentheses for diagnosis. */
 export function describeError(code: string): string {
-  const reason = REASONS[code];
+  // Nothing failed: the server was updated, and reloading the page brings the matching client.
+  if (code === "client_outdated") return "Hands was updated. Reload to continue (client_outdated).";
+  // Discord SDK failures carry the RPC error number (authorize_failed_4006); the stage gives the reason.
+  const reason = REASONS[code] ?? REASONS[code.replace(/_\d+$/u, "")];
   return reason === undefined ? `Unable to continue (${code}).` : `Unable to continue: ${reason} (${code}).`;
 }

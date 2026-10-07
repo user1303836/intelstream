@@ -127,7 +127,7 @@ interface Stump {
   fountainLife: number;
   accumulator: number;
   seed: number;
-  direction: number;
+  direction: SprayDirection;
 }
 
 /** An eye hanging out of its socket on its nerve, swinging as a weight on a cord. */
@@ -172,6 +172,20 @@ const SKULL_RADII = new THREE.Vector2(0.085 + EYE_RADIUS, 0.12 + EYE_RADIUS);
 /** How far in front of the socket's plane a hanging eye lies on the face, for the cheekbone and the lids. */
 const FACE_CLEARANCE = 0.012;
 const SALIVA = { r: 0.82, g: 0.86, b: 0.9 } as const;
+
+/** Horizontal world direction (x and z) a spray flies in. */
+export interface SprayDirection {
+  readonly x: number;
+  readonly z: number;
+}
+
+/** A spray direction as a unit vector; a bare number is the world-x sign that hit events carry. */
+function unitSpray(direction: number | SprayDirection): SprayDirection {
+  if (typeof direction === "number") return { x: direction < 0 ? -1 : 1, z: 0 };
+  const length = Math.hypot(direction.x, direction.z);
+  return Number.isFinite(length) && length > 1e-6 ? { x: direction.x / length, z: direction.z / length } : { x: 1, z: 0 };
+}
+
 const unitY = new THREE.Vector3(0, 1, 0);
 const UNIT_Z = new THREE.Vector3(0, 0, 1);
 const safeStep = (dt: number): number => Number.isFinite(dt) ? THREE.MathUtils.clamp(dt, 0, MAX_STEP) : 0;
@@ -239,6 +253,8 @@ export class Effects3D {
   private readonly dropletVelocity = new THREE.Vector3();
   private readonly dropletColor = new THREE.Color();
   private dropletIndex = 0;
+  /** Live droplets fill the front of the pool, and only they are drawn and uploaded. */
+  private liveDroplets = 0;
 
   readonly mistPoints: THREE.Points;
   private readonly mists: Mist[] = [];
@@ -309,6 +325,8 @@ export class Effects3D {
   private readonly shieldMeshes: THREE.Mesh[] = [];
   private readonly shields: ShieldState[] = [idleShield(), idleShield()];
   private readonly lastShieldEvent = [null, null] as Array<number | null>;
+  /** Materials only for the shader pre-compile, made on the first call for it. */
+  private bakedStandIns: { readonly map: THREE.Texture; readonly materials: readonly THREE.MeshStandardMaterial[] } | null = null;
 
   private readonly dripEmitters: [DripEmitter, DripEmitter] = [
     { position: new THREE.Vector3(), active: false, rate: 0, accumulator: 0 },
@@ -340,7 +358,9 @@ export class Effects3D {
       this.dropletMesh.setColorAt(i, this.dropletColor.setRGB(0.5, 0.02, 0.04));
       this.writeDropletMatrix(i, this.droplets[i]!);
     }
+    this.dropletMesh.instanceColor?.setUsage(THREE.DynamicDrawUsage);
     this.dropletMesh.instanceMatrix.needsUpdate = true;
+    this.dropletMesh.count = 0;
 
     this.mistPositions = new Float32Array(MAX_MIST * 3);
     this.mistColors = new Float32Array(MAX_MIST * 4).fill(1);
@@ -415,7 +435,7 @@ export class Effects3D {
       const stumpMesh = new THREE.Mesh(this.stumpGeometry, this.stumpMaterial);
       stumpMesh.visible = false;
       scene.add(stumpMesh);
-      this.stumps.push({ mesh: stumpMesh, flesh: new THREE.BufferGeometry(), active: false, fountainLife: 0, accumulator: 0, seed: 1, direction: 1 });
+      this.stumps.push({ mesh: stumpMesh, flesh: new THREE.BufferGeometry(), active: false, fountainLife: 0, accumulator: 0, seed: 1, direction: { x: 1, z: 0 } });
     }
     this.eyeGeometry = new THREE.SphereGeometry(EYE_RADIUS, 16, 12);
     this.eyeMap = eyeTexture();
@@ -463,7 +483,7 @@ export class Effects3D {
       const stumpMesh = new THREE.Mesh(this.wristStumpGeometry, this.wristMaterial);
       stumpMesh.visible = false;
       scene.add(stumpMesh);
-      this.handStumps.push({ mesh: stumpMesh, flesh: new THREE.BufferGeometry(), active: false, fountainLife: 0, accumulator: 0, seed: 1, direction: 1 });
+      this.handStumps.push({ mesh: stumpMesh, flesh: new THREE.BufferGeometry(), active: false, fountainLife: 0, accumulator: 0, seed: 1, direction: { x: 1, z: 0 } });
     }
   }
 
@@ -473,6 +493,39 @@ export class Effects3D {
    */
   setViewDistance(distance: number): void {
     this.dropletCloseness = THREE.MathUtils.clamp(finite(distance, 5) / 5, 0.4, 1);
+  }
+
+  /**
+   * Stand-ins sharing the hidden pools' geometry and materials (blood on the canvas, severed heads and
+   * gloves and their wounds, the jaw a burst head leaves, a forced-out eye on its nerve, a gum shield),
+   * so their shaders can be compiled ahead of the first bloody hit instead of inside it.
+   */
+  compileStandIns(): THREE.Mesh[] {
+    const hidden = [
+      this.canvasBlood.mesh,
+      this.heads[0]!.mesh,
+      this.hands[0]!.mesh,
+      this.stumps[0]!.mesh,
+      this.handStumps[0]!.mesh,
+      this.eyeMeshes[0]!,
+      this.nerveMeshes[0]!,
+      this.shieldMeshes[0]!,
+    ];
+    // Each casts a shadow as its pool does, so the key light's shadow pass can be compiled for it too.
+    const standIns = hidden.map((mesh) => Object.assign(new THREE.Mesh(mesh.geometry, mesh.material), { castShadow: mesh.castShadow }));
+    standIns.push(Object.assign(new THREE.Mesh(this.stumpGeometry, this.jawMaterial), { castShadow: this.stumps[0]!.mesh.castShadow }));
+    // Baked from a fighter, a severed head or glove is drawn with its owner's texture: a variant of its
+    // shader of its own, compiled here on materials in that state, which share its program.
+    if (this.bakedStandIns === null) {
+      const map = new THREE.Texture();
+      const head = new THREE.MeshStandardMaterial({ color: 0x8a4d32, roughness: 0.76, metalness: 0, map });
+      new LookShading(head, true);
+      const glove = new THREE.MeshStandardMaterial({ color: 0x1d4ed8, roughness: 0.38, metalness: 0.03, map });
+      wearCornerColour(glove, true);
+      this.bakedStandIns = { map, materials: [head, glove] };
+    }
+    for (const material of this.bakedStandIns.materials) standIns.push(Object.assign(new THREE.Mesh(this.headGeometry, material), { castShadow: true }));
+    return standIns;
   }
 
   setBloodLevel(level: BloodLevel): void {
@@ -569,7 +622,7 @@ export class Effects3D {
    * the canvas and lies there until the round ends. Once out it stays out, unless `again` replays the
    * blow. A spray of spit, and of blood when blood is shown, follows it.
    */
-  ejectMouthpiece(fighterIndex: number, mouth: THREE.Vector3, quaternion: THREE.Quaternion, direction: number, eventId: number, color: number, again = false): boolean {
+  ejectMouthpiece(fighterIndex: number, mouth: THREE.Vector3, quaternion: THREE.Quaternion, direction: number | SprayDirection, eventId: number, color: number, again = false): boolean {
     if (fighterIndex < 0 || fighterIndex >= MAX_HEADS) return false;
     const index = Math.trunc(fighterIndex);
     const shield = this.shields[index]!;
@@ -577,14 +630,17 @@ export class Effects3D {
     if ((shield.out && !again) || this.lastShieldEvent[index] === safeEventId) return false;
     this.lastShieldEvent[index] = safeEventId;
     const rand = seeded(safeEventId * 48271 + index * 7907 + 5);
-    const launch = direction < 0 ? -1 : 1;
+    const launch = unitSpray(direction);
+    const along = 0.9 + rand() * 0.9;
+    const vy = 0.9 + rand() * 0.9;
+    const across = (rand() - 0.5) * 1.1;
     Object.assign(shield, idleShield(), {
       out: true,
       moving: true,
       x: finite(mouth.x), y: finite(mouth.y, 1.45), z: finite(mouth.z),
-      vx: launch * (0.9 + rand() * 0.9),
-      vy: 0.9 + rand() * 0.9,
-      vz: (rand() - 0.5) * 1.1,
+      vx: along * launch.x - across * launch.z,
+      vy,
+      vz: along * launch.z + across * launch.x,
       wx: (rand() - 0.5) * 26,
       wy: (rand() - 0.5) * 18,
       wz: (rand() - 0.5) * 26,
@@ -619,7 +675,7 @@ export class Effects3D {
    * Forces a fighter's eye out of its socket at `socket`, along `forward` (the way the face points):
    * it springs out, then hangs and swings on its nerve, bleeding from the empty socket.
    */
-  gougeEye(fighterIndex: number, socket: THREE.Vector3, forward: THREE.Vector3, direction: number, eventId: number): void {
+  gougeEye(fighterIndex: number, socket: THREE.Vector3, forward: THREE.Vector3, direction: number | SprayDirection, eventId: number): void {
     if (this.bloodLevel !== "full" || fighterIndex < 0 || fighterIndex >= MAX_HEADS) return;
     const index = Math.trunc(fighterIndex);
     const eye = this.eyes[index]!;
@@ -633,7 +689,9 @@ export class Effects3D {
     eye.position.copy(eye.socket).addScaledVector(forward, EYE_RADIUS * 1.5);
     // It leaves at about a metre and a half a second, out of the face and away from the punch.
     this.eyeDirection.copy(forward).multiplyScalar(1.3);
-    this.eyeDirection.x += (direction < 0 ? -1 : 1) * 0.5;
+    const launch = unitSpray(direction);
+    this.eyeDirection.x += launch.x * 0.5;
+    this.eyeDirection.z += launch.z * 0.5;
     eye.previous.copy(eye.position).addScaledVector(this.eyeDirection, -SIMULATION_STEP);
     eye.bleeding = 2;
     eye.accumulator = 0;
@@ -800,8 +858,8 @@ export class Effects3D {
   }
 
   private spawnDroplet(x: number, y: number, z: number, vx: number, vy: number, vz: number, color: { r: number; g: number; b: number }, life: number, blood: boolean, radius = blood ? 0.0035 + this.ambientRandom() ** 3 * 0.0125 : 0.0025 + this.ambientRandom() ** 2 * 0.004): void {
-    const index = this.dropletIndex % MAX_DROPLETS;
-    this.dropletIndex += 1;
+    // A new droplet joins the live ones at the front; a full pool reuses its slots in turn.
+    const index = this.liveDroplets < MAX_DROPLETS ? this.liveDroplets++ : this.dropletIndex++ % MAX_DROPLETS;
     const droplet = this.droplets[index]!;
     droplet.alive = true;
     droplet.blood = blood;
@@ -824,9 +882,44 @@ export class Effects3D {
     this.dropletColors[index * 3 + 1] = droplet.g;
     this.dropletColors[index * 3 + 2] = droplet.b;
     this.dropletMesh.setColorAt(index, this.dropletColor.setRGB(droplet.r, droplet.g, droplet.b));
-    if (this.dropletMesh.instanceColor !== null) this.dropletMesh.instanceColor.needsUpdate = true;
     this.writeDropletMatrix(index, droplet);
+    this.uploadDroplets(index, index + 1, true);
+  }
+
+  /** Draws only the live droplets and uploads the instances from `from` up to `to`. */
+  private uploadDroplets(from: number, to: number, colors: boolean): void {
+    this.dropletMesh.count = this.liveDroplets;
+    if (to <= from) return;
+    this.dropletMesh.instanceMatrix.addUpdateRange(from * 16, (to - from) * 16);
     this.dropletMesh.instanceMatrix.needsUpdate = true;
+    const instanceColor = this.dropletMesh.instanceColor;
+    if (!colors || instanceColor === null) return;
+    instanceColor.addUpdateRange(from * 3, (to - from) * 3);
+    instanceColor.needsUpdate = true;
+  }
+
+  /** Retires the droplet in slot `index` and moves the last live droplet into its place. */
+  private retireDroplet(index: number): void {
+    const last = this.liveDroplets - 1;
+    const retired = this.droplets[index]!;
+    retired.alive = false;
+    this.liveDroplets = last;
+    if (index !== last) {
+      const moved = this.droplets[last]!;
+      this.droplets[index] = moved;
+      this.droplets[last] = retired;
+      this.dropletPositions.copyWithin(index * 3, last * 3, last * 3 + 3);
+      this.dropletColors.copyWithin(index * 3, last * 3, last * 3 + 3);
+      this.dropletMesh.setColorAt(index, this.dropletColor.setRGB(moved.r, moved.g, moved.b));
+      this.writeDropletMatrix(index, moved);
+    }
+    this.dropletPositions[last * 3 + 1] = -50;
+    this.writeDropletMatrix(last, retired);
+  }
+
+  /** Spawns a droplet whose horizontal velocity is given along the spray and across it. */
+  private sprayDroplet(spray: SprayDirection, x: number, y: number, z: number, along: number, vy: number, across: number, color: { r: number; g: number; b: number }, life: number, blood: boolean, radius?: number): void {
+    this.spawnDroplet(x, y, z, along * spray.x - across * spray.z, vy, along * spray.z + across * spray.x, color, life, blood, radius);
   }
 
   private writeDropletMatrix(index: number, droplet: Droplet): void {
@@ -915,12 +1008,18 @@ export class Effects3D {
     this.canvasBlood.pool(finite(x), finite(z), Math.max(0.02, finite(radius, 0.1)) * (reduced ? 0.5 : 1), reduced ? 0.45 : 0.92, stamp);
   }
 
-  addEvent(event: CombatEvent, targetWorld: THREE.Vector3, reducedMotion: boolean): void {
+  /**
+   * Blood, sweat and chunks for a contact. `spray` is the way the punch travelled (from puncher to
+   * recipient); without it the event's world-x sign stands in.
+   */
+  addEvent(event: CombatEvent, targetWorld: THREE.Vector3, reducedMotion: boolean, spray?: SprayDirection): void {
     if (!IMPACT_KINDS.has(event.kind)) return;
     const rand = seeded(event.event_id * 7919 + 17);
     const blocked = event.kind === "block" || event.kind === "perfect_block";
     const pattern = bloodPatternFor(event);
-    const launchDirection = event.direction < 0 ? -1 : 1;
+    const launch = unitSpray(spray ?? event.direction);
+    // Sweat and chunks are pushed along the punch as hard as the event's sign says (a block may carry none).
+    const push = spray === undefined ? Math.abs(finite(event.direction)) : 1;
     const origin = { x: finite(targetWorld.x), y: event.detail.endsWith(":body") ? 1.05 : 1.58, z: finite(targetWorld.z) };
     const sweatCount = reducedMotion ? 0 : Math.round((blocked ? 6 : 16) + Math.min(20, Math.max(0, event.amount) / 20));
     const strand = { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, life: 0, radius: 0, color: bloodShade(0) };
@@ -935,11 +1034,12 @@ export class Effects3D {
     for (let i = 0; i < sweatCount; i += 1) {
       const angle = rand() * Math.PI * 2;
       const outward = 0.4 + rand() * 0.9;
-      this.spawnDroplet(
+      this.sprayDroplet(
+        launch,
         origin.x + (rand() - 0.5) * 0.12,
         origin.y + (rand() - 0.5) * 0.14,
         origin.z + (rand() - 0.5) * 0.12,
-        Math.sin(angle) * outward + event.direction * (0.5 + rand() * 0.9),
+        Math.sin(angle) * outward + push * (0.5 + rand() * 0.9),
         0.6 + rand() * 1.5,
         Math.cos(angle) * outward,
         { r: 0.82, g: 0.9, b: 1.0 },
@@ -957,35 +1057,38 @@ export class Effects3D {
       const arterial = link === 0;
       const angle = (rand() - 0.5) * Math.PI;
       const speed = arterial ? 2.2 + rand() * 1.8 : 0.9 + rand() * 1.5;
-      let vx = launchDirection * speed;
+      let along = speed;
       let vy = 0.5 + rand() * 1.25;
-      let vz = (rand() - 0.5) * 0.5;
+      let across = (rand() - 0.5) * 0.5;
       if (pattern === "fan") {
-        vx = launchDirection * speed * (0.45 + Math.cos(angle) * 0.35);
+        along = speed * (0.45 + Math.cos(angle) * 0.35);
         vy = 0.55 + rand() * 1.15;
-        vz = Math.sin(angle) * speed * 0.9;
+        across = Math.sin(angle) * speed * 0.9;
       } else if (pattern === "plume") {
-        vx = launchDirection * speed * (0.25 + rand() * 0.25);
+        along = speed * (0.25 + rand() * 0.25);
         vy = 1.8 + rand() * 2.2;
-        vz = (rand() - 0.5) * speed * 0.65;
+        across = (rand() - 0.5) * speed * 0.65;
       } else if (pattern === "body_burst") {
-        vx = launchDirection * speed * (0.55 + rand() * 0.45);
+        along = speed * (0.55 + rand() * 0.45);
         vy = -0.15 + rand() * 1.05;
-        vz = Math.sin(angle) * speed * 0.75;
+        across = Math.sin(angle) * speed * 0.75;
       } else if (pattern === "ooze") {
-        vx = launchDirection * (0.08 + rand() * 0.22);
+        along = 0.08 + rand() * 0.22;
         vy = -0.3 - rand() * 0.55;
-        vz = (rand() - 0.5) * 0.22;
+        across = (rand() - 0.5) * 0.22;
       } else if (pattern === "impact") {
-        vx = launchDirection * speed * (0.45 + rand() * 0.65);
+        along = speed * (0.45 + rand() * 0.65);
         vy = 0.9 + rand() * 2.1;
-        vz = Math.sin(angle) * speed;
+        across = Math.sin(angle) * speed;
       } else {
         const spread = arterial ? 0.12 : 0.34;
-        vx = launchDirection * speed * (0.8 + rand() * 0.35);
+        along = speed * (0.8 + rand() * 0.35);
         vy = arterial ? 1.3 + rand() * 1.6 : 0.5 + rand() * 1.25;
-        vz = (rand() - 0.5) * speed * spread;
+        across = (rand() - 0.5) * speed * spread;
       }
+      // Authored along and across the punch, turned onto the line it travelled; a strand's links follow its lead.
+      const vx = along * launch.x - across * launch.z;
+      const vz = along * launch.z + across * launch.x;
       const color = bloodShade(rand());
       const x = origin.x + (rand() - 0.5) * 0.12;
       const y = origin.y + (rand() - 0.5) * 0.14;
@@ -1026,11 +1129,12 @@ export class Effects3D {
       for (let index = 0; index < chunks; index += 1) {
         const angle = rand() * Math.PI * 2;
         const speed = 0.5 + rand() * 1.8;
-        this.spawnGib(
+        this.sprayGib(
+          launch,
           origin.x + (rand() - 0.5) * 0.12,
           origin.y + (rand() - 0.5) * 0.14,
           origin.z + (rand() - 0.5) * 0.12,
-          event.direction * (0.5 + rand() * 1.4) + Math.sin(angle) * speed * 0.5,
+          push * (0.5 + rand() * 1.4) + Math.sin(angle) * speed * 0.5,
           0.5 + rand() * 1.7,
           Math.cos(angle) * speed,
           rand,
@@ -1095,7 +1199,7 @@ export class Effects3D {
     fighterIndex: number,
     position: THREE.Vector3,
     quaternion: THREE.Quaternion,
-    direction: number,
+    direction: number | SprayDirection,
     eventId: number,
     skinColor = 0x8a4d32,
     baked?: BakedPart,
@@ -1107,15 +1211,17 @@ export class Effects3D {
     if (head.active || this.lastDecapitationEvent[index] === safeEventId) return;
     this.applyBakedPart(head, baked, skinColor);
     const rand = seeded(safeEventId * 104729 + index * 8191 + 23);
-    const launchDirection = direction < 0 ? -1 : 1;
+    const launch = unitSpray(direction);
     this.lastDecapitationEvent[index] = safeEventId;
 
     head.active = true;
     head.moving = true;
     head.eventId = safeEventId;
-    head.vx = launchDirection * (1.8 + rand() * 1.1);
+    const along = 1.8 + rand() * 1.1;
     head.vy = 2.3 + rand() * 1.1;
-    head.vz = (rand() - 0.5) * 2.2;
+    const across = (rand() - 0.5) * 2.2;
+    head.vx = along * launch.x - across * launch.z;
+    head.vz = along * launch.z + across * launch.x;
     head.vrx = (rand() - 0.5) * 12;
     head.vry = (rand() - 0.5) * 12;
     head.vrz = (rand() - 0.5) * 12;
@@ -1132,7 +1238,7 @@ export class Effects3D {
     stump.fountainLife = 1.25;
     stump.accumulator = 0;
     stump.seed = safeEventId | 1;
-    stump.direction = launchDirection;
+    stump.direction = launch;
     stump.mesh.position.copy(head.mesh.position);
     stump.mesh.quaternion.copy(head.mesh.quaternion);
     stump.mesh.visible = true;
@@ -1140,11 +1246,12 @@ export class Effects3D {
     for (let i = 0; i < GIBS_PER_DECAPITATION; i += 1) {
       const angle = rand() * Math.PI * 2;
       const speed = 0.8 + rand() * 2.4;
-      this.spawnGib(
+      this.sprayGib(
+        launch,
         head.mesh.position.x + (rand() - 0.5) * 0.12,
         head.mesh.position.y + (rand() - 0.5) * 0.12,
         head.mesh.position.z + (rand() - 0.5) * 0.12,
-        launchDirection * (0.7 + rand() * 1.8) + Math.sin(angle) * speed * 0.55,
+        0.7 + rand() * 1.8 + Math.sin(angle) * speed * 0.55,
         0.8 + rand() * 2.4,
         Math.cos(angle) * speed,
         rand,
@@ -1154,11 +1261,12 @@ export class Effects3D {
       const angle = rand() * Math.PI * 2;
       const speed = 1 + rand() * 2.6;
       const shade = rand();
-      this.spawnDroplet(
+      this.sprayDroplet(
+        launch,
         head.mesh.position.x + (rand() - 0.5) * 0.12,
         head.mesh.position.y + (rand() - 0.5) * 0.1,
         head.mesh.position.z + (rand() - 0.5) * 0.12,
-        launchDirection * (1.2 + rand() * 2.2) + Math.sin(angle) * speed * 0.35,
+        1.2 + rand() * 2.2 + Math.sin(angle) * speed * 0.35,
         0.7 + rand() * 2.7,
         Math.cos(angle) * speed,
         bloodShade(shade),
@@ -1176,7 +1284,7 @@ export class Effects3D {
    * The head bursts above the mouth: pieces of skull and brain, teeth and a great spray of blood go out
    * from the middle of the skull at `position`, and the lower jaw is left on the neck.
    */
-  burstHead(fighterIndex: number, position: THREE.Vector3, direction: number, eventId: number): void {
+  burstHead(fighterIndex: number, position: THREE.Vector3, direction: number | SprayDirection, eventId: number): void {
     if (this.bloodLevel !== "full" || fighterIndex < 0 || fighterIndex >= MAX_HEADS) return;
     const index = Math.trunc(fighterIndex);
     const safeEventId = Number.isSafeInteger(eventId) ? eventId : 0;
@@ -1184,7 +1292,7 @@ export class Effects3D {
     if (stump.active || this.lastBurstEvent[index] === safeEventId) return;
     this.lastBurstEvent[index] = safeEventId;
     const rand = seeded(safeEventId * 91_813 + index * 6151 + 41);
-    const launch = direction < 0 ? -1 : 1;
+    const launch = unitSpray(direction);
     const x = finite(position.x);
     const y = finite(position.y, 1.6);
     const z = finite(position.z);
@@ -1198,9 +1306,9 @@ export class Effects3D {
           x + Math.cos(around) * flat * 0.06,
           y + up * 0.05 - (kind === "tooth" ? 0.07 : 0),
           z + Math.sin(around) * flat * 0.06,
-          Math.cos(around) * flat * pace + launch * pace * 0.45,
+          Math.cos(around) * flat * pace + launch.x * pace * 0.45,
           up * pace + lift,
-          Math.sin(around) * flat * pace,
+          Math.sin(around) * flat * pace + launch.z * pace * 0.45,
           rand,
           kind,
         );
@@ -1218,9 +1326,9 @@ export class Effects3D {
         x + (rand() - 0.5) * 0.1,
         y + (rand() - 0.5) * 0.1,
         z + (rand() - 0.5) * 0.1,
-        Math.cos(around) * flat * pace + launch * pace * 0.35,
+        Math.cos(around) * flat * pace + launch.x * pace * 0.35,
         up * pace + 0.8,
-        Math.sin(around) * flat * pace,
+        Math.sin(around) * flat * pace + launch.z * pace * 0.35,
         bloodShade(rand()),
         0.8 + rand() * 1.1,
         true,
@@ -1230,7 +1338,7 @@ export class Effects3D {
     for (let puff = 0; puff < 24; puff += 1) {
       this.spawnMist(x + (rand() - 0.5) * 0.5, y + (rand() - 0.3) * 0.4, z + (rand() - 0.5) * 0.5, 1.2 + rand() * 1.6, 0.8 + rand() * 0.7);
     }
-    this.splatter(x + launch * 0.3, z, 2.2, rand);
+    this.splatter(x + launch.x * 0.3, z + launch.z * 0.3, 2.2, rand);
     this.shake = Math.min(0.16, this.shake + 0.1);
     stump.mesh.material = this.jawMaterial;
     stump.active = true;
@@ -1247,7 +1355,7 @@ export class Effects3D {
     side: Hand,
     position: THREE.Vector3,
     quaternion: THREE.Quaternion,
-    direction: number,
+    direction: number | SprayDirection,
     eventId: number,
     color: number,
     baked?: BakedPart,
@@ -1259,14 +1367,16 @@ export class Effects3D {
     if (hand.active || this.lastDismembermentEvent[index] === safeEventId) return;
     this.applyBakedPart(hand, baked, color);
     const rand = seeded(safeEventId * 130363 + index * 12289 + 37);
-    const launchDirection = direction < 0 ? -1 : 1;
+    const launch = unitSpray(direction);
     this.lastDismembermentEvent[index] = safeEventId;
     hand.active = true;
     hand.moving = true;
     hand.eventId = safeEventId;
-    hand.vx = launchDirection * (1.3 + rand() * 1.1);
+    const along = 1.3 + rand() * 1.1;
     hand.vy = 1.5 + rand() * 1.2;
-    hand.vz = (rand() - 0.5) * 1.8;
+    const across = (rand() - 0.5) * 1.8;
+    hand.vx = along * launch.x - across * launch.z;
+    hand.vz = along * launch.z + across * launch.x;
     hand.vrx = (rand() - 0.5) * 16;
     hand.vry = (rand() - 0.5) * 16;
     hand.vrz = (rand() - 0.5) * 16;
@@ -1281,7 +1391,7 @@ export class Effects3D {
     stump.fountainLife = 0.9;
     stump.accumulator = 0;
     stump.seed = safeEventId | 1;
-    stump.direction = launchDirection;
+    stump.direction = launch;
     stump.mesh.position.copy(hand.mesh.position);
     stump.mesh.quaternion.copy(hand.mesh.quaternion);
     stump.mesh.visible = true;
@@ -1289,11 +1399,12 @@ export class Effects3D {
     for (let gib = 0; gib < GIBS_PER_HAND; gib += 1) {
       const angle = rand() * Math.PI * 2;
       const speed = 0.55 + rand() * 1.8;
-      this.spawnGib(
+      this.sprayGib(
+        launch,
         hand.mesh.position.x + (rand() - 0.5) * 0.08,
         hand.mesh.position.y + (rand() - 0.5) * 0.08,
         hand.mesh.position.z + (rand() - 0.5) * 0.08,
-        launchDirection * (0.5 + rand() * 1.4) + Math.sin(angle) * speed * 0.45,
+        0.5 + rand() * 1.4 + Math.sin(angle) * speed * 0.45,
         0.5 + rand() * 1.9,
         Math.cos(angle) * speed,
         rand,
@@ -1302,11 +1413,12 @@ export class Effects3D {
     for (let drop = 0; drop < 80; drop += 1) {
       const angle = rand() * Math.PI * 2;
       const speed = 0.8 + rand() * 2.1;
-      this.spawnDroplet(
+      this.sprayDroplet(
+        launch,
         hand.mesh.position.x + (rand() - 0.5) * 0.08,
         hand.mesh.position.y + (rand() - 0.5) * 0.08,
         hand.mesh.position.z + (rand() - 0.5) * 0.08,
-        launchDirection * (0.8 + rand() * 1.7) + Math.sin(angle) * speed * 0.35,
+        0.8 + rand() * 1.7 + Math.sin(angle) * speed * 0.35,
         0.5 + rand() * 2.1,
         Math.cos(angle) * speed,
         bloodShade(rand()),
@@ -1437,17 +1549,19 @@ export class Effects3D {
   }
 
   /** Ejects teeth from the mouth on heavy head contact. */
-  spawnTeeth(mouthWorld: THREE.Vector3, direction: number, count: number, eventId: number): void {
+  spawnTeeth(mouthWorld: THREE.Vector3, direction: number | SprayDirection, count: number, eventId: number): void {
     if (this.bloodLevel === "off") return;
     const rand = seeded((Number.isSafeInteger(eventId) ? eventId : 0) * 7331 + 91);
+    const launch = unitSpray(direction);
     const teeth = Math.min(4, Math.max(1, Math.round(count * (this.bloodLevel === "reduced" ? 0.5 : 1))));
     for (let i = 0; i < teeth; i += 1) {
       const angle = rand() * Math.PI * 2;
-      this.spawnGib(
+      this.sprayGib(
+        launch,
         finite(mouthWorld.x) + (rand() - 0.5) * 0.04,
         finite(mouthWorld.y, 1.4) + (rand() - 0.5) * 0.02,
         finite(mouthWorld.z) + (rand() - 0.5) * 0.04,
-        direction * (0.9 + rand() * 1.6) + Math.sin(angle) * 0.6,
+        0.9 + rand() * 1.6 + Math.sin(angle) * 0.6,
         1.1 + rand() * 1.4,
         Math.cos(angle) * 0.7,
         rand,
@@ -1456,7 +1570,7 @@ export class Effects3D {
     }
     for (let i = 0; i < 18; i += 1) {
       const angle = rand() * Math.PI * 2;
-      this.spawnDroplet(finite(mouthWorld.x), finite(mouthWorld.y, 1.4), finite(mouthWorld.z), direction * (0.8 + rand() * 1.4) + Math.sin(angle) * 0.5, 0.6 + rand() * 1.3, Math.cos(angle) * 0.5, bloodShade(rand()), 0.6 + rand() * 0.6, true);
+      this.sprayDroplet(launch, finite(mouthWorld.x), finite(mouthWorld.y, 1.4), finite(mouthWorld.z), 0.8 + rand() * 1.4 + Math.sin(angle) * 0.5, 0.6 + rand() * 1.3, Math.cos(angle) * 0.5, bloodShade(rand()), 0.6 + rand() * 0.6, true);
     }
   }
 
@@ -1497,6 +1611,11 @@ export class Effects3D {
     gib.stained = false;
     this.writeDebrisMatrix(mesh, index, gib);
     mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  /** Spawns a piece of debris whose horizontal velocity is given along the spray and across it. */
+  private sprayGib(spray: SprayDirection, x: number, y: number, z: number, along: number, vy: number, across: number, rand: () => number, kind: DebrisKind = "flesh"): void {
+    this.spawnGib(x, y, z, along * spray.x - across * spray.z, vy, along * spray.z + across * spray.x, rand, kind);
   }
 
   private writeDebrisMatrix(mesh: THREE.InstancedMesh, index: number, gib: Gib): void {
@@ -1670,11 +1789,12 @@ export class Effects3D {
         const first = this.stumpRandom(stump);
         const second = this.stumpRandom(stump);
         const third = this.stumpRandom(stump);
-        this.spawnDroplet(
+        this.sprayDroplet(
+          stump.direction,
           stump.mesh.position.x + (first - 0.5) * 0.08,
           stump.mesh.position.y + 0.015,
           stump.mesh.position.z + (second - 0.5) * 0.08,
-          stump.direction * (0.35 + first * 0.55),
+          0.35 + first * 0.55,
           1.3 + second * 1.45,
           (third - 0.5) * 0.85,
           bloodShade(first),
@@ -1705,19 +1825,19 @@ export class Effects3D {
     this.updateDebris(this.gibs, this.gibMesh, step);
     this.updateDebris(this.shards, this.shardMesh, step);
 
-    let dropletsChanged = false;
-    for (const [i, droplet] of this.droplets.entries()) {
-      if (!droplet.alive) continue;
-      dropletsChanged = true;
+    const live = this.liveDroplets;
+    let retired = false;
+    for (let i = 0; i < this.liveDroplets;) {
+      const droplet = this.droplets[i]!;
       droplet.life -= step;
       if (droplet.life <= 0 || droplet.y < CANVAS_TOP) {
         if (droplet.y < CANVAS_TOP && droplet.blood && this.bloodLevel !== "off" && this.ambientRandom() < (this.bloodLevel === "full" ? 0.48 : 0.18)) {
           const scale = this.bloodLevel === "full" ? 1 : 0.35;
           this.placeDecal(droplet.x, droplet.z, (0.22 + this.ambientRandom() * 0.38) * scale, (0.14 + this.ambientRandom() * 0.24) * scale, this.ambientRandom() * Math.PI, 0.38 * scale, 0x6e0d13);
         }
-        droplet.alive = false;
-        this.dropletPositions[i * 3 + 1] = -50;
-        this.writeDropletMatrix(i, droplet);
+        // The last live droplet takes this slot and is stepped next.
+        this.retireDroplet(i);
+        retired = true;
         continue;
       }
       droplet.vy -= DROPLET_GRAVITY * step;
@@ -1732,11 +1852,12 @@ export class Effects3D {
       this.dropletColors[i * 3 + 1] = droplet.g * fade;
       this.dropletColors[i * 3 + 2] = droplet.b * fade;
       this.writeDropletMatrix(i, droplet);
+      i += 1;
     }
-    if (dropletsChanged) {
+    if (live > 0) {
       this.dropletBuffers.position.needsUpdate = true;
       this.dropletBuffers.color.needsUpdate = true;
-      this.dropletMesh.instanceMatrix.needsUpdate = true;
+      this.uploadDroplets(0, this.liveDroplets, retired);
     }
 
     let mistChanged = false;
@@ -1762,17 +1883,14 @@ export class Effects3D {
   }
 
   private clearDroplets(bloodOnly: boolean): void {
-    let changed = false;
-    for (const [index, droplet] of this.droplets.entries()) {
-      if (!droplet.alive || (bloodOnly && !droplet.blood)) continue;
-      droplet.alive = false;
-      this.dropletPositions[index * 3 + 1] = -50;
-      this.writeDropletMatrix(index, droplet);
-      changed = true;
+    const live = this.liveDroplets;
+    for (let index = 0; index < this.liveDroplets;) {
+      if (bloodOnly && !this.droplets[index]!.blood) index += 1;
+      else this.retireDroplet(index);
     }
-    if (changed) {
+    if (this.liveDroplets !== live) {
       this.dropletBuffers.position.needsUpdate = true;
-      this.dropletMesh.instanceMatrix.needsUpdate = true;
+      this.uploadDroplets(0, this.liveDroplets, true);
     }
   }
 
@@ -1848,6 +1966,7 @@ export class Effects3D {
     this.mistGeometry.dispose();
     this.mistMaterial.dispose();
     this.mistMap.dispose();
+    this.gibMesh.dispose();
     this.gibGeometry.dispose();
     this.gibMaterial.dispose();
     this.shardMesh.dispose();
@@ -1874,6 +1993,11 @@ export class Effects3D {
     this.stumpMap.dispose();
     this.wristMaterial.dispose();
     this.wristMap.dispose();
+    if (this.bakedStandIns !== null) {
+      this.bakedStandIns.map.dispose();
+      for (const material of this.bakedStandIns.materials) material.dispose();
+      this.bakedStandIns = null;
+    }
     for (const head of this.heads) this.scene.remove(head.mesh);
     for (const hand of this.hands) this.scene.remove(hand.mesh);
     for (const stump of [...this.stumps, ...this.handStumps]) this.scene.remove(stump.mesh);

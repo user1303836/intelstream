@@ -152,7 +152,8 @@ describe("gum shield", () => {
     };
     const fire = (FightRenderer.prototype as unknown as { fireReplayImpact(this: unknown, snapshot: unknown): void }).fireReplayImpact;
     fire.call(stub, snapshot());
-    expect(knocked).toEqual([[1, -1, 9 + 1_000_003, true]]);
+    // It flies the way the punch travelled: fighter one stands at -x and fighter two at +x.
+    expect(knocked).toEqual([[1, { x: 1, z: 0 }, 9 + 1_000_003, true]]);
     fire.call({ ...stub, settings: () => ({ reducedMotion: true }) }, snapshot());
     fire.call({ ...stub, lastKnockdown: { ...stub.lastKnockdown, hit: { ...hit, detail: "hook:body" } } }, snapshot());
     expect(knocked).toHaveLength(1);

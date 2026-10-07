@@ -106,7 +106,7 @@ describe("an eye swelling shut", () => {
   });
 
   it("puts blood over a closed lid, not the lid over the blood", () => {
-    const head = compile(new InjuryShading(new THREE.MeshStandardMaterial(), HEAD_SITES).material);
+    const head = compile(new InjuryShading(new THREE.MeshStandardMaterial(), HEAD_SITES).material!);
     const lids = head.fragmentShader.indexOf("vec4 lid = uInjuryLid[e];");
     const streams = head.fragmentShader.indexOf("float blood = uInjuryBlood[i];");
     expect(lids).toBeGreaterThan(0);
@@ -116,7 +116,7 @@ describe("an eye swelling shut", () => {
 
 describe("blood running from a wound", () => {
   it("splits into a second rivulet only once it runs freely", () => {
-    const head = compile(new InjuryShading(new THREE.MeshStandardMaterial(), HEAD_SITES).material);
+    const head = compile(new InjuryShading(new THREE.MeshStandardMaterial(), HEAD_SITES).material!);
     expect(head.fragmentShader).toContain("if (fk > 0.5 && blood < 0.45) break;");
   });
 

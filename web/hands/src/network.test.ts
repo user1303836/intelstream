@@ -186,6 +186,87 @@ describe("same-origin WebSocket controller", () => {
     expect(socket.sent.slice(1)).toHaveLength(1);
   });
 
+  it("sends one neutral frame as input goes off at the bell, and one on a later focus loss, so held input stops driving the fighter", () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket();
+    const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 1000, defense: "guard_high", actions: [] }), callbacks(), () => socket);
+    const inputs = (): Record<string, unknown>[] => socket.sent.map((frame) => JSON.parse(frame) as Record<string, unknown>).filter((frame) => frame.type === "input");
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message(ready);
+    socket.message({ version: 3, type: "snapshot", payload: { ...snapshot(41), phase: "fight" } });
+    vi.advanceTimersByTime(40);
+    expect(inputs().at(-1)).toMatchObject({ move: { x: 0, y: 1000 }, defense: "guard_high" });
+    const held = inputs().length;
+    socket.message({ version: 3, type: "snapshot", payload: { ...snapshot(42), phase: "rest" } });
+    expect(inputs()).toHaveLength(held + 1);
+    expect(inputs().at(-1)).toMatchObject({ move: { x: 0, y: 0 }, defense: "none", actions: [] });
+    controller.setActive(false);
+    vi.advanceTimersByTime(500);
+    expect(inputs()).toHaveLength(held + 1);
+    window.dispatchEvent(new Event("blur"));
+    expect(inputs()).toHaveLength(held + 2);
+    expect(inputs().at(-1)).toMatchObject({ move: { x: 0, y: 0 }, defense: "none" });
+    controller.dispose();
+  });
+
+  it("sends touch input from a frame that never gets document focus, and still stops for a hidden page", () => {
+    vi.useFakeTimers();
+    vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    const focus = vi.spyOn(window, "focus").mockImplementation(() => undefined);
+    let hidden = false;
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+    try {
+      const socket = new FakeSocket();
+      const controller = new NetworkController("ticket", () => ({ moveX: 1000, moveY: 0, defense: "none", actions: [] }), callbacks(), () => socket);
+      const inputs = (): Record<string, unknown>[] => socket.sent.map((frame) => JSON.parse(frame) as Record<string, unknown>).filter((frame) => frame.type === "input");
+      const touch = (): void => { document.body.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true })); };
+      controller.start();
+      socket.open();
+      socket.message(welcome());
+      socket.message(ready);
+      vi.advanceTimersByTime(100);
+      expect(inputs()).toHaveLength(0);
+      touch();
+      expect(focus).toHaveBeenCalledOnce();
+      vi.advanceTimersByTime(100);
+      expect(inputs().length).toBeGreaterThanOrEqual(2);
+      expect(inputs().at(-1)).toMatchObject({ move: { x: 1000, y: 0 } });
+
+      hidden = true;
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(inputs().at(-1)).toMatchObject({ move: { x: 0, y: 0 }, defense: "none" });
+      const stopped = inputs().length;
+      vi.advanceTimersByTime(200);
+      hidden = false;
+      document.dispatchEvent(new Event("visibilitychange"));
+      vi.advanceTimersByTime(200);
+      expect(inputs()).toHaveLength(stopped);
+      touch();
+      vi.advanceTimersByTime(100);
+      expect(inputs().length).toBeGreaterThan(stopped);
+      controller.dispose();
+    } finally {
+      delete (document as { hidden?: boolean }).hidden;
+    }
+  });
+
+  it("sends nothing before the bout starts, even on a focus loss, since the server ends the connection for it", () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket();
+    const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 1000, defense: "guard_high", actions: [] }), callbacks(), () => socket);
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message({ version: 3, type: "waiting", open_seats: 1 });
+    controller.setActive(false);
+    window.dispatchEvent(new Event("blur"));
+    vi.advanceTimersByTime(200);
+    expect(socket.sent.map((frame) => JSON.parse(frame).type)).toEqual(["authenticate"]);
+    controller.dispose();
+  });
+
   it.each(["room_full", "persistence_failed", "abandoned"])("treats server error %s as terminal", (code) => {
     vi.useFakeTimers();
     const socket = new FakeSocket();
@@ -205,6 +286,27 @@ describe("same-origin WebSocket controller", () => {
     expect(fresh).not.toHaveBeenCalled();
     expect(reconnect).not.toHaveBeenCalled();
     controller.dispose();
+  });
+
+  it("reports a frame from another protocol version as an outdated client, and a malformed one as a protocol error", () => {
+    const outdated = new FakeSocket();
+    const fatal = vi.fn();
+    const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks({ onFatal: fatal }), () => outdated);
+    controller.start();
+    outdated.open();
+    // A server that moved on answers authenticate with its own version, so the frame itself does not decode.
+    outdated.message({ version: 4, type: "error", code: "client_outdated" });
+    expect(fatal).toHaveBeenCalledWith("client_outdated");
+    controller.dispose();
+
+    const malformed = new FakeSocket();
+    const protocolFatal = vi.fn();
+    const other = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks({ onFatal: protocolFatal }), () => malformed);
+    other.start();
+    malformed.open();
+    malformed.message({ version: 3, type: "waiting", open_seats: 2 });
+    expect(protocolFatal).toHaveBeenCalledWith("protocol_error");
+    other.dispose();
   });
 
   it("ticks an open-socket opponent pause from its current grace to zero", () => {
@@ -404,6 +506,43 @@ describe("edge-triggered action sends", () => {
     vi.useRealTimers();
   });
 
+  it("sends a press at once however soon after a periodic flush it comes", () => {
+    vi.useFakeTimers();
+    let now = 1000;
+    const socket = new FakeSocket();
+    const queued: string[] = [];
+    const controller = new NetworkController(
+      "ticket",
+      () => ({ moveX: 0, moveY: 0, defense: "none" as const, actions: queued.splice(0, 4).map((id) => ({ kind: "punch" as const, hand: "left" as const, class: "jab" as const, target: "head" as const, power: "normal" as const, id })) }),
+      callbacks(),
+      () => socket,
+      () => now,
+    );
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message(ready);
+    controller.setActive(true);
+    const step = (): void => { now += 1; vi.advanceTimersByTime(1); };
+    const carried = (id: string): boolean => socket.sent.some((frame) => (JSON.parse(frame).actions ?? []).some((action: { id?: string }) => action.id === id));
+    const waits: number[] = [];
+    for (let offset = 0; offset < 33; offset += 1) {
+      for (let rest = 0; rest < 100; rest += 1) step();
+      const sent = socket.sent.length;
+      while (socket.sent.length === sent) step();
+      for (let elapsed = 0; elapsed < offset; elapsed += 1) step();
+      const id = `p${offset}`;
+      queued.push(id);
+      controller.notifyAction();
+      let waited = 0;
+      while (!carried(id)) { step(); waited += 1; }
+      waits.push(waited);
+    }
+    expect(waits).toEqual(Array.from({ length: 33 }, () => 0));
+    controller.dispose();
+    vi.useRealTimers();
+  });
+
   it("keeps room for the periodic flush when presses come in a burst", () => {
     vi.useFakeTimers();
     let now = 1000;
@@ -423,6 +562,36 @@ describe("edge-triggered action sends", () => {
       edges += socket.sent.length - sent;
     }
     expect(edges).toBe(20);
+    controller.dispose();
+    vi.useRealTimers();
+  });
+
+  it("remembers which input sequence carried each press, for telling a refused press from a late one", () => {
+    vi.useFakeTimers();
+    let now = 1000;
+    const socket = new FakeSocket();
+    const queued: string[] = [];
+    const controller = new NetworkController(
+      "ticket",
+      () => ({ moveX: 0, moveY: 0, defense: "none" as const, actions: queued.splice(0, 4).map((id) => ({ kind: "punch" as const, hand: "left" as const, class: "jab" as const, target: "head" as const, power: "normal" as const, id })) }),
+      callbacks(),
+      () => socket,
+      () => now,
+    );
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message(ready);
+    controller.setActive(true);
+    queued.push("c1");
+    expect(controller.sequenceOf("c1")).toBeNull();
+    controller.notifyAction();
+    expect(controller.sequenceOf("c1")).toBe(5);
+    now += 20;
+    queued.push("c2", "c3");
+    controller.notifyAction();
+    expect([controller.sequenceOf("c2"), controller.sequenceOf("c3")]).toEqual([6, 6]);
+    expect(controller.sequenceOf("c9")).toBeNull();
     controller.dispose();
     vi.useRealTimers();
   });

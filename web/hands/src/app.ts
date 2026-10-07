@@ -2,7 +2,7 @@ import { RoundClock } from "./render/hud";
 import { AnnouncerVoice } from "./announcer";
 import { AudioFeedback } from "./audio";
 import { ClientError, safeError } from "./api";
-import { authorizeDiscord, type DiscordSession } from "./discord";
+import { DiscordActivity, type ActivityAuthorizer, type DiscordSession } from "./discord";
 import { CornerPanel } from "./corner";
 import { StylePicker } from "./styles";
 import { describeError } from "./errors";
@@ -24,7 +24,7 @@ const CONTACT_FEEDBACK_KINDS = new Set(["hit", "counter_hit", "block", "perfect_
 // The room keeps the finished bout for its result hold (ten seconds by default); a rejoin inside
 // that window only replays the old final, so the rematch waits it out and retries if it still hits it.
 const CONTROL_HINT_KEYBOARD = "Move WASD · Jab F/J · Straight R/U · Hook G/H · Uppercut T/Y · Guard Q/E · Body Shift · Power Alt";
-const CONTROL_HINT_TOUCH = "Drag on the left to move · Tap the pads to punch, L or R hand · Hold BODY, POWER or GUARD";
+const CONTROL_HINT_TOUCH = "Drag on the left to move · Tap the pads to punch, L or R hand · Hold BODY, POWER or GUARD · Tap SLIP, WEAVE, PULL or CLINCH";
 const REMATCH_HOLD_MS = 11_000;
 /** How long the finish plays without the overlay while the result is still on its way. */
 const RESULT_WAIT_MS = 4_000;
@@ -52,6 +52,7 @@ export class HandsApp {
   private destroyed = false;
   private generation = 0;
   private reloadOnRetry = false;
+  private reloading = false;
 
   private readonly canvas: HTMLCanvasElement;
   private readonly status: HTMLElement;
@@ -89,7 +90,7 @@ export class HandsApp {
   constructor(
     private readonly root: HTMLElement,
     private readonly reloadPage: () => void = () => window.location.reload(),
-    private readonly authorizer: (signal: AbortSignal) => Promise<DiscordSession> = authorizeDiscord,
+    private readonly authorizer: ActivityAuthorizer = new DiscordActivity(),
   ) {
     root.innerHTML = `<section class="activity" aria-label="Hands boxing activity"><canvas class="fight" aria-label="Two-player boxing match"></canvas><header class="topbar"><strong>HANDS</strong><span>two-player boxing</span><span class="spectator-role" data-role hidden>SPECTATING · READ ONLY</span><button type="button" data-controls aria-expanded="false">Controls</button><button type="button" data-settings aria-expanded="false">Settings</button></header><section class="overlay" data-overlay><p class="status" data-status></p><p class="hint" data-hint hidden></p><section class="cpu-picker" data-cpu hidden aria-label="Fight the computer"><p data-cpu-prompt>No one here yet? Fight the computer.</p><div class="cpu-levels">${CPU_CHOICES.map((choice) => `<button type="button" data-cpu-level="${choice.level}"><strong>${choice.label}</strong><span>${choice.detail}</span></button>`).join("")}</div></section><button type="button" class="primary" data-retry hidden>Retry securely</button><button type="button" class="primary" data-rematch hidden>Rematch</button></section><aside class="panel" data-controls-panel hidden aria-label="Controls"><h2>Controls</h2>${CONTROL_SECTIONS.map((section) => `<h3>${section.title}</h3><ul>${section.items.map((item) => `<li>${item}</li>`).join("")}</ul>`).join("")}</aside><aside class="panel settings" data-settings-panel hidden aria-label="Accessibility and feedback settings"><h2>Settings</h2><label>Volume <input data-volume type="range" min="0" max="1" step="0.05"></label><label><input data-haptics type="checkbox"> Haptics</label><label><input data-motion type="checkbox"> Reduced motion</label><label><input data-commentary type="checkbox"> Commentary captions</label><label><input data-announcer type="checkbox"> Ring announcer voice</label><label>Blood <select data-blood><option value="full">Full (arcade gore)</option><option value="reduced">Reduced</option><option value="off">Off</option></select></label><label>Camera <select data-camera><option value="broadcast">Broadcast</option><option value="close">Close</option><option value="fighter">Over the shoulder</option></select></label><details class="diagnostics"><summary>Diagnostics</summary><pre data-diagnostics></pre><button type="button" data-copy-diagnostics>Copy diagnostics</button></details><p class="model-credit"><a href="https://sketchfab.com/3d-models/boxer-84767168720948b38728ff78ee6f6090" target="_blank" rel="noreferrer">“Boxer” by Texel, Inc.</a> · <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">CC BY 4.0</a> · modified</p></aside><section class="sr-summary" data-fight-summary aria-label="Fight summary"></section><p class="sr-summary" data-fight-status role="status" aria-live="polite" aria-atomic="true"></p><section class="sr-summary" data-final aria-live="polite" aria-label="Final result"></section></section>`;
     this.canvas = root.querySelector<HTMLCanvasElement>("canvas")!;
@@ -241,7 +242,7 @@ export class HandsApp {
     this.setText(this.status, "Securing Discord Activity session…");
     this.retry.hidden = true;
     try {
-      const session = await this.authorizer(this.abort.signal);
+      const session = await this.authorizer.authorize(this.abort.signal);
       if (this.destroyed || generation !== this.generation) {
         session.destroy();
         return;
@@ -286,7 +287,10 @@ export class HandsApp {
    */
   private ensureRenderer(): void {
     if (this.renderer !== null || this.session === null || this.destroyed) return;
-    const renderer = new FightRenderer(this.canvas, this.session.bootstrap.simulation, () => this.settings.current, { localInput: () => this.input.held() });
+    const renderer = new FightRenderer(this.canvas, this.session.bootstrap.simulation, () => this.settings.current, {
+      localInput: () => this.input.held(),
+      inputSequenceOf: (actionId) => this.network?.sequenceOf(actionId) ?? null,
+    });
     renderer.onContact = (event) => {
       this.audio.event(event);
       this.haptics.event(event);
@@ -424,6 +428,7 @@ export class HandsApp {
     this.renderer?.setCornerPanelTop(this.corner.top());
     this.stylePicker.update(this.state.stage === "select" ? this.state.select : null, this.state.playerId, this.state.role);
     this.retry.hidden = this.state.stage !== "fatal";
+    this.setText(this.retry, this.reloadOnRetry ? "Reload" : "Retry securely");
     if (this.state.stage !== "complete") this.rematchButton.hidden = true;
     this.cpuPicker.hidden = spectating || this.state.stage !== "waiting" || this.cpuLevel !== null;
     // While a rematch waits for the other fighter, the computer is the fallback rather than the invitation.
@@ -434,7 +439,9 @@ export class HandsApp {
     // Once the pads are up for the countdown, the touch hint moves to the empty stick side so it covers no pad.
     this.overlay.toggleAttribute("data-touch-hint", showHint && this.state.stage === "countdown" && coarsePointer());
     const active = !spectating && ["countdown", "fight", "knockdown", "foul_recovery"].includes(this.state.stage);
-    this.input.setActive(active);
+    // Between rounds and through pauses the touch controls stay up, inert, so a thumb already in place counts at the bell.
+    const resting = !spectating && this.state.snapshot !== null && (this.state.stage === "rest" || this.state.stage === "paused");
+    this.input.setActive(active, active || resting);
     this.network?.setActive(active);
     this.renderFightSummary();
     if (this.state.final !== null) {
@@ -464,6 +471,8 @@ export class HandsApp {
 
   private readonly onRetry = (): void => {
     if (this.reloadOnRetry) {
+      // The reload brings up a new page and SDK; closing this SDK on the way out would close the Activity.
+      this.reloading = true;
       this.reloadPage();
       return;
     }
@@ -588,6 +597,8 @@ export class HandsApp {
       this.scheduleRematchRetry();
       return;
     }
+    // A server on a newer protocol cannot be played from this page; Retry reloads it.
+    if (code === "client_outdated") this.reloadOnRetry = true;
     this.dispatch({ type: "fatal", code });
     this.rematchOpponent = null;
     this.voice.cancel();
@@ -609,6 +620,7 @@ export class HandsApp {
     this.abort.abort();
     this.network?.dispose();
     this.session?.destroy();
+    if (!this.reloading) this.authorizer.close();
     this.renderer?.destroy();
     window.removeEventListener("keydown", this.onCameraKey);
     this.input.destroy();

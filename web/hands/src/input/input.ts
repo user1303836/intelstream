@@ -22,7 +22,8 @@ export class InputController {
   constructor() { this.keyboard = new KeyboardInput(window, 1, this.actions); this.gamepad = new GamepadInput(1, this.actions); window.addEventListener("blur", this.reset); document.addEventListener("visibilitychange", this.visibility); }
   private readonly visibility = (): void => { if (document.hidden) this.reset(); };
   attachTouch(container: HTMLElement, force = coarsePointer()): void { if (this.touch !== null || !force) return; this.touch = new TouchInput(container, this.actions); }
-  setActive(active: boolean): void { this.keyboard.setEnabled(active); this.gamepad.setEnabled(active); this.touch?.setEnabled(active); }
+  /** `touchShown` keeps the touch controls on screen, inert, while input is off (the rest, a pause). */
+  setActive(active: boolean, touchShown = active): void { this.keyboard.setEnabled(active); this.gamepad.setEnabled(active); this.touch?.setEnabled(active, touchShown); }
   setKnockdown(value: boolean): void { this.gamepad.setKnockdown(value); this.touch?.setKnockdown(value); }
   onAction(listener: ((action: SemanticAction) => void) | null): void { this.actions.setListener(listener); }
   /** While the camera turns with the player's fighter, up on the stick or W walks the way it faces. */

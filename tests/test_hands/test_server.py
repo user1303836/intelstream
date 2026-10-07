@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import os
+import socket
+import struct
 import time
+import zlib
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
@@ -16,7 +21,12 @@ from intelstream.database.repository import Repository
 from intelstream.hands import server as server_module
 from intelstream.hands.auth import AuthenticatedPlayer, AuthExchange, HandsAuth, HandsAuthError
 from intelstream.hands.engine import EngineConfig
-from intelstream.hands.rooms import HandsRoomManager, RoomConfig, RoomError
+from intelstream.hands.rooms import (
+    SNAPSHOT_BACKLOG_BYTES,
+    HandsRoomManager,
+    RoomConfig,
+    RoomError,
+)
 from intelstream.hands.server import AdmissionConfig, HandsServer
 
 if TYPE_CHECKING:
@@ -140,6 +150,166 @@ async def start_server(
     await server.start()
     assert server.bound_port is not None
     return server, fake_auth, f"http://127.0.0.1:{server.bound_port}"
+
+
+async def connect_reader_that_stalls(
+    port: int, ticket: str, *, read_frames: int = 0
+) -> tuple[socket.socket, list[dict[str, object]]]:
+    """Authenticates over a raw socket, reads `read_frames` server frames, then never reads again.
+
+    The small receive buffer and the absent reads fill the server's transport within a fraction of
+    a second of per-tick snapshots, as a phone that switched networks or went to the background
+    would.
+    """
+    loop = asyncio.get_running_loop()
+    raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    raw.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    raw.setblocking(False)
+    await loop.sock_connect(raw, ("127.0.0.1", port))
+    key = base64.b64encode(os.urandom(16)).decode()
+    await loop.sock_sendall(
+        raw,
+        (
+            "GET /api/hands/ws HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\nOrigin: {ORIGIN}\r\n\r\n"
+        ).encode(),
+    )
+    received = b""
+    while b"\r\n\r\n" not in received:
+        received += await loop.sock_recv(raw, 1)
+    assert b" 101 " in received.split(b"\r\n", 1)[0]
+    payload = json.dumps({"version": 3, "type": "authenticate", "ticket": ticket}).encode()
+    assert len(payload) < 126
+    mask = os.urandom(4)
+    masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+    await loop.sock_sendall(raw, bytes([0x81, 0x80 | len(payload)]) + mask + masked)
+
+    async def read_exactly(count: int) -> bytes:
+        data = b""
+        while len(data) < count:
+            chunk = await loop.sock_recv(raw, count - len(data))
+            assert chunk, "server closed the socket"
+            data += chunk
+        return data
+
+    frames: list[dict[str, object]] = []
+    for _ in range(read_frames):
+        first, second = await read_exactly(2)
+        length = second & 0x7F
+        if length == 126:
+            (length,) = struct.unpack("!H", await read_exactly(2))
+        elif length == 127:
+            (length,) = struct.unpack("!Q", await read_exactly(8))
+        assert first & 0x40 == 0, "a raw reader does not negotiate compression"
+        frames.append(json.loads(await read_exactly(length)))
+    return raw, frames
+
+
+async def connect_deflate_client(
+    port: int, ticket: str
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter, str]:
+    """Authenticates over a raw socket that offers permessage-deflate, as browsers do."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    key = base64.b64encode(os.urandom(16)).decode()
+    writer.write(
+        (
+            "GET /api/hands/ws HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\nOrigin: {ORIGIN}\r\n"
+            "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n\r\n"
+        ).encode()
+    )
+    head = (await reader.readuntil(b"\r\n\r\n")).decode()
+    assert " 101 " in head.split("\r\n", 1)[0]
+    extensions = next(
+        (
+            line.split(":", 1)[1].strip()
+            for line in head.split("\r\n")
+            if line.lower().startswith("sec-websocket-extensions:")
+        ),
+        "",
+    )
+    payload = json.dumps({"version": 3, "type": "authenticate", "ticket": ticket}).encode()
+    mask = os.urandom(4)
+    masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+    writer.write(bytes([0x81, 0x80 | len(payload)]) + mask + masked)
+    return reader, writer, extensions
+
+
+async def read_server_frame(reader: asyncio.StreamReader) -> tuple[bool, int, bytes]:
+    first, second = await reader.readexactly(2)
+    length = second & 0x7F
+    if length == 126:
+        (length,) = struct.unpack("!H", await reader.readexactly(2))
+    elif length == 127:
+        (length,) = struct.unpack("!Q", await reader.readexactly(8))
+    return bool(first & 0x40), first & 0x0F, await reader.readexactly(length)
+
+
+async def receive_until(
+    socket: aiohttp.ClientWebSocketResponse, kind: str, *, deadline_seconds: float = 10.0
+) -> dict[str, object]:
+    async with asyncio.timeout(deadline_seconds):
+        while True:
+            message = await socket.receive()
+            assert message.type == aiohttp.WSMsgType.TEXT, message
+            payload = json.loads(message.data)
+            if payload["type"] == kind:
+                return payload
+
+
+def stalled_reader_rooms(
+    repository: Repository, match_id: str, *, outbound_queue_size: int = 16
+) -> HandsRoomManager:
+    return HandsRoomManager(
+        repository,
+        config=RoomConfig(
+            style_select_seconds=0.0,
+            tick_interval_seconds=0.002,
+            reconnect_grace_seconds=0.5,
+            result_hold_seconds=0.0,
+            outbound_queue_size=outbound_queue_size,
+            engine_config=EngineConfig(
+                rounds=1,
+                round_ticks=1_000_000,
+                rest_ticks=0,
+                countdown_ticks=1,
+                flash_ko_enabled=False,
+            ),
+        ),
+        match_id_factory=lambda: match_id,
+    )
+
+
+async def start_capped_proxy(upstream_port: int, *, bytes_per_second: int) -> asyncio.Server:
+    """A TCP proxy whose server-to-client direction runs no faster than a weak mobile link."""
+
+    async def relay(
+        client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter
+    ) -> None:
+        upstream_reader, upstream_writer = await asyncio.open_connection("127.0.0.1", upstream_port)
+
+        async def up() -> None:
+            while data := await client_reader.read(65536):
+                upstream_writer.write(data)
+                await upstream_writer.drain()
+
+        async def down() -> None:
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            relayed = 0
+            while data := await upstream_reader.read(2048):
+                relayed += len(data)
+                client_writer.write(data)
+                await client_writer.drain()
+                await asyncio.sleep(max(0.0, relayed / bytes_per_second - (loop.time() - started)))
+
+        await asyncio.gather(up(), down(), return_exceptions=True)
+        client_writer.close()
+        upstream_writer.close()
+
+    return await asyncio.start_server(relay, "127.0.0.1", 0)
 
 
 async def post_bootstrap(
@@ -334,6 +504,39 @@ async def test_websocket_requires_ticket_first_without_query_and_times_out(
     await server.close()
 
 
+async def test_an_outdated_client_is_told_in_its_own_version_without_spending_its_ticket(
+    repository: Repository,
+) -> None:
+    auth = FakeAuth()
+    auth.tickets["valid"] = AuthenticatedPlayer("one", GUILD, "room", "One", None)
+    server, _auth, base = await start_server(repository, auth=auth)
+    async with aiohttp.ClientSession() as client:
+        for frame in (
+            {"version": 2, "type": "authenticate", "ticket": "valid"},
+            {"version": 4, "type": "authenticate", "ticket": "valid", "build": "next"},
+        ):
+            socket = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
+            await socket.send_json(frame)
+            error = json.loads((await socket.receive(timeout=1)).data)
+            assert error == {
+                "code": "client_outdated",
+                "type": "error",
+                "version": frame["version"],
+            }
+            closing = await socket.receive(timeout=1)
+            assert closing.type == aiohttp.WSMsgType.CLOSE
+            assert closing.data == 4003
+            await socket.close()
+        assert "valid" in auth.tickets
+
+        socket = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
+        await socket.send_json({"version": 3, "type": "resume", "ticket": "valid"})
+        error = json.loads((await socket.receive(timeout=1)).data)
+        assert error == {"code": "invalid_ticket", "type": "error", "version": 3}
+        await socket.close()
+    await server.close()
+
+
 async def test_authenticated_room_admission_is_not_part_of_first_frame_timeout(
     repository: Repository,
 ) -> None:
@@ -351,17 +554,21 @@ async def test_authenticated_room_admission_is_not_part_of_first_frame_timeout(
     auth = FakeAuth()
     auth.tickets["valid"] = AuthenticatedPlayer("one", GUILD, "room", "One", None)
     rooms = DelayedRejectionRooms()
+    # Well above Windows' 15.6 ms timer resolution, which let a 10 ms timeout expire before the
+    # authentication frame was read.
+    auth_timeout = 0.25
     server, _auth, base = await start_server(
         repository,
         auth=auth,
-        auth_timeout=0.01,
+        auth_timeout=auth_timeout,
         rooms=rooms,
     )
     async with aiohttp.ClientSession() as client:
         socket = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
         await socket.send_json({"version": 3, "type": "authenticate", "ticket": "valid"})
-        await rooms.entered.wait()
-        await asyncio.sleep(0.03)
+        async with asyncio.timeout(2):
+            await rooms.entered.wait()
+        await asyncio.sleep(2 * auth_timeout)
         rooms.release.set()
         error = json.loads((await socket.receive(timeout=1)).data)
         assert error["code"] == "room_full"
@@ -619,6 +826,228 @@ async def test_fighters_pick_their_styles_over_the_socket_and_a_spectator_cannot
                 await ws.close()
     async with asyncio.timeout(1):
         await server.close()
+
+
+async def test_state_updates_are_deflated_but_frames_carrying_a_ticket_never_are(
+    repository: Repository,
+) -> None:
+    refresh_now = asyncio.Event()
+    never = asyncio.Event()
+    refreshes = 0
+
+    async def ticket_sleep(_delay: float) -> None:
+        nonlocal refreshes
+        refreshes += 1
+        await (refresh_now if refreshes == 1 else never).wait()
+
+    auth = FakeAuth()
+    auth.tickets = {
+        "one": AuthenticatedPlayer("one", GUILD, "room", "One", None),
+        "two": AuthenticatedPlayer("two", GUILD, "room", "Two", None),
+    }
+    rooms = stalled_reader_rooms(repository, "deflated")
+    server, _auth, base = await start_server(
+        repository, auth=auth, rooms=rooms, ticket_refresh=1.0, ticket_sleep=ticket_sleep
+    )
+    assert server.bound_port is not None
+    reader, writer, extensions = await connect_deflate_client(server.bound_port, "one")
+    assert extensions.startswith("permessage-deflate")
+    # One inflater for the whole stream: the server keeps its deflate context between messages.
+    inflater = zlib.decompressobj(-15)
+    received: list[tuple[dict[str, object], bool]] = []
+
+    async def read_until(kind: str, count: int = 1) -> None:
+        async with asyncio.timeout(10):
+            while sum(1 for message, _ in received if message["type"] == kind) < count:
+                compressed, opcode, payload = await read_server_frame(reader)
+                if opcode != 0x1:
+                    continue
+                if compressed:
+                    payload = inflater.decompress(payload + b"\x00\x00\xff\xff")
+                received.append((json.loads(payload), compressed))
+
+    async with aiohttp.ClientSession() as client:
+        two = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
+        await two.send_json({"version": 3, "type": "authenticate", "ticket": "two"})
+        await read_until("snapshot", 3)
+        refresh_now.set()
+        await read_until("ticket")
+        snapshots_before = sum(1 for message, _ in received if message["type"] == "snapshot")
+        await read_until("snapshot", snapshots_before + 3)
+        await two.close()
+    writer.close()
+    await server.close()
+
+    welcome, welcome_compressed = received[0]
+    assert welcome["type"] == "welcome"
+    assert isinstance(welcome["reconnect_ticket"], str)
+    assert not welcome_compressed
+    ticket, ticket_compressed = next(item for item in received if item[0]["type"] == "ticket")
+    assert isinstance(ticket["reconnect_ticket"], str)
+    assert not ticket_compressed
+    assert all(
+        compressed
+        for message, compressed in received
+        if message["type"] not in {"welcome", "ticket"}
+    )
+
+
+async def test_a_spectator_on_a_slow_mobile_link_keeps_up_with_the_fight(
+    repository: Repository,
+) -> None:
+    auth = FakeAuth()
+    for user in ("one", "two", "three"):
+        auth.tickets[user] = AuthenticatedPlayer(user, GUILD, "room", user.title(), None)
+    rooms = HandsRoomManager(
+        repository,
+        config=RoomConfig(
+            style_select_seconds=0.0,
+            engine_config=EngineConfig(
+                rounds=1, round_ticks=1_000_000, countdown_ticks=1, flash_ko_enabled=False
+            ),
+        ),
+        match_id_factory=lambda: "slow-link",
+    )
+    server, _auth, base = await start_server(repository, auth=auth, rooms=rooms)
+    assert server.bound_port is not None
+    proxy = await start_capped_proxy(server.bound_port, bytes_per_second=40_000)
+    proxy_port = proxy.sockets[0].getsockname()[1]
+
+    async def fight(socket: aiohttp.ClientWebSocketResponse) -> None:
+        async for _message in socket:
+            pass
+
+    async with aiohttp.ClientSession() as client:
+        fighters = []
+        for ticket in ("one", "two"):
+            socket = await client.ws_connect(
+                f"{base}/api/hands/ws", headers={"Origin": ORIGIN}, compress=15
+            )
+            await socket.send_json({"version": 3, "type": "authenticate", "ticket": ticket})
+            fighters.append(asyncio.create_task(fight(socket)))
+        spectator = await client.ws_connect(
+            f"http://127.0.0.1:{proxy_port}/api/hands/ws", headers={"Origin": ORIGIN}, compress=15
+        )
+        await spectator.send_json({"version": 3, "type": "authenticate", "ticket": "three"})
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        lag_ticks: list[int] = []
+        async with asyncio.timeout(10):
+            # Uncompressed per-tick snapshots need about 65 KB/s, so this link fell a third of a
+            # second further behind every second.
+            while loop.time() - started < 3.0:
+                payload = json.loads((await spectator.receive()).data)
+                if payload["type"] == "snapshot":
+                    engine = rooms._rooms["room"].engine
+                    assert engine is not None
+                    lag_ticks.append(engine.tick - payload["payload"]["tick"])
+        await spectator.close()
+        for task in fighters:
+            task.cancel()
+        await asyncio.gather(*fighters, return_exceptions=True)
+    proxy.close()
+    await server.close()
+
+    assert max(lag_ticks[-30:]) <= 6
+    assert len(lag_ticks) > 60
+
+
+async def test_a_fighter_whose_socket_stops_reading_is_paused_then_forfeits(
+    repository: Repository,
+) -> None:
+    auth = FakeAuth()
+    auth.tickets = {
+        "one": AuthenticatedPlayer("one", GUILD, "room", "One", None),
+        "two": AuthenticatedPlayer("two", GUILD, "room", "Two", None),
+    }
+    rooms = stalled_reader_rooms(repository, "stalled-reader")
+    server, _auth, base = await start_server(repository, auth=auth, rooms=rooms)
+    assert server.bound_port is not None
+    async with aiohttp.ClientSession() as client:
+        one = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
+        await one.send_json({"version": 3, "type": "authenticate", "ticket": "one"})
+        await receive_until(one, "waiting")
+        stalled, _frames = await connect_reader_that_stalls(server.bound_port, "two")
+        try:
+            paused = await receive_until(one, "paused")
+            assert paused["player_id"] == "two"
+            final = await receive_until(one, "final")
+        finally:
+            stalled.close()
+        assert final["winner_id"] == "one"
+        assert final["method"] == "forfeit"
+        await one.close()
+    assert await repository.get_hands_match("stalled-reader") is not None
+    await server.close()
+
+
+async def test_reconnecting_over_a_stalled_socket_does_not_hold_up_any_join(
+    repository: Repository,
+) -> None:
+    auth = FakeAuth()
+    auth.tickets = {
+        "one": AuthenticatedPlayer("one", GUILD, "room", "One", None),
+        "two": AuthenticatedPlayer("two", GUILD, "room", "Two", None),
+        "elsewhere": AuthenticatedPlayer("three", GUILD, "other-room", "Three", None),
+    }
+    # A generous outbound bound keeps the stalled socket attached until the player reconnects.
+    rooms = stalled_reader_rooms(repository, "stalled-reconnect", outbound_queue_size=100_000)
+    server, _auth, base = await start_server(repository, auth=auth, rooms=rooms)
+    assert server.bound_port is not None
+    async with aiohttp.ClientSession() as client:
+        one = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
+        await one.send_json({"version": 3, "type": "authenticate", "ticket": "one"})
+        await receive_until(one, "waiting")
+        stalled, frames = await connect_reader_that_stalls(server.bound_port, "two", read_frames=1)
+        try:
+            assert frames[0]["type"] == "welcome"
+            room = rooms._rooms["room"]
+            old_connection = room._slots["two"].connection
+            assert old_connection is not None
+            old_socket = old_connection.socket
+            assert isinstance(old_socket, server_module._RoomSocket)
+            # The room holds snapshots back once a few kilobytes are buffered, short of the
+            # transport's own pause; a lower mark gets the paused transport a dead peer leaves.
+            # More than that backlog only builds once the peer's kernel buffers are full too, so
+            # the pause is lasting rather than one overlapped write still in flight.
+            transport = old_socket._request.transport
+            assert transport is not None
+            transport.set_write_buffer_limits(high=1024)
+            async with asyncio.timeout(10):
+                while not (  # noqa: ASYNC110
+                    old_socket._request.protocol.writing_paused
+                    and transport.get_write_buffer_size() > SNAPSHOT_BACKLOG_BYTES
+                ):
+                    await asyncio.sleep(0.01)
+
+            replacement = await client.ws_connect(
+                f"{base}/api/hands/ws", headers={"Origin": ORIGIN}
+            )
+            elsewhere = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
+            await replacement.send_json(
+                {"version": 3, "type": "authenticate", "ticket": frames[0]["reconnect_ticket"]}
+            )
+            await elsewhere.send_json({"version": 3, "type": "authenticate", "ticket": "elsewhere"})
+            welcome = await receive_until(replacement, "welcome", deadline_seconds=2)
+            assert welcome["player_id"] == "two"
+            await receive_until(replacement, "resumed", deadline_seconds=2)
+            elsewhere_welcome = await receive_until(elsewhere, "welcome", deadline_seconds=2)
+            assert elsewhere_welcome["player_id"] == "three"
+
+            # The stalled socket is aborted once its close times out.
+            loop = asyncio.get_running_loop()
+            async with asyncio.timeout(10):
+                while True:
+                    try:
+                        if not await loop.sock_recv(stalled, 65536):
+                            break
+                    except ConnectionError:
+                        break
+        finally:
+            stalled.close()
+        for socket_ in (one, replacement, elsewhere):
+            await socket_.close()
+    await server.close()
 
 
 @pytest.mark.parametrize(

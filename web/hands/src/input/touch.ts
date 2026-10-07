@@ -1,12 +1,12 @@
 import { SharedActionIntent } from "./action-buffer";
-import type { HeldDefense, InputFrame, PunchClass } from "../types";
+import type { HeldDefense, InputFrame, MovementKind, PunchClass } from "../types";
 
 /**
  * On-screen controls for coarse-pointer clients (Discord mobile). The left
  * half of the activity is a floating joystick for footwork; the right side
  * carries four punch pads whose left or right half selects the hand, hold
- * modifiers for body shots and power, and hold guards. During a knockdown the
- * pads become the get-up rhythm buttons.
+ * modifiers for body shots and power, hold guards, and a row of evasions and
+ * the clinch. During a knockdown the pads become the get-up rhythm buttons.
  */
 
 export function coarsePointer(): boolean {
@@ -25,12 +25,22 @@ const PUNCH_PADS: readonly { readonly label: string; readonly punchClass: PunchC
   { label: "UPPER", punchClass: "uppercut" },
 ];
 
+/** The evasions and the clinch, the same actions as the keyboard's Z, C, X, V and B. */
+const MOVES: readonly { readonly label: string; readonly name: string; readonly kind: MovementKind }[] = [
+  { label: "◀ SLIP", name: "Slip left", kind: "slip_left" },
+  { label: "WEAVE", name: "Weave", kind: "weave" },
+  { label: "SLIP ▶", name: "Slip right", kind: "slip_right" },
+  { label: "PULL", name: "Pull", kind: "pull" },
+  { label: "CLINCH", name: "Clinch", kind: "clinch" },
+];
+
 export class TouchInput {
   private readonly root: HTMLElement;
   private readonly stickZone: HTMLElement;
   private readonly stickBase: HTMLElement;
   private readonly stickKnob: HTMLElement;
   private readonly pads: HTMLButtonElement[] = [];
+  private readonly moves: HTMLButtonElement[] = [];
   private stickPointer: number | null = null;
   private stickOrigin = { x: 0, y: 0 };
   private moveX = 0;
@@ -48,6 +58,7 @@ export class TouchInput {
     this.root.setAttribute("aria-label", "Touch controls");
     this.root.innerHTML = `<div class="touch-stick" data-stick><div class="touch-stick-base" data-stick-base><div class="touch-stick-knob" data-stick-knob></div></div></div>
 <div class="touch-pads" data-pads>
+  <div class="touch-moves">${MOVES.map((move) => `<button type="button" class="touch-move" data-move="${move.kind}" aria-label="${move.name}">${move.label}</button>`).join("")}</div>
   <div class="touch-mods">
     <button type="button" class="touch-mod" data-mod="body">BODY</button>
     <button type="button" class="touch-mod" data-mod="power">POWER</button>
@@ -61,13 +72,15 @@ export class TouchInput {
     this.stickBase = this.root.querySelector("[data-stick-base]")!;
     this.stickKnob = this.root.querySelector("[data-stick-knob]")!;
     this.pads.push(...this.root.querySelectorAll<HTMLButtonElement>("[data-punch]"));
+    this.moves.push(...this.root.querySelectorAll<HTMLButtonElement>("[data-move]"));
     this.bind();
   }
 
   private bind(): void {
     const zone = this.stickZone;
+    // The stick and the hold buttons track fingers while input is off but shown (the rest, a pause); presses wait for input.
     zone.addEventListener("pointerdown", (event) => {
-      if (!this.enabled || this.stickPointer !== null) return;
+      if (this.stickPointer !== null) return;
       event.preventDefault();
       this.stickPointer = event.pointerId;
       this.stickOrigin = { x: event.clientX, y: event.clientY };
@@ -110,22 +123,30 @@ export class TouchInput {
         window.setTimeout(() => pad.classList.remove("pressed"), 120);
       });
     }
+    for (const move of this.moves) {
+      // A press must start on the button, like a punch pad; a thumb sliding over from the pads does nothing.
+      move.addEventListener("pointerdown", (event) => {
+        if (!this.enabled || this.knockdown) return;
+        event.preventDefault();
+        this.sharedActions.push("touch", { kind: move.dataset.move as MovementKind });
+        move.classList.add("pressed");
+        window.setTimeout(() => move.classList.remove("pressed"), 120);
+      });
+    }
     for (const mod of this.root.querySelectorAll<HTMLButtonElement>("[data-mod], [data-guard]")) {
+      const key = mod.dataset.mod ?? mod.dataset.guard ?? "";
       const press = (event: PointerEvent): void => {
-        if (!this.enabled) return;
         event.preventDefault();
         mod.setPointerCapture(event.pointerId);
-        const key = mod.dataset.mod ?? mod.dataset.guard ?? "";
         this.heldPointers.set(event.pointerId, key);
-        this.applyHeld(key, true);
+        if (key === "guard_high" || key === "guard_low") this.sharedActions.clear();
+        this.syncHeld();
         mod.classList.add("pressed");
       };
       const lift = (event: PointerEvent): void => {
-        const key = this.heldPointers.get(event.pointerId);
-        if (key === undefined) return;
-        this.heldPointers.delete(event.pointerId);
-        this.applyHeld(key, false);
-        mod.classList.remove("pressed");
+        if (!this.heldPointers.delete(event.pointerId)) return;
+        this.syncHeld();
+        mod.classList.toggle("pressed", [...this.heldPointers.values()].includes(key));
       };
       mod.addEventListener("pointerdown", press);
       mod.addEventListener("pointerup", lift);
@@ -133,17 +154,12 @@ export class TouchInput {
     }
   }
 
-  private applyHeld(key: string, down: boolean): void {
-    if (key === "body") this.body = down;
-    else if (key === "power") this.power = down;
-    else if (key === "guard_high" || key === "guard_low") {
-      if (down) {
-        this.guard = key;
-        this.sharedActions.clear();
-      } else if (this.guard === key) {
-        this.guard = "none";
-      }
-    }
+  /** Body, power and guard follow the fingers still down; with both guards held, the later one counts. */
+  private syncHeld(): void {
+    const keys = [...this.heldPointers.values()];
+    this.body = keys.includes("body");
+    this.power = keys.includes("power");
+    this.guard = keys.findLast((key): key is HeldDefense => key === "guard_high" || key === "guard_low") ?? "none";
   }
 
   private updateStick(clientX: number, clientY: number): void {
@@ -174,13 +190,20 @@ export class TouchInput {
     }
   }
 
-  setEnabled(enabled: boolean): void {
+  /**
+   * Off and hidden outside a bout. Through the rest and pauses the controls stay shown, dimmed: a
+   * thumb resting on the stick or a hold button counts from the first frame after the bell.
+   */
+  setEnabled(enabled: boolean, shown = enabled): void {
     this.enabled = enabled;
-    this.root.classList.toggle("disabled", !enabled);
-    if (!enabled) this.reset();
+    this.root.classList.toggle("disabled", !shown);
+    this.root.classList.toggle("resting", shown && !enabled);
+    if (!shown) this.reset();
+    else if (!enabled) this.sharedActions.clearSource("touch");
   }
 
   frame(): InputFrame {
+    if (!this.enabled) return { moveX: 0, moveY: 0, defense: "none", actions: [] };
     return { moveX: this.moveX, moveY: this.moveY, defense: this.guard, actions: [] };
   }
 

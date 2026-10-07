@@ -458,8 +458,10 @@ export function drawHud(
     fighterPlate(ctx, x, plateY, plateWidth, player?.name ?? "Fighter", detail, bars.slice(0, 2), mirror, accent, compact ? undefined : pictureOf(fighter));
     if (compact) portrait(ctx, width / 2 + (mirror ? 1 : -1) * (ROUND_CARD_WIDTH / 2 + 8 + CLOCK_PORTRAIT_RADIUS), 54 + 29, CLOCK_PORTRAIT_RADIUS, pictureOf(fighter), player?.name ?? "Fighter", accent);
     const miniY = plateY - 12;
-    broadcastBar(ctx, mirror ? x + plateWidth - 148 : x + 20, miniY, 64, bars[2]!, mirror);
-    broadcastBar(ctx, mirror ? x + plateWidth - 72 : x + 96, miniY, 64, bars[3]!, mirror);
+    // Guard and poise ride above the plate, as wide as the plate's own bars once the plate is narrow.
+    const miniWidth = Math.min(64, (plateWidth - 52) / 2);
+    broadcastBar(ctx, mirror ? x + plateWidth - 20 - 2 * miniWidth : x + 20, miniY, miniWidth, bars[2]!, mirror);
+    broadcastBar(ctx, mirror ? x + plateWidth - 8 - miniWidth : x + 32 + miniWidth, miniY, miniWidth, bars[3]!, mirror);
     const eyeTag = shutEyeTag(fighter.trauma);
     if (eyeTag !== null) warningTag(ctx, mirror ? x + plateWidth - 20 : x + 20, miniY - 34, eyeTag, mirror);
   });

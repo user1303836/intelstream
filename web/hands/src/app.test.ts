@@ -2,32 +2,40 @@ import type { NetworkCallbacks } from "./network";
 import type { EngineSnapshot, ServerMessage } from "./types";
 import { fighter } from "./test/fixtures";
 
-const mocks = vi.hoisted(() => ({
-  sessionDestroy: vi.fn(),
-  networkDispose: vi.fn(),
-  networkSetActive: vi.fn(),
-  inputDestroy: vi.fn(),
-  rendererDestroy: vi.fn(),
-  rendererPushes: [] as number[][],
-  callbacks: null as NetworkCallbacks | null,
-  rendererResyncs: 0,
-  resultVisible: true,
-  cornerPicks: [] as string[],
-  styleChoices: [] as string[],
-  cpuRequests: [] as string[],
-  cpuAccepted: true,
-  renderers: [] as Array<{ onAnnouncement?: ((lines: readonly string[]) => void) | null; onCrowdCue?: ((cue: "chant") => void) | null }>,
-  input: null as (() => { moveX: number; moveY: number }) | null,
-  viewForward: null as { x: number; z: number } | null,
-}));
+const mocks = vi.hoisted(() => {
+  const sessionDestroy = vi.fn();
+  return {
+    sessionDestroy,
+    authorize: vi.fn(async () => ({
+      sdk: {},
+      bootstrap: { client_id: "123", state: "state", protocol: 3, simulation: { tick_rate: 20, ring_half_width: 500, ring_half_height: 500 } },
+      player: { id: "one", name: "One", avatar: null, rating: 1500 },
+      takeTicket: () => "ticket",
+      destroy: sessionDestroy,
+    })),
+    activityClose: vi.fn(),
+    networkDispose: vi.fn(),
+    networkSetActive: vi.fn(),
+    inputDestroy: vi.fn(),
+    rendererDestroy: vi.fn(),
+    rendererPushes: [] as number[][],
+    callbacks: null as NetworkCallbacks | null,
+    rendererResyncs: 0,
+    resultVisible: true,
+    cornerPicks: [] as string[],
+    styleChoices: [] as string[],
+    cpuRequests: [] as string[],
+    cpuAccepted: true,
+    renderers: [] as Array<{ onAnnouncement?: ((lines: readonly string[]) => void) | null; onCrowdCue?: ((cue: "chant") => void) | null }>,
+    input: null as (() => { moveX: number; moveY: number }) | null,
+    viewForward: null as { x: number; z: number } | null,
+  };
+});
 vi.mock("./discord", () => ({
-  authorizeDiscord: vi.fn(async () => ({
-    sdk: {},
-    bootstrap: { client_id: "123", state: "state", protocol: 3, simulation: { tick_rate: 20, ring_half_width: 500, ring_half_height: 500 } },
-    player: { id: "one", name: "One", avatar: null, rating: 1500 },
-    takeTicket: () => "ticket",
-    destroy: mocks.sessionDestroy,
-  })),
+  DiscordActivity: class {
+    readonly authorize = mocks.authorize;
+    readonly close = mocks.activityClose;
+  },
 }));
 vi.mock("./network", () => ({
   NetworkController: class {
@@ -62,12 +70,23 @@ vi.mock("./render/renderer", () => ({
   },
 }));
 
+import type { IDiscordSDK } from "@discord/embedded-app-sdk";
 import { ClientError } from "./api";
 import { HandsApp } from "./app";
 import { AudioFeedback } from "./audio";
-import { authorizeDiscord } from "./discord";
 
 const send = (message: ServerMessage): void => { mocks.callbacks?.onMessage(message); };
+/** A Discord client that answers every command; `close` is what would close the Activity. */
+const fakeDiscord = (instanceId: string) => ({
+  instanceId,
+  ready: vi.fn(async () => undefined),
+  close: vi.fn(),
+  commands: { authorize: vi.fn(async () => ({ code: "oauth-code" })), authenticate: vi.fn(async () => ({})) },
+});
+const json = (value: unknown): Response => new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
+const handsBackend = () => vi.fn(async (input: URL | RequestInfo) => String(input).includes("bootstrap")
+  ? json({ client_id: "123", state: "state", protocol: 3, simulation: { tick_rate: 30, ring_half_width: 500, ring_half_height: 500 } })
+  : json({ access_token: "access", ticket: "ticket", player: { id: "one", name: "One", avatar: null, rating: 1500 } }));
 const players = [
   { id: "one", name: "One", avatar: null, rating: 1500, connected: true },
   { id: "two", name: "Two", avatar: null, rating: 1500, connected: true },
@@ -170,10 +189,12 @@ describe("browser lifecycle and accessible overlays", () => {
     send({ version: 3, type: "final", match_id: "m", winner_id: "one", method: "decision", round: 1, scorecards: cards, ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } });
     expect(root.querySelector("[data-final]")?.textContent).toContain("A: 10 to 9");
     expect(root.querySelector<HTMLElement>("[data-hint]")!.hidden).toBe(true);
+    expect(mocks.activityClose).not.toHaveBeenCalled();
     app.destroy();
     expect(mocks.networkDispose).toHaveBeenCalled();
     expect(mocks.rendererDestroy).toHaveBeenCalled();
     expect(mocks.sessionDestroy).toHaveBeenCalled();
+    expect(mocks.activityClose).toHaveBeenCalledOnce();
     expect(root.children).toHaveLength(0);
   });
 
@@ -203,7 +224,7 @@ describe("browser lifecycle and accessible overlays", () => {
   });
 
   it("keeps authorization failures visible and reloads before retrying", async () => {
-    vi.mocked(authorizeDiscord).mockRejectedValueOnce(new ClientError("sdk_authenticate_failed", true));
+    mocks.authorize.mockRejectedValueOnce(new ClientError("sdk_authenticate_failed", true));
     history.replaceState({}, "", "/?instance_id=launch");
     const root = document.createElement("div");
     const reload = vi.fn();
@@ -215,6 +236,34 @@ describe("browser lifecycle and accessible overlays", () => {
     retry.click();
     expect(reload).toHaveBeenCalledOnce();
     expect(mocks.sessionDestroy).not.toHaveBeenCalled();
+    // The reload's pagehide tears the app down; closing the SDK then would close the Activity instead.
+    app.destroy();
+    expect(mocks.activityClose).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["the bootstrap", (): void => { mocks.authorize.mockRejectedValueOnce(new ClientError("client_outdated", true)); }],
+    ["the socket", (): void => undefined],
+  ])("asks for a reload, not another sign-in, when %s shows Hands was updated", async (source, arrange) => {
+    arrange();
+    history.replaceState({}, "", "/?instance_id=launch");
+    const root = document.createElement("div");
+    const reload = vi.fn();
+    const app = new HandsApp(root, reload);
+    app.start();
+    if (source === "the socket") {
+      await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
+      send({ version: 3, type: "error", code: "client_outdated" });
+      mocks.callbacks?.onFatal("client_outdated");
+    }
+    await vi.waitFor(() => expect(root.querySelector("[data-status]")?.textContent).toBe("Hands was updated. Reload to continue (client_outdated)."));
+    const retry = root.querySelector<HTMLButtonElement>("[data-retry]")!;
+    expect(retry.hidden).toBe(false);
+    expect(retry.textContent).toBe("Reload");
+    const authorizations = mocks.authorize.mock.calls.length;
+    retry.click();
+    expect(reload).toHaveBeenCalledOnce();
+    expect(mocks.authorize.mock.calls.length).toBe(authorizations);
     app.destroy();
   });
 
@@ -287,7 +336,7 @@ describe("browser lifecycle and accessible overlays", () => {
     const root = document.createElement("div");
     const app = new HandsApp(root);
     const headings = [...root.querySelectorAll("[data-controls-panel] h3")].map((heading) => heading.textContent);
-    expect(headings).toEqual(["Keyboard", "Between rounds", "Controller"]);
+    expect(headings).toEqual(["Keyboard", "Between rounds", "Controller", "Touch"]);
     expect(root.querySelector("[data-controls-panel]")?.textContent).toContain("Shift+1 low blow");
     const diagnostics = root.querySelector("details.diagnostics");
     expect(diagnostics).not.toBeNull();
@@ -468,7 +517,7 @@ describe("browser lifecycle and accessible overlays", () => {
     vi.useRealTimers();
     await vi.waitFor(() => expect(mocks.callbacks).not.toBe(first));
     const closing = mocks.callbacks;
-    const authorizations = vi.mocked(authorizeDiscord).mock.calls.length;
+    const authorizations = mocks.authorize.mock.calls.length;
     vi.useFakeTimers();
     send({ version: 3, type: "error", code: "room_closed" });
     closing?.onFatal("room_closed");
@@ -476,7 +525,7 @@ describe("browser lifecycle and accessible overlays", () => {
     vi.advanceTimersByTime(3_100);
     vi.useRealTimers();
     await vi.waitFor(() => expect(mocks.callbacks).not.toBe(closing));
-    expect(vi.mocked(authorizeDiscord).mock.calls.length).toBe(authorizations + 1);
+    expect(mocks.authorize.mock.calls.length).toBe(authorizations + 1);
     send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1516, players: [players[0]], server_tick: 0, next_sequence: 0, reconnect_ticket: "fresh" });
     send({ version: 3, type: "waiting", open_seats: 1 });
     send({ version: 3, type: "error", code: "room_closed" });
@@ -582,6 +631,86 @@ describe("browser lifecycle and accessible overlays", () => {
     app.destroy();
   });
 
+  it("keeps the touch controls up but inert through the rest, and hides them outside the bout", async () => {
+    vi.mocked(window.matchMedia).mockImplementation((query: string) => ({ matches: query === "(pointer: coarse)", media: query, onchange: null, addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn() }));
+    history.replaceState({}, "", "/?instance_id=launch");
+    const root = document.createElement("div");
+    const app = new HandsApp(root);
+    app.start();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
+    const controls = root.querySelector<HTMLElement>(".touch-controls")!;
+    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [players[0]], server_tick: 0, next_sequence: 0, reconnect_ticket: "rotated" });
+    send({ version: 3, type: "waiting", open_seats: 1 });
+    expect(controls.classList.contains("disabled")).toBe(true);
+    send({ version: 3, type: "ready", players: [...players] });
+    send({ version: 3, type: "snapshot", payload: makeSnapshot(100) });
+    expect(controls.classList.contains("disabled")).toBe(false);
+    expect(controls.classList.contains("resting")).toBe(false);
+    send({ version: 3, type: "snapshot", payload: makeSnapshot(101, "rest") });
+    expect(controls.classList.contains("disabled")).toBe(false);
+    expect(controls.classList.contains("resting")).toBe(true);
+    send({ version: 3, type: "snapshot", payload: makeSnapshot(102, "fight") });
+    expect(controls.classList.contains("resting")).toBe(false);
+    send({ version: 3, type: "snapshot", payload: makeSnapshot(103, "complete") });
+    expect(controls.classList.contains("disabled")).toBe(true);
+    app.destroy();
+  });
+
+  it("keeps the page's one Discord SDK open through a rematch and a retried failure, and closes it at teardown", async () => {
+    const { DiscordActivity } = await vi.importActual<typeof import("./discord")>("./discord");
+    history.replaceState({}, "", "/?instance_id=launch&frame_id=frame&platform=mobile");
+    vi.stubGlobal("fetch", handsBackend());
+    const discord = fakeDiscord("launch");
+    const makeSdk = vi.fn(() => discord as unknown as IDiscordSDK);
+    const root = document.createElement("div");
+    const app = new HandsApp(root, vi.fn(), new DiscordActivity(makeSdk));
+    app.start();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
+    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 100, next_sequence: 8, reconnect_ticket: "rotated" });
+    send({ version: 3, type: "snapshot", payload: makeSnapshot(100) });
+    vi.useFakeTimers();
+    send({ version: 3, type: "final", match_id: "m1", winner_id: "one", method: "decision", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } });
+    vi.advanceTimersByTime(11_500);
+    const first = mocks.callbacks;
+    root.querySelector<HTMLButtonElement>("[data-rematch]")!.click();
+    vi.useRealTimers();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBe(first));
+    expect(discord.commands.authorize).toHaveBeenCalledTimes(2);
+    expect(discord.close).not.toHaveBeenCalled();
+
+    const rematched = mocks.callbacks!;
+    rematched.onFatal("persistence_failed");
+    expect(root.querySelector("[data-status]")?.textContent).toContain("could not be saved");
+    expect(discord.close).not.toHaveBeenCalled();
+    root.querySelector<HTMLButtonElement>("[data-retry]")!.click();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBe(rematched));
+    expect(discord.commands.authorize).toHaveBeenCalledTimes(3);
+    expect(makeSdk).toHaveBeenCalledOnce();
+    expect(discord.close).not.toHaveBeenCalled();
+
+    app.destroy();
+    expect(discord.close).toHaveBeenCalledOnce();
+    vi.unstubAllGlobals();
+  });
+
+  it("reloads without closing the Activity when Discord authorization fails", async () => {
+    const { DiscordActivity } = await vi.importActual<typeof import("./discord")>("./discord");
+    history.replaceState({}, "", "/?instance_id=launch&frame_id=frame&platform=mobile");
+    vi.stubGlobal("fetch", handsBackend());
+    const discord = fakeDiscord("launch");
+    discord.commands.authenticate.mockRejectedValue(new Error("host rejected"));
+    const reload = vi.fn();
+    const root = document.createElement("div");
+    const app = new HandsApp(root, reload, new DiscordActivity(() => discord as unknown as IDiscordSDK));
+    app.start();
+    await vi.waitFor(() => expect(root.querySelector("[data-status]")?.textContent).toContain("(sdk_authenticate_failed)"));
+    expect(discord.close).not.toHaveBeenCalled();
+    root.querySelector<HTMLButtonElement>("[data-retry]")!.click();
+    expect(reload).toHaveBeenCalledOnce();
+    app.destroy();
+    expect(discord.close).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
 });
 
 describe("the corner panel", () => {

@@ -49,11 +49,39 @@ export const FIGHTER_RADIUS = manifestJson.ring.fighter_radius;
 export const EYE_SHUT_TRAUMA = manifestJson.blind_side.eye_threshold;
 export const CORNER_TREATMENTS = manifestJson.corner;
 export const RING_CORNER_REACH = manifestJson.corners.reach;
+/** Percent of a punch's recovery that must pass before a chained follow-up may cut the rest of it short. */
+export const RECOVERY_CANCEL_PERCENT = manifestJson.combos.recovery_cancel_percent;
 const comboChains = new Set(manifestJson.combos.chains.map(([first, second]) => `${first}:${second}`));
 
 /** Whether the engine counts `second` straight after `first` as a combination. */
 export function comboChain(first: PunchClass, second: PunchClass): boolean {
   return comboChains.has(`${first}:${second}`);
+}
+
+/** Age from which a punch's recovery may give way to a follow-up: the engine's `cancel_age`. */
+export function recoveryCancelAge(timing: Pick<PunchTiming, "startup" | "active" | "recovery">): number {
+  return timing.startup + timing.active + Math.floor((timing.recovery * RECOVERY_CANCEL_PERCENT) / 100);
+}
+
+/**
+ * The engine's `_can_cancel_recovery` for a punch past its `recoveryCancelAge`: the follow-up waiting
+ * on it starts at once only if the punch landed (a hit or an ordinary block, not a whiff, an evade or a
+ * parry), the two form a combination, the fighter can pay the follow-up's full cost at his style's price
+ * (a punch he cannot is a tired one, and no combination) and the defender is not stunned. Otherwise the
+ * follow-up starts the tick after the punch ends.
+ */
+export function cancelsRecovery(
+  punch: PunchClass,
+  landed: boolean,
+  followUp: { readonly class: PunchClass; readonly target: Target; readonly power: Power },
+  stamina: number,
+  defenderStunned: boolean,
+  style: FighterStyle = "balanced",
+): boolean {
+  return landed
+    && !defenderStunned
+    && comboChain(punch, followUp.class)
+    && stamina >= styledStaminaCost(style, followUp.class, followUp.target, followUp.power);
 }
 
 /** Ticks after a punch ends during which a compatible follow-up still counts as a combination. */
@@ -115,28 +143,38 @@ interface ManifestStyle {
   readonly stamina_cost_percent?: number;
   readonly conditioning_loss_percent?: number;
   readonly move_speed_percent?: number;
+  readonly evasion_ticks?: number;
 }
 
-/** What the client needs of a style to predict the player's own punches and footwork as the engine will. */
+/** What the client needs of a style to predict the player's own punches, evasions and footwork as the engine will. */
 export interface StyleTiming {
   readonly startupTicks: Readonly<Partial<Record<PunchClass, number>>>;
   readonly recoveryTicks: Readonly<Partial<Record<PunchClass, number>>>;
   readonly staminaCostPercent: number;
   readonly conditioningLossPercent: number;
   readonly moveSpeedPercent: number;
+  /** Ticks a slip, weave or pull lasts beyond the engine's EVASION_TICKS. */
+  readonly evasionTicks: number;
 }
 
 const styles = manifestJson.styles as unknown as Record<FighterStyle, ManifestStyle>;
+/** Built once per style: the prediction asks for it many times a frame. */
+const styleTimings = new Map<FighterStyle, StyleTiming>();
 
 export function styleTiming(style: FighterStyle): StyleTiming {
+  const known = styleTimings.get(style);
+  if (known !== undefined) return known;
   const raw = styles[style] ?? {};
-  return {
+  const timing: StyleTiming = {
     startupTicks: raw.startup_ticks ?? {},
     recoveryTicks: raw.recovery_ticks ?? {},
     staminaCostPercent: raw.stamina_cost_percent ?? 100,
     conditioningLossPercent: raw.conditioning_loss_percent ?? 100,
     moveSpeedPercent: raw.move_speed_percent ?? 100,
+    evasionTicks: raw.evasion_ticks ?? 0,
   };
+  styleTimings.set(style, timing);
+  return timing;
 }
 
 /** The stamina a fighter of `style` is charged for the punch, before any combo discount. */

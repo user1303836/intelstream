@@ -1,5 +1,5 @@
 import { comboChain, comboWindow, FIGHTER_RADIUS, punchTiming, RING_CORNER_REACH, RING_HALF_HEIGHT, RING_HALF_WIDTH, STUNNED_SPEED_PERCENT, styledStaminaCost, styleTiming, TIRED_RECOVERY_TICKS, TIRED_STARTUP_TICKS, type PunchTiming } from "./manifest";
-import type { FighterSnapshot, Hand, HeldDefense, Power, PunchClass, Target } from "./types";
+import type { DefensivePose, FighterSnapshot, Hand, HeldDefense, MovementKind, Power, PunchClass, Target } from "./types";
 
 export interface HeldInput {
   readonly moveX: number;
@@ -86,30 +86,47 @@ function stateLocked(fighter: FighterSnapshot): boolean {
     || ["slip_left", "slip_right", "weave", "pull"].includes(fighter.defense);
 }
 
+/** What the engine walks toward for a held input: the velocity it blends halfway to each tick, and its speed cap. */
+export interface MovementIntent {
+  readonly x: number;
+  readonly y: number;
+  readonly speed: number;
+}
+
+/**
+ * The fatigue-, guard-, stun- and style-scaled walking intent of `held` on the tick `step` ticks after
+ * the snapshot, as the engine's `_move_fighter` works it out, written to `out`. The engine counts a
+ * stun down before the footwork of each tick, and a stunned fighter's guard is down: he stumbles at a
+ * share of his plain speed while the stun has ticks left after that.
+ */
+export function movementIntent(fighter: FighterSnapshot, held: HeldInput, out: { x: number; y: number; speed: number } = { x: 0, y: 0, speed: 0 }, step = 0): MovementIntent {
+  const base = Math.max(2, Math.floor((MAX_SPEED * fatigueFactor(fighter.conditioning, fighter.trauma.body)) / 100));
+  const stunned = fighter.stunned_ticks - step;
+  let speed = base;
+  if (stunned > 1) speed = Math.max(2, Math.floor((base * STUNNED_SPEED_PERCENT) / 100));
+  else if (stunned <= 0 && (held.defense === "guard_high" || held.defense === "guard_low")) speed = Math.max(2, Math.floor((base * GUARD_SPEED_PERCENT) / 100));
+  // The engine moves in thousandths of a unit, so a style's few percent of footspeed are kept.
+  speed *= styleTiming(fighter.style).moveSpeedPercent / 100;
+  const magnitude = Math.hypot(held.moveX, held.moveY);
+  const scale = magnitude > 1000 ? 1000 / magnitude : 1;
+  out.x = (held.moveX * scale * speed) / 1000;
+  out.y = (held.moveY * scale * speed) / 1000;
+  out.speed = speed;
+  return out;
+}
+
 /**
  * Mirrors the authoritative movement integrator (velocity blends halfway to
  * the held direction each tick, capped at the fatigue-scaled speed) so the
- * viewer's own fighter can be shown `ticks` ahead of the delayed snapshot.
- * With the snapshot `tick`, a punch only holds the fighter for the ticks it
- * has left, so stepping out of a punch is predicted as soon as it ends.
+ * viewer's own fighter can be shown `ticks` ahead of the delayed snapshot,
+ * walking toward `intent(step)` on each tick. With the snapshot `tick`, a
+ * punch only holds the fighter for the ticks it has left, so stepping out of
+ * a punch is predicted as soon as it ends.
  */
-export function predictMovement(fighter: FighterSnapshot, held: HeldInput, ticks: number, tick?: number): PredictedOffset {
+export function replayMovement(fighter: FighterSnapshot, intent: (step: number) => MovementIntent, ticks: number, tick?: number): PredictedOffset {
   if (ticks <= 0 || stateLocked(fighter)) return { dx: 0, dy: 0 };
   const committed = tick === undefined ? (fighter.action !== null ? Infinity : 0) : attackTicksRemaining(fighter, tick);
   if (committed >= ticks) return { dx: 0, dy: 0 };
-  const base = Math.max(2, Math.floor((MAX_SPEED * fatigueFactor(fighter.conditioning, fighter.trauma.body)) / 100));
-  const guarded = Math.max(2, Math.floor((base * GUARD_SPEED_PERCENT) / 100));
-  // The engine moves in thousandths of a unit, so a style's few percent of footspeed are kept.
-  const footwork = styleTiming(fighter.style).moveSpeedPercent / 100;
-  const magnitude = Math.hypot(held.moveX, held.moveY);
-  const scale = magnitude > 1000 ? 1000 / magnitude : 1;
-  // The engine counts a stun down before the footwork of each tick, and a stunned fighter's guard
-  // is down: he stumbles at a share of his plain speed while the stun has ticks left after that.
-  const speedAt = (step: number): number => {
-    const stunned = fighter.stunned_ticks - step;
-    if (stunned > 0) return (stunned > 1 ? Math.max(2, Math.floor((base * STUNNED_SPEED_PERCENT) / 100)) : base) * footwork;
-    return (held.defense === "guard_high" || held.defense === "guard_low" ? guarded : base) * footwork;
-  };
   let vx = fighter.velocity_x;
   let vy = fighter.velocity_y;
   let dx = 0;
@@ -117,25 +134,103 @@ export function predictMovement(fighter: FighterSnapshot, held: HeldInput, ticks
   const whole = Math.floor(ticks);
   const fraction = ticks - whole;
   for (let step = 0; step < whole; step += 1) {
-    const speed = speedAt(step);
     const free = step >= committed;
-    vx = (vx + (free ? (held.moveX * scale * speed) / 1000 : 0)) / 2;
-    vy = (vy + (free ? (held.moveY * scale * speed) / 1000 : 0)) / 2;
+    const want = intent(step);
+    vx = (vx + (free ? want.x : 0)) / 2;
+    vy = (vy + (free ? want.y : 0)) / 2;
     const length = Math.hypot(vx, vy);
-    if (length > speed) {
-      vx = (vx / length) * speed;
-      vy = (vy / length) * speed;
+    if (length > want.speed) {
+      vx = (vx / length) * want.speed;
+      vy = (vy / length) * want.speed;
     }
     dx += vx;
     dy += vy;
   }
   if (fraction > 0) {
-    const speed = speedAt(whole);
     const free = whole >= committed;
-    dx += ((vx + (free ? (held.moveX * scale * speed) / 1000 : 0)) / 2) * fraction;
-    dy += ((vy + (free ? (held.moveY * scale * speed) / 1000 : 0)) / 2) * fraction;
+    const want = intent(whole);
+    dx += ((vx + (free ? want.x : 0)) / 2) * fraction;
+    dy += ((vy + (free ? want.y : 0)) / 2) * fraction;
   }
   return { dx, dy };
+}
+
+/** `replayMovement` with the same input held on every tick. */
+export function predictMovement(fighter: FighterSnapshot, held: HeldInput, ticks: number, tick?: number): PredictedOffset {
+  const intent = { x: 0, y: 0, speed: 0 };
+  return replayMovement(fighter, (step) => movementIntent(fighter, held, intent, step), ticks, tick);
+}
+
+/** Held input kept for replay, longer than any lead the renderer works with. */
+const HELD_HISTORY_MS = 1000;
+/** The prediction offset may move at most this many times the top walking speed: real motion is never slowed, a correction slides. */
+const OFFSET_SPEED_LIMIT = 2.5;
+/** Rate at which the lead eases to a new estimate of the latency or the interpolation delay. */
+const HORIZON_EASE_RATE = 4;
+
+/**
+ * Keeps the viewer's own fighter ahead of the delayed snapshot on screen by the input latency plus
+ * the interpolation delay. That far ahead the server is still applying inputs held in the past, so
+ * rather than assume the current one was held all along, each tick ahead replays the input the
+ * server applies at that tick: the one a flush sent a lead earlier. The fighter then sets off on the
+ * press and stops on the release instead of stepping, stalling and overshooting.
+ */
+export class MovementPrediction {
+  private readonly history: { readonly at: number; readonly held: HeldInput }[] = [];
+  private readonly offset = { dx: 0, dy: 0 };
+  private readonly mean = { x: 0, y: 0, speed: 0 };
+  private readonly sample = { x: 0, y: 0, speed: 0 };
+  private horizon: number | null = null;
+
+  /**
+   * The offset to draw `fighter`, as shown, by this frame. `held` is the input held now; with
+   * `holdFeet` (the viewer's own punch playing) the server will not walk him for it. `fighter` is
+   * null outside the fight, where the offset eases away.
+   */
+  update(fighter: FighterSnapshot | null, held: HeldInput, holdFeet: boolean, nowMs: number, horizonTicks: number, tick: number, dt: number, tickRate: number): PredictedOffset {
+    this.history.push({ at: nowMs, held: holdFeet ? { ...held, moveX: 0, moveY: 0 } : held });
+    while (this.history.length > 2 && this.history[1]!.at < nowMs - HELD_HISTORY_MS) this.history.shift();
+    this.horizon = this.horizon === null ? horizonTicks : this.horizon + (horizonTicks - this.horizon) * (1 - Math.exp(-HORIZON_EASE_RATE * dt));
+    let target: PredictedOffset = { dx: 0, dy: 0 };
+    if (fighter !== null) {
+      const tickMs = 1000 / tickRate;
+      const lead = this.horizon;
+      // The input applied `step` ticks ahead left with a flush around `lead - 1 - step` ticks ago.
+      target = replayMovement(fighter, (step) => this.meanIntent(fighter, step, nowMs - (lead - 1 - step) * tickMs, tickMs), lead, tick);
+    }
+    const limit = OFFSET_SPEED_LIMIT * MAX_SPEED * tickRate * dt;
+    const changeX = target.dx - this.offset.dx;
+    const changeY = target.dy - this.offset.dy;
+    const change = Math.hypot(changeX, changeY);
+    const scale = change > limit ? limit / change : 1;
+    this.offset.dx += changeX * scale;
+    this.offset.dy += changeY * scale;
+    return { dx: this.offset.dx, dy: this.offset.dy };
+  }
+
+  /**
+   * The walking intent `step` ticks ahead, averaged over the `width` ms around `centre`, the input held
+   * after now being the current one.
+   */
+  private meanIntent(fighter: FighterSnapshot, step: number, centre: number, width: number): MovementIntent {
+    const from = centre - width / 2;
+    const to = centre + width / 2;
+    const mean = this.mean;
+    mean.x = 0;
+    mean.y = 0;
+    mean.speed = 0;
+    for (let index = 0; index < this.history.length; index += 1) {
+      const start = index === 0 ? from : Math.max(from, this.history[index]!.at);
+      const end = Math.min(to, this.history[index + 1]?.at ?? Infinity);
+      if (end <= start) continue;
+      const intent = movementIntent(fighter, this.history[index]!.held, this.sample, step);
+      const weight = (end - start) / width;
+      mean.x += intent.x * weight;
+      mean.y += intent.y * weight;
+      mean.speed += intent.speed * weight;
+    }
+    return mean;
+  }
 }
 
 /** The nearest point inside the ropes and corner pads, the engine's ring projection without its integer rounding. */
@@ -181,4 +276,76 @@ export function constrainPrediction(fighter: { readonly x: number; readonly y: n
   }
   const inside = ringPoint(x, y);
   return { dx: inside.x - fighter.x, dy: inside.y - fighter.y };
+}
+
+/** Ticks a slip, weave or pull lasts on the server (the engine's EVASION_TICKS), before a style's own. */
+export const EVASION_TICKS = 10;
+/** Stamina the server asks of a slip, weave or pull before it starts one. */
+export const EVASION_STAMINA = 25;
+
+export type EvasionKind = "slip_left" | "slip_right" | "weave" | "pull";
+
+export function isEvasion(kind: MovementKind | "punch" | "foul" | DefensivePose): kind is EvasionKind {
+  return kind === "slip_left" || kind === "slip_right" || kind === "weave" || kind === "pull";
+}
+
+/**
+ * The defence the viewer's own fighter is shown in during the fight: the guard held now, ahead of the
+ * snapshot like his feet, or the slip, weave or pull just pressed. The server's own defence stands
+ * while it overrides the held guard: none while stunned or taunting, unchanged in a clinch, and an
+ * evasion it is playing.
+ */
+export function predictedDefense(server: FighterSnapshot, held: HeldInput, evasion: EvasionKind | null): DefensivePose {
+  if (server.stunned_ticks > 0 || server.taunt_ticks > 0 || server.clinch_ticks > 0) return server.defense;
+  if (evasion !== null) return evasion;
+  if (isEvasion(server.defense)) return server.defense;
+  return held.defense;
+}
+
+/**
+ * A slip, weave or pull the viewer pressed, shown on the press the way his punches are. It lasts the
+ * lead plus its own ticks, so it ends as the server's copy does on screen, unless the server turns it
+ * down: once a snapshot has the frame that carried it, the fighter is evading or never will for it, and
+ * a stun, a clinch or the end of the fight phase clears it.
+ */
+export class EvasionPrediction {
+  private kind: EvasionKind | null = null;
+  private id = "";
+  private pressedAt = 0;
+  private until = 0;
+  private ticks = EVASION_TICKS;
+  private sequence: number | null = null;
+  private started = false;
+
+  /** `evasionTicks` is how long the server plays it: EVASION_TICKS plus the fighter's style's own. */
+  press(kind: EvasionKind, id: string, nowMs: number, leadTicks: number, tickRate: number, evasionTicks = EVASION_TICKS): void {
+    this.kind = kind;
+    this.id = id;
+    this.pressedAt = nowMs;
+    this.ticks = evasionTicks;
+    this.until = nowMs + ((Math.max(0, leadTicks) + evasionTicks) * 1000) / tickRate;
+    this.sequence = null;
+    this.started = false;
+  }
+
+  /** Squares the pressed evasion with the newest snapshot; `sequenceOf` gives the frame that carried a press once it has gone out. */
+  acknowledge(server: FighterSnapshot, fighting: boolean, sequenceOf: ((actionId: string) => number | null) | null): void {
+    if (this.kind === null) return;
+    this.sequence ??= sequenceOf?.(this.id) ?? null;
+    if (server.defense === this.kind) this.started = true;
+    const cutOff = !fighting || server.stunned_ticks > 0 || server.clinch_ticks > 0;
+    const refused = !this.started && this.sequence !== null && server.last_input_sequence >= this.sequence && server.queued_actions === 0;
+    if (cutOff || refused) this.kind = null;
+  }
+
+  /** The evasion to show at `nowMs`, or null. */
+  pose(nowMs: number): EvasionKind | null {
+    if (this.kind !== null && nowMs >= this.until) this.kind = null;
+    return this.kind;
+  }
+
+  /** True while the server, evading, keeps the fighter's feet still for inputs sent now. */
+  holdsFeet(nowMs: number, tickRate: number): boolean {
+    return this.kind !== null && nowMs < this.pressedAt + (this.ticks * 1000) / tickRate;
+  }
 }

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import secrets
 import signal
 import zlib
@@ -88,15 +89,18 @@ async def run(args: argparse.Namespace) -> None:
         ),
     )
     await server.start()
-    print(f"hands e2e server listening on http://127.0.0.1:{server.bound_port}", flush=True)
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for signal_number in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(signal_number, stop.set)
     try:
+        print(f"hands e2e server listening on http://127.0.0.1:{server.bound_port}", flush=True)
+        stop = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        for signal_number in (signal.SIGINT, signal.SIGTERM):
+            # Windows event loops have no signal handlers; Ctrl+C cancels the run there instead.
+            with contextlib.suppress(NotImplementedError):
+                loop.add_signal_handler(signal_number, stop.set)
         await stop.wait()
     finally:
         await server.close()
+        await repository.close()
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -111,7 +115,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main() -> None:
-    asyncio.run(run(parse_args()))
+    with contextlib.suppress(KeyboardInterrupt):
+        asyncio.run(run(parse_args()))
 
 
 if __name__ == "__main__":

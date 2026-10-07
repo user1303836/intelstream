@@ -37,7 +37,12 @@ from intelstream.database.models import (
     SourceType,
     SuckBoobsStats,
 )
-from intelstream.hands.rating import DEFAULT_RATING, calculate_elo
+from intelstream.hands.rating import (
+    DEFAULT_RATING,
+    REPEAT_PAIRING_WINDOW,
+    calculate_elo,
+    repeat_pairing_k_factor,
+)
 from intelstream.hands.types import FinishMethod, MatchResult
 
 logger = structlog.get_logger()
@@ -976,7 +981,30 @@ class Repository:
                     if match_result.winner_id is None
                     else (1.0 if match_result.winner_id == one.user_id else 0.0)
                 )
-                elo = calculate_elo(one.rating, two.rating, one_score)
+                earlier_bouts = await session.scalar(
+                    select(func.count())
+                    .select_from(HandsMatch)
+                    .where(
+                        HandsMatch.guild_id == match_result.guild_id,
+                        HandsMatch.created_at >= datetime.now(UTC) - REPEAT_PAIRING_WINDOW,
+                        or_(
+                            and_(
+                                HandsMatch.player_one_id == one.user_id,
+                                HandsMatch.player_two_id == two.user_id,
+                            ),
+                            and_(
+                                HandsMatch.player_one_id == two.user_id,
+                                HandsMatch.player_two_id == one.user_id,
+                            ),
+                        ),
+                    )
+                )
+                elo = calculate_elo(
+                    one.rating,
+                    two.rating,
+                    one_score,
+                    k_factor=repeat_pairing_k_factor(int(earlier_bouts or 0)),
+                )
                 scorecard_json = json.dumps(
                     [
                         {

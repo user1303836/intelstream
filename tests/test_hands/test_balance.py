@@ -121,16 +121,19 @@ def test_a_hurt_fighter_is_rocked_by_an_ordinary_shot() -> None:
     assert engine.fighter("two").stunned_ticks >= ROCKED_BASE_TICKS
 
 
-def test_a_run_of_stuns_stops_at_the_chain_limit() -> None:
+def test_a_running_stun_is_not_started_again_and_no_stun_passes_the_chain_limit() -> None:
     engine = make_engine()
     fighter = engine.fighter("two")
     fighter.stunned_ticks = 10
-    fighter.stun_chain_ticks = STUN_CHAIN_MAX_TICKS - 5
-    assert not engine._stun(fighter, 30, rocked=True)
-    assert fighter.stunned_ticks == 10
     fighter.stun_chain_ticks = STUN_CHAIN_MAX_TICKS - 25
-    assert engine._stun(fighter, 30, rocked=True)
-    assert fighter.stunned_ticks == 25
+    # However hard it lands, a punch on a man who is still stunned does not start his stun again.
+    assert not engine._stun(fighter, 8, rocked=False)
+    assert not engine._stun(fighter, 30, rocked=True)
+    assert (fighter.stunned_ticks, fighter.stun_chain_ticks) == (10, STUN_CHAIN_MAX_TICKS - 25)
+    fighter.stunned_ticks = 0
+    fighter.stun_chain_ticks = 0
+    assert engine._stun(fighter, STUN_CHAIN_MAX_TICKS + 20, rocked=True)
+    assert fighter.stunned_ticks == STUN_CHAIN_MAX_TICKS
 
 
 def test_a_stun_keeps_counting_toward_the_chain_and_then_leaves_a_moment_of_clear_head() -> None:
