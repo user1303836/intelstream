@@ -15,7 +15,7 @@ import { applyOutfitShading, buildCuffGeometry, buildHandGeometry, type Official
 import { PoseSolver, STANCE, easeIn, easeOut, mirrorX, smoothstep, vec, type FootTarget, type HandTarget, type PoseDescription } from "./poser";
 import { KnockoutRagdoll, blowImpulse, fallStyleFor } from "./ragdoll";
 import { SolvedRig } from "./rig";
-import { POST_RADIUS, type WorldMapping } from "./world";
+import { CANVAS_TOP, PLATFORM_HALF, POST_RADIUS, type WorldMapping } from "./world";
 
 export const FIGHTER_MODEL_SCALE = 1;
 
@@ -115,6 +115,34 @@ interface AppliedFighterMaterials {
   readonly bodyInjury: InjuryShading;
 }
 
+/**
+ * Lifts a posed vertex that is under the ring's floor onto it, in the mesh's own space, just before it is projected.
+ * Off the platform the floor is the arena's, a metre lower, and a vertex there is left alone.
+ */
+export const PRESS_ONTO_CANVAS_GLSL = /* glsl */ `{
+  vec4 pressedOntoCanvas = modelMatrix * vec4( transformed, 1.0 );
+  if ( pressedOntoCanvas.y < ${CANVAS_TOP.toFixed(4)} && max( abs( pressedOntoCanvas.x ), abs( pressedOntoCanvas.z ) ) < ${PLATFORM_HALF.toFixed(4)} ) {
+    transformed += inverse( mat3( modelMatrix ) ) * vec3( 0.0, ${CANVAS_TOP.toFixed(4)} - pressedOntoCanvas.y, 0.0 );
+  }
+}`;
+
+/**
+ * Skin and kit meet the canvas instead of passing through it: a vertex the skeleton puts below the canvas is drawn on
+ * it, as flesh or cloth pressed flat on the floor. A body lying on the canvas rests on spheres at its joints, which the
+ * calves, the loose trunks and the gloves' padding reach past: they went 5-10 cm under it. Composes with a shader
+ * patch already on the material.
+ */
+export function pressOntoCanvas(material: THREE.Material): void {
+  const before = material.onBeforeCompile;
+  const beforeKey = Object.hasOwn(material, "customProgramCacheKey") ? material.customProgramCacheKey() : "plain";
+  material.onBeforeCompile = (shader, renderer) => {
+    before.call(material, shader, renderer);
+    shader.vertexShader = shader.vertexShader.replace("#include <project_vertex>", `${PRESS_ONTO_CANVAS_GLSL}\n#include <project_vertex>`);
+  };
+  material.customProgramCacheKey = () => `${beforeKey}-on-canvas`;
+  material.needsUpdate = true;
+}
+
 export function applyFighterSkin(target: THREE.Object3D, palette: BoxerPaletteColors): AppliedFighterMaterials {
   // An official never takes damage or sweats: plain materials, injury state that shades nothing, and no shadow.
   const official = palette.outfit !== undefined;
@@ -153,6 +181,7 @@ export function applyFighterSkin(target: THREE.Object3D, palette: BoxerPaletteCo
       if (outfit !== undefined && part !== undefined) applyOutfitShading(material, part, outfit);
       else if (sourceName === "PantsMat0") trunksBlood = wearCornerColour(material, false, "trunks");
       else if (sourceName === "GlovesMat0") gloveBlood = wearCornerColour(material);
+      pressOntoCanvas(material);
     }
     object.material = material;
     object.castShadow = !official;

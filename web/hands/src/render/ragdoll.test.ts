@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import * as THREE from "three";
 import { fighter as baseFighter } from "../test/fixtures";
 import type { DefensivePose, FighterSnapshot } from "../types";
-import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
+import { BoxingGraph, PRESS_ONTO_CANVAS_GLSL, SkinnedBoxer, loadBoxerGlb } from "./graph";
 import { NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE } from "./injury";
 import { KnockoutRagdoll, P, PARTICLES, RADIUS, RagdollBody, blowImpulse, fallStyleFor, type ImpulseRecord } from "./ragdoll";
 import { closeUpAngle } from "./renderer";
@@ -544,6 +544,28 @@ describe("knockouts on the fighter", () => {
     // Up off his knee he is on his place: the opponent's punches aim there.
     expect(away).toBeLessThan(0.01);
   }, 60_000);
+
+  it("draws the skin and kit a body lying on the canvas reaches under it pressed flat on the canvas", () => {
+    // The body lies on spheres at its joints, which the calves, the loose trunks and the gloves' padding reach past:
+    // drawn as the skeleton put them, they went 5-10 cm under the canvas.
+    const { boxer } = standing();
+    const materials = new Set<THREE.MeshStandardMaterial>();
+    boxer.root.traverse((object) => {
+      if (object instanceof THREE.SkinnedMesh) materials.add(object.material as THREE.MeshStandardMaterial);
+    });
+    expect(materials.size).toBe(5);
+    for (const material of materials) {
+      const shader = { uniforms: {}, vertexShader: THREE.ShaderLib.physical.vertexShader, fragmentShader: THREE.ShaderLib.physical.fragmentShader };
+      material.onBeforeCompile(shader as unknown as THREE.WebGLProgramParametersWithUniforms, null as unknown as THREE.WebGLRenderer);
+      // Once, on the vertex as posed: after the skeleton and every other patch move it, just before it is projected.
+      const press = shader.vertexShader.indexOf(PRESS_ONTO_CANVAS_GLSL);
+      expect(press, material.name).toBeGreaterThan(shader.vertexShader.indexOf("#include <skinning_vertex>"));
+      expect(shader.vertexShader.indexOf(PRESS_ONTO_CANVAS_GLSL, press + 1), material.name).toBe(-1);
+      expect(shader.vertexShader.slice(press + PRESS_ONTO_CANVAS_GLSL.length).trimStart().startsWith("#include <project_vertex>"), material.name).toBe(true);
+      // A program of its own, not one cached for the same material without it.
+      expect(material.customProgramCacheKey(), material.name).toContain("on-canvas");
+    }
+  });
 
   it("runs the recorded fall again for the replay and ends where the live fall ended", () => {
     const { graph, fighter, opponent, time } = standing();
