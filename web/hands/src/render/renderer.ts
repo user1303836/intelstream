@@ -150,6 +150,9 @@ void main() {
 };
 /** Where the fighters stand for the decision, in engine units: either side of the referee, facing the camera. */
 export const CEREMONY_MARKS = [{ x: -102, y: -16 }, { x: 102, y: -16 }] as const;
+const SEAT_MARKS = [0, 1] as const;
+/** While he walks to his mark the referee keeps this far from the fighters, who stand 0.62 m either side of it. */
+const CEREMONY_WALK_CLEARANCE = 0.5;
 const CEREMONY_REFEREE = { x: 0, z: -0.2 } as const;
 const ANNOUNCEMENT_ROPE_OPACITY = 0;
 const CEREMONY_WALK_SPEED = 200;
@@ -171,6 +174,8 @@ interface Ceremony {
   readonly winnerSeat: 0 | 1 | null;
   /** Where the fighters are drawn, once the walk to the marks has begun. */
   positions: [{ x: number; y: number }, { x: number; y: number }] | null;
+  /** The mark each seat walks to: the one on his own side, so fighters who ended the bout on each other's side never cross. */
+  marks?: readonly [0 | 1, 0 | 1];
   refereeArrived: boolean;
   arrivedAt: number | null;
   announced: boolean;
@@ -1055,11 +1060,16 @@ export class FightRenderer {
 
   /** The fighters as drawn during the decision: walking to their marks, then standing square to the camera. */
   private ceremonyFighters(ceremony: Ceremony, fighters: readonly [FighterSnapshot, FighterSnapshot], dt: number, seconds: number): readonly [FighterSnapshot, FighterSnapshot] {
-    ceremony.positions ??= [{ x: fighters[0].x, y: fighters[0].y }, { x: fighters[1].x, y: fighters[1].y }];
+    if (ceremony.positions === null) {
+      ceremony.positions = [{ x: fighters[0].x, y: fighters[0].y }, { x: fighters[1].x, y: fighters[1].y }];
+      ceremony.marks = fighters[0].x <= fighters[1].x ? [0, 1] : [1, 0];
+    }
+    const marks = ceremony.marks ?? SEAT_MARKS;
     let arrived = ceremony.refereeArrived;
     for (const seat of [0, 1] as const) {
       const from = ceremony.positions[seat];
-      const step = ceremonyStep(from.x, from.y, CEREMONY_MARKS[seat], CEREMONY_WALK_SPEED * dt);
+      const mark = marks[seat];
+      const step = ceremonyStep(from.x, from.y, CEREMONY_MARKS[mark], CEREMONY_WALK_SPEED * dt);
       const moved = Math.hypot(step.x - from.x, step.y - from.y);
       const perTick = dt > 0 ? 1 / (dt * this.simulation.tick_rate) : 0;
       const walking = !step.arrived && moved > 1e-6;
@@ -1077,7 +1087,7 @@ export class FightRenderer {
       from.x = step.x;
       from.y = step.y;
       arrived &&= step.arrived;
-      this.graphs?.[seat]?.awaitVerdict(seat === 0 ? 1 : -1);
+      this.graphs?.[seat]?.awaitVerdict(mark === 0 ? 1 : -1);
     }
     if (arrived) ceremony.arrivedAt ??= seconds;
     if (!ceremony.announced && ceremony.arrivedAt !== null && seconds - ceremony.arrivedAt >= CEREMONY_PAUSE_SECONDS) {
@@ -1088,11 +1098,12 @@ export class FightRenderer {
       this.arena.excite(1);
     }
     if (ceremony.announced) {
-      // The referee holds the wrist where the last frame left it; the blue corner stands on the referee's right.
-      const wrist = (seat: 0 | 1): THREE.Vector3 | null => {
+      // The referee holds the wrist where the last frame left it; the fighter on the left mark stands on the referee's right.
+      const wrist = (mark: 0 | 1): THREE.Vector3 | null => {
+        const seat = marks[0] === mark ? 0 : 1;
         const raised = ceremony.winnerSeat === null || ceremony.winnerSeat === seat;
-        const bone = this.graphs?.[seat]?.boxer.rig.bones[seat === 0 ? "gloveL" : "gloveR"];
-        return raised && bone !== undefined ? bone.getWorldPosition(this.ceremonyWrists[seat]) : null;
+        const bone = this.graphs?.[seat]?.boxer.rig.bones[mark === 0 ? "gloveL" : "gloveR"];
+        return raised && bone !== undefined ? bone.getWorldPosition(this.ceremonyWrists[mark]) : null;
       };
       this.referee?.raise(wrist(1), wrist(0));
     }
@@ -1108,7 +1119,7 @@ export class FightRenderer {
     const punches = latest.fighters.map((fighter) => this.roundStats.total(fighter.player_id)) as [RoundPunchStats, RoundPunchStats];
     const layout = resultCardLayout(width, height, resultCard(this.final, latest.fighters, this.players, punches), latest.fighters.some((fighter) => fighter.player_id === this.viewerId));
     const shot = ceremonyShot(this.camera.aspect, this.camera.fov, (height - layout.y) / Math.max(1, height));
-    const drift = Math.sin((seconds - ceremony.arrivedAt) * 0.35) * 0.06 * shot.distance;
+    const drift = this.settings().reducedMotion ? 0 : Math.sin((seconds - ceremony.arrivedAt) * 0.35) * 0.06 * shot.distance;
     this.cornerPosition.set(drift, shot.height + 0.05 * shot.distance, shot.distance);
     this.cornerLookAt.set(0, shot.height, 0);
     return { position: this.cornerPosition, lookAt: this.cornerLookAt, framed: true };
@@ -2090,13 +2101,14 @@ export class FightRenderer {
       this.refereePosition.x += (targetX - this.refereePosition.x) * rate;
       this.refereePosition.z += (targetZ - this.refereePosition.z) * rate;
     }
-    for (const fighter of ceremony !== null ? [] : [this.tmpA, this.tmpB]) {
+    const keepOff = ceremony === null ? clearance : ceremony.refereeArrived ? 0 : CEREMONY_WALK_CLEARANCE;
+    for (const fighter of keepOff > 0 ? [this.tmpA, this.tmpB] : []) {
       const dx = this.refereePosition.x - fighter.x;
       const dz = this.refereePosition.z - fighter.z;
       const distance = Math.hypot(dx, dz);
-      if (distance < clearance && distance > 0.001) {
-        this.refereePosition.x = fighter.x + (dx / distance) * clearance;
-        this.refereePosition.z = fighter.z + (dz / distance) * clearance;
+      if (distance < keepOff && distance > 0.001) {
+        this.refereePosition.x = fighter.x + (dx / distance) * keepOff;
+        this.refereePosition.z = fighter.z + (dz / distance) * keepOff;
       }
     }
     // Nor on a fighter lying where the fall took him.

@@ -502,7 +502,7 @@ describe("near ropes", () => {
     ring.setNearRopeOpacity(0.3);
     expect(ring.nearRopeOpacity()).toBeCloseTo(0.3, 6);
     const faded = ring.materials.filter((material) => material.transparent && material.opacity < 1);
-    expect(faded).toHaveLength(3 + 3 * 2);
+    expect(faded).toHaveLength(3 + 1);
     ring.group.updateMatrixWorld(true);
     const box = new THREE.Box3();
     ring.group.traverse((object) => {
@@ -550,6 +550,21 @@ describe("rope give", () => {
     expect(ropeGive(1.2, 0, 1.26)).toBe(0);
     expect(ropeGive(0.6, 0, 1.26)).toBeGreaterThan(0.3);
     expect(ropeGive(0.6, 0, 1.26)).toBeLessThan(0.9);
+  });
+
+  it("gives the straps that tie the ropes together the ropes' own give", () => {
+    const ring = buildRing();
+    const ropes: THREE.Material[] = [];
+    const straps: THREE.Mesh[] = [];
+    ring.group.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      if (object.geometry.type === "TubeGeometry") ropes.push(object.material as THREE.Material);
+      if (object.geometry.type === "BoxGeometry" && (object.geometry as THREE.BoxGeometry).parameters.height === 0.82) straps.push(object);
+    });
+    expect(straps).toHaveLength(24);
+    const flex = (ropes[0] as THREE.MeshStandardMaterial).onBeforeCompile.toString();
+    for (const strap of straps) expect((strap.material as THREE.MeshStandardMaterial).onBeforeCompile.toString()).toBe(flex);
+    expect(new Set(straps.map((strap) => strap.geometry)).size).toBe(1);
   });
 
   it("writes fighter contacts into the rope shader uniforms and clears them", () => {

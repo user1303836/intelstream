@@ -216,8 +216,8 @@ export function buildRing(): BuiltRing {
   const ropeContacts: [THREE.Vector4, THREE.Vector4] = [new THREE.Vector4(0, 0, 0, 0), new THREE.Vector4(0, 0, 0, 0)];
   const ropeUniforms = { uRopeContactA: { value: ropeContacts[0] }, uRopeContactB: { value: ropeContacts[1] } };
   const ropeColors = [0xb91c1c, 0xe5e7eb, 0x1d4ed8];
-  const ropeMaterial = (color: number): THREE.MeshStandardMaterial => {
-    const material = new THREE.MeshStandardMaterial({ color, roughness: 0.42, metalness: 0.05 });
+  const flexMaterial = (parameters: THREE.MeshStandardMaterialParameters): THREE.MeshStandardMaterial => {
+    const material = new THREE.MeshStandardMaterial(parameters);
     material.onBeforeCompile = (shader) => {
       shader.uniforms.uRopeContactA = ropeUniforms.uRopeContactA;
       shader.uniforms.uRopeContactB = ropeUniforms.uRopeContactB;
@@ -228,8 +228,15 @@ export function buildRing(): BuiltRing {
     materials.push(material);
     return material;
   };
+  const ropeMaterial = (color: number): THREE.MeshStandardMaterial => flexMaterial({ color, roughness: 0.42, metalness: 0.05 });
   const ropeMats = ropeColors.map(ropeMaterial);
   const nearMaterials: THREE.MeshStandardMaterial[] = ropeColors.map(ropeMaterial);
+  // The straps tie the ropes together, so they give with them where a fighter presses into the ropes.
+  const tieMat = flexMaterial({ color: 0xd8dee8, roughness: 0.6 });
+  const nearTieMat = flexMaterial({ color: 0xd8dee8, roughness: 0.6 });
+  nearMaterials.push(nearTieMat);
+  const tieGeo = new THREE.BoxGeometry(0.035, 0.82, 0.012);
+  geometries.push(tieGeo);
   const setRopeContacts = (a: { x: number; z: number } | null, b: { x: number; z: number } | null): void => {
     for (const [index, contact] of [a, b].entries()) {
       const target = ropeContacts[index]!;
@@ -260,12 +267,7 @@ export function buildRing(): BuiltRing {
       group.add(rope);
       for (const t of [0.33, 0.66]) {
         const point = curve.getPoint(t);
-        const tieGeo = new THREE.BoxGeometry(0.035, 0.82, 0.012);
-        geometries.push(tieGeo);
-        const tieMat = new THREE.MeshStandardMaterial({ color: 0xd8dee8, roughness: 0.6 });
-        materials.push(tieMat);
-        if (side === NEAR_SIDE) nearMaterials.push(tieMat);
-        const tie = new THREE.Mesh(tieGeo, tieMat);
+        const tie = new THREE.Mesh(tieGeo, side === NEAR_SIDE ? nearTieMat : tieMat);
         tie.position.set(point.x, height - 0.36, point.z);
         tie.lookAt(0, height - 0.36, 0);
         group.add(tie);

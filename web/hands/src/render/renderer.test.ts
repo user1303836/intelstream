@@ -312,6 +312,53 @@ describe("decision ceremony", () => {
     expect(raised.at(-1)).toEqual([null, -0.3]);
   });
 
+  it("sends fighters who finished on each other's side to the mark on their own side, so they never cross", () => {
+    const awaited: string[] = [];
+    const graph = (seat: number) => ({
+      awaitVerdict: (side: number) => { if (!awaited.includes(`${seat} ${side}`)) awaited.push(`${seat} ${side}`); },
+      announce: () => {},
+      boxer: { rig: { bones: { gloveL: { getWorldPosition: (out: { set: (x: number, y: number, z: number) => unknown }) => out.set(-0.3, 2, 0.1) }, gloveR: { getWorldPosition: (out: { set: (x: number, y: number, z: number) => unknown }) => out.set(0.3, 2, 0.1) } } } },
+    });
+    const raised: unknown[][] = [];
+    const stub = {
+      drawnFighters: [fighter("a"), fighter("b")], simulation: { tick_rate: 30 }, graphs: [graph(0), graph(1)],
+      referee: { raise: (...wrists: unknown[]) => raised.push(wrists.map((wrist) => (wrist === null ? null : (wrist as { x: number }).x))) },
+      arena: { excite: () => {} },
+      ceremonyWrists: [{ x: 0, set(x: number) { this.x = x; return this; } }, { x: 0, set(x: number) { this.x = x; return this; } }],
+      frameSeconds: 0, finalRevealAt: 99, commentary: { verdict: () => {} },
+    };
+    const swapped = () => [{ ...fighter("one"), x: 250, y: 60 }, { ...fighter("two"), x: -300, y: -40 }];
+    const ceremony: Staged = { winnerSeat: 0, positions: null, refereeArrived: true, arrivedAt: null, announced: false };
+    let drawn = methods.ceremonyFighters.call(stub, ceremony, swapped(), 1 / 60, 0);
+    for (let frame = 1; frame < 400 && !ceremony.announced; frame += 1) {
+      stub.frameSeconds = frame / 60;
+      drawn = methods.ceremonyFighters.call(stub, ceremony, swapped(), 1 / 60, frame / 60);
+      expect(drawn[0]!.x).toBeGreaterThan(drawn[1]!.x);
+    }
+    expect(ceremony.announced).toBe(true);
+    expect({ x: drawn[0]!.x, y: drawn[0]!.y }).toEqual(CEREMONY_MARKS[1]);
+    expect({ x: drawn[1]!.x, y: drawn[1]!.y }).toEqual(CEREMONY_MARKS[0]);
+    expect(awaited).toEqual(["0 -1", "1 1"]);
+    expect(raised.at(-1)).toEqual([0.3, null]);
+  });
+
+  it("holds the announcement shot still under reduced motion", () => {
+    const frame = (FightRenderer.prototype as unknown as { ceremonyFrame(this: unknown, seconds: number): { position: THREE.Vector3 } | null }).ceremonyFrame;
+    const shotAt = (reducedMotion: boolean, seconds: number): number => {
+      const stub = {
+        ceremony: { winnerSeat: 0, positions: [], refereeArrived: true, arrivedAt: 10, announced: true }, replay: null,
+        final: { version: 3, type: "final", match_id: "m", winner_id: "one", method: "decision", round: 3, scorecards: [], ratings: {} },
+        buffer: { latest: () => snapshot() }, hudViewport: { width: 1280, height: 720 }, roundStats: { total: () => ({ thrown: 0, landed: 0 }) },
+        players: {}, viewerId: "one", camera: { aspect: 16 / 9, fov: 36 }, cornerPosition: new THREE.Vector3(), cornerLookAt: new THREE.Vector3(),
+        settings: () => ({ reducedMotion }),
+      };
+      return frame.call(stub, seconds)!.position.x;
+    };
+    expect(shotAt(false, 13)).not.toBeCloseTo(shotAt(false, 16), 3);
+    expect(shotAt(true, 13)).toBe(0);
+    expect(shotAt(true, 16)).toBe(0);
+  });
+
   it("waits for the referee, and raises both arms after a draw", () => {
     const raised: unknown[][] = [];
     const announced: string[] = [];
