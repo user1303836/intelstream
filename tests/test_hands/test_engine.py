@@ -15,9 +15,11 @@ from intelstream.hands.protocol import encode_snapshot
 from intelstream.hands.rules import (
     BLIND_SIDE_EYE_THRESHOLD,
     BODY_COLLAPSE_DELAY_TICKS,
+    BODY_WIND_PERCENT,
     CLINCH_HOLD_DISTANCE,
     CORNER_TREATMENTS,
     FIGHTER_RADIUS,
+    GUARD_BLOCK_MINIMUM,
     KNOCKDOWN_NEUTRAL_SEPARATION,
     MINIMUM_SEPARATION,
     PARRY_STAGGER_TICKS,
@@ -608,7 +610,7 @@ def test_combo_window_rewards_chaining_different_punches() -> None:
 def test_high_low_guard_guard_wear_break_and_perfect_block() -> None:
     engine = make_engine()
     defender = engine.fighter("two")
-    defender.guard = 20
+    defender.guard = GUARD_BLOCK_MINIMUM + 40
     engine.step({"one": command(1, action=punch(target=Target.HEAD, power=Power.POWER))})
     attack = engine.fighter("one").attack
     assert attack is not None
@@ -617,8 +619,19 @@ def test_high_low_guard_guard_wear_break_and_perfect_block() -> None:
     engine.step({"two": command(1, defense=DefensivePose.GUARD_HIGH)})
 
     assert advance_until(engine, {"perfect_block"}) == "perfect_block"
-    assert defender.guard < 20
-    assert any(event.kind == "guard_break" for event in engine.events)
+    assert defender.guard < GUARD_BLOCK_MINIMUM + 40
+
+    worn = make_engine()
+    worn.fighter("two").guard = GUARD_BLOCK_MINIMUM
+    worn.step(
+        {
+            "one": command(1, action=punch(PunchClass.HOOK, target=Target.HEAD, power=Power.POWER)),
+            "two": command(1, defense=DefensivePose.GUARD_HIGH),
+        }
+    )
+    assert advance_until(worn, {"block", "perfect_block"}) == "block"
+    assert worn.fighter("two").guard == 0
+    assert any(event.kind == "guard_break" for event in worn.events)
 
     body_engine = make_engine()
     body_engine.step(
@@ -2297,7 +2310,7 @@ def test_a_clean_body_shot_takes_the_wind_and_a_blocked_one_does_not() -> None:
         lost = before - engine.fighter("two").stamina
         if winded:
             assert contact.kind == "hit"
-            assert lost >= contact.amount * 150 // 100 - 4
+            assert lost >= contact.amount * BODY_WIND_PERCENT // 100 - 4
         else:
             assert contact.kind == "block"
             assert lost <= 0

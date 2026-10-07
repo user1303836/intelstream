@@ -1,7 +1,8 @@
+import { ROCKED_BASE_TICKS, ROCKED_MAX_TICKS } from "../manifest";
 import type { FighterSnapshot, MatchPhase } from "../types";
 
-/** Stun at which the hurt vision is at full strength: a big head shot stuns for this long or longer. */
-export const ROCKED_STUN_TICKS = 45;
+/** Stun at which the hurt vision is at full strength: the longest a big head shot rocks a man. */
+export const ROCKED_STUN_TICKS = ROCKED_MAX_TICKS;
 /** Below this poise a fighter is hanging on even when not stunned. */
 export const ROCKED_POISE = 150;
 /** On the canvas during a count. */
@@ -11,7 +12,8 @@ export const ROCKED_DOWN = 0.9;
 export function rockedLevel(fighter: FighterSnapshot | undefined, phase: MatchPhase): number {
   if (fighter === undefined || (phase !== "fight" && phase !== "knockdown")) return 0;
   if (fighter.is_downed) return ROCKED_DOWN;
-  const stunned = Math.min(1, fighter.stunned_ticks / ROCKED_STUN_TICKS);
+  // A flinch from an ordinary clean shot is over before it could blur anything.
+  const stunned = fighter.stunned_ticks < ROCKED_BASE_TICKS ? 0 : Math.min(1, fighter.stunned_ticks / ROCKED_STUN_TICKS);
   const shaky = fighter.poise < ROCKED_POISE ? ((ROCKED_POISE - fighter.poise) / ROCKED_POISE) * 0.6 : 0;
   return Math.max(stunned, shaky);
 }

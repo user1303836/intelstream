@@ -44,6 +44,41 @@ BODY_COLLAPSE_TRAUMA: int = _MANIFEST["body"]["collapse_body_trauma"]
 BODY_COLLAPSE_STAMINA: int = _MANIFEST["body"]["collapse_stamina"]
 BODY_COLLAPSE_MINIMUM_DAMAGE: int = _MANIFEST["body"]["collapse_minimum_damage"]
 BODY_COLLAPSE_DELAY_TICKS: int = _MANIFEST["body"]["collapse_delay_ticks"]
+GET_UP_STUN_TICKS: int = _MANIFEST["knockdown"]["get_up_stun_ticks"]
+_STUN = _MANIFEST["stun"]
+FLINCH_MINIMUM_DAMAGE: int = _STUN["flinch_minimum_damage"]
+FLINCH_BASE_TICKS: int = _STUN["flinch_base_ticks"]
+FLINCH_DAMAGE_DIVISOR: int = _STUN["flinch_damage_divisor"]
+ROCKED_COUNTER_DAMAGE: int = _STUN["rocked_counter_damage"]
+ROCKED_POWER_DAMAGE: int = _STUN["rocked_power_damage"]
+ROCKED_HURT_POISE: int = _STUN["rocked_hurt_poise"]
+ROCKED_BASE_TICKS: int = _STUN["rocked_base_ticks"]
+ROCKED_DAMAGE_DIVISOR: int = _STUN["rocked_damage_divisor"]
+ROCKED_MAX_TICKS: int = _STUN["rocked_max_ticks"]
+STUN_CHAIN_MAX_TICKS: int = _STUN["chain_max_ticks"]
+STUN_IMMUNITY_TICKS: int = _STUN["immunity_ticks"]
+BLOCK_POISE_PERCENT: int = _MANIFEST["guard"]["block_poise_percent"]
+PERFECT_BLOCK_POISE_PERCENT: int = _MANIFEST["guard"]["perfect_block_poise_percent"]
+GUARD_LEAK_BASE_PERCENT: int = _MANIFEST["guard"]["leak_base_percent"]
+GUARD_LEAK_MINIMUM_PERCENT: int = _MANIFEST["guard"]["leak_minimum_percent"]
+GUARD_BLOCK_MINIMUM: int = _MANIFEST["guard"]["block_minimum"]
+GUARD_HELD_REGEN_EVERY_TICKS: int = _MANIFEST["guard"]["held_regen_every_ticks"]
+GUARD_DAMAGE_PERCENT: int = _MANIFEST["guard"]["damage_percent"]
+GUARD_STAMINA_REGEN_PERCENT: int = _MANIFEST["guard"]["stamina_regen_percent"]
+BODY_COLLAPSE_COOLDOWN_TICKS: int = _MANIFEST["body"]["collapse_cooldown_ticks"]
+GET_UP_STAMINA: int = _MANIFEST["knockdown"]["get_up_stamina"]
+GET_UP_BASE: int = _MANIFEST["knockdown"]["get_up_base"]
+GET_UP_PER_KNOCKDOWN: int = _MANIFEST["knockdown"]["get_up_per_knockdown"]
+GET_UP_TRAUMA_DIVISOR: int = _MANIFEST["knockdown"]["get_up_trauma_divisor"]
+HEAD_TRAUMA_PER_DAMAGE_PERCENT: int = _MANIFEST["trauma"]["head_per_damage_percent"]
+BODY_TRAUMA_PER_DAMAGE_PERCENT: int = _MANIFEST["trauma"]["body_per_damage_percent"]
+EYE_TRAUMA_PER_DAMAGE_PERCENT: int = _MANIFEST["trauma"]["eye_per_damage_percent"]
+CUT_PER_DAMAGE_PERCENT: int = _MANIFEST["trauma"]["cut_per_damage_percent"]
+SWELLING_PER_DAMAGE_PERCENT: int = _MANIFEST["trauma"]["swelling_per_damage_percent"]
+POISE_CEILING_PER_HEAD_PERCENT: int = _MANIFEST["trauma"]["poise_ceiling_per_head_percent"]
+POISE_CEILING_FLOOR: int = _MANIFEST["trauma"]["poise_ceiling_floor"]
+POISE_REGEN_EVERY_TICKS: int = _MANIFEST["trauma"]["poise_regen_every_ticks"]
+POISE_DAMAGE_PERCENT: int = _MANIFEST["trauma"]["poise_damage_percent"]
 
 
 def _manifest_check() -> None:
@@ -188,6 +223,11 @@ def fatigue_max_stamina(conditioning: int, body_trauma: int) -> int:
     conditioning_penalty = (MAX_CONDITIONING - conditioning) * 45 // 100
     body_penalty = min(280, body_trauma // 3)
     return max(330, MAX_STAMINA - conditioning_penalty - body_penalty)
+
+
+def poise_ceiling(head_trauma: int) -> int:
+    """The most poise a fighter gets back: a beating to the head wears it down for the bout."""
+    return max(POISE_CEILING_FLOOR, MAX_POISE - head_trauma * POISE_CEILING_PER_HEAD_PERCENT // 100)
 
 
 def fatigue_factor(conditioning: int, body_trauma: int) -> int:

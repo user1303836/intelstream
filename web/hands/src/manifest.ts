@@ -47,6 +47,9 @@ export const FIGHTER_RADIUS = manifestJson.ring.fighter_radius;
 /** Eye trauma at which the eye is swollen shut and punches from that side go unseen. */
 export const EYE_SHUT_TRAUMA = manifestJson.blind_side.eye_threshold;
 export const CORNER_TREATMENTS = manifestJson.corner;
+/** A stun this long or longer is a fighter rocked by a big shot rather than a flinch. */
+export const ROCKED_BASE_TICKS = manifestJson.stun.rocked_base_ticks;
+export const ROCKED_MAX_TICKS = manifestJson.stun.rocked_max_ticks;
 
 export function punchTiming(punchClass: PunchClass, target: Target, power: Power): PunchTiming {
   const base = punches[punchClass];

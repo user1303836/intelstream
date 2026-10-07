@@ -9854,12 +9854,12 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "2996705d5a50972312f391536329b047960067a71b8ca31d0532a5e0ef26fa3e",
+     "checksum": "2ee6a63a0b0d9a8ca04a571812139968acdcbbe74665f904af0e49df7530cb23",
      "events": [
       {
        "action_id": "one@72",
        "actor_id": "two",
-       "amount": 44,
+       "amount": 26,
        "blood": 0,
        "detail": "",
        "direction": 0,
@@ -9871,8 +9871,8 @@
       {
        "action_id": "one@72",
        "actor_id": "one",
-       "amount": 14,
-       "blood": 3,
+       "amount": 4,
+       "blood": 1,
        "detail": "jab:head",
        "direction": 1,
        "event_id": 3,
@@ -9965,14 +9965,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 674,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 566,
+       "poise": 590,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -9981,12 +9981,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -10022,7 +10022,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "93dfa817dbe566e1ba0d3dabc30239708b0ce13226c3951bee89894e160ee11b",
+     "checksum": "e71d732a693fe4cf42846fe26483e2c36fc2dec2c2a08911e65e813cb7603880",
      "events": [],
      "fighters": [
       {
@@ -10108,14 +10108,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 677,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 567,
+       "poise": 591,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -10124,12 +10124,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -10165,7 +10165,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "dd879858fd224c09dc18e7042b00f7758c10fa3d5fc7755c5c9ff504c7440a09",
+     "checksum": "29e09173c3918e385e3d1a1190d1b36c3949d07b38b70bb2213159c1e8058bb8",
      "events": [],
      "fighters": [
       {
@@ -10251,14 +10251,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 677,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 568,
+       "poise": 591,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -10267,12 +10267,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -10308,7 +10308,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "a1b53a5b6bc42080e0e091a83ac2774cd514c39eceef6880e3a96eceda3c202e",
+     "checksum": "60fc1b169bb009427b25ea115931e4f940310ad915a62a280ea0e9c8fb78615d",
      "events": [],
      "fighters": [
       {
@@ -10394,14 +10394,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 677,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 569,
+       "poise": 592,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -10410,12 +10410,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -10451,7 +10451,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "f75081cd633d89d6827fe474ae7477e8a71abdb938068f5829ccfa66fc6c7c6e",
+     "checksum": "1869ed09ddac9c135848598798d4d05c747d7dad951c9bb98f28448123468fb0",
      "events": [],
      "fighters": [
       {
@@ -10537,14 +10537,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 677,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 570,
+       "poise": 592,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -10553,12 +10553,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -10594,7 +10594,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "0302e60f9ea101c0cbe57a125851c3ad0c9900727150bf3ee0c5cf2a1f2cce3f",
+     "checksum": "75ff0c9a93ad68ae4295b01e391f14156ff214534aa3f218fa724c6d276e8782",
      "events": [],
      "fighters": [
       {
@@ -10680,14 +10680,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 680,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 571,
+       "poise": 593,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -10696,12 +10696,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -10737,7 +10737,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "efde1880a46b27be81c94cd6b90cfe592c22063944dca2ec76dc2806c472b653",
+     "checksum": "859aa281afc19ff4516eaaafdbf9edd4fcc7157aec7611d5d519721b850cf413",
      "events": [],
      "fighters": [
       {
@@ -10823,14 +10823,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 680,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 572,
+       "poise": 593,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -10839,12 +10839,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -10880,7 +10880,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "44094349f68aad715227ef46946e76a18d84c9f063b884060daae5ffff6e4187",
+     "checksum": "8da496721135a5a31bd6649249436343698e2e742399ece21cb7f5569f8e6eb5",
      "events": [],
      "fighters": [
       {
@@ -10966,14 +10966,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 680,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 573,
+       "poise": 594,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -10982,12 +10982,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -11023,7 +11023,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "22bbde2257d6270275fda610daa00ca8c7a2c2bbb0b8a2e375329bed05cdfe76",
+     "checksum": "bc65c03cad83d62b230f44d097e0d2d252c2ba616da3ea33e1bf8d54659075a7",
      "events": [],
      "fighters": [
       {
@@ -11109,14 +11109,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 680,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 574,
+       "poise": 594,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -11125,12 +11125,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -11155,7 +11155,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "989c83c63db2abef0285a03fc5b99d42ec676170859c81f473f6b610d25428a9",
+     "checksum": "a3f2f303a5aeba8809d613c04887cb388d40db8797e115b72efd26e9fb24955b",
      "events": [],
      "fighters": [
       {
@@ -11241,14 +11241,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 683,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 575,
+       "poise": 595,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -11257,12 +11257,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -11287,7 +11287,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "24b50a34a7855dab0f2c9ccfd82f5ed43479d175b58173f31063e36ad8f2a125",
+     "checksum": "6ca2e7e5e70951dc33c6dfa6336cadcd3435890762602efc7ec9e79152af84b5",
      "events": [],
      "fighters": [
       {
@@ -11373,14 +11373,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 683,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 576,
+       "poise": 595,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -11389,12 +11389,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -11419,7 +11419,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "c419d79e151b6be94c8277f5c90f323c9a66d03df017fbe5ae94b955e35f605c",
+     "checksum": "5a4ea87eef5f55306db443b81cdde8cd1631ade1f44d9b0f9ebfbe066982979d",
      "events": [],
      "fighters": [
       {
@@ -11505,14 +11505,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 683,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 577,
+       "poise": 596,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -11521,12 +11521,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -11551,7 +11551,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "0b9a3d44e0484477871acb7d423254f271311f7aedf74db77526b061f43ba401",
+     "checksum": "68b450464969182b81625975761e2160a2c66ba3809748b0aed125d8818a743b",
      "events": [],
      "fighters": [
       {
@@ -11637,14 +11637,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 683,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 578,
+       "poise": 596,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -11653,12 +11653,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -11683,7 +11683,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "18036a537adda93a60ebafbb696c3d0111a49732c8f5068b32f304ae76c54644",
+     "checksum": "b010f1ae8b7f83f447d43c81844bd18d634c19e591162d1555d1c373360a4fa4",
      "events": [],
      "fighters": [
       {
@@ -11769,14 +11769,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 686,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 579,
+       "poise": 597,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -11785,12 +11785,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -11815,7 +11815,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "0f6bed1f674fd34cc6afffc3f728ad904b49db4ebe040408b8ee5e6cd63ccce0",
+     "checksum": "e5a344acb66a18e91779ed6da683c94e46999a8172317e48332a4a8cdd8f3837",
      "events": [],
      "fighters": [
       {
@@ -11901,14 +11901,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 686,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 580,
+       "poise": 597,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -11917,12 +11917,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -11947,7 +11947,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "5442799fd29056e6bc08c5c8d84883682035d600f92f84eb8aee26e45e5cef9b",
+     "checksum": "ad85d08a5cbd0b0f8b2d22afdab3176076c33e9d2376311e42a8fc650da0e510",
      "events": [],
      "fighters": [
       {
@@ -12033,14 +12033,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 686,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 581,
+       "poise": 598,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -12049,12 +12049,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -12079,7 +12079,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "d18142665bf76a7906969d43220144a81499e3af5df8505fb445f6213014b023",
+     "checksum": "a3ea7dbcce2e817e0ed147e72f852db6d7c8b19a1e0b91e5256f40088257f243",
      "events": [],
      "fighters": [
       {
@@ -12165,14 +12165,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 686,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 582,
+       "poise": 598,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -12181,12 +12181,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -12211,7 +12211,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "c915686409a041d4e1cbe3638069bffc6c2c287aebd1c7f9d5bcc5f09d4dddf7",
+     "checksum": "d35549063fd1b75f593effbc60a507b4dd3e285ddb36aa7f8f750dc4db24c701",
      "events": [],
      "fighters": [
       {
@@ -12297,14 +12297,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 689,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 583,
+       "poise": 599,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -12313,12 +12313,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -12343,7 +12343,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "558f5df8c5213a37724d5d3238e4b632b10a8452625f60c366370548f3985159",
+     "checksum": "81eb4ec75ff93bcaa8a983c4504e37a9be095c21bf97e91898b8e84ef27b45af",
      "events": [],
      "fighters": [
       {
@@ -12429,14 +12429,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 689,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 584,
+       "poise": 599,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -12445,12 +12445,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -12475,7 +12475,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "564128a838ba68b9369aef8743608ec02b038c79205f7759cd3dcf3fbad3293f",
+     "checksum": "16965375056666e1cdf523d615099870a0a1f22408b5ddf02347ad829a9d996d",
      "events": [],
      "fighters": [
       {
@@ -12561,14 +12561,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 689,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 585,
+       "poise": 599,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -12577,12 +12577,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -12607,7 +12607,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "468c2fb08a3f7cb7e738bdf003e5c314e6b8adeee1c3aba5cb25f8157545e0a8",
+     "checksum": "469e148104e8c3b8c4960d91a6bb1ed9f3e998cbf3af00712842df1fd9e5813c",
      "events": [],
      "fighters": [
       {
@@ -12693,14 +12693,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 689,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 586,
+       "poise": 599,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -12709,12 +12709,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -12739,7 +12739,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "90fa8b7a651cb6f24cd687a7b7fac3a1b4ebdf51c16929db72ae682ce4af419f",
+     "checksum": "3ca2909e40dc11342b7004857069a354b42ecdd1849b357bf19f1eeeda808bf7",
      "events": [],
      "fighters": [
       {
@@ -12825,14 +12825,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 692,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 587,
+       "poise": 599,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -12841,12 +12841,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -12871,7 +12871,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "3f7e56e03e50a4f3421e37be43af30312fe4aedece467c38448f74a2c3adc231",
+     "checksum": "84ee2a69b5241a404654d55903c10f2894b2622c01aa410e32a0151030e9062f",
      "events": [],
      "fighters": [
       {
@@ -12957,14 +12957,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 692,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 588,
+       "poise": 599,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -12973,12 +12973,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -13003,7 +13003,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "af9125fa2f0f1249d076d8c4e84d6f6cfd60ec0588bf5b4974e9196fe4d5e17f",
+     "checksum": "700dbe4d12a817510615d53a23d0b394086aa7f7ea1784927278cb575c82785c",
      "events": [],
      "fighters": [
       {
@@ -13089,14 +13089,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 692,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 589,
+       "poise": 599,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -13105,12 +13105,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -13135,7 +13135,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "58fbbe98bb9c02220f3fb01f658407d865e54ef2cd2b77e281e760905cbec823",
+     "checksum": "960a28a7e6deeed2ab5efc8a2021c686a87a85503d5c950e86464e3e9209b05d",
      "events": [],
      "fighters": [
       {
@@ -13221,14 +13221,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 692,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 590,
+       "poise": 599,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -13237,12 +13237,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -13278,7 +13278,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "c7d9ea400112a86134710f214484f07c4f8927b76113218b0d0c113f5be152be",
+     "checksum": "2853e965cbd27302f7d3507becca32684abaad2bd942c9ada22d852b767bccf6",
      "events": [
       {
        "action_id": "one@100",
@@ -13377,14 +13377,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 695,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 591,
+       "poise": 599,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -13393,12 +13393,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -13434,7 +13434,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "50802bf2009f36e443792f30eeddb67bc87c738ef4846da4fee8b083d821c89f",
+     "checksum": "f798ba402150d7da9f718480117bbf47a2d294ec4280e3e93a53c3ac2de9eb70",
      "events": [],
      "fighters": [
       {
@@ -13520,14 +13520,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 695,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 592,
+       "poise": 599,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -13536,12 +13536,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -13577,7 +13577,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "5c0a8866d61170ed60c3026250379c87e20686f3378f29d94f26919700040291",
+     "checksum": "993e08e29fd456b74a00478d3be0028fa8d25fef9974d97db5830082b38e8375",
      "events": [],
      "fighters": [
       {
@@ -13663,14 +13663,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 656,
+       "guard": 695,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 593,
+       "poise": 599,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -13679,12 +13679,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 28,
+        "head": 4,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 14,
-        "swelling": 7
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -13720,12 +13720,12 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "edb54e343a2788072598e8fbb9add05d6ad6db9be62eab875425c15d60621ffe",
+     "checksum": "08d39a0f33c382e898e7cfc6b083bc74b7571a5414f8d664b2c8e28cae7c6899",
      "events": [
       {
        "action_id": "one@100",
        "actor_id": "two",
-       "amount": 44,
+       "amount": 26,
        "blood": 0,
        "detail": "",
        "direction": 0,
@@ -13737,8 +13737,8 @@
       {
        "action_id": "one@100",
        "actor_id": "one",
-       "amount": 15,
-       "blood": 3,
+       "amount": 4,
+       "blood": 1,
        "detail": "jab:head",
        "direction": 1,
        "event_id": 6,
@@ -13831,14 +13831,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 612,
+       "guard": 669,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 559,
+       "poise": 589,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -13847,12 +13847,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 58,
+        "head": 8,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 14
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -13888,7 +13888,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "ee9c78c0fb8fa4723055cfe3395ed51d730e7c94b8998207a5036abc8cfacad1",
+     "checksum": "ab52bae6ca5b6267e2d423fc7cc0e31c69eb80a82bbb50b37f6eb554618616fa",
      "events": [],
      "fighters": [
       {
@@ -13974,14 +13974,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 612,
+       "guard": 672,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 560,
+       "poise": 590,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -13990,12 +13990,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 58,
+        "head": 8,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 14
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -14031,7 +14031,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "560ea527f07e7dbd8c7a1d1c9e291ffc6d67c85fa68354ff1ca78cbe3d8d64a2",
+     "checksum": "4f7f088e5a2b4d33063132aa8a8f58dc1b86f2f2a152d9b0de790a43c792570d",
      "events": [],
      "fighters": [
       {
@@ -14117,14 +14117,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 612,
+       "guard": 672,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 561,
+       "poise": 590,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -14133,12 +14133,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 58,
+        "head": 8,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 14
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -14174,7 +14174,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "4a6e47a779aadab1e88f2285b3d76d878696cf9e035691f447718abf1fbd69ab",
+     "checksum": "f89d02f550457c028095367a986baf4d763301e22916dc0d3eba62383c6bea45",
      "events": [],
      "fighters": [
       {
@@ -14260,14 +14260,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 612,
+       "guard": 672,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 562,
+       "poise": 591,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -14276,12 +14276,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 58,
+        "head": 8,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 14
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -14317,7 +14317,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "eb7a2d0ea99752388051982423afb445d2bf5e0a99a7cfed2ef7c188e186150a",
+     "checksum": "f84542e60c22f484947970da79a26d8d30337442f868186f139cdebeaefdb3d0",
      "events": [],
      "fighters": [
       {
@@ -14403,14 +14403,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 612,
+       "guard": 672,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 563,
+       "poise": 591,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -14419,12 +14419,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 58,
+        "head": 8,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 14
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -14460,7 +14460,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "523f064c18ecc6c60928291e18c60a8cefc6e641114a24f7f54a533bd64c253c",
+     "checksum": "abf2f1912291c38e39187acc129c25a3f2d4dda07ea070acaf320bf6b1bec6c1",
      "events": [],
      "fighters": [
       {
@@ -14546,14 +14546,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 612,
+       "guard": 675,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 564,
+       "poise": 592,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -14562,12 +14562,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 58,
+        "head": 8,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 14
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -14603,7 +14603,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "a352e337c411429b1323261e0239c79dfa37676f988e80c7c30b394c9ae442da",
+     "checksum": "e72fcaa01cf764ddeaa17ffd907f8cd8ac975a588c07628de56d7e01f19c4203",
      "events": [],
      "fighters": [
       {
@@ -14689,14 +14689,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 612,
+       "guard": 675,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 565,
+       "poise": 592,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -14705,12 +14705,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 58,
+        "head": 8,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 14
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -14746,7 +14746,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "ba2df4096eac67f8c6ca0b974212606bf3c19147e8561f5a44b8a212cb0c2de8",
+     "checksum": "297b9a46d4422571105d34d44e81fb88bdd6d1d60c12801ead8e7d5b282cc208",
      "events": [],
      "fighters": [
       {
@@ -14832,14 +14832,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 612,
+       "guard": 675,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 566,
+       "poise": 593,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -14848,12 +14848,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 58,
+        "head": 8,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 14
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -14889,7 +14889,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "a0f056bee1b47a597b9954317ee3a553ebeb280495d792387c7a0977016da762",
+     "checksum": "7e6df6eabcbbfe69f9d8a45e9a5420f78b63576695c90c47c83aa7b5d81da9da",
      "events": [],
      "fighters": [
       {
@@ -14975,14 +14975,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 612,
+       "guard": 675,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 567,
+       "poise": 593,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -14991,12 +14991,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 58,
+        "head": 8,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 14
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -15021,7 +15021,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "08220531ab476d7cea36f3315667fd6055d351b04df3990969128ae74113ad27",
+     "checksum": "3e63047102206a77aa0fc9f34af1248a3063437d17997d61e008d8f52c2828f0",
      "events": [],
      "fighters": [
       {
@@ -15107,14 +15107,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 612,
+       "guard": 678,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 568,
+       "poise": 594,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -15123,12 +15123,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 58,
+        "head": 8,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 14
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -15153,7 +15153,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "a9a28a69082f8efc0195ebbea2be3ab46d25f4ce27b282301609b8608a32f162",
+     "checksum": "323bdc10f8c775905c1bdddcfc56a825a36977e309408c2f493f5c1fa0c4c3cf",
      "events": [],
      "fighters": [
       {
@@ -15239,14 +15239,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 612,
+       "guard": 678,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 569,
+       "poise": 594,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -15255,12 +15255,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 58,
+        "head": 8,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 14
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -15296,7 +15296,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "0324418b9514fc38728bd3b56416a915110d4416a56cc5386e945b73c2399962",
+     "checksum": "0b714f90fdeb09c2f614a276d97d29ce5f27da4f68b544faa76f72ba042732b5",
      "events": [
       {
        "action_id": "one@114",
@@ -15395,7 +15395,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 615,
+       "guard": 681,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
@@ -15411,12 +15411,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 58,
+        "head": 8,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 14
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -15452,7 +15452,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "114779989064e9aa30de45247d937a7212363897a530a557bbe6c91783880b87",
+     "checksum": "7c495dca1d2aa9b869311cd3c52de7a4cdc406328d6b9b680a1222747690b19e",
      "events": [],
      "fighters": [
       {
@@ -15538,14 +15538,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 615,
+       "guard": 681,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 3,
+       "poise": 2,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -15554,12 +15554,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 58,
+        "head": 8,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 14
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -15595,7 +15595,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "f137de95c49523ce1b7bf31e5ca6ee10722904ed660995865632e12720b18a93",
+     "checksum": "5b236c08fd7f2090c935f89397f5e4ba3afd231eb36ff55fdcf50d7848a4dd13",
      "events": [],
      "fighters": [
       {
@@ -15681,14 +15681,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 618,
+       "guard": 684,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 4,
+       "poise": 3,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -15697,12 +15697,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 58,
+        "head": 8,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 14
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -15738,7 +15738,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "5e7e302bef8535a52bfc8eab7ab476dec693ee2b5ea7c59a5ddf7e0bd80882e5",
+     "checksum": "2d73aadd87d8e0d124fe3a3599f3cf965bf729e27c78c593c770071c24ad7580",
      "events": [],
      "fighters": [
       {
@@ -15824,14 +15824,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 618,
+       "guard": 684,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 5,
+       "poise": 3,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -15840,12 +15840,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 58,
+        "head": 8,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 14
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -15881,7 +15881,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "3c65ef4278f2345b3f9b113f5bdd8bb58f7865991b720d7b0724ff10246800e3",
+     "checksum": "2722ef940032af9e9d7e03ee007e3218b5fdb156e687586269518ab5d023f84d",
      "events": [],
      "fighters": [
       {
@@ -15967,14 +15967,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 621,
+       "guard": 687,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 6,
+       "poise": 4,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -15983,12 +15983,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 58,
+        "head": 8,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 14
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -16024,7 +16024,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "24b636a87a36d2d9d98f6e84dd3fb28437082f251895eab9bfa2972edef5326d",
+     "checksum": "740065cceb99289aae241ab41edfc72d66f0a7e1f98d6e379ff3877d0514a0a0",
      "events": [],
      "fighters": [
       {
@@ -16110,14 +16110,14 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 621,
+       "guard": 687,
        "is_downed": false,
        "is_foul_recovery_target": false,
        "knockdowns": 0,
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 7,
+       "poise": 4,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -16126,12 +16126,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 58,
+        "head": 8,
         "left_cut": 0,
         "left_eye": 0,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 14
+        "right_eye": 0,
+        "swelling": 0
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -16156,7 +16156,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "a09b9d489f6cd4ae0a385dba63b9fd07ca9bc0787323f023a01f5cf97828ff26",
+     "checksum": "96c7a1a2fab89fca61f6e377b464a2885b1adaeda796c34043e057f3a483f4e0",
      "events": [
       {
        "action_id": "one@114",
@@ -16267,7 +16267,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -16283,12 +16283,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -16313,7 +16313,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "7f8a1a5e873550821a169b8f6b6e4a6cde22ad8a2365eba80cda1f87fa0eaf57",
+     "checksum": "022325c047624a306440dd1d1fc7c117468ac136eacbdec4dbaa891ec67df8a4",
      "events": [],
      "fighters": [
       {
@@ -16399,7 +16399,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -16415,12 +16415,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -16445,7 +16445,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "f4f051bc3d36121c1e5e6d558b10ca7bfb1781340a4f54a6c457e36b0322dbdf",
+     "checksum": "0462ed7d1963930c164634f069dc01330be8988b59c771d1c8e5b1336a341cc8",
      "events": [],
      "fighters": [
       {
@@ -16531,7 +16531,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -16547,12 +16547,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -16577,7 +16577,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "96bfc761eb6897cdeb8ea3f54443b86d0c816b070cdb1803be97d9a72f4ecdec",
+     "checksum": "6c6de22c82bc18a2386fc5e647baa2b4b98fc721c66789fd78fc1f44884d2b11",
      "events": [],
      "fighters": [
       {
@@ -16663,7 +16663,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -16679,12 +16679,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -16709,7 +16709,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "6d40cd46e4f63037f0b62c6aff473b92e4ade0d88b72de58b9d7b39c6c9c2175",
+     "checksum": "f521eb8f704d0d8c9ad89ff36c8b9442a9d4efc8d31aab588615e6ad9357c292",
      "events": [],
      "fighters": [
       {
@@ -16795,7 +16795,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -16811,12 +16811,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -16841,7 +16841,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "590e6033a37ecef4833ecf108f331eafb8100ee95bf51348eb07102d449817b2",
+     "checksum": "d068f518743534f1c7047b44c2236d343a4c7434c3944e9fff787100f12346d9",
      "events": [],
      "fighters": [
       {
@@ -16927,7 +16927,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -16943,12 +16943,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -16973,7 +16973,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "cf8f8bd1693c01a1575a6f8a3337bfbe4bd3ef98a3ef8381286e762bb186e0b0",
+     "checksum": "783542026c45aa80a8c024be853a559d7842fd6c318753e93eacaabc88b2bc33",
      "events": [],
      "fighters": [
       {
@@ -17059,7 +17059,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -17075,12 +17075,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -17105,7 +17105,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "8b764743b9ba7cf0e97697beb6638f8f373634ef9bc7511b37b8643b145606a6",
+     "checksum": "930d709e86bb6f8d7963d297905e1aa5def7001aeb473ecd3041981096186d6e",
      "events": [],
      "fighters": [
       {
@@ -17191,7 +17191,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -17207,12 +17207,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -17237,7 +17237,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "fc5ad67a4f95c3a1e615a1d4bbfc0065a09ae6a7382b99019b01bb702004dbd3",
+     "checksum": "37fe4ed6c549d5184bb34b4ff3fa27896b79c82d156e8bab449f90c9213cc73f",
      "events": [],
      "fighters": [
       {
@@ -17323,7 +17323,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -17339,12 +17339,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -17369,7 +17369,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "0533ff2e81a9d28d586820f7d501d52bfa23e6be2107ccef30f010df1891c59c",
+     "checksum": "3f569b52ecef7c0896daabd6053d5fc361e9b1eb5e81d0a8b27b453c867e016e",
      "events": [],
      "fighters": [
       {
@@ -17455,7 +17455,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -17471,12 +17471,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -17501,7 +17501,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "0abb290af6dd673aab90996620f6bdf5e9e44daa47b08a0d99a20ac7ac123b38",
+     "checksum": "93ae14b249dbad947326a2bd63313764ccc52783edb970b0ed19c98b268eb972",
      "events": [],
      "fighters": [
       {
@@ -17587,7 +17587,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -17603,12 +17603,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -17633,7 +17633,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "56fd1ad221001ccc389b139f9f9bf5b29247cc6ed6068a58a8922aed64c0e246",
+     "checksum": "236aff9bbadc18f7ff8c3257742101979ce020a3349e931d2e0c26380e3bcbec",
      "events": [],
      "fighters": [
       {
@@ -17719,7 +17719,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -17735,12 +17735,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -17765,7 +17765,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "0cc6fe25a1452ff1fd922260092f24870e5b0c65f031b3b3816c8a4f346e3790",
+     "checksum": "7724e03b0a2a63a3ae4b390ac584d27d31aa941f4fc10044d732a8a2d833dc6c",
      "events": [],
      "fighters": [
       {
@@ -17851,7 +17851,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -17867,12 +17867,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -17897,7 +17897,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "5de48be1dd47e4237c9e93fd7a70baa74346e7882d90f871a6aca1c8b7da8b1f",
+     "checksum": "2eb568c2bcb13dda30f1c8b6842c70800aed35d85aa2a5a98aa62238fa9e06ee",
      "events": [],
      "fighters": [
       {
@@ -17983,7 +17983,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -17999,12 +17999,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -18029,7 +18029,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "e6e8d81b0272c5fa0530317592b8d2f06aa68a7826d59d24fe4166fab375015c",
+     "checksum": "50d18e60656ce1d45028a692e0eb0d74657d360cefb2fffbd1076da50f7fc86b",
      "events": [],
      "fighters": [
       {
@@ -18115,7 +18115,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -18131,12 +18131,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -18161,7 +18161,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "e74dac8caeba44382d99ee5ea0be81edea5665fa257445154343beac0de41435",
+     "checksum": "ba1f70c551bdd3c78de28aac75b5dce5eefb192b9ee79b6c0f0fbb06a1fab249",
      "events": [],
      "fighters": [
       {
@@ -18247,7 +18247,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -18263,12 +18263,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -18293,7 +18293,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "1912da5add3ba3370ed16641f1b4001de9b1bc62517430660b3843604ece9a50",
+     "checksum": "c0a10dd27930f7183b7a9ec5c33b05f32a7322ec73eade4f28874ced24fd4da5",
      "events": [],
      "fighters": [
       {
@@ -18379,7 +18379,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -18395,12 +18395,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -18425,7 +18425,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "6bd739dc3b5b4b8ef4ee93e362318e83afdbadac5986bd89296e81befb5617b5",
+     "checksum": "273275b08ee08bef2caafcf2ffad5ce2a4750a54b4e17d066001b01898556e16",
      "events": [],
      "fighters": [
       {
@@ -18511,7 +18511,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -18527,12 +18527,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -18557,7 +18557,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "b125a6ac9bad94bd33348ea2044f24aac8e999841c7aa02dab906edecd53f4e4",
+     "checksum": "e2f0fb1a5df4f79735235af5bb6299ecd63af08c94cba2bcc1a9ee8283cbaeaf",
      "events": [],
      "fighters": [
       {
@@ -18643,7 +18643,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -18659,12 +18659,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -18689,7 +18689,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "a9dccc5dff5e178beb5e5979f716b95ea285e8b3db5ce1fef2bfc69ce94b8865",
+     "checksum": "ca8559a87117942cad3f952390032ad2f7318da8376bdda0f877e86c455f3d97",
      "events": [],
      "fighters": [
       {
@@ -18775,7 +18775,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -18791,12 +18791,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -18821,7 +18821,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "50a6851ca7870718ad905195994ff6b5ff395ca1f6a5c1eac5ffe32ab046cfcd",
+     "checksum": "8142937fd696244ff0ffaaf776b6a447e77e2a9dadc486066bf7cc26714fba52",
      "events": [],
      "fighters": [
       {
@@ -18907,7 +18907,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -18923,12 +18923,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -18953,7 +18953,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "4543aaf41aecb5f54df5259edd25f5324e442506967da04fa1e9c35dacfde016",
+     "checksum": "f9e44fdb22cc392ff1dd161b726471dc79a7518a3d057ca818f7497992e1e83f",
      "events": [],
      "fighters": [
       {
@@ -19039,7 +19039,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -19055,12 +19055,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -19085,7 +19085,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "88b5a65f3235c0869f3c04cd1dc57c828acb67cee740267e18d36ed6127f16ba",
+     "checksum": "dfbf8990eaf9c5cb115d24016d6390cfda0fefef66f73e1fa9b6b7de99b57204",
      "events": [],
      "fighters": [
       {
@@ -19171,7 +19171,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -19187,12 +19187,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -19217,7 +19217,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "45a9007a6b46c28914a3eae1e5c3a819b2ed6109b9618e91807c9fb92beaa97b",
+     "checksum": "b093f49ab888442f6c63c954da0c89939ae9998bddfcf7bca73cffba7d4132b5",
      "events": [],
      "fighters": [
       {
@@ -19303,7 +19303,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -19319,12 +19319,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -19349,7 +19349,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "aee053081451f70d7e719d4b6ea3d0cf7b931485e6f35dc339f62ac0243a031e",
+     "checksum": "bf29b840cf42c3a12bd201c6d2cd77f959be7ec7f17f71522dda75b2941fc32c",
      "events": [],
      "fighters": [
       {
@@ -19435,7 +19435,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -19451,12 +19451,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -19481,7 +19481,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "b360d98499cf2a5eba41dcf2bec5b3b79a91c77ae9b598f4040b08d88a38655c",
+     "checksum": "db3ea9525969f0440c1c319f6e44ee27d9c6cf27a68d9f16f5aee0481e333938",
      "events": [],
      "fighters": [
       {
@@ -19567,7 +19567,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -19583,12 +19583,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -19613,7 +19613,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "a69c942296b8b801424cce0c132472f354090f3bd4f45f047942b91a2582439f",
+     "checksum": "89fff562b0bd843fc10910fa29ec4ad1f96459fdeeca6a7f3d48ec18083f510e",
      "events": [],
      "fighters": [
       {
@@ -19699,7 +19699,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -19715,12 +19715,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -19745,7 +19745,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "6ffefb8e24de88cc2f7fdfbfd77c1461fe021773efbef003947f086c9326d8de",
+     "checksum": "cef3fd6b8e71d878b6c4ae28a658ab669407923e829c5bf8906a3f80595e8872",
      "events": [],
      "fighters": [
       {
@@ -19831,7 +19831,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -19847,12 +19847,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -19877,7 +19877,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "b853139acfefd1b89172163ddfdf63a785086f0bd2e4fbf1c1a648f18b36b68a",
+     "checksum": "1e0f77a6d52a9a253da965a9056ada5b840329fb69b5bc574a4a0c1f2925eaf4",
      "events": [],
      "fighters": [
       {
@@ -19963,7 +19963,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -19979,12 +19979,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -20009,7 +20009,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "d441183b0a08e096b9bf58350fdf62b17441715b1abf9fa9fa8c2796656d9082",
+     "checksum": "affee5448ee62677186c88ddf9e11a0b85a3be4c41b09198efe2815dab90f4ea",
      "events": [],
      "fighters": [
       {
@@ -20095,7 +20095,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -20111,12 +20111,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -20141,7 +20141,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "43c44d98bdb1ce18dd94ba7b86657e4c852d276b81df431aa60fff07bb648ebe",
+     "checksum": "9f83a7ec4c3834cc417dd93a617fe47df94740fc8bbd767c3d7b778ead871535",
      "events": [
       {
        "action_id": null,
@@ -20240,7 +20240,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -20256,12 +20256,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -20286,7 +20286,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "97d3feb67fbd9449812f0045af4cdbd222fd1a3f771eaa92a154a46e1764c25d",
+     "checksum": "9a6e4878eea7c076ba58269e415f63aa10e571338499c43d3cce7fd62cd5e376",
      "events": [],
      "fighters": [
       {
@@ -20372,7 +20372,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -20388,12 +20388,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -20418,7 +20418,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "a86aee4ee3a1f8dbe6730f48665ff1a5de89280feb7222c05429cc9f5958b01e",
+     "checksum": "1820b009d6e918e7a29a93283717dc0e10f1cd31fc91cdbfa9c9edaabf722312",
      "events": [],
      "fighters": [
       {
@@ -20504,7 +20504,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -20520,12 +20520,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -20550,7 +20550,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "daee2157a0a8647529305f433c5ee8bdd478051e064f49eb2688811912f8670d",
+     "checksum": "a109a7f5deb60309b0168166ee319541d08f4fa17d50a453a44f95623b934258",
      "events": [],
      "fighters": [
       {
@@ -20636,7 +20636,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -20652,12 +20652,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -20682,7 +20682,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "a0985673b4dfcba3b2835c370fe356d21c216d77260710dd9ca7a87c44ec6b5b",
+     "checksum": "43031b1bd368b455affd528ddffeacc9d95cea90b9633249fdd69b0a6689df71",
      "events": [],
      "fighters": [
       {
@@ -20768,7 +20768,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -20784,12 +20784,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -20814,7 +20814,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "7d4e765ca9ccda37b24b3d9f04af945d2d7647968ba464ce1d31dc0e2c145709",
+     "checksum": "a117e854b492ece575a36ece528e1476c4fe7dee7caa72c65d8f94cc201d9c9c",
      "events": [],
      "fighters": [
       {
@@ -20900,7 +20900,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -20916,12 +20916,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -20946,7 +20946,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "eb032e1a643397fa33fb2395655045ea052709b2f4613e389d15831735ca3c7e",
+     "checksum": "4a5e36ee8f7c533bbcd79e944b44f09ab0ee480de58621f985f220b852bae86d",
      "events": [],
      "fighters": [
       {
@@ -21032,7 +21032,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -21048,12 +21048,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -21078,7 +21078,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "88a0507757b22602bf27ddd8e968ba429edc893205aec976719fe5ce74574f49",
+     "checksum": "9c5ae2d39548d393541982d5b50542265c5bb86efc08719682e7eecc0f49392a",
      "events": [],
      "fighters": [
       {
@@ -21164,7 +21164,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -21180,12 +21180,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -21210,7 +21210,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "13a1824a5867e111b8ce886557b36f2212fe32dcfa46a69a08d2a2344ef9c893",
+     "checksum": "50c88cca49925cb644a6ef745b7f4b0495393bda40373fec84e600b410cc1e45",
      "events": [],
      "fighters": [
       {
@@ -21296,7 +21296,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -21312,12 +21312,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -21342,7 +21342,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "c46ec5a2394fabaeb1c5fe72990fbd9f6ebbef61f6f8711303e801cf2ee038ce",
+     "checksum": "7fd7b2d40b52da4eef90dd97aabccbcedfa388d6710eb374998e24ab5ffd36b7",
      "events": [],
      "fighters": [
       {
@@ -21428,7 +21428,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -21444,12 +21444,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -21474,7 +21474,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "29fefd0688f763869055290e4c941558bfb4545df5c33713121a4156de9ff9dc",
+     "checksum": "ea1a86efc05b35f4c900ce790213c9e183a65d679e8d8af101ca077e59f479b0",
      "events": [],
      "fighters": [
       {
@@ -21560,7 +21560,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -21576,12 +21576,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,
@@ -21606,7 +21606,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "4cb8d8b5ca6af33b34ad232400114e55d76a1cd5064bcc589bee529b6ce35f2c",
+     "checksum": "47a3978a1780981363ffbf84cf737effe9916c8c0fa29e8f01eeeb4f25377906",
      "events": [],
      "fighters": [
       {
@@ -21692,7 +21692,7 @@
        "get_up_required": 0,
        "get_up_window_end_tick": 0,
        "get_up_window_start_tick": 0,
-       "guard": 624,
+       "guard": 690,
        "is_downed": true,
        "is_foul_recovery_target": false,
        "knockdowns": 1,
@@ -21708,12 +21708,12 @@
        "trauma": {
         "bleeding": 0,
         "body": 0,
-        "head": 190,
+        "head": 74,
         "left_cut": 0,
-        "left_eye": 66,
+        "left_eye": 46,
         "right_cut": 0,
-        "right_eye": 29,
-        "swelling": 47
+        "right_eye": 0,
+        "swelling": 21
        },
        "velocity_x": 0,
        "velocity_y": 0,

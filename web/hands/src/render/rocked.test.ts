@@ -1,3 +1,4 @@
+import { ROCKED_BASE_TICKS, ROCKED_MAX_TICKS } from "../manifest";
 import { fighter } from "../test/fixtures";
 import { ROCKED_DOWN, RockedVision, rockedLevel } from "./rocked";
 
@@ -5,11 +6,16 @@ describe("hurt vision", () => {
   it("follows how long the fighter is stunned and how little poise is left", () => {
     expect(rockedLevel(undefined, "fight")).toBe(0);
     expect(rockedLevel(fighter("one"), "fight")).toBe(0);
-    expect(rockedLevel({ ...fighter("one"), stunned_ticks: 45 }, "fight")).toBe(1);
+    expect(rockedLevel({ ...fighter("one"), stunned_ticks: ROCKED_MAX_TICKS }, "fight")).toBe(1);
     expect(rockedLevel({ ...fighter("one"), stunned_ticks: 90 }, "fight")).toBe(1);
-    expect(rockedLevel({ ...fighter("one"), stunned_ticks: 9 }, "fight")).toBeCloseTo(0.2);
+    expect(rockedLevel({ ...fighter("one"), stunned_ticks: ROCKED_BASE_TICKS }, "fight")).toBeCloseTo(ROCKED_BASE_TICKS / ROCKED_MAX_TICKS);
     expect(rockedLevel({ ...fighter("one"), poise: 75 }, "fight")).toBeCloseTo(0.3);
-    expect(rockedLevel({ ...fighter("one"), poise: 75, stunned_ticks: 30 }, "fight")).toBeCloseTo(30 / 45);
+    expect(rockedLevel({ ...fighter("one"), poise: 75, stunned_ticks: 30 }, "fight")).toBeCloseTo(30 / ROCKED_MAX_TICKS);
+  });
+
+  it("leaves a flinch from an ordinary clean shot alone", () => {
+    expect(rockedLevel({ ...fighter("one"), stunned_ticks: 9 }, "fight")).toBe(0);
+    expect(rockedLevel({ ...fighter("one"), stunned_ticks: ROCKED_BASE_TICKS - 1 }, "fight")).toBe(0);
   });
 
   it("is strongest on the canvas and gone once the bout is not live", () => {

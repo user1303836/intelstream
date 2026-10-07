@@ -11,20 +11,40 @@ from typing import Final
 from intelstream.hands.rules import (
     BLIND_SIDE_EYE_THRESHOLD,
     BLIND_SIDE_IMPACT_PERCENT,
+    BLOCK_POISE_PERCENT,
+    BODY_COLLAPSE_COOLDOWN_TICKS,
     BODY_COLLAPSE_DELAY_TICKS,
     BODY_COLLAPSE_MINIMUM_DAMAGE,
     BODY_COLLAPSE_STAMINA,
     BODY_COLLAPSE_TRAUMA,
+    BODY_TRAUMA_PER_DAMAGE_PERCENT,
     BODY_WIND_PERCENT,
     CLINCH_DRAW_SPEED,
     CLINCH_HOLD_DISTANCE,
     COMPATIBLE_COMBO_CHAINS,
     CORNER_TREATMENTS,
     COUNTDOWN_TICKS,
+    CUT_PER_DAMAGE_PERCENT,
     DEFAULT_ROUNDS,
+    EYE_TRAUMA_PER_DAMAGE_PERCENT,
     FACING_SCALE,
     FACING_TURN_PERCENT,
     FIGHTER_RADIUS,
+    FLINCH_BASE_TICKS,
+    FLINCH_DAMAGE_DIVISOR,
+    FLINCH_MINIMUM_DAMAGE,
+    GET_UP_BASE,
+    GET_UP_PER_KNOCKDOWN,
+    GET_UP_STAMINA,
+    GET_UP_STUN_TICKS,
+    GET_UP_TRAUMA_DIVISOR,
+    GUARD_BLOCK_MINIMUM,
+    GUARD_DAMAGE_PERCENT,
+    GUARD_HELD_REGEN_EVERY_TICKS,
+    GUARD_LEAK_BASE_PERCENT,
+    GUARD_LEAK_MINIMUM_PERCENT,
+    GUARD_STAMINA_REGEN_PERCENT,
+    HEAD_TRAUMA_PER_DAMAGE_PERCENT,
     JUDGE_PROFILES,
     KNOCKDOWN_NEUTRAL_SEPARATION,
     MAX_CONDITIONING,
@@ -33,6 +53,9 @@ from intelstream.hands.rules import (
     MAX_STAMINA,
     MINIMUM_SEPARATION,
     PARRY_STAGGER_TICKS,
+    PERFECT_BLOCK_POISE_PERCENT,
+    POISE_DAMAGE_PERCENT,
+    POISE_REGEN_EVERY_TICKS,
     PUNCH_RULES,
     RECOVERY_CANCEL_PERCENT,
     REFEREE_WALK_SPEED,
@@ -42,12 +65,22 @@ from intelstream.hands.rules import (
     RING_CORNER_REACH,
     RING_HALF_HEIGHT,
     RING_HALF_WIDTH,
+    ROCKED_BASE_TICKS,
+    ROCKED_COUNTER_DAMAGE,
+    ROCKED_DAMAGE_DIVISOR,
+    ROCKED_HURT_POISE,
+    ROCKED_MAX_TICKS,
+    ROCKED_POWER_DAMAGE,
     ROUND_TICKS,
+    STUN_CHAIN_MAX_TICKS,
+    STUN_IMMUNITY_TICKS,
+    SWELLING_PER_DAMAGE_PERCENT,
     TICKS_PER_SECOND,
     JudgeProfile,
     PunchRule,
     fatigue_factor,
     fatigue_max_stamina,
+    poise_ceiling,
 )
 from intelstream.hands.types import (
     ActionKind,
@@ -205,6 +238,8 @@ class FighterState:
     evasion_ticks: int = 0
     stunned_ticks: int = 0
     stunned_at_tick: int = -1
+    stun_chain_ticks: int = 0
+    stun_immune_until_tick: int = -1
     counter_ticks: int = 0
     clinch_startup_ticks: int = 0
     clinch_ticks: int = 0
@@ -237,6 +272,7 @@ class FighterState:
     movement_load: int = 0
     corner_choice: CornerChoice | None = None
     body_collapse_ticks: int = 0
+    body_collapse_at_tick: int = -100_000
     body_collapse_action_id: str | None = None
 
     def __post_init__(self) -> None:
@@ -574,6 +610,11 @@ class BoxingEngine:
         )
         if fighter.stunned_ticks > 0:
             fighter.stunned_ticks -= 1
+            fighter.stun_chain_ticks += 1
+            if fighter.stunned_ticks == 0:
+                # Clear-headed again: the next clean shot is a moment before it can stop him again.
+                fighter.stun_chain_ticks = 0
+                fighter.stun_immune_until_tick = self.tick + STUN_IMMUNITY_TICKS
             fighter.defense = DefensivePose.NONE
             fighter.clinch_startup_ticks = 0
             fighter.pending_actions.clear()
@@ -792,9 +833,10 @@ class BoxingEngine:
             impact = impact * BLIND_SIDE_IMPACT_PERCENT // 100
         impact = max(1, impact)
 
-        blocked = guarding and defender.guard > 0
+        # Arms too tired to hold a real guard stop nothing, and cannot be broken again.
+        blocked = guarding and defender.guard >= GUARD_BLOCK_MINIMUM
         if blocked:
-            guard_damage = rule.guard_damage
+            guard_damage = rule.guard_damage * GUARD_DAMAGE_PERCENT // 100
             if perfect:
                 guard_damage //= 3
                 impact //= 8
@@ -818,8 +860,8 @@ class BoxingEngine:
                     )
             else:
                 guard_leak = max(
-                    18,
-                    100 - defender.guard // 12 + (100 - defender.fatigue) // 2,
+                    GUARD_LEAK_MINIMUM_PERCENT,
+                    GUARD_LEAK_BASE_PERCENT - defender.guard // 12 + (100 - defender.fatigue) // 2,
                 )
                 impact = impact * guard_leak // 100
                 self._emit(
@@ -845,12 +887,20 @@ class BoxingEngine:
             attacker.performance.clean_hits += 1
 
         damage = max(1, impact)
-        poise_damage = rule.poise_damage * counter_multiplier // 100
+        poise_damage = rule.poise_damage * counter_multiplier * POISE_DAMAGE_PERCENT // 10_000
+        if blocked:
+            poise_damage = (
+                poise_damage
+                * (PERFECT_BLOCK_POISE_PERCENT if perfect else BLOCK_POISE_PERCENT)
+                // 100
+            )
         shut_eye: str | None = None
         if action.target is Target.HEAD:
-            shut_eye = self._apply_head_damage(defender, action, damage)
+            shut_eye = self._apply_head_damage(defender, action, damage, clean=not blocked)
         else:
-            defender.trauma.body = min(1200, defender.trauma.body + damage * 2)
+            defender.trauma.body = min(
+                1200, defender.trauma.body + damage * BODY_TRAUMA_PER_DAMAGE_PERCENT // 100
+            )
             defender.conditioning = max(0, defender.conditioning - damage)
             if not blocked:
                 # A clean shot to the body takes the wind out of a fighter as well as the legs.
@@ -900,9 +950,8 @@ class BoxingEngine:
         if self._needs_doctor_stoppage(defender):
             self._complete(attacker.player_id, FinishMethod.DOCTOR_STOPPAGE)
             return
-        if defender.poise <= 0 or (
-            action.target is Target.HEAD and defender.trauma.head > 850 and damage >= 40
-        ):
+        clean_head = action.target is Target.HEAD and not blocked
+        if defender.poise <= 0:
             if action.target is Target.BODY:
                 self._knock_down(
                     defender,
@@ -912,11 +961,20 @@ class BoxingEngine:
                 )
             else:
                 self._knock_down(defender, attacker)
-        elif action.target is Target.HEAD and damage >= 36:
-            defender.stunned_ticks = min(90, 8 + damage // 2)
-            defender.stunned_at_tick = self.tick
-            defender.taunt_ticks = 0
-            self._emit("stun", attacker.player_id, defender.player_id, amount=damage)
+        elif clean_head and damage >= FLINCH_MINIMUM_DAMAGE:
+            rocked = (
+                (counter and damage >= ROCKED_COUNTER_DAMAGE)
+                or (action.power is Power.POWER and damage >= ROCKED_POWER_DAMAGE)
+                or defender.poise < ROCKED_HURT_POISE
+            )
+            if rocked:
+                ticks = min(ROCKED_MAX_TICKS, ROCKED_BASE_TICKS + damage // ROCKED_DAMAGE_DIVISOR)
+                if self._stun(defender, ticks, rocked=True):
+                    self._emit("stun", attacker.player_id, defender.player_id, amount=damage)
+            else:
+                self._stun(
+                    defender, FLINCH_BASE_TICKS + damage // FLINCH_DAMAGE_DIVISOR, rocked=False
+                )
         elif (
             action.target is Target.BODY
             and not blocked
@@ -924,9 +982,11 @@ class BoxingEngine:
             and defender.trauma.body >= BODY_COLLAPSE_TRAUMA
             and defender.stamina <= BODY_COLLAPSE_STAMINA
             and defender.body_collapse_ticks == 0
+            and self.tick - defender.body_collapse_at_tick >= BODY_COLLAPSE_COOLDOWN_TICKS
         ):
             # The delayed body knockdown: the fighter stands frozen for a moment, then goes to a knee.
             defender.body_collapse_ticks = BODY_COLLAPSE_DELAY_TICKS
+            defender.body_collapse_at_tick = self.tick
             defender.body_collapse_action_id = self._action_id(attacker, attack)
             defender.stunned_ticks = max(defender.stunned_ticks, BODY_COLLAPSE_DELAY_TICKS + 1)
             defender.stunned_at_tick = self.tick
@@ -939,22 +999,59 @@ class BoxingEngine:
                 action_id=self._action_id(attacker, attack),
             )
 
+    def _stun(self, fighter: FighterState, ticks: int, *, rocked: bool) -> bool:
+        """Stops a fighter for `ticks`, and says whether it took.
+
+        A clean shot makes a fresh fighter flinch; only a big counter, a big power shot or a hurt
+        fighter is rocked. A flinch cannot land again in the moment after a stun wears off, and
+        no run of stuns lasts longer than the chain limit, so one clean punch cannot be strung
+        into a knockdown with the defender unable to answer.
+        """
+        if fighter.stunned_ticks > 0:
+            room = STUN_CHAIN_MAX_TICKS - fighter.stun_chain_ticks
+            ticks = min(ticks, room)
+            if ticks <= fighter.stunned_ticks:
+                return False
+        elif not rocked and self.tick < fighter.stun_immune_until_tick:
+            return False
+        else:
+            fighter.stun_chain_ticks = 0
+        fighter.stunned_ticks = ticks
+        fighter.stunned_at_tick = self.tick
+        fighter.taunt_ticks = 0
+        return True
+
     def _apply_head_damage(
-        self, defender: FighterState, action: PunchAction, damage: int
+        self, defender: FighterState, action: PunchAction, damage: int, *, clean: bool
     ) -> str | None:
-        """Applies a head shot and returns the side of an eye it has just swollen shut, if any."""
+        """Applies a head shot and returns the side of an eye it has just swollen shut, if any.
+
+        Whatever gets through a guard still shakes the head, but only a clean punch marks the face.
+        """
         eyes_before = (defender.trauma.left_eye, defender.trauma.right_eye)
-        defender.trauma.head = min(1400, defender.trauma.head + damage * 2)
-        eye_damage = damage * (2 if action.punch_class is PunchClass.HOOK else 1)
+        defender.trauma.head = min(
+            1400, defender.trauma.head + damage * HEAD_TRAUMA_PER_DAMAGE_PERCENT // 100
+        )
+        if not clean:
+            return None
+        eye_damage = (
+            damage
+            * (2 if action.punch_class is PunchClass.HOOK else 1)
+            * EYE_TRAUMA_PER_DAMAGE_PERCENT
+            // 100
+        )
+        cut = damage * CUT_PER_DAMAGE_PERCENT // 100
         if action.hand.value == "left":
             defender.trauma.right_eye = min(1000, defender.trauma.right_eye + eye_damage)
             if defender.trauma.right_eye > 260:
-                defender.trauma.right_cut = min(1000, defender.trauma.right_cut + damage)
+                defender.trauma.right_cut = min(1000, defender.trauma.right_cut + cut)
         else:
             defender.trauma.left_eye = min(1000, defender.trauma.left_eye + eye_damage)
             if defender.trauma.left_eye > 260:
-                defender.trauma.left_cut = min(1000, defender.trauma.left_cut + damage)
-        defender.trauma.swelling = min(1000, defender.trauma.swelling + damage // 2)
+                defender.trauma.left_cut = min(1000, defender.trauma.left_cut + cut)
+        defender.trauma.swelling = min(
+            1000, defender.trauma.swelling + damage * SWELLING_PER_DAMAGE_PERCENT // 100
+        )
         defender.trauma.bleeding = min(
             1000,
             defender.trauma.bleeding
@@ -1390,12 +1487,16 @@ class BoxingEngine:
         base = 1 if active else max(1, fighter.fatigue // 25)
         regen = max(1, base * 3 // 4) if fighter.movement_load else base
         if fighter.defense in (DefensivePose.GUARD_HIGH, DefensivePose.GUARD_LOW):
-            regen //= 2
+            regen = regen * GUARD_STAMINA_REGEN_PERCENT // 100
         fighter.stamina = min(fighter.maximum_stamina, fighter.stamina + regen)
+        guard_regen = max(1, fighter.fatigue // 30)
         if not active and fighter.defense is DefensivePose.NONE and self.tick % 2 == 0:
-            guard_regen = max(1, fighter.fatigue // 30)
             fighter.guard = min(MAX_GUARD, fighter.guard + guard_regen)
-        fighter.poise = min(MAX_POISE, fighter.poise + (1 if not active else 0))
+        elif not active and self.tick % GUARD_HELD_REGEN_EVERY_TICKS == 0:
+            # A held guard still comes back, slowly, between the punches it takes.
+            fighter.guard = min(MAX_GUARD, fighter.guard + guard_regen)
+        recovering = not active and self.tick % POISE_REGEN_EVERY_TICKS == 0
+        fighter.poise = min(poise_ceiling(fighter.trauma.head), fighter.poise + int(recovering))
 
     @staticmethod
     def _ring_control(fighter: FighterState, opponent: FighterState) -> int:
@@ -1499,7 +1600,11 @@ class BoxingEngine:
             self._complete(attacker.player_id, FinishMethod.TKO)
 
     def _get_up_required(self, fighter: FighterState) -> int:
-        return 34 + fighter.knockdowns * 16 + fighter.trauma.head // 28
+        return (
+            GET_UP_BASE
+            + fighter.knockdowns * GET_UP_PER_KNOCKDOWN
+            + fighter.trauma.head // GET_UP_TRAUMA_DIVISOR
+        )
 
     def _schedule_get_up_prompt(self, fighter: FighterState) -> None:
         fighter.get_up_prompt = (
@@ -1553,9 +1658,10 @@ class BoxingEngine:
         required = self._get_up_required(downed)
         count = self._knockdown_count_ticks // COUNT_TICK_INTERVAL
         if downed.get_up_meter >= required and count >= 1:
-            downed.poise = MAX_POISE // 2
-            downed.stamina = min(downed.maximum_stamina, 350)
-            downed.stunned_ticks = 20
+            downed.poise = min(poise_ceiling(downed.trauma.head), MAX_POISE // 2)
+            downed.stamina = max(downed.stamina, min(downed.maximum_stamina, GET_UP_STAMINA))
+            downed.stunned_ticks = GET_UP_STUN_TICKS
+            downed.stun_chain_ticks = 0
             self._separate_fighters(downed, winner)
             self.phase = MatchPhase.FIGHT
             self.phase_ticks_remaining = max(1, self._paused_fight_ticks)
@@ -1684,6 +1790,8 @@ class BoxingEngine:
                 fighter.clinch_startup_ticks = 0
                 fighter.clinch_ticks = 0
                 fighter.stunned_ticks = 0
+                fighter.stun_chain_ticks = 0
+                fighter.stun_immune_until_tick = -1
                 fighter.taunt_ticks = 0
                 fighter.defense = DefensivePose.NONE
                 fighter.corner_choice = None
@@ -1699,7 +1807,7 @@ class BoxingEngine:
         for fighter in self._fighters.values():
             fighter.stamina = min(fighter.maximum_stamina, fighter.stamina + 3)
             fighter.guard = min(MAX_GUARD, fighter.guard + 2)
-            fighter.poise = min(MAX_POISE, fighter.poise + 2)
+            fighter.poise = min(poise_ceiling(fighter.trauma.head), fighter.poise + 2)
             if self.tick % TICKS_PER_SECOND == 0:
                 fighter.trauma.bleeding = max(0, fighter.trauma.bleeding - 2)
         if self.phase_ticks_remaining <= 0:
@@ -1740,7 +1848,7 @@ class BoxingEngine:
         trauma.body = max(0, trauma.body - treatment.body)
         if treatment.refresh:
             fighter.stamina = fighter.maximum_stamina
-            fighter.poise = MAX_POISE
+            fighter.poise = poise_ceiling(fighter.trauma.head)
         fighter.corner_choice = choice
         self._emit("corner", fighter.player_id, detail=choice.value)
 
@@ -1783,6 +1891,8 @@ class BoxingEngine:
             fighter.pending_actions.clear()
             fighter.clinch_startup_ticks = 0
             fighter.stunned_ticks = 0
+            fighter.stun_chain_ticks = 0
+            fighter.stun_immune_until_tick = -1
             fighter.taunt_ticks = 0
             fighter.last_action_until_tick = -1
         self.phase = MatchPhase.FIGHT
