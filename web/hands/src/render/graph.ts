@@ -1506,7 +1506,8 @@ export class BoxingGraph {
     const towardZ = this.mapping.z(opponent.y) - this.mapping.z(fighter.y);
     const gap = Math.hypot(towardX, towardZ);
     const share = gap > TOUCH_GLOVES_GAP ? ((gap - TOUCH_GLOVES_GAP) / 2 / gap) * walk : 0;
-    this.touchVelocity.set(towardX * share - this.touchOffset.x, 0, towardZ * share - this.touchOffset.z).divideScalar(Math.max(dt, 1e-3));
+    // Capped at a walk, so a jump (a client that joins mid-countdown) is not taken as one huge stride.
+    this.touchVelocity.set(towardX * share - this.touchOffset.x, 0, towardZ * share - this.touchOffset.z).divideScalar(Math.max(dt, 1e-3)).clampLength(0, TOUCH_WALK_TOP_SPEED);
     return this.touchOffset.set(towardX * share, 0, towardZ * share);
   }
 
@@ -1918,6 +1919,8 @@ const TOUCH_WALK_IN_START_TICKS = 80;
 const TOUCH_WALK_IN_END_TICKS = 56;
 const TOUCH_WALK_BACK_START_TICKS = 24;
 const TOUCH_WALK_BACK_END_TICKS = 4;
+/** Metres per second; the walk itself peaks at about 1. */
+const TOUCH_WALK_TOP_SPEED = 1.5;
 /** The engine's taunt length in ticks, over which the lead glove beckons TAUNT_BECKONS times. */
 const TAUNT_TICKS = 60;
 const TAUNT_BECKONS = 4;

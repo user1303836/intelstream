@@ -156,4 +156,25 @@ describe("glove touch", () => {
     expect(Math.abs(atBell![1]! - marks[1]!)).toBeLessThan(1e-3);
     expect(Math.abs(blue.boxer.root.position.x - marks[0]!)).toBeLessThan(1e-3);
   });
+
+  it("does not stride across the ring when the countdown is first seen halfway through the walk", () => {
+    const { boxer, graph } = makeGraph();
+    const left: FighterSnapshot = { ...baseFighter("one"), x: -180, y: 0, facing_x: 1000, facing_y: 0 };
+    const right: FighterSnapshot = { ...baseFighter("two"), x: 180, y: 0, facing_x: -1000, facing_y: 0 };
+    // Waiting on his mark until the first snapshot arrives, already well into the countdown.
+    let renderTick = 0;
+    for (let frame = 0; frame < 30; frame += 1) {
+      renderTick += 0.5;
+      graph.update(left, right, 1 / 60, renderTick / 30, false, "full", renderTick);
+    }
+    let furthest = 0;
+    for (let frame = 0; frame < 60; frame += 1) {
+      renderTick += 0.5;
+      graph.setCountdown(60 - Math.floor(frame / 2));
+      graph.update(left, right, 1 / 60, renderTick / 30, false, "full", renderTick);
+      for (const ankle of ["ankleL", "ankleR"] as const) furthest = Math.max(furthest, bone(boxer, ankle).x - boxer.root.position.x);
+    }
+    // The lead foot's place in the stance is 0.24 m ahead of the fighter.
+    expect(furthest).toBeLessThan(0.3);
+  });
 });
