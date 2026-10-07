@@ -250,29 +250,51 @@ const DEFAULT_SIM: SimulationInfo = { tick_rate: 30, ring_half_width: 500, ring_
 
 /**
  * Freezes a skinned mesh's current deformed surface into a static geometry
- * expressed relative to `pivot` so it can fly as a rigid severed part.
+ * expressed relative to `pivot` so it can fly as a rigid severed part. Only the
+ * vertices its triangles use are kept: each glove of the model indexes its own
+ * half of a vertex buffer the two gloves share.
  */
 export function bakeSkinnedPart(mesh: THREE.SkinnedMesh, pivotPosition: THREE.Vector3, pivotQuaternion: THREE.Quaternion): BakedPart {
   const source = mesh.geometry;
   const positions = source.getAttribute("position");
-  const baked = new Float32Array(positions.count * 3);
+  const index = source.getIndex();
+  // The source vertex behind each kept vertex, and the triangles renumbered to the kept vertices.
+  const kept: number[] = [];
+  const triangles: number[] = [];
+  if (index === null) {
+    for (let vertex = 0; vertex < positions.count; vertex += 1) kept.push(vertex);
+  } else {
+    const renumbered = new Int32Array(positions.count).fill(-1);
+    for (let corner = 0; corner < index.count; corner += 1) {
+      const vertex = index.getX(corner);
+      if (renumbered[vertex]! < 0) renumbered[vertex] = kept.push(vertex) - 1;
+      triangles.push(renumbered[vertex]!);
+    }
+  }
+  const baked = new Float32Array(kept.length * 3);
   const vertex = new THREE.Vector3();
   const inverse = pivotQuaternion.clone().invert();
   mesh.updateMatrixWorld(true);
-  for (let index = 0; index < positions.count; index += 1) {
-    vertex.fromBufferAttribute(positions, index);
-    mesh.applyBoneTransform(index, vertex);
+  for (const [target, from] of kept.entries()) {
+    vertex.fromBufferAttribute(positions, from);
+    mesh.applyBoneTransform(from, vertex);
     vertex.applyMatrix4(mesh.matrixWorld).sub(pivotPosition).applyQuaternion(inverse);
-    baked[index * 3] = vertex.x;
-    baked[index * 3 + 1] = vertex.y;
-    baked[index * 3 + 2] = vertex.z;
+    baked[target * 3] = vertex.x;
+    baked[target * 3 + 1] = vertex.y;
+    baked[target * 3 + 2] = vertex.z;
   }
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.BufferAttribute(baked, 3));
   const uv = source.getAttribute("uv");
-  if (uv !== undefined) geometry.setAttribute("uv", uv.clone());
-  const index = source.getIndex();
-  if (index !== null) geometry.setIndex(index.clone());
+  if (uv !== undefined) {
+    const uvs = new Float32Array(kept.length * 2);
+    for (const [target, from] of kept.entries()) {
+      uvs[target * 2] = uv.getX(from);
+      uvs[target * 2 + 1] = uv.getY(from);
+    }
+    geometry.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
+  }
+  if (index !== null) geometry.setIndex(triangles);
   geometry.computeVertexNormals();
   const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
   const map = material instanceof THREE.MeshStandardMaterial ? material.map : null;
