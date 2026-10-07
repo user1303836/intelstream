@@ -1115,8 +1115,11 @@ async def test_reconnecting_over_a_stalled_socket_does_not_hold_up_any_join(
             # the pause is lasting rather than one overlapped write still in flight.
             transport = old_socket._request.transport
             assert transport is not None
+            # The server's own kernel send buffer is kept small too, so the stall builds in a
+            # fraction of a second however large the system would autotune it.
+            transport.get_extra_info("socket").setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
             transport.set_write_buffer_limits(high=1024)
-            async with asyncio.timeout(10):
+            async with asyncio.timeout(30):
                 while not (  # noqa: ASYNC110
                     old_socket._request.protocol.writing_paused
                     and transport.get_write_buffer_size() > SNAPSHOT_BACKLOG_BYTES
