@@ -1,5 +1,5 @@
 import manifestJson from "../../../src/intelstream/hands/combat-manifest.json";
-import type { Hand, Power, PunchClass, Target } from "./types";
+import type { FighterStyle, Hand, Power, PunchClass, Target } from "./types";
 
 export interface PunchTiming {
   readonly startup: number;
@@ -95,6 +95,41 @@ export function punchStaminaCost(punchClass: PunchClass, target: Target, power: 
   if (target === "body") cost += variants.body.stamina_cost_add ?? 0;
   if (power === "power") cost = Math.floor((cost * (variants.power.stamina_cost_mul_num ?? 1)) / (variants.power.stamina_cost_mul_den ?? 1));
   return cost;
+}
+
+interface ManifestStyle {
+  readonly startup_ticks?: Partial<Record<PunchClass, number>>;
+  readonly recovery_ticks?: Partial<Record<PunchClass, number>>;
+  readonly stamina_cost_percent?: number;
+  readonly conditioning_loss_percent?: number;
+  readonly move_speed_percent?: number;
+}
+
+/** What the client needs of a style to predict the player's own punches and footwork as the engine will. */
+export interface StyleTiming {
+  readonly startupTicks: Readonly<Partial<Record<PunchClass, number>>>;
+  readonly recoveryTicks: Readonly<Partial<Record<PunchClass, number>>>;
+  readonly staminaCostPercent: number;
+  readonly conditioningLossPercent: number;
+  readonly moveSpeedPercent: number;
+}
+
+const styles = manifestJson.styles as unknown as Record<FighterStyle, ManifestStyle>;
+
+export function styleTiming(style: FighterStyle): StyleTiming {
+  const raw = styles[style] ?? {};
+  return {
+    startupTicks: raw.startup_ticks ?? {},
+    recoveryTicks: raw.recovery_ticks ?? {},
+    staminaCostPercent: raw.stamina_cost_percent ?? 100,
+    conditioningLossPercent: raw.conditioning_loss_percent ?? 100,
+    moveSpeedPercent: raw.move_speed_percent ?? 100,
+  };
+}
+
+/** The stamina a fighter of `style` is charged for the punch, before any combo discount. */
+export function styledStaminaCost(style: FighterStyle, punchClass: PunchClass, target: Target, power: Power): number {
+  return Math.floor((punchStaminaCost(punchClass, target, power) * styleTiming(style).staminaCostPercent) / 100);
 }
 
 export function actionKey(punchClass: PunchClass, hand: Hand, target: Target, power: Power): string {

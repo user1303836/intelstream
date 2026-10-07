@@ -1,5 +1,5 @@
-import { decodeBootstrap, decodeServerFrame, decodeToken, encodeCpuRequest, encodeInput, ProtocolError } from "./protocol";
-import type { CpuLevel } from "./types";
+import { decodeBootstrap, decodeServerFrame, decodeToken, encodeCpuRequest, encodeInput, encodeStyleChoice, ProtocolError } from "./protocol";
+import type { CpuLevel, FighterStyle } from "./types";
 import { envelope, publicPlayers, snapshot } from "./test/fixtures";
 
 describe("strict protocol v3", () => {
@@ -142,5 +142,42 @@ describe("corner instructions", () => {
   it("sends a corner instruction as an ordinary action", () => {
     const encoded = JSON.parse(encodeInput(7, 40, { moveX: 0, moveY: 0, defense: "none", actions: [{ kind: "corner_swelling" }] })) as { actions: unknown[] };
     expect(encoded.actions).toEqual([{ kind: "corner_swelling" }]);
+  });
+});
+
+describe("fighter styles", () => {
+  const select = { version: 3, type: "select", deadline_ms: 9_000, players: [{ ...publicPlayers[0], style: "slugger" }, publicPlayers[1]], ready: ["one"] };
+  it("decodes the pick of styles with a style only for the fighter who has settled", () => {
+    expect(decodeServerFrame(JSON.stringify(select))).toEqual(select);
+    expect(decodeServerFrame(JSON.stringify({ ...select, players: [...publicPlayers], ready: [] }))).toMatchObject({ type: "select", ready: [] });
+  });
+  it.each([
+    ["a separate styles map", { ...select, styles: { one: "slugger" } }],
+    ["one fighter", { ...select, players: [publicPlayers[0]] }],
+    ["an unknown style", { ...select, players: [{ ...publicPlayers[0], style: "brawler" }, publicPlayers[1]] }],
+    ["a stranger settled", { ...select, ready: ["three"] }],
+    ["a fighter settled twice", { ...select, ready: ["one", "one"] }],
+    ["a deadline past a minute", { ...select, deadline_ms: 60_001 }],
+    ["a negative deadline", { ...select, deadline_ms: -1 }],
+    ["no deadline", { version: 3, type: "select", players: select.players, ready: [] }],
+  ])("rejects a pick with %s", (_name, value) => expect(() => decodeServerFrame(JSON.stringify(value))).toThrow(ProtocolError));
+  it("carries each fighter's style in snapshots and in the players of a bout", () => {
+    const base = snapshot();
+    for (const style of ["balanced", "boxer", "slugger", "swarmer", "counter_puncher"] as const) {
+      const styled = { ...base, fighters: [{ ...base.fighters[0], style }, base.fighters[1]] };
+      expect(decodeServerFrame(JSON.stringify({ version: 3, type: "snapshot", payload: styled }))).toMatchObject({ payload: { fighters: [{ style }, { style: "balanced" }] } });
+    }
+    const unknown = { ...base, fighters: [{ ...base.fighters[0], style: "brawler" }, base.fighters[1]] };
+    expect(() => decodeServerFrame(JSON.stringify({ version: 3, type: "snapshot", payload: unknown }))).toThrow(/style/u);
+    const { style: _dropped, ...unstyled } = base.fighters[1];
+    expect(() => decodeServerFrame(JSON.stringify({ version: 3, type: "snapshot", payload: { ...base, fighters: [base.fighters[0], unstyled] } }))).toThrow(ProtocolError);
+    const ready = { version: 3, type: "ready", players: [{ ...publicPlayers[0], style: "swarmer" }, { ...publicPlayers[1], style: "counter_puncher" }] };
+    expect(decodeServerFrame(JSON.stringify(ready))).toEqual(ready);
+    expect(() => decodeServerFrame(JSON.stringify({ ...ready, players: [{ ...publicPlayers[0], style: 3 }, publicPlayers[1]] }))).toThrow(ProtocolError);
+  });
+  it("sends a style with whether the fighter has settled on it, and nothing else", () => {
+    expect(JSON.parse(encodeStyleChoice("swarmer", true))).toEqual({ version: 3, type: "style", style: "swarmer", ready: true });
+    expect(JSON.parse(encodeStyleChoice("boxer", false))).toEqual({ version: 3, type: "style", style: "boxer", ready: false });
+    expect(() => encodeStyleChoice("brawler" as FighterStyle, true)).toThrow(ProtocolError);
   });
 });

@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   rendererResyncs: 0,
   resultVisible: true,
   cornerPicks: [] as string[],
+  styleChoices: [] as string[],
   cpuRequests: [] as string[],
   cpuAccepted: true,
   renderers: [] as Array<{ onAnnouncement?: ((lines: readonly string[]) => void) | null; onCrowdCue?: ((cue: "chant") => void) | null }>,
@@ -35,6 +36,7 @@ vi.mock("./network", () => ({
     setActive(active: boolean): void { mocks.networkSetActive(active); }
     notifyAction(): void {}
     sendCornerChoice(kind: string): boolean { mocks.cornerPicks.push(kind); return true; }
+    chooseStyle(style: string, ready: boolean): boolean { mocks.styleChoices.push(`${style}:${ready}`); return true; }
     requestCpu(level: string): boolean { mocks.cpuRequests.push(level); return mocks.cpuAccepted; }
     dispose(): void { mocks.networkDispose(); }
   },
@@ -579,6 +581,58 @@ describe("the corner panel", () => {
     send({ version: 3, type: "welcome", role: "spectator", player_id: "viewer", players: [...players], server_tick: 0, reconnect_ticket: "spectator" });
     send({ version: 3, type: "snapshot", payload: makeSnapshot(11, "rest") });
     expect(root.querySelector<HTMLElement>("[data-corner]")!.hidden).toBe(true);
+    app.destroy();
+  });
+});
+
+describe("the pick of styles", () => {
+  beforeEach(() => {
+    mocks.callbacks = null;
+    mocks.styleChoices.length = 0;
+    vi.clearAllMocks();
+  });
+
+  const launch = async (instance: string): Promise<{ app: HandsApp; root: HTMLElement }> => {
+    history.replaceState({}, "", `/?instance_id=${instance}`);
+    const root = document.createElement("div");
+    const app = new HandsApp(root);
+    app.start();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
+    return { app, root };
+  };
+
+  it("offers last time's style when the pick begins, without settling on it, and never for a spectator", async () => {
+    localStorage.setItem("hands.style.v1", "swarmer");
+    const select = { version: 3, type: "select", deadline_ms: 9_000, players: [...players], ready: [] } as const;
+    const fighterView = await launch("styles-join");
+    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [players[0]], server_tick: 0, next_sequence: 0 });
+    expect(mocks.styleChoices).toEqual([]);
+    send(select);
+    expect(mocks.styleChoices).toEqual(["swarmer:false"]);
+    fighterView.app.destroy();
+    const watcher = await launch("styles-watch");
+    send({ version: 3, type: "welcome", role: "spectator", player_id: "viewer", players: [...players], server_tick: 0 });
+    send(select);
+    expect(mocks.styleChoices).toEqual(["swarmer:false"]);
+    watcher.app.destroy();
+  });
+
+  it("shows the pick while the room is choosing and sends a tap as the fighter's settled style", async () => {
+    const { app, root } = await launch("styles-pick");
+    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [players[0]], server_tick: 0, next_sequence: 0 });
+    send({ version: 3, type: "waiting", open_seats: 1 });
+    const picker = root.querySelector<HTMLElement>("[data-style-picker]")!;
+    expect(picker.hidden).toBe(true);
+    send({ version: 3, type: "select", deadline_ms: 9_000, players: [players[0], { ...players[1], style: "boxer" }], ready: ["two"] });
+    expect(picker.hidden).toBe(false);
+    expect(root.querySelector<HTMLElement>("[data-status]")!.hidden).toBe(true);
+    expect(root.querySelector<HTMLElement>("[data-cpu]")!.hidden).toBe(true);
+    expect(picker.textContent).toContain("Two: Boxer");
+    picker.querySelector<HTMLButtonElement>('[data-style="slugger"]')!.click();
+    expect(mocks.styleChoices.at(-1)).toBe("slugger:true");
+    expect(localStorage.getItem("hands.style.v1")).toBe("slugger");
+    send({ version: 3, type: "ready", players: [{ ...players[0], style: "slugger" }, { ...players[1], style: "boxer" }] });
+    expect(picker.hidden).toBe(true);
     app.destroy();
   });
 });

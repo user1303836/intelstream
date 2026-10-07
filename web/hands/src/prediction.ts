@@ -1,4 +1,4 @@
-import { comboChain, comboWindow, FIGHTER_RADIUS, punchStaminaCost, punchTiming, RING_CORNER_REACH, RING_HALF_HEIGHT, RING_HALF_WIDTH, type PunchTiming } from "./manifest";
+import { comboChain, comboWindow, FIGHTER_RADIUS, punchTiming, RING_CORNER_REACH, RING_HALF_HEIGHT, RING_HALF_WIDTH, styledStaminaCost, styleTiming, type PunchTiming } from "./manifest";
 import type { FighterSnapshot, Hand, HeldDefense, Power, PunchClass, Target } from "./types";
 
 export interface HeldInput {
@@ -42,22 +42,23 @@ export function inComboWindow(fighter: FighterSnapshot, punch: PunchIntent, tick
  */
 export function predictedPunchTiming(fighter: FighterSnapshot, punch: PunchIntent, tick?: number): PunchTiming {
   const base = punchTiming(punch.class, punch.target, punch.power);
-  const fullCost = punchStaminaCost(punch.class, punch.target, punch.power);
+  const style = styleTiming(fighter.style);
+  const fullCost = styledStaminaCost(fighter.style, punch.class, punch.target, punch.power);
   const cost = tick !== undefined && inComboWindow(fighter, punch, tick) ? Math.max(1, Math.floor((fullCost * 90) / 100)) : fullCost;
-  const conditioning = Math.max(0, fighter.conditioning - Math.max(1, Math.floor(cost / 12)));
+  const conditioning = Math.max(0, fighter.conditioning - Math.floor((Math.max(1, Math.floor(cost / 12)) * style.conditioningLossPercent) / 100));
   const speed = fatigueFactor(conditioning, fighter.trauma.body);
   const lead = fighter.stance === "orthodox" ? "left" : "right";
   const quick = punch.class === "jab" && punch.hand === lead ? 1 : 0;
   return {
     ...base,
-    startup: Math.max(2, Math.floor((base.startup * 100) / speed) - quick),
-    recovery: Math.max(4, Math.floor((base.recovery * 100) / speed)),
+    startup: Math.max(2, Math.floor((base.startup * 100) / speed) - quick + (style.startupTicks[punch.class] ?? 0)),
+    recovery: Math.max(4, Math.floor((base.recovery * 100) / speed) + (style.recoveryTicks[punch.class] ?? 0)),
   };
 }
 
 /** False when the fighter cannot pay the punch's full cost: the engine checks it before any combo discount. */
 export function canAffordPunch(fighter: FighterSnapshot, punch: PunchIntent): boolean {
-  return fighter.stamina >= punchStaminaCost(punch.class, punch.target, punch.power);
+  return fighter.stamina >= styledStaminaCost(fighter.style, punch.class, punch.target, punch.power);
 }
 
 /**
@@ -101,6 +102,8 @@ export function predictMovement(fighter: FighterSnapshot, held: HeldInput, ticks
   if (committed >= ticks) return { dx: 0, dy: 0 };
   let speed = Math.max(2, Math.floor((MAX_SPEED * fatigueFactor(fighter.conditioning, fighter.trauma.body)) / 100));
   if (held.defense === "guard_high" || held.defense === "guard_low") speed = Math.max(2, Math.floor((speed * GUARD_SPEED_PERCENT) / 100));
+  // The engine moves in thousandths of a unit, so a style's few percent of footspeed are kept.
+  speed = (speed * styleTiming(fighter.style).moveSpeedPercent) / 100;
   const magnitude = Math.hypot(held.moveX, held.moveY);
   const scale = magnitude > 1000 ? 1000 / magnitude : 1;
   const desiredX = (held.moveX * scale * speed) / 1000;

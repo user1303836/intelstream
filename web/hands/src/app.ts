@@ -4,6 +4,7 @@ import { AudioFeedback } from "./audio";
 import { ClientError, safeError } from "./api";
 import { authorizeDiscord, type DiscordSession } from "./discord";
 import { CornerPanel } from "./corner";
+import { StylePicker } from "./styles";
 import { describeError } from "./errors";
 import { HapticFeedback } from "./haptics";
 import { CONTROL_HELP } from "./input/bindings";
@@ -79,6 +80,7 @@ export class HandsApp {
   private readonly liveFightStatus: HTMLElement;
   private readonly finalSummary: HTMLElement;
   private readonly corner: CornerPanel;
+  private readonly stylePicker: StylePicker;
 
   constructor(
     private readonly root: HTMLElement,
@@ -106,6 +108,7 @@ export class HandsApp {
     this.syncSettings();
     this.input.attachTouch(root.querySelector<HTMLElement>(".activity")!);
     this.corner = new CornerPanel(root.querySelector<HTMLElement>(".activity")!, (kind) => this.network?.sendCornerChoice(kind) ?? false);
+    this.stylePicker = new StylePicker(root.querySelector<HTMLElement>(".activity")!, (style, ready) => this.network?.chooseStyle(style, ready) ?? false);
     this.input.setViewForward(() => this.renderer?.viewForward() ?? null);
     window.addEventListener("keydown", this.onCameraKey);
   }
@@ -357,6 +360,7 @@ export class HandsApp {
       authorizing: "Authorizing with Discord…",
       connecting: "Connecting securely…",
       waiting: this.cpuLevel === null ? "Waiting for one opponent to use Play now in this channel." : "Calling in the computer…",
+      select: "Pick how your fighter boxes.",
       countdown: "Bout countdown.",
       fight: `Round ${this.state.snapshot?.round_number ?? 1} in progress.`,
       knockdown: `Knockdown count ${this.state.snapshot?.fighters.find((fighter) => fighter.player_id === this.state.playerId)?.get_up_count ?? 0}.`,
@@ -370,7 +374,7 @@ export class HandsApp {
     this.setText(this.status, spectating ? `Spectating — ${labels[this.state.stage]}` : labels[this.state.stage]);
     // The result card says how the bout ended; the button sits in the card's footer.
     const resulted = this.state.stage === "complete" && this.state.final !== null;
-    this.status.hidden = resulted || ["countdown", "fight", "knockdown", "foul_recovery", "rest"].includes(this.state.stage);
+    this.status.hidden = resulted || ["select", "countdown", "fight", "knockdown", "foul_recovery", "rest"].includes(this.state.stage);
     this.overlay.toggleAttribute("data-raised", this.state.snapshot !== null);
     this.overlay.toggleAttribute("data-result", resulted);
     // The engine's last snapshot arrives before the result does; the finish plays without the overlay.
@@ -404,6 +408,7 @@ export class HandsApp {
           : labels[this.state.stage];
     this.setText(this.liveFightStatus, liveStatus);
     this.corner.update(this.state.snapshot, this.state.playerId, this.state.role === "fighter" && this.state.stage === "rest");
+    this.stylePicker.update(this.state.stage === "select" ? this.state.select : null, this.state.playerId, this.state.role);
     this.retry.hidden = this.state.stage !== "fatal";
     if (this.state.stage !== "complete") this.rematchButton.hidden = true;
     this.cpuPicker.hidden = spectating || this.state.stage !== "waiting" || this.cpuLevel !== null;
@@ -588,6 +593,7 @@ export class HandsApp {
     window.removeEventListener("keydown", this.onCameraKey);
     this.input.destroy();
     this.corner.destroy();
+    this.stylePicker.destroy();
     this.audio.destroy();
     this.voice.destroy();
     this.settings.destroy();

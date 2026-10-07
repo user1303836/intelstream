@@ -11,6 +11,16 @@ describe("authoritative state reducer", () => {
     state = reduceState(state, { type: "message", message: { version: 3, type: "resumed", player_id: "two" } }); expect(state.stage).toBe("fight");
     state = reduceState(state, { type: "message", message: { version: 3, type: "final", match_id: "m", winner_id: null, method: "draw", round: 12, scorecards: [], ratings: { one: { before: 1500, after: 1500 }, two: { before: 1500, after: 1500 } } } }); expect(state.stage).toBe("complete");
   });
+  it("shows the pick of styles with both fighters, then clears it when the bout is ready", () => {
+    let state = reduceState(initialState, { type: "message", message: { version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [publicPlayers[0]], server_tick: 0, next_sequence: 0 } });
+    state = reduceState(state, { type: "message", message: { version: 3, type: "waiting", open_seats: 1 } });
+    const select = { version: 3, type: "select", deadline_ms: 9_000, players: [publicPlayers[0], { ...publicPlayers[1], style: "boxer" }], ready: ["two"] } as const;
+    state = reduceState(state, { type: "message", message: select });
+    expect(state).toMatchObject({ stage: "select", select, playerOrder: ["one", "two"] });
+    expect(state.players.two?.style).toBe("boxer");
+    state = reduceState(state, { type: "message", message: { version: 3, type: "ready", players: [...publicPlayers] } });
+    expect(state).toMatchObject({ stage: "countdown", select: null });
+  });
   it("stores spectator role without granting fighter identity or sequence authority", () => {
     const state = reduceState(initialState, { type: "message", message: { version: 3, type: "welcome", role: "spectator", player_id: "viewer", players: [...publicPlayers], server_tick: 30 } });
     expect(state).toMatchObject({ role: "spectator", playerId: null, nextSequence: 0, serverTick: 30 });

@@ -1,5 +1,6 @@
 import { ROCKED_MAX_TICKS } from "../manifest";
 import { isDebut, recordCard } from "../record";
+import { styleTag, styleTitle } from "../styles";
 import type { CombatEvent, EngineSnapshot, FighterRecord, FighterSnapshot, FinalMessage, PublicPlayer } from "../types";
 import { decisionLabel, wasBlocked } from "./hud";
 
@@ -429,11 +430,15 @@ export class CommentaryDirector {
     for (const seat of [0, 1] as const) {
       const corner = seat === 0 ? "blue" : "red";
       const player = this.players[snapshot.fighters[seat].player_id];
-      const detail = player === undefined ? "" : `${player.record === undefined ? "" : `${recordCard(player.record)} · `}RATED ${player.rating}`;
+      const style = styleTag(snapshot.fighters[seat].style);
+      const detail = player === undefined ? "" : `${style === null ? "" : `${style} · `}${player.record === undefined ? "" : `${recordCard(player.record)} · `}RATED ${player.rating}`;
       this.enqueue(this.announcement(`In the ${corner} corner, ${names[seat]}.`, { kicker: `IN THE ${corner.toUpperCase()} CORNER`, title: names[seat]!.toUpperCase(), detail, corner: seat }, hold, 97), now + seat * hold, null, 30);
     }
-    const spoken = snapshot.fighters.map((fighter) => recordSpoken(this.players[fighter.player_id]?.record));
-    this.hooks.speak?.([`In the blue corner${spoken[0]}... ${names[0]}!`, `And in the red corner${spoken[1]}... ${names[1]}!`]);
+    const spoken = snapshot.fighters.map((fighter) => {
+      const title = styleTitle(fighter.style);
+      return `${recordSpoken(this.players[fighter.player_id]?.record)}...${title === null ? "" : ` ${title},`}`;
+    });
+    this.hooks.speak?.([`In the blue corner${spoken[0]} ${names[0]}!`, `And in the red corner${spoken[1]} ${names[1]}!`]);
   }
 
   private consider(event: CombatEvent, snapshot: EngineSnapshot, result: CombatEvent | null, now: number): void {

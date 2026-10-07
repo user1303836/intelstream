@@ -213,6 +213,15 @@ def test_a_swarmer_is_quicker_on_the_feet() -> None:
     assert travelled(BOXER) == balanced
 
 
+def test_a_quick_fighter_still_reports_a_velocity_clients_accept() -> None:
+    engine = styled_engine(SWARMER, gap=600)
+    for sequence in range(1, 31):
+        snapshot = engine.step({"one": command(sequence, move_x=1000)})
+        fighter = snapshot.fighters[0]
+        assert -7 <= fighter.velocity_x <= 7
+        assert -7 <= fighter.velocity_y <= 7
+
+
 def test_a_boxer_gets_his_wind_back_sooner() -> None:
     def recovered(style: FighterStyle) -> int:
         engine = styled_engine(style, gap=400)

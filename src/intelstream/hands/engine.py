@@ -1345,10 +1345,10 @@ class BoxingEngine:
                     fighter.velocity_fixed_y -= 1 if fighter.velocity_fixed_y > 0 else -1
         fighter.velocity_x = _rounded_fixed_velocity(fighter.velocity_fixed_x)
         fighter.velocity_y = _rounded_fixed_velocity(fighter.velocity_fixed_y)
-        rounded_speed = (fixed_speed + MOVEMENT_FIXED_SCALE // 2) // MOVEMENT_FIXED_SCALE
+        # The velocity a snapshot reports stays within the base speed; the footwork is in fixed point.
         while (
             fighter.velocity_x * fighter.velocity_x + fighter.velocity_y * fighter.velocity_y
-            > rounded_speed * rounded_speed
+            > speed * speed
         ):
             if abs(fighter.velocity_x) >= abs(fighter.velocity_y):
                 fighter.velocity_x -= 1 if fighter.velocity_x > 0 else -1

@@ -4,13 +4,20 @@ import { SharedActionIntent } from "./input/action-buffer";
 import { TouchInput, coarsePointer } from "./input/touch";
 import { FightRenderer } from "./render/renderer";
 import { CAMERA_MODES } from "./settings";
-import type { CombatEvent, EngineSnapshot, FighterSnapshot, PublicPlayer } from "./types";
+import { FIGHTER_STYLES } from "./protocol";
+import type { CombatEvent, EngineSnapshot, FighterSnapshot, FighterStyle, PublicPlayer } from "./types";
 
 type Draft = { -readonly [K in keyof FighterSnapshot]: FighterSnapshot[K] };
 
+// `styles=<one>,<two>` boxes the fixture fighters in those styles, for the plates and the introduction.
+const fixtureStyles = (new URLSearchParams(window.location.search).get("styles") ?? "").split(",");
+const fixtureStyle = (id: string): FighterStyle => {
+  const wanted = fixtureStyles[id === "fixture-one" ? 0 : 1];
+  return FIGHTER_STYLES.find((style) => style === wanted) ?? "balanced";
+};
 const base = (id: string): Draft => ({
   player_id: id, x: 0, y: 0, facing: id === "fixture-one" ? 1 : -1, facing_x: id === "fixture-one" ? 1000 : -1000, facing_y: 0, velocity_x: 0, velocity_y: 0,
-  stance: id === "fixture-one" ? "orthodox" : "southpaw", defense: "guard_high",
+  stance: id === "fixture-one" ? "orthodox" : "southpaw", style: fixtureStyle(id), defense: "guard_high",
   stamina: 760, maximum_stamina: 1000, conditioning: 820, guard: 670, poise: 520,
   trauma: id === "fixture-two"
     ? { head: 420, body: 640, left_eye: 430, right_eye: 210, left_cut: 330, right_cut: 170, swelling: 280, bleeding: 380 }

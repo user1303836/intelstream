@@ -33,7 +33,7 @@ type Draft = { -readonly [K in keyof FighterSnapshot]: FighterSnapshot[K] };
 
 const base = (): Draft => ({
   player_id: "lab", x: 0, y: 0, facing: 1, facing_x: 0, facing_y: -1000, velocity_x: 0, velocity_y: 0,
-  stance: "orthodox", defense: "none", stamina: 1000, maximum_stamina: 1000, conditioning: 1000, guard: 700, poise: 600,
+  stance: "orthodox", style: "balanced", defense: "none", stamina: 1000, maximum_stamina: 1000, conditioning: 1000, guard: 700, poise: 600,
   trauma: { head: 0, body: 0, left_eye: 0, right_eye: 0, left_cut: 0, right_cut: 0, swelling: 0, bleeding: 0 },
   knockdowns: 0, warnings: 0, deductions: 0, stunned_ticks: 0, is_downed: false,
   action: null, action_hand: null, action_target: null, action_power: null, action_id: null, action_key: null,

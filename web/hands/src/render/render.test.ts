@@ -675,6 +675,16 @@ describe("round stats", () => {
     expect(texts.some((text) => text.startsWith("DEBUT · ELO"))).toBe(true);
   });
 
+  it("puts a fighter's style on the plate, and nothing for a balanced one", () => {
+    const texts: string[] = [];
+    const players = Object.fromEntries(publicPlayers.map((player) => [player.id, player]));
+    const styled = snapshot();
+    drawHud(mockHudContext(texts), 1280, 720, { ...styled, fighters: [{ ...styled.fighters[0], style: "counter_puncher" }, styled.fighters[1]] }, players, "one", null, 0, 30);
+    expect(texts.some((text) => text.startsWith("COUNTER · ELO"))).toBe(true);
+    expect(texts.filter((text) => text.startsWith("ELO "))).toHaveLength(1);
+    expect(texts.some((text) => text.includes("BALANCED"))).toBe(false);
+  });
+
   it("shows the local fighter's input latency readout", () => {
     const texts: string[] = [];
     const ctx = mockHudContext(texts);

@@ -574,7 +574,7 @@ class HandsRoom:
                 "avatar": slot.identity.avatar_hash,
                 "rating": slot.rating,
                 "connected": slot.connection is not None,
-                "style": slot.style.value,
+                **self._public_style(slot.identity.user_id, slot.style),
                 **({} if slot.record is None else {"record": slot.record.payload()}),
             }
             for slot in self._slots.values()
@@ -588,11 +588,18 @@ class HandsRoom:
                     "rating": self._cpu.rating,
                     "connected": True,
                     "cpu": True,
-                    "style": self._cpu.style.value,
+                    **self._public_style(self._cpu.player_id, self._cpu.style),
                     "record": self._cpu.record.payload(),
                 }
             )
         return players
+
+    def _public_style(self, player_id: str, style: FighterStyle) -> dict[str, object]:
+        """A style is shown to everyone once its fighter has settled on it or the bout is on."""
+        settled = self._engine is not None or (
+            self._select is not None and player_id in self._select.ready
+        )
+        return {"style": style.value} if settled else {}
 
     def _enqueue(
         self, connection: PlayerConnection, message: str, *, bounded_update: bool = False
@@ -668,16 +675,10 @@ class HandsRoom:
     def _select_message(self) -> str:
         select = self._select
         assert select is not None
-        # A style is shown to the other corner once its fighter has settled on it.
-        styles = {
-            player_id: style.value
-            for player_id, style in self._seated_styles().items()
-            if player_id in select.ready
-        }
         return self._message(
             "select",
             deadline_ms=max(0, int((select.deadline - self._clock()) * 1000)),
-            styles=styles,
+            players=self._public_players(),
             ready=sorted(select.ready),
         )
 
@@ -706,7 +707,8 @@ class HandsRoom:
     async def choose_style(
         self, player_id: str, connection: PlayerConnection, choice: StyleChoice
     ) -> None:
-        """A fighter picks a style. Alone it is remembered; once the bout has started it is too late."""
+        """A fighter's style during the pick before the bout. Outside the pick, or once the fighter
+        has settled, it changes nothing."""
         async with self._lock:
             spectator = self._spectators.get(player_id)
             if spectator is not None:
@@ -716,16 +718,31 @@ class HandsRoom:
             slot = self._slots.get(player_id)
             if slot is None or slot.connection is not connection:
                 raise RoomError("connection_replaced")
-            if self._engine is not None or self._closed or self._finished:
+            # Counted with the fighter's input frames: every pick is broadcast, so a flood of them
+            # is throttled and then refused like a flood of inputs.
+            now = self._clock()
+            while slot.frame_times and slot.frame_times[0] <= now - 1.0:
+                slot.frame_times.popleft()
+            slot.frame_times.append(now)
+            limit = self.config.max_input_frames_per_second
+            if len(slot.frame_times) > limit:
+                if slot.flood_started is None:
+                    slot.flood_started = now
+                if (
+                    len(slot.frame_times) > FLOOD_HARD_LIMIT_FACTOR * limit
+                    or now - slot.flood_started >= FLOOD_GRACE_SECONDS
+                ):
+                    raise RoomError("rate_limited")
+                return
+            slot.flood_started = None
+            select = self._select
+            if select is None or self._closed or player_id in select.ready:
                 return
             slot.style = choice.style
-            select = self._select
-            if select is None:
+            if not choice.ready:
+                # Still choosing: the other corner learns nothing until this fighter settles.
                 return
-            if choice.ready:
-                select.ready.add(player_id)
-            else:
-                select.ready.discard(player_id)
+            select.ready.add(player_id)
             if set(self._seated_styles()) <= select.ready:
                 self._start_match(select.seed)
             else:
