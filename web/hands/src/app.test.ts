@@ -601,8 +601,8 @@ describe("the corner panel", () => {
     expect(panel.hidden).toBe(true);
     send({ version: 3, type: "snapshot", payload: makeSnapshot(11, "rest") });
     expect(panel.hidden).toBe(false);
-    root.querySelector<HTMLButtonElement>('[data-corner-pick="corner_cut"]')!.click();
-    expect(mocks.cornerPicks).toEqual(["corner_cut"]);
+    root.querySelector<HTMLButtonElement>('[data-corner-pick="corner_breath"]')!.click();
+    expect(mocks.cornerPicks).toEqual(["corner_breath"]);
     send({ version: 3, type: "snapshot", payload: makeSnapshot(12, "fight") });
     expect(panel.hidden).toBe(true);
     app.destroy();

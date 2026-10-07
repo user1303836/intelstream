@@ -1,11 +1,12 @@
 import { CORNER_TREATMENTS, EYE_SHUT_TRAUMA } from "./manifest";
-import { CORNER_PAD_BUTTONS, CornerPanel, cornerPreview } from "./corner";
+import { CORNER_PAD_BUTTONS, CornerPanel, cornerPreview, cutWord } from "./corner";
 import { fighter, snapshot } from "./test/fixtures";
 import type { CornerChoice, CornerKind, EngineSnapshot } from "./types";
 
+/** A fighter with a cut and a swollen eye, so every instruction has something to work on. */
 const resting = (choice: CornerChoice | null = null, trauma: Partial<EngineSnapshot["fighters"][0]["trauma"]> = {}): EngineSnapshot => {
   const base = snapshot();
-  return { ...base, phase: "rest", phase_ticks_remaining: 300, fighters: [{ ...base.fighters[0], corner_choice: choice, trauma: { ...base.fighters[0].trauma, ...trauma } }, base.fighters[1]] };
+  return { ...base, phase: "rest", phase_ticks_remaining: 300, fighters: [{ ...base.fighters[0], corner_choice: choice, trauma: { ...base.fighters[0].trauma, left_cut: 200, left_eye: 300, ...trauma } }, base.fighters[1]] };
 };
 
 function panel(pick: (kind: CornerKind) => boolean = () => true, now: () => number = () => 0): { panel: CornerPanel; root: HTMLElement; buttons: () => HTMLButtonElement[]; status: () => string } {
@@ -124,12 +125,45 @@ describe("the corner between rounds", () => {
 });
 
 describe("what each instruction would do", () => {
-  it("previews the cut, the eye and the health in the HUD's terms", () => {
+  it("previews the cut, the eye and the health in plain words and percentages", () => {
     const hurt = { ...fighter("one"), conditioning: 500, trauma: { ...fighter("one").trauma, left_cut: 600, right_cut: 200, right_eye: EYE_SHUT_TRAUMA + 20, swelling: 300 } };
     const preview = cornerPreview(hurt);
-    expect(preview.cut).toBe(`Cut 600 → ${600 - CORNER_TREATMENTS.cut.worse_cut}`);
-    expect(preview.swelling).toBe(`Eye ${EYE_SHUT_TRAUMA + 20} → ${EYE_SHUT_TRAUMA + 20 - CORNER_TREATMENTS.swelling.eyes} · opens the eye`);
-    expect(preview.breath).toBe(`Health 500 → ${500 + CORNER_TREATMENTS.breath.conditioning} · full stamina`);
+    expect(preview.cut).toBe(`Dangerous cut → ${cutWord(600 - CORNER_TREATMENTS.cut.worse_cut)}`);
+    expect(preview.swelling).toBe(`Eye 100% swollen → ${Math.round(((EYE_SHUT_TRAUMA + 20 - CORNER_TREATMENTS.swelling.eyes) / EYE_SHUT_TRAUMA) * 100)}% · opens the eye`);
+    expect(preview.breath).toBe(`Health 50% → ${Math.round(((500 + CORNER_TREATMENTS.breath.conditioning) / 1000) * 100)}% · full stamina`);
+    expect(cornerPreview({ ...hurt, trauma: { ...hurt.trauma, left_cut: 60, right_cut: 0 } }).cut).toBe("Small cut → closed");
+    expect(Object.values(preview).some((text) => /\d{3}/u.test(text) && !text.includes("%"))).toBe(false);
+  });
+
+  it("will not take an instruction with nothing to work on", () => {
+    const picks: string[] = [];
+    const parent = document.createElement("div");
+    const corner = new CornerPanel(parent, (kind) => { picks.push(kind); return true; });
+    const resting = { ...snapshot(), phase: "rest" as const, fighters: [fighter("one"), fighter("two")] as const };
+    corner.update(resting, "one", true);
+    expect(parent.querySelector<HTMLButtonElement>('[data-corner-pick="corner_cut"]')!.disabled).toBe(true);
+    expect(parent.querySelector<HTMLButtonElement>('[data-corner-pick="corner_swelling"]')!.disabled).toBe(true);
+    expect(parent.querySelector<HTMLButtonElement>('[data-corner-pick="corner_breath"]')!.disabled).toBe(false);
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "Digit1", bubbles: true }));
+    expect(picks).toEqual([]);
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "Digit3", bubbles: true }));
+    expect(picks).toEqual(["corner_breath"]);
+    corner.destroy();
+  });
+
+  it("keeps the picked card's preview as it was when it was picked", () => {
+    const parent = document.createElement("div");
+    const corner = new CornerPanel(parent, () => true);
+    const cut = { ...fighter("one"), trauma: { ...fighter("one").trauma, left_cut: 300 } };
+    corner.update({ ...snapshot(), phase: "rest", fighters: [cut, fighter("two")] }, "one", true);
+    const card = parent.querySelector<HTMLButtonElement>('[data-corner-pick="corner_cut"]')!;
+    const before = card.querySelector("span")!.textContent;
+    card.click();
+    const treated = { ...cut, corner_choice: "cut" as const, trauma: { ...cut.trauma, left_cut: 0 } };
+    corner.update({ ...snapshot(), phase: "rest", fighters: [treated, fighter("two")] }, "one", true);
+    expect(card.querySelector("span")!.textContent).toBe(before);
+    expect(card.querySelector("span")!.textContent).not.toBe("No cut to close");
+    corner.destroy();
   });
 
   it("says when there is nothing to treat, and when an eye stays shut", () => {
