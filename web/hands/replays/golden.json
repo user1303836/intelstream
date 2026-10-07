@@ -16553,7 +16553,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "fad618455b715918aa2591a70545e20c5401b505efb1cf0804c27a4c9500e5d4",
+     "checksum": "36981c3799ab6a39d0a381c3dfe0e9b7f00ad9f7e899c0b37af54840416edb03",
      "events": [],
      "fighters": [
       {
@@ -16576,7 +16576,7 @@
        "defense": "none",
        "facing": 1,
        "facing_x": 1000,
-       "facing_y": -5,
+       "facing_y": -17,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -16687,7 +16687,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "d8cf2b0c6a300395fa3c64ea1d25aecb747e104dd3332e161ca72ba30e9d449c",
+     "checksum": "d127924fbc5f713a58fc502f31d2ebcc5272161a38a1c1965cc36d9e86c30f9c",
      "events": [],
      "fighters": [
       {
@@ -16710,7 +16710,7 @@
        "defense": "none",
        "facing": 1,
        "facing_x": 1000,
-       "facing_y": -17,
+       "facing_y": -42,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -16821,7 +16821,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "6f78b0f9ab2455e8a0350b5dbe3d511881e80245ae22ff76368478b2be7d206d",
+     "checksum": "c20a2897e1d7c3ced1f23697e1ae7f2faa6fdbe867fd4428dab7db2b3d7f5fc2",
      "events": [],
      "fighters": [
       {
@@ -16844,7 +16844,7 @@
        "defense": "none",
        "facing": 1,
        "facing_x": 1000,
-       "facing_y": -33,
+       "facing_y": -65,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -16955,7 +16955,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "0c1d1c66716c642757c37886f0e2a858b4e7c2a970ccde8aad2fc01144b1f9a0",
+     "checksum": "552c7f54cc91e83b1d7e65dfa081387e599703277bfff46eafaed34ef7e5849b",
      "events": [],
      "fighters": [
       {
@@ -16977,8 +16977,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 999,
-       "facing_y": -50,
+       "facing_x": 1000,
+       "facing_y": -87,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -17089,7 +17089,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "5a95b7de2c078f6917939f158a8a90c79ecf88e803f2bdb732287ed54a5f3e0a",
+     "checksum": "1a78095bb1f98e887c5b8a06e110e3cb84a11de2e001f72fa8b50e2f2100156c",
      "events": [],
      "fighters": [
       {
@@ -17111,8 +17111,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 998,
-       "facing_y": -66,
+       "facing_x": 1000,
+       "facing_y": -100,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -17223,7 +17223,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "5c67e3ad0ffa7598adba07b191453521015c1a0ea95f3f62bf090e6ad3b96812",
+     "checksum": "57364f1408c3b26a677c1a6c42601703ab6a1bef94ec888e44fc1c26d40f832d",
      "events": [],
      "fighters": [
       {
@@ -17245,8 +17245,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 997,
-       "facing_y": -83,
+       "facing_x": 1000,
+       "facing_y": -118,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -17357,7 +17357,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "c46f26724003ac636a1c9e0a624ccb29bbfd164789f971a11073dec80c2096c9",
+     "checksum": "e2e7bf4fb02de28afe5afdde9f8b6354e0107b1c17dae5caed62d0d8b9fad8f7",
      "events": [],
      "fighters": [
       {
@@ -17379,8 +17379,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 995,
-       "facing_y": -100,
+       "facing_x": 992,
+       "facing_y": -135,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -17491,7 +17491,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "7724a649ee628273f58eb80b7846d691fdced3758a62c620d8d5ff1042e8ab17",
+     "checksum": "2a454f21c6d7be1cd18e82abb3d24e0ed78ad388a1cbba496f71591b62112ae2",
      "events": [],
      "fighters": [
       {
@@ -17513,8 +17513,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 994,
-       "facing_y": -114,
+       "facing_x": 993,
+       "facing_y": -145,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -17625,7 +17625,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "1fdae3b73d535df8b820bbde88fd2c9f3e76d60b49fc55d02ccf4b6d3fff2d67",
+     "checksum": "8dc42c3b3af063d44d3ef9e9454da677dca97db2b9299d2e958ff94e61860d83",
      "events": [],
      "fighters": [
       {
@@ -17647,8 +17647,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 992,
-       "facing_y": -129,
+       "facing_x": 993,
+       "facing_y": -162,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -17759,7 +17759,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "ccc4164de11742998af8b6246429495ff29988804333821845025968af1dc316",
+     "checksum": "9c4db4194aeedb5538816f5d00c54dd32d4eecec991ad4f9850eed3e0a2a0546",
      "events": [],
      "fighters": [
       {
@@ -17781,8 +17781,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 990,
-       "facing_y": -145,
+       "facing_x": 986,
+       "facing_y": -176,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -17893,7 +17893,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "7a3347437636fe74674960dda8784894fe701172a12056c56fb4b268cd7f29e2",
+     "checksum": "d74be0c58a1fecd1968d460f7d84c6dfd21f817d08aefd81a5a8a6f333679a2f",
      "events": [],
      "fighters": [
       {
@@ -17915,8 +17915,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 988,
-       "facing_y": -159,
+       "facing_x": 987,
+       "facing_y": -189,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -18027,7 +18027,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "a9e50a6b18b439f4e6c9c9cec95e4ca6dca1e36188f8e52cacff8f4bebbb85f3",
+     "checksum": "b2277af2dcc04d0efced1c7095107227ca20f029dd43e0c7e70bdfaecf3e4cfd",
      "events": [],
      "fighters": [
       {
@@ -18049,8 +18049,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 986,
-       "facing_y": -171,
+       "facing_x": 981,
+       "facing_y": -196,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -18161,7 +18161,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "4247b87c1a6eee6c5635a209423692c1fc9caaaf60aa098a790b241fd24f12a8",
+     "checksum": "8b927309305349c8e32f4f1a39d4deb39517d20d95c1b9e815f913453567dfd3",
      "events": [],
      "fighters": [
       {
@@ -18183,8 +18183,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 983,
-       "facing_y": -183,
+       "facing_x": 982,
+       "facing_y": -209,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -18295,7 +18295,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "b395c758d2eb40b91603c9c7ef6cfdedeba218cb0aca996896d89b8be05e5a46",
+     "checksum": "f72b850904b026a5f4c8ce3ae3d16747d4bef37b04c9e0af730d53bd2d8873f8",
      "events": [],
      "fighters": [
       {
@@ -18317,8 +18317,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 981,
-       "facing_y": -195,
+       "facing_x": 976,
+       "facing_y": -220,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -18429,7 +18429,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "c141c766788ffd8fc9c9c51f39e4b914c494e9af22770273769eb3a8e022c8c8",
+     "checksum": "f56f8713b5bd55eafb27b568791563dd1cc2a93afebdef298a49ee52d596bd05",
      "events": [],
      "fighters": [
       {
@@ -18451,8 +18451,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 979,
-       "facing_y": -206,
+       "facing_x": 977,
+       "facing_y": -232,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -18563,7 +18563,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "9bed25375ea2c2e266d6542e9518e7b99587c683f03886c2ec6d0657a63d68fd",
+     "checksum": "663f977a8e712f194b25db133c8d886e6fcd497de57451db8973e7bbc7918895",
      "events": [],
      "fighters": [
       {
@@ -18585,8 +18585,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 977,
-       "facing_y": -216,
+       "facing_x": 972,
+       "facing_y": -237,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -18697,7 +18697,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "6bbf7bdd69945db21ca7fecbe11368732e7bdd622e2f201e9f7fe21d821c8eb0",
+     "checksum": "52c6107079447c4f0504852d5d38d72bbe3a323d388d67e25b96de39f9a501c4",
      "events": [],
      "fighters": [
       {
@@ -18719,8 +18719,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 975,
-       "facing_y": -225,
+       "facing_x": 973,
+       "facing_y": -247,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -18831,7 +18831,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "0974ce100dac917509857340c9fda199cd12c30109c6c25448d83bc28994324f",
+     "checksum": "d04669f2b22c16e5d39d0a95a3bcb19438113e8e6b1b99dd4944ac9e7cf02042",
      "events": [],
      "fighters": [
       {
@@ -18853,8 +18853,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 973,
-       "facing_y": -235,
+       "facing_x": 968,
+       "facing_y": -256,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -18965,7 +18965,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "53af0b5b6342b28d2472e3c128e8d376877007d3438a8fdf694be5f2b927c237",
+     "checksum": "91a3c4ba03655b5c8e4781a97e0166be18e02bac7be98ac94b5dabfac92280e5",
      "events": [],
      "fighters": [
       {
@@ -18987,8 +18987,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 970,
-       "facing_y": -245,
+       "facing_x": 964,
+       "facing_y": -265,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -19099,7 +19099,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "50e6caf6d8957154813041aa52e9f39b65e505c0f18037ec36a556849dfc8aa1",
+     "checksum": "2af715998cf4aaa285bf65f29b5324951bcd547eade4a29031d670345e7518f9",
      "events": [],
      "fighters": [
       {
@@ -19121,8 +19121,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 968,
-       "facing_y": -252,
+       "facing_x": 965,
+       "facing_y": -270,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -19233,7 +19233,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "a974a81297ca4083f5e127e3ea3fbe849f514f486b42ee11256e598c59d64406",
+     "checksum": "c93d8828ceb2a18b85072c495a11dc8789dc7233765f1c7c2aaeb2474cdab255",
      "events": [],
      "fighters": [
       {
@@ -19255,8 +19255,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 966,
-       "facing_y": -261,
+       "facing_x": 960,
+       "facing_y": -278,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -19367,7 +19367,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "612b21f0459fd5ee035a5037d4c5a7aa7cb9ad4c3606030739b36bb5e901f6e7",
+     "checksum": "e209091c8f482bf9137b8fc04b578f52d55aec726ca2a6a51fe7a6e339807382",
      "events": [],
      "fighters": [
       {
@@ -19389,8 +19389,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 963,
-       "facing_y": -269,
+       "facing_x": 961,
+       "facing_y": -287,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -19501,7 +19501,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "554d0fe9d404d28ccc38e67829b996959c9a22af7b8fbe8eb25e1c9c3369a890",
+     "checksum": "81c884b03b6cbb33cec76d915c6991a948a8445f2dd8ae1a2e61fa7776e0057a",
      "events": [],
      "fighters": [
       {
@@ -19523,8 +19523,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 961,
-       "facing_y": -276,
+       "facing_x": 958,
+       "facing_y": -293,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -19635,7 +19635,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "a82b308bc754d045a54934d21cf817109de8b749d50a9bbfd8275fc9c375b01b",
+     "checksum": "2dfa3f2de812e523db714ebc24b6b9e1f9a6bb41d0f97d095e9e34151527678e",
      "events": [],
      "fighters": [
       {
@@ -19657,8 +19657,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 960,
-       "facing_y": -283,
+       "facing_x": 958,
+       "facing_y": -296,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -19769,7 +19769,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "8dc853729ddb34cfdda9a95688fdb5deeed6d0f457eb477ca71df40f71c7dbaf",
+     "checksum": "b44d5da109f4193f6c69992a842e959e9a54230a82788cdcfad065126a3ae68d",
      "events": [],
      "fighters": [
       {
@@ -19791,8 +19791,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 958,
-       "facing_y": -289,
+       "facing_x": 955,
+       "facing_y": -303,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -19903,7 +19903,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "53cce509d03cb32c25a0bf1a17755b94ac4bc0980f4dd21f33d3b54315ac3c4f",
+     "checksum": "ccb32ca6739f14ece17ad7b44d2568c09ac686628993fe4ab3556949f4348608",
      "events": [],
      "fighters": [
       {
@@ -19925,8 +19925,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 956,
-       "facing_y": -296,
+       "facing_x": 951,
+       "facing_y": -310,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -20037,7 +20037,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "d15231318ef98e886e2d52bcad77c3d174d59143847c56599b65ca4a920b7f2a",
+     "checksum": "736826e2d4c4b96693132fc5c9334475f58607f5e64b97a504e6150b609e862d",
      "events": [],
      "fighters": [
       {
@@ -20059,8 +20059,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 954,
-       "facing_y": -303,
+       "facing_x": 948,
+       "facing_y": -316,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -20171,7 +20171,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "af918db63d74df8abe68607ca21fabb6cd433d33a73719df52f8c931bedbce52",
+     "checksum": "02f7f00ee048e68dfcd92acf5e87b333edff354b91616a79c69fe12a931df785",
      "events": [],
      "fighters": [
       {
@@ -20193,8 +20193,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 952,
-       "facing_y": -306,
+       "facing_x": 949,
+       "facing_y": -317,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -20305,7 +20305,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "c06d5c6d9935015f99801fdce285108090cfa5cf962eaec78bb618aeb477eb35",
+     "checksum": "5f269707801422b85122bd89942847090cd3647ffb16e8e439a4c3fca650e961",
      "events": [],
      "fighters": [
       {
@@ -20327,8 +20327,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 950,
-       "facing_y": -311,
+       "facing_x": 946,
+       "facing_y": -323,
        "get_up_count": 0,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -20439,7 +20439,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "38785f1ff411eeffb3eca39ccedbad2baff1c8b39b35a368fa0208a7e8751091",
+     "checksum": "ba9baa115688d924c33d52ae669bb3cd727b157059d8951ebde95553a29f4560",
      "events": [
       {
        "action_id": null,
@@ -20474,8 +20474,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 949,
-       "facing_y": -317,
+       "facing_x": 947,
+       "facing_y": -330,
        "get_up_count": 1,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -20586,7 +20586,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "c6fa53d841772ab8b1099de2082af59a2740550d0304c3979a71520171ef4ba0",
+     "checksum": "b2ded491c50f8eb7ef1b0aa831c346bf2ecfd0f13233e2ee7c243aa4d6176e98",
      "events": [],
      "fighters": [
       {
@@ -20608,8 +20608,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 947,
-       "facing_y": -322,
+       "facing_x": 944,
+       "facing_y": -335,
        "get_up_count": 1,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -20720,7 +20720,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "fb86de0bee95e5e129c3f347a94502db47f23587ff4aeb8b759e56da3bbfd684",
+     "checksum": "77e97fa3e86417b0b020f9f8bb8d8194ed13afd892db1201d1e08e2f999d56fa",
      "events": [],
      "fighters": [
       {
@@ -20742,8 +20742,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 945,
-       "facing_y": -327,
+       "facing_x": 941,
+       "facing_y": -337,
        "get_up_count": 1,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -20854,7 +20854,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "cc3dfff11a7ef7715c4a2a01a6270befc9d5f39b7d91bd39be7649769902655f",
+     "checksum": "1cb2f5cfa40a0e495864d4e3e8dab5034d2cc83073466db09bdbc1a2a5033924",
      "events": [],
      "fighters": [
       {
@@ -20876,8 +20876,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 944,
-       "facing_y": -332,
+       "facing_x": 942,
+       "facing_y": -343,
        "get_up_count": 1,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -20988,7 +20988,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "ee561496436ea5a0350ada1c22a181945d26573e7a7bffa2b473d86633d7cc23",
+     "checksum": "8900c76eaa6c563a26febf9586aff327b483cb79ac934ef43d6bf7990a62d677",
      "events": [],
      "fighters": [
       {
@@ -21010,8 +21010,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 942,
-       "facing_y": -336,
+       "facing_x": 940,
+       "facing_y": -347,
        "get_up_count": 1,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -21122,7 +21122,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "9b41bdb938e9a8015d25adfad91c62df4b4fe5247305af950fdd4831810865ad",
+     "checksum": "09bb2611cb8b99a12897949733aa595798f5ef79e4019c15de077b44b35b205c",
      "events": [],
      "fighters": [
       {
@@ -21144,8 +21144,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 941,
-       "facing_y": -341,
+       "facing_x": 937,
+       "facing_y": -351,
        "get_up_count": 1,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -21256,7 +21256,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "7cebef4a7dd62b063e320384b52391aeea9047bafd1e7c4c2296c3adba07efa6",
+     "checksum": "c351f06af9420ae07fc715660e958f9dcd9de1f60f55447e9328dffa2c7c486e",
      "events": [],
      "fighters": [
       {
@@ -21278,8 +21278,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 939,
-       "facing_y": -344,
+       "facing_x": 938,
+       "facing_y": -353,
        "get_up_count": 1,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -21390,7 +21390,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "4c93601d663d469095af518e172fae38d2eefc45ebd6fed59328b8d367c023a8",
+     "checksum": "c797923946d81be2cb110c6ad57e4c4987c64424bea238b1d8fbf891e8364634",
      "events": [],
      "fighters": [
       {
@@ -21412,8 +21412,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 938,
-       "facing_y": -348,
+       "facing_x": 936,
+       "facing_y": -358,
        "get_up_count": 1,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -21524,7 +21524,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "5eaf8dd15d601da00788330cf384fbba7b81cc68bb26c637a0d9a51c1dc80c06",
+     "checksum": "df49fba2970d04bdb5418c4bc27711e839451b2330b5d050e821951c39f14c99",
      "events": [],
      "fighters": [
       {
@@ -21546,8 +21546,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 937,
-       "facing_y": -352,
+       "facing_x": 933,
+       "facing_y": -362,
        "get_up_count": 1,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -21658,7 +21658,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "1179ec356918d61123b01e6846aee9f1f129f626cac21876997eceff22834fbb",
+     "checksum": "b630caec68a3ad5a5523e8a43823504d3c2d6044e43a4037014b7fb092b5a0d3",
      "events": [],
      "fighters": [
       {
@@ -21680,8 +21680,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 935,
-       "facing_y": -356,
+       "facing_x": 931,
+       "facing_y": -366,
        "get_up_count": 1,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -21792,7 +21792,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "703a200a6b23bf40f219230c333d0e7d75466d5b1af709a95bee48e0d897c275",
+     "checksum": "c24bec6b41e7d8448a8e617d14422daa2b4c9b6492cf07bcec9c80f7d1cd73cd",
      "events": [],
      "fighters": [
       {
@@ -21814,8 +21814,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 934,
-       "facing_y": -359,
+       "facing_x": 932,
+       "facing_y": -367,
        "get_up_count": 1,
        "get_up_meter": 0,
        "get_up_prompt": null,
@@ -21926,7 +21926,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "d01977790b6595419b60e824f3ca37242a7b4cdca9146901352e9ba92a0b4712",
+     "checksum": "5b9fb75816ca8e697efae88a2264ea4c28a0e4e25cda855b26b8563f8e419aec",
      "events": [],
      "fighters": [
       {
@@ -21948,8 +21948,8 @@
        "deductions": 0,
        "defense": "none",
        "facing": 1,
-       "facing_x": 933,
-       "facing_y": -362,
+       "facing_x": 930,
+       "facing_y": -370,
        "get_up_count": 1,
        "get_up_meter": 0,
        "get_up_prompt": null,

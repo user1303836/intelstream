@@ -29,7 +29,8 @@ from intelstream.hands.rules import (
     DEFAULT_ROUNDS,
     EYE_TRAUMA_PER_DAMAGE_PERCENT,
     FACING_SCALE,
-    FACING_TURN_PERCENT,
+    FACING_TURN_COS,
+    FACING_TURN_SIN,
     FIGHTER_RADIUS,
     FLINCH_BASE_TICKS,
     FLINCH_DAMAGE_DIVISOR,
@@ -348,6 +349,11 @@ def _separation_along_axis(across: int) -> int:
     return root if root * root == needed else root + 1
 
 
+def _rounded_divide(numerator: int, denominator: int) -> int:
+    magnitude = (abs(numerator) + denominator // 2) // denominator
+    return magnitude if numerator >= 0 else -magnitude
+
+
 def _away_divide(numerator: int, denominator: int) -> int:
     magnitude = -(-abs(numerator) // denominator)
     return magnitude if numerator >= 0 else -magnitude
@@ -431,6 +437,38 @@ def _ring_point(x: int, y: int) -> tuple[int, int, bool, bool, bool]:
     if cut_x > limit_x:
         return sign_x * limit_x, sign_y * (RING_CORNER_REACH - limit_x), True, False, True
     return sign_x * cut_x, sign_y * cut_y, False, False, True
+
+
+def _bearing(x: int, y: int, opponent: FighterState) -> tuple[int, int] | None:
+    """The unit vector, in facing units, from (x, y) to the opponent."""
+    dx = opponent.x - x
+    dy = opponent.y - y
+    distance = isqrt(dx * dx + dy * dy)
+    if distance == 0:
+        return None
+    return _symmetric_divide(dx * FACING_SCALE, distance), _symmetric_divide(
+        dy * FACING_SCALE, distance
+    )
+
+
+def _turn_toward(fighter: FighterState, target: tuple[int, int], cos: int, sin: int) -> None:
+    """Turns the facing toward `target` by at most the angle whose cosine and sine are given, in
+    millionths, and onto it when it is that close."""
+    target_x, target_y = target
+    facing_x, facing_y = fighter.facing_x, fighter.facing_y
+    cross = facing_x * target_y - facing_y * target_x
+    if facing_x * target_x + facing_y * target_y > 0 and abs(cross) <= sin:
+        fighter.facing_x, fighter.facing_y = target_x, target_y
+    else:
+        # Facing straight away, he turns the same way every time.
+        turn = sin if cross >= 0 else -sin
+        turned_x = facing_x * cos - facing_y * turn
+        turned_y = facing_x * turn + facing_y * cos
+        length = isqrt(turned_x * turned_x + turned_y * turned_y)
+        # Rounded rather than cut short, which would shave a little off every tick's turn.
+        fighter.facing_x = _rounded_divide(turned_x * FACING_SCALE, length)
+        fighter.facing_y = _rounded_divide(turned_y * FACING_SCALE, length)
+    fighter.facing = 1 if fighter.facing_x >= 0 else -1
 
 
 def _pad_stop(x: int, y: int, *, along_x: bool) -> tuple[int, int]:
@@ -595,8 +633,8 @@ class BoxingEngine:
         two = self._fighters[self._player_ids[1]]
         one.movement_load = 0
         two.movement_load = 0
-        # The facing blends toward the opponent here and again after each fighter's footwork
-        # (`_move_fighter`), so in the fight phase it turns about 58% of the way per tick.
+        # Each turns toward the other here, at the turn rate, and with his own footwork in
+        # `_move_fighter`.
         self._update_facing(one, two)
         self._update_facing(two, one)
 
@@ -1442,6 +1480,7 @@ class BoxingEngine:
         delta_y, fighter.position_remainder_y = _consume_fixed_position(
             fighter.velocity_fixed_y, fighter.position_remainder_y
         )
+        from_x, from_y = fighter.x, fighter.y
         fighter.x += delta_x
         fighter.y += delta_y
         self._clamp_to_ring(fighter)
@@ -1457,7 +1496,7 @@ class BoxingEngine:
         )
         movement_load = 2 if above_half_speed else int(moving)
         fighter.movement_load = movement_load
-        self._update_facing(fighter, opponent)
+        self._turn_with_step(fighter, opponent, from_x, from_y)
 
     @staticmethod
     def _clamp_to_ring(fighter: FighterState) -> None:
@@ -1565,36 +1604,41 @@ class BoxingEngine:
             self._clamp_to_ring(two)
 
     def _update_facing(self, fighter: FighterState, opponent: FighterState) -> None:
-        if fighter.attack is not None or fighter.clinch_startup_ticks:
+        """Turns the fighter toward the other man, by no more than a tick's turn."""
+        if self._facing_held(fighter):
             return
-        dx = opponent.x - fighter.x
-        dy = opponent.y - fighter.y
-        distance = isqrt(dx * dx + dy * dy)
-        if distance == 0:
+        bearing = _bearing(fighter.x, fighter.y, opponent)
+        if bearing is not None:
+            _turn_toward(fighter, bearing, FACING_TURN_COS, FACING_TURN_SIN)
+
+    def _turn_with_step(
+        self, fighter: FighterState, opponent: FighterState, from_x: int, from_y: int
+    ) -> None:
+        """His own footwork turns him with it: stepping round the other man keeps him in front.
+
+        Only the other man's footwork has to be followed at the turn rate, so circling him fast
+        enough takes an angle on him.
+        """
+        if self._facing_held(fighter):
             return
-        desired_x = _symmetric_divide(dx * FACING_SCALE, distance)
-        desired_y = _symmetric_divide(dy * FACING_SCALE, distance)
-        if fighter.facing_x * desired_x + fighter.facing_y * desired_y < -(
-            FACING_SCALE * FACING_SCALE * 9 // 10
-        ):
-            # Anti-parallel facings would blend through the origin; turn via the perpendicular.
-            fighter.facing_x, fighter.facing_y = (
-                fighter.facing_x - _symmetric_divide(fighter.facing_y * FACING_TURN_PERCENT, 100),
-                fighter.facing_y + _symmetric_divide(fighter.facing_x * FACING_TURN_PERCENT, 100),
-            )
-        fighter.facing_x += _symmetric_divide(
-            (desired_x - fighter.facing_x) * FACING_TURN_PERCENT, 100
+        before = _bearing(from_x, from_y, opponent)
+        after = _bearing(fighter.x, fighter.y, opponent)
+        if before is None or after is None:
+            return
+        step_sin = abs(before[0] * after[1] - before[1] * after[0])
+        if step_sin:
+            step_cos = before[0] * after[0] + before[1] * after[1]
+            _turn_toward(fighter, after, step_cos, step_sin)
+
+    @staticmethod
+    def _facing_held(fighter: FighterState) -> bool:
+        """The facing holds still through a punch's startup and active ticks, so a slip or weave
+        is judged against the line it was thrown along, and while a clinch is tried for. Between
+        the punches of a combination it follows the other man again."""
+        attack = fighter.attack
+        return fighter.clinch_startup_ticks > 0 or (
+            attack is not None and attack.age < attack.rule.startup + attack.rule.active
         )
-        fighter.facing_y += _symmetric_divide(
-            (desired_y - fighter.facing_y) * FACING_TURN_PERCENT, 100
-        )
-        length = isqrt(fighter.facing_x**2 + fighter.facing_y**2)
-        if length == 0:
-            fighter.facing_x, fighter.facing_y = desired_x, desired_y
-        else:
-            fighter.facing_x = _symmetric_divide(fighter.facing_x * FACING_SCALE, length)
-            fighter.facing_y = _symmetric_divide(fighter.facing_y * FACING_SCALE, length)
-        fighter.facing = 1 if fighter.facing_x >= 0 else -1
 
     @staticmethod
     def _facing_components(fighter: FighterState, dx: int, dy: int) -> tuple[int, int]:
@@ -1789,8 +1833,9 @@ class BoxingEngine:
         new_second = self._knockdown_count_ticks % COUNT_TICK_INTERVAL == 0
         if self._box_tick is not None:
             # Up, and taking the mandatory count: the referee counts on to eight, looks him over
-            # and only then tells them to box.
+            # and only then tells them to box. On his feet, he turns to face the other man.
             downed.pending_actions.clear()
+            self._update_facing(downed, winner)
             if self.tick >= self._box_tick:
                 self._box(downed, winner)
                 return
@@ -1897,9 +1942,11 @@ class BoxingEngine:
         delta_y, winner.position_remainder_y = _consume_fixed_position(
             winner.velocity_fixed_y, winner.position_remainder_y
         )
+        from_x, from_y = winner.x, winner.y
         winner.x += delta_x
         winner.y += delta_y
         self._clamp_to_ring(winner)
+        self._turn_with_step(winner, downed, from_x, from_y)
         self._update_facing(winner, downed)
 
     def _finish_round(self) -> None:

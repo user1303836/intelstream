@@ -408,6 +408,8 @@ def test_corner_posts_keep_fighters_out_of_the_corner_pad() -> None:
     ("name", "value", "key"),
     [
         ("FACING_SCALE", 1024, "facing.scale"),
+        ("FACING_TURN_DEGREES_PER_SECOND", 0, "facing.turn_degrees_per_second"),
+        ("FACING_TURN_DEGREES_PER_SECOND", 2700, "facing.turn_degrees_per_second"),
         ("REST_CORNER_OFFSET", RING_CORNER_REACH // 2 + 1, "rest.corner_offset"),
     ],
 )
@@ -947,7 +949,8 @@ def test_rest_walks_both_fighters_to_their_corners_and_seats_them_facing_the_rin
     assert (two.x, two.y) == (REST_CORNER_OFFSET, REST_CORNER_OFFSET)
     assert (one.velocity_x, one.velocity_y) == (0, 0)
     assert (two.velocity_x, two.velocity_y) == (0, 0)
-    for step in range(12):
+    # Arrived facing his corner, he turns round to face the ring at the turn rate.
+    for step in range(math.ceil(180 / TURN_PER_TICK)):
         engine.step({"one": command(300 + step, move_x=1000, move_y=1000)})
     assert (one.x, one.y) == (-REST_CORNER_OFFSET, -REST_CORNER_OFFSET)
     assert one.facing_x > 0 and one.facing_y > 0
@@ -1379,7 +1382,7 @@ def test_facing_vector_turns_toward_the_opponent_and_the_hit_test_follows() -> N
     two.x = 0
     two.y = 100
     assert (one.facing_x, one.facing_y) == (1000, 0)
-    for _ in range(12):
+    for _ in range(math.ceil(90 / TURN_PER_TICK) + 1):
         engine.step()
     assert one.facing_y > 950
     assert abs(one.facing_x) < 200
@@ -2708,17 +2711,111 @@ def test_a_walk_and_guard_held_at_the_bell_do_not_carry_into_the_next_round(
     assert (one.velocity_x, one.velocity_y) == (0, 0)
 
 
-def test_the_facing_blends_toward_the_opponent_before_and_after_footwork_each_fight_tick() -> None:
+TURN_PER_TICK = rules.FACING_TURN_DEGREES_PER_SECOND / rules.TICKS_PER_SECOND
+
+
+def off_line_degrees(viewer: FighterState, other: FighterState) -> float:
+    """How far off the way `viewer` faces `other` stands."""
+    bearing = math.atan2(other.y - viewer.y, other.x - viewer.x)
+    facing = math.atan2(viewer.facing_y, viewer.facing_x)
+    return abs(math.degrees((bearing - facing + math.pi) % (2 * math.pi) - math.pi))
+
+
+def test_a_standing_fighter_turns_toward_the_other_at_a_fixed_rate() -> None:
     engine = make_engine(round_ticks=2000)
     one = engine.fighter("one")
     two = engine.fighter("two")
     one.x = one.y = 0
     two.x, two.y = 0, 300
-    engine.step()
-    turned = math.degrees(math.atan2(one.facing_y, one.facing_x))
-    single_blend = math.degrees(math.atan2(350, 650))
-    assert turned > single_blend + 15
-    assert 46 < turned < 52
+    turned = []
+    for _ in range(math.ceil(90 / TURN_PER_TICK)):
+        engine.step()
+        turned.append(math.degrees(math.atan2(one.facing_y, one.facing_x)))
+
+    # The same few degrees every tick, not a share of what is left: it used to close 58% of the
+    # gap a tick, so a quarter turn took two ticks and nobody could be outflanked.
+    assert turned[0] == pytest.approx(TURN_PER_TICK, abs=0.1)
+    assert turned[len(turned) // 2 - 1] == pytest.approx(TURN_PER_TICK * len(turned) // 2, abs=0.3)
+    assert turned[-1] == pytest.approx(90, abs=0.1)
+    assert 999_000 <= one.facing_x**2 + one.facing_y**2 <= 1_001_000
+
+
+@pytest.mark.parametrize("stepping_with_him", [False, True])
+def test_circling_takes_an_angle_on_a_man_who_stands_but_not_on_one_who_steps_with_him(
+    stepping_with_him: bool,
+) -> None:
+    def circled(then: dict[str, InputCommand]) -> tuple[float, float, str]:
+        engine = make_engine(round_ticks=2000)
+        one, two = engine.fighter("one"), engine.fighter("two")
+        one.x, two.x = -60, 60
+        for sequence in range(1, 31):
+            # One circles the other a second at full speed, hands down, keeping 120 from him.
+            dx, dy = two.x - one.x, two.y - one.y
+            distance = hypot(dx, dy)
+            across = (-dy / distance, dx / distance)
+            radial = (distance - 120) / 20
+            move = (across[0] + dx / distance * radial, across[1] + dy / distance * radial)
+            size = hypot(*move)
+            inputs = {
+                "one": command(
+                    sequence,
+                    move_x=round(move[0] / size * 1000),
+                    move_y=round(move[1] / size * 1000),
+                )
+            }
+            if stepping_with_him:
+                inputs["two"] = command(
+                    sequence, move_x=round(across[0] * 1000), move_y=round(across[1] * 1000)
+                )
+            engine.step(inputs)
+        angles = (off_line_degrees(one, two), off_line_degrees(two, one))
+        engine.step(then)
+        return *angles, advance_until(engine, {"hit", "counter_hit", "whiff"})
+
+    straight = punch(PunchClass.STRAIGHT)
+    circler, other, circler_punch = circled({"one": command(31, action=straight)})
+    *_, other_punch = circled({"two": command(31, action=straight)})
+
+    if stepping_with_him:
+        # Cutting the ring off, each turns with his own steps: both stay square.
+        assert circler < TURN_PER_TICK * 2 and other < TURN_PER_TICK * 2
+        assert (circler_punch, other_punch) == ("hit", "hit")
+    else:
+        # His own steps turn the circler with them. Standing, the other turns only at the turn
+        # rate and falls behind: off the line of his own straight, it goes past the circler,
+        # whose straight lands.
+        assert circler < 1
+        assert other > 15
+        assert (circler_punch, other_punch) == ("hit", "whiff")
+
+
+def test_the_facing_holds_through_each_punch_but_follows_between_a_combinations_punches() -> None:
+    engine = make_engine(round_ticks=2000)
+    one = engine.fighter("one")
+    jab = punch(PunchClass.JAB, hand=Hand.LEFT)
+    straight = punch(PunchClass.STRAIGHT, hand=Hand.RIGHT)
+    # One throws a jab and lets the straight go off its recovery, while two steps round him.
+    engine.step({"one": command(1, action=jab), "two": command(1, move_y=1000)})
+    first = one.attack
+    assert first is not None
+    engine.step({"one": command(2, action=straight)})
+    held: dict[str, set[tuple[int, int]]] = {"jab": set(), "between": set(), "straight": set()}
+    for _ in range(30):
+        attack = one.attack
+        if attack is not None and attack.age < attack.rule.startup + attack.rule.active:
+            held[attack.action.punch_class.value].add((one.facing_x, one.facing_y))
+        elif attack is not None and attack.action.punch_class is PunchClass.JAB:
+            held["between"].add((one.facing_x, one.facing_y))
+        engine.step()
+        if one.attack is not None and one.attack is not first and one.attack.age == 0:
+            assert one.attack.start_tick - first.start_tick == first.cancel_age
+
+    # Each punch keeps the line it was thrown along, so a slip or weave is judged against it, but
+    # the cancel chain no longer freezes the facing from the jab to the end of the straight.
+    assert len(held["jab"]) == 1
+    assert len(held["straight"]) == 1
+    assert len(held["between"]) > 1
+    assert held["jab"] != held["straight"]
 
 
 def _manifest() -> dict[str, dict[str, int]]:

@@ -1,4 +1,5 @@
 import json
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from importlib import resources
@@ -28,10 +29,14 @@ MAX_CONDITIONING = 1000
 MAX_GUARD = 700
 MAX_POISE = 600
 FACING_SCALE: int = _MANIFEST["facing"]["scale"]
-# Share of the remaining turn toward the opponent taken per facing update. A fight tick makes two
-# updates (before the exchange and after footwork), about 58% per tick; knockdown and rest walks
-# make one.
-FACING_TURN_PERCENT: int = _MANIFEST["facing"]["turn_percent_per_update"]
+# How fast a fighter turns to follow the other man's footwork. His own footwork turns him with it,
+# so a man who circles keeps the other in front of him while the other has to turn to follow: fast
+# enough, and close enough, circling takes an angle on him.
+FACING_TURN_DEGREES_PER_SECOND: int = _MANIFEST["facing"]["turn_degrees_per_second"]
+_FACING_TURN_RADIANS = math.radians(FACING_TURN_DEGREES_PER_SECOND / TICKS_PER_SECOND)
+# The most a fighter turns in a tick, as the cosine and sine of the angle in millionths.
+FACING_TURN_COS: int = round(math.cos(_FACING_TURN_RADIANS) * 1_000_000)
+FACING_TURN_SIN: int = round(math.sin(_FACING_TURN_RADIANS) * 1_000_000)
 RECOVERY_CANCEL_PERCENT: int = _MANIFEST["combos"]["recovery_cancel_percent"]
 REFEREE_WALK_SPEED: int = _MANIFEST["knockdown"]["referee_walk_speed"]
 MANDATORY_COUNT: int = _MANIFEST["knockdown"]["mandatory_count"]
@@ -115,6 +120,9 @@ def _manifest_check() -> None:
     # walks feed facing vectors into, and the client's snapshot checks all count a unit as 1000.
     if FACING_SCALE != 1000:
         raise RuntimeError("combat-manifest.json facing.scale must stay 1000")
+    # A turn of a right angle or more in one tick could carry the facing past the opponent.
+    if not 0 < FACING_TURN_DEGREES_PER_SECOND < 90 * TICKS_PER_SECOND:
+        raise RuntimeError("combat-manifest.json facing.turn_degrees_per_second is out of range")
     if REST_CORNER_OFFSET * 2 > RING_CORNER_REACH:
         raise RuntimeError("combat-manifest.json rest.corner_offset is past the corner pads")
 

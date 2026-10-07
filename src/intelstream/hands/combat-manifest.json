@@ -15,7 +15,7 @@
   "action_buffer_ticks": 6,
   "facing": {
     "scale": 1000,
-    "turn_percent_per_update": 35
+    "turn_degrees_per_second": 75
   },
   "combos": {
     "recovery_cancel_percent": 50,
