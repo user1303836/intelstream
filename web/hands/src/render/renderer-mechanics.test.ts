@@ -3,6 +3,7 @@ import { EventDeduplicator, SnapshotBuffer } from "../interpolation";
 import { EvasionPrediction, MovementPrediction } from "../prediction";
 import { fighter, snapshot } from "../test/fixtures";
 import type { CombatEvent, EngineSnapshot } from "../types";
+import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
 import { RoundStatsTracker } from "./hud";
 import { bodySideStruck, contactPresentationPlan, cutmanWork, FightRenderer, isDelayedBodyKnockdown } from "./renderer";
 import { worldMapping } from "./world";
@@ -42,6 +43,7 @@ function pushStub(graphs: [FakeGraph, FakeGraph]): Record<string, unknown> {
     simulation: { tick_rate: 30 },
     players: {},
     frameSeconds: 0,
+    liveFallTicks: [null, null],
   };
 }
 
@@ -111,14 +113,14 @@ describe("fight mechanics on screen", () => {
         simulation: { tick_rate: 30 }, frameSeconds: 0, final: null, graphs,
         commentary: { replay: vi.fn() }, arcadeInjuries: [null, null], arcadeInjuryEvents: [null, null], replayInjuries: [null, null],
         lastKnockdown: { knockdown: combat("knockdown", { event_id: 9, tick: 40, detail, amount: 1, action_id: "liver" }), hit, finisher: null },
-        pendingContacts: [], effects: { returnMouthpiece: vi.fn() },
+        pendingContacts: [], effects: { returnMouthpiece: vi.fn() }, liveFallTicks: [null, null],
       };
       startReplay.call(stub, { snapshots: [snapshot(20), snapshot(40)], impact: hit, durationSeconds: 3 });
       return graphs;
     };
     const body = replayFor("body");
-    // Every fighter replays the fall he took live rather than a new one.
-    for (const replayed of body) expect(replayed.primeReplayFall).toHaveBeenCalledOnce();
+    // The knee is the animation's, so there is no fall under the physics to run again.
+    for (const replayed of body) expect(replayed.primeReplayFall).not.toHaveBeenCalled();
     expect(body[1].fallToKnee).toHaveBeenCalledWith(true);
     expect(body[0].fallToKnee).not.toHaveBeenCalled();
     expect(replayFor("")[1].fallToKnee).not.toHaveBeenCalled();
@@ -199,10 +201,90 @@ describe("a bout that ends on the punch itself", () => {
   it("does the finisher at the replay's impact, not before the punch is shown", () => {
     const { stub, applyArcadeInjury, returnMouthpiece } = fightTo("tko");
     expect(applyArcadeInjury).not.toHaveBeenCalled();
-    expect(stub.pendingContacts).toEqual([]);
+    // The punch is the replay's own; the knockdown that came with it waits for the replay's impact.
+    expect((stub.pendingContacts as { event: CombatEvent; contactTick: number; injury: unknown }[]).map(({ event, contactTick, injury }) => ({ kind: event.kind, contactTick, injury }))).toEqual([{ kind: "knockdown", contactTick: Number.POSITIVE_INFINITY, injury: null }]);
     expect((stub.replayInjuries as unknown[])[1]).not.toBeNull();
     expect(returnMouthpiece).toHaveBeenCalledWith(1);
   });
+
+  it("gives the knockdown that ended the bout its thud, roar and rumble at the replay's impact", () => {
+    const { stub } = fightTo("tko");
+    const heard: string[] = [];
+    const excite = vi.fn();
+    Object.assign(stub, {
+      onContact: (event: CombatEvent) => heard.push(event.kind), arena: { excite }, viewerId: "two", viewerHitFlash: 0,
+      knockOutMouthpiece: vi.fn(), headWorldPose: () => null, mouthPoint: new THREE.Vector3(), reapplyReplayInjuries: vi.fn(),
+    });
+    for (const graph of stub.graphs as unknown as Record<string, unknown>[]) Object.assign(graph, { react: vi.fn(), landedHit: vi.fn() });
+    const replay = stub.replay as { plan: { snapshots: EngineSnapshot[] } };
+    const fireContacts = (FightRenderer.prototype as unknown as { fireContacts(this: unknown, tick: number): void }).fireContacts;
+    const fireReplayImpact = (FightRenderer.prototype as unknown as { fireReplayImpact(this: unknown, snapshot: EngineSnapshot): void }).fireReplayImpact;
+    // The replay's lead-up shows nothing of it.
+    fireContacts.call(stub, 150);
+    expect(heard).toEqual([]);
+    fireReplayImpact.call(stub, replay.plan.snapshots.find((one) => one.tick === 160)!);
+    fireContacts.call(stub, 160.3);
+    // Before, the knockdown's contact was dropped when the replay began: no thud, no roar, no rumble.
+    expect(heard).toEqual(["counter_hit", "knockdown"]);
+    expect(excite).toHaveBeenCalledWith(1);
+    expect(stub.viewerHitFlash).toBeGreaterThan(0);
+    expect(stub.pendingContacts).toEqual([]);
+  });
+});
+
+describe("the knockout replay's fall", () => {
+  const startReplay = (FightRenderer.prototype as unknown as { startReplay(this: unknown, plan: unknown): void }).startReplay;
+  const impact = combat("counter_hit", { event_id: 30, tick: 400, detail: "hook:head", amount: 120 });
+  const replayed = (graphs: unknown[], liveFallTicks: [number | null, number | null]) => startReplay.call({
+    simulation: { tick_rate: 30 }, frameSeconds: 0, final: null, graphs, commentary: { replay: vi.fn() },
+    arcadeInjuries: [null, null], arcadeInjuryEvents: [null, null], replayInjuries: [null, null], pendingContacts: [], effects: { returnMouthpiece: vi.fn() },
+    lastKnockdown: { knockdown: combat("knockdown", { event_id: 31, tick: 400, amount: 3 }), hit: impact, finisher: null }, liveFallTicks,
+  }, { snapshots: [snapshot(380), snapshot(400)], impact, durationSeconds: 3 });
+
+  it("runs the recorded fall again only when it is this knockdown's", () => {
+    const fallen = fakeGraphs();
+    replayed(fallen, [null, 401]);
+    expect(fallen[1].primeReplayFall).toHaveBeenCalledOnce();
+    expect(fallen[0].primeReplayFall).not.toHaveBeenCalled();
+    // The record is an earlier knockdown's: the bout ended on the punch before the render clock showed this fall.
+    const earlier = fakeGraphs();
+    replayed(earlier, [null, 120]);
+    expect(earlier[1].primeReplayFall).not.toHaveBeenCalled();
+  });
+
+  it("falls where he stood when the bout ended on the punch, not where an earlier knockdown left him", async () => {
+    const gltf = await loadBoxerGlb();
+    const mapping = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 });
+    const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
+    const graph = new BoxingGraph(boxer, mapping);
+    let time = 0;
+    const frames = (self: ReturnType<typeof fighter>, other: ReturnType<typeof fighter>, count: number): void => {
+      for (let frame = 0; frame < count; frame += 1) {
+        time += 1 / 60;
+        graph.update(self, other, 1 / 60, time, false, "full", time * 30);
+      }
+    };
+    const facing = (x: number) => ({ ...fighter("two", x), y: 0, facing_x: 0, facing_y: -1000 });
+    const opponent = (x: number) => ({ ...fighter("one", x), y: -150, facing_x: 0, facing_y: 1000 });
+    frames(facing(0), opponent(0), 12);
+    // An earlier knockdown under the physics at x = 0, beaten.
+    graph.react("hit", "head", 1, "straight", "right", 140);
+    frames({ ...facing(0), is_downed: true, get_up_required: 100 }, opponent(0), 120);
+    frames(facing(0), opponent(0), 150);
+    frames(facing(250), opponent(250), 60);
+    // The final arrives before the render clock shows this knockdown's fall: the replay starts and replays it.
+    replayed([fakeGraphs()[0], graph], [null, 120]);
+    frames(facing(250), opponent(250), 10);
+    graph.react("hit", "head", 1, "hook", "left", 120);
+    frames({ ...facing(250), is_downed: true }, opponent(250), 2);
+    const root = boxer.root.position.clone();
+    const start = graph.fallBody!.pelvis(new THREE.Vector3());
+    frames({ ...facing(250), is_downed: true }, opponent(250), 300);
+    const rest = graph.fallBody!.pelvis(new THREE.Vector3());
+    // Before, the replayed body started at x = 0.01, where the earlier knockdown fell, and lay 1.58 m from him.
+    expect(Math.hypot(start.x - root.x, start.z - root.z)).toBeLessThan(0.35);
+    expect(Math.hypot(rest.x - root.x, rest.z - root.z)).toBeLessThan(1.1);
+  }, 30_000);
 });
 
 describe("the player's own fighter folding over a body shot", () => {

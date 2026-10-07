@@ -69,6 +69,8 @@ function frame(state: EngineSnapshot, overrides: Record<string, unknown> = {}) {
     lookIds: [null, null],
     headCache: [new THREE.Vector3(), new THREE.Vector3()],
     headCacheValid: [false, false],
+    liveFallTicks: [null, null],
+    fallingLive: [false, false],
     simulation: SIMULATION,
     lastPhase: state.phase,
     roundCalloutUntil: 0,

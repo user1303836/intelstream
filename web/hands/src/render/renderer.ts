@@ -933,6 +933,9 @@ export class FightRenderer {
   private graphsReady: Promise<void> = Promise.resolve();
   private readonly headCache = [new THREE.Vector3(), new THREE.Vector3()];
   private readonly headCacheValid = [false, false];
+  /** The tick on screen when each fighter's knockout physics last began a fall, outside the replay; null before any. */
+  private readonly liveFallTicks: [number | null, number | null] = [null, null];
+  private readonly fallingLive = [false, false];
   private readonly arcadeInjuries: [ArcadeInjury | null, ArcadeInjury | null] = [null, null];
   private readonly observedInjuryDown: [boolean, boolean] = [false, false];
   private readonly arcadeInjuryEvents: [CombatEvent | null, CombatEvent | null] = [null, null];
@@ -1524,12 +1527,17 @@ export class FightRenderer {
       }
     }
     // The replay shows the punch that ended the bout. A contact still waiting for the live clock is not
-    // shown live as well; the injury it carried lands at the replay's impact instead.
+    // shown live as well: the injury it carried lands at the replay's impact instead, and what came with
+    // the punch (the knockdown it caused, with its thud, roar and rumble) is held for that impact.
     for (const pending of this.pendingContacts.splice(0)) {
       const index = pending.recipientIndex;
       if (pending.injury !== null && (index === 0 || index === 1) && this.replayInjuries[index] === null && this.arcadeInjuries[index] === null) {
         this.replayInjuries[index] = { injury: pending.injury, event: pending.event };
       }
+      if (pending.event.event_id === plan.impact.event_id) continue;
+      pending.injury = null;
+      pending.contactTick = Number.POSITIVE_INFINITY;
+      this.pendingContacts.push(pending);
     }
     const victim = plan.snapshots[0]?.fighters.findIndex((fighter) => fighter.player_id === plan.impact.target_id) ?? -1;
     // The replay's punch knocks the gum shield out again, so it is back in his mouth for the lead-up.
@@ -1537,8 +1545,12 @@ export class FightRenderer {
     // The impact is the body punch itself, so the knockdown it caused says whether he went to one knee.
     const kneels = this.lastKnockdown?.knockdown.detail === BODY_KNOCKDOWN;
     for (const [index, graph] of (this.graphs ?? []).entries()) {
+      // The physics runs the recorded fall again only when it is this knockdown's. One the render clock had
+      // not reached when the bout ended on the punch was never recorded: the fall recorded is an earlier
+      // knockdown's, somewhere else, and the replay runs a new one from the replayed blow instead.
+      const recorded = this.liveFallTicks[index];
       graph.resetTransient(false);
-      graph.primeReplayFall();
+      if (recorded !== null && recorded >= plan.impact.tick - 1) graph.primeReplayFall();
       if (index === victim && kneels) graph.fallToKnee(true);
     }
     this.finalRevealAt = this.frameSeconds + plan.durationSeconds + finalRevealDelay(this.final);
@@ -1581,6 +1593,10 @@ export class FightRenderer {
     if (event.detail.endsWith(":head") && !this.settings().reducedMotion) this.knockOutMouthpiece(recipientIndex, spray ?? event.direction, event.event_id + REPLAY_EVENT_ID_OFFSET, true);
     this.onContact?.(event);
     this.reapplyReplayInjuries(spray);
+    // What came with the punch and was held for this moment (see startReplay) is shown with it.
+    for (const pending of this.pendingContacts) {
+      if (pending.contactTick === Number.POSITIVE_INFINITY) pending.contactTick = this.replay?.plan.impact.tick ?? snapshot.tick;
+    }
   }
 
   private replayFrame(snapshot: EngineSnapshot, elapsed: number): { position: THREE.Vector3; lookAt: THREE.Vector3; tight: boolean } {
@@ -2252,6 +2268,10 @@ export class FightRenderer {
             headBone.getWorldPosition(this.headCache[index]!);
             this.headCacheValid[index] = true;
           }
+          // Which knockdown the physics last recorded a fall for, so the replay runs only that one again.
+          const falling = graph.fallBody !== null;
+          if (falling && !this.fallingLive[index] && this.replay === null) this.liveFallTicks[index] = sampledTick;
+          this.fallingLive[index] = falling;
         }
       }
       for (let index = 0; index < this.arcadeInjuries.length; index += 1) {
