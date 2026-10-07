@@ -19,9 +19,10 @@ const handTarget = (graph: BoxingGraph, hand: Hand): THREE.Vector3 =>
 
 /**
  * Plays a server punch of `punchClass` at an opponent `units` away and returns the punching hand's IK
- * target at every frame through the startup, ending on the contact age, with the point it aims at.
+ * target at every frame through the startup, ending on the contact age, and through the active phase
+ * after it, with the point it aims at.
  */
-function throwPunch(punchClass: PunchClass, hand: Hand, target: Target, units: number): { path: THREE.Vector3[]; aim: THREE.Vector3 } {
+function throwPunch(punchClass: PunchClass, hand: Hand, target: Target, units: number): { path: THREE.Vector3[]; active: THREE.Vector3[]; aim: THREE.Vector3 } {
   const graph = new BoxingGraph(new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 }), mapping);
   const opponent = opponentAt(units);
   const head = new THREE.Vector3(0, 1.5, mapping.z(-units));
@@ -33,12 +34,13 @@ function throwPunch(punchClass: PunchClass, hand: Hand, target: Target, units: n
     action_start_tick: 100, action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery,
   };
   const path: THREE.Vector3[] = [];
-  // Each frame advances the punch half a tick from the authoritative age, so the last frame sits on the contact age.
-  for (let frame = 0; frame < timing.startup * 2; frame += 1) {
+  const active: THREE.Vector3[] = [];
+  // Each frame advances the punch half a tick from the authoritative age, so frame 2 * startup - 1 sits on the contact age.
+  for (let frame = 0; frame < (timing.startup + timing.active) * 2; frame += 1) {
     graph.update(punch, opponent, 1 / 60, 1 + frame / 60, false, "full", 100 + (frame - 1) / 2, head);
-    path.push(handTarget(graph, hand).clone());
+    (frame < timing.startup * 2 ? path : active).push(handTarget(graph, hand).clone());
   }
-  return { path, aim: head.clone().setY(head.y - (target === "body" ? 0.42 : 0.04)) };
+  return { path, active, aim: head.clone().setY(head.y - (target === "body" ? 0.42 : 0.04)) };
 }
 
 describe("hook sweep", () => {
@@ -46,6 +48,17 @@ describe("hook sweep", () => {
     for (const [hand, target, units] of [["left", "head", 124], ["left", "body", 110], ["right", "head", 124]] as const) {
       const { path, aim } = throwPunch("hook", hand, target, units);
       expect(path.at(-1)!.distanceTo(aim), `${hand} hook to the ${target} at ${units}`).toBeCloseTo(STAND_OFF, 2);
+    }
+  });
+});
+
+describe("close range punches", () => {
+  it("shorten instead of driving the glove past the contact point into the face", () => {
+    for (const [punchClass, hand, units] of [["jab", "left", 76], ["jab", "left", 100], ["straight", "right", 76], ["straight", "right", 100]] as const) {
+      const { path, active, aim } = throwPunch(punchClass, hand, "head", units);
+      const label = `${punchClass} at ${units}`;
+      expect(path.at(-1)!.distanceTo(aim), label).toBeCloseTo(STAND_OFF, 2);
+      for (const glove of active) expect(glove.distanceTo(aim), label).toBeGreaterThan(STAND_OFF - 0.005);
     }
   });
 });

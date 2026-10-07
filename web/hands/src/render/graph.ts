@@ -1275,7 +1275,9 @@ export class BoxingGraph {
     const reach = 0.5 + 0.04 * power + (this.punchClass === "straight" ? 0.06 : 0) + (this.punchClass === "jab" ? 0.03 : 0)
       - (this.punchClass === "hook" ? 0.08 : 0) - (this.punchClass === "uppercut" ? 0.08 : 0);
     const contactDistance = Math.min(distance - HURTBOXES.head.radius - GLOVE_HITBOX_RADIUS + PUNCH_CONTACT_OFFSET, reach);
-    const contact = shoulderChar.clone().addScaledVector(dir, Math.max(0.2, contactDistance));
+    // Pressed together there is little room: the punch shortens and the elbow stays bent rather than
+    // the glove going past the contact point into the face.
+    const contact = shoulderChar.clone().addScaledVector(dir, Math.max(0, contactDistance));
     rear.heel = heelRear * e;
     lead.heel = heelLead * e;
     if (leadPivot > 0) {
@@ -1334,7 +1336,7 @@ export class BoxingGraph {
       hand.knuckles.set(0.05 * side * mirror, 0.9, 0.35).normalize();
       hand.palm.set(-0.2 * side * mirror, 0.3, -0.95).normalize();
     } else {
-      hand.position.copy(start).lerp(contact, travel);
+      hand.position.copy(start).lerp(contact, Math.min(1, travel));
       hand.position.y += Math.sin(clamp(travel, 0, 1) * Math.PI) * 0.025;
       hand.pole.set(0.55 * side * mirror, -0.9, 0.35);
       const pronate = smoothstep(0.55, 1, travel);
