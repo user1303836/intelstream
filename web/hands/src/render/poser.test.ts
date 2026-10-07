@@ -765,3 +765,43 @@ describe("runtime boxing graph", () => {
     }
   });
 });
+
+describe("per-frame allocations", () => {
+  /** Counts the vectors, quaternions and Euler angles built (clones included) while `body` runs. */
+  const constructions = (body: () => void): number => {
+    let count = 0;
+    const counted = [[THREE.Vector3.prototype, "x"], [THREE.Quaternion.prototype, "_x"], [THREE.Euler.prototype, "_x"]] as const;
+    for (const [prototype, key] of counted) {
+      // Each constructor assigns this field first: count it, then make it the instance's own plain field.
+      Object.defineProperty(prototype, key, {
+        configurable: true,
+        set(this: object, value: number) {
+          count += 1;
+          Object.defineProperty(this, key, { value, writable: true, enumerable: true, configurable: true });
+        },
+      });
+    }
+    try {
+      body();
+    } finally {
+      for (const [prototype, key] of counted) Reflect.deleteProperty(prototype, key);
+    }
+    return count;
+  };
+
+  it("builds no vectors while idle, falling, down or getting up, or with a dislocated jaw", () => {
+    const { graph } = makeGraph();
+    const fighter = facingOpponent(baseFighter("one"));
+    const opponent = opponentFor("two");
+    const downed = { ...fighter, is_downed: true };
+    run(graph, fighter, opponent, 30, undefined);
+    expect(constructions(() => run(graph, fighter, opponent, 10, undefined, 15, 0.5))).toBe(0);
+    graph.react("hit", "head", 1, "uppercut", "left", 120);
+    expect(constructions(() => run(graph, downed, opponent, 20, undefined, 20, 0.7))).toBe(0);
+    run(graph, downed, opponent, 60, undefined, 30, 1);
+    expect(constructions(() => run(graph, downed, opponent, 10, undefined, 60, 2))).toBe(0);
+    expect(constructions(() => run(graph, fighter, opponent, 60, undefined, 65, 2.2))).toBe(0);
+    graph.setArcadeDislocation("jaw");
+    expect(constructions(() => run(graph, fighter, opponent, 10, undefined, 100, 3.5))).toBe(0);
+  });
+});

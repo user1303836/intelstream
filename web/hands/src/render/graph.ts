@@ -427,6 +427,11 @@ export class BoxingGraph {
     headOffset: new THREE.Vector3(),
   };
   private readonly pose: PoseDescription;
+  /** Scratch poses for the fall and the get-up: the live pose, the two being blended and the result. */
+  private readonly downStanding = downPose();
+  private readonly downFrom = downPose();
+  private readonly downTo = downPose();
+  private readonly downResult = downPose();
 
   private readonly referee: boolean;
   private refereeCount = 0;
@@ -689,7 +694,8 @@ export class BoxingGraph {
   private stepFeet(dt: number, mirror: number, speed: number, velocityWorld: THREE.Vector3, rootPosition: THREE.Vector3, yaw: number): void {
     const desired = this.scratch;
     const rotate = this.scratchQ.setFromAxisAngle(worldUpVector, yaw);
-    for (const [index, foot] of this.feet.entries()) {
+    for (let index = 0; index < 2; index += 1) {
+      const foot = this.feet[index]!;
       const isLead = (index === 0) === (mirror > 0);
       const offset = isLead ? STANCE.leadFoot : STANCE.rearFoot;
       if (this.referee) desired.set((index === 0 ? 0.16 : -0.16), 0, index === 0 ? 0.02 : -0.02).applyQuaternion(rotate).add(rootPosition);
@@ -724,15 +730,16 @@ export class BoxingGraph {
     this.feetInitialized = true;
   }
 
-  private footWorld(index: 0 | 1, out: THREE.Vector3): { lift: number } {
+  /** Writes the foot's world position into `out` and returns how high it is lifted mid-step. */
+  private footWorld(index: 0 | 1, out: THREE.Vector3): number {
     const foot = this.feet[index];
     if (!foot.stepping) {
       out.copy(foot.planted);
-      return { lift: 0 };
+      return 0;
     }
     const t = easeOut(foot.progress, 1.6);
     out.copy(foot.from).lerp(foot.to, t);
-    return { lift: Math.sin(foot.progress * Math.PI) * 0.055 };
+    return Math.sin(foot.progress * Math.PI) * 0.055;
   }
 
   update(
@@ -851,8 +858,8 @@ export class BoxingGraph {
     const rear = mirror > 0 ? this.foot.R : this.foot.L;
     const leadIndex: 0 | 1 = mirror > 0 ? 0 : 1;
     const rearIndex: 0 | 1 = mirror > 0 ? 1 : 0;
-    const leadLift = this.footWorld(leadIndex, lead.position).lift;
-    const rearLift = this.footWorld(rearIndex, rear.position).lift;
+    const leadLift = this.footWorld(leadIndex, lead.position);
+    const rearLift = this.footWorld(rearIndex, rear.position);
     lead.position.sub(rootPosition).applyQuaternion(rootQuatInverse);
     rear.position.sub(rootPosition).applyQuaternion(rootQuatInverse);
     const ankleRest = this.boxer.rig.metrics.ankleHeight;
@@ -1014,7 +1021,7 @@ export class BoxingGraph {
     if (this.attendWeight > 0.001 && this.downState === "up") this.applyAttendPose(this.attendWeight, time, mirror, leadHand, rearHand);
     if (this.treatWeight > 0.001 && this.downState === "up") this.applyTreatPose(this.treatWeight, time, mirror, leadHand, rearHand, lead, rear);
     if (this.seated > 0.001 && this.downState === "up") this.applySeatedPose(this.seated, time, mirror, leadHand, rearHand, lead, rear);
-    if (this.downState !== "up") this.applyDownPose(mirror, leadHand, rearHand, lead, rear, headRest);
+    if (this.downState !== "up") this.applyDownPose(mirror, leadHand, rearHand, lead, rear);
 
     crouch = 0;
     void crouch;
@@ -1690,137 +1697,57 @@ export class BoxingGraph {
     rearHand: { position: THREE.Vector3; knuckles: THREE.Vector3; palm: THREE.Vector3; pole: THREE.Vector3 },
     lead: { position: THREE.Vector3; toe: THREE.Vector3; heel: number; pole: THREE.Vector3 },
     rear: { position: THREE.Vector3; toe: THREE.Vector3; heel: number; pole: THREE.Vector3 },
-    headRest: THREE.Vector3,
   ): void {
     const torso = this.torso;
-    const side = this.fallSide === 0 ? 0 : this.fallSide;
-    // Lying-on-the-back pose (character space); a turn of the hips swings the head the opposite way.
-    const lying = {
-      hips: vec(side * 0.22, 0.14, -0.4),
-      hipsYaw: -side * 0.35,
-      hipsPitch: -1.42,
-      hipsRoll: -side * 0.25,
-      shouldersYaw: -side * 0.2,
-      spinePitch: 0.1,
-      headPitch: -0.5,
-      leadHand: vec(0.52 * mirror, 0.1, -0.62),
-      rearHand: vec(-0.5 * mirror, 0.1, -0.7),
-      leadFoot: vec(0.17 * mirror + side * 0.05, 0.08, 0.16),
-      rearFoot: vec(-0.16 * mirror + side * 0.05, 0.09, -0.02),
-    };
-    // Face-down pose after a hook: the fighter pitches forward over the front foot.
-    const prone = {
-      hips: vec(side * 0.12, 0.13, 0.32),
-      hipsYaw: side * 0.3,
-      hipsPitch: 1.5,
-      hipsRoll: side * 0.15,
-      shouldersYaw: side * 0.15,
-      spinePitch: 0.05,
-      headPitch: 0.2,
-      leadHand: vec(0.34 * mirror, 0.06, 0.78),
-      rearHand: vec(-0.3 * mirror, 0.06, 0.62),
-      leadFoot: vec(0.16 * mirror + side * 0.04, 0.06, -0.5),
-      rearFoot: vec(-0.15 * mirror + side * 0.04, 0.07, -0.55),
-    };
-    const down = this.fallProne ? prone : lying;
-    const standing = {
-      hips: torso.hips.clone(),
-      hipsYaw: torso.hipsYaw,
-      hipsPitch: torso.hipsPitch,
-      hipsRoll: torso.hipsRoll,
-      shouldersYaw: torso.shouldersYaw,
-      spinePitch: torso.spinePitch,
-      headPitch: torso.headPitch,
-      leadHand: leadHand.position.clone(),
-      rearHand: rearHand.position.clone(),
-      leadFoot: lead.position.clone(),
-      rearFoot: rear.position.clone(),
-    };
-    let t: number;
-    let headLag: number;
+    const standing = this.downStanding;
+    standing.hips.copy(torso.hips);
+    standing.hipsYaw = torso.hipsYaw;
+    standing.hipsPitch = torso.hipsPitch;
+    standing.hipsRoll = torso.hipsRoll;
+    standing.shouldersYaw = torso.shouldersYaw;
+    standing.spinePitch = torso.spinePitch;
+    standing.headPitch = torso.headPitch;
+    standing.leadHand.copy(leadHand.position);
+    standing.rearHand.copy(rearHand.position);
+    standing.leadFoot.copy(lead.position);
+    standing.rearFoot.copy(rear.position);
+    const pose = this.downResult;
+    if (this.downState === "rising") {
+      // Rising: lying -> all fours -> one knee -> stand.
+      const u = clamp(this.riseAge / GETUP_SECONDS, 0, 1);
+      if (u < 0.38) lerpDownPose(pose, this.placeLying(mirror), placeDownPose(this.downTo, ALL_FOURS, null, mirror, 0), smoothstep(0, 0.38, u));
+      else if (u < 0.72) lerpDownPose(pose, placeDownPose(this.downFrom, ALL_FOURS, null, mirror, 0), placeDownPose(this.downTo, ONE_KNEE, null, mirror, 0), smoothstep(0.38, 0.72, u));
+      else lerpDownPose(pose, placeDownPose(this.downFrom, ONE_KNEE, null, mirror, 0), standing, smoothstep(0.72, 1, u));
+      this.writeDown(pose, leadHand, rearHand, lead, rear, 0);
+      return;
+    }
+    let t = 1;
+    let headLag = 0;
     if (this.downState === "falling") {
       const u = clamp(this.fallAge / KNOCKDOWN_FALL_SECONDS, 0, 1);
       t = easeIn(u, 2.1);
       headLag = Math.sin(u * Math.PI) * 0.12;
       const buckle = smoothstep(0, 0.35, u) * (1 - smoothstep(0.35, 0.8, u));
       standing.hips.y -= buckle * 0.12;
-    } else if (this.downState === "down") {
-      t = 1;
-      headLag = 0;
-    } else {
-      // Rising: lying -> all fours -> one knee -> stand.
-      const u = clamp(this.riseAge / GETUP_SECONDS, 0, 1);
-      headLag = 0;
-      const fours = {
-        hips: vec(0.08 * mirror, 0.52, -0.18),
-        hipsYaw: STANCE.bladeYaw * mirror * 0.4,
-        hipsPitch: 1.0,
-        hipsRoll: 0,
-        shouldersYaw: STANCE.bladeYaw * mirror * 0.35,
-        spinePitch: 0.15,
-        headPitch: -0.5,
-        leadHand: vec(0.26 * mirror, 0.02, 0.18),
-        rearHand: vec(-0.24 * mirror, 0.02, 0.1),
-        leadFoot: vec(0.17 * mirror, 0.05, -0.55),
-        rearFoot: vec(-0.16 * mirror, 0.05, -0.6),
-      };
-      const knee = {
-        hips: vec(0.03 * mirror, 0.66, -0.06),
-        hipsYaw: STANCE.bladeYaw * mirror * 0.7,
-        hipsPitch: 0.5,
-        hipsRoll: 0,
-        shouldersYaw: STANCE.bladeYaw * mirror * 0.6,
-        spinePitch: 0.25,
-        headPitch: -0.15,
-        leadHand: vec(0.2 * mirror, 0.75, 0.3),
-        rearHand: vec(-0.25 * mirror, 0.55, 0.05),
-        leadFoot: vec(0.14 * mirror, 0.0, 0.3),
-        rearFoot: vec(-0.14 * mirror, 0.06, -0.5),
-      };
-      const blend = (a: typeof lying, b: typeof lying, s: number): typeof lying => ({
-        hips: a.hips.clone().lerp(b.hips, s),
-        hipsYaw: THREE.MathUtils.lerp(a.hipsYaw, b.hipsYaw, s),
-        hipsPitch: THREE.MathUtils.lerp(a.hipsPitch, b.hipsPitch, s),
-        hipsRoll: THREE.MathUtils.lerp(a.hipsRoll, b.hipsRoll, s),
-        shouldersYaw: THREE.MathUtils.lerp(a.shouldersYaw, b.shouldersYaw, s),
-        spinePitch: THREE.MathUtils.lerp(a.spinePitch, b.spinePitch, s),
-        headPitch: THREE.MathUtils.lerp(a.headPitch, b.headPitch, s),
-        leadHand: a.leadHand.clone().lerp(b.leadHand, s),
-        rearHand: a.rearHand.clone().lerp(b.rearHand, s),
-        leadFoot: a.leadFoot.clone().lerp(b.leadFoot, s),
-        rearFoot: a.rearFoot.clone().lerp(b.rearFoot, s),
-      });
-      let current: typeof lying;
-      if (u < 0.38) current = blend(down, fours, smoothstep(0, 0.38, u));
-      else if (u < 0.72) current = blend(fours, knee, smoothstep(0.38, 0.72, u));
-      else current = blend(knee, standing, smoothstep(0.72, 1, u));
-      this.writeDown(current, leadHand, rearHand, lead, rear, 0);
-      return;
     }
-    const mixed = {
-      hips: standing.hips.clone().lerp(down.hips, t),
-      hipsYaw: THREE.MathUtils.lerp(standing.hipsYaw, down.hipsYaw, t),
-      hipsPitch: THREE.MathUtils.lerp(standing.hipsPitch, down.hipsPitch, t),
-      hipsRoll: THREE.MathUtils.lerp(standing.hipsRoll, down.hipsRoll, t),
-      shouldersYaw: THREE.MathUtils.lerp(standing.shouldersYaw, down.shouldersYaw, t),
-      spinePitch: THREE.MathUtils.lerp(standing.spinePitch, down.spinePitch, t),
-      headPitch: THREE.MathUtils.lerp(standing.headPitch, down.headPitch, t),
-      leadHand: standing.leadHand.clone().lerp(down.leadHand, t),
-      rearHand: standing.rearHand.clone().lerp(down.rearHand, t),
-      leadFoot: standing.leadFoot.clone().lerp(down.leadFoot, t),
-      rearFoot: standing.rearFoot.clone().lerp(down.rearFoot, t),
-    };
+    lerpDownPose(pose, standing, this.placeLying(mirror), t);
     if (this.downState === "falling") {
       const flail = Math.sin(clamp(this.fallAge / KNOCKDOWN_FALL_SECONDS, 0, 1) * Math.PI) * 0.35;
-      mixed.leadHand.y += flail;
-      mixed.rearHand.y += flail * 0.8;
+      pose.leadHand.y += flail;
+      pose.rearHand.y += flail * 0.8;
     }
-    this.writeDown(mixed, leadHand, rearHand, lead, rear, headLag);
-    void headRest;
+    this.writeDown(pose, leadHand, rearHand, lead, rear, headLag);
+  }
+
+  /** The pose the fighter ends up in on the canvas: face down or on his back, twisted by the fall side. */
+  private placeLying(mirror: number): DownPose {
+    return this.fallProne
+      ? placeDownPose(this.downFrom, PRONE, PRONE_TWIST, mirror, this.fallSide)
+      : placeDownPose(this.downFrom, LYING, LYING_TWIST, mirror, this.fallSide);
   }
 
   private writeDown(
-    state: { hips: THREE.Vector3; hipsYaw: number; hipsPitch: number; hipsRoll: number; shouldersYaw: number; spinePitch: number; headPitch: number; leadHand: THREE.Vector3; rearHand: THREE.Vector3; leadFoot: THREE.Vector3; rearFoot: THREE.Vector3 },
+    state: DownPose,
     leadHand: { position: THREE.Vector3; knuckles: THREE.Vector3; palm: THREE.Vector3; pole: THREE.Vector3 },
     rearHand: { position: THREE.Vector3; knuckles: THREE.Vector3; palm: THREE.Vector3; pole: THREE.Vector3 },
     lead: { position: THREE.Vector3; toe: THREE.Vector3; heel: number; pole: THREE.Vector3 },
@@ -1861,7 +1788,7 @@ export class BoxingGraph {
     if (this.dislocation !== "jaw") return;
     const head = this.boxer.bone("head");
     if (head !== null) {
-      head.quaternion.multiply(this.scratchQ.setFromEuler(new THREE.Euler(0.08, 0.2, -0.22)));
+      head.quaternion.multiply(JAW_DISLOCATION);
       head.updateWorldMatrix(false, true);
     }
   }
@@ -1877,6 +1804,108 @@ const STOOL_SEAT_HEIGHT = 0.44;
 const TOUCH_GLOVES_START_TICKS = 48;
 const TOUCH_GLOVES_END_TICKS = 14;
 const seatedScratch = new THREE.Vector3();
+const JAW_DISLOCATION = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.08, 0.2, -0.22));
+
+/** A whole-body pose on the way down and back up, in character space. */
+interface DownPose {
+  readonly hips: THREE.Vector3;
+  hipsYaw: number;
+  hipsPitch: number;
+  hipsRoll: number;
+  shouldersYaw: number;
+  spinePitch: number;
+  headPitch: number;
+  readonly leadHand: THREE.Vector3;
+  readonly rearHand: THREE.Vector3;
+  readonly leadFoot: THREE.Vector3;
+  readonly rearFoot: THREE.Vector3;
+}
+
+function downPose(pose: Partial<DownPose> = {}): DownPose {
+  return {
+    hips: new THREE.Vector3(),
+    hipsYaw: 0,
+    hipsPitch: 0,
+    hipsRoll: 0,
+    shouldersYaw: 0,
+    spinePitch: 0,
+    headPitch: 0,
+    leadHand: new THREE.Vector3(),
+    rearHand: new THREE.Vector3(),
+    leadFoot: new THREE.Vector3(),
+    rearFoot: new THREE.Vector3(),
+    ...pose,
+  };
+}
+
+// The authored poses are for an orthodox fighter; a twist table is added per unit of fall side.
+/** Lying on the back; turning the hips swings the head the opposite way. */
+const LYING = downPose({
+  hips: vec(0, 0.14, -0.4), hipsPitch: -1.42, spinePitch: 0.1, headPitch: -0.5,
+  leadHand: vec(0.52, 0.1, -0.62), rearHand: vec(-0.5, 0.1, -0.7), leadFoot: vec(0.17, 0.08, 0.16), rearFoot: vec(-0.16, 0.09, -0.02),
+});
+const LYING_TWIST = downPose({ hips: vec(0.22, 0, 0), hipsYaw: -0.35, hipsRoll: -0.25, shouldersYaw: -0.2, leadFoot: vec(0.05, 0, 0), rearFoot: vec(0.05, 0, 0) });
+/** Face down after a hook or a body shot: the fighter pitches forward over the front foot. */
+const PRONE = downPose({
+  hips: vec(0, 0.13, 0.32), hipsPitch: 1.5, spinePitch: 0.05, headPitch: 0.2,
+  leadHand: vec(0.34, 0.06, 0.78), rearHand: vec(-0.3, 0.06, 0.62), leadFoot: vec(0.16, 0.06, -0.5), rearFoot: vec(-0.15, 0.07, -0.55),
+});
+const PRONE_TWIST = downPose({ hips: vec(0.12, 0, 0), hipsYaw: 0.3, hipsRoll: 0.15, shouldersYaw: 0.15, leadFoot: vec(0.04, 0, 0), rearFoot: vec(0.04, 0, 0) });
+/** The get-up's first stage, on all fours. */
+const ALL_FOURS = downPose({
+  hips: vec(0.08, 0.52, -0.18), hipsYaw: STANCE.bladeYaw * 0.4, hipsPitch: 1.0, shouldersYaw: STANCE.bladeYaw * 0.35, spinePitch: 0.15, headPitch: -0.5,
+  leadHand: vec(0.26, 0.02, 0.18), rearHand: vec(-0.24, 0.02, 0.1), leadFoot: vec(0.17, 0.05, -0.55), rearFoot: vec(-0.16, 0.05, -0.6),
+});
+/** The get-up's second stage, on one knee with the lead foot planted. */
+const ONE_KNEE = downPose({
+  hips: vec(0.03, 0.66, -0.06), hipsYaw: STANCE.bladeYaw * 0.7, hipsPitch: 0.5, shouldersYaw: STANCE.bladeYaw * 0.6, spinePitch: 0.25, headPitch: -0.15,
+  leadHand: vec(0.2, 0.75, 0.3), rearHand: vec(-0.25, 0.55, 0.05), leadFoot: vec(0.14, 0, 0.3), rearFoot: vec(-0.14, 0.06, -0.5),
+});
+
+/** Writes `base` mirrored for the stance, plus `twist` per unit of `side`, into `out`. */
+function placeDownPose(out: DownPose, base: DownPose, twist: DownPose | null, mirror: number, side: number): DownPose {
+  out.hips.set(base.hips.x * mirror, base.hips.y, base.hips.z);
+  out.hipsYaw = base.hipsYaw * mirror;
+  out.hipsPitch = base.hipsPitch;
+  out.hipsRoll = base.hipsRoll * mirror;
+  out.shouldersYaw = base.shouldersYaw * mirror;
+  out.spinePitch = base.spinePitch;
+  out.headPitch = base.headPitch;
+  mirrorX(base.leadHand, mirror, out.leadHand);
+  mirrorX(base.rearHand, mirror, out.rearHand);
+  mirrorX(base.leadFoot, mirror, out.leadFoot);
+  mirrorX(base.rearFoot, mirror, out.rearFoot);
+  if (twist === null || side === 0) return out;
+  out.hips.addScaledVector(twist.hips, side);
+  out.hipsYaw += twist.hipsYaw * side;
+  out.hipsPitch += twist.hipsPitch * side;
+  out.hipsRoll += twist.hipsRoll * side;
+  out.shouldersYaw += twist.shouldersYaw * side;
+  out.spinePitch += twist.spinePitch * side;
+  out.headPitch += twist.headPitch * side;
+  out.leadHand.addScaledVector(twist.leadHand, side);
+  out.rearHand.addScaledVector(twist.rearHand, side);
+  out.leadFoot.addScaledVector(twist.leadFoot, side);
+  out.rearFoot.addScaledVector(twist.rearFoot, side);
+  return out;
+}
+
+/** Writes the blend from `a` to `b` into `out`, which may be `a` but not `b`. */
+function lerpDownPose(out: DownPose, a: DownPose, b: DownPose, t: number): DownPose {
+  const lerp = THREE.MathUtils.lerp;
+  out.hips.copy(a.hips).lerp(b.hips, t);
+  out.hipsYaw = lerp(a.hipsYaw, b.hipsYaw, t);
+  out.hipsPitch = lerp(a.hipsPitch, b.hipsPitch, t);
+  out.hipsRoll = lerp(a.hipsRoll, b.hipsRoll, t);
+  out.shouldersYaw = lerp(a.shouldersYaw, b.shouldersYaw, t);
+  out.spinePitch = lerp(a.spinePitch, b.spinePitch, t);
+  out.headPitch = lerp(a.headPitch, b.headPitch, t);
+  out.leadHand.copy(a.leadHand).lerp(b.leadHand, t);
+  out.rearHand.copy(a.rearHand).lerp(b.rearHand, t);
+  out.leadFoot.copy(a.leadFoot).lerp(b.leadFoot, t);
+  out.rearFoot.copy(a.rearFoot).lerp(b.rearFoot, t);
+  return out;
+}
 
 function buildEnswell(): { group: THREE.Group; dispose: () => void } {
   const group = new THREE.Group();

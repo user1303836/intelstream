@@ -75,6 +75,7 @@ const scratchBend = new THREE.Vector3();
 const scratchMid = new THREE.Vector3();
 const scratchNormal = new THREE.Vector3();
 const scratchLower = new THREE.Vector3();
+const scratchHint = new THREE.Vector3();
 
 export function worldPosition(object: THREE.Object3D, target: THREE.Vector3): THREE.Vector3 {
   return target.setFromMatrixPosition(object.matrixWorld);
@@ -108,6 +109,7 @@ export class SolvedRig {
   readonly metrics: RigMetrics;
   private readonly restLocal = new Map<THREE.Bone, THREE.Quaternion>();
   private readonly restLocalPosition = new Map<THREE.Bone, THREE.Vector3>();
+  private readonly limb = { reached: false, joint: new THREE.Vector3() };
 
   constructor(root: THREE.Object3D) {
     const found = new Map<string, THREE.Bone>();
@@ -198,14 +200,15 @@ export class SolvedRig {
     scratchDir.subVectors(target, scratchA);
     if (scratchDir.lengthSq() < 1e-10) return;
     worldQuaternion(bone, scratchWorld);
-    const hint = axis === "z" ? scratchZ.set(0, 0, 1).applyQuaternion(scratchWorld) : scratchX.set(1, 0, 0).applyQuaternion(scratchWorld);
-    this.setWorldFrame(bone, scratchDir, hint.clone(), axis);
+    const hint = axis === "z" ? scratchHint.set(0, 0, 1) : scratchHint.set(1, 0, 0);
+    this.setWorldFrame(bone, scratchDir, hint.applyQuaternion(scratchWorld), axis);
   }
 
   /**
    * Two-bone IK. `pole` is a world direction the joint bends toward. `hingeAxis`
    * selects which local axis of the two bones is the hinge and `hingeSign`
-   * orients it (+1: hinge = pole x limb direction, -1: the opposite).
+   * orients it (+1: hinge = pole x limb direction, -1: the opposite). The
+   * returned result is reused by the next solve.
    */
   solveLimb(
     upper: THREE.Bone,
@@ -216,7 +219,7 @@ export class SolvedRig {
     hingeAxis: "x" | "z",
     hingeSign: 1 | -1,
     minimumBend = 0.01,
-  ): { reached: boolean; joint: THREE.Vector3 } {
+  ): { readonly reached: boolean; readonly joint: THREE.Vector3 } {
     upper.updateWorldMatrix(false, false);
     const root = worldPosition(upper, scratchA);
     scratchDir.subVectors(target, root);
@@ -246,6 +249,8 @@ export class SolvedRig {
     const jointWorld = worldPosition(lower, scratchB);
     scratchLower.copy(root).addScaledVector(scratchDir, distance).sub(jointWorld);
     this.setWorldFrame(lower, scratchLower, scratchNormal, hingeAxis);
-    return { reached, joint: jointWorld };
+    this.limb.reached = reached;
+    this.limb.joint.copy(jointWorld);
+    return this.limb;
   }
 }
