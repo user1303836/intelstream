@@ -1566,6 +1566,10 @@ class BoxingEngine:
         if self.round_number >= self.config.rounds:
             self._finish_decision()
             return
+        for fighter in self._fighters.values():
+            # The bell ends whatever was held. Clients stop sending between rounds, so a walk or a
+            # guard held at the bell would otherwise carry the fighter into the next round.
+            fighter.held_input = InputCommand(0, 0)
         if self.config.rest_ticks == 0:
             self._start_next_round()
         else:

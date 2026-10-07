@@ -2121,6 +2121,24 @@ def test_the_bell_clears_evasion_counter_and_combo_windows(rest_ticks: int) -> N
     assert (one.evasion_ticks, one.counter_ticks, one.combo_ticks) == (0, 0, 0)
 
 
+@pytest.mark.parametrize("rest_ticks", [150, 0])
+def test_a_walk_and_guard_held_at_the_bell_do_not_carry_into_the_next_round(
+    rest_ticks: int,
+) -> None:
+    engine = make_engine(round_ticks=30, rounds=2, rest_ticks=rest_ticks)
+    one = engine.fighter("one")
+    engine.fighter("two").x = 300
+    # Walking in behind a high guard at the bell, then no more frames: clients stop sending
+    # between rounds.
+    engine.step({"one": command(1, move_x=1000, defense=DefensivePose.GUARD_HIGH)})
+    while engine.round_number == 1:
+        engine.step()
+    snapshots = [engine.step() for _ in range(7)]
+
+    assert [snapshot.fighters[0].defense for snapshot in snapshots] == [DefensivePose.NONE] * 7
+    assert (one.velocity_x, one.velocity_y) == (0, 0)
+
+
 def test_the_facing_blends_toward_the_opponent_before_and_after_footwork_each_fight_tick() -> None:
     engine = make_engine(round_ticks=2000)
     one = engine.fighter("one")
