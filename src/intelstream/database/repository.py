@@ -68,6 +68,11 @@ CONTENT_ITEM_INDEX_MIGRATIONS: tuple[str, ...] = (
     "WHERE posted_to_discord = 0 AND summary IS NOT NULL",
 )
 
+# A boxing record counts a doctor's stoppage as a technical knockout.
+HANDS_KNOCKOUT_METHODS: frozenset[FinishMethod] = frozenset(
+    {FinishMethod.KO, FinishMethod.FLASH_KO, FinishMethod.TKO, FinishMethod.DOCTOR_STOPPAGE}
+)
+
 MIN_POLL_INTERVAL_MINUTES = 1
 MAX_POLL_INTERVAL_MINUTES = 1440
 SQLITE_IN_BATCH_SIZE = 900
@@ -99,6 +104,7 @@ class Repository:
             await conn.run_sync(Base.metadata.create_all)
             await self._migrate_sources_table(conn)
             await self._migrate_content_item_indexes(conn)
+            await self._recount_hands_knockouts(conn)
         logger.info("Database initialization complete")
 
     async def _migrate_sources_table(self, conn: AsyncConnection) -> None:
@@ -115,6 +121,26 @@ class Repository:
     async def _migrate_content_item_indexes(self, conn: AsyncConnection) -> None:
         for statement in CONTENT_ITEM_INDEX_MIGRATIONS:
             await conn.execute(text(statement))
+
+    async def _recount_hands_knockouts(self, conn: AsyncConnection) -> None:
+        """Counts each fighter's knockouts again from the stored bouts.
+
+        Wins by doctor stoppage were once left out. The count is exact and idempotent, so it runs at
+        every start and only writes a row whose count was wrong.
+        """
+        counted = (
+            select(func.count())
+            .select_from(HandsMatch)
+            .where(
+                HandsMatch.guild_id == HandsRating.guild_id,
+                HandsMatch.winner_id == HandsRating.user_id,
+                HandsMatch.finish_method.in_(sorted(HANDS_KNOCKOUT_METHODS)),
+            )
+            .scalar_subquery()
+        )
+        await conn.execute(
+            update(HandsRating).where(HandsRating.knockouts != counted).values(knockouts=counted)
+        )
 
     async def migrate_sources_to_channel(self, guild_id: str, channel_id: str) -> int:
         """Assign existing sources without a channel to the specified guild and channel."""
@@ -1113,11 +1139,7 @@ class Repository:
         winner.current_streak += 1
         loser.losses += 1
         loser.current_streak = 0
-        if match_result.finish_method in (
-            FinishMethod.KO,
-            FinishMethod.FLASH_KO,
-            FinishMethod.TKO,
-        ):
+        if match_result.finish_method in HANDS_KNOCKOUT_METHODS:
             winner.knockouts += 1
 
     async def record_suck_boobs_usage(

@@ -2,7 +2,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
@@ -2271,6 +2271,52 @@ class TestHandsRatings:
         assert match.player_one_rating_before == 1000
         assert match.player_two_rating_after == 984
         assert repr(match) == "<HandsMatch(match_id='match-1', finish='ko')>"
+
+    async def test_a_doctor_stoppage_counts_as_a_knockout_in_the_record(
+        self, repository: Repository
+    ) -> None:
+        await repository.record_hands_match(
+            self.result("cut-stoppage", finish_method=FinishMethod.DOCTOR_STOPPAGE)
+        )
+        await repository.record_hands_match(
+            self.result("cards", finish_method=FinishMethod.DECISION)
+        )
+        one = await repository.get_hands_rating("guild-a", "user-1")
+
+        assert one is not None
+        assert (one.wins, one.knockouts) == (2, 1)
+
+    async def test_knockouts_are_recounted_from_the_stored_bouts_at_start(
+        self, repository: Repository
+    ) -> None:
+        for match_id, method in (
+            ("ko", FinishMethod.KO),
+            ("cut", FinishMethod.DOCTOR_STOPPAGE),
+            ("cards", FinishMethod.DECISION),
+        ):
+            await repository.record_hands_match(self.result(match_id, finish_method=method))
+        await repository.record_hands_match(
+            self.result("other-guild", guild_id="guild-b", finish_method=FinishMethod.TKO)
+        )
+        # A record stored before doctor stoppages counted, and one somebody else's bout left alone.
+        async with repository.session() as session:
+            await session.execute(
+                update(HandsRating)
+                .where(HandsRating.guild_id == "guild-a", HandsRating.user_id == "user-1")
+                .values(knockouts=1)
+            )
+            await session.commit()
+
+        await repository.initialize()
+        await repository.initialize()
+
+        one = await repository.get_hands_rating("guild-a", "user-1")
+        two = await repository.get_hands_rating("guild-a", "user-2")
+        elsewhere = await repository.get_hands_rating("guild-b", "user-1")
+        assert one is not None and two is not None and elsewhere is not None
+        assert (one.wins, one.knockouts) == (3, 2)
+        assert two.knockouts == 0
+        assert elsewhere.knockouts == 1
 
     async def test_draws_reset_streak_and_duplicate_match_is_idempotent(
         self, repository: Repository
