@@ -331,6 +331,10 @@ export class BoxingGraph {
   private ownExpectedTicks = 0;
   /** The server turned the punch down before it landed, so the glove is coming back the way it went. */
   private ownPulled = false;
+  /** Input frame that carried the press: once a snapshot has it, the punch has started there or never will. */
+  private ownSequence: number | null = null;
+  /** The server refused the punch or cut it off before contact, so the pull-back is final. */
+  private ownRefused = false;
   /** Own punches already played or cut short here; the server's copy of them is not played again. */
   private readonly retiredOwnIds: string[] = [];
   private hitstop = 0;
@@ -546,16 +550,18 @@ export class BoxingGraph {
   /**
    * Starts the viewer's own punch on the key press. `leadTicks` estimates how far ahead of the
    * server's presentation that is (input latency plus the interpolation delay); the startup is
-   * stretched by it so the glove arrives when the hit is shown, and the punch is never pulled back.
+   * stretched by it so the glove arrives when the hit is shown. `sequence` is the input frame that
+   * carries the press, so `acknowledge` can tell when the server has had its chance to start it.
    */
-  predict(action: SemanticAction, timeSeconds: number, tickRate: number, leadTicks = 0, expected?: PunchTiming): void {
+  predict(action: SemanticAction, timeSeconds: number, tickRate: number, leadTicks = 0, expected?: PunchTiming, sequence?: number): void {
     if (action.kind !== "punch" || action.id === undefined) return;
     void timeSeconds;
     void tickRate;
     // Mid-punch the server queues the press, so it plays on the server's timeline. Late in the
-    // recovery the follow-up cuts in at once.
-    const remaining = this.punchActive ? this.punchTotalTicks - this.punchAgeTicks : 0;
-    if (this.punchActive && this.punchAgeTicks / this.punchTotalTicks <= 0.55) return;
+    // recovery the follow-up cuts in at once, and a punch on its way back holds nothing up.
+    const busy = this.punchActive && !this.ownPulled;
+    const remaining = busy ? this.punchTotalTicks - this.punchAgeTicks : 0;
+    if (busy && this.punchAgeTicks / this.punchTotalTicks <= 0.55) return;
     this.retirePunch();
     const timing = expected ?? punchTiming(action.class, action.target, action.power);
     this.punchClass = action.class;
@@ -569,11 +575,34 @@ export class BoxingGraph {
     this.ownActionId = action.id;
     this.ownLeadTicks = clamp(leadTicks, 0, MAX_OWN_LEAD_TICKS);
     this.ownExpectedTicks = Math.max(0, leadTicks) + remaining;
+    this.ownSequence = sequence ?? null;
   }
 
   /** True while the viewer's own punch, started on the key press, is playing. */
   get ownPunchActive(): boolean {
     return this.punchActive && this.ownActionId !== null;
+  }
+
+  /**
+   * Squares the viewer's own punch with the newest snapshot, which is ahead of the one on screen by
+   * the interpolation delay. Once that snapshot has the frame that carried the press, the punch has
+   * started on the server or never will: a guard raised in the same tick, a newer press or a stun
+   * clears it there. A stun, a clinch or the end of the fight phase also cuts off a punch the server
+   * did start, unless it had already landed. Either way the glove comes straight back.
+   */
+  acknowledge(server: FighterSnapshot, fighting: boolean): void {
+    if (!this.punchActive || this.ownActionId === null || this.ownPulled || this.ownRefused) return;
+    const started = server.action_id === this.ownActionId;
+    if (started) this.ownSequence = null;
+    const cutOff = !fighting || server.stunned_ticks > 0 || server.clinch_ticks > 0 || server.clinch_startup_ticks > 0;
+    const refused = started
+      ? cutOff && server.action_contact_tick === null
+      : this.ownSequence !== null && this.ownAuthoritativeAge === null
+        && (cutOff || (server.last_input_sequence >= this.ownSequence && server.queued_actions === 0));
+    if (!refused) return;
+    this.ownRefused = true;
+    // Before contact the glove comes back the way it went; after it the punch simply finishes.
+    if (this.punchAgeTicks < this.punchTiming.startup) this.ownPulled = true;
   }
 
   /** Marks the punch being played as done so neither copy of it is started again. */
@@ -591,6 +620,8 @@ export class BoxingGraph {
     this.ownWaitedTicks = 0;
     this.ownExpectedTicks = 0;
     this.ownPulled = false;
+    this.ownSequence = null;
+    this.ownRefused = false;
   }
 
   landedHit(blocked: boolean): void {
@@ -1101,8 +1132,11 @@ export class BoxingGraph {
           // The server's timing can differ from the predicted one (fatigue); keep the glove where it is.
           this.punchAgeTicks = remapPunchAge(this.punchAgeTicks, predictedTiming, this.punchTiming);
           this.ownAuthoritativeAge = authoritativeAge;
-          this.ownPulled = false;
-          if (authoritativeAge - this.punchAgeTicks > 1) this.punchAgeTicks = authoritativeAge;
+          // A punch the server cut off keeps coming back; one that was only late resumes.
+          if (!this.ownRefused) {
+            this.ownPulled = false;
+            if (authoritativeAge - this.punchAgeTicks > 1) this.punchAgeTicks = authoritativeAge;
+          }
         } else {
           this.punchAgeTicks = authoritativeAge;
           this.ownActionId = null;
@@ -1122,7 +1156,7 @@ export class BoxingGraph {
       const authoritativeAge = Math.max(0, sampledTick - fighter.action_start_tick);
       if (this.ownActionId === this.actionId) {
         this.ownAuthoritativeAge = authoritativeAge;
-        if (authoritativeAge - this.punchAgeTicks > 1.5) this.punchAgeTicks = authoritativeAge;
+        if (!this.ownPulled && authoritativeAge - this.punchAgeTicks > 1.5) this.punchAgeTicks = authoritativeAge;
       } else if (Math.abs(this.punchAgeTicks - authoritativeAge) > 1.5) {
         this.punchAgeTicks = authoritativeAge;
       }
@@ -1136,8 +1170,9 @@ export class BoxingGraph {
     if (this.punchActive && this.ownPulled) {
       this.punchAgeTicks -= simDt * 30 * OWN_PUNCH_PULL_RATE;
       if (this.punchAgeTicks <= 0) {
-        // Not retired: if the server does start it after all, it plays on the server's timeline.
-        this.ownActionId = null;
+        // Only a punch the server refused is retired. One that was merely late is not: if the server
+        // does start it after all, it plays on the server's timeline.
+        if (!this.ownRefused) this.ownActionId = null;
         this.retirePunch();
       }
     } else if (this.punchActive) {

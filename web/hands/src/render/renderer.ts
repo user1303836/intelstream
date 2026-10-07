@@ -987,7 +987,8 @@ export class FightRenderer {
     return { position: this.tmpStump, quaternion: this.tmpStumpQuaternion };
   }
 
-  predictAction(action: SemanticAction): void {
+  /** `sequence` is the input frame that will carry the press, matched later against `last_input_sequence`. */
+  predictAction(action: SemanticAction, sequence?: number): void {
     const latest = this.buffer.latest();
     if (latest === null || this.viewerId === null || this.replay !== null) return;
     const index = latest.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
@@ -996,11 +997,19 @@ export class FightRenderer {
     const fighter = latest.fighters[index]!;
     if (action.kind !== "punch" || latest.phase !== "fight" || !canStartPunch(fighter) || !canAffordPunch(fighter, action)) return;
     const leadTicks = ((this.inputLatencyMs ?? 60) / 1000) * this.simulation.tick_rate + this.buffer.interpolationDelayTicks;
-    this.graphs?.[index]?.predict(action, performance.now() / 1000, this.simulation.tick_rate, leadTicks, predictedPunchTiming(fighter, action, latest.tick + 1));
+    this.graphs?.[index]?.predict(action, performance.now() / 1000, this.simulation.tick_rate, leadTicks, predictedPunchTiming(fighter, action, latest.tick + 1), sequence);
+  }
+
+  /** Every snapshot, as it arrives, tells the viewer's own punch whether the server took it. */
+  private acknowledgeActions(snapshot: EngineSnapshot): void {
+    if (this.viewerId === null) return;
+    const index = snapshot.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
+    if (index >= 0) this.graphs?.[index]?.acknowledge(snapshot.fighters[index]!, snapshot.phase === "fight");
   }
 
   push(snapshot: EngineSnapshot): void {
     if (!this.buffer.push(snapshot, this.manualClock ? this.lastManualTime : performance.now())) return;
+    this.acknowledgeActions(snapshot);
     const accepted = this.dedupe.accept(snapshot.events);
     this.history.push(snapshot);
     if (this.history.length > HISTORY_LIMIT) this.history.shift();
