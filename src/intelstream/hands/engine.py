@@ -1717,6 +1717,8 @@ class BoxingEngine:
         self.phase = MatchPhase.FIGHT
         self.phase_ticks_remaining = max(1, self._paused_fight_ticks)
         self._downed_id = None
+        # The count stops where the referee left it rather than running on past ten.
+        self._knockdown_count_ticks = self._get_up_count() * COUNT_TICK_INTERVAL
         self._box_tick = None
         self._count_at_rise = 0
         self._neutral_corner = None

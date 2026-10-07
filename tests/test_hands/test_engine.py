@@ -2605,6 +2605,7 @@ def test_a_fighter_who_beats_the_count_takes_the_mandatory_eight_before_they_box
     assert engine.phase is MatchPhase.FIGHT
     assert engine.phase_ticks_remaining == clock
     assert two.stunned_ticks == GET_UP_STUN_TICKS
+    assert {view.get_up_count for view in engine.snapshot().fighters} == {MANDATORY_COUNT}
 
 
 def test_a_late_get_up_still_gets_the_referee_s_look_before_the_box() -> None:
@@ -2619,6 +2620,9 @@ def test_a_late_get_up_still_gets_the_referee_s_look_before_the_box() -> None:
         assert {view.get_up_count for view in snapshot.fighters} == {9}
     assert [event.kind for event in engine.step().events if event.kind == "box"] == ["box"]
     assert engine.phase is MatchPhase.FIGHT
+    # The count the referee reached stays on the snapshot, inside what the client accepts.
+    for _ in range(3 * COUNT_TICK_INTERVAL):
+        assert {view.get_up_count for view in engine.step().fighters} == {9}
 
 
 def test_round_one_opens_with_the_introductions_and_later_rounds_with_the_bell() -> None:
