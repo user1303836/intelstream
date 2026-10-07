@@ -452,6 +452,11 @@ export class BoxingGraph {
   private readonly downFrom = downPose();
   private readonly downTo = downPose();
   private readonly downResult = downPose();
+  /** The last pose written by `writeDown` and its share of the standing pose, where a fall that cuts into a get-up starts. */
+  private downStand = 1;
+  private readonly fallStart = downPose();
+  private fallStartStand = 1;
+  private fallFromGetUp = false;
 
   private readonly referee: boolean;
   private refereeCount = 0;
@@ -1486,6 +1491,12 @@ export class BoxingGraph {
   private updateDownState(fighter: FighterSnapshot, dt: number, speed: number): void {
     if (fighter.is_downed) {
       if (this.downState === "up" || this.downState === "rising") {
+        // Knocked down again while getting up, he falls from where the get-up had him, not from standing.
+        this.fallFromGetUp = this.downState === "rising";
+        if (this.fallFromGetUp) {
+          copyDownPose(this.fallStart, this.downResult);
+          this.fallStartStand = this.downStand;
+        }
         this.downState = "falling";
         this.fallAge = 0;
         this.riseProgress = 0;
@@ -1774,26 +1785,28 @@ export class BoxingGraph {
     const lying = this.placeLying(mirror);
     const u = clamp(this.fallAge / KNOCKDOWN_FALL_SECONDS, 0, 1);
     const t = easeIn(u, 2.1);
-    const buckle = smoothstep(0, 0.35, u) * (1 - smoothstep(0.35, 0.8, u));
-    standing.hips.y -= buckle * 0.12;
-    lerpDownPose(pose, standing, lying, t);
-    // The feet slide out from under him while he is still high, so his knees never fold through the canvas.
-    const feet = smoothstep(0.3, 0.9, u);
-    pose.leadFoot.lerpVectors(standing.leadFoot, lying.leadFoot, feet);
-    pose.rearFoot.lerpVectors(standing.rearFoot, lying.rearFoot, feet);
-    pose.leadHeel = THREE.MathUtils.lerp(standing.leadHeel, lying.leadHeel, feet);
-    pose.rearHeel = THREE.MathUtils.lerp(standing.rearHeel, lying.rearHeel, feet);
+    const start = this.fallFromGetUp ? this.fallStart : standing;
+    if (!this.fallFromGetUp) standing.hips.y -= smoothstep(0, 0.35, u) * (1 - smoothstep(0.35, 0.8, u)) * 0.12;
+    lerpDownPose(pose, start, lying, t);
+    // The feet slide out from under him while he is still high, so his knees never fold through the canvas;
+    // knocked down from his knees, the folded legs go with him from the start.
+    const feet = this.fallFromGetUp ? smoothstep(0, 0.6, u) : smoothstep(0.3, 0.9, u);
+    pose.leadFoot.lerpVectors(start.leadFoot, lying.leadFoot, feet);
+    pose.rearFoot.lerpVectors(start.rearFoot, lying.rearFoot, feet);
+    pose.leadHeel = THREE.MathUtils.lerp(start.leadHeel, lying.leadHeel, feet);
+    pose.rearHeel = THREE.MathUtils.lerp(start.rearHeel, lying.rearHeel, feet);
     if (this.landProne) {
       // Pitching forward, the gloves reach out ahead of him to break the fall.
       const reach = easeOut(u, 2.5);
-      pose.leadHand.lerpVectors(standing.leadHand, lying.leadHand, reach);
-      pose.rearHand.lerpVectors(standing.rearHand, lying.rearHand, reach);
+      pose.leadHand.lerpVectors(start.leadHand, lying.leadHand, reach);
+      pose.rearHand.lerpVectors(start.rearHand, lying.rearHand, reach);
     } else {
       const flail = Math.sin(u * Math.PI) * 0.35;
       pose.leadHand.y += flail;
       pose.rearHand.y += flail * 0.8;
     }
-    this.writeDown(pose, mirror, leadHand, rearHand, lead, rear, Math.sin(u * Math.PI) * 0.12, 1 - t);
+    const stand = (this.fallFromGetUp ? this.fallStartStand : 1) * (1 - t);
+    this.writeDown(pose, mirror, leadHand, rearHand, lead, rear, Math.sin(u * Math.PI) * 0.12, stand);
   }
 
   /** The pose the fighter ends up in on the canvas: face down or on his back, twisted by the fall side. */
@@ -1878,6 +1891,7 @@ export class BoxingGraph {
   ): void {
     const torso = this.torso;
     const down = 1 - stand;
+    this.downStand = stand;
     torso.hips.copy(state.hips);
     torso.hipsYaw = state.hipsYaw;
     torso.hipsPitch = state.hipsPitch;
@@ -2077,6 +2091,10 @@ function fitInsideRopes(low: number, high: number): number {
   if (low < -ROPE_LINE) return -ROPE_LINE - low;
   if (high > ROPE_LINE) return ROPE_LINE - high;
   return 0;
+}
+
+function copyDownPose(out: DownPose, from: DownPose): DownPose {
+  return lerpDownPose(out, from, from, 0);
 }
 
 /** Writes the blend from `a` to `b` into `out`, which may be `a` but not `b`. */

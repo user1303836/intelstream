@@ -278,6 +278,25 @@ describe("get-up", () => {
     expect(reach).toBeGreaterThan(guardZ + 0.25);
   });
 
+  it("falls again from where the get-up had him when he is knocked down mid-rise", () => {
+    const { boxer, step, standing, downed } = knockedDown();
+    step({ ...downed, get_up_meter: 22 }, 30);
+    step({ ...downed, get_up_meter: 44 }, 30);
+    step({ ...standing, get_up_meter: 66, stunned_ticks: 20 }, 8);
+    const names = Object.keys(boxer.rig.bones) as CanonicalBone[];
+    let previous = names.map((name) => bone(boxer, name));
+    expect(previous[names.indexOf("head")]!.y).toBeLessThan(1.3);
+    let jump = 0;
+    for (let frame = 0; frame < 60; frame += 1) {
+      step(downed, 1);
+      const now = names.map((name) => bone(boxer, name));
+      for (const [index, position] of now.entries()) jump = Math.max(jump, position.distanceTo(previous[index]!));
+      previous = now;
+    }
+    expect(jump).toBeLessThan(0.12);
+    expect(bone(boxer, "head").y).toBeLessThan(0.5);
+  });
+
   it("finishes the get-up at once when he walks off", () => {
     const { boxer, step, standing, downed } = knockedDown();
     step({ ...downed, get_up_meter: 22 }, 30);
