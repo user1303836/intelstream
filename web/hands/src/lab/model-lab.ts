@@ -11,7 +11,9 @@ import type { FighterSnapshot, Hand, PunchClass, Target } from "../types";
  * every authored pose can be inspected from any angle without a match.
  * Query parameters: pose (idle, guard_high, guard_low, slip_left, slip_right,
  * weave, pull, jab_left, straight_right, hook_left, uppercut_right, ...,
- * hit_head, hit_body, block, knockdown, getup, stunned, taunt, clinch, seated, celebrate, wave_off, break, touch_gloves, walk),
+ * hit_head, hit_body, block, knockdown, getup, stunned, taunt, clinch, seated, celebrate, wave_off, break, touch_gloves, walk,
+ * ragdoll: a knockout fall under physics from `hit` (jab|straight|hook|uppercut|body) thrown with
+ * `hand` (left|right) for `amount` damage, getting up after `getup` seconds when given),
  * t (seconds into the pose), stance (orthodox|southpaw), cam (front|side|
  * three-quarter|top|back), skeleton (1), outfit (referee|corner_blue|corner_red|cutman) to
  * show a ring official, whose poses are idle, count, attend, treat, wave_off and break, and
@@ -39,6 +41,9 @@ const base = (): Draft => ({
   last_input_sequence: -1,
 });
 
+/** Seconds into the lab at which the ragdoll pose takes its blow and goes down. */
+const RAGDOLL_FALL_AT = 0.3;
+
 const CAMERAS: Record<string, [number, number, number]> = {
   face: [0.25, 1.55, 1.0],
   portrait: [0.12, 1.62, 0.62],
@@ -49,6 +54,7 @@ const CAMERAS: Record<string, [number, number, number]> = {
   top: [0.01, 4.5, 0.6],
   back: [0.2, 1.4, -3.4],
   low: [1.8, 0.5, 2.6],
+  wide: [3.4, 2.7, 3.6],
 };
 
 export class ModelLab {
@@ -85,6 +91,7 @@ export class ModelLab {
     this.camera.position.set(...cam);
     if (this.params.get("cam") === "hand") this.camera.lookAt(0.27, 0.84, 0.12);
     else if (this.params.get("cam") === "portrait") this.camera.lookAt(0, 1.6, 0.05);
+    else if (this.params.get("cam") === "wide") this.camera.lookAt(0, 0.45, -0.2);
     else this.camera.lookAt(0, this.params.get("cam") === "face" ? 1.5 : 1.0, 0);
     this.setupLighting();
   }
@@ -144,6 +151,9 @@ export class ModelLab {
       fighter.defense = pose as FighterSnapshot["defense"];
     } else if (pose === "knockdown") {
       fighter.is_downed = seconds % 6 < 3.2;
+    } else if (pose === "ragdoll") {
+      const getUp = this.params.get("getup");
+      fighter.is_downed = seconds >= RAGDOLL_FALL_AT && (getUp === null || seconds < Number(getUp));
     } else if (pose === "stunned") {
       fighter.stunned_ticks = 40;
     } else if (pose === "taunt") {
@@ -238,6 +248,12 @@ export class ModelLab {
         const [kind, target, punchClass, hand] = reaction.split("_");
         graph.react(kind === "block" ? "block" : "hit", (target as Target) ?? "head", 1, (punchClass as PunchClass) ?? "straight", (hand as Hand) ?? "right", 320);
       }
+    }
+    if (reaction === "ragdoll" && !this.reactionFired && this.elapsed >= RAGDOLL_FALL_AT - 0.02) {
+      this.reactionFired = true;
+      const hit = this.params.get("hit") ?? "straight";
+      const punchClass = (hit === "body" ? "hook" : hit) as PunchClass;
+      graph.react("hit", hit === "body" ? "body" : "head", 1, punchClass, this.params.get("hand") === "left" ? "left" : "right", Number(this.params.get("amount") ?? 420));
     }
     if (this.params.get("pose") === "knockdown" && this.params.get("fall") === "prone" && this.elapsed % 6 < dt * 1.5) {
       graph.react("hit", "head", 1, "hook", "left", 420);

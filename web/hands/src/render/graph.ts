@@ -13,6 +13,7 @@ import { BODY_SITES, HEAD_SITES, InjuryShading, applyBodyTrauma, applyHeadTrauma
 import { LookShading, SCANNED_LOOK, type FighterLook } from "./looks";
 import { applyOutfitShading, buildCuffGeometry, buildHandGeometry, type OfficialOutfit, type OutfitPart } from "./outfit";
 import { PoseSolver, STANCE, easeIn, easeOut, mirrorX, smoothstep, vec, type FootTarget, type HandTarget, type PoseDescription } from "./poser";
+import { KnockoutRagdoll, blowImpulse, fallStyleFor } from "./ragdoll";
 import { SolvedRig } from "./rig";
 import type { WorldMapping } from "./world";
 
@@ -355,6 +356,9 @@ const CROWDED_GAP = 0.58;
 const OPEN_GAP = 1;
 const KNOCKDOWN_FALL_SECONDS = 0.75;
 const GETUP_SECONDS = 1.7;
+/** Hips of the authored lying poses (x for a fall to the fighter's left), which the get-up starts from. */
+const FALLEN_SUPINE_HIPS = { x: 0.22, z: -0.4 } as const;
+const FALLEN_PRONE_HIPS = { x: 0.12, z: 0.32 } as const;
 
 const SIDE_FROM_HAND = (hand: Hand): "L" | "R" => (hand === "left" ? "L" : "R");
 
@@ -489,6 +493,16 @@ export class BoxingGraph {
   private readonly referee: boolean;
   private refereeCount = 0;
   private refereeCounting = false;
+  /** Knockout physics; officials have none. */
+  private readonly ragdoll: KnockoutRagdoll | null;
+  /** Knocked out on his feet (a flash knockout): down although the engine never counts him. */
+  private forcedDown = false;
+  /** The next fall is the animation's, not the physics' (a body shot that takes him to one knee). */
+  private authoredNextFall = false;
+  private obstacle: { x: number; z: number } | null = null;
+  private blows = 0;
+  /** Where the fall left the pelvis relative to the authored lying pose, in character space; the get-up starts there. */
+  private readonly riseOffset = new THREE.Vector3();
 
   constructor(boxer: SkinnedBoxer, private readonly mapping: WorldMapping, options: { referee?: boolean } = {}) {
     this.boxer = boxer;
@@ -500,6 +514,34 @@ export class BoxingGraph {
     boxer.root.add(this.stool.group);
     this.enswell = buildEnswell();
     boxer.rig.bones.gloveL.add(this.enswell.group);
+    this.ragdoll = this.referee ? null : new KnockoutRagdoll(boxer.rig, boxer.root);
+  }
+
+  /** The knockout replay runs the recorded fall again rather than a new one. */
+  primeReplayFall(): void {
+    this.ragdoll?.prime();
+  }
+
+  /** The next knockdown plays the animation rather than the physics: a body shot drops him to one knee. */
+  useAuthoredFall(): void {
+    this.authoredNextFall = true;
+  }
+
+  /** Puts the fighter down for a flash knockout, which the engine ends without a count. */
+  knockOut(): void {
+    this.forcedDown = true;
+  }
+
+  /** The standing opponent, whom a falling fighter does not fall through. */
+  setObstacle(x: number, z: number): void {
+    this.obstacle ??= { x, z };
+    this.obstacle.x = x;
+    this.obstacle.z = z;
+  }
+
+  /** The knockout physics while it drives this fighter, for the camera and the officials. */
+  get fallBody(): KnockoutRagdoll | null {
+    return this.ragdoll?.active === true ? this.ragdoll : null;
   }
 
   /** Between rounds the fighter walks to the corner, and once still, sits on the stool. */
@@ -522,6 +564,18 @@ export class BoxingGraph {
    * knockout replay. `downed` seeds the lying pose instead of standing.
    */
   resetTransient(downed = false): void {
+    this.forcedDown = false;
+    const ragdoll = this.ragdoll;
+    if (ragdoll !== null) {
+      if (!downed) {
+        ragdoll.stop();
+        ragdoll.clearRise();
+      } else if (ragdoll.active) {
+        ragdoll.settle();
+      } else {
+        ragdoll.restoreSettled();
+      }
+    }
     this.downState = downed ? "down" : "up";
     this.fallAge = downed ? KNOCKDOWN_FALL_SECONDS : 0;
     this.riseAge = 0;
@@ -760,6 +814,14 @@ export class BoxingGraph {
       this.fallSide = lateral;
       this.fallProne = punchClass === "hook";
     }
+    // The knockdown itself is presented as a hit too, carrying the count rather than the damage.
+    if (kind === "hit" && amount >= 10 && this.ragdoll !== null) {
+      const blow = blowImpulse({ target, punchClass, hand, lateral, amount });
+      const snap = this.scratchE.set(blow.x, blow.y, blow.z).applyAxisAngle(worldUpVector, this.yaw);
+      const drive = this.scratchD.set(blow.driveX, blow.driveY, blow.driveZ).applyAxisAngle(worldUpVector, this.yaw);
+      this.blows += 1;
+      this.ragdoll.takeBlow(snap, drive, target, blow.twist, fallStyleFor(punchClass, target, amount, this.blows + Math.round(amount)));
+    }
   }
 
   /** Transient compression of the struck surface at contact; the injury shading releases it. */
@@ -918,7 +980,8 @@ export class BoxingGraph {
     springStep(this.rootKick, dt, 120, 8, 0.12);
     this.guardKick = Math.max(0, this.guardKick - dt * 2.4);
 
-    this.updateDownState(fighter, dt);
+    this.ragdoll?.tick(dt);
+    this.updateDownState(fighter, dt, reducedMotion);
 
     const bounceTempo = (1.9 - this.tired * 0.7) * (1 - this.stunAmount * 0.6);
     this.bouncePhase += dt * bounceTempo * Math.PI * 2 * motionScale;
@@ -1111,7 +1174,21 @@ export class BoxingGraph {
     const pose = this.pose as { shrugL: number; shrugR: number };
     pose.shrugL = mirror > 0 ? shrugLead : shrugRear;
     pose.shrugR = mirror > 0 ? shrugRear : shrugLead;
-    this.solver.apply(boxer.root, this.pose);
+    const ragdoll = this.ragdoll;
+    if (ragdoll?.active === true && reducedMotion) {
+      ragdoll.stop();
+      ragdoll.clearRise();
+    }
+    if (ragdoll?.active === true) {
+      ragdoll.setLost(boxer.isDecapitated, boxer.isHandDismembered("left"), boxer.isHandDismembered("right"));
+      ragdoll.update(dt, this.obstacle);
+    } else {
+      this.solver.apply(boxer.root, this.pose);
+      if (ragdoll !== null && this.downState === "rising" && ragdoll.hasRisePose) {
+        ragdoll.blendRise(smoothstep(0, 0.3, this.riseAge / GETUP_SECONDS));
+      }
+      ragdoll?.sample(dt);
+    }
     this.applyDislocation();
 
     const opponentBlood = Math.min(
@@ -1547,11 +1624,15 @@ export class BoxingGraph {
     }
   }
 
-  private updateDownState(fighter: FighterSnapshot, dt: number): void {
-    if (fighter.is_downed) {
+  private updateDownState(fighter: FighterSnapshot, dt: number, reducedMotion: boolean): void {
+    if (fighter.is_downed || this.forcedDown) {
       if (this.downState === "up" || this.downState === "rising") {
         this.downState = "falling";
         this.fallAge = 0;
+        this.ragdoll?.clearRise();
+        if (this.authoredNextFall) this.ragdoll?.forget();
+        else if (!reducedMotion) this.ragdoll?.start("crumple");
+        this.authoredNextFall = false;
       } else if (this.downState === "falling") {
         this.fallAge += dt;
         if (this.fallAge >= KNOCKDOWN_FALL_SECONDS) this.downState = "down";
@@ -1561,6 +1642,20 @@ export class BoxingGraph {
     if (this.downState === "down" || this.downState === "falling") {
       this.downState = "rising";
       this.riseAge = 0;
+      this.riseOffset.set(0, 0, 0);
+      const ragdoll = this.ragdoll;
+      if (ragdoll?.active === true) {
+        // Get up from where the fall ended: face down or on the back, beside the spot it started from.
+        this.fallProne = ragdoll.faceDown();
+        const pelvis = ragdoll.pelvis(this.scratchE);
+        pelvis.x -= this.rootX ?? 0;
+        pelvis.z -= this.rootZ;
+        pelvis.applyAxisAngle(worldUpVector, -this.yaw);
+        this.fallSide = Math.abs(pelvis.x) > 0.12 ? Math.sign(pelvis.x) : 0;
+        const lying = this.fallProne ? FALLEN_PRONE_HIPS : FALLEN_SUPINE_HIPS;
+        this.riseOffset.set(pelvis.x - lying.x * this.fallSide, 0, pelvis.z - lying.z);
+        ragdoll.stop();
+      }
     } else if (this.downState === "rising") {
       this.riseAge += dt;
       if (this.riseAge >= GETUP_SECONDS) {
@@ -1846,7 +1941,7 @@ export class BoxingGraph {
     const side = this.fallSide === 0 ? 0 : this.fallSide;
     // Lying-on-the-back pose (character space).
     const lying = {
-      hips: vec(side * 0.22, 0.14, -0.4),
+      hips: vec(side * FALLEN_SUPINE_HIPS.x, 0.14, FALLEN_SUPINE_HIPS.z),
       hipsYaw: side * 0.35,
       hipsPitch: -1.42,
       hipsRoll: side * 0.25,
@@ -1860,7 +1955,7 @@ export class BoxingGraph {
     };
     // Face-down pose after a hook: the fighter pitches forward over the front foot.
     const prone = {
-      hips: vec(side * 0.12, 0.13, 0.32),
+      hips: vec(side * FALLEN_PRONE_HIPS.x, 0.13, FALLEN_PRONE_HIPS.z),
       hipsYaw: side * 0.3,
       hipsPitch: 1.5,
       hipsRoll: side * 0.15,
@@ -1944,6 +2039,13 @@ export class BoxingGraph {
       if (u < 0.38) current = blend(down, fours, smoothstep(0, 0.38, u));
       else if (u < 0.72) current = blend(fours, knee, smoothstep(0.38, 0.72, u));
       else current = blend(knee, standing, smoothstep(0.72, 1, u));
+      const away = 1 - smoothstep(0.3, 0.95, u);
+      if (away > 0) {
+        for (const point of [current.hips, current.leadHand, current.rearHand, current.leadFoot, current.rearFoot]) {
+          point.x += this.riseOffset.x * away;
+          point.z += this.riseOffset.z * away;
+        }
+      }
       this.writeDown(current, leadHand, rearHand, lead, rear, 0);
       return;
     }
