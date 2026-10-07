@@ -116,6 +116,14 @@ const HISTORY_LIMIT = 480;
 const LOW_TIER_SCALE = 0.56;
 const ROUND_CALLOUT_SECONDS = 1.8;
 const FINISH_CLOSE_UP_SECONDS = 1.7;
+/** On a screen narrower than this (as a pull), the rest's wide shot looks down the ring's diagonal, from this far behind the near fighter and this high. */
+const REST_DIAGONAL_PULL = 1.6;
+const REST_DIAGONAL_BACK = 5;
+const REST_DIAGONAL_HEIGHT = 3.4;
+/** After a stoppage the winner celebrates until the bout is gone, and the referee lifts his arm once the fight is waved off. */
+const WINNER_CELEBRATION_SECONDS = 600;
+const STOPPAGE_RAISE_DELAY_SECONDS = 2.8;
+const STOPPAGE_RAISE_SPACING = 0.6;
 const CORNERMAN_APRON_DISTANCE = 3.42;
 /** Close cameras stay inside the rope line (posts stand at 2.46 m) so a rope never fills the lens. */
 const TIGHT_SHOT_LIMIT = 2.2;
@@ -125,6 +133,8 @@ const HEAD_CLEARANCE = 0.9;
 const BODY_KNOCKDOWN = "body";
 /** The referee keeps this far from any part of a fighter lying on the canvas. */
 const BODY_CLEARANCE = 0.55;
+/** How far the standing fighter's middle keeps from any part of a body on the canvas, so his feet are off it. */
+const STANDING_BODY_CLEARANCE = 0.5;
 /** How far from someone on their feet a close-up has to pass to see past them. */
 const STANDING_BLOCK_RADIUS = 0.5;
 /** Parts of a body lying on the canvas that a close-up of its head does not shoot across. */
@@ -541,7 +551,8 @@ const DEFAULT_SIM: SimulationInfo = { tick_rate: 30, ring_half_width: 500, ring_
 
 /**
  * Freezes a skinned mesh's current deformed surface into a static geometry
- * expressed relative to `pivot` so it can fly as a rigid severed part.
+ * expressed relative to `pivot` so it can fly as a rigid severed part. With `rigid`, every vertex
+ * follows that bone alone, so skin the part shares with the next bone keeps the part's own shape.
  */
 export function bakeSkinnedPart(
   mesh: THREE.SkinnedMesh,
@@ -549,6 +560,7 @@ export function bakeSkinnedPart(
   pivotQuaternion: THREE.Quaternion,
   keep?: (bind: THREE.Vector3) => boolean,
   look?: FighterLook,
+  rigid?: THREE.Bone,
 ): BakedPart {
   const source = mesh.geometry;
   const positions = source.getAttribute("position");
@@ -556,11 +568,14 @@ export function bakeSkinnedPart(
   const vertex = new THREE.Vector3();
   const inverse = pivotQuaternion.clone().invert();
   mesh.updateMatrixWorld(true);
+  const bone = rigid === undefined ? -1 : mesh.skeleton.bones.indexOf(rigid);
+  const follow = bone < 0 ? null : new THREE.Matrix4().multiplyMatrices(mesh.bindMatrixInverse, new THREE.Matrix4().multiplyMatrices(mesh.skeleton.bones[bone]!.matrixWorld, mesh.skeleton.boneInverses[bone]!)).multiply(mesh.bindMatrix);
   for (let index = 0; index < positions.count; index += 1) {
     vertex.fromBufferAttribute(positions, index);
     // A head is drawn reshaped by its owner's look; the severed head keeps that shape.
     if (look !== undefined) lookShape(vertex, look, vertex);
-    mesh.applyBoneTransform(index, vertex);
+    if (follow !== null) vertex.applyMatrix4(follow);
+    else mesh.applyBoneTransform(index, vertex);
     vertex.applyMatrix4(mesh.matrixWorld).sub(pivotPosition).applyQuaternion(inverse);
     baked[index * 3] = vertex.x;
     baked[index * 3 + 1] = vertex.y;
@@ -603,6 +618,11 @@ export function bakeSkinnedPart(
   const flesh = new THREE.BufferGeometry();
   closeCut(flesh, edge, position, position.clone().sub(middle).normalize());
   return { geometry, map, color, cut: { position, flesh } };
+}
+
+/** A severed head as it leaves the neck: the head bone's own shape of it, in its owner's look, measured from the given pivot. */
+export function bakeSeveredHead(boxer: SkinnedBoxer, pivotPosition: THREE.Vector3, pivotQuaternion: THREE.Quaternion): BakedPart {
+  return { ...bakeSkinnedPart(boxer.headMesh, pivotPosition, pivotQuaternion, aboveNeckCut, boxer.look, boxer.bone("head") ?? undefined), look: boxer.look };
 }
 
 function blankFighter(playerId: string): FighterSnapshot {
@@ -856,6 +876,11 @@ export class FightRenderer {
   private finishCloseUpUntil = 0;
   private finishCloseUpIndex = -1;
   private finishCloseUpBearing: number | null = null;
+  /** The seat whose arm the referee lifts after a stoppage, from `stoppageRaiseAt`; -1 for none. */
+  private stoppageWinner = -1;
+  private stoppageRaiseAt = Number.POSITIVE_INFINITY;
+  private readonly stoppageWrist = new THREE.Vector3();
+  private readonly stoppageOtherWrist = new THREE.Vector3();
   private readonly closeUpPosition = new THREE.Vector3();
   private roundCalloutUntil = 0;
   private roundCalloutRound = 0;
@@ -1083,6 +1108,8 @@ export class FightRenderer {
   /** A stoppage's result panel waits for the slow-motion fall; decisions show at once. */
   setFinal(final: FinalMessage | null): void {
     this.final = final;
+    this.stoppageWinner = -1;
+    this.stoppageRaiseAt = Number.POSITIVE_INFINITY;
     this.ceremony = this.ceremonyFor(final);
     this.finalRevealAt = this.frameSeconds + (this.ceremony === null ? finalRevealDelay(final) : CEREMONY_REVEAL_LIMIT_SECONDS);
     this.ovationUntil = final === null ? 0 : this.frameSeconds + CROWD_OVATION_SECONDS;
@@ -1208,7 +1235,10 @@ export class FightRenderer {
     }
     if (final.winner_id === null) return;
     const index = fighters?.findIndex((fighter) => fighter.player_id === final.winner_id) ?? -1;
-    if (index >= 0) this.graphs?.[index]?.celebrate();
+    if (index < 0) return;
+    this.graphs?.[index]?.celebrate(WINNER_CELEBRATION_SECONDS);
+    this.stoppageWinner = index;
+    this.stoppageRaiseAt = this.frameSeconds + STOPPAGE_RAISE_DELAY_SECONDS;
   }
 
   /** Between rounds the broadcast cuts to each corner in turn, the viewer's own first, once its fighter is seated. */
@@ -1224,13 +1254,33 @@ export class FightRenderer {
     return { position: this.cornerPosition, lookAt: this.cornerLookAt };
   }
 
+  /**
+   * Between rounds the fighters sit in opposite corners, too far apart across a phone held upright for
+   * any shot from the side. The wide shot there looks down the diagonal from behind the blue corner,
+   * the near fighter low in the picture and the far one above him.
+   */
+  private restWideFrame(snapshot: EngineSnapshot | null): { position: THREE.Vector3; lookAt: THREE.Vector3; framed: boolean } | null {
+    if (snapshot?.phase !== "rest" || this.portraitPull <= REST_DIAGONAL_PULL) return null;
+    const near = this.tmpA;
+    const far = this.tmpB;
+    const dx = near.x - far.x;
+    const dz = near.z - far.z;
+    const apart = Math.hypot(dx, dz);
+    if (apart < 1e-3) return null;
+    this.cornerPosition.set(near.x + (dx / apart) * REST_DIAGONAL_BACK, REST_DIAGONAL_HEIGHT, near.z + (dz / apart) * REST_DIAGONAL_BACK);
+    this.cornerLookAt.set((near.x + far.x) / 2, 0.75, (near.z + far.z) / 2);
+    return { position: this.cornerPosition, lookAt: this.cornerLookAt, framed: true };
+  }
+
   /** A short high three-quarter close-up on the beaten fighter's face, or on the head where it came to rest, before the result panel. */
   private closeUpFrame(seconds: number): { position: THREE.Vector3; lookAt: THREE.Vector3; tight: boolean } | null {
     if (seconds >= this.finishCloseUpUntil || this.finishCloseUpIndex < 0 || !this.headCacheValid[this.finishCloseUpIndex]) return null;
     const injury = this.arcadeInjuries[this.finishCloseUpIndex];
     const severed = injury === "decapitation" && this.effects.severedHeadPosition(this.finishCloseUpIndex, this.closeUpTarget);
-    // An eye out of its socket is shot close, on the side the face points to.
-    const hanging = !severed && (injury === "eye_left" || injury === "eye_right") && this.effects.eyePosition(this.finishCloseUpIndex, this.closeUpTarget);
+    // An eye out of its socket is shot close, on the side the face points to; one hanging under a face on
+    // the canvas cannot be seen from any side, and the shot is the head's own.
+    const hanging = !severed && (injury === "eye_left" || injury === "eye_right") && this.effects.eyePosition(this.finishCloseUpIndex, this.closeUpTarget)
+      && this.eyeInSight(this.closeUpTarget);
     const head = severed || hanging ? this.closeUpTarget : this.headCache[this.finishCloseUpIndex]!;
     const reach = severed ? 0.8 : hanging ? 0.45 : 1.05;
     const drift = (seconds - (this.finishCloseUpUntil - FINISH_CLOSE_UP_SECONDS)) * 0.25 - 0.2;
@@ -1265,6 +1315,22 @@ export class FightRenderer {
     );
     this.replayLookAt.copy(head);
     return { position: this.closeUpPosition, lookAt: this.replayLookAt, tight: true };
+  }
+
+  /** The winner's glove nearer the referee, in world space. */
+  private nearerGlove(left: THREE.Bone, right: THREE.Bone): THREE.Vector3 {
+    left.getWorldPosition(this.stoppageWrist);
+    right.getWorldPosition(this.stoppageOtherWrist);
+    const reach = (glove: THREE.Vector3): number => Math.hypot(glove.x - this.refereePosition.x, glove.z - this.refereePosition.z);
+    return reach(this.stoppageOtherWrist) < reach(this.stoppageWrist) ? this.stoppageOtherWrist : this.stoppageWrist;
+  }
+
+  /** Whether an eye hanging at `eye` is clear of the beaten fighter's skull from above, rather than under his face. */
+  private eyeInSight(eye: THREE.Vector3): boolean {
+    const skull = this.headWorldPose(this.finishCloseUpIndex);
+    if (skull === null) return false;
+    const fromSkull = this.closeUpFacing.copy(eye).sub(skull.position);
+    return fromSkull.y > -0.5 * fromSkull.length();
   }
 
   /** Replays the recorded snapshots around the knockdown from a close camera before the result panel. */
@@ -1448,7 +1514,7 @@ export class FightRenderer {
       const pose = this.headWorldPose(index);
       if (pose !== null) {
         const graph = this.graphs?.[index];
-        const baked = graph === undefined ? undefined : { ...bakeSkinnedPart(graph.boxer.headMesh, pose.position, pose.quaternion, aboveNeckCut, graph.boxer.look), look: graph.boxer.look };
+        const baked = graph === undefined ? undefined : bakeSeveredHead(graph.boxer, pose.position, pose.quaternion);
         this.effects.decapitate(
           index,
           pose.position,
@@ -1928,6 +1994,7 @@ export class FightRenderer {
     const actorDt = this.replay !== null ? dt * this.replay.plan.speed : dt;
     let separation = 1.8;
     let knockdown = false;
+    let downedAt: { x: number; z: number } | null = null;
     if (snapshot !== null) {
       const ceremony = this.replay === null ? this.ceremony : null;
       const [a, b] = ceremony !== null ? this.ceremonyFighters(ceremony, snapshot.fighters, actorDt, seconds) : this.standApart(snapshot.fighters);
@@ -1999,6 +2066,7 @@ export class FightRenderer {
       const contactA = fallenA === null ? { x: ax, z: az } : { x: fallenA.x, z: fallenA.z };
       const fallenB = this.graphs?.[1]?.fallBody?.centre(this.bodyPoint) ?? null;
       const contactB = fallenB === null ? { x: bx, z: bz } : { x: fallenB.x, z: fallenB.z };
+      downedAt = a.is_downed ? contactA : b.is_downed ? contactB : null;
       this.ring.setRopeContacts(contactA, contactB);
       this.tmpA.set(ax, 0, az);
       this.tmpB.set(bx, 0, bz);
@@ -2056,6 +2124,7 @@ export class FightRenderer {
       this.effects.shakeAmount,
       current.reducedMotion,
       current.camera === "close",
+      downedAt,
     );
     const viewerIndex = snapshot === null ? -1 : snapshot.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
     const ownView = current.camera === "fighter" && viewerIndex >= 0 && ownViewPhase(snapshot)
@@ -2063,7 +2132,7 @@ export class FightRenderer {
       : null;
     if (ownView === null) this.fighterCam.reset();
     const replaying = this.replay;
-    const frame: { position: THREE.Vector3; lookAt: THREE.Vector3; tight?: boolean; framed?: boolean } = this.cameraOverride ?? (replaying !== null && snapshot !== null ? this.replayFrame(snapshot, seconds - replaying.startedAt) : (this.closeUpFrame(seconds) ?? this.cornerShotFrame(seconds, snapshot, current.reducedMotion) ?? this.ceremonyFrame(seconds) ?? ownView ?? directed));
+    const frame: { position: THREE.Vector3; lookAt: THREE.Vector3; tight?: boolean; framed?: boolean } = this.cameraOverride ?? (replaying !== null && snapshot !== null ? this.replayFrame(snapshot, seconds - replaying.startedAt) : (this.closeUpFrame(seconds) ?? this.cornerShotFrame(seconds, snapshot, current.reducedMotion) ?? this.restWideFrame(snapshot) ?? this.ceremonyFrame(seconds) ?? ownView ?? directed));
     this.ownViewActive = ownView !== null && frame === ownView;
     const fov = this.ownViewActive ? this.baseFov * FIGHTER_CAM_FOV_SCALE : this.baseFov;
     if (this.camera.fov !== fov) {
@@ -2141,13 +2210,33 @@ export class FightRenderer {
     this.graphs?.[index]?.boxer.setLook(lookFor(playerId));
   }
 
-  /** The fighters as drawn: eased apart when the engine has them closer than two bodies can stand. */
+  /** The fighters as drawn: eased apart when the engine has them closer than two bodies can stand, and off a fighter lying on the canvas. */
   private standApart(fighters: readonly [FighterSnapshot, FighterSnapshot]): readonly [FighterSnapshot, FighterSnapshot] {
     const [a, b] = fighters;
     const tied = [a, b].some((fighter) => fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0 || fighter.is_downed);
     const apart = tied ? null : visualSeparation(a.x, a.y, b.x, b.y, DRAWN_MINIMUM_GAP, RING_HALF_WIDTH - FIGHTER_RADIUS, RING_HALF_HEIGHT - FIGHTER_RADIUS);
-    if (apart === null) return fighters;
-    return [Object.assign(this.drawnFighters[0], a, { x: apart.ax, y: apart.ay }), Object.assign(this.drawnFighters[1], b, { x: apart.bx, y: apart.by })];
+    const drawn: readonly [FighterSnapshot, FighterSnapshot] = apart === null ? fighters : [Object.assign(this.drawnFighters[0], a, { x: apart.ax, y: apart.ay }), Object.assign(this.drawnFighters[1], b, { x: apart.bx, y: apart.by })];
+    return this.replay === null ? this.clearOfTheFallen(drawn) : drawn;
+  }
+
+  /** Whoever is still on his feet stands off the body of a fighter lying where the fall took him, never in it. */
+  private clearOfTheFallen(fighters: readonly [FighterSnapshot, FighterSnapshot]): readonly [FighterSnapshot, FighterSnapshot] {
+    for (const lying of [0, 1] as const) {
+      const body = this.graphs?.[lying]?.fallBody ?? null;
+      const seat = lying === 0 ? 1 : 0;
+      const standing = fighters[seat];
+      if (body === null || standing.is_downed || (this.graphs?.[seat]?.fallBody ?? null) !== null) continue;
+      let x = this.mapping.x(standing.x);
+      let z = this.mapping.z(standing.y);
+      for (const point of [0, 1, 2, 3, 4] as const) {
+        body.bodyPoint(point, this.bodyPoint);
+        ({ x, z } = keepClear(x, z, this.bodyPoint.x, this.bodyPoint.z, STANDING_BODY_CLEARANCE));
+      }
+      if (x === this.mapping.x(standing.x) && z === this.mapping.z(standing.y)) continue;
+      const moved = Object.assign(this.drawnFighters[seat], standing, { x: x / this.mapping.x(1), y: z / this.mapping.z(1) });
+      return seat === 0 ? [moved, fighters[1]] : [fighters[0], moved];
+    }
+    return fighters;
   }
 
   private headHeightOf(index: number): number {
@@ -2169,6 +2258,10 @@ export class FightRenderer {
   private updateReferee(dt: number, time: number, snapshot: EngineSnapshot | null, sampledTick: number): void {
     const referee = this.referee;
     if (referee === null) return;
+    // The replay isolates the two fighters: the referee, who would stand in its close shot, is left out of it.
+    referee.boxer.root.visible = this.replay === null;
+    const shadow = this.blobShadows[2];
+    if (shadow !== undefined) shadow.visible = this.replay === null;
     const downed = snapshot?.fighters.find((fighter) => fighter.is_downed) ?? null;
     const clinched = snapshot?.fighters.some((fighter) => fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0) ?? false;
     const focusX = downed !== null ? this.mapping.x(downed.x) : (this.tmpA.x + this.tmpB.x) / 2;
@@ -2182,7 +2275,18 @@ export class FightRenderer {
     const previousX = this.refereePosition.x;
     const previousZ = this.refereePosition.z;
     const ceremony = this.replay === null && this.ceremony?.positions !== null ? this.ceremony : null;
-    if (ceremony !== null) {
+    // Once the fight is waved off, the referee goes to the winner's side, the side nearer the middle of the ring.
+    const winner = ceremony === null && this.replay === null && this.stoppageWinner >= 0 && this.frameSeconds >= this.stoppageRaiseAt
+      ? (this.stoppageWinner === 0 ? this.tmpA : this.tmpB)
+      : null;
+    const side = winner !== null && winner.x > 0 ? -1 : 1;
+    let beside = false;
+    if (winner !== null) {
+      const step = ceremonyStep(this.refereePosition.x, this.refereePosition.z, { x: winner.x + side * STOPPAGE_RAISE_SPACING, y: winner.z }, CEREMONY_REFEREE_SPEED * dt);
+      this.refereePosition.x = step.x;
+      this.refereePosition.z = step.y;
+      beside = step.arrived;
+    } else if (ceremony !== null) {
       // The referee walks to the mark between the fighters and turns to the camera.
       const step = ceremonyStep(this.refereePosition.x, this.refereePosition.z, { x: CEREMONY_REFEREE.x, y: CEREMONY_REFEREE.z }, CEREMONY_REFEREE_SPEED * dt);
       this.refereePosition.x = step.x;
@@ -2193,7 +2297,7 @@ export class FightRenderer {
       this.refereePosition.x += (targetX - this.refereePosition.x) * rate;
       this.refereePosition.z += (targetZ - this.refereePosition.z) * rate;
     }
-    const keepOff = ceremony === null ? clearance : ceremony.refereeArrived ? 0 : CEREMONY_WALK_CLEARANCE;
+    const keepOff = winner !== null ? STOPPAGE_RAISE_SPACING * 0.85 : ceremony === null ? clearance : ceremony.refereeArrived ? 0 : CEREMONY_WALK_CLEARANCE;
     for (const fighter of keepOff > 0 ? [this.tmpA, this.tmpB] : []) {
       const dx = this.refereePosition.x - fighter.x;
       const dz = this.refereePosition.z - fighter.z;
@@ -2225,8 +2329,15 @@ export class FightRenderer {
       this.refereeVelocity.set((this.refereePosition.x - previousX) / dt, 0, (this.refereePosition.z - previousZ) / dt);
     }
     const walking = ceremony !== null && !ceremony.refereeArrived;
-    const yaw = ceremony === null ? Math.atan2(focusX - this.refereePosition.x, focusZ - this.refereePosition.z)
-      : walking ? Math.atan2(CEREMONY_REFEREE.x - this.refereePosition.x, CEREMONY_REFEREE.z - this.refereePosition.z) : 0;
+    const yaw = winner !== null ? (beside ? 0 : Math.atan2(winner.x - this.refereePosition.x, winner.z - this.refereePosition.z))
+      : ceremony === null ? Math.atan2(focusX - this.refereePosition.x, focusZ - this.refereePosition.z)
+        : walking ? Math.atan2(CEREMONY_REFEREE.x - this.refereePosition.x, CEREMONY_REFEREE.z - this.refereePosition.z) : 0;
+    if (winner !== null) {
+      // Facing the camera, the referee's left hand is the one on the +x side.
+      const gloves = this.graphs?.[this.stoppageWinner]?.boxer.rig.bones;
+      const wrist = beside && gloves !== undefined ? this.nearerGlove(gloves.gloveL, gloves.gloveR) : null;
+      referee.raise(side < 0 ? wrist : null, side > 0 ? wrist : null);
+    }
     const yawDelta = ((yaw - this.refereeYaw + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
     this.refereeYaw += yawDelta * (1 - Math.exp(-3 * dt));
     const state = refereeSnapshot(this.refereePosition, this.refereeYaw, this.refereeVelocity, this.mapping);

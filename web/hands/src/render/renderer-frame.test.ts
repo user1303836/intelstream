@@ -240,10 +240,10 @@ describe("a rendered frame", () => {
     const { settings, run } = frame(fighting(), { director });
     settings.camera = "close";
     run();
-    expect(update.mock.calls.at(-1)!.at(-1)).toBe(true);
+    expect(update.mock.calls.at(-1)![8]).toBe(true);
     settings.camera = "broadcast";
     run();
-    expect(update.mock.calls.at(-1)!.at(-1)).toBe(false);
+    expect(update.mock.calls.at(-1)![8]).toBe(false);
   });
 
   it("puts the camera over the player's own shoulder when chosen, but never for a spectator", () => {
@@ -348,5 +348,69 @@ describe("around the fight", () => {
     method("presentFinish").call(stub, { version: 3, type: "final", match_id: "m", winner_id: "two", method: "tko", round: 2, scorecards: [], ratings: {} });
     expect(celebrate[1]).toHaveBeenCalledOnce();
     expect(celebrate[0]).not.toHaveBeenCalled();
+    // He celebrates for as long as the result is up, rather than going back into his guard.
+    expect(celebrate[1]!.mock.calls[0]![0]).toBeGreaterThanOrEqual(60);
+  });
+
+  it("keeps both fighters in the wide shot of the rest on a phone held upright", () => {
+    const mapping = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 });
+    const corner = mapping.x(420);
+    const stub = prototypeOf({
+      portraitPull: THREE.MathUtils.clamp(1.2 / (390 / 844), 1, 2.2),
+      tmpA: new THREE.Vector3(-corner, 0, corner), tmpB: new THREE.Vector3(corner, 0, -corner),
+      cornerPosition: new THREE.Vector3(), cornerLookAt: new THREE.Vector3(),
+    });
+    const frame = method("restWideFrame").call(stub, { ...snapshot(), phase: "rest" }) as { position: THREE.Vector3; lookAt: THREE.Vector3 } | null;
+    expect(frame).not.toBeNull();
+    const camera = new THREE.PerspectiveCamera(36, 390 / 844, 0.1, 80);
+    camera.position.copy(frame!.position);
+    camera.lookAt(frame!.lookAt);
+    camera.updateMatrixWorld(true);
+    for (const fighter of [stub.tmpA as THREE.Vector3, stub.tmpB as THREE.Vector3]) {
+      for (const height of [0.3, 1.3]) {
+        const point = new THREE.Vector3(fighter.x, height, fighter.z).project(camera);
+        expect(Math.abs(point.x)).toBeLessThan(0.85);
+        expect(Math.abs(point.y)).toBeLessThan(0.85);
+      }
+    }
+    // A landscape screen keeps the broadcast's own wide shot.
+    expect(method("restWideFrame").call(prototypeOf({ ...stub, portraitPull: 1 }), { ...snapshot(), phase: "rest" })).toBeNull();
+  });
+
+  it("has the referee lift the winner's arm once he has waved the fight off", () => {
+    const raise = vi.fn();
+    const glove = (x: number): THREE.Object3D => {
+      const bone = new THREE.Object3D();
+      bone.position.set(x, 1.9, 0.3);
+      bone.updateMatrixWorld(true);
+      return bone;
+    };
+    const stub = prototypeOf({
+      referee: { waveOff: vi.fn(), raise, setRefereeCount: vi.fn(), update: vi.fn(), boxer: { root: new THREE.Object3D() } }, blobShadows: [], buffer: { latest: () => snapshot() }, headCacheValid: [false, false],
+      settings: () => ({ reducedMotion: false }), frameSeconds: 0, finishCloseUpIndex: -1,
+      graphs: [{ celebrate: vi.fn(), fallBody: null }, { celebrate: vi.fn(), fallBody: null, boxer: { rig: { bones: { gloveL: glove(1.2), gloveR: glove(0.8) } } } }],
+      mapping: worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }),
+      tmpA: new THREE.Vector3(-1.4, 0, -0.6), tmpB: new THREE.Vector3(1, 0, 0.3), refereePosition: new THREE.Vector3(-0.8, 0, -1.4),
+      refereeVelocity: new THREE.Vector3(), refereeAway: new THREE.Vector3(), refereeYaw: 0, effects: { severedHeadPosition: () => false },
+      closeUpTarget: new THREE.Vector3(), replay: null, ceremony: null, stoppageWrist: new THREE.Vector3(), stoppageOtherWrist: new THREE.Vector3(),
+    });
+    method("presentFinish").call(stub, { version: 3, type: "final", match_id: "m", winner_id: "two", method: "ko", round: 2, scorecards: [], ratings: {} });
+    const step = method("updateReferee");
+    for (let frame = 0; frame < 150; frame += 1) {
+      (stub as { frameSeconds: number }).frameSeconds = frame / 60;
+      step.call(stub, 1 / 60, frame / 60, null, frame / 2);
+    }
+    // While the fight is being waved off, nobody's arm goes up.
+    expect(raise.mock.calls.every(([left, right]) => left === null && right === null)).toBe(true);
+    for (let frame = 150; frame < 420; frame += 1) {
+      (stub as { frameSeconds: number }).frameSeconds = frame / 60;
+      step.call(stub, 1 / 60, frame / 60, null, frame / 2);
+    }
+    const referee = (stub as { refereePosition: THREE.Vector3 }).refereePosition;
+    expect(Math.hypot(referee.x - 0.4, referee.z - 0.3)).toBeLessThan(0.05);
+    // Beside the winner on his -x side, facing the camera: the referee's left hand holds the winner's nearer glove.
+    const [left, right] = raise.mock.lastCall!;
+    expect(right).toBeNull();
+    expect((left as THREE.Vector3).distanceTo(new THREE.Vector3(0.8, 1.9, 0.3))).toBeLessThan(1e-6);
   });
 });

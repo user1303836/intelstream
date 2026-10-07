@@ -1,13 +1,14 @@
 import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import { fighter } from "../test/fixtures";
+import type { FighterSnapshot } from "../types";
 import { BIG_SHOT, BLOOD_SHADES, HARD_SHOT, bloodDropsFor, bloodShade, buildChunkGeometry, buildDropletGeometry, buildWoundGeometry, closeCut, cutRim, dropletShape, teethFor } from "./gore";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
 import { HEAD_SITES, InjuryShading, NECK_CUT_HEIGHT } from "./injury";
 import { SCANNED_LOOK } from "./looks";
 import { Effects3D, confineToRopes } from "./effects";
-import { FightRenderer, aboveNeckCut, bakeSkinnedPart, closeUpAngle, keepClear } from "./renderer";
-import { ROPE_LINE, worldMapping } from "./world";
+import { FightRenderer, aboveNeckCut, bakeSeveredHead, bakeSkinnedPart, closeUpAngle, keepClear } from "./renderer";
+import { CANVAS_TOP, ROPE_LINE, worldMapping } from "./world";
 
 const gltf = await loadBoxerGlb();
 
@@ -155,6 +156,65 @@ describe("neck cut", () => {
     boxer.dispose();
   });
 
+  it("leaves a severed head on an ear, its face turned to the side and the head on the canvas, however it spun", () => {
+    const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
+    boxer.rig.resetToRest();
+    boxer.root.updateMatrixWorld(true);
+    const head = boxer.bone("head")!;
+    const at = head.getWorldPosition(new THREE.Vector3());
+    const turn = head.getWorldQuaternion(new THREE.Quaternion());
+    const scene = new THREE.Scene();
+    const effects = new Effects3D(scene);
+    const face = new THREE.Vector3();
+    const point = new THREE.Vector3();
+    for (let event = 1; event <= 12; event += 1) {
+      effects.clearDynamic();
+      const baked = bakeSeveredHead(boxer, at, turn);
+      effects.decapitate(1, at, turn, event % 2 === 0 ? 1 : -1, event * 7, 0xb0703f, baked);
+      for (let frame = 0; frame < 240; frame += 1) effects.update(1 / 60);
+      expect(effects.severedHeadFacing(1, face)).toBe(true);
+      expect(Math.abs(face.y)).toBeLessThan(0.05);
+      const mesh = scene.children.find((child): child is THREE.Mesh => child instanceof THREE.Mesh && child.geometry === baked.geometry)!;
+      mesh.updateMatrixWorld(true);
+      const position = baked.geometry.getAttribute("position");
+      const used = baked.geometry.getIndex()!;
+      let lowest = Infinity;
+      for (let index = 0; index < used.count; index += 1) lowest = Math.min(lowest, point.fromBufferAttribute(position, used.getX(index)).applyMatrix4(mesh.matrixWorld).y);
+      expect(Math.abs(lowest - CANVAS_TOP)).toBeLessThan(0.005);
+    }
+    effects.dispose();
+    boxer.dispose();
+  });
+
+  it("takes the head off whole, without the skin it shares with the neck and chest trailing after the body", () => {
+    const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
+    const head = boxer.bone("head")!;
+    const bake = (): THREE.BufferGeometry => {
+      boxer.root.updateMatrixWorld(true);
+      return bakeSeveredHead(boxer, head.getWorldPosition(new THREE.Vector3()), head.getWorldQuaternion(new THREE.Quaternion())).geometry;
+    };
+    boxer.rig.resetToRest();
+    const whole = bake();
+    // A head snapped back on a body doubled over, as a knockout blow leaves it.
+    boxer.rig.bones.chest.rotateX(0.5);
+    boxer.rig.bones.upperChest.rotateX(0.4);
+    boxer.rig.bones.neck.rotateX(0.6);
+    head.rotateX(-1.2);
+    const posed = bake();
+    const index = posed.getIndex()!;
+    const before = whole.getAttribute("position");
+    const after = posed.getAttribute("position");
+    let drift = 0;
+    for (let at = 0; at < index.count; at += 1) {
+      const vertex = index.getX(at);
+      drift = Math.max(drift, new THREE.Vector3().fromBufferAttribute(after, vertex).distanceTo(new THREE.Vector3().fromBufferAttribute(before, vertex)));
+    }
+    expect(drift).toBeLessThan(0.001);
+    whole.dispose();
+    posed.dispose();
+    boxer.dispose();
+  });
+
   it("closes both sides of the cut with flesh that meets the skin all the way round and faces out", () => {
     const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
     const graph = new BoxingGraph(boxer, worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }));
@@ -297,9 +357,11 @@ describe("blood in the air", () => {
       vertex.fromBufferAttribute(position, index);
       if (vertex.y >= 0) expect(vertex.length()).toBeLessThan(1.001);
       tail = Math.min(tail, vertex.y);
-      if (vertex.y < -1) widestBehind = Math.max(widestBehind, Math.hypot(vertex.x, vertex.z));
+      if (vertex.y < -0.6) widestBehind = Math.max(widestBehind, Math.hypot(vertex.x, vertex.z));
     }
-    expect(tail).toBeLessThan(-1.8);
+    // A short tail: a drop, not a needle.
+    expect(tail).toBeLessThan(-0.9);
+    expect(tail).toBeGreaterThan(-1.3);
     expect(widestBehind).toBeGreaterThan(0.1);
     expect(widestBehind).toBeLessThan(0.62);
     geometry.dispose();
@@ -310,16 +372,17 @@ describe("blood in the air", () => {
     expect(still.width).toBeCloseTo(0.01, 6);
     expect(still.length).toBeCloseTo(0.01, 6);
     let last = { ...still };
-    for (const speed of [0.5, 1.5, 3, 4.5]) {
+    for (const speed of [0.5, 1.5, 2.5, 3.4]) {
       const shape = dropletShape(0.01, speed, { width: 0, length: 0 });
       expect(shape.length).toBeGreaterThan(last.length + 0.001);
       expect(shape.width).toBeLessThan(last.width - 0.0003);
       expect(shape.width * shape.width * shape.length).toBeCloseTo(1e-6, 9);
       last = { ...shape };
     }
+    // However fast, a drop stays a drop: no longer than a little over twice its size.
     const fastest = dropletShape(0.01, 40, { width: 0, length: 0 });
-    expect(fastest.length).toBeLessThan(0.045);
-    expect(fastest.width).toBeGreaterThan(0.0045);
+    expect(fastest.length).toBeLessThan(0.025);
+    expect(fastest.width).toBeGreaterThan(0.0065);
   });
 
   it("is dark red, never pink", () => {
@@ -492,7 +555,7 @@ describe("referee and a head on the canvas", () => {
     effects.severedHeadPosition(1, head);
     const updated: unknown[] = [];
     const stub = {
-      referee: { setRefereeCount: () => {}, update: (...frame: unknown[]) => updated.push(frame) },
+      referee: { setRefereeCount: () => {}, update: (...frame: unknown[]) => updated.push(frame), boxer: { root: new THREE.Object3D() } }, blobShadows: [],
       mapping: worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }),
       tmpA: new THREE.Vector3(head.x - 0.4, 0, head.z + 2.2), tmpB: new THREE.Vector3(head.x + 0.4, 0, head.z + 2.2),
       refereePosition: new THREE.Vector3(head.x + 0.1, 0, head.z - 0.2), refereeVelocity: new THREE.Vector3(), refereeAway: new THREE.Vector3(), refereeYaw: 0,
@@ -507,6 +570,26 @@ describe("referee and a head on the canvas", () => {
     effects.dispose();
   });
 
+  it("is left out of the knockout replay's close shot, and back for the live picture", () => {
+    const root = new THREE.Object3D();
+    const shadow = new THREE.Object3D();
+    const stub = {
+      referee: { setRefereeCount: () => {}, update: () => {}, boxer: { root } }, blobShadows: [new THREE.Object3D(), new THREE.Object3D(), shadow],
+      mapping: worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }),
+      tmpA: new THREE.Vector3(-0.5, 0, 0), tmpB: new THREE.Vector3(0.5, 0, 0),
+      refereePosition: new THREE.Vector3(0, 0, -1.5), refereeVelocity: new THREE.Vector3(), refereeAway: new THREE.Vector3(), refereeYaw: 0,
+      effects: { severedHeadPosition: () => false }, closeUpTarget: new THREE.Vector3(), replay: {} as unknown, ceremony: null,
+    };
+    const step = (FightRenderer.prototype as unknown as { updateReferee: (dt: number, time: number, snapshot: unknown, tick: number) => void }).updateReferee;
+    step.call(stub, 1 / 60, 0, null, 0);
+    expect(root.visible).toBe(false);
+    expect(shadow.visible).toBe(false);
+    stub.replay = null;
+    step.call(stub, 1 / 60, 1 / 60, null, 0.5);
+    expect(root.visible).toBe(true);
+    expect(shadow.visible).toBe(true);
+  });
+
   it("steps back from it and is left alone when already clear", () => {
     expect(keepClear(0.3, 0, 0, 0, 0.9)).toEqual({ x: 0.9, z: 0 });
     const stepped = keepClear(0.3, -0.4, 0, 0, 0.9);
@@ -515,6 +598,36 @@ describe("referee and a head on the canvas", () => {
     expect(keepClear(1.2, 0.4, 0, 0, 0.9)).toEqual({ x: 1.2, z: 0.4 });
     expect(keepClear(2, 1, 2, 1, 0.9).x).toBe(2);
     expect(keepClear(2, 1, 2, 1, 0.9).z).toBeCloseTo(0.1, 9);
+  });
+});
+
+describe("the winner beside the beaten fighter", () => {
+  const renderer = FightRenderer.prototype as unknown as {
+    standApart(this: unknown, fighters: readonly [FighterSnapshot, FighterSnapshot]): readonly [FighterSnapshot, FighterSnapshot];
+    clearOfTheFallen: unknown;
+  };
+  const lying = [new THREE.Vector3(0.3, 0.1, 0.2), new THREE.Vector3(0.1, 0.2, 0.25), new THREE.Vector3(-0.2, 0.15, 0.3), new THREE.Vector3(-0.5, 0.1, 0.2), new THREE.Vector3(-0.5, 0.1, 0.4)];
+  const rig = (replay: unknown) => ({
+    graphs: [{ fallBody: null }, { fallBody: { bodyPoint: (index: number, out: THREE.Vector3) => out.copy(lying[index]!) } }],
+    mapping: worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }), replay, bodyPoint: new THREE.Vector3(),
+    drawnFighters: [{ ...fighter("one") }, { ...fighter("two") }], clearOfTheFallen: renderer.clearOfTheFallen,
+  });
+
+  it("stands clear of the body where the fall left it, never inside it", () => {
+    const stub = rig(null);
+    const winner = { ...fighter("one"), x: 0, y: -40 };
+    const loser = { ...fighter("two"), x: 0, y: -40, is_downed: true };
+    const [drawn, beaten] = renderer.standApart.call(stub, [winner, loser]);
+    const at = new THREE.Vector3(stub.mapping.x(drawn.x), 0, stub.mapping.z(drawn.y));
+    for (const point of lying) expect(Math.hypot(at.x - point.x, at.z - point.z)).toBeGreaterThanOrEqual(0.5 - 1e-6);
+    expect(beaten).toBe(loser);
+    const far = { ...fighter("one"), x: 300, y: 200 };
+    expect(renderer.standApart.call(stub, [far, loser])[0]).toBe(far);
+  });
+
+  it("leaves the replay as it was recorded", () => {
+    const winner = { ...fighter("one"), x: 0, y: -40 };
+    expect(renderer.standApart.call(rig({}), [winner, { ...fighter("two"), x: 0, y: -40, is_downed: true }])[0]).toBe(winner);
   });
 });
 

@@ -92,6 +92,22 @@ describe("scene construction", () => {
 });
 
 describe("camera direction", () => {
+  it("keeps a fighter on the canvas up in the close shot over a count, clear of the plates along the bottom", () => {
+    const director = new CameraDirector();
+    const standing = { x: -0.2, z: -1.3 };
+    const down = { x: 0.4, z: 1.1 };
+    let frame = director.update(1 / 60, 0, standing, down, 2.5, true, 0, true, true, down);
+    for (let i = 1; i < 300; i += 1) frame = director.update(1 / 60, i / 60, standing, down, 2.5, true, 0, true, true, down);
+    const camera = new THREE.PerspectiveCamera(36, 16 / 9, 0.1, 80);
+    camera.position.copy(frame.position);
+    camera.lookAt(frame.lookAt);
+    camera.updateMatrixWorld(true);
+    const onScreen = new THREE.Vector3(down.x, 0.15, down.z).project(camera);
+    // The plates take the bottom sixth of the screen.
+    expect(onScreen.y).toBeGreaterThan(-0.55);
+    expect(Math.abs(onScreen.x)).toBeLessThan(0.6);
+  });
+
   it("follows the fighters midpoint and pushes in on knockdowns", () => {
     const director = new CameraDirector();
     for (let i = 0; i < 300; i += 1) director.update(1 / 60, i / 60, { x: -1.5, z: 0 }, { x: 1.5, z: 0 }, 3, false, 0, true);

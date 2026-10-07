@@ -94,6 +94,17 @@ const ROPE_SOFTNESS = 0.35;
 const POST_RADIUS_WITH_PAD = 0.12;
 /** Torso parts never leave the ring; a head or limb may hang out between the ropes. */
 const TORSO_PARTS = [P.pelvis, P.hipL, P.hipR, P.belly, P.chest, P.upper] as const;
+/** What turns with the shoulders when the spine is wrung past its turn. */
+const UPPER_BODY = [P.upper, P.neck, P.shoulderL, P.shoulderR, P.head, P.crown, P.face, P.elbowL, P.wristL, P.fistL, P.elbowR, P.wristR, P.fistR] as const;
+/** What turns with the hips: the pelvis and both legs. */
+const LOWER_BODY = [P.pelvis, P.hipL, P.hipR, P.belly, P.kneeL, P.ankleL, P.toeL, P.heelL, P.kneeR, P.ankleR, P.toeR, P.heelR] as const;
+/** The shoulders turn on the hips no further than this, either way about the spine. */
+const SPINE_TWIST = (40 * Math.PI) / 180;
+const THIGH_PARTS = [[P.kneeL, P.ankleL, P.toeL, P.heelL], [P.kneeR, P.ankleR, P.toeR, P.heelR]] as const;
+const SHIN_PARTS = [[P.ankleL, P.toeL, P.heelL], [P.ankleR, P.toeR, P.heelR]] as const;
+/** How fast a limp thigh or shin left standing up topples once the body is down, per step and per unit it points up past `TOPPLE_FROM`. */
+const TOPPLE_RATE = 0.08;
+const TOPPLE_FROM = 0.35;
 const TORSO_SET: ReadonlySet<number> = new Set(TORSO_PARTS);
 const APRON_LIMIT = RING_FIGHT_HALF + 0.45;
 const OBSTACLE_RADIUS = 0.24;
@@ -514,12 +525,14 @@ export class RagdollBody {
       this.solveRigid();
       this.solveRanges();
       this.solveKnees();
+      this.solveTwist();
       this.solveElbows();
       this.solveNeck();
       this.solveFeet();
       this.solveArmsAgainstTorso();
       this.solveEnvironment();
     }
+    if (this.landedSeconds >= 0) this.toppleLegs();
     this.applyFriction();
     this.limitSpeed();
     this.steps += 1;
@@ -615,6 +628,49 @@ export class RagdollBody {
       const axis = this.hingeAxis(2 + side, upper, this.gx, this.gy, this.gz, this.b);
       this.hinge(elbow, side === 0 ? P.wristL : P.wristR, upper, axis, -HYPEREXTENSION, ELBOW_MAX_FLEX);
     }
+  }
+
+  /**
+   * Nothing holds up a limp leg: a thigh or a shin left pointing up once the body is down goes over the
+   * way it leans, where the heavy damping of a body at rest would otherwise keep a foot in the air.
+   */
+  private toppleLegs(): void {
+    const p = this.position;
+    for (let side = 0; side < 2; side += 1) {
+      const hip = side === 0 ? P.hipL : P.hipR;
+      const knee = side === 0 ? P.kneeL : P.kneeR;
+      const ankle = side === 0 ? P.ankleL : P.ankleR;
+      const thigh = this.dir(hip, knee, this.a);
+      if (thigh.y > TOPPLE_FROM) {
+        const across = this.dir(P.hipR, P.hipL, this.b);
+        // Which way about the hips' axis takes the knee down.
+        const down = this.c.crossVectors(across, this.d.set(p[knee * 3]! - p[hip * 3]!, p[knee * 3 + 1]! - p[hip * 3 + 1]!, p[knee * 3 + 2]! - p[hip * 3 + 2]!)).y > 0 ? -1 : 1;
+        this.rotateAbout(THIGH_PARTS[side]!, hip, across, down * TOPPLE_RATE * (thigh.y - TOPPLE_FROM));
+      }
+      const shin = this.dir(knee, ankle, this.a);
+      if (shin.y > TOPPLE_FROM) {
+        const axis = this.kneeAxis(side === 0 ? 0 : 1, p, this.b);
+        const down = this.c.crossVectors(axis, this.d.set(p[ankle * 3]! - p[knee * 3]!, p[ankle * 3 + 1]! - p[knee * 3 + 1]!, p[ankle * 3 + 2]! - p[knee * 3 + 2]!)).y > 0 ? -1 : 1;
+        this.rotateAbout(SHIN_PARTS[side]!, knee, axis, down * TOPPLE_RATE * (shin.y - TOPPLE_FROM));
+      }
+    }
+  }
+
+  /** The shoulders turn on the hips only as far as a spine does, however the body landed. */
+  private solveTwist(): void {
+    const spine = this.dir(P.pelvis, P.upper, this.e);
+    const hips = this.dir(P.hipR, P.hipL, this.a);
+    hips.addScaledVector(spine, -hips.dot(spine));
+    const shoulders = this.dir(P.shoulderR, P.shoulderL, this.c);
+    shoulders.addScaledVector(spine, -shoulders.dot(spine));
+    if (hips.lengthSq() < 1e-8 || shoulders.lengthSq() < 1e-8) return;
+    const twist = Math.atan2(this.d.crossVectors(hips, shoulders).dot(spine), hips.dot(shoulders));
+    const excess = Math.abs(twist) - SPINE_TWIST;
+    if (excess <= 0) return;
+    // The shoulders and the hips each turn half the way back, the legs with the hips.
+    const turn = Math.sign(twist) * excess * CONE_STIFFNESS * 0.5;
+    this.rotateAbout(UPPER_BODY, P.chest, spine, -turn);
+    this.rotateAbout(LOWER_BODY, P.chest, spine, turn);
   }
 
   /** The neck and the skull lean from the line of the spine only so far, whatever the blow. */
@@ -1007,6 +1063,7 @@ export class KnockoutRagdoll {
   private readonly velocities = new Float64Array(PARTICLES * 3);
   private readonly offsets = DRIVEN.map(() => new THREE.Quaternion());
   private readonly fromLocal = DRIVEN.map(() => new THREE.Quaternion());
+  private readonly fromPositions = DRIVEN.map(() => new THREE.Vector3());
   private readonly fromHips = new THREE.Vector3();
   private readonly riseLocal = DRIVEN.map(() => new THREE.Quaternion());
   private readonly riseHips = new THREE.Vector3();
@@ -1247,7 +1304,10 @@ export class KnockoutRagdoll {
   }
 
   private captureLocals(out: readonly THREE.Quaternion[], hips: THREE.Vector3): void {
-    for (let index = 0; index < this.bones.length; index += 1) out[index]!.copy(this.bones[index]!.quaternion);
+    for (let index = 0; index < this.bones.length; index += 1) {
+      out[index]!.copy(this.bones[index]!.quaternion);
+      this.fromPositions[index]!.copy(this.bones[index]!.position);
+    }
     hips.copy(this.rig.bones.hips.position);
   }
 
@@ -1257,6 +1317,7 @@ export class KnockoutRagdoll {
     for (let index = 0; index < this.bones.length; index += 1) {
       const bone = this.bones[index]!;
       bone.quaternion.slerpQuaternions(from[index]!, bone.quaternion, w);
+      if (bone !== this.rig.bones.hips) bone.position.lerpVectors(this.fromPositions[index]!, bone.position, w);
     }
     this.rig.bones.hips.position.lerpVectors(hips, this.rig.bones.hips.position, w);
     this.root.updateMatrixWorld(true);
@@ -1308,6 +1369,11 @@ export class KnockoutRagdoll {
   }
 
   private drive(positions: Float64Array): void {
+    // The poser moves the head off the neck for slips and blows; the body on the canvas has its own neck.
+    for (let index = 0; index < this.bones.length; index += 1) {
+      const bone = this.bones[index]!;
+      if (bone !== this.rig.bones.hips) bone.position.copy(this.rig.restLocalPosition(bone));
+    }
     this.root.updateMatrixWorld(true);
     const hips = this.rig.bones.hips;
     this.rig.setWorldPosition(hips, v(positions, P.pelvis, this.point));

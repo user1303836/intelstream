@@ -216,6 +216,41 @@ describe("knockouts on the fighter", () => {
     expect(head.distanceTo(particle)).toBeLessThan(0.06);
   });
 
+  it("brings the head back onto the neck when the fall starts with it thrown off by a slip or a blow", () => {
+    const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
+    const ragdoll = new KnockoutRagdoll(boxer.rig, boxer.root);
+    boxer.rig.resetToRest();
+    boxer.root.updateMatrixWorld(true);
+    const bones = boxer.rig.bones;
+    const onTheNeck = bones.head.position.clone();
+    // The poser moves the head itself for slips and big blows; the fall takes over from that frame.
+    bones.head.position.add(new THREE.Vector3(-4.2, -0.9, -7.4));
+    boxer.root.updateMatrixWorld(true);
+    expect(ragdoll.start("crumple")).toBe(true);
+    for (let frame = 0; frame < 150; frame += 1) ragdoll.update(1 / 60, null);
+    const where = bones.neck.localToWorld(onTheNeck.clone());
+    expect(worldPosition(bones.head, new THREE.Vector3()).distanceTo(where)).toBeLessThan(0.001);
+  });
+
+  it("lies with his shoulders turned on his hips no further than a spine turns, however he went down", () => {
+    let worst = 0;
+    for (const punch of ["jab", "hook"] as const) {
+      for (const target of ["head", "body"] as const) {
+        const { graph, fighter, opponent, time } = standing();
+        graph.react("hit", target, 1, punch, "left", 300);
+        frames(graph, { ...fighter, is_downed: true }, opponent, 240, time);
+        const p = graph.fallBody!.body.position;
+        const spine = at(p, P.upper).sub(at(p, P.pelvis)).normalize();
+        const hips = at(p, P.hipL).sub(at(p, P.hipR));
+        hips.addScaledVector(spine, -hips.dot(spine));
+        const shoulders = at(p, P.shoulderL).sub(at(p, P.shoulderR));
+        shoulders.addScaledVector(spine, -shoulders.dot(spine));
+        worst = Math.max(worst, Math.abs(Math.atan2(new THREE.Vector3().crossVectors(hips, shoulders).dot(spine), hips.dot(shoulders))));
+      }
+    }
+    expect(THREE.MathUtils.radToDeg(worst)).toBeLessThan(45);
+  });
+
   it("keeps the authored fall under reduced motion", () => {
     const { boxer, graph, fighter, opponent, time } = standing();
     graph.react("hit", "head", 1, "straight", "right", 420);

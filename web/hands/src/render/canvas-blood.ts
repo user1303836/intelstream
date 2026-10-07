@@ -5,6 +5,7 @@ const STAMP_SIZE = 128;
 const STAMP_COUNT = 4;
 /** Seconds between uploads of the painted canvas to the GPU while blood keeps landing. */
 export const CANVAS_BLOOD_UPLOAD_INTERVAL = 0.12;
+export const CANVAS_BLOOD_ROUGHNESS = 0.82;
 
 const seeded = (seed: number): (() => number) => () => {
   seed = Math.imul(seed ^ (seed >>> 15), 1 | seed);
@@ -12,22 +13,59 @@ const seeded = (seed: number): (() => number) => () => {
   return ((seed ^ (seed >>> 14)) >>> 0) / 4294967296;
 };
 
-/** An irregular splash: a main blot, satellite blots and flecks thrown clear of it, white on clear. */
+/**
+ * An irregular splash, white on clear: a lumpy main blot thinner in the middle than at its rim, where
+ * soaked-in blood dries darkest, satellite blots of their own weight and flecks thrown clear of it.
+ */
+export function splatRecipe(seed: number): { lobes: { x: number; y: number; rx: number; ry: number; turn: number }[]; fill: number; rim: number; satellites: number } {
+  const rand = seeded(seed);
+  const lobes = Array.from({ length: 5 + Math.floor(rand() * 4) }, (_, index) => {
+    const angle = rand() * Math.PI * 2;
+    const reach = index === 0 ? 0 : 6 + rand() * 12;
+    const radius = index === 0 ? 16 + rand() * 6 : 8 + rand() * 9;
+    return { x: 64 + Math.cos(angle) * reach, y: 64 + Math.sin(angle) * reach, rx: radius, ry: radius * (0.55 + rand() * 0.45), turn: rand() * Math.PI };
+  });
+  return { lobes, fill: 0.55 + rand() * 0.2, rim: 0.95, satellites: 6 + Math.floor(rand() * 6) };
+}
+
 function splatStamp(seed: number): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
   canvas.width = STAMP_SIZE;
   canvas.height = STAMP_SIZE;
   const ctx = canvas.getContext("2d");
   if (ctx !== null) {
-    const rand = seeded(seed);
+    const recipe = splatRecipe(seed);
+    const rand = seeded(seed ^ 0x5bd1e995);
     ctx.clearRect(0, 0, STAMP_SIZE, STAMP_SIZE);
     ctx.fillStyle = "rgba(255,255,255,1)";
-    const blobs = 7 + Math.floor(rand() * 6);
-    for (let i = 0; i < blobs; i += 1) {
+    ctx.strokeStyle = "rgba(255,255,255,1)";
+    // The rim first, as a ragged band round every lobe, then the thinner middle over it.
+    ctx.globalAlpha = recipe.rim;
+    ctx.lineWidth = 3.5;
+    for (const lobe of recipe.lobes) {
+      ctx.beginPath();
+      ctx.ellipse(lobe.x, lobe.y, lobe.rx, lobe.ry, lobe.turn, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.globalAlpha = 1;
+    for (const lobe of recipe.lobes) {
+      ctx.beginPath();
+      ctx.ellipse(lobe.x, lobe.y, Math.max(1, lobe.rx - 1.5), Math.max(1, lobe.ry - 1.5), lobe.turn, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalCompositeOperation = "source-over";
+    ctx.globalAlpha = recipe.fill;
+    for (const lobe of recipe.lobes) {
+      ctx.beginPath();
+      ctx.ellipse(lobe.x, lobe.y, Math.max(1, lobe.rx - 1.5), Math.max(1, lobe.ry - 1.5), lobe.turn, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    for (let i = 0; i < recipe.satellites; i += 1) {
       const angle = rand() * Math.PI * 2;
-      const distance = i === 0 ? 0 : 8 + rand() * 40;
-      const radius = i === 0 ? 24 + rand() * 12 : 3 + rand() * 12;
-      ctx.globalAlpha = i === 0 ? 1 : 0.7 + rand() * 0.3;
+      const distance = 26 + rand() * 22;
+      const radius = 2.5 + rand() * 7;
+      ctx.globalAlpha = 0.5 + rand() * 0.45;
       ctx.beginPath();
       ctx.ellipse(64 + Math.cos(angle) * distance, 64 + Math.sin(angle) * distance, radius, radius * (0.55 + rand() * 0.5), rand() * Math.PI, 0, Math.PI * 2);
       ctx.fill();
@@ -102,7 +140,8 @@ export class CanvasBlood {
     this.texture.flipY = false;
     this.source = new THREE.Texture(this.canvas);
     this.region.makeEmpty();
-    this.material = new THREE.MeshStandardMaterial({ map: this.texture, transparent: true, depthWrite: false, roughness: 0.32, metalness: 0, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
+    // Blood soaks into canvas: a glossy coat picked up the ring lights' blue and turned the stains lavender.
+    this.material = new THREE.MeshStandardMaterial({ map: this.texture, transparent: true, depthWrite: false, roughness: CANVAS_BLOOD_ROUGHNESS, metalness: 0, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
     this.geometry = new THREE.PlaneGeometry(RING_FIGHT_HALF * 2, RING_FIGHT_HALF * 2);
     const uv = this.geometry.getAttribute("uv");
     for (let index = 0; index < uv.count; index += 1) uv.setY(index, 1 - uv.getY(index));

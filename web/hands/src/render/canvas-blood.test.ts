@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { describe, expect, it, vi } from "vitest";
-import { CANVAS_BLOOD_UPLOAD_INTERVAL, CanvasBlood } from "./canvas-blood";
+import { CANVAS_BLOOD_UPLOAD_INTERVAL, CanvasBlood, splatRecipe } from "./canvas-blood";
 import { Effects3D } from "./effects";
 import { poolRadius } from "./renderer";
 import { CANVAS_TOP, RING_FIGHT_HALF } from "./world";
@@ -13,6 +13,24 @@ describe("blood on the canvas", () => {
     expect(blood.pixel(0, 0)).toEqual({ x: 256, y: 256 });
     expect(blood.mesh.position.y).toBeGreaterThan(CANVAS_TOP);
     expect(blood.mesh.position.y).toBeLessThan(CANVAS_TOP + 0.01);
+    blood.dispose();
+  });
+
+  it("soaks in as a lumpy blot, darker where it dries at the rim than in the middle, never a flat disc", () => {
+    for (let seed = 0; seed < 8; seed += 1) {
+      const recipe = splatRecipe(0x3a1f_00d1 + seed * 977);
+      expect(recipe.lobes.length).toBeGreaterThanOrEqual(5);
+      const sizes = recipe.lobes.map((lobe) => lobe.rx);
+      expect(Math.max(...sizes) - Math.min(...sizes)).toBeGreaterThan(2);
+      expect(recipe.lobes.some((lobe) => Math.hypot(lobe.x - 64, lobe.y - 64) > 5)).toBe(true);
+      expect(recipe.rim).toBeGreaterThan(recipe.fill + 0.15);
+    }
+    expect(splatRecipe(7)).toEqual(splatRecipe(7));
+  });
+
+  it("is matte, as blood soaked into canvas is, so the ring lights do not glaze it lavender", () => {
+    const blood = new CanvasBlood(new THREE.Scene(), 256);
+    expect((blood.mesh.material as THREE.MeshStandardMaterial).roughness).toBeGreaterThanOrEqual(0.75);
     blood.dispose();
   });
 
