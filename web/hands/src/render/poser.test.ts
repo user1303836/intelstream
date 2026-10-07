@@ -1036,8 +1036,7 @@ describe("per-frame allocations", () => {
 });
 
 describe("transition sweep", () => {
-  // Hook and uppercut join once a punch's first frame no longer jumps the glove (applyPunch, prediction fixes).
-  const PUNCHES = ["jab", "straight"] as const;
+  const PUNCHES = ["jab", "straight", "hook", "uppercut"] as const;
   // 9 m/s: a straight's glove peaks near 7 m/s, while the snaps this guards against moved bones 0.5 m in a frame.
   const MAX_STEP = 0.15;
 
@@ -1101,7 +1100,7 @@ describe("transition sweep", () => {
     };
 
     step("idle", idle, 30);
-    for (const punchClass of PUNCHES) step(punchClass, punch(punchClass, punchClass === "jab" ? "left" : "right"), 40);
+    for (const punchClass of PUNCHES) step(punchClass, punch(punchClass, punchClass === "jab" || punchClass === "hook" ? "left" : "right"), 40);
     graph.react("hit", "head", 1, "hook", "left", 140);
     step("fall face down", downed, 70);
     getUp("first");
@@ -1117,7 +1116,8 @@ describe("transition sweep", () => {
     step("rest", idle, 150);
     graph.setResting(false);
     step("round starts", idle, 90);
-    step("taunt", (frame) => ({ ...idle, taunt_ticks: Math.max(0, 60 - frame) }), 70);
+    // The count steps once per engine tick, every second frame.
+    step("taunt", (frame) => ({ ...idle, taunt_ticks: Math.max(0, 60 - Math.floor(frame / 2)) }), 140);
 
     expect(jump.distance, jump.at).toBeLessThan(MAX_STEP);
     expect(lowest.height, lowest.at).toBeGreaterThan(-0.02);
