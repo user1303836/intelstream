@@ -3,16 +3,21 @@ import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
+import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { EventDeduplicator, SnapshotBuffer } from "../interpolation";
+import { coarsePointer } from "../input/touch";
+import { REST_CORNER_OFFSET, punchTiming } from "../manifest";
+import { EVASION_STAMINA, EvasionPrediction, MovementPrediction, attackTicksRemaining, canAffordPunch, constrainPrediction, isEvasion, predictedDefense, predictedPunchTiming, type HeldInput } from "../prediction";
 import type { BloodLevel, Settings } from "../settings";
-import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, MatchResult, PublicPlayer, SemanticAction, SimulationInfo } from "../types";
-import { BoxerAnimator } from "./animation";
+import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, Hand, MatchResult, PublicPlayer, PunchClass, SemanticAction, SimulationInfo } from "../types";
 import { buildArena, type BuiltArena } from "./arena";
-import { buildBoxer, buildReferee, disposeBoxer, type BoxerRig } from "./boxer";
-import { CameraDirector } from "./camera";
-import { Effects3D } from "./effects";
-import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, type ArcadeDislocation } from "./graph";
-import { drawHud } from "./hud";
+import { CameraDirector, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE, cornerFrame, cornerPoint, cornerShot, cornerShotProgress } from "./camera";
+import { Effects3D, type BakedPart, type SprayDirection } from "./effects";
+import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, releaseFighterGpu, type ArcadeDislocation } from "./graph";
+import { drawHud, finalRevealDelay, RoundStatsTracker, STOPPAGE_METHODS, RoundClock } from "./hud";
+import { ResolutionScaler } from "./quality";
+import { planKnockoutReplay, replayTick, type ReplayPlan } from "./replay";
+import { GloveTrail } from "./trails";
 
 export type ArcadeInjury =
   | "decapitation"
@@ -36,6 +41,50 @@ export function isArcadeInjuryCandidate(
   );
 }
 
+/** EffectComposer.dispose frees only its own targets; each pass (bloom keeps a chain of them) is freed too. */
+export function disposeComposer(composer: { readonly passes: readonly { dispose?: () => void }[]; dispose(): void }): void {
+  for (const pass of composer.passes) pass.dispose?.();
+  composer.dispose();
+}
+
+/**
+ * Compiles a scene's shaders for the composer's own target (linear, without tone mapping), which is
+ * what the scene is drawn into; compiled for the screen they would be variants the frame never uses.
+ */
+export function compileForComposer(
+  renderer: Pick<THREE.WebGLRenderer, "setRenderTarget" | "compileAsync">,
+  composer: { readonly readBuffer: THREE.WebGLRenderTarget },
+  staging: THREE.Object3D,
+  camera: THREE.Camera,
+  scene: THREE.Scene,
+): Promise<unknown> {
+  renderer.setRenderTarget(composer.readBuffer);
+  // compileAsync builds the programs before it returns, so the target can be let go at once.
+  const compiled = renderer.compileAsync(staging, camera, scene);
+  renderer.setRenderTarget(null);
+  return compiled;
+}
+
+const KEY_SHADOW_BIAS = -0.0004;
+/** Past the shadow camera's far plane, so every lit pixel skips the shadow lookups. */
+const SKIPPED_SHADOW_BIAS = 10;
+
+/**
+ * Sets the key light's shadow for a quality tier without touching castShadow, which is part of every
+ * material's program key: flipping it would recompile every shader in one frame on the slowest
+ * devices. Turned off, the shadow stops being drawn, its depth target is freed, and it is hidden.
+ */
+export function setKeyShadowTier(shadow: THREE.LightShadow, off: boolean, size: number): void {
+  shadow.autoUpdate = !off;
+  shadow.intensity = off ? 0 : 1;
+  shadow.bias = off ? SKIPPED_SHADOW_BIAS : KEY_SHADOW_BIAS;
+  if ((off && shadow.map !== null) || shadow.mapSize.x !== size) {
+    shadow.mapSize.set(size, size);
+    shadow.map?.dispose();
+    shadow.map = null;
+  }
+}
+
 export function contactParticipants(event: CombatEvent, snapshot: EngineSnapshot): {
   recipientIndex: number;
   puncherIndex: number;
@@ -49,14 +98,72 @@ export function contactParticipants(event: CombatEvent, snapshot: EngineSnapshot
   };
 }
 
+/**
+ * The way a punch travelled in the world, from the puncher to the recipient, for its blood, teeth and
+ * severed parts. Hit events only carry the sign of the puncher's world-x facing, which is wrong
+ * whenever the fighters exchange along any other line of the square ring; undefined leaves effects
+ * to that sign, when a fighter is missing or the two stand on the same spot.
+ */
+export function sprayDirection(puncher: FighterSnapshot | undefined, recipient: FighterSnapshot | undefined, mapping: WorldMapping): SprayDirection | undefined {
+  if (puncher === undefined || recipient === undefined) return undefined;
+  const x = mapping.x(recipient.x) - mapping.x(puncher.x);
+  const z = mapping.z(recipient.y) - mapping.z(puncher.y);
+  const length = Math.hypot(x, z);
+  return Number.isFinite(length) && length > 1e-3 ? { x: x / length, z: z / length } : undefined;
+}
+
 export interface ContactPresentation {
   readonly event: CombatEvent;
   readonly presentationEvent: CombatEvent;
   readonly presentImpact: boolean;
+  /** How hard the recipient reacts, or null when the punch's own entry already reacts to it. */
+  readonly reactAmount: number | null;
 }
 
 const isHit = (event: CombatEvent): boolean => event.kind === "hit" || event.kind === "counter_hit";
 const isBlock = (event: CombatEvent): boolean => event.kind === "block" || event.kind === "perfect_block";
+const HISTORY_LIMIT = 480;
+const LOW_TIER_SCALE = 0.56;
+const ROUND_CALLOUT_SECONDS = 1.8;
+const FINISH_CLOSE_UP_SECONDS = 1.7;
+/** Longest a finish waits for its punch to be shown (the render clock runs at most 6 ticks behind). */
+const FINISH_WAIT_LIMIT_SECONDS = 0.5;
+const CORNERMAN_APRON_DISTANCE = 3.42;
+/** Close cameras stay inside the rope line (posts stand at 2.46 m) so a rope never fills the lens. */
+const TIGHT_SHOT_LIMIT = 2.2;
+const CORNERMAN_WORK_DISTANCE = 2.95;
+/** Metres per second the referee steps in at to break a clinch. */
+const REFEREE_BREAK_SPEED = 2.4;
+const CUTMAN_WALK_SECONDS = 1.6;
+// Broadcast finish: a soft vignette and a whisper of grain, applied before tone mapping.
+const BROADCAST_FINISH_SHADER = {
+  uniforms: { tDiffuse: { value: null }, uTime: { value: 0 }, uVignette: { value: 0.32 }, uGrain: { value: 0.035 } },
+  vertexShader: `
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}`,
+  fragmentShader: `
+uniform sampler2D tDiffuse;
+uniform float uTime;
+uniform float uVignette;
+uniform float uGrain;
+varying vec2 vUv;
+float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7)) + uTime * 43.7) * 43758.5453);
+}
+void main() {
+  vec4 color = texture2D(tDiffuse, vUv);
+  vec2 centered = vUv - 0.5;
+  float falloff = smoothstep(0.35, 0.95, dot(centered, centered) * 2.2);
+  color.rgb *= 1.0 - falloff * uVignette;
+  float grain = (hash(floor(vUv * vec2(960.0, 540.0))) - 0.5) * uGrain;
+  color.rgb += grain * (0.15 + color.rgb);
+  gl_FragColor = color;
+}`,
+};
+const CROWD_EXCITEMENT: Readonly<Record<string, number>> = { hit: 0.18, counter_hit: 0.3, guard_break: 0.25, knockdown: 1, block: 0.04, perfect_block: 0.1 };
 
 function pairedBlock(event: CombatEvent, events: readonly CombatEvent[]): CombatEvent | undefined {
   if (!isHit(event) || event.action_id === null) return undefined;
@@ -94,10 +201,11 @@ export function contactPresentationPlan(
           blood: hit?.blood ?? event.blood,
         },
         presentImpact: true,
+        reactAmount: event.amount,
       };
     }
     if (pairedBlock(event, events) !== undefined) {
-      return { event, presentationEvent: event, presentImpact: false };
+      return { event, presentationEvent: event, presentImpact: false, reactAmount: event.amount };
     }
     if (event.kind === "knockdown") {
       const hitEvent = events.slice(0, eventIndex).reverse().find((candidate) => isHit(candidate)
@@ -115,10 +223,12 @@ export function contactPresentationPlan(
             action_id: hitEvent.action_id,
           },
           presentImpact: true,
+          // A knockdown's amount is its count. The punch reacts in its own entry, unless a block took its place.
+          reactAmount: pairedBlock(hitEvent, events) === undefined ? null : hitEvent.amount,
         };
       }
     }
-    return { event, presentationEvent: event, presentImpact: true };
+    return { event, presentationEvent: event, presentImpact: true, reactAmount: event.amount };
   });
 }
 
@@ -141,7 +251,7 @@ export function arcadeInjuryFor(
 }
 import { buildRing, disposeRing, type BuiltRing } from "./ring";
 import { resizeHighDpi } from "./viewport";
-import { PALETTES, worldMapping, type WorldMapping } from "./world";
+import { worldMapping, type WorldMapping } from "./world";
 
 function blobShadowTexture(): THREE.CanvasTexture {
   const canvas = document.createElement("canvas");
@@ -159,7 +269,197 @@ function blobShadowTexture(): THREE.CanvasTexture {
   return new THREE.CanvasTexture(canvas);
 }
 
-const DEFAULT_SIM: SimulationInfo = { tick_rate: 30, ring_half_width: 500, ring_half_height: 330 };
+const DEFAULT_SIM: SimulationInfo = { tick_rate: 30, ring_half_width: 500, ring_half_height: 500 };
+
+/**
+ * Freezes a skinned mesh's current deformed surface into a static geometry
+ * expressed relative to `pivot` so it can fly as a rigid severed part. Only the
+ * vertices its triangles use are kept: each glove of the model indexes its own
+ * half of a vertex buffer the two gloves share.
+ */
+export function bakeSkinnedPart(mesh: THREE.SkinnedMesh, pivotPosition: THREE.Vector3, pivotQuaternion: THREE.Quaternion): BakedPart {
+  const source = mesh.geometry;
+  const positions = source.getAttribute("position");
+  const index = source.getIndex();
+  // The source vertex behind each kept vertex, and the triangles renumbered to the kept vertices.
+  const kept: number[] = [];
+  const triangles: number[] = [];
+  if (index === null) {
+    for (let vertex = 0; vertex < positions.count; vertex += 1) kept.push(vertex);
+  } else {
+    const renumbered = new Int32Array(positions.count).fill(-1);
+    for (let corner = 0; corner < index.count; corner += 1) {
+      const vertex = index.getX(corner);
+      if (renumbered[vertex]! < 0) renumbered[vertex] = kept.push(vertex) - 1;
+      triangles.push(renumbered[vertex]!);
+    }
+  }
+  const baked = new Float32Array(kept.length * 3);
+  const vertex = new THREE.Vector3();
+  const inverse = pivotQuaternion.clone().invert();
+  mesh.updateMatrixWorld(true);
+  for (const [target, from] of kept.entries()) {
+    vertex.fromBufferAttribute(positions, from);
+    mesh.applyBoneTransform(from, vertex);
+    vertex.applyMatrix4(mesh.matrixWorld).sub(pivotPosition).applyQuaternion(inverse);
+    baked[target * 3] = vertex.x;
+    baked[target * 3 + 1] = vertex.y;
+    baked[target * 3 + 2] = vertex.z;
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(baked, 3));
+  const uv = source.getAttribute("uv");
+  if (uv !== undefined) {
+    const uvs = new Float32Array(kept.length * 2);
+    for (const [target, from] of kept.entries()) {
+      uvs[target * 2] = uv.getX(from);
+      uvs[target * 2 + 1] = uv.getY(from);
+    }
+    geometry.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
+  }
+  if (index !== null) geometry.setIndex(triangles);
+  geometry.computeVertexNormals();
+  const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+  const map = material instanceof THREE.MeshStandardMaterial ? material.map : null;
+  const color = material instanceof THREE.MeshStandardMaterial ? material.color.getHex() : 0xffffff;
+  return { geometry, map, color };
+}
+
+function cornerShirtTexture(color: string): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext("2d");
+  if (ctx !== null) {
+    ctx.fillStyle = color;
+    ctx.fillRect(0, 0, 256, 256);
+    ctx.fillStyle = "rgba(0,0,0,0.35)";
+    ctx.fillRect(0, 0, 256, 16);
+    ctx.fillStyle = "rgba(255,255,255,0.12)";
+    ctx.fillRect(96, 60, 64, 22);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.flipY = false;
+  return texture;
+}
+
+function refereeShirtTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext("2d");
+  if (ctx !== null) {
+    ctx.fillStyle = "#9fb4d8";
+    ctx.fillRect(0, 0, 256, 256);
+    ctx.fillStyle = "rgba(255,255,255,0.08)";
+    for (let x = 0; x < 256; x += 8) ctx.fillRect(x, 0, 2, 256);
+    ctx.fillStyle = "#1b2230";
+    ctx.fillRect(0, 0, 256, 18);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.flipY = false;
+  return texture;
+}
+
+function blankFighter(playerId: string): FighterSnapshot {
+  return {
+    player_id: playerId, x: 0, y: 0, facing: 1, facing_x: 1000, facing_y: 0, velocity_x: 0, velocity_y: 0,
+    stance: "orthodox", defense: "guard_high", stamina: 1000, maximum_stamina: 1000, conditioning: 1000, guard: 700, poise: 600,
+    trauma: { head: 0, body: 0, left_eye: 0, right_eye: 0, left_cut: 0, right_cut: 0, swelling: 0, bleeding: 0 },
+    knockdowns: 0, warnings: 0, deductions: 0, stunned_ticks: 0, is_downed: false,
+    action: null, action_hand: null, action_target: null, action_power: null, action_id: null, action_key: null,
+    action_start_tick: 0, action_startup_ticks: 0, action_active_ticks: 0, action_recovery_ticks: 0, action_contact_tick: null,
+    queued_actions: 0, clinch_startup_ticks: 0, clinch_ticks: 0, is_foul_recovery_target: false, taunt_ticks: 0,
+    get_up_prompt: null, get_up_meter: 0, get_up_required: 0, get_up_count: 0, get_up_window_start_tick: 0, get_up_window_end_tick: 0,
+    last_input_sequence: -1,
+  };
+}
+
+const SHADOW_BOXING_CYCLE_TICKS = 126;
+const SHADOW_BOXING: readonly { readonly start: number; readonly punchClass: PunchClass; readonly hand: Hand }[] = [
+  { start: 0, punchClass: "jab", hand: "left" },
+  { start: 16, punchClass: "jab", hand: "left" },
+  { start: 33, punchClass: "straight", hand: "right" },
+  { start: 78, punchClass: "hook", hand: "left" },
+];
+
+/** A lone fighter shadow boxes while waiting: a jab-jab-straight then a hook every few seconds. */
+function shadowBoxing(idleTick: number): Partial<FighterSnapshot> {
+  const cycleTick = idleTick % SHADOW_BOXING_CYCLE_TICKS;
+  const cycle = Math.floor(idleTick / SHADOW_BOXING_CYCLE_TICKS);
+  for (const [index, punch] of SHADOW_BOXING.entries()) {
+    const timing = punchTiming(punch.punchClass, "head", "normal");
+    const total = timing.startup + timing.active + timing.recovery;
+    if (cycleTick < punch.start || cycleTick >= punch.start + total) continue;
+    return {
+      action: punch.punchClass, action_hand: punch.hand, action_target: "head", action_power: "normal",
+      action_id: `idle-${cycle}-${index}`, action_key: `${punch.punchClass}:${punch.hand}:head:normal`,
+      action_start_tick: idleTick - (cycleTick - punch.start), action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery,
+      action_contact_tick: idleTick - (cycleTick - punch.start) + timing.startup,
+    };
+  }
+  return {};
+}
+
+const REPLAY_EVENT_ID_OFFSET = 1_000_003;
+const REPLAY_MINIMUM_DISTANCE = 1.6;
+
+/**
+ * Which side of the fighters' line the replay camera shoots from: the broadcast side, unless the
+ * ropes would crowd it there and the other side has more room.
+ */
+export function replayCameraSide(midX: number, midZ: number, nx: number, nz: number, distance: number, limit: number): 1 | -1 {
+  const preferred = nz < 0 ? -1 : 1;
+  const room = (side: number): number => Math.hypot(
+    THREE.MathUtils.clamp(midX + nx * side * distance, -limit, limit) - midX,
+    THREE.MathUtils.clamp(midZ + nz * side * distance, -limit, limit) - midZ,
+  );
+  return room(preferred) >= distance * 0.8 || room(preferred) >= room(-preferred) ? preferred : (-preferred as 1 | -1);
+}
+
+/** Whether the server would start a punch for this fighter now. */
+export function canStartPunch(fighter: FighterSnapshot): boolean {
+  return !fighter.is_downed
+    && fighter.stunned_ticks === 0
+    && fighter.clinch_ticks === 0
+    && fighter.clinch_startup_ticks === 0
+    && fighter.taunt_ticks === 0
+    && !fighter.is_foul_recovery_target;
+}
+
+/** Whether the knockout replay puts this injury back so it can happen again on screen. */
+export function replayReattaches(injury: ArcadeInjury): boolean {
+  return injury === "decapitation" || injury === "dismember_left" || injury === "dismember_right";
+}
+
+/** How far the referee stands from the action and how close he may get to a fighter: tight over a count, in close for a clinch, between the two to break it, otherwise out of the way. */
+export function refereeSpacing(downed: boolean, clinched: boolean, breaking = false): { standoff: number; clearance: number } {
+  if (downed) return { standoff: 1.25, clearance: 1.0 };
+  if (breaking) return { standoff: 0.45, clearance: 0.5 };
+  if (clinched) return { standoff: 1.15, clearance: 0.9 };
+  return { standoff: 2.05, clearance: 1.45 };
+}
+
+function refereeSnapshot(position: THREE.Vector3, yaw: number, velocity: THREE.Vector3, mapping: WorldMapping): { self: FighterSnapshot; focus: FighterSnapshot } {
+  const simX = position.x / mapping.x(1);
+  const simY = position.z / mapping.z(1);
+  const base: FighterSnapshot = {
+    player_id: "referee", x: simX, y: simY, facing: 1, facing_x: Math.round(Math.sin(yaw) * 1000), facing_y: Math.round(-Math.cos(yaw) * 1000),
+    velocity_x: velocity.x / mapping.x(1) / 30, velocity_y: velocity.z / mapping.z(1) / 30,
+    stance: "orthodox", defense: "none", stamina: 1000, maximum_stamina: 1000, conditioning: 1000, guard: 700, poise: 600,
+    trauma: { head: 0, body: 0, left_eye: 0, right_eye: 0, left_cut: 0, right_cut: 0, swelling: 0, bleeding: 0 },
+    knockdowns: 0, warnings: 0, deductions: 0, stunned_ticks: 0, is_downed: false,
+    action: null, action_hand: null, action_target: null, action_power: null, action_id: null, action_key: null,
+    action_start_tick: 0, action_startup_ticks: 0, action_active_ticks: 0, action_recovery_ticks: 0, action_contact_tick: null,
+    queued_actions: 0, clinch_startup_ticks: 0, clinch_ticks: 0, is_foul_recovery_target: false, taunt_ticks: 0,
+    get_up_prompt: null, get_up_meter: 0, get_up_required: 0, get_up_count: 0, get_up_window_start_tick: 0, get_up_window_end_tick: 0,
+    last_input_sequence: -1,
+  };
+  const focus: FighterSnapshot = { ...base, player_id: "focus", x: simX + Math.sin(yaw) * 300, y: simY - Math.cos(yaw) * 300 };
+  return { self: base, focus };
+}
 
 export class FightRenderer {
   private readonly renderer: THREE.WebGLRenderer;
@@ -168,14 +468,32 @@ export class FightRenderer {
   private readonly composer: EffectComposer;
   private readonly ring: BuiltRing;
   private readonly arena: BuiltArena;
-  private readonly boxers: [BoxerRig, BoxerRig];
-  private readonly referee: BoxerRig;
+  private referee: BoxingGraph | null = null;
+  private cornermen: [BoxingGraph, BoxingGraph] | null = null;
+  private trails: GloveTrail[] = [];
+  private readonly trailGlove = new THREE.Vector3();
+  private readonly cornerShirts: THREE.CanvasTexture[] = [];
+  private readonly cornermanPosition = new THREE.Vector3();
+  private readonly cornermanVelocity = new THREE.Vector3();
+  private cutmen: [BoxingGraph, BoxingGraph] | null = null;
+  private readonly cutmanProgress = [0, 0];
+  private readonly cutmanFrom = new THREE.Vector3();
+  private readonly cutmanTo = new THREE.Vector3();
+  private readonly cutmanEye = new THREE.Vector3();
+  private readonly cutmanFacing = new THREE.Vector3();
+  private readonly cutmanLast = [new THREE.Vector3(), new THREE.Vector3()];
   private readonly refereePosition = new THREE.Vector3(0.4, 0, -2.1);
-  private readonly animators: [BoxerAnimator, BoxerAnimator];
+  private readonly refereeVelocity = new THREE.Vector3();
   private readonly effects: Effects3D;
   private readonly director = new CameraDirector();
   private readonly mapping: WorldMapping;
-  private readonly buffer = new SnapshotBuffer();
+  private readonly buffer: SnapshotBuffer;
+  private readonly localInput: (() => HeldInput | null) | null;
+  /** Sequence of the input frame that carried a press, once it has gone out; null before then. */
+  private readonly inputSequenceOf: ((actionId: string) => number | null) | null;
+  private readonly movement = new MovementPrediction();
+  private readonly evasion = new EvasionPrediction();
+  private lastManualTime = 0;
   private readonly dedupe = new EventDeduplicator();
   private readonly hudCanvas: HTMLCanvasElement;
   private cameraOverride: { position: THREE.Vector3; lookAt: THREE.Vector3 } | null = null;
@@ -190,25 +508,64 @@ export class FightRenderer {
   private refereeYaw = 0;
   private raf = 0;
   private previous = performance.now();
+  private readonly scaler = new ResolutionScaler();
+  private readonly pixelRatioCap = coarsePointer() ? 1.5 : 2;
+  private basePixelRatio = Math.min(this.pixelRatioCap, window.devicePixelRatio || 1);
   private players: Readonly<Record<string, PublicPlayer>> = {};
+  private playerOrder: readonly string[] = [];
   private viewerId: string | null = null;
   private final: FinalMessage | null = null;
   private reconnectMs = 0;
   private destroyed = false;
   private graphs: [BoxingGraph, BoxingGraph] | null = null;
   private glbLoading = false;
+  private refereeShirt: THREE.CanvasTexture | null = null;
   private graphsReady: Promise<void> = Promise.resolve();
   private readonly headCache = [new THREE.Vector3(), new THREE.Vector3()];
   private readonly headCacheValid = [false, false];
   private readonly arcadeInjuries: [ArcadeInjury | null, ArcadeInjury | null] = [null, null];
   private readonly observedInjuryDown: [boolean, boolean] = [false, false];
+  private readonly arcadeInjuryEvents: [CombatEvent | null, CombatEvent | null] = [null, null];
+  private readonly replayInjuries: [{ injury: ArcadeInjury; event: CombatEvent } | null, { injury: ArcadeInjury; event: CombatEvent } | null] = [null, null];
+  private readonly closeUpTarget = new THREE.Vector3();
   private readonly downedPoolAccumulators: [number, number] = [0, 0];
   private readonly downedPoolCounts: [number, number] = [0, 0];
   private bloodLevel: BloodLevel = "full";
+  private viewerHitFlash = 0;
+  private finishSlowMotion = 0;
+  private finishSeen = false;
+  private finalRevealAt = 0;
+  private pendingFinish: { readonly final: FinalMessage; readonly tick: number; readonly latestAt: number } | null = null;
+  private portraitPull = 1;
+  private lastPhase: string | null = null;
+  private restStartedAt = 0;
+  private readonly roundClock = new RoundClock();
+  private replayFollow = 0;
+  private replayFollowAt = 0;
+  private readonly cornerPosition = new THREE.Vector3();
+  private readonly cornerLookAt = new THREE.Vector3();
+  private finishCloseUpUntil = 0;
+  private finishCloseUpIndex = -1;
+  private readonly closeUpPosition = new THREE.Vector3();
+  private roundCalloutUntil = 0;
+  private roundCalloutRound = 0;
+  private readonly tmpCamera = new THREE.Vector3();
+  private readonly roundStats = new RoundStatsTracker();
+  private readonly history: EngineSnapshot[] = [];
+  private lastKnockdown: { readonly knockdown: CombatEvent; readonly hit: CombatEvent | null } | null = null;
+  private replay: { readonly plan: ReplayPlan; readonly buffer: SnapshotBuffer; readonly startedAt: number; impactFired: boolean; side: 1 | -1 | null } | null = null;
+  private readonly finishPass: ShaderPass;
+  private readonly bloomPass: UnrealBloomPass;
+  private inputLatencyMs: number | null = null;
+  private frameMsAverage = 16.7;
+  private readonly replayCameraPosition = new THREE.Vector3();
+  private readonly replayLookAt = new THREE.Vector3();
+  private frameSeconds = 0;
   private readonly pendingContacts: Array<{
     event: CombatEvent;
     presentationEvent: CombatEvent;
     presentImpact: boolean;
+    reactAmount: number | null;
     contactTick: number;
     recipientIndex: number;
     puncherIndex: number;
@@ -230,22 +587,25 @@ export class FightRenderer {
     private readonly canvas: HTMLCanvasElement,
     private readonly simulation: SimulationInfo = DEFAULT_SIM,
     private readonly settings: () => Settings,
-    options: { manualClock?: boolean } = {},
+    options: { manualClock?: boolean; localInput?: () => HeldInput | null; inputSequenceOf?: (actionId: string) => number | null } = {},
   ) {
     this.manualClock = options.manualClock === true;
+    this.localInput = options.localInput ?? null;
+    this.inputSequenceOf = options.inputSequenceOf ?? null;
+    this.buffer = new SnapshotBuffer(8, simulation.tick_rate);
     this.mapping = worldMapping(simulation);
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance", preserveDrawingBuffer: options.manualClock === true });
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 0.92;
-    this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    this.renderer.toneMappingExposure = 1.0;
+    this.renderer.setPixelRatio(this.basePixelRatio);
 
     this.scene.background = new THREE.Color("#04060b");
     this.scene.fog = new THREE.FogExp2("#04060b", 0.042);
-    this.camera = new THREE.PerspectiveCamera(38, 1, 0.1, 80);
-    this.camera.position.set(0, 2.05, 7.6);
-    this.camera.lookAt(0, 1.1, 0);
+    this.camera = new THREE.PerspectiveCamera(36, 1, 0.1, 80);
+    this.camera.position.set(0, 2.05, 5.9);
+    this.camera.lookAt(0, 1.05, 0);
 
     this.setupLights();
     this.ring = buildRing();
@@ -253,22 +613,6 @@ export class FightRenderer {
     this.arena = buildArena();
     this.scene.add(this.arena.group);
     this.effects = new Effects3D(this.scene);
-
-    this.boxers = [buildBoxer(PALETTES[0]), buildBoxer(PALETTES[1])];
-    this.animators = [new BoxerAnimator(this.boxers[0], this.mapping), new BoxerAnimator(this.boxers[1], this.mapping)];
-    this.boxers[0].root.position.set(-0.9, 0, 0);
-    this.boxers[1].root.position.set(0.9, 0, 0);
-    this.boxers[0].root.rotation.y = Math.PI / 2;
-    this.boxers[1].root.rotation.y = -Math.PI / 2;
-    this.scene.add(this.boxers[0].root, this.boxers[1].root);
-
-    this.referee = buildReferee();
-    this.referee.root.position.copy(this.refereePosition);
-    this.referee.shoulderL.rotation.x = -0.42;
-    this.referee.shoulderR.rotation.x = -0.42;
-    this.referee.elbowL.rotation.x = -0.55;
-    this.referee.elbowR.rotation.x = -0.55;
-    this.scene.add(this.referee.root);
 
     this.blobTexture = blobShadowTexture();
     const blobGeometry = new THREE.PlaneGeometry(1, 1);
@@ -283,8 +627,11 @@ export class FightRenderer {
 
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    const bloom = new UnrealBloomPass(new THREE.Vector2(1280, 720), 0.32, 0.5, 0.85);
+    const bloom = new UnrealBloomPass(new THREE.Vector2(1280, 720), 0.2, 0.45, 1.08);
+    this.bloomPass = bloom;
     this.composer.addPass(bloom);
+    this.finishPass = new ShaderPass(BROADCAST_FINISH_SHADER);
+    this.composer.addPass(this.finishPass);
     this.composer.addPass(new OutputPass());
 
     this.hudCanvas = document.createElement("canvas");
@@ -300,21 +647,45 @@ export class FightRenderer {
 
   private ensureGraphs(): void {
     if (this.glbLoading || this.graphs !== null) return;
-    if (new URLSearchParams(window.location.search).get("procedural") === "1") return;
     this.glbLoading = true;
     this.graphsReady = loadBoxerGlb()
-      .then((gltf) => {
+      .then(async (gltf) => {
         if (this.destroyed) return;
         const first = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
         const second = new SkinnedBoxer(gltf, { skin: 0x6e4128, gear: 0xb91c1c });
         this.graphs = [new BoxingGraph(first, this.mapping), new BoxingGraph(second, this.mapping)];
         this.syncInjuryPresentation(0);
         this.syncInjuryPresentation(1);
-        this.scene.add(first.root, second.root);
-        for (const boxer of this.boxers) {
-          this.scene.remove(boxer.root);
-          disposeBoxer(boxer);
+        this.refereeShirt = refereeShirtTexture();
+        const official = new SkinnedBoxer(gltf, { skin: 0xc79b76, gear: 0x3b57b8, pants: 0x14161c, bodyMap: this.refereeShirt });
+        this.referee = new BoxingGraph(official, this.mapping, { referee: true });
+        const blueShirt = cornerShirtTexture("#2b4c9e");
+        const redShirt = cornerShirtTexture("#9e2b2b");
+        this.cornerShirts.push(blueShirt, redShirt);
+        const blueCorner = new SkinnedBoxer(gltf, { skin: 0x8a5a3b, gear: 0x1b2230, pants: 0x14161c, bodyMap: blueShirt });
+        const redCorner = new SkinnedBoxer(gltf, { skin: 0xd9a77c, gear: 0x1b2230, pants: 0x14161c, bodyMap: redShirt });
+        this.cornermen = [new BoxingGraph(blueCorner, this.mapping, { referee: true }), new BoxingGraph(redCorner, this.mapping, { referee: true })];
+        const whiteShirt = cornerShirtTexture("#e3e4e8");
+        this.cornerShirts.push(whiteShirt);
+        const blueCutman = new SkinnedBoxer(gltf, { skin: 0xb98c66, gear: 0x1b2230, pants: 0x14161c, bodyMap: whiteShirt });
+        const redCutman = new SkinnedBoxer(gltf, { skin: 0x5a3a26, gear: 0x1b2230, pants: 0x14161c, bodyMap: whiteShirt });
+        this.cutmen = [new BoxingGraph(blueCutman, this.mapping, { referee: true }), new BoxingGraph(redCutman, this.mapping, { referee: true })];
+        blueCutman.root.visible = false;
+        redCutman.root.visible = false;
+        this.trails = [0x1d4ed8, 0xb91c1c].flatMap((gear) => [0, 1].map(() => new GloveTrail(new THREE.Color(gear).lerp(new THREE.Color(0xffffff), 0.55))));
+        // Compile the skinned materials, and the effects that start hidden (glove trails, blood on the
+        // canvas, severed parts), off the critical path (parallel shader compile where available) so
+        // neither the first frame with fighters nor the first bloody hit stalls the page.
+        const staging = new THREE.Group();
+        staging.add(first.root, second.root, official.root, blueCorner.root, redCorner.root, blueCutman.root, redCutman.root, ...this.trails.map((trail) => trail.mesh), ...this.effects.compileStandIns());
+        try {
+          await compileForComposer(this.renderer, this.composer, staging, this.camera, this.scene);
+        } catch {
+          // Fall back to compiling on the first draw.
         }
+        if (this.destroyed) return;
+        this.scene.add(first.root, second.root, official.root, blueCorner.root, redCorner.root, blueCutman.root, redCutman.root);
+        for (const trail of this.trails) this.scene.add(trail.mesh);
       })
       .catch((error: unknown) => {
         this.glbLoading = false;
@@ -329,7 +700,7 @@ export class FightRenderer {
   get labRigs(): THREE.Object3D[] {
     const graphs = this.graphs;
     if (graphs !== null) return [graphs[0].boxer.root, graphs[1].boxer.root];
-    return this.boxers.map((boxer) => boxer.root);
+    return [];
   }
 
   get labScene(): THREE.Scene {
@@ -348,13 +719,204 @@ export class FightRenderer {
     this.draw(virtualSeconds * 1000, true, render);
   }
 
-  setPlayers(players: Readonly<Record<string, PublicPlayer>>, viewerId: string | null): void {
+  setPlayers(players: Readonly<Record<string, PublicPlayer>>, viewerId: string | null, order: readonly string[] = Object.keys(players)): void {
     this.players = players;
     this.viewerId = viewerId;
+    this.playerOrder = order;
   }
 
+  /** Before the first snapshot the known fighters wait in guard instead of overlapping at the origin. */
+  private updateIdleFighters(dt: number, time: number, sampledTick: number): void {
+    const graphs = this.graphs;
+    if (graphs === null) return;
+    const known = this.playerOrder.filter((id) => this.players[id] !== undefined);
+    const alone = known.length < 2;
+    for (const [index, graph] of graphs.entries()) {
+      const id = this.playerOrder[index] ?? `seat-${index}`;
+      const present = alone ? id === this.viewerId || (this.viewerId === null && index === 0) : true;
+      graph.boxer.root.visible = present;
+      if (!present) continue;
+      const sign = index === 0 ? -1 : 1;
+      const idleTick = Math.floor(time * this.simulation.tick_rate);
+      const self = { ...blankFighter(id), x: alone ? 0 : sign * 180, y: alone ? -70 : 0, facing: alone ? 1 : -sign, facing_x: alone ? 0 : -sign * 1000, facing_y: alone ? -1000 : 0, ...(alone ? shadowBoxing(idleTick) : {}) };
+      const other = { ...blankFighter(this.playerOrder[1 - index] ?? "opponent"), x: alone ? 0 : -sign * 180, y: alone ? -150 : 0 };
+      graph.setResting(false);
+      graph.update(self, other, dt, time, this.settings().reducedMotion, this.bloodLevel, alone ? idleTick : sampledTick);
+    }
+  }
+
+  /** A stoppage's result panel waits for the slow-motion fall; decisions show at once. */
   setFinal(final: FinalMessage | null): void {
     this.final = final;
+    this.finalRevealAt = this.frameSeconds + finalRevealDelay(final);
+    this.pendingFinish = null;
+    if (final === null || !STOPPAGE_METHODS.has(final.method)) return;
+    const plan = this.lastKnockdown === null ? null : planKnockoutReplay(this.history, this.lastKnockdown.knockdown, this.simulation.tick_rate);
+    if (plan !== null && this.graphs !== null && !this.settings().reducedMotion) {
+      this.startReplay(plan);
+      return;
+    }
+    // The result arrives while the screen is still a few ticks behind it, so the finish waits for the
+    // punch that ended the bout to be shown.
+    const resultTick = this.buffer.latest()?.result?.tick;
+    if (resultTick === undefined) this.presentFinish(final);
+    else this.pendingFinish = { final, tick: resultTick, latestAt: this.frameSeconds + FINISH_WAIT_LIMIT_SECONDS };
+  }
+
+  /** Presents a finish waiting for its punch once the presented tick reaches the result (or the wait runs out). */
+  private presentFinishWhenShown(sampledTick: number): void {
+    const pending = this.pendingFinish;
+    if (pending === null || (sampledTick < pending.tick && this.frameSeconds < pending.latestAt)) return;
+    this.pendingFinish = null;
+    this.presentFinish(pending.final);
+  }
+
+  private presentFinish(final: FinalMessage): void {
+    this.referee?.waveOff();
+    const fighters = this.buffer.latest()?.fighters;
+    const loserIndex = fighters?.findIndex((fighter) => fighter.player_id !== final.winner_id && fighter.player_id !== null) ?? -1;
+    if (loserIndex >= 0 && this.headCacheValid[loserIndex] && !this.settings().reducedMotion) {
+      this.finishCloseUpIndex = loserIndex;
+      this.finishCloseUpUntil = this.frameSeconds + FINISH_CLOSE_UP_SECONDS;
+    }
+    if (final.winner_id === null) return;
+    const index = fighters?.findIndex((fighter) => fighter.player_id === final.winner_id) ?? -1;
+    if (index >= 0) this.graphs?.[index]?.celebrate();
+  }
+
+  /** Between rounds the broadcast cuts to each corner in turn, the viewer's own first, once its fighter is seated. */
+  private cornerShotFrame(seconds: number, snapshot: EngineSnapshot | null, reducedMotion: boolean): { position: THREE.Vector3; lookAt: THREE.Vector3 } | null {
+    if (snapshot === null || snapshot.phase !== "rest" || reducedMotion || this.graphs === null) return null;
+    const viewer = snapshot.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
+    const elapsed = seconds - this.restStartedAt;
+    const index = cornerShot(elapsed, snapshot.phase_ticks_remaining / this.simulation.tick_rate, viewer === 1 ? 1 : 0);
+    if (index === null || !this.graphs[index].stoolVisible) return null;
+    cornerFrame(index, this.mapping.x(REST_CORNER_OFFSET), cornerShotProgress(elapsed), this.cornerPosition, this.cornerLookAt);
+    return { position: this.cornerPosition, lookAt: this.cornerLookAt };
+  }
+
+  /** A short high three-quarter close-up on the beaten fighter's face, or on the head where it came to rest, before the result panel. */
+  private closeUpFrame(seconds: number): { position: THREE.Vector3; lookAt: THREE.Vector3; tight: boolean } | null {
+    if (seconds >= this.finishCloseUpUntil || this.finishCloseUpIndex < 0 || !this.headCacheValid[this.finishCloseUpIndex]) return null;
+    const severed = this.arcadeInjuries[this.finishCloseUpIndex] === "decapitation" && this.effects.severedHeadPosition(this.finishCloseUpIndex, this.closeUpTarget);
+    const head = severed ? this.closeUpTarget : this.headCache[this.finishCloseUpIndex]!;
+    const reach = severed ? 0.8 : 1.05;
+    const drift = (seconds - (this.finishCloseUpUntil - FINISH_CLOSE_UP_SECONDS)) * 0.25 - 0.2;
+    // Shoot from the ring-centre side of the fighter so the ropes stay behind the face.
+    const toCentre = Math.atan2(-head.x, -head.z);
+    const angle = (Math.hypot(head.x, head.z) > 0.4 ? toCentre : 0.9) + drift;
+    this.closeUpPosition.set(
+      THREE.MathUtils.clamp(head.x + Math.sin(angle) * reach, -TIGHT_SHOT_LIMIT, TIGHT_SHOT_LIMIT),
+      head.y + (severed ? 0.42 : 0.75),
+      THREE.MathUtils.clamp(head.z + Math.cos(angle) * reach, -TIGHT_SHOT_LIMIT, TIGHT_SHOT_LIMIT),
+    );
+    this.replayLookAt.copy(head);
+    return { position: this.closeUpPosition, lookAt: this.replayLookAt, tight: true };
+  }
+
+  /** Replays the recorded snapshots around the knockdown from a close camera before the result panel. */
+  private startReplay(plan: ReplayPlan): void {
+    const buffer = new SnapshotBuffer(plan.snapshots.length + 2, this.simulation.tick_rate);
+    for (const snapshot of plan.snapshots) buffer.push(snapshot);
+    this.replay = { plan, buffer, startedAt: this.frameSeconds, impactFired: false, side: null };
+    this.replayFollow = 0;
+    this.replayFollowAt = 0;
+    for (const index of [0, 1] as const) {
+      const injury = this.arcadeInjuries[index];
+      const event = this.arcadeInjuryEvents[index];
+      if (injury !== null && event !== null && replayReattaches(injury)) {
+        this.replayInjuries[index] = { injury, event };
+        this.restoreInjury(index);
+      }
+    }
+    for (const graph of this.graphs ?? []) graph.resetTransient(false);
+    this.finalRevealAt = this.frameSeconds + plan.durationSeconds + finalRevealDelay(this.final);
+  }
+
+  private endReplay(): void {
+    this.replay = null;
+    this.reapplyReplayInjuries();
+    const live = this.buffer.latest();
+    for (const [index, graph] of (this.graphs ?? []).entries()) graph.resetTransient(live?.fighters[index]?.is_downed === true);
+    if (this.final !== null) this.presentFinish(this.final);
+  }
+
+  private fireReplayImpact(snapshot: EngineSnapshot): void {
+    const record = this.lastKnockdown;
+    if (record === null) return;
+    const event = record.hit ?? { ...record.knockdown, kind: "hit", amount: 420, blood: 60 };
+    const { recipientIndex, puncherIndex } = contactParticipants(event, snapshot);
+    const recipient = snapshot.fighters[recipientIndex];
+    if (recipient === undefined) return;
+    this.tmpA.set(this.mapping.x(recipient.x), 0, this.mapping.z(recipient.y));
+    const spray = sprayDirection(snapshot.fighters[puncherIndex], recipient, this.mapping);
+    this.effects.addEvent(event, this.tmpA, this.settings().reducedMotion, spray);
+    const puncher = puncherIndex >= 0 ? snapshot.fighters[puncherIndex] : undefined;
+    const keyParts = puncher?.action_key?.split(":") ?? [];
+    const punchClass = (keyParts[0] ?? null) as PunchClass | null;
+    const hand = (keyParts[1] ?? null) as Hand | null;
+    this.graphs?.[recipientIndex]?.react("hit", event.detail.endsWith(":body") ? "body" : "head", event.direction, punchClass, hand, event.amount);
+    if (puncherIndex >= 0) this.graphs?.[puncherIndex]?.landedHit(false);
+    this.onContact?.(event);
+    this.reapplyReplayInjuries(spray);
+  }
+
+  private replayFrame(snapshot: EngineSnapshot, elapsed: number): { position: THREE.Vector3; lookAt: THREE.Vector3; tight: boolean } {
+    const [a, b] = snapshot.fighters;
+    const ax = this.mapping.x(a.x);
+    const az = this.mapping.z(a.y);
+    const bx = this.mapping.x(b.x);
+    const bz = this.mapping.z(b.y);
+    // A portrait screen is too narrow for both fighters up close, so it favours the one being hit;
+    // after the impact every screen follows that fighter down to the canvas.
+    const victim = snapshot.fighters.findIndex((fighter) => fighter.player_id === this.replay?.plan.impact.target_id);
+    const falling = this.replay?.impactFired === true && victim >= 0 && this.headCacheValid[victim] === true;
+    const follow = 1 - Math.exp(-3 * Math.max(0, elapsed - this.replayFollowAt));
+    this.replayFollowAt = elapsed;
+    this.replayFollow += ((falling ? 1 : 0) - this.replayFollow) * follow;
+    const favour = victim < 0 ? 0 : Math.max(this.portraitPull > 1.3 ? 0.7 : 0, this.replayFollow * 0.8);
+    const midX = (ax + bx) / 2 + ((victim === 1 ? bx : ax) - (ax + bx) / 2) * favour;
+    const midZ = (az + bz) / 2 + ((victim === 1 ? bz : az) - (az + bz) / 2) * favour;
+    let nx = -(bz - az);
+    let nz = bx - ax;
+    const length = Math.hypot(nx, nz) || 1;
+    nx /= length;
+    nz /= length;
+    const distance = 2.5;
+    const replay = this.replay;
+    // The side is chosen once so the shot never cuts across the fighters mid-replay.
+    if (replay !== null && replay.side === null) replay.side = replayCameraSide(midX, midZ, nx, nz, distance, TIGHT_SHOT_LIMIT);
+    const side = replay?.side ?? (nz < 0 ? -1 : 1);
+    nx *= side;
+    nz *= side;
+    const orbit = 0.35 * Math.sin(elapsed * 0.7);
+    const dx = nx * Math.cos(orbit) - nz * Math.sin(orbit);
+    const dz = nx * Math.sin(orbit) + nz * Math.cos(orbit);
+    this.replayCameraPosition.set(
+      THREE.MathUtils.clamp(midX + dx * distance, -TIGHT_SHOT_LIMIT, TIGHT_SHOT_LIMIT),
+      1.38 - Math.min(0.25, elapsed * 0.05),
+      THREE.MathUtils.clamp(midZ + dz * distance, -TIGHT_SHOT_LIMIT, TIGHT_SHOT_LIMIT),
+    );
+    // In a corner both sides are short of room; back off toward the ring centre instead of crowding the fighters.
+    const room = Math.hypot(this.replayCameraPosition.x - midX, this.replayCameraPosition.z - midZ);
+    const centre = Math.hypot(midX, midZ);
+    if (room < REPLAY_MINIMUM_DISTANCE && centre > 0.01) {
+      const push = REPLAY_MINIMUM_DISTANCE - room;
+      this.replayCameraPosition.x = THREE.MathUtils.clamp(this.replayCameraPosition.x - (midX / centre) * push, -TIGHT_SHOT_LIMIT, TIGHT_SHOT_LIMIT);
+      this.replayCameraPosition.z = THREE.MathUtils.clamp(this.replayCameraPosition.z - (midZ / centre) * push, -TIGHT_SHOT_LIMIT, TIGHT_SHOT_LIMIT);
+    }
+    const headHeight = falling ? THREE.MathUtils.clamp(this.headCache[victim]!.y, 0.45, 1.28) : 1.28;
+    this.replayLookAt.set(midX, 1.28 + (headHeight - 1.28) * this.replayFollow, midZ);
+    return { position: this.replayCameraPosition, lookAt: this.replayLookAt, tight: true };
+  }
+
+  setInputLatency(milliseconds: number | null): void {
+    this.inputLatencyMs = milliseconds;
+  }
+
+  /** The server clock starts over after a new connection or a paused bout, so the render clock relearns it. */
+  resyncClock(): void {
+    this.buffer.resync();
   }
 
   setReconnect(milliseconds: number): void {
@@ -389,17 +951,79 @@ export class FightRenderer {
           ? injury
           : null;
       graph.setArcadeDislocation(dislocation);
-      return;
     }
-    const boxer = this.boxers[index]!;
-    boxer.head.visible = injury !== "decapitation";
-    boxer.gloveLMesh.visible = injury !== "dismember_left";
-    boxer.gloveRMesh.visible = injury !== "dismember_right";
+  }
+
+  /**
+   * Severs the head or a hand from the fighter's current pose, flying the way the punch travelled, or
+   * sets a dislocation, and records it.
+   */
+  private applyArcadeInjury(index: number, injury: ArcadeInjury, event: CombatEvent, spray?: SprayDirection): boolean {
+    let applied = this.graphs !== null
+      && (injury === "jaw_dislocation" || injury === "shoulder_left" || injury === "shoulder_right");
+    if (injury === "decapitation") {
+      const pose = this.headWorldPose(index);
+      if (pose !== null) {
+        const graph = this.graphs?.[index];
+        const baked = graph === undefined ? undefined : bakeSkinnedPart(graph.boxer.headMesh, pose.position, pose.quaternion);
+        this.effects.decapitate(
+          index,
+          pose.position,
+          pose.quaternion,
+          spray ?? event.direction,
+          event.event_id,
+          this.skinColor(index),
+          baked,
+        );
+        const stumpPose = this.stumpWorldPose(index);
+        if (stumpPose !== null) this.effects.anchorStump(index, stumpPose.position, stumpPose.quaternion);
+        applied = true;
+      }
+    } else if (injury === "dismember_left" || injury === "dismember_right") {
+      const side = injury === "dismember_left" ? "left" : "right";
+      const pose = this.handWorldPose(index, side);
+      if (pose !== null) {
+        const graph = this.graphs?.[index];
+        const baked = graph === undefined ? undefined : bakeSkinnedPart(graph.boxer.gloveMesh(side), pose.position, pose.quaternion);
+        this.effects.dismemberHand(
+          index,
+          side,
+          pose.position,
+          pose.quaternion,
+          spray ?? event.direction,
+          event.event_id,
+          this.gearColor(index),
+          baked,
+        );
+        this.effects.anchorHandStump(index, side, pose.position, pose.quaternion);
+        applied = true;
+      }
+    }
+    if (!applied) return false;
+    this.arcadeInjuries[index] = injury;
+    this.arcadeInjuryEvents[index] = event;
+    this.observedInjuryDown[index] = false;
+    this.syncInjuryPresentation(index);
+    this.onArcadeInjury?.(injury, event);
+    return true;
+  }
+
+  /** Severed parts go back on for the replay and come off again, from the replayed pose, at its impact. */
+  private reapplyReplayInjuries(spray?: SprayDirection): void {
+    for (const index of [0, 1] as const) {
+      const stash = this.replayInjuries[index];
+      if (stash === null) continue;
+      this.replayInjuries[index] = null;
+      const settings = this.settings();
+      if (settings.blood !== "full" || settings.reducedMotion) continue;
+      this.applyArcadeInjury(index, stash.injury, { ...stash.event, event_id: stash.event.event_id + REPLAY_EVENT_ID_OFFSET }, spray);
+    }
   }
 
   private restoreInjury(index: number): void {
     if (this.arcadeInjuries[index] === null) return;
     this.arcadeInjuries[index] = null;
+    this.arcadeInjuryEvents[index] = null;
     this.observedInjuryDown[index] = false;
     this.syncInjuryPresentation(index);
     this.effects.restoreFighter(index);
@@ -413,10 +1037,9 @@ export class FightRenderer {
 
   private headWorldPose(index: number): { position: THREE.Vector3; quaternion: THREE.Quaternion } | null {
     const graphs = this.graphs;
-    const head = graphs !== null ? graphs[index]!.boxer.bone("head") : this.boxers[index]!.head;
-    if (head === null) return null;
-    if (graphs !== null) graphs[index]!.boxer.root.updateMatrixWorld(true);
-    else this.boxers[index]!.root.updateMatrixWorld(true);
+    const head = graphs !== null ? graphs[index]!.boxer.bone("head") : null;
+    if (head === null || graphs === null) return null;
+    graphs[index]!.boxer.root.updateMatrixWorld(true);
     head.getWorldPosition(this.tmpHead);
     head.getWorldQuaternion(this.tmpHeadQuaternion);
     this.tmpStumpOffset.set(0, 0.12, 0.02).applyQuaternion(this.tmpHeadQuaternion);
@@ -429,60 +1052,81 @@ export class FightRenderer {
     side: "left" | "right",
   ): { position: THREE.Vector3; quaternion: THREE.Quaternion } | null {
     const graphs = this.graphs;
-    const hand = graphs !== null
-      ? graphs[index]!.boxer.bone(side === "left" ? "gloveL" : "gloveR")
-      : side === "left" ? this.boxers[index]!.gloveL : this.boxers[index]!.gloveR;
-    if (hand === null) return null;
-    if (graphs !== null) graphs[index]!.boxer.root.updateMatrixWorld(true);
-    else this.boxers[index]!.root.updateMatrixWorld(true);
+    const hand = graphs !== null ? graphs[index]!.boxer.bone(side === "left" ? "gloveL" : "gloveR") : null;
+    if (hand === null || graphs === null) return null;
+    graphs[index]!.boxer.root.updateMatrixWorld(true);
     hand.getWorldPosition(this.tmpPart);
     hand.getWorldQuaternion(this.tmpPartQuaternion);
     return { position: this.tmpPart, quaternion: this.tmpPartQuaternion };
   }
 
   private gearColor(index: number): number {
-    const graphs = this.graphs;
-    return graphs !== null
-      ? graphs[index]!.boxer.gearBaseColor.getHex()
-      : this.boxers[index]!.gloveBaseColor.getHex();
+    return this.graphs?.[index]?.boxer.gearBaseColor.getHex() ?? 0x1d4ed8;
   }
 
   private skinColor(index: number): number {
-    const graphs = this.graphs;
-    return graphs !== null
-      ? graphs[index]!.boxer.skinBaseColor.getHex()
-      : this.boxers[index]!.skinMaterial.color.getHex();
+    return this.graphs?.[index]?.boxer.skinBaseColor.getHex() ?? 0xb0703f;
   }
 
   private stumpWorldPose(index: number): { position: THREE.Vector3; quaternion: THREE.Quaternion } | null {
     const graphs = this.graphs;
-    const anchor = graphs !== null ? graphs[index]!.boxer.bone("Neck_012") : this.boxers[index]!.head;
-    if (anchor === null) return null;
-    if (graphs !== null) graphs[index]!.boxer.root.updateMatrixWorld(true);
-    else this.boxers[index]!.root.updateMatrixWorld(true);
+    const anchor = graphs !== null ? graphs[index]!.boxer.bone("Neck_012") : null;
+    if (anchor === null || graphs === null) return null;
+    graphs[index]!.boxer.root.updateMatrixWorld(true);
     anchor.getWorldPosition(this.tmpStump);
     anchor.getWorldQuaternion(this.tmpStumpQuaternion);
-    if (graphs === null) {
-      this.tmpStumpOffset.set(0, -0.085, 0).applyQuaternion(this.tmpStumpQuaternion);
-      this.tmpStump.add(this.tmpStumpOffset);
-    }
     return { position: this.tmpStump, quaternion: this.tmpStumpQuaternion };
   }
 
   predictAction(action: SemanticAction): void {
     const latest = this.buffer.latest();
-    if (latest === null || this.viewerId === null) return;
+    if (latest === null || this.viewerId === null || this.replay !== null) return;
     const index = latest.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
     if (index < 0) return;
-    const graphs = this.graphs;
-    if (graphs !== null) graphs[index]!.predict(action, performance.now() / 1000, this.simulation.tick_rate);
-    else this.animators[index]!.predict(action, performance.now() / 1000, this.simulation.tick_rate);
+    // The server turns a punch or an evasion down outside the fight phase and while the fighter cannot act or pay for it.
+    const fighter = latest.fighters[index]!;
+    if (latest.phase !== "fight" || !canStartPunch(fighter)) return;
+    const leadTicks = ((this.inputLatencyMs ?? 60) / 1000) * this.simulation.tick_rate + this.buffer.interpolationDelayTicks;
+    if (isEvasion(action.kind)) {
+      // Behind a punch the server holds it, so it is shown at once only when the fighter is free.
+      const busy = this.graphs?.[index]?.ownPunchActive === true || attackTicksRemaining(fighter, latest.tick) > 0 || fighter.queued_actions > 0;
+      if (!busy && action.id !== undefined && fighter.stamina >= EVASION_STAMINA) {
+        this.evasion.press(action.kind, action.id, this.manualClock ? this.lastManualTime : performance.now(), leadTicks, this.simulation.tick_rate);
+      }
+      return;
+    }
+    if (action.kind !== "punch" || !canAffordPunch(fighter, action)) return;
+    this.graphs?.[index]?.predict(action, performance.now() / 1000, this.simulation.tick_rate, leadTicks, predictedPunchTiming(fighter, action, latest.tick + 1));
+  }
+
+  /**
+   * Every snapshot, as it arrives, tells the viewer's own punches whether the server took them (matching
+   * each press to the input frame that carried it), and both fighters' punches how they met the opponent.
+   */
+  private acknowledgeActions(snapshot: EngineSnapshot, events: readonly CombatEvent[]): void {
+    for (const [index, fighter] of snapshot.fighters.entries()) {
+      const viewer = fighter.player_id === this.viewerId;
+      if (viewer) this.evasion.acknowledge(fighter, snapshot.phase === "fight", this.inputSequenceOf);
+      const contacts = events.filter((event) => contactParticipants(event, snapshot).puncherIndex === index);
+      this.graphs?.[index]?.acknowledge(fighter, snapshot.phase === "fight", contacts, viewer ? this.inputSequenceOf : null);
+    }
   }
 
   push(snapshot: EngineSnapshot): void {
-    if (!this.buffer.push(snapshot)) return;
+    if (!this.buffer.push(snapshot, this.manualClock ? this.lastManualTime : performance.now())) return;
     const accepted = this.dedupe.accept(snapshot.events);
-    for (const { event, presentationEvent, presentImpact } of contactPresentationPlan(accepted, snapshot)) {
+    this.acknowledgeActions(snapshot, accepted);
+    this.history.push(snapshot);
+    if (this.history.length > HISTORY_LIMIT) this.history.shift();
+    for (const event of accepted) {
+      this.roundStats.record(event);
+      if (event.kind === "knockdown") {
+        const hit = accepted.find((candidate) => (candidate.kind === "hit" || candidate.kind === "counter_hit") && candidate.target_id === event.target_id) ?? null;
+        this.lastKnockdown = { knockdown: event, hit };
+      }
+      if (event.kind === "referee_break") this.referee?.breakClinch();
+    }
+    for (const { event, presentationEvent, presentImpact, reactAmount } of contactPresentationPlan(accepted, snapshot)) {
       const targetIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.target_id);
       const actorIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.actor_id);
       const { recipientIndex, puncherIndex } = contactParticipants(event, snapshot);
@@ -497,6 +1141,7 @@ export class FightRenderer {
           event,
           presentationEvent,
           presentImpact,
+          reactAmount,
           contactTick: puncher?.action_contact_tick ?? event.tick,
           recipientIndex,
           puncherIndex,
@@ -516,13 +1161,24 @@ export class FightRenderer {
         continue;
       }
       this.pendingContacts.splice(index, 1);
-      const { event, presentationEvent, presentImpact, recipientIndex, puncherIndex, injury } = pending;
+      const { event, presentationEvent, presentImpact, reactAmount, recipientIndex, puncherIndex, injury } = pending;
       const target = this.buffer.latest()?.fighters[recipientIndex];
+      const spray = sprayDirection(this.buffer.latest()?.fighters[puncherIndex], target, this.mapping);
       if (presentImpact && target !== undefined) {
         this.tmpA.set(this.mapping.x(target.x), 0, this.mapping.z(target.y));
-        this.effects.addEvent(presentationEvent, this.tmpA, this.settings().reducedMotion);
+        this.effects.addEvent(presentationEvent, this.tmpA, this.settings().reducedMotion, spray);
       }
       const currentSettings = this.settings();
+      if (presentImpact) this.arena.excite(CROWD_EXCITEMENT[event.kind] ?? 0);
+      if (
+        presentImpact
+        && recipientIndex >= 0
+        && this.viewerId !== null
+        && this.buffer.latest()?.fighters[recipientIndex]?.player_id === this.viewerId
+        && ["hit", "counter_hit", "knockdown"].includes(event.kind)
+      ) {
+        this.viewerHitFlash = Math.max(this.viewerHitFlash, Math.min(1, 0.35 + event.amount / 400));
+      }
       if (
         injury !== null
         && recipientIndex >= 0
@@ -530,64 +1186,38 @@ export class FightRenderer {
         && currentSettings.blood === "full"
         && !currentSettings.reducedMotion
       ) {
-        let applied = this.graphs !== null
-          && (injury === "jaw_dislocation" || injury === "shoulder_left" || injury === "shoulder_right");
-        if (injury === "decapitation") {
-          const pose = this.headWorldPose(recipientIndex);
-          if (pose !== null) {
-            this.effects.decapitate(
-              recipientIndex,
-              pose.position,
-              pose.quaternion,
-              event.direction,
-              event.event_id,
-              this.skinColor(recipientIndex),
-            );
-            const stumpPose = this.stumpWorldPose(recipientIndex);
-            if (stumpPose !== null) this.effects.anchorStump(recipientIndex, stumpPose.position, stumpPose.quaternion);
-            applied = true;
-          }
-        } else if (injury === "dismember_left" || injury === "dismember_right") {
-          const side = injury === "dismember_left" ? "left" : "right";
-          const pose = this.handWorldPose(recipientIndex, side);
-          if (pose !== null) {
-            this.effects.dismemberHand(
-              recipientIndex,
-              side,
-              pose.position,
-              pose.quaternion,
-              event.direction,
-              event.event_id,
-              this.gearColor(recipientIndex),
-            );
-            this.effects.anchorHandStump(recipientIndex, side, pose.position, pose.quaternion);
-            applied = true;
-          }
-        }
-        if (applied) {
-          this.arcadeInjuries[recipientIndex] = injury;
-          this.observedInjuryDown[recipientIndex] = false;
-          this.syncInjuryPresentation(recipientIndex);
-          this.onArcadeInjury?.(injury, event);
-        }
+        this.applyArcadeInjury(recipientIndex, injury, event, spray);
       }
       const graphs = this.graphs;
       if (
         presentImpact
         && recipientIndex >= 0
+        && ["hit", "counter_hit", "knockdown"].includes(event.kind)
+        && presentationEvent.detail.endsWith(":head")
+        && event.amount >= 260
+        && !currentSettings.reducedMotion
+        && currentSettings.blood !== "off"
+      ) {
+        const pose = this.headWorldPose(recipientIndex);
+        if (pose !== null) {
+          this.tmpB.set(0, -0.07, 0.1).applyQuaternion(pose.quaternion).add(pose.position);
+          this.effects.spawnTeeth(this.tmpB, spray ?? presentationEvent.direction, event.kind === "knockdown" ? 3 : 1 + Math.floor((event.amount - 260) / 120), event.event_id);
+        }
+      }
+      if (
+        presentImpact
+        && recipientIndex >= 0
+        && reactAmount !== null
         && ["hit", "counter_hit", "block", "perfect_block", "knockdown"].includes(event.kind)
       ) {
         const blocked = event.kind === "block" || event.kind === "perfect_block";
         const targetKind = presentationEvent.detail.endsWith(":body") ? "body" : "head";
         if (graphs !== null) {
-          graphs[recipientIndex]!.react(blocked ? "block" : "hit", targetKind, presentationEvent.direction);
-        } else {
-          this.animators[recipientIndex]!.impact({
-            direction: presentationEvent.direction,
-            amount: blocked ? event.amount * 0.35 : event.amount,
-            blocked,
-            target: targetKind,
-          });
+          const puncher = puncherIndex >= 0 ? this.buffer.latest()?.fighters[puncherIndex] : undefined;
+          const keyParts = puncher?.action_key?.split(":") ?? [];
+          const punchClass = (keyParts[0] ?? presentationEvent.detail.split(":")[0] ?? null) as PunchClass | null;
+          const punchHand = (keyParts[1] ?? null) as Hand | null;
+          graphs[recipientIndex]!.react(blocked ? "block" : "hit", targetKind, presentationEvent.direction, punchClass, punchHand, reactAmount);
         }
       }
       if (
@@ -595,55 +1225,81 @@ export class FightRenderer {
         && puncherIndex >= 0
         && ["hit", "counter_hit", "block", "perfect_block", "guard_break"].includes(event.kind)
       ) {
-        if (graphs !== null) graphs[puncherIndex]!.landedHit(event.kind === "block" || event.kind === "perfect_block");
-        else this.animators[puncherIndex]!.landedHit(event.kind === "block" || event.kind === "perfect_block");
+        graphs?.[puncherIndex]?.landedHit(event.kind === "block" || event.kind === "perfect_block");
       }
       this.onContact?.(event);
     }
   }
 
+  /** True once the result panel is on screen, after any knockout replay and close-up. */
+  get resultVisible(): boolean {
+    return this.final !== null && this.frameSeconds >= this.finalRevealAt;
+  }
+
+  get resolutionScale(): number {
+    return this.scaler.scale;
+  }
+
+  /** Snapshot for the diagnostics panel: smoothed frame time, render scale, GPU objects and the graphics adapter. */
+  get diagnostics(): { frameMs: number; resolutionScale: number; gpu: { geometries: number; textures: number; programs: number }; graphics: string } {
+    const gl = this.renderer.getContext();
+    const info = gl.getExtension("WEBGL_debug_renderer_info");
+    const graphics = info === null ? gl.getParameter(gl.RENDERER) : gl.getParameter(info.UNMASKED_RENDERER_WEBGL);
+    return { frameMs: this.frameMsAverage, resolutionScale: this.scaler.scale, gpu: this.memoryInfo, graphics: String(graphics) };
+  }
+
+  /** Live GPU object counts from three, for leak checks across rematches. */
+  get memoryInfo(): { geometries: number; textures: number; programs: number } {
+    return { geometries: this.renderer.info.memory.geometries, textures: this.renderer.info.memory.textures, programs: this.renderer.info.programs?.length ?? 0 };
+  }
+
+  private applyResolutionScale(): void {
+    const ratio = this.basePixelRatio * this.scaler.scale;
+    this.renderer.setPixelRatio(ratio);
+    this.composer.setPixelRatio(ratio);
+    // At the bottom of the scale the client is struggling: drop bloom and the key shadow entirely.
+    const low = this.scaler.scale <= LOW_TIER_SCALE;
+    this.bloomPass.enabled = !low;
+    if (this.keyLight !== null) setKeyShadowTier(this.keyLight.shadow, low, this.scaler.scale < 0.8 ? 1024 : 2048);
+  }
+
   private setupLights(): void {
-    const hemisphere = new THREE.HemisphereLight("#5a6a95", "#0c0e16", 1.2);
+    const hemisphere = new THREE.HemisphereLight("#3c4a72", "#07080c", 0.55);
     this.scene.add(hemisphere);
     this.lights.push(hemisphere);
 
-    const ambient = new THREE.AmbientLight("#3a4468", 1.05);
-    this.scene.add(ambient);
-    this.lights.push(ambient);
-
-    const key = new THREE.SpotLight("#fff4e0", 115, 26, 0.68, 0.6, 1.6);
-    key.position.set(0, 7.4, 0.9);
-    key.target.position.set(0, 0, 0);
+    const key = new THREE.SpotLight("#fff1dc", 150, 24, 0.56, 0.55, 1.7);
+    key.position.set(0.6, 7.4, 1.2);
+    key.target.position.set(0, 0.6, 0);
     key.castShadow = true;
     key.shadow.mapSize.set(2048, 2048);
-    key.shadow.bias = -0.0004;
+    key.shadow.bias = KEY_SHADOW_BIAS;
     key.shadow.camera.near = 3;
     key.shadow.camera.far = 14;
     this.keyLight = key;
     this.scene.add(key, key.target);
     this.lights.push(key);
 
-    const fills: Array<[string, number, number, number]> = [
-      ["#b9cdff", -6.5, 4.4, -5.2],
-      ["#ffd9b9", 6.2, 4.1, -5.6],
-      ["#9fb8ff", -5.4, 3.6, 6.0],
-      ["#c9d8ff", 5.8, 3.9, 5.7],
+    const secondary = new THREE.SpotLight("#ffe6c8", 95, 24, 0.6, 0.6, 1.7);
+    secondary.position.set(-2.6, 7.0, -2.2);
+    secondary.target.position.set(0, 0.8, 0);
+    this.scene.add(secondary, secondary.target);
+    this.lights.push(secondary);
+
+    const rims: Array<[string, number, number, number]> = [
+      ["#8fa8ff", -5.5, 3.8, -5.4],
+      ["#7f95e8", 5.6, 3.6, -5.6],
     ];
-    for (const [color, x, y, z] of fills) {
-      const fill = new THREE.SpotLight(color, 105, 30, 0.7, 0.8, 1.8);
-      fill.position.set(x, y, z);
-      fill.target.position.set(0, 1, 0);
-      this.scene.add(fill, fill.target);
-      this.lights.push(fill);
+    for (const [color, x, y, z] of rims) {
+      const rim = new THREE.SpotLight(color, 34, 30, 0.72, 0.9, 1.8);
+      rim.position.set(x, y, z);
+      rim.target.position.set(0, 1.2, 0);
+      this.scene.add(rim, rim.target);
+      this.lights.push(rim);
     }
 
-    const rim = new THREE.DirectionalLight("#dfe9ff", 0.7);
-    rim.position.set(0, 3.4, -6.5);
-    this.scene.add(rim);
-    this.lights.push(rim);
-
-    const follow = new THREE.SpotLight("#ffe8d0", 55, 22, 0.34, 0.75, 1.5);
-    follow.position.set(0, 5.6, 5.2);
+    const follow = new THREE.SpotLight("#ffe8d0", 48, 22, 0.32, 0.8, 1.5);
+    follow.position.set(0, 5.8, 5.4);
     follow.target.position.set(0, 1, 0);
     this.scene.add(follow, follow.target);
     this.lights.push(follow);
@@ -652,8 +1308,17 @@ export class FightRenderer {
 
   private draw(time: number, manual = false, render = true): void {
     if (this.destroyed) return;
-    const dt = manual ? 1 / 60 : Math.min(0.05, Math.max(0.001, (time - this.previous) / 1000));
+    const frameMs = time - this.previous;
+    let dt = manual ? 1 / 60 : Math.min(0.05, Math.max(0.001, frameMs / 1000));
     this.previous = time;
+    if (!manual && this.scaler.record(frameMs)) this.applyResolutionScale();
+    if (!manual && frameMs > 0 && frameMs < 1000) this.frameMsAverage += (frameMs - this.frameMsAverage) * 0.05;
+    // Zooming or moving the window to another monitor changes the pixel ratio, often without a resize.
+    const pixelRatio = Math.min(this.pixelRatioCap, window.devicePixelRatio || 1);
+    if (pixelRatio !== this.basePixelRatio) {
+      this.basePixelRatio = pixelRatio;
+      this.applyResolutionScale();
+    }
 
     const width = this.canvas.clientWidth;
     const height = this.canvas.clientHeight;
@@ -663,23 +1328,58 @@ export class FightRenderer {
         this.renderer.setSize(width, height, false);
         this.composer.setSize(width, height);
         this.camera.aspect = width / height;
+        // Narrow viewports widen the lens a little and pull the camera back (see the frame step below).
+        this.portraitPull = THREE.MathUtils.clamp(1.2 / this.camera.aspect, 1, 2.2);
+        this.camera.fov = 36 * Math.min(1.3, Math.sqrt(this.portraitPull));
         this.camera.updateProjectionMatrix();
       }
     }
 
     const seconds = time / 1000;
+    this.frameSeconds = seconds;
+    this.finishPass.uniforms.uTime!.value = seconds % 1000;
+    if (manual) this.lastManualTime = time;
     const current = this.settings();
     this.setBloodLevel(current.blood);
 
     const latest = this.buffer.latest();
-    const sampledTick = latest === null ? 0 : presentationTickFor(latest);
-    const snapshot = latest === null ? null : this.buffer.sample(sampledTick);
+    const finishing = latest?.result !== null && latest?.result !== undefined
+      && STOPPAGE_METHODS.has(latest.result.finish_method);
+    if (finishing && !this.finishSeen) {
+      this.finishSeen = true;
+      this.finishSlowMotion = 2.2;
+      this.arena.excite(1);
+    }
+    if (this.finishSlowMotion > 0 && !current.reducedMotion) {
+      this.finishSlowMotion = Math.max(0, this.finishSlowMotion - dt);
+      const eased = Math.min(1, this.finishSlowMotion / 0.5);
+      dt *= 0.3 + 0.7 * (1 - eased);
+    }
+    this.viewerHitFlash = Math.max(0, this.viewerHitFlash - dt * 3.2);
+    let sampledTick = latest === null ? 0 : manual ? presentationTickFor(latest) : this.buffer.renderTick(time);
+    let snapshot = latest === null ? null : this.applyLocalPrediction(this.buffer.sample(sampledTick), dt, time);
+    const replay = this.replay;
+    if (replay !== null) {
+      const elapsed = seconds - replay.startedAt;
+      if (elapsed >= replay.plan.durationSeconds) {
+        this.endReplay();
+      } else {
+        sampledTick = replayTick(replay.plan, elapsed, this.simulation.tick_rate);
+        snapshot = replay.buffer.sample(sampledTick) ?? snapshot;
+        if (!replay.impactFired && sampledTick >= replay.plan.impact.tick && snapshot !== null) {
+          replay.impactFired = true;
+          this.fireReplayImpact(snapshot);
+        }
+      }
+    }
+    // Everyone in the ring moves in slow motion with the replayed snapshots.
+    const actorDt = this.replay !== null ? dt * this.replay.plan.speed : dt;
     let separation = 1.8;
     let knockdown = false;
     if (snapshot !== null) {
       const [a, b] = snapshot.fighters;
       for (const [index, fighter] of snapshot.fighters.entries()) {
-        if (this.arcadeInjuries[index] === null) continue;
+        if (this.arcadeInjuries[index] === null || this.replay !== null) continue;
         if (fighter.is_downed) this.observedInjuryDown[index] = true;
         else if (this.observedInjuryDown[index] && snapshot.result === null) this.restoreInjury(index);
       }
@@ -687,8 +1387,21 @@ export class FightRenderer {
       if (graphs !== null) {
         const headA = this.headCacheValid[0] ? this.headCache[0] : undefined;
         const headB = this.headCacheValid[1] ? this.headCache[1] : undefined;
-        graphs[0].update(a, b, dt, seconds, current.reducedMotion, current.blood, sampledTick, headB);
-        graphs[1].update(b, a, dt, seconds, current.reducedMotion, current.blood, sampledTick, headA);
+        graphs[0].boxer.root.visible = true;
+        graphs[1].boxer.root.visible = true;
+        graphs[0].setResting(snapshot.phase === "rest");
+        graphs[1].setResting(snapshot.phase === "rest");
+        const countdown = snapshot.phase === "countdown" ? snapshot.phase_ticks_remaining : null;
+        graphs[0].setCountdown(countdown);
+        graphs[1].setCountdown(countdown);
+        if (snapshot.phase === "fight" && this.lastPhase === "rest" && this.replay === null) {
+          this.roundCalloutUntil = seconds + ROUND_CALLOUT_SECONDS;
+          this.roundCalloutRound = snapshot.round_number;
+        }
+        if (snapshot.phase === "rest" && this.lastPhase !== "rest") this.restStartedAt = seconds;
+        this.lastPhase = snapshot.phase;
+        graphs[0].update(a, b, actorDt, seconds, current.reducedMotion, current.blood, sampledTick, headB);
+        graphs[1].update(b, a, actorDt, seconds, current.reducedMotion, current.blood, sampledTick, headA);
         for (const [index, graph] of graphs.entries()) {
           const headBone = graph.boxer.bone("head");
           if (headBone !== null) {
@@ -697,9 +1410,6 @@ export class FightRenderer {
             this.headCacheValid[index] = true;
           }
         }
-      } else {
-        this.animators[0].update(a, b, dt, seconds, current.reducedMotion, current.blood, sampledTick);
-        this.animators[1].update(b, a, dt, seconds, current.reducedMotion, current.blood, sampledTick);
       }
       for (let index = 0; index < this.arcadeInjuries.length; index += 1) {
         const injury = this.arcadeInjuries[index];
@@ -718,6 +1428,7 @@ export class FightRenderer {
       const bz = this.mapping.z(b.y);
       separation = Math.hypot(ax - bx, az - bz);
       knockdown = a.is_downed || b.is_downed;
+      this.ring.setRopeContacts({ x: ax, z: az }, { x: bx, z: bz });
       this.tmpA.set(ax, 0, az);
       this.tmpB.set(bx, 0, bz);
       for (const [index, fighter] of snapshot.fighters.entries()) {
@@ -747,17 +1458,22 @@ export class FightRenderer {
     } else {
       this.tmpA.set(-0.9, 0, 0);
       this.tmpB.set(0.9, 0, 0);
+      this.updateIdleFighters(dt, seconds, sampledTick);
     }
 
     this.arena.update(seconds, dt, current.reducedMotion);
-    this.effects.update(dt);
-    this.updateReferee(dt, seconds, current.reducedMotion);
+    this.effects.update(actorDt);
+    this.updateTrails(actorDt, current.reducedMotion);
+    this.updateReferee(actorDt, seconds, snapshot, sampledTick);
+    this.updateCornermen(actorDt, seconds, snapshot, sampledTick);
+    this.updateCutmen(actorDt, seconds, snapshot, sampledTick);
     this.updateBlobShadows();
     this.fireContacts(sampledTick);
+    this.presentFinishWhenShown(sampledTick);
     if (this.followSpot !== null) {
       this.followSpot.target.position.set((this.tmpA.x + this.tmpB.x) / 2, 1.0, (this.tmpA.z + this.tmpB.z) / 2);
     }
-    const frame = this.cameraOverride ?? this.director.update(
+    const directed = this.director.update(
       dt,
       seconds,
       { x: this.tmpA.x, z: this.tmpA.z },
@@ -767,8 +1483,23 @@ export class FightRenderer {
       this.effects.shakeAmount,
       current.reducedMotion,
     );
-    this.camera.position.copy(frame.position);
-    this.camera.lookAt(frame.lookAt);
+    const replaying = this.replay;
+    const frame: { position: THREE.Vector3; lookAt: THREE.Vector3; tight?: boolean } = this.cameraOverride ?? (replaying !== null && snapshot !== null ? this.replayFrame(snapshot, seconds - replaying.startedAt) : (this.closeUpFrame(seconds) ?? this.cornerShotFrame(seconds, snapshot, current.reducedMotion) ?? directed));
+    if (this.cameraOverride === null && this.portraitPull > 1) {
+      const tight = frame.tight === true;
+      const pull = this.portraitPull / Math.min(1.3, Math.sqrt(this.portraitPull));
+      const distanceScale = tight ? Math.min(pull, 1.25) : pull;
+      this.tmpCamera.subVectors(frame.position, frame.lookAt).multiplyScalar(distanceScale);
+      this.camera.position.copy(frame.lookAt).add(this.tmpCamera);
+      if (tight) {
+        this.camera.position.x = THREE.MathUtils.clamp(this.camera.position.x, -TIGHT_SHOT_LIMIT, TIGHT_SHOT_LIMIT);
+        this.camera.position.z = THREE.MathUtils.clamp(this.camera.position.z, -TIGHT_SHOT_LIMIT, TIGHT_SHOT_LIMIT);
+      }
+      this.camera.lookAt(frame.lookAt.x, frame.lookAt.y - (this.portraitPull - 1) * (tight ? 0.08 : 0.45), frame.lookAt.z);
+    } else {
+      this.camera.position.copy(frame.position);
+      this.camera.lookAt(frame.lookAt);
+    }
 
     if (render) {
       this.composer.render();
@@ -778,16 +1509,40 @@ export class FightRenderer {
     if (!this.destroyed && !this.manualClock) this.raf = requestAnimationFrame((next) => this.draw(next));
   }
 
+  private applyLocalPrediction(snapshot: EngineSnapshot | null, dt: number, timeMs: number): EngineSnapshot | null {
+    if (snapshot === null || this.localInput === null || this.viewerId === null) return snapshot;
+    const index = snapshot.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
+    const held = this.localInput() ?? { moveX: 0, moveY: 0, defense: "none" };
+    // Shown as far ahead of the snapshot on screen as an input pressed now takes to show up in it: the
+    // round trip plus the interpolation delay. The player's own punch starts here before the server
+    // has it, and holds the feet from then on.
+    const leadTicks = ((this.inputLatencyMs ?? 60) / 1000) * this.simulation.tick_rate + this.buffer.interpolationDelayTicks;
+    const fighting = index >= 0 && snapshot.phase === "fight" ? snapshot.fighters[index]! : null;
+    const holdFeet = this.graphs?.[index]?.ownPunchActive === true || this.evasion.holdsFeet(timeMs, this.simulation.tick_rate);
+    const local = this.movement.update(fighting, held, holdFeet, timeMs, leadTicks, snapshot.tick, dt, this.simulation.tick_rate);
+    // The guard is the most latency-sensitive thing the player controls: it is shown as held, and a
+    // slip, weave or pull on the press, wherever the server is not overriding it.
+    const evading = this.evasion.pose(timeMs);
+    if (index < 0) return snapshot;
+    const viewer = snapshot.fighters[index]!;
+    const defense = fighting !== null ? predictedDefense(fighting, held, evading) : viewer.defense;
+    if (Math.abs(local.dx) < 0.01 && Math.abs(local.dy) < 0.01 && defense === viewer.defense) return snapshot;
+    const offset = constrainPrediction(viewer, local, snapshot.fighters[index === 0 ? 1 : 0] ?? null);
+    const predicted = { ...viewer, x: viewer.x + offset.dx, y: viewer.y + offset.dy, defense };
+    const fighters: [FighterSnapshot, FighterSnapshot] = index === 0 ? [predicted, snapshot.fighters[1]] : [snapshot.fighters[0], predicted];
+    return { ...snapshot, fighters };
+  }
+
   private headHeightOf(index: number): number {
-    const graphs = this.graphs;
-    if (graphs !== null) return graphs[index]!.boxer.metrics.headRestY + 0.04;
-    return 1.56;
+    return (this.graphs?.[index]?.boxer.metrics.headRestY ?? 1.52) + 0.04;
   }
 
   private updateBlobShadows(): void {
     const anchors = [this.tmpA, this.tmpB, this.refereePosition];
     for (const [index, blob] of this.blobShadows.entries()) {
-      const anchor = anchors[index]!;
+      // A fighter's blob sits under the rendered fighter, who walks in from his mark for the glove touch.
+      const graph = index < 2 ? this.graphs?.[index] : undefined;
+      const anchor = graph?.boxer.root.visible === true ? graph.currentRoot : anchors[index]!;
       blob.position.x = anchor.x;
       blob.position.z = anchor.z;
       const downed = index < 2 && this.buffer.latest()?.fighters[index]?.is_downed === true;
@@ -795,32 +1550,135 @@ export class FightRenderer {
     }
   }
 
-  private updateReferee(dt: number, time: number, reducedMotion: boolean): void {
-    const midX = (this.tmpA.x + this.tmpB.x) / 2;
-    const midZ = (this.tmpA.z + this.tmpB.z) / 2;
-    const away = this.refereeAway.set(this.refereePosition.x - midX, 0, this.refereePosition.z - midZ);
+  private updateReferee(dt: number, time: number, snapshot: EngineSnapshot | null, sampledTick: number): void {
+    const referee = this.referee;
+    if (referee === null) return;
+    const downed = snapshot?.fighters.find((fighter) => fighter.is_downed) ?? null;
+    const clinched = snapshot?.fighters.some((fighter) => fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0) ?? false;
+    const breaking = downed === null && referee.breaking;
+    const focusX = downed !== null ? this.mapping.x(downed.x) : (this.tmpA.x + this.tmpB.x) / 2;
+    const focusZ = downed !== null ? this.mapping.z(downed.y) : (this.tmpA.z + this.tmpB.z) / 2;
+    const away = this.refereeAway.set(this.refereePosition.x - focusX, 0, this.refereePosition.z - focusZ);
     if (away.lengthSq() < 0.01) away.set(0, 0, -1);
     away.normalize();
-    const targetX = THREE.MathUtils.clamp(midX + away.x * 2.05, -2.4, 2.4);
-    const targetZ = THREE.MathUtils.clamp(midZ + away.z * 2.05, -2.4, 2.4);
-    const rate = 1 - Math.exp(-1.6 * dt);
-    this.refereePosition.x += (targetX - this.refereePosition.x) * rate;
-    this.refereePosition.z += (targetZ - this.refereePosition.z) * rate;
+    if (breaking) {
+      // He steps in square to the line between the two, on his side of it, so a hand reaches each chest.
+      const acrossX = this.tmpB.z - this.tmpA.z;
+      const acrossZ = this.tmpA.x - this.tmpB.x;
+      const across = Math.hypot(acrossX, acrossZ);
+      const side = acrossX * away.x + acrossZ * away.z >= 0 ? 1 : -1;
+      if (across > 0.01) away.set((acrossX / across) * side, 0, (acrossZ / across) * side);
+    }
+    const { standoff, clearance } = refereeSpacing(downed !== null, clinched, breaking);
+    const targetX = THREE.MathUtils.clamp(focusX + away.x * standoff, -2.4, 2.4);
+    const targetZ = THREE.MathUtils.clamp(focusZ + away.z * standoff, -2.4, 2.4);
+    const previousX = this.refereePosition.x;
+    const previousZ = this.refereePosition.z;
+    // A break is a brisk step in, never faster than REFEREE_BREAK_SPEED; otherwise he drifts into place.
+    const rate = 1 - Math.exp(-(breaking ? 8 : 1.6) * dt);
+    const pace = breaking ? Math.min(1, (REFEREE_BREAK_SPEED * dt) / Math.max(1e-6, Math.hypot(targetX - this.refereePosition.x, targetZ - this.refereePosition.z) * rate)) : 1;
+    this.refereePosition.x += (targetX - this.refereePosition.x) * rate * pace;
+    this.refereePosition.z += (targetZ - this.refereePosition.z) * rate * pace;
     for (const fighter of [this.tmpA, this.tmpB]) {
       const dx = this.refereePosition.x - fighter.x;
       const dz = this.refereePosition.z - fighter.z;
       const distance = Math.hypot(dx, dz);
-      if (distance < 1.45 && distance > 0.001) {
-        this.refereePosition.x = fighter.x + (dx / distance) * 1.45;
-        this.refereePosition.z = fighter.z + (dz / distance) * 1.45;
+      if (distance < clearance && distance > 0.001) {
+        this.refereePosition.x = fighter.x + (dx / distance) * clearance;
+        this.refereePosition.z = fighter.z + (dz / distance) * clearance;
       }
     }
-    this.referee.root.position.set(this.refereePosition.x, 0, this.refereePosition.z);
-    const yaw = Math.atan2(midX - this.refereePosition.x, midZ - this.refereePosition.z);
-    let yawDelta = ((yaw - this.refereeYaw + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
-    this.refereeYaw += yawDelta * (1 - Math.exp(-3 * dt));
-    this.referee.root.rotation.y = this.refereeYaw;
-    this.referee.hips.position.y = 0.98 + (reducedMotion ? 0 : Math.sin(time * 1.7) * 0.006);
+    if (dt > 0) {
+      this.refereeVelocity.set((this.refereePosition.x - previousX) / dt, 0, (this.refereePosition.z - previousZ) / dt);
+    }
+    const yaw = Math.atan2(focusX - this.refereePosition.x, focusZ - this.refereePosition.z);
+    const yawDelta = ((yaw - this.refereeYaw + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+    this.refereeYaw += yawDelta * (1 - Math.exp(-(breaking ? 8 : 3) * dt));
+    const state = refereeSnapshot(this.refereePosition, this.refereeYaw, this.refereeVelocity, this.mapping);
+    referee.setRefereeCount(downed !== null, downed?.get_up_count ?? 0);
+    referee.aimBreak(this.tmpA, this.tmpB);
+    referee.update(state.self, state.focus, dt, time, false, "off", sampledTick);
+  }
+
+  private updateTrails(dt: number, reducedMotion: boolean): void {
+    const graphs = this.graphs;
+    if (graphs === null || this.trails.length < 4) return;
+    for (const [index, graph] of graphs.entries()) {
+      for (const [gloveIndex, bone] of (["gloveL", "gloveR"] as const).entries()) {
+        const trail = this.trails[index * 2 + gloveIndex]!;
+        if (!graph.boxer.root.visible) {
+          trail.reset();
+          continue;
+        }
+        graph.boxer.rig.bones[bone].getWorldPosition(this.trailGlove);
+        trail.update(this.trailGlove, dt, this.camera.position, !reducedMotion && this.replay === null);
+      }
+    }
+  }
+
+  /** Cornermen stand on the apron outside their fighter's corner and lean in during the rest. */
+  private updateCornermen(dt: number, time: number, snapshot: EngineSnapshot | null, sampledTick: number): void {
+    const cornermen = this.cornermen;
+    if (cornermen === null) return;
+    const resting = snapshot?.phase === "rest";
+    for (const [index, graph] of cornermen.entries()) {
+      const sign = index === 0 ? -1 : 1;
+      const reach = resting ? CORNERMAN_WORK_DISTANCE : CORNERMAN_APRON_DISTANCE;
+      this.cornermanPosition.set(sign * reach, 0, -sign * reach);
+      const yaw = index === 0 ? (3 * Math.PI) / 4 : -Math.PI / 4;
+      graph.attend(resting);
+      const state = refereeSnapshot(this.cornermanPosition, yaw, this.cornermanVelocity, this.mapping);
+      graph.update(state.self, state.focus, dt, time, false, "off", sampledTick);
+    }
+  }
+
+  /** Between rounds each cutman climbs in from the apron, crouches before the seated fighter and works the worse eye, then climbs back out for the bell. */
+  private updateCutmen(dt: number, time: number, snapshot: EngineSnapshot | null, sampledTick: number): void {
+    const cutmen = this.cutmen;
+    const graphs = this.graphs;
+    if (cutmen === null || graphs === null) return;
+    const resting = snapshot?.phase === "rest";
+    const corner = this.mapping.x(REST_CORNER_OFFSET);
+    for (const [index, graph] of cutmen.entries()) {
+      const sign = index === 0 ? -1 : 1;
+      const wanted = resting && graphs[index]!.stoolVisible ? 1 : 0;
+      const progress = this.cutmanProgress[index]!;
+      const next = progress + Math.sign(wanted - progress) * Math.min(Math.abs(wanted - progress), dt / CUTMAN_WALK_SECONDS);
+      this.cutmanProgress[index] = next;
+      const wasVisible = graph.boxer.root.visible;
+      graph.boxer.root.visible = next > 0.005;
+      if (!graph.boxer.root.visible) continue;
+      this.cutmanFrom.set(sign * CORNERMAN_APRON_DISTANCE, 0, -sign * (CORNERMAN_APRON_DISTANCE - 1));
+      cornerPoint(index === 0 ? 0 : 1, corner, CUTMAN_WORK_DISTANCE, CUTMAN_WORK_DEGREES, this.cutmanTo);
+      const eased = next * next * (3 - 2 * next);
+      this.cornermanPosition.copy(this.cutmanFrom).lerp(this.cutmanTo, eased);
+      const last = this.cutmanLast[index]!;
+      if (!wasVisible) last.copy(this.cornermanPosition);
+      this.cornermanVelocity.copy(this.cornermanPosition).sub(last).divideScalar(Math.max(dt, 1e-3));
+      last.copy(this.cornermanPosition);
+      const travelling = next > 0.02 && next < 0.98;
+      const head = this.headCacheValid[index] ? this.headCache[index]! : null;
+      const yaw = travelling
+        ? Math.atan2(this.cutmanTo.x - this.cutmanFrom.x, this.cutmanTo.z - this.cutmanFrom.z) + (wanted === 1 ? 0 : Math.PI)
+        : next >= 0.98
+          ? (head !== null ? Math.atan2(head.x - this.cutmanTo.x, head.z - this.cutmanTo.z) : Math.atan2(sign, -sign))
+          : Math.atan2(-this.cutmanFrom.x, -this.cutmanFrom.z);
+      const trauma = snapshot?.fighters[index]?.trauma;
+      const side = trauma !== undefined && trauma.right_eye + trauma.right_cut > trauma.left_eye + trauma.left_cut ? -1 : 1;
+      if (next >= 0.98 && head !== null) {
+        const fighterYaw = graphs[index]!.boxer.root.rotation.y;
+        this.cutmanFacing.set(Math.sin(fighterYaw), 0, Math.cos(fighterYaw));
+        this.cutmanEye.copy(head).addScaledVector(this.cutmanFacing, 0.09);
+        this.cutmanEye.x += Math.cos(fighterYaw) * side * 0.035;
+        this.cutmanEye.z -= Math.sin(fighterYaw) * side * 0.035;
+        this.cutmanEye.y += 0.08;
+        graph.treat(this.cutmanEye, this.cutmanFacing, side);
+      } else {
+        graph.treat(null);
+      }
+      const state = refereeSnapshot(this.cornermanPosition, yaw, this.cornermanVelocity, this.mapping);
+      graph.update(state.self, state.focus, dt, time, false, "off", sampledTick);
+    }
   }
 
   private drawHudOverlay(snapshot: EngineSnapshot | null): void {
@@ -829,6 +1687,13 @@ export class FightRenderer {
     const { context: ctx, viewport } = resized;
     ctx.clearRect(0, 0, viewport.width, viewport.height);
     if (snapshot === null) return;
+    if (this.viewerHitFlash > 0.01 && !this.settings().reducedMotion) {
+      const flash = ctx.createRadialGradient(viewport.width / 2, viewport.height / 2, viewport.width * 0.12, viewport.width / 2, viewport.height / 2, viewport.width * 0.7);
+      flash.addColorStop(0, `rgba(255,235,225,${(this.viewerHitFlash * 0.18).toFixed(3)})`);
+      flash.addColorStop(1, `rgba(140,0,10,${(this.viewerHitFlash * 0.55).toFixed(3)})`);
+      ctx.fillStyle = flash;
+      ctx.fillRect(0, 0, viewport.width, viewport.height);
+    }
     const hurt = Math.max(...snapshot.fighters.map((fighter) => fighter.trauma.head + fighter.trauma.body));
     if (hurt > 350) {
       const vignette = ctx.createRadialGradient(viewport.width / 2, viewport.height / 2, viewport.width * 0.2, viewport.width / 2, viewport.height / 2, viewport.width * 0.72);
@@ -837,7 +1702,7 @@ export class FightRenderer {
       ctx.fillStyle = vignette;
       ctx.fillRect(0, 0, viewport.width, viewport.height);
     }
-    drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.final, this.reconnectMs, this.simulation.tick_rate);
+    drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.frameSeconds >= this.finalRevealAt ? this.final : null, this.reconnectMs, this.simulation.tick_rate, this.roundStats, this.replay !== null ? "KNOCKOUT REPLAY" : null, this.inputLatencyMs, this.frameSeconds < this.roundCalloutUntil ? `ROUND ${this.roundCalloutRound}` : null, this.roundClock.ticks(snapshot));
   }
 
   destroy(): void {
@@ -851,10 +1716,6 @@ export class FightRenderer {
     this.effects.dispose();
     this.arena.dispose();
     disposeRing(this.ring);
-    for (const boxer of this.boxers) {
-      this.scene.remove(boxer.root);
-      disposeBoxer(boxer);
-    }
     if (this.graphs !== null) {
       for (const graph of this.graphs) {
         this.scene.remove(graph.boxer.root);
@@ -862,20 +1723,49 @@ export class FightRenderer {
       }
       this.graphs = null;
     }
-    this.scene.remove(this.referee.root);
-    disposeBoxer(this.referee);
+    if (this.referee !== null) {
+      this.scene.remove(this.referee.boxer.root);
+      this.referee.dispose();
+      this.referee = null;
+    }
+    for (const trail of this.trails) {
+      this.scene.remove(trail.mesh);
+      trail.dispose();
+    }
+    this.trails = [];
+    if (this.cornermen !== null) {
+      for (const graph of this.cornermen) {
+        this.scene.remove(graph.boxer.root);
+        graph.dispose();
+      }
+      this.cornermen = null;
+    }
+    if (this.cutmen !== null) {
+      for (const graph of this.cutmen) {
+        this.scene.remove(graph.boxer.root);
+        graph.dispose();
+      }
+      this.cutmen = null;
+    }
+    for (const shirt of this.cornerShirts) shirt.dispose();
+    this.cornerShirts.length = 0;
+    this.refereeShirt?.dispose();
     for (const light of this.lights) this.scene.remove(light);
     this.keyLight?.shadow.map?.dispose();
     this.keyLight?.shadow.dispose();
-    this.renderer.renderLists.dispose();
-    this.composer.dispose();
-    this.renderer.dispose();
     this.blobTexture.dispose();
     for (const blob of this.blobShadows) {
       this.scene.remove(blob);
       blob.geometry.dispose();
       (blob.material as THREE.Material).dispose();
     }
+    this.renderer.renderLists.dispose();
+    disposeComposer(this.composer);
+    // three's UnrealBloomPass.dispose leaves its bright-pass filter out.
+    this.bloomPass.materialHighPassFilter.dispose();
+    releaseFighterGpu();
+    // Last: a disposed renderer forgets what it allocated, so anything freed after it stays on the card.
+    this.renderer.dispose();
     this.hudCanvas.remove();
   }
 }

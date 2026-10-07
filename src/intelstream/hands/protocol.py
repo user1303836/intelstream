@@ -21,7 +21,7 @@ from intelstream.hands.types import (
     Target,
 )
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 MAX_FRAME_BYTES = 4096
 MAX_ACTIONS_PER_INPUT = 4
 MAX_SERVER_FRAME_BYTES = 65_536
@@ -145,10 +145,11 @@ def parse_client_input(
     if sequence <= last_sequence:
         raise ProtocolError("stale input sequence")
     client_tick = _integer(envelope.get("client_tick"), "client_tick", 0, MAX_SEQUENCE)
-    if client_tick < max(0, server_tick - MAX_TICK_LAG):
-        raise ProtocolError("client tick is too old")
-    if client_tick > server_tick + MAX_TICK_LEAD:
-        raise ProtocolError("client tick is too far ahead")
+    # The client tick is informational; a stalled or lagging client must keep playing, so the
+    # value is clamped into the plausible window instead of ending the connection.
+    client_tick = min(
+        max(client_tick, max(0, server_tick - MAX_TICK_LAG)), server_tick + MAX_TICK_LEAD
+    )
 
     move = _object(envelope.get("move"), "move")
     _exact_fields(move, {"x", "y"}, "move")
@@ -266,6 +267,7 @@ def snapshot_for_viewer(snapshot: EngineSnapshot, viewer_id: str | None) -> Engi
             get_up_required=0,
             get_up_window_start_tick=0,
             get_up_window_end_tick=0,
+            last_input_sequence=-1,
         )
         for fighter in snapshot.fighters
     )

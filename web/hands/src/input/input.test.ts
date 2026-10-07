@@ -62,6 +62,22 @@ describe("combined input intent", () => {
   });
 });
 
+describe("input across the bell", () => {
+  it("counts movement and guard keys pressed during the rest and held through the bell", () => {
+    Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [] });
+    const input = new InputController();
+    input.setActive(false);
+    window.dispatchEvent(key("keydown", "KeyW"));
+    window.dispatchEvent(key("keydown", "KeyQ"));
+    expect(input.held()).toEqual({ moveX: 0, moveY: 0, defense: "none" });
+    input.setActive(true);
+    expect(input.frame()).toEqual({ moveX: 0, moveY: 1000, defense: "guard_high", actions: [] });
+    window.dispatchEvent(new Event("blur"));
+    expect(input.frame()).toEqual({ moveX: 0, moveY: 0, defense: "none", actions: [] });
+    input.destroy();
+  });
+});
+
 describe("action instance ids", () => {
   it("preserves the original id and notification when identical intent coalesces", () => {
     const buffer = new SharedActionIntent(1);

@@ -138,6 +138,8 @@ class FighterSnapshot:
     x: int
     y: int
     facing: int
+    facing_x: int
+    facing_y: int
     velocity_x: int
     velocity_y: int
     stance: Stance
@@ -175,6 +177,7 @@ class FighterSnapshot:
     get_up_count: int
     get_up_window_start_tick: int
     get_up_window_end_tick: int
+    last_input_sequence: int
 
 
 @dataclass(frozen=True, slots=True)

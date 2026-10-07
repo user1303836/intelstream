@@ -1,0 +1,55 @@
+const REASONS: Readonly<Record<string, string>> = {
+  invalid_launch: "open Hands from a Discord voice channel with Play now",
+  cancelled: "the session was cancelled",
+  authorization_failed: "Discord did not authorize the session",
+  authorize_failed: "Discord did not authorize the session",
+  authorize_timeout: "Discord took too long to authorize the session",
+  sdk_ready_failed: "the Discord client did not respond",
+  sdk_ready_timeout: "the Discord client took too long to respond",
+  sdk_authenticate_failed: "Discord did not confirm your identity",
+  sdk_authenticate_timeout: "Discord took too long to confirm your identity",
+  sdk_initialization_failed: "the Discord client could not start the activity",
+  instance_mismatch: "this window belongs to a different activity instance",
+  bootstrap_failed: "the Hands server could not be reached",
+  token_failed: "the Hands server rejected the sign-in",
+  invalid_bootstrap: "the Hands server sent an unexpected reply",
+  invalid_token_response: "the Hands server sent an unexpected reply",
+  ticket_unavailable: "the session ticket was already used",
+  protocol_error: "the server and client disagree on the protocol",
+  unexpected_error: "something unexpected went wrong",
+  authentication_timeout: "the connection took too long to authenticate",
+  authentication_required: "the connection was not authenticated",
+  invalid_ticket: "the session ticket was rejected",
+  invalid_request: "the server rejected the request",
+  invalid_input: "the server rejected an input frame",
+  input_queue_full: "the server could not keep up with the inputs",
+  rate_limited: "too many requests were sent; wait a moment",
+  service_busy: "the server is busy right now",
+  service_unavailable: "the server is unavailable right now",
+  upstream_unavailable: "Discord is unavailable right now",
+  room_closed: "the bout has already ended; use Play now to start another",
+  room_full: "both seats in this bout are taken",
+  already_in_room: "you are already in a bout in another channel",
+  match_not_started: "the bout has not started yet",
+  connection_replaced: "this seat was taken over by a newer connection",
+  spectator_read_only: "spectators cannot send input",
+  server_shutting_down: "the server is restarting",
+  internal_error: "the server hit an internal error",
+  not_in_activity: "you are not a participant of this activity",
+  invalid_activity: "this activity instance is not valid",
+  invalid_state: "the sign-in state expired; retry",
+  invalid_guild: "this activity belongs to another server",
+  persistence_failed: "the result could not be saved",
+  rematch_unavailable: "the ring could not be cleared for a rematch; use Play now to start another bout",
+  network_unavailable: "the connection to the Hands server could not be opened",
+  match_abandoned: "both fighters lost their connection and the bout was called off",
+};
+
+/** Plain-language failure text; the full code stays in parentheses for diagnosis. */
+export function describeError(code: string): string {
+  // Nothing failed: the server was updated, and reloading the page brings the matching client.
+  if (code === "client_outdated") return "Hands was updated. Reload to continue (client_outdated).";
+  // Discord SDK failures carry the RPC error number (authorize_failed_4006); the stage gives the reason.
+  const reason = REASONS[code] ?? REASONS[code.replace(/_\d+$/u, "")];
+  return reason === undefined ? `Unable to continue (${code}).` : `Unable to continue: ${reason} (${code}).`;
+}

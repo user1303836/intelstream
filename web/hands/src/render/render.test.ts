@@ -1,17 +1,15 @@
 import * as THREE from "three";
 import { punchTiming, totalTicks } from "../manifest";
 import { buildArena } from "./arena";
-import { BoxerAnimator } from "./animation";
-import { buildBoxer, buildReferee } from "./boxer";
-import { CameraDirector } from "./camera";
+import { CameraDirector, cornerFrame, cornerPoint, cornerShot, cornerShotProgress, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE } from "./camera";
 import { bloodPatternFor, Effects3D } from "./effects";
-import { drawHud, HUD_MAX_GUARD, HUD_MAX_POISE, scoreTotal } from "./hud";
-import { buildRing } from "./ring";
+import { decisionLabel, drawHud, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, RoundClock, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
+import { buildRing, ropePress } from "./ring";
 import { resizeHighDpi } from "./viewport";
 import { PALETTES, worldMapping } from "./world";
 import { fighter, publicPlayers, snapshot } from "../test/fixtures";
 
-const mapping = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 330 });
+const mapping = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 });
 
 const withAction = (
   base: ReturnType<typeof fighter>,
@@ -39,12 +37,12 @@ const withAction = (
 
 describe("world mapping", () => {
   it("maps sim up (W/stick-up) away from the broadcast camera and sim right to screen right", () => {
-    const map = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 330 });
-    expect(map.z(330)).toBeLessThan(0);
-    expect(map.z(-330)).toBeGreaterThan(0);
+    const map = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 });
+    expect(map.z(500)).toBeLessThan(0);
+    expect(map.z(-500)).toBeGreaterThan(0);
     expect(map.x(500)).toBeGreaterThan(0);
     expect(map.x(-500)).toBeLessThan(0);
-    expect(Math.abs(map.x(500))).toBeCloseTo(Math.abs(map.z(330)), 5);
+    expect(Math.abs(map.x(500))).toBeCloseTo(Math.abs(map.z(500)), 5);
   });
 });
 
@@ -58,296 +56,12 @@ describe("scene construction", () => {
     expect(ring.geometries.some((geometry) => geometry.type === "PlaneGeometry")).toBe(true);
   });
 
-  it("builds anatomically complete boxers with distinct corner palettes", () => {
-    const blue = buildBoxer(PALETTES[0]);
-    const red = buildBoxer(PALETTES[1]);
-    for (const joint of ["hips", "spine", "chest", "head", "shoulderL", "elbowL", "gloveL", "shoulderR", "elbowR", "gloveR", "hipL", "kneeL", "hipR", "kneeR"]) {
-      expect(blue.root.getObjectByName(joint), joint).toBeTruthy();
-    }
-    expect(blue.gloveLMesh).toBeTruthy();
-    expect(blue.gloveRMesh).toBeTruthy();
-    expect((blue.gloveLMesh.material as THREE.MeshStandardMaterial).color.getHex()).not.toBe((red.gloveLMesh.material as THREE.MeshStandardMaterial).color.getHex());
-    expect(blue.geometries.length).toBeGreaterThan(20);
-  });
-
-  it("builds a clothed referee sharing the boxer rig", () => {
-    const referee = buildReferee();
-    expect(referee.root.getObjectByName("hips")).toBeTruthy();
-    expect(referee.root.getObjectByName("head")).toBeTruthy();
-    expect(referee.materials.length).toBeGreaterThan(8);
-  });
-
   it("builds and animates the arena crowd deterministically", () => {
     const arena = buildArena();
     arena.update(1.5, 1 / 60, false);
     arena.update(2.5, 1 / 60, true);
     expect(arena.group.children.length).toBeGreaterThan(5);
     arena.dispose();
-  });
-});
-
-describe("boxer animation", () => {
-  const make = () => {
-    const rig = buildBoxer(PALETTES[0]);
-    return { rig, animator: new BoxerAnimator(rig, mapping) };
-  };
-
-  it("moves the rig to authoritative world positions and faces the opponent", () => {
-    const { rig, animator } = make();
-    const one = { ...fighter("one"), x: -200, y: 100 };
-    const two = { ...fighter("two"), x: 200, y: -50 };
-    for (let i = 0; i < 60; i += 1) animator.update(one, two, 1 / 60, i / 60, false);
-    expect(rig.root.position.x).toBeCloseTo(mapping.x(-200), 5);
-    expect(rig.root.position.z).toBeCloseTo(mapping.z(100), 5);
-    const expectedYaw = Math.atan2(mapping.x(200) - mapping.x(-200), (mapping.z(-50) - mapping.z(100)) * 0.45);
-    expect(Math.abs(rig.root.rotation.y - expectedYaw)).toBeLessThan(0.6);
-  });
-
-  it("drives punch timelines from action instances and returns to guard", () => {
-    const { rig, animator } = make();
-    const one = fighter("one");
-    const two = fighter("two");
-    for (let i = 0; i < 30; i += 1) animator.update(one, two, 1 / 60, i / 60, false, "full", Math.floor(i / 2));
-    const guardZ = rig.gloveL.getWorldPosition(new THREE.Vector3()).z;
-    const punching = withAction({ ...one, x: 0 }, "straight", "right");
-    const farOpponent = { ...two, x: 195 };
-    let maxExtension = 0;
-    for (let i = 0; i < 40; i += 1) {
-      const snapshotTick = 15 + Math.floor(i / 2);
-      const frame = i < 34 ? { ...punching, action_start_tick: 15 } : { ...one, action_start_tick: 15 };
-      animator.update(frame, farOpponent, 1 / 60, 0.5 + i / 60, false, "full", snapshotTick);
-      const shoulder = rig.shoulderR.getWorldPosition(new THREE.Vector3());
-      const glove = rig.gloveR.getWorldPosition(new THREE.Vector3());
-      maxExtension = Math.max(maxExtension, shoulder.distanceTo(glove));
-    }
-    expect(maxExtension).toBeGreaterThan(0.55);
-    expect(maxExtension).toBeLessThanOrEqual(0.67);
-    for (let i = 0; i < 90; i += 1) animator.update(one, two, 1 / 60, 1.5 + i / 60, false, "full", 40 + Math.floor(i / 2));
-    const recovered = rig.gloveL.getWorldPosition(new THREE.Vector3()).z;
-    expect(Math.abs(recovered - guardZ)).toBeLessThan(0.25);
-  });
-
-  it("drops the hips to the canvas when downed and rises on recovery", () => {
-    const { rig, animator } = make();
-    const two = fighter("two");
-    const downed = { ...fighter("one"), is_downed: true };
-    for (let i = 0; i < 120; i += 1) animator.update(downed, two, 1 / 60, i / 60, false);
-    expect(rig.hips.position.y).toBeLessThan(0.35);
-    const standing = fighter("one");
-    for (let i = 0; i < 240; i += 1) animator.update(standing, two, 1 / 60, 2 + i / 60, false);
-    expect(rig.hips.position.y).toBeGreaterThan(0.9);
-  });
-
-  it("shows trauma overlays scaled by authoritative trauma", () => {
-    const { rig, animator } = make();
-    const two = fighter("two");
-    const hurt = { ...fighter("one"), trauma: { head: 500, body: 900, left_eye: 300, right_eye: 40, left_cut: 260, right_cut: 0, swelling: 0, bleeding: 300 } };
-    animator.update(hurt, two, 1 / 60, 0, false);
-    expect((rig.bruiseL.material as THREE.MeshStandardMaterial).opacity).toBeGreaterThan(0.5);
-    expect((rig.bruiseR.material as THREE.MeshStandardMaterial).opacity).toBeLessThan(0.5);
-    expect((rig.cutL.material as THREE.MeshStandardMaterial).opacity).toBeGreaterThan(0.5);
-    expect((rig.bodyBruise.material as THREE.MeshStandardMaterial).opacity).toBeGreaterThan(0.4);
-  });
-
-  it("reacts to impacts without mutating the snapshot", () => {
-    const { animator } = make();
-    const one = fighter("one");
-    const two = fighter("two");
-    const serialized = JSON.stringify(one);
-    animator.impact({ direction: 1, amount: 300, blocked: false });
-    animator.update(one, two, 1 / 60, 0, false);
-    expect(JSON.stringify(one)).toBe(serialized);
-  });
-
-  it("grows swelling, streaks and rib bruising with trauma and gates blood by setting", () => {
-    const { rig, animator } = make();
-    const two = fighter("two");
-    const hurt = { ...fighter("one"), trauma: { head: 800, body: 700, left_eye: 400, right_eye: 100, left_cut: 300, right_cut: 50, swelling: 300, bleeding: 350 } };
-    animator.update(hurt, two, 1 / 60, 0, false, "full");
-    expect(rig.swellL.scale.x).toBeGreaterThan(1);
-    expect(rig.swellR.scale.x).toBeLessThan(rig.swellL.scale.x);
-    expect((rig.streakL.material as THREE.MeshStandardMaterial).opacity).toBeGreaterThan(0.8);
-    expect((rig.ribL.material as THREE.MeshStandardMaterial).opacity).toBeGreaterThan(0.5);
-    expect((rig.noseStreak.material as THREE.MeshStandardMaterial).opacity).toBeGreaterThan(0.5);
-    animator.update(hurt, two, 1 / 60, 0.1, false, "off");
-    expect((rig.streakL.material as THREE.MeshStandardMaterial).opacity).toBe(0);
-    expect((rig.cutL.material as THREE.MeshStandardMaterial).opacity).toBe(0);
-    expect((rig.mouthBlood.material as THREE.MeshStandardMaterial).opacity).toBe(0);
-    expect((rig.swellL.material as THREE.MeshStandardMaterial).opacity).toBeGreaterThan(0);
-  });
-
-  it("bloodies the attacker's gloves with the opponent's bleeding", () => {
-    const { rig, animator } = make();
-    const one = fighter("one");
-    const bloodied = { ...fighter("two"), trauma: { head: 500, body: 0, left_eye: 0, right_eye: 0, left_cut: 300, right_cut: 200, swelling: 0, bleeding: 500 } };
-    animator.update(one, bloodied, 1 / 60, 0, false, "full");
-    const tinted = rig.gloveLMaterial.color.getHex();
-    animator.update(one, fighter("two"), 1 / 60, 0.1, false, "full");
-    expect(rig.gloveLMaterial.color.getHex()).not.toBe(tinted);
-    expect(tinted).not.toBe(rig.gloveBaseColor.getHex());
-    animator.update(one, bloodied, 1 / 60, 0.2, false, "off");
-    expect(rig.gloveLMaterial.color.getHex()).toBe(rig.gloveBaseColor.getHex());
-  });
-
-  it("retracts a punch when the fighter goes down mid-animation", () => {
-    const { rig, animator } = make();
-    const two = fighter("two");
-    const punching = { ...fighter("one"), action: "straight" as const, action_hand: "right" as const, action_target: "head" as const, action_power: "power" as const };
-    for (let i = 0; i < 8; i += 1) animator.update(punching, two, 1 / 60, i / 60, false);
-    const extendedZ = rig.gloveR.getWorldPosition(new THREE.Vector3()).z - rig.root.position.z;
-    const downed = { ...punching, is_downed: true, action: null };
-    for (let i = 0; i < 120; i += 1) animator.update(downed, two, 1 / 60, 1 + i / 60, false);
-    const downZ = rig.gloveR.getWorldPosition(new THREE.Vector3()).z - rig.root.position.z;
-    expect(downZ).toBeLessThan(extendedZ);
-  });
-
-  it("freezes the punch during hitstop and rotates the punching shoulder into a cross", () => {
-    const { rig, animator } = make();
-    const two = fighter("two");
-    const punching = withAction(fighter("one"), "straight", "right");
-    for (let i = 0; i < 5; i += 1) animator.update(punching, two, 1 / 60, i / 60, false, "full", Math.floor(i / 2));
-    const gloveBefore = rig.gloveR.getWorldPosition(new THREE.Vector3()).z;
-    animator.landedHit(false);
-    for (let i = 0; i < 3; i += 1) animator.update(punching, two, 1 / 60, 0.1 + i / 60, false, "full", 2);
-    const gloveDuringStop = rig.gloveR.getWorldPosition(new THREE.Vector3()).z;
-    expect(Math.abs(gloveDuringStop - gloveBefore)).toBeLessThan(0.06);
-    for (let i = 0; i < 20; i += 1) animator.update(punching, two, 1 / 60, 0.3 + i / 60, false, "full", 2 + Math.floor(i / 2));
-    expect(rig.hips.rotation.y).toBeGreaterThan(0.1);
-    expect(rig.spine.rotation.y).toBeGreaterThan(0.1);
-    const southpawRig = buildBoxer(PALETTES[1]);
-    const southpawAnimator = new BoxerAnimator(southpawRig, mapping);
-    const southpawPunch = withAction({ ...fighter("two"), stance: "southpaw" as const }, "straight", "right");
-    for (let i = 0; i < 20; i += 1) southpawAnimator.update(southpawPunch, fighter("one"), 1 / 60, i / 60, false, "full", Math.floor(i / 2));
-    expect(southpawRig.spine.rotation.y).toBeGreaterThan(0.1);
-  });
-
-  it("drops level for body punches and springs the canvas landing on knockdown", () => {
-    const { rig, animator } = make();
-    const two = fighter("two");
-    const bodyPunch = withAction(fighter("one"), "straight", "left", "body");
-    for (let i = 0; i < 14; i += 1) animator.update(bodyPunch, two, 1 / 60, i / 60, false, "full", Math.floor(i / 2));
-    const bodyHeight = rig.hips.position.y;
-    const headPunch = withAction(fighter("one"), "straight", "left", "head");
-    const second = make();
-    for (let i = 0; i < 14; i += 1) second.animator.update(headPunch, two, 1 / 60, i / 60, false, "full", Math.floor(i / 2));
-    expect(bodyHeight).toBeLessThan(second.rig.hips.position.y - 0.03);
-    const downed = { ...fighter("one"), is_downed: true };
-    const third = make();
-    let maxSpring = 0;
-    for (let i = 0; i < 150; i += 1) {
-      third.animator.update(downed, two, 1 / 60, i / 60, false);
-      maxSpring = Math.max(maxSpring, Math.abs(third.animator.landingOffset));
-    }
-    expect(maxSpring).toBeGreaterThan(0.025);
-    expect(third.rig.hips.position.y).toBeLessThan(0.35);
-  });
-
-  it("dances the taunt with overhead swings and hip wiggle", () => {
-    const { rig, animator } = make();
-    const two = fighter("two");
-    const taunting = { ...fighter("one"), taunt_ticks: 45 };
-    let maxGloveY = -Infinity;
-    let maxRoll = 0;
-    for (let i = 0; i < 40; i += 1) {
-      animator.update({ ...taunting, taunt_ticks: 45 - i }, two, 1 / 60, i / 60, false);
-      maxGloveY = Math.max(maxGloveY, rig.gloveL.getWorldPosition(new THREE.Vector3()).y);
-      maxRoll = Math.max(maxRoll, Math.abs(rig.hips.rotation.z));
-    }
-    expect(maxGloveY).toBeGreaterThan(1.55);
-    expect(maxRoll).toBeGreaterThan(0.05);
-  });
-
-  it("differentiates punch silhouettes: hook sweeps wide, jab recovers fastest", () => {
-    const two = fighter("two");
-    const trace = (action: "jab" | "hook"): { maxLateral: number; recoverFrames: number } => {
-      const { rig, animator } = make();
-      const punching = withAction(fighter("one"), action, "left");
-      const farOpponent = { ...two, x: 195 };
-      animator.update(fighter("one"), farOpponent, 1 / 60, 0, false, "full", 0);
-      const guardZ = rig.chest.worldToLocal(rig.gloveL.getWorldPosition(new THREE.Vector3())).z;
-      let maxLateral = 0;
-      let peakZ = -Infinity;
-      let peakTick = 0;
-      let extended = false;
-      let recoverTick = Infinity;
-      for (let i = 0; i < 90; i += 1) {
-        const frame = i < 40 ? punching : fighter("one");
-        animator.update(frame, farOpponent, 1 / 60, i / 60, false, "full", Math.floor(i / 2));
-        const local = rig.chest.worldToLocal(rig.gloveL.getWorldPosition(new THREE.Vector3()));
-        maxLateral = Math.max(maxLateral, Math.abs(local.x));
-        if (local.z > guardZ + 0.15) extended = true;
-        if (local.z > peakZ) {
-          peakZ = local.z;
-          peakTick = i;
-        } else if (extended && recoverTick === Infinity && i > peakTick && local.z < guardZ + 0.04) {
-          recoverTick = i;
-        }
-      }
-      return { maxLateral, recoverFrames: recoverTick - peakTick };
-    };
-    const jab = trace("jab");
-    const hook = trace("hook");
-    expect(hook.maxLateral).toBeGreaterThan(jab.maxLateral + 0.1);
-    expect(totalTicks(punchTiming("jab", "head", "normal"))).toBeLessThan(totalTicks(punchTiming("hook", "head", "normal")));
-    expect(totalTicks(punchTiming("straight", "head", "normal"))).toBeLessThan(totalTicks(punchTiming("uppercut", "head", "normal")));
-  });
-
-  it("buckles the knees early in a knockdown before settling flat", () => {
-    const { rig, animator } = make();
-    const two = fighter("two");
-    const downed = { ...fighter("one"), is_downed: true };
-    let earlyKnee = 0;
-    for (let i = 0; i < 18; i += 1) {
-      animator.update(downed, two, 1 / 60, i / 60, false);
-      earlyKnee = Math.max(earlyKnee, rig.kneeL.rotation.x);
-    }
-    expect(earlyKnee).toBeGreaterThan(0.5);
-    for (let i = 0; i < 150; i += 1) animator.update(downed, two, 1 / 60, 1 + i / 60, false);
-    expect(rig.kneeL.rotation.x).toBeLessThan(0.4);
-  });
-
-  it("restarts identical punches on new action instances", () => {
-    const { rig, animator } = make();
-    const two = fighter("two");
-    const jabOne = withAction(fighter("one"), "jab", "left");
-    for (let i = 0; i < 16; i += 1) animator.update(jabOne, two, 1 / 60, i / 60, false, "full", Math.floor(i / 2));
-    const midZ = rig.chest.worldToLocal(rig.gloveL.getWorldPosition(new THREE.Vector3())).z;
-    expect(midZ).toBeGreaterThan(0.33);
-    const jabTwo = { ...withAction(fighter("one"), "jab", "left"), action_id: "jab-left-head-normal-2" };
-    animator.update(jabTwo, two, 1 / 60, 1, false, "full", 8);
-    const restartZ = rig.chest.worldToLocal(rig.gloveL.getWorldPosition(new THREE.Vector3())).z;
-    expect(restartZ).toBeLessThan(midZ);
-  });
-
-  it("begins predicted punches locally and reconciles within one tick", () => {
-    const { rig, animator } = make();
-    const two = fighter("two");
-    const baseline = rig.chest.worldToLocal(rig.gloveL.getWorldPosition(new THREE.Vector3())).z;
-    animator.predict({ kind: "punch", hand: "left", class: "jab", target: "head", power: "normal", id: "c7" }, 0, 30);
-    animator.update(fighter("one"), two, 1 / 60, 1 / 60, false, "full", 0);
-    const predictedZ = rig.chest.worldToLocal(rig.gloveL.getWorldPosition(new THREE.Vector3())).z;
-    expect(predictedZ).toBeGreaterThan(baseline + 0.005);
-    const authoritative = {
-      ...withAction(fighter("one"), "jab", "left"),
-      action_id: "c7",
-      action_start_tick: 2,
-    };
-    animator.update(authoritative, two, 1 / 60, 2 / 60, false, "full", 2);
-    const reconciledZ = rig.chest.worldToLocal(rig.gloveL.getWorldPosition(new THREE.Vector3())).z;
-    expect(Math.abs(reconciledZ - predictedZ)).toBeLessThan(0.3);
-  });
-
-  it("mirrors southpaw glove placement", () => {
-    const { rig, animator } = make();
-    const one = { ...fighter("one"), stance: "southpaw" as const };
-    const two = fighter("two");
-    for (let i = 0; i < 30; i += 1) animator.update(one, two, 1 / 60, i / 60, false);
-    const leftX = rig.gloveL.getWorldPosition(new THREE.Vector3()).x - rig.root.position.x;
-    const orthodox = buildBoxer(PALETTES[0]);
-    const orthodoxAnimator = new BoxerAnimator(orthodox, mapping);
-    for (let i = 0; i < 30; i += 1) orthodoxAnimator.update(fighter("one"), two, 1 / 60, i / 60, false);
-    const orthodoxLeftX = orthodox.gloveL.getWorldPosition(new THREE.Vector3()).x - orthodox.root.position.x;
-    expect(Math.sign(leftX)).not.toBe(Math.sign(orthodoxLeftX));
   });
 });
 
@@ -397,8 +111,8 @@ describe("effects", () => {
       const effects = new Effects3D(new THREE.Scene());
       effects.addEvent({ ...severeHit(20), detail }, new THREE.Vector3(), false);
       effects.update(0.1);
-      const positions = effects.points.geometry.getAttribute("position") as THREE.BufferAttribute;
-      const colors = effects.points.geometry.getAttribute("color") as THREE.BufferAttribute;
+      const positions = effects.dropletBuffers.position;
+      const colors = effects.dropletBuffers.color;
       const heights: number[] = [];
       for (let index = 0; index < positions.count; index += 1) {
         if (colors.getY(index) < 0.2 && positions.getY(index) > -10) heights.push(positions.getY(index));
@@ -414,7 +128,7 @@ describe("effects", () => {
 
     const full = new Effects3D(new THREE.Scene());
     full.addEvent(severeHit(1), origin, false);
-    expect(full.liveBloodParticles).toBe(140);
+    expect(full.liveBloodParticles).toBe(110);
     expect(full.liveMist).toBe(10);
     expect(full.liveGibs).toBe(11);
     expect(full.visibleDecals).toBe(12);
@@ -454,11 +168,32 @@ describe("effects", () => {
       effects.update(1 / 60);
     }
     expect(effects.liveBloodParticles).toBe(2);
-    const positions = effects.points.geometry.getAttribute("position") as THREE.BufferAttribute;
+    const positions = effects.dropletBuffers.position;
     const liveX = Array.from({ length: positions.count }, (_unused, index) => positions.getX(index))
       .filter((_x, index) => positions.getY(index) > -10);
     expect(liveX.some((x) => x < 0)).toBe(true);
     expect(liveX.some((x) => x > 0)).toBe(true);
+    effects.dispose();
+  });
+
+  it("reports where a severed head is, follows it as it falls, and can sever again after a restore", () => {
+    const scene = new THREE.Scene();
+    const effects = new Effects3D(scene);
+    const where = new THREE.Vector3();
+    expect(effects.severedHeadPosition(0, where)).toBe(false);
+    effects.decapitate(0, new THREE.Vector3(0.2, 1.5, -0.1), new THREE.Quaternion(), 1, 77);
+    expect(effects.severedHeadPosition(0, where)).toBe(true);
+    expect(where.y).toBeCloseTo(1.5, 1);
+    for (let frame = 0; frame < 240; frame += 1) effects.update(1 / 60);
+    expect(effects.severedHeadPosition(0, where)).toBe(true);
+    expect(where.y).toBeLessThan(0.6);
+    expect(effects.severedHeadPosition(1, where)).toBe(false);
+    effects.restoreFighter(0);
+    expect(effects.severedHeadPosition(0, where)).toBe(false);
+    effects.decapitate(0, new THREE.Vector3(0, 1.5, 0), new THREE.Quaternion(), 1, 77);
+    expect(effects.activeHeads).toBe(0);
+    effects.decapitate(0, new THREE.Vector3(0, 1.5, 0), new THREE.Quaternion(), 1, 77 + 1_000_003);
+    expect(effects.activeHeads).toBe(1);
     effects.dispose();
   });
 
@@ -501,7 +236,7 @@ describe("effects", () => {
     effects.decapitate(0, position, quaternion, 1, 42, 0xb0703f);
     expect(effects.activeHeads).toBe(1);
     const visibleHead = scene.children.find((child) =>
-      child instanceof THREE.Mesh && child.visible && child.geometry instanceof THREE.SphereGeometry,
+      child instanceof THREE.Mesh && !(child instanceof THREE.InstancedMesh) && child.visible && child.geometry instanceof THREE.SphereGeometry,
     ) as THREE.Mesh<THREE.SphereGeometry, THREE.MeshStandardMaterial>;
     expect(visibleHead.material.color.getHex()).toBe(0xb0703f);
     expect(effects.activeStumps).toBe(1);
@@ -518,7 +253,7 @@ describe("effects", () => {
     effects.decapitate(1, position, quaternion, -1, 43, 0x6e4128);
     expect(effects.activeHeads).toBe(2);
     const visibleHeadColors = scene.children
-      .filter((child) => child instanceof THREE.Mesh && child.visible && child.geometry instanceof THREE.SphereGeometry)
+      .filter((child) => child instanceof THREE.Mesh && !(child instanceof THREE.InstancedMesh) && child.visible && child.geometry instanceof THREE.SphereGeometry)
       .map((child) => ((child as THREE.Mesh).material as THREE.MeshStandardMaterial).color.getHex());
     expect(visibleHeadColors).toEqual([0xb0703f, 0x6e4128]);
     expect(effects.activeStumps).toBe(2);
@@ -635,7 +370,7 @@ describe("effects", () => {
         effects.update(dt);
       }
       const head = scene.children.find((child) =>
-        child instanceof THREE.Mesh && child.visible && child.geometry instanceof THREE.SphereGeometry,
+        child instanceof THREE.Mesh && !(child instanceof THREE.InstancedMesh) && child.visible && child.geometry instanceof THREE.SphereGeometry,
       )!;
       const gibMesh = scene.children.find((child) => child instanceof THREE.InstancedMesh) as THREE.InstancedMesh;
       const matrix = new THREE.Matrix4();
@@ -644,13 +379,112 @@ describe("effects", () => {
       const result = {
         head: head.position.toArray(),
         gib: gibPosition.toArray(),
-        particles: Array.from(effects.points.geometry.getAttribute("position").array),
+        particles: Array.from(effects.dropletBuffers.position.array),
         decals: effects.visibleDecals,
       };
       effects.dispose();
       return result;
     };
     expect(simulate(1 / 30)).toEqual(simulate(1 / 60));
+  });
+
+  it("draws and uploads only the droplets in flight", () => {
+    const effects = new Effects3D(new THREE.Scene());
+    const mesh = effects.dropletMesh;
+    const matrices = mesh.instanceMatrix;
+    expect(mesh.count).toBe(0);
+    effects.addEvent(severeHit(40), new THREE.Vector3(), false);
+    expect(mesh.count).toBe(effects.liveParticles);
+    // A step moves every live droplet and uploads just their matrices, packed at the front of the pool.
+    matrices.clearUpdateRanges();
+    effects.update(1 / 60);
+    const live = mesh.count;
+    expect(live).toBe(effects.liveParticles);
+    expect(matrices.updateRanges).toEqual([{ start: 0, count: live * 16 }]);
+    const positions = effects.dropletBuffers.position;
+    for (let index = 0; index < 900; index += 1) expect(positions.getY(index) > -10).toBe(index < live);
+    // Once the blood has landed nothing is drawn or uploaded.
+    for (let frame = 0; frame < 180; frame += 1) effects.update(1 / 60);
+    expect(effects.liveParticles).toBe(0);
+    expect(mesh.count).toBe(0);
+    matrices.clearUpdateRanges();
+    const version = matrices.version;
+    effects.update(1 / 60);
+    expect(matrices.version).toBe(version);
+    // A full pool keeps reusing its slots.
+    for (let eventId = 0; eventId < 12; eventId += 1) effects.addEvent(severeHit(100 + eventId), new THREE.Vector3(), false);
+    expect(mesh.count).toBe(900);
+    expect(effects.liveParticles).toBe(900);
+    effects.dispose();
+  });
+
+  it("sprays blood, teeth and severed parts along the line the punch travelled", () => {
+    const towardsAway = { x: 0, z: -1 };
+    /** Mean horizontal position of the airborne blood droplets, or of the airborne gibs. */
+    const bloodCentre = (effects: Effects3D): THREE.Vector2 => {
+      const positions = effects.dropletBuffers.position;
+      const colors = effects.dropletBuffers.color;
+      const centre = new THREE.Vector2();
+      let count = 0;
+      for (let index = 0; index < positions.count; index += 1) {
+        if (positions.getY(index) < -10 || colors.getY(index) >= 0.2) continue;
+        centre.x += positions.getX(index);
+        centre.y += positions.getZ(index);
+        count += 1;
+      }
+      return centre.divideScalar(Math.max(1, count));
+    };
+    const gibCentre = (scene: THREE.Scene): THREE.Vector2 => {
+      const gibs = scene.children.find((child) => child instanceof THREE.InstancedMesh && child.geometry instanceof THREE.IcosahedronGeometry) as THREE.InstancedMesh;
+      const matrix = new THREE.Matrix4();
+      const position = new THREE.Vector3();
+      const centre = new THREE.Vector2();
+      let count = 0;
+      for (let index = 0; index < gibs.count; index += 1) {
+        gibs.getMatrixAt(index, matrix);
+        position.setFromMatrixPosition(matrix);
+        if (position.y < -10) continue;
+        centre.x += position.x;
+        centre.y += position.z;
+        count += 1;
+      }
+      return centre.divideScalar(Math.max(1, count));
+    };
+    const run = (effects: Effects3D, seconds: number): void => {
+      for (let elapsed = 0; elapsed < seconds; elapsed += 1 / 60) effects.update(1 / 60);
+    };
+    const along = (centre: { x: number; y: number }): void => {
+      expect(centre.y).toBeLessThan(-0.15);
+      expect(Math.abs(centre.x)).toBeLessThan(Math.abs(centre.y));
+    };
+
+    const scene = new THREE.Scene();
+    const effects = new Effects3D(scene);
+    effects.addEvent({ ...severeHit(30), detail: "straight:head" }, new THREE.Vector3(), false, towardsAway);
+    run(effects, 0.25);
+    along(bloodCentre(effects));
+    along(gibCentre(scene));
+    effects.clearDynamic();
+    effects.spawnTeeth(new THREE.Vector3(0, 1.5, 0), towardsAway, 4, 31);
+    run(effects, 0.25);
+    along(gibCentre(scene));
+    const head = new THREE.Vector3();
+    effects.decapitate(0, new THREE.Vector3(0, 1.55, 0), new THREE.Quaternion(), towardsAway, 32);
+    run(effects, 0.3);
+    effects.severedHeadPosition(0, head);
+    along({ x: head.x, y: head.z });
+    effects.dismemberHand(1, "left", new THREE.Vector3(0, 1.3, 0), new THREE.Quaternion(), towardsAway, 33, 0x1d4ed8);
+    run(effects, 0.3);
+    const hand = scene.children.find((child) => child instanceof THREE.Mesh && child.visible && child.geometry instanceof THREE.CapsuleGeometry)!;
+    along({ x: hand.position.x, y: hand.position.z });
+    effects.dispose();
+
+    // Without the fighters' positions the event's world-x sign still decides.
+    const fallback = new Effects3D(new THREE.Scene());
+    fallback.addEvent({ ...severeHit(34), detail: "straight:head", direction: -1 }, new THREE.Vector3(), false);
+    run(fallback, 0.25);
+    expect(bloodCentre(fallback).x).toBeLessThan(-0.15);
+    fallback.dispose();
   });
 
   it("never exceeds any fixed pool under repeated production-valid events", () => {
@@ -705,6 +539,8 @@ describe("viewport and broadcast HUD", () => {
     drawHud(ctx, 800, 600, opponentPrompt, players, "one", null, 0);
     expect(texts.join(" ")).not.toContain("NOW!");
     expect(texts.join(" ")).not.toContain("GET READY");
+    expect(texts).toContain("COUNT 4");
+    expect(texts.join(" ")).not.toContain("Waiting for");
     texts.length = 0;
     const ownPrompt = { ...opponentPrompt, fighters: [{ ...base.fighters[0], is_downed: true, get_up_prompt: "get_up_right" as const, get_up_meter: 2, get_up_required: 4 }, opponentPrompt.fighters[1]] as const };
     drawHud(ctx, 800, 600, ownPrompt, players, "one", null, 0);
@@ -739,6 +575,126 @@ describe("viewport and broadcast HUD", () => {
   });
 });
 
+describe("rope flex", () => {
+  it("presses into the nearest ropes only when a fighter is within reach of them", () => {
+    expect(ropePress(0, 0)).toEqual({ pressX: 0, pressZ: 0 });
+    expect(ropePress(2.82, 0).pressX).toBeGreaterThan(0.95);
+    expect(ropePress(2.82, 0).pressZ).toBe(0);
+    expect(ropePress(0, -2.82).pressZ).toBeGreaterThan(0.95);
+    expect(ropePress(2.6, 0).pressX).toBeGreaterThan(0.1);
+    expect(ropePress(2.6, 0).pressX).toBeLessThan(0.6);
+  });
+
+  it("writes fighter contacts into the rope shader uniforms and clears them", () => {
+    const ring = buildRing();
+    ring.setRopeContacts({ x: 2.82, z: 0.4 }, null);
+    expect(ring.ropeContacts[0].x).toBeCloseTo(2.82);
+    expect(ring.ropeContacts[0].y).toBeCloseTo(0.4);
+    expect(ring.ropeContacts[0].z).toBeGreaterThan(0.95);
+    expect(ring.ropeContacts[1].toArray()).toEqual([0, 0, 0, 0]);
+    ring.setRopeContacts(null, null);
+    expect(ring.ropeContacts[0].toArray()).toEqual([0, 0, 0, 0]);
+  });
+});
+
+describe("round stats", () => {
+  const event = (kind: string, actor: string, detail = ""): Parameters<RoundStatsTracker["record"]>[0] =>
+    ({ event_id: 1, tick: 1, kind, actor_id: actor, target_id: null, amount: 0, detail, blood: 0, direction: 1, action_id: null });
+
+  it("counts punches thrown and landed per fighter and resets on the round-start bell", () => {
+    const tracker = new RoundStatsTracker();
+    tracker.record(event("punch_start", "one"));
+    tracker.record(event("punch_start", "one"));
+    tracker.record(event("hit", "one"));
+    tracker.record(event("punch_start", "two"));
+    tracker.record(event("counter_hit", "two"));
+    tracker.record(event("block", "two"));
+    expect(tracker.get("one")).toEqual({ thrown: 2, landed: 1 });
+    expect(tracker.get("two")).toEqual({ thrown: 1, landed: 1 });
+    tracker.record(event("bell", "", "round_end"));
+    expect(tracker.get("one")).toEqual({ thrown: 2, landed: 1 });
+    tracker.record(event("bell", "", "round_start"));
+    expect(tracker.get("one")).toEqual({ thrown: 0, landed: 0 });
+  });
+
+  it("keeps bout totals across rounds and prints them on the result panel", () => {
+    const tracker = new RoundStatsTracker();
+    tracker.record(event("punch_start", "one"));
+    tracker.record(event("hit", "one"));
+    tracker.record(event("bell", "", "round_start"));
+    tracker.record(event("punch_start", "one"));
+    tracker.record(event("punch_start", "two"));
+    expect(tracker.get("one")).toEqual({ thrown: 1, landed: 0 });
+    expect(tracker.total("one")).toEqual({ thrown: 2, landed: 1 });
+    const texts: string[] = [];
+    const ctx = mockHudContext(texts);
+    const players = Object.fromEntries(publicPlayers.map((player) => [player.id, player]));
+    const final = { version: 3 as const, type: "final" as const, match_id: "m", winner_id: "one", method: "decision" as const, round: 3, scorecards: [], ratings: {} };
+    drawHud(ctx, 1280, 720, { ...snapshot(), phase: "complete" }, players, "one", final, 0, 30, tracker);
+    expect(texts.some((text) => text.includes("One 1/2 landed") && text.includes("Two 0/1 landed"))).toBe(true);
+  });
+
+  it("draws the round callout only while the renderer asks for it", () => {
+    const texts: string[] = [];
+    const ctx = mockHudContext(texts);
+    const players = Object.fromEntries(publicPlayers.map((player) => [player.id, player]));
+    drawHud(ctx, 1280, 720, { ...snapshot(), phase: "fight", round_number: 2 }, players, "one", null, 0, 30, null, null, null, "ROUND 2");
+    expect(texts.filter((text) => text === "ROUND 2").length).toBeGreaterThanOrEqual(2);
+    texts.length = 0;
+    drawHud(ctx, 1280, 720, { ...snapshot(), phase: "fight", round_number: 2 }, players, "one", null, 0, 30, null, null, null, null);
+    expect(texts.filter((text) => text === "ROUND 2").length).toBe(1);
+  });
+
+  it("shows the local fighter's input latency readout", () => {
+    const texts: string[] = [];
+    const ctx = mockHudContext(texts);
+    const players = Object.fromEntries(publicPlayers.map((player) => [player.id, player]));
+    drawHud(ctx, 1280, 720, snapshot(), players, "one", null, 0, 30, null, null, 48.4);
+    expect(texts).toContain("INPUT 48 ms");
+    texts.length = 0;
+    drawHud(ctx, 1280, 720, snapshot(), players, null, null, 0, 30, null, null, 48.4);
+    expect(texts.some((text) => text.startsWith("INPUT"))).toBe(false);
+  });
+
+  it("shows the landed counts on the rest panel", () => {
+    const texts: string[] = [];
+    const ctx = mockHudContext(texts);
+    const tracker = new RoundStatsTracker();
+    tracker.record(event("punch_start", "one"));
+    tracker.record(event("hit", "one"));
+    drawHud(ctx, 1280, 720, { ...snapshot(), phase: "rest" }, Object.fromEntries(publicPlayers.map((player) => [player.id, player])), "one", null, 0, 30, tracker);
+    expect(texts.some((text) => text.includes("One 1/1"))).toBe(true);
+  });
+});
+
+describe("decision label", () => {
+  const card = (one: number[], two: number[], judge = "J") => ({ judge, player_one: one, player_two: two });
+  const final = (method: "decision" | "draw" | "ko" | "tko", scorecards: ReturnType<typeof card>[]) =>
+    ({ version: 3 as const, type: "final" as const, match_id: "m", winner_id: method === "draw" ? null : "one", method, round: 3, scorecards, ratings: {} });
+
+  it("names unanimous, split and majority decisions and draws from the scorecards", () => {
+    expect(decisionLabel(final("decision", [card([10, 10, 10], [9, 9, 9]), card([10, 10, 9], [9, 9, 10]), card([10, 10, 10], [9, 9, 9])]))).toBe("UNANIMOUS DECISION");
+    expect(decisionLabel(final("decision", [card([10, 10, 10], [9, 9, 9]), card([9, 9, 10], [10, 10, 9]), card([10, 10, 10], [9, 9, 9])]))).toBe("SPLIT DECISION");
+    expect(decisionLabel(final("decision", [card([10, 10, 10], [9, 9, 9]), card([10, 9], [9, 10]), card([10, 10, 10], [9, 9, 9])]))).toBe("MAJORITY DECISION");
+    expect(decisionLabel(final("draw", [card([10], [10]), card([10], [10]), card([10], [10])]))).toBe("UNANIMOUS DRAW");
+    expect(decisionLabel(final("draw", [card([10], [9]), card([9], [10]), card([10], [10])]))).toBe("SPLIT DRAW");
+    expect(decisionLabel(final("draw", [card([10], [9]), card([10], [10]), card([10], [10])]))).toBe("MAJORITY DRAW");
+    expect(decisionLabel(final("tko", []))).toBe("TKO");
+    expect(decisionLabel(final("decision", []))).toBe("DECISION");
+  });
+});
+
+describe("final reveal", () => {
+  const final = { version: 3 as const, type: "final" as const, match_id: "m", winner_id: "one", method: "ko" as const, round: 1, scorecards: [], ratings: {} };
+  it("holds stoppage results back for the slow-motion fall and shows decisions at once", () => {
+    expect(finalRevealDelay(final)).toBe(FINAL_REVEAL_DELAY_SECONDS);
+    expect(finalRevealDelay({ ...final, method: "tko" })).toBe(FINAL_REVEAL_DELAY_SECONDS);
+    expect(finalRevealDelay({ ...final, method: "flash_ko" })).toBe(FINAL_REVEAL_DELAY_SECONDS);
+    expect(finalRevealDelay({ ...final, method: "decision" })).toBe(0);
+    expect(finalRevealDelay(null)).toBe(0);
+  });
+});
+
 function mockHudContext(texts: string[]): CanvasRenderingContext2D {
   const gradient = { addColorStop: () => {} };
   return {
@@ -754,6 +710,7 @@ function mockHudContext(texts: string[]): CanvasRenderingContext2D {
     strokeRect: () => {},
     clearRect: () => {},
     fillText: (text: string) => texts.push(text),
+    strokeText: () => undefined,
     measureText: (text: string) => ({ width: text.length * 7 }),
     createLinearGradient: () => gradient,
     createRadialGradient: () => gradient,
@@ -765,3 +722,159 @@ function mockHudContext(texts: string[]): CanvasRenderingContext2D {
     set textBaseline(_value: CanvasTextBaseline) {},
   } as unknown as CanvasRenderingContext2D;
 }
+
+describe("fitFontSize", () => {
+  it("returns the largest size that fits and the minimum when nothing does", () => {
+    const measure = (size: number) => size * 10;
+    expect(fitFontSize(measure, 160, 16, 11)).toBe(16);
+    expect(fitFontSize(measure, 135, 16, 11)).toBe(13);
+    expect(fitFontSize(measure, 50, 16, 11)).toBe(11);
+  });
+});
+
+describe("topPanelOffset", () => {
+  it("parks the panel under the top bar and lower on narrow screens", () => {
+    const top = (width: number, height: number): number => height / 2 + topPanelOffset(width, height) - (height < 480 ? 25 : 39);
+    expect(top(1280, 720)).toBeCloseTo(72);
+    expect(top(844, 390)).toBeCloseTo(56);
+    expect(top(390, 844)).toBeCloseTo(112);
+  });
+});
+
+describe("corner shots", () => {
+  it("stays wide while the fighters walk over and before the bell, then alternates corners starting with the viewer's", () => {
+    expect(cornerShot(1, 14, 0)).toBeNull();
+    expect(cornerShot(3, 12, 0)).toBe(0);
+    expect(cornerShot(3, 12, 1)).toBe(1);
+    expect(cornerShot(8.5, 6.5, 0)).toBe(1);
+    expect(cornerShot(13.6, 1.4, 0)).toBeNull();
+    expect(cornerShotProgress(3)).toBeCloseTo(0.5);
+    expect(cornerShotProgress(8.5)).toBeCloseTo(0.5);
+  });
+
+  it("shoots each corner from inside the ropes, mirrored, looking at the stool", () => {
+    const position = new THREE.Vector3();
+    const lookAt = new THREE.Vector3();
+    cornerFrame(1, 2.56, 0, position, lookAt);
+    expect(Math.abs(position.x)).toBeLessThan(3.05);
+    expect(Math.abs(position.z)).toBeLessThan(3.05);
+    expect(position.distanceTo(new THREE.Vector3(2.56, 1, -2.56))).toBeGreaterThan(2);
+    expect(position.distanceTo(new THREE.Vector3(2.56, 1, -2.56))).toBeLessThan(2.9);
+    expect(lookAt.distanceTo(new THREE.Vector3(2.56, 1, -2.56))).toBeLessThan(0.8);
+    const mirrored = new THREE.Vector3();
+    cornerFrame(0, 2.56, 0, mirrored, lookAt);
+    expect(mirrored.x).toBeCloseTo(-position.x);
+    expect(mirrored.z).toBeCloseTo(-position.z);
+  });
+});
+
+describe("corner staging", () => {
+  it("puts the cutman on the fighter's left and the camera on the right, both inside the ropes", () => {
+    const cutman = cornerPoint(1, 2.56, CUTMAN_WORK_DISTANCE, CUTMAN_WORK_DEGREES, new THREE.Vector3());
+    const camera = new THREE.Vector3();
+    const lookAt = new THREE.Vector3();
+    cornerFrame(1, 2.56, 0, camera, lookAt);
+    for (const point of [cutman, camera]) {
+      expect(Math.abs(point.x)).toBeLessThan(2.6);
+      expect(Math.abs(point.z)).toBeLessThan(2.6);
+    }
+    const stool = new THREE.Vector3(2.56, 0, -2.56);
+    const forward = new THREE.Vector3(-1, 0, 1).normalize();
+    const left = new THREE.Vector3(forward.z, 0, -forward.x);
+    expect(cutman.clone().sub(stool).dot(left)).toBeGreaterThan(0.2);
+    expect(camera.clone().setY(0).sub(stool).dot(left)).toBeLessThan(-0.8);
+    expect(cutman.distanceTo(stool)).toBeCloseTo(CUTMAN_WORK_DISTANCE);
+  });
+});
+
+describe("round clock", () => {
+  it("holds the round time through a knockdown count and a foul timeout, and resets for a new round", () => {
+    const clock = new RoundClock();
+    const base = snapshot();
+    expect(clock.ticks({ ...base, phase: "fight", round_number: 1, phase_ticks_remaining: 2400 })).toBe(2400);
+    expect(clock.ticks({ ...base, phase: "knockdown", round_number: 1, phase_ticks_remaining: 270 })).toBe(2400);
+    expect(clock.ticks({ ...base, phase: "fight", round_number: 1, phase_ticks_remaining: 2390 })).toBe(2390);
+    expect(clock.ticks({ ...base, phase: "foul_recovery", round_number: 1, phase_ticks_remaining: 60 })).toBe(2390);
+    expect(clock.ticks({ ...base, phase: "rest", round_number: 1, phase_ticks_remaining: 450 })).toBe(450);
+    expect(clock.ticks({ ...base, phase: "knockdown", round_number: 2, phase_ticks_remaining: 250 })).toBe(250);
+  });
+});
+
+describe("compact scoreboard labels", () => {
+  it("abbreviates the bar labels on narrow screens so four-digit values do not collide", () => {
+    const texts: string[] = [];
+    const ctx = mockHudContext(texts);
+    const players = Object.fromEntries(publicPlayers.map((p) => [p.id, p]));
+    drawHud(ctx, 390, 844, snapshot(), players, "one", null, 0, 30);
+    expect(texts.some((text) => text.startsWith("STA "))).toBe(true);
+    expect(texts.some((text) => text.startsWith("HP "))).toBe(true);
+    expect(texts.some((text) => text.startsWith("STAMINA"))).toBe(false);
+  });
+});
+
+describe("compact scoreboard mini bars", () => {
+  /** Records filled rectangles and where each text lands, measuring text at 0.6 em per character. */
+  function layoutContext(): { ctx: CanvasRenderingContext2D; rects: { x: number; y: number; w: number; h: number }[]; texts: { text: string; left: number; right: number; y: number }[] } {
+    const rects: { x: number; y: number; w: number; h: number }[] = [];
+    const texts: { text: string; left: number; right: number; y: number }[] = [];
+    let size = 10;
+    let align: CanvasTextAlign = "left";
+    const width = (text: string): number => text.length * size * 0.6;
+    const ctx = Object.assign(mockHudContext([]), {
+      fillRect: (x: number, y: number, w: number, h: number) => rects.push({ x, y, w, h }),
+      fillText: (text: string, x: number, y: number) => {
+        const left = align === "right" ? x - width(text) : align === "center" ? x - width(text) / 2 : x;
+        texts.push({ text, left, right: left + width(text), y });
+      },
+      measureText: (text: string) => ({ width: width(text) }),
+    });
+    Object.defineProperty(ctx, "font", { set: (font: string) => { size = Number(/(\d+)px/.exec(font)?.[1] ?? 10); } });
+    Object.defineProperty(ctx, "textAlign", { set: (value: CanvasTextAlign) => { align = value; } });
+    return { ctx, rects, texts };
+  }
+
+  it("fit side by side inside their plates on a 320 px phone", () => {
+    const { ctx, rects, texts } = layoutContext();
+    const width = 320;
+    const height = 640;
+    drawHud(ctx, width, height, snapshot(), Object.fromEntries(publicPlayers.map((p) => [p.id, p])), "one", null, 0, 30);
+    const miniY = height - 84 - 12;
+    // Each bar first fills its frame, a pixel larger than the bar all round.
+    const bars = rects.filter((rect) => rect.y === miniY - 1 && rect.h === 11).sort((a, b) => a.x - b.x);
+    const labels = texts.filter((text) => text.y === miniY - 4).sort((a, b) => a.left - b.left);
+    expect(bars).toHaveLength(4);
+    expect(labels.map((label) => label.text.split(" ")[0])).toEqual(["GUARD", "POISE", "GUARD", "POISE"]);
+    const plateWidth = (width - 56) / 2;
+    const plates = [[24, 24 + plateWidth], [width - 24 - plateWidth, width - 24]] as const;
+    for (const [index, bar] of bars.entries()) {
+      const [left, right] = plates[index < 2 ? 0 : 1];
+      expect(bar.x + 1).toBeGreaterThanOrEqual(left);
+      expect(bar.x + bar.w - 1).toBeLessThanOrEqual(right);
+    }
+    for (let index = 1; index < 4; index += 1) {
+      expect(bars[index]!.x).toBeGreaterThanOrEqual(bars[index - 1]!.x + bars[index - 1]!.w);
+      expect(labels[index]!.left).toBeGreaterThanOrEqual(labels[index - 1]!.right);
+    }
+  });
+
+  it("keep their broadcast size and place on a desktop", () => {
+    const { ctx, rects } = layoutContext();
+    drawHud(ctx, 1280, 720, snapshot(), Object.fromEntries(publicPlayers.map((p) => [p.id, p])), "one", null, 0, 30);
+    const bars = rects.filter((rect) => rect.y === 720 - 84 - 12 - 1 && rect.h === 11).sort((a, b) => a.x - b.x);
+    expect(bars.map((bar) => [bar.x + 1, bar.w - 2])).toEqual([[44, 64], [120, 64], [1280 - 24 - 148, 64], [1280 - 24 - 72, 64]]);
+  });
+});
+
+describe("result panel text", () => {
+  it("keeps a long winner name whole on a narrow screen instead of cutting the verdict", () => {
+    const texts: string[] = [];
+    const ctx = mockHudContext(texts);
+    const longName = "Anastasia-the-Great5";
+    const players = { one: { id: "one", name: longName, avatar: null, rating: 1500, connected: true }, two: { id: "two", name: "Bo", avatar: null, rating: 1500, connected: true } };
+    const final = { version: 3 as const, type: "final" as const, match_id: "m", winner_id: "one", method: "decision" as const, round: 2, scorecards: [{ judge: "Impact", player_one: [10, 10], player_two: [9, 10] }], ratings: { one: { before: 1000, after: 1016 }, two: { before: 1000, after: 984 } } };
+    drawHud(ctx, 390, 844, { ...snapshot(), phase: "complete" }, players, "one", final, 0, 30);
+    expect(texts).toContain(`${longName} WINS`);
+    expect(texts.some((text) => text.startsWith(`${longName}  1000`))).toBe(true);
+    expect(texts.some((text) => text.startsWith("INPUT"))).toBe(false);
+  });
+});

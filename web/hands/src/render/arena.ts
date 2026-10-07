@@ -3,8 +3,13 @@ import * as THREE from "three";
 export interface BuiltArena {
   readonly group: THREE.Group;
   readonly update: (time: number, dt: number, reducedMotion: boolean) => void;
+  /** Raises crowd excitement (0..1); it decays over a few seconds. */
+  readonly excite: (amount: number) => void;
+  readonly excitement: () => number;
   readonly dispose: () => void;
 }
+
+const EXCITEMENT_DECAY_PER_SECOND = 0.3;
 
 const CROWD_BODY_COLORS = [0x2a3140, 0x3a2f2a, 0x26343a, 0x40312e, 0x2e3a2c, 0x38343e, 0x443c30, 0x5a5148, 0x31404a, 0x4a3542];
 const CROWD_SKIN_COLORS = [0xc79b76, 0x8a5a3b, 0x6e4128, 0xe0b48f, 0x54301d, 0xa9744f];
@@ -44,8 +49,8 @@ export function buildArena(): BuiltArena {
   const bodyGeo = new THREE.CapsuleGeometry(0.19, 0.5, 4, 8);
   const headGeo = new THREE.SphereGeometry(0.115, 8, 7);
   geometries.push(bodyGeo, headGeo);
-  const bodyMat = new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0 });
-  const headMat = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0 });
+  const bodyMat = new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0, emissive: 0x141926, emissiveIntensity: 0.7 });
+  const headMat = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0, emissive: 0x2a1d16, emissiveIntensity: 0.7 });
   materials.push(bodyMat, headMat);
   const bodies = new THREE.InstancedMesh(bodyGeo, bodyMat, total);
   const heads = new THREE.InstancedMesh(headGeo, headMat, total);
@@ -171,20 +176,22 @@ export function buildArena(): BuiltArena {
 
   let flashTimer = 0;
   let flashOn = 0;
+  let excitement = 0;
   const crowdMatrix = new THREE.Matrix4();
   const crowdPosition = new THREE.Vector3();
   const crowdQuaternion = new THREE.Quaternion();
   const crowdScale = new THREE.Vector3();
   const yAxis = new THREE.Vector3(0, 1, 0);
   const update = (time: number, dt: number, reducedMotion: boolean): void => {
+    excitement = Math.max(0, excitement - dt * EXCITEMENT_DECAY_PER_SECOND);
     if (!reducedMotion) {
-      const subset = 90;
-      const start = Math.floor((time * 30) % total);
-      for (let n = 0; n < subset; n += 1) {
-        const i = (start + n) % total;
+      const swayAmplitude = 0.05 + excitement * 0.06;
+      const bounceAmplitude = 0.05 + excitement * 0.2;
+      const bounceRate = 2.3 + excitement * 3.2;
+      for (let i = 0; i < total; i += 1) {
         const base = bases[i]!;
-        const sway = Math.sin(time * 1.6 + phases[i]!) * 0.05;
-        const bounce = Math.abs(Math.sin(time * 2.3 + phases[i]! * 1.7)) * 0.05;
+        const sway = Math.sin(time * 1.6 + phases[i]!) * swayAmplitude;
+        const bounce = Math.abs(Math.sin(time * bounceRate + phases[i]! * 1.7)) * bounceAmplitude;
         crowdQuaternion.setFromAxisAngle(yAxis, base.yaw + sway);
         crowdMatrix.compose(
           crowdPosition.set(base.x, base.y + 0.45 * base.scale + bounce, base.z + sway * 0.4),
@@ -205,7 +212,7 @@ export function buildArena(): BuiltArena {
       flashTimer -= dt;
       if (flashTimer <= 0) {
         flashOn = 0.09 + Math.random() * 0.08;
-        flashTimer = 0.25 + Math.random() * 1.6;
+        flashTimer = (0.25 + Math.random() * 1.6) / (1 + excitement * 4);
       }
       flashOn = Math.max(0, flashOn - dt);
       flashMat.opacity = flashOn > 0 ? 0.85 : 0;
@@ -220,5 +227,9 @@ export function buildArena(): BuiltArena {
     heads.dispose();
   };
 
-  return { group, update, dispose };
+  const excite = (amount: number): void => {
+    excitement = Math.min(1, excitement + Math.max(0, amount));
+  };
+
+  return { group, update, excite, excitement: () => excitement, dispose };
 }

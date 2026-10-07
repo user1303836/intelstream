@@ -4,18 +4,112 @@ const mix = (a: number, b: number, t: number): number => a + (b - a) * t;
 const presentationFighter = (a: FighterSnapshot, b: FighterSnapshot, t: number): FighterSnapshot => ({
   ...b,
   x: mix(a.x, b.x, t), y: mix(a.y, b.y, t), facing: mix(a.facing, b.facing, t),
+  facing_x: mix(a.facing_x, b.facing_x, t), facing_y: mix(a.facing_y, b.facing_y, t),
   velocity_x: mix(a.velocity_x, b.velocity_x, t), velocity_y: mix(a.velocity_y, b.velocity_y, t),
   stamina: mix(a.stamina, b.stamina, t), maximum_stamina: mix(a.maximum_stamina, b.maximum_stamina, t),
   conditioning: mix(a.conditioning, b.conditioning, t), guard: mix(a.guard, b.guard, t), poise: mix(a.poise, b.poise, t),
 });
+
+const MIN_DELAY_TICKS = 1.5;
+const MAX_DELAY_TICKS = 6;
+const STARVATION_STEP_TICKS = 0.5;
+/** How long a late snapshot or a starved frame keeps the delay up: long enough to span a burst of jitter. */
+const LATENESS_WINDOW_MS = 2500;
+/** On top of a snapshot's lateness, one more interval keeps the next snapshot in hand. */
+const LATENESS_MARGIN_TICKS = 1;
+/** While the delay comes down the presentation runs this much faster than real time, too little to see. */
+const RELAX_RATE = 0.04;
+/** Longest frame gap the relaxation counts, so a page coming back from the background eases in instead of jumping. */
+const RELAX_FRAME_CAP_MS = 100;
+const OFFSET_DRIFT_PER_PUSH = 0.01;
+/** Consecutive snapshots this far behind the clock mean the server stopped (a paused bout), not jitter. */
+const RESEED_AFTER_PUSHES = 4;
+
+/**
+ * Holds recent authoritative snapshots and provides a continuously advancing
+ * render clock: the client estimates the server tick from snapshot arrival
+ * times and presents the state a small, adaptive delay behind it so that
+ * every rendered frame interpolates between two real snapshots instead of
+ * holding the latest pose until the next packet arrives.
+ *
+ * A starved frame widens the delay at once. It comes back down, at a pace
+ * too slow to see, to what the last few seconds of arrivals needed: the
+ * worst lateness behind the clock plus one snapshot interval.
+ */
 export class SnapshotBuffer {
   private readonly snapshots: EngineSnapshot[] = [];
-  constructor(private readonly maximum = 6) {}
-  push(snapshot: EngineSnapshot): boolean {
+  private offsetTicks: number | null = null;
+  private delayTicks: number;
+  private lastStarvationMs = -Infinity;
+  private lastFrameMs: number | null = null;
+  private behindPushes = 0;
+  /** Delays recent moments needed, newest last and decreasing, so the first is the largest in the window. */
+  private readonly needs: { readonly atMs: number; readonly ticks: number }[] = [];
+  constructor(private readonly maximum = 8, private readonly tickRate = 30, private readonly initialDelayTicks = 2) {
+    this.delayTicks = initialDelayTicks;
+  }
+  get interpolationDelayTicks(): number { return this.delayTicks; }
+  push(snapshot: EngineSnapshot, nowMs?: number): boolean {
     const latest = this.snapshots.at(-1); if (latest !== undefined && snapshot.tick <= latest.tick) return false;
-    this.snapshots.push(snapshot); if (this.snapshots.length > this.maximum) this.snapshots.shift(); return true;
+    this.snapshots.push(snapshot); if (this.snapshots.length > this.maximum) this.snapshots.shift();
+    if (nowMs !== undefined && Number.isFinite(nowMs)) {
+      const sample = snapshot.tick - (nowMs * this.tickRate) / 1000;
+      if (this.offsetTicks !== null && sample < this.offsetTicks - MAX_DELAY_TICKS) this.behindPushes += 1;
+      else this.behindPushes = 0;
+      if (this.behindPushes >= RESEED_AFTER_PUSHES) this.restartClock();
+      if (this.offsetTicks === null) {
+        this.offsetTicks = sample;
+        // A new clock keeps its starting delay until a full window of arrivals shows what the link needs.
+        this.need(nowMs, this.initialDelayTicks);
+      } else {
+        this.offsetTicks = Math.max(sample, this.offsetTicks - OFFSET_DRIFT_PER_PUSH);
+      }
+      this.need(nowMs, this.offsetTicks - sample + LATENESS_MARGIN_TICKS);
+    }
+    return true;
+  }
+  /** Forgets the server clock and the delay it taught, for a new connection or a bout resuming after a pause. */
+  resync(): void {
+    this.restartClock();
+  }
+  private restartClock(): void {
+    this.offsetTicks = null;
+    this.delayTicks = this.initialDelayTicks;
+    this.lastStarvationMs = -Infinity;
+    this.behindPushes = 0;
+    this.needs.length = 0;
+  }
+  private need(atMs: number, ticks: number): void {
+    while (this.needs.length > 0 && this.needs.at(-1)!.ticks <= ticks) this.needs.pop();
+    this.needs.push({ atMs, ticks });
+  }
+  private recentNeed(nowMs: number): number {
+    while (this.needs.length > 0 && this.needs[0]!.atMs <= nowMs - LATENESS_WINDOW_MS) this.needs.shift();
+    return this.needs[0]?.ticks ?? 0;
   }
   latest(): EngineSnapshot | null { return this.snapshots.at(-1) ?? null; }
+  /** Fractional tick to present at `nowMs`, clamped to the buffered range. */
+  renderTick(nowMs: number): number {
+    const latest = this.latest();
+    if (latest === null) return 0;
+    const oldest = this.snapshots[0]!.tick;
+    if (this.offsetTicks === null) return Math.max(oldest, latest.tick - 1);
+    const frameMs = this.lastFrameMs === null ? 0 : Math.min(RELAX_FRAME_CAP_MS, Math.max(0, nowMs - this.lastFrameMs));
+    this.lastFrameMs = nowMs;
+    const estimate = (nowMs * this.tickRate) / 1000 + this.offsetTicks - this.delayTicks;
+    if (estimate > latest.tick + 0.25) {
+      if (nowMs - this.lastStarvationMs > 250) {
+        this.lastStarvationMs = nowMs;
+        this.delayTicks = Math.min(MAX_DELAY_TICKS, this.delayTicks + STARVATION_STEP_TICKS);
+        // The snapshots that will show how late the link runs have not arrived yet; hold the new delay meanwhile.
+        this.need(nowMs, this.delayTicks);
+      }
+    } else {
+      const target = Math.max(MIN_DELAY_TICKS, this.recentNeed(nowMs));
+      if (this.delayTicks > target) this.delayTicks = Math.max(target, this.delayTicks - (RELAX_RATE * frameMs * this.tickRate) / 1000);
+    }
+    return Math.min(latest.tick, Math.max(oldest, estimate));
+  }
   sample(tick: number): EngineSnapshot | null {
     const nextIndex = this.snapshots.findIndex((item) => item.tick >= tick);
     if (nextIndex <= 0) return this.snapshots[Math.max(0, nextIndex)] ?? this.latest();
@@ -24,7 +118,7 @@ export class SnapshotBuffer {
     const t = Math.max(0, Math.min(1, (tick - a.tick) / Math.max(1, b.tick - a.tick)));
     return { ...b, fighters: [presentationFighter(a.fighters[0], b.fighters[0], t), presentationFighter(a.fighters[1], b.fighters[1], t)] };
   }
-  clear(): void { this.snapshots.length = 0; }
+  clear(): void { this.snapshots.length = 0; this.offsetTicks = null; }
 }
 export class EventDeduplicator {
   private highest = -1;

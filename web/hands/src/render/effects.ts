@@ -24,6 +24,13 @@ interface Droplet {
   life: number;
   maxLife: number;
   r: number; g: number; b: number;
+  radius: number;
+}
+
+export interface BakedPart {
+  readonly geometry: THREE.BufferGeometry;
+  readonly map: THREE.Texture | null;
+  readonly color: number;
 }
 
 interface Mist {
@@ -44,10 +51,15 @@ interface Gib {
   scale: number;
   bounces: number;
   stained: boolean;
+  tooth: boolean;
 }
 
 interface SeveredHead {
   readonly mesh: THREE.Mesh;
+  readonly defaultGeometry: THREE.BufferGeometry;
+  readonly defaultScale: THREE.Vector3;
+  readonly cap: THREE.Mesh;
+  baked: THREE.BufferGeometry | null;
   readonly radius: number;
   active: boolean;
   moving: boolean;
@@ -64,7 +76,7 @@ interface Stump {
   fountainLife: number;
   accumulator: number;
   seed: number;
-  direction: number;
+  direction: SprayDirection;
 }
 
 interface DripEmitter {
@@ -81,6 +93,21 @@ const seeded = (seed: number): (() => number) => () => {
 };
 
 const finite = (value: number, fallback = 0): number => Number.isFinite(value) ? value : fallback;
+
+/** Horizontal world direction (x and z) a spray flies in. */
+export interface SprayDirection {
+  readonly x: number;
+  readonly z: number;
+}
+
+/** A spray direction as a unit vector; a bare number is the world-x sign that hit events carry. */
+function unitSpray(direction: number | SprayDirection): SprayDirection {
+  if (typeof direction === "number") return { x: direction < 0 ? -1 : 1, z: 0 };
+  const length = Math.hypot(direction.x, direction.z);
+  return Number.isFinite(length) && length > 1e-6 ? { x: direction.x / length, z: direction.z / length } : { x: 1, z: 0 };
+}
+
+const unitY = new THREE.Vector3(0, 1, 0);
 const safeStep = (dt: number): number => Number.isFinite(dt) ? THREE.MathUtils.clamp(dt, 0, MAX_STEP) : 0;
 const IMPACT_KINDS = new Set(["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown", "bleed"]);
 
@@ -103,6 +130,39 @@ function copyFiniteQuaternion(target: THREE.Quaternion, source: THREE.Quaternion
   else target.normalize();
 }
 
+function splatTexture(seed: number): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = 128;
+  canvas.height = 128;
+  const ctx = canvas.getContext("2d");
+  if (ctx !== null) {
+    const rand = seeded(seed);
+    ctx.clearRect(0, 0, 128, 128);
+    ctx.fillStyle = "rgba(255,255,255,1)";
+    const blobs = 7 + Math.floor(rand() * 6);
+    for (let i = 0; i < blobs; i += 1) {
+      const angle = rand() * Math.PI * 2;
+      const distance = i === 0 ? 0 : 8 + rand() * 40;
+      const radius = i === 0 ? 24 + rand() * 12 : 3 + rand() * 12;
+      ctx.globalAlpha = i === 0 ? 1 : 0.7 + rand() * 0.3;
+      ctx.beginPath();
+      ctx.ellipse(64 + Math.cos(angle) * distance, 64 + Math.sin(angle) * distance, radius, radius * (0.55 + rand() * 0.5), rand() * Math.PI, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    for (let i = 0; i < 12; i += 1) {
+      const angle = rand() * Math.PI * 2;
+      const distance = 30 + rand() * 30;
+      ctx.beginPath();
+      ctx.arc(64 + Math.cos(angle) * distance, 64 + Math.sin(angle) * distance, 1 + rand() * 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.NoColorSpace;
+  return texture;
+}
+
 function mistTexture(): THREE.CanvasTexture {
   const canvas = document.createElement("canvas");
   canvas.width = 64;
@@ -120,13 +180,22 @@ function mistTexture(): THREE.CanvasTexture {
 }
 
 export class Effects3D {
-  readonly points: THREE.Points;
+  readonly dropletMesh: THREE.InstancedMesh;
   private readonly droplets: Droplet[] = [];
   private readonly dropletPositions: Float32Array;
   private readonly dropletColors: Float32Array;
-  private readonly dropletGeometry: THREE.BufferGeometry;
-  private readonly dropletMaterial: THREE.PointsMaterial;
+  readonly dropletBuffers: { readonly position: THREE.BufferAttribute; readonly color: THREE.BufferAttribute };
+  private readonly dropletGeometry: THREE.SphereGeometry;
+  private readonly dropletMaterial: THREE.MeshStandardMaterial;
+  private readonly dropletMatrix = new THREE.Matrix4();
+  private readonly dropletQuaternion = new THREE.Quaternion();
+  private readonly dropletScale = new THREE.Vector3();
+  private readonly dropletVelocity = new THREE.Vector3();
+  private readonly dropletColor = new THREE.Color();
+  private readonly splatMaps: THREE.CanvasTexture[] = [];
   private dropletIndex = 0;
+  /** Live droplets fill the front of the pool, and only they are drawn and uploaded. */
+  private liveDroplets = 0;
 
   readonly mistPoints: THREE.Points;
   private readonly mists: Mist[] = [];
@@ -138,12 +207,13 @@ export class Effects3D {
   private mistIndex = 0;
 
   private readonly decals: THREE.Mesh[] = [];
-  private readonly decalGeometry: THREE.CircleGeometry;
+  private readonly decalGeometry: THREE.PlaneGeometry;
   private decalIndex = 0;
 
   private readonly gibGeometry: THREE.IcosahedronGeometry;
   private readonly gibMaterial: THREE.MeshStandardMaterial;
   private readonly gibMesh: THREE.InstancedMesh;
+  private readonly gibColor = new THREE.Color();
   private readonly gibs: Gib[] = [];
   private gibIndex = 0;
   private readonly gibMatrix = new THREE.Matrix4();
@@ -178,17 +248,27 @@ export class Effects3D {
   constructor(private readonly scene: THREE.Scene) {
     this.dropletPositions = new Float32Array(MAX_DROPLETS * 3);
     this.dropletColors = new Float32Array(MAX_DROPLETS * 3);
-    this.dropletGeometry = new THREE.BufferGeometry();
-    this.dropletGeometry.setAttribute("position", new THREE.BufferAttribute(this.dropletPositions, 3));
-    this.dropletGeometry.setAttribute("color", new THREE.BufferAttribute(this.dropletColors, 3));
-    this.dropletMaterial = new THREE.PointsMaterial({ size: 0.038, vertexColors: true, transparent: true, opacity: 0.96, depthWrite: false, sizeAttenuation: true });
-    this.points = new THREE.Points(this.dropletGeometry, this.dropletMaterial);
-    this.points.frustumCulled = false;
-    scene.add(this.points);
+    this.dropletBuffers = {
+      position: new THREE.BufferAttribute(this.dropletPositions, 3),
+      color: new THREE.BufferAttribute(this.dropletColors, 3),
+    };
+    this.dropletGeometry = new THREE.SphereGeometry(1, 7, 5);
+    this.dropletMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.22, metalness: 0.02 });
+    this.dropletMesh = new THREE.InstancedMesh(this.dropletGeometry, this.dropletMaterial, MAX_DROPLETS);
+    this.dropletMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.dropletMesh.frustumCulled = false;
+    this.dropletMesh.castShadow = false;
+    scene.add(this.dropletMesh);
     for (let i = 0; i < MAX_DROPLETS; i += 1) {
-      this.droplets.push({ alive: false, blood: false, x: 0, y: -50, z: 0, vx: 0, vy: 0, vz: 0, life: 0, maxLife: 1, r: 1, g: 1, b: 1 });
+      this.droplets.push({ alive: false, blood: false, x: 0, y: -50, z: 0, vx: 0, vy: 0, vz: 0, life: 0, maxLife: 1, r: 1, g: 1, b: 1, radius: 0.012 });
       this.dropletPositions[i * 3 + 1] = -50;
+      this.dropletMesh.setColorAt(i, this.dropletColor.setRGB(0.5, 0.02, 0.04));
+      this.writeDropletMatrix(i, this.droplets[i]!);
     }
+    this.dropletMesh.instanceColor?.setUsage(THREE.DynamicDrawUsage);
+    this.dropletMesh.instanceMatrix.needsUpdate = true;
+    this.dropletMesh.count = 0;
+    for (let i = 0; i < 4; i += 1) this.splatMaps.push(splatTexture(0x3a1f_00d1 + i * 977));
 
     this.mistPositions = new Float32Array(MAX_MIST * 3);
     this.mistColors = new Float32Array(MAX_MIST * 3);
@@ -205,9 +285,9 @@ export class Effects3D {
       this.mistPositions[i * 3 + 1] = -50;
     }
 
-    this.decalGeometry = new THREE.CircleGeometry(0.09, 12);
+    this.decalGeometry = new THREE.PlaneGeometry(0.2, 0.2);
     for (let i = 0; i < MAX_DECALS; i += 1) {
-      const decal = new THREE.Mesh(this.decalGeometry, new THREE.MeshBasicMaterial({ color: 0x6e0d13, transparent: true, opacity: 0.42, depthWrite: false }));
+      const decal = new THREE.Mesh(this.decalGeometry, new THREE.MeshStandardMaterial({ color: 0x6e0d13, map: this.splatMaps[i % this.splatMaps.length]!, alphaMap: this.splatMaps[i % this.splatMaps.length]!, transparent: true, opacity: 0.42, depthWrite: false, roughness: 0.25, metalness: 0 }));
       decal.rotation.x = -Math.PI / 2;
       decal.position.y = CANVAS_TOP + 0.004 + i * 0.00015;
       decal.visible = false;
@@ -222,8 +302,9 @@ export class Effects3D {
     this.gibMesh.frustumCulled = false;
     scene.add(this.gibMesh);
     for (let i = 0; i < MAX_GIBS; i += 1) {
-      const gib: Gib = { alive: false, x: 0, y: -50, z: 0, vx: 0, vy: 0, vz: 0, rx: 0, ry: 0, rz: 0, vrx: 0, vry: 0, vrz: 0, life: 0, scale: 0, bounces: 0, stained: false };
+      const gib: Gib = { alive: false, x: 0, y: -50, z: 0, vx: 0, vy: 0, vz: 0, rx: 0, ry: 0, rz: 0, vrx: 0, vry: 0, vrz: 0, life: 0, scale: 0, bounces: 0, stained: false, tooth: false };
       this.gibs.push(gib);
+      this.gibMesh.setColorAt(i, this.gibColor.setHex(0xffffff));
       this.writeGibMatrix(i, gib);
     }
     this.gibMesh.instanceMatrix.needsUpdate = true;
@@ -241,12 +322,17 @@ export class Effects3D {
       headMesh.castShadow = true;
       headMesh.visible = false;
       scene.add(headMesh);
-      this.heads.push({ mesh: headMesh, radius: HEAD_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
+      const cap = new THREE.Mesh(new THREE.CircleGeometry(0.058, 14), this.stumpMaterial);
+      cap.rotation.x = Math.PI / 2;
+      cap.position.y = -0.1;
+      cap.visible = false;
+      headMesh.add(cap);
+      this.heads.push({ mesh: headMesh, defaultGeometry: this.headGeometry, defaultScale: headMesh.scale.clone(), cap, baked: null, radius: HEAD_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
 
       const stumpMesh = new THREE.Mesh(this.stumpGeometry, this.stumpMaterial);
       stumpMesh.visible = false;
       scene.add(stumpMesh);
-      this.stumps.push({ mesh: stumpMesh, active: false, fountainLife: 0, accumulator: 0, seed: 1, direction: 1 });
+      this.stumps.push({ mesh: stumpMesh, active: false, fountainLife: 0, accumulator: 0, seed: 1, direction: { x: 1, z: 0 } });
     }
     for (let index = 0; index < MAX_HANDS; index += 1) {
       const material = new THREE.MeshStandardMaterial({ color: 0x1d4ed8, roughness: 0.38, metalness: 0.03 });
@@ -256,13 +342,27 @@ export class Effects3D {
       handMesh.castShadow = true;
       handMesh.visible = false;
       scene.add(handMesh);
-      this.hands.push({ mesh: handMesh, radius: HAND_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
+      const cap = new THREE.Mesh(new THREE.CircleGeometry(0.04, 12), this.stumpMaterial);
+      cap.rotation.x = Math.PI / 2;
+      cap.position.y = 0.02;
+      cap.visible = false;
+      handMesh.add(cap);
+      this.hands.push({ mesh: handMesh, defaultGeometry: this.handGeometry, defaultScale: handMesh.scale.clone(), cap, baked: null, radius: HAND_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
 
       const stumpMesh = new THREE.Mesh(this.wristStumpGeometry, this.stumpMaterial);
       stumpMesh.visible = false;
       scene.add(stumpMesh);
-      this.handStumps.push({ mesh: stumpMesh, active: false, fountainLife: 0, accumulator: 0, seed: 1, direction: 1 });
+      this.handStumps.push({ mesh: stumpMesh, active: false, fountainLife: 0, accumulator: 0, seed: 1, direction: { x: 1, z: 0 } });
     }
+  }
+
+  /**
+   * Stand-ins sharing the hidden pools' geometry and materials (blood on the canvas, severed parts and
+   * their stumps), so their shaders can be compiled ahead of the first bloody hit instead of inside it.
+   */
+  compileStandIns(): THREE.Mesh[] {
+    const hidden = [this.decals[0]!, this.heads[0]!.mesh, this.hands[0]!.mesh, this.stumps[0]!.mesh, this.handStumps[0]!.mesh];
+    return hidden.map((mesh) => new THREE.Mesh(mesh.geometry, mesh.material));
   }
 
   setBloodLevel(level: BloodLevel): void {
@@ -300,6 +400,14 @@ export class Effects3D {
     return this.heads.filter((head) => head.active).length;
   }
 
+  /** Copies the world position of a fighter's severed head into `out`; false when the head is still on. */
+  severedHeadPosition(fighterIndex: number, out: THREE.Vector3): boolean {
+    const head = this.heads[Math.trunc(fighterIndex)];
+    if (head === undefined || !head.active) return false;
+    out.copy(head.mesh.position);
+    return true;
+  }
+
   get activeHands(): number {
     return this.hands.filter((hand) => hand.active).length;
   }
@@ -308,12 +416,13 @@ export class Effects3D {
     return [...this.stumps, ...this.handStumps].filter((stump) => stump.active).length;
   }
 
-  private spawnDroplet(x: number, y: number, z: number, vx: number, vy: number, vz: number, color: { r: number; g: number; b: number }, life: number, blood: boolean): void {
-    const index = this.dropletIndex % MAX_DROPLETS;
-    this.dropletIndex += 1;
+  private spawnDroplet(x: number, y: number, z: number, vx: number, vy: number, vz: number, color: { r: number; g: number; b: number }, life: number, blood: boolean, radius = blood ? 0.006 + this.ambientRandom() * 0.009 : 0.004 + this.ambientRandom() * 0.004): void {
+    // A new droplet joins the live ones at the front; a full pool reuses its slots in turn.
+    const index = this.liveDroplets < MAX_DROPLETS ? this.liveDroplets++ : this.dropletIndex++ % MAX_DROPLETS;
     const droplet = this.droplets[index]!;
     droplet.alive = true;
     droplet.blood = blood;
+    droplet.radius = radius;
     droplet.x = finite(x);
     droplet.y = finite(y, 1);
     droplet.z = finite(z);
@@ -331,8 +440,67 @@ export class Effects3D {
     this.dropletColors[index * 3] = droplet.r;
     this.dropletColors[index * 3 + 1] = droplet.g;
     this.dropletColors[index * 3 + 2] = droplet.b;
-    this.dropletGeometry.attributes.position!.needsUpdate = true;
-    this.dropletGeometry.attributes.color!.needsUpdate = true;
+    this.dropletMesh.setColorAt(index, this.dropletColor.setRGB(droplet.r, droplet.g, droplet.b));
+    this.writeDropletMatrix(index, droplet);
+    this.uploadDroplets(index, index + 1, true);
+  }
+
+  /** Draws only the live droplets and uploads the instances from `from` up to `to`. */
+  private uploadDroplets(from: number, to: number, colors: boolean): void {
+    this.dropletMesh.count = this.liveDroplets;
+    if (to <= from) return;
+    this.dropletMesh.instanceMatrix.addUpdateRange(from * 16, (to - from) * 16);
+    this.dropletMesh.instanceMatrix.needsUpdate = true;
+    const instanceColor = this.dropletMesh.instanceColor;
+    if (!colors || instanceColor === null) return;
+    instanceColor.addUpdateRange(from * 3, (to - from) * 3);
+    instanceColor.needsUpdate = true;
+  }
+
+  /** Retires the droplet in slot `index` and moves the last live droplet into its place. */
+  private retireDroplet(index: number): void {
+    const last = this.liveDroplets - 1;
+    const retired = this.droplets[index]!;
+    retired.alive = false;
+    this.liveDroplets = last;
+    if (index !== last) {
+      const moved = this.droplets[last]!;
+      this.droplets[index] = moved;
+      this.droplets[last] = retired;
+      this.dropletPositions.copyWithin(index * 3, last * 3, last * 3 + 3);
+      this.dropletColors.copyWithin(index * 3, last * 3, last * 3 + 3);
+      this.dropletMesh.setColorAt(index, this.dropletColor.setRGB(moved.r, moved.g, moved.b));
+      this.writeDropletMatrix(index, moved);
+    }
+    this.dropletPositions[last * 3 + 1] = -50;
+    this.writeDropletMatrix(last, retired);
+  }
+
+  /** Spawns a droplet whose horizontal velocity is given along the spray and across it. */
+  private sprayDroplet(spray: SprayDirection, x: number, y: number, z: number, along: number, vy: number, across: number, color: { r: number; g: number; b: number }, life: number, blood: boolean): void {
+    this.spawnDroplet(x, y, z, along * spray.x - across * spray.z, vy, along * spray.z + across * spray.x, color, life, blood);
+  }
+
+  private writeDropletMatrix(index: number, droplet: Droplet): void {
+    if (!droplet.alive) {
+      this.dropletScale.setScalar(0);
+      this.dropletQuaternion.identity();
+      this.dropletMatrix.compose(this.dropletVelocity.set(0, -50, 0), this.dropletQuaternion, this.dropletScale);
+      this.dropletMesh.setMatrixAt(index, this.dropletMatrix);
+      return;
+    }
+    const speed = Math.hypot(droplet.vx, droplet.vy, droplet.vz);
+    const stretch = 1 + Math.min(3.2, speed * 0.55);
+    if (speed > 1e-4) {
+      this.dropletVelocity.set(droplet.vx / speed, droplet.vy / speed, droplet.vz / speed);
+      this.dropletQuaternion.setFromUnitVectors(unitY, this.dropletVelocity);
+    } else {
+      this.dropletQuaternion.identity();
+    }
+    const fade = Math.min(1, droplet.life / (droplet.maxLife * 0.3));
+    this.dropletScale.set(droplet.radius * fade, droplet.radius * stretch * fade, droplet.radius * fade);
+    this.dropletMatrix.compose(this.dropletVelocity.set(droplet.x, droplet.y, droplet.z), this.dropletQuaternion, this.dropletScale);
+    this.dropletMesh.setMatrixAt(index, this.dropletMatrix);
   }
 
   private spawnMist(x: number, y: number, z: number, scale: number, life: number): void {
@@ -363,9 +531,9 @@ export class Effects3D {
     decal.position.x = finite(x);
     decal.position.z = finite(z);
     decal.rotation.z = finite(rotation);
-    decal.scale.set(Math.max(0.01, finite(scaleX, 0.2)), Math.max(0.01, finite(scaleZ, 0.15)), 1);
-    const material = decal.material as THREE.MeshBasicMaterial;
-    material.opacity = THREE.MathUtils.clamp(finite(opacity, 0.4), 0, 1);
+    decal.scale.set(Math.max(0.01, finite(scaleX, 0.2)) * 1.4, Math.max(0.01, finite(scaleZ, 0.15)) * 1.4, 1);
+    const material = decal.material as THREE.MeshStandardMaterial;
+    material.opacity = THREE.MathUtils.clamp(finite(opacity, 0.4) * 1.6, 0, 1);
     material.color.setHex(color);
   }
 
@@ -408,30 +576,37 @@ export class Effects3D {
     }
   }
 
-  addEvent(event: CombatEvent, targetWorld: THREE.Vector3, reducedMotion: boolean): void {
+  /**
+   * Blood, sweat and chunks for a contact. `spray` is the way the punch travelled (from puncher to
+   * recipient); without it the event's world-x sign stands in.
+   */
+  addEvent(event: CombatEvent, targetWorld: THREE.Vector3, reducedMotion: boolean, spray?: SprayDirection): void {
     if (!IMPACT_KINDS.has(event.kind)) return;
     const rand = seeded(event.event_id * 7919 + 17);
     const blocked = event.kind === "block" || event.kind === "perfect_block";
     const pattern = bloodPatternFor(event);
-    const launchDirection = event.direction < 0 ? -1 : 1;
+    const launch = unitSpray(spray ?? event.direction);
+    // Sweat and chunks are pushed along the punch as hard as the event's sign says (a block may carry none).
+    const push = spray === undefined ? Math.abs(finite(event.direction)) : 1;
     const origin = { x: finite(targetWorld.x), y: event.detail.endsWith(":body") ? 1.05 : 1.58, z: finite(targetWorld.z) };
     const sweatCount = reducedMotion ? 0 : Math.round((blocked ? 6 : 16) + Math.min(20, Math.max(0, event.amount) / 20));
     const bloodCount = reducedMotion || event.blood <= 0 || this.bloodLevel === "off"
       ? 0
       : this.bloodLevel === "reduced"
         ? Math.min(24, Math.round(event.blood * 0.24))
-        : Math.min(160, Math.round(event.blood * 1.4));
+        : Math.min(120, Math.round(event.blood * 1.1));
     this.shake = Math.min(0.09, this.shake + (blocked ? 0.008 : Math.max(0.012, event.amount / 2600)));
     if (event.kind === "knockdown") this.shake = Math.min(0.14, this.shake + 0.06);
 
     for (let i = 0; i < sweatCount; i += 1) {
       const angle = rand() * Math.PI * 2;
       const outward = 0.4 + rand() * 0.9;
-      this.spawnDroplet(
+      this.sprayDroplet(
+        launch,
         origin.x + (rand() - 0.5) * 0.12,
         origin.y + (rand() - 0.5) * 0.14,
         origin.z + (rand() - 0.5) * 0.12,
-        Math.sin(angle) * outward + event.direction * (0.5 + rand() * 0.9),
+        Math.sin(angle) * outward + push * (0.5 + rand() * 0.9),
         0.6 + rand() * 1.5,
         Math.cos(angle) * outward,
         { r: 0.82, g: 0.9, b: 1.0 },
@@ -443,43 +618,44 @@ export class Effects3D {
       const arterial = i % 4 === 0;
       const angle = (rand() - 0.5) * Math.PI;
       const speed = arterial ? 2.2 + rand() * 1.8 : 0.9 + rand() * 1.5;
-      let vx = launchDirection * speed;
+      let along = speed;
       let vy = 0.5 + rand() * 1.25;
-      let vz = (rand() - 0.5) * 0.5;
+      let across = (rand() - 0.5) * 0.5;
       if (pattern === "fan") {
-        vx = launchDirection * speed * (0.45 + Math.cos(angle) * 0.35);
+        along = speed * (0.45 + Math.cos(angle) * 0.35);
         vy = 0.55 + rand() * 1.15;
-        vz = Math.sin(angle) * speed * 0.9;
+        across = Math.sin(angle) * speed * 0.9;
       } else if (pattern === "plume") {
-        vx = launchDirection * speed * (0.25 + rand() * 0.25);
+        along = speed * (0.25 + rand() * 0.25);
         vy = 1.8 + rand() * 2.2;
-        vz = (rand() - 0.5) * speed * 0.65;
+        across = (rand() - 0.5) * speed * 0.65;
       } else if (pattern === "body_burst") {
-        vx = launchDirection * speed * (0.55 + rand() * 0.45);
+        along = speed * (0.55 + rand() * 0.45);
         vy = -0.15 + rand() * 1.05;
-        vz = Math.sin(angle) * speed * 0.75;
+        across = Math.sin(angle) * speed * 0.75;
       } else if (pattern === "ooze") {
-        vx = launchDirection * (0.08 + rand() * 0.22);
+        along = 0.08 + rand() * 0.22;
         vy = -0.3 - rand() * 0.55;
-        vz = (rand() - 0.5) * 0.22;
+        across = (rand() - 0.5) * 0.22;
       } else if (pattern === "impact") {
-        vx = launchDirection * speed * (0.45 + rand() * 0.65);
+        along = speed * (0.45 + rand() * 0.65);
         vy = 0.9 + rand() * 2.1;
-        vz = Math.sin(angle) * speed;
+        across = Math.sin(angle) * speed;
       } else {
         const spread = arterial ? 0.12 : 0.34;
-        vx = launchDirection * speed * (0.8 + rand() * 0.35);
+        along = speed * (0.8 + rand() * 0.35);
         vy = arterial ? 1.3 + rand() * 1.6 : 0.5 + rand() * 1.25;
-        vz = (rand() - 0.5) * speed * spread;
+        across = (rand() - 0.5) * speed * spread;
       }
       const shade = rand();
-      this.spawnDroplet(
+      this.sprayDroplet(
+        launch,
         origin.x + (rand() - 0.5) * 0.12,
         origin.y + (rand() - 0.5) * 0.14,
         origin.z + (rand() - 0.5) * 0.12,
-        vx,
+        along,
         vy,
-        vz,
+        across,
         shade < 0.3 ? { r: 0.72, g: 0.055, b: 0.08 } : shade < 0.7 ? { r: 0.5, g: 0.025, b: 0.045 } : { r: 0.3, g: 0.012, b: 0.025 },
         0.65 + rand() * 0.85,
         true,
@@ -505,11 +681,12 @@ export class Effects3D {
       for (let index = 0; index < chunks; index += 1) {
         const angle = rand() * Math.PI * 2;
         const speed = 0.5 + rand() * 1.8;
-        this.spawnGib(
+        this.sprayGib(
+          launch,
           origin.x + (rand() - 0.5) * 0.12,
           origin.y + (rand() - 0.5) * 0.14,
           origin.z + (rand() - 0.5) * 0.12,
-          event.direction * (0.5 + rand() * 1.4) + Math.sin(angle) * speed * 0.5,
+          push * (0.5 + rand() * 1.4) + Math.sin(angle) * speed * 0.5,
           0.5 + rand() * 1.7,
           Math.cos(angle) * speed,
           rand,
@@ -518,29 +695,59 @@ export class Effects3D {
     }
   }
 
+  private applyBakedPart(part: SeveredHead, baked: BakedPart | undefined, fallbackColor: number): void {
+    if (part.baked !== null) {
+      part.baked.dispose();
+      part.baked = null;
+    }
+    const material = part.mesh.material as THREE.MeshStandardMaterial;
+    if (baked !== undefined) {
+      part.mesh.geometry = baked.geometry;
+      part.baked = baked.geometry;
+      part.mesh.scale.setScalar(1);
+      material.map = baked.map;
+      material.color.setHex(baked.color);
+      baked.geometry.computeBoundingBox();
+      const box = baked.geometry.boundingBox;
+      if (box !== null) part.cap.position.y = box.min.y + 0.004;
+      part.cap.visible = true;
+    } else {
+      part.mesh.geometry = part.defaultGeometry;
+      part.mesh.scale.copy(part.defaultScale);
+      material.map = null;
+      material.color.setHex(fallbackColor);
+      part.cap.visible = false;
+    }
+    material.needsUpdate = true;
+  }
+
   decapitate(
     fighterIndex: number,
     position: THREE.Vector3,
     quaternion: THREE.Quaternion,
-    direction: number,
+    direction: number | SprayDirection,
     eventId: number,
     skinColor = 0x8a4d32,
+    baked?: BakedPart,
   ): void {
     if (this.bloodLevel !== "full" || fighterIndex < 0 || fighterIndex >= MAX_HEADS) return;
     const index = Math.trunc(fighterIndex);
     const safeEventId = Number.isSafeInteger(eventId) ? eventId : 0;
     const head = this.heads[index]!;
     if (head.active || this.lastDecapitationEvent[index] === safeEventId) return;
+    this.applyBakedPart(head, baked, skinColor);
     const rand = seeded(safeEventId * 104729 + index * 8191 + 23);
-    const launchDirection = direction < 0 ? -1 : 1;
+    const launch = unitSpray(direction);
     this.lastDecapitationEvent[index] = safeEventId;
 
     head.active = true;
     head.moving = true;
     head.eventId = safeEventId;
-    head.vx = launchDirection * (1.8 + rand() * 1.1);
+    const along = 1.8 + rand() * 1.1;
     head.vy = 2.3 + rand() * 1.1;
-    head.vz = (rand() - 0.5) * 2.2;
+    const across = (rand() - 0.5) * 2.2;
+    head.vx = along * launch.x - across * launch.z;
+    head.vz = along * launch.z + across * launch.x;
     head.vrx = (rand() - 0.5) * 12;
     head.vry = (rand() - 0.5) * 12;
     head.vrz = (rand() - 0.5) * 12;
@@ -548,7 +755,6 @@ export class Effects3D {
     head.stained = false;
     head.mesh.position.set(finite(position.x), finite(position.y, 1.55), finite(position.z));
     copyFiniteQuaternion(head.mesh.quaternion, quaternion);
-    (head.mesh.material as THREE.MeshStandardMaterial).color.setHex(skinColor);
     head.mesh.visible = true;
 
     const stump = this.stumps[index]!;
@@ -556,7 +762,7 @@ export class Effects3D {
     stump.fountainLife = 1.25;
     stump.accumulator = 0;
     stump.seed = safeEventId | 1;
-    stump.direction = launchDirection;
+    stump.direction = launch;
     stump.mesh.position.copy(head.mesh.position);
     stump.mesh.quaternion.copy(head.mesh.quaternion);
     stump.mesh.visible = true;
@@ -564,11 +770,12 @@ export class Effects3D {
     for (let i = 0; i < GIBS_PER_DECAPITATION; i += 1) {
       const angle = rand() * Math.PI * 2;
       const speed = 0.8 + rand() * 2.4;
-      this.spawnGib(
+      this.sprayGib(
+        launch,
         head.mesh.position.x + (rand() - 0.5) * 0.12,
         head.mesh.position.y + (rand() - 0.5) * 0.12,
         head.mesh.position.z + (rand() - 0.5) * 0.12,
-        launchDirection * (0.7 + rand() * 1.8) + Math.sin(angle) * speed * 0.55,
+        0.7 + rand() * 1.8 + Math.sin(angle) * speed * 0.55,
         0.8 + rand() * 2.4,
         Math.cos(angle) * speed,
         rand,
@@ -578,11 +785,12 @@ export class Effects3D {
       const angle = rand() * Math.PI * 2;
       const speed = 1 + rand() * 2.6;
       const shade = rand();
-      this.spawnDroplet(
+      this.sprayDroplet(
+        launch,
         head.mesh.position.x + (rand() - 0.5) * 0.12,
         head.mesh.position.y + (rand() - 0.5) * 0.1,
         head.mesh.position.z + (rand() - 0.5) * 0.12,
-        launchDirection * (1.2 + rand() * 2.2) + Math.sin(angle) * speed * 0.35,
+        1.2 + rand() * 2.2 + Math.sin(angle) * speed * 0.35,
         0.7 + rand() * 2.7,
         Math.cos(angle) * speed,
         shade < 0.5 ? { r: 0.64, g: 0.035, b: 0.055 } : { r: 0.36, g: 0.015, b: 0.03 },
@@ -601,24 +809,28 @@ export class Effects3D {
     side: Hand,
     position: THREE.Vector3,
     quaternion: THREE.Quaternion,
-    direction: number,
+    direction: number | SprayDirection,
     eventId: number,
     color: number,
+    baked?: BakedPart,
   ): void {
     if (this.bloodLevel !== "full" || fighterIndex < 0 || fighterIndex >= MAX_HEADS) return;
     const index = Math.trunc(fighterIndex) * 2 + (side === "left" ? 0 : 1);
     const safeEventId = Number.isSafeInteger(eventId) ? eventId : 0;
     const hand = this.hands[index]!;
     if (hand.active || this.lastDismembermentEvent[index] === safeEventId) return;
+    this.applyBakedPart(hand, baked, color);
     const rand = seeded(safeEventId * 130363 + index * 12289 + 37);
-    const launchDirection = direction < 0 ? -1 : 1;
+    const launch = unitSpray(direction);
     this.lastDismembermentEvent[index] = safeEventId;
     hand.active = true;
     hand.moving = true;
     hand.eventId = safeEventId;
-    hand.vx = launchDirection * (1.3 + rand() * 1.1);
+    const along = 1.3 + rand() * 1.1;
     hand.vy = 1.5 + rand() * 1.2;
-    hand.vz = (rand() - 0.5) * 1.8;
+    const across = (rand() - 0.5) * 1.8;
+    hand.vx = along * launch.x - across * launch.z;
+    hand.vz = along * launch.z + across * launch.x;
     hand.vrx = (rand() - 0.5) * 16;
     hand.vry = (rand() - 0.5) * 16;
     hand.vrz = (rand() - 0.5) * 16;
@@ -626,7 +838,6 @@ export class Effects3D {
     hand.stained = false;
     hand.mesh.position.set(finite(position.x), finite(position.y, 1.25), finite(position.z));
     copyFiniteQuaternion(hand.mesh.quaternion, quaternion);
-    (hand.mesh.material as THREE.MeshStandardMaterial).color.setHex(color);
     hand.mesh.visible = true;
 
     const stump = this.handStumps[index]!;
@@ -634,7 +845,7 @@ export class Effects3D {
     stump.fountainLife = 0.9;
     stump.accumulator = 0;
     stump.seed = safeEventId | 1;
-    stump.direction = launchDirection;
+    stump.direction = launch;
     stump.mesh.position.copy(hand.mesh.position);
     stump.mesh.quaternion.copy(hand.mesh.quaternion);
     stump.mesh.visible = true;
@@ -642,11 +853,12 @@ export class Effects3D {
     for (let gib = 0; gib < GIBS_PER_HAND; gib += 1) {
       const angle = rand() * Math.PI * 2;
       const speed = 0.55 + rand() * 1.8;
-      this.spawnGib(
+      this.sprayGib(
+        launch,
         hand.mesh.position.x + (rand() - 0.5) * 0.08,
         hand.mesh.position.y + (rand() - 0.5) * 0.08,
         hand.mesh.position.z + (rand() - 0.5) * 0.08,
-        launchDirection * (0.5 + rand() * 1.4) + Math.sin(angle) * speed * 0.45,
+        0.5 + rand() * 1.4 + Math.sin(angle) * speed * 0.45,
         0.5 + rand() * 1.9,
         Math.cos(angle) * speed,
         rand,
@@ -655,11 +867,12 @@ export class Effects3D {
     for (let drop = 0; drop < 80; drop += 1) {
       const angle = rand() * Math.PI * 2;
       const speed = 0.8 + rand() * 2.1;
-      this.spawnDroplet(
+      this.sprayDroplet(
+        launch,
         hand.mesh.position.x + (rand() - 0.5) * 0.08,
         hand.mesh.position.y + (rand() - 0.5) * 0.08,
         hand.mesh.position.z + (rand() - 0.5) * 0.08,
-        launchDirection * (0.8 + rand() * 1.7) + Math.sin(angle) * speed * 0.35,
+        0.8 + rand() * 1.7 + Math.sin(angle) * speed * 0.35,
         0.5 + rand() * 2.1,
         Math.cos(angle) * speed,
         { r: 0.56, g: 0.025, b: 0.045 },
@@ -709,6 +922,7 @@ export class Effects3D {
     head.moving = false;
     head.mesh.visible = false;
     head.mesh.position.y = -50;
+    this.applyBakedPart(head, undefined, 0x8a4d32);
     const stump = this.stumps[index]!;
     stump.active = false;
     stump.fountainLife = 0;
@@ -721,6 +935,7 @@ export class Effects3D {
       hand.moving = false;
       hand.mesh.visible = false;
       hand.mesh.position.y = -50;
+      this.applyBakedPart(hand, undefined, 0x1d4ed8);
       const handStump = this.handStumps[handIndex]!;
       handStump.active = false;
       handStump.fountainLife = 0;
@@ -770,11 +985,40 @@ export class Effects3D {
     }
   }
 
-  private spawnGib(x: number, y: number, z: number, vx: number, vy: number, vz: number, rand: () => number): void {
+  /** Ejects teeth from the mouth on heavy head contact. */
+  spawnTeeth(mouthWorld: THREE.Vector3, direction: number | SprayDirection, count: number, eventId: number): void {
+    if (this.bloodLevel === "off") return;
+    const rand = seeded((Number.isSafeInteger(eventId) ? eventId : 0) * 7331 + 91);
+    const launch = unitSpray(direction);
+    const teeth = Math.min(4, Math.max(1, Math.round(count * (this.bloodLevel === "reduced" ? 0.5 : 1))));
+    for (let i = 0; i < teeth; i += 1) {
+      const angle = rand() * Math.PI * 2;
+      this.sprayGib(
+        launch,
+        finite(mouthWorld.x) + (rand() - 0.5) * 0.04,
+        finite(mouthWorld.y, 1.4) + (rand() - 0.5) * 0.02,
+        finite(mouthWorld.z) + (rand() - 0.5) * 0.04,
+        0.9 + rand() * 1.6 + Math.sin(angle) * 0.6,
+        1.1 + rand() * 1.4,
+        Math.cos(angle) * 0.7,
+        rand,
+        true,
+      );
+    }
+    for (let i = 0; i < 18; i += 1) {
+      const angle = rand() * Math.PI * 2;
+      this.sprayDroplet(launch, finite(mouthWorld.x), finite(mouthWorld.y, 1.4), finite(mouthWorld.z), 0.8 + rand() * 1.4 + Math.sin(angle) * 0.5, 0.6 + rand() * 1.3, Math.cos(angle) * 0.5, { r: 0.55, g: 0.02, b: 0.04 }, 0.6 + rand() * 0.6, true);
+    }
+  }
+
+  private spawnGib(x: number, y: number, z: number, vx: number, vy: number, vz: number, rand: () => number, tooth = false): void {
     const index = this.gibIndex % MAX_GIBS;
     this.gibIndex += 1;
     const gib = this.gibs[index]!;
     gib.alive = true;
+    gib.tooth = tooth;
+    this.gibMesh.setColorAt(index, this.gibColor.setHex(tooth ? 0xf3ead6 : 0xffffff));
+    if (this.gibMesh.instanceColor !== null) this.gibMesh.instanceColor.needsUpdate = true;
     gib.x = finite(x);
     gib.y = finite(y, 1.5);
     gib.z = finite(z);
@@ -787,12 +1031,17 @@ export class Effects3D {
     gib.vrx = (rand() - 0.5) * 18;
     gib.vry = (rand() - 0.5) * 18;
     gib.vrz = (rand() - 0.5) * 18;
-    gib.life = 1.8 + rand() * 1.2;
-    gib.scale = 0.55 + rand() * 1.2;
+    gib.life = tooth ? 6 : 1.8 + rand() * 1.2;
+    gib.scale = tooth ? 0.22 + rand() * 0.12 : 0.32 + rand() * 0.7;
     gib.bounces = 0;
     gib.stained = false;
     this.writeGibMatrix(index, gib);
     this.gibMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  /** Spawns a gib whose horizontal velocity is given along the spray and across it. */
+  private sprayGib(spray: SprayDirection, x: number, y: number, z: number, along: number, vy: number, across: number, rand: () => number, tooth = false): void {
+    this.spawnGib(x, y, z, along * spray.x - across * spray.z, vy, along * spray.z + across * spray.x, rand, tooth);
   }
 
   private writeGibMatrix(index: number, gib: Gib): void {
@@ -831,18 +1080,23 @@ export class Effects3D {
       this.confineGib(gib);
       if (gib.y <= CANVAS_TOP + 0.015) {
         gib.y = CANVAS_TOP + 0.015;
-        if (!gib.stained && this.bloodLevel === "full") {
+        if (!gib.stained && this.bloodLevel === "full" && !gib.tooth) {
           gib.stained = true;
           this.placeDecal(gib.x, gib.z, 0.24 + gib.scale * 0.16, 0.14 + gib.scale * 0.1, gib.rz, 0.42, 0x620a10);
         }
-        if (gib.bounces === 0 && Math.abs(gib.vy) > 0.35) {
-          gib.bounces = 1;
+        if (gib.bounces < (gib.tooth ? 3 : 1) && Math.abs(gib.vy) > 0.35) {
+          gib.bounces += 1;
           gib.vy = Math.abs(gib.vy) * 0.3;
           gib.vx *= 0.68;
           gib.vz *= 0.68;
           gib.vrx *= 0.7;
           gib.vry *= 0.7;
           gib.vrz *= 0.7;
+        } else if (gib.tooth) {
+          gib.vx = 0;
+          gib.vy = 0;
+          gib.vz = 0;
+          gib.vrx = gib.vry = gib.vrz = 0;
         } else {
           gib.alive = false;
         }
@@ -936,11 +1190,12 @@ export class Effects3D {
         const first = this.stumpRandom(stump);
         const second = this.stumpRandom(stump);
         const third = this.stumpRandom(stump);
-        this.spawnDroplet(
+        this.sprayDroplet(
+          stump.direction,
           stump.mesh.position.x + (first - 0.5) * 0.08,
           stump.mesh.position.y + 0.015,
           stump.mesh.position.z + (second - 0.5) * 0.08,
-          stump.direction * (0.35 + first * 0.55),
+          0.35 + first * 0.55,
           1.3 + second * 1.45,
           (third - 0.5) * 0.85,
           { r: 0.58, g: 0.025, b: 0.045 },
@@ -967,18 +1222,19 @@ export class Effects3D {
     this.updateDetachedParts(this.hands, step);
     this.updateGibs(step);
 
-    let dropletsChanged = false;
-    for (const [i, droplet] of this.droplets.entries()) {
-      if (!droplet.alive) continue;
-      dropletsChanged = true;
+    const live = this.liveDroplets;
+    let retired = false;
+    for (let i = 0; i < this.liveDroplets;) {
+      const droplet = this.droplets[i]!;
       droplet.life -= step;
       if (droplet.life <= 0 || droplet.y < CANVAS_TOP) {
         if (droplet.y < CANVAS_TOP && droplet.blood && this.bloodLevel !== "off" && this.ambientRandom() < (this.bloodLevel === "full" ? 0.48 : 0.18)) {
           const scale = this.bloodLevel === "full" ? 1 : 0.35;
           this.placeDecal(droplet.x, droplet.z, (0.22 + this.ambientRandom() * 0.38) * scale, (0.14 + this.ambientRandom() * 0.24) * scale, this.ambientRandom() * Math.PI, 0.38 * scale, 0x6e0d13);
         }
-        droplet.alive = false;
-        this.dropletPositions[i * 3 + 1] = -50;
+        // The last live droplet takes this slot and is stepped next.
+        this.retireDroplet(i);
+        retired = true;
         continue;
       }
       droplet.vy -= 4.6 * step;
@@ -992,10 +1248,13 @@ export class Effects3D {
       this.dropletColors[i * 3] = droplet.r * fade;
       this.dropletColors[i * 3 + 1] = droplet.g * fade;
       this.dropletColors[i * 3 + 2] = droplet.b * fade;
+      this.writeDropletMatrix(i, droplet);
+      i += 1;
     }
-    if (dropletsChanged) {
-      this.dropletGeometry.attributes.position!.needsUpdate = true;
-      this.dropletGeometry.attributes.color!.needsUpdate = true;
+    if (live > 0) {
+      this.dropletBuffers.position.needsUpdate = true;
+      this.dropletBuffers.color.needsUpdate = true;
+      this.uploadDroplets(0, this.liveDroplets, retired);
     }
 
     let mistChanged = false;
@@ -1024,16 +1283,14 @@ export class Effects3D {
   }
 
   private clearDroplets(bloodOnly: boolean): void {
-    let changed = false;
-    for (const [index, droplet] of this.droplets.entries()) {
-      if (!droplet.alive || (bloodOnly && !droplet.blood)) continue;
-      droplet.alive = false;
-      this.dropletPositions[index * 3 + 1] = -50;
-      changed = true;
+    const live = this.liveDroplets;
+    for (let index = 0; index < this.liveDroplets;) {
+      if (bloodOnly && !this.droplets[index]!.blood) index += 1;
+      else this.retireDroplet(index);
     }
-    if (changed) {
-      this.dropletGeometry.attributes.position!.needsUpdate = true;
-      this.dropletGeometry.attributes.color!.needsUpdate = true;
+    if (this.liveDroplets !== live) {
+      this.dropletBuffers.position.needsUpdate = true;
+      this.uploadDroplets(0, this.liveDroplets, true);
     }
   }
 
@@ -1091,14 +1348,21 @@ export class Effects3D {
   }
 
   dispose(): void {
-    this.scene.remove(this.points);
+    this.scene.remove(this.dropletMesh);
     this.scene.remove(this.mistPoints);
     this.scene.remove(this.gibMesh);
+    this.dropletMesh.dispose();
     this.dropletGeometry.dispose();
     this.dropletMaterial.dispose();
+    for (const map of this.splatMaps) map.dispose();
+    for (const part of [...this.heads, ...this.hands]) {
+      part.baked?.dispose();
+      part.cap.geometry.dispose();
+    }
     this.mistGeometry.dispose();
     this.mistMaterial.dispose();
     this.mistMap.dispose();
+    this.gibMesh.dispose();
     this.gibGeometry.dispose();
     this.gibMaterial.dispose();
     this.headGeometry.dispose();

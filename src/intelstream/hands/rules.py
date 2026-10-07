@@ -15,7 +15,7 @@ _MANIFEST = _load_manifest()
 
 TICKS_PER_SECOND = 30
 RING_HALF_WIDTH = 500
-RING_HALF_HEIGHT = 330
+RING_HALF_HEIGHT = 500
 FIGHTER_RADIUS = 38
 MINIMUM_SEPARATION = FIGHTER_RADIUS * 2
 ROUND_TICKS = 120 * TICKS_PER_SECOND
@@ -26,6 +26,19 @@ MAX_STAMINA = 1000
 MAX_CONDITIONING = 1000
 MAX_GUARD = 700
 MAX_POISE = 600
+FACING_SCALE: int = _MANIFEST["facing"]["scale"]
+# Share of the remaining turn toward the opponent taken per facing update. A fight tick makes two
+# updates (before the exchange and after footwork), about 58% per tick; knockdown and rest walks
+# make one.
+FACING_TURN_PERCENT: int = _MANIFEST["facing"]["turn_percent_per_update"]
+RECOVERY_CANCEL_PERCENT: int = _MANIFEST["combos"]["recovery_cancel_percent"]
+KNOCKDOWN_NEUTRAL_SEPARATION: int = _MANIFEST["knockdown"]["neutral_separation"]
+REFEREE_WALK_SPEED: int = _MANIFEST["knockdown"]["referee_walk_speed"]
+RING_CORNER_REACH: int = _MANIFEST["corners"]["reach"]
+REST_CORNER_OFFSET: int = _MANIFEST["rest"]["corner_offset"]
+CLINCH_HOLD_DISTANCE: int = _MANIFEST["clinch"]["hold_distance"]
+CLINCH_DRAW_SPEED: int = _MANIFEST["clinch"]["draw_speed"]
+REST_WALK_SPEED: int = _MANIFEST["rest"]["walk_speed"]
 
 
 def _manifest_check() -> None:
@@ -42,6 +55,12 @@ def _manifest_check() -> None:
         raise RuntimeError("combat-manifest.json limits mismatch with rules.py")
     if limits["max_guard"] != MAX_GUARD or limits["max_poise"] != MAX_POISE:
         raise RuntimeError("combat-manifest.json limits mismatch with rules.py")
+    # Not a tunable: the engine's fixed-point movement and compass, which the knockdown and rest
+    # walks feed facing vectors into, and the client's snapshot checks all count a unit as 1000.
+    if FACING_SCALE != 1000:
+        raise RuntimeError("combat-manifest.json facing.scale must stay 1000")
+    if REST_CORNER_OFFSET * 2 > RING_CORNER_REACH:
+        raise RuntimeError("combat-manifest.json rest.corner_offset is past the corner pads")
 
 
 _manifest_check()
@@ -126,13 +145,7 @@ PUNCH_RULES: dict[tuple[PunchClass, Target, Power], PunchRule] = {
 }
 
 COMPATIBLE_COMBO_CHAINS: frozenset[tuple[PunchClass, PunchClass]] = frozenset(
-    {
-        (PunchClass.JAB, PunchClass.STRAIGHT),
-        (PunchClass.JAB, PunchClass.HOOK),
-        (PunchClass.STRAIGHT, PunchClass.HOOK),
-        (PunchClass.HOOK, PunchClass.UPPERCUT),
-        (PunchClass.UPPERCUT, PunchClass.HOOK),
-    }
+    (PunchClass(first), PunchClass(second)) for first, second in _MANIFEST["combos"]["chains"]
 )
 
 

@@ -1,276 +1,249 @@
 import * as THREE from "three";
-import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
-import { BONE_ADAPTER, FIGHTER_MODEL_SCALE, applyFighterSkin, loadBoxerGlb } from "../render/graph";
+import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "../render/graph";
+import { GloveTrail } from "../render/trails";
+import { worldMapping } from "../render/world";
+import type { FighterSnapshot, Hand, PunchClass, Target } from "../types";
 
-interface ClipRow {
-  readonly name: string;
-  readonly duration: string;
-  readonly tracks: number;
-}
+/**
+ * Pose lab: drives the runtime animation graph with synthetic fighter state so
+ * every authored pose can be inspected from any angle without a match.
+ * Query parameters: pose (idle, guard_high, guard_low, slip_left, slip_right,
+ * weave, pull, jab_left, straight_right, hook_left, uppercut_right, ...,
+ * hit_head, hit_body, block, knockdown, getup, stunned, taunt, clinch, seated, celebrate, wave_off, break, touch_gloves, walk),
+ * t (seconds into the pose), stance (orthodox|southpaw), cam (front|side|
+ * three-quarter|top|back), skeleton (1).
+ */
+
+type Draft = { -readonly [K in keyof FighterSnapshot]: FighterSnapshot[K] };
+
+const base = (): Draft => ({
+  player_id: "lab", x: 0, y: 0, facing: 1, facing_x: 0, facing_y: -1000, velocity_x: 0, velocity_y: 0,
+  stance: "orthodox", defense: "none", stamina: 1000, maximum_stamina: 1000, conditioning: 1000, guard: 700, poise: 600,
+  trauma: { head: 0, body: 0, left_eye: 0, right_eye: 0, left_cut: 0, right_cut: 0, swelling: 0, bleeding: 0 },
+  knockdowns: 0, warnings: 0, deductions: 0, stunned_ticks: 0, is_downed: false,
+  action: null, action_hand: null, action_target: null, action_power: null, action_id: null, action_key: null,
+  action_start_tick: 0, action_startup_ticks: 0, action_active_ticks: 0, action_recovery_ticks: 0, action_contact_tick: null,
+  queued_actions: 0, clinch_startup_ticks: 0, clinch_ticks: 0, is_foul_recovery_target: false, taunt_ticks: 0,
+  get_up_prompt: null, get_up_meter: 0, get_up_required: 0, get_up_count: 0, get_up_window_start_tick: 0, get_up_window_end_tick: 0,
+  last_input_sequence: -1,
+});
+
+const CAMERAS: Record<string, [number, number, number]> = {
+  face: [0.25, 1.55, 1.0],
+  front: [0, 1.35, 3.4],
+  side: [3.4, 1.3, 0.2],
+  "three-quarter": [2.4, 1.5, 2.6],
+  top: [0.01, 4.5, 0.6],
+  back: [0.2, 1.4, -3.4],
+  low: [1.8, 0.5, 2.6],
+};
 
 export class ModelLab {
   private readonly renderer: THREE.WebGLRenderer;
   private readonly scene = new THREE.Scene();
   private readonly camera: THREE.PerspectiveCamera;
-  private mixer: THREE.AnimationMixer | null = null;
-  private labMaterials: readonly THREE.Material[] = [];
-  private actions = new Map<string, THREE.AnimationAction>();
-  private current: THREE.AnimationAction | null = null;
+  private graph: BoxingGraph | null = null;
+  private boxer: SkinnedBoxer | null = null;
+  private trails: GloveTrail[] = [];
+  private readonly trailGlove = new THREE.Vector3();
   private skeletonHelper: THREE.SkeletonHelper | null = null;
-  private model: THREE.Object3D | null = null;
   private raf = 0;
   private previous = performance.now();
-  private playing = true;
-  private loop = true;
-  private readonly warnings: string[] = [];
-  private readonly inventoryEl: HTMLElement;
-  private readonly clipsEl: HTMLElement;
-  private readonly warningsEl: HTMLElement;
-  private readonly timeSlider: HTMLInputElement;
+  private elapsed = 0;
+  private readonly params = new URLSearchParams(window.location.search);
+  private reactionFired = false;
+  private readonly statusEl: HTMLElement;
 
   constructor(private readonly root: HTMLElement) {
     root.innerHTML = `<section class="activity model-lab">
 <canvas class="fight" data-canvas></canvas>
-<header class="topbar"><strong>HANDS MODEL LAB</strong><span data-status>loading…</span></header>
-<aside class="panel model-panel" data-panel>
-<h2>Clips</h2>
-<div class="model-clips" data-clips></div>
-<div class="model-row">
-<button type="button" data-play>Pause</button>
-<label><input type="checkbox" data-loop checked> Loop</label>
-<label><input type="checkbox" data-skeleton> Skeleton</label>
-</div>
-<div class="model-row"><input type="range" data-seek min="0" max="1000" value="0" step="1"></div>
-<h2>Transform</h2>
-<div class="model-row"><label>Scale <input type="range" data-scale min="30" max="200" value="96"></label></div>
-<div class="model-row"><label>Rotate Y <input type="range" data-rotate min="-180" max="180" value="0"></label></div>
-<div class="model-row"><label>Offset X <input type="range" data-offx min="-200" max="200" value="0"></label>
-<label>Z <input type="range" data-offz min="-200" max="200" value="0"></label></div>
-<h2>Inventory</h2>
-<pre class="model-inventory" data-inventory></pre>
-<h2>Warnings</h2>
-<pre class="model-warnings" data-warnings>none</pre>
-</aside>
+<header class="topbar"><strong>HANDS POSE LAB</strong><span data-status>loading…</span></header>
 </section>`;
-    this.inventoryEl = root.querySelector("[data-inventory]")!;
-    this.clipsEl = root.querySelector("[data-clips]")!;
-    this.warningsEl = root.querySelector("[data-warnings]")!;
-    this.timeSlider = root.querySelector("[data-seek]")!;
+    this.statusEl = root.querySelector("[data-status]")!;
     const canvas = root.querySelector<HTMLCanvasElement>("[data-canvas]")!;
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
     this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
     this.renderer.shadowMap.enabled = true;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.camera = new THREE.PerspectiveCamera(38, 1, 0.1, 60);
-    this.camera.position.set(0.4, 1.5, 3.6);
-    this.camera.lookAt(0, 1.0, 0);
-    this.setupGameLighting();
-    this.bindControls();
+    const cam = CAMERAS[this.params.get("cam") ?? "three-quarter"] ?? CAMERAS["three-quarter"]!;
+    this.camera.position.set(...cam);
+    this.camera.lookAt(0, this.params.get("cam") === "face" ? 1.5 : 1.0, 0);
+    this.setupLighting();
   }
 
-  private setupGameLighting(): void {
-    this.scene.background = new THREE.Color("#04060b");
-    if (new URLSearchParams(window.location.search).get("fog") === "1") this.scene.fog = new THREE.FogExp2("#04060b", 0.042);
-    this.scene.add(new THREE.HemisphereLight("#5a6a95", "#0c0e16", 1.2));
-    this.scene.add(new THREE.AmbientLight("#3a4468", 1.05));
-    const key = new THREE.SpotLight("#fff4e0", 115, 26, 0.68, 0.6, 1.6);
-    key.position.set(0, 7.4, 0.9);
+  private setupLighting(): void {
+    this.scene.background = new THREE.Color("#101318");
+    this.scene.add(new THREE.HemisphereLight("#8fa0c8", "#1a1c22", 1.4));
+    const key = new THREE.DirectionalLight("#fff1dc", 2.6);
+    key.position.set(2.5, 5, 3);
     key.castShadow = true;
-    key.target.position.set(0, 0, 0);
-    this.scene.add(key, key.target);
-    const fills: Array<[string, number, number, number]> = [
-      ["#b9cdff", -6.5, 4.4, -5.2],
-      ["#ffd9b9", 6.2, 4.1, -5.6],
-      ["#9fb8ff", -5.4, 3.6, 6.0],
-      ["#c9d8ff", 5.8, 3.9, 5.7],
-    ];
-    for (const [color, x, y, z] of fills) {
-      const fill = new THREE.SpotLight(color, 105, 30, 0.7, 0.8, 1.8);
-      fill.position.set(x, y, z);
-      fill.target.position.set(0, 1, 0);
-      this.scene.add(fill, fill.target);
-    }
-    const rim = new THREE.DirectionalLight("#dfe9ff", 0.7);
-    rim.position.set(0, 3.4, -6.5);
+    key.shadow.mapSize.set(2048, 2048);
+    this.scene.add(key);
+    const rim = new THREE.DirectionalLight("#9fb8ff", 1.2);
+    rim.position.set(-3, 3, -3);
     this.scene.add(rim);
-    const floor = new THREE.Mesh(new THREE.CircleGeometry(4, 32), new THREE.MeshStandardMaterial({ color: "#2c4386", roughness: 0.9 }));
+    const floor = new THREE.Mesh(new THREE.CircleGeometry(4, 48), new THREE.MeshStandardMaterial({ color: "#3c4a7a", roughness: 0.9 }));
     floor.rotation.x = -Math.PI / 2;
     floor.receiveShadow = true;
     this.scene.add(floor);
+    const grid = new THREE.GridHelper(4, 16, 0x8899bb, 0x33405a);
+    grid.position.y = 0.002;
+    this.scene.add(grid);
+  }
+
+  private synthesize(seconds: number): { fighter: FighterSnapshot; opponent: FighterSnapshot; sampledTick: number; head: THREE.Vector3 } {
+    const pose = this.params.get("pose") ?? "idle";
+    const stance = this.params.get("stance") === "southpaw" ? "southpaw" : "orthodox";
+    const fighter: Draft = { ...base(), stance };
+    const trauma = this.params.get("trauma");
+    if (trauma === "light") fighter.trauma = { head: 220, body: 260, left_eye: 190, right_eye: 60, left_cut: 40, right_cut: 0, swelling: 120, bleeding: 60 };
+    if (trauma === "heavy") fighter.trauma = { head: 900, body: 700, left_eye: 720, right_eye: 380, left_cut: 520, right_cut: 190, swelling: 620, bleeding: 520 };
+    if (trauma === "cut") fighter.trauma = { head: 420, body: 120, left_eye: 380, right_eye: 120, left_cut: 300, right_cut: 0, swelling: 260, bleeding: 380 };
+    const opponent = { ...base(), player_id: "other", x: 0, y: -150, facing_x: 0, facing_y: 1000 } as FighterSnapshot;
+    const tick = Math.floor(seconds * 30);
+    const punch = /^(jab|straight|hook|uppercut)_(left|right)(_body)?(_power)?$/.exec(pose);
+    if (punch !== null) {
+      const punchClass = punch[1] as PunchClass;
+      const hand = punch[2] as Hand;
+      const target: Target = punch[3] === "_body" ? "body" : "head";
+      const power = punch[4] === "_power" ? "power" : "normal";
+      const timing = { jab: [4, 2, 7], straight: [6, 2, 10], hook: [7, 3, 12], uppercut: [8, 2, 13] }[punchClass]!;
+      const total = timing[0]! + timing[1]! + timing[2]!;
+      const startTick = Math.floor(tick / (total + 12)) * (total + 12) + 6;
+      if (tick >= startTick && tick < startTick + total) {
+        fighter.action = punchClass;
+        fighter.action_hand = hand;
+        fighter.action_target = target;
+        fighter.action_power = power;
+        fighter.action_id = `lab-${startTick}`;
+        fighter.action_key = `${punchClass}:${hand}:${target}:${power}`;
+        fighter.action_start_tick = startTick;
+        fighter.action_startup_ticks = timing[0]!;
+        fighter.action_active_ticks = timing[1]!;
+        fighter.action_recovery_ticks = timing[2]!;
+      }
+    } else if (["guard_high", "guard_low", "slip_left", "slip_right", "weave", "pull"].includes(pose)) {
+      fighter.defense = pose as FighterSnapshot["defense"];
+    } else if (pose === "knockdown") {
+      fighter.is_downed = seconds % 6 < 3.2;
+    } else if (pose === "stunned") {
+      fighter.stunned_ticks = 40;
+    } else if (pose === "taunt") {
+      fighter.taunt_ticks = Math.max(1, 60 - (tick % 60));
+    } else if (pose === "clinch") {
+      fighter.clinch_ticks = 30;
+    } else if (pose === "foul") {
+      fighter.is_foul_recovery_target = true;
+    } else if (pose === "exhausted") {
+      fighter.stamina = 80;
+    } else if (pose.startsWith("walk")) {
+      const direction = pose.split("_")[1] ?? "forward";
+      const speed = 6;
+      fighter.velocity_x = direction === "left" ? -speed : direction === "right" ? speed : 0;
+      fighter.velocity_y = direction === "forward" ? speed : direction === "back" ? -speed : 0;
+      const mapping = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 });
+      const travel = seconds * speed * 30;
+      fighter.x = Math.round(Math.sin(seconds * 0.9) * 0);
+      fighter.y = Math.round(((travel % 400) - 200) * (direction === "forward" ? 1 : direction === "back" ? -1 : 0));
+      fighter.x = Math.round(((travel % 400) - 200) * (direction === "right" ? 1 : direction === "left" ? -1 : 0));
+      void mapping;
+    }
+    const head = new THREE.Vector3(0, 1.5, 150 * (3.05 / 500));
+    return { fighter, opponent, sampledTick: tick, head };
   }
 
   async start(): Promise<void> {
-    const status = this.root.querySelector("[data-status]")!;
     try {
       const gltf = await loadBoxerGlb();
-      this.model = cloneSkeleton(gltf.scene);
-      this.model.scale.setScalar(FIGHTER_MODEL_SCALE);
-      this.labMaterials = applyFighterSkin(this.model, { skin: 0xa9744f, gear: 0x1d4ed8 }).owned;
-      this.scene.add(this.model);
-      this.model.traverse((object) => {
-        if (object instanceof THREE.SkinnedMesh) {
-          object.castShadow = true;
-          object.frustumCulled = false;
-        }
-      });
-      this.mixer = new THREE.AnimationMixer(this.model);
-      const clipRows: ClipRow[] = [];
-      for (const clip of gltf.animations) {
-        const action = this.mixer.clipAction(clip);
-        this.actions.set(clip.name, action);
-        clipRows.push({ name: clip.name, duration: clip.duration.toFixed(3), tracks: clip.tracks.length });
-        if (clip.name === "" || clip.name.startsWith("unnamed")) this.warnings.push(`unnamed clip at index ${clipRows.length - 1}`);
+      this.boxer = new SkinnedBoxer(gltf, { skin: 0xa9744f, gear: 0x1d4ed8 });
+      this.graph = new BoxingGraph(this.boxer, worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }));
+      this.scene.add(this.boxer.root);
+      this.trails = [new GloveTrail(new THREE.Color(0xdbe4ff)), new GloveTrail(new THREE.Color(0xdbe4ff))];
+      for (const trail of this.trails) this.scene.add(trail.mesh);
+      if (this.params.get("skeleton") === "1") {
+        this.skeletonHelper = new THREE.SkeletonHelper(this.boxer.root);
+        this.scene.add(this.skeletonHelper);
       }
-      this.buildClipList(clipRows);
-      this.buildInventory();
-      const requested = new URLSearchParams(window.location.search).get("clip");
-      this.playClip(requested !== null && this.actions.has(requested) ? requested : "idle");
-      this.skeletonHelper = new THREE.SkeletonHelper(this.model);
-      this.skeletonHelper.visible = false;
-      this.scene.add(this.skeletonHelper);
-      status.textContent = "ready";
+      const dislocation = this.params.get("dislocation");
+      if (dislocation === "jaw" || dislocation === "shoulder_left" || dislocation === "shoulder_right") this.graph.setArcadeDislocation(dislocation);
+      this.statusEl.textContent = `pose ${this.params.get("pose") ?? "idle"}`;
     } catch (error) {
-      status.textContent = `load failed: ${String(error).slice(0, 120)}`;
-      this.warnings.push(String(error));
-      this.warningsEl.textContent = this.warnings.join("\n");
+      this.statusEl.textContent = `load failed: ${String(error).slice(0, 120)}`;
       throw error;
+    }
+    const fixed = this.params.get("t");
+    const freeze = this.params.get("freeze");
+    if (freeze !== null) {
+      const until = Number(freeze);
+      while (this.elapsed < until) {
+        this.elapsed += 1 / 60;
+        this.step(1 / 60);
+      }
     }
     const loop = (time: number): void => {
       const dt = Math.min(0.05, (time - this.previous) / 1000);
       this.previous = time;
-      if (this.mixer !== null && this.playing) this.mixer.update(dt);
-      if (this.current !== null && !this.playing) {
-        // seek mode: hold the slider time
+      if (freeze !== null) {
+        this.step(0);
+      } else {
+        this.elapsed = fixed !== null ? Number(fixed) : this.elapsed + dt;
+        this.step(fixed !== null ? 1 / 60 : dt);
       }
-      this.syncSeek();
       this.renderer.render(this.scene, this.camera);
       this.raf = requestAnimationFrame(loop);
     };
     this.raf = requestAnimationFrame(loop);
   }
 
-  private buildClipList(rows: readonly ClipRow[]): void {
-    const list = document.createElement("div");
-    list.className = "model-clip-list";
-    for (const row of rows) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.textContent = `${row.name} (${row.duration}s, ${row.tracks} tracks)`;
-      button.dataset.clip = row.name;
-      button.addEventListener("click", () => this.playClip(row.name));
-      list.append(button);
+  private step(dt: number): void {
+    const graph = this.graph;
+    if (graph === null) return;
+    const width = this.renderer.domElement.clientWidth;
+    const height = this.renderer.domElement.clientHeight;
+    if (width > 0 && height > 0 && (this.renderer.domElement.width !== width || this.renderer.domElement.height !== height)) {
+      this.renderer.setSize(width, height, false);
+      this.camera.aspect = width / height;
+      this.camera.updateProjectionMatrix();
     }
-    this.clipsEl.replaceChildren(list);
-  }
-
-  private buildInventory(): void {
-    if (this.model === null) return;
-    this.model.updateMatrixWorld(true);
-    const lines: string[] = [];
-    let triangles = 0;
-    const materials = new Set<THREE.Material>();
-    const textures = new Set<THREE.Texture>();
-    this.model.traverse((object) => {
-      if (object instanceof THREE.SkinnedMesh || object instanceof THREE.Mesh) {
-        const geometry = object.geometry;
-        const index = geometry.getIndex();
-        triangles += (index !== null ? index.count : geometry.getAttribute("position").count) / 3;
-        for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
-          materials.add(material);
-          const standard = material as THREE.MeshStandardMaterial;
-          if (standard.map !== null && standard.map !== undefined) textures.add(standard.map);
-        }
+    const { fighter, opponent, sampledTick, head } = this.synthesize(this.elapsed);
+    const reaction = this.params.get("pose") ?? "";
+    if (/^(hit|block)_/.test(reaction)) {
+      const period = 1.6;
+      const phase = this.elapsed % period;
+      const fire = this.params.has("freeze") ? !this.reactionFired && this.elapsed >= 0.02 : phase < dt * 1.5;
+      if (fire) {
+        this.reactionFired = true;
+        const [kind, target, punchClass, hand] = reaction.split("_");
+        graph.react(kind === "block" ? "block" : "hit", (target as Target) ?? "head", 1, (punchClass as PunchClass) ?? "straight", (hand as Hand) ?? "right", 320);
       }
-    });
-    lines.push(`triangles: ${Math.round(triangles)}`);
-    lines.push(`materials: ${materials.size}`);
-    lines.push(`textures: ${textures.size}`);
-    for (const texture of textures) {
-      const image = texture.image as { width?: number; height?: number } | undefined;
-      lines.push(`texture: ~${image?.width ?? "?"}×${image?.height ?? "?"}`);
     }
-    lines.push("");
-    lines.push("bone hierarchy:");
-    const bones: THREE.Bone[] = [];
-    this.model.traverse((object) => {
-      if (object instanceof THREE.Bone) bones.push(object);
-    });
-    const roots = bones.filter((bone) => !(bone.parent instanceof THREE.Bone));
-    const walk = (bone: THREE.Bone, depth: number): void => {
-      lines.push(`${"  ".repeat(depth)}${bone.name || "(unnamed)"}`);
-      if (bone.name === "") this.warnings.push("unnamed bone found");
-      for (const child of bone.children) if (child instanceof THREE.Bone) walk(child, depth + 1);
+    if (this.params.get("pose") === "knockdown" && this.params.get("fall") === "prone" && this.elapsed % 6 < dt * 1.5) {
+      graph.react("hit", "head", 1, "hook", "left", 420);
+    }
+    graph.debugHoldImpact = this.params.get("dent") === "hold";
+    graph.setResting(this.params.get("pose") === "seated");
+    if (this.params.get("pose") === "celebrate") graph.celebrate(60);
+    if (this.params.get("pose") === "wave_off") graph.waveOff(60);
+    if (this.params.get("pose") === "break") graph.breakClinch(60);
+    graph.setCountdown(this.params.get("pose") === "touch_gloves" ? 30 : null);
+    graph.update(fighter, opponent, dt, this.elapsed, false, "full", sampledTick, head);
+    for (const [index, bone] of (["gloveL", "gloveR"] as const).entries()) {
+      this.boxer!.rig.bones[bone].getWorldPosition(this.trailGlove);
+      this.trails[index]?.update(this.trailGlove, dt, this.camera.position, dt > 0);
+    }
+    (window as unknown as Record<string, unknown>).__poseLab = {
+      head: this.boxer!.bone("head")!.getWorldPosition(new THREE.Vector3()).toArray().map((v) => Number(v.toFixed(3))),
+      gloveL: this.boxer!.bone("gloveL")!.getWorldPosition(new THREE.Vector3()).toArray().map((v) => Number(v.toFixed(3))),
+      gloveR: this.boxer!.bone("gloveR")!.getWorldPosition(new THREE.Vector3()).toArray().map((v) => Number(v.toFixed(3))),
+      ankleL: this.boxer!.bone("ankleL")!.getWorldPosition(new THREE.Vector3()).toArray().map((v) => Number(v.toFixed(3))),
+      ankleR: this.boxer!.bone("ankleR")!.getWorldPosition(new THREE.Vector3()).toArray().map((v) => Number(v.toFixed(3))),
     };
-    for (const rootBone of roots) walk(rootBone, 0);
-    lines.push("");
-    lines.push("adapter mapping:");
-    for (const [canonical, model] of Object.entries(BONE_ADAPTER)) lines.push(`  ${canonical} → ${model}`);
-    this.inventoryEl.textContent = lines.join("\n");
-    const missing = Object.values(BONE_ADAPTER).filter((name) => this.model!.getObjectByName(name) === undefined);
-    for (const name of missing) this.warnings.push(`missing mapped bone: ${name}`);
-    if (this.warnings.length > 0) this.warningsEl.textContent = this.warnings.join("\n");
-  }
-
-  private playClip(name: string): void {
-    const next = this.actions.get(name);
-    if (next === undefined || this.mixer === null) return;
-    const previous = this.current;
-    next.reset();
-    next.setLoop(this.loop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
-    next.clampWhenFinished = true;
-    if (previous !== null && previous !== next) {
-      next.crossFadeFrom(previous, 0.25, true);
-    }
-    next.play();
-    this.current = next;
-    for (const button of this.clipsEl.querySelectorAll("button")) {
-      button.classList.toggle("active", button.dataset.clip === name);
-    }
-  }
-
-  private syncSeek(): void {
-    if (this.current === null) return;
-    const duration = this.current.getClip().duration;
-    if (this.playing) {
-      this.timeSlider.value = String(Math.round((this.current.time / duration) * 1000));
-    } else {
-      this.current.time = (Number(this.timeSlider.value) / 1000) * duration;
-      this.mixer?.update(0);
-    }
-  }
-
-  private bindControls(): void {
-    this.root.querySelector("[data-play]")!.addEventListener("click", (event) => {
-      this.playing = !this.playing;
-      (event.target as HTMLButtonElement).textContent = this.playing ? "Pause" : "Play";
-    });
-    this.root.querySelector<HTMLInputElement>("[data-loop]")!.addEventListener("change", (event) => {
-      this.loop = (event.target as HTMLInputElement).checked;
-      if (this.current !== null) {
-        const name = this.current.getClip().name;
-        this.playClip(name);
-      }
-    });
-    this.root.querySelector<HTMLInputElement>("[data-skeleton]")!.addEventListener("change", (event) => {
-      if (this.skeletonHelper !== null) this.skeletonHelper.visible = (event.target as HTMLInputElement).checked;
-    });
-    this.root.querySelector<HTMLInputElement>("[data-scale]")!.addEventListener("input", (event) => {
-      this.model?.scale.setScalar(Number((event.target as HTMLInputElement).value) / 100);
-    });
-    this.root.querySelector<HTMLInputElement>("[data-rotate]")!.addEventListener("input", (event) => {
-      if (this.model !== null) this.model.rotation.y = (Number((event.target as HTMLInputElement).value) * Math.PI) / 180;
-    });
-    this.root.querySelector<HTMLInputElement>("[data-offx]")!.addEventListener("input", (event) => {
-      if (this.model !== null) this.model.position.x = Number((event.target as HTMLInputElement).value) / 100;
-    });
-    this.root.querySelector<HTMLInputElement>("[data-offz]")!.addEventListener("input", (event) => {
-      if (this.model !== null) this.model.position.z = Number((event.target as HTMLInputElement).value) / 100;
-    });
   }
 
   destroy(): void {
     cancelAnimationFrame(this.raf);
-    for (const material of this.labMaterials) material.dispose();
+    this.graph?.dispose();
     this.renderer.dispose();
     this.root.replaceChildren();
   }

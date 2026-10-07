@@ -6,7 +6,49 @@ export interface BuiltRing {
   readonly materials: readonly THREE.Material[];
   readonly geometries: readonly THREE.BufferGeometry[];
   readonly textures: readonly THREE.Texture[];
+  /** Feeds the two fighters' world positions to the rope flex shader. */
+  readonly setRopeContacts: (a: { x: number; z: number } | null, b: { x: number; z: number } | null) => void;
+  readonly ropeContacts: readonly [THREE.Vector4, THREE.Vector4];
 }
+
+export interface RopePress {
+  readonly pressX: number;
+  readonly pressZ: number;
+}
+
+const ROPE_PRESS_START = 0.6;
+const ROPE_PRESS_FULL = 0.22;
+
+function smoothstep(edge0: number, edge1: number, value: number): number {
+  const t = Math.min(1, Math.max(0, (value - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+/** How hard a fighter at (x, z) leans into the x-facing and z-facing ropes (0..1 each). */
+export function ropePress(x: number, z: number): RopePress {
+  return {
+    pressX: smoothstep(ROPE_PRESS_START, ROPE_PRESS_FULL, RING_FIGHT_HALF - Math.abs(x)),
+    pressZ: smoothstep(ROPE_PRESS_START, ROPE_PRESS_FULL, RING_FIGHT_HALF - Math.abs(z)),
+  };
+}
+
+const ROPE_FLEX_GLSL = `
+vec3 ropeWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;
+bool ropeSideX = abs(ropeWorld.x) > abs(ropeWorld.z);
+vec3 ropeOut = ropeSideX ? vec3(sign(ropeWorld.x), 0.0, 0.0) : vec3(0.0, 0.0, sign(ropeWorld.z));
+float ropeAlong = ropeSideX ? ropeWorld.z : ropeWorld.x;
+float ropeFlex = 0.0;
+for (int ropeIndex = 0; ropeIndex < 2; ropeIndex += 1) {
+  vec4 contact = ropeIndex == 0 ? uRopeContactA : uRopeContactB;
+  float along = ropeSideX ? contact.y : contact.x;
+  float press = ropeSideX ? contact.z : contact.w;
+  float sameSide = ropeSideX ? step(0.0, ropeOut.x * contact.x) : step(0.0, ropeOut.z * contact.y);
+  ropeFlex += press * sameSide * (1.0 - smoothstep(0.0, 0.8, abs(ropeAlong - along)));
+}
+float ropeAnchor = smoothstep(0.0, 0.7, ${RING_FIGHT_HALF.toFixed(2)} - abs(ropeAlong));
+float ropeHeightWeight = 0.45 + 0.55 * smoothstep(0.4, 1.0, ropeWorld.y);
+transformed += ropeOut * min(1.0, ropeFlex) * 0.22 * ropeHeightWeight * ropeAnchor;
+`;
 
 function canvasTexture(size: number, draw: (ctx: CanvasRenderingContext2D, size: number) => void): THREE.CanvasTexture {
   const canvas = document.createElement("canvas");
@@ -22,34 +64,42 @@ function canvasTexture(size: number, draw: (ctx: CanvasRenderingContext2D, size:
 
 function ringCanvasTexture(): THREE.CanvasTexture {
   return canvasTexture(1024, (ctx, size) => {
-    ctx.fillStyle = "#2c4386";
+    ctx.fillStyle = "#9d968a";
     ctx.fillRect(0, 0, size, size);
     const noise = ctx.createLinearGradient(0, 0, size, size);
-    noise.addColorStop(0, "rgba(255,255,255,0.05)");
-    noise.addColorStop(0.5, "rgba(0,0,0,0.04)");
-    noise.addColorStop(1, "rgba(255,255,255,0.03)");
+    noise.addColorStop(0, "rgba(255,255,255,0.08)");
+    noise.addColorStop(0.5, "rgba(60,50,40,0.06)");
+    noise.addColorStop(1, "rgba(255,255,255,0.04)");
     ctx.fillStyle = noise;
     ctx.fillRect(0, 0, size, size);
-    for (let i = 0; i < 900; i += 1) {
+    for (let i = 0; i < 2600; i += 1) {
       const x = (Math.sin(i * 12.9898) * 43758.5453) % 1;
       const y = (Math.sin(i * 78.233) * 12543.1234) % 1;
-      ctx.fillStyle = `rgba(${i % 2 === 0 ? "255,255,255" : "10,20,50"},${0.015 + (i % 5) * 0.004})`;
-      ctx.fillRect(Math.abs(x) * size, Math.abs(y) * size, 2 + (i % 3), 1 + (i % 2));
+      ctx.fillStyle = `rgba(${i % 3 === 0 ? "255,255,255" : "70,55,45"},${0.02 + (i % 5) * 0.006})`;
+      ctx.fillRect(Math.abs(x) * size, Math.abs(y) * size, 2 + (i % 4), 1 + (i % 3));
     }
-    ctx.strokeStyle = "rgba(235,240,255,0.9)";
-    ctx.lineWidth = 10;
+    for (let i = 0; i < 40; i += 1) {
+      const x = Math.abs((Math.sin(i * 91.7) * 7919.3) % 1) * size;
+      const y = Math.abs((Math.sin(i * 47.1) * 4271.9) % 1) * size;
+      ctx.fillStyle = `rgba(80,60,50,${0.05 + (i % 4) * 0.02})`;
+      ctx.beginPath();
+      ctx.ellipse(x, y, 18 + (i % 7) * 6, 6 + (i % 5) * 3, (i * 0.7) % Math.PI, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.strokeStyle = "rgba(30,60,140,0.85)";
+    ctx.lineWidth = 12;
     ctx.beginPath();
     ctx.arc(size / 2, size / 2, size * 0.2, 0, Math.PI * 2);
     ctx.stroke();
-    ctx.fillStyle = "rgba(235,240,255,0.92)";
+    ctx.fillStyle = "rgba(30,60,140,0.9)";
     ctx.font = `800 ${Math.round(size * 0.062)}px Inter, system-ui, sans-serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText("H A N D S", size / 2, size / 2 - size * 0.012);
     ctx.font = `600 ${Math.round(size * 0.024)}px Inter, system-ui, sans-serif`;
     ctx.fillText("AUTHORITATIVE BOXING", size / 2, size / 2 + size * 0.052);
-    ctx.strokeStyle = "rgba(235,240,255,0.55)";
-    ctx.lineWidth = 5;
+    ctx.strokeStyle = "rgba(30,60,140,0.6)";
+    ctx.lineWidth = 6;
     ctx.strokeRect(size * 0.035, size * 0.035, size * 0.93, size * 0.93);
   });
 }
@@ -63,7 +113,7 @@ export function buildRing(): BuiltRing {
 
   const canvasMap = ringCanvasTexture();
   textures.push(canvasMap);
-  const canvasMat = new THREE.MeshStandardMaterial({ map: canvasMap, roughness: 0.92, metalness: 0 });
+  const canvasMat = new THREE.MeshStandardMaterial({ map: canvasMap, roughness: 0.88, metalness: 0 });
   materials.push(canvasMat);
   const canvasGeo = new THREE.PlaneGeometry(RING_FIGHT_HALF * 2, RING_FIGHT_HALF * 2);
   geometries.push(canvasGeo);
@@ -73,7 +123,7 @@ export function buildRing(): BuiltRing {
   canvasMesh.receiveShadow = true;
   group.add(canvasMesh);
 
-  const apronMat = new THREE.MeshStandardMaterial({ color: "#16233f", roughness: 0.85 });
+  const apronMat = new THREE.MeshStandardMaterial({ color: "#1c2b52", roughness: 0.85 });
   materials.push(apronMat);
   const apronGeo = new THREE.RingGeometry(RING_FIGHT_HALF * 0.98, RING_APRON_HALF, 4, 1);
   geometries.push(apronGeo);
@@ -135,12 +185,32 @@ export function buildRing(): BuiltRing {
     }
   }
 
+  const ropeContacts: [THREE.Vector4, THREE.Vector4] = [new THREE.Vector4(0, 0, 0, 0), new THREE.Vector4(0, 0, 0, 0)];
+  const ropeUniforms = { uRopeContactA: { value: ropeContacts[0] }, uRopeContactB: { value: ropeContacts[1] } };
   const ropeColors = [0xb91c1c, 0xe5e7eb, 0x1d4ed8];
   const ropeMats = ropeColors.map((color) => {
     const material = new THREE.MeshStandardMaterial({ color, roughness: 0.42, metalness: 0.05 });
+    material.onBeforeCompile = (shader) => {
+      shader.uniforms.uRopeContactA = ropeUniforms.uRopeContactA;
+      shader.uniforms.uRopeContactB = ropeUniforms.uRopeContactB;
+      shader.vertexShader = shader.vertexShader
+        .replace("#include <common>", "#include <common>\nuniform vec4 uRopeContactA;\nuniform vec4 uRopeContactB;")
+        .replace("#include <begin_vertex>", `#include <begin_vertex>${ROPE_FLEX_GLSL}`);
+    };
     materials.push(material);
     return material;
   });
+  const setRopeContacts = (a: { x: number; z: number } | null, b: { x: number; z: number } | null): void => {
+    for (const [index, contact] of [a, b].entries()) {
+      const target = ropeContacts[index]!;
+      if (contact === null) {
+        target.set(0, 0, 0, 0);
+        continue;
+      }
+      const press = ropePress(contact.x, contact.z);
+      target.set(contact.x, contact.z, press.pressX, press.pressZ);
+    }
+  };
   for (let side = 0; side < 4; side += 1) {
     const from = corners[side]!;
     const to = corners[(side + 1) % 4]!;
@@ -171,7 +241,7 @@ export function buildRing(): BuiltRing {
     }
   }
 
-  return { group, materials, geometries, textures };
+  return { group, materials, geometries, textures, setRopeContacts, ropeContacts };
 }
 
 export function disposeRing(ring: BuiltRing): void {

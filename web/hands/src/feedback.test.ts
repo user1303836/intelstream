@@ -15,6 +15,9 @@ class MockAudioContext {
   static operations: string[] = [];
   static last: MockAudioContext | null = null;
   static playedBuffers: Array<AudioBuffer | null> = [];
+  /** The next resume() is outside a user activation: it stays pending until a later resume() starts the context. */
+  static holdResume = false;
+  private readonly pendingResumes: (() => void)[] = [];
   state: AudioContextState = "suspended";
   currentTime = 0;
   sampleRate = 8000;
@@ -22,7 +25,13 @@ class MockAudioContext {
   resume = vi.fn(async () => {
     MockAudioContext.operations.push("resume");
     if (MockAudioContext.failResume) { MockAudioContext.failResume = false; throw new Error("blocked"); }
+    if (MockAudioContext.holdResume) {
+      MockAudioContext.holdResume = false;
+      await new Promise<void>((resolve) => { this.pendingResumes.push(resolve); });
+      return;
+    }
     this.state = "running";
+    for (const resolve of this.pendingResumes.splice(0)) resolve();
   });
   suspend = vi.fn(async () => { this.state = "suspended"; });
   close = vi.fn(async () => {});
@@ -62,7 +71,34 @@ describe("authoritative audio and haptics", () => {
     MockAudioContext.operations = [];
     MockAudioContext.last = null;
     MockAudioContext.playedBuffers = [];
+    MockAudioContext.holdResume = false;
     vi.stubGlobal("AudioContext", MockAudioContext);
+  });
+
+  it.each(["pointerup", "touchend", "click"])("unlocks audio on the %s that ends a touch whose press could not start it", async (release) => {
+    MockAudioContext.holdResume = true;
+    const feedback = new AudioFeedback(() => settings);
+    try {
+      window.dispatchEvent(new Event("pointerdown"));
+      await Promise.resolve();
+      expect(MockAudioContext.created).toBe(1);
+      expect(MockAudioContext.oscillatorStarts).toBe(0);
+      window.dispatchEvent(new Event(release));
+      await vi.waitFor(() => expect(MockAudioContext.oscillatorStarts).toBe(1));
+      expect(MockAudioContext.last!.state).toBe("running");
+    } finally {
+      feedback.destroy();
+    }
+  });
+
+  it.each(["touchend", "click"])("unlocks audio when %s is the first gesture", async (gesture) => {
+    const feedback = new AudioFeedback(() => settings);
+    try {
+      window.dispatchEvent(new Event(gesture));
+      await vi.waitFor(() => expect(MockAudioContext.oscillatorStarts).toBe(1));
+    } finally {
+      feedback.destroy();
+    }
   });
 
   it("creates WebAudio only after an explicit gesture and safely synthesizes events", async () => {
@@ -72,6 +108,22 @@ describe("authoritative audio and haptics", () => {
     await feedback.unlock();
     expect(MockAudioContext.created).toBe(1);
     expect(() => feedback.event({ event_id: 2, tick: 1, kind: "knockdown", actor_id: null, target_id: null, amount: 100, detail: "", blood: 0, direction: 0, action_id: null })).not.toThrow();
+    feedback.destroy();
+  });
+
+  it("cracks the ten-second clapper once per round of the fight phase", async () => {
+    const feedback = new AudioFeedback(() => settings);
+    await feedback.unlock();
+    const before = MockAudioContext.bufferStarts;
+    feedback.roundClock("fight", 1, 3500, 30);
+    feedback.roundClock("rest", 1, 200, 30);
+    expect(MockAudioContext.bufferStarts).toBe(before);
+    feedback.roundClock("fight", 1, 299, 30);
+    expect(MockAudioContext.bufferStarts).toBe(before + 2);
+    feedback.roundClock("fight", 1, 280, 30);
+    expect(MockAudioContext.bufferStarts).toBe(before + 2);
+    feedback.roundClock("fight", 2, 250, 30);
+    expect(MockAudioContext.bufferStarts).toBe(before + 4);
     feedback.destroy();
   });
 
@@ -192,6 +244,31 @@ describe("authoritative audio and haptics", () => {
     const haptics = new HapticFeedback(() => settings);
     expect(() => haptics.event({ event_id: 1, tick: 1, kind: "hit", actor_id: null, target_id: null, amount: 1, detail: "", blood: 0, direction: 0, action_id: null })).not.toThrow();
     expect(playEffect).toHaveBeenCalledOnce();
+  });
+
+  it("vibrates a phone that has no pad to rumble, only with Haptics on and never on a desktop", () => {
+    const vibrate = vi.fn((_duration: number) => true);
+    Object.defineProperty(navigator, "vibrate", { configurable: true, value: vibrate });
+    Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [] });
+    let coarse = true;
+    vi.mocked(window.matchMedia).mockImplementation((query: string) => ({ matches: coarse && query === "(pointer: coarse)", media: query, onchange: null, addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn() }));
+    try {
+      let haptics = true;
+      const feedback = new HapticFeedback(() => ({ ...settings, haptics }));
+      const hit = { event_id: 1, tick: 1, kind: "hit", actor_id: null, target_id: null, amount: 1, detail: "", blood: 0, direction: 0, action_id: null };
+      feedback.event(hit);
+      feedback.event({ ...hit, event_id: 2, kind: "bell" });
+      expect(vibrate).toHaveBeenCalledOnce();
+      expect(vibrate).toHaveBeenCalledWith(85);
+      haptics = false;
+      feedback.event({ ...hit, event_id: 3 });
+      haptics = true;
+      coarse = false;
+      feedback.event({ ...hit, event_id: 4 });
+      expect(vibrate).toHaveBeenCalledOnce();
+    } finally {
+      delete (navigator as { vibrate?: unknown }).vibrate;
+    }
   });
 
   it("tolerates absent and throwing gamepad APIs", () => {

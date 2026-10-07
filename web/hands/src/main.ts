@@ -1,5 +1,6 @@
 import "./style.css";
 import { HandsApp } from "./app";
+import { devAuthorizer } from "./dev-e2e";
 import { runDevelopmentFixture } from "./dev-fixtures";
 import { runLab } from "./lab/lab";
 import { runModelLab } from "./lab/model-lab";
@@ -13,7 +14,13 @@ const modelLabMode = window.location.pathname.endsWith("/hands/model-lab") || pa
 if (modelLabMode) teardown = runModelLab(root);
 else if (labMode) teardown = runLab(root);
 else if (import.meta.env.DEV && params.get("fixture") === "1") teardown = runDevelopmentFixture(root);
-else {
+else if (import.meta.env.DEV && params.get("e2e") === "1") {
+  // The development authorizer runs without Discord, so there is no SDK to close.
+  const app = new HandsApp(root, undefined, { authorize: devAuthorizer, close: () => undefined });
+  (window as unknown as Record<string, unknown>).__handsApp = app;
+  app.start();
+  teardown = () => app.destroy();
+} else {
   const app = new HandsApp(root);
   app.start();
   teardown = () => app.destroy();

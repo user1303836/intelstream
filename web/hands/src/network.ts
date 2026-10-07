@@ -1,6 +1,6 @@
-import { safeError } from "./api";
-import { decodeServerFrame, encodeInput } from "./protocol";
-import { PROTOCOL_VERSION, type ConnectionRole, type InputFrame, type ServerMessage } from "./types";
+import { ClientError, safeError } from "./api";
+import { decodeServerFrame, encodeInput, parseStrictJson } from "./protocol";
+import { PROTOCOL_VERSION, type ConnectionRole, type EngineSnapshot, type InputFrame, type ServerMessage } from "./types";
 
 export function websocketUrl(location: Location = window.location): string {
   const url = new URL("/api/hands/ws", location.origin);
@@ -21,6 +21,7 @@ export interface NetworkCallbacks {
 
 interface SocketLike {
   readonly readyState: number;
+  readonly bufferedAmount?: number;
   binaryType: BinaryType;
   onopen: ((event: Event) => void) | null;
   onmessage: ((event: MessageEvent) => void) | null;
@@ -33,6 +34,31 @@ interface SocketLike {
 type SocketFactory = (url: string) => SocketLike;
 const OPEN = 1;
 const NEUTRAL_INPUT: InputFrame = { moveX: 0, moveY: 0, defense: "none", actions: [] };
+const INPUT_FLUSH_MS = 33;
+const MIN_EDGE_SEND_GAP_MS = 8;
+/** The server accepts 60 inputs a second; staying under it leaves room for frames the network bunches together. */
+const MAX_SENDS_PER_SECOND = 50;
+/** Edge sends have a budget of their own on top of the 30 a second flush, together under MAX_SENDS_PER_SECOND. */
+const MAX_EDGE_SENDS_PER_SECOND = 20;
+/** Bytes still waiting in the socket above which the connection is stalled; frames queued behind it would all land at once. */
+const BACKLOG_BYTES = 2048;
+
+/** Decodes a server frame. One that declares another protocol version means this page is out of date, not that the server misbehaved. */
+function decodeFrame(data: string | ArrayBuffer): ServerMessage {
+  try {
+    return decodeServerFrame(data);
+  } catch (error) {
+    let version: unknown;
+    try {
+      const value = parseStrictJson(data);
+      version = typeof value === "object" && value !== null && "version" in value ? value.version : undefined;
+    } catch {
+      // Not even JSON: the original error stands.
+    }
+    if (typeof version === "number" && version !== PROTOCOL_VERSION) throw new ClientError("client_outdated", true);
+    throw error;
+  }
+}
 
 export class NetworkController {
   private socket: SocketLike | null = null;
@@ -45,13 +71,24 @@ export class NetworkController {
   private opponentPaused = false;
   private attempts = 0;
   private nextSequence = 0;
+  private playerId: string | null = null;
+  private readonly sentAt = new Map<number, number>();
+  private readonly actionSequences = new Map<string, number>();
+  private latencyMs: number | null = null;
   private serverTick = 0;
   private role: ConnectionRole | null = null;
   private active = false;
+  /** Input has been on, so the server's engine exists and accepts a frame in any phase. */
+  private boutStarted = false;
   private disposed = false;
   private terminal = false;
   private inputSuppressed = false;
+  /** A pointer pressed in the page since the last blur or hidden page; it stands in for document focus. */
+  private pointerFocus = false;
   private listenersBound = false;
+  private lastInputSentAt = -Infinity;
+  private readonly sendTimes: number[] = [];
+  private readonly edgeSendTimes: number[] = [];
 
   constructor(
     ticket: string,
@@ -68,23 +105,75 @@ export class NetworkController {
     this.listenersBound = true;
     window.addEventListener("blur", this.onInputLoss);
     window.addEventListener("focus", this.onInputRegain);
+    window.addEventListener("pointerdown", this.onPagePointer, true);
     document.addEventListener("visibilitychange", this.onVisibilityChange);
     this.connect();
-    if (!this.disposed && !this.terminal) this.inputTimer = window.setInterval(() => this.flushInput(), 40);
+    if (!this.disposed && !this.terminal) this.inputTimer = window.setInterval(() => this.flushInput(), INPUT_FLUSH_MS);
   }
 
   setActive(active: boolean): void {
+    this.setInputActive(active);
+  }
+
+  /**
+   * The server keeps applying the last frame's movement and guard until the next frame arrives, and
+   * none comes while input is off: one neutral frame as it goes off (the bell, a pause) stops a key
+   * held at the bell from walking the fighter out at the start of the next round.
+   */
+  private setInputActive(active: boolean): void {
+    const wasActive = this.active;
     this.active = active;
+    if (active) this.boutStarted = true;
+    else if (wasActive) this.sendInput(NEUTRAL_INPUT, true);
+  }
+
+  /** Sends the pending input frame on the action edge instead of waiting for the periodic flush. */
+  notifyAction(): void {
+    // The gap merges presses that land together. It counts edge sends only: measured from the
+    // periodic flush too, a press in the 8 ms after each flush waited a whole flush period.
+    if (this.now() - (this.edgeSendTimes.at(-1) ?? -Infinity) < MIN_EDGE_SEND_GAP_MS) return;
+    // Past the budget the press stays queued and leaves with the next periodic flush.
+    if (this.withinLastSecond(this.edgeSendTimes) >= MAX_EDGE_SENDS_PER_SECOND) return;
+    if (this.flushInput()) this.edgeSendTimes.push(this.lastInputSentAt);
+  }
+
+  private sendsInLastSecond(): number {
+    return this.withinLastSecond(this.sendTimes);
+  }
+
+  private withinLastSecond(times: number[]): number {
+    const cutoff = this.now() - 1000;
+    while (times.length > 0 && times[0]! <= cutoff) times.shift();
+    return times.length;
   }
 
   private readonly onInputLoss = (): void => {
     if (this.inputSuppressed) return;
-    this.sendInput(NEUTRAL_INPUT);
+    // Sent while input is off too (the rest, a pause); before the bout starts the server refuses input.
+    this.sendInput(NEUTRAL_INPUT, this.boutStarted);
     this.inputSuppressed = true;
+    this.pointerFocus = false;
   };
 
   private readonly onInputRegain = (): void => {
     if (!document.hidden && document.hasFocus()) this.inputSuppressed = false;
+  };
+
+  /**
+   * Inside Discord the page is a frame, and a touch may never focus it: the touch controls cancel
+   * pointerdown, and the focus change with it. A pointer pressed in the page counts as focus until
+   * a blur or a hidden page.
+   */
+  private readonly onPagePointer = (): void => {
+    if (document.hidden) return;
+    this.pointerFocus = true;
+    this.inputSuppressed = false;
+    if (document.hasFocus()) return;
+    try {
+      window.focus();
+    } catch {
+      // The host can refuse focus; the press still counts.
+    }
   };
 
   private readonly onVisibilityChange = (): void => {
@@ -130,7 +219,7 @@ export class NetworkController {
     if (this.socket !== socket || this.disposed || this.terminal) return;
     try {
       if (typeof event.data !== "string" && !(event.data instanceof ArrayBuffer)) throw new Error("unsupported_frame");
-      const message = decodeServerFrame(event.data);
+      const message = decodeFrame(event.data);
       this.applyMessage(message);
       if (message.type === "ticket") {
         try {
@@ -164,6 +253,8 @@ export class NetworkController {
       this.reconnectTicket = message.reconnect_ticket;
       this.serverTick = message.server_tick;
       this.role = message.role;
+      this.playerId = message.role === "fighter" ? message.player_id : null;
+      this.sentAt.clear();
       if (message.role === "fighter") this.nextSequence = Math.max(this.nextSequence, message.next_sequence);
       else this.stopInputLifecycle();
       this.attempts = 0;
@@ -172,18 +263,19 @@ export class NetworkController {
       this.reconnectTicket = message.reconnect_ticket;
     } else if (message.type === "snapshot") {
       this.serverTick = Math.max(this.serverTick, message.payload.tick);
-      this.active = ["countdown", "fight", "knockdown", "foul_recovery"].includes(message.payload.phase);
+      this.setInputActive(["countdown", "fight", "knockdown", "foul_recovery"].includes(message.payload.phase));
+      this.observeAcknowledgement(message.payload);
     } else if (message.type === "paused") {
-      this.active = false;
+      this.setInputActive(false);
       this.startOpponentPause(message.grace_ms);
     } else if (message.type === "resumed") {
-      this.active = true;
+      this.setInputActive(true);
       this.attempts = 0;
       this.clearOpponentPause(true);
     } else if (message.type === "ready") {
-      this.active = true;
+      this.setInputActive(true);
     } else if (message.type === "waiting") {
-      this.active = false;
+      this.setInputActive(false);
     } else if (message.type === "final" || message.type === "error") {
       this.active = false;
       this.clearOpponentPause(true);
@@ -234,20 +326,58 @@ export class NetworkController {
     }, delay);
   }
 
-  private sendInput(frame: InputFrame): void {
+  /** Smoothed round trip from an input send to the first snapshot acknowledging it, in milliseconds. */
+  get inputLatencyMs(): number | null {
+    return this.latencyMs;
+  }
+
+  /**
+   * The input sequence that carried the press with this instance id, or null before it is sent. Once
+   * the fighter's last_input_sequence reaches it, the server has seen the press.
+   */
+  sequenceOf(actionId: string): number | null {
+    return this.actionSequences.get(actionId) ?? null;
+  }
+
+  private observeAcknowledgement(snapshot: EngineSnapshot): void {
+    if (this.playerId === null) return;
+    const self = snapshot.fighters.find((fighter) => fighter.player_id === this.playerId);
+    if (self === undefined || self.last_input_sequence < 0) return;
+    const sent = this.sentAt.get(self.last_input_sequence);
+    if (sent !== undefined) {
+      const sample = Math.max(0, this.now() - sent);
+      this.latencyMs = this.latencyMs === null ? sample : this.latencyMs * 0.8 + sample * 0.2;
+    }
+    for (const sequence of this.sentAt.keys()) if (sequence <= self.last_input_sequence) this.sentAt.delete(sequence);
+  }
+
+  private sendInput(frame: InputFrame, whileInactive = false): boolean {
     const socket = this.socket;
-    if (this.role !== "fighter" || !this.active || this.disposed || this.terminal || socket?.readyState !== OPEN) return;
+    if (this.role !== "fighter" || (!this.active && !whileInactive) || this.disposed || this.terminal || socket?.readyState !== OPEN) return false;
     try {
-      socket.send(encodeInput(this.nextSequence, this.serverTick, { ...frame, actions: frame.actions.slice(0, 4) }));
+      const actions = frame.actions.slice(0, 4);
+      socket.send(encodeInput(this.nextSequence, this.serverTick, { ...frame, actions }));
+      this.sentAt.set(this.nextSequence, this.now());
+      if (this.sentAt.size > 128) this.sentAt.delete(this.sentAt.keys().next().value!);
+      for (const action of actions) if (action.id !== undefined) this.actionSequences.set(action.id, this.nextSequence);
+      while (this.actionSequences.size > 64) this.actionSequences.delete(this.actionSequences.keys().next().value!);
       this.nextSequence += 1;
+      this.lastInputSentAt = this.now();
+      this.sendTimes.push(this.lastInputSentAt);
+      return true;
     } catch {
       this.handleClose(socket);
+      return false;
     }
   }
 
-  private flushInput(): void {
-    if (this.inputSuppressed || document.hidden || !document.hasFocus()) return;
-    this.sendInput(this.getInput());
+  private flushInput(): boolean {
+    if (this.inputSuppressed || document.hidden || !(this.pointerFocus || document.hasFocus())) return false;
+    if (this.sendsInLastSecond() >= MAX_SENDS_PER_SECOND) return false;
+    // While the connection is stalled the input stays here, current, instead of joining a queue
+    // of stale frames; presses wait in the input buffer and leave with the next frame that goes.
+    if ((this.socket?.bufferedAmount ?? 0) > BACKLOG_BYTES) return false;
+    return this.sendInput(this.getInput());
   }
 
   private startOpponentPause(graceMs: number): void {
@@ -307,6 +437,7 @@ export class NetworkController {
     if (this.listenersBound) {
       window.removeEventListener("blur", this.onInputLoss);
       window.removeEventListener("focus", this.onInputRegain);
+      window.removeEventListener("pointerdown", this.onPagePointer, true);
       document.removeEventListener("visibilitychange", this.onVisibilityChange);
       this.listenersBound = false;
     }

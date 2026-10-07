@@ -1,3 +1,4 @@
+import { snapshot } from "./test/fixtures";
 import { NetworkController, websocketUrl } from "./network";
 import type { ServerMessage } from "./types";
 
@@ -10,6 +11,7 @@ class FakeSocket {
   onerror: ((event: Event) => void) | null = null;
   sent: string[] = [];
   closed = false;
+  bufferedAmount = 0;
   send(data: string): void { this.sent.push(data); }
   close(): void { this.closed = true; }
   open(): void { this.onopen?.(new Event("open")); }
@@ -30,18 +32,18 @@ const callbacks = (overrides: Partial<{
 });
 
 const welcome = (ticket = "ticket-b") => ({
-  version: 2, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500,
+  version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500,
   players: [{ id: "one", name: "One", avatar: null, rating: 1500, connected: true }],
   server_tick: 40, next_sequence: 5, reconnect_ticket: ticket,
 });
 const ready = {
-  version: 2, type: "ready", players: [
+  version: 3, type: "ready", players: [
     { id: "one", name: "One", avatar: null, rating: 1500, connected: true },
     { id: "two", name: "Two", avatar: null, rating: 1500, connected: true },
   ],
 };
 const final = {
-  version: 2, type: "final", match_id: "match", winner_id: "one", method: "decision", round: 1,
+  version: 3, type: "final", match_id: "match", winner_id: "one", method: "decision", round: 1,
   scorecards: ["A", "B", "C"].map((judge) => ({ judge, player_one: [10], player_two: [9] })),
   ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } },
 };
@@ -85,6 +87,32 @@ describe("same-origin WebSocket controller", () => {
     controller.dispose();
   });
 
+  it("measures input acknowledgement latency from the local fighter's acknowledged sequence", () => {
+    vi.useFakeTimers();
+    history.replaceState({}, "", "/");
+    const socket = new FakeSocket();
+    const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks(), () => socket, () => Date.now());
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message(ready);
+    expect(controller.inputLatencyMs).toBeNull();
+    vi.advanceTimersByTime(40);
+    const sent = JSON.parse(socket.sent.at(-1)!) as { sequence: number };
+    vi.advanceTimersByTime(70);
+    const base = snapshot();
+    const acknowledged = { ...base, tick: 44, fighters: [{ ...base.fighters[0], player_id: welcome().player_id, last_input_sequence: sent.sequence }, base.fighters[1]] as const };
+    socket.message({ version: 3, type: "snapshot", payload: acknowledged });
+    const measured = controller.inputLatencyMs;
+    expect(measured).not.toBeNull();
+    expect(measured!).toBeGreaterThanOrEqual(70);
+    expect(measured!).toBeLessThan(120);
+    vi.advanceTimersByTime(40);
+    socket.message({ version: 3, type: "snapshot", payload: { ...acknowledged, tick: 45 } });
+    expect(controller.inputLatencyMs).toBe(measured);
+    controller.dispose();
+  });
+
   it("never sends gameplay input for a server-declared spectator", () => {
     vi.useFakeTimers();
     const socket = new FakeSocket();
@@ -93,7 +121,7 @@ describe("same-origin WebSocket controller", () => {
     controller.start();
     socket.open();
     socket.message({
-      version: 2,
+      version: 3,
       type: "welcome",
       role: "spectator",
       player_id: "viewer",
@@ -125,9 +153,9 @@ describe("same-origin WebSocket controller", () => {
     controller.start();
     sockets[0]!.open();
     sockets[0]!.message(welcome("ticket-b"));
-    sockets[0]!.message({ version: 2, type: "ticket", reconnect_ticket: "ticket-c", refresh_id: "refresh-identifier" });
+    sockets[0]!.message({ version: 3, type: "ticket", reconnect_ticket: "ticket-c", refresh_id: "refresh-identifier" });
     expect(messages.map((message) => message.type)).toEqual(["welcome"]);
-    expect(JSON.parse(sockets[0]!.sent[1]!)).toEqual({ version: 2, type: "ticket_ack", refresh_id: "refresh-identifier" });
+    expect(JSON.parse(sockets[0]!.sent[1]!)).toEqual({ version: 3, type: "ticket_ack", refresh_id: "refresh-identifier" });
     sockets[0]!.disconnect();
     vi.advanceTimersByTime(250);
     sockets[1]!.open();
@@ -158,6 +186,87 @@ describe("same-origin WebSocket controller", () => {
     expect(socket.sent.slice(1)).toHaveLength(1);
   });
 
+  it("sends one neutral frame as input goes off at the bell, and one on a later focus loss, so held input stops driving the fighter", () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket();
+    const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 1000, defense: "guard_high", actions: [] }), callbacks(), () => socket);
+    const inputs = (): Record<string, unknown>[] => socket.sent.map((frame) => JSON.parse(frame) as Record<string, unknown>).filter((frame) => frame.type === "input");
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message(ready);
+    socket.message({ version: 3, type: "snapshot", payload: { ...snapshot(41), phase: "fight" } });
+    vi.advanceTimersByTime(40);
+    expect(inputs().at(-1)).toMatchObject({ move: { x: 0, y: 1000 }, defense: "guard_high" });
+    const held = inputs().length;
+    socket.message({ version: 3, type: "snapshot", payload: { ...snapshot(42), phase: "rest" } });
+    expect(inputs()).toHaveLength(held + 1);
+    expect(inputs().at(-1)).toMatchObject({ move: { x: 0, y: 0 }, defense: "none", actions: [] });
+    controller.setActive(false);
+    vi.advanceTimersByTime(500);
+    expect(inputs()).toHaveLength(held + 1);
+    window.dispatchEvent(new Event("blur"));
+    expect(inputs()).toHaveLength(held + 2);
+    expect(inputs().at(-1)).toMatchObject({ move: { x: 0, y: 0 }, defense: "none" });
+    controller.dispose();
+  });
+
+  it("sends touch input from a frame that never gets document focus, and still stops for a hidden page", () => {
+    vi.useFakeTimers();
+    vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    const focus = vi.spyOn(window, "focus").mockImplementation(() => undefined);
+    let hidden = false;
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+    try {
+      const socket = new FakeSocket();
+      const controller = new NetworkController("ticket", () => ({ moveX: 1000, moveY: 0, defense: "none", actions: [] }), callbacks(), () => socket);
+      const inputs = (): Record<string, unknown>[] => socket.sent.map((frame) => JSON.parse(frame) as Record<string, unknown>).filter((frame) => frame.type === "input");
+      const touch = (): void => { document.body.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true })); };
+      controller.start();
+      socket.open();
+      socket.message(welcome());
+      socket.message(ready);
+      vi.advanceTimersByTime(100);
+      expect(inputs()).toHaveLength(0);
+      touch();
+      expect(focus).toHaveBeenCalledOnce();
+      vi.advanceTimersByTime(100);
+      expect(inputs().length).toBeGreaterThanOrEqual(2);
+      expect(inputs().at(-1)).toMatchObject({ move: { x: 1000, y: 0 } });
+
+      hidden = true;
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(inputs().at(-1)).toMatchObject({ move: { x: 0, y: 0 }, defense: "none" });
+      const stopped = inputs().length;
+      vi.advanceTimersByTime(200);
+      hidden = false;
+      document.dispatchEvent(new Event("visibilitychange"));
+      vi.advanceTimersByTime(200);
+      expect(inputs()).toHaveLength(stopped);
+      touch();
+      vi.advanceTimersByTime(100);
+      expect(inputs().length).toBeGreaterThan(stopped);
+      controller.dispose();
+    } finally {
+      delete (document as { hidden?: boolean }).hidden;
+    }
+  });
+
+  it("sends nothing before the bout starts, even on a focus loss, since the server ends the connection for it", () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket();
+    const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 1000, defense: "guard_high", actions: [] }), callbacks(), () => socket);
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message({ version: 3, type: "waiting", open_seats: 1 });
+    controller.setActive(false);
+    window.dispatchEvent(new Event("blur"));
+    vi.advanceTimersByTime(200);
+    expect(socket.sent.map((frame) => JSON.parse(frame).type)).toEqual(["authenticate"]);
+    controller.dispose();
+  });
+
   it.each(["room_full", "persistence_failed", "abandoned"])("treats server error %s as terminal", (code) => {
     vi.useFakeTimers();
     const socket = new FakeSocket();
@@ -168,7 +277,7 @@ describe("same-origin WebSocket controller", () => {
     controller.start();
     socket.open();
     socket.message(welcome());
-    socket.message({ version: 2, type: "error", code });
+    socket.message({ version: 3, type: "error", code });
     expect(fatal).toHaveBeenCalledOnce();
     expect(fatal).toHaveBeenCalledWith(code);
     expect(socket.closed).toBe(true);
@@ -179,13 +288,34 @@ describe("same-origin WebSocket controller", () => {
     controller.dispose();
   });
 
+  it("reports a frame from another protocol version as an outdated client, and a malformed one as a protocol error", () => {
+    const outdated = new FakeSocket();
+    const fatal = vi.fn();
+    const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks({ onFatal: fatal }), () => outdated);
+    controller.start();
+    outdated.open();
+    // A server that moved on answers authenticate with its own version, so the frame itself does not decode.
+    outdated.message({ version: 4, type: "error", code: "client_outdated" });
+    expect(fatal).toHaveBeenCalledWith("client_outdated");
+    controller.dispose();
+
+    const malformed = new FakeSocket();
+    const protocolFatal = vi.fn();
+    const other = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks({ onFatal: protocolFatal }), () => malformed);
+    other.start();
+    malformed.open();
+    malformed.message({ version: 3, type: "waiting", open_seats: 2 });
+    expect(protocolFatal).toHaveBeenCalledWith("protocol_error");
+    other.dispose();
+  });
+
   it("ticks an open-socket opponent pause from its current grace to zero", () => {
     vi.useFakeTimers();
     const reconnect = vi.fn();
     const socket = new FakeSocket();
     const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks({ onReconnect: reconnect }), () => socket, () => Date.now());
     controller.start(); socket.open(); socket.message(welcome());
-    socket.message({ version: 2, type: "paused", player_id: "two", grace_ms: 1_000 });
+    socket.message({ version: 3, type: "paused", player_id: "two", grace_ms: 1_000 });
     expect(reconnect).toHaveBeenLastCalledWith(1_000);
     vi.advanceTimersByTime(250); expect(reconnect).toHaveBeenLastCalledWith(750);
     vi.advanceTimersByTime(750); expect(reconnect).toHaveBeenLastCalledWith(0);
@@ -199,9 +329,9 @@ describe("same-origin WebSocket controller", () => {
     const socket = new FakeSocket();
     const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks({ onReconnect: reconnect }), () => socket, () => Date.now());
     controller.start(); socket.open(); socket.message(welcome());
-    socket.message({ version: 2, type: "paused", player_id: "two", grace_ms: 2_000 });
+    socket.message({ version: 3, type: "paused", player_id: "two", grace_ms: 2_000 });
     vi.advanceTimersByTime(250);
-    socket.message({ version: 2, type: "resumed", player_id: "two" });
+    socket.message({ version: 3, type: "resumed", player_id: "two" });
     expect(reconnect).toHaveBeenLastCalledWith(0);
     const calls = reconnect.mock.calls.length;
     vi.advanceTimersByTime(3_000);
@@ -215,7 +345,7 @@ describe("same-origin WebSocket controller", () => {
     const socket = new FakeSocket();
     const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks({ onReconnect: reconnect }), () => socket, () => Date.now());
     controller.start(); socket.open(); socket.message(welcome());
-    socket.message({ version: 2, type: "paused", player_id: "two", grace_ms: 5_000 });
+    socket.message({ version: 3, type: "paused", player_id: "two", grace_ms: 5_000 });
     vi.advanceTimersByTime(4_000);
     socket.disconnect();
     expect(reconnect).toHaveBeenLastCalledWith(20_000);
@@ -229,7 +359,7 @@ describe("same-origin WebSocket controller", () => {
     const finalSocket = new FakeSocket();
     const finalController = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks({ onReconnect: finalReconnect }), () => finalSocket, () => Date.now());
     finalController.start(); finalSocket.open(); finalSocket.message(welcome());
-    finalSocket.message({ version: 2, type: "paused", player_id: "two", grace_ms: 2_000 });
+    finalSocket.message({ version: 3, type: "paused", player_id: "two", grace_ms: 2_000 });
     finalSocket.message(final);
     expect(finalReconnect).toHaveBeenLastCalledWith(0);
     expect(vi.getTimerCount()).toBe(0);
@@ -238,7 +368,7 @@ describe("same-origin WebSocket controller", () => {
     const disposeSocket = new FakeSocket();
     const disposeController = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks({ onReconnect: disposeReconnect }), () => disposeSocket, () => Date.now());
     disposeController.start(); disposeSocket.open(); disposeSocket.message(welcome());
-    disposeSocket.message({ version: 2, type: "paused", player_id: "two", grace_ms: 2_000 });
+    disposeSocket.message({ version: 3, type: "paused", player_id: "two", grace_ms: 2_000 });
     disposeController.dispose();
     expect(disposeReconnect).toHaveBeenLastCalledWith(0);
     expect(vi.getTimerCount()).toBe(0);
@@ -258,9 +388,9 @@ describe("same-origin WebSocket controller", () => {
     controller.start();
     sockets[0]!.open();
     sockets[0]!.message(welcome());
-    sockets[0]!.message({ version: 2, type: "paused", player_id: "two", grace_ms: 5_000 });
+    sockets[0]!.message({ version: 3, type: "paused", player_id: "two", grace_ms: 5_000 });
     now = 5_500;
-    sockets[0]!.message({ version: 2, type: "resumed", player_id: "two" });
+    sockets[0]!.message({ version: 3, type: "resumed", player_id: "two" });
     now = 8_000;
     sockets[0]!.disconnect();
     expect(reconnect).toHaveBeenLastCalledWith(20_000);
@@ -276,5 +406,236 @@ describe("same-origin WebSocket controller", () => {
     socket.disconnect();
     expect(fresh).toHaveBeenCalledOnce();
     controller.dispose();
+  });
+});
+
+describe("edge-triggered action sends", () => {
+  it("flushes immediately on notifyAction and coalesces bursts", () => {
+    vi.useFakeTimers();
+    let now = 1000;
+    const socket = new FakeSocket();
+    const frames = [
+      { moveX: 0, moveY: 0, defense: "none" as const, actions: [{ kind: "punch" as const, hand: "left" as const, class: "jab" as const, target: "head" as const, power: "normal" as const, id: "c1" }] },
+      { moveX: 0, moveY: 0, defense: "none" as const, actions: [] },
+    ];
+    let frameIndex = 0;
+    const controller = new NetworkController(
+      "ticket",
+      () => frames[Math.min(frameIndex++, frames.length - 1)]!,
+      callbacks(),
+      () => socket,
+      () => now,
+    );
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message(ready);
+    controller.setActive(true);
+    controller.notifyAction();
+    expect(socket.sent).toHaveLength(2);
+    expect(JSON.parse(socket.sent[1]!).actions).toEqual([{ kind: "punch", hand: "left", class: "jab", target: "head", power: "normal", id: "c1" }]);
+    controller.notifyAction();
+    expect(socket.sent).toHaveLength(2);
+    now += 20;
+    controller.notifyAction();
+    expect(socket.sent).toHaveLength(3);
+    controller.dispose();
+    vi.useRealTimers();
+  });
+
+  it("sends a press at once in the middle of a bout, when the periodic flush has filled the last second", () => {
+    vi.useFakeTimers();
+    let now = 1000;
+    const socket = new FakeSocket();
+    const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none" as const, actions: [] }), callbacks(), () => socket, () => now);
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message(ready);
+    controller.setActive(true);
+    for (let millisecond = 0; millisecond < 1500; millisecond += 1) {
+      now += 1;
+      vi.advanceTimersByTime(1);
+    }
+    now += 10;
+    const before = socket.sent.length;
+    controller.notifyAction();
+    expect(socket.sent.length).toBe(before + 1);
+    let edges = 0;
+    for (let millisecond = 0; millisecond < 1000; millisecond += 10) {
+      now += 10;
+      vi.advanceTimersByTime(10);
+      const sent = socket.sent.length;
+      controller.notifyAction();
+      edges += socket.sent.length - sent;
+    }
+    expect(edges).toBeLessThanOrEqual(20);
+    expect(edges).toBeGreaterThanOrEqual(15);
+    controller.dispose();
+    vi.useRealTimers();
+  });
+
+  it("sends a press at once however soon after a periodic flush it comes", () => {
+    vi.useFakeTimers();
+    let now = 1000;
+    const socket = new FakeSocket();
+    const queued: string[] = [];
+    const controller = new NetworkController(
+      "ticket",
+      () => ({ moveX: 0, moveY: 0, defense: "none" as const, actions: queued.splice(0, 4).map((id) => ({ kind: "punch" as const, hand: "left" as const, class: "jab" as const, target: "head" as const, power: "normal" as const, id })) }),
+      callbacks(),
+      () => socket,
+      () => now,
+    );
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message(ready);
+    controller.setActive(true);
+    const step = (): void => { now += 1; vi.advanceTimersByTime(1); };
+    const carried = (id: string): boolean => socket.sent.some((frame) => (JSON.parse(frame).actions ?? []).some((action: { id?: string }) => action.id === id));
+    const waits: number[] = [];
+    for (let offset = 0; offset < 33; offset += 1) {
+      for (let rest = 0; rest < 100; rest += 1) step();
+      const sent = socket.sent.length;
+      while (socket.sent.length === sent) step();
+      for (let elapsed = 0; elapsed < offset; elapsed += 1) step();
+      const id = `p${offset}`;
+      queued.push(id);
+      controller.notifyAction();
+      let waited = 0;
+      while (!carried(id)) { step(); waited += 1; }
+      waits.push(waited);
+    }
+    expect(waits).toEqual(Array.from({ length: 33 }, () => 0));
+    controller.dispose();
+    vi.useRealTimers();
+  });
+
+  it("keeps room for the periodic flush when presses come in a burst", () => {
+    vi.useFakeTimers();
+    let now = 1000;
+    const socket = new FakeSocket();
+    const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none" as const, actions: [] }), callbacks(), () => socket, () => now);
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message(ready);
+    controller.setActive(true);
+    let edges = 0;
+    for (let millisecond = 0; millisecond < 400; millisecond += 9) {
+      now += 9;
+      vi.advanceTimersByTime(9);
+      const sent = socket.sent.length;
+      controller.notifyAction();
+      edges += socket.sent.length - sent;
+    }
+    expect(edges).toBe(20);
+    controller.dispose();
+    vi.useRealTimers();
+  });
+
+  it("remembers which input sequence carried each press, for telling a refused press from a late one", () => {
+    vi.useFakeTimers();
+    let now = 1000;
+    const socket = new FakeSocket();
+    const queued: string[] = [];
+    const controller = new NetworkController(
+      "ticket",
+      () => ({ moveX: 0, moveY: 0, defense: "none" as const, actions: queued.splice(0, 4).map((id) => ({ kind: "punch" as const, hand: "left" as const, class: "jab" as const, target: "head" as const, power: "normal" as const, id })) }),
+      callbacks(),
+      () => socket,
+      () => now,
+    );
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message(ready);
+    controller.setActive(true);
+    queued.push("c1");
+    expect(controller.sequenceOf("c1")).toBeNull();
+    controller.notifyAction();
+    expect(controller.sequenceOf("c1")).toBe(5);
+    now += 20;
+    queued.push("c2", "c3");
+    controller.notifyAction();
+    expect([controller.sequenceOf("c2"), controller.sequenceOf("c3")]).toEqual([6, 6]);
+    expect(controller.sequenceOf("c9")).toBeNull();
+    controller.dispose();
+    vi.useRealTimers();
+  });
+
+  it("holds its input while the connection is stalled and sends the current state when it clears", () => {
+    vi.useFakeTimers();
+    let now = 1000;
+    const socket = new FakeSocket();
+    let held = 1000;
+    const queued: string[] = ["p1"];
+    const controller = new NetworkController(
+      "ticket",
+      () => ({ moveX: held, moveY: 0, defense: "none" as const, actions: queued.splice(0, 4).map((id) => ({ kind: "punch" as const, hand: "left" as const, class: "jab" as const, target: "head" as const, power: "normal" as const, id })) }),
+      callbacks(),
+      () => socket,
+      () => now,
+    );
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message(ready);
+    controller.setActive(true);
+    const authenticated = socket.sent.length;
+    socket.bufferedAmount = 5000;
+    for (let millisecond = 0; millisecond < 2000; millisecond += 1) { now += 1; vi.advanceTimersByTime(1); }
+    controller.notifyAction();
+    expect(socket.sent.length).toBe(authenticated);
+    held = 0;
+    socket.bufferedAmount = 0;
+    for (let millisecond = 0; millisecond < 40; millisecond += 1) { now += 1; vi.advanceTimersByTime(1); }
+    const frames = socket.sent.slice(authenticated).map((frame) => JSON.parse(frame) as { move: { x: number }; actions: { id: string }[] });
+    expect(frames.length).toBeGreaterThanOrEqual(1);
+    expect(frames.length).toBeLessThanOrEqual(2);
+    expect(frames[0]!.move.x).toBe(0);
+    expect(frames[0]!.actions.map((action) => action.id)).toEqual(["p1"]);
+    controller.dispose();
+    vi.useRealTimers();
+  });
+
+  it("stays under the server's input limit however fast the player mashes, without losing a press", () => {
+    vi.useFakeTimers();
+    let now = 1000;
+    const socket = new FakeSocket();
+    const queued: string[] = [];
+    let pressed = 0;
+    const controller = new NetworkController(
+      "ticket",
+      () => ({ moveX: 0, moveY: 0, defense: "none" as const, actions: queued.splice(0, 4).map((id) => ({ kind: "punch" as const, hand: "left" as const, class: "jab" as const, target: "head" as const, power: "normal" as const, id })) }),
+      callbacks(),
+      () => socket,
+      () => now,
+    );
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message(ready);
+    controller.setActive(true);
+    const authenticated = socket.sent.length;
+    const times: number[] = [];
+    const record = (): void => { while (times.length < socket.sent.length - authenticated) times.push(now); };
+    for (let millisecond = 0; millisecond < 3000; millisecond += 1) {
+      now += 1;
+      vi.advanceTimersByTime(1);
+      record();
+      if (millisecond < 2000 && millisecond % 2 === 0) {
+        if (queued.length < 4) { pressed += 1; queued.push(`p${pressed}`); }
+        controller.notifyAction();
+        record();
+      }
+    }
+    for (const start of times) expect(times.filter((at) => at >= start && at < start + 1000).length).toBeLessThanOrEqual(50);
+    expect(times.length).toBeGreaterThan(90);
+    const delivered = socket.sent.slice(authenticated).flatMap((frame) => (JSON.parse(frame).actions as { id: string }[]).map((action) => action.id));
+    expect(delivered).toEqual(Array.from({ length: pressed }, (_unused, index) => `p${index + 1}`));
+    controller.dispose();
+    vi.useRealTimers();
   });
 });

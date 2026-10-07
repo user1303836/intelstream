@@ -2,7 +2,6 @@ import * as THREE from "three";
 import { HURTBOXES } from "../manifest";
 import { BONE_ADAPTER, loadBoxerGlb } from "../render/graph";
 import { FightRenderer } from "../render/renderer";
-import markerData from "../assets/fighter-markers.json";
 import type { BloodLevel } from "../settings";
 import type { EngineSnapshot } from "../types";
 
@@ -66,7 +65,6 @@ export class LabApp {
   private readonly pendingQueue: Array<{ at: number; tick: ReplayTick }> = [];
   private destroyed = false;
   private overlays = { skeleton: false, hurtbox: false, hitbox: false };
-  private trajectoryLine: THREE.Line | null = null;
   private readonly skeletonLines: THREE.LineSegments[] = [];
   private readonly hurtboxMeshes: THREE.Mesh[] = [];
   private readonly hitboxMeshes: THREE.Mesh[] = [];
@@ -106,7 +104,7 @@ export class LabApp {
     await loadBoxerGlb();
     this.renderer = new FightRenderer(
       this.canvas,
-      { tick_rate: this.replay.tick_rate, ring_half_width: 500, ring_half_height: 330 },
+      { tick_rate: this.replay.tick_rate, ring_half_width: 500, ring_half_height: 500 },
       () => ({ volume: 0, haptics: false, reducedMotion: false, blood: "full" as BloodLevel }),
       { manualClock: true },
     );
@@ -254,7 +252,6 @@ export class LabApp {
     this.renderer.labFrame(this.virtualTick / this.replay.tick_rate, render ?? this.renderOnSeek);
     this.renderer.labFrame((this.virtualTick + 0.5) / this.replay.tick_rate, render ?? this.renderOnSeek);
     this.updateOverlays();
-    this.updateTrajectory();
     const tick = this.replay.ticks[this.virtualTick];
     const phase = tick?.snapshot.payload.phase ?? "";
     this.setStatus(`tick ${this.virtualTick}/${this.replay.ticks.length - 1} · ${phase} · ${this.speed}×`);
@@ -307,39 +304,6 @@ export class LabApp {
     for (const lines of this.skeletonLines) lines.visible = this.overlays.skeleton;
     for (const mesh of this.hurtboxMeshes) mesh.visible = this.overlays.hurtbox;
     for (const mesh of this.hitboxMeshes) mesh.visible = this.overlays.hitbox;
-    this.updateTrajectory();
-  }
-
-  private updateTrajectory(): void {
-    if (this.trajectoryLine !== null) {
-      this.trajectoryLine.removeFromParent();
-      this.trajectoryLine.geometry.dispose();
-      (this.trajectoryLine.material as THREE.Material).dispose();
-      this.trajectoryLine = null;
-    }
-    if (!this.overlays.hitbox || this.replay === null || this.renderer === null) return;
-    const entry = this.replay.ticks[this.virtualTick];
-    const fighter = entry?.snapshot.payload.fighters[0];
-    const key = fighter?.action_key;
-    if (key === undefined || key === null) return;
-    const parts = key.split(":");
-    const trajectory = (markerData.trajectories as Record<string, { left: number[][]; right: number[][] }>)[`${parts[0]}:${parts[1]}`];
-    if (trajectory === undefined) return;
-    const fighterRoot = this.renderer.labRigs[0]!;
-    const fighterModel = fighterRoot.children[0] ?? fighterRoot;
-    fighterModel.updateMatrixWorld(true);
-    const points = (parts[1] === "right" ? trajectory.right : trajectory.left).map(
-      (point) => fighterModel.localToWorld(new THREE.Vector3(point[0] ?? 0, point[1] ?? 0, point[2] ?? 0)),
-    );
-    if (points.length < 2) return;
-    const geometry = new THREE.BufferGeometry().setFromPoints(points);
-    this.trajectoryLine = new THREE.Line(
-      geometry,
-      new THREE.LineBasicMaterial({ color: 0x5db4ff, transparent: true, opacity: 0.75, depthTest: false }),
-    );
-    this.trajectoryLine.renderOrder = 23;
-    this.trajectoryLine.frustumCulled = false;
-    this.renderer.labScene.add(this.trajectoryLine);
   }
 
   private updateOverlays(): void {
