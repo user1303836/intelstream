@@ -22,15 +22,18 @@ from intelstream.hands.rules import (
     BLIND_SIDE_EYE_THRESHOLD,
     BODY_COLLAPSE_DELAY_TICKS,
     BODY_WIND_PERCENT,
+    BOX_PAUSE_TICKS,
     CLINCH_HOLD_DISTANCE,
     CORNER_TREATMENTS,
     FIGHTER_RADIUS,
     FOUL_SEPARATION,
+    GET_UP_STUN_TICKS,
     GUARD_BLOCK_MINIMUM,
-    KNOCKDOWN_NEUTRAL_SEPARATION,
+    MANDATORY_COUNT,
     MINIMUM_SEPARATION,
     PARRY_STAGGER_TICKS,
     PUNCH_RULES,
+    REFEREE_WALK_SPEED,
     REST_CORNER_OFFSET,
     RING_CORNER_REACH,
     RING_HALF_HEIGHT,
@@ -499,7 +502,7 @@ def test_sliding_along_a_corner_pad_keeps_its_speed_and_is_the_same_both_ways() 
     ("winner_at", "downed_at"),
     [((367, 366), (300, 300)), ((333, 400), (265, 328)), ((-440, -293), (-370, -230))],
 )
-def test_cornered_winner_still_reaches_neutral_distance(
+def test_cornered_winner_still_reaches_a_neutral_corner(
     winner_at: tuple[int, int], downed_at: tuple[int, int]
 ) -> None:
     engine = make_engine(seed=100, round_ticks=5000)
@@ -510,14 +513,13 @@ def test_cornered_winner_still_reaches_neutral_distance(
     engine._knock_down(downed, winner)
     assert engine.phase is MatchPhase.KNOCKDOWN
 
-    for _ in range(150):
+    for _ in range(8 * COUNT_TICK_INTERVAL):
         engine.step()
         assert in_ring(winner)
         assert hypot(winner.x - downed.x, winner.y - downed.y) >= MINIMUM_SEPARATION - 8
-        if engine.phase is not MatchPhase.KNOCKDOWN:
-            break
 
-    assert hypot(winner.x - downed.x, winner.y - downed.y) >= KNOCKDOWN_NEUTRAL_SEPARATION
+    corners = [(-REST_CORNER_OFFSET, REST_CORNER_OFFSET), (REST_CORNER_OFFSET, -REST_CORNER_OFFSET)]
+    assert min(hypot(winner.x - x, winner.y - y) for x, y in corners) <= REFEREE_WALK_SPEED
     assert (winner.velocity_x, winner.velocity_y) == (0, 0)
 
 
@@ -914,7 +916,7 @@ def test_knockdown_seeded_get_up_and_repeated_knockdown_tko() -> None:
 
     sequence = 2
     used_window = -1
-    while engine.phase is MatchPhase.KNOCKDOWN and engine.tick < 240:
+    while engine.phase is MatchPhase.KNOCKDOWN and engine.tick < 400:
         snapshot = engine.snapshot()
         fighter = next(item for item in snapshot.fighters if item.player_id == "two")
         if (
@@ -935,7 +937,10 @@ def test_knockdown_seeded_get_up_and_repeated_knockdown_tko() -> None:
         else:
             engine.step()
     assert engine.phase is MatchPhase.FIGHT
-    assert any(event.kind == "get_up" for event in engine.events)
+    assert [event.kind for event in engine.events if event.kind in {"get_up", "box"}] == [
+        "get_up",
+        "box",
+    ]
 
     tko = make_engine(round_ticks=2000)
     tko.fighter("two").knockdowns = 2
@@ -1268,36 +1273,21 @@ def test_facing_vector_turns_toward_the_opponent_and_the_hit_test_follows() -> N
     assert payload["fighters"][1]["last_input_sequence"] == -1
 
 
-def test_knockdown_walks_the_standing_fighter_to_neutral_distance_without_teleport() -> None:
+def test_the_standing_fighter_walks_to_the_far_neutral_corner_without_teleporting() -> None:
     engine = make_engine(round_ticks=2000)
-    defender = engine.fighter("two")
-    attacker = engine.fighter("one")
-    defender.poise = 1
-    engine.step({"one": command(1, action=punch(PunchClass.UPPERCUT, power=Power.POWER))})
-    advance_until(engine, {"knockdown"})
-    downed_at = (defender.x, defender.y)
-    for _ in range(40):
+    one, two = engine.fighter("one"), engine.fighter("two")
+    _down_two(engine)
+    downed_at = (two.x, two.y)
+    neutral = [(-REST_CORNER_OFFSET, REST_CORNER_OFFSET), (REST_CORNER_OFFSET, -REST_CORNER_OFFSET)]
+    far = max(neutral, key=lambda corner: hypot(corner[0] - two.x, corner[1] - two.y))
+    while engine._knockdown_count_ticks < MANDATORY_COUNT * COUNT_TICK_INTERVAL:
+        before = (one.x, one.y)
         engine.step()
-    assert (defender.x, defender.y) == downed_at
-    assert hypot(attacker.x - defender.x, attacker.y - defender.y) >= 230
-    assert attacker.velocity_x == 0 and attacker.velocity_y == 0
-
-    sequence = 2
-    used_window = -1
-    while engine.phase is MatchPhase.KNOCKDOWN and engine.tick < 300:
-        fighter = next(item for item in engine.snapshot().fighters if item.player_id == "two")
-        if (
-            fighter.get_up_prompt is not None
-            and engine.tick >= fighter.get_up_window_start_tick
-            and fighter.get_up_window_end_tick != used_window
-        ):
-            engine.step({"two": command(sequence, action=MovementAction(fighter.get_up_prompt))})
-            used_window = fighter.get_up_window_end_tick
-            sequence += 1
-        else:
-            engine.step()
-    assert engine.phase is MatchPhase.FIGHT
-    assert (defender.x, defender.y) == downed_at
+        assert hypot(one.x - before[0], one.y - before[1]) <= REFEREE_WALK_SPEED + 1
+        assert hypot(one.x - two.x, one.y - two.y) >= MINIMUM_SEPARATION - 8
+        assert (two.x, two.y) == downed_at
+    assert hypot(one.x - far[0], one.y - far[1]) <= REFEREE_WALK_SPEED
+    assert (one.velocity_x, one.velocity_y) == (0, 0)
 
 
 def test_short_buffered_combo_only_rewards_authored_compatible_chain() -> None:
@@ -2566,6 +2556,69 @@ def test_two_body_collapses_on_one_tick_favour_neither_seat(
         fighter.body_collapse_action_id = "trade"
     knockdowns = [event for event in engine.step().events if event.kind == "knockdown"]
     assert [event.target_id for event in knockdowns] == [first_down]
+
+
+def _down_two(engine: BoxingEngine) -> None:
+    engine.fighter("two").poise = 1
+    engine.step({"one": command(1, action=punch(PunchClass.UPPERCUT, power=Power.POWER))})
+    advance_until(engine, {"knockdown"})
+    assert engine.phase is MatchPhase.KNOCKDOWN
+
+
+def _rise_at(engine: BoxingEngine, count: int) -> list[CombatEvent]:
+    """Let the referee reach `count`, then fill the get-up meter: two rises on the next tick."""
+    while engine._knockdown_count_ticks < count * COUNT_TICK_INTERVAL:
+        engine.step()
+    two = engine.fighter("two")
+    two.get_up_meter = engine._get_up_required(two)
+    return list(engine.step().events)
+
+
+def test_a_fighter_who_beats_the_count_takes_the_mandatory_eight_before_they_box() -> None:
+    engine = make_engine(round_ticks=2000)
+    _down_two(engine)
+    clock = engine._paused_fight_ticks
+    two = engine.fighter("two")
+    risen_at = (two.x, two.y)
+    events = _rise_at(engine, 2)
+    assert [event.amount for event in events if event.kind == "get_up"] == [2]
+
+    counts: list[int] = []
+    shown: list[int] = []
+    sequence = 1
+    box_tick = engine.tick - engine._knockdown_count_ticks + MANDATORY_COUNT * COUNT_TICK_INTERVAL
+    box_tick += BOX_PAUSE_TICKS
+    while engine.phase is MatchPhase.KNOCKDOWN:
+        view = next(item for item in engine.snapshot().fighters if item.player_id == "two")
+        assert not view.is_downed and view.get_up_prompt is None
+        assert engine.phase_ticks_remaining == box_tick - engine.tick
+        shown.append(view.get_up_count)
+        # Nothing he presses counts until the referee waves them on.
+        snapshot = engine.step({"two": command(sequence, action=punch(), move_x=1000)})
+        sequence += 1
+        counts += [event.amount for event in snapshot.events if event.kind == "count"]
+        assert (two.x, two.y) == risen_at
+    assert engine.tick == box_tick
+    assert counts == [3, 4, 5, 6, 7, 8]
+    assert shown == sorted(shown) and shown[0] == 2 and shown[-1] == MANDATORY_COUNT
+    assert [event.target_id for event in engine.events if event.kind == "box"] == ["two"]
+    assert engine.phase is MatchPhase.FIGHT
+    assert engine.phase_ticks_remaining == clock
+    assert two.stunned_ticks == GET_UP_STUN_TICKS
+
+
+def test_a_late_get_up_still_gets_the_referee_s_look_before_the_box() -> None:
+    engine = make_engine(round_ticks=2000)
+    _down_two(engine)
+    events = _rise_at(engine, 9)
+    assert [event.amount for event in events if event.kind == "get_up"] == [9]
+    for _ in range(BOX_PAUSE_TICKS - 1):
+        snapshot = engine.step()
+        assert engine.phase is MatchPhase.KNOCKDOWN and engine.result is None
+        assert not [event for event in snapshot.events if event.kind in {"count", "box"}]
+        assert {view.get_up_count for view in snapshot.fighters} == {9}
+    assert [event.kind for event in engine.step().events if event.kind == "box"] == ["box"]
+    assert engine.phase is MatchPhase.FIGHT
 
 
 def test_round_one_opens_with_the_introductions_and_later_rounds_with_the_bell() -> None:

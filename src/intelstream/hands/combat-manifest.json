@@ -43,8 +43,9 @@
     ]
   },
   "knockdown": {
-    "neutral_separation": 230,
-    "referee_walk_speed": 4,
+    "referee_walk_speed": 5,
+    "mandatory_count": 8,
+    "box_pause_ticks": 60,
     "get_up_stun_ticks": 20,
     "get_up_stamina": 500,
     "get_up_base": 34,
