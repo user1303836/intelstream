@@ -474,4 +474,64 @@ describe("around the fight", () => {
     expect(right).toBeNull();
     expect((left as THREE.Vector3).distanceTo(new THREE.Vector3(0.8, 1.9, 0.3))).toBeLessThan(1e-6);
   });
+
+  /** The referee's own stand-ins, with the winner (seat one) and the beaten fighter where they are drawn. */
+  const officiating = (fields: Record<string, unknown>) => {
+    const glove = (x: number): THREE.Object3D => {
+      const bone = new THREE.Object3D();
+      bone.position.set(x, 1.9, 0);
+      bone.updateMatrixWorld(true);
+      return bone;
+    };
+    const referee = { raise: vi.fn(), setRefereeCount: vi.fn(), aimBreak: vi.fn(), update: vi.fn(), breaking: false, boxer: { root: new THREE.Object3D() } };
+    const stub = prototypeOf({
+      referee, blobShadows: [], replay: null, ceremony: null, mapping: worldMapping(SIMULATION), frameSeconds: 0, stoppageWinner: -1, stoppageRaiseAt: Number.POSITIVE_INFINITY, stoppageSpot: null,
+      graphs: [{ fallBody: null, boxer: { rig: { bones: { gloveL: glove(-0.35), gloveR: glove(-0.65) } } } }, { fallBody: null }],
+      tmpA: new THREE.Vector3(), tmpB: new THREE.Vector3(), refereePosition: new THREE.Vector3(0.4, 0, -2.1), refereeVelocity: new THREE.Vector3(), refereeAway: new THREE.Vector3(),
+      refereeYaw: 0, effects: { severedHeadPosition: () => false }, closeUpTarget: new THREE.Vector3(), bodyPoint: new THREE.Vector3(),
+      stoppageWrist: new THREE.Vector3(), stoppageOtherWrist: new THREE.Vector3(), lastKnockdown: null,
+      ...fields,
+    });
+    const step = (snapshot: EngineSnapshot | null, frames: number): void => {
+      for (let frame = 0; frame < frames; frame += 1) {
+        (stub as { frameSeconds: number }).frameSeconds += 1 / 60;
+        method("updateReferee").call(stub, 1 / 60, (stub as { frameSeconds: number }).frameSeconds, snapshot, 0);
+      }
+    };
+    return { stub, referee, step };
+  };
+
+  it("lifts the winner's arm when the beaten fighter or his body stands on the side he would walk to", () => {
+    // The winner at x = -0.5, so the spot toward the middle of the ring is at x = +0.1: right where the loser stands.
+    const lying = [new THREE.Vector3(1.4, 0, 0), new THREE.Vector3(1.05, 0, 0), new THREE.Vector3(0.7, 0, 0), new THREE.Vector3(0.35, 0, 0.12), new THREE.Vector3(0.35, 0, -0.12)];
+    for (const body of [null, { bodyPoint: (index: number, out: THREE.Vector3) => out.copy(lying[index]!) }]) {
+      const { stub, referee, step } = officiating({ stoppageWinner: 0, stoppageRaiseAt: 0 });
+      (stub.tmpA as THREE.Vector3).set(-0.5, 0, 0);
+      (stub.tmpB as THREE.Vector3).set(0.3, 0, 0);
+      (stub.graphs as Array<{ fallBody: unknown }>)[1]!.fallBody = body;
+      step(null, 300);
+      // Before, he was pushed off the spot every frame and no arm ever went up.
+      expect(referee.raise.mock.calls.some(([left, right]) => left !== null || right !== null)).toBe(true);
+      const at = stub.refereePosition as THREE.Vector3;
+      // Beside him, 0.6 m away.
+      expect(Math.hypot(at.x + 0.5, at.z)).toBeCloseTo(0.6, 1);
+      expect(Math.hypot(at.x - 0.3, at.z)).toBeGreaterThan(0.55);
+      for (const point of body === null ? [] : lying) expect(Math.hypot(at.x - point.x, at.z - point.z)).toBeGreaterThan(0.55);
+    }
+  });
+
+  it("goes on counting over a fighter who has beaten the count, to the mandatory eight", () => {
+    const { stub, referee, step } = officiating({ lastKnockdown: { knockdown: { event_id: 4, tick: 30, kind: "knockdown", actor_id: "one", target_id: "two", amount: 1, detail: "", blood: 0, direction: 1, action_id: null }, hit: null, finisher: null } });
+    (stub.tmpA as THREE.Vector3).set(-2.2, 0, 2.2);
+    (stub.tmpB as THREE.Vector3).set(0.6, 0, 0);
+    // Up at five: the engine no longer has him down, but the phase is still the knockdown's.
+    const standingEight = { ...snapshot(60), phase: "knockdown" as const, fighters: [fighter("one", -360), { ...fighter("two", 100), get_up_count: 5 }] as const };
+    step(standingEight, 120);
+    expect(referee.setRefereeCount).toHaveBeenLastCalledWith(true, 5);
+    const at = stub.refereePosition as THREE.Vector3;
+    expect(Math.hypot(at.x - 0.61, at.z)).toBeLessThan(1.4);
+    // Once they box on, the count is over.
+    step({ ...standingEight, phase: "fight" }, 1);
+    expect(referee.setRefereeCount).toHaveBeenLastCalledWith(false, 0);
+  });
 });

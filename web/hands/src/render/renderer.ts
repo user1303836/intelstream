@@ -160,6 +160,16 @@ const REST_DIAGONAL_HEIGHT = 3.4;
 const WINNER_CELEBRATION_SECONDS = 600;
 const STOPPAGE_RAISE_DELAY_SECONDS = 2.8;
 const STOPPAGE_RAISE_SPACING = 0.6;
+/**
+ * The spots beside the winner the referee tries in turn for the arm raise, each as [toward the middle of
+ * the ring, toward the broadcast camera] in STOPPAGE_RAISE_SPACINGs: either side of him, then a little
+ * behind, then a little in front.
+ */
+const RAISE_SPOTS = [[1, 0], [-1, 0], [0.75, -0.66], [-0.75, -0.66], [0.75, 0.66], [-0.75, 0.66]] as const;
+/** A spot is his once he stands this near it; it keeps this far from the beaten fighter and inside this square. */
+const RAISE_ARRIVED = 0.15;
+const RAISE_CLEARANCE = 0.6;
+const RAISE_LIMIT = 2.3;
 /** Longest a finish waits for its punch to be shown (the render clock runs at most 6 ticks behind). */
 const FINISH_WAIT_LIMIT_SECONDS = 0.5;
 const CORNERMAN_APRON_DISTANCE = 3.42;
@@ -959,6 +969,8 @@ export class FightRenderer {
   /** The seat whose arm the referee lifts after a stoppage, from `stoppageRaiseAt`; -1 for none. */
   private stoppageWinner = -1;
   private stoppageRaiseAt = Number.POSITIVE_INFINITY;
+  /** Where the referee stands to lift the winner's arm, from the winner; chosen as he sets off for it. */
+  private stoppageSpot: { readonly x: number; readonly z: number } | null = null;
   private readonly stoppageWrist = new THREE.Vector3();
   private readonly stoppageOtherWrist = new THREE.Vector3();
   private readonly closeUpPosition = new THREE.Vector3();
@@ -1225,6 +1237,7 @@ export class FightRenderer {
     this.final = final;
     this.stoppageWinner = -1;
     this.stoppageRaiseAt = Number.POSITIVE_INFINITY;
+    this.stoppageSpot = null;
     this.ceremony = this.ceremonyFor(final);
     this.finalRevealAt = this.frameSeconds + (this.ceremony === null ? finalRevealDelay(final) : CEREMONY_REVEAL_LIMIT_SECONDS);
     this.ovationUntil = final === null ? 0 : this.frameSeconds + CROWD_OVATION_SECONDS;
@@ -1443,6 +1456,39 @@ export class FightRenderer {
     );
     this.replayLookAt.copy(head);
     return { position: this.closeUpPosition, lookAt: this.replayLookAt, tight: true };
+  }
+
+  /**
+   * Where the referee stands to lift the winner's arm, as an offset from the winner: the first of
+   * RAISE_SPOTS clear of the beaten fighter, of a body and a head on the canvas, and inside the ropes, or the
+   * least crowded of them. A spot taken by any of those would keep him stepping in and being pushed back out.
+   */
+  private raiseSpot(winner: THREE.Vector3, loser: THREE.Vector3): { x: number; z: number } {
+    const toCentre = winner.x > 0 ? -1 : 1;
+    let best = { x: toCentre * STOPPAGE_RAISE_SPACING, z: 0 };
+    let bestRoom = Number.NEGATIVE_INFINITY;
+    for (const [across, along] of RAISE_SPOTS) {
+      const x = winner.x + toCentre * across * STOPPAGE_RAISE_SPACING;
+      const z = winner.z + along * STOPPAGE_RAISE_SPACING;
+      let room = Math.min(RAISE_LIMIT - Math.abs(x), RAISE_LIMIT - Math.abs(z), Math.hypot(x - loser.x, z - loser.z) - RAISE_CLEARANCE);
+      for (const graph of this.graphs ?? []) {
+        const body = graph.fallBody;
+        if (body === null) continue;
+        for (const point of [0, 1, 2, 3, 4] as const) {
+          body.bodyPoint(point, this.bodyPoint);
+          room = Math.min(room, Math.hypot(x - this.bodyPoint.x, z - this.bodyPoint.z) - BODY_CLEARANCE - 0.05);
+        }
+      }
+      for (const index of [0, 1]) {
+        if (this.effects.severedHeadPosition(index, this.closeUpTarget)) room = Math.min(room, Math.hypot(x - this.closeUpTarget.x, z - this.closeUpTarget.z) - HEAD_CLEARANCE - 0.05);
+      }
+      if (room >= 0) return { x: x - winner.x, z: z - winner.z };
+      if (room > bestRoom) {
+        bestRoom = room;
+        best = { x: x - winner.x, z: z - winner.z };
+      }
+    }
+    return best;
   }
 
   /** The winner's glove nearer the referee, in world space. */
@@ -2442,11 +2488,15 @@ export class FightRenderer {
     referee.boxer.root.visible = this.replay === null;
     const shadow = this.blobShadows[2];
     if (shadow !== undefined) shadow.visible = this.replay === null;
-    const downed = snapshot?.fighters.find((fighter) => fighter.is_downed) ?? null;
+    // He counts over the fighter who went down from the knockdown until "Box!": one who beats the count is
+    // still counted to the mandatory eight, on his feet, and looked over.
+    const counted = snapshot?.fighters.find((fighter) => fighter.is_downed)
+      ?? (snapshot?.phase === "knockdown" ? snapshot.fighters.find((fighter) => fighter.player_id === this.lastKnockdown?.knockdown.target_id) : undefined)
+      ?? null;
     const clinched = snapshot?.fighters.some((fighter) => fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0) ?? false;
-    const breaking = downed === null && referee.breaking;
-    const focusX = downed !== null ? this.mapping.x(downed.x) : (this.tmpA.x + this.tmpB.x) / 2;
-    const focusZ = downed !== null ? this.mapping.z(downed.y) : (this.tmpA.z + this.tmpB.z) / 2;
+    const breaking = counted === null && referee.breaking;
+    const focusX = counted !== null ? this.mapping.x(counted.x) : (this.tmpA.x + this.tmpB.x) / 2;
+    const focusZ = counted !== null ? this.mapping.z(counted.y) : (this.tmpA.z + this.tmpB.z) / 2;
     const away = this.refereeAway.set(this.refereePosition.x - focusX, 0, this.refereePosition.z - focusZ);
     if (away.lengthSq() < 0.01) away.set(0, 0, -1);
     away.normalize();
@@ -2458,23 +2508,23 @@ export class FightRenderer {
       const side = acrossX * away.x + acrossZ * away.z >= 0 ? 1 : -1;
       if (across > 0.01) away.set((acrossX / across) * side, 0, (acrossZ / across) * side);
     }
-    const { standoff, clearance } = refereeSpacing(downed !== null, clinched, breaking);
+    const { standoff, clearance } = refereeSpacing(counted !== null, clinched, breaking);
     const targetX = THREE.MathUtils.clamp(focusX + away.x * standoff, -2.4, 2.4);
     const targetZ = THREE.MathUtils.clamp(focusZ + away.z * standoff, -2.4, 2.4);
     const previousX = this.refereePosition.x;
     const previousZ = this.refereePosition.z;
     const ceremony = this.replay === null && this.ceremony?.positions !== null ? this.ceremony : null;
-    // Once the fight is waved off, the referee goes to the winner's side, the side nearer the middle of the ring.
+    // Once the fight is waved off, the referee goes to the winner's side: the side nearer the middle of the
+    // ring, or the first one clear of the beaten fighter and his body (see raiseSpot).
     const winner = ceremony === null && this.replay === null && this.stoppageWinner >= 0 && this.frameSeconds >= this.stoppageRaiseAt
       ? (this.stoppageWinner === 0 ? this.tmpA : this.tmpB)
       : null;
-    const side = winner !== null && winner.x > 0 ? -1 : 1;
-    let beside = false;
-    if (winner !== null) {
-      const step = ceremonyStep(this.refereePosition.x, this.refereePosition.z, { x: winner.x + side * STOPPAGE_RAISE_SPACING, y: winner.z }, CEREMONY_REFEREE_SPEED * dt);
+    const spot = winner === null ? null : (this.stoppageSpot ??= this.raiseSpot(winner, this.stoppageWinner === 0 ? this.tmpB : this.tmpA));
+    const side = spot !== null && spot.x < 0 ? -1 : 1;
+    if (winner !== null && spot !== null) {
+      const step = ceremonyStep(this.refereePosition.x, this.refereePosition.z, { x: winner.x + spot.x, y: winner.z + spot.z }, CEREMONY_REFEREE_SPEED * dt);
       this.refereePosition.x = step.x;
       this.refereePosition.z = step.y;
-      beside = step.arrived;
     } else if (ceremony !== null) {
       // The referee walks to the mark between the fighters and turns to the camera.
       const step = ceremonyStep(this.refereePosition.x, this.refereePosition.z, { x: CEREMONY_REFEREE.x, y: CEREMONY_REFEREE.z }, CEREMONY_REFEREE_SPEED * dt);
@@ -2519,6 +2569,9 @@ export class FightRenderer {
     if (dt > 0) {
       this.refereeVelocity.set((this.refereePosition.x - previousX) / dt, 0, (this.refereePosition.z - previousZ) / dt);
     }
+    // Arrived is where the keep-offs above let him stand, not where his step would have put him.
+    const beside = winner !== null && spot !== null
+      && Math.hypot(this.refereePosition.x - winner.x - spot.x, this.refereePosition.z - winner.z - spot.z) <= RAISE_ARRIVED;
     const walking = ceremony !== null && !ceremony.refereeArrived;
     const yaw = winner !== null ? (beside ? 0 : Math.atan2(winner.x - this.refereePosition.x, winner.z - this.refereePosition.z))
       : ceremony === null ? Math.atan2(focusX - this.refereePosition.x, focusZ - this.refereePosition.z)
@@ -2532,7 +2585,7 @@ export class FightRenderer {
     const yawDelta = ((yaw - this.refereeYaw + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
     this.refereeYaw += yawDelta * (1 - Math.exp(-(breaking ? 8 : 3) * dt));
     const state = refereeSnapshot(this.refereePosition, this.refereeYaw, this.refereeVelocity, this.mapping);
-    referee.setRefereeCount(downed !== null, downed?.get_up_count ?? 0);
+    referee.setRefereeCount(counted !== null, counted?.get_up_count ?? 0);
     referee.aimBreak(this.tmpA, this.tmpB);
     referee.update(state.self, state.focus, dt, time, false, "off", sampledTick);
   }
