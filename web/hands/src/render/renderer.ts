@@ -17,7 +17,7 @@ import { captionSlot, drawCaption } from "./caption";
 import { CommentaryDirector, type CrowdCue } from "./commentary";
 import { Effects3D, type BakedPart, type SprayDirection } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, releaseFighterGpu, type ArcadeDislocation, type CutmanProp } from "./graph";
-import { drawHud, finalRevealDelay, hudScale, resultCard, resultCardLayout, RoundStatsTracker, STOPPAGE_METHODS, RoundClock, type RoundPunchStats } from "./hud";
+import { drawHud, finalRevealDelay, hudScale, lagWarning, resultCard, resultCardLayout, RoundStatsTracker, STOPPAGE_METHODS, RoundClock, wasBlocked, type RoundPunchStats } from "./hud";
 import { BURST_CUT_HEIGHT, EYE_LIDS, NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE } from "./injury";
 import { BIG_SHOT, closeCut, cutRim, teethFor } from "./gore";
 import { mouthpieceFlies } from "./mouthpiece";
@@ -1040,6 +1040,8 @@ export class FightRenderer {
   private readonly bloomPass: UnrealBloomPass;
   private readonly avatars = new Avatars();
   private inputLatencyMs: number | null = null;
+  /** The slow-connection warning is up (lagWarning). */
+  private lagWarned = false;
   private frameMsAverage = 16.7;
   private readonly replayCameraPosition = new THREE.Vector3();
   private readonly replayLookAt = new THREE.Vector3();
@@ -1747,6 +1749,7 @@ export class FightRenderer {
 
   setInputLatency(milliseconds: number | null): void {
     this.inputLatencyMs = milliseconds;
+    this.lagWarned = lagWarning(milliseconds, this.lagWarned);
   }
 
   /** The server clock starts over after a new connection or a paused bout, so the render clock relearns it. */
@@ -1997,9 +2000,12 @@ export class FightRenderer {
     for (const event of accepted) {
       this.roundStats.record(event, accepted);
       if (event.kind === "knockdown") {
-        const hit = accepted.find((candidate) => (candidate.kind === "hit" || candidate.kind === "counter_hit") && candidate.target_id === event.target_id)
+        // The punch that put him down landed on the knockdown's own tick; a snapshot can carry older ones too.
+        const hit = accepted.find((candidate) => isHit(candidate) && candidate.target_id === event.target_id && candidate.tick === event.tick)
           ?? (event.detail === "body" ? this.recordedHit(event) : null);
-        this.lastKnockdown = { knockdown: event, hit, finisher: knockdownFinisher(hit, snapshot) };
+        // A punch the guard took can still floor a fighter with no poise left. The replay shows it as it was,
+        // but it earns no finisher.
+        this.lastKnockdown = { knockdown: event, hit, finisher: hit !== null && wasBlocked(hit, snapshot.events) ? null : knockdownFinisher(hit, snapshot) };
         const downed = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.target_id);
         this.graphs?.[downed]?.fallToKnee(event.detail === BODY_KNOCKDOWN);
       }
@@ -2120,7 +2126,8 @@ export class FightRenderer {
       ) {
         graphs?.[puncherIndex]?.landedHit(event.kind === "block" || event.kind === "perfect_block");
       }
-      this.onContact?.(event);
+      // The hit that leaked through a block is heard and felt as the block it came with, not as a landed punch.
+      if (pending.presentImpact || !isHit(event)) this.onContact?.(event);
     }
   }
 
@@ -2880,7 +2887,7 @@ export class FightRenderer {
       ctx.fillStyle = vignette;
       ctx.fillRect(0, 0, viewport.width, viewport.height);
     }
-    drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.frameSeconds >= this.finalRevealAt ? this.final : null, this.reconnectMs, this.simulation.tick_rate, this.roundStats, this.replay !== null ? "KNOCKOUT REPLAY" : null, this.inputLatencyMs, this.frameSeconds < this.roundCalloutUntil ? `ROUND ${this.roundCalloutRound}` : this.eventCallout !== null && this.frameSeconds < this.eventCallout.until ? this.eventCallout.text : null, this.roundClock.ticks(snapshot), (player) => this.avatars.get(player));
+    drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.frameSeconds >= this.finalRevealAt ? this.final : null, this.reconnectMs, this.simulation.tick_rate, this.roundStats, this.replay !== null ? "KNOCKOUT REPLAY" : null, this.lagWarned ? this.inputLatencyMs : null, this.frameSeconds < this.roundCalloutUntil ? `ROUND ${this.roundCalloutRound}` : this.eventCallout !== null && this.frameSeconds < this.eventCallout.until ? this.eventCallout.text : null, this.roundClock.ticks(snapshot), (player) => this.avatars.get(player), this.lastKnockdown?.knockdown.target_id ?? null, this.touchControls && snapshot.fighters.some((fighter) => fighter.player_id === this.viewerId));
     this.drawCaption(ctx, viewport.width, viewport.height, snapshot);
   }
 
@@ -2926,7 +2933,7 @@ export class FightRenderer {
     const resultTop = final === null ? null : resultCardTop(final, width, height, snapshot.fighters, this.players, this.roundStats, this.viewerId) / scale;
     const callout = this.frameSeconds < this.roundCalloutUntil || (this.eventCallout !== null && this.frameSeconds < this.eventCallout.until);
     const cornerPanelTop = this.cornerPanelTop === null ? null : this.cornerPanelTop / scale;
-    const slot = captionSlot({ width: width / scale, height: height / scale, phase: snapshot.phase, resultTop, touch: this.touchControls && viewer !== undefined, hint: snapshot.phase === "countdown" && viewer !== undefined, viewerDown: viewer?.is_downed === true, replay: this.replay !== null, cornerPanelTop, callout });
+    const slot = captionSlot({ width: width / scale, height: height / scale, phase: snapshot.phase, resultTop, touch: this.touchControls && viewer !== undefined, hint: snapshot.phase === "countdown" && viewer !== undefined, viewerDown: viewer?.is_downed === true, replay: this.replay !== null, cornerPanelTop, callout, lag: this.lagWarned });
     if (slot === null) return;
     ctx.save();
     ctx.scale(scale, scale);

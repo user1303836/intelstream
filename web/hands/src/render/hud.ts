@@ -131,17 +131,24 @@ export function hudScale(width: number, height: number): number {
 }
 
 /**
- * The line under a fighter's name: the record, the rating (or CPU), then knockdowns, warnings and points taken
- * only when there are any. A narrow phone plate keeps the record, the rating and the knockdowns.
+ * The line under a fighter's name, fullest first: the style, the record, the rating (or CPU), then knockdowns,
+ * warnings and points taken only when there are any. A plate too narrow for the whole line takes the next one
+ * that fits: without the record, then without the rating, then with the counts in short ("W2", "−1"), then
+ * without the style, so the counts, which can decide a close round, are the last thing a plate gives up. A
+ * phone's plate is only the style and the counts in short: the introductions give the record.
  */
-export function plateDetail(player: PublicPlayer | undefined, fighter: Pick<FighterSnapshot, "knockdowns" | "warnings" | "deductions">, compact: boolean): string {
-  const parts: string[] = [];
-  if (player?.record !== undefined) parts.push(isDebut(player.record) ? "DEBUT" : recordLine(player.record));
-  parts.push(player?.cpu === true ? "CPU" : `ELO ${player?.rating ?? "—"}`);
-  if (fighter.knockdowns > 0) parts.push(`${fighter.knockdowns} KD`);
-  if (!compact && fighter.warnings > 0) parts.push(`${fighter.warnings} WARNING${fighter.warnings === 1 ? "" : "S"}`);
-  if (!compact && fighter.deductions > 0) parts.push(`−${fighter.deductions} PT${fighter.deductions === 1 ? "" : "S"}`);
-  return parts.join(" · ");
+export function plateDetails(player: PublicPlayer | undefined, fighter: Pick<FighterSnapshot, "style" | "knockdowns" | "warnings" | "deductions">, compact: boolean): readonly string[] {
+  const style = styleTag(fighter.style);
+  const record = player?.record === undefined ? null : isDebut(player.record) ? "DEBUT" : recordLine(player.record);
+  const rating = player?.cpu === true ? "CPU" : `ELO ${player?.rating ?? "—"}`;
+  const knockdowns = fighter.knockdowns > 0 ? `${fighter.knockdowns} KD` : null;
+  const counts = [knockdowns, fighter.warnings > 0 ? `${fighter.warnings} WARNING${fighter.warnings === 1 ? "" : "S"}` : null, fighter.deductions > 0 ? `−${fighter.deductions} PT${fighter.deductions === 1 ? "" : "S"}` : null];
+  const short = [knockdowns, fighter.warnings > 0 ? `W${fighter.warnings}` : null, fighter.deductions > 0 ? `−${fighter.deductions}` : null];
+  const line = (...parts: (string | null)[]): string => parts.filter((part) => part !== null).join(" · ");
+  const lines = compact
+    ? [line(style, ...short), line(...short)]
+    : [line(style, record, rating, ...counts), line(style, rating, ...counts), line(style, ...counts), line(style, ...short), line(...short)];
+  return lines.filter((text, index) => text !== "" && lines.indexOf(text) === index);
 }
 
 export const PLATE_PORTRAIT_RADIUS = 16;
@@ -154,7 +161,8 @@ function fighterPlate(
   y: number,
   width: number,
   name: string,
-  detail: string,
+  /** The line under the name, fullest first (plateDetails). */
+  details: readonly string[],
   bars: readonly BarSpec[],
   mirror: boolean,
   accent: string,
@@ -199,10 +207,13 @@ function fighterPlate(
   ctx.fillText(fit(ctx, label, nameWidth), textX, y + 21);
   ctx.fillStyle = "#93a3bd";
   const detailWidth = width - inset - 14;
-  const detailSize = fitFontSize((size) => {
+  const measureDetail = (text: string, size: number): number => {
     ctx.font = `600 ${size}px Inter, system-ui, sans-serif`;
-    return ctx.measureText(detail).width;
-  }, detailWidth, 10, 8);
+    return ctx.measureText(text).width;
+  };
+  // The fullest line that fits at the smallest size, set as large as it fits; whole parts go, never letters.
+  const detail = details.find((text) => measureDetail(text, 8) <= detailWidth) ?? details.at(-1) ?? "";
+  const detailSize = fitFontSize((size) => measureDetail(detail, size), detailWidth, 10, 8);
   ctx.font = `600 ${detailSize}px Inter, system-ui, sans-serif`;
   ctx.fillText(fit(ctx, detail, detailWidth), textX, y + 35);
 
@@ -402,9 +413,16 @@ export function finalRevealDelay(final: FinalMessage | null): number {
 }
 
 /** Below the top bar, or below the round card where a phone puts it under the top bar. */
-const headlineBaseline = (height: number, compact: boolean): number => Math.max(height * 0.16, (compact ? 112 : 56) + 40);
-/** Engine latency that is worth telling a player about on the broadcast screen. */
+export const headlineBaseline = (height: number, compact: boolean): number => Math.max(height * 0.16, (compact ? 112 : 56) + 40);
+/** How far below the headline the knockdown count's baseline sits. */
+export const COUNT_BELOW_HEADLINE = 64;
+/** Engine latency that is worth telling a player about on the broadcast screen... */
 export const LAG_WARNING_MS = 120;
+/** ...and the warning stays up until the latency is back under this, so a value hovering at the line cannot flicker it. */
+export const LAG_CLEAR_MS = 100;
+
+/** Whether the slow-connection warning is up, from the latency now and whether it was up a moment ago. */
+export const lagWarning = (latencyMs: number | null, shown: boolean): boolean => latencyMs !== null && latencyMs >= (shown ? LAG_CLEAR_MS : LAG_WARNING_MS);
 
 export function drawHud(
   ctx: CanvasRenderingContext2D,
@@ -418,10 +436,15 @@ export function drawHud(
   tickRate = 30,
   roundStats: RoundStatsTracker | null = null,
   replayLabel: string | null = null,
+  /** The latency while the slow-connection warning is up (lagWarning), else null. */
   inputLatencyMs: number | null = null,
   roundCallout: string | null = null,
   clockTicks: number | null = null,
   pictures: PictureSource | null = null,
+  /** The fighter the referee is counting over, as the renderer saw him go down: he is no longer on the canvas once he has beaten the count. */
+  countTarget: string | null = null,
+  /** The touch pads are up over the right of the screen. */
+  touch = false,
 ): void {
   ctx.save();
   const scale = hudScale(width, height);
@@ -433,9 +456,10 @@ export function drawHud(
     const player = players[fighter.player_id];
     return player === undefined || pictures === null ? null : pictures(player);
   };
-  // Below 640 px the two plates share the bottom edge and the round card moves under the top bar.
+  // Below 640 px the two plates share the bottom edge and the round card moves under the top bar. Wider, each
+  // plate ends 8 px short of the round card between them.
   const compact = width < 640;
-  const plateWidth = compact ? (width - 56) / 2 : Math.min(300, width * 0.38);
+  const plateWidth = compact ? (width - 56) / 2 : Math.min(300, width * 0.38, width / 2 - ROUND_CARD_WIDTH / 2 - 8 - 24);
   const plateY = height - 84;
 
   // The result card takes the place of the plates and the clock once the bout is over.
@@ -443,10 +467,6 @@ export function drawHud(
     const mirror = index === 1;
     const x = mirror ? width - 24 - plateWidth : 24;
     const player = players[fighter.player_id];
-    // A phone's plate only has room for the style and the bout's own knockdowns; the introductions give the record.
-    const detail = (compact ? [styleTag(fighter.style), fighter.knockdowns > 0 ? `${fighter.knockdowns} KD` : null] : [styleTag(fighter.style), plateDetail(player, fighter, false)])
-      .filter((part) => part !== null && part !== "")
-      .join(" · ");
     const bars: BarSpec[] = [
       { label: `${compact ? "STA" : "STAMINA"} ${Math.round(fighter.stamina)}`, value: fighter.stamina, maximum: fighter.maximum_stamina, from: "#ffe08a", to: "#d9a53a" },
       { label: `${compact ? "HP" : "HEALTH"} ${Math.round(fighter.conditioning)}`, value: fighter.conditioning, maximum: HUD_MAX_CONDITIONING, from: "#ff8a7a", to: "#b02a20" },
@@ -454,9 +474,10 @@ export function drawHud(
       { label: `POISE ${Math.round(fighter.poise)}`, value: fighter.poise, maximum: HUD_MAX_POISE, from: "#e8c890", to: "#8a6a34" },
     ];
     const accent = index === 0 ? "#3d6fb8" : "#b02a20";
-    // A narrow plate has no room for a picture, so it goes beside the clock at the top.
-    fighterPlate(ctx, x, plateY, plateWidth, player?.name ?? "Fighter", detail, bars.slice(0, 2), mirror, accent, compact ? undefined : pictureOf(fighter));
-    if (compact) portrait(ctx, width / 2 + (mirror ? 1 : -1) * (ROUND_CARD_WIDTH / 2 + 8 + CLOCK_PORTRAIT_RADIUS), 54 + 29, CLOCK_PORTRAIT_RADIUS, pictureOf(fighter), player?.name ?? "Fighter", accent);
+    // A narrow plate has no room for a picture, so it goes beside the clock at the top, unless the phone is on its
+    // side with the touch pads up, which stand where the red corner's would go.
+    fighterPlate(ctx, x, plateY, plateWidth, player?.name ?? "Fighter", plateDetails(player, fighter, compact), bars.slice(0, 2), mirror, accent, compact ? undefined : pictureOf(fighter));
+    if (compact && !(touch && width > height)) portrait(ctx, width / 2 + (mirror ? 1 : -1) * (ROUND_CARD_WIDTH / 2 + 8 + CLOCK_PORTRAIT_RADIUS), 54 + 29, CLOCK_PORTRAIT_RADIUS, pictureOf(fighter), player?.name ?? "Fighter", accent);
     const miniY = plateY - 12;
     // Guard and poise ride above the plate, as wide as the plate's own bars once the plate is narrow.
     const miniWidth = Math.min(64, (plateWidth - 52) / 2);
@@ -470,14 +491,15 @@ export function drawHud(
   const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
   if (final === null) roundCard(ctx, width / 2, compact ? 54 : height - 84, clock, `ROUND ${snapshot.round_number}`, snapshot.phase === "complete" ? "FINAL" : snapshot.phase.replace("_", " ").toUpperCase());
   // Only a connection slow enough to feel is worth the broadcast screen; Settings, Diagnostics always shows it.
-  // A phone has no free corner for it beside the clock, the centre panels and the captions.
+  // A phone has no free corner for it beside the clock, the centre panels and the captions. With the touch pads up
+  // it goes top left, where they never reach and where the knockout replay's tag has the corner to itself.
   const lag = inputLatencyMs === null ? 0 : Math.round(inputLatencyMs);
-  if (lag >= LAG_WARNING_MS && !compact && final === null && snapshot.fighters.some((fighter) => fighter.player_id === viewerId)) {
+  if (lag >= LAG_CLEAR_MS && !compact && final === null && !(touch && replayLabel !== null) && snapshot.fighters.some((fighter) => fighter.player_id === viewerId)) {
     ctx.save();
-    ctx.textAlign = "right";
+    ctx.textAlign = touch ? "left" : "right";
     ctx.font = "700 11px ui-monospace, monospace";
     ctx.fillStyle = lag < 200 ? "rgba(240,200,110,0.9)" : "rgba(255,110,100,0.95)";
-    ctx.fillText(`SLOW CONNECTION ${lag} ms`, width - 24, 76);
+    ctx.fillText(`SLOW CONNECTION ${lag} ms`, touch ? 24 : width - 24, 76);
     ctx.restore();
   }
   if (replayLabel !== null) {
@@ -513,9 +535,11 @@ export function drawHud(
   // The replay's own tag says what it shows; the live count panel would only cover it.
   const headline = headlineBaseline(height, compact);
   if (snapshot.phase === "knockdown" && replayLabel === null) {
-    const viewer = snapshot.fighters.find((fighter) => fighter.player_id === viewerId);
-    const downed = snapshot.fighters.find((fighter) => fighter.is_downed) ?? viewer;
-    const downedName = players[downed?.player_id ?? ""]?.name ?? "Fighter";
+    // Once he has beaten the count he stands for the rest of the eight, and the snapshot no longer says who went
+    // down: it is the fighter the renderer saw fall, or nobody by name for a spectator who arrived after it.
+    const downed = snapshot.fighters.find((fighter) => fighter.is_downed);
+    const counted = downed ?? snapshot.fighters.find((fighter) => fighter.player_id === countTarget);
+    const name = counted === undefined ? null : (players[counted.player_id]?.name ?? "Fighter").toUpperCase();
     ctx.save();
     ctx.textAlign = "center";
     ctx.font = "900 44px Inter, system-ui, sans-serif";
@@ -526,7 +550,9 @@ export function drawHud(
     ctx.fillText("KNOCKDOWN", width / 2, headline);
     ctx.font = "700 15px Inter, system-ui, sans-serif";
     ctx.fillStyle = "#e6ecf7";
-    ctx.fillText(`${fit(ctx, downedName.toUpperCase(), width * 0.5)} IS DOWN`, width / 2, headline + 24);
+    const verb = downed === undefined ? " BEAT THE COUNT" : " IS DOWN";
+    const line = name === null ? "STANDING EIGHT" : `${fit(ctx, name, Math.min(width * 0.5, width - 32 - ctx.measureText(verb).width))}${verb}`;
+    ctx.fillText(line, width / 2, headline + 24);
     ctx.restore();
   }
   if (snapshot.phase === "knockdown" && replayLabel === null) {
@@ -540,9 +566,9 @@ export function drawHud(
         ctx.font = "900 36px Inter, system-ui, sans-serif";
         ctx.lineWidth = 5;
         ctx.strokeStyle = "rgba(0,0,0,0.75)";
-        ctx.strokeText(`COUNT ${count}`, width / 2, headline + 64);
+        ctx.strokeText(`COUNT ${count}`, width / 2, headline + COUNT_BELOW_HEADLINE);
         ctx.fillStyle = "#ffd77a";
-        ctx.fillText(`COUNT ${count}`, width / 2, headline + 64);
+        ctx.fillText(`COUNT ${count}`, width / 2, headline + COUNT_BELOW_HEADLINE);
         ctx.restore();
       }
     } else {

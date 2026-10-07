@@ -382,6 +382,41 @@ describe("reading the fight", () => {
     expect(watch(intro, 1, 10).some((text) => text.startsWith("In the"))).toBe(false);
   });
 
+  it("never asks whether a fighter who is up can beat the count while the referee counts on to the eight", () => {
+    // The engine's order: a count a second, the rise, the mandatory count on to eight with the phase still the
+    // knockdown's, two seconds for the referee's look, then the box. Snapshots at 30 Hz, the screen at 60 Hz.
+    const struggle = /struggling to get up|trying to beat the count|get up\?/u;
+    for (const rise of [1, 2, 3, 4, 5, 6, 7]) {
+      for (const offset of [2, 12, 25]) {
+        const director = new CommentaryDirector();
+        const knockdown = 300;
+        const risen = knockdown + rise * 30 + offset;
+        const box = knockdown + 8 * 30 + 60;
+        const afterRise: string[] = [];
+        let called = false;
+        for (let tick = knockdown; tick <= box + 90; tick += 1) {
+          const now = (tick - knockdown) / 30;
+          const count = Math.floor((tick - knockdown) / 30);
+          const events: CombatEvent[] = [];
+          if (tick === knockdown) events.push(event("knockdown", tick, { actor_id: "one", target_id: "two", amount: 1 }));
+          if (tick > knockdown && (tick - knockdown) % 30 === 0 && count <= 8 && (tick < risen || count > rise)) events.push(event("count", tick, { target_id: "two", amount: count }));
+          if (tick === risen) events.push(event("get_up", tick, { actor_id: "two", amount: rise }));
+          if (tick === box) events.push(event("box", tick, { target_id: "two" }));
+          feed(director, state(tick, tick < box ? "knockdown" : "fight", [{}, { is_downed: tick < risen }]), events, now);
+          for (const at of [now, now + 1 / 60]) {
+            const text = director.current(at)?.line.text ?? "";
+            called ||= struggle.test(text);
+            // A line on screen at the rise is given the fade to go.
+            if (at >= (risen - knockdown) / 30 + 0.3 && struggle.test(text)) afterRise.push(text);
+          }
+        }
+        expect(afterRise, `up at ${rise}`).toEqual([]);
+        // Down for the six, he is still asked about while he is on the canvas.
+        if (rise >= 6 && offset === 25) expect(called, `up at ${rise}`).toBe(true);
+      }
+    }
+  });
+
   it("introduces the computer as the computer, not by a rating", () => {
     const director = new CommentaryDirector();
     const computer = { ...players, two: { ...players.two!, cpu: true, record: { wins: 19, losses: 5, draws: 1, knockouts: 12 } } };
