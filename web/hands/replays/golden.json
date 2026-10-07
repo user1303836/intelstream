@@ -29,7 +29,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "f2cf6a34af05134c85da044a829492c3f616964a4b7b7ac77233010f6aa995c0",
+     "checksum": "1a0e830197a478852770d7ae776782ddd624a87e5f4d9e1caa45db7d0600f617",
      "events": [],
      "fighters": [
       {
@@ -71,6 +71,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -127,6 +128,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -161,7 +163,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "7f6a6141c90ec6ee1ef15fb557f48a5feb3851c5df3bf356020465767a6f0083",
+     "checksum": "432d67d22c574cdf973da7150e11608f225f71b52a9e13561336f7a44ccd0f44",
      "events": [],
      "fighters": [
       {
@@ -203,6 +205,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -259,6 +262,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -293,7 +297,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "2c02dda63899d9f33bb0042a59275de93b4aad27f629c19c591811029a9ffa7f",
+     "checksum": "df4567b2a97e075e903ddc0c63f906142a5a7b7df8ea2992acdb1b8782697b4f",
      "events": [],
      "fighters": [
       {
@@ -335,6 +339,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -391,6 +396,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -425,7 +431,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "072e156093a10ad64acba7f6c4e03a572db8e26b53870c7dfc351cbf46b6cd57",
+     "checksum": "9ee1e40bc3fb26b6756f18540291e5ff8ee5e57151ce5dd6d1967dbe0b4a5559",
      "events": [],
      "fighters": [
       {
@@ -467,6 +473,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -523,6 +530,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -557,7 +565,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "ee090800835370ab7e3c66994548f8b3dc8b50d0931dbc6a9c317068d29fbc77",
+     "checksum": "b5a929d6937f1c74d3ea257512050050d75e7a41be22a29dbef8ff41993fe0ac",
      "events": [],
      "fighters": [
       {
@@ -599,6 +607,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -655,6 +664,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -689,7 +699,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "40e18997a25561e94aa85b4d741a4ce41f88b0dfe26efab9448832376d757d9d",
+     "checksum": "d9a1fd334ef4313797e806291bbb36704550e92b79650320ce4cb0335fcbe8ce",
      "events": [],
      "fighters": [
       {
@@ -731,6 +741,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -787,6 +798,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -821,7 +833,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "40045b6824b70633a38426c4bad5535547c65b49d6bdd23cf906752d4ae128b0",
+     "checksum": "c3f1869cf030166a0607a0221987fd15e31afe0dd232e74fac187ee2af16f758",
      "events": [],
      "fighters": [
       {
@@ -863,6 +875,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -919,6 +932,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -953,7 +967,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "6ca1f186a95e2cfa5ccec3904c09016b20a8873ce1ca623a99c72a5b8385db35",
+     "checksum": "1b59004ea3522e2f06681f78cc85ba036e842a18a13224cd197e73a166295988",
      "events": [],
      "fighters": [
       {
@@ -995,6 +1009,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -1051,6 +1066,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -1085,7 +1101,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "f0d06ee51b5e8c87efe8105cce02c60bce7d2e081b4a8f4ae37ff6b735d1f4a0",
+     "checksum": "7edc3136284fc1c83fa67661b131f230c301593e349f75b24da3b0824794f395",
      "events": [],
      "fighters": [
       {
@@ -1127,6 +1143,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -1183,6 +1200,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -1217,7 +1235,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "939b944dee448a013a8e9bbe03bd93a25fb177ae53ab7939eae3041008c6afae",
+     "checksum": "fac2c582e42dbc2f8d1fb70cafb7c85a6427da448c3f3ff39b052c2e0899991f",
      "events": [],
      "fighters": [
       {
@@ -1259,6 +1277,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -1315,6 +1334,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -1349,7 +1369,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "e46aa1a1e611f5ee5b56014deeb8126b9bc55d464845c31290eb051ab7e9180a",
+     "checksum": "24a15dc8b33d4c8f516bc88e1826e82f8cf7310ecf38ff63f2eb071d620c1e53",
      "events": [],
      "fighters": [
       {
@@ -1391,6 +1411,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -1447,6 +1468,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -1481,7 +1503,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "869a192e19339c92c955bbd25fd3a1f0533b81222ce61c3a4d95a31d26796503",
+     "checksum": "74d562a57980e8fad053a9d791f043c72e40a1c6ad9305512db98f0bce15e41d",
      "events": [],
      "fighters": [
       {
@@ -1523,6 +1545,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -1579,6 +1602,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -1613,7 +1637,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "ab9d45f6dff26e351ebdd5c8e9e2a70c3f15c8bf32f52cb2bead9786608e9b22",
+     "checksum": "e63c5b82fa6ded8f2c963446c451a5f1e15d7564f88f4ec3cda650cd8b967b8b",
      "events": [],
      "fighters": [
       {
@@ -1655,6 +1679,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -1711,6 +1736,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -1745,7 +1771,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "a07a022efa3276cd8d8bc29e423eb29ef5f5a67be135ed78aa5a26e7edc57b5e",
+     "checksum": "bbdfd6e42e4e552d7509707b484f03b8cb1c1875d851ea97411e08091949f513",
      "events": [],
      "fighters": [
       {
@@ -1787,6 +1813,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -1843,6 +1870,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -1877,7 +1905,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "e4a142550796b5757908c099a9a7806fc795c05efada0caa7f4aecdd50aaf453",
+     "checksum": "7f2fd922c60b0bdbf31ffab96f756adaf086b0e1a9696f7b4205bda149dcbd4a",
      "events": [],
      "fighters": [
       {
@@ -1919,6 +1947,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -1975,6 +2004,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -2009,7 +2039,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "6546cc26101e395ccb85f4f7a1f2518f96c4468c789509595d805b750bd16d39",
+     "checksum": "43838dd4b3bd65465a6b89512d72de5f79f055381fc277babfa1e410481daccf",
      "events": [],
      "fighters": [
       {
@@ -2051,6 +2081,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -2107,6 +2138,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -2141,7 +2173,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "5e6d6542e443b3f5ccd23c358c4974416870c9c3bb2a97823e79a010b9e4b043",
+     "checksum": "69606fa57d87f75298510f33bc37ef37c167f93350d7ed692f08f0ec4a03046a",
      "events": [],
      "fighters": [
       {
@@ -2183,6 +2215,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -2239,6 +2272,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -2273,7 +2307,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "2d4c18f903a83e9f9f3c35619edd01c3c8b3fe658be8f08672b6534f2cfce513",
+     "checksum": "810414511719c94070d356d50f7225564318e5624f8452c88ea22b01b212b8a5",
      "events": [],
      "fighters": [
       {
@@ -2315,6 +2349,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -2371,6 +2406,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -2405,7 +2441,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "038941cd2d914cbc3f1eea6553210e58c4b0ce4eb2efe91798082d91d939970c",
+     "checksum": "1a0af967fef2b73e5278b174b3cff09b322fc049c467f0312f17d8411f045cd2",
      "events": [],
      "fighters": [
       {
@@ -2447,6 +2483,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -2503,6 +2540,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -2537,7 +2575,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "766e13748b71480c873a66f4bd4177b61715002551685c7778e0b9eabd6be115",
+     "checksum": "2dea79f328c57c6cc90cd290de5d80d7394ae593b8b3768b769ec28c38cb1b5c",
      "events": [],
      "fighters": [
       {
@@ -2579,6 +2617,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -2635,6 +2674,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -2669,7 +2709,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "9fd54ff28134932609a2d5ea2f46e3c790dd2ffb15cae322035db8dadd7ed04d",
+     "checksum": "eb95e3c5ac7e0c6df1e695b22ff27f9909f93388cf4f14b4ed9dbda42f4253bb",
      "events": [],
      "fighters": [
       {
@@ -2711,6 +2751,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -2767,6 +2808,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -2801,7 +2843,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "e3e4aec671b71e396b66601f9939f1f21574c440f2b133cf63522f317a6b4722",
+     "checksum": "ca397d874036cbd54a3c50d9be6a86b186334c890e896b8a4fd0e08f49c7ccb6",
      "events": [],
      "fighters": [
       {
@@ -2843,6 +2885,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -2899,6 +2942,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -2933,7 +2977,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "8c65ffb1983fbb9e05186dc212cf4c9e4491a26c901ba8042be3bae510995cd8",
+     "checksum": "64d0d8900449e11782eedb631d85227645df190c9adba37405fc5235fdfc65ff",
      "events": [],
      "fighters": [
       {
@@ -2975,6 +3019,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -3031,6 +3076,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -3065,7 +3111,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "15f2efca9a5209146bfdd7ab754df32a76b511dd813e0b04a34ebb8571cc0546",
+     "checksum": "41c88e23d396b5f81eb4944fc0e4231ce1f02dd26bf21ff9d13b75b089b23e46",
      "events": [],
      "fighters": [
       {
@@ -3107,6 +3153,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -3163,6 +3210,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -3197,7 +3245,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "46a2d864415005652f4695b3e1b09cbc6e4a61845c17febb79d809c5e673fa31",
+     "checksum": "676d47459d58468ed02d46204225794151040171af93b0daed299b284992697d",
      "events": [],
      "fighters": [
       {
@@ -3239,6 +3287,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -3295,6 +3344,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -3329,7 +3379,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "e0dc5f1518384f21f42fec631f571f62595725b9fe105da267be83604dc1b3cd",
+     "checksum": "394a8b9f2b76f0244ba5f349432ea1b59861a5a36f3fd4dee424209d2f143155",
      "events": [],
      "fighters": [
       {
@@ -3371,6 +3421,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -3427,6 +3478,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -3461,7 +3513,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "0f331d2eb2bf81124f3cbd8c2e1f678172f22296b3b32b5cf7201a8cb7be18b2",
+     "checksum": "7da73b61b394adb5bfdd1108e59bdcbeb2ef849f7b369ef747b45c056af23a14",
      "events": [],
      "fighters": [
       {
@@ -3503,6 +3555,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -3559,6 +3612,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -3593,7 +3647,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "e13da943564df75be0d4d7798ddf971b8e3d0b74ec48f4305f309ee781d29ac5",
+     "checksum": "4c98e70283690f88348f094e6678a46312e4018384b12577caa86202aed22985",
      "events": [],
      "fighters": [
       {
@@ -3635,6 +3689,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -3691,6 +3746,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -3725,7 +3781,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "34b00f9f1c3048ea6f5ce47a92f99738b0da2cd21e150bef5c4587a15df1adf2",
+     "checksum": "543763f328459484c3753f2dd7abec29d0769397ae3d884a1e9e157d7fd80c35",
      "events": [],
      "fighters": [
       {
@@ -3767,6 +3823,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -3823,6 +3880,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -3857,7 +3915,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "333d796c15ce1aa43992800bd0c2d36e0bc21e01560cb419a3fb1addf4570e38",
+     "checksum": "a7ab633313101a75770e94fbf5402982aa11d539fbed02aa380ce8fcf0ceb39d",
      "events": [],
      "fighters": [
       {
@@ -3899,6 +3957,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -3955,6 +4014,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -3989,7 +4049,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "029f5c0915f2504de8335c8539aabc960af3ceccbdcaf32e19c06410da942d2d",
+     "checksum": "6c02581f7db8209c4a4b8680495a111dff7f3718b98dea039e716aff3fceb24e",
      "events": [],
      "fighters": [
       {
@@ -4031,6 +4091,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -4087,6 +4148,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -4121,7 +4183,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "5e1064536587f48f0c16736a6e2370557a978272c9e34e0fc11e1368e1df7bbd",
+     "checksum": "694f891667dd62c06e4c8ec7bf3f15bc05a80dea5154b38de13c446d7870e917",
      "events": [],
      "fighters": [
       {
@@ -4163,6 +4225,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -4219,6 +4282,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -4253,7 +4317,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "d83041ac10de4ae4bc0d5be4328e43e1c4fb6c9200ee7a259a7de640cce6dd75",
+     "checksum": "c52cd34866e6ce3d0842ba4a1d22b1c4cdd9723c4e5f033c9efe3e4b4b3d6ca3",
      "events": [],
      "fighters": [
       {
@@ -4295,6 +4359,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -4351,6 +4416,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -4385,7 +4451,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "67af12a6a70be37abae6ed78fa70df318f26b133f071d760fe8e41918045dace",
+     "checksum": "36bad66c4fa7380c03ea9807b69fa7aa4e48c97a58f3c0c11c446eac321cd916",
      "events": [],
      "fighters": [
       {
@@ -4427,6 +4493,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -4483,6 +4550,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -4517,7 +4585,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "7552d9710724700e4f672fd812d15bb96348523629ea5caff465e96dbbee2d6c",
+     "checksum": "3e7fabd9e8d13448a2504d5717855f5cb18947cee708f8f32e7a493c04c01f71",
      "events": [],
      "fighters": [
       {
@@ -4559,6 +4627,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -4615,6 +4684,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -4649,7 +4719,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "f2e8d57f87402f1966aac7b755582dcb097e1fcd2fbfa271ad66fdca337da7a9",
+     "checksum": "51eed3086394f41efdc0615547e121cd266c4279665930e627d1e5f0012e10ba",
      "events": [],
      "fighters": [
       {
@@ -4691,6 +4761,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -4747,6 +4818,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -4781,7 +4853,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "a5717624fa82f2c9aa15f58ecdb322fa16b773540c315714534f9e8374692bb9",
+     "checksum": "b0e6c614523370d78417c8c269816a99520206aca72a58e304bbdd6dd5c955f2",
      "events": [],
      "fighters": [
       {
@@ -4823,6 +4895,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -4879,6 +4952,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -4913,7 +4987,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "29263e9cc2f95d38d3e41ab4dec7cb0a4379ecc05a71a5d419f2f2f315f767d4",
+     "checksum": "100933fa4ab862337561cf19c5b40cdf428c3353114cc0aa7412eb00ee00afd8",
      "events": [],
      "fighters": [
       {
@@ -4955,6 +5029,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -5011,6 +5086,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -5045,7 +5121,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "986c42d628363b23cf70b0ab6f3304aaf75b684e4665320864ae851c0ee89606",
+     "checksum": "30c88afb3460189bff19646336dc6eac3640d768ef80ccc80c6f07ce34e54ac7",
      "events": [],
      "fighters": [
       {
@@ -5087,6 +5163,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -5143,6 +5220,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -5177,7 +5255,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "bf06b2dbba1b5ae8469ee79e276248f773f90e465ef0bcc174dd980ef3a64b7d",
+     "checksum": "8e4d70c8ce67f463bbcb65c9a4a1887fd8e8877b868266efe55952b564a0d027",
      "events": [],
      "fighters": [
       {
@@ -5219,6 +5297,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -5275,6 +5354,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -5309,7 +5389,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "26c2072636bcab2fb3ea2fbfd0bfc310272b22ec72926574d8175c38ecafb345",
+     "checksum": "3bb70c2c92b6055fd042819ec8a6149845fa1a1da0282added628aca07f4378b",
      "events": [],
      "fighters": [
       {
@@ -5351,6 +5431,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -5407,6 +5488,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -5441,7 +5523,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "c1ecc7101c7a500aa4c5369fd07439603d6ad89fc8279776717a281a7fd9b761",
+     "checksum": "1dae0d72cb5b8ece9d7cff9f189e0ace5f333fb1412a97e3900044e008e40d59",
      "events": [],
      "fighters": [
       {
@@ -5483,6 +5565,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -5539,6 +5622,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -5573,7 +5657,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "a0c262c1cfaaf5bfa7f51a43d2a40f54055b8c8f382729909cf8136998a725b7",
+     "checksum": "50efeaa6b5d7d757a8dbbdafd2110aa585b46e0a21fcf4e435a0eaf338344a45",
      "events": [],
      "fighters": [
       {
@@ -5615,6 +5699,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -5671,6 +5756,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -5705,7 +5791,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "51596ce51aa0afa1cd3fb9cf53f6d6f4ec3603a997288dc4512b3150d5ed940c",
+     "checksum": "5c5dd95c28101fa1021032b50d91847534b3bb714cdf5f55331d453b22e5d219",
      "events": [],
      "fighters": [
       {
@@ -5747,6 +5833,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -5803,6 +5890,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -5837,7 +5925,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "ea29e6ae1f41b8ffbf07b62952914a752c1e388113d6faad09d81bb2e1dffc3e",
+     "checksum": "7a5580ba99aa20eddca0491515429c183d2c8d6eb004015cbd44b756175384ea",
      "events": [],
      "fighters": [
       {
@@ -5879,6 +5967,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -5935,6 +6024,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -5969,7 +6059,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "516360f1b297bc7a96f46fe584163c8469e86df4a9e7d3afcf5f7f93c07462bb",
+     "checksum": "7815c76c0be58cbd81ee21d53d54e945dc9d7b45b04fd30c2195077c7b58e7b5",
      "events": [],
      "fighters": [
       {
@@ -6011,6 +6101,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -6067,6 +6158,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -6101,7 +6193,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "949be9878426aec349800d4d84cdc837ff8f691a027029a831651163f6fffd1c",
+     "checksum": "fbfa3f578ebfa67ba7f6662fca96118800a7cc0c2439ca79a266134901aa6d0d",
      "events": [],
      "fighters": [
       {
@@ -6143,6 +6235,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -6199,6 +6292,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -6233,7 +6327,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "457c16d2e477e0bdd3db60e2d9429a713d4bc34edb1f624c0d84cade96ceb74f",
+     "checksum": "d585622726a7091107dd61a7685d85cd64369da7e2e2107431e38d053c5b13ce",
      "events": [],
      "fighters": [
       {
@@ -6275,6 +6369,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -6331,6 +6426,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -6365,7 +6461,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "8e383d7e7b735b84d1ba650d411b5e394b2ac8a5ada94812a01c27b167932a91",
+     "checksum": "99220a41bb423a2ea43ba8d518ea780684aa313b018d006cbd019dbebaa53ccc",
      "events": [],
      "fighters": [
       {
@@ -6407,6 +6503,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -6463,6 +6560,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -6497,7 +6595,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "cee94fd9bd5836de979b026ed217e2718ab1abab5e43bd5bd98d94c2d51a55a7",
+     "checksum": "b759a54e95381f377d8f9e17bf0eecb3a3a83e4fd781b54ee6136d3fcd953821",
      "events": [],
      "fighters": [
       {
@@ -6539,6 +6637,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -6595,6 +6694,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -6629,7 +6729,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "af4599d4cb1e2c7ec5d96e86fbb1ee943b9ee2413fe1ee0ed564ea550322ba08",
+     "checksum": "02353377233c02e08f6336ff6590c04b57363b3c045b1690c781588bb1f95323",
      "events": [],
      "fighters": [
       {
@@ -6671,6 +6771,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -6727,6 +6828,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -6761,7 +6863,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "7704caff56122074f5d90da3d9c5ee7ac9b4f6011f8844841f77f70c46d44231",
+     "checksum": "8a483a708f7f423914b59205b3ae3d199bc20b361508f95898c74d6c1c50d418",
      "events": [],
      "fighters": [
       {
@@ -6803,6 +6905,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -6859,6 +6962,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -6893,7 +6997,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "ed41d90104a850d881ad8b32983ab70399b2f5053bcad7b0dd151567c2faf835",
+     "checksum": "bf27441d376ae6ee7cd95faa6b9b7718f6b12ef7fe5bef0bd43bf9aa0142ac0c",
      "events": [],
      "fighters": [
       {
@@ -6935,6 +7039,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -6991,6 +7096,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -7025,7 +7131,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "eb69e72587e11c2087ea09b528e6852ffe5721eadb431562da8b1efb6b8f8571",
+     "checksum": "ea2f2996d89335b4a7bb7f4911f7406c7719b55372add3d2b9c626463d6859f5",
      "events": [],
      "fighters": [
       {
@@ -7067,6 +7173,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -7123,6 +7230,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -7157,7 +7265,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "deee1ef5cbdf055afc17514cd258d947517d6f3f9a5c12288bde7880cf0a9422",
+     "checksum": "731b5d525885b835fe7bf8bc03d651a92e922f90f2e93bfcce2c5a6f461fcd7f",
      "events": [],
      "fighters": [
       {
@@ -7199,6 +7307,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -7255,6 +7364,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -7289,7 +7399,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "9f0656d70f30ab206862e1fd6a8337e6fc2a12dfad53506c2203b9bc501457f8",
+     "checksum": "c3cf89cf9cbd300455e6146d33ff4fe5c8cad248323a131c4d21674da17741db",
      "events": [],
      "fighters": [
       {
@@ -7331,6 +7441,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -7387,6 +7498,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -7421,7 +7533,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "5c84efb8cf7dacab932c1cc599c72e886b8d117cc23470b91c6fd3629bff266c",
+     "checksum": "2b5b71b6309b3a17e1167a428d290a882b8c80c926fff0c7d968ba1b08131918",
      "events": [],
      "fighters": [
       {
@@ -7463,6 +7575,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -7519,6 +7632,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -7553,7 +7667,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "7b8ebd66af5c1e8cc9be715512ce6da58b2b76e10a74a52d8c2e9712ae8474a4",
+     "checksum": "5ec8f87f7c1af396d4e76e0d6d44393496ffcc42f997bbd3f702596ee5a8ea8b",
      "events": [],
      "fighters": [
       {
@@ -7595,6 +7709,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -7651,6 +7766,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -7685,7 +7801,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "3cc253dfd0c1ab97a740c03d3a14c4de00a9e3f8efbc9057188ed531edb5d086",
+     "checksum": "8d5ab1db371a8d293e2d998f9e43a0f1525d46de2c12001156ea0cd6b8c44c8a",
      "events": [],
      "fighters": [
       {
@@ -7727,6 +7843,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -7783,6 +7900,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -7817,7 +7935,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "6ee7b780b5ac0ce497c42553ca9b9787a1e72b0b4d9cbc16bf2d9b6687be444d",
+     "checksum": "c73f5a48b3d2158d3f19e2a25af4e21f95b0d19505a6df9f58d6d0ba55296876",
      "events": [],
      "fighters": [
       {
@@ -7859,6 +7977,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -7915,6 +8034,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -7949,7 +8069,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "84681e631753f5ef6ba146f6560867917e2dd7d06052a68c5f652d779f491010",
+     "checksum": "05f7ead3555fb0368e02df9eb14d5c6240a4e964d8be86a684f7106c3bd75de4",
      "events": [],
      "fighters": [
       {
@@ -7991,6 +8111,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -8047,6 +8168,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -8081,7 +8203,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "c5e5638fda5e1ad6ab029c8b8b5f006ed3a070bd735bc51df2d046609c0ab9c6",
+     "checksum": "97506a2e2aa79b8ebc21532f325cc0f24d9eaf857ad53dc451935ce6a85ae660",
      "events": [],
      "fighters": [
       {
@@ -8123,6 +8245,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -8179,6 +8302,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -8213,7 +8337,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "46ef3c114b87afe615073c3ae35ad92a362f5572c183db2e75b2220c3cc1ce65",
+     "checksum": "a028fb2fac99ae5e3a6a1b66392f506ccda28502cce97b51d283fb985088c30b",
      "events": [],
      "fighters": [
       {
@@ -8255,6 +8379,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -8311,6 +8436,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -8345,7 +8471,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "41ebce5814709c16475c208c2941ba118d751a522e9c180d882468654f984585",
+     "checksum": "7a91bc7e127912582b7ed20981ccd2ba8e2f2646770f0d3e6f6123ab348f2fd9",
      "events": [],
      "fighters": [
       {
@@ -8387,6 +8513,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -8443,6 +8570,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -8477,7 +8605,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "012da13e19808f5f2fc9d60b292328ad87ac4c2d7ba26af1c80510e332af01d2",
+     "checksum": "2d1624439d64032b10f16d67ef33c1efbfd94b2458c579401d48b23985adb1ef",
      "events": [],
      "fighters": [
       {
@@ -8519,6 +8647,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -8575,6 +8704,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -8609,7 +8739,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "71b5fef7ea62bcc0e9b39e80ec14585e7e4d13729e25d8214af46b19db09b156",
+     "checksum": "3b194cc9e7f9eb82024023d5e2dc62a409e6e6392d51f1cf51427e81ec8f452c",
      "events": [],
      "fighters": [
       {
@@ -8651,6 +8781,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -8707,6 +8838,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -8741,7 +8873,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "5969a25429b3a270452ade689dea99a0808851d771f448f18bfa0a791d94c8a5",
+     "checksum": "42d9c31e0dfbfd902f0d4f7b9242bc5ab671a81e78b171f26a25945c4df15edd",
      "events": [],
      "fighters": [
       {
@@ -8783,6 +8915,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -8839,6 +8972,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -8873,7 +9007,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "a6e5a929edacd42967e429fb8c2118e6c9f2c5b169cc369e57756402cc5d1b55",
+     "checksum": "6e8e348d494f6ca702816a06fb07f786dddcbd0a96f592d758b1f32d4424bfd4",
      "events": [],
      "fighters": [
       {
@@ -8915,6 +9049,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -8971,6 +9106,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -9005,7 +9141,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "7cdeb993ff0ec5ad4e78123652e1536e755f739acdde1718c22ffd31724371eb",
+     "checksum": "909e33a9ca64865f1e09f6d35470ce815e21a132083eb420d67ee98737c342a5",
      "events": [],
      "fighters": [
       {
@@ -9047,6 +9183,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -9103,6 +9240,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -9137,7 +9275,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "be046fe626ff54b907c4e02ca7e509532f02adc128566628a1ad1a1688806127",
+     "checksum": "54e6b1fea0f771281248f087abadb7d132d77fb9ea94ce24da46ae518b844eff",
      "events": [],
      "fighters": [
       {
@@ -9179,6 +9317,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -9235,6 +9374,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -9269,7 +9409,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "245c45520f3858c222fe23f628396ec4d905972ef4d469b9daccc0e08386f11f",
+     "checksum": "2b91af579332e84a02e4a5335ad6301bb02df0edb36790bc950b728445bc6e46",
      "events": [],
      "fighters": [
       {
@@ -9311,6 +9451,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -9367,6 +9508,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -9412,7 +9554,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "7769f6a5b2858915501690e3abf0359337dcaa7dbe2e32969c7228e7c6ca69a9",
+     "checksum": "7b5c45daa794338872463a33619f525885d6f6293a098f84b639d304ff2e2b60",
      "events": [
       {
        "action_id": "one@72",
@@ -9467,6 +9609,7 @@
        "stamina": 959,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -9523,6 +9666,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -9568,7 +9712,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "518e2c4273412ae20f5d58f6deb37c4beb91ccf6a93fceb930c12af8e65ddfb3",
+     "checksum": "67c748ce1648a3ed4cd1c089466fe18d7c0f894f0ad1b7edadb42f7d7a406087",
      "events": [],
      "fighters": [
       {
@@ -9610,6 +9754,7 @@
        "stamina": 960,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -9666,6 +9811,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -9711,7 +9857,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "31d90eccd7072402b0cfafc66c4772978e6f5b9250e95cf345ce05ce248cbe54",
+     "checksum": "ed8e1afc17513426ce3d7814079b8a83463bec65fee4935d038857a1e822370c",
      "events": [],
      "fighters": [
       {
@@ -9753,6 +9899,7 @@
        "stamina": 961,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -9809,6 +9956,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -9854,7 +10002,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "2ee6a63a0b0d9a8ca04a571812139968acdcbbe74665f904af0e49df7530cb23",
+     "checksum": "d46e920dba3c5c0908915ce90b2aa8c96083841ab635ea3a0b8962f97a9eae2f",
      "events": [
       {
        "action_id": "one@72",
@@ -9921,6 +10069,7 @@
        "stamina": 962,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -9977,6 +10126,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -10022,7 +10172,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "e71d732a693fe4cf42846fe26483e2c36fc2dec2c2a08911e65e813cb7603880",
+     "checksum": "f4f7f04bce91664f0761afc42937e7db21b577317ac7b22e1150a969357efe26",
      "events": [],
      "fighters": [
       {
@@ -10064,6 +10214,7 @@
        "stamina": 963,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -10120,6 +10271,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -10165,7 +10317,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "29e09173c3918e385e3d1a1190d1b36c3949d07b38b70bb2213159c1e8058bb8",
+     "checksum": "18fe5f689509c0111e3daad490e13295ec2eb6f477515c25f7e5e78b89efb2ef",
      "events": [],
      "fighters": [
       {
@@ -10207,6 +10359,7 @@
        "stamina": 964,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -10263,6 +10416,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -10308,7 +10462,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "60fc1b169bb009427b25ea115931e4f940310ad915a62a280ea0e9c8fb78615d",
+     "checksum": "0c289f9f7c89887c9412e69e5a32d99ea1327008171469677545968f960a16ac",
      "events": [],
      "fighters": [
       {
@@ -10350,6 +10504,7 @@
        "stamina": 965,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -10406,6 +10561,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -10451,7 +10607,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "1869ed09ddac9c135848598798d4d05c747d7dad951c9bb98f28448123468fb0",
+     "checksum": "53ff94ad8dd6128be134ab2ecfc3f5366ec9cbd7d91326763d6a9b4cf9f61c75",
      "events": [],
      "fighters": [
       {
@@ -10493,6 +10649,7 @@
        "stamina": 966,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -10549,6 +10706,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -10594,7 +10752,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "75ff0c9a93ad68ae4295b01e391f14156ff214534aa3f218fa724c6d276e8782",
+     "checksum": "2782c6088e9250dce4f8485ecdcaacfbb916fa28b2a1009cd1691d90acb34140",
      "events": [],
      "fighters": [
       {
@@ -10636,6 +10794,7 @@
        "stamina": 967,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -10692,6 +10851,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -10737,7 +10897,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "859aa281afc19ff4516eaaafdbf9edd4fcc7157aec7611d5d519721b850cf413",
+     "checksum": "f4f1cb5b4ecea04afe887800f0fbc2d43ea7003b460c94d99f43f4e250a22529",
      "events": [],
      "fighters": [
       {
@@ -10779,6 +10939,7 @@
        "stamina": 968,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -10835,6 +10996,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -10880,7 +11042,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "8da496721135a5a31bd6649249436343698e2e742399ece21cb7f5569f8e6eb5",
+     "checksum": "eedb16145ed330ad195f0ebc828f5cd0c40c06df44ce82b53585d0225e40931f",
      "events": [],
      "fighters": [
       {
@@ -10922,6 +11084,7 @@
        "stamina": 969,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -10978,6 +11141,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -11023,7 +11187,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "bc65c03cad83d62b230f44d097e0d2d252c2ba616da3ea33e1bf8d54659075a7",
+     "checksum": "257f2d6cb64b0bd49025e433f53f1d531dbc206a5432162a6bb62fd1e0bbaadd",
      "events": [],
      "fighters": [
       {
@@ -11065,6 +11229,7 @@
        "stamina": 970,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -11121,6 +11286,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -11155,7 +11321,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "a3f2f303a5aeba8809d613c04887cb388d40db8797e115b72efd26e9fb24955b",
+     "checksum": "3de03197c7623ba1c0087b6c664b4779364fa42b305fb43a335af1b59bfc81c8",
      "events": [],
      "fighters": [
       {
@@ -11197,6 +11363,7 @@
        "stamina": 974,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -11253,6 +11420,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -11287,7 +11455,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "6ca2e7e5e70951dc33c6dfa6336cadcd3435890762602efc7ec9e79152af84b5",
+     "checksum": "11ff97bccb821d16d02030a3403e6919adf42b707924bfb800da0300eb15b8df",
      "events": [],
      "fighters": [
       {
@@ -11329,6 +11497,7 @@
        "stamina": 978,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -11385,6 +11554,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -11419,7 +11589,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "5a4ea87eef5f55306db443b81cdde8cd1631ade1f44d9b0f9ebfbe066982979d",
+     "checksum": "ca9f9b59ce7b59f90812c76eea46778c96f42fe1967e6b498239143d6a3a58ff",
      "events": [],
      "fighters": [
       {
@@ -11461,6 +11631,7 @@
        "stamina": 982,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -11517,6 +11688,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -11551,7 +11723,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "68b450464969182b81625975761e2160a2c66ba3809748b0aed125d8818a743b",
+     "checksum": "c232790b922bc824b86cc40b3bfdc3baa42c340b0d9510070b6251881d110477",
      "events": [],
      "fighters": [
       {
@@ -11593,6 +11765,7 @@
        "stamina": 986,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -11649,6 +11822,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -11683,7 +11857,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "b010f1ae8b7f83f447d43c81844bd18d634c19e591162d1555d1c373360a4fa4",
+     "checksum": "ece33418d5b7bc8f33f79673866d8af7e5d72c546410d22f9dfd6d45104e7f31",
      "events": [],
      "fighters": [
       {
@@ -11725,6 +11899,7 @@
        "stamina": 990,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -11781,6 +11956,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -11815,7 +11991,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "e5a344acb66a18e91779ed6da683c94e46999a8172317e48332a4a8cdd8f3837",
+     "checksum": "d13337f99d69d7f77e975ba65e51e1c6bb025472034e8b6402eea7a660dee47b",
      "events": [],
      "fighters": [
       {
@@ -11857,6 +12033,7 @@
        "stamina": 994,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -11913,6 +12090,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -11947,7 +12125,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "ad85d08a5cbd0b0f8b2d22afdab3176076c33e9d2376311e42a8fc650da0e510",
+     "checksum": "2e260fe872779040be6ee9156af26a8c85aec4ef26dfbf3550c7c422d95f20fd",
      "events": [],
      "fighters": [
       {
@@ -11989,6 +12167,7 @@
        "stamina": 998,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -12045,6 +12224,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -12079,7 +12259,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "a3ea7dbcce2e817e0ed147e72f852db6d7c8b19a1e0b91e5256f40088257f243",
+     "checksum": "69a12db031eccfce040033741c2987a0af32ddda1f0e590db360063f443305d5",
      "events": [],
      "fighters": [
       {
@@ -12121,6 +12301,7 @@
        "stamina": 999,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -12177,6 +12358,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -12211,7 +12393,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "d35549063fd1b75f593effbc60a507b4dd3e285ddb36aa7f8f750dc4db24c701",
+     "checksum": "052bfff5674b5ba3376b9644ee00b610d5ba9e3d8a774b25cbdff2ccd3cfeaa4",
      "events": [],
      "fighters": [
       {
@@ -12253,6 +12435,7 @@
        "stamina": 999,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -12309,6 +12492,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -12343,7 +12527,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "81eb4ec75ff93bcaa8a983c4504e37a9be095c21bf97e91898b8e84ef27b45af",
+     "checksum": "c3ce18333d4296413de87e5a2b79584c9b78abf993ff456324156567673f5115",
      "events": [],
      "fighters": [
       {
@@ -12385,6 +12569,7 @@
        "stamina": 999,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -12441,6 +12626,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -12475,7 +12661,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "16965375056666e1cdf523d615099870a0a1f22408b5ddf02347ad829a9d996d",
+     "checksum": "9306932eebe8e1c515ac0af2b355450c7cacf861b60dcf38c70d03ed9b63d1c8",
      "events": [],
      "fighters": [
       {
@@ -12517,6 +12703,7 @@
        "stamina": 999,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -12573,6 +12760,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -12607,7 +12795,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "469e148104e8c3b8c4960d91a6bb1ed9f3e998cbf3af00712842df1fd9e5813c",
+     "checksum": "3c7eee3c72cbbbb0db2e31b2f64dd0eff6fa9133fa821a4a34cc8d3461447800",
      "events": [],
      "fighters": [
       {
@@ -12649,6 +12837,7 @@
        "stamina": 999,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -12705,6 +12894,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -12739,7 +12929,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "3ca2909e40dc11342b7004857069a354b42ecdd1849b357bf19f1eeeda808bf7",
+     "checksum": "593f3406cc83fc7ace468ec9667e4b6d12f4abc18b62927fad7111b244eefa4d",
      "events": [],
      "fighters": [
       {
@@ -12781,6 +12971,7 @@
        "stamina": 999,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -12837,6 +13028,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -12871,7 +13063,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "84ee2a69b5241a404654d55903c10f2894b2622c01aa410e32a0151030e9062f",
+     "checksum": "5e1df63bc990d8d160f87f3c431604e742f8ee220ad0eadd2d4837e70f835614",
      "events": [],
      "fighters": [
       {
@@ -12913,6 +13105,7 @@
        "stamina": 999,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -12969,6 +13162,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -13003,7 +13197,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "700dbe4d12a817510615d53a23d0b394086aa7f7ea1784927278cb575c82785c",
+     "checksum": "cb19dfbd88cb2b715255f6c51bf6c475fa4fd299ac301256a1e25efea3e92c46",
      "events": [],
      "fighters": [
       {
@@ -13045,6 +13239,7 @@
        "stamina": 999,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -13101,6 +13296,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -13135,7 +13331,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "960a28a7e6deeed2ab5efc8a2021c686a87a85503d5c950e86464e3e9209b05d",
+     "checksum": "944b0ae9573ea691b60aa8e48214eca707b247e789f96f44348cb1030c955d7a",
      "events": [],
      "fighters": [
       {
@@ -13177,6 +13373,7 @@
        "stamina": 999,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -13233,6 +13430,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -13278,7 +13476,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "2853e965cbd27302f7d3507becca32684abaad2bd942c9ada22d852b767bccf6",
+     "checksum": "497e6a9a0f8365a6305c80758e0603612542f0de8c43546d28cf3f59bbfcd6f2",
      "events": [
       {
        "action_id": "one@100",
@@ -13333,6 +13531,7 @@
        "stamina": 958,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -13389,6 +13588,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -13434,7 +13634,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "f798ba402150d7da9f718480117bbf47a2d294ec4280e3e93a53c3ac2de9eb70",
+     "checksum": "49b99328d97432b7bc8f7217a9b3510d9134711e0c6056699dd35b85ededd466",
      "events": [],
      "fighters": [
       {
@@ -13476,6 +13676,7 @@
        "stamina": 959,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -13532,6 +13733,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -13577,7 +13779,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "993e08e29fd456b74a00478d3be0028fa8d25fef9974d97db5830082b38e8375",
+     "checksum": "576a50d6a87b2f65d53eb560804f00c0afdd451d530fb89c8983062dc085d1b2",
      "events": [],
      "fighters": [
       {
@@ -13619,6 +13821,7 @@
        "stamina": 960,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -13675,6 +13878,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -13720,7 +13924,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "08d39a0f33c382e898e7cfc6b083bc74b7571a5414f8d664b2c8e28cae7c6899",
+     "checksum": "364e979392a291c09c1fd9edf5d70d99c629daf4a90acdb1d285afe5a0fc4a3d",
      "events": [
       {
        "action_id": "one@100",
@@ -13787,6 +13991,7 @@
        "stamina": 961,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -13843,6 +14048,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -13888,7 +14094,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "ab52bae6ca5b6267e2d423fc7cc0e31c69eb80a82bbb50b37f6eb554618616fa",
+     "checksum": "f301da8b927f74ef2480c4900f482db70feaac8490e3aa69018d2f9d2ca231be",
      "events": [],
      "fighters": [
       {
@@ -13930,6 +14136,7 @@
        "stamina": 962,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -13986,6 +14193,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -14031,7 +14239,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "4f7f088e5a2b4d33063132aa8a8f58dc1b86f2f2a152d9b0de790a43c792570d",
+     "checksum": "76cc5620864d2e3d683e70d6499884001f59007d41be8d03085a0256a4da85eb",
      "events": [],
      "fighters": [
       {
@@ -14073,6 +14281,7 @@
        "stamina": 963,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -14129,6 +14338,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -14174,7 +14384,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "f89d02f550457c028095367a986baf4d763301e22916dc0d3eba62383c6bea45",
+     "checksum": "1cd2189438ba60ad8952eaf58fa4a02f94b336e9eb19ef489b16c7c486302499",
      "events": [],
      "fighters": [
       {
@@ -14216,6 +14426,7 @@
        "stamina": 964,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -14272,6 +14483,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -14317,7 +14529,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "f84542e60c22f484947970da79a26d8d30337442f868186f139cdebeaefdb3d0",
+     "checksum": "68e4de7b979be2ccb49c4b424c6d011b5f95fc9d1529b44e06d2f4bd1767b6c5",
      "events": [],
      "fighters": [
       {
@@ -14359,6 +14571,7 @@
        "stamina": 965,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -14415,6 +14628,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -14460,7 +14674,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "abf2f1912291c38e39187acc129c25a3f2d4dda07ea070acaf320bf6b1bec6c1",
+     "checksum": "b5c11e8135b07d385446ee7abc5e396f22efcf45ad52e6d3696849326de60a19",
      "events": [],
      "fighters": [
       {
@@ -14502,6 +14716,7 @@
        "stamina": 966,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -14558,6 +14773,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -14603,7 +14819,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "e72fcaa01cf764ddeaa17ffd907f8cd8ac975a588c07628de56d7e01f19c4203",
+     "checksum": "eb9ecf28239b47047463dda798a91d28f20d618ed92f26c497f63989e8255ae0",
      "events": [],
      "fighters": [
       {
@@ -14645,6 +14861,7 @@
        "stamina": 967,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -14701,6 +14918,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -14746,7 +14964,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "297b9a46d4422571105d34d44e81fb88bdd6d1d60c12801ead8e7d5b282cc208",
+     "checksum": "6959422c9653b0b7b2ced70f21a3e8a6243958569b6371ce7e3c6f43577c6da3",
      "events": [],
      "fighters": [
       {
@@ -14788,6 +15006,7 @@
        "stamina": 968,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -14844,6 +15063,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -14889,7 +15109,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "7e6df6eabcbbfe69f9d8a45e9a5420f78b63576695c90c47c83aa7b5d81da9da",
+     "checksum": "6fefcb09316ee277531356b3fb8c43a217769f1db097e774349bef9c9fa76f06",
      "events": [],
      "fighters": [
       {
@@ -14931,6 +15151,7 @@
        "stamina": 969,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -14987,6 +15208,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -15021,7 +15243,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "3e63047102206a77aa0fc9f34af1248a3063437d17997d61e008d8f52c2828f0",
+     "checksum": "1acfcabf484caab3529131e61166f58448fb25843b866c9755b3c405f8d25543",
      "events": [],
      "fighters": [
       {
@@ -15063,6 +15285,7 @@
        "stamina": 973,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -15119,6 +15342,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -15153,7 +15377,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "323bdc10f8c775905c1bdddcfc56a825a36977e309408c2f493f5c1fa0c4c3cf",
+     "checksum": "74d4925c5127d851c614768a04df0536691ef141a2870215a7d03961645fc5de",
      "events": [],
      "fighters": [
       {
@@ -15195,6 +15419,7 @@
        "stamina": 977,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -15251,6 +15476,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -15296,7 +15522,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "0b714f90fdeb09c2f614a276d97d29ce5f27da4f68b544faa76f72ba042732b5",
+     "checksum": "7ac06fc05db6c0f09f49dd4066e30f269e32b1d5d513c38117a4d5d52b37a96f",
      "events": [
       {
        "action_id": "one@114",
@@ -15351,6 +15577,7 @@
        "stamina": 920,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -15407,6 +15634,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -15452,7 +15680,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "7c495dca1d2aa9b869311cd3c52de7a4cdc406328d6b9b680a1222747690b19e",
+     "checksum": "cbb26b66278a78f16b7aed62d78c31dbba5ecac30b6fa9a8ded5116e0a56aec0",
      "events": [],
      "fighters": [
       {
@@ -15494,6 +15722,7 @@
        "stamina": 921,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -15550,6 +15779,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -15595,7 +15825,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "5b236c08fd7f2090c935f89397f5e4ba3afd231eb36ff55fdcf50d7848a4dd13",
+     "checksum": "ce583f17827d369e9f3a9344f419cde00cf0285af4920ae7775cfdfce74dabe1",
      "events": [],
      "fighters": [
       {
@@ -15637,6 +15867,7 @@
        "stamina": 922,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -15693,6 +15924,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -15738,7 +15970,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "2d73aadd87d8e0d124fe3a3599f3cf965bf729e27c78c593c770071c24ad7580",
+     "checksum": "2b5f6a3a6ef0f866298c1f60427062f54d77478185a98020d81808c598e3264a",
      "events": [],
      "fighters": [
       {
@@ -15780,6 +16012,7 @@
        "stamina": 923,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -15836,6 +16069,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -15881,7 +16115,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "2722ef940032af9e9d7e03ee007e3218b5fdb156e687586269518ab5d023f84d",
+     "checksum": "ee968021c2255b1268c55c7bf14cd91e056cbe583fb575ca7e09a32241a13431",
      "events": [],
      "fighters": [
       {
@@ -15923,6 +16157,7 @@
        "stamina": 924,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -15979,6 +16214,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -16024,7 +16260,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "740065cceb99289aae241ab41edfc72d66f0a7e1f98d6e379ff3877d0514a0a0",
+     "checksum": "ee84c87fcee2628eb0d614886cc81640c8818045f79385375a8a72860eff288a",
      "events": [],
      "fighters": [
       {
@@ -16066,6 +16302,7 @@
        "stamina": 925,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -16122,6 +16359,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -16156,7 +16394,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "96c7a1a2fab89fca61f6e377b464a2885b1adaeda796c34043e057f3a483f4e0",
+     "checksum": "9cc13290996db88f3f399b300026307965cf3e84af6cf534f89c4d3e9ef9a6fa",
      "events": [
       {
        "action_id": "one@114",
@@ -16223,6 +16461,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -16279,6 +16518,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -16313,7 +16553,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "022325c047624a306440dd1d1fc7c117468ac136eacbdec4dbaa891ec67df8a4",
+     "checksum": "e4744a4e34bfe79e07671e33c4feecd426632ddf1f37199875e91be8960aad66",
      "events": [],
      "fighters": [
       {
@@ -16355,6 +16595,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -16411,6 +16652,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -16445,7 +16687,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "0462ed7d1963930c164634f069dc01330be8988b59c771d1c8e5b1336a341cc8",
+     "checksum": "66d390c18704c60b68a8c30d1a1b61a260038057d5333f1a4b425ee2eb538585",
      "events": [],
      "fighters": [
       {
@@ -16487,6 +16729,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -16543,6 +16786,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -16577,7 +16821,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "6c6de22c82bc18a2386fc5e647baa2b4b98fc721c66789fd78fc1f44884d2b11",
+     "checksum": "9d893a2a2654d5353169e797de2baae649bda507a869348a03f29d7ff99e146e",
      "events": [],
      "fighters": [
       {
@@ -16619,6 +16863,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -16675,6 +16920,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -16709,7 +16955,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "f521eb8f704d0d8c9ad89ff36c8b9442a9d4efc8d31aab588615e6ad9357c292",
+     "checksum": "2b77bdef0ee6cea52c4a59b5cb12ae1c8e572e41db86222b56d2ecfbf186c1ae",
      "events": [],
      "fighters": [
       {
@@ -16751,6 +16997,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -16807,6 +17054,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -16841,7 +17089,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "d068f518743534f1c7047b44c2236d343a4c7434c3944e9fff787100f12346d9",
+     "checksum": "3cdea0f7ff31ed4a49c3e52c5d29ac14ed7591fd79c7086fca00c615dfd5fa2f",
      "events": [],
      "fighters": [
       {
@@ -16883,6 +17131,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -16939,6 +17188,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -16973,7 +17223,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "783542026c45aa80a8c024be853a559d7842fd6c318753e93eacaabc88b2bc33",
+     "checksum": "e1ef452ce232a0cf84146111a9319f63772b4c0f033ebe5ffafce511548a25b1",
      "events": [],
      "fighters": [
       {
@@ -17015,6 +17265,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -17071,6 +17322,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -17105,7 +17357,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "930d709e86bb6f8d7963d297905e1aa5def7001aeb473ecd3041981096186d6e",
+     "checksum": "0b75c09bb0427114691c38d17dab2d2c907cd18577fd4a7d6be7100f856bb129",
      "events": [],
      "fighters": [
       {
@@ -17147,6 +17399,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -17203,6 +17456,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -17237,7 +17491,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "37fe4ed6c549d5184bb34b4ff3fa27896b79c82d156e8bab449f90c9213cc73f",
+     "checksum": "851df7ce2ded13fbe3840a4f85e05283262572253f1b70c6430fe610b5e1cd1e",
      "events": [],
      "fighters": [
       {
@@ -17279,6 +17533,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -17335,6 +17590,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -17369,7 +17625,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "3f569b52ecef7c0896daabd6053d5fc361e9b1eb5e81d0a8b27b453c867e016e",
+     "checksum": "57f34a0d2af69ff7f14b71f97e4245e68ba828d117e5d5c980e6166bc7bcb447",
      "events": [],
      "fighters": [
       {
@@ -17411,6 +17667,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -17467,6 +17724,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -17501,7 +17759,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "93ae14b249dbad947326a2bd63313764ccc52783edb970b0ed19c98b268eb972",
+     "checksum": "68147259ce8a279523edef460a9a2546df2e8b7c97c6dfab49d4ed2b046a8538",
      "events": [],
      "fighters": [
       {
@@ -17543,6 +17801,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -17599,6 +17858,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -17633,7 +17893,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "236aff9bbadc18f7ff8c3257742101979ce020a3349e931d2e0c26380e3bcbec",
+     "checksum": "fc2fac48c7c359db05243c740849256f0ff7b6f4efc8ea6b9a54d191c448e27c",
      "events": [],
      "fighters": [
       {
@@ -17675,6 +17935,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -17731,6 +17992,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -17765,7 +18027,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "7724e03b0a2a63a3ae4b390ac584d27d31aa941f4fc10044d732a8a2d833dc6c",
+     "checksum": "3e9c444b1c6894b07b5623bbfc72be0d6ea1cc0f3d7eafdc24e72ef5bd93cf39",
      "events": [],
      "fighters": [
       {
@@ -17807,6 +18069,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -17863,6 +18126,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -17897,7 +18161,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "2eb568c2bcb13dda30f1c8b6842c70800aed35d85aa2a5a98aa62238fa9e06ee",
+     "checksum": "0282bd1f8ae94b9a7a45b5deae811aebfaed80ee6032fe0847925a959b09b333",
      "events": [],
      "fighters": [
       {
@@ -17939,6 +18203,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -17995,6 +18260,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -18029,7 +18295,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "50d18e60656ce1d45028a692e0eb0d74657d360cefb2fffbd1076da50f7fc86b",
+     "checksum": "90569ca306c1bfa0f6559df1a1e48857f31beef011886e98a7d291b6a3cab722",
      "events": [],
      "fighters": [
       {
@@ -18071,6 +18337,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -18127,6 +18394,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -18161,7 +18429,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "ba1f70c551bdd3c78de28aac75b5dce5eefb192b9ee79b6c0f0fbb06a1fab249",
+     "checksum": "2a520c2370370839811df5bc2fae66c2a7b51842fb5925c40b80dd3fb08a70dc",
      "events": [],
      "fighters": [
       {
@@ -18203,6 +18471,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -18259,6 +18528,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -18293,7 +18563,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "c0a10dd27930f7183b7a9ec5c33b05f32a7322ec73eade4f28874ced24fd4da5",
+     "checksum": "114a58094ced64903b262c00f70efa637f59fd25a6a9aef5a3c2f5499afd6d5f",
      "events": [],
      "fighters": [
       {
@@ -18335,6 +18605,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -18391,6 +18662,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -18425,7 +18697,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "273275b08ee08bef2caafcf2ffad5ce2a4750a54b4e17d066001b01898556e16",
+     "checksum": "a0ee64c978edbbe255931d823f2dc5a28829e80d774bf91e9b491c1b21abf5cd",
      "events": [],
      "fighters": [
       {
@@ -18467,6 +18739,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -18523,6 +18796,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -18557,7 +18831,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "e2f0fb1a5df4f79735235af5bb6299ecd63af08c94cba2bcc1a9ee8283cbaeaf",
+     "checksum": "6bc945e7d3135c2b38420d834eaa47fd6ed3c93ad8500233f9000054b0f08943",
      "events": [],
      "fighters": [
       {
@@ -18599,6 +18873,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -18655,6 +18930,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -18689,7 +18965,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "ca8559a87117942cad3f952390032ad2f7318da8376bdda0f877e86c455f3d97",
+     "checksum": "8c476f71ce29f8ef8e767482cb603d03c4eba98041eb11428a0297057704ce6e",
      "events": [],
      "fighters": [
       {
@@ -18731,6 +19007,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -18787,6 +19064,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -18821,7 +19099,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "8142937fd696244ff0ffaaf776b6a447e77e2a9dadc486066bf7cc26714fba52",
+     "checksum": "6d6707df0ef286830695345f36503f84dadd21da32313c790a874f209390740c",
      "events": [],
      "fighters": [
       {
@@ -18863,6 +19141,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -18919,6 +19198,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -18953,7 +19233,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "f9e44fdb22cc392ff1dd161b726471dc79a7518a3d057ca818f7497992e1e83f",
+     "checksum": "422f495f8f98919582359d9245137bf7ebc9b22a48513093294862e26a661804",
      "events": [],
      "fighters": [
       {
@@ -18995,6 +19275,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -19051,6 +19332,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -19085,7 +19367,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "dfbf8990eaf9c5cb115d24016d6390cfda0fefef66f73e1fa9b6b7de99b57204",
+     "checksum": "c6a6e422770f119cf806fd12b0e657ee6c37bc1a269aecc790a7775925bd3491",
      "events": [],
      "fighters": [
       {
@@ -19127,6 +19409,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -19183,6 +19466,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -19217,7 +19501,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "b093f49ab888442f6c63c954da0c89939ae9998bddfcf7bca73cffba7d4132b5",
+     "checksum": "90508d420f306742a13f9518be6ddd7a5cefa4022d6c1d211a1443e3ad019aac",
      "events": [],
      "fighters": [
       {
@@ -19259,6 +19543,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -19315,6 +19600,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -19349,7 +19635,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "bf29b840cf42c3a12bd201c6d2cd77f959be7ec7f17f71522dda75b2941fc32c",
+     "checksum": "22927bb4a9cd18bb52c7da7dec024e159927a8813d30db2c7f4886c135e7a831",
      "events": [],
      "fighters": [
       {
@@ -19391,6 +19677,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -19447,6 +19734,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -19481,7 +19769,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "db3ea9525969f0440c1c319f6e44ee27d9c6cf27a68d9f16f5aee0481e333938",
+     "checksum": "cbaa523224cdc0b6584b38a74484dd2d1b5cf54a7062f9807f96f5cf4af2df66",
      "events": [],
      "fighters": [
       {
@@ -19523,6 +19811,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -19579,6 +19868,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -19613,7 +19903,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "89fff562b0bd843fc10910fa29ec4ad1f96459fdeeca6a7f3d48ec18083f510e",
+     "checksum": "2d18d048bc7875ce3664938aa3359739e441256ade9b081f29f3c84123f98e0e",
      "events": [],
      "fighters": [
       {
@@ -19655,6 +19945,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -19711,6 +20002,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -19745,7 +20037,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "cef3fd6b8e71d878b6c4ae28a658ab669407923e829c5bf8906a3f80595e8872",
+     "checksum": "59362a24f278dd8103c0784c1b3df5217bcca5b608cc2cc3394bfcf7a515ee85",
      "events": [],
      "fighters": [
       {
@@ -19787,6 +20079,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -19843,6 +20136,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -19877,7 +20171,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "1e0f77a6d52a9a253da965a9056ada5b840329fb69b5bc574a4a0c1f2925eaf4",
+     "checksum": "93e9b9850640381e89a79a89842a85f16919181420b2d4bb7fa26279139cf110",
      "events": [],
      "fighters": [
       {
@@ -19919,6 +20213,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -19975,6 +20270,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -20009,7 +20305,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "affee5448ee62677186c88ddf9e11a0b85a3be4c41b09198efe2815dab90f4ea",
+     "checksum": "93de2754dc0a6fe05b151cc15d91c8a84e24e992da84c4135fb29bee3c6e19e7",
      "events": [],
      "fighters": [
       {
@@ -20051,6 +20347,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -20107,6 +20404,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -20141,7 +20439,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "9f83a7ec4c3834cc417dd93a617fe47df94740fc8bbd767c3d7b778ead871535",
+     "checksum": "6831b7c31721026e3e4a0af4e8e0c162987417ba00a4384c786011cb0e754475",
      "events": [
       {
        "action_id": null,
@@ -20196,6 +20494,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -20252,6 +20551,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -20286,7 +20586,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "9a6e4878eea7c076ba58269e415f63aa10e571338499c43d3cce7fd62cd5e376",
+     "checksum": "a708956fdf1f41059731f2c445c23b8b7f4a3c0841520d32cb852337efc1a697",
      "events": [],
      "fighters": [
       {
@@ -20328,6 +20628,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -20384,6 +20685,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -20418,7 +20720,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "1820b009d6e918e7a29a93283717dc0e10f1cd31fc91cdbfa9c9edaabf722312",
+     "checksum": "722100fa22b96d22e780266a680a0220770a3e2ea7efc5d05001ee397355f8d7",
      "events": [],
      "fighters": [
       {
@@ -20460,6 +20762,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -20516,6 +20819,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -20550,7 +20854,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "a109a7f5deb60309b0168166ee319541d08f4fa17d50a453a44f95623b934258",
+     "checksum": "faaa68ef868b4eb2c6b99881de55e568b7f612a498f01c42892bfbdc133e9bb3",
      "events": [],
      "fighters": [
       {
@@ -20592,6 +20896,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -20648,6 +20953,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -20682,7 +20988,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "43031b1bd368b455affd528ddffeacc9d95cea90b9633249fdd69b0a6689df71",
+     "checksum": "8f49181d59ef4c77693cec2fca8a7e10ad42ae9ee1646eca7af4e006a51a0522",
      "events": [],
      "fighters": [
       {
@@ -20724,6 +21030,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -20780,6 +21087,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -20814,7 +21122,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "a117e854b492ece575a36ece528e1476c4fe7dee7caa72c65d8f94cc201d9c9c",
+     "checksum": "9eba1424168711e46f770aff9338265d1f951767f088089dd9487eb0130ab0c9",
      "events": [],
      "fighters": [
       {
@@ -20856,6 +21164,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -20912,6 +21221,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -20946,7 +21256,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "4a5e36ee8f7c533bbcd79e944b44f09ab0ee480de58621f985f220b852bae86d",
+     "checksum": "c1f231f90487e771be06d51d01976d3a40d19648438549d5a690e1eaa6e0f2f7",
      "events": [],
      "fighters": [
       {
@@ -20988,6 +21298,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -21044,6 +21355,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -21078,7 +21390,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "9c5ae2d39548d393541982d5b50542265c5bb86efc08719682e7eecc0f49392a",
+     "checksum": "8ddcd64ef7c4be4f044b900cddb041c3d390834e2d57709ca3efb258b30a36f0",
      "events": [],
      "fighters": [
       {
@@ -21120,6 +21432,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -21176,6 +21489,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -21210,7 +21524,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "50c88cca49925cb644a6ef745b7f4b0495393bda40373fec84e600b410cc1e45",
+     "checksum": "17d37e22930ad3c512a283fa55fd699be12c583052cec51897055bdeb60174da",
      "events": [],
      "fighters": [
       {
@@ -21252,6 +21566,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -21308,6 +21623,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -21342,7 +21658,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "7fd7b2d40b52da4eef90dd97aabccbcedfa388d6710eb374998e24ab5ffd36b7",
+     "checksum": "6d5fb840e0e776d4bc0afde2fc9c4f1c34f37c90a0932e899998bfbf37377b6c",
      "events": [],
      "fighters": [
       {
@@ -21384,6 +21700,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -21440,6 +21757,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -21474,7 +21792,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "ea1a86efc05b35f4c900ce790213c9e183a65d679e8d8af101ca077e59f479b0",
+     "checksum": "faef66e64ccdd9cbd4319c1f1c9408915cd1a239da102b65e6cd3f44d3b1a091",
      "events": [],
      "fighters": [
       {
@@ -21516,6 +21834,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -21572,6 +21891,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -21606,7 +21926,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "47a3978a1780981363ffbf84cf737effe9916c8c0fa29e8f01eeeb4f25377906",
+     "checksum": "2165ae80afc02ad88e11b350c036afd714eb944238c427f6f2d85b44a2c2332e",
      "events": [],
      "fighters": [
       {
@@ -21648,6 +21968,7 @@
        "stamina": 929,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,
@@ -21704,6 +22025,7 @@
        "stamina": 1000,
        "stance": "orthodox",
        "stunned_ticks": 0,
+       "style": "balanced",
        "taunt_ticks": 0,
        "trauma": {
         "bleeding": 0,

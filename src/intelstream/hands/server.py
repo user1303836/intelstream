@@ -24,6 +24,7 @@ from intelstream.hands.protocol import (
     PROTOCOL_VERSION,
     ProtocolError,
     parse_cpu_request,
+    parse_style_choice,
     parse_ticket_ack,
 )
 from intelstream.hands.rooms import HandsRoomManager, RoomError, RoomMembership
@@ -726,6 +727,12 @@ class HandsServer:
                         if cpu_level is not None:
                             await membership.room.request_cpu(
                                 membership.player_id, membership.connection, cpu_level
+                            )
+                            continue
+                        style_choice = parse_style_choice(message.data)
+                        if style_choice is not None:
+                            await membership.room.choose_style(
+                                membership.player_id, membership.connection, style_choice
                             )
                             continue
                         await membership.room.submit_frame(

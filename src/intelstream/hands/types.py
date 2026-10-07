@@ -31,6 +31,14 @@ class Stance(StrEnum):
     SOUTHPAW = "southpaw"
 
 
+class FighterStyle(StrEnum):
+    BALANCED = "balanced"
+    BOXER = "boxer"
+    SLUGGER = "slugger"
+    SWARMER = "swarmer"
+    COUNTER_PUNCHER = "counter_puncher"
+
+
 class DefensivePose(StrEnum):
     NONE = "none"
     GUARD_HIGH = "guard_high"
@@ -153,6 +161,7 @@ class FighterSnapshot:
     velocity_x: int
     velocity_y: int
     stance: Stance
+    style: FighterStyle
     defense: DefensivePose
     stamina: int
     maximum_stamina: int

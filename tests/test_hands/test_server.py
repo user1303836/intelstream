@@ -428,6 +428,7 @@ async def test_two_websockets_start_and_third_is_read_only_spectator(
     rooms = HandsRoomManager(
         repository,
         config=RoomConfig(
+            style_select_seconds=0.0,
             tick_interval_seconds=0.002,
             broadcast_every_ticks=1,
             reconnect_grace_seconds=0.1,
@@ -489,6 +490,7 @@ async def test_a_lone_fighter_calls_the_computer_and_a_spectator_cannot(
     rooms = HandsRoomManager(
         repository,
         config=RoomConfig(
+            style_select_seconds=0.0,
             tick_interval_seconds=0.002,
             broadcast_every_ticks=1,
             reconnect_grace_seconds=0.1,
@@ -540,6 +542,81 @@ async def test_a_lone_fighter_calls_the_computer_and_a_spectator_cannot(
         assert not fighter.closed
         async with asyncio.timeout(1):
             await fighter.close()
+    async with asyncio.timeout(1):
+        await server.close()
+
+
+async def test_fighters_pick_their_styles_over_the_socket_and_a_spectator_cannot(
+    repository: Repository,
+) -> None:
+    auth = FakeAuth()
+    auth.tickets = {
+        name: AuthenticatedPlayer(name, GUILD, "room", name.title(), None)
+        for name in ("one", "two", "three")
+    }
+    rooms = HandsRoomManager(
+        repository,
+        config=RoomConfig(
+            style_select_seconds=5.0,
+            tick_interval_seconds=0.002,
+            broadcast_every_ticks=1,
+            reconnect_grace_seconds=0.1,
+            result_hold_seconds=0.05,
+            engine_config=EngineConfig(
+                rounds=1,
+                round_ticks=5000,
+                rest_ticks=0,
+                countdown_ticks=1,
+                flash_ko_enabled=False,
+            ),
+        ),
+        match_id_factory=lambda: "server-styles",
+    )
+    server, _auth, base = await start_server(repository, auth=auth, rooms=rooms)
+
+    async def receive_type(ws: aiohttp.ClientWebSocketResponse, kind: str) -> dict:
+        async with asyncio.timeout(1):
+            while True:
+                message = await ws.receive()
+                if message.type != aiohttp.WSMsgType.TEXT:
+                    raise AssertionError(f"socket closed before {kind}")
+                payload = json.loads(message.data)
+                if payload["type"] == kind:
+                    return payload
+
+    def choice(style: str, ready: bool) -> dict:
+        return {"version": 3, "type": "style", "style": style, "ready": ready}
+
+    async with aiohttp.ClientSession() as client:
+        sockets = {}
+        for name in ("one", "two"):
+            sockets[name] = await client.ws_connect(
+                f"{base}/api/hands/ws", headers={"Origin": ORIGIN}
+            )
+            await sockets[name].send_json({"version": 3, "type": "authenticate", "ticket": name})
+        await receive_type(sockets["one"], "select")
+        await sockets["one"].send_json(choice("swarmer", True))
+        await sockets["two"].send_json(choice("counter_puncher", True))
+        ready = await receive_type(sockets["two"], "ready")
+        assert {player["id"]: player["style"] for player in ready["players"]} == {
+            "one": "swarmer",
+            "two": "counter_puncher",
+        }
+        snapshot = await receive_type(sockets["one"], "snapshot")
+        assert [entry["style"] for entry in snapshot["payload"]["fighters"]] == [
+            "swarmer",
+            "counter_puncher",
+        ]
+
+        watcher = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
+        await watcher.send_json({"version": 3, "type": "authenticate", "ticket": "three"})
+        assert (await receive_type(watcher, "welcome"))["role"] == "spectator"
+        await watcher.send_json(choice("slugger", True))
+        assert (await receive_type(watcher, "error"))["code"] == "spectator_read_only"
+        await watcher.close()
+        async with asyncio.timeout(1):
+            for ws in sockets.values():
+                await ws.close()
     async with asyncio.timeout(1):
         await server.close()
 

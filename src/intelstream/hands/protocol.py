@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Never
 
 from intelstream.hands.cpu import CpuLevel
@@ -10,6 +10,7 @@ from intelstream.hands.types import (
     ActionKind,
     DefensivePose,
     EngineSnapshot,
+    FighterStyle,
     Foul,
     FoulAction,
     Hand,
@@ -229,6 +230,38 @@ def parse_cpu_request(frame: str | bytes) -> CpuLevel | None:
     if envelope.get("version") != PROTOCOL_VERSION:
         raise ProtocolError("unsupported protocol version")
     return _enum(CpuLevel, envelope.get("level"), "computer level")
+
+
+@dataclass(frozen=True, slots=True)
+class StyleChoice:
+    style: FighterStyle
+    ready: bool
+    """True once the fighter has settled on the style; False while still choosing."""
+
+
+def parse_style_choice(frame: str | bytes) -> StyleChoice | None:
+    """The style a fighter is choosing before the bout, or None when the frame is not that message."""
+    encoded = frame.encode() if isinstance(frame, str) else frame
+    if len(encoded) > MAX_FRAME_BYTES:
+        raise ProtocolError("input frame is too large")
+    try:
+        raw = json.loads(
+            encoded,
+            parse_constant=_reject_constant,
+            object_pairs_hook=_unique_object,
+        )
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ProtocolError("input frame is not valid JSON") from exc
+    envelope = _object(raw, "envelope")
+    if envelope.get("type") != "style":
+        return None
+    _exact_fields(envelope, {"version", "type", "style", "ready"}, "style choice")
+    if envelope.get("version") != PROTOCOL_VERSION:
+        raise ProtocolError("unsupported protocol version")
+    ready = envelope.get("ready")
+    if not isinstance(ready, bool):
+        raise ProtocolError("ready must be true or false")
+    return StyleChoice(_enum(FighterStyle, envelope.get("style"), "fighter style"), ready)
 
 
 def _action_dict(action: SemanticAction) -> dict[str, object]:

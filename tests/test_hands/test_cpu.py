@@ -8,12 +8,15 @@ from math import hypot
 import pytest
 
 from intelstream.hands.cpu import (
+    CPU_STYLES,
     PROFILES,
     CpuBrain,
     CpuLevel,
     _evades,
     _rope_room,
     cpu_player_id,
+    cpu_style,
+    styled_profile,
 )
 from intelstream.hands.engine import BoxingEngine, EngineConfig
 from intelstream.hands.rules import (
@@ -26,6 +29,7 @@ from intelstream.hands.rules import (
 from intelstream.hands.types import (
     ActionKind,
     DefensivePose,
+    FighterStyle,
     Hand,
     InputCommand,
     MatchPhase,
@@ -676,3 +680,68 @@ def test_a_high_guard_is_attacked_to_the_body() -> None:
         assert human.defense in (DefensivePose.GUARD_HIGH, DefensivePose.NONE)
     assert thrown
     assert all(punch.target is Target.BODY for punch in thrown)
+
+
+def test_the_computer_picks_its_style_from_the_match_seed() -> None:
+    for level in CpuLevel:
+        picks = {cpu_style(level, seed) for seed in range(200)}
+        assert picks == set(CPU_STYLES[level])
+        assert cpu_style(level, 99) is cpu_style(level, 99)
+
+
+@pytest.mark.parametrize("level", list(CpuLevel))
+def test_each_style_boxes_its_own_way(level: CpuLevel) -> None:
+    base = PROFILES[level]
+    assert styled_profile(base, FighterStyle.BALANCED) == base
+    boxer = styled_profile(base, FighterStyle.BOXER)
+    assert boxer.outside_distance > base.outside_distance
+    assert boxer.jab_bias > base.jab_bias
+    slugger = styled_profile(base, FighterStyle.SLUGGER)
+    assert slugger.power_percent > base.power_percent
+    swarmer = styled_profile(base, FighterStyle.SWARMER)
+    assert swarmer.outside_distance < base.outside_distance
+    assert swarmer.body_percent > base.body_percent
+    assert swarmer.aggression_percent > base.aggression_percent
+    counter = styled_profile(base, FighterStyle.COUNTER_PUNCHER)
+    assert counter.counter_percent > base.counter_percent
+    assert counter.aggression_percent < base.aggression_percent
+    for styled in (boxer, slugger, swarmer, counter):
+        for name in ("aggression_percent", "power_percent", "counter_percent", "body_percent"):
+            assert 0 <= getattr(styled, name) <= 100
+
+
+def test_it_prices_and_times_its_punches_by_its_style() -> None:
+    engine = engine_at(120)
+    cpu = engine.fighter("cpu")
+    hook = PunchAction(Hand.LEFT, PunchClass.HOOK, Target.HEAD, Power.POWER)
+    cost = PUNCH_RULES[(PunchClass.HOOK, Target.HEAD, Power.POWER)].stamina_cost
+    cpu.stamina = cost
+    balanced = CpuBrain("cpu", "human", CpuLevel.CHAMPION, 6)
+    slugger = CpuBrain("cpu", "human", CpuLevel.CHAMPION, 6, FighterStyle.SLUGGER)
+    assert balanced._affordable(cpu, hook, 0)
+    assert not slugger._affordable(cpu, hook, 0)
+    swarmer = CpuBrain("cpu", "human", CpuLevel.CHAMPION, 6, FighterStyle.SWARMER)
+    assert swarmer._timing(cpu, hook)[0] == balanced._timing(cpu, hook)[0] - 1
+    jab = PunchAction(Hand.LEFT, PunchClass.JAB, Target.HEAD)
+    boxer = CpuBrain("cpu", "human", CpuLevel.CHAMPION, 6, FighterStyle.BOXER)
+    assert boxer._rule(jab).reach > balanced._rule(jab).reach
+
+
+def test_a_counter_puncher_raises_its_guard_earlier_for_the_perfect_block() -> None:
+    def guard_from(style: FighterStyle) -> int:
+        engine = engine_at(120)
+        brain = always(CpuBrain("cpu", "human", CpuLevel.CHAMPION, 6, style))
+        throw(engine, PunchAction(Hand.RIGHT, PunchClass.STRAIGHT, Target.HEAD, Power.POWER))
+        engine.step()
+        human = engine.fighter("human")
+        cpu = engine.fighter("cpu")
+        attack = human.attack
+        assert attack is not None
+        # Force a guard answer: an evasion is out of reach.
+        cpu.stamina = 0
+        while engine.tick - attack.start_tick < brain.profile.reaction_ticks:
+            engine.step()
+        brain._read(engine.tick, cpu, human)
+        return brain._guard_from
+
+    assert guard_from(FighterStyle.COUNTER_PUNCHER) == guard_from(FighterStyle.BALANCED) - 1
