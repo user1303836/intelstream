@@ -10,6 +10,7 @@ import pytest
 
 from intelstream.hands.engine import (
     ACTION_BUFFER_TICKS,
+    COUNT_TICK_INTERVAL,
     MAX_PENDING_ACTIONS,
     AttackState,
     BoxingEngine,
@@ -2565,6 +2566,34 @@ def test_two_body_collapses_on_one_tick_favour_neither_seat(
         fighter.body_collapse_action_id = "trade"
     knockdowns = [event for event in engine.step().events if event.kind == "knockdown"]
     assert [event.target_id for event in knockdowns] == [first_down]
+
+
+def test_round_one_opens_with_the_introductions_and_later_rounds_with_the_bell() -> None:
+    opening = _manifest()["countdown"]["opening_ticks"]
+    assert opening >= 8 * COUNT_TICK_INTERVAL
+    config = dataclasses.replace(EngineConfig(), rounds=2, round_ticks=30, rest_ticks=10)
+    assert config.countdown_ticks == opening
+    engine = BoxingEngine(
+        match_id="intro",
+        activity_instance_id="instance-1",
+        guild_id="guild-1",
+        player_one_id="one",
+        player_two_id="two",
+        seed=3,
+        config=config,
+    )
+    phases = []
+    while engine.result is None:
+        phases.append(engine.phase)
+        engine.step()
+    assert phases[:opening] == [MatchPhase.COUNTDOWN] * opening
+    assert MatchPhase.COUNTDOWN not in phases[opening:]
+    assert [event.detail for event in engine.events if event.kind == "bell"] == [
+        "round_start",
+        "round_end",
+        "round_start",
+        "round_end",
+    ]
 
 
 def test_the_referee_sends_both_fighters_back_after_a_foul() -> None:
