@@ -1591,7 +1591,7 @@ export class FightRenderer {
       // The physics runs the recorded fall again only when it is this knockdown's. One the render clock had
       // not reached when the bout ended on the punch was never recorded: the fall recorded is an earlier
       // knockdown's, somewhere else, and the replay runs a new one from the replayed blow instead.
-      const recorded = this.liveFallTicks[index];
+      const recorded = this.liveFallTicks[index] ?? null;
       graph.resetTransient(false);
       if (recorded !== null && recorded >= plan.impact.tick - 1) graph.primeReplayFall();
       if (index === victim && kneels) graph.fallToKnee(true);

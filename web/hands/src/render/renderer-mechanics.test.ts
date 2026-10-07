@@ -216,7 +216,7 @@ describe("a bout that ends on the punch itself", () => {
       knockOutMouthpiece: vi.fn(), headWorldPose: () => null, mouthPoint: new THREE.Vector3(), reapplyReplayInjuries: vi.fn(),
     });
     for (const graph of stub.graphs as unknown as Record<string, unknown>[]) Object.assign(graph, { react: vi.fn(), landedHit: vi.fn() });
-    const replay = stub.replay as { plan: { snapshots: EngineSnapshot[] } };
+    const replay = stub.replay as unknown as { plan: { snapshots: EngineSnapshot[] } };
     const fireContacts = (FightRenderer.prototype as unknown as { fireContacts(this: unknown, tick: number): void }).fireContacts;
     const fireReplayImpact = (FightRenderer.prototype as unknown as { fireReplayImpact(this: unknown, snapshot: EngineSnapshot): void }).fireReplayImpact;
     // The replay's lead-up shows nothing of it.
