@@ -1307,15 +1307,17 @@ export class BoxingGraph {
     }
     const start = guard.clone().addScaledVector(windupOffset, Math.max(windup, this.punchClass === "hook" || this.punchClass === "uppercut" ? (1 - travel) * 0.6 : 0));
     if (this.punchClass === "hook") {
-      // Horizontal sweep around the shoulder from the wide windup into the target.
-      const radius = Math.max(0.32, Math.min(0.48, contact.distanceTo(shoulderChar)));
+      // Horizontal sweep around the shoulder from the wide windup into the target. The radius runs
+      // from the windup's to the contact's, measured flat, so the sweep ends on the contact point.
+      const startRadius = Math.hypot(start.x - shoulderChar.x, start.z - shoulderChar.z);
+      const contactRadius = Math.hypot(contact.x - shoulderChar.x, contact.z - shoulderChar.z);
       const startDir = start.clone().sub(shoulderChar).setY(0).normalize();
       const endDir = contact.clone().sub(shoulderChar).setY(0).normalize();
       const angle = Math.acos(clamp(startDir.dot(endDir), -1, 1));
       const turn = new THREE.Vector3().crossVectors(startDir, endDir).y >= 0 ? 1 : -1;
       const sweep = smoothstep(0, 1, travel);
       const rotated = startDir.clone().applyAxisAngle(worldUpVector, angle * sweep * turn).normalize();
-      hand.position.copy(shoulderChar).addScaledVector(rotated, radius * (0.8 + 0.2 * sweep));
+      hand.position.copy(shoulderChar).addScaledVector(rotated, THREE.MathUtils.lerp(startRadius, contactRadius, sweep));
       hand.position.y = THREE.MathUtils.lerp(start.y, contact.y, sweep);
       hand.pole.set(0.95 * side * mirror, 0.08, 0.3).normalize();
       hand.knuckles.copy(rotated).applyAxisAngle(worldUpVector, turn * Math.PI / 2).setY(0.05).normalize();
