@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { fighter, mockHudContext, snapshot, type DrawnPicture } from "../test/fixtures";
 import { Avatars } from "./avatars";
 import { RoundClock } from "./hud";
-import type { CombatEvent, MatchResult } from "../types";
+import type { CombatEvent, EngineSnapshot, MatchResult } from "../types";
 import { arcadeInjuryFor, canStartPunch, CEREMONY_MARKS, ceremonyStep, contactParticipants, contactPresentationPlan, cornersAtWork, FightRenderer, isArcadeInjuryCandidate, presentationTickFor, refereeSpacing, replayCameraSide, replayReattaches, visualSeparation } from "./renderer";
 import { worldMapping } from "./world";
 
@@ -237,6 +237,7 @@ describe("decision ceremony", () => {
       ceremonyWrists: [{ x: 0, set(x: number) { this.x = x; return this; } }, { x: 0, set(x: number) { this.x = x; return this; } }],
       frameSeconds: 0,
       finalRevealAt: 99,
+      commentary: { verdict: () => {} },
     };
     const ceremony: Staged = { winnerSeat: 0, positions: null, refereeArrived: true, arrivedAt: null, announced: false };
     let drawn = methods.ceremonyFighters.call(stub, ceremony, standing(), 1 / 60, 0);
@@ -267,7 +268,7 @@ describe("decision ceremony", () => {
     const raised: unknown[][] = [];
     const announced: string[] = [];
     const graph = () => ({ awaitVerdict: () => {}, announce: (verdict: string) => announced.push(verdict), boxer: { rig: { bones: { gloveL: { getWorldPosition: (out: unknown) => out }, gloveR: { getWorldPosition: (out: unknown) => out } } } } });
-    const stub = { drawnFighters: [fighter("a"), fighter("b")], simulation: { tick_rate: 30 }, graphs: [graph(), graph()], referee: { raise: (...wrists: unknown[]) => raised.push(wrists) }, arena: { excite: () => {} }, ceremonyWrists: ["blue", "red"], frameSeconds: 0, finalRevealAt: 99 };
+    const stub = { drawnFighters: [fighter("a"), fighter("b")], simulation: { tick_rate: 30 }, graphs: [graph(), graph()], referee: { raise: (...wrists: unknown[]) => raised.push(wrists) }, arena: { excite: () => {} }, ceremonyWrists: ["blue", "red"], frameSeconds: 0, finalRevealAt: 99, commentary: { verdict: () => {} } };
     const ceremony: Staged = { winnerSeat: null, positions: CEREMONY_MARKS.map(({ x, y }) => ({ x, y })), refereeArrived: false, arrivedAt: null, announced: false };
     for (let frame = 0; frame < 120; frame += 1) methods.ceremonyFighters.call(stub, ceremony, standing(), 1 / 60, frame / 60);
     expect(ceremony.arrivedAt).toBeNull();
@@ -319,7 +320,7 @@ describe("ovation", () => {
   const methods = FightRenderer.prototype as unknown as { setFinal: (final: unknown) => void; cheer: (seconds: number, dt: number) => void };
   const hall = (frameSeconds: number) => {
     const excited: number[] = [];
-    return { excited, stub: { frameSeconds, buffer: { latest: () => null }, graphs: null, referee: null, arena: { excite: (amount: number) => excited.push(amount) }, ovationUntil: 0, finalRevealAt: 0, ceremony: null, final: null, ceremonyFor: () => null, endCeremony: () => {} } };
+    return { excited, stub: { frameSeconds, buffer: { latest: () => null }, graphs: null, referee: null, arena: { excite: (amount: number) => excited.push(amount) }, ovationUntil: 0, finalRevealAt: 0, ceremony: null, final: null, ceremonyFor: () => null, endCeremony: () => {}, commentary: { finish: () => {} } } };
   };
   const decision = { version: 3, type: "final", match_id: "m", winner_id: "one", method: "forfeit", round: 3, scorecards: [], ratings: {} };
 
@@ -375,6 +376,7 @@ describe("players' pictures", () => {
       roundCalloutRound: 1,
       roundClock: new RoundClock(),
       avatars,
+      drawCaption: () => {},
     };
     const overlay = (FightRenderer.prototype as unknown as { drawHudOverlay(this: unknown, frame: unknown): void }).drawHudOverlay;
     overlay.call(self, snapshot());
@@ -433,5 +435,55 @@ describe("the rest between rounds", () => {
   it("is back on the wide shot once the seconds are out", () => {
     expect(shot.call(crew([1, 1]), 13, { ...resting, phase_ticks_remaining: 91 }, false)).not.toBeNull();
     expect(shot.call(crew([1, 1]), 13, { ...resting, phase_ticks_remaining: 89 }, false)).toBeNull();
+  });
+});
+
+describe("the broadcast caption", () => {
+  const draw = (FightRenderer.prototype as unknown as { drawCaption(this: unknown, ctx: CanvasRenderingContext2D, width: number, height: number, state: EngineSnapshot): void }).drawCaption;
+  const scene = (overrides: Record<string, unknown> = {}) => {
+    const commentary = { resultShown: vi.fn(), current: vi.fn(() => ({ line: { speaker: "play", text: "Down goes Two!", priority: 95, urgent: true, hold: 3, card: null }, opacity: 1, entering: 0 })) };
+    return {
+      commentary,
+      final: null,
+      finalRevealAt: 0,
+      frameSeconds: 10,
+      resultAnnounced: false,
+      captionText: "",
+      hudCanvas: { dataset: {} as Record<string, string> },
+      viewerId: "one",
+      players: {},
+      roundStats: { total: () => ({ thrown: 0, landed: 0 }) },
+      touchControls: false,
+      replay: null,
+      settings: () => ({ commentary: true, reducedMotion: false }),
+      ...overrides,
+    };
+  };
+
+  it("draws the line on screen and mirrors it for automation", () => {
+    const texts: string[] = [];
+    const self = scene();
+    draw.call(self, mockHudContext(texts), 1280, 720, snapshot());
+    expect(texts).toEqual(["CALLAHAN", "Down goes Two!"]);
+    expect(self.hudCanvas.dataset.caption).toBe("Down goes Two!");
+  });
+
+  it("draws nothing when captions are switched off", () => {
+    const texts: string[] = [];
+    const self = scene({ settings: () => ({ commentary: false, reducedMotion: false }) });
+    draw.call(self, mockHudContext(texts), 1280, 720, snapshot());
+    expect(texts).toEqual([]);
+    expect(self.hudCanvas.dataset.caption).toBeUndefined();
+  });
+
+  it("tells the announcer once that the result card is up", () => {
+    const final = { version: 3, type: "final", match_id: "m", winner_id: "one", method: "ko", round: 2, scorecards: [], ratings: {} };
+    const self = scene({ final, finalRevealAt: 12 });
+    draw.call(self, mockHudContext([]), 1280, 720, snapshot());
+    expect(self.commentary.resultShown).not.toHaveBeenCalled();
+    self.frameSeconds = 12.5;
+    draw.call(self, mockHudContext([]), 1280, 720, snapshot());
+    draw.call(self, mockHudContext([]), 1280, 720, snapshot());
+    expect(self.commentary.resultShown).toHaveBeenCalledOnce();
   });
 });

@@ -13,6 +13,8 @@ import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, Hand, 
 import { buildArena, type BuiltArena } from "./arena";
 import { CameraDirector, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE, SECONDS_OUT, ceremonyShot, cornerFrame, cornerPoint, cornerShot, cornerShotProgress } from "./camera";
 import { Avatars } from "./avatars";
+import { captionSlot, drawCaption } from "./caption";
+import { CommentaryDirector, type CrowdCue } from "./commentary";
 import { Effects3D, type BakedPart } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, type ArcadeDislocation } from "./graph";
 import { drawHud, finalRevealDelay, resultCard, resultCardLayout, RoundStatsTracker, STOPPAGE_METHODS, RoundClock, type RoundPunchStats } from "./hud";
@@ -627,6 +629,13 @@ export class FightRenderer {
   }> = [];
   onContact: ((event: CombatEvent) => void) | null = null;
   onArcadeInjury: ((injury: ArcadeInjury, event: CombatEvent) => void) | null = null;
+  /** The ring announcer's lines for a voice to read. */
+  onAnnouncement: ((lines: readonly string[]) => void) | null = null;
+  onCrowdCue: ((cue: CrowdCue) => void) | null = null;
+  private readonly commentary = new CommentaryDirector({ speak: (lines) => this.onAnnouncement?.(lines), cue: (cue) => this.onCrowdCue?.(cue) });
+  private readonly touchControls = coarsePointer();
+  private resultAnnounced = false;
+  private captionText = "";
   private readonly tmpA = new THREE.Vector3();
   private readonly tmpB = new THREE.Vector3();
   private readonly tmpHead = new THREE.Vector3();
@@ -799,6 +808,7 @@ export class FightRenderer {
     this.ceremony = this.ceremonyFor(final);
     this.finalRevealAt = this.frameSeconds + (this.ceremony === null ? finalRevealDelay(final) : CEREMONY_REVEAL_LIMIT_SECONDS);
     this.ovationUntil = final === null ? 0 : this.frameSeconds + CROWD_OVATION_SECONDS;
+    if (final !== null) this.commentary.finish(final, this.players, this.ceremony !== null, this.frameSeconds);
     if (this.ceremony === null) this.endCeremony();
     if (final === null || !STOPPAGE_METHODS.has(final.method)) return;
     const plan = this.lastKnockdown === null ? null : planKnockoutReplay(this.history, this.lastKnockdown.knockdown, this.simulation.tick_rate);
@@ -852,6 +862,7 @@ export class FightRenderer {
     if (arrived) ceremony.arrivedAt ??= seconds;
     if (!ceremony.announced && ceremony.arrivedAt !== null && seconds - ceremony.arrivedAt >= CEREMONY_PAUSE_SECONDS) {
       ceremony.announced = true;
+      this.commentary.verdict(this.frameSeconds);
       for (const seat of [0, 1] as const) this.graphs?.[seat]?.announce(ceremony.winnerSeat === null ? "level" : ceremony.winnerSeat === seat ? "winner" : "loser");
       this.finalRevealAt = Math.min(this.finalRevealAt, this.frameSeconds + 0.35);
       this.arena.excite(1);
@@ -941,6 +952,7 @@ export class FightRenderer {
     const buffer = new SnapshotBuffer(plan.snapshots.length + 2, this.simulation.tick_rate);
     for (const snapshot of plan.snapshots) buffer.push(snapshot);
     this.replay = { plan, buffer, startedAt: this.frameSeconds, impactFired: false, side: null };
+    this.commentary.replay(this.frameSeconds);
     this.replayFollow = 0;
     this.replayFollowAt = 0;
     for (const index of [0, 1] as const) {
@@ -1232,6 +1244,7 @@ export class FightRenderer {
       }
       if (event.kind === "referee_break") this.referee?.breakClinch();
     }
+    this.commentary.observe(snapshot, accepted, this.players, this.simulation.tick_rate, this.frameSeconds);
     for (const { event, presentationEvent, presentImpact } of contactPresentationPlan(accepted, snapshot)) {
       const targetIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.target_id);
       const actorIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.actor_id);
@@ -1847,6 +1860,28 @@ export class FightRenderer {
       ctx.fillRect(0, 0, viewport.width, viewport.height);
     }
     drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.frameSeconds >= this.finalRevealAt ? this.final : null, this.reconnectMs, this.simulation.tick_rate, this.roundStats, this.replay !== null ? "KNOCKOUT REPLAY" : null, this.inputLatencyMs, this.frameSeconds < this.roundCalloutUntil ? `ROUND ${this.roundCalloutRound}` : null, this.roundClock.ticks(snapshot), (player) => this.avatars.get(player));
+    this.drawCaption(ctx, viewport.width, viewport.height, snapshot);
+  }
+
+  /** The broadcast caption: commentary, the ring announcer and the decision read-out. */
+  private drawCaption(ctx: CanvasRenderingContext2D, width: number, height: number, snapshot: EngineSnapshot): void {
+    const final = this.final !== null && this.frameSeconds >= this.finalRevealAt ? this.final : null;
+    if (final !== null && !this.resultAnnounced) {
+      this.resultAnnounced = true;
+      this.commentary.resultShown(this.frameSeconds);
+    }
+    const caption = this.commentary.current(this.frameSeconds);
+    const settings = this.settings();
+    const text = caption === null || !settings.commentary ? "" : caption.line.text;
+    if (text !== this.captionText) {
+      this.captionText = text;
+      this.hudCanvas.dataset.caption = text;
+    }
+    if (caption === null || !settings.commentary) return;
+    const viewer = snapshot.fighters.find((fighter) => fighter.player_id === this.viewerId);
+    const resultTop = final === null ? null : resultCardLayout(width, height, resultCard(final, snapshot.fighters, this.players, snapshot.fighters.map((fighter) => this.roundStats.total(fighter.player_id)) as [RoundPunchStats, RoundPunchStats]), viewer !== undefined).y;
+    const slot = captionSlot({ width, height, phase: snapshot.phase, resultTop, touch: this.touchControls && viewer !== undefined, hint: snapshot.phase === "countdown" && viewer !== undefined, viewerDown: viewer?.is_downed === true, replay: this.replay !== null });
+    if (slot !== null) drawCaption(ctx, caption, slot, settings.reducedMotion);
   }
 
   destroy(): void {

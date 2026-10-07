@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   rendererPushes: [] as number[][],
   callbacks: null as NetworkCallbacks | null,
   resultVisible: true,
+  renderers: [] as Array<{ onAnnouncement?: ((lines: readonly string[]) => void) | null; onCrowdCue?: ((cue: "chant") => void) | null }>,
 }));
 vi.mock("./discord", () => ({
   authorizeDiscord: vi.fn(async () => ({
@@ -33,7 +34,9 @@ vi.mock("./network", () => ({
 vi.mock("./render/renderer", () => ({
   FightRenderer: class {
     private readonly pushes: number[] = [];
-    constructor() { mocks.rendererPushes.push(this.pushes); }
+    onAnnouncement: ((lines: readonly string[]) => void) | null = null;
+    onCrowdCue: ((cue: "chant") => void) | null = null;
+    constructor() { mocks.rendererPushes.push(this.pushes); mocks.renderers.push(this); }
     setPlayers(): void {}
     setFinal(): void {}
     setReconnect(): void {}
@@ -322,4 +325,57 @@ describe("browser lifecycle and accessible overlays", () => {
     app.destroy();
   });
 
+});
+
+describe("the broadcast", () => {
+  beforeEach(() => {
+    mocks.callbacks = null;
+    mocks.renderers.length = 0;
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    Reflect.deleteProperty(window, "speechSynthesis");
+    Reflect.deleteProperty(window, "SpeechSynthesisUtterance");
+  });
+
+  const launch = async (): Promise<{ root: HTMLElement; app: HandsApp }> => {
+    history.replaceState({}, "", "/?instance_id=broadcast");
+    const root = document.createElement("div");
+    const app = new HandsApp(root);
+    app.start();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
+    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 0, next_sequence: 0 });
+    return { root, app };
+  };
+
+  it("offers caption and announcer settings, with the voice switched off where the browser cannot speak", async () => {
+    const { root, app } = await launch();
+    const captions = root.querySelector<HTMLInputElement>("[data-commentary]")!;
+    const voice = root.querySelector<HTMLInputElement>("[data-announcer]")!;
+    expect(captions.checked).toBe(true);
+    expect(voice.disabled).toBe(true);
+    expect(voice.checked).toBe(false);
+    captions.checked = false;
+    captions.dispatchEvent(new Event("change"));
+    expect(JSON.parse(localStorage.getItem("hands.preferences.v1")!)).toMatchObject({ commentary: false });
+    app.destroy();
+  });
+
+  it("reads the ring announcements aloud and stops when the voice is switched off", async () => {
+    const spoken: string[] = [];
+    const cancel = vi.fn();
+    Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { speak: (utterance: { text: string }) => spoken.push(utterance.text), cancel, getVoices: () => [] } });
+    Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: class { onend = null; onerror = null; constructor(readonly text: string) {} } });
+    const { root, app } = await launch();
+    const voice = root.querySelector<HTMLInputElement>("[data-announcer]")!;
+    expect(voice.disabled).toBe(false);
+    expect(voice.checked).toBe(true);
+    mocks.renderers.at(-1)!.onAnnouncement!(["In the blue corner... One!", "And in the red corner... Two!"]);
+    expect(spoken).toEqual(["In the blue corner... One!"]);
+    voice.checked = false;
+    voice.dispatchEvent(new Event("change"));
+    expect(cancel).toHaveBeenCalled();
+    app.destroy();
+  });
 });

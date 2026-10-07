@@ -2,7 +2,7 @@ import { AudioFeedback } from "./audio";
 import { INJURY_SOUNDS } from "./assets/injury-sounds";
 import { HapticFeedback } from "./haptics";
 
-const settings = { volume: 1, haptics: true, reducedMotion: false, blood: "full" as const };
+const settings = { volume: 1, haptics: true, reducedMotion: false, blood: "full" as const, commentary: true, announcer: true };
 const audioParam = (): AudioParam => ({ value: 0, setValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() } as unknown as AudioParam);
 class MockAudioContext {
   static created = 0;

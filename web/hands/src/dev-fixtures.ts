@@ -30,7 +30,7 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
   const renderer = new FightRenderer(
     root.querySelector("canvas")!,
     { tick_rate: 30, ring_half_width: 500, ring_half_height: 500 },
-    () => ({ volume: 0, haptics: false, reducedMotion: false, blood }),
+    () => ({ volume: 0, haptics: false, reducedMotion: false, blood, commentary: true, announcer: false }),
   );
   renderer.setBloodLevel(blood);
   // `avatars=<discord id>:<avatar hash>,<discord id>:<avatar hash>` draws real pictures on the plates.
@@ -45,6 +45,9 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
   let tick = 0;
   let eventId = 0;
   let finalSent = false;
+  let bellRung = false;
+  let thrownWindow = -1;
+  let landedWindow = -1;
   const interval = window.setInterval(() => {
     tick += 3;
     const t = tick / 30;
@@ -87,7 +90,14 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       attacker.action_target = Math.floor(t / 3.2) % 4 === 1 ? "body" : "head";
       attacker.action_power = Math.floor(t / 3.2) % 5 === 2 ? "power" : "normal";
       defender.defense = Math.floor(t / 6.4) % 2 === 0 ? "guard_high" : "none";
-      if (cycle > 0.2 && cycle < 0.3) {
+      const punchWindow = Math.floor(t / 3.2);
+      if (thrownWindow !== punchWindow) {
+        thrownWindow = punchWindow;
+        eventId += 1;
+        events.push({ event_id: eventId, tick, kind: "punch_start", actor_id: attacker.player_id, target_id: null, amount: 0, detail: `${attacker.action_hand}:${punch}:${attacker.action_target}`, blood: 0, direction: 0, action_id: null });
+      }
+      if (cycle >= 0.2 && landedWindow !== punchWindow) {
+        landedWindow = punchWindow;
         eventId += 1;
         events.push({ event_id: eventId, tick, kind: "hit", actor_id: attacker.player_id, target_id: defender.player_id, amount: 210, detail: `${attacker.action_hand}:${punch}:${attacker.action_target}`, blood: 100, direction: attacker.facing, action_id: null });
         defender.stunned_ticks = 12;
@@ -95,7 +105,10 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
     }
     const search = new URLSearchParams(window.location.search);
     const finisher = search.get("finisher");
-    const forcedRest = search.get("phase") === "rest";
+    // `phase=bell` fights for ten seconds and then rings the bell for the rest; `intro=1` opens with the countdown.
+    const bellAt = search.get("phase") === "bell" ? 10.5 : null;
+    const forcedRest = search.get("phase") === "rest" || (bellAt !== null && t >= bellAt);
+    const introducing = search.get("intro") === "1" && t < 3;
     const pinned = search.get("pin") === "1";
     const knockdownCycle = finisher === null ? t % 14 : (t < 2.5 ? 0 : 12);
     if (knockdownCycle > 11 && knockdownCycle < 13.4) {
@@ -149,6 +162,25 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
         fighter.defense = "none";
       }
       events.length = 0;
+      if (bellAt !== null && !bellRung) {
+        bellRung = true;
+        eventId += 1;
+        events.push({ event_id: eventId, tick, kind: "bell", actor_id: null, target_id: null, amount: 0, detail: "round_end", blood: 0, direction: 0, action_id: null });
+      }
+    }
+    if (introducing) {
+      for (const [fighter, sign] of [[one, -1], [two, 1]] as const) {
+        fighter.x = sign * 150;
+        fighter.y = 0;
+        fighter.velocity_x = fighter.velocity_y = 0;
+        fighter.facing_x = -sign * 1000;
+        fighter.facing_y = 0;
+        fighter.facing = -sign;
+        fighter.action = null;
+        fighter.taunt_ticks = fighter.stunned_ticks = fighter.clinch_ticks = 0;
+        fighter.is_downed = false;
+      }
+      events.length = 0;
     }
     const decided = search.get("finish") === "decision" && t >= 3.4;
     if (decided) {
@@ -162,7 +194,7 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       events.length = 0;
     }
     const snapshot: EngineSnapshot = {
-      tick, phase: decided ? "complete" : forcedRest ? "rest" : "fight", round_number: 3, phase_ticks_remaining: decided ? 0 : Math.max(0, 5400 - tick),
+      tick, phase: decided ? "complete" : introducing ? "countdown" : forcedRest ? "rest" : "fight", round_number: search.get("intro") === "1" ? 1 : 3, phase_ticks_remaining: decided ? 0 : introducing ? Math.max(0, 90 - tick) : forcedRest ? Math.max(0, 450 - tick) : Math.max(0, 5400 - tick),
       fighters: [{ ...one }, { ...two }], events, result: null, checksum: "a".repeat(64),
     };
     renderer.push(snapshot);
