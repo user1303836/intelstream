@@ -386,7 +386,7 @@ class HandsRoom:
                 role = "fighter"
             elif existing_spectator is not None:
                 role = "spectator"
-            elif self._engine is None and len(self._slots) + (self._cpu is not None) < 2:
+            elif self._seat_open():
                 role = "fighter"
             else:
                 role = "spectator"
@@ -414,6 +414,11 @@ class HandsRoom:
                     existing_fighter.pre_match_grace_event.set()
                     fighter = existing_fighter
                 else:
+                    if self._cpu is not None:
+                        # A person takes the computer's seat before the bell: the computer's pick
+                        # is dropped and the two of them pick afresh below.
+                        self._cancel_select()
+                        self._cpu = None
                     fighter = PlayerSlot(
                         identity=identity,
                         rating=rating,
@@ -538,6 +543,14 @@ class HandsRoom:
             if not connection.ticket_refresh_queued:
                 connection.ticket_refresh_queued = True
                 connection.outbox.put_nowait(_OutboundMessage(ticket_refresh=True))
+
+    def _seat_open(self) -> bool:
+        """Whether a newcomer can take a fighter's seat.
+
+        Seats are taken before the bell. The computer holds its seat only once the bout is on:
+        until then a person who arrives takes it, since bouts against the computer are unrated.
+        """
+        return self._engine is None and len(self._slots) < 2
 
     def _new_connection(
         self, player_id: str, role: ConnectionRole, socket: SocketLike

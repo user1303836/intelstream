@@ -2453,9 +2453,6 @@ async def test_the_computer_picks_at_once_and_waits_for_the_fighter(
     # The computer has settled, but its style is revealed at the bell like anyone's.
     assert shown_styles(select) == {}
     assert [entry["id"] for entry in select["players"]] == ["one", "cpu:champion"]
-    # Nobody else is seated beside the computer while the styles are picked.
-    third = await manager.join(player("three"), FakeSocket())
-    assert third.role == "spectator"
     assert not await one.room.request_cpu("one", one.connection, CpuLevel.ROOKIE)
 
     await one.room.choose_style("one", one.connection, ready_choice(FighterStyle.SWARMER))
@@ -2466,6 +2463,56 @@ async def test_the_computer_picks_at_once_and_waits_for_the_fighter(
     computer = one.room.cpu
     assert computer is not None and computer.brain is not None
     assert computer.brain.style is computer_style
+    await manager.close()
+
+
+async def test_a_friend_who_arrives_during_the_computers_pick_takes_its_seat(
+    repository: Repository,
+) -> None:
+    manager = HandsRoomManager(
+        repository,
+        config=room_config(style_select=5.0),
+        match_id_factory=lambda: "match-friend",
+    )
+    first_socket = FakeSocket()
+    one = await manager.join(player("one"), first_socket)
+    assert await one.room.request_cpu("one", one.connection, CpuLevel.CHAMPION)
+    await wait_until(lambda: "select" in message_types(first_socket))
+
+    second_socket = FakeSocket()
+    friend = await manager.join(player("two"), second_socket)
+    assert friend.role == "fighter"
+    assert friend.room is one.room
+    assert one.room.cpu is None
+    await wait_until(lambda: len(payloads(first_socket, "select")) == 2)
+    fresh = payloads(first_socket, "select")[-1]
+    assert [entry["id"] for entry in fresh["players"]] == ["one", "two"]
+    assert not any(entry.get("cpu") for entry in fresh["players"])
+    assert fresh["ready"] == [] and fresh["deadline_ms"] > 4000
+    assert message_types(second_socket) == ["welcome", "select"]
+    # The computer cannot come back into the pick, and a third arrival watches.
+    assert not await one.room.request_cpu("one", one.connection, CpuLevel.ROOKIE)
+    watcher = await manager.join(player("three"), FakeSocket())
+    assert watcher.role == "spectator"
+
+    await one.room.choose_style("one", one.connection, ready_choice(FighterStyle.BOXER))
+    await friend.room.choose_style("two", friend.connection, ready_choice(FighterStyle.SLUGGER))
+    engine = one.room.engine
+    assert engine is not None and engine.players == ("one", "two")
+    await wait_until(lambda: "final" in message_types(first_socket), deadline_seconds=5)
+    # A bout between two people is rated.
+    assert await repository.get_hands_match("match-friend") is not None
+    await manager.close()
+
+
+async def test_the_computer_keeps_its_seat_once_the_bout_is_on(repository: Repository) -> None:
+    manager = HandsRoomManager(repository, config=room_config(round_ticks=600))
+    one = await manager.join(player("one"), FakeSocket())
+    assert await one.room.request_cpu("one", one.connection, CpuLevel.ROOKIE)
+    assert one.room.engine is not None
+    late = await manager.join(player("two"), FakeSocket())
+    assert late.role == "spectator"
+    assert one.room.cpu is not None
     await manager.close()
 
 
