@@ -50,15 +50,27 @@ const css = (color: number): string => {
   return `rgb(${shade(16)},${shade(8)},${shade(0)})`;
 };
 
+/** The part of the renderer that sends a painted region to the GPU without the rest of the texture. */
+export interface RegionUploader {
+  initTexture(texture: THREE.Texture): void;
+  copyTextureToTexture(source: THREE.Texture, destination: THREE.Texture, region: THREE.Box2, position: THREE.Vector2): void;
+}
+
 /**
  * Blood on the canvas, painted into one texture that lies over the ring: a stain stays where it fell
- * for the whole bout, it darkens where stains overlap, and any number of them cost one draw.
+ * for the whole bout, it darkens where stains overlap, and any number of them cost one draw. Only the
+ * part painted since the last upload goes to the GPU.
  */
 export class CanvasBlood {
   readonly mesh: THREE.Mesh;
   private readonly canvas: HTMLCanvasElement;
   private readonly context: CanvasRenderingContext2D | null;
   private readonly texture: THREE.CanvasTexture;
+  /** The same canvas as an upload source the renderer never draws, so copying from it reads the painted pixels. */
+  private readonly source: THREE.Texture;
+  private uploader: RegionUploader | null = null;
+  private readonly region = new THREE.Box2();
+  private readonly regionAt = new THREE.Vector2();
   private readonly material: THREE.MeshStandardMaterial;
   private readonly geometry: THREE.PlaneGeometry;
   private readonly stamps: HTMLCanvasElement[] = [];
@@ -67,6 +79,7 @@ export class CanvasBlood {
   private readonly pixelsPerMetre: number;
   private dirty = false;
   private sinceUpload = 0;
+  private uploadInterval = CANVAS_BLOOD_UPLOAD_INTERVAL;
   private painted = 0;
 
   constructor(private readonly scene: THREE.Scene, readonly size = 1024) {
@@ -84,8 +97,15 @@ export class CanvasBlood {
     this.texture = new THREE.CanvasTexture(this.canvas);
     this.texture.colorSpace = THREE.SRGBColorSpace;
     this.texture.anisotropy = 4;
+    // Rows go up the canvas as they go down the image, so a region copies without flipping; the plane's
+    // texture coordinates turn the other way to match.
+    this.texture.flipY = false;
+    this.source = new THREE.Texture(this.canvas);
+    this.region.makeEmpty();
     this.material = new THREE.MeshStandardMaterial({ map: this.texture, transparent: true, depthWrite: false, roughness: 0.32, metalness: 0, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
     this.geometry = new THREE.PlaneGeometry(RING_FIGHT_HALF * 2, RING_FIGHT_HALF * 2);
+    const uv = this.geometry.getAttribute("uv");
+    for (let index = 0; index < uv.count; index += 1) uv.setY(index, 1 - uv.getY(index));
     this.mesh = new THREE.Mesh(this.geometry, this.material);
     this.mesh.rotation.x = -Math.PI / 2;
     this.mesh.position.y = CANVAS_TOP + 0.003;
@@ -101,6 +121,22 @@ export class CanvasBlood {
 
   get uploadPending(): boolean {
     return this.dirty;
+  }
+
+  /** Lets the canvas send only what has been painted; without it every upload is the whole texture. */
+  useUploader(uploader: RegionUploader | null): void {
+    this.uploader = uploader;
+    uploader?.initTexture(this.texture);
+  }
+
+  /** A struggling client sends the canvas half as often. */
+  setLowTier(low: boolean): void {
+    this.uploadInterval = low ? CANVAS_BLOOD_UPLOAD_INTERVAL * 2 : CANVAS_BLOOD_UPLOAD_INTERVAL;
+  }
+
+  private grow(x: number, y: number, radius: number): void {
+    this.region.expandByPoint(this.regionAt.set(x - radius - 1, y - radius - 1));
+    this.region.expandByPoint(this.regionAt.set(x + radius + 1, y + radius + 1));
   }
 
   /** Where a point of the ring lands on the painted canvas, in pixels. */
@@ -126,6 +162,7 @@ export class CanvasBlood {
     const at = this.pixel(x, z);
     const w = Math.max(1, width * this.pixelsPerMetre);
     const h = Math.max(1, depth * this.pixelsPerMetre);
+    this.grow(at.x, at.y, Math.hypot(w, h) / 2);
     ctx.save();
     ctx.globalAlpha = THREE.MathUtils.clamp(opacity, 0, 1);
     ctx.translate(at.x, at.y);
@@ -141,6 +178,7 @@ export class CanvasBlood {
     if (ctx === null || Math.abs(x) > RING_FIGHT_HALF || Math.abs(z) > RING_FIGHT_HALF) return;
     const at = this.pixel(x, z);
     const core = Math.max(1, radius * 1.15 * this.pixelsPerMetre);
+    this.grow(at.x, at.y, core);
     const gradient = ctx.createRadialGradient(at.x, at.y, 0, at.x, at.y, core);
     gradient.addColorStop(0, "rgba(40,3,6,0.9)");
     gradient.addColorStop(0.65, "rgba(58,5,9,0.65)");
@@ -154,11 +192,19 @@ export class CanvasBlood {
     ctx.restore();
   }
 
-  /** Sends what has been painted to the GPU, no more often than every `CANVAS_BLOOD_UPLOAD_INTERVAL` seconds. */
+  /** Sends what has been painted to the GPU, no more often than every `CANVAS_BLOOD_UPLOAD_INTERVAL` seconds (twice that at the low tier). */
   update(dt: number): void {
     this.sinceUpload += Number.isFinite(dt) ? Math.max(0, dt) : 0;
-    if (!this.dirty || this.sinceUpload < CANVAS_BLOOD_UPLOAD_INTERVAL) return;
-    this.texture.needsUpdate = true;
+    if (!this.dirty || this.sinceUpload < this.uploadInterval) return;
+    const region = this.region;
+    region.min.set(Math.max(0, Math.floor(region.min.x)), Math.max(0, Math.floor(region.min.y)));
+    region.max.set(Math.min(this.size, Math.ceil(region.max.x)), Math.min(this.size, Math.ceil(region.max.y)));
+    if (this.uploader !== null && !region.isEmpty() && region.max.x > region.min.x && region.max.y > region.min.y) {
+      this.uploader.copyTextureToTexture(this.source, this.texture, region, this.regionAt.copy(region.min));
+    } else {
+      this.texture.needsUpdate = true;
+    }
+    region.makeEmpty();
     this.dirty = false;
     this.sinceUpload = 0;
   }
@@ -167,6 +213,7 @@ export class CanvasBlood {
     this.context?.clearRect(0, 0, this.size, this.size);
     this.painted = 0;
     this.dirty = false;
+    this.region.makeEmpty();
     this.texture.needsUpdate = true;
     this.mesh.visible = false;
   }
@@ -174,6 +221,7 @@ export class CanvasBlood {
   dispose(): void {
     this.scene.remove(this.mesh);
     this.texture.dispose();
+    this.source.dispose();
     this.material.dispose();
     this.geometry.dispose();
   }

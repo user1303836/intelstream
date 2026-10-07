@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import type { BloodLevel } from "../settings";
 import type { CombatEvent, Hand } from "../types";
-import { CanvasBlood } from "./canvas-blood";
+import { CanvasBlood, type RegionUploader } from "./canvas-blood";
 import { wearCornerColour } from "./gear";
 import { HARD_SHOT, bloodDropsFor, bloodShade, buildChunkGeometry, buildDropletGeometry, buildShardGeometry, buildWoundGeometry, closeCut, dropletShape, eyeTexture, jawWoundTexture, woundTexture, wristWoundTexture } from "./gore";
 import { LookShading, SCANNED_LOOK, type FighterLook } from "./looks";
@@ -489,6 +489,15 @@ export class Effects3D {
   /** Stains of blood painted on the canvas since it was last cleaned. */
   get canvasStains(): number {
     return this.canvasBlood.stains;
+  }
+
+  /** Sends only the newly painted part of the canvas blood to the GPU from now on. */
+  useUploader(uploader: RegionUploader): void {
+    this.canvasBlood.useUploader(uploader);
+  }
+
+  setLowTier(low: boolean): void {
+    this.canvasBlood.setLowTier(low);
   }
 
   get liveGibs(): number {

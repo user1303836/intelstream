@@ -715,17 +715,19 @@ describe("the low quality tier", () => {
   const apply = (FightRenderer.prototype as unknown as { applyResolutionScale(this: unknown): void }).applyResolutionScale;
   const rig = (scale: number) => ({
     basePixelRatio: 2, scaler: { scale }, renderer: { setPixelRatio: vi.fn() }, composer: { setPixelRatio: vi.fn() },
-    bloomPass: { enabled: true }, keyLight: null, arena: { setLowTier: vi.fn() },
+    bloomPass: { enabled: true }, keyLight: null, arena: { setLowTier: vi.fn() }, effects: { setLowTier: vi.fn() },
   });
 
   it("sheds the crowd's most expensive work along with the bloom, and gives it back", () => {
     const struggling = rig(0.5);
     apply.call(struggling);
     expect(struggling.arena.setLowTier).toHaveBeenLastCalledWith(true);
+    expect(struggling.effects.setLowTier).toHaveBeenLastCalledWith(true);
     expect(struggling.bloomPass.enabled).toBe(false);
     const fine = rig(1);
     apply.call(fine);
     expect(fine.arena.setLowTier).toHaveBeenLastCalledWith(false);
+    expect(fine.effects.setLowTier).toHaveBeenLastCalledWith(false);
     expect(fine.bloomPass.enabled).toBe(true);
   });
 });

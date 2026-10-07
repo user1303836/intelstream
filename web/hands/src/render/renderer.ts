@@ -937,6 +937,7 @@ export class FightRenderer {
     this.arena = buildArena();
     this.scene.add(this.arena.group);
     this.effects = new Effects3D(this.scene, coarsePointer() ? 1024 : 2048);
+    this.effects.useUploader(this.renderer);
 
     this.blobTexture = blobShadowTexture();
     const blobGeometry = new THREE.PlaneGeometry(1, 1);
@@ -1804,6 +1805,7 @@ export class FightRenderer {
     this.bloomPass.enabled = !low;
     if (this.keyLight !== null) this.keyLight.castShadow = !low;
     this.arena.setLowTier(low);
+    this.effects.setLowTier(low);
     const shadowSize = this.scaler.scale < 0.8 ? 1024 : 2048;
     const shadow = this.keyLight?.shadow;
     if (shadow !== undefined && shadow.mapSize.x !== shadowSize) {
