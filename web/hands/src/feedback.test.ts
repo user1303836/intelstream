@@ -15,6 +15,9 @@ class MockAudioContext {
   static operations: string[] = [];
   static last: MockAudioContext | null = null;
   static playedBuffers: Array<AudioBuffer | null> = [];
+  /** The next resume() is outside a user activation: it stays pending until a later resume() starts the context. */
+  static holdResume = false;
+  private readonly pendingResumes: (() => void)[] = [];
   state: AudioContextState = "suspended";
   currentTime = 0;
   sampleRate = 8000;
@@ -22,7 +25,13 @@ class MockAudioContext {
   resume = vi.fn(async () => {
     MockAudioContext.operations.push("resume");
     if (MockAudioContext.failResume) { MockAudioContext.failResume = false; throw new Error("blocked"); }
+    if (MockAudioContext.holdResume) {
+      MockAudioContext.holdResume = false;
+      await new Promise<void>((resolve) => { this.pendingResumes.push(resolve); });
+      return;
+    }
     this.state = "running";
+    for (const resolve of this.pendingResumes.splice(0)) resolve();
   });
   suspend = vi.fn(async () => { this.state = "suspended"; });
   close = vi.fn(async () => {});
@@ -62,7 +71,34 @@ describe("authoritative audio and haptics", () => {
     MockAudioContext.operations = [];
     MockAudioContext.last = null;
     MockAudioContext.playedBuffers = [];
+    MockAudioContext.holdResume = false;
     vi.stubGlobal("AudioContext", MockAudioContext);
+  });
+
+  it.each(["pointerup", "touchend", "click"])("unlocks audio on the %s that ends a touch whose press could not start it", async (release) => {
+    MockAudioContext.holdResume = true;
+    const feedback = new AudioFeedback(() => settings);
+    try {
+      window.dispatchEvent(new Event("pointerdown"));
+      await Promise.resolve();
+      expect(MockAudioContext.created).toBe(1);
+      expect(MockAudioContext.oscillatorStarts).toBe(0);
+      window.dispatchEvent(new Event(release));
+      await vi.waitFor(() => expect(MockAudioContext.oscillatorStarts).toBe(1));
+      expect(MockAudioContext.last!.state).toBe("running");
+    } finally {
+      feedback.destroy();
+    }
+  });
+
+  it.each(["touchend", "click"])("unlocks audio when %s is the first gesture", async (gesture) => {
+    const feedback = new AudioFeedback(() => settings);
+    try {
+      window.dispatchEvent(new Event(gesture));
+      await vi.waitFor(() => expect(MockAudioContext.oscillatorStarts).toBe(1));
+    } finally {
+      feedback.destroy();
+    }
   });
 
   it("creates WebAudio only after an explicit gesture and safely synthesizes events", async () => {
