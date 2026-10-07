@@ -871,8 +871,9 @@ class CpuBrain:
             PunchAction(_other_hand(attack.action.hand), punch_class, Target.HEAD), them, power
         )
         rule = self._rule(action)
-        discounted = max(1, rule.stamina_cost * 90 // 100)
-        if distance > self._reach(me, rule) or me.stamina < discounted:
+        # The engine charges the full price before a combination's discount: short of it, the
+        # punch would wait out the recovery or come as a slow arm punch.
+        if distance > self._reach(me, rule) or me.stamina < rule.stamina_cost:
             self._combo_left = 0
             return None
         return action

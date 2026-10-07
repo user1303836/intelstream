@@ -243,6 +243,51 @@ def test_it_never_throws_a_punch_it_cannot_pay_for() -> None:
     assert not any(event.kind == "exhausted" for event in engine.events)
 
 
+def test_it_only_follows_up_with_the_full_price_of_the_next_punch_in_hand() -> None:
+    """The engine charges a combination's next punch in full before its discount, so a follow-up
+    queued on the discounted price waits out the recovery or comes as a slow arm punch."""
+    engine = engine_at(100)
+    engine.checksums = False
+    brain = CpuBrain("cpu", "human", CpuLevel.CHAMPION, 9)
+    cpu, human = engine.fighter("cpu"), engine.fighter("human")
+    engine.submit_input(
+        "cpu",
+        InputCommand(
+            1, engine.tick, actions=(PunchAction(Hand.LEFT, PunchClass.JAB, Target.HEAD),)
+        ),
+    )
+    while cpu.attack is None or not cpu.attack.resolved:
+        engine.step()
+    assert cpu.attack.landed
+    # The first follow-up on offer after a jab is the hook; make it a power hook to the body.
+    brain._rng.randrange = lambda _stop: 0  # type: ignore[method-assign]
+    brain._shaped = lambda action, _them, _power: replace(  # type: ignore[method-assign]
+        action, target=Target.BODY, power=Power.POWER
+    )
+    price = brain._rule(
+        PunchAction(Hand.RIGHT, PunchClass.HOOK, Target.BODY, Power.POWER)
+    ).stamina_cost
+
+    def follow_up(stamina: int) -> PunchAction | None:
+        brain._followed_start = -1
+        brain._combo_left = 1
+        cpu.stamina = stamina
+        return brain._follow_up(cpu, human, 100.0, False)
+
+    assert follow_up(price * 90 // 100) is None
+    assert follow_up(price - 1) is None
+    hook = follow_up(price)
+    assert hook is not None
+    attack = cpu.attack
+    engine.submit_input("cpu", InputCommand(2, engine.tick, actions=(hook,)))
+    events = []
+    while cpu.attack is attack:
+        events.extend(engine.step().events)
+    # Paid in full, it cuts the jab's recovery short at the cancel point and is no arm punch.
+    assert engine.tick == attack.start_tick + attack.cancel_age
+    assert not any(event.kind == "exhausted" for event in events)
+
+
 def test_with_stamina_in_hand_it_lets_its_hands_go() -> None:
     engine = engine_at(120)
     brain = always(CpuBrain("cpu", "human", CpuLevel.CHAMPION, 6))
