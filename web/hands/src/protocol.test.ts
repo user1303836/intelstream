@@ -1,3 +1,5 @@
+import manifestJson from "../../../src/intelstream/hands/combat-manifest.json";
+import { GET_UP_REQUIRED_MAX, GET_UP_REQUIRED_MIN } from "./manifest";
 import { decodeBootstrap, decodeServerFrame, decodeToken, encodeCpuRequest, encodeInput, ProtocolError } from "./protocol";
 import type { CpuLevel } from "./types";
 import { envelope, publicPlayers, snapshot } from "./test/fixtures";
@@ -76,11 +78,16 @@ describe("strict protocol v3", () => {
     const cards = ["A", "B", "C"].map((judge) => ({ judge, player_one: [], player_two: [] }));
     expect(() => decodeServerFrame(JSON.stringify({ version: 3, type: "final", match_id: "m", winner_id, method, round: 1, scorecards: cards, ratings: { one: { before: 1, after: 1 }, two: { before: 1, after: 1 } } }))).toThrow(/coherent/u);
   });
+  it("allows the most get-up presses the engine can ask for: three knockdowns on a head beaten to the cap", () => {
+    expect(GET_UP_REQUIRED_MIN).toBe(manifestJson.knockdown.get_up_base);
+    expect(GET_UP_REQUIRED_MAX).toBe(manifestJson.knockdown.get_up_base + 3 * manifestJson.knockdown.get_up_per_knockdown + Math.floor(1400 / manifestJson.knockdown.get_up_trauma_divisor));
+    expect(GET_UP_REQUIRED_MAX).toBeGreaterThanOrEqual(171);
+  });
   it("accepts exact fighter-domain boundaries and the private get-up sentinel", () => {
     const base = snapshot();
     const lower = { ...base.fighters[0], x: -462, y: -462, facing: -1, velocity_x: -7, velocity_y: -7, maximum_stamina: 330, stamina: 0, poise: 0, get_up_required: 45 };
-    const upper = { ...base.fighters[1], x: 462, y: 462, facing: 1, velocity_x: 7, velocity_y: 7, maximum_stamina: 1000, stamina: 1000, poise: 600, get_up_required: 169 };
-    expect(decodeServerFrame(JSON.stringify({ version: 3, type: "snapshot", payload: { ...base, fighters: [lower, upper] } }))).toMatchObject({ type: "snapshot", payload: { fighters: [{ get_up_required: 45 }, { get_up_required: 169 }] } });
+    const upper = { ...base.fighters[1], x: 462, y: 462, facing: 1, velocity_x: 7, velocity_y: 7, maximum_stamina: 1000, stamina: 1000, poise: 600, get_up_required: GET_UP_REQUIRED_MAX };
+    expect(decodeServerFrame(JSON.stringify({ version: 3, type: "snapshot", payload: { ...base, fighters: [lower, upper] } }))).toMatchObject({ type: "snapshot", payload: { fighters: [{ get_up_required: 45 }, { get_up_required: GET_UP_REQUIRED_MAX }] } });
     const redactedOpponent = { ...upper, get_up_required: 0 };
     expect(decodeServerFrame(JSON.stringify({ version: 3, type: "snapshot", payload: { ...base, fighters: [lower, redactedOpponent] } }))).toMatchObject({ payload: { fighters: [{ get_up_required: 45 }, { get_up_required: 0 }] } });
   });
@@ -89,7 +96,7 @@ describe("strict protocol v3", () => {
     ["zero facing", "facing", 0], ["velocity x below", "velocity_x", -8], ["velocity x above", "velocity_x", 8],
     ["velocity y below", "velocity_y", -8], ["velocity y above", "velocity_y", 8], ["maximum stamina below", "maximum_stamina", 329],
     ["maximum stamina above", "maximum_stamina", 1001], ["poise below", "poise", -1], ["poise above", "poise", 601],
-    ["get-up gap start", "get_up_required", 1], ["get-up gap end", "get_up_required", 33], ["get-up above", "get_up_required", 170],
+    ["get-up gap start", "get_up_required", 1], ["get-up gap end", "get_up_required", GET_UP_REQUIRED_MIN - 1], ["get-up above", "get_up_required", GET_UP_REQUIRED_MAX + 1],
   ])("rejects %s fighter output", (_name, field, value) => {
     const base = snapshot();
     const changed = { ...base.fighters[0], [field]: value };

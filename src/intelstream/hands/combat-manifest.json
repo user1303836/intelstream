@@ -227,7 +227,8 @@
     "rocked_damage_divisor": 6,
     "rocked_max_ticks": 36,
     "chain_max_ticks": 45,
-    "immunity_ticks": 24
+    "immunity_ticks": 24,
+    "moving_speed_percent": 50
   },
   "guard": {
     "block_poise_percent": 25,

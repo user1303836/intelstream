@@ -1,4 +1,4 @@
-import { comboChain, comboWindow, FIGHTER_RADIUS, punchStaminaCost, punchTiming, RING_CORNER_REACH, RING_HALF_HEIGHT, RING_HALF_WIDTH, type PunchTiming } from "./manifest";
+import { comboChain, comboWindow, FIGHTER_RADIUS, punchStaminaCost, punchTiming, RING_CORNER_REACH, RING_HALF_HEIGHT, RING_HALF_WIDTH, STUNNED_SPEED_PERCENT, type PunchTiming } from "./manifest";
 import type { FighterSnapshot, Hand, HeldDefense, Power, PunchClass, Target } from "./types";
 
 export interface HeldInput {
@@ -80,7 +80,6 @@ function stateLocked(fighter: FighterSnapshot): boolean {
   // A queued punch starts the tick the current one ends, so the fighter is never free in between.
   return fighter.queued_actions > 0
     || fighter.is_downed
-    || fighter.stunned_ticks > 0
     || fighter.clinch_ticks > 0
     || fighter.clinch_startup_ticks > 0
     || fighter.taunt_ticks > 0
@@ -99,12 +98,17 @@ export function predictMovement(fighter: FighterSnapshot, held: HeldInput, ticks
   if (ticks <= 0 || stateLocked(fighter)) return { dx: 0, dy: 0 };
   const committed = tick === undefined ? (fighter.action !== null ? Infinity : 0) : attackTicksRemaining(fighter, tick);
   if (committed >= ticks) return { dx: 0, dy: 0 };
-  let speed = Math.max(2, Math.floor((MAX_SPEED * fatigueFactor(fighter.conditioning, fighter.trauma.body)) / 100));
-  if (held.defense === "guard_high" || held.defense === "guard_low") speed = Math.max(2, Math.floor((speed * GUARD_SPEED_PERCENT) / 100));
+  const base = Math.max(2, Math.floor((MAX_SPEED * fatigueFactor(fighter.conditioning, fighter.trauma.body)) / 100));
+  const guarded = Math.max(2, Math.floor((base * GUARD_SPEED_PERCENT) / 100));
   const magnitude = Math.hypot(held.moveX, held.moveY);
   const scale = magnitude > 1000 ? 1000 / magnitude : 1;
-  const desiredX = (held.moveX * scale * speed) / 1000;
-  const desiredY = (held.moveY * scale * speed) / 1000;
+  // The engine counts a stun down before the footwork of each tick, and a stunned fighter's guard
+  // is down: he stumbles at a share of his plain speed while the stun has ticks left after that.
+  const speedAt = (step: number): number => {
+    const stunned = fighter.stunned_ticks - step;
+    if (stunned > 0) return stunned > 1 ? Math.max(2, Math.floor((base * STUNNED_SPEED_PERCENT) / 100)) : base;
+    return held.defense === "guard_high" || held.defense === "guard_low" ? guarded : base;
+  };
   let vx = fighter.velocity_x;
   let vy = fighter.velocity_y;
   let dx = 0;
@@ -112,9 +116,10 @@ export function predictMovement(fighter: FighterSnapshot, held: HeldInput, ticks
   const whole = Math.floor(ticks);
   const fraction = ticks - whole;
   for (let step = 0; step < whole; step += 1) {
+    const speed = speedAt(step);
     const free = step >= committed;
-    vx = (vx + (free ? desiredX : 0)) / 2;
-    vy = (vy + (free ? desiredY : 0)) / 2;
+    vx = (vx + (free ? (held.moveX * scale * speed) / 1000 : 0)) / 2;
+    vy = (vy + (free ? (held.moveY * scale * speed) / 1000 : 0)) / 2;
     const length = Math.hypot(vx, vy);
     if (length > speed) {
       vx = (vx / length) * speed;
@@ -124,9 +129,10 @@ export function predictMovement(fighter: FighterSnapshot, held: HeldInput, ticks
     dy += vy;
   }
   if (fraction > 0) {
+    const speed = speedAt(whole);
     const free = whole >= committed;
-    dx += ((vx + (free ? desiredX : 0)) / 2) * fraction;
-    dy += ((vy + (free ? desiredY : 0)) / 2) * fraction;
+    dx += ((vx + (free ? (held.moveX * scale * speed) / 1000 : 0)) / 2) * fraction;
+    dy += ((vy + (free ? (held.moveY * scale * speed) / 1000 : 0)) / 2) * fraction;
   }
   return { dx, dy };
 }

@@ -10,6 +10,7 @@ from intelstream.hands.protocol import (
     MAX_TICK_LAG,
     MAX_TICK_LEAD,
     ProtocolError,
+    decode_client_frame,
     encode_client_input,
     encode_snapshot,
     parse_client_input,
@@ -339,3 +340,15 @@ def test_corner_instructions_and_choice_travel_on_the_wire() -> None:
     engine.step({"two": InputCommand(1, 0, actions=(MovementAction(ActionKind.CORNER_BREATH),))})
     resting = json.loads(encode_snapshot(engine.snapshot(), viewer_id="one"))["payload"]
     assert [fighter["corner_choice"] for fighter in resting["fighters"]] == [None, "breath"]
+
+
+def test_a_frame_is_decoded_once_and_then_read_as_whichever_message_it_is() -> None:
+    request = decode_client_frame(json.dumps({"version": 3, "type": "cpu", "level": "rookie"}))
+    assert parse_ticket_ack(request) is None
+    assert parse_cpu_request(request) is CpuLevel.ROOKIE
+    frame = encode_client_input(InputCommand(sequence=4, client_tick=0, move_x=500))
+    command = parse_client_input(decode_client_frame(frame), last_sequence=3)
+    assert command.sequence == 4 and command.move_x == 500
+    for bad in ("x" * (MAX_FRAME_BYTES + 1), "[1, 2]", "{", b"\xff\xfe"):
+        with pytest.raises(ProtocolError):
+            decode_client_frame(bad)

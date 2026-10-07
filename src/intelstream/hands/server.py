@@ -23,6 +23,7 @@ from intelstream.hands.protocol import (
     MAX_FRAME_BYTES,
     PROTOCOL_VERSION,
     ProtocolError,
+    decode_client_frame,
     parse_cpu_request,
     parse_ticket_ack,
 )
@@ -712,7 +713,8 @@ class HandsServer:
             async for message in websocket:
                 if message.type in (WSMsgType.TEXT, WSMsgType.BINARY):
                     try:
-                        refresh_id = parse_ticket_ack(message.data)
+                        envelope = decode_client_frame(message.data)
+                        refresh_id = parse_ticket_ack(envelope)
                         if refresh_id is not None:
                             reconnect_ticket = ticket_refresh_state.ticket_for(refresh_id)
                             if reconnect_ticket is None:
@@ -722,7 +724,7 @@ class HandsServer:
                             continue
                         if membership.role == "spectator":
                             raise RoomError("spectator_read_only")
-                        cpu_level = parse_cpu_request(message.data)
+                        cpu_level = parse_cpu_request(envelope)
                         if cpu_level is not None:
                             await membership.room.request_cpu(
                                 membership.player_id, membership.connection, cpu_level
@@ -731,7 +733,7 @@ class HandsServer:
                         await membership.room.submit_frame(
                             membership.player_id,
                             membership.connection,
-                            message.data,
+                            envelope,
                         )
                     except ProtocolError:
                         await self._ws_error(websocket, "invalid_input", close_code=4008)

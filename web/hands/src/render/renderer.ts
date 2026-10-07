@@ -814,6 +814,8 @@ export class FightRenderer {
   private players: Readonly<Record<string, PublicPlayer>> = {};
   private playerOrder: readonly string[] = [];
   private viewerId: string | null = null;
+  /** Until this tick the player's own fighter is folding over a body shot and cannot move. */
+  private ownCollapseUntil = 0;
   private final: FinalMessage | null = null;
   private reconnectMs = 0;
   private destroyed = false;
@@ -1633,6 +1635,7 @@ export class FightRenderer {
         }
       }
       if (event.kind === "referee_break") this.referee?.breakClinch();
+      if (event.kind === "body_collapse" && event.target_id === this.viewerId) this.ownCollapseUntil = event.tick + event.amount;
     }
     this.commentary.observe(snapshot, accepted, this.players, this.simulation.tick_rate, this.frameSeconds);
     for (const { event, presentationEvent, presentImpact } of contactPresentationPlan(accepted, snapshot)) {
@@ -2102,7 +2105,9 @@ export class FightRenderer {
     const rate = 1 - Math.exp(-14 * dt);
     let target = { dx: 0, dy: 0 };
     // The player's own punch starts here before the server has it, and holds the feet from then on.
-    if (index >= 0 && held !== null && snapshot.phase === "fight" && this.graphs?.[index]?.ownPunchActive !== true) {
+    // A body shot that is putting the player's own fighter down freezes him until he drops.
+    const collapsing = this.ownCollapseUntil > snapshot.tick;
+    if (index >= 0 && held !== null && snapshot.phase === "fight" && !collapsing && this.graphs?.[index]?.ownPunchActive !== true) {
       target = predictMovement(snapshot.fighters[index]!, held, this.buffer.interpolationDelayTicks + 2, snapshot.tick);
     }
     this.localOffset.dx += (target.dx - this.localOffset.dx) * rate;

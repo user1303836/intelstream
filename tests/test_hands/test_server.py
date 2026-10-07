@@ -1089,3 +1089,116 @@ async def test_request_body_limit_and_clean_shutdown(repository: Repository) -> 
     await server.close()
     assert not server.running
     assert auth.closed
+
+
+async def _bout_against_the_computer(
+    client: aiohttp.ClientSession, base: str, auth: FakeAuth, name: str
+) -> aiohttp.ClientWebSocketResponse:
+    auth.tickets[name] = AuthenticatedPlayer(name, GUILD, f"room-{name}", name, None)
+    ws = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
+    await ws.send_json({"version": 3, "type": "authenticate", "ticket": name})
+    async with asyncio.timeout(2):
+        while json.loads((await ws.receive()).data)["type"] != "waiting":
+            pass
+    await ws.send_json({"version": 3, "type": "cpu", "level": "rookie"})
+    async with asyncio.timeout(2):
+        while json.loads((await ws.receive()).data)["type"] != "ready":
+            pass
+    return ws
+
+
+async def _errors_until_closed(ws: aiohttp.ClientWebSocketResponse, seconds: float) -> list[str]:
+    errors: list[str] = []
+    try:
+        async with asyncio.timeout(seconds):
+            while True:
+                message = await ws.receive()
+                if message.type != aiohttp.WSMsgType.TEXT:
+                    errors.append("closed")
+                    return errors
+                payload = json.loads(message.data)
+                if payload["type"] == "error":
+                    errors.append(payload["code"])
+    except TimeoutError:
+        errors.append("open")
+    return errors
+
+
+def _cpu_bout_rooms(repository: Repository) -> HandsRoomManager:
+    return HandsRoomManager(
+        repository,
+        config=RoomConfig(
+            tick_interval_seconds=0.01,
+            reconnect_grace_seconds=1.0,
+            result_hold_seconds=0.05,
+            engine_config=EngineConfig(
+                rounds=1, round_ticks=50_000, rest_ticks=0, countdown_ticks=1
+            ),
+        ),
+    )
+
+
+async def test_a_flood_of_computer_requests_is_cut_off_like_a_flood_of_inputs(
+    repository: Repository,
+) -> None:
+    auth = FakeAuth()
+    server, _auth, base = await start_server(
+        repository, auth=auth, rooms=_cpu_bout_rooms(repository)
+    )
+    async with aiohttp.ClientSession() as client:
+        repeat = await _bout_against_the_computer(client, base, auth, "repeat")
+        await repeat.send_json({"version": 3, "type": "cpu", "level": "champion"})
+        assert await _errors_until_closed(repeat, 0.3) == ["open"]
+        await repeat.close()
+
+        flooder = await _bout_against_the_computer(client, base, auth, "flooder")
+        frame = json.dumps({"version": 3, "type": "cpu", "level": "champion"})
+        for _ in range(4000):
+            await flooder.send_str(frame)
+        assert await _errors_until_closed(flooder, 2.0) == ["rate_limited", "closed"]
+    async with asyncio.timeout(1):
+        await server.close()
+
+
+async def test_each_frame_is_decoded_once(
+    repository: Repository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from intelstream.hands import protocol
+
+    decoded: list[object] = []
+    arrived = asyncio.Event()
+    original = protocol.decode_client_frame
+
+    def counting(frame: str | bytes) -> dict[str, object]:
+        decoded.append(frame)
+        arrived.set()
+        return original(frame)
+
+    monkeypatch.setattr(protocol, "decode_client_frame", counting)
+    monkeypatch.setattr(server_module, "decode_client_frame", counting)
+    auth = FakeAuth()
+    server, _auth, base = await start_server(
+        repository, auth=auth, rooms=_cpu_bout_rooms(repository)
+    )
+    async with aiohttp.ClientSession() as client:
+        fighter = await _bout_against_the_computer(client, base, auth, "once")
+        before = len(decoded)
+        arrived.clear()
+        await fighter.send_json(
+            {
+                "version": 3,
+                "type": "input",
+                "sequence": 0,
+                "client_tick": 0,
+                "move": {"x": 1000, "y": 0},
+                "defense": "none",
+                "actions": [],
+            }
+        )
+        async with asyncio.timeout(1):
+            await arrived.wait()
+        await asyncio.sleep(0.05)
+        assert len(decoded) == before + 1
+        await fighter.close()
+    async with asyncio.timeout(1):
+        await server.close()

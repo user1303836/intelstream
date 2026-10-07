@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
+from importlib import resources
 from math import hypot
 
 import pytest
@@ -11,6 +13,7 @@ from intelstream.hands.engine import (
     MAX_PENDING_ACTIONS,
     BoxingEngine,
     EngineConfig,
+    FighterState,
 )
 from intelstream.hands.protocol import encode_snapshot
 from intelstream.hands.rules import (
@@ -29,6 +32,7 @@ from intelstream.hands.rules import (
     RING_CORNER_REACH,
     RING_HALF_HEIGHT,
     RING_HALF_WIDTH,
+    STUNNED_SPEED_PERCENT,
 )
 from intelstream.hands.types import (
     ActionKind,
@@ -2411,3 +2415,145 @@ def test_the_facing_blends_toward_the_opponent_before_and_after_footwork_each_fi
     single_blend = math.degrees(math.atan2(350, 650))
     assert turned > single_blend + 15
     assert 46 < turned < 52
+
+
+def _manifest() -> dict[str, dict[str, int]]:
+    resource = resources.files("intelstream.hands").joinpath("combat-manifest.json")
+    return json.loads(resource.read_text())  # type: ignore[no-any-return]
+
+
+def test_the_most_get_up_presses_asked_for_is_the_bound_the_client_derives() -> None:
+    # web/hands/src/manifest.ts derives GET_UP_REQUIRED_MAX from the manifest with this formula:
+    # three knockdowns on a head beaten to the cap. A different engine formula must change both.
+    engine = make_engine()
+    two = engine.fighter("two")
+    two.knockdowns = 3
+    two.trauma.head = 1400
+    knockdown = _manifest()["knockdown"]
+    assert engine._get_up_required(two) == (
+        knockdown["get_up_base"]
+        + 3 * knockdown["get_up_per_knockdown"]
+        + 1400 // knockdown["get_up_trauma_divisor"]
+    )
+
+
+def test_a_clean_hit_through_a_guard_too_worn_to_block_lands_and_can_flash() -> None:
+    engine = make_engine(seed=11, flash=True)
+    one, two = engine.fighter("one"), engine.fighter("two")
+    two.guard = GUARD_BLOCK_MINIMUM - 1
+    two.trauma.head = 300
+    one.counter_ticks = 30
+    engine.step({"one": command(1, action=punch(PunchClass.HOOK, power=Power.POWER))})
+    attack = one.attack
+    assert attack is not None
+    while attack.age < attack.rule.startup - 2:
+        two.guard = GUARD_BLOCK_MINIMUM - 1
+        engine.step()
+    kinds: list[str] = []
+    two.guard = GUARD_BLOCK_MINIMUM - 1
+    snapshot = engine.step({"two": command(1, defense=DefensivePose.GUARD_HIGH)})
+    kinds.extend(event.kind for event in snapshot.events)
+    while not attack.resolved:
+        two.guard = GUARD_BLOCK_MINIMUM - 1
+        kinds.extend(event.kind for event in engine.step().events)
+    assert "block" not in kinds and "perfect_block" not in kinds
+    assert "hit" in kinds or "counter_hit" in kinds
+    assert attack.landed is True
+    assert "flash_roll" in kinds
+
+
+def test_checksum_covers_every_number_a_fighter_carries() -> None:
+    base = make_engine(seed=303).snapshot().checksum
+    for state_field in dataclasses.fields(FighterState):
+        changed = make_engine(seed=303)
+        fighter = changed.fighter("one")
+        value = getattr(fighter, state_field.name)
+        # An expiry with nothing pending decides nothing, so the checksum leaves it out on purpose.
+        if state_field.name == "pending_action_expires_tick":
+            continue
+        if isinstance(value, bool) or not isinstance(value, int):
+            continue
+        setattr(fighter, state_field.name, value + 1)
+        assert changed.snapshot().checksum != base, state_field.name
+
+
+def test_a_bout_ended_on_the_punch_leaves_no_poise_below_zero() -> None:
+    engine = make_engine(seed=7, flash=True)
+    engine.fighter("two").poise = 40
+    engine.fighter("two").trauma.head = 300
+    engine.fighter("one").counter_ticks = 30
+    engine._flash_chance = lambda *_args: 10_000  # type: ignore[method-assign]
+    snapshot = engine.step({"one": command(1, action=punch(PunchClass.HOOK, power=Power.POWER))})
+    while engine.result is None:
+        snapshot = engine.step()
+    assert engine.result.finish_method is FinishMethod.FLASH_KO
+    assert all(fighter.poise >= 0 for fighter in snapshot.fighters)
+
+
+def test_bleeding_never_leaves_more_stamina_than_the_fighter_can_hold() -> None:
+    engine = make_engine(seed=3, doctor_cut_threshold=10_000, doctor_swelling_threshold=10_000)
+    engine.fighter("one").x, engine.fighter("two").x = -300, 300
+    engine.fighter("two").trauma.bleeding = 1000
+    engine.fighter("two").conditioning = 900
+    for _ in range(300):
+        for fighter in engine.step().fighters:
+            assert fighter.stamina <= fighter.maximum_stamina
+
+
+def test_a_stunned_fighter_stumbles_at_a_share_of_his_footwork() -> None:
+    engine = make_engine(seed=13)
+    one = engine.fighter("one")
+    engine.fighter("two").x = 400
+    one.stunned_ticks = 30
+    engine.step({"one": command(1, move_x=-1000)})
+    for _ in range(8):
+        engine.step()
+    speed = hypot(one.velocity_x, one.velocity_y)
+    assert 0 < speed <= max(2, 7 * STUNNED_SPEED_PERCENT // 100)
+    one.stunned_ticks = 0
+    for _ in range(8):
+        engine.step()
+    assert hypot(one.velocity_x, one.velocity_y) == 7
+
+
+def test_a_fighter_folding_over_a_body_shot_stands_frozen_until_he_drops() -> None:
+    engine = make_engine(seed=7)
+    two = engine.fighter("two")
+    two.trauma.body = 800
+    two.stamina = 300
+    engine.step(
+        {
+            "one": command(
+                1,
+                action=punch(
+                    PunchClass.HOOK, hand=Hand.LEFT, target=Target.BODY, power=Power.POWER
+                ),
+            )
+        }
+    )
+    collapsed_at = None
+    for _ in range(30):
+        if any(event.kind == "body_collapse" for event in engine.step().events):
+            collapsed_at = (two.x, two.y)
+            break
+    assert collapsed_at is not None
+    sequence = 1
+    while engine.phase is MatchPhase.FIGHT:
+        engine.step({"two": command(sequence, move_x=1000)})
+        sequence += 1
+    assert engine.phase is MatchPhase.KNOCKDOWN
+    assert (two.x, two.y) == collapsed_at
+
+
+@pytest.mark.parametrize(("ticks_before", "first_down"), [(0, "two"), (1, "one")])
+def test_two_body_collapses_on_one_tick_favour_neither_seat(
+    ticks_before: int, first_down: str
+) -> None:
+    engine = make_engine(seed=17)
+    for _ in range(ticks_before):
+        engine.step()
+    for fighter in (engine.fighter("one"), engine.fighter("two")):
+        fighter.body_collapse_ticks = 1
+        fighter.body_collapse_action_id = "trade"
+    knockdowns = [event for event in engine.step().events if event.kind == "knockdown"]
+    assert [event.target_id for event in knockdowns] == [first_down]
