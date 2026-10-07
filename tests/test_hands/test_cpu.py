@@ -22,6 +22,7 @@ from intelstream.hands.rules import (
     BODY_COLLAPSE_TRAUMA,
     COMPATIBLE_COMBO_CHAINS,
     PUNCH_RULES,
+    poise_ceiling,
 )
 from intelstream.hands.types import (
     ActionKind,
@@ -676,3 +677,43 @@ def test_a_high_guard_is_attacked_to_the_body() -> None:
         assert human.defense in (DefensivePose.GUARD_HIGH, DefensivePose.NONE)
     assert thrown
     assert all(punch.target is Target.BODY for punch in thrown)
+
+
+def _fight_a_man_standing_still(level: CpuLevel, prepare, ticks: int = 900) -> Counter[str]:  # type: ignore[no-untyped-def]
+    """The computer against an opponent who stands in front of it and never punches."""
+    engine = engine_at(220, seed=5, round_ticks=100_000)
+    brain = CpuBrain("cpu", "human", level, 5)
+    seen: Counter[str] = Counter()
+    for sequence in range(1, ticks + 1):
+        cpu, human = engine.fighter("cpu"), engine.fighter("human")
+        prepare(cpu)
+        human.poise, human.stamina, human.guard = 600, 1000, 700
+        command = brain.decide(engine)
+        if command is not None:
+            engine.submit_input("cpu", command)
+        engine.submit_input("human", InputCommand(sequence, engine.tick))
+        for event in engine.step().events:
+            if event.actor_id == "cpu":
+                seen[event.kind] += 1
+    return seen
+
+
+@pytest.mark.parametrize("level", [CpuLevel.CONTENDER, CpuLevel.CHAMPION])
+def test_a_battered_computer_at_the_poise_it_can_still_have_keeps_fighting(level: CpuLevel) -> None:
+    def battered(cpu) -> None:  # type: ignore[no-untyped-def]
+        cpu.trauma.head = 1200
+        cpu.poise = poise_ceiling(1200)
+
+    seen = _fight_a_man_standing_still(level, battered)
+    assert seen["punch_start"] >= 20
+
+
+@pytest.mark.parametrize("level", [CpuLevel.CONTENDER, CpuLevel.CHAMPION])
+def test_with_swollen_eyes_it_steps_into_its_shorter_reach(level: CpuLevel) -> None:
+    def swollen(cpu) -> None:  # type: ignore[no-untyped-def]
+        cpu.trauma.left_eye = cpu.trauma.right_eye = 800
+        cpu.trauma.swelling = 700
+
+    seen = _fight_a_man_standing_still(level, swollen)
+    assert seen["punch_start"] >= 20
+    assert seen["whiff"] * 10 <= seen["punch_start"]

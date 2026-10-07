@@ -32,6 +32,7 @@ from intelstream.hands.rules import (
     RING_HALF_HEIGHT,
     RING_HALF_WIDTH,
     PunchRule,
+    poise_ceiling,
 )
 from intelstream.hands.types import (
     ActionKind,
@@ -57,6 +58,8 @@ THREAT_RANGE = 190
 TAUNT_RANGE = 230
 ROCKED_TICKS = 12
 HURT_POISE = 160
+# A battered head lowers the poise a fighter can get back, so "nearly out of it" is a share of that.
+HURT_CEILING_PERCENT = 70
 OPPONENT_HURT_POISE = 200
 GUARD_SETTLED_TICKS = 8
 CORNER_CUT_AT = 400
@@ -383,7 +386,10 @@ class CpuBrain:
         hurt = (
             me.stunned_ticks > ROCKED_TICKS
             or me.poise < HURT_POISE
-            or (me.trauma.head >= 900 and me.poise < 280)
+            or (
+                me.trauma.head >= 900
+                and me.poise < poise_ceiling(me.trauma.head) * HURT_CEILING_PERCENT // 100
+            )
         )
         tired = me.stamina < self._reserve(me)
         opponent_hurt = (
@@ -572,10 +578,14 @@ class CpuBrain:
         startup = max(2, rule.startup * 100 // me.fatigue - (1 if lead_jab else 0))
         return startup, rule
 
+    def _reach(self, me: FighterState, rule: PunchRule) -> int:
+        """How far this punch carries for this boxer: swollen eyes shorten it, as in the engine."""
+        return rule.reach * (100 - _vision_penalty(me)) // 100 - self.profile.reach_margin
+
     def _reaches(self, me: FighterState, them: FighterState, action: PunchAction) -> bool:
         startup, rule = self._timing(me, action)
         vision = _vision_penalty(me)
-        reach = rule.reach * (100 - vision) // 100 - self.profile.reach_margin
+        reach = self._reach(me, rule)
         arc = rule.lateral_arc * (100 - vision) // 100 - max(0, self.profile.reach_margin)
         tx, ty = float(them.x), float(them.y)
         if self.profile.leads_target:
@@ -722,9 +732,16 @@ class CpuBrain:
         if self._reaches(me, them, action):
             return self._launch(tick, action)
         startup, rule = self._timing(me, action)
+        # Whether one step brings the punch into range is judged on its full reach; the step
+        # itself goes as far as swollen eyes need, with the time for the extra ground.
         if distance - (rule.reach - profile.reach_margin) <= 45:
             self._step_in = action
-            self._step_in_until = tick + 10 + startup
+            self._step_in_until = (
+                tick
+                + 10
+                + startup
+                + (rule.reach - profile.reach_margin - self._reach(me, rule)) // 5
+            )
         return None
 
     def _launch(self, tick: int, action: PunchAction) -> PunchAction:
@@ -760,7 +777,7 @@ class CpuBrain:
         )
         rule = PUNCH_RULES[(action.punch_class, action.target, action.power)]
         discounted = max(1, rule.stamina_cost * 90 // 100)
-        if distance > rule.reach - self.profile.reach_margin or me.stamina < discounted:
+        if distance > self._reach(me, rule) or me.stamina < discounted:
             self._combo_left = 0
             return None
         return action
@@ -791,7 +808,7 @@ class CpuBrain:
             wanted = 240.0
         elif self._step_in is not None:
             _startup, rule = self._timing(me, self._step_in)
-            wanted = rule.reach - profile.reach_margin - 10
+            wanted = self._reach(me, rule) - 10
         elif opponent_hurt and profile.finish_percent:
             wanted = 105.0
         else:
