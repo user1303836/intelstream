@@ -94,6 +94,7 @@ async function sdkOperation<T>(
  */
 export class DiscordActivity implements ActivityAuthorizer {
   private sdk: IDiscordSDK | null = null;
+  private authenticated = false;
   private closed = false;
 
   constructor(private readonly makeSDK: SDKFactory = (id) => new DiscordSDK(id)) {}
@@ -133,15 +134,19 @@ export class DiscordActivity implements ActivityAuthorizer {
       requireActive();
       const token = await exchangeToken(authorization.code, boot.state, signal);
       requireActive();
-      const authentication = await sdkOperation(
-        () => sdk.commands.authenticate({ access_token: token.access_token }),
-        signal,
-        "sdk_authenticate_failed",
-        "sdk_authenticate_timeout",
-        SDK_AUTHENTICATE_TIMEOUT_MS,
-      );
-      if (authentication == null) throw new ClientError("sdk_authenticate_failed");
-      requireActive();
+      // The SDK stays authenticated for the page; a later session only needs the server's fresh ticket.
+      if (!this.authenticated) {
+        const authentication = await sdkOperation(
+          () => sdk.commands.authenticate({ access_token: token.access_token }),
+          signal,
+          "sdk_authenticate_failed",
+          "sdk_authenticate_timeout",
+          SDK_AUTHENTICATE_TIMEOUT_MS,
+        );
+        if (authentication == null) throw new ClientError("sdk_authenticate_failed");
+        this.authenticated = true;
+        requireActive();
+      }
       let ticket: string | null = token.ticket;
       return {
         sdk,

@@ -24,8 +24,9 @@ describe("Discord SDK OAuth", () => {
     const activity = new DiscordActivity(factory);
     const first = await activity.authorize(); expect(first.takeTicket()).toBe("ticket"); first.destroy();
     const second = await activity.authorize(); expect(second.takeTicket()).toBe("ticket"); second.destroy();
-    expect(factory).toHaveBeenCalledOnce(); expect(mockSdk.commands.authorize).toHaveBeenCalledTimes(2); expect(mockSdk.commands.authenticate).toHaveBeenCalledTimes(2);
-    expect(order.filter((step) => step === "bootstrap")).toHaveLength(2); expect(mockSdk.close).not.toHaveBeenCalled();
+    expect(factory).toHaveBeenCalledOnce(); expect(mockSdk.commands.authorize).toHaveBeenCalledTimes(2);
+    // The SDK keeps its authentication; the second session needs only a fresh ticket from the token exchange.
+    expect(order).toEqual(["bootstrap", "ready", "authorize", "token", "authenticate", "bootstrap", "ready", "authorize", "token"]); expect(mockSdk.close).not.toHaveBeenCalled();
     activity.close(); expect(mockSdk.close).toHaveBeenCalledOnce();
   });
   it("rejects missing SDK launch parameters before construction", async () => {
@@ -84,6 +85,8 @@ describe("Discord SDK OAuth", () => {
     const activity = new DiscordActivity(factory);
     await expect(activity.authorize(abort.signal)).rejects.toMatchObject({ code: "cancelled" }); expect(mockSdk.close).not.toHaveBeenCalled();
     const session = await activity.authorize(new AbortController().signal); expect(session.takeTicket()).toBe("ticket"); expect(factory).toHaveBeenCalledOnce();
+    // The aborted attempt never authenticated, so this one does.
+    expect(mockSdk.commands.authenticate).toHaveBeenCalledOnce();
   });
   it("constructs no SDK after final teardown", async () => {
     history.replaceState({}, "", launchUrl); const factory = vi.fn(() => sdk("launch-1", [])); vi.stubGlobal("fetch", backend());
