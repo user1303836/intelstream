@@ -10,9 +10,10 @@
  * (real frame pacing and input latency). The response scenario takes E2E_DELAY_MS and E2E_JITTER_MS.
  *
  * The cpu scenario is one player against the computer (E2E_CPU_LEVEL, default contender) through to the
- * result card. E2E_PORT moves the server off 8091.
+ * result card. The tko scenario gets the floored player up twice, so the bout ends on the punch of the
+ * third knockdown, and fails unless the knockout replay still plays. E2E_PORT moves the server off 8091.
  *
- *   node scripts/hands_e2e_scenarios.js ko|reconnect|rest|spectator|touch|mash|latency|soak|background|rematch|rematchloop|clinch|response|cpu
+ *   node scripts/hands_e2e_scenarios.js ko|tko|reconnect|rest|spectator|touch|mash|latency|soak|background|rematch|rematchloop|clinch|response|cpu
  */
 const { chromium, devices } = require('playwright');
 const { spawn } = require('node:child_process');
@@ -179,6 +180,7 @@ async function main() {
 
   const serverArgs = {
     ko: ['--rounds', '3', '--round-seconds', '90', '--rest-seconds', '5'],
+    tko: ['--rounds', '3', '--round-seconds', '90', '--rest-seconds', '5'],
     reconnect: ['--rounds', '1', '--round-seconds', '70', '--rest-seconds', '5'],
     rest: ['--rounds', '2', '--round-seconds', '14', '--rest-seconds', '9'],
     spectator: ['--rounds', '1', '--round-seconds', '30', '--rest-seconds', '5'],
@@ -211,7 +213,27 @@ async function main() {
     // Approach: A right, B left.
     await A.page.keyboard.down('d'); await B.page.keyboard.down('a'); await wait(1600); await A.page.keyboard.up('d'); await B.page.keyboard.up('a');
 
-    if (scenario === 'ko') {
+    if (scenario === 'tko') {
+      // Presses each get-up prompt once, in the middle of its window, from inside the page.
+      await B.page.evaluate(() => {
+        let answered = -1;
+        const press = () => {
+          const app = window.__handsApp;
+          const snapshot = app?.state?.snapshot;
+          const me = snapshot?.fighters.find((fighter) => fighter.player_id === app.state.playerId);
+          if (me?.is_downed && me.get_up_prompt !== null && answered !== me.get_up_window_start_tick && snapshot.tick >= me.get_up_window_start_tick + 2) {
+            answered = me.get_up_window_start_tick;
+            const code = me.get_up_prompt === 'get_up_left' ? 'ArrowLeft' : 'ArrowRight';
+            window.dispatchEvent(new KeyboardEvent('keydown', { code, key: code }));
+            window.dispatchEvent(new KeyboardEvent('keyup', { code, key: code }));
+          }
+          requestAnimationFrame(press);
+        };
+        requestAnimationFrame(press);
+      });
+    }
+
+    if (scenario === 'ko' || scenario === 'tko') {
       // Records every fighter's punch phase while the knockout replay plays, to catch a stuttering replay.
       await A.page.evaluate(() => {
         const state = { frames: 0, jumps: 0, worst: 0 };
@@ -242,7 +264,8 @@ async function main() {
         if (/^Knockdown/.test(live) || /\. knockdown\./.test(sB.summary ?? '')) {
           if (!downSeen) { downSeen = true; note('KNOCKDOWN seen at', ((Date.now() - started) / 1000).toFixed(1), 's:', live); await A.page.screenshot({ path: `${out}/e2e-ko-A-down.png` }); await B.page.screenshot({ path: `${out}/e2e-ko-B-down.png` }); }
           const count = /Count (\d+)/.exec(live); if (count && Number(count[1]) !== lastCount) { lastCount = Number(count[1]); note('count', lastCount, '|', live); }
-          if (/Press left now/.test(live)) { await B.page.keyboard.press('ArrowLeft'); promptsPressed += 1; }
+          if (scenario === 'tko') { /* the page answers its own prompts */ }
+          else if (/Press left now/.test(live)) { await B.page.keyboard.press('ArrowLeft'); promptsPressed += 1; }
           else if (/Press right now/.test(live)) { await B.page.keyboard.press('ArrowRight'); promptsPressed += 1; }
           await wait(60);
           continue;
@@ -261,7 +284,17 @@ async function main() {
       await A.page.screenshot({ path: `${out}/e2e-ko-A-final.png` }); await B.page.screenshot({ path: `${out}/e2e-ko-B-final.png` });
       await wait(8000);
       await A.page.screenshot({ path: `${out}/e2e-ko-A-result.png` });
-      note('knockout replay:', JSON.stringify(await A.page.evaluate(() => window.__replayProbe)));
+      const replay = await A.page.evaluate(() => window.__replayProbe);
+      note('knockout replay:', JSON.stringify(replay));
+      if (scenario === 'tko') {
+        const ending = await A.page.evaluate(() => {
+          const renderer = window.__handsApp?.renderer;
+          return { lastRecordedTick: renderer?.history?.at(-1)?.tick ?? null, knockdownTick: renderer?.lastKnockdown?.knockdown?.tick ?? null };
+        });
+        note('recording ends at tick', ending.lastRecordedTick, '| last knockdown at tick', ending.knockdownTick);
+        if (!/^tko\b/i.test(final?.final ?? '')) report.errors.push(`expected a TKO on the third knockdown, got: ${final?.final ?? 'no result'}`);
+        else if (!(replay?.frames > 0)) report.errors.push('no knockout replay after a TKO that ended on its punch');
+      }
     }
 
     if (scenario === 'reconnect') {
