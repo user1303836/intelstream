@@ -387,6 +387,8 @@ export class BoxingGraph {
   private wave = 0;
   private breakTime = 0;
   private breakWeight = 0;
+  private readonly breakFighters: [THREE.Vector3, THREE.Vector3] = [new THREE.Vector3(), new THREE.Vector3()];
+  private breakAimed = false;
   private attending = false;
   private attendWeight = 0;
   private countdownTicks: number | null = null;
@@ -522,6 +524,18 @@ export class BoxingGraph {
   /** Referee break: both arms push out and apart at chest height to separate a clinch. */
   breakClinch(seconds = 1.3): void {
     this.breakTime = seconds;
+  }
+
+  /** Whether the referee is separating a clinch. */
+  get breaking(): boolean {
+    return this.breakTime > 0;
+  }
+
+  /** Where the two fighters stand (world, on the canvas): the break puts a palm on each one's chest. */
+  aimBreak(first: THREE.Vector3, second: THREE.Vector3): void {
+    this.breakFighters[0].copy(first);
+    this.breakFighters[1].copy(second);
+    this.breakAimed = true;
   }
 
   private makeHand(): { position: THREE.Vector3; knuckles: THREE.Vector3; palm: THREE.Vector3; pole: THREE.Vector3 } {
@@ -1600,8 +1614,26 @@ export class BoxingGraph {
     const lerp = THREE.MathUtils.lerp;
     torso.hipsPitch = lerp(torso.hipsPitch, 0.14, blend);
     torso.spinePitch = lerp(torso.spinePitch, 0.08, blend);
-    leadHand.position.lerp(seatedScratch.set(0.48 * mirror, 1.22, 0.52), blend);
-    rearHand.position.lerp(seatedScratch.set(-0.48 * mirror, 1.22, 0.52), blend);
+    const leadTarget = this.scratchC.set(0.48 * mirror, 1.22, 0.52);
+    const rearTarget = this.scratchD.set(-0.48 * mirror, 1.22, 0.52);
+    if (this.breakAimed) {
+      // A palm on the front of each fighter's chest, the side facing the other fighter.
+      const [first, second] = this.breakFighters;
+      const toward = this.scratch.subVectors(second, first).setY(0).normalize();
+      const inverse = this.scratchQ.setFromAxisAngle(worldUpVector, -this.yaw);
+      const root = this.scratchB.set(this.rootX ?? 0, 0, this.rootZ);
+      leadTarget.copy(first).addScaledVector(toward, BREAK_CHEST_DEPTH).sub(root).applyQuaternion(inverse);
+      rearTarget.copy(second).addScaledVector(toward, -BREAK_CHEST_DEPTH).sub(root).applyQuaternion(inverse);
+      if (leadTarget.x * mirror < rearTarget.x * mirror) {
+        root.copy(leadTarget);
+        leadTarget.copy(rearTarget);
+        rearTarget.copy(root);
+      }
+      leadTarget.y = BREAK_CHEST_HEIGHT;
+      rearTarget.y = BREAK_CHEST_HEIGHT;
+    }
+    leadHand.position.lerp(leadTarget, blend);
+    rearHand.position.lerp(rearTarget, blend);
     leadHand.palm.lerp(seatedScratch.set(mirror, 0, 0.2), blend).normalize();
     rearHand.palm.lerp(seatedScratch.set(-mirror, 0, 0.2), blend).normalize();
     leadHand.knuckles.lerp(seatedScratch.set(0, 0.3, 1), blend).normalize();
@@ -1862,6 +1894,9 @@ export class BoxingGraph {
 const STOOL_SEAT_HEIGHT = 0.44;
 /** Seated weight below which a rising fighter's hips are about 0.2 m clear of the seat. */
 const STOOL_CLEAR_SEATED = 0.2;
+/** Where the referee's palms press to break a clinch: on each fighter's chest, this far toward the other from his centre, at sternum height. */
+const BREAK_CHEST_DEPTH = 0.26;
+const BREAK_CHEST_HEIGHT = 1.2;
 const TOUCH_GLOVES_START_TICKS = 48;
 const TOUCH_GLOVES_END_TICKS = 14;
 /** Root-to-root distance at which the touch pose's gloves meet: each glove's front reaches 0.68 m ahead. */

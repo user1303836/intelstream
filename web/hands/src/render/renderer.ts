@@ -132,6 +132,8 @@ const CORNERMAN_APRON_DISTANCE = 3.42;
 /** Close cameras stay inside the rope line (posts stand at 2.46 m) so a rope never fills the lens. */
 const TIGHT_SHOT_LIMIT = 2.2;
 const CORNERMAN_WORK_DISTANCE = 2.95;
+/** Metres per second the referee steps in at to break a clinch. */
+const REFEREE_BREAK_SPEED = 2.4;
 const CUTMAN_WALK_SECONDS = 1.6;
 // Broadcast finish: a soft vignette and a whisper of grain, applied before tone mapping.
 const BROADCAST_FINISH_SHADER = {
@@ -432,9 +434,10 @@ export function replayReattaches(injury: ArcadeInjury): boolean {
   return injury === "decapitation" || injury === "dismember_left" || injury === "dismember_right";
 }
 
-/** How far the referee stands from the action and how close he may get to a fighter: tight over a count, in close for a clinch, otherwise out of the way. */
-export function refereeSpacing(downed: boolean, clinched: boolean): { standoff: number; clearance: number } {
+/** How far the referee stands from the action and how close he may get to a fighter: tight over a count, in close for a clinch, between the two to break it, otherwise out of the way. */
+export function refereeSpacing(downed: boolean, clinched: boolean, breaking = false): { standoff: number; clearance: number } {
   if (downed) return { standoff: 1.25, clearance: 1.0 };
+  if (breaking) return { standoff: 0.45, clearance: 0.5 };
   if (clinched) return { standoff: 1.15, clearance: 0.9 };
   return { standoff: 2.05, clearance: 1.45 };
 }
@@ -1521,19 +1524,30 @@ export class FightRenderer {
     if (referee === null) return;
     const downed = snapshot?.fighters.find((fighter) => fighter.is_downed) ?? null;
     const clinched = snapshot?.fighters.some((fighter) => fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0) ?? false;
+    const breaking = downed === null && referee.breaking;
     const focusX = downed !== null ? this.mapping.x(downed.x) : (this.tmpA.x + this.tmpB.x) / 2;
     const focusZ = downed !== null ? this.mapping.z(downed.y) : (this.tmpA.z + this.tmpB.z) / 2;
     const away = this.refereeAway.set(this.refereePosition.x - focusX, 0, this.refereePosition.z - focusZ);
     if (away.lengthSq() < 0.01) away.set(0, 0, -1);
     away.normalize();
-    const { standoff, clearance } = refereeSpacing(downed !== null, clinched);
+    if (breaking) {
+      // He steps in square to the line between the two, on his side of it, so a hand reaches each chest.
+      const acrossX = this.tmpB.z - this.tmpA.z;
+      const acrossZ = this.tmpA.x - this.tmpB.x;
+      const across = Math.hypot(acrossX, acrossZ);
+      const side = acrossX * away.x + acrossZ * away.z >= 0 ? 1 : -1;
+      if (across > 0.01) away.set((acrossX / across) * side, 0, (acrossZ / across) * side);
+    }
+    const { standoff, clearance } = refereeSpacing(downed !== null, clinched, breaking);
     const targetX = THREE.MathUtils.clamp(focusX + away.x * standoff, -2.4, 2.4);
     const targetZ = THREE.MathUtils.clamp(focusZ + away.z * standoff, -2.4, 2.4);
     const previousX = this.refereePosition.x;
     const previousZ = this.refereePosition.z;
-    const rate = 1 - Math.exp(-1.6 * dt);
-    this.refereePosition.x += (targetX - this.refereePosition.x) * rate;
-    this.refereePosition.z += (targetZ - this.refereePosition.z) * rate;
+    // A break is a brisk step in, never faster than REFEREE_BREAK_SPEED; otherwise he drifts into place.
+    const rate = 1 - Math.exp(-(breaking ? 8 : 1.6) * dt);
+    const pace = breaking ? Math.min(1, (REFEREE_BREAK_SPEED * dt) / Math.max(1e-6, Math.hypot(targetX - this.refereePosition.x, targetZ - this.refereePosition.z) * rate)) : 1;
+    this.refereePosition.x += (targetX - this.refereePosition.x) * rate * pace;
+    this.refereePosition.z += (targetZ - this.refereePosition.z) * rate * pace;
     for (const fighter of [this.tmpA, this.tmpB]) {
       const dx = this.refereePosition.x - fighter.x;
       const dz = this.refereePosition.z - fighter.z;
@@ -1548,9 +1562,10 @@ export class FightRenderer {
     }
     const yaw = Math.atan2(focusX - this.refereePosition.x, focusZ - this.refereePosition.z);
     const yawDelta = ((yaw - this.refereeYaw + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
-    this.refereeYaw += yawDelta * (1 - Math.exp(-3 * dt));
+    this.refereeYaw += yawDelta * (1 - Math.exp(-(breaking ? 8 : 3) * dt));
     const state = refereeSnapshot(this.refereePosition, this.refereeYaw, this.refereeVelocity, this.mapping);
     referee.setRefereeCount(downed !== null, downed?.get_up_count ?? 0);
+    referee.aimBreak(this.tmpA, this.tmpB);
     referee.update(state.self, state.focus, dt, time, false, "off", sampledTick);
   }
 
