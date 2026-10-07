@@ -796,7 +796,8 @@ export class BoxingGraph {
       this.yaw = targetYaw;
       this.yawInitialized = true;
     }
-    const turnRate = this.punchActive ? 3 : 9;
+    // On the canvas and getting up he turns with his whole body on the ground, so more slowly.
+    const turnRate = this.punchActive ? 3 : this.downState === "up" ? 9 : 4;
     this.yaw = smoothAngle(this.yaw, targetYaw, turnRate, dt);
     boxer.root.position.set(this.rootX, 0, this.rootZ);
     boxer.root.rotation.set(0, this.yaw, 0);
@@ -878,7 +879,8 @@ export class BoxingGraph {
 
     // Feet.
     const rootPosition = this.scratchC.set(this.rootX, 0, this.rootZ);
-    if (this.downState === "up") this.stepFeet(dt, mirror, speed, velocityWorld, rootPosition, this.yaw);
+    // Getting up, the feet are planted again under him and step as he turns or walks, ready for the standing pose.
+    if (this.downState === "up" || this.downState === "rising") this.stepFeet(dt, mirror, speed, velocityWorld, rootPosition, this.yaw);
     const rootQuatInverse = this.scratchQ.setFromAxisAngle(worldUpVector, -this.yaw);
     const lead = mirror > 0 ? this.foot.L : this.foot.R;
     const rear = mirror > 0 ? this.foot.R : this.foot.L;
@@ -1515,16 +1517,14 @@ export class BoxingGraph {
     if (this.downState === "down" || this.downState === "falling") {
       this.downState = "rising";
       this.riseFrom = this.riseProgress;
+      this.feetInitialized = false;
     }
     if (this.downState !== "rising") return;
     // The server already has him fighting: finish inside the stun, sooner if he walks or throws.
     const hurried = speed > 0.3 || this.punchActive;
     const rate = (1 - this.riseFrom) / (hurried ? GETUP_HURRIED_SECONDS : GETUP_SECONDS);
     this.riseProgress = Math.min(1, this.riseProgress + (this.riseProgress < RISE_FOURS ? Math.min(rate, RISE_ROLL_RATE) : rate) * dt);
-    if (this.riseProgress >= 1) {
-      this.downState = "up";
-      this.feetInitialized = false;
-    }
+    if (this.riseProgress >= 1) this.downState = "up";
   }
 
   private applyTouchGlovesPose(

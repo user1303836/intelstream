@@ -297,6 +297,23 @@ describe("get-up", () => {
     expect(bone(boxer, "head").y).toBeLessThan(0.5);
   });
 
+  it("plants the feet under him as he gets up, so they do not jump when the get-up ends", () => {
+    const { boxer, step, standing, downed } = knockedDown();
+    step({ ...downed, get_up_meter: 22 }, 30);
+    step({ ...downed, get_up_meter: 44 }, 30);
+    // The engine turns him to face the opponent, who walked away during the count.
+    const turned = { ...standing, facing_x: 1000, facing_y: 0, get_up_meter: 66, stunned_ticks: 20 };
+    let previous = [bone(boxer, "ankleL"), bone(boxer, "ankleR")];
+    let jump = 0;
+    for (let frame = 0; frame < 60; frame += 1) {
+      step(turned, 1);
+      const now = [bone(boxer, "ankleL"), bone(boxer, "ankleR")];
+      for (const [index, ankle] of now.entries()) jump = Math.max(jump, ankle.distanceTo(previous[index]!));
+      previous = now;
+    }
+    expect(jump).toBeLessThan(0.12);
+  });
+
   it("finishes the get-up at once when he walks off", () => {
     const { boxer, step, standing, downed } = knockedDown();
     step({ ...downed, get_up_meter: 22 }, 30);
