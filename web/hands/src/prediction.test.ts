@@ -2,9 +2,10 @@ import { cancelsRecovery, punchStaminaCost, punchTiming, recoveryCancelAge, styl
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { SnapshotBuffer } from "./interpolation";
-import { attackTicksRemaining, constrainPrediction, EVASION_STAMINA, EVASION_TICKS, EvasionPrediction, fatigueFactor, MINIMUM_SEPARATION, MovementPrediction, movementLocked, predictedDefense, predictMovement, predictedPunchTiming, type HeldInput } from "./prediction";
+import { attackTicksRemaining, constrainPrediction, EVASION_STAMINA, EVASION_TICKS, EvasionPrediction, fatigueFactor, MINIMUM_SEPARATION, MovementPrediction, movementLocked, parryRootedUntil, predictedDefense, predictMovement, predictedPunchTiming, type HeldInput } from "./prediction";
 import { decodeServerFrame, ProtocolError } from "./protocol";
 import { fighter, snapshot } from "./test/fixtures";
+import movementTraces from "./test/movement-traces.json";
 import timingTable from "./test/punch-timing-table.json";
 import styleTimingTable from "./test/style-timing-table.json";
 import { PROTOCOL_VERSION, type EngineSnapshot, type FighterSnapshot, type FighterStyle, type PunchClass } from "./types";
@@ -214,6 +215,38 @@ describe("local movement prediction", () => {
     expect(cancelsRecovery("straight", true, hook, sluggerCost - 1, false, "slugger")).toBe(false);
     expect(cancelsRecovery("straight", true, hook, sluggerCost - 1, false)).toBe(true);
   });
+});
+
+describe("footwork predicted against what the engine did", () => {
+  interface TraceRecord { readonly tick: number; readonly fighter: unknown; readonly events: unknown[]; readonly held: HeldInput }
+  const LOOKAHEAD = 4;
+
+  /** Each tick's snapshot as the client decodes it, with the parries it has seen so far. */
+  function replay(records: readonly TraceRecord[]): { fighter: FighterSnapshot; rootedUntil: number; held: HeldInput }[] {
+    let rootedUntil = 0;
+    return records.map((record) => {
+      const payload = { ...snapshot(record.tick), fighters: [record.fighter, fighter("two", 400)], events: record.events };
+      const message = decodeServerFrame(JSON.stringify({ version: PROTOCOL_VERSION, type: "snapshot", payload }));
+      if (message.type !== "snapshot") throw new Error(message.type);
+      for (const event of message.payload.events) rootedUntil = parryRootedUntil(event, "one", rootedUntil);
+      return { fighter: message.payload.fighters[0], rootedUntil, held: record.held };
+    });
+  }
+
+  for (const [name, records] of Object.entries(movementTraces as Record<string, TraceRecord[]>)) {
+    it(`${name}: every tick's ${LOOKAHEAD}-tick step is the engine's to within 2 units`, () => {
+      const decoded = replay(records);
+      const misses: string[] = [];
+      for (let index = 0; index + LOOKAHEAD < decoded.length; index += 1) {
+        const { fighter: now, rootedUntil, held } = decoded[index]!;
+        const later = decoded[index + LOOKAHEAD]!.fighter;
+        const step = predictMovement(now, held, LOOKAHEAD, records[index]!.tick, rootedUntil);
+        const miss = Math.hypot(step.dx - (later.x - now.x), step.dy - (later.y - now.y));
+        if (miss > 2) misses.push(`tick ${records[index]!.tick}: predicted ${step.dx.toFixed(1)}, engine ${later.x - now.x}`);
+      }
+      expect(misses).toEqual([]);
+    });
+  }
 });
 
 describe("walking behind a round trip", () => {

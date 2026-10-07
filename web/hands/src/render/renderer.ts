@@ -1858,6 +1858,7 @@ export class FightRenderer {
       // The fighter who beat the count is ready and the referee sends them back to it.
       if (event.kind === "box") this.eventCallout = { text: "BOX!", until: this.frameSeconds + BOX_CALLOUT_SECONDS };
       if (event.kind === "body_collapse" && event.target_id === this.viewerId) this.ownCollapseUntil = event.tick + event.amount;
+      this.movement.observe(event, this.viewerId);
     }
     this.commentary.observe(snapshot, accepted, this.players, this.simulation.tick_rate, this.frameSeconds);
     for (const { event, presentationEvent, presentImpact, reactAmount } of contactPresentationPlan(accepted, snapshot)) {

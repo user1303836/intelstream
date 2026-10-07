@@ -240,6 +240,7 @@ class FighterState:
     evasion_ticks: int = 0
     stunned_ticks: int = 0
     stunned_at_tick: int = -1
+    staggered_until_tick: int = -1
     stun_chain_ticks: int = 0
     stun_immune_until_tick: int = -1
     rocked_immune_until_tick: int = -1
@@ -946,6 +947,7 @@ class BoxingEngine:
                 if action.power is Power.POWER:
                     attacker.stunned_ticks = max(attacker.stunned_ticks, PARRY_STAGGER_TICKS)
                     attacker.stunned_at_tick = self.tick
+                    attacker.staggered_until_tick = self.tick + PARRY_STAGGER_TICKS
                     attacker.taunt_ticks = 0
                     self._emit(
                         "parry",
@@ -1406,6 +1408,8 @@ class BoxingEngine:
             or fighter.clinch_startup_ticks > 0
             or fighter.taunt_ticks > 0
             or fighter.body_collapse_ticks > 0
+            # Parried, he is caught off balance and rooted, so the counter it opens can land.
+            or (fighter.stunned_ticks > 0 and self.tick < fighter.staggered_until_tick)
         ):
             move_x = 0
             move_y = 0
@@ -2302,6 +2306,7 @@ class BoxingEngine:
                         fighter.evasion_ticks,
                         fighter.stunned_ticks,
                         fighter.stunned_at_tick,
+                        fighter.staggered_until_tick,
                         fighter.counter_ticks,
                         fighter.clinch_startup_ticks,
                         fighter.clinch_ticks,

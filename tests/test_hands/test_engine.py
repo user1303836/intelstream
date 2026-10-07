@@ -2248,6 +2248,40 @@ def test_parrying_a_power_punch_staggers_the_puncher() -> None:
     assert advance_until(engine, {"counter_hit", "hit", "block", "perfect_block"}) == "counter_hit"
 
 
+@pytest.mark.parametrize("gap", [110, 130, 150])
+@pytest.mark.parametrize("answer_after", [4, 8])
+@pytest.mark.parametrize(
+    ("counter", "hand"), [(PunchClass.JAB, Hand.LEFT), (PunchClass.STRAIGHT, Hand.RIGHT)]
+)
+def test_a_parried_fighter_cannot_walk_out_of_the_counter_it_opens(
+    gap: int, answer_after: int, counter: PunchClass, hand: Hand
+) -> None:
+    engine = make_engine(round_ticks=2000)
+    one = engine.fighter("one")
+    one.x, engine.fighter("two").x = -(gap // 2), gap - gap // 2
+    # He throws the power straight holding back, ready to walk away from whatever comes back.
+    straight = punch(PunchClass.STRAIGHT, power=Power.POWER)
+    engine.step({"one": command(1, action=straight, move_x=-1000)})
+    attack = one.attack
+    assert attack is not None
+    while attack.age < attack.rule.startup - 2:
+        engine.step()
+    engine.step({"two": command(1, defense=DefensivePose.GUARD_HIGH)})
+    assert advance_until(engine, {"parry", "block", "hit"}) == "parry"
+    parried_at = (one.x, one.y)
+    for _ in range(answer_after - 1):
+        engine.step()
+    engine.step({"two": command(2, action=punch(counter, hand=hand))})
+    assert advance_until(engine, {"counter_hit", "hit", "whiff", "block"}) == "counter_hit"
+    assert (one.x, one.y) == parried_at
+    # Once the stagger is over he walks away at full speed again.
+    while one.stunned_ticks:
+        engine.step()
+    for _ in range(8):
+        engine.step()
+    assert one.velocity_x == -7
+
+
 def test_parrying_an_ordinary_punch_does_not_stagger() -> None:
     engine = perfect_guard_engine(Power.NORMAL)
     assert advance_until(engine, {"block", "perfect_block"}) == "perfect_block"
