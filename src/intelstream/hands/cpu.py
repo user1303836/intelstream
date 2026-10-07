@@ -29,6 +29,7 @@ from intelstream.hands.rules import (
     COMPATIBLE_COMBO_CHAINS,
     FIGHTER_RADIUS,
     GUARD_BLOCK_MINIMUM,
+    PERFECT_BLOCK_REARM_TICKS,
     PUNCH_RULES,
     RING_CORNER_REACH,
     RING_HALF_HEIGHT,
@@ -66,13 +67,18 @@ HURT_POISE = 160
 # A battered head lowers the poise a fighter can get back, so "nearly out of it" is a share of that.
 HURT_CEILING_PERCENT = 70
 OPPONENT_HURT_POISE = 200
-GUARD_SETTLED_TICKS = 8
 CORNER_CUT_AT = 400
 CORNER_BLEEDING_AT = 200
 CORNER_EYE_AT = 500
 CORNER_SWELLING_AT = 450
 GET_UP_ACCURACY_TRAUMA_DIVISOR = 45
 GET_UP_KNOCKDOWN_PENALTY = 14
+# The quickest punch the computer loads up: it never throws a power jab.
+QUICKEST_POWER_STARTUP = min(
+    rule.startup
+    for (punch_class, _target, power), rule in PUNCH_RULES.items()
+    if power is Power.POWER and punch_class is not PunchClass.JAB
+)
 _LIMIT_X = RING_HALF_WIDTH - FIGHTER_RADIUS
 _LIMIT_Y = RING_HALF_HEIGHT - FIGHTER_RADIUS
 
@@ -217,7 +223,7 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         jab_bias=0,
         counter_percent=80,
         power_percent=35,
-        body_percent=38,
+        body_percent=43,
         finish_percent=30,
         admire_ticks=0,
         head_movement_percent=14,
@@ -628,10 +634,17 @@ class CpuBrain:
             self._punish_start = attack.start_tick
             return _EVASION_ACTIONS[evasion]
         held = me.defense is guard
-        perfect = not held and self._roll(self.profile.perfect_percent)
         window = PERFECT_BLOCK_TICKS + self.style_rule.perfect_block_ticks
-        if not held and not perfect and contact - (tick + 1) <= window:
-            # Raised now, the guard would still be fresh when the punch lands: a parry, which the
+        # Only a guard let down long enough parries, so a parry is tried only when the late raise
+        # will be one; otherwise the guard simply goes up and blocks.
+        perfect = (
+            not held
+            and self._rearmed(me, contact - window)
+            and self._roll(self.profile.perfect_percent)
+        )
+        late = contact - (tick + 1) <= window
+        if not held and not perfect and late and self._rearmed(me, tick + 1):
+            # Raised now, the guard would be a fresh one when the punch lands: a parry, which the
             # roll did not give. There is no time left for an ordinary block.
             return None
         self._guard_pose = guard
@@ -641,6 +654,12 @@ class CpuBrain:
             # Blocked, he is still in his recovery when the guard comes down.
             self._punish_start = attack.start_tick
         return None
+
+    @staticmethod
+    def _rearmed(me: FighterState, raise_tick: int) -> bool:
+        """Whether a guard raised on `raise_tick` would come up after being let down long enough
+        to parry, if it is not held again before then."""
+        return raise_tick - me.guard_held_tick > PERFECT_BLOCK_REARM_TICKS
 
     @staticmethod
     def _incoming(me: FighterState, them: FighterState, lead: int) -> tuple[float, float]:
@@ -797,15 +816,18 @@ class CpuBrain:
         )
 
     def _parry_risk(self, them: FighterState) -> bool:
-        """A power punch at a guard that is down, or only just up, can be parried by a late raise.
+        """A power punch at a guard that is down can be parried by a late raise, once the guard
+        has been down long enough to come up fresh before the punch lands.
 
-        A guard that has been up a while only blocks it, and a man punching or stunned cannot raise
-        one in time.
+        A guard that is up only blocks it, since the punch lands too long after the raise, and a
+        man punching or stunned cannot raise one in time.
         """
         if them.stunned_ticks > 0 or them.attack is not None:
             return False
-        guarded = them.defense in (DefensivePose.GUARD_HIGH, DefensivePose.GUARD_LOW)
-        return not (guarded and self._tick - them.defense_started_tick >= GUARD_SETTLED_TICKS)
+        if them.defense in (DefensivePose.GUARD_HIGH, DefensivePose.GUARD_LOW):
+            return False
+        latest_raise = self._tick + QUICKEST_POWER_STARTUP - 1
+        return latest_raise - them.guard_held_tick > PERFECT_BLOCK_REARM_TICKS
 
     def _attack(
         self,
