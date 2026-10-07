@@ -202,6 +202,78 @@ describe("ribs caved in by the knockout punch", () => {
   });
 });
 
+describe("blood on the canvas", () => {
+  const cut = { ...fighter("two").trauma, bleeding: 200, left_cut: 60 };
+  const pools = (renderer: Record<string, unknown>): number[][] => (renderer.effects as { pool: ReturnType<typeof vi.fn> }).pool.mock.calls as number[][];
+  const drips = (renderer: Record<string, unknown>): unknown[][] => (renderer.effects as { drip: ReturnType<typeof vi.fn> }).drip.mock.calls.filter((call) => call[3] === 1);
+
+  it("pools under a flash knockout's loser, whom the engine never puts down, instead of raining on his old spot", () => {
+    const result = { match_id: "m", activity_instance_id: "a", guild_id: "g", player_one_id: "one", player_two_id: "two", winner_id: "one", finish_method: "flash_ko" as const, round_number: 1, tick: 40, scorecards: [], player_one_knockdowns: 0, player_two_knockdowns: 0, player_one_damage: 0, player_two_damage: 500 };
+    const { renderer, run, graphs } = frame(fighting({}, { trauma: cut }, { phase: "complete", result }), { flashKnockout: { hitEventId: 3, loserId: "two" } });
+    graphs[1]!.isDown = true;
+    // The finish plays in slow motion for its first seconds.
+    run(300);
+    expect(drips(renderer)).toHaveLength(0);
+    expect(pools(renderer).length).toBeGreaterThan(0);
+  });
+
+  it("drips from under the chin of the head as it is drawn: seated on his stool, not at standing height over his spot", () => {
+    const root = new THREE.Object3D();
+    const head = new THREE.Bone();
+    root.add(head);
+    // Seated in his corner, his head forward of his place and 40 cm below a standing man's.
+    head.position.set(0.25, 1.12, 0.3);
+    head.rotation.y = 0.6;
+    const { renderer, run, graphs } = frame(fighting({}, { trauma: cut }, { phase: "rest", phase_ticks_remaining: 600 }), {
+      tmpHeadQuaternion: new THREE.Quaternion(), tmpStumpOffset: new THREE.Vector3(),
+    });
+    Object.assign(graphs[1]!.boxer, { root, bone: (name: string) => (name === "head" ? head : null) });
+    run(2);
+    const [at] = drips(renderer).at(-1)! as [THREE.Vector3];
+    root.updateMatrixWorld(true);
+    const skull = new THREE.Vector3(0, 0.12, 0.02).applyQuaternion(head.quaternion).add(head.getWorldPosition(new THREE.Vector3()));
+    const chin = skull.add(new THREE.Vector3(0, -0.1, 0.08).applyQuaternion(head.quaternion));
+    expect(at.distanceTo(chin)).toBeLessThan(1e-6);
+  });
+
+  it("pools from a finisher's open wound however little the engine says he was cut, and further than any cut", () => {
+    const { renderer, run, graphs } = frame(fighting({}, { is_downed: true }, { phase: "knockdown" }), { arcadeInjuries: [null, "decapitation"] });
+    graphs[1]!.isDown = true;
+    Object.assign(renderer, { headCacheValid: [false, true], headCache: [new THREE.Vector3(), new THREE.Vector3(0.6, 0.15, -0.2)] });
+    // Ten seconds on the canvas with no cuts in the engine at all.
+    run(600);
+    const calls = pools(renderer);
+    expect(calls.length).toBeGreaterThan(50);
+    const widest = Math.max(...calls.map((call) => call[2]!));
+    expect(widest).toBeGreaterThan(0.55);
+    expect(widest).toBeLessThanOrEqual(0.8);
+    for (const [x, z] of calls) expect(Math.hypot(x! - 0.6, z! + 0.2)).toBeLessThan(0.25);
+  });
+
+  it("leaves a dislocation, which opens no wound, to the engine's cuts", () => {
+    const { renderer, run, graphs } = frame(fighting({}, { is_downed: true }, { phase: "knockdown" }), { arcadeInjuries: [null, "jaw_dislocation"] });
+    graphs[1]!.isDown = true;
+    run(120);
+    expect(pools(renderer)).toHaveLength(0);
+  });
+
+  it("lays a flash knockout's loser's shadow out flat with him", () => {
+    const blobs = [new THREE.Mesh(), new THREE.Mesh(), new THREE.Mesh()];
+    const stub = Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, {
+      blobShadows: blobs, tmpA: new THREE.Vector3(-0.5, 0, 0), tmpB: new THREE.Vector3(0.5, 0, 0), refereePosition: new THREE.Vector3(0, 0, -2), bodyPoint: new THREE.Vector3(),
+      graphs: [{ fallBody: null, isDown: false, boxer: { root: { visible: false } } }, { fallBody: null, isDown: true, boxer: { root: { visible: false } } }],
+      buffer: { latest: () => snapshot() }, flashKnockout: { hitEventId: 3, loserId: "two" },
+    });
+    (FightRenderer.prototype as unknown as { updateBlobShadows(this: unknown): void }).updateBlobShadows.call(stub);
+    expect(blobs[1]!.scale.x).toBeCloseTo(2.1, 6);
+    expect(blobs[0]!.scale.x).toBeCloseTo(1.25, 6);
+    // The engine's word alone, as before: the loser of a flash knockout, never put down by it.
+    stub.graphs = [{ fallBody: null, isDown: false, boxer: { root: { visible: false } } }, { fallBody: null, isDown: false, boxer: { root: { visible: false } } }];
+    (FightRenderer.prototype as unknown as { updateBlobShadows(this: unknown): void }).updateBlobShadows.call(stub);
+    expect(blobs[1]!.scale.x).toBeCloseTo(2.1, 6);
+  });
+});
+
 describe("the stands in a rendered frame", () => {
   it("make room for the broadcast camera only while it stands on its platform", () => {
     const placed = (camera: Settings["camera"], portraitPull = 1): boolean => {

@@ -837,10 +837,32 @@ export function knockdownFinisher(hit: CombatEvent | null, snapshot: EngineSnaps
 
 const POOL_SEVERITY = 0.2;
 const POOL_RATE = 2;
+const POOL_REACH = 0.42;
+/**
+ * A finisher's open wound bleeds out whatever the engine says of his cuts: as badly as the worst cut does
+ * (the pool's ceiling), three times as fast, and spreading to 0.8 m across, which takes about 18 s.
+ */
+const OPEN_WOUNDS: ReadonlySet<ArcadeInjury> = new Set(["decapitation", "head_burst", "eye_left", "eye_right", "dismember_left", "dismember_right", "ribs_left", "ribs_right"]);
+const OPEN_WOUND_SEVERITY = 1.6;
+const OPEN_WOUND_POOL_RATE = 3;
+const OPEN_WOUND_POOL_REACH = 0.8;
+/** Under the chin, from the middle of the skull, in the head's frame. */
+const UNDER_THE_CHIN = new THREE.Vector3(0, -0.1, 0.08);
 
-/** How far the pool under a downed fighter has spread after `count` spills, in metres: fast at first, then slower, wider the worse he bleeds. */
-export function poolRadius(count: number, severity: number): number {
-  return Math.min(0.42, 0.05 + 0.045 * Math.sqrt(Math.max(0, count)) * Math.min(1.6, Math.max(0, severity)));
+/**
+ * How far the pool under a downed fighter has spread after `count` spills, in metres: fast at first, then slower,
+ * wider the worse he bleeds, up to `reach`.
+ */
+export function poolRadius(count: number, severity: number, reach = POOL_REACH): number {
+  return Math.min(reach, 0.05 + 0.045 * Math.sqrt(Math.max(0, count)) * Math.min(1.6, Math.max(0, severity)));
+}
+
+/**
+ * Whether a fighter is down for his blood and his shadow: counted on the canvas, falling or lying there as
+ * drawn, or the loser of a flash knockout, whom the engine never puts down (the bout ends with the punch).
+ */
+export function fighterDown(fighter: FighterSnapshot, graph: { readonly isDown: boolean } | undefined, flashLoserId: string | undefined): boolean {
+  return fighter.is_downed || graph?.isDown === true || (flashLoserId !== undefined && fighter.player_id === flashLoserId);
 }
 
 /** How deep (bind-space centimetres) and how wide a torso finisher caves the ribs in: twice the deepest dent a punch leaves. */
@@ -2331,33 +2353,7 @@ export class FightRenderer {
       this.ring.setRopeContacts(contactA, contactB);
       this.tmpA.set(ax, 0, az);
       this.tmpB.set(bx, 0, bz);
-      for (const [index, fighter] of snapshot.fighters.entries()) {
-        const severity = (fighter.trauma.bleeding + fighter.trauma.left_cut + fighter.trauma.right_cut) / 380;
-        if (severity > 0.05 && !fighter.is_downed) {
-          this.downedPoolAccumulators[index] = 0;
-          this.downedPoolCounts[index] = 0;
-          const anchor = index === 0 ? this.tmpA : this.tmpB;
-          this.tmpHead.set(anchor.x, this.headHeightOf(index), anchor.z);
-          this.effects.drip(this.tmpHead, severity, current.reducedMotion, index);
-        } else if (severity > POOL_SEVERITY && fighter.is_downed && current.blood !== "off") {
-          // A pool spreads from under his head through the count.
-          this.effects.stopDrip(index);
-          this.downedPoolAccumulators[index]! += dt * POOL_RATE;
-          const head = this.headCacheValid[index] ? this.headCache[index]! : index === 0 ? this.tmpA : this.tmpB;
-          while (this.downedPoolAccumulators[index]! >= 1) {
-            this.downedPoolAccumulators[index]! -= 1;
-            const count = this.downedPoolCounts[index]!;
-            this.downedPoolCounts[index] = count + 1;
-            const spread = poolRadius(count, severity);
-            const angle = count * 2.399_963 + index * Math.PI;
-            this.effects.pool(head.x + Math.sin(angle) * spread * 0.25, head.z + Math.cos(angle) * spread * 0.25, spread, count + index * 7);
-          }
-        } else {
-          this.effects.stopDrip(index);
-          this.downedPoolAccumulators[index] = 0;
-          if (!fighter.is_downed) this.downedPoolCounts[index] = 0;
-        }
-      }
+      this.bleed(snapshot.fighters, dt, current);
     } else {
       this.tmpA.set(-0.9, 0, 0);
       this.tmpB.set(0.9, 0, 0);
@@ -2510,6 +2506,61 @@ export class FightRenderer {
     return (this.graphs?.[index]?.boxer.metrics.headRestY ?? 1.52) + 0.04;
   }
 
+  /**
+   * Blood from a fighter's wounds: dripping from his face while he is up, and pooling under him once he is
+   * down (see fighterDown). A finisher's open wound pools whatever the engine says of his cuts, faster and
+   * wider, from the wound itself.
+   */
+  private bleed(fighters: readonly FighterSnapshot[], dt: number, current: Settings): void {
+    for (const [index, fighter] of fighters.entries()) {
+      const down = fighterDown(fighter, this.graphs?.[index], this.flashKnockout?.loserId);
+      const wound = this.arcadeInjuries[index] ?? null;
+      const open = wound !== null && OPEN_WOUNDS.has(wound);
+      const engine = (fighter.trauma.bleeding + fighter.trauma.left_cut + fighter.trauma.right_cut) / 380;
+      const severity = open ? Math.max(engine, OPEN_WOUND_SEVERITY) : engine;
+      if (severity > 0.05 && !down) {
+        this.downedPoolAccumulators[index] = 0;
+        this.downedPoolCounts[index] = 0;
+        this.effects.drip(this.dripPoint(index), severity, current.reducedMotion, index);
+      } else if (severity > POOL_SEVERITY && down && current.blood !== "off") {
+        // A pool spreads from under his head through the count, or from the wound a finisher left.
+        this.effects.stopDrip(index);
+        this.downedPoolAccumulators[index]! += dt * POOL_RATE * (open ? OPEN_WOUND_POOL_RATE : 1);
+        const source = this.poolSource(index, wound);
+        while (this.downedPoolAccumulators[index]! >= 1) {
+          this.downedPoolAccumulators[index]! -= 1;
+          const count = this.downedPoolCounts[index]!;
+          this.downedPoolCounts[index] = count + 1;
+          const spread = poolRadius(count, severity, open ? OPEN_WOUND_POOL_REACH : POOL_REACH);
+          const angle = count * 2.399_963 + index * Math.PI;
+          this.effects.pool(source.x + Math.sin(angle) * spread * 0.25, source.z + Math.cos(angle) * spread * 0.25, spread, count + index * 7);
+        }
+      } else {
+        this.effects.stopDrip(index);
+        this.downedPoolAccumulators[index] = 0;
+        if (!down) this.downedPoolCounts[index] = 0;
+      }
+    }
+  }
+
+  /** Where blood drips from a fighter's face: under his chin as his head is drawn, standing, seated or slipping. */
+  private dripPoint(index: number): THREE.Vector3 {
+    const head = this.headWorldPose(index);
+    if (head !== null) return head.position.add(this.tmpStumpOffset.copy(UNDER_THE_CHIN).applyQuaternion(head.quaternion));
+    if (this.headCacheValid[index]) return this.tmpHead.copy(this.headCache[index]!);
+    const anchor = index === 0 ? this.tmpA : this.tmpB;
+    return this.tmpHead.set(anchor.x, this.headHeightOf(index), anchor.z);
+  }
+
+  /** Where a downed fighter's blood pools from: a severed hand's wrist, otherwise his head or what is left of his neck. */
+  private poolSource(index: number, wound: ArcadeInjury | null): { readonly x: number; readonly z: number } {
+    if (wound === "dismember_left" || wound === "dismember_right") {
+      const wrist = this.handWorldPose(index, wound === "dismember_left" ? "left" : "right");
+      if (wrist !== null) return wrist.position;
+    }
+    return this.headCacheValid[index] ? this.headCache[index]! : index === 0 ? this.tmpA : this.tmpB;
+  }
+
   private updateBlobShadows(): void {
     const anchors = [this.tmpA, this.tmpB, this.refereePosition];
     for (const [index, blob] of this.blobShadows.entries()) {
@@ -2520,7 +2571,8 @@ export class FightRenderer {
       const anchor = fallen ?? (graph?.boxer.root.visible === true ? graph.currentRoot : anchors[index]!);
       blob.position.x = anchor.x;
       blob.position.z = anchor.z;
-      const downed = index < 2 && this.buffer.latest()?.fighters[index]?.is_downed === true;
+      const fighter = index < 2 ? this.buffer.latest()?.fighters[index] : undefined;
+      const downed = fighter !== undefined && fighterDown(fighter, graph, this.flashKnockout?.loserId);
       blob.scale.set(downed ? 2.1 : 1.25, downed ? 0.9 : 0.85, 1);
     }
   }
