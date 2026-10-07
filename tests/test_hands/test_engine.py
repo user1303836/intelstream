@@ -2787,6 +2787,30 @@ def test_a_stunned_fighter_stumbles_at_a_share_of_his_footwork() -> None:
     assert hypot(one.velocity_x, one.velocity_y) == 7
 
 
+def test_a_stun_ends_the_weave_it_lands_on_so_he_stumbles_instead_of_standing_frozen() -> None:
+    engine = make_engine(seed=13)
+    two = engine.fighter("two")
+    # A weave does not take a straight: it lands mid-weave, walking away.
+    engine.step(
+        {
+            "one": command(1, action=punch(PunchClass.STRAIGHT)),
+            "two": command(1, action=MovementAction(ActionKind.WEAVE), move_x=1000),
+        }
+    )
+    assert two.evasion_ticks > 0
+    advance_until(engine, {"hit"})
+    stunned = two.stunned_ticks
+    assert stunned > 0 and two.evasion_ticks > 0
+    engine.step()
+    assert (two.evasion_ticks, two.defense) == (0, DefensivePose.NONE)
+    start = two.x
+    while two.stunned_ticks > 0:
+        engine.step()
+    assert two.x - start >= (stunned - 2) * 2
+    engine.step()
+    assert two.defense is DefensivePose.NONE and two.evasion_ticks == 0
+
+
 def test_a_fighter_folding_over_a_body_shot_stands_frozen_until_he_drops() -> None:
     engine = make_engine(seed=7)
     two = engine.fighter("two")

@@ -625,6 +625,9 @@ class BoxingEngine:
                 fighter.stun_chain_ticks = 0
                 fighter.stun_immune_until_tick = self.tick + STUN_IMMUNITY_TICKS
             fighter.defense = DefensivePose.NONE
+            # A stun ends the slip, weave or pull it caught him in: he stumbles rather than standing
+            # frozen through the evasion's leftover ticks.
+            fighter.evasion_ticks = 0
             fighter.clinch_startup_ticks = 0
             fighter.pending_actions.clear()
             if not imminent_trade:
