@@ -288,6 +288,7 @@
     "leak_base_percent": 70,
     "leak_minimum_percent": 10,
     "block_minimum": 60,
+    "perfect_rearm_ticks": 6,
     "held_regen_every_ticks": 4,
     "damage_percent": 60,
     "stamina_regen_percent": 50

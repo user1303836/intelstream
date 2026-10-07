@@ -75,6 +75,9 @@ PERFECT_BLOCK_POISE_PERCENT: int = _MANIFEST["guard"]["perfect_block_poise_perce
 GUARD_LEAK_BASE_PERCENT: int = _MANIFEST["guard"]["leak_base_percent"]
 GUARD_LEAK_MINIMUM_PERCENT: int = _MANIFEST["guard"]["leak_minimum_percent"]
 GUARD_BLOCK_MINIMUM: int = _MANIFEST["guard"]["block_minimum"]
+# A raised guard only perfect-blocks once the guard has been let down for this many ticks: a guard
+# flicked down and straight back up blocks, but keeps no parry window open.
+PERFECT_BLOCK_REARM_TICKS: int = _MANIFEST["guard"]["perfect_rearm_ticks"]
 GUARD_HELD_REGEN_EVERY_TICKS: int = _MANIFEST["guard"]["held_regen_every_ticks"]
 GUARD_DAMAGE_PERCENT: int = _MANIFEST["guard"]["damage_percent"]
 GUARD_STAMINA_REGEN_PERCENT: int = _MANIFEST["guard"]["stamina_regen_percent"]

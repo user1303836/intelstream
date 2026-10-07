@@ -58,6 +58,7 @@ from intelstream.hands.rules import (
     MINIMUM_SEPARATION,
     PARRY_STAGGER_TICKS,
     PERFECT_BLOCK_POISE_PERCENT,
+    PERFECT_BLOCK_REARM_TICKS,
     POISE_DAMAGE_PERCENT,
     POISE_REGEN_EVERY_TICKS,
     PUNCH_RULES,
@@ -232,6 +233,10 @@ class FighterState:
     trauma: Trauma = field(default_factory=Trauma)
     defense: DefensivePose = DefensivePose.NONE
     defense_started_tick: int = -1000
+    guard_held_tick: int = -1000
+    """The last tick the fighter was holding a guard (his input, whatever the stun or slip did)."""
+    guard_raised_tick: int = -1000
+    """When the guard he has up was raised, if it can perfect-block: after being let down a while."""
     evasion_ticks: int = 0
     stunned_ticks: int = 0
     stunned_at_tick: int = -1
@@ -634,6 +639,16 @@ class BoxingEngine:
         if fighter.combo_ticks > 0:
             fighter.combo_ticks -= 1
 
+        held_guard = fighter.held_input.defense in (
+            DefensivePose.GUARD_HIGH,
+            DefensivePose.GUARD_LOW,
+        )
+        # A perfect block needs a real raise: a guard let down for a moment first, not one flicked
+        # down and back up, switched from high to low, or coming back up after a stun.
+        guard_rested = self.tick - fighter.guard_held_tick > PERFECT_BLOCK_REARM_TICKS
+        if held_guard:
+            fighter.guard_held_tick = self.tick
+
         attack = fighter.attack
         imminent_trade = (
             fighter.stunned_at_tick == self.tick
@@ -666,6 +681,7 @@ class BoxingEngine:
         else:
             if fighter.defense is not fighter.held_input.defense:
                 fighter.defense_started_tick = self.tick
+                fighter.guard_raised_tick = self.tick if held_guard and guard_rested else -1000
             fighter.defense = fighter.held_input.defense
 
         if (
@@ -896,7 +912,7 @@ class BoxingEngine:
         perfect = (
             blocked
             and not blind
-            and self.tick - defender.defense_started_tick
+            and self.tick - defender.guard_raised_tick
             <= PERFECT_BLOCK_TICKS + defender.style_rule.perfect_block_ticks
         )
         counter = attacker.counter_ticks > 0 or self._counter_vulnerable(defender.attack)
@@ -2281,6 +2297,7 @@ class BoxingEngine:
                     "trauma": fighter.trauma,
                     "defense": fighter.defense,
                     "defense_started_tick": fighter.defense_started_tick,
+                    "guard_timing": [fighter.guard_held_tick, fighter.guard_raised_tick],
                     "timers": [
                         fighter.evasion_ticks,
                         fighter.stunned_ticks,

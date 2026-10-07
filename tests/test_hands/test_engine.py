@@ -7,6 +7,7 @@ import re
 from enum import Enum
 from importlib import resources
 from math import hypot
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -15,6 +16,7 @@ from intelstream.hands.engine import (
     ACTION_BUFFER_TICKS,
     COUNT_TICK_INTERVAL,
     MAX_PENDING_ACTIONS,
+    PERFECT_BLOCK_TICKS,
     AttackState,
     BoxingEngine,
     EngineConfig,
@@ -36,6 +38,7 @@ from intelstream.hands.rules import (
     MANDATORY_COUNT,
     MINIMUM_SEPARATION,
     PARRY_STAGGER_TICKS,
+    PERFECT_BLOCK_REARM_TICKS,
     PUNCH_RULES,
     REFEREE_WALK_SPEED,
     REST_CORNER_OFFSET,
@@ -70,6 +73,9 @@ from intelstream.hands.types import (
     Stance,
     Target,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def make_engine(
@@ -2247,6 +2253,82 @@ def test_parrying_an_ordinary_punch_does_not_stagger() -> None:
     assert advance_until(engine, {"block", "perfect_block"}) == "perfect_block"
     assert not [event for event in engine.events if event.kind == "parry"]
     assert engine.fighter("one").stunned_ticks == 0
+
+
+def _power_straight_into(guard_at: Callable[[int], DefensivePose], start: int = 30) -> str:
+    """How a power straight thrown at tick `start` meets a defender holding `guard_at(tick)`."""
+    engine = make_engine(round_ticks=2000)
+    one = engine.fighter("one")
+    while engine.tick + 1 < start:
+        tick = engine.tick + 1
+        engine.step({"two": command(tick, defense=guard_at(tick))})
+    straight = punch(PunchClass.STRAIGHT, power=Power.POWER)
+    engine.step(
+        {"one": command(1, action=straight), "two": command(start, defense=guard_at(start))}
+    )
+    assert one.attack is not None and one.attack.start_tick == start
+    for _ in range(30):
+        tick = engine.tick + 1
+        for event in engine.step({"two": command(tick, defense=guard_at(tick))}).events:
+            if event.kind in ("hit", "counter_hit", "block", "perfect_block"):
+                return event.kind
+    raise AssertionError("the straight never arrived")
+
+
+@pytest.mark.parametrize(("up", "down"), [(3, 2), (4, 1), (5, 1), (6, 2)])
+def test_a_guard_flicked_up_and_down_blocks_but_never_parries(up: int, down: int) -> None:
+    outcomes = []
+    for phase in range(up + down):
+
+        def flicker(tick: int, phase: int = phase) -> DefensivePose:
+            up_now = (tick + phase) % (up + down) < up
+            return DefensivePose.GUARD_HIGH if up_now else DefensivePose.NONE
+
+        outcomes.append(_power_straight_into(flicker))
+    assert "perfect_block" not in outcomes
+    assert "block" in outcomes
+
+
+@pytest.mark.parametrize(
+    ("down_for", "lead", "expected"),
+    [
+        (PERFECT_BLOCK_REARM_TICKS, 2, "perfect_block"),
+        (PERFECT_BLOCK_REARM_TICKS, 4, "perfect_block"),
+        (30, 3, "perfect_block"),
+        (PERFECT_BLOCK_REARM_TICKS - 1, 3, "block"),
+        (1, 2, "block"),
+    ],
+)
+def test_a_guard_raised_late_after_being_let_down_a_moment_still_parries(
+    down_for: int, lead: int, expected: str
+) -> None:
+    contact = 30 + PUNCH_RULES[(PunchClass.STRAIGHT, Target.HEAD, Power.POWER)].startup
+    raised = contact - lead
+
+    def guard_at(tick: int) -> DefensivePose:
+        down = raised - down_for <= tick < raised
+        return DefensivePose.NONE if down else DefensivePose.GUARD_HIGH
+
+    assert _power_straight_into(guard_at) == expected
+
+
+def test_switching_guards_or_coming_back_from_a_stun_is_no_parry() -> None:
+    contact = 30 + PUNCH_RULES[(PunchClass.STRAIGHT, Target.HEAD, Power.POWER)].startup
+
+    def switched(tick: int) -> DefensivePose:
+        return DefensivePose.GUARD_LOW if tick < contact - 2 else DefensivePose.GUARD_HIGH
+
+    assert _power_straight_into(switched) == "block"
+    # Held through a stun, the guard comes back up as the stun ends: that is no raise either.
+    engine = make_engine(round_ticks=2000)
+    two = engine.fighter("two")
+    engine.step({"two": command(1, defense=DefensivePose.GUARD_HIGH)})
+    for _ in range(10):
+        engine.step()
+    two.stunned_ticks = 6
+    engine.step({"one": command(1, action=punch(PunchClass.STRAIGHT, power=Power.POWER))})
+    assert advance_until(engine, {"hit", "block", "perfect_block"}) == "block"
+    assert engine.tick - two.defense_started_tick <= PERFECT_BLOCK_TICKS
 
 
 def body_shot_engine(
