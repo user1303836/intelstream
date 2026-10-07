@@ -71,6 +71,16 @@ describe("contact presentation tick", () => {
     expect(plan[0]!.presentationEvent).toMatchObject({ kind: "block", detail: "straight:body", direction: -1, blood: 12 });
     expect(plan[2]!.presentationEvent).toMatchObject({ kind: "knockdown", detail: "straight:body", direction: -1, blood: 12 });
   });
+
+  it("reacts once to the punch that knocks a fighter down, at the punch's own strength", () => {
+    const frame = snapshot(10);
+    const hit = event("hit", "straight:head");
+    const knockdown = { ...event("knockdown", ""), event_id: 2, amount: 1, blood: 0, direction: 0, action_id: null };
+    expect(contactPresentationPlan([hit, knockdown], frame).map((entry) => entry.reactAmount)).toEqual([500, null]);
+    // Through a block, the block's entry presents the punch, so the knockdown reacts for the hit that leaked.
+    const block = { ...event("block", ""), actor_id: "two", target_id: "one", amount: 30, blood: 0, direction: 0 };
+    expect(contactPresentationPlan([block, { ...hit, amount: 18 }, knockdown], frame).map((entry) => entry.reactAmount)).toEqual([30, 18, 18]);
+  });
 });
 
 describe("arcade injury candidate routing", () => {

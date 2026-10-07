@@ -102,6 +102,8 @@ export interface ContactPresentation {
   readonly event: CombatEvent;
   readonly presentationEvent: CombatEvent;
   readonly presentImpact: boolean;
+  /** How hard the recipient reacts, or null when the punch's own entry already reacts to it. */
+  readonly reactAmount: number | null;
 }
 
 const isHit = (event: CombatEvent): boolean => event.kind === "hit" || event.kind === "counter_hit";
@@ -183,10 +185,11 @@ export function contactPresentationPlan(
           blood: hit?.blood ?? event.blood,
         },
         presentImpact: true,
+        reactAmount: event.amount,
       };
     }
     if (pairedBlock(event, events) !== undefined) {
-      return { event, presentationEvent: event, presentImpact: false };
+      return { event, presentationEvent: event, presentImpact: false, reactAmount: event.amount };
     }
     if (event.kind === "knockdown") {
       const hitEvent = events.slice(0, eventIndex).reverse().find((candidate) => isHit(candidate)
@@ -204,10 +207,12 @@ export function contactPresentationPlan(
             action_id: hitEvent.action_id,
           },
           presentImpact: true,
+          // A knockdown's amount is its count. The punch reacts in its own entry, unless a block took its place.
+          reactAmount: pairedBlock(hitEvent, events) === undefined ? null : hitEvent.amount,
         };
       }
     }
-    return { event, presentationEvent: event, presentImpact: true };
+    return { event, presentationEvent: event, presentImpact: true, reactAmount: event.amount };
   });
 }
 
@@ -540,6 +545,7 @@ export class FightRenderer {
     event: CombatEvent;
     presentationEvent: CombatEvent;
     presentImpact: boolean;
+    reactAmount: number | null;
     contactTick: number;
     recipientIndex: number;
     puncherIndex: number;
@@ -1072,7 +1078,7 @@ export class FightRenderer {
       }
       if (event.kind === "referee_break") this.referee?.breakClinch();
     }
-    for (const { event, presentationEvent, presentImpact } of contactPresentationPlan(accepted, snapshot)) {
+    for (const { event, presentationEvent, presentImpact, reactAmount } of contactPresentationPlan(accepted, snapshot)) {
       const targetIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.target_id);
       const actorIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.actor_id);
       const { recipientIndex, puncherIndex } = contactParticipants(event, snapshot);
@@ -1087,6 +1093,7 @@ export class FightRenderer {
           event,
           presentationEvent,
           presentImpact,
+          reactAmount,
           contactTick: puncher?.action_contact_tick ?? event.tick,
           recipientIndex,
           puncherIndex,
@@ -1106,7 +1113,7 @@ export class FightRenderer {
         continue;
       }
       this.pendingContacts.splice(index, 1);
-      const { event, presentationEvent, presentImpact, recipientIndex, puncherIndex, injury } = pending;
+      const { event, presentationEvent, presentImpact, reactAmount, recipientIndex, puncherIndex, injury } = pending;
       const target = this.buffer.latest()?.fighters[recipientIndex];
       if (presentImpact && target !== undefined) {
         this.tmpA.set(this.mapping.x(target.x), 0, this.mapping.z(target.y));
@@ -1151,6 +1158,7 @@ export class FightRenderer {
       if (
         presentImpact
         && recipientIndex >= 0
+        && reactAmount !== null
         && ["hit", "counter_hit", "block", "perfect_block", "knockdown"].includes(event.kind)
       ) {
         const blocked = event.kind === "block" || event.kind === "perfect_block";
@@ -1160,7 +1168,7 @@ export class FightRenderer {
           const keyParts = puncher?.action_key?.split(":") ?? [];
           const punchClass = (keyParts[0] ?? presentationEvent.detail.split(":")[0] ?? null) as PunchClass | null;
           const punchHand = (keyParts[1] ?? null) as Hand | null;
-          graphs[recipientIndex]!.react(blocked ? "block" : "hit", targetKind, presentationEvent.direction, punchClass, punchHand, event.amount);
+          graphs[recipientIndex]!.react(blocked ? "block" : "hit", targetKind, presentationEvent.direction, punchClass, punchHand, reactAmount);
         }
       }
       if (

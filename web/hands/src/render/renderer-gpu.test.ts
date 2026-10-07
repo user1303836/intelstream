@@ -4,6 +4,7 @@ import { fighter, snapshot } from "../test/fixtures";
 import type { CombatEvent, FighterSnapshot, FinalMessage, MatchResult } from "../types";
 import { attachFakeWebGl, type FakeWebGl } from "../test/webgl";
 import type { Effects3D } from "./effects";
+import type { BoxingGraph } from "./graph";
 import { FightRenderer } from "./renderer";
 
 /** The renderer's private parts a test drives or inspects. */
@@ -14,6 +15,7 @@ interface Internals {
   applyResolutionScale(): void;
   readonly keyLight: THREE.SpotLight;
   readonly effects: Effects3D;
+  readonly graphs: readonly [BoxingGraph, BoxingGraph];
   restoreAllInjuries(): void;
 }
 
@@ -87,6 +89,19 @@ describe("quality tiers on the graphics card", () => {
     expect(key.shadow.intensity).toBe(1);
     expect(key.shadow.map).not.toBeNull();
     expect(key.shadow.map?.width).toBe(1024);
+  });
+});
+
+describe("knockdown punch", () => {
+  it("leaves the punch's own dent in the face, not the knockdown's minimum one", async () => {
+    const { fight, internals } = await mount({ blood: "reduced" });
+    const time = settle(fight);
+    const hit = punch(51, 20);
+    const knockdown: CombatEvent = { ...hit, event_id: 52, kind: "knockdown", amount: 1, detail: "", blood: 0, direction: 0, action_id: null };
+    land(fight, 20, [hit, knockdown], exchange(20, "head", true));
+    fight.labFrame(time + 0.1);
+    // A straight to the head dents the mouth 1.1 cm plus a centimetre for every 220 of damage.
+    expect(internals.graphs[1].boxer.headInjury.impactDepth).toBeCloseTo(1.1 + hit.amount / 220, 2);
   });
 });
 
