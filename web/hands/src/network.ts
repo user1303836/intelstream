@@ -275,11 +275,6 @@ export class NetworkController {
     return this.latencyMs;
   }
 
-  /** Sequence of the next input frame, the one that will carry a press made now. */
-  get nextInputSequence(): number {
-    return this.nextSequence;
-  }
-
   private observeAcknowledgement(snapshot: EngineSnapshot): void {
     if (this.playerId === null) return;
     const self = snapshot.fighters.find((fighter) => fighter.player_id === this.playerId);

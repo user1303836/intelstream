@@ -188,7 +188,7 @@ export class HandsApp {
       this.dispatch({ type: "bootstrap", simulation: session.bootstrap.simulation });
       this.dispatch({ type: "authorized", player: session.player });
       this.input.onAction((action) => {
-        this.renderer?.predictAction?.(action, this.network?.nextInputSequence);
+        this.renderer?.predictAction?.(action);
         this.network?.notifyAction();
       });
       const ticket = session.takeTicket();

@@ -296,8 +296,10 @@ interface OwnPress {
   readonly timing: PunchTiming;
   readonly leadTicks: number;
   readonly pressedAt: number;
-  /** The input frame that carries it, until the server has started it. */
+  /** The input frame that carried it, once known. */
   sequence: number | null;
+  /** The server has started it, so it is no longer the server's to refuse. */
+  started: boolean;
   /** Real ticks since the key was pressed. */
   waited: number;
 }
@@ -343,8 +345,10 @@ export class BoxingGraph {
   private ownExpectedTicks = 0;
   /** The server turned the punch down before it landed, so the glove is coming back the way it went. */
   private ownPulled = false;
-  /** Input frame that carried the press: once a snapshot has it, the punch has started there or never will. */
+  /** Input frame that carried the press, once known: once a snapshot has it, the punch has started there or never will. */
   private ownSequence: number | null = null;
+  /** A snapshot has shown the server playing the punch. */
+  private ownStarted = false;
   /** When the key was pressed, in seconds. */
   private ownPressedAt = 0;
   /** The server refused the punch or cut it off before contact, so the pull-back is final. */
@@ -583,26 +587,26 @@ export class BoxingGraph {
   /**
    * Starts the viewer's own punch on the key press. `leadTicks` estimates how far ahead of the
    * server's presentation that is (input latency plus the interpolation delay); the startup is
-   * stretched by it so the glove arrives when the hit is shown. `sequence` is the input frame that
-   * carries the press, so `acknowledge` can tell when the server has had its chance to start it. A
-   * press made during a punch waits, as it does on the server, until that punch lets it go.
+   * stretched by it so the glove arrives when the hit is shown. A press made during a punch waits, as
+   * it does on the server, until that punch lets it go.
    */
-  predict(action: SemanticAction, timeSeconds: number, tickRate: number, leadTicks = 0, expected?: PunchTiming, sequence?: number): void {
+  predict(action: SemanticAction, timeSeconds: number, tickRate: number, leadTicks = 0, expected?: PunchTiming): void {
     if (action.kind !== "punch" || action.id === undefined) return;
     const press: OwnPress = {
       action: { ...action, id: action.id },
       timing: expected ?? punchTiming(action.class, action.target, action.power),
       leadTicks,
       pressedAt: timeSeconds,
-      sequence: sequence ?? null,
+      sequence: null,
+      started: false,
       waited: 0,
     };
-    // The server keeps one press waiting and a newer one takes its place. Two presses in the same
-    // input frame, or less than half a tick apart, usually reach it before the same step, so only the
-    // second starts there: it replaces the first here too, unless the server has already started it.
-    const unstarted = this.punchActive && this.ownActionId !== null && this.ownAuthoritativeAge === null && !this.ownPulled
-      && (sequence === undefined || this.ownSequence !== null);
-    if (unstarted && (sequence === this.ownSequence || (timeSeconds - this.ownPressedAt) * tickRate < SAME_STEP_TICKS)) {
+    // The server keeps one press waiting and a newer one takes its place. Two presses less than half a
+    // tick apart usually reach it before the same step, so only the second starts there: it replaces
+    // the first here too, unless the server has already started it. (Two presses sent in one input
+    // frame are only ever the newer one; `acknowledge` catches that once the newer one has gone out.)
+    const unstarted = this.punchActive && this.ownActionId !== null && this.ownAuthoritativeAge === null && !this.ownPulled && !this.ownStarted;
+    if (unstarted && (timeSeconds - this.ownPressedAt) * tickRate < SAME_STEP_TICKS) {
       // Not retired: if the first did start after all, it plays on the server's timeline.
       this.ownActionId = null;
     } else if (this.punchActive && !this.ownPulled) {
@@ -627,13 +631,14 @@ export class BoxingGraph {
 
   /**
    * Squares the viewer's own punches with the newest snapshot, which is ahead of the one on screen by
-   * the interpolation delay. Once that snapshot has the frame that carried a press, the punch has
-   * started on the server or never will: a guard raised in the same tick, a newer press or a stun
-   * clears it there. A stun, a clinch or the end of the fight phase also cuts off a punch the server
-   * did start, unless it had already landed. Either way the glove comes straight back. `contacts` are
-   * the snapshot's contact events for this fighter's punches.
+   * the interpolation delay. `sequenceOf` gives the input frame that carried a press once it has gone
+   * out. Once the snapshot has that frame, the punch has started on the server or never will: a guard
+   * raised in the same tick, a newer press or a stun clears it there. A stun, a clinch or the end of
+   * the fight phase also clears a press still waiting and cuts off a punch the server did start, unless
+   * it had already landed. Either way the glove comes straight back. `contacts` are the snapshot's
+   * contact events for this fighter's punches.
    */
-  acknowledge(server: FighterSnapshot, fighting: boolean, contacts: readonly CombatEvent[] = []): void {
+  acknowledge(server: FighterSnapshot, fighting: boolean, contacts: readonly CombatEvent[] = [], sequenceOf: ((actionId: string) => number | null) | null = null): void {
     for (const event of contacts) {
       if (event.action_id === null || !CONNECTING_CONTACTS.has(event.kind)) continue;
       if (event.action_id !== this.contactId) {
@@ -645,17 +650,28 @@ export class BoxingGraph {
     const cutOff = !fighting || server.stunned_ticks > 0 || server.clinch_ticks > 0 || server.clinch_startup_ticks > 0;
     const queued = this.ownQueued;
     if (queued !== null) {
-      // A held press the server has started is no longer its to refuse; one it has dropped is forgotten.
-      if (server.action_id === queued.action.id) queued.sequence = null;
-      else if (queued.sequence !== null && (cutOff || (server.last_input_sequence >= queued.sequence && server.queued_actions === 0))) this.ownQueued = null;
+      queued.sequence ??= sequenceOf?.(queued.action.id) ?? null;
+      if (server.action_id === queued.action.id) queued.started = true;
+      else if (!queued.started && (cutOff || (queued.sequence !== null && server.last_input_sequence >= queued.sequence && server.queued_actions === 0))) this.ownQueued = null;
     }
     if (!this.punchActive || this.ownActionId === null || this.ownPulled || this.ownRefused) return;
+    if (!this.ownStarted) this.ownSequence ??= sequenceOf?.(this.ownActionId) ?? null;
     const started = server.action_id === this.ownActionId;
-    if (started) this.ownSequence = null;
+    if (started) this.ownStarted = true;
+    const held = this.ownQueued;
+    if (held !== null && held.sequence !== null && sequenceOf !== null && !this.ownStarted && this.ownSequence === null && this.ownAuthoritativeAge === null) {
+      // A later press went out and this one never did: the input queue kept only the newer press, so
+      // the server never sees this one and starts that one as soon as it gets it.
+      this.ownActionId = null;
+      this.ownQueued = null;
+      this.retirePunch();
+      this.startOwnPunch(held, Math.max(0, held.leadTicks - held.waited));
+      return;
+    }
     const refused = started
       ? cutOff && server.action_contact_tick === null
-      : this.ownSequence !== null && this.ownAuthoritativeAge === null
-        && (cutOff || (server.last_input_sequence >= this.ownSequence && server.queued_actions === 0));
+      : !this.ownStarted && this.ownAuthoritativeAge === null
+        && (cutOff || (this.ownSequence !== null && server.last_input_sequence >= this.ownSequence && server.queued_actions === 0));
     if (!refused) return;
     this.ownRefused = true;
     // Before contact the glove comes back the way it went; after it the punch simply finishes.
@@ -677,6 +693,7 @@ export class BoxingGraph {
     this.ownLeadTicks = clamp(leadTicks, 0, MAX_OWN_LEAD_TICKS);
     this.ownExpectedTicks = Math.max(0, leadTicks);
     this.ownSequence = press.sequence;
+    this.ownStarted = press.started;
     this.ownPressedAt = press.pressedAt;
   }
 
@@ -727,6 +744,7 @@ export class BoxingGraph {
     this.ownExpectedTicks = 0;
     this.ownPulled = false;
     this.ownSequence = null;
+    this.ownStarted = false;
     this.ownRefused = false;
   }
 

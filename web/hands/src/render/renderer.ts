@@ -423,6 +423,8 @@ export class FightRenderer {
   private readonly mapping: WorldMapping;
   private readonly buffer: SnapshotBuffer;
   private readonly localInput: (() => HeldInput | null) | null;
+  /** Sequence of the input frame that carried a press, once it has gone out; null before then. */
+  private readonly inputSequenceOf: ((actionId: string) => number | null) | null;
   private readonly localOffset = { dx: 0, dy: 0 };
   private lastManualTime = 0;
   private readonly dedupe = new EventDeduplicator();
@@ -515,10 +517,11 @@ export class FightRenderer {
     private readonly canvas: HTMLCanvasElement,
     private readonly simulation: SimulationInfo = DEFAULT_SIM,
     private readonly settings: () => Settings,
-    options: { manualClock?: boolean; localInput?: () => HeldInput | null } = {},
+    options: { manualClock?: boolean; localInput?: () => HeldInput | null; inputSequenceOf?: (actionId: string) => number | null } = {},
   ) {
     this.manualClock = options.manualClock === true;
     this.localInput = options.localInput ?? null;
+    this.inputSequenceOf = options.inputSequenceOf ?? null;
     this.buffer = new SnapshotBuffer(8, simulation.tick_rate);
     this.mapping = worldMapping(simulation);
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance", preserveDrawingBuffer: options.manualClock === true });
@@ -987,8 +990,7 @@ export class FightRenderer {
     return { position: this.tmpStump, quaternion: this.tmpStumpQuaternion };
   }
 
-  /** `sequence` is the input frame that will carry the press, matched later against `last_input_sequence`. */
-  predictAction(action: SemanticAction, sequence?: number): void {
+  predictAction(action: SemanticAction): void {
     const latest = this.buffer.latest();
     if (latest === null || this.viewerId === null || this.replay !== null) return;
     const index = latest.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
@@ -997,19 +999,19 @@ export class FightRenderer {
     const fighter = latest.fighters[index]!;
     if (action.kind !== "punch" || latest.phase !== "fight" || !canStartPunch(fighter) || !canAffordPunch(fighter, action)) return;
     const leadTicks = ((this.inputLatencyMs ?? 60) / 1000) * this.simulation.tick_rate + this.buffer.interpolationDelayTicks;
-    this.graphs?.[index]?.predict(action, performance.now() / 1000, this.simulation.tick_rate, leadTicks, predictedPunchTiming(fighter, action, latest.tick + 1), sequence);
+    this.graphs?.[index]?.predict(action, performance.now() / 1000, this.simulation.tick_rate, leadTicks, predictedPunchTiming(fighter, action, latest.tick + 1));
   }
 
   /**
-   * Every snapshot, as it arrives, tells the viewer's own punches whether the server took them, and
-   * both fighters' punches how they met the opponent.
+   * Every snapshot, as it arrives, tells the viewer's own punches whether the server took them (matching
+   * each press to the input frame that carried it), and both fighters' punches how they met the opponent.
    */
   private acknowledgeActions(snapshot: EngineSnapshot, events: readonly CombatEvent[]): void {
     const graphs = this.graphs;
     if (graphs === null) return;
     for (const [index, fighter] of snapshot.fighters.entries()) {
       const contacts = events.filter((event) => contactParticipants(event, snapshot).puncherIndex === index);
-      graphs[index]?.acknowledge(fighter, snapshot.phase === "fight", contacts);
+      graphs[index]?.acknowledge(fighter, snapshot.phase === "fight", contacts, fighter.player_id === this.viewerId ? this.inputSequenceOf : null);
     }
   }
 
