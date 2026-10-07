@@ -486,6 +486,15 @@ export function measureBurstStump(
   return written;
 }
 
+/**
+ * Where a fighter's blood, sweat and chunks leave from, into `out`: under him as he is drawn, which is not
+ * always his place in the engine (held on the ropes he is drawn in off them, and he gets up where a fall left him).
+ */
+function drawnPlace(graph: { readonly currentRoot?: { readonly x: number; readonly z: number } } | undefined, fighter: FighterSnapshot, mapping: WorldMapping, out: THREE.Vector3): THREE.Vector3 {
+  const drawn = graph?.currentRoot;
+  return out.set(drawn?.x ?? mapping.x(fighter.x), 0, drawn?.z ?? mapping.z(fighter.y));
+}
+
 /** The place nearest to (x, z) that is at least `clearance` from (fromX, fromZ). */
 export function keepClear(x: number, z: number, fromX: number, fromZ: number, clearance: number): { x: number; z: number } {
   const distance = Math.hypot(x - fromX, z - fromZ);
@@ -1544,7 +1553,7 @@ export class FightRenderer {
     const { recipientIndex, puncherIndex } = contactParticipants(event, snapshot);
     const recipient = snapshot.fighters[recipientIndex];
     if (recipient === undefined) return;
-    this.placeContact(recipientIndex, recipient);
+    drawnPlace(this.graphs?.[recipientIndex], recipient, this.mapping, this.contactPoint);
     const spray = sprayDirection(snapshot.fighters[puncherIndex], recipient, this.mapping);
     this.effects.addEvent(event, this.contactPoint, this.settings().reducedMotion, spray);
     const puncher = puncherIndex >= 0 ? snapshot.fighters[puncherIndex] : undefined;
@@ -1726,7 +1735,7 @@ export class FightRenderer {
       const fighter = this.buffer.latest()?.fighters[index];
       if (graph !== undefined && fighter !== undefined) {
         if (graph.boxer.rig.bones.upperChest.getWorldPosition(this.tmpPart).y > RIBS_BURST_CHEST_HEIGHT) {
-          this.placeContact(index, fighter);
+          drawnPlace(graph, fighter, this.mapping, this.contactPoint);
           const burst: CombatEvent = { ...event, event_id: event.event_id + RIBS_BURST_EVENT_OFFSET, kind: "counter_hit", detail: "hook:body", amount: Math.max(event.amount, BIG_SHOT), blood: 100 };
           this.effects.addEvent(burst, this.contactPoint, false, spray);
         }
@@ -1800,15 +1809,6 @@ export class FightRenderer {
 
   private skinColor(index: number): number {
     return this.graphs?.[index]?.boxer.skinBaseColor.getHex() ?? 0xb0703f;
-  }
-
-  /**
-   * Where a fighter's blood, sweat and chunks leave from: under him as he is drawn, which is not always his
-   * place in the engine (held on the ropes he is drawn in off them, and he gets up where a fall left him).
-   */
-  private placeContact(index: number, fighter: FighterSnapshot): void {
-    const drawn = this.graphs?.[index]?.currentRoot;
-    this.contactPoint.set(drawn?.x ?? this.mapping.x(fighter.x), 0, drawn?.z ?? this.mapping.z(fighter.y));
   }
 
   /**
@@ -1918,7 +1918,7 @@ export class FightRenderer {
         ?? snapshot.fighters[targetIndex]
         ?? snapshot.fighters[actorIndex]
         ?? snapshot.fighters[0];
-      this.placeContact(snapshot.fighters.indexOf(recipient), recipient);
+      drawnPlace(this.graphs?.[snapshot.fighters.indexOf(recipient)], recipient, this.mapping, this.contactPoint);
       if (CONTACT_KINDS.has(event.kind)) {
         const puncher = puncherIndex >= 0 ? snapshot.fighters[puncherIndex]! : null;
         this.pendingContacts.push({
@@ -1953,7 +1953,7 @@ export class FightRenderer {
       const spray = sprayDirection(this.buffer.latest()?.fighters[puncherIndex], target, this.mapping);
       this.presentFightEvent(event, recipientIndex, puncherIndex);
       if (presentImpact && target !== undefined) {
-        this.placeContact(recipientIndex, target);
+        drawnPlace(this.graphs?.[recipientIndex], target, this.mapping, this.contactPoint);
         this.effects.addEvent(presentationEvent, this.contactPoint, this.settings().reducedMotion, spray);
       }
       const currentSettings = this.settings();
