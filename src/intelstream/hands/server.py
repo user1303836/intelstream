@@ -6,6 +6,7 @@ import json
 import math
 import mimetypes
 import secrets
+import struct
 import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
@@ -25,7 +26,7 @@ from intelstream.hands.protocol import (
     ProtocolError,
     parse_ticket_ack,
 )
-from intelstream.hands.rooms import HandsRoomManager, RoomError, RoomMembership
+from intelstream.hands.rooms import HandsRoomManager, RoomError, RoomMembership, SocketLike
 from intelstream.hands.rules import RING_HALF_HEIGHT, RING_HALF_WIDTH, TICKS_PER_SECOND
 
 if TYPE_CHECKING:
@@ -206,6 +207,63 @@ class _TicketRefreshState:
         self.acknowledged.set()
 
 
+def _text_frame(payload: bytes) -> bytes:
+    """One final, unmasked and uncompressed websocket text frame (RFC 6455 section 5.2)."""
+    length = len(payload)
+    if length < 126:
+        header = struct.pack("!BB", 0x81, length)
+    elif length < 1 << 16:
+        header = struct.pack("!BBH", 0x81, 126, length)
+    else:
+        header = struct.pack("!BBQ", 0x81, 127, length)
+    return header + payload
+
+
+class _RoomSocket:
+    """The room's handle on one websocket, with the transport underneath it.
+
+    Room traffic is deflated through aiohttp with the connection's shared context when the client
+    negotiated permessage-deflate. A frame that carries a reconnect ticket is written uncompressed,
+    which RFC 7692 allows per message, so the ticket never shares a context with player-chosen
+    text such as display names. aiohttp cannot send it that way itself: its per-message option
+    deflates with a fresh context, which the client's inflater cannot follow.
+    """
+
+    __slots__ = ("_request", "_websocket")
+
+    def __init__(self, request: web.Request, websocket: web.WebSocketResponse) -> None:
+        self._request = request
+        self._websocket = websocket
+
+    @property
+    def closed(self) -> bool:
+        return self._websocket.closed
+
+    async def send_str(self, data: str) -> None:
+        await self._websocket.send_str(data)
+
+    async def send_uncompressed(self, data: str) -> None:
+        if not self._websocket.compress:
+            await self._websocket.send_str(data)
+            return
+        transport = self._request.transport
+        if self._websocket.closed or transport is None or transport.is_closing():
+            raise ConnectionResetError("websocket is closed")
+        transport.write(_text_frame(data.encode()))
+
+    def write_buffer_size(self) -> int:
+        transport = self._request.transport
+        return 0 if transport is None else transport.get_write_buffer_size()
+
+    async def close(self, *, code: int = 1000, message: bytes = b"") -> None:
+        await self._websocket.close(code=code, message=message)
+
+    def abort(self) -> None:
+        transport = self._request.transport
+        if transport is not None:
+            transport.abort()
+
+
 class AuthBackend(Protocol):
     application_id: str
 
@@ -229,7 +287,7 @@ class RoomsBackend(Protocol):
     async def join(
         self,
         player: AuthenticatedPlayer,
-        socket: web.WebSocketResponse,
+        socket: SocketLike,
         *,
         reconnect_ticket: str | None = None,
         reconnect_ticket_factory: Callable[[], str] | None = None,
@@ -280,6 +338,20 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
             raise ValueError("duplicate field")
         result[key] = value
     return result
+
+
+def _authentication_version(raw: bytes) -> int | None:
+    """The protocol version an authentication frame claims, before its shape is checked."""
+    try:
+        value = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(value, dict) or value.get("type") != "authenticate":
+        return None
+    version = value.get("version")
+    if isinstance(version, bool) or not isinstance(version, int) or not 0 < version < 2**31:
+        return None
+    return version
 
 
 def _strict_object(raw: bytes, *, fields: set[str]) -> dict[str, object]:
@@ -655,7 +727,7 @@ class HandsServer:
             autoping=True,
             heartbeat=15.0,
             max_msg_size=MAX_FRAME_BYTES,
-            compress=False,
+            compress=True,
         )
         try:
             await websocket.prepare(request)
@@ -665,6 +737,7 @@ class HandsServer:
         membership: RoomMembership | None = None
         ticket_refresh_state: _TicketRefreshState | None = None
         ticket_refresh_task: asyncio.Task[None] | None = None
+        reply_version = PROTOCOL_VERSION
         try:
             try:
                 async with asyncio.timeout(self.auth_timeout_seconds):
@@ -674,6 +747,12 @@ class HandsServer:
                     encoded = first.data.encode() if isinstance(first.data, str) else first.data
                     if not isinstance(encoded, bytes) or len(encoded) > MAX_AUTH_FRAME_BYTES:
                         raise HandsAuthError("authentication_required")
+                    client_version = _authentication_version(encoded)
+                    if client_version is not None and client_version != PROTOCOL_VERSION:
+                        # A window still running an older build after a deploy: it must reload,
+                        # and is told so in its own version, which its decoder still reads.
+                        reply_version = client_version
+                        raise HandsAuthError("client_outdated")
                     payload = _strict_object(encoded, fields={"version", "type", "ticket"})
                     if payload["version"] != PROTOCOL_VERSION or payload["type"] != "authenticate":
                         raise HandsAuthError("invalid_ticket")
@@ -682,7 +761,7 @@ class HandsServer:
                 await self._ws_error(websocket, "authentication_timeout", close_code=4003)
                 return websocket
             except HandsAuthError as exc:
-                await self._ws_error(websocket, exc.code, close_code=4003)
+                await self._ws_error(websocket, exc.code, close_code=4003, version=reply_version)
                 return websocket
             except web.HTTPException:
                 await self._ws_error(websocket, "invalid_request", close_code=4004)
@@ -693,7 +772,7 @@ class HandsServer:
             try:
                 membership = await self.rooms.join(
                     player,
-                    websocket,
+                    _RoomSocket(request, websocket),
                     reconnect_ticket_factory=lambda: self.auth.issue_ticket(player),
                 )
             except (HandsAuthError, RoomError) as exc:
@@ -780,12 +859,18 @@ class HandsServer:
             logger.error("Hands ticket refresh failed", error_type=type(exc).__name__)
 
     @staticmethod
-    async def _ws_error(websocket: web.WebSocketResponse, code: str, *, close_code: int) -> None:
+    async def _ws_error(
+        websocket: web.WebSocketResponse,
+        code: str,
+        *,
+        close_code: int,
+        version: int = PROTOCOL_VERSION,
+    ) -> None:
         if not websocket.closed:
             with contextlib.suppress(ConnectionError, RuntimeError):
                 await websocket.send_str(
                     json.dumps(
-                        {"version": PROTOCOL_VERSION, "type": "error", "code": code},
+                        {"version": version, "type": "error", "code": code},
                         separators=(",", ":"),
                         sort_keys=True,
                     )
