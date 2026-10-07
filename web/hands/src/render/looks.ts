@@ -145,7 +145,12 @@ const VERTEX_BAKED = /* glsl */ `
 vLookPos = bindPosition;
 `;
 
-const FRAGMENT_GROOM = /* glsl */ `
+/**
+ * Dyes the hair, shaves the scalp and grows the beard over the scanned texture. `diffuse` is the material
+ * colour, the fighter's skin tone: it tints the shaved scalp and the skin showing through a beard, never the
+ * dye, so a dark-skinned fighter's grey or blond hair stays grey or blond. Exported so a test can read it.
+ */
+export const LOOK_GROOM_GLSL = /* glsl */ `
 #ifdef USE_MAP
 {
   vec3 p = vLookPos;
@@ -153,13 +158,13 @@ const FRAGMENT_GROOM = /* glsl */ `
   float hair = lookHairZone(p) * max(1.0 - smoothstep(0.13, 0.26, scanned), smoothstep(126.2, 127.4, p.y));
   vec3 dyed = uLookHair * clamp(scanned / 0.075, 0.45, 1.7);
   vec3 scalp = mix(${SKIN}, uLookHair, 0.1) * clamp(scanned / 0.075, 0.85, 1.12) * 0.9;
-  diffuseColor.rgb = mix(diffuseColor.rgb, mix(dyed, scalp, uLookGroom.x) * diffuse, hair);
+  diffuseColor.rgb = mix(diffuseColor.rgb, mix(dyed, scalp * diffuse, uLookGroom.x), hair);
   // The beard covers the chin and runs back along the jaw to the ear, clear of the neck beneath it.
   float front = mix(1.4, -4.8, smoothstep(111.2, 114.6, p.y));
   float jaw = (1.0 - smoothstep(115.4, 116.8, p.y)) * smoothstep(109.6, 110.6, p.y) * smoothstep(front - 0.6, front + 0.6, p.z);
-  float lips = 1.0 - smoothstep(0.8, 2.0, length((p - vec3(0.0, 114.3, 4.8)) * vec3(0.55, 1.0, 0.4)));
+  float lips = 1.0 - smoothstep(0.8, 2.0, length(vec3(p.x * 0.55, p.y - 114.3, (p.z - 4.8) * 0.4)));
   float grain = 0.8 + 0.2 * sin(p.x * 41.0 + p.z * 13.0) * sin(p.y * 47.0 + p.z * 29.0);
-  diffuseColor.rgb = mix(diffuseColor.rgb, mix(uLookHair, ${SKIN}, 0.12) * 0.8 * diffuse, jaw * (1.0 - lips) * uLookGroom.y * grain * 0.88);
+  diffuseColor.rgb = mix(diffuseColor.rgb, mix(uLookHair * 0.8, ${SKIN} * diffuse, 0.12), jaw * (1.0 - lips) * uLookGroom.y * grain * 0.88);
 }
 #endif
 `;
@@ -188,7 +193,7 @@ export class LookShading {
         .replace("#include <morphtarget_vertex>", `${baked ? VERTEX_BAKED : LOOK_SHAPE_GLSL}\n#include <morphtarget_vertex>`);
       shader.fragmentShader = shader.fragmentShader
         .replace("#include <common>", `#include <common>\n${LOOK_MASKS_GLSL}`)
-        .replace("#include <map_fragment>", `#include <map_fragment>\n${FRAGMENT_GROOM}`);
+        .replace("#include <map_fragment>", `#include <map_fragment>\n${LOOK_GROOM_GLSL}`);
     };
     material.customProgramCacheKey = () => `${beforeKey}-look-${baked ? "baked" : "live"}`;
     material.needsUpdate = true;

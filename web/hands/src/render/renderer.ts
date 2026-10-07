@@ -18,8 +18,8 @@ import { CommentaryDirector, type CrowdCue } from "./commentary";
 import { Effects3D, type BakedPart, type SprayDirection } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, releaseFighterGpu, type ArcadeDislocation, type CutmanProp } from "./graph";
 import { drawHud, finalRevealDelay, hudScale, lagWarning, resultCard, resultCardLayout, RoundStatsTracker, STOPPAGE_METHODS, RoundClock, wasBlocked, type RoundPunchStats } from "./hud";
-import { BURST_CUT_HEIGHT, EYE_LIDS, NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE } from "./injury";
-import { BIG_SHOT, closeCut, cutRim, teethFor } from "./gore";
+import { BURST_CUT_HEIGHT, EYE_LIDS, NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE, type InjuryShading } from "./injury";
+import { BIG_SHOT, closeCut, cutRim, teethFor, HARD_SHOT } from "./gore";
 import { mouthpieceFlies } from "./mouthpiece";
 import { OFFICIAL_LOOKS, lookFor, lookShape, type FighterLook } from "./looks";
 import { BLUE_CORNER_OUTFIT, CUTMAN_OUTFIT, RED_CORNER_OUTFIT, REFEREE_OUTFIT } from "./outfit";
@@ -37,7 +37,9 @@ export type ArcadeInjury =
   | "dismember_right"
   | "jaw_dislocation"
   | "shoulder_left"
-  | "shoulder_right";
+  | "shoulder_right"
+  | "ribs_left"
+  | "ribs_right";
 
 /** Phases the player's own over-the-shoulder camera is used in; counts, rests and the finish go to the broadcast. */
 export function ownViewPhase(snapshot: Pick<EngineSnapshot, "phase"> | null): boolean {
@@ -396,6 +398,17 @@ export function presentationTickFor(snapshot: EngineSnapshot): number {
   return snapshot.result === null ? snapshot.tick - 1 : snapshot.tick;
 }
 
+/** A straight this hard to the head takes it off: most land for 30 to 80. */
+const DECAPITATING_STRAIGHT = 80;
+const PUNCH_CLASSES: readonly string[] = ["jab", "straight", "hook", "uppercut"];
+
+/**
+ * The finisher the punch that ends the bout earns, by where it landed, what it was and how hard it was:
+ * - to the head, a flash knockout or a big counter bursts it, a hard uppercut or straight takes it off, a
+ *   hard hook forces out the eye on the side it lands, and anything lighter dislocates the jaw;
+ * - to the body, a hook comes round through the elbow covering the ribs, so a big one takes the forearm
+ *   off and a hard one puts the shoulder out; otherwise the ribs it lands on cave in.
+ */
 export function arcadeInjuryFor(
   event: CombatEvent,
   target: FighterSnapshot | undefined,
@@ -403,22 +416,20 @@ export function arcadeInjuryFor(
   puncher?: FighterSnapshot,
 ): ArcadeInjury | null {
   if (!isArcadeInjuryCandidate(event, target, result)) return null;
-  const selection = Math.abs(event.event_id);
+  const key = puncher?.action_key?.split(":");
+  const punch = event.detail.split(":").find((part) => PUNCH_CLASSES.includes(part)) ?? key?.[0];
+  // A left hand lands on his right side; without the puncher's hand, on the side an orthodox lead lands on.
+  const struck = key?.[1] === "right" ? "left" : "right";
+  const amount = event.amount;
   if (event.detail.endsWith(":head")) {
-    // A flash knockout or a big counter bursts the head.
-    if (result?.finish_method === "flash_ko" || (event.kind === "counter_hit" && event.amount >= BIG_SHOT)) return "head_burst";
-    const key = puncher?.action_key?.split(":");
-    const punch = event.detail.split(":").find((part) => ["jab", "straight", "hook", "uppercut"].includes(part)) ?? key?.[0];
-    if (punch === "hook" && selection % 2 === 1) {
-      // A hook drives the eye on the side it lands out of its socket.
-      const struck = key?.[1] === "left" ? "right" : key?.[1] === "right" ? "left" : Math.floor(selection / 2) % 2 === 0 ? "left" : "right";
-      return `eye_${struck}`;
-    }
-    return selection % 2 === 0 ? "decapitation" : "jaw_dislocation";
+    if (result?.finish_method === "flash_ko" || (event.kind === "counter_hit" && amount >= BIG_SHOT)) return "head_burst";
+    if ((punch === "uppercut" && amount >= HARD_SHOT) || (punch === "straight" && amount >= DECAPITATING_STRAIGHT)) return "decapitation";
+    if (punch === "hook" && amount >= HARD_SHOT) return `eye_${struck}`;
+    return "jaw_dislocation";
   }
-  const hand = puncher?.action_key?.split(":")[1];
-  const recipientSide = hand === "left" ? "right" : hand === "right" ? "left" : Math.floor(selection / 2) % 2 === 0 ? "left" : "right";
-  return selection % 2 === 0 ? `dismember_${recipientSide}` : `shoulder_${recipientSide}`;
+  if (punch === "hook" && amount >= BIG_SHOT) return `dismember_${struck}`;
+  if (punch === "hook" && amount >= HARD_SHOT) return `shoulder_${struck}`;
+  return `ribs_${struck}`;
 }
 import { buildRing, disposeRing, nearRopeOpacityFor, type BuiltRing } from "./ring";
 import { resizeHighDpi } from "./viewport";
@@ -501,6 +512,15 @@ export function measureBurstStump(
   out.scratch.set(0, 1, 0).applyQuaternion(out.quaternion);
   out.quaternion.setFromUnitVectors(UP, out.scratch);
   return written;
+}
+
+/**
+ * Where a fighter's blood, sweat and chunks leave from, into `out`: under him as he is drawn, which is not
+ * always his place in the engine (held on the ropes he is drawn in off them, and he gets up where a fall left him).
+ */
+function drawnPlace(graph: { readonly currentRoot?: { readonly x: number; readonly z: number } } | undefined, fighter: FighterSnapshot, mapping: WorldMapping, out: THREE.Vector3): THREE.Vector3 {
+  const drawn = graph?.currentRoot;
+  return out.set(drawn?.x ?? mapping.x(fighter.x), 0, drawn?.z ?? mapping.z(fighter.y));
 }
 
 /** The place nearest to (x, z) that is at least `clearance` from (fromX, fromZ). */
@@ -633,6 +653,32 @@ function posedHeadVertex(boxer: SkinnedBoxer, vertex: number, out: THREE.Vector3
   return mesh.applyBoneTransform(vertex, out).applyMatrix4(mesh.matrixWorld);
 }
 
+const skinIndexScratch = new THREE.Vector4();
+const skinWeightScratch = new THREE.Vector4();
+const boneScratch = new THREE.Matrix4();
+
+/**
+ * The matrix a skinned vertex is posed by, into `out` (in the mesh's own space): its bones' matrices blended by
+ * its weights, as the skinning shader blends them for the vertex's normal.
+ */
+function skinMatrixOf(mesh: THREE.SkinnedMesh, vertex: number, out: THREE.Matrix4): THREE.Matrix4 {
+  const geometry = mesh.geometry;
+  skinIndexScratch.fromBufferAttribute(geometry.getAttribute("skinIndex") as THREE.BufferAttribute, vertex);
+  skinWeightScratch.fromBufferAttribute(geometry.getAttribute("skinWeight") as THREE.BufferAttribute, vertex);
+  out.set(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+  for (let influence = 0; influence < 4; influence += 1) {
+    const weight = skinWeightScratch.getComponent(influence);
+    if (weight === 0) continue;
+    const bone = skinIndexScratch.getComponent(influence);
+    boneScratch.multiplyMatrices(mesh.skeleton.bones[bone]!.matrixWorld, mesh.skeleton.boneInverses[bone]!);
+    for (let element = 0; element < 16; element += 1) out.elements[element]! += boneScratch.elements[element]! * weight;
+  }
+  return out.premultiply(mesh.bindMatrixInverse).multiply(mesh.bindMatrix);
+}
+
+/** Across a severed head's cut, in the head bone's frame: mirrored, because the cut faces down it. */
+const SEVERED_HEAD_ACROSS = new THREE.Vector3(-1, 0, 0);
+
 /** True for the part of the head mesh that leaves with the head. */
 export function aboveNeckCut(bind: THREE.Vector3): boolean {
   return bind.y > NECK_CUT_HEIGHT - NECK_CUT_SLOPE * (bind.z - NECK_CUT_DEPTH) - 0.3;
@@ -678,6 +724,13 @@ export function bakeSkinnedPart(
   mesh.updateMatrixWorld(true);
   const bone = rigid === undefined ? -1 : mesh.skeleton.bones.indexOf(rigid);
   const follow = bone < 0 ? null : new THREE.Matrix4().multiplyMatrices(mesh.bindMatrixInverse, new THREE.Matrix4().multiplyMatrices(mesh.skeleton.bones[bone]!.matrixWorld, mesh.skeleton.boneInverses[bone]!)).multiply(mesh.bindMatrix);
+  // The scan's own normals go along, posed as the skin is: recomputed, every UV seam of its fragmented atlas
+  // would split the shading into facets, as each side of a seam would be averaged over its own island only.
+  const normals = source.getAttribute("normal");
+  const bakedNormals = normals === undefined ? null : new Float32Array(kept.length * 3);
+  const normalTurn = new THREE.Matrix3();
+  const skinned = new THREE.Matrix4();
+  if (follow !== null) normalTurn.getNormalMatrix(skinned.multiplyMatrices(mesh.matrixWorld, follow));
   for (const [target, from] of kept.entries()) {
     vertex.fromBufferAttribute(positions, from);
     // A head is drawn reshaped by its owner's look; the severed head keeps that shape.
@@ -688,6 +741,12 @@ export function bakeSkinnedPart(
     baked[target * 3] = vertex.x;
     baked[target * 3 + 1] = vertex.y;
     baked[target * 3 + 2] = vertex.z;
+    if (normals === undefined || bakedNormals === null) continue;
+    if (follow === null) normalTurn.getNormalMatrix(skinned.multiplyMatrices(mesh.matrixWorld, skinMatrixOf(mesh, from, skinned)));
+    vertex.fromBufferAttribute(normals, from).applyMatrix3(normalTurn).applyQuaternion(inverse).normalize();
+    bakedNormals[target * 3] = vertex.x;
+    bakedNormals[target * 3 + 1] = vertex.y;
+    bakedNormals[target * 3 + 2] = vertex.z;
   }
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.BufferAttribute(baked, 3));
@@ -718,7 +777,8 @@ export function bakeSkinnedPart(
     }
     geometry.setIndex(whole);
   } else if (triangles !== null) geometry.setIndex(triangles);
-  geometry.computeVertexNormals();
+  if (bakedNormals !== null) geometry.setAttribute("normal", new THREE.BufferAttribute(bakedNormals, 3));
+  else geometry.computeVertexNormals();
   const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
   const map = material instanceof THREE.MeshStandardMaterial ? material.map : null;
   const color = material instanceof THREE.MeshStandardMaterial ? material.color.getHex() : 0xffffff;
@@ -737,7 +797,9 @@ export function bakeSkinnedPart(
   for (let at = 0; at < used.count; at += 1) middle.add(vertex.fromArray(baked, used.getX(at) * 3));
   middle.multiplyScalar(1 / Math.max(1, used.count));
   const flesh = new THREE.BufferGeometry();
-  closeCut(flesh, edge, position, position.clone().sub(middle).normalize());
+  // A severed head's cut faces down its own frame, so the head's sideways axis runs the other way across it
+  // for the windpipe to sit under the chin, as on the neck it came off.
+  closeCut(flesh, edge, position, position.clone().sub(middle).normalize(), 0.01, keep === aboveNeckCut ? SEVERED_HEAD_ACROSS : undefined);
   return { geometry, map, color, cut: { position, flesh } };
 }
 
@@ -822,15 +884,54 @@ export function knockdownFinisher(hit: CombatEvent | null, snapshot: EngineSnaps
 
 const POOL_SEVERITY = 0.2;
 const POOL_RATE = 2;
+const POOL_REACH = 0.42;
+/**
+ * A finisher's open wound bleeds out whatever the engine says of his cuts: as badly as the worst cut does
+ * (the pool's ceiling), three times as fast, and spreading out to 0.8 m from it, which takes about 18 s.
+ */
+const OPEN_WOUNDS: ReadonlySet<ArcadeInjury> = new Set(["decapitation", "head_burst", "eye_left", "eye_right", "dismember_left", "dismember_right", "ribs_left", "ribs_right"]);
+const OPEN_WOUND_SEVERITY = 1.6;
+const OPEN_WOUND_POOL_RATE = 3;
+const OPEN_WOUND_POOL_REACH = 0.8;
+/** Under the chin, from the middle of the skull, in the head's frame. */
+const UNDER_THE_CHIN = new THREE.Vector3(0, -0.1, 0.08);
 
-/** How far the pool under a downed fighter has spread after `count` spills, in metres: fast at first, then slower, wider the worse he bleeds. */
-export function poolRadius(count: number, severity: number): number {
-  return Math.min(0.42, 0.05 + 0.045 * Math.sqrt(Math.max(0, count)) * Math.min(1.6, Math.max(0, severity)));
+/**
+ * How far the pool under a downed fighter has spread after `count` spills, in metres: fast at first, then slower,
+ * wider the worse he bleeds, up to `reach`.
+ */
+export function poolRadius(count: number, severity: number, reach = POOL_REACH): number {
+  return Math.min(reach, 0.05 + 0.045 * Math.sqrt(Math.max(0, count)) * Math.min(1.6, Math.max(0, severity)));
+}
+
+/**
+ * Whether a fighter is down for his blood and his shadow: counted on the canvas, falling or lying there as
+ * drawn, or the loser of a flash knockout, whom the engine never puts down (the bout ends with the punch).
+ */
+export function fighterDown(fighter: FighterSnapshot, graph: { readonly isDown: boolean } | undefined, flashLoserId: string | undefined): boolean {
+  return fighter.is_downed || graph?.isDown === true || (flashLoserId !== undefined && fighter.player_id === flashLoserId);
+}
+
+/** How deep (bind-space centimetres) and how wide a torso finisher caves the ribs in: twice the deepest dent a punch leaves. */
+const RIBS_DENT = 6;
+const RIBS_DENT_RADIUS = 11;
+/** The burst of blood from caved-in ribs is thrown at rib height, while the chest is still this high off the canvas. */
+const RIBS_BURST_CHEST_HEIGHT = 0.9;
+const RIBS_BURST_EVENT_OFFSET = 7;
+
+/**
+ * Ribs a torso finisher caved in on the fighter's `side`: a deep dent, black with bruising and running
+ * with blood. Set every frame over what the engine's trauma paints, which would let the dent spring back.
+ */
+export function caveInRibs(shading: InjuryShading, side: "left" | "right"): void {
+  const site = side === "left" ? "leftRibs" : "rightRibs";
+  shading.impact(site, [side === "left" ? -RIBS_DENT : RIBS_DENT, -RIBS_DENT * 0.15, -RIBS_DENT * 0.25], RIBS_DENT_RADIUS);
+  shading.set(site, { bruise: 1.2, swell: 0, blood: 1.4 });
 }
 
 /** Whether the knockout replay puts this injury back so it can happen again on screen. */
 export function replayReattaches(injury: ArcadeInjury): boolean {
-  return injury === "decapitation" || injury === "head_burst" || injury === "eye_left" || injury === "eye_right" || injury === "dismember_left" || injury === "dismember_right";
+  return injury !== "jaw_dislocation" && injury !== "shoulder_left" && injury !== "shoulder_right";
 }
 
 const eyeVertices = new WeakMap<THREE.BufferGeometry, readonly [number, number]>();
@@ -1080,6 +1181,7 @@ export class FightRenderer {
   private readonly tmpStump = new THREE.Vector3();
   private readonly tmpStumpOffset = new THREE.Vector3();
   private readonly tmpStumpQuaternion = new THREE.Quaternion();
+  private readonly tmpStumpAcross = new THREE.Vector3();
   private readonly tmpPart = new THREE.Vector3();
   private readonly tmpPartQuaternion = new THREE.Quaternion();
 
@@ -1676,8 +1778,7 @@ export class FightRenderer {
     const { recipientIndex, puncherIndex } = contactParticipants(event, snapshot);
     const recipient = snapshot.fighters[recipientIndex];
     if (recipient === undefined) return;
-    // Where he is drawn, apart from the puncher, rather than his engine place up to 17 cm into him.
-    this.contactPoint.copy(recipientIndex === 0 ? this.tmpA : this.tmpB);
+    drawnPlace(this.graphs?.[recipientIndex], recipient, this.mapping, this.contactPoint);
     const spray = sprayDirection(snapshot.fighters[puncherIndex], recipient, this.mapping);
     this.effects.addEvent(event, this.contactPoint, this.settings().reducedMotion, spray);
     const puncher = puncherIndex >= 0 ? snapshot.fighters[puncherIndex] : undefined;
@@ -1821,7 +1922,7 @@ export class FightRenderer {
           baked,
         );
         const stumpPose = this.stumpWorldPose(index);
-        if (stumpPose !== null) this.effects.anchorStump(index, stumpPose.position, stumpPose.quaternion, stumpPose.rim);
+        if (stumpPose !== null) this.effects.anchorStump(index, stumpPose.position, stumpPose.quaternion, stumpPose.rim, stumpPose.across);
         applied = true;
       }
     } else if (injury === "head_burst") {
@@ -1855,6 +1956,19 @@ export class FightRenderer {
           baked,
         );
         this.effects.anchorHandStump(index, side, pose.position, pose.quaternion);
+        applied = true;
+      }
+    } else if (injury === "ribs_left" || injury === "ribs_right") {
+      // The ribs cave in under the punch (held every frame in draw, see caveInRibs) and blood bursts from the
+      // side, from rib height while he is still up; on the canvas the wound and the pool tell it.
+      const graph = this.graphs?.[index];
+      const fighter = this.buffer.latest()?.fighters[index];
+      if (graph !== undefined && fighter !== undefined) {
+        if (graph.boxer.rig.bones.upperChest.getWorldPosition(this.tmpPart).y > RIBS_BURST_CHEST_HEIGHT) {
+          drawnPlace(graph, fighter, this.mapping, this.contactPoint);
+          const burst: CombatEvent = { ...event, event_id: event.event_id + RIBS_BURST_EVENT_OFFSET, kind: "counter_hit", detail: "hook:body", amount: Math.max(event.amount, BIG_SHOT), blood: 100 };
+          this.effects.addEvent(burst, this.contactPoint, false, spray);
+        }
         applied = true;
       }
     }
@@ -1931,7 +2045,7 @@ export class FightRenderer {
    * The exposed cut through the neck, measured on the skin as it is posed: its middle, facing up the
    * neck, and its edge, both ends of each of its edges in turn.
    */
-  private stumpWorldPose(index: number): { position: THREE.Vector3; quaternion: THREE.Quaternion; rim: Float32Array } | null {
+  private stumpWorldPose(index: number): { position: THREE.Vector3; quaternion: THREE.Quaternion; rim: Float32Array; across: THREE.Vector3 } | null {
     const boxer = this.graphs?.[index]?.boxer;
     const head = boxer?.bone("head");
     if (boxer === undefined || head === undefined || head === null) return null;
@@ -1948,8 +2062,10 @@ export class FightRenderer {
     }
     this.tmpStump.multiplyScalar(1 / rim.length);
     head.getWorldPosition(this.tmpStumpOffset).sub(this.tmpStump).normalize();
+    // The head's own sideways axis turns the cross-section with the neck: the windpipe at the throat, the spine at the nape.
+    this.tmpStumpAcross.set(1, 0, 0).applyQuaternion(head.getWorldQuaternion(this.tmpStumpQuaternion));
     this.tmpStumpQuaternion.setFromUnitVectors(UP, this.tmpStumpOffset);
-    return { position: this.tmpStump, quaternion: this.tmpStumpQuaternion, rim: this.stumpRim };
+    return { position: this.tmpStump, quaternion: this.tmpStumpQuaternion, rim: this.stumpRim, across: this.tmpStumpAcross };
   }
 
   private burstStumpPose(index: number): { position: THREE.Vector3; quaternion: THREE.Quaternion; rim: Float32Array; across: THREE.Vector3 } | null {
@@ -2037,7 +2153,7 @@ export class FightRenderer {
         ?? snapshot.fighters[targetIndex]
         ?? snapshot.fighters[actorIndex]
         ?? snapshot.fighters[0];
-      this.contactPoint.set(this.mapping.x(recipient.x), 0, this.mapping.z(recipient.y));
+      drawnPlace(this.graphs?.[snapshot.fighters.indexOf(recipient)], recipient, this.mapping, this.contactPoint);
       if (CONTACT_KINDS.has(event.kind)) {
         const puncher = puncherIndex >= 0 ? snapshot.fighters[puncherIndex]! : null;
         this.pendingContacts.push({
@@ -2072,8 +2188,7 @@ export class FightRenderer {
       const spray = sprayDirection(this.buffer.latest()?.fighters[puncherIndex], target, this.mapping);
       this.presentFightEvent(event, recipientIndex, puncherIndex);
       if (presentImpact && target !== undefined) {
-        // Blood leaves the fighter where he is drawn, which stands apart from the engine's spot.
-        this.contactPoint.copy(recipientIndex === 0 ? this.tmpA : this.tmpB);
+        drawnPlace(this.graphs?.[recipientIndex], target, this.mapping, this.contactPoint);
         this.effects.addEvent(presentationEvent, this.contactPoint, this.settings().reducedMotion, spray);
       }
       const currentSettings = this.settings();
@@ -2385,7 +2500,7 @@ export class FightRenderer {
         const injury = this.arcadeInjuries[index];
         if (injury === "decapitation") {
           const pose = this.stumpWorldPose(index);
-          if (pose !== null) this.effects.anchorStump(index, pose.position, pose.quaternion, pose.rim);
+          if (pose !== null) this.effects.anchorStump(index, pose.position, pose.quaternion, pose.rim, pose.across);
         } else if (injury === "head_burst") {
           const jaw = this.burstStumpPose(index);
           if (jaw !== null) this.effects.anchorStump(index, jaw.position, jaw.quaternion, jaw.rim, jaw.across);
@@ -2397,6 +2512,9 @@ export class FightRenderer {
           const side = injury === "dismember_left" ? "left" : "right";
           const pose = this.handWorldPose(index, side);
           if (pose !== null) this.effects.anchorHandStump(index, side, pose.position, pose.quaternion);
+        } else if (injury === "ribs_left" || injury === "ribs_right") {
+          const body = this.graphs?.[index]?.boxer.bodyInjury;
+          if (body !== undefined) caveInRibs(body, injury === "ribs_left" ? "left" : "right");
         }
       }
       const ax = this.mapping.x(a.x);
@@ -2414,33 +2532,7 @@ export class FightRenderer {
       this.ring.setRopeContacts(contactA, contactB);
       this.tmpA.set(ax, 0, az);
       this.tmpB.set(bx, 0, bz);
-      for (const [index, fighter] of snapshot.fighters.entries()) {
-        const severity = (fighter.trauma.bleeding + fighter.trauma.left_cut + fighter.trauma.right_cut) / 380;
-        if (severity > 0.05 && !fighter.is_downed) {
-          this.downedPoolAccumulators[index] = 0;
-          this.downedPoolCounts[index] = 0;
-          const anchor = index === 0 ? this.tmpA : this.tmpB;
-          this.tmpHead.set(anchor.x, this.headHeightOf(index), anchor.z);
-          this.effects.drip(this.tmpHead, severity, current.reducedMotion, index);
-        } else if (severity > POOL_SEVERITY && fighter.is_downed && current.blood !== "off") {
-          // A pool spreads from under his head through the count.
-          this.effects.stopDrip(index);
-          this.downedPoolAccumulators[index]! += dt * POOL_RATE;
-          const head = this.headCacheValid[index] ? this.headCache[index]! : index === 0 ? this.tmpA : this.tmpB;
-          while (this.downedPoolAccumulators[index]! >= 1) {
-            this.downedPoolAccumulators[index]! -= 1;
-            const count = this.downedPoolCounts[index]!;
-            this.downedPoolCounts[index] = count + 1;
-            const spread = poolRadius(count, severity);
-            const angle = count * 2.399_963 + index * Math.PI;
-            this.effects.pool(head.x + Math.sin(angle) * spread * 0.25, head.z + Math.cos(angle) * spread * 0.25, spread, count + index * 7);
-          }
-        } else {
-          this.effects.stopDrip(index);
-          this.downedPoolAccumulators[index] = 0;
-          if (!fighter.is_downed) this.downedPoolCounts[index] = 0;
-        }
-      }
+      this.bleed(snapshot.fighters, dt, current);
     } else {
       this.tmpA.set(-0.9, 0, 0);
       this.tmpB.set(0.9, 0, 0);
@@ -2502,6 +2594,7 @@ export class FightRenderer {
       this.camera.lookAt(frame.lookAt);
     }
     this.effects.setViewDistance(this.camera.position.distanceTo(frame.lookAt));
+    this.arena.makeRoomForCamera(this.camera.position);
     // The broadcast camera and the announcement look through the near ropes; every other shot is from inside them.
     const solid = frame === directed ? nearRopeOpacityFor(Math.max(this.tmpA.z, this.tmpB.z)) : frame.framed === true ? ANNOUNCEMENT_ROPE_OPACITY : 1;
     this.ring.setNearRopeOpacity(this.ring.nearRopeOpacity() + (solid - this.ring.nearRopeOpacity()) * (1 - Math.exp(-6 * dt)));
@@ -2661,6 +2754,61 @@ export class FightRenderer {
     return (this.graphs?.[index]?.boxer.metrics.headRestY ?? 1.52) + 0.04;
   }
 
+  /**
+   * Blood from a fighter's wounds: dripping from his face while he is up, and pooling under him once he is
+   * down (see fighterDown). A finisher's open wound pools whatever the engine says of his cuts, faster and
+   * wider, from the wound itself.
+   */
+  private bleed(fighters: readonly FighterSnapshot[], dt: number, current: Settings): void {
+    for (const [index, fighter] of fighters.entries()) {
+      const down = fighterDown(fighter, this.graphs?.[index], this.flashKnockout?.loserId);
+      const wound = this.arcadeInjuries[index] ?? null;
+      const open = wound !== null && OPEN_WOUNDS.has(wound);
+      const engine = (fighter.trauma.bleeding + fighter.trauma.left_cut + fighter.trauma.right_cut) / 380;
+      const severity = open ? Math.max(engine, OPEN_WOUND_SEVERITY) : engine;
+      if (severity > 0.05 && !down) {
+        this.downedPoolAccumulators[index] = 0;
+        this.downedPoolCounts[index] = 0;
+        this.effects.drip(this.dripPoint(index), severity, current.reducedMotion, index);
+      } else if (severity > POOL_SEVERITY && down && current.blood !== "off") {
+        // A pool spreads from under his head through the count, or from the wound a finisher left.
+        this.effects.stopDrip(index);
+        this.downedPoolAccumulators[index]! += dt * POOL_RATE * (open ? OPEN_WOUND_POOL_RATE : 1);
+        const source = this.poolSource(index, wound);
+        while (this.downedPoolAccumulators[index]! >= 1) {
+          this.downedPoolAccumulators[index]! -= 1;
+          const count = this.downedPoolCounts[index]!;
+          this.downedPoolCounts[index] = count + 1;
+          const spread = poolRadius(count, severity, open ? OPEN_WOUND_POOL_REACH : POOL_REACH);
+          const angle = count * 2.399_963 + index * Math.PI;
+          this.effects.pool(source.x + Math.sin(angle) * spread * 0.25, source.z + Math.cos(angle) * spread * 0.25, spread, count + index * 7);
+        }
+      } else {
+        this.effects.stopDrip(index);
+        this.downedPoolAccumulators[index] = 0;
+        if (!down) this.downedPoolCounts[index] = 0;
+      }
+    }
+  }
+
+  /** Where blood drips from a fighter's face: under his chin as his head is drawn, standing, seated or slipping. */
+  private dripPoint(index: number): THREE.Vector3 {
+    const head = this.headWorldPose(index);
+    if (head !== null) return head.position.add(this.tmpStumpOffset.copy(UNDER_THE_CHIN).applyQuaternion(head.quaternion));
+    if (this.headCacheValid[index]) return this.tmpHead.copy(this.headCache[index]!);
+    const anchor = index === 0 ? this.tmpA : this.tmpB;
+    return this.tmpHead.set(anchor.x, this.headHeightOf(index), anchor.z);
+  }
+
+  /** Where a downed fighter's blood pools from: a severed hand's wrist, otherwise his head or what is left of his neck. */
+  private poolSource(index: number, wound: ArcadeInjury | null): { readonly x: number; readonly z: number } {
+    if (wound === "dismember_left" || wound === "dismember_right") {
+      const wrist = this.handWorldPose(index, wound === "dismember_left" ? "left" : "right");
+      if (wrist !== null) return wrist.position;
+    }
+    return this.headCacheValid[index] ? this.headCache[index]! : index === 0 ? this.tmpA : this.tmpB;
+  }
+
   private updateBlobShadows(): void {
     const anchors = [this.tmpA, this.tmpB, this.refereePosition];
     for (const [index, blob] of this.blobShadows.entries()) {
@@ -2671,7 +2819,8 @@ export class FightRenderer {
       const anchor = fallen ?? (graph?.boxer.root.visible === true ? graph.currentRoot : anchors[index]!);
       blob.position.x = anchor.x;
       blob.position.z = anchor.z;
-      const downed = index < 2 && this.buffer.latest()?.fighters[index]?.is_downed === true;
+      const fighter = index < 2 ? this.buffer.latest()?.fighters[index] : undefined;
+      const downed = fighter !== undefined && fighterDown(fighter, graph, this.flashKnockout?.loserId);
       blob.scale.set(downed ? 2.1 : 1.25, downed ? 0.9 : 0.85, 1);
     }
   }

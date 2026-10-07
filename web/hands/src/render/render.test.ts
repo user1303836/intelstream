@@ -1,14 +1,15 @@
 import * as THREE from "three";
-import { punchTiming, REST_CORNER_OFFSET, totalTicks } from "../manifest";
+import { FIGHTER_RADIUS, punchTiming, REST_CORNER_OFFSET, RING_HALF_WIDTH, totalTicks } from "../manifest";
 import { buildArena } from "./arena";
 import { CameraDirector, ceremonyShot, cornerFrame, cornerPoint, cornerShot, cornerShotProgress, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE } from "./camera";
 import { captionSlot, drawCaption } from "./caption";
-import { bloodPatternFor, Effects3D } from "./effects";
+import { bloodPatternFor, Effects3D, NECK_FOUNTAIN_SECONDS } from "./effects";
 import { CLOCK_PORTRAIT_RADIUS, cardRows, decisionLabel, drawHud, finalRevealDelay as revealDelay, hudScale, lagWarning, plateDetails, REFEREE_REVEAL_DELAY_SECONDS, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, PLATE_PORTRAIT_RADIUS, RESULT_CARD_FOOTER, resultCard, resultCardLayout, RoundClock, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
 import { FightRenderer } from "./renderer";
-import { buildRing, disposeRing, nearRopeOpacityFor, ROPE_FLEX_GLSL, ROPE_GIVE_GLSL, ropePress } from "./ring";
+import { buildRing, disposeRing, nearRopeOpacityFor, ROPE_FLEX_GLSL, ROPE_GIVE_GLSL, ropePress, ROPE_BACK, ROPE_MAX_GIVE, ropeExcess } from "./ring";
+import { GloveTrail } from "./trails";
 import { resizeHighDpi } from "./viewport";
-import { CORNER_COLORS, PALETTES, ROPE_LINE, worldMapping } from "./world";
+import { CORNER_COLORS, PALETTES, ROPE_HEIGHTS, ROPE_LINE, worldMapping } from "./world";
 import { fighter, mockHudContext, publicPlayers, snapshot, type DrawnPicture } from "../test/fixtures";
 import type { EngineSnapshot } from "../types";
 
@@ -367,6 +368,8 @@ describe("effects", () => {
     effects.anchorStump(0, new THREE.Vector3(0.4, 1.4, -0.2), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.4));
     for (let i = 0; i < 10; i += 1) effects.update(1 / 60);
     expect(effects.liveBloodParticles).toBeGreaterThan(initialBlood);
+    // The severed neck pumps for NECK_FOUNTAIN_SECONDS; what follows is once it has bled out.
+    for (let i = 0; i < NECK_FOUNTAIN_SECONDS * 60; i += 1) effects.update(1 / 60);
 
     for (let i = 0; i < 360; i += 1) effects.update(1 / 60);
     // The flesh lies where it fell for the rest of the bout; the blood in the air has all come down.
@@ -663,14 +666,40 @@ describe("near ropes", () => {
     expect(ring.materials.filter((material) => !material.visible)).toHaveLength(faded.length);
     disposeRing(ring);
   });
+
+  it("blend last and write no depth while faded, so the blob shadows and glove trails seen through them are not cut", () => {
+    const ring = buildRing();
+    ring.setNearRopeOpacity(0.26);
+    const faded = ring.materials.filter((material) => material.transparent && material.opacity < 1);
+    expect(faded).toHaveLength(3 + 1);
+    for (const material of faded) expect(material.depthWrite).toBe(false);
+    const trail = new GloveTrail(new THREE.Color(0xffffff));
+    const blobShadowOrder = 1;
+    let near = 0;
+    ring.group.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      if (faded.includes(object.material as THREE.Material)) {
+        near += 1;
+        expect(object.renderOrder).toBeGreaterThan(Math.max(trail.mesh.renderOrder, blobShadowOrder));
+      } else {
+        expect(object.renderOrder).toBe(0);
+      }
+    });
+    // Three ropes and two straps on the side that faces the broadcast camera.
+    expect(near).toBe(5);
+    // Solid again for the shots from inside the ring, they write depth as before.
+    ring.setNearRopeOpacity(1);
+    for (const material of faded) expect(material.depthWrite).toBe(true);
+    disposeRing(ring);
+  });
 });
 
 describe("rope give", () => {
-  it("leaves the ropes alone until a fighter's back reaches them", () => {
+  it("leaves the ropes alone until a fighter's back reaches them, and gives no further than their furthest give", () => {
     expect(ropePress(0, 0)).toEqual({ pressX: 0, pressZ: 0 });
-    expect(ropePress(ROPE_LINE - 0.21, 0.4)).toEqual({ pressX: 0, pressZ: 0 });
-    expect(ropePress(-(ROPE_LINE - 0.1), 0).pressX).toBeCloseTo(0.1, 9);
-    expect(ropePress(0, -2.82).pressZ).toBeCloseTo(2.82 + 0.2 - ROPE_LINE, 9);
+    expect(ropePress(ROPE_LINE - ROPE_BACK - 0.01, 0.4)).toEqual({ pressX: 0, pressZ: 0 });
+    expect(ropePress(-(ROPE_LINE - 0.1), 0).pressX).toBeCloseTo(ROPE_BACK - 0.1, 9);
+    expect(ropePress(0, -2.82).pressZ).toBeCloseTo(ROPE_MAX_GIVE, 9);
     expect(ropePress(0, -2.82).pressX).toBe(0);
   });
 
@@ -687,21 +716,36 @@ describe("rope give", () => {
     expect(ROPE_FLEX_GLSL).toContain("transformed += ropeOut * ropeFlex;");
   });
 
-  it("keeps the top ropes behind the back of a fighter anywhere the engine lets one stand", () => {
-    for (const x of [2.3, 2.5, 2.7, 2.82]) {
+  it("keeps the top ropes on the back of a fighter anywhere the engine lets one stand, drawn in where they can give no more", () => {
+    const limit = mapping.x(RING_HALF_WIDTH - FIGHTER_RADIUS);
+    // The engine lets his middle reach 0.36 m past the rope line.
+    expect(limit - ROPE_LINE).toBeGreaterThan(0.35);
+    for (const x of [2.1, 2.3, 2.5, 2.7, limit]) {
+      const drawn = x - ropeExcess(x, 0.3, { x: 0, z: 0 }).x;
+      expect(drawn + ROPE_BACK).toBeLessThanOrEqual(ROPE_LINE + ROPE_MAX_GIVE + 1e-9);
       for (const along of [-1.6, 0, 1.2]) {
         for (const height of [0.88, 1.26]) {
           const rope = ROPE_LINE + ropePress(x, along).pressX * ropeGive(0, along, height);
-          expect(rope).toBeGreaterThanOrEqual(x + 0.2 - 1e-9);
+          expect(rope).toBeGreaterThanOrEqual(drawn + ROPE_BACK - 1e-9);
           const beside = ROPE_LINE + ropePress(x, along).pressX * ropeGive(0.2, along + 0.2, height);
-          expect(beside).toBeGreaterThanOrEqual(x + 0.2 - 1e-9);
+          expect(beside).toBeGreaterThanOrEqual(drawn + ROPE_BACK - 1e-9);
         }
       }
     }
   });
 
-  it("gives less at the bottom rope, nothing at the posts and nothing away from the fighter", () => {
-    expect(ropeGive(0, 0, 0.5)).toBeCloseTo(0.6, 9);
+  it("never bows a rope as far as the next one, so the ropes do not wrap round a fighter on them", () => {
+    const limit = mapping.x(RING_HALF_WIDTH - FIGHTER_RADIUS);
+    let furthest = 0;
+    for (const height of ROPE_HEIGHTS) furthest = Math.max(furthest, ropePress(limit, limit).pressX * ropeGive(0, 0, height), ropePress(limit, limit).pressZ * ropeGive(0, 0, height));
+    expect(furthest).toBeLessThanOrEqual(0.25);
+    expect(furthest).toBeLessThan(ROPE_HEIGHTS[1] - ROPE_HEIGHTS[0]);
+    expect(ropeExcess(limit, -limit, { x: 0, z: 0 })).toEqual({ x: expect.closeTo(limit + ROPE_BACK - ROPE_LINE - ROPE_MAX_GIVE, 9), z: expect.closeTo(-(limit + ROPE_BACK - ROPE_LINE - ROPE_MAX_GIVE), 9) });
+    expect(ropeExcess(ROPE_LINE + ROPE_MAX_GIVE - ROPE_BACK - 1e-6, 0, { x: 1, z: 1 })).toEqual({ x: 0, z: 0 });
+  });
+
+  it("gives a little less at the bottom rope, nothing at the posts and nothing away from the fighter", () => {
+    expect(ropeGive(0, 0, 0.5)).toBeCloseTo(0.9, 9);
     expect(ropeGive(0, 0, 1.26)).toBe(1);
     expect(ropeGive(0, ROPE_LINE, 1.26)).toBeCloseTo(0, 9);
     expect(ropeGive(0, -ROPE_LINE, 1.26)).toBeCloseTo(0, 9);
@@ -717,12 +761,54 @@ describe("rope give", () => {
     ring.group.traverse((object) => {
       if (!(object instanceof THREE.Mesh)) return;
       if (object.geometry.type === "TubeGeometry") ropes.push(object.material as THREE.Material);
-      if (object.geometry.type === "BoxGeometry" && (object.geometry as THREE.BoxGeometry).parameters.height === 0.82) straps.push(object);
+      if (object.geometry.type === "BoxGeometry" && (object.geometry as THREE.BoxGeometry).parameters.width === 0.035) straps.push(object);
     });
-    expect(straps).toHaveLength(24);
     const flex = (ropes[0] as THREE.MeshStandardMaterial).onBeforeCompile.toString();
     for (const strap of straps) expect((strap.material as THREE.MeshStandardMaterial).onBeforeCompile.toString()).toBe(flex);
     expect(new Set(straps.map((strap) => strap.geometry)).size).toBe(1);
+  });
+
+  it("ties the ropes with one strap at each tie, from under the bottom rope to over the top one, that bends with them", () => {
+    const ring = buildRing();
+    ring.group.updateMatrixWorld(true);
+    const straps: THREE.Mesh[] = [];
+    ring.group.traverse((object) => {
+      if (object instanceof THREE.Mesh && object.geometry.type === "BoxGeometry" && (object.geometry as THREE.BoxGeometry).parameters.width === 0.035) straps.push(object);
+    });
+    // Two ties on each side; a strap per tie rather than three overlapping ones, which banded as the near side faded.
+    expect(straps).toHaveLength(8);
+    expect(new Set(straps.map((strap) => `${strap.position.x.toFixed(3)},${strap.position.z.toFixed(3)}`)).size).toBe(8);
+    const ropeRadius = 0.028;
+    const box = new THREE.Box3();
+    for (const strap of straps) {
+      box.setFromObject(strap);
+      expect(box.min.y).toBeLessThan(ROPE_HEIGHTS[0] - 0.02 - ropeRadius);
+      expect(box.max.y).toBeGreaterThan(ROPE_HEIGHTS[2] - 0.02 + ropeRadius);
+    }
+    expect((straps[0]!.geometry as THREE.BoxGeometry).parameters.heightSegments).toBeGreaterThanOrEqual(4);
+    disposeRing(ring);
+  });
+
+  it("casts the ropes' shadows from where they have given, not from where they hang", () => {
+    const ring = buildRing();
+    const casting: THREE.Mesh[] = [];
+    ring.group.traverse((object) => {
+      if (object instanceof THREE.Mesh && object.geometry.type === "TubeGeometry" && object.castShadow) casting.push(object);
+    });
+    expect(casting).toHaveLength(12);
+    const depth = casting[0]!.customDepthMaterial;
+    expect(depth).toBeInstanceOf(THREE.MeshDepthMaterial);
+    for (const rope of casting) expect(rope.customDepthMaterial).toBe(depth);
+    // It is the ring's to free, with its other materials.
+    expect(ring.materials).toContain(depth);
+    const shader = { uniforms: {} as Record<string, { value: unknown }>, vertexShader: "#include <common>\nvoid main() {\n#include <begin_vertex>\n#include <project_vertex>\n}", fragmentShader: "" };
+    depth!.onBeforeCompile(shader as unknown as THREE.WebGLProgramParametersWithUniforms, null as unknown as THREE.WebGLRenderer);
+    expect(shader.vertexShader).toContain(ROPE_GIVE_GLSL);
+    expect(shader.vertexShader).toContain(ROPE_FLEX_GLSL);
+    expect(shader.vertexShader.indexOf(ROPE_FLEX_GLSL)).toBeLessThan(shader.vertexShader.indexOf("#include <project_vertex>"));
+    expect(shader.uniforms.uRopeContactA!.value).toBe(ring.ropeContacts[0]);
+    expect(shader.uniforms.uRopeContactB!.value).toBe(ring.ropeContacts[1]);
+    disposeRing(ring);
   });
 
   it("writes fighter contacts into the rope shader uniforms and clears them", () => {
@@ -730,7 +816,7 @@ describe("rope give", () => {
     ring.setRopeContacts({ x: 2.82, z: 0.4 }, null);
     expect(ring.ropeContacts[0].x).toBeCloseTo(2.82);
     expect(ring.ropeContacts[0].y).toBeCloseTo(0.4);
-    expect(ring.ropeContacts[0].z).toBeCloseTo(2.82 + 0.2 - ROPE_LINE, 9);
+    expect(ring.ropeContacts[0].z).toBeCloseTo(ROPE_MAX_GIVE, 9);
     expect(ring.ropeContacts[0].w).toBe(0);
     expect(ring.ropeContacts[1].toArray()).toEqual([0, 0, 0, 0]);
     ring.setRopeContacts(null, null);

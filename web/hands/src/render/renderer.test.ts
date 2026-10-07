@@ -120,17 +120,18 @@ describe("arcade injury candidate routing", () => {
     expect(isArcadeInjuryCandidate(event("hit", "straight:head"), { ...fighter("two"), is_downed: true }, { ...tko, finish_method: "decision" })).toBe(false);
   });
 
-  it("routes head trauma to head injuries and body trauma to the struck-side limbs", () => {
+  it("routes head trauma to head injuries and body trauma to the struck side", () => {
     const downed = { ...fighter("two"), is_downed: true };
     const leftPunch = { ...fighter("one"), action_key: "hook:left:body:heavy" };
     const rightPunch = { ...fighter("one"), action_key: "hook:right:body:heavy" };
-    expect(arcadeInjuryFor({ ...event("hit", "hook:head"), event_id: 0 }, downed, tko, leftPunch)).toBe("decapitation");
+    expect(arcadeInjuryFor({ ...event("hit", "hook:head"), event_id: 0 }, downed, tko, leftPunch)).toBe("eye_right");
     expect(arcadeInjuryFor({ ...event("hit", "hook:head"), event_id: 1 }, downed, tko, leftPunch)).toBe("eye_right");
-    expect(arcadeInjuryFor({ ...event("hit", "uppercut:head"), event_id: 1 }, downed, tko, leftPunch)).toBe("jaw_dislocation");
+    expect(arcadeInjuryFor({ ...event("hit", "uppercut:head"), event_id: 1 }, downed, tko, leftPunch)).toBe("decapitation");
     expect(arcadeInjuryFor({ ...event("hit", "hook:body"), event_id: 0 }, downed, tko, leftPunch)).toBe("dismember_right");
-    expect(arcadeInjuryFor({ ...event("hit", "hook:body"), event_id: 1 }, downed, tko, leftPunch)).toBe("shoulder_right");
+    expect(arcadeInjuryFor({ ...event("hit", "hook:body"), event_id: 1, amount: 80 }, downed, tko, leftPunch)).toBe("shoulder_right");
     expect(arcadeInjuryFor({ ...event("hit", "hook:body"), event_id: 0 }, downed, tko, rightPunch)).toBe("dismember_left");
-    expect(arcadeInjuryFor({ ...event("hit", "hook:body"), event_id: 1 }, downed, tko, rightPunch)).toBe("shoulder_left");
+    expect(arcadeInjuryFor({ ...event("hit", "hook:body"), event_id: 1, amount: 80 }, downed, tko, rightPunch)).toBe("shoulder_left");
+    expect(arcadeInjuryFor({ ...event("hit", "straight:body"), event_id: 1 }, downed, tko, rightPunch)).toBe("ribs_left");
   });
 
   it.each([
@@ -192,12 +193,15 @@ describe("referee spacing", () => {
 });
 
 describe("knockout replay injuries", () => {
-  it("reattaches severed parts for the replay but leaves dislocations in place", () => {
+  it("reattaches severed parts and caved-in ribs for the replay but leaves dislocations in place", () => {
     expect(replayReattaches("decapitation")).toBe(true);
     expect(replayReattaches("dismember_left")).toBe(true);
     expect(replayReattaches("dismember_right")).toBe(true);
+    expect(replayReattaches("ribs_left")).toBe(true);
+    expect(replayReattaches("ribs_right")).toBe(true);
     expect(replayReattaches("jaw_dislocation")).toBe(false);
     expect(replayReattaches("shoulder_left")).toBe(false);
+    expect(replayReattaches("shoulder_right")).toBe(false);
   });
 });
 

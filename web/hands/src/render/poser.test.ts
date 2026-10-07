@@ -1,12 +1,14 @@
 import * as THREE from "three";
-import { punchTiming } from "../manifest";
+import { FIGHTER_RADIUS, RING_HALF_WIDTH, punchTiming } from "../manifest";
 import { fighter as baseFighter } from "../test/fixtures";
 import type { FighterSnapshot } from "../types";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, remapPunchAge } from "./graph";
 import { applyHeadTrauma } from "./injury";
 import { STANCE } from "./poser";
 import { worldPosition, worldQuaternion, type CanonicalBone } from "./rig";
-import { worldMapping } from "./world";
+import { aboveNeckCut } from "./renderer";
+import { ROPE_BACK, ROPE_MAX_GIVE } from "./ring";
+import { ROPE_HEIGHTS, ROPE_LINE, worldMapping } from "./world";
 
 const mapping = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 });
 const gltf = await loadBoxerGlb();
@@ -1085,6 +1087,132 @@ describe("clinch hold", () => {
       sway.push(bone(over.boxer, "hips").x);
     }
     expect(Math.max(...sway) - Math.min(...sway)).toBeGreaterThan(0.008);
+  });
+
+  /** The skinned skull above the neck cut, sampled, and the ellipsoid its bounding box holds in the head bone's frame. */
+  const skull = (boxer: SkinnedBoxer): { inverse: THREE.Matrix4; centre: THREE.Vector3; radii: THREE.Vector3; points: THREE.Vector3[] } => {
+    boxer.root.updateMatrixWorld(true);
+    const mesh = boxer.headMesh;
+    const inverse = boxer.bone("head")!.matrixWorld.clone().invert();
+    const position = mesh.geometry.getAttribute("position");
+    const points: THREE.Vector3[] = [];
+    const box = new THREE.Box3();
+    for (let index = 0; index < position.count; index += 7) {
+      if (!aboveNeckCut(skinnedVertex.fromBufferAttribute(position, index))) continue;
+      const point = mesh.getVertexPosition(index, new THREE.Vector3()).applyMatrix4(mesh.matrixWorld);
+      points.push(point);
+      box.expandByPoint(point.clone().applyMatrix4(inverse));
+    }
+    return { inverse, centre: box.getCenter(new THREE.Vector3()), radii: box.getSize(new THREE.Vector3()).multiplyScalar(0.5), points };
+  };
+  /** How many sampled points of one skull are inside the other's. */
+  const inside = (one: SkinnedBoxer, other: SkinnedBoxer): number => {
+    const from = skull(one);
+    const into = skull(other);
+    const local = new THREE.Vector3();
+    return from.points.filter((point) => {
+      local.copy(point).applyMatrix4(into.inverse).sub(into.centre);
+      return Math.hypot(local.x / into.radii.x, local.y / into.radii.y, local.z / into.radii.z) < 1;
+    }).length;
+  };
+
+  it("rests the two heads on opposite shoulders whatever the stances, clear of each other through the struggle", () => {
+    for (const [first, second] of [["orthodox", "orthodox"], ["orthodox", "southpaw"], ["southpaw", "orthodox"], ["southpaw", "southpaw"]] as const) {
+      const one = makeGraph();
+      const two = makeGraph();
+      // Held at the engine's clinch distance, 60 units, as the hold draws them in.
+      const a: FighterSnapshot = { ...facingOpponent(baseFighter("one")), stance: first, clinch_ticks: 30 };
+      const b: FighterSnapshot = { ...opponentFor("two"), stance: second, y: -60, clinch_ticks: 30 };
+      const headA = new THREE.Vector3();
+      const headB = new THREE.Vector3();
+      let closest = Infinity;
+      let overlapping = 0;
+      for (let frame = 0; frame < 150; frame += 1) {
+        const time = 1 + frame / 60;
+        one.graph.update(a, b, 1 / 60, time, false, "full", 10 + frame * 0.5, frame > 0 ? headB : undefined);
+        two.graph.update(b, a, 1 / 60, time, false, "full", 10 + frame * 0.5, frame > 0 ? headA : undefined);
+        bone(one.boxer, "head", headA);
+        bone(two.boxer, "head", headB);
+        if (frame < 30) continue;
+        closest = Math.min(closest, headA.distanceTo(headB));
+        if (frame % 15 === 0) overlapping += inside(one.boxer, two.boxer) + inside(two.boxer, one.boxer);
+      }
+      expect(closest, `${first} v ${second}`).toBeGreaterThan(0.3);
+      expect(overlapping, `${first} v ${second}`).toBe(0);
+      // Each to his own right: one faces -z here, so his right is -x, and two's is +x.
+      expect(headA.x).toBeLessThan(-0.1);
+      expect(headB.x).toBeGreaterThan(0.1);
+      one.boxer.dispose();
+      two.boxer.dispose();
+    }
+  });
+});
+
+describe("on the ropes", () => {
+  /** Fighter one with his back to the +x ropes, facing the middle, and two on top of him: `units` is one's engine x. */
+  const pinned = (units: number): [FighterSnapshot, FighterSnapshot] => [
+    { ...baseFighter("one"), x: units, y: 0, facing_x: -1000, facing_y: 0, defense: "guard_high" },
+    { ...baseFighter("two"), x: units - 115, y: 0, facing_x: 1000, facing_y: 0 },
+  ];
+  const fight = (one: { boxer: SkinnedBoxer; graph: BoxingGraph }, two: { boxer: SkinnedBoxer; graph: BoxingGraph }, [a, b]: [FighterSnapshot, FighterSnapshot], frames: number, from = 0): void => {
+    const headA = new THREE.Vector3();
+    const headB = new THREE.Vector3();
+    for (let frame = 0; frame < frames; frame += 1) {
+      const time = 1 + (from + frame) / 60;
+      one.graph.update(a, b, 1 / 60, time, false, "full", 10 + (from + frame) * 0.5, from + frame > 0 ? headB : undefined);
+      two.graph.update(b, a, 1 / 60, time, false, "full", 10 + (from + frame) * 0.5, from + frame > 0 ? headA : undefined);
+      bone(one.boxer, "head", headA);
+      bone(two.boxer, "head", headB);
+    }
+  };
+  /** How far past the line `ropeX` the skin reaches, near each rope's height and across the fighter's back. */
+  const pastTheRope = (boxer: SkinnedBoxer, height: number, ropeX: number): number => {
+    boxer.root.updateMatrixWorld(true);
+    let furthest = -Infinity;
+    boxer.root.traverse((object) => {
+      if (!(object instanceof THREE.SkinnedMesh)) return;
+      const count = object.geometry.getAttribute("position").count;
+      for (let index = 0; index < count; index += 2) {
+        object.getVertexPosition(index, skinnedVertex).applyMatrix4(object.matrixWorld);
+        if (Math.abs(skinnedVertex.y - (height - 0.02)) < 0.03 && Math.abs(skinnedVertex.z) < 0.35) furthest = Math.max(furthest, skinnedVertex.x - ropeX);
+      }
+    });
+    return furthest;
+  };
+  const lean = (boxer: SkinnedBoxer): number => bone(boxer, "upperChest").x - bone(boxer, "hips").x;
+
+  it("draws a fighter the engine has past the ropes' give in, his back resting on the top rope, leaning back on it", () => {
+    const limit = RING_HALF_WIDTH - FIGHTER_RADIUS;
+    const open = [makeGraph(), makeGraph()] as const;
+    fight(open[0], open[1], pinned(300), 90);
+    const one = makeGraph();
+    const two = makeGraph();
+    fight(one, two, pinned(limit), 90);
+    // Drawn in so that his back is no further out than the ropes give.
+    expect(one.boxer.root.position.x + ROPE_BACK).toBeLessThanOrEqual(ROPE_LINE + ROPE_MAX_GIVE + 1e-6);
+    // The man on top of him comes in with him: the gap between them is the engine's.
+    expect(one.boxer.root.position.x - two.boxer.root.position.x).toBeCloseTo(mapping.x(115), 2);
+    // No rope passes through him, and his back rests against the top one rather than standing off it.
+    const rope = ROPE_LINE + ROPE_MAX_GIVE;
+    const ropeRadius = 0.028;
+    for (const height of [ROPE_HEIGHTS[1], ROPE_HEIGHTS[2]]) expect(pastTheRope(one.boxer, height, rope)).toBeLessThan(ropeRadius);
+    expect(pastTheRope(one.boxer, ROPE_HEIGHTS[2], rope)).toBeGreaterThan(-0.06);
+    // Leaning back toward the ropes from the hips.
+    expect(lean(one.boxer) - lean(open[0].boxer)).toBeGreaterThan(0.05);
+    // He eases back upright once he comes off the ropes.
+    fight(one, two, pinned(300), 90, 90);
+    expect(Math.abs(lean(one.boxer) - lean(open[0].boxer))).toBeLessThan(0.01);
+    expect(one.boxer.root.position.x).toBeCloseTo(mapping.x(300), 2);
+    for (const made of [...open, one, two]) made.boxer.dispose();
+  });
+
+  it("leaves the ropes alone short of their furthest give, where they bow behind him", () => {
+    const one = makeGraph();
+    const two = makeGraph();
+    fight(one, two, pinned(380), 90);
+    expect(one.boxer.root.position.x).toBeCloseTo(mapping.x(380), 3);
+    expect(Math.abs(lean(one.boxer))).toBeLessThan(0.1);
+    for (const made of [one, two]) made.boxer.dispose();
   });
 });
 

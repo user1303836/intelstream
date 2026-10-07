@@ -10,6 +10,8 @@ export interface BuiltArena {
   readonly excitement: () => number;
   /** Sheds the crowd's most expensive work when the client is struggling. */
   readonly setLowTier: (low: boolean) => void;
+  /** Clears the seats in front of the broadcast camera while it stands among them; called once the frame's camera is placed. */
+  readonly makeRoomForCamera: (camera: { readonly x: number; readonly z: number }) => void;
   readonly dispose: () => void;
 }
 
@@ -204,5 +206,5 @@ export function buildArena(): BuiltArena {
     excitement = Math.min(1, excitement + Math.max(0, amount));
   };
 
-  return { group, update, excite, excitement: () => excitement, setLowTier: crowd.setLowTier, dispose };
+  return { group, update, excite, excitement: () => excitement, setLowTier: crowd.setLowTier, makeRoomForCamera: crowd.makeRoomForCamera, dispose };
 }

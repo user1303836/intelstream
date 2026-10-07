@@ -258,7 +258,7 @@ describe("shaders for effects that start hidden", () => {
     fight.labFrame((time += 0.1));
     expect(internals.effects.activeHeads).toBe(1);
     internals.restoreAllInjuries();
-    land(fight, 24, [punch(44, 24, "straight:body")], exchange(24, "body", true), knockout(24));
+    land(fight, 24, [punch(44, 24, "hook:body")], exchange(24, "body", true), knockout(24));
     fight.labFrame((time += 0.1));
     expect(internals.effects.activeHands).toBe(1);
     // The other finishers, whatever punch earns them, and the gum shield a big punch knocks out.

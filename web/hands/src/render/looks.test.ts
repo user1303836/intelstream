@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import { Effects3D } from "./effects";
 import { SkinnedBoxer, loadBoxerGlb } from "./graph";
-import { LOOK_MASKS_GLSL, LOOK_SHAPE_GLSL, LookShading, OFFICIAL_LOOKS, SCANNED_LOOK, lookFor, lookShape, type FighterLook } from "./looks";
+import { LOOK_GROOM_GLSL, LOOK_MASKS_GLSL, LOOK_SHAPE_GLSL, LookShading, OFFICIAL_LOOKS, SCANNED_LOOK, lookFor, lookShape, type FighterLook } from "./looks";
 import { REFEREE_OUTFIT } from "./outfit";
 import { aboveNeckCut, bakeSkinnedPart, measureBurstStump } from "./renderer";
 
@@ -99,6 +99,83 @@ describe("look shading", () => {
     expect(shader.vertexShader).toContain("vLookPos = bindPosition;");
     expect(shader.vertexShader).not.toContain("uLookFace.x");
     expect(material.customProgramCacheKey()).toBe("plain-look-baked");
+  });
+});
+
+/**
+ * Runs the groom's own shader text for one texel, a colour channel at a time: each colour is a vec3 whose
+ * arithmetic gives that channel, while positions are only read by component or measured whole.
+ */
+function groomed(texel: number, tint: number, look: FighterLook, at: THREE.Vector3): THREE.Color {
+  const js = (glsl: string): string => glsl
+    .replace(/^\s*(uniform|varying|attribute)\b.*$/gm, "")
+    .replace(/^#.*$/gm, "")
+    .replace(/\bfloat (\w+)\(vec3 (\w+)\)/g, "function $1($2)")
+    .replace(/\b(float|vec3) (?=\w+\s*=)/g, "let ");
+  const run = new Function("channel", "colours", `
+    const smoothstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+    const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
+    const max = Math.max;
+    const mix = (a, b, t) => +a + (+b - +a) * t;
+    const abs = Math.abs;
+    const sin = Math.sin;
+    const vec3 = (x, y, z) => ({ x, y, z, valueOf: () => [x, y, z][channel] });
+    const dot = (a, b) => a.x * b.x + a.y * b.y + a.z * b.z;
+    const length = (v) => Math.hypot(v.x, v.y, v.z);
+    const colour = (c) => vec3(c.r, c.g, c.b);
+    const uLookHair = colour(colours.hair);
+    const diffuse = colour(colours.tint);
+    const uLookGroom = colours.groom;
+    const vLookPos = colours.at;
+    const sampledDiffuseColor = { rgb: colour(colours.texel) };
+    const diffuseColor = { rgb: vec3(colours.tint.r * colours.texel.r, colours.tint.g * colours.texel.g, colours.tint.b * colours.texel.b) };
+    ${js(LOOK_MASKS_GLSL)}
+    ${js(LOOK_GROOM_GLSL)}
+    return +diffuseColor.rgb;
+  `) as (channel: number, colours: Record<string, unknown>) => number;
+  const colours = {
+    hair: new THREE.Color(look.hair), tint: new THREE.Color(tint), texel: new THREE.Color(texel),
+    groom: { x: look.shaved, y: look.beard }, at: { x: at.x, y: at.y, z: at.z },
+  };
+  return new THREE.Color(run(0, colours), run(1, colours), run(2, colours));
+}
+
+describe("grooming on every skin tone", () => {
+  const darkest = 0x6f5548;
+  // A dark texel of the scanned hair on the crown, and one of the skin along the jaw under a beard.
+  const crown = new THREE.Vector3(0, 127.6, -3);
+  const jaw = new THREE.Vector3(4.6, 112.8, 1.4);
+  const hairTexel = 0x2a1d16;
+  const skinTexel = 0xd7a184;
+  const close = (a: THREE.Color, b: THREE.Color, within: number): void => {
+    for (const channel of ["r", "g", "b"] as const) expect(Math.abs(a[channel] - b[channel])).toBeLessThanOrEqual(within * Math.max(a[channel], b[channel]) + 1e-6);
+  };
+
+  it("dyes the hair the same colour on the darkest skin as on the scanned man", () => {
+    for (const hair of [0x8c8a86, 0xa88c58]) {
+      const look: FighterLook = { ...SCANNED_LOOK, hair, shaved: 0, beard: 0 };
+      close(groomed(hairTexel, darkest, look, crown), groomed(hairTexel, 0xffffff, look, crown), 0.05);
+    }
+  });
+
+  it("grows a beard of the hair's colour, with the skin's own tone showing through", () => {
+    const look: FighterLook = { ...SCANNED_LOOK, hair: 0xa88c58, shaved: 0, beard: 1 };
+    // Over a black texel only the beard itself shows: most of it is the dye, whatever the skin.
+    const pale = groomed(0x000000, 0xffffff, look, jaw);
+    const dark = groomed(0x000000, darkest, look, jaw);
+    expect(pale.r).toBeGreaterThan(0.05);
+    for (const channel of ["r", "g", "b"] as const) expect(dark[channel]).toBeGreaterThan(0.7 * pale[channel]);
+    // Without one, the jaw is just the tinted skin.
+    const bare = groomed(skinTexel, darkest, { ...look, beard: 0 }, jaw);
+    close(bare, new THREE.Color(skinTexel).multiply(new THREE.Color(darkest)), 0.001);
+  });
+
+  it("tints a shaved scalp with the skin", () => {
+    const look: FighterLook = { ...SCANNED_LOOK, hair: 0x8c8a86, shaved: 1, beard: 0 };
+    const pale = groomed(hairTexel, 0xffffff, look, crown);
+    const dark = groomed(hairTexel, darkest, look, crown);
+    const tint = new THREE.Color(darkest);
+    close(dark, new THREE.Color(pale.r * tint.r, pale.g * tint.g, pale.b * tint.b), 0.001);
   });
 });
 

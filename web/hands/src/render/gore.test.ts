@@ -15,7 +15,7 @@ const gltf = await loadBoxerGlb();
 type Pose = { position: THREE.Vector3; quaternion: THREE.Quaternion };
 const renderer = FightRenderer.prototype as unknown as {
   headWorldPose(this: unknown, index: number): Pose | null;
-  stumpWorldPose(this: unknown, index: number): (Pose & { rim: Float32Array }) | null;
+  stumpWorldPose(this: unknown, index: number): (Pose & { rim: Float32Array; across: THREE.Vector3 }) | null;
   closeUpFrame(this: unknown, seconds: number): { position: THREE.Vector3; lookAt: THREE.Vector3 } | null;
 };
 
@@ -273,13 +273,87 @@ describe("neck cut", () => {
     boxer.dispose();
   });
 
+  /** Vertices sharing a place on the surface: the two sides of the scan's UV seams. */
+  const seamGroups = (geometry: THREE.BufferGeometry): number[][] => {
+    const position = geometry.getAttribute("position");
+    const used = new Set<number>();
+    const index = geometry.getIndex()!;
+    for (let at = 0; at < index.count; at += 1) used.add(index.getX(at));
+    const groups = new Map<string, number[]>();
+    for (const vertex of used) {
+      const key = `${Math.round(position.getX(vertex) * 1e4)},${Math.round(position.getY(vertex) * 1e4)},${Math.round(position.getZ(vertex) * 1e4)}`;
+      groups.set(key, [...(groups.get(key) ?? []), vertex]);
+    }
+    return [...groups.values()];
+  };
+  /** Angles (degrees) between each vertex's normal and its surface's, its faces' normals summed across the seams. */
+  const offSurface = (geometry: THREE.BufferGeometry): number[] => {
+    const position = geometry.getAttribute("position");
+    const normal = geometry.getAttribute("normal");
+    const index = geometry.getIndex()!;
+    const groups = seamGroups(geometry);
+    const groupOf = new Map<number, number>();
+    for (const [at, group] of groups.entries()) for (const vertex of group) groupOf.set(vertex, at);
+    const sums = groups.map(() => new THREE.Vector3());
+    const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+    for (let at = 0; at < index.count; at += 3) {
+      a.fromBufferAttribute(position, index.getX(at));
+      b.fromBufferAttribute(position, index.getX(at + 1));
+      c.fromBufferAttribute(position, index.getX(at + 2));
+      const face = c.sub(b).cross(a.sub(b));
+      for (let corner = 0; corner < 3; corner += 1) sums[groupOf.get(index.getX(at + corner))!]!.add(face);
+    }
+    const angles: number[] = [];
+    for (const [at, group] of groups.entries()) {
+      for (const vertex of group) angles.push(THREE.MathUtils.radToDeg(a.fromBufferAttribute(normal, vertex).angleTo(sums[at]!)));
+    }
+    return angles.sort((x, y) => x - y);
+  };
+
+  it("keeps the scan's own smooth shading across its UV seams on a severed head and glove", () => {
+    const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
+    const head = boxer.bone("head")!;
+    // Posed as a knockout leaves it: the head snapped back on a body doubled over, the arm raised.
+    boxer.rig.bones.chest.rotateX(0.5);
+    boxer.rig.bones.neck.rotateX(0.6);
+    head.rotateX(-1.2);
+    boxer.rig.bones.shoulderL.rotateZ(0.9);
+    boxer.root.updateMatrixWorld(true);
+    const severed = bakeSeveredHead(boxer, head.getWorldPosition(new THREE.Vector3()), head.getWorldQuaternion(new THREE.Quaternion())).geometry;
+    const glove = boxer.bone("gloveL")!;
+    const hand = bakeSkinnedPart(boxer.gloveMesh("left"), glove.getWorldPosition(new THREE.Vector3()), glove.getWorldQuaternion(new THREE.Quaternion())).geometry;
+    for (const geometry of [severed, hand]) {
+      const normal = geometry.getAttribute("normal");
+      let seams = 0;
+      let split = 0;
+      for (const group of seamGroups(geometry)) {
+        for (let i = 1; i < group.length; i += 1) {
+          seams += 1;
+          const angle = THREE.MathUtils.radToDeg(new THREE.Vector3().fromBufferAttribute(normal, group[0]!).angleTo(new THREE.Vector3().fromBufferAttribute(normal, group[i]!)));
+          if (angle > 5) split += 1;
+        }
+      }
+      expect(seams).toBeGreaterThan(50);
+      expect(split).toBe(0);
+      // Turned with the part as it was posed: they agree with the surface they shade.
+      const angles = offSurface(geometry);
+      expect(angles[Math.floor(angles.length / 2)]!).toBeLessThan(12);
+      expect(angles[Math.floor(angles.length * 0.95)]!).toBeLessThan(35);
+    }
+    // The cut's rim indexes the head mesh's own numbering, which the severed head keeps.
+    expect(severed.getAttribute("position").count).toBe(boxer.headMesh.geometry.getAttribute("position").count);
+    severed.dispose();
+    hand.dispose();
+    boxer.dispose();
+  });
+
   it("closes both sides of the cut with flesh that meets the skin all the way round and faces out", () => {
     const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
     const graph = new BoxingGraph(boxer, worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }));
     const self = { ...fighter("one"), x: -40, y: 0, facing_x: 1000, facing_y: 0, defense: "slip_left" as const };
     const other = { ...fighter("two"), x: 40, y: 0, facing_x: -1000, facing_y: 0 };
     for (let frame = 0; frame < 40; frame += 1) graph.update(self, other, 1 / 60, frame / 60, false, "full", 100 + frame / 2);
-    const stub = { graphs: [graph, graph], tmpHead: new THREE.Vector3(), tmpHeadQuaternion: new THREE.Quaternion(), tmpStumpOffset: new THREE.Vector3(), tmpStump: new THREE.Vector3(), tmpStumpQuaternion: new THREE.Quaternion(), stumpRim: new Float32Array(0) };
+    const stub = { graphs: [graph, graph], tmpHead: new THREE.Vector3(), tmpHeadQuaternion: new THREE.Quaternion(), tmpStumpOffset: new THREE.Vector3(), tmpStump: new THREE.Vector3(), tmpStumpQuaternion: new THREE.Quaternion(), tmpStumpAcross: new THREE.Vector3(), stumpRim: new Float32Array(0) };
     const pose = renderer.headWorldPose.call(stub, 0)!;
     const baked = bakeSkinnedPart(boxer.headMesh, pose.position, pose.quaternion, aboveNeckCut);
     const scene = new THREE.Scene();
@@ -326,6 +400,54 @@ describe("neck cut", () => {
     graph.dispose();
   });
 
+  it("turns the neck's cross-section with the head: the windpipe at the throat and the spine at the nape, on both sides of the cut", () => {
+    // Squared up along x, where a cross-section fixed to the world would put the spine at the side of the neck.
+    for (const facing of [1000, -1000]) {
+      const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
+      const graph = new BoxingGraph(boxer, worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }));
+      const self = { ...fighter("one"), x: -40, y: 0, facing_x: facing, facing_y: 0 };
+      const other = { ...fighter("two"), x: 40, y: 0, facing_x: -facing, facing_y: 0 };
+      for (let frame = 0; frame < 40; frame += 1) graph.update(self, other, 1 / 60, frame / 60, false, "full", 100 + frame / 2);
+      const stub = { graphs: [graph, graph], tmpHead: new THREE.Vector3(), tmpHeadQuaternion: new THREE.Quaternion(), tmpStumpOffset: new THREE.Vector3(), tmpStump: new THREE.Vector3(), tmpStumpQuaternion: new THREE.Quaternion(), tmpStumpAcross: new THREE.Vector3(), stumpRim: new Float32Array(0) };
+      const pose = renderer.headWorldPose.call(stub, 0)!;
+      const baked = bakeSkinnedPart(boxer.headMesh, pose.position, pose.quaternion, aboveNeckCut);
+      const scene = new THREE.Scene();
+      const effects = new Effects3D(scene);
+      effects.decapitate(0, pose.position, pose.quaternion, 1, 8, 0xb0703f, baked);
+      const stump = renderer.stumpWorldPose.call(stub, 0)!;
+      effects.anchorStump(0, stump.position, stump.quaternion, stump.rim, stump.across);
+      const wound = scene.children.find((child): child is THREE.Mesh => child instanceof THREE.Mesh && child.visible && child.geometry !== baked.geometry && child.position.distanceTo(stump.position) < 1e-6)!;
+      /** The texture's v at the rim corner of a cut's flesh furthest toward `toward`, in the flesh's own frame. */
+      const vToward = (flesh: THREE.BufferGeometry, toward: THREE.Vector3): number => {
+        const position = flesh.getAttribute("position");
+        const uv = flesh.getAttribute("uv");
+        let best = -Infinity;
+        let v = 0.5;
+        for (let corner = 0; corner < position.count; corner += 1) {
+          if (corner % 3 === 0) continue;
+          const along = new THREE.Vector3().fromBufferAttribute(position, corner).dot(toward);
+          if (along > best) {
+            best = along;
+            v = uv.getY(corner);
+          }
+        }
+        return v;
+      };
+      // The neck texture draws the spine high in v and the windpipe low.
+      const face = new THREE.Vector3(0, 0, 1).applyQuaternion(boxer.bone("head")!.getWorldQuaternion(new THREE.Quaternion()));
+      face.y = 0;
+      face.normalize();
+      expect(Math.abs(face.x)).toBeGreaterThan(0.9);
+      expect(vToward(wound.geometry, face)).toBeLessThan(0.3);
+      expect(vToward(wound.geometry, face.clone().negate())).toBeGreaterThan(0.7);
+      // The severed head's own cut, in the head's frame, where the face points along +z.
+      expect(vToward(baked.cut!.flesh, new THREE.Vector3(0, 0, 1))).toBeLessThan(0.3);
+      expect(vToward(baked.cut!.flesh, new THREE.Vector3(0, 0, -1))).toBeGreaterThan(0.7);
+      effects.dispose();
+      graph.dispose();
+    }
+  });
+
   it("falls back to a disc on the neck when the cut has not been measured", () => {
     const effects = new Effects3D(new THREE.Scene());
     effects.decapitate(0, new THREE.Vector3(0, 1.5, 0), new THREE.Quaternion(), 1, 8);
@@ -336,6 +458,103 @@ describe("neck cut", () => {
     expect(stumps[0]!.mesh.quaternion.angleTo(turn)).toBeCloseTo(0, 6);
     expect(stumps[0]!.mesh.geometry.getAttribute("position").count).toBeGreaterThan(100);
     effects.dispose();
+  });
+});
+
+describe("an arterial fountain", () => {
+  type Spawn = { time: number; velocity: THREE.Vector3; at: THREE.Vector3 };
+  /** Every drop a stump throws, and when: from the cut until `seconds` later. */
+  const pump = (effects: Effects3D, seconds: number): Spawn[] => {
+    const spawns: Spawn[] = [];
+    let time = 0;
+    const spawn = vi.spyOn(effects as unknown as { spawnDroplet(...args: number[]): void }, "spawnDroplet").mockImplementation((x, y, z, vx, vy, vz) => {
+      spawns.push({ time, velocity: new THREE.Vector3(vx, vy, vz), at: new THREE.Vector3(x, y, z) });
+    });
+    for (; time < seconds; time += 1 / 60) effects.update(1 / 60);
+    spawn.mockRestore();
+    return spawns;
+  };
+  // A neck lying on the canvas, its wound facing along +x.
+  const along = new THREE.Vector3(1, 0, 0);
+  const lying = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), along);
+  const severed = (effects: Effects3D): void => {
+    effects.decapitate(0, new THREE.Vector3(0.4, 0.25, 0.2), new THREE.Quaternion(), 1, 8);
+    effects.anchorStump(0, new THREE.Vector3(0.4, 0.25, 0.2), lying);
+  };
+
+  it("pumps with the heart for seconds, in spurts that weaken as he bleeds out", () => {
+    const effects = new Effects3D(new THREE.Scene());
+    severed(effects);
+    const spawns = pump(effects, 9);
+    const between = (from: number, to: number): Spawn[] => spawns.filter((spawn) => spawn.time >= from && spawn.time < to);
+    expect(between(5, 6.5).length).toBeGreaterThan(5);
+    expect(between(6.6, 9)).toHaveLength(0);
+    expect(between(0, 1).length).toBeGreaterThan(between(4, 5).length * 1.5);
+    // Spurts at the heart's rate: tenths of a second at the top of a beat throw far more than those between beats.
+    const tenths = Array.from({ length: 24 }, (_, tenth) => between(tenth / 10, (tenth + 1) / 10).length);
+    expect(Math.max(...tenths)).toBeGreaterThanOrEqual(Math.max(4, 4 * Math.min(...tenths)));
+    let peaks = 0;
+    for (let tenth = 1; tenth + 1 < tenths.length; tenth += 1) if (tenths[tenth]! > tenths[tenth - 1]! && tenths[tenth]! >= tenths[tenth + 1]! && tenths[tenth]! >= Math.max(...tenths) / 2) peaks += 1;
+    // 1.7 beats a second: four beats in 2.4 s.
+    expect(peaks).toBeGreaterThanOrEqual(3);
+    expect(peaks).toBeLessThanOrEqual(5);
+    // Its heaviest spurts throw only so many drops, for the phones.
+    expect(spawns.length).toBeLessThan(260);
+    effects.dispose();
+  });
+
+  it("throws the blood at arterial speed along the wound's axis, not straight up", () => {
+    const effects = new Effects3D(new THREE.Scene());
+    severed(effects);
+    const spawns = pump(effects, 6.5);
+    const early = spawns.filter((spawn) => spawn.time < 1.5);
+    for (const spawn of spawns) {
+      expect(THREE.MathUtils.radToDeg(spawn.velocity.angleTo(along))).toBeLessThan(25);
+      expect(spawn.velocity.length()).toBeLessThanOrEqual(6 + 1e-9);
+    }
+    const fast = early.filter((spawn) => spawn.velocity.length() >= 4);
+    expect(fast.length).toBeGreaterThan(early.length * 0.3);
+    // Weaker as the pressure falls.
+    const late = spawns.filter((spawn) => spawn.time > 5.5);
+    const mean = (list: Spawn[]): number => list.reduce((sum, spawn) => sum + spawn.velocity.length(), 0) / Math.max(1, list.length);
+    expect(mean(late)).toBeLessThan(mean(early) * 0.8);
+    effects.dispose();
+  });
+
+  it("faces out of the flesh closing a measured cut", () => {
+    const effects = new Effects3D(new THREE.Scene());
+    effects.decapitate(0, new THREE.Vector3(0, 1.4, 0), new THREE.Quaternion(), 1, 8);
+    // The neck tipped over toward -z, its cut measured as a ring round the wound.
+    const outward = new THREE.Vector3(0, 0.5, -1).normalize();
+    const centre = new THREE.Vector3(0, 1.4, 0);
+    const turn = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), outward);
+    const rim: number[] = [];
+    for (let edge = 0; edge < 16; edge += 1) {
+      for (const end of [edge, edge + 1]) {
+        const angle = (end / 16) * Math.PI * 2;
+        rim.push(...new THREE.Vector3(Math.cos(angle) * 0.06, 0, Math.sin(angle) * 0.06).applyQuaternion(turn).add(centre).toArray());
+      }
+    }
+    effects.anchorStump(0, centre, turn, rim);
+    const spawns = pump(effects, 1);
+    expect(spawns.length).toBeGreaterThan(10);
+    for (const spawn of spawns) expect(THREE.MathUtils.radToDeg(spawn.velocity.angleTo(outward))).toBeLessThan(25);
+    effects.dispose();
+  });
+
+  it("pumps a severed wrist too, and stops with the blood turned down", () => {
+    const effects = new Effects3D(new THREE.Scene());
+    effects.dismemberHand(0, "left", new THREE.Vector3(0.3, 0.2, 0), new THREE.Quaternion(), 1, 21, 0x1d4ed8);
+    effects.anchorHandStump(0, "left", new THREE.Vector3(0.3, 0.2, 0), lying);
+    const spawns = pump(effects, 6);
+    expect(spawns.filter((spawn) => spawn.time > 3).length).toBeGreaterThan(5);
+    for (const spawn of spawns) expect(THREE.MathUtils.radToDeg(spawn.velocity.angleTo(along))).toBeLessThan(25);
+    const reduced = new Effects3D(new THREE.Scene());
+    severed(reduced);
+    reduced.setBloodLevel("reduced");
+    expect(pump(reduced, 3)).toHaveLength(0);
+    effects.dispose();
+    reduced.dispose();
   });
 });
 

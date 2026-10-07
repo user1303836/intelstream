@@ -21,6 +21,11 @@ function smoothstep(edge0: number, edge1: number, value: number): number {
 
 /** The side of the ring that faces the broadcast camera. */
 const NEAR_SIDE = 3;
+/**
+ * The near side's ropes and straps blend last, after the blob shadows (1) and the glove trails (4) seen
+ * through them, which would otherwise be cut where a faded rope crosses them.
+ */
+const NEAR_ROPE_RENDER_ORDER = 5;
 
 /** How solid the near ropes are drawn for fighters whose nearest point to the camera is `z` metres from the centre. */
 export function nearRopeOpacityFor(z: number): number {
@@ -32,25 +37,49 @@ export interface RopePress {
   readonly pressZ: number;
 }
 
-/** The ropes run behind a fighter's back, this far from the middle of the body. */
-const ROPE_BACK = 0.2;
+/** The ropes run behind a fighter's back, this far from the middle of the body (his back, and his rear leg in the stance). */
+export const ROPE_BACK = 0.23;
+/**
+ * The furthest the ropes give behind a fighter: well short of the 0.38 m between them, so they never wrap
+ * round him. The engine lets his middle reach 0.36 m past the rope line; the rest is made up by drawing
+ * him in and leaning him back on the ropes (see `ropeExcess`).
+ */
+export const ROPE_MAX_GIVE = 0.22;
 /** Along the rope, the give is full across the back and gone this far from the fighter. */
 const ROPE_GIVE_FLAT = 0.22;
 const ROPE_GIVE_REACH = 1.15;
 /** The rope is tied at the post and gives nothing there. */
 const ROPE_TIE = 0.5;
-/** The bottom rope is pushed by the legs, which lean back less than the shoulders. */
-const ROPE_LOW_GIVE = 0.6;
+/** The bottom rope is pushed by the legs: in the stance the rear one reaches almost as far back as the shoulders. */
+const ROPE_LOW_GIVE = 0.9;
+/** The ropes sag this far in the middle of a side. */
+const ROPE_SAG = 0.045;
+/** Where along each side the straps tie the ropes together. */
+const TIE_POSITIONS = [0.33, 0.66] as const;
+/** How far the ropes have sagged at the ties, and how far past a rope's middle a strap wraps round it. */
+const TIE_SAG = ROPE_SAG * 2 * 0.33 * 0.67;
+const TIE_WRAP = 0.04;
 
 /**
  * How far, in metres, a fighter at (x, z) pushes the ropes on the x and z sides outward. The engine
- * lets a fighter's middle pass the line of the ropes, so they give way to stay behind the back.
+ * lets a fighter's middle pass the line of the ropes, so they give way to stay behind the back, as far
+ * as `ROPE_MAX_GIVE`.
  */
 export function ropePress(x: number, z: number): RopePress {
   return {
-    pressX: Math.max(0, Math.abs(x) + ROPE_BACK - ROPE_LINE),
-    pressZ: Math.max(0, Math.abs(z) + ROPE_BACK - ROPE_LINE),
+    pressX: Math.min(ROPE_MAX_GIVE, Math.max(0, Math.abs(x) + ROPE_BACK - ROPE_LINE)),
+    pressZ: Math.min(ROPE_MAX_GIVE, Math.max(0, Math.abs(z) + ROPE_BACK - ROPE_LINE)),
   };
+}
+
+/**
+ * How far past the ropes' furthest give the engine has a fighter at (x, z), per axis and signed outward,
+ * in metres: he is drawn that much nearer the middle, his back on the ropes, and leans back on them.
+ */
+export function ropeExcess(x: number, z: number, out: { x: number; z: number }): { x: number; z: number } {
+  out.x = Math.sign(x) * Math.max(0, Math.abs(x) + ROPE_BACK - ROPE_LINE - ROPE_MAX_GIVE);
+  out.z = Math.sign(z) * Math.max(0, Math.abs(z) + ROPE_BACK - ROPE_LINE - ROPE_MAX_GIVE);
+  return out;
 }
 
 /**
@@ -220,26 +249,36 @@ export function buildRing(): BuiltRing {
   const ropeContacts: [THREE.Vector4, THREE.Vector4] = [new THREE.Vector4(0, 0, 0, 0), new THREE.Vector4(0, 0, 0, 0)];
   const ropeUniforms = { uRopeContactA: { value: ropeContacts[0] }, uRopeContactB: { value: ropeContacts[1] } };
   const ropeColors = [0xb91c1c, 0xe5e7eb, 0x1d4ed8];
+  const bendRopes = (shader: THREE.WebGLProgramParametersWithUniforms): void => {
+    shader.uniforms.uRopeContactA = ropeUniforms.uRopeContactA;
+    shader.uniforms.uRopeContactB = ropeUniforms.uRopeContactB;
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", `#include <common>\nuniform vec4 uRopeContactA;\nuniform vec4 uRopeContactB;\n${ROPE_GIVE_GLSL}`)
+      .replace("#include <begin_vertex>", `#include <begin_vertex>${ROPE_FLEX_GLSL}`);
+  };
   const flexMaterial = (parameters: THREE.MeshStandardMaterialParameters): THREE.MeshStandardMaterial => {
     const material = new THREE.MeshStandardMaterial(parameters);
-    material.onBeforeCompile = (shader) => {
-      shader.uniforms.uRopeContactA = ropeUniforms.uRopeContactA;
-      shader.uniforms.uRopeContactB = ropeUniforms.uRopeContactB;
-      shader.vertexShader = shader.vertexShader
-        .replace("#include <common>", `#include <common>\nuniform vec4 uRopeContactA;\nuniform vec4 uRopeContactB;\n${ROPE_GIVE_GLSL}`)
-        .replace("#include <begin_vertex>", `#include <begin_vertex>${ROPE_FLEX_GLSL}`);
-    };
+    material.onBeforeCompile = bendRopes;
     materials.push(material);
     return material;
   };
+  // The key light's shadow pass draws a mesh with three's own depth material unless it has one: the ropes'
+  // bends them as they give, so their shadows move with them off a fighter pinned on them.
+  const ropeDepth = new THREE.MeshDepthMaterial();
+  ropeDepth.onBeforeCompile = bendRopes;
+  ropeDepth.customProgramCacheKey = () => "hands-rope-depth";
+  materials.push(ropeDepth);
   const ropeMaterial = (color: number): THREE.MeshStandardMaterial => flexMaterial({ color, roughness: 0.42, metalness: 0.05 });
   const ropeMats = ropeColors.map(ropeMaterial);
   const nearMaterials: THREE.MeshStandardMaterial[] = ropeColors.map(ropeMaterial);
-  // The straps tie the ropes together, so they give with them where a fighter presses into the ropes.
+  // The straps tie the ropes together, so they give with them where a fighter presses into the ropes: one
+  // strap at each tie, from under the bottom rope to over the top one, in enough pieces to bend with them.
   const tieMat = flexMaterial({ color: 0xd8dee8, roughness: 0.6 });
   const nearTieMat = flexMaterial({ color: 0xd8dee8, roughness: 0.6 });
   nearMaterials.push(nearTieMat);
-  const tieGeo = new THREE.BoxGeometry(0.035, 0.82, 0.012);
+  const tieLow = ROPE_HEIGHTS[0] - TIE_SAG - TIE_WRAP;
+  const tieHigh = ROPE_HEIGHTS[ROPE_HEIGHTS.length - 1]! - TIE_SAG + TIE_WRAP;
+  const tieGeo = new THREE.BoxGeometry(0.035, tieHigh - tieLow, 0.012, 1, 6, 1);
   geometries.push(tieGeo);
   const setRopeContacts = (a: { x: number; z: number } | null, b: { x: number; z: number } | null): void => {
     for (const [index, contact] of [a, b].entries()) {
@@ -257,7 +296,7 @@ export function buildRing(): BuiltRing {
     const to = corners[(side + 1) % 4]!;
     for (const [ropeIndex, height] of ROPE_HEIGHTS.entries()) {
       const middle = from.clone().add(to).multiplyScalar(0.5);
-      middle.y = height - 0.045;
+      middle.y = height - ROPE_SAG;
       const curve = new THREE.QuadraticBezierCurve3(
         new THREE.Vector3(from.x, height, from.z),
         middle,
@@ -268,14 +307,18 @@ export function buildRing(): BuiltRing {
       geometries.push(ropeGeo);
       const rope = new THREE.Mesh(ropeGeo, (side === NEAR_SIDE ? nearMaterials : ropeMats)[ropeIndex]!);
       rope.castShadow = true;
+      rope.customDepthMaterial = ropeDepth;
+      if (side === NEAR_SIDE) rope.renderOrder = NEAR_ROPE_RENDER_ORDER;
       group.add(rope);
-      for (const t of [0.33, 0.66]) {
-        const point = curve.getPoint(t);
-        const tie = new THREE.Mesh(tieGeo, side === NEAR_SIDE ? nearTieMat : tieMat);
-        tie.position.set(point.x, height - 0.36, point.z);
-        tie.lookAt(0, height - 0.36, 0);
-        group.add(tie);
-      }
+    }
+    for (const t of TIE_POSITIONS) {
+      const x = from.x + (to.x - from.x) * t;
+      const z = from.z + (to.z - from.z) * t;
+      const tie = new THREE.Mesh(tieGeo, side === NEAR_SIDE ? nearTieMat : tieMat);
+      tie.position.set(x, (tieLow + tieHigh) / 2, z);
+      tie.lookAt(0, tie.position.y, 0);
+      if (side === NEAR_SIDE) tie.renderOrder = NEAR_ROPE_RENDER_ORDER;
+      group.add(tie);
     }
   }
 
@@ -285,6 +328,9 @@ export function buildRing(): BuiltRing {
       material.opacity = THREE.MathUtils.clamp(opacity, 0, 1);
       // Faded right out they are not drawn at all, or they would still write depth and catch the bloom.
       material.visible = material.opacity > 0.03;
+      // Faded, they blend over what is behind them without cutting it out of anything drawn later. Depth
+      // writing is render state, not part of the shader, so switching it compiles nothing.
+      material.depthWrite = material.opacity >= 1;
     }
   };
 

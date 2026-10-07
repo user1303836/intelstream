@@ -14,6 +14,7 @@ import { LookShading, SCANNED_LOOK, type FighterLook } from "./looks";
 import { applyOutfitShading, buildCuffGeometry, buildHandGeometry, type OfficialOutfit, type OutfitPart } from "./outfit";
 import { PoseSolver, STANCE, easeIn, easeOut, mirrorX, smoothstep, vec, type FootTarget, type HandTarget, type PoseDescription } from "./poser";
 import { KnockoutRagdoll, blowImpulse, fallStyleFor } from "./ragdoll";
+import { ropeExcess } from "./ring";
 import { SolvedRig } from "./rig";
 import { POST_RADIUS, type WorldMapping } from "./world";
 
@@ -444,6 +445,46 @@ const HEAD_SPACE = 0.25;
 const HEAD_SPACE_CLEAR = 0.32;
 const HEAD_SPACE_RATE = 9;
 const OPEN_GAP = 1;
+/** In a clinch each fighter rests his head this far to his own right (metres), leaning his shoulders that way (radians). */
+const CLINCH_HEAD_SIDE = 0.08;
+const CLINCH_HEAD_LEAN = 0.3;
+/** Within this gap (metres between them) an opponent on top of a fighter held on the ropes comes in with him, and from the second on not at all. */
+const ROPE_HOLD_CLOSE = 1;
+const ROPE_HOLD_OPEN = 1.6;
+/**
+ * Held on the ropes, a fighter leans back on them like a man against a wall: in full once the engine has him
+ * this far past their furthest give (metres), with his feet this much further in, so his back rests on the top
+ * rope. He tips back from the hips toward the ropes, or sideways when they are at his side (radians), and the
+ * lean follows the engine's place for him, quickly settling.
+ */
+const ROPE_LEAN_FULL = 0.25;
+const ROPE_LEAN_ROOM = 0.12;
+const ROPE_LEAN_PITCH = 0.3;
+const ROPE_LEAN_ROLL = 0.3;
+const ROPE_LEAN_RATE = 8;
+
+/**
+ * How far (world x and z, into `out`) a fighter whose place is (x, z) is drawn in off the ropes, and how far
+ * he leans back on them, 0 to 1; `excess` takes how far past the ropes' furthest give his place is.
+ */
+function ropeHoldAt(x: number, z: number, excess: { x: number; z: number }, out: { x: number; z: number }): number {
+  ropeExcess(x, z, excess);
+  const past = Math.hypot(excess.x, excess.z);
+  if (past <= 0) {
+    out.x = 0;
+    out.z = 0;
+    return 0;
+  }
+  const lean = smoothstep(0, ROPE_LEAN_FULL, past);
+  const reach = 1 + (ROPE_LEAN_ROOM * lean) / past;
+  out.x = excess.x * reach;
+  out.z = excess.z * reach;
+  return lean;
+}
+
+/** Along one axis, how far in to draw a fighter held `own` on the ropes, or with an opponent held `theirs`. */
+const heldIn = (own: number, theirs: number): number => (own === 0 || (Math.sign(theirs) === Math.sign(own) && Math.abs(theirs) > Math.abs(own)) ? theirs : own);
+
 const KNOCKDOWN_FALL_SECONDS = 0.75;
 /**
  * The get-up runs lying -> all fours (RISE_FOURS) -> one knee (RISE_KNEE) -> standing (1). While he is down it
@@ -588,6 +629,19 @@ export class BoxingGraph {
   /** How far, in his own frame (x to the side, y ahead), the fighter is leaning his head away from the other's. */
   private readonly headSpace = new THREE.Vector2();
   private readonly ownHead = new THREE.Vector3();
+  /**
+   * On the ropes: how far (world x and z) he is drawn in from his place in the engine, so his back stays on
+   * the ropes at their furthest give (an opponent on top of him comes in with him), how far past that give
+   * the engine has him himself, and how far he leans back on the ropes, toward `ropeOutward`.
+   */
+  private readonly ropeHold = new THREE.Vector3();
+  private readonly ropeExcess = { x: 0, z: 0 };
+  private readonly ropeOwn = { x: 0, z: 0 };
+  private readonly ropeTheirs = { x: 0, z: 0 };
+  private ropeLeanTarget = 0;
+  private ropeLean = 0;
+  private readonly ropeOutward = new THREE.Vector3(1, 0, 0);
+  private readonly ropeLocal = new THREE.Vector3();
   /** Render tick the taunt ends on (see latchEndTick). */
   private tauntEnd: number | null = null;
   private lastSpeed = 0;
@@ -1300,8 +1354,9 @@ export class BoxingGraph {
 
     const touch = this.touchWalk(fighter, opponent, dt, sampledTick);
     this.walkBackFromTheFall(dt);
-    const worldX = this.mapping.x(fighter.x) + touch.x + this.riseRoot.x;
-    const worldZ = this.mapping.z(fighter.y) + touch.z + this.riseRoot.z;
+    const hold = this.holdOnTheRopes(opponent, this.mapping.x(fighter.x) + touch.x + this.riseRoot.x, this.mapping.z(fighter.y) + touch.z + this.riseRoot.z);
+    const worldX = this.mapping.x(fighter.x) + touch.x + this.riseRoot.x - hold.x;
+    const worldZ = this.mapping.z(fighter.y) + touch.z + this.riseRoot.z - hold.z;
     if (this.rootX === null) {
       this.rootX = worldX;
       this.rootZ = worldZ;
@@ -1388,7 +1443,7 @@ export class BoxingGraph {
     const crowded = this.referee || fighter.is_downed || opponent.is_downed ? 0 : 1 - smoothstep(CROWDED_GAP, OPEN_GAP, gap);
     this.crowding = smooth(this.crowding, crowded, 9, dt);
     let apart = Number.POSITIVE_INFINITY;
-    if (this.hasLiveHead && !this.referee && this.downState === "up" && this.clinchWeight < 0.5) {
+    if (this.hasLiveHead && !this.referee && this.downState === "up") {
       const own = this.boxer.rig.bones.head.getWorldPosition(this.ownHead);
       const dx = own.x - this.liveOpponentHead.x;
       const dz = own.z - this.liveOpponentHead.z;
@@ -1550,18 +1605,30 @@ export class BoxingGraph {
       rearHand.position.z -= inside * 0.07;
     }
 
-    // Heads never pass through each other: the one too close leans away from the other's.
+    // Heads never pass through each other: the one too close leans away from the other's. Tied up in a
+    // clinch, which already rests the heads on opposite shoulders, only the head moves.
     if (Math.abs(this.headSpace.x) + Math.abs(this.headSpace.y) > 0.001) {
       const side = this.headSpace.x;
       const ahead = this.headSpace.y;
-      torso.spinePitch += ahead * 0.7;
-      torso.spineRoll -= side * 0.7;
-      torso.hips.z += ahead * 0.1;
-      torso.hips.x += side * 0.05;
+      const free = 1 - this.clinchWeight;
+      torso.spinePitch += ahead * 0.7 * free;
+      torso.spineRoll -= side * 0.7 * free;
+      torso.hips.z += ahead * 0.1 * free;
+      torso.hips.x += side * 0.05 * free;
       torso.headOffset.x += side * 0.05;
       torso.headOffset.z += ahead * 0.05;
       torso.headPitch += ahead * 0.2;
       torso.headRoll -= side * 0.3;
+    }
+
+    // Drawn in off the ropes (see holdOnTheRopes), he leans back on them.
+    this.ropeLean = smooth(this.ropeLean, this.referee || this.downState !== "up" ? 0 : this.ropeLeanTarget, ROPE_LEAN_RATE, dt);
+    if (this.ropeLean > 0.001) {
+      // The way to the ropes in his own frame: x to his left, z ahead of him.
+      const toRopes = this.ropeLocal.copy(this.ropeOutward).applyAxisAngle(worldUpVector, -this.yaw);
+      // The whole body tips back from the hips, as against a wall.
+      torso.hipsPitch += toRopes.z * ROPE_LEAN_PITCH * this.ropeLean;
+      torso.hipsRoll -= toRopes.x * ROPE_LEAN_ROLL * this.ropeLean;
     }
 
     // Reactions.
@@ -1706,21 +1773,27 @@ export class BoxingGraph {
 
   /**
    * Tie-up: the fighter whose id sorts first hooks over the opponent's arms,
-   * the other digs under them around the ribs. Both lean in over the bladed
-   * chest line and rest the head to their own right, so the skulls pass on
-   * opposite shoulders, and both keep working for position while they hold.
+   * the other digs under them around the ribs. Both square up chest to chest,
+   * lean in and rest the head to their own right, so the skulls pass on
+   * opposite shoulders whatever their stances, and both keep working for
+   * position while they hold.
    */
   private applyClinchPose(c: number, time: number, mirror: number, fighter: FighterSnapshot, opponent: FighterSnapshot, leadHand: HandTarget, rearHand: HandTarget, headRest: THREE.Vector3): void {
     const torso = this.torso;
     const over = fighter.player_id < opponent.player_id;
     const struggle = Math.sin(time * 7.3) * 0.5 + Math.sin(time * 4.1 + 1.2) * 0.5;
+    // Held on the ropes, the two are drawn in together (see holdOnTheRopes).
     const centre = this.clinchCentre
-      .set(this.mapping.x(opponent.x) - (this.rootX ?? 0), 0, this.mapping.z(opponent.y) - this.rootZ)
+      .set(this.mapping.x(opponent.x) - this.ropeHold.x - (this.rootX ?? 0), 0, this.mapping.z(opponent.y) - this.ropeHold.z - this.rootZ)
       .applyQuaternion(this.scratchQ.setFromAxisAngle(worldUpVector, -this.yaw));
     if (centre.lengthSq() < 0.04) centre.set(0, 0, 0.5);
     const forward = this.clinchForward.copy(centre).normalize();
     const acrossX = forward.z;
     const acrossZ = -forward.x;
+    // Bladed, a lean in takes the head toward the rear hand's side: an orthodox fighter's to his right, a
+    // southpaw's to his left, into the head of an orthodox opponent. Squared up, both rest it to the right.
+    torso.hipsYaw *= 1 - c;
+    torso.shouldersYaw *= 1 - c;
     torso.spinePitch += c * (over ? 0.28 : 0.42) + struggle * 0.025 * c;
     torso.hips.z += c * (over ? 0.04 : 0.06);
     torso.hips.x += struggle * 0.02 * c;
@@ -1728,7 +1801,8 @@ export class BoxingGraph {
     torso.hipsYaw += struggle * 0.06 * c;
     torso.headPitch += c * (over ? 0.15 : 0.3);
     torso.headYaw -= c * 0.3;
-    torso.headOffset.x -= c * 0.05;
+    torso.headOffset.x -= c * CLINCH_HEAD_SIDE;
+    torso.spineRoll += c * CLINCH_HEAD_LEAN;
     torso.headOffset.y -= c * (over ? 0.02 : 0.06);
     const metrics = this.boxer.rig.metrics;
     const reach = Math.min(metrics.armL.upper + metrics.armL.lower, metrics.armR.upper + metrics.armR.lower) * 0.92;
@@ -1756,6 +1830,27 @@ export class BoxingGraph {
       hand.knuckles.lerp(this.clinchTemp.set(-acrossX * side * 0.9 + forward.x * 0.3, over ? -0.25 : 0.1, -acrossZ * side * 0.9 + forward.z * 0.3), c).normalize();
       hand.palm.lerp(this.clinchTemp.set(-forward.x, over ? 0.1 : 0.35, -forward.z), c).normalize();
     }
+  }
+
+  /**
+   * How far (world x and z) to draw this fighter in from `x`, `z`, where he would stand: the engine lets a
+   * fighter's middle reach 0.36 m past the rope line, further than the ropes give, so one it has past their
+   * furthest give is drawn in, his back on the ropes, and leans back on them (see ropeHoldAt). An opponent
+   * on top of him comes in with him, so the two keep the gap the engine has between them.
+   */
+  private holdOnTheRopes(opponent: FighterSnapshot, x: number, z: number): THREE.Vector3 {
+    if (this.referee) {
+      this.ropeLeanTarget = 0;
+      return this.ropeHold.set(0, 0, 0);
+    }
+    this.ropeLeanTarget = ropeHoldAt(x, z, this.ropeExcess, this.ropeOwn);
+    const pressed = Math.hypot(this.ropeExcess.x, this.ropeExcess.z);
+    if (pressed > 0) this.ropeOutward.set(this.ropeExcess.x / pressed, 0, this.ropeExcess.z / pressed);
+    const opponentX = this.mapping.x(opponent.x);
+    const opponentZ = this.mapping.z(opponent.y);
+    ropeHoldAt(opponentX, opponentZ, this.ropeTheirs, this.ropeTheirs);
+    const close = 1 - smoothstep(ROPE_HOLD_CLOSE, ROPE_HOLD_OPEN, Math.hypot(opponentX - x, opponentZ - z));
+    return this.ropeHold.set(heldIn(this.ropeOwn.x, this.ropeTheirs.x * close), 0, heldIn(this.ropeOwn.z, this.ropeTheirs.z * close));
   }
 
   /** Character-space head rest position for hand offsets (before torso deltas). */
