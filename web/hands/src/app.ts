@@ -399,7 +399,7 @@ export class HandsApp {
     const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
     const fighters = snapshot.fighters.map((fighter) => {
       const player = this.state.players[fighter.player_id];
-      return `${player?.name ?? "Fighter"}, ELO ${player?.rating ?? "unknown"}, stamina ${Math.round(fighter.stamina)} of ${Math.round(fighter.maximum_stamina)}, guard ${Math.round(fighter.guard)}, poise ${Math.round(fighter.poise)}, conditioning ${Math.round(fighter.conditioning)}, ${fighter.warnings} warnings, ${fighter.knockdowns} knockdowns`;
+      return `${player?.name ?? "Fighter"}, ${player?.cpu === true ? "computer opponent" : `ELO ${player?.rating ?? "unknown"}`}, stamina ${Math.round(fighter.stamina)} of ${Math.round(fighter.maximum_stamina)}, guard ${Math.round(fighter.guard)}, poise ${Math.round(fighter.poise)}, conditioning ${Math.round(fighter.conditioning)}, ${fighter.warnings} warnings, ${fighter.knockdowns} knockdowns`;
     });
     const viewer = snapshot.fighters.find((fighter) => fighter.player_id === this.state.playerId);
     const getUp = viewer?.is_downed === true

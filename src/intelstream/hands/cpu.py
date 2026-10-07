@@ -84,6 +84,8 @@ class CpuProfile:
     stamina_reserve: int
     footwork_percent: int
     outside_distance: int
+    jab_bias: int
+    """Extra weight on the jab, which seldom stuns: a weak boxer pecks rather than hurts."""
     counter_percent: int
     power_percent: int
     body_percent: int
@@ -115,7 +117,8 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         leads_target=False,
         stamina_reserve=60,
         footwork_percent=25,
-        outside_distance=150,
+        outside_distance=130,
+        jab_bias=60,
         counter_percent=15,
         power_percent=20,
         body_percent=15,
@@ -143,6 +146,7 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         stamina_reserve=180,
         footwork_percent=60,
         outside_distance=160,
+        jab_bias=10,
         counter_percent=45,
         power_percent=35,
         body_percent=40,
@@ -170,6 +174,7 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         stamina_reserve=260,
         footwork_percent=85,
         outside_distance=166,
+        jab_bias=0,
         counter_percent=80,
         power_percent=50,
         body_percent=55,
@@ -531,6 +536,7 @@ class CpuBrain:
                 (PunchClass.HOOK, 45),
                 (PunchClass.UPPERCUT, 30),
             )
+        weights = ((PunchClass.JAB, self.profile.jab_bias), *weights)
         pick = self._rng.randrange(sum(weight for _, weight in weights))
         punch_class = weights[-1][0]
         for candidate, weight in weights:
@@ -700,6 +706,8 @@ class CpuBrain:
         ux, uy = dx / span, dy / span
         error = distance - wanted
         radial = 0.0 if abs(error) < 6 else max(-1.0, min(1.0, error / 30))
+        # A flat-footed boxer is slow to take or give ground.
+        radial *= 0.5 + 0.5 * profile.footwork_percent / 100
 
         if tick >= self._strafe_until:
             self._strafe = 1 if self._roll(50) else -1
