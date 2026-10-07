@@ -7,7 +7,7 @@ import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { EventDeduplicator, SnapshotBuffer } from "../interpolation";
 import { coarsePointer } from "../input/touch";
 import { REST_CORNER_OFFSET, punchTiming } from "../manifest";
-import { canAffordPunch, constrainPrediction, predictMovement, predictedPunchTiming, type HeldInput } from "../prediction";
+import { EVASION_STAMINA, EvasionPrediction, MovementPrediction, attackTicksRemaining, canAffordPunch, constrainPrediction, isEvasion, predictedDefense, predictedPunchTiming, type HeldInput } from "../prediction";
 import type { BloodLevel, Settings } from "../settings";
 import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, Hand, MatchResult, PublicPlayer, PunchClass, SemanticAction, SimulationInfo } from "../types";
 import { buildArena, type BuiltArena } from "./arena";
@@ -489,7 +489,10 @@ export class FightRenderer {
   private readonly mapping: WorldMapping;
   private readonly buffer: SnapshotBuffer;
   private readonly localInput: (() => HeldInput | null) | null;
-  private readonly localOffset = { dx: 0, dy: 0 };
+  /** Sequence of the input frame that carried a press, once it has gone out; null before then. */
+  private readonly inputSequenceOf: ((actionId: string) => number | null) | null;
+  private readonly movement = new MovementPrediction();
+  private readonly evasion = new EvasionPrediction();
   private lastManualTime = 0;
   private readonly dedupe = new EventDeduplicator();
   private readonly hudCanvas: HTMLCanvasElement;
@@ -584,10 +587,11 @@ export class FightRenderer {
     private readonly canvas: HTMLCanvasElement,
     private readonly simulation: SimulationInfo = DEFAULT_SIM,
     private readonly settings: () => Settings,
-    options: { manualClock?: boolean; localInput?: () => HeldInput | null } = {},
+    options: { manualClock?: boolean; localInput?: () => HeldInput | null; inputSequenceOf?: (actionId: string) => number | null } = {},
   ) {
     this.manualClock = options.manualClock === true;
     this.localInput = options.localInput ?? null;
+    this.inputSequenceOf = options.inputSequenceOf ?? null;
     this.buffer = new SnapshotBuffer(8, simulation.tick_rate);
     this.mapping = worldMapping(simulation);
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance", preserveDrawingBuffer: options.manualClock === true });
@@ -1079,16 +1083,39 @@ export class FightRenderer {
     if (latest === null || this.viewerId === null || this.replay !== null) return;
     const index = latest.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
     if (index < 0) return;
-    // The server turns a punch down outside the fight phase and while the fighter cannot act or pay for it.
+    // The server turns a punch or an evasion down outside the fight phase and while the fighter cannot act or pay for it.
     const fighter = latest.fighters[index]!;
-    if (action.kind !== "punch" || latest.phase !== "fight" || !canStartPunch(fighter) || !canAffordPunch(fighter, action)) return;
+    if (latest.phase !== "fight" || !canStartPunch(fighter)) return;
     const leadTicks = ((this.inputLatencyMs ?? 60) / 1000) * this.simulation.tick_rate + this.buffer.interpolationDelayTicks;
+    if (isEvasion(action.kind)) {
+      // Behind a punch the server holds it, so it is shown at once only when the fighter is free.
+      const busy = this.graphs?.[index]?.ownPunchActive === true || attackTicksRemaining(fighter, latest.tick) > 0 || fighter.queued_actions > 0;
+      if (!busy && action.id !== undefined && fighter.stamina >= EVASION_STAMINA) {
+        this.evasion.press(action.kind, action.id, this.manualClock ? this.lastManualTime : performance.now(), leadTicks, this.simulation.tick_rate);
+      }
+      return;
+    }
+    if (action.kind !== "punch" || !canAffordPunch(fighter, action)) return;
     this.graphs?.[index]?.predict(action, performance.now() / 1000, this.simulation.tick_rate, leadTicks, predictedPunchTiming(fighter, action, latest.tick + 1));
+  }
+
+  /**
+   * Every snapshot, as it arrives, tells the viewer's own punches whether the server took them (matching
+   * each press to the input frame that carried it), and both fighters' punches how they met the opponent.
+   */
+  private acknowledgeActions(snapshot: EngineSnapshot, events: readonly CombatEvent[]): void {
+    for (const [index, fighter] of snapshot.fighters.entries()) {
+      const viewer = fighter.player_id === this.viewerId;
+      if (viewer) this.evasion.acknowledge(fighter, snapshot.phase === "fight", this.inputSequenceOf);
+      const contacts = events.filter((event) => contactParticipants(event, snapshot).puncherIndex === index);
+      this.graphs?.[index]?.acknowledge(fighter, snapshot.phase === "fight", contacts, viewer ? this.inputSequenceOf : null);
+    }
   }
 
   push(snapshot: EngineSnapshot): void {
     if (!this.buffer.push(snapshot, this.manualClock ? this.lastManualTime : performance.now())) return;
     const accepted = this.dedupe.accept(snapshot.events);
+    this.acknowledgeActions(snapshot, accepted);
     this.history.push(snapshot);
     if (this.history.length > HISTORY_LIMIT) this.history.shift();
     for (const event of accepted) {
@@ -1330,7 +1357,7 @@ export class FightRenderer {
     }
     this.viewerHitFlash = Math.max(0, this.viewerHitFlash - dt * 3.2);
     let sampledTick = latest === null ? 0 : manual ? presentationTickFor(latest) : this.buffer.renderTick(time);
-    let snapshot = latest === null ? null : this.applyLocalPrediction(this.buffer.sample(sampledTick), dt);
+    let snapshot = latest === null ? null : this.applyLocalPrediction(this.buffer.sample(sampledTick), dt, time);
     const replay = this.replay;
     if (replay !== null) {
       const elapsed = seconds - replay.startedAt;
@@ -1482,22 +1509,26 @@ export class FightRenderer {
     if (!this.destroyed && !this.manualClock) this.raf = requestAnimationFrame((next) => this.draw(next));
   }
 
-  private applyLocalPrediction(snapshot: EngineSnapshot | null, dt: number): EngineSnapshot | null {
+  private applyLocalPrediction(snapshot: EngineSnapshot | null, dt: number, timeMs: number): EngineSnapshot | null {
     if (snapshot === null || this.localInput === null || this.viewerId === null) return snapshot;
     const index = snapshot.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
-    const held = this.localInput();
-    const rate = 1 - Math.exp(-14 * dt);
-    let target = { dx: 0, dy: 0 };
-    // The player's own punch starts here before the server has it, and holds the feet from then on.
-    if (index >= 0 && held !== null && snapshot.phase === "fight" && this.graphs?.[index]?.ownPunchActive !== true) {
-      target = predictMovement(snapshot.fighters[index]!, held, this.buffer.interpolationDelayTicks + 2, snapshot.tick);
-    }
-    this.localOffset.dx += (target.dx - this.localOffset.dx) * rate;
-    this.localOffset.dy += (target.dy - this.localOffset.dy) * rate;
-    if (index < 0 || (Math.abs(this.localOffset.dx) < 0.01 && Math.abs(this.localOffset.dy) < 0.01)) return snapshot;
+    const held = this.localInput() ?? { moveX: 0, moveY: 0, defense: "none" };
+    // Shown as far ahead of the snapshot on screen as an input pressed now takes to show up in it: the
+    // round trip plus the interpolation delay. The player's own punch starts here before the server
+    // has it, and holds the feet from then on.
+    const leadTicks = ((this.inputLatencyMs ?? 60) / 1000) * this.simulation.tick_rate + this.buffer.interpolationDelayTicks;
+    const fighting = index >= 0 && snapshot.phase === "fight" ? snapshot.fighters[index]! : null;
+    const holdFeet = this.graphs?.[index]?.ownPunchActive === true || this.evasion.holdsFeet(timeMs, this.simulation.tick_rate);
+    const local = this.movement.update(fighting, held, holdFeet, timeMs, leadTicks, snapshot.tick, dt, this.simulation.tick_rate);
+    // The guard is the most latency-sensitive thing the player controls: it is shown as held, and a
+    // slip, weave or pull on the press, wherever the server is not overriding it.
+    const evading = this.evasion.pose(timeMs);
+    if (index < 0) return snapshot;
     const viewer = snapshot.fighters[index]!;
-    const offset = constrainPrediction(viewer, this.localOffset, snapshot.fighters[index === 0 ? 1 : 0] ?? null);
-    const predicted = { ...viewer, x: viewer.x + offset.dx, y: viewer.y + offset.dy };
+    const defense = fighting !== null ? predictedDefense(fighting, held, evading) : viewer.defense;
+    if (Math.abs(local.dx) < 0.01 && Math.abs(local.dy) < 0.01 && defense === viewer.defense) return snapshot;
+    const offset = constrainPrediction(viewer, local, snapshot.fighters[index === 0 ? 1 : 0] ?? null);
+    const predicted = { ...viewer, x: viewer.x + offset.dx, y: viewer.y + offset.dy, defense };
     const fighters: [FighterSnapshot, FighterSnapshot] = index === 0 ? [predicted, snapshot.fighters[1]] : [snapshot.fighters[0], predicted];
     return { ...snapshot, fighters };
   }

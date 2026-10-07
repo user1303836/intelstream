@@ -280,7 +280,7 @@ describe("own punch prediction", () => {
     const step = (fighter: FighterSnapshot): void => { tick += 0.5; graph.update(fighter, opponentFor("two"), 1 / 60, tick / 30, false, "full", tick, undefined); };
     for (let frame = 0; frame < 3; frame += 1) step(idle);
     const before = age(graph);
-    graph.predict({ ...jab, id: "own-2", class: "straight" }, 0, 30, 4);
+    graph.predict({ ...jab, id: "own-2", class: "straight" }, 3 / 60, 30, 4);
     expect(state(graph).punchClass).toBe("jab");
     expect(state(graph).ownActionId).toBe("own-1");
     expect(age(graph)).toBe(before);
@@ -290,14 +290,16 @@ describe("own punch prediction", () => {
     expect(state(graph).punchClass).toBe("jab");
   });
 
-  it("cuts a follow-up in late in the recovery without the first punch coming back", () => {
+  it("cuts a follow-up in at the cancel age of a landed combination without the first punch coming back", () => {
     const { graph } = makeGraph();
     const idle = facingOpponent(baseFighter("one"));
     run(graph, idle, opponentFor("two"), 10, undefined);
     let tick = 300;
     const hook = serverPunch(idle, "theirs-hook", "hook", tick);
     const step = (fighter: FighterSnapshot): void => { tick += 0.5; graph.update(fighter, opponentFor("two"), 1 / 60, tick / 30, false, "full", tick, undefined); };
-    while (age(graph) / punchTiming("hook", "head", "normal").startup < 1 || age(graph) < 14) step(hook);
+    graph.acknowledge(hook, true, [{ event_id: 1, tick: 307, kind: "hit", actor_id: "one", target_id: "two", amount: 30, detail: "hook:head", blood: 0, direction: 1, action_id: "theirs-hook" }]);
+    // The engine lets a chained follow-up cut a landed hook's recovery short from 7 + 3 + 12 / 2 ticks.
+    while (age(graph) < 16) step(hook);
     expect(state(graph).punchClass).toBe("hook");
     graph.predict({ ...jab, id: "own-3", class: "uppercut" }, 0, 30, 3);
     expect(state(graph).punchClass).toBe("uppercut");
