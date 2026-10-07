@@ -1,9 +1,11 @@
 """Computer opponent for Hands: a boxer that plays through the same inputs a person sends.
 
 The brain reads both fighters from the authoritative engine once per tick and answers with one
-`InputCommand`. It only reacts to the opponent's punch after a human-like delay, so the fast lead
-jab can only be met with a guard that is already up, while a champion slips, weaves or times a
-perfect block against anything slower. Everything it does goes through `BoxingEngine.submit_input`
+`InputCommand`. It only notices the opponent's punch after a reaction drawn afresh for each punch,
+so the fast lead jab can only be met with a guard that is already up, while a champion slips,
+weaves or times a perfect block against anything slower. It reads the server's state as it is,
+where a player sees each punch a connection's trip late, so even a champion's reactions are kept
+within a few ticks of a sharp player's. Everything it does goes through `BoxingEngine.submit_input`
 under the same rules as a player's input.
 """
 
@@ -86,7 +88,9 @@ class CpuProfile:
     name: str
     rating: int
     reaction_ticks: int
-    """Ticks before the opponent's punch is noticed."""
+    """Ticks before the opponent's punch can be noticed."""
+    reaction_spread: int
+    """Up to this many more ticks, drawn for each punch: nobody reacts to every punch alike."""
     read_percent: int
     """Chance to answer a noticed punch with a defence that works against it."""
     perfect_percent: int
@@ -130,6 +134,7 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         name="Kid Cole",
         rating=850,
         reaction_ticks=10,
+        reaction_spread=4,
         read_percent=15,
         perfect_percent=0,
         guard_percent=15,
@@ -159,7 +164,8 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
     CpuLevel.CONTENDER: CpuProfile(
         name="Marcus 'Hammer' Reed",
         rating=1100,
-        reaction_ticks=6,
+        reaction_ticks=7,
+        reaction_spread=3,
         read_percent=64,
         perfect_percent=35,
         guard_percent=60,
@@ -189,7 +195,8 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
     CpuLevel.CHAMPION: CpuProfile(
         name="Viktor 'Iron' Volkov",
         rating=1400,
-        reaction_ticks=4,
+        reaction_ticks=5,
+        reaction_spread=3,
         read_percent=66,
         perfect_percent=45,
         guard_percent=65,
@@ -369,6 +376,8 @@ class CpuBrain:
         self._rng = random.Random(seed)  # nosec B311
         self._sequence = 0
         self._read_attack: tuple[int, str] | None = None
+        self._seen_attack: tuple[int, str] | None = None
+        self._reaction = 0
         self._guard_pose = DefensivePose.NONE
         self._guard_from = 0
         self._guard_until = -1
@@ -564,7 +573,13 @@ class CpuBrain:
         if attack is None or attack.resolved:
             return None
         key = (attack.start_tick, attack.action.punch_class.value)
-        if key == self._read_attack or tick - attack.start_tick < self.profile.reaction_ticks:
+        if key == self._read_attack:
+            return None
+        if key != self._seen_attack:
+            self._seen_attack = key
+            spread = self.profile.reaction_spread
+            self._reaction = self.profile.reaction_ticks + self._rng.randrange(spread + 1)
+        if tick - attack.start_tick < self._reaction:
             return None
         self._read_attack = key
         if _blind_to(me, attack.action.hand):

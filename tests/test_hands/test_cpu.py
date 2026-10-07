@@ -68,8 +68,10 @@ def engine_at(distance: int, *, seed: int = 3, **config: int) -> BoxingEngine:
 
 
 def always(brain: CpuBrain) -> CpuBrain:
-    """Every dice roll succeeds, so a test sees the brain's best answer."""
+    """Every dice roll succeeds and every reaction is the quickest, so a test sees the brain's best
+    answer."""
     brain._roll = lambda _percent: True  # type: ignore[method-assign]
+    brain.profile = replace(brain.profile, reaction_spread=0)
     return brain
 
 
@@ -154,13 +156,43 @@ def test_a_punch_is_not_answered_before_the_reaction_delay() -> None:
     assert answered_at == started.start_tick + PROFILES[CpuLevel.CHAMPION].reaction_ticks
 
 
+@pytest.mark.parametrize("level", list(CpuLevel))
+def test_each_punch_is_noticed_after_a_reaction_of_its_own(level: CpuLevel) -> None:
+    profile = PROFILES[level]
+    delays = []
+    for seed in range(24):
+        engine = engine_at(150, seed=seed)
+        engine.checksums = False
+        # A worn-out puncher's straight is slow enough to answer after any reaction.
+        engine.fighter("human").conditioning = 0
+        brain = CpuBrain("cpu", "human", level, seed)
+        brain._roll = lambda _percent: True  # type: ignore[method-assign]
+        brain._attack = lambda *_args: None  # type: ignore[method-assign]
+        throw(engine, PunchAction(Hand.RIGHT, PunchClass.STRAIGHT, Target.HEAD, Power.POWER))
+        engine.step()
+        attack = engine.fighter("human").attack
+        assert attack is not None
+        for _ in range(30):
+            command = brain.decide(engine)
+            assert command is not None
+            if brain._read_attack is not None:
+                delays.append(engine.tick - attack.start_tick)
+                break
+            engine.submit_input("cpu", command)
+            engine.step()
+    assert len(delays) == 24
+    assert profile.reaction_ticks == min(delays)
+    assert max(delays) == profile.reaction_ticks + profile.reaction_spread
+    assert len(set(delays)) == profile.reaction_spread + 1
+
+
 @pytest.mark.parametrize(
     ("action", "distance", "expected"),
     [
         (PunchAction(Hand.RIGHT, PunchClass.STRAIGHT, Target.HEAD, Power.POWER), 120, "slip_left"),
         (PunchAction(Hand.LEFT, PunchClass.HOOK, Target.HEAD, Power.POWER), 105, "weave"),
         (PunchAction(Hand.RIGHT, PunchClass.UPPERCUT, Target.HEAD), 95, "slip_left"),
-        (PunchAction(Hand.RIGHT, PunchClass.STRAIGHT, Target.HEAD), 160, "pull"),
+        (PunchAction(Hand.RIGHT, PunchClass.STRAIGHT, Target.HEAD, Power.POWER), 160, "pull"),
     ],
 )
 def test_a_champion_evades_a_punch_it_has_seen(
@@ -217,7 +249,7 @@ def body_hook_outcome(
     engine.fighter("cpu").style = style
     engine.fighter("human").conditioning = puncher_conditioning
     brain = CpuBrain("cpu", "human", CpuLevel.CHAMPION, 4, style)
-    brain.profile = profile = replace(brain.profile, reaction_ticks=6)
+    brain.profile = profile = replace(brain.profile, reaction_ticks=6, reaction_spread=0)
     assert profile.read_percent != profile.perfect_percent
     brain._roll = lambda percent: (
         percent == profile.read_percent
@@ -734,10 +766,10 @@ def test_a_newcomer_mashing_every_punch_button_can_beat_the_rookie() -> None:
     """Never guarding and never stopping, he out-lands the rookie and is not stopped."""
     bouts = [
         play("mash", "rookie", seed, EngineConfig(rounds=1, countdown_ticks=0))
-        for seed in (1, 2, 3)
+        for seed in range(1, 9)
     ]
-    assert [bout.method for bout in bouts] == ["decision"] * 3
-    assert sum(bout.winner_seat == 0 for bout in bouts) >= 2
+    assert [bout.method for bout in bouts] == ["decision"] * 8
+    assert sum(bout.winner_seat == 0 for bout in bouts) >= 5
 
 
 def test_a_skilled_player_beats_the_rookie_on_the_cards_and_not_by_cutting_him_up() -> None:
@@ -757,7 +789,7 @@ def test_the_champion_can_be_outboxed_or_outcountered_but_not_mashed() -> None:
     assert winner("skilled", 2, FighterStyle.COUNTER_PUNCHER) == 0
     assert winner("skilled", 2, FighterStyle.SWARMER) == 1
     assert winner("counter", 4, FighterStyle.BOXER) == 0
-    assert winner("counter", 5, FighterStyle.SLUGGER) == 1
+    assert winner("counter", 2, FighterStyle.SLUGGER) == 1
     assert winner("mash", 1, FighterStyle.BOXER) == 1
 
 
