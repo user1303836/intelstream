@@ -272,7 +272,12 @@ export class RoundClock {
 export interface RoundPunchStats {
   thrown: number;
   landed: number;
+  /** Of those, the jabs; every other punch counts as a power punch, as CompuBox counts them. */
+  jabsThrown: number;
+  jabsLanded: number;
 }
+
+const blankPunches = (): RoundPunchStats => ({ thrown: 0, landed: 0, jabsThrown: 0, jabsLanded: 0 });
 
 /** Punches thrown and landed per fighter in the current round, reset on the round-start bell. */
 export class RoundStatsTracker {
@@ -286,27 +291,35 @@ export class RoundStatsTracker {
     }
     if (event.actor_id === null) return;
     if (event.kind === "punch_start") {
-      this.entry(this.stats, event.actor_id).thrown += 1;
-      this.entry(this.totals, event.actor_id).thrown += 1;
+      // The detail is "hand:class:target".
+      const jab = event.detail.split(":")[1] === "jab" ? 1 : 0;
+      for (const entry of [this.entry(this.stats, event.actor_id), this.entry(this.totals, event.actor_id)]) {
+        entry.thrown += 1;
+        entry.jabsThrown += jab;
+      }
     } else if (event.kind === "hit" || event.kind === "counter_hit") {
-      this.entry(this.stats, event.actor_id).landed += 1;
-      this.entry(this.totals, event.actor_id).landed += 1;
+      // The detail is "class:target".
+      const jab = event.detail.split(":")[0] === "jab" ? 1 : 0;
+      for (const entry of [this.entry(this.stats, event.actor_id), this.entry(this.totals, event.actor_id)]) {
+        entry.landed += 1;
+        entry.jabsLanded += jab;
+      }
     }
   }
 
   get(playerId: string): RoundPunchStats {
-    return this.stats.get(playerId) ?? { thrown: 0, landed: 0 };
+    return this.stats.get(playerId) ?? blankPunches();
   }
 
   /** Punches over the whole bout, for the result panel. */
   total(playerId: string): RoundPunchStats {
-    return this.totals.get(playerId) ?? { thrown: 0, landed: 0 };
+    return this.totals.get(playerId) ?? blankPunches();
   }
 
   private entry(map: Map<string, RoundPunchStats>, playerId: string): RoundPunchStats {
     let entry = map.get(playerId);
     if (entry === undefined) {
-      entry = { thrown: 0, landed: 0 };
+      entry = blankPunches();
       map.set(playerId, entry);
     }
     return entry;
@@ -523,7 +536,7 @@ export function drawHud(
   }
   if (snapshot.phase === "rest") {
     const statsLine = snapshot.fighters
-      .map((fighter) => ({ name: players[fighter.player_id]?.name ?? "Fighter", stats: roundStats?.get(fighter.player_id) ?? { thrown: 0, landed: 0 } }))
+      .map((fighter) => ({ name: players[fighter.player_id]?.name ?? "Fighter", stats: roundStats?.get(fighter.player_id) ?? blankPunches() }))
       .filter(({ stats }) => stats.thrown > 0 || stats.landed > 0)
       .map(({ name, stats }) => `${fit(ctx, name, width * 0.22)} ${stats.landed}/${stats.thrown}`)
       .join("  ·  ");
@@ -534,7 +547,7 @@ export function drawHud(
     centerPanel(ctx, width, height, `OPPONENT RECONNECTING · ${Math.ceil(reconnectMs / 1000)}s`, "The bout is paused");
   }
   if (final !== null) {
-    const punches = snapshot.fighters.map((fighter) => roundStats?.total(fighter.player_id) ?? { thrown: 0, landed: 0 }) as [RoundPunchStats, RoundPunchStats];
+    const punches = snapshot.fighters.map((fighter) => roundStats?.total(fighter.player_id) ?? blankPunches()) as [RoundPunchStats, RoundPunchStats];
     drawResultCard(ctx, width, height, resultCard(final, snapshot.fighters, players, punches), snapshot.fighters.some((fighter) => fighter.player_id === viewerId), [pictureOf(snapshot.fighters[0]), pictureOf(snapshot.fighters[1])]);
   }
   ctx.restore();
@@ -601,9 +614,13 @@ export function resultCard(
   const scored: [number, number] = [fighters[1].knockdowns, fighters[0].knockdowns];
   if (scored[0] > 0 || scored[1] > 0) rows.push({ label: "KNOCKDOWNS", values: [String(scored[0]), String(scored[1])], lead: lead(scored[0], scored[1]) });
   if (punches[0].thrown > 0 || punches[1].thrown > 0) {
-    const accuracy = punches.map((stats) => (stats.thrown > 0 ? Math.round((stats.landed / stats.thrown) * 100) : null)) as [number | null, number | null];
-    rows.push({ label: "PUNCHES LANDED", values: [`${punches[0].landed} of ${punches[0].thrown}`, `${punches[1].landed} of ${punches[1].thrown}`], lead: lead(punches[0].landed, punches[1].landed) });
-    rows.push({ label: "ACCURACY", values: [accuracy[0] === null ? "—" : `${accuracy[0]}%`, accuracy[1] === null ? "—" : `${accuracy[1]}%`], lead: lead(accuracy[0] ?? -1, accuracy[1] ?? -1) });
+    // CompuBox: landed of thrown and the share that landed, for all punches, the jabs and the power punches.
+    // A client that joined mid-punch saw the hit but not the throw; never show more landed than thrown.
+    const count = (landed: number, thrown: number): string => (thrown > 0 ? `${Math.min(landed, thrown)}/${thrown} (${Math.round((Math.min(landed, thrown) / thrown) * 100)}%)` : "0/0");
+    const power = punches.map((stats) => ({ landed: stats.landed - stats.jabsLanded, thrown: stats.thrown - stats.jabsThrown }));
+    rows.push({ label: "TOTAL PUNCHES", values: [count(punches[0].landed, punches[0].thrown), count(punches[1].landed, punches[1].thrown)], lead: lead(punches[0].landed, punches[1].landed) });
+    rows.push({ label: "JABS", values: [count(punches[0].jabsLanded, punches[0].jabsThrown), count(punches[1].jabsLanded, punches[1].jabsThrown)], lead: lead(punches[0].jabsLanded, punches[1].jabsLanded) });
+    rows.push({ label: "POWER PUNCHES", values: [count(power[0]!.landed, power[0]!.thrown), count(power[1]!.landed, power[1]!.thrown)], lead: lead(power[0]!.landed, power[1]!.landed) });
   }
   const ratings = fighters.map((fighter) => final.ratings[fighter.player_id]);
   const [first, second] = ratings;

@@ -592,12 +592,23 @@ describe("round stats", () => {
     tracker.record(event("punch_start", "two"));
     tracker.record(event("counter_hit", "two"));
     tracker.record(event("block", "two"));
-    expect(tracker.get("one")).toEqual({ thrown: 2, landed: 1 });
-    expect(tracker.get("two")).toEqual({ thrown: 1, landed: 1 });
+    expect(tracker.get("one")).toMatchObject({ thrown: 2, landed: 1 });
+    expect(tracker.get("two")).toMatchObject({ thrown: 1, landed: 1 });
     tracker.record(event("bell", "", "round_end"));
-    expect(tracker.get("one")).toEqual({ thrown: 2, landed: 1 });
+    expect(tracker.get("one")).toMatchObject({ thrown: 2, landed: 1 });
     tracker.record(event("bell", "", "round_start"));
-    expect(tracker.get("one")).toEqual({ thrown: 0, landed: 0 });
+    expect(tracker.get("one")).toEqual({ thrown: 0, landed: 0, jabsThrown: 0, jabsLanded: 0 });
+  });
+
+  it("counts jabs apart from power punches", () => {
+    const tracker = new RoundStatsTracker();
+    tracker.record(event("punch_start", "one", "left:jab:head"));
+    tracker.record(event("hit", "one", "jab:head"));
+    tracker.record(event("punch_start", "one", "right:straight:head"));
+    tracker.record(event("punch_start", "one", "left:hook:body"));
+    tracker.record(event("counter_hit", "one", "hook:body"));
+    expect(tracker.get("one")).toEqual({ thrown: 3, landed: 2, jabsThrown: 1, jabsLanded: 1 });
+    expect(tracker.total("one")).toEqual({ thrown: 3, landed: 2, jabsThrown: 1, jabsLanded: 1 });
   });
 
   it("keeps bout totals across rounds and prints them on the result panel", () => {
@@ -607,17 +618,15 @@ describe("round stats", () => {
     tracker.record(event("bell", "", "round_start"));
     tracker.record(event("punch_start", "one"));
     tracker.record(event("punch_start", "two"));
-    expect(tracker.get("one")).toEqual({ thrown: 1, landed: 0 });
-    expect(tracker.total("one")).toEqual({ thrown: 2, landed: 1 });
+    expect(tracker.get("one")).toMatchObject({ thrown: 1, landed: 0 });
+    expect(tracker.total("one")).toMatchObject({ thrown: 2, landed: 1 });
     const texts: string[] = [];
     const ctx = mockHudContext(texts);
     const players = Object.fromEntries(publicPlayers.map((player) => [player.id, player]));
     const final = { version: 3 as const, type: "final" as const, match_id: "m", winner_id: "one", method: "decision" as const, round: 3, scorecards: [], ratings: {} };
     drawHud(ctx, 1280, 720, { ...snapshot(), phase: "complete" }, players, "one", final, 0, 30, tracker);
-    const row = texts.indexOf("PUNCHES LANDED");
-    expect(texts.slice(row + 1, row + 3)).toEqual(["1 of 2", "0 of 1"]);
-    const accuracy = texts.indexOf("ACCURACY");
-    expect(texts.slice(accuracy + 1, accuracy + 3)).toEqual(["50%", "0%"]);
+    const row = texts.indexOf("TOTAL PUNCHES");
+    expect(texts.slice(row + 1, row + 3)).toEqual(["1/2 (50%)", "0/1 (0%)"]);
   });
 
   it("draws the round callout only while the renderer asks for it", () => {
@@ -848,7 +857,7 @@ describe("players' pictures", () => {
     drawHud(mockHudContext(texts, drawn), 1280, 720, { ...snapshot(), phase: "complete" }, players, "one", final, 0, 30, null, null, null, null, null, onlyOne);
     expect(drawn).toHaveLength(1);
     expect(drawn[0]!.image).toBe(picture);
-    const layout = resultCardLayout(1280, 720, resultCard(final, snapshot().fighters, players, [{ thrown: 0, landed: 0 }, { thrown: 0, landed: 0 }]), true);
+    const layout = resultCardLayout(1280, 720, resultCard(final, snapshot().fighters, players, [{ thrown: 0, landed: 0, jabsThrown: 0, jabsLanded: 0 }, { thrown: 0, landed: 0, jabsThrown: 0, jabsLanded: 0 }]), true);
     expect(drawn[0]!.x).toBeGreaterThan(layout.x + layout.width * 0.42);
     expect(drawn[0]!.x + drawn[0]!.width).toBeLessThan(layout.x + layout.width * 0.6);
     expect(drawn[0]!.y).toBeGreaterThanOrEqual(layout.y + 14);
@@ -877,7 +886,7 @@ describe("result card", () => {
   const fighters = (downOne = 0, downTwo = 0): [ReturnType<typeof fighter>, ReturnType<typeof fighter>] => [{ ...fighter("one"), knockdowns: downOne }, { ...fighter("two"), knockdowns: downTwo }];
   const result = (method: "decision" | "draw" | "ko" | "flash_ko" | "tko" | "forfeit", winner: string | null, scorecards: { judge: string; player_one: number[]; player_two: number[] }[] = [], ratings: Record<string, { before: number; after: number }> = {}) =>
     ({ version: 3 as const, type: "final" as const, match_id: "m", winner_id: winner, method, round: 2, scorecards, ratings });
-  const none = { thrown: 0, landed: 0 };
+  const none = { thrown: 0, landed: 0, jabsThrown: 0, jabsLanded: 0 };
 
   it("lists each judge's total for a decision, with the fighter who took the card in the lead", () => {
     const card = resultCard(result("decision", "two", [{ judge: "Impact", player_one: [10, 9], player_two: [9, 10] }, { judge: "Craft", player_one: [9, 9], player_two: [10, 10] }]), fighters(), players, [none, none]);
@@ -906,13 +915,20 @@ describe("result card", () => {
     expect(card.rows).toEqual([{ label: "KNOCKDOWNS", values: ["2", "1"], lead: 0 }]);
   });
 
-  it("shows punches, accuracy and rating changes, and a dash for a fighter who threw nothing", () => {
-    const card = resultCard(result("decision", "one", [], { one: { before: 1000, after: 1016 }, two: { before: 1000, after: 984 } }), fighters(), players, [{ thrown: 9, landed: 6 }, none]);
+  it("shows the punch stats the way CompuBox counts them, and the rating changes", () => {
+    const card = resultCard(result("decision", "one", [], { one: { before: 1000, after: 1016 }, two: { before: 1000, after: 984 } }), fighters(), players, [{ thrown: 9, landed: 6, jabsThrown: 4, jabsLanded: 1 }, none]);
     expect(card.rows).toEqual([
-      { label: "PUNCHES LANDED", values: ["6 of 9", "0 of 0"], lead: 0 },
-      { label: "ACCURACY", values: ["67%", "—"], lead: 0 },
+      { label: "TOTAL PUNCHES", values: ["6/9 (67%)", "0/0"], lead: 0 },
+      { label: "JABS", values: ["1/4 (25%)", "0/0"], lead: 0 },
+      { label: "POWER PUNCHES", values: ["5/5 (100%)", "0/0"], lead: 0 },
       { label: "RATING", values: ["1016 (+16)", "984 (−16)"], lead: null, news: [true, false] },
     ]);
+  });
+
+  it("never shows more punches landed than thrown", () => {
+    const card = resultCard(result("decision", "one"), fighters(), players, [{ thrown: 2, landed: 3, jabsThrown: 2, jabsLanded: 0 }, none]);
+    expect(card.rows.find((row) => row.label === "POWER PUNCHES")!.values[0]).toBe("0/0");
+    expect(card.rows.find((row) => row.label === "TOTAL PUNCHES")!.values[0]).toBe("2/2 (100%)");
   });
 
   it("calls a bout against the computer unrated", () => {
@@ -927,7 +943,7 @@ describe("result card", () => {
   });
 
   const full = result("decision", "one", [{ judge: "Impact", player_one: [10, 10], player_two: [9, 9] }, { judge: "Craft", player_one: [10, 10], player_two: [9, 9] }, { judge: "Generalship", player_one: [10, 10], player_two: [9, 9] }], { one: { before: 1000, after: 1016 }, two: { before: 1000, after: 984 } });
-  const fullCard = resultCard(full, fighters(0, 1), players, [{ thrown: 9, landed: 6 }, { thrown: 4, landed: 1 }]);
+  const fullCard = resultCard(full, fighters(0, 1), players, [{ thrown: 9, landed: 6, jabsThrown: 5, jabsLanded: 3 }, { thrown: 4, landed: 1, jabsThrown: 2, jabsLanded: 1 }]);
 
   it("sits along the bottom of the screen and leaves the ring in view above it", () => {
     for (const [width, height, clear] of [[1280, 720, 0.55], [1920, 1080, 0.6], [390, 844, 0.45], [844, 390, 0.15], [640, 360, 0.1]] as const) {
@@ -957,6 +973,6 @@ describe("result card", () => {
     tracker.record({ event_id: 1, tick: 1, kind: "punch_start", actor_id: "one", target_id: "two", amount: 0, detail: "", blood: 0, direction: 1, action_id: null });
     drawHud(mockHudContext(texts), 1280, 720, { ...snapshot(), phase: "complete" }, players, "one", full, 0, 30, tracker);
     expect(texts.some((text) => /STAMINA|HEALTH|GUARD|POISE|COMPLETE/.test(text))).toBe(false);
-    expect(texts).toEqual(expect.arrayContaining(["UNANIMOUS DECISION", "ROUND 2", "Alpha WINS", "IMPACT", "20 – 18", "Alpha", "Bravo", "PUNCHES LANDED", "0 of 1", "RATING"]));
+    expect(texts).toEqual(expect.arrayContaining(["UNANIMOUS DECISION", "ROUND 2", "Alpha WINS", "IMPACT", "20 – 18", "Alpha", "Bravo", "TOTAL PUNCHES", "0/1 (0%)", "RATING"]));
   });
 });
