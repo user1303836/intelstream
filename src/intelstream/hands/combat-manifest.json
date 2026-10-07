@@ -56,6 +56,9 @@
     "recovery_ticks": 5,
     "impact_percent": 40
   },
+  "foul": {
+    "separation": 45
+  },
   "hitstop_ms": {
     "hit": 78,
     "block": 45

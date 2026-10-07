@@ -33,6 +33,7 @@ from intelstream.hands.rules import (
     FLINCH_BASE_TICKS,
     FLINCH_DAMAGE_DIVISOR,
     FLINCH_MINIMUM_DAMAGE,
+    FOUL_SEPARATION,
     GET_UP_BASE,
     GET_UP_PER_KNOCKDOWN,
     GET_UP_STAMINA,
@@ -1217,6 +1218,15 @@ class BoxingEngine:
         elif fighter.warnings >= 3:
             self._complete(opponent.player_id, FinishMethod.DISQUALIFICATION)
             return
+        # The referee steps between them: each is sent back from the other for the recovery.
+        for mover in (fighter, opponent):
+            mover.x -= _symmetric_divide(mover.facing_x * FOUL_SEPARATION, FACING_SCALE)
+            mover.y -= _symmetric_divide(mover.facing_y * FOUL_SEPARATION, FACING_SCALE)
+            mover.velocity_x = mover.velocity_y = 0
+            mover.velocity_fixed_x = mover.velocity_fixed_y = 0
+        self._clamp_to_ring(fighter)
+        self._clamp_to_ring(opponent)
+        self._separate_fighters(fighter, opponent)
         self._paused_fight_ticks = self.phase_ticks_remaining
         self.phase = MatchPhase.FOUL_RECOVERY
         self.phase_ticks_remaining = FOUL_RECOVERY_TICKS

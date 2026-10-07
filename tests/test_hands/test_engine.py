@@ -24,6 +24,7 @@ from intelstream.hands.rules import (
     CLINCH_HOLD_DISTANCE,
     CORNER_TREATMENTS,
     FIGHTER_RADIUS,
+    FOUL_SEPARATION,
     GUARD_BLOCK_MINIMUM,
     KNOCKDOWN_NEUTRAL_SEPARATION,
     MINIMUM_SEPARATION,
@@ -756,6 +757,7 @@ def test_out_of_range_clinch_is_denied_and_still_costs_stamina() -> None:
 def test_fouls_warn_deduct_recover_and_disqualify() -> None:
     engine = make_engine(round_ticks=2000)
     for sequence, foul in enumerate((Foul.LOW_BLOW, Foul.HEADBUTT, Foul.LOW_BLOW), start=1):
+        engine.fighter("one").x, engine.fighter("two").x = -45, 45
         engine.step({"one": command(sequence, action=FoulAction(foul))})
         if sequence < 3:
             while engine.phase is MatchPhase.FOUL_RECOVERY:
@@ -1588,6 +1590,7 @@ def test_completed_close_round_applies_live_foul_deduction() -> None:
     engine.step({"one": command(1, action=FoulAction(Foul.LOW_BLOW))})
     while engine.phase is MatchPhase.FOUL_RECOVERY:
         engine.step()
+    engine.fighter("one").x, engine.fighter("two").x = -45, 45
     engine.step({"one": command(2, action=FoulAction(Foul.HEADBUTT))})
     while engine.phase is MatchPhase.FOUL_RECOVERY:
         engine.step()
@@ -2562,6 +2565,21 @@ def test_two_body_collapses_on_one_tick_favour_neither_seat(
         fighter.body_collapse_action_id = "trade"
     knockdowns = [event for event in engine.step().events if event.kind == "knockdown"]
     assert [event.target_id for event in knockdowns] == [first_down]
+
+
+def test_the_referee_sends_both_fighters_back_after_a_foul() -> None:
+    engine = make_engine(round_ticks=2000)
+    one, two = engine.fighter("one"), engine.fighter("two")
+    apart = hypot(two.x - one.x, two.y - one.y)
+    engine.step({"one": command(1, action=FoulAction(Foul.LOW_BLOW))})
+    assert engine.phase is MatchPhase.FOUL_RECOVERY
+    assert hypot(two.x - one.x, two.y - one.y) >= apart + 2 * FOUL_SEPARATION - 2
+    assert (one.velocity_x, one.velocity_y, two.velocity_x, two.velocity_y) == (0, 0, 0, 0)
+    while engine.phase is MatchPhase.FOUL_RECOVERY:
+        engine.step()
+    # A second foul straight after the restart is thrown from too far to land.
+    events = engine.step({"one": command(2, action=FoulAction(Foul.HEADBUTT))}).events
+    assert [event.kind for event in events if event.kind.startswith("foul")] == ["foul_miss"]
 
 
 def _straight_from(stamina: int) -> tuple[BoxingEngine, int, list[CombatEvent]]:
