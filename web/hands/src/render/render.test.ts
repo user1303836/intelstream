@@ -649,6 +649,9 @@ describe("round stats", () => {
     texts.length = 0;
     drawHud(ctx, 1280, 720, snapshot(), players, null, null, 0, 30, null, null, 48.4);
     expect(texts.some((text) => text.startsWith("INPUT"))).toBe(false);
+    texts.length = 0;
+    drawHud(ctx, 390, 844, snapshot(), players, "one", null, 0, 30, null, null, 48.4);
+    expect(texts.some((text) => text.startsWith("INPUT"))).toBe(false);
   });
 
   it("shows the landed counts on the rest panel", () => {

@@ -411,13 +411,14 @@ export function drawHud(
   const seconds = Math.floor((clockTicks ?? snapshot.phase_ticks_remaining) / tickRate);
   const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
   if (final === null) roundCard(ctx, width / 2, compact ? 54 : height - 84, clock, `ROUND ${snapshot.round_number}`, snapshot.phase.replace("_", " ").toUpperCase());
-  if (inputLatencyMs !== null && final === null && snapshot.fighters.some((fighter) => fighter.player_id === viewerId)) {
+  // A phone has no free corner for it beside the clock, the centre panels and the captions; Settings shows it there.
+  if (inputLatencyMs !== null && !compact && final === null && snapshot.fighters.some((fighter) => fighter.player_id === viewerId)) {
     const rounded = Math.round(inputLatencyMs);
     ctx.save();
     ctx.textAlign = "right";
     ctx.font = "700 11px ui-monospace, monospace";
     ctx.fillStyle = rounded < 90 ? "rgba(170,200,180,0.75)" : rounded < 160 ? "rgba(240,200,110,0.9)" : "rgba(255,110,100,0.95)";
-    ctx.fillText(`INPUT ${rounded} ms`, width - 24, compact ? 128 : 36);
+    ctx.fillText(`INPUT ${rounded} ms`, width - 24, 36);
     ctx.restore();
   }
   if (replayLabel !== null) {
