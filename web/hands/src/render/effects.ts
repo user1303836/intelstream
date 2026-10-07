@@ -338,6 +338,15 @@ export class Effects3D {
     }
   }
 
+  /**
+   * Stand-ins sharing the hidden pools' geometry and materials (blood on the canvas, severed parts and
+   * their stumps), so their shaders can be compiled ahead of the first bloody hit instead of inside it.
+   */
+  compileStandIns(): THREE.Mesh[] {
+    const hidden = [this.decals[0]!, this.heads[0]!.mesh, this.hands[0]!.mesh, this.stumps[0]!.mesh, this.handStumps[0]!.mesh];
+    return hidden.map((mesh) => new THREE.Mesh(mesh.geometry, mesh.material));
+  }
+
   setBloodLevel(level: BloodLevel): void {
     if (level === this.bloodLevel) return;
     const previous = this.bloodLevel;

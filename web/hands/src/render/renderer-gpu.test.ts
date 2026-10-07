@@ -1,6 +1,9 @@
 import * as THREE from "three";
 import type { Settings } from "../settings";
+import { fighter, snapshot } from "../test/fixtures";
+import type { CombatEvent, FighterSnapshot } from "../types";
 import { attachFakeWebGl, type FakeWebGl } from "../test/webgl";
+import type { Effects3D } from "./effects";
 import { FightRenderer } from "./renderer";
 
 /** The renderer's private parts a test drives or inspects. */
@@ -9,6 +12,24 @@ interface Internals {
   readonly scaler: { scale: number };
   applyResolutionScale(): void;
   readonly keyLight: THREE.SpotLight;
+  readonly effects: Effects3D;
+  restoreAllInjuries(): void;
+}
+
+const punch = (eventId: number, tick: number, detail = "straight:head"): CombatEvent => ({
+  event_id: eventId, tick, kind: "hit", actor_id: "one", target_id: "two", amount: 420, detail, blood: 100, direction: 1, action_id: `punch-${eventId}`,
+});
+
+/** Fighter one landing a straight on fighter two at `tick`. */
+const exchange = (tick: number, target: "head" | "body", downed = false): readonly [FighterSnapshot, FighterSnapshot] => [
+  { ...fighter("one", -60), action_key: `straight:right:${target}:normal`, action_contact_tick: tick },
+  { ...fighter("two", 60), is_downed: downed },
+];
+
+/** Pushes the snapshot carrying `events` and the next one, so the manual clock presents the contact. */
+function land(fight: FightRenderer, tick: number, events: readonly CombatEvent[], fighters: readonly [FighterSnapshot, FighterSnapshot]): void {
+  fight.push({ ...snapshot(tick), fighters, events });
+  fight.push({ ...snapshot(tick + 1), fighters });
 }
 
 /** The graphics-card handle three made for a texture. */
@@ -65,5 +86,25 @@ describe("quality tiers on the graphics card", () => {
     expect(key.shadow.intensity).toBe(1);
     expect(key.shadow.map).not.toBeNull();
     expect(key.shadow.map?.width).toBe(1024);
+  });
+});
+
+describe("shaders for effects that start hidden", () => {
+  it("are compiled before the first bloody hit, decapitation and severed hand", async () => {
+    const { gl, fight, internals } = await mount();
+    let time = settle(fight);
+    const programs = gl.created.programs;
+    land(fight, 20, [punch(41, 20)], exchange(20, "head"));
+    fight.labFrame((time += 0.1));
+    expect(internals.effects.visibleDecals).toBeGreaterThan(0);
+    land(fight, 22, [punch(42, 22)], exchange(22, "head", true));
+    fight.labFrame((time += 0.1));
+    expect(internals.effects.activeHeads).toBe(1);
+    internals.restoreAllInjuries();
+    land(fight, 24, [punch(44, 24, "straight:body")], exchange(24, "body", true));
+    fight.labFrame((time += 0.1));
+    expect(internals.effects.activeHands).toBe(1);
+    fight.labFrame((time += 0.1));
+    expect(gl.created.programs).toBe(programs);
   });
 });

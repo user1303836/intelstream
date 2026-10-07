@@ -619,10 +619,12 @@ export class FightRenderer {
         this.cutmen = [new BoxingGraph(blueCutman, this.mapping, { referee: true }), new BoxingGraph(redCutman, this.mapping, { referee: true })];
         blueCutman.root.visible = false;
         redCutman.root.visible = false;
-        // Compile the skinned materials off the critical path (parallel shader compile where
-        // available) so the first frame with fighters does not stall the page.
+        this.trails = [0x1d4ed8, 0xb91c1c].flatMap((gear) => [0, 1].map(() => new GloveTrail(new THREE.Color(gear).lerp(new THREE.Color(0xffffff), 0.55))));
+        // Compile the skinned materials, and the effects that start hidden (glove trails, blood on the
+        // canvas, severed parts), off the critical path (parallel shader compile where available) so
+        // neither the first frame with fighters nor the first bloody hit stalls the page.
         const staging = new THREE.Group();
-        staging.add(first.root, second.root, official.root, blueCorner.root, redCorner.root, blueCutman.root, redCutman.root);
+        staging.add(first.root, second.root, official.root, blueCorner.root, redCorner.root, blueCutman.root, redCutman.root, ...this.trails.map((trail) => trail.mesh), ...this.effects.compileStandIns());
         try {
           await compileForComposer(this.renderer, this.composer, staging, this.camera, this.scene);
         } catch {
@@ -630,7 +632,6 @@ export class FightRenderer {
         }
         if (this.destroyed) return;
         this.scene.add(first.root, second.root, official.root, blueCorner.root, redCorner.root, blueCutman.root, redCutman.root);
-        this.trails = [0x1d4ed8, 0xb91c1c].flatMap((gear) => [0, 1].map(() => new GloveTrail(new THREE.Color(gear).lerp(new THREE.Color(0xffffff), 0.55))));
         for (const trail of this.trails) this.scene.add(trail.mesh);
       })
       .catch((error: unknown) => {
