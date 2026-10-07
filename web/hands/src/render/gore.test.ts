@@ -15,7 +15,7 @@ const gltf = await loadBoxerGlb();
 type Pose = { position: THREE.Vector3; quaternion: THREE.Quaternion };
 const renderer = FightRenderer.prototype as unknown as {
   headWorldPose(this: unknown, index: number): Pose | null;
-  stumpWorldPose(this: unknown, index: number): (Pose & { rim: Float32Array }) | null;
+  stumpWorldPose(this: unknown, index: number): (Pose & { rim: Float32Array; across: THREE.Vector3 }) | null;
   closeUpFrame(this: unknown, seconds: number): { position: THREE.Vector3; lookAt: THREE.Vector3 } | null;
 };
 
@@ -295,7 +295,7 @@ describe("neck cut", () => {
     const self = { ...fighter("one"), x: -40, y: 0, facing_x: 1000, facing_y: 0, defense: "slip_left" as const };
     const other = { ...fighter("two"), x: 40, y: 0, facing_x: -1000, facing_y: 0 };
     for (let frame = 0; frame < 40; frame += 1) graph.update(self, other, 1 / 60, frame / 60, false, "full", 100 + frame / 2);
-    const stub = { graphs: [graph, graph], tmpHead: new THREE.Vector3(), tmpHeadQuaternion: new THREE.Quaternion(), tmpStumpOffset: new THREE.Vector3(), tmpStump: new THREE.Vector3(), tmpStumpQuaternion: new THREE.Quaternion(), stumpRim: new Float32Array(0) };
+    const stub = { graphs: [graph, graph], tmpHead: new THREE.Vector3(), tmpHeadQuaternion: new THREE.Quaternion(), tmpStumpOffset: new THREE.Vector3(), tmpStump: new THREE.Vector3(), tmpStumpQuaternion: new THREE.Quaternion(), tmpStumpAcross: new THREE.Vector3(), stumpRim: new Float32Array(0) };
     const pose = renderer.headWorldPose.call(stub, 0)!;
     const baked = bakeSkinnedPart(boxer.headMesh, pose.position, pose.quaternion, aboveNeckCut);
     const scene = new THREE.Scene();
@@ -340,6 +340,54 @@ describe("neck cut", () => {
     expect(faces(wound).dot(pose.position.clone().sub(middle(onBody)).normalize())).toBeGreaterThan(0.7);
     effects.dispose();
     graph.dispose();
+  });
+
+  it("turns the neck's cross-section with the head: the windpipe at the throat and the spine at the nape, on both sides of the cut", () => {
+    // Squared up along x, where a cross-section fixed to the world would put the spine at the side of the neck.
+    for (const facing of [1000, -1000]) {
+      const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
+      const graph = new BoxingGraph(boxer, worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }));
+      const self = { ...fighter("one"), x: -40, y: 0, facing_x: facing, facing_y: 0 };
+      const other = { ...fighter("two"), x: 40, y: 0, facing_x: -facing, facing_y: 0 };
+      for (let frame = 0; frame < 40; frame += 1) graph.update(self, other, 1 / 60, frame / 60, false, "full", 100 + frame / 2);
+      const stub = { graphs: [graph, graph], tmpHead: new THREE.Vector3(), tmpHeadQuaternion: new THREE.Quaternion(), tmpStumpOffset: new THREE.Vector3(), tmpStump: new THREE.Vector3(), tmpStumpQuaternion: new THREE.Quaternion(), tmpStumpAcross: new THREE.Vector3(), stumpRim: new Float32Array(0) };
+      const pose = renderer.headWorldPose.call(stub, 0)!;
+      const baked = bakeSkinnedPart(boxer.headMesh, pose.position, pose.quaternion, aboveNeckCut);
+      const scene = new THREE.Scene();
+      const effects = new Effects3D(scene);
+      effects.decapitate(0, pose.position, pose.quaternion, 1, 8, 0xb0703f, baked);
+      const stump = renderer.stumpWorldPose.call(stub, 0)!;
+      effects.anchorStump(0, stump.position, stump.quaternion, stump.rim, stump.across);
+      const wound = scene.children.find((child): child is THREE.Mesh => child instanceof THREE.Mesh && child.visible && child.geometry !== baked.geometry && child.position.distanceTo(stump.position) < 1e-6)!;
+      /** The texture's v at the rim corner of a cut's flesh furthest toward `toward`, in the flesh's own frame. */
+      const vToward = (flesh: THREE.BufferGeometry, toward: THREE.Vector3): number => {
+        const position = flesh.getAttribute("position");
+        const uv = flesh.getAttribute("uv");
+        let best = -Infinity;
+        let v = 0.5;
+        for (let corner = 0; corner < position.count; corner += 1) {
+          if (corner % 3 === 0) continue;
+          const along = new THREE.Vector3().fromBufferAttribute(position, corner).dot(toward);
+          if (along > best) {
+            best = along;
+            v = uv.getY(corner);
+          }
+        }
+        return v;
+      };
+      // The neck texture draws the spine high in v and the windpipe low.
+      const face = new THREE.Vector3(0, 0, 1).applyQuaternion(boxer.bone("head")!.getWorldQuaternion(new THREE.Quaternion()));
+      face.y = 0;
+      face.normalize();
+      expect(Math.abs(face.x)).toBeGreaterThan(0.9);
+      expect(vToward(wound.geometry, face)).toBeLessThan(0.3);
+      expect(vToward(wound.geometry, face.clone().negate())).toBeGreaterThan(0.7);
+      // The severed head's own cut, in the head's frame, where the face points along +z.
+      expect(vToward(baked.cut!.flesh, new THREE.Vector3(0, 0, 1))).toBeLessThan(0.3);
+      expect(vToward(baked.cut!.flesh, new THREE.Vector3(0, 0, -1))).toBeGreaterThan(0.7);
+      effects.dispose();
+      graph.dispose();
+    }
   });
 
   it("falls back to a disc on the neck when the cut has not been measured", () => {

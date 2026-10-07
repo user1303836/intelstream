@@ -629,6 +629,9 @@ function skinMatrixOf(mesh: THREE.SkinnedMesh, vertex: number, out: THREE.Matrix
   return out.premultiply(mesh.bindMatrixInverse).multiply(mesh.bindMatrix);
 }
 
+/** Across a severed head's cut, in the head bone's frame: mirrored, because the cut faces down it. */
+const SEVERED_HEAD_ACROSS = new THREE.Vector3(-1, 0, 0);
+
 /** True for the part of the head mesh that leaves with the head. */
 export function aboveNeckCut(bind: THREE.Vector3): boolean {
   return bind.y > NECK_CUT_HEIGHT - NECK_CUT_SLOPE * (bind.z - NECK_CUT_DEPTH) - 0.3;
@@ -747,7 +750,9 @@ export function bakeSkinnedPart(
   for (let at = 0; at < used.count; at += 1) middle.add(vertex.fromArray(baked, used.getX(at) * 3));
   middle.multiplyScalar(1 / Math.max(1, used.count));
   const flesh = new THREE.BufferGeometry();
-  closeCut(flesh, edge, position, position.clone().sub(middle).normalize());
+  // A severed head's cut faces down its own frame, so the head's sideways axis runs the other way across it
+  // for the windpipe to sit under the chin, as on the neck it came off.
+  closeCut(flesh, edge, position, position.clone().sub(middle).normalize(), 0.01, keep === aboveNeckCut ? SEVERED_HEAD_ACROSS : undefined);
   return { geometry, map, color, cut: { position, flesh } };
 }
 
@@ -1087,6 +1092,7 @@ export class FightRenderer {
   private readonly tmpStump = new THREE.Vector3();
   private readonly tmpStumpOffset = new THREE.Vector3();
   private readonly tmpStumpQuaternion = new THREE.Quaternion();
+  private readonly tmpStumpAcross = new THREE.Vector3();
   private readonly tmpPart = new THREE.Vector3();
   private readonly tmpPartQuaternion = new THREE.Quaternion();
 
@@ -1729,7 +1735,7 @@ export class FightRenderer {
           baked,
         );
         const stumpPose = this.stumpWorldPose(index);
-        if (stumpPose !== null) this.effects.anchorStump(index, stumpPose.position, stumpPose.quaternion, stumpPose.rim);
+        if (stumpPose !== null) this.effects.anchorStump(index, stumpPose.position, stumpPose.quaternion, stumpPose.rim, stumpPose.across);
         applied = true;
       }
     } else if (injury === "head_burst") {
@@ -1852,7 +1858,7 @@ export class FightRenderer {
    * The exposed cut through the neck, measured on the skin as it is posed: its middle, facing up the
    * neck, and its edge, both ends of each of its edges in turn.
    */
-  private stumpWorldPose(index: number): { position: THREE.Vector3; quaternion: THREE.Quaternion; rim: Float32Array } | null {
+  private stumpWorldPose(index: number): { position: THREE.Vector3; quaternion: THREE.Quaternion; rim: Float32Array; across: THREE.Vector3 } | null {
     const boxer = this.graphs?.[index]?.boxer;
     const head = boxer?.bone("head");
     if (boxer === undefined || head === undefined || head === null) return null;
@@ -1869,8 +1875,10 @@ export class FightRenderer {
     }
     this.tmpStump.multiplyScalar(1 / rim.length);
     head.getWorldPosition(this.tmpStumpOffset).sub(this.tmpStump).normalize();
+    // The head's own sideways axis turns the cross-section with the neck: the windpipe at the throat, the spine at the nape.
+    this.tmpStumpAcross.set(1, 0, 0).applyQuaternion(head.getWorldQuaternion(this.tmpStumpQuaternion));
     this.tmpStumpQuaternion.setFromUnitVectors(UP, this.tmpStumpOffset);
-    return { position: this.tmpStump, quaternion: this.tmpStumpQuaternion, rim: this.stumpRim };
+    return { position: this.tmpStump, quaternion: this.tmpStumpQuaternion, rim: this.stumpRim, across: this.tmpStumpAcross };
   }
 
   private burstStumpPose(index: number): { position: THREE.Vector3; quaternion: THREE.Quaternion; rim: Float32Array; across: THREE.Vector3 } | null {
@@ -2292,7 +2300,7 @@ export class FightRenderer {
         const injury = this.arcadeInjuries[index];
         if (injury === "decapitation") {
           const pose = this.stumpWorldPose(index);
-          if (pose !== null) this.effects.anchorStump(index, pose.position, pose.quaternion, pose.rim);
+          if (pose !== null) this.effects.anchorStump(index, pose.position, pose.quaternion, pose.rim, pose.across);
         } else if (injury === "head_burst") {
           const jaw = this.burstStumpPose(index);
           if (jaw !== null) this.effects.anchorStump(index, jaw.position, jaw.quaternion, jaw.rim, jaw.across);
