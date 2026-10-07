@@ -363,6 +363,8 @@ export class BoxingGraph {
   private clinchWeight = 0;
   private foulWeight = 0;
   private tauntWeight = 0;
+  /** Render tick the taunt ends on (see latchEndTick). */
+  private tauntEnd: number | null = null;
   private lastSpeed = 0;
   private readonly stool: { group: THREE.Group; dispose: () => void };
   /** Root position and yaw the stool was set down at, where it stays while the fighter rises off it. */
@@ -796,6 +798,7 @@ export class BoxingGraph {
     this.clinchWeight = smooth(this.clinchWeight, fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0 ? 1 : 0, 10, dt);
     this.foulWeight = smooth(this.foulWeight, fighter.is_foul_recovery_target ? 1 : 0, 8, dt);
     this.tauntWeight = smooth(this.tauntWeight, fighter.taunt_ticks > 0 ? 1 : 0, 10, dt);
+    this.tauntEnd = latchEndTick(this.tauntEnd, sampledTick, fighter.taunt_ticks > 0 ? fighter.taunt_ticks : null);
 
     springStep(this.headKick, dt, 190, 7.5, 0.24);
     springStep(this.torsoKick, dt, 150, 7, 0.7);
@@ -952,7 +955,10 @@ export class BoxingGraph {
       leadHand.pole.set(0.6 * mirror, -0.6, 0.5);
       rearHand.pole.set(-0.6 * mirror, -0.6, 0.5);
     }
-    if (this.tauntWeight > 0.001) this.applyTauntPose(this.tauntWeight, ((60 - fighter.taunt_ticks) / 60) * 4, mirror, leadHand, rearHand, headRest);
+    if (this.tauntWeight > 0.001) {
+      const tauntLeft = this.tauntEnd === null ? 0 : clamp(this.tauntEnd - sampledTick, 0, TAUNT_TICKS);
+      this.applyTauntPose(this.tauntWeight, ((TAUNT_TICKS - tauntLeft) / TAUNT_TICKS) * TAUNT_BECKONS, mirror, leadHand, rearHand, headRest);
+    }
 
     // Exhaustion and stun on guard.
     if (this.dislocation === "shoulder_left" || this.dislocation === "shoulder_right") {
@@ -995,7 +1001,7 @@ export class BoxingGraph {
 
   /**
    * Showboat: the rear glove drops to the hip with the chest out and chin up
-   * while the lead glove beckons the opponent in, palm up, twice per taunt.
+   * while the lead glove beckons the opponent in, palm up, four times per taunt.
    */
   private applyTauntPose(t: number, beat: number, mirror: number, leadHand: HandTarget, rearHand: HandTarget, headRest: THREE.Vector3): void {
     const torso = this.torso;
@@ -1836,7 +1842,25 @@ const STOOL_SEAT_HEIGHT = 0.44;
 const STOOL_CLEAR_SEATED = 0.2;
 const TOUCH_GLOVES_START_TICKS = 48;
 const TOUCH_GLOVES_END_TICKS = 14;
+/** The engine's taunt length in ticks, over which the lead glove beckons TAUNT_BECKONS times. */
+const TAUNT_TICKS = 60;
+const TAUNT_BECKONS = 4;
 const seatedScratch = new THREE.Vector3();
+
+/** How far a count's end may stray from the one held before it is taken again: a few snapshots. */
+const LATCH_SLACK_TICKS = 3;
+
+/**
+ * Render tick at which a count carried in the snapshots runs out. The snapshots step such counts once
+ * per tick while the render tick moves every frame, so a pose timed straight from the count moves in
+ * 30 Hz steps. The end is held instead, and taken again only when the count disagrees with it by more
+ * than a few snapshots (a new count, or a jump in the clock). Null while there is no count.
+ */
+function latchEndTick(held: number | null, sampledTick: number, remaining: number | null): number | null {
+  if (remaining === null) return null;
+  const end = sampledTick + remaining;
+  return held === null || Math.abs(end - held) > LATCH_SLACK_TICKS ? end : held;
+}
 
 function buildEnswell(): { group: THREE.Group; dispose: () => void } {
   const group = new THREE.Group();

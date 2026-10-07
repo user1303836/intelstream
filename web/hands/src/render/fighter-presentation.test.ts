@@ -53,3 +53,44 @@ describe("corner stool", () => {
     expect(graph.stoolVisible).toBe(false);
   });
 });
+
+describe("taunt", () => {
+  it("beckons four times and moves the glove on every frame, not on the server's ticks", () => {
+    const { boxer, graph } = makeGraph();
+    const idle: FighterSnapshot = { ...baseFighter("one"), x: 0, y: 0, facing_x: 0, facing_y: -1000 };
+    const opponent: FighterSnapshot = { ...baseFighter("two"), x: 0, y: -150, facing_x: 0, facing_y: 1000 };
+    let renderTick = 100;
+    for (let frame = 0; frame < 30; frame += 1) {
+      renderTick += 0.5;
+      graph.update(idle, opponent, 1 / 60, renderTick / 30, false, "full", renderTick);
+    }
+    // At 60 frames a second each snapshot, with its whole-tick taunt count, is presented for two frames.
+    const start = Math.ceil(renderTick);
+    const reach: number[] = [];
+    for (let frame = 0; frame < 140; frame += 1) {
+      renderTick += 0.5;
+      const tauntTicks = Math.max(0, 60 - (Math.ceil(renderTick) - start));
+      graph.update({ ...idle, taunt_ticks: tauntTicks }, opponent, 1 / 60, renderTick / 30, false, "full", renderTick);
+      reach.push(bone(boxer, "gloveL").z);
+    }
+    const steps = reach.slice(1).map((z, index) => z - reach[index]!);
+    let held = 0;
+    for (let index = 1; index < steps.length - 1; index += 1) {
+      const around = (Math.abs(steps[index - 1]!) + Math.abs(steps[index + 1]!)) / 2;
+      if (around > 0.004 && Math.abs(steps[index]!) < around * 0.25) held += 1;
+    }
+    expect(held).toBeLessThan(5);
+    const outstretched = Math.max(...reach);
+    let beckons = 0;
+    let curled = false;
+    for (const z of reach) {
+      if (!curled && z < outstretched - 0.15) {
+        curled = true;
+        beckons += 1;
+      } else if (curled && z > outstretched - 0.05) {
+        curled = false;
+      }
+    }
+    expect(beckons).toBe(4);
+  });
+});
