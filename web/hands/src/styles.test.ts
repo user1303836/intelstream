@@ -1,7 +1,21 @@
+import manifest from "../../../src/intelstream/hands/combat-manifest.json";
 import { FIGHTER_STYLES } from "./protocol";
 import { loadStyle, saveStyle, STYLE_CARDS, StylePicker, styleTag, styleTitle } from "./styles";
 import { publicPlayers } from "./test/fixtures";
 import type { ConnectionRole, FighterStyle, SelectMessage } from "./types";
+
+/** A style's rule as the manifest gives it; every number it leaves out is the balanced fighter's. */
+interface ManifestStyle {
+  readonly impact_percent?: number;
+  readonly body_damage_percent?: number;
+  readonly poise_damage_percent?: number;
+  readonly reach_percent?: number;
+  readonly move_speed_percent?: number;
+  readonly stamina_cost_percent?: number;
+  readonly conditioning_loss_percent?: number;
+  readonly startup_ticks?: Readonly<Record<string, number>>;
+  readonly recovery_ticks?: Readonly<Record<string, number>>;
+}
 
 const choosing = (fields: Partial<SelectMessage> = {}): SelectMessage => ({ version: 3, type: "select", deadline_ms: 9_500, players: [publicPlayers[0], publicPlayers[1]], ready: [], ...fields });
 const press = (code: string, init: KeyboardEventInit = {}): void => { window.dispatchEvent(new KeyboardEvent("keydown", { code, cancelable: true, ...init })); };
@@ -14,6 +28,31 @@ describe("style cards", () => {
       expect(card.stats.every((value) => Number.isInteger(value) && value >= 1 && value <= 5)).toBe(true);
     }
     expect(STYLE_CARDS.find((card) => card.style === "balanced")?.stats).toEqual([3, 3, 3, 3, 3, 3]);
+  });
+
+  it("show the strengths the manifest's numbers give each style, so a change to either is caught", () => {
+    // A bar is three at the balanced fighter's number and moves a step for each `step` away from it.
+    const bar = (measure: number, neutral: number, step: number): number => Math.max(1, Math.min(5, 3 + Math.round((measure - neutral) / step)));
+    const rules = manifest.styles as Readonly<Record<string, ManifestStyle>>;
+    for (const card of STYLE_CARDS) {
+      const rule = rules[card.style] ?? {};
+      // Power: how hard the punches land, one in three to the body, and how much poise they take.
+      const power = ((rule.impact_percent ?? 100) * (200 + (rule.body_damage_percent ?? 100)) / 300) * (rule.poise_damage_percent ?? 100) / 100;
+      // Hand speed: the ticks a style takes off (or puts on) its punches' startup and recovery.
+      const ticks = [...Object.values(rule.startup_ticks ?? {}), ...Object.values(rule.recovery_ticks ?? {})].reduce((sum, value) => sum + value, 0);
+      // Stamina: what the punches cost, and how slowly the conditioning drains.
+      const stamina = (100 - (rule.stamina_cost_percent ?? 100)) + (100 - (rule.conditioning_loss_percent ?? 100)) / 2;
+      // Defence weighs the chin, head movement and parries against each other, so it is set by hand.
+      const [power_, speed, footwork, reach, endurance] = card.stats;
+      expect({ style: card.style, power: power_, speed, footwork, reach, stamina: endurance }).toEqual({
+        style: card.style,
+        power: bar(power, 100, 6),
+        speed: bar(-ticks, 0, 2),
+        footwork: bar(rule.move_speed_percent ?? 100, 100, 4),
+        reach: bar(rule.reach_percent ?? 100, 100, 2),
+        stamina: bar(stamina, 0, 10),
+      });
+    }
   });
 
   it("tag a name plate and title an introduction for every style but balanced", () => {
