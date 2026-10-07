@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import random
+from math import isqrt
+
 import pytest
 
 from intelstream.hands.engine import BoxingEngine, EngineConfig
@@ -264,6 +267,58 @@ def test_a_quick_fighter_still_reports_a_velocity_clients_accept() -> None:
         fighter = snapshot.fighters[0]
         assert -7 <= fighter.velocity_x <= 7
         assert -7 <= fighter.velocity_y <= 7
+
+
+def test_a_quick_fighter_pushed_onto_a_corner_pad_still_reports_a_velocity_clients_accept() -> None:
+    # The pad keeps the speed along it, which for a fresh swarmer is 7.7 units a tick.
+    pad = styled_engine(SWARMER, SWARMER).fighter("one")
+    pad.x, pad.y = 400, 340
+    pad.velocity_fixed_x, pad.velocity_fixed_y = -7700, 0
+    BoxingEngine._clamp_to_ring(pad)
+    assert (pad.velocity_x, pad.velocity_y) == (-7, 0)
+    assert pad.velocity_fixed_x == -7700
+
+    # Walking out of a corner while the other swarmer walks him back onto the pad.
+    engine = styled_engine(SWARMER, SWARMER)
+    one, two = engine.fighter("one"), engine.fighter("two")
+    one.x, one.y, two.x, two.y = -369, 364, -300, 330
+    velocities = set()
+    for sequence in range(1, 80):
+        dx, dy = one.x - two.x, one.y - two.y
+        distance = max(1, isqrt(dx * dx + dy * dy))
+        snapshot = engine.step(
+            {
+                "one": InputCommand(sequence, sequence, 1000, 0),
+                "two": InputCommand(
+                    sequence, sequence, dx * 1000 // distance, dy * 1000 // distance
+                ),
+            }
+        )
+        velocities.update((f.velocity_x, f.velocity_y) for f in snapshot.fighters)
+    assert max(max(abs(x), abs(y)) for x, y in velocities) == 7
+
+    # Random scrambles in every corner, both fighters fresh swarmers.
+    rng = random.Random(4205227423)
+    for _ in range(40):
+        engine = styled_engine(SWARMER, SWARMER)
+        one, two = engine.fighter("one"), engine.fighter("two")
+        sign_x, sign_y = rng.choice((-1, 1)), rng.choice((-1, 1))
+        one.x, one.y = sign_x * rng.randrange(300, 420), sign_y * rng.randrange(300, 420)
+        two.x, two.y = (
+            one.x - sign_x * rng.randrange(60, 120),
+            one.y - sign_y * rng.randrange(0, 80),
+        )
+        for sequence in range(1, 45):
+            moves = [(rng.randrange(-1000, 1001), rng.randrange(-1000, 1001)) for _ in range(2)]
+            snapshot = engine.step(
+                {
+                    "one": InputCommand(sequence, sequence, *moves[0]),
+                    "two": InputCommand(sequence, sequence, *moves[1]),
+                }
+            )
+            for fighter in snapshot.fighters:
+                assert -7 <= fighter.velocity_x <= 7
+                assert -7 <= fighter.velocity_y <= 7
 
 
 def test_a_counter_puncher_makes_a_miss_cost_more() -> None:

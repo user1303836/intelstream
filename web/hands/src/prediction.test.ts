@@ -3,10 +3,11 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { SnapshotBuffer } from "./interpolation";
 import { attackTicksRemaining, constrainPrediction, EVASION_STAMINA, EVASION_TICKS, EvasionPrediction, fatigueFactor, MINIMUM_SEPARATION, MovementPrediction, movementLocked, predictedDefense, predictMovement, predictedPunchTiming, type HeldInput } from "./prediction";
+import { decodeServerFrame, ProtocolError } from "./protocol";
 import { fighter, snapshot } from "./test/fixtures";
 import timingTable from "./test/punch-timing-table.json";
 import styleTimingTable from "./test/style-timing-table.json";
-import type { EngineSnapshot, FighterSnapshot, FighterStyle, PunchClass } from "./types";
+import { PROTOCOL_VERSION, type EngineSnapshot, type FighterSnapshot, type FighterStyle, type PunchClass } from "./types";
 
 describe("local movement prediction", () => {
   it("mirrors the authoritative fatigue factor", () => {
@@ -179,6 +180,21 @@ describe("local movement prediction", () => {
     const moving = { ...fighter("one"), conditioning: 1000, velocity_x: 6 };
     const coast = predictMovement(moving, { moveX: 0, moveY: 0, defense: "none" }, 3);
     expect(coast.dx).toBeCloseTo(3 + 1.5 + 0.75, 5);
+  });
+
+  it("takes a velocity past the walking speed clamped to it rather than ending the bout, and seeds the step from that", () => {
+    const base = snapshot();
+    const decode = (one: FighterSnapshot): FighterSnapshot => {
+      const message = decodeServerFrame(JSON.stringify({ version: PROTOCOL_VERSION, type: "snapshot", payload: { ...base, fighters: [one, base.fighters[1]] } }));
+      if (message.type !== "snapshot") throw new Error(message.type);
+      return message.payload.fighters[0];
+    };
+    // A fresh swarmer pushed back onto a corner pad keeps 7.7 units a tick along it.
+    const swarmer = decode({ ...base.fighters[0], style: "swarmer", conditioning: 1000, velocity_x: 8, velocity_y: -9 });
+    expect([swarmer.velocity_x, swarmer.velocity_y]).toEqual([7, -7]);
+    const coast = predictMovement(swarmer, { moveX: 0, moveY: 0, defense: "none" }, 1);
+    expect(Math.hypot(coast.dx, coast.dy)).toBeLessThanOrEqual(7 * 1.1);
+    expect(() => decode({ ...base.fighters[0], velocity_x: 7.5 })).toThrow(ProtocolError);
   });
 
   it("mirrors the engine's recovery cancel: a landed, chained, affordable follow-up on a defender who is not stunned", () => {

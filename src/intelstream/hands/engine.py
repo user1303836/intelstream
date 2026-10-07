@@ -133,6 +133,8 @@ GET_UP_WINDOW_START_OFFSET: Final = 3
 GET_UP_WINDOW_END_OFFSET: Final = 13
 TAUNT_TICKS: Final = 60
 MOVEMENT_FIXED_SCALE: Final = 1000
+# A fresh fighter's walking speed in units a tick, and the fastest velocity a snapshot reports.
+MAX_SPEED: Final = 7
 CORNER_INSTRUCTIONS: Final = {
     ActionKind.CORNER_CUT: CornerChoice.CUT,
     ActionKind.CORNER_SWELLING: CornerChoice.SWELLING,
@@ -376,6 +378,25 @@ def _blend_velocity(current: int, desired: int) -> int:
 def _rounded_fixed_velocity(velocity: int) -> int:
     rounded = (abs(velocity) + MOVEMENT_FIXED_SCALE // 2) // MOVEMENT_FIXED_SCALE
     return rounded if velocity >= 0 else -rounded
+
+
+def _report_velocity(fighter: FighterState, limit: int) -> None:
+    """Rounds the fixed-point velocity to the whole units a snapshot reports, within `limit`.
+
+    The footwork stays in fixed point, so a style's few percent of footspeed survive, but the
+    velocity a snapshot reports keeps within the walking speed: a quick fighter's 7.7 would round
+    to 8, past what clients accept.
+    """
+    fighter.velocity_x = _rounded_fixed_velocity(fighter.velocity_fixed_x)
+    fighter.velocity_y = _rounded_fixed_velocity(fighter.velocity_fixed_y)
+    while (
+        fighter.velocity_x * fighter.velocity_x + fighter.velocity_y * fighter.velocity_y
+        > limit * limit
+    ):
+        if abs(fighter.velocity_x) >= abs(fighter.velocity_y):
+            fighter.velocity_x -= 1 if fighter.velocity_x > 0 else -1
+        else:
+            fighter.velocity_y -= 1 if fighter.velocity_y > 0 else -1
 
 
 def _consume_fixed_position(velocity: int, remainder: int) -> tuple[int, int]:
@@ -1336,7 +1357,7 @@ class BoxingEngine:
     def _move_fighter(self, fighter: FighterState, opponent: FighterState) -> None:
         move_x = fighter.held_input.move_x
         move_y = fighter.held_input.move_y
-        speed = max(2, 7 * fighter.fatigue // 100)
+        speed = max(2, MAX_SPEED * fighter.fatigue // 100)
         if fighter.defense in (DefensivePose.GUARD_HIGH, DefensivePose.GUARD_LOW):
             speed = max(2, speed * 70 // 100)
         if fighter.stunned_ticks > 0:
@@ -1380,17 +1401,8 @@ class BoxingEngine:
                     fighter.velocity_fixed_x -= 1 if fighter.velocity_fixed_x > 0 else -1
                 else:
                     fighter.velocity_fixed_y -= 1 if fighter.velocity_fixed_y > 0 else -1
-        fighter.velocity_x = _rounded_fixed_velocity(fighter.velocity_fixed_x)
-        fighter.velocity_y = _rounded_fixed_velocity(fighter.velocity_fixed_y)
         # The velocity a snapshot reports stays within the base speed; the footwork is in fixed point.
-        while (
-            fighter.velocity_x * fighter.velocity_x + fighter.velocity_y * fighter.velocity_y
-            > speed * speed
-        ):
-            if abs(fighter.velocity_x) >= abs(fighter.velocity_y):
-                fighter.velocity_x -= 1 if fighter.velocity_x > 0 else -1
-            else:
-                fighter.velocity_y -= 1 if fighter.velocity_y > 0 else -1
+        _report_velocity(fighter, speed)
         delta_x, fighter.position_remainder_x = _consume_fixed_position(
             fighter.velocity_fixed_x, fighter.position_remainder_x
         )
@@ -1431,8 +1443,7 @@ class BoxingEngine:
                 half = (outward + 1) // 2
                 fighter.velocity_fixed_x -= sign_x * half
                 fighter.velocity_fixed_y -= sign_y * half
-            fighter.velocity_x = _rounded_fixed_velocity(fighter.velocity_fixed_x)
-            fighter.velocity_y = _rounded_fixed_velocity(fighter.velocity_fixed_y)
+            _report_velocity(fighter, MAX_SPEED)
             fighter.position_remainder_x = fighter.position_remainder_y = 0
         else:
             if rope_x:
