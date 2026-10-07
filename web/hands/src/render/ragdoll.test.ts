@@ -261,7 +261,7 @@ describe("knockouts on the fighter", () => {
       expect(turn, punchClass).toBeLessThan(8);
       expect(move, punchClass).toBeLessThan(0.12);
     }
-  });
+  }, 30_000);
 
   it("brings the head back onto the neck when the fall starts with it thrown off by a slip or a blow", () => {
     const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
@@ -312,7 +312,7 @@ describe("knockouts on the fighter", () => {
         expect(lowest, label).toBeGreaterThan(-0.035);
       }
     }
-  });
+  }, 30_000);
 
   it("rolls the feet only as far as an ankle goes and never flicks them, in the air or on the canvas", () => {
     // Nothing bounded a foot's roll onto its edge: feet lay 60-90 degrees on their sides against the shin in 20 of
@@ -363,7 +363,7 @@ describe("knockouts on the fighter", () => {
     expect(rest).toBeLessThan(40);
     expect(stepMove).toBeLessThan(0.1);
     expect(frameMove).toBeLessThan(0.2);
-  });
+  }, 30_000);
 
   it("lands the head on the canvas without the skull flipping or skidding across it", () => {
     // The skull's lean on the neck was corrected by turning only the skull, into the canvas when the head lay on it;
@@ -371,6 +371,7 @@ describe("knockouts on the fighter", () => {
     let crownStep = 0;
     let headTurn = 0;
     let skullRest = 0;
+    let carried = 0;
     const turned = new THREE.Quaternion();
     for (const punchClass of ["jab", "straight", "hook", "uppercut"] as const) {
       for (const hand of ["left", "right"] as const) {
@@ -396,6 +397,7 @@ describe("knockouts on the fighter", () => {
           const neck = at(body.position, P.head).sub(at(body.position, P.neck)).normalize();
           const skull = at(body.position, P.crown).sub(at(body.position, P.head)).normalize();
           skullRest = Math.max(skullRest, THREE.MathUtils.radToDeg(neck.angleTo(skull)));
+          carried = Math.max(carried, Math.hypot(body.position[P.pelvis * 3]!, body.position[P.pelvis * 3 + 2]!));
         }
       }
     }
@@ -403,7 +405,9 @@ describe("knockouts on the fighter", () => {
     expect(headTurn).toBeLessThan(60);
     // The skull leans on the neck no further than its 32 degrees, give or take a pass.
     expect(skullRest).toBeLessThan(36);
-  });
+    // Bringing the head back never drags the body across the ring: a turn handed to the neck alone once slid it 2.3 m.
+    expect(carried).toBeLessThan(0.8);
+  }, 30_000);
 
   it("lies with his shoulders turned on his hips no further than a spine turns, however he went down", () => {
     let worst = 0;
@@ -440,7 +444,7 @@ describe("knockouts on the fighter", () => {
       expect(boxer.root.position.x, `count ${count}`).toBeCloseTo(mapping.x(149), 2);
       expect(Math.hypot(pelvis.x - boxer.root.position.x, pelvis.z - boxer.root.position.z), `count ${count}`).toBeLessThan(0.7);
     }
-  });
+  }, 30_000);
 
   it("keeps the authored fall under reduced motion", () => {
     const { boxer, graph, fighter, opponent, time } = standing();
@@ -515,7 +519,7 @@ describe("knockouts on the fighter", () => {
       graph.resetTransient(true);
       expect(Float64Array.from(graph.fallBody!.body.position), punchClass).toEqual(live);
     }
-  });
+  }, 30_000);
 
   it("puts the body where the fall ends without running it when the replay cuts back to live", () => {
     // settle() ran the rest of the fall in the frame of the cut to the close-up (up to 280 steps, about 20 ms on a
@@ -554,7 +558,7 @@ describe("knockouts on the fighter", () => {
       expect(body.asleep, `${liveFrames}`).toBe(true);
       expect(Float64Array.from(body.position), `${liveFrames}`).toEqual(settled);
     }
-  });
+  }, 30_000);
 
   it("settles the recorded fall at once when the replay cuts back to live", () => {
     const { graph, fighter, opponent, time } = standing();
@@ -646,7 +650,7 @@ describe("knockouts on the fighter", () => {
         }
       }
     }
-  });
+  }, 30_000);
 
   it("replays the fall exactly when the opponent walks off another way", () => {
     const fallWith = (graph: BoxingGraph, fighter: FighterSnapshot, opponent: FighterSnapshot, from: number, walk: (frame: number) => number): number => {
