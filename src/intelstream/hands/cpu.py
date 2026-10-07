@@ -10,7 +10,7 @@ under the same rules as a player's input.
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from math import hypot
 
@@ -31,12 +31,15 @@ from intelstream.hands.rules import (
     RING_CORNER_REACH,
     RING_HALF_HEIGHT,
     RING_HALF_WIDTH,
+    STYLE_RULES,
     PunchRule,
     poise_ceiling,
+    style_punch_rule,
 )
 from intelstream.hands.types import (
     ActionKind,
     DefensivePose,
+    FighterStyle,
     Hand,
     InputCommand,
     MatchPhase,
@@ -215,6 +218,78 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
     ),
 }
 
+# The styles each of the computer's boxers fights in, one picked per bout from the match seed.
+CPU_STYLES: dict[CpuLevel, tuple[FighterStyle, ...]] = {
+    CpuLevel.ROOKIE: (FighterStyle.BALANCED, FighterStyle.SLUGGER, FighterStyle.SWARMER),
+    CpuLevel.CONTENDER: (
+        FighterStyle.BOXER,
+        FighterStyle.SLUGGER,
+        FighterStyle.SWARMER,
+        FighterStyle.COUNTER_PUNCHER,
+    ),
+    CpuLevel.CHAMPION: (
+        FighterStyle.BOXER,
+        FighterStyle.SLUGGER,
+        FighterStyle.SWARMER,
+        FighterStyle.COUNTER_PUNCHER,
+    ),
+}
+CPU_STYLE_SALT = 0x2545F491
+
+
+def cpu_style(level: CpuLevel, seed: int) -> FighterStyle:
+    """The style the computer's boxer fights in for the bout with this match seed."""
+    pool = CPU_STYLES[level]
+    return pool[random.Random(seed ^ CPU_STYLE_SALT).randrange(len(pool))]  # nosec B311
+
+
+def _percent(value: int) -> int:
+    return max(0, min(100, value))
+
+
+def styled_profile(profile: CpuProfile, style: FighterStyle) -> CpuProfile:
+    """How the computer boxes in a style: a boxer keeps range and jabs, a slugger loads up, a
+    swarmer presses and goes to the body, a counter-puncher waits and makes him pay."""
+    if style is FighterStyle.BOXER:
+        return replace(
+            profile,
+            outside_distance=profile.outside_distance + 10,
+            jab_bias=profile.jab_bias + 25,
+            aggression_percent=_percent(profile.aggression_percent - 6),
+            power_percent=_percent(profile.power_percent - 10),
+            body_percent=_percent(profile.body_percent - 10),
+        )
+    if style is FighterStyle.SLUGGER:
+        return replace(
+            profile,
+            outside_distance=profile.outside_distance - 12,
+            jab_bias=max(0, profile.jab_bias - 10),
+            power_percent=_percent(profile.power_percent + 20),
+            combo_percent=_percent(profile.combo_percent - 10),
+            aggression_percent=_percent(profile.aggression_percent + 5),
+            footwork_percent=_percent(profile.footwork_percent - 15),
+        )
+    if style is FighterStyle.SWARMER:
+        return replace(
+            profile,
+            outside_distance=profile.outside_distance - 20,
+            aggression_percent=_percent(profile.aggression_percent + 4),
+            body_percent=_percent(profile.body_percent + 20),
+            head_movement_percent=_percent(profile.head_movement_percent + 10),
+            clinch_percent=_percent(profile.clinch_percent - 10),
+        )
+    if style is FighterStyle.COUNTER_PUNCHER:
+        return replace(
+            profile,
+            outside_distance=profile.outside_distance + 6,
+            aggression_percent=_percent(profile.aggression_percent - 10),
+            counter_percent=_percent(profile.counter_percent + 6),
+            read_percent=_percent(profile.read_percent + 3),
+            perfect_percent=_percent(profile.perfect_percent + 4),
+        )
+    return profile
+
+
 _FOLLOW_UPS: dict[PunchClass, tuple[PunchClass, ...]] = {
     first: tuple(second for start, second in sorted(COMPATIBLE_COMBO_CHAINS) if start is first)
     for first in PunchClass
@@ -277,11 +352,20 @@ _EVASION_ACTIONS: dict[DefensivePose, ActionKind] = {
 
 
 class CpuBrain:
-    def __init__(self, player_id: str, opponent_id: str, level: CpuLevel, seed: int) -> None:
+    def __init__(
+        self,
+        player_id: str,
+        opponent_id: str,
+        level: CpuLevel,
+        seed: int,
+        style: FighterStyle = FighterStyle.BALANCED,
+    ) -> None:
         self.player_id = player_id
         self.opponent_id = opponent_id
         self.level = level
-        self.profile = PROFILES[level]
+        self.style = style
+        self.style_rule = STYLE_RULES[style]
+        self.profile = styled_profile(PROFILES[level], style)
         self._rng = random.Random(seed)  # nosec B311
         self._sequence = 0
         self._read_attack: tuple[int, str] | None = None
@@ -512,7 +596,7 @@ class CpuBrain:
             and me.attack is None
             and me.stunned_ticks == 0
             and me.stamina >= EVASION_STAMINA
-            and lead - 1 < EVASION_TICKS
+            and lead - 1 < EVASION_TICKS + self.style_rule.evasion_ticks
         )
         if can_evade and (me.defense is guard or self._roll(55)):
             assert evasion is not None
@@ -521,7 +605,8 @@ class CpuBrain:
         self._guard_pose = guard
         self._guard_until = contact + attack.rule.active
         perfect = me.defense is not guard and self._roll(self.profile.perfect_percent)
-        self._guard_from = contact - PERFECT_BLOCK_TICKS - 1 if perfect else tick
+        window = PERFECT_BLOCK_TICKS + self.style_rule.perfect_block_ticks
+        self._guard_from = contact - window - 1 if perfect else tick
         if self._roll(self.profile.counter_percent):
             # Blocked, he is still in his recovery when the guard comes down.
             self._punish_start = attack.start_tick
@@ -572,10 +657,21 @@ class CpuBrain:
             return DefensivePose.GUARD_HIGH
         return DefensivePose.GUARD_HIGH if self._hold_guard else DefensivePose.NONE
 
+    def _rule(self, action: PunchAction) -> PunchRule:
+        """The punch as this boxer's style throws it: its reach and its cost."""
+        return style_punch_rule(
+            PUNCH_RULES[(action.punch_class, action.target, action.power)], self.style_rule
+        )
+
     def _timing(self, me: FighterState, action: PunchAction) -> tuple[int, PunchRule]:
-        rule = PUNCH_RULES[(action.punch_class, action.target, action.power)]
+        rule = self._rule(action)
         lead_jab = action.punch_class is PunchClass.JAB and action.hand is _lead_hand(me)
-        startup = max(2, rule.startup * 100 // me.fatigue - (1 if lead_jab else 0))
+        startup = max(
+            2,
+            rule.startup * 100 // me.fatigue
+            - (1 if lead_jab else 0)
+            + self.style_rule.startup_ticks.get(action.punch_class, 0),
+        )
         return startup, rule
 
     def _reach(self, me: FighterState, rule: PunchRule) -> int:
@@ -600,8 +696,7 @@ class CpuBrain:
         return FIGHTER_RADIUS // 3 < forward <= reach and hypot(dx, dy) <= reach and lateral <= arc
 
     def _affordable(self, me: FighterState, action: PunchAction, reserve: int) -> bool:
-        rule = PUNCH_RULES[(action.punch_class, action.target, action.power)]
-        return me.stamina >= rule.stamina_cost + reserve
+        return me.stamina >= self._rule(action).stamina_cost + reserve
 
     def _choose(
         self,
@@ -775,7 +870,7 @@ class CpuBrain:
         action = self._shaped(
             PunchAction(_other_hand(attack.action.hand), punch_class, Target.HEAD), them, power
         )
-        rule = PUNCH_RULES[(action.punch_class, action.target, action.power)]
+        rule = self._rule(action)
         discounted = max(1, rule.stamina_cost * 90 // 100)
         if distance > self._reach(me, rule) or me.stamina < discounted:
             self._combo_left = 0

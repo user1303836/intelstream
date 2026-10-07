@@ -91,6 +91,7 @@ async def test_real_auth_spectator_reconnect_and_authoritative_elo(tmp_path) -> 
     rooms = HandsRoomManager(
         repository,
         config=RoomConfig(
+            style_select_seconds=0.0,
             tick_interval_seconds=0.001,
             broadcast_every_ticks=1,
             reconnect_grace_seconds=0.2,

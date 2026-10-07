@@ -1,7 +1,7 @@
 import {
   MAX_SERVER_FRAME_BYTES, PROTOCOL_VERSION,
   type BootstrapResponse, type CombatEvent, type CornerChoice, type CpuLevel, type DefensivePose, type EngineSnapshot,
-  type FighterRecord, type FighterSnapshot, type FinalMessage, type FinishMethod, type Foul, type Hand,
+  type FighterRecord, type FighterSnapshot, type FighterStyle, type FinalMessage, type FinishMethod, type Foul, type Hand,
   type HeldDefense, type JudgeCard, type MatchPhase, type MatchResult, type MovementKind,
   type Power, type PublicPlayer, type PunchClass, type SemanticAction, type ServerMessage,
   type Stance, type Target, type TokenResponse, type TraumaSnapshot,
@@ -86,6 +86,7 @@ function array(value: unknown, name: string, max: number): unknown[] { if (!Arra
 const hands = ["left", "right"] as const; const classes = ["jab", "straight", "hook", "uppercut"] as const;
 const targets = ["head", "body"] as const; const powers = ["normal", "power"] as const;
 const stances = ["orthodox", "southpaw"] as const;
+export const FIGHTER_STYLES = ["balanced", "boxer", "slugger", "swarmer", "counter_puncher"] as const;
 const defenses = ["none", "guard_high", "guard_low", "slip_left", "slip_right", "weave", "pull"] as const;
 const heldDefenses = ["none", "guard_high", "guard_low"] as const;
 const movementKinds = ["slip_left", "slip_right", "weave", "pull", "clinch", "switch_stance", "get_up_left", "get_up_right", "taunt", "corner_cut", "corner_swelling", "corner_breath"] as const;
@@ -100,10 +101,11 @@ function fighterRecord(value: unknown): FighterRecord {
 }
 
 function publicPlayer(value: unknown): PublicPlayer {
-  const o = object(value, "player"); exact(o, ["id", "name", "avatar", "rating", "connected"], ["cpu", "record"]);
+  const o = object(value, "player"); exact(o, ["id", "name", "avatar", "rating", "connected"], ["cpu", "record", "style"]);
+  const style = o.style === undefined ? {} : { style: oneOf<FighterStyle>(o.style, FIGHTER_STYLES, "player style") };
   const cpu = o.cpu === undefined ? {} : { cpu: bool(o.cpu, "cpu") };
   const record = o.record === undefined ? {} : { record: fighterRecord(o.record) };
-  return { id: string(o.id, "player.id"), name: string(o.name, "player.name", 80), avatar: nullableString(o.avatar, "player.avatar", 128), rating: integer(o.rating, "rating"), connected: bool(o.connected, "connected"), ...cpu, ...record };
+  return { id: string(o.id, "player.id"), name: string(o.name, "player.name", 80), avatar: nullableString(o.avatar, "player.avatar", 128), rating: integer(o.rating, "rating"), connected: bool(o.connected, "connected"), ...cpu, ...record, ...style };
 }
 function players(value: unknown, exactLength?: number): PublicPlayer[] {
   const result = array(value, "players", 2).map(publicPlayer);
@@ -123,7 +125,7 @@ function trauma(value: unknown): TraumaSnapshot {
 function fighter(value: unknown): FighterSnapshot {
   const o = object(value, "fighter");
   exact(o, [
-    "player_id", "x", "y", "facing", "facing_x", "facing_y", "velocity_x", "velocity_y", "stance", "defense",
+    "player_id", "x", "y", "facing", "facing_x", "facing_y", "velocity_x", "velocity_y", "stance", "style", "defense",
     "stamina", "maximum_stamina", "conditioning", "guard", "poise", "trauma", "knockdowns",
     "warnings", "deductions", "stunned_ticks", "is_downed", "action", "action_hand",
     "action_target", "action_power", "action_id", "action_key", "action_start_tick",
@@ -154,7 +156,7 @@ function fighter(value: unknown): FighterSnapshot {
   return {
     player_id: string(o.player_id, "player_id"), x: integer(o.x, "x", -462, 462), y: integer(o.y, "y", -462, 462),
     facing, facing_x: facingX, facing_y: facingY, velocity_x: integer(o.velocity_x, "velocity_x", -7, 7), velocity_y: integer(o.velocity_y, "velocity_y", -7, 7),
-    stance: oneOf<Stance>(o.stance, stances, "stance"), defense: oneOf<DefensivePose>(o.defense, defenses, "defense"),
+    stance: oneOf<Stance>(o.stance, stances, "stance"), style: oneOf<FighterStyle>(o.style, FIGHTER_STYLES, "style"), defense: oneOf<DefensivePose>(o.defense, defenses, "defense"),
     stamina, maximum_stamina: maximumStamina,
     conditioning: integer(o.conditioning, "conditioning", 0, 1000), guard: integer(o.guard, "guard", 0, 700), poise: integer(o.poise, "poise", 0, 600),
     trauma: trauma(o.trauma), knockdowns: integer(o.knockdowns, "knockdowns", 0, 3), warnings: integer(o.warnings, "warnings", 0, 3), deductions: integer(o.deductions, "deductions", 0, 1),
@@ -228,6 +230,13 @@ export function decodeServerFrame(frame: string | ArrayBuffer | Uint8Array): Ser
   }
   if (type === "ticket") { exact(o, ["version", "type", "reconnect_ticket", "refresh_id"]); return { version: 3, type, reconnect_ticket: string(o.reconnect_ticket, "reconnect_ticket", 4096), refresh_id: string(o.refresh_id, "refresh_id", 128, 16) }; }
   if (type === "waiting") { exact(o, ["version", "type", "open_seats"]); if (o.open_seats !== 1) throw new ProtocolError("invalid open seats"); return { version: 3, type, open_seats: 1 }; }
+  if (type === "select") {
+    exact(o, ["version", "type", "deadline_ms", "players", "ready"]);
+    const ps = players(o.players, 2);
+    const ready = array(o.ready, "ready", 2).map((id) => string(id, "ready player id"));
+    if (new Set(ready).size !== ready.length || ready.some((id) => !ps.some((player) => player.id === id))) throw new ProtocolError("invalid ready fighters");
+    return { version: 3, type, deadline_ms: integer(o.deadline_ms, "deadline_ms", 0, 60_000), players: [ps[0]!, ps[1]!], ready };
+  }
   if (type === "ready") { exact(o, ["version", "type", "players"]); const ps = players(o.players, 2); return { version: 3, type, players: [ps[0]!, ps[1]!] }; }
   if (type === "paused") { exact(o, ["version", "type", "player_id", "grace_ms"]); return { version: 3, type, player_id: string(o.player_id, "player_id"), grace_ms: integer(o.grace_ms, "grace_ms", 0, 60_000) }; }
   if (type === "resumed") { exact(o, ["version", "type", "player_id"]); return { version: 3, type, player_id: string(o.player_id, "player_id") }; }
@@ -254,6 +263,11 @@ export function encodeInput(sequence: number, clientTick: number, frame: { moveX
     return { kind: oneOf<MovementKind>(raw.kind, movementKinds, "action"), ...id };
   };
   return JSON.stringify({ version: 3, type: "input", sequence: integer(sequence, "sequence"), client_tick: integer(clientTick, "client tick"), move: { x: Math.max(-1000, Math.min(1000, Math.round(Number.isFinite(frame.moveX) ? frame.moveX : 0))), y: Math.max(-1000, Math.min(1000, Math.round(Number.isFinite(frame.moveY) ? frame.moveY : 0))) }, defense: oneOf<HeldDefense>(frame.defense, heldDefenses, "held defense"), actions: frame.actions.slice(0, 4).map(action) });
+}
+
+/** A style the fighter is choosing (`ready` false) or has settled on before the bout. */
+export function encodeStyleChoice(style: FighterStyle, ready: boolean): string {
+  return JSON.stringify({ version: 3, type: "style", style: oneOf<FighterStyle>(style, FIGHTER_STYLES, "fighter style"), ready: ready === true });
 }
 
 export const CPU_LEVELS = ["rookie", "contender", "champion"] as const;

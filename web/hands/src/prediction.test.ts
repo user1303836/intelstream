@@ -1,8 +1,9 @@
-import { punchStaminaCost } from "./manifest";
+import { punchStaminaCost, styledStaminaCost } from "./manifest";
 import { attackTicksRemaining, constrainPrediction, fatigueFactor, MINIMUM_SEPARATION, movementLocked, predictMovement, predictedPunchTiming } from "./prediction";
 import { fighter } from "./test/fixtures";
 import timingTable from "./test/punch-timing-table.json";
-import type { FighterSnapshot, PunchClass } from "./types";
+import styleTimingTable from "./test/style-timing-table.json";
+import type { FighterSnapshot, FighterStyle, PunchClass } from "./types";
 
 describe("local movement prediction", () => {
   it("mirrors the authoritative fatigue factor", () => {
@@ -117,6 +118,31 @@ describe("local movement prediction", () => {
     }
     expect(timingTable.length).toBeGreaterThan(1000);
     expect(mismatches).toEqual([]);
+  });
+
+  it("predicts each style's timing and price for every punch exactly as the engine gives them", () => {
+    const classes: Record<string, PunchClass> = { j: "jab", s: "straight", h: "hook", u: "uppercut" };
+    const mismatches: string[] = [];
+    for (const row of styleTimingTable as string[]) {
+      const [style, key, conditioning, body, startup, recovery, cost] = row.split(",") as [FighterStyle, string, string, string, string, string, string];
+      const base = fighter("one");
+      const state: FighterSnapshot = { ...base, style, stance: "orthodox", conditioning: Number(conditioning), trauma: { ...base.trauma, body: Number(body) } };
+      const punch = { class: classes[key[0]!]!, target: key[1] === "h" ? "head" as const : "body" as const, power: key[2] === "p" ? "power" as const : "normal" as const, hand: key[3] === "l" ? "left" as const : "right" as const };
+      const timing = predictedPunchTiming(state, punch);
+      if (timing.startup !== Number(startup) || timing.recovery !== Number(recovery)) mismatches.push(`${row} -> ${timing.startup},${timing.recovery}`);
+      if (styledStaminaCost(style, punch.class, punch.target, punch.power) !== Number(cost)) mismatches.push(`${row} cost`);
+    }
+    expect(styleTimingTable.length).toBe(1280);
+    expect(mismatches).toEqual([]);
+  });
+
+  it("moves a swarmer as much quicker, and a slugger as much slower, as the engine does", () => {
+    const held = { moveX: 1000, moveY: 0, defense: "none" as const };
+    const balanced = predictMovement({ ...fighter("one"), conditioning: 1000 }, held, 20);
+    const swarmer = predictMovement({ ...fighter("one"), conditioning: 1000, style: "swarmer" }, held, 20);
+    const slugger = predictMovement({ ...fighter("one"), conditioning: 1000, style: "slugger" }, held, 20);
+    expect(swarmer.dx / balanced.dx).toBeCloseTo(1.1, 2);
+    expect(slugger.dx / balanced.dx).toBeCloseTo(0.96, 2);
   });
 
   it("charges a punch thrown inside the combination window at the engine's discount", () => {

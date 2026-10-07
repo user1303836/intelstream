@@ -10,17 +10,20 @@ from intelstream.hands.protocol import (
     MAX_TICK_LAG,
     MAX_TICK_LEAD,
     ProtocolError,
+    StyleChoice,
     decode_client_frame,
     encode_client_input,
     encode_snapshot,
     parse_client_input,
     parse_cpu_request,
+    parse_style_choice,
     parse_ticket_ack,
     snapshot_for_viewer,
 )
 from intelstream.hands.types import (
     ActionKind,
     DefensivePose,
+    FighterStyle,
     Foul,
     FoulAction,
     Hand,
@@ -207,6 +210,31 @@ def test_computer_request_is_strict_and_distinct_from_other_frames() -> None:
     ):
         with pytest.raises(ProtocolError):
             parse_cpu_request(malformed)
+
+
+def test_style_choice_is_strict_and_distinct_from_other_frames() -> None:
+    for style in FighterStyle:
+        for ready in (True, False):
+            frame = json.dumps(
+                {"version": 3, "type": "style", "style": style.value, "ready": ready}
+            )
+            assert parse_style_choice(frame) == StyleChoice(style, ready)
+    assert parse_style_choice(json.dumps(valid_payload())) is None
+    assert parse_style_choice('{"version":3,"type":"cpu","level":"rookie"}') is None
+    for malformed in (
+        '{"version":3,"type":"style","style":"brawler","ready":true}',
+        '{"version":3,"type":"style","style":"boxer"}',
+        '{"version":3,"type":"style","style":"boxer","ready":1}',
+        '{"version":3,"type":"style","style":"boxer","ready":"yes"}',
+        '{"version":3,"type":"style","style":"boxer","ready":true,"extra":1}',
+        '{"version":2,"type":"style","style":"boxer","ready":true}',
+        '{"version":3,"type":"style","style":"boxer","style":"slugger","ready":true}',
+        '{"version":3,"type":"style","style":5,"ready":true}',
+        "not json",
+        "x" * (MAX_FRAME_BYTES + 1),
+    ):
+        with pytest.raises(ProtocolError):
+            parse_style_choice(malformed)
 
 
 def test_snapshot_encoding_is_required_and_redacted_per_viewer() -> None:

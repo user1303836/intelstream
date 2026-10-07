@@ -11,9 +11,11 @@
  *
  * The cpu scenario is one player against the computer (E2E_CPU_LEVEL, default contender) through to the
  * result card. The tko scenario gets the floored player up twice, so the bout ends on the punch of the
- * third knockdown, and fails unless the knockout replay still plays. E2E_PORT moves the server off 8091.
+ * third knockdown, and fails unless the knockout replay still plays. The styles scenario has one fighter pick a style with the keyboard and the other by
+ * touch while a spectator watches; every other scenario settles on the offered style at once. E2E_PORT
+ * moves the server off 8091.
  *
- *   node scripts/hands_e2e_scenarios.js ko|tko|reconnect|rest|spectator|touch|mash|latency|soak|background|rematch|rematchloop|clinch|response|cpu
+ *   node scripts/hands_e2e_scenarios.js ko|tko|reconnect|rest|spectator|touch|mash|latency|soak|background|rematch|rematchloop|clinch|response|cpu|styles
  */
 const { chromium, devices } = require('playwright');
 const { spawn } = require('node:child_process');
@@ -93,6 +95,26 @@ async function status(page) {
     final: document.querySelector('[data-final]')?.textContent ?? null,
     role: document.querySelector('[data-role]')?.hidden === false ? document.querySelector('[data-role]')?.textContent : null,
   }));
+}
+
+/** Settles on the style the picker offers, as soon as the pick before the bout appears. */
+async function settleStyle(page) {
+  await page.waitForSelector('[data-style-picker]:not([hidden])', { timeout: 60000 });
+  await page.keyboard.press('Enter');
+}
+
+async function pickerState(page) {
+  return page.evaluate(() => {
+    const element = document.querySelector('[data-style-picker]');
+    if (element === null) return null;
+    return {
+      hidden: element.hidden,
+      chosen: element.querySelector('[data-chosen]')?.dataset.style ?? null,
+      disabled: [...element.querySelectorAll('[data-style]')].filter((button) => button.disabled).length,
+      clock: element.querySelector('.style-clock')?.textContent ?? null,
+      status: element.querySelector('.style-status')?.textContent ?? null,
+    };
+  });
 }
 
 async function waitFor(page, predicate, timeoutMs, label) {
@@ -194,6 +216,7 @@ async function main() {
     clinch: ['--rounds', '1', '--round-seconds', '30', '--rest-seconds', '5'],
     response: ['--rounds', '1', '--round-seconds', '40', '--rest-seconds', '5'],
     cpu: ['--rounds', '2', '--round-seconds', '40', '--rest-seconds', '6'],
+    styles: ['--rounds', '1', '--round-seconds', '30', '--rest-seconds', '5', '--style-select-seconds', '30'],
   }[scenario];
   const responseDelayMs = Number(process.env.E2E_DELAY_MS ?? 60);
   const responseJitterMs = Number(process.env.E2E_JITTER_MS ?? 0);
@@ -205,7 +228,9 @@ async function main() {
       report.errors.push(...A.errors);
       return;
     }
-    const B = await open('Bravo', { mobile: scenario === 'touch' || scenario === 'rest' });
+    const B = await open('Bravo', { mobile: scenario === 'touch' || scenario === 'rest' || scenario === 'styles' });
+    if (scenario === 'styles') await pickStyles(A, B, open, note, report);
+    else await Promise.all([settleStyle(A.page), settleStyle(B.page)]);
     if (scenario === 'latency') note('both clients behind a TCP proxy adding 110 ms each way (220 ms round trip) to every frame');
     const startedState = await waitFor(A.page, (s) => /countdown|fight/.test(s.summary ?? ''), 60000, 'bout start');
     note('bout started:', startedState !== null);
@@ -295,6 +320,12 @@ async function main() {
         if (!/^tko\b/i.test(final?.final ?? '')) report.errors.push(`expected a TKO on the third knockdown, got: ${final?.final ?? 'no result'}`);
         else if (!(replay?.frames > 0)) report.errors.push('no knockout replay after a TKO that ended on its punch');
       }
+    }
+
+    if (scenario === 'styles') {
+      await wait(800);
+      await A.page.screenshot({ path: `${out}/e2e-styles-A-plates.png` });
+      await B.page.screenshot({ path: `${out}/e2e-styles-B-plates.png` });
     }
 
     if (scenario === 'reconnect') {
@@ -498,6 +529,7 @@ async function main() {
       note('rematch enabled after', ((Date.now() - enabledAt) / 1000).toFixed(1), 's:', JSON.stringify(await rematchState(A.page)), JSON.stringify(await rematchState(B.page)));
       await A.page.click('[data-rematch]');
       await B.page.click('[data-rematch]');
+      await Promise.all([settleStyle(A.page), settleStyle(B.page)]);
       const second = await waitFor(A.page, (s) => /countdown|\. fight\./.test(s.summary ?? '') && !s.final, 60000, 'second bout start');
       note('second bout started:', second !== null, '|', second?.status, '|', second?.summary?.slice(0, 60));
       await waitFor(A.page, (s) => /\. fight\./.test(s.summary ?? ''), 20000, 'second fight phase');
@@ -524,6 +556,7 @@ async function main() {
         for (let i = 0; i < 60; i += 1) { if ((await rematchReady(A.page)) && (await rematchReady(B.page))) break; await wait(500); }
         await A.page.click('[data-rematch]');
         await B.page.click('[data-rematch]');
+        await Promise.all([settleStyle(A.page), settleStyle(B.page)]);
         const next = await waitFor(A.page, (s) => /countdown|\. fight\./.test(s.summary ?? '') && !s.final, 60000, `bout ${bout + 1} start`);
         note(`bout ${bout + 1} started: ${next !== null}`);
       }
@@ -733,6 +766,9 @@ async function runCpu(A, note) {
   await A.page.screenshot({ path: `${out}/e2e-cpu-waiting.png` });
   await A.page.click(`[data-cpu-level="${level}"]`);
   note('asked for:', level, '|', (await status(A.page)).status);
+  await A.page.waitForSelector('[data-style-picker]:not([hidden])', { timeout: 30000 });
+  note('the computer has picked:', (await pickerState(A.page))?.status);
+  await A.page.keyboard.press('Enter');
   const started = await waitFor(A.page, (s) => /\. fight\./.test(s.summary ?? ''), 30000, 'fight phase');
   note('bout started against:', /computer opponent/.test(started?.summary ?? '') ? 'the computer' : 'someone else', '|', started?.summary?.slice(0, 160));
   const begun = Date.now();
@@ -774,9 +810,47 @@ async function runCpu(A, note) {
   note('rematch offered:', rematch !== null);
   if (rematch !== null) {
     await A.page.click('[data-rematch]');
+    await settleStyle(A.page);
     const again = await waitFor(A.page, (s) => /countdown|\. fight\./.test(s.summary ?? '') && !s.final, 60000, 'rematch start');
     note('rematch against the computer started:', /computer opponent/.test(again?.summary ?? ''));
   }
+}
+
+/** Alpha picks with the keyboard and Bravo by touch while Charlie watches; the bout starts once both settle. */
+async function pickStyles(A, B, open, note, report) {
+  await Promise.all([A.page.waitForSelector('[data-style-picker]:not([hidden])', { timeout: 60000 }), B.page.waitForSelector('[data-style-picker]:not([hidden])', { timeout: 60000 })]);
+  note('pick shown to Alpha:', JSON.stringify(await pickerState(A.page)));
+  const C = await open('Charlie');
+  await C.page.waitForSelector('[data-style-picker]:not([hidden])', { timeout: 30000 });
+  await C.page.keyboard.press('Digit3');
+  const watching = await pickerState(C.page);
+  note('pick shown to the spectator:', JSON.stringify(watching));
+  if (watching?.disabled !== 5 || watching.chosen !== null) report.errors.push('the spectator could pick a style');
+  await A.page.keyboard.press('ArrowRight');
+  await A.page.keyboard.press('ArrowRight');
+  note('Alpha moves to:', (await pickerState(A.page))?.chosen);
+  await A.page.keyboard.press('Enter');
+  let heard = null;
+  for (let i = 0; i < 40 && heard === null; i += 1) { const state = await pickerState(B.page); if (/Alpha: Slugger/.test(state?.status ?? '')) heard = state; else await wait(250); }
+  note('Bravo hears:', heard?.status ?? 'nothing');
+  if (heard === null) report.errors.push("Bravo never saw Alpha's settled style");
+  note('the spectator hears:', (await pickerState(C.page))?.status);
+  await A.page.screenshot({ path: `${out}/e2e-styles-A-pick.png` });
+  await B.page.screenshot({ path: `${out}/e2e-styles-B-pick.png` });
+  await B.page.tap('[data-style="swarmer"]');
+  const started = await waitFor(A.page, (s) => /countdown|\. fight\./.test(s.summary ?? ''), 20000, 'bout start after the pick');
+  note('bout started once both settled:', started !== null);
+  await wait(600);
+  await A.page.screenshot({ path: `${out}/e2e-styles-A-intro.png` });
+  const styles = await A.page.evaluate(() => { const state = window.__handsApp?.state; return state?.snapshot?.fighters.map((fighter) => `${state.players[fighter.player_id]?.name}:${fighter.style}`) ?? null; });
+  note('styles in the bout:', JSON.stringify(styles));
+  if (JSON.stringify(styles) !== JSON.stringify(['Alpha:slugger', 'Bravo:swarmer'])) report.errors.push(`unexpected styles in the bout: ${JSON.stringify(styles)}`);
+  const remembered = [await A.page.evaluate(() => localStorage.getItem('hands.style.v1')), await B.page.evaluate(() => localStorage.getItem('hands.style.v1'))];
+  note('remembered for next time:', JSON.stringify(remembered));
+  if (remembered[0] !== 'slugger' || remembered[1] !== 'swarmer') report.errors.push(`styles not remembered: ${JSON.stringify(remembered)}`);
+  note('pick hidden once the bout began:', (await pickerState(A.page))?.hidden, (await pickerState(C.page))?.hidden);
+  report.errors.push(...C.errors);
+  await C.context.close();
 }
 
 main().catch((e) => { console.error('ERR', e.stack || e.message); process.exit(1); });

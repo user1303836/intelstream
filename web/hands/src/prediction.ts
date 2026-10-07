@@ -1,4 +1,4 @@
-import { comboChain, comboWindow, FIGHTER_RADIUS, punchStaminaCost, punchTiming, RING_CORNER_REACH, RING_HALF_HEIGHT, RING_HALF_WIDTH, STUNNED_SPEED_PERCENT, TIRED_RECOVERY_TICKS, TIRED_STARTUP_TICKS, type PunchTiming } from "./manifest";
+import { comboChain, comboWindow, FIGHTER_RADIUS, punchTiming, RING_CORNER_REACH, RING_HALF_HEIGHT, RING_HALF_WIDTH, STUNNED_SPEED_PERCENT, styledStaminaCost, styleTiming, TIRED_RECOVERY_TICKS, TIRED_STARTUP_TICKS, type PunchTiming } from "./manifest";
 import type { FighterSnapshot, Hand, HeldDefense, Power, PunchClass, Target } from "./types";
 
 export interface HeldInput {
@@ -44,17 +44,18 @@ export function inComboWindow(fighter: FighterSnapshot, punch: PunchIntent, tick
  */
 export function predictedPunchTiming(fighter: FighterSnapshot, punch: PunchIntent, tick?: number): PunchTiming {
   const base = punchTiming(punch.class, punch.target, punch.power);
-  const fullCost = punchStaminaCost(punch.class, punch.target, punch.power);
+  const style = styleTiming(fighter.style);
+  const fullCost = styledStaminaCost(fighter.style, punch.class, punch.target, punch.power);
   const tired = fighter.stamina < fullCost;
   const cost = tired ? fighter.stamina : tick !== undefined && inComboWindow(fighter, punch, tick) ? Math.max(1, Math.floor((fullCost * 90) / 100)) : fullCost;
-  const conditioning = Math.max(0, fighter.conditioning - Math.max(1, Math.floor(cost / 12)));
+  const conditioning = Math.max(0, fighter.conditioning - Math.floor((Math.max(1, Math.floor(cost / 12)) * style.conditioningLossPercent) / 100));
   const speed = fatigueFactor(conditioning, fighter.trauma.body);
   const lead = fighter.stance === "orthodox" ? "left" : "right";
   const quick = punch.class === "jab" && punch.hand === lead ? 1 : 0;
   return {
     ...base,
-    startup: Math.max(2, Math.floor((base.startup * 100) / speed) - quick) + (tired ? TIRED_STARTUP_TICKS : 0),
-    recovery: Math.max(4, Math.floor((base.recovery * 100) / speed)) + (tired ? TIRED_RECOVERY_TICKS : 0),
+    startup: Math.max(2, Math.floor((base.startup * 100) / speed) - quick + (style.startupTicks[punch.class] ?? 0)) + (tired ? TIRED_STARTUP_TICKS : 0),
+    recovery: Math.max(4, Math.floor((base.recovery * 100) / speed) + (style.recoveryTicks[punch.class] ?? 0)) + (tired ? TIRED_RECOVERY_TICKS : 0),
   };
 }
 
@@ -98,14 +99,16 @@ export function predictMovement(fighter: FighterSnapshot, held: HeldInput, ticks
   if (committed >= ticks) return { dx: 0, dy: 0 };
   const base = Math.max(2, Math.floor((MAX_SPEED * fatigueFactor(fighter.conditioning, fighter.trauma.body)) / 100));
   const guarded = Math.max(2, Math.floor((base * GUARD_SPEED_PERCENT) / 100));
+  // The engine moves in thousandths of a unit, so a style's few percent of footspeed are kept.
+  const footwork = styleTiming(fighter.style).moveSpeedPercent / 100;
   const magnitude = Math.hypot(held.moveX, held.moveY);
   const scale = magnitude > 1000 ? 1000 / magnitude : 1;
   // The engine counts a stun down before the footwork of each tick, and a stunned fighter's guard
   // is down: he stumbles at a share of his plain speed while the stun has ticks left after that.
   const speedAt = (step: number): number => {
     const stunned = fighter.stunned_ticks - step;
-    if (stunned > 0) return stunned > 1 ? Math.max(2, Math.floor((base * STUNNED_SPEED_PERCENT) / 100)) : base;
-    return held.defense === "guard_high" || held.defense === "guard_low" ? guarded : base;
+    if (stunned > 0) return (stunned > 1 ? Math.max(2, Math.floor((base * STUNNED_SPEED_PERCENT) / 100)) : base) * footwork;
+    return (held.defense === "guard_high" || held.defense === "guard_low" ? guarded : base) * footwork;
   };
   let vx = fighter.velocity_x;
   let vy = fighter.velocity_y;

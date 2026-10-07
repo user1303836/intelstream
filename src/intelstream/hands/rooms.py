@@ -12,15 +12,17 @@ from uuid import uuid4
 
 import structlog
 
-from intelstream.hands.cpu import PROFILES, CpuBrain, CpuLevel, cpu_player_id
+from intelstream.hands.cpu import PROFILES, CpuBrain, CpuLevel, cpu_player_id, cpu_style
 from intelstream.hands.engine import BoxingEngine, EngineConfig
 from intelstream.hands.protocol import (
     PROTOCOL_VERSION,
     ClientEnvelope,
     ProtocolError,
+    StyleChoice,
     encode_snapshot,
     parse_client_input,
 )
+from intelstream.hands.types import FighterStyle
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine
@@ -76,6 +78,8 @@ class RoomConfig:
     max_input_frames_per_second: int = 180
     outbound_queue_size: int = 16
     max_spectators: int = 20
+    style_select_seconds: float = 10.0
+    """How long the fighters have to pick a style once both corners are filled; 0 starts at once."""
     engine_config: EngineConfig = field(default_factory=EngineConfig)
 
     def __post_init__(self) -> None:
@@ -99,6 +103,8 @@ class RoomConfig:
             raise ValueError("room durations are invalid")
         if self.max_spectators < 0:
             raise ValueError("spectator bound must not be negative")
+        if self.style_select_seconds < 0:
+            raise ValueError("style select time must not be negative")
         if self.max_input_frames_per_second < self.max_inputs_per_second:
             raise ValueError("input frame bound must not be below the accepted input bound")
 
@@ -129,6 +135,8 @@ class PlayerSlot:
     connection: PlayerConnection | None
     grace_remaining: float
     record: FighterRecord | None = None
+    style: FighterStyle = FighterStyle.BALANCED
+    """The style this fighter has picked, or would like: it is fixed when the bout starts."""
     last_sequence: int = -1
     input_budget: float | None = None
     input_budget_at: float = 0.0
@@ -172,6 +180,7 @@ class CpuOpponent:
 
     level: CpuLevel
     brain: CpuBrain | None = None
+    style: FighterStyle = FighterStyle.BALANCED
 
     @property
     def player_id(self) -> str:
@@ -192,6 +201,16 @@ class CpuOpponent:
 
 # Seeds the computer's own dice from the match seed, so a bout replays from its inputs.
 CPU_SEED_SALT = 0x5DEECE66D
+
+
+@dataclass(slots=True)
+class StyleSelect:
+    """The fighters picking their styles: the bout starts when both are ready or at the deadline."""
+
+    deadline: float
+    seed: int
+    ready: set[str] = field(default_factory=set)
+    task: asyncio.Task[None] | None = None
 
 
 @dataclass(slots=True)
@@ -243,6 +262,7 @@ class HandsRoom:
         self._slots: dict[str, PlayerSlot] = {}
         self._spectators: dict[str, SpectatorSlot] = {}
         self._cpu: CpuOpponent | None = None
+        self._select: StyleSelect | None = None
         self._engine: BoxingEngine | None = None
         self._tick_task: asyncio.Task[None] | None = None
         self._persistence_task: asyncio.Task[HandsMatch | None] | None = None
@@ -330,7 +350,7 @@ class HandsRoom:
                 role = "fighter"
             elif existing_spectator is not None:
                 role = "spectator"
-            elif self._engine is None and len(self._slots) < 2:
+            elif self._engine is None and len(self._slots) + (self._cpu is not None) < 2:
                 role = "fighter"
             else:
                 role = "spectator"
@@ -394,8 +414,7 @@ class HandsRoom:
             if reconnect_ticket is not None:
                 welcome["reconnect_ticket"] = reconnect_ticket
             self._enqueue(connection, self._message("welcome", **welcome))
-            if (existing is not None and self._engine is not None) or role == "spectator":
-                assert self._engine is not None
+            if self._engine is not None and (existing is not None or role == "spectator"):
                 self._enqueue(
                     connection,
                     encode_snapshot(
@@ -405,6 +424,8 @@ class HandsRoom:
                 )
             if self._final_payload is not None:
                 self._enqueue(connection, self._final_payload)
+            elif not final_recovery and self._select is not None:
+                self._enqueue(connection, self._select_message())
             elif (
                 not final_recovery
                 and role == "fighter"
@@ -446,7 +467,7 @@ class HandsRoom:
             elif not final_recovery and len(self._slots) == 1:
                 self._enqueue(connection, self._message("waiting", open_seats=1))
             elif not final_recovery and self._engine is None:
-                self._start_match()
+                self._begin_select()
                 disconnected = [
                     current for current in self._slots.values() if current.connection is None
                 ]
@@ -554,6 +575,7 @@ class HandsRoom:
                 "avatar": slot.identity.avatar_hash,
                 "rating": slot.rating,
                 "connected": slot.connection is not None,
+                **self._public_style(slot.identity.user_id, slot.style),
                 **({} if slot.record is None else {"record": slot.record.payload()}),
             }
             for slot in self._slots.values()
@@ -567,10 +589,18 @@ class HandsRoom:
                     "rating": self._cpu.rating,
                     "connected": True,
                     "cpu": True,
+                    **self._public_style(self._cpu.player_id, self._cpu.style),
                     "record": self._cpu.record.payload(),
                 }
             )
         return players
+
+    def _public_style(self, player_id: str, style: FighterStyle) -> dict[str, object]:
+        """A style is shown to everyone once its fighter has settled on it or the bout is on."""
+        settled = self._engine is not None or (
+            self._select is not None and player_id in self._select.ready
+        )
+        return {"style": style.value} if settled else {}
 
     def _enqueue(
         self, connection: PlayerConnection, message: str, *, bounded_update: bool = False
@@ -624,7 +654,102 @@ class HandsRoom:
         if slot.reconnect_deadline is not None:
             slot.grace_remaining = max(0.0, slot.reconnect_deadline - now)
 
-    def _start_match(self) -> None:
+    def _begin_select(self) -> None:
+        """Both corners are filled: the fighters pick their styles, then the bout starts."""
+        seed = self._seed_factory()
+        ready: set[str] = set()
+        if self._cpu is not None:
+            self._cpu.style = cpu_style(self._cpu.level, seed)
+            ready.add(self._cpu.player_id)
+        if self.config.style_select_seconds <= 0:
+            self._start_match(seed)
+            return
+        select = StyleSelect(
+            deadline=self._clock() + self.config.style_select_seconds, seed=seed, ready=ready
+        )
+        self._select = select
+        select.task = self._spawn(
+            self._close_select_at_deadline(select), name=f"hands-style-select-{self.instance_id}"
+        )
+        self._enqueue_all(self._select_message())
+
+    def _select_message(self) -> str:
+        select = self._select
+        assert select is not None
+        return self._message(
+            "select",
+            deadline_ms=max(0, int((select.deadline - self._clock()) * 1000)),
+            players=self._public_players(),
+            ready=sorted(select.ready),
+        )
+
+    def _seated_styles(self) -> dict[str, FighterStyle]:
+        styles = {player_id: slot.style for player_id, slot in self._slots.items()}
+        if self._cpu is not None:
+            styles[self._cpu.player_id] = self._cpu.style
+        return styles
+
+    async def _close_select_at_deadline(self, select: StyleSelect) -> None:
+        await self._sleep(max(0.0, select.deadline - self._clock()))
+        async with self._lock:
+            if self._select is select and self._engine is None and not self._closed:
+                self._start_match(select.seed)
+
+    def _cancel_select(self) -> None:
+        select = self._select
+        self._select = None
+        if (
+            select is not None
+            and select.task is not None
+            and select.task is not asyncio.current_task()
+        ):
+            select.task.cancel()
+
+    async def choose_style(
+        self, player_id: str, connection: PlayerConnection, choice: StyleChoice
+    ) -> None:
+        """A fighter's style during the pick; outside it, or once settled, it changes nothing."""
+        async with self._lock:
+            spectator = self._spectators.get(player_id)
+            if spectator is not None:
+                if spectator.connection is not connection:
+                    raise RoomError("connection_replaced")
+                raise RoomError("spectator_read_only")
+            slot = self._slots.get(player_id)
+            if slot is None or slot.connection is not connection:
+                raise RoomError("connection_replaced")
+            # Counted with the fighter's input frames, so a flood of picks is throttled and then
+            # refused like a flood of inputs.
+            now = self._clock()
+            while slot.frame_times and slot.frame_times[0] <= now - 1.0:
+                slot.frame_times.popleft()
+            slot.frame_times.append(now)
+            limit = self.config.max_input_frames_per_second
+            if len(slot.frame_times) > limit:
+                if slot.flood_started is None:
+                    slot.flood_started = now
+                if (
+                    len(slot.frame_times) > FLOOD_HARD_LIMIT_FACTOR * limit
+                    or now - slot.flood_started >= FLOOD_GRACE_SECONDS
+                ):
+                    raise RoomError("rate_limited")
+                return
+            slot.flood_started = None
+            select = self._select
+            if select is None or self._closed or player_id in select.ready:
+                return
+            slot.style = choice.style
+            if not choice.ready:
+                # Still choosing: the other corner learns nothing until this fighter settles.
+                return
+            select.ready.add(player_id)
+            if set(self._seated_styles()) <= select.ready:
+                self._start_match(select.seed)
+            else:
+                self._enqueue_all(self._select_message(), bounded_update=True)
+
+    def _start_match(self, seed: int) -> None:
+        self._cancel_select()
         players = tuple(self._slots)
         if self._cpu is not None:
             players = (*players, self._cpu.player_id)
@@ -634,7 +759,7 @@ class HandsRoom:
             if slot.connection is None:
                 self._refresh_grace(slot, now)
             slot.pre_match_grace_event.set()
-        seed = self._seed_factory()
+        styles = self._seated_styles()
         self._engine = BoxingEngine(
             match_id=self._match_id_factory(),
             activity_instance_id=self.instance_id,
@@ -643,10 +768,15 @@ class HandsRoom:
             player_two_id=players[1],
             seed=seed,
             config=self.config.engine_config,
+            styles=(styles[players[0]], styles[players[1]]),
         )
         if self._cpu is not None:
             self._cpu.brain = CpuBrain(
-                self._cpu.player_id, players[0], self._cpu.level, seed ^ CPU_SEED_SALT
+                self._cpu.player_id,
+                players[0],
+                self._cpu.level,
+                seed ^ CPU_SEED_SALT,
+                self._cpu.style,
             )
         self._enqueue_all(self._message("ready", players=self._public_players()))
         self._tick_task = asyncio.create_task(
@@ -668,10 +798,15 @@ class HandsRoom:
             # A request is a frame like any other, so a stream of them is a flood like any other.
             if not self._account_frame(slot, self._clock()):
                 return False
-            if self._closed or self._finished or self._engine is not None:
+            if (
+                self._closed
+                or self._finished
+                or self._engine is not None
+                or self._select is not None
+            ):
                 return False
             self._cpu = CpuOpponent(level)
-            self._start_match()
+            self._begin_select()
             return True
 
     async def submit_frame(
@@ -866,6 +1001,11 @@ class HandsRoom:
                         if slot.grace_remaining <= 0:
                             self._slots.pop(player_id, None)
                             expired = True
+                            if self._select is not None:
+                                # Back to waiting for an opponent: the corner is empty again.
+                                self._cancel_select()
+                                self._cpu = None
+                                self._enqueue_all(self._message("waiting", open_seats=1))
                         else:
                             delay = slot.grace_remaining
                 if expired:

@@ -1,9 +1,10 @@
 import json
-from dataclasses import dataclass, replace
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from importlib import resources
 from typing import Any
 
-from intelstream.hands.types import CornerChoice, Power, PunchClass, Target
+from intelstream.hands.types import CornerChoice, FighterStyle, Power, PunchClass, Target
 
 
 def _load_manifest() -> dict[str, Any]:
@@ -190,6 +191,55 @@ PUNCH_RULES: dict[tuple[PunchClass, Target, Power], PunchRule] = {
 COMPATIBLE_COMBO_CHAINS: frozenset[tuple[PunchClass, PunchClass]] = frozenset(
     (PunchClass(first), PunchClass(second)) for first, second in _MANIFEST["combos"]["chains"]
 )
+
+
+@dataclass(frozen=True, slots=True)
+class StyleRule:
+    """How a style of boxer differs from the balanced fighter. Every number is neutral by default."""
+
+    startup_ticks: Mapping[PunchClass, int] = field(default_factory=dict)
+    recovery_ticks: Mapping[PunchClass, int] = field(default_factory=dict)
+    reach_percent: int = 100
+    impact_percent: int = 100
+    poise_damage_percent: int = 100
+    """Poise damage this fighter's punches do."""
+    poise_taken_percent: int = 100
+    """Poise damage this fighter takes: the chin."""
+    stamina_cost_percent: int = 100
+    conditioning_loss_percent: int = 100
+    move_speed_percent: int = 100
+    body_damage_percent: int = 100
+    counter_bonus_percent: int = 28
+    """A counter lands this much harder than the same punch thrown into nothing."""
+    counter_window_ticks: int = 0
+    evasion_ticks: int = 0
+    perfect_block_ticks: int = 0
+
+
+def _style_rule(raw: dict[str, Any]) -> StyleRule:
+    fields = dict(raw)
+    for key in ("startup_ticks", "recovery_ticks"):
+        if key in fields:
+            fields[key] = {PunchClass(name): ticks for name, ticks in fields[key].items()}
+    return StyleRule(**fields)
+
+
+STYLE_RULES: dict[FighterStyle, StyleRule] = {
+    FighterStyle(name): _style_rule(raw) for name, raw in _MANIFEST["styles"].items()
+}
+if set(STYLE_RULES) != set(FighterStyle):
+    raise RuntimeError("combat-manifest.json styles must list every fighter style")
+
+
+def style_punch_rule(rule: PunchRule, style: StyleRule) -> PunchRule:
+    """The punch as a fighter of `style` throws it, before fatigue: reach, cost and poise damage."""
+    return replace(
+        rule,
+        reach=rule.reach * style.reach_percent // 100,
+        stamina_cost=rule.stamina_cost * style.stamina_cost_percent // 100,
+        whiff_cost=rule.whiff_cost * style.stamina_cost_percent // 100,
+        poise_damage=rule.poise_damage * style.poise_damage_percent // 100,
+    )
 
 
 @dataclass(frozen=True, slots=True)

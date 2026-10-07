@@ -77,6 +77,7 @@ from intelstream.hands.rules import (
     STUN_CHAIN_MAX_TICKS,
     STUN_IMMUNITY_TICKS,
     STUNNED_SPEED_PERCENT,
+    STYLE_RULES,
     SWELLING_PER_DAMAGE_PERCENT,
     TICKS_PER_SECOND,
     TIRED_IMPACT_PERCENT,
@@ -84,9 +85,11 @@ from intelstream.hands.rules import (
     TIRED_STARTUP_TICKS,
     JudgeProfile,
     PunchRule,
+    StyleRule,
     fatigue_factor,
     fatigue_max_stamina,
     poise_ceiling,
+    style_punch_rule,
 )
 from intelstream.hands.types import (
     ActionKind,
@@ -95,6 +98,7 @@ from intelstream.hands.types import (
     DefensivePose,
     EngineSnapshot,
     FighterSnapshot,
+    FighterStyle,
     FinishMethod,
     FoulAction,
     Hand,
@@ -207,6 +211,7 @@ class FighterState:
     y: int
     facing: int
     stance: Stance
+    style: FighterStyle = FighterStyle.BALANCED
     facing_x: int = 0
     facing_y: int = 0
     velocity_x: int = 0
@@ -269,6 +274,10 @@ class FighterState:
     @property
     def maximum_stamina(self) -> int:
         return fatigue_max_stamina(self.conditioning, self.trauma.body)
+
+    @property
+    def style_rule(self) -> StyleRule:
+        return STYLE_RULES[self.style]
 
     @property
     def fatigue(self) -> int:
@@ -422,6 +431,7 @@ class BoxingEngine:
         player_two_id: str,
         seed: int,
         config: EngineConfig | None = None,
+        styles: tuple[FighterStyle, FighterStyle] = (FighterStyle.BALANCED, FighterStyle.BALANCED),
     ) -> None:
         if player_one_id == player_two_id:
             raise ValueError("a match requires two distinct players")
@@ -440,8 +450,8 @@ class BoxingEngine:
         self._rng = random.Random(seed)  # nosec B311
         self._player_ids = (player_one_id, player_two_id)
         self._fighters = {
-            player_one_id: FighterState(player_one_id, -180, 0, 1, Stance.ORTHODOX),
-            player_two_id: FighterState(player_two_id, 180, 0, -1, Stance.ORTHODOX),
+            player_one_id: FighterState(player_one_id, -180, 0, 1, Stance.ORTHODOX, styles[0]),
+            player_two_id: FighterState(player_two_id, 180, 0, -1, Stance.ORTHODOX, styles[1]),
         }
         self._events: list[CombatEvent] = []
         self._tick_events: list[CombatEvent] = []
@@ -688,11 +698,17 @@ class BoxingEngine:
             and (attack.action.punch_class, follow_up.punch_class) in COMPATIBLE_COMBO_CHAINS
             # A punch the fighter cannot pay for in full is a tired one, and no combination.
             and fighter.stamina
-            >= PUNCH_RULES[(follow_up.punch_class, follow_up.target, follow_up.power)].stamina_cost
+            >= style_punch_rule(
+                PUNCH_RULES[(follow_up.punch_class, follow_up.target, follow_up.power)],
+                fighter.style_rule,
+            ).stamina_cost
         )
 
     def _start_punch(self, fighter: FighterState, action: PunchAction) -> None:
-        base_rule = PUNCH_RULES[(action.punch_class, action.target, action.power)]
+        style = fighter.style_rule
+        base_rule = style_punch_rule(
+            PUNCH_RULES[(action.punch_class, action.target, action.power)], style
+        )
         cost = base_rule.stamina_cost
         lead_hand = "left" if fighter.stance is Stance.ORTHODOX else "right"
         hand_speed_bonus = (
@@ -715,10 +731,20 @@ class BoxingEngine:
             combo_bonus = 10
             cost = max(1, cost * 90 // 100)
         fighter.stamina -= cost
-        fighter.conditioning = max(0, fighter.conditioning - max(1, cost // 12))
+        fighter.conditioning = max(
+            0, fighter.conditioning - max(1, cost // 12) * style.conditioning_loss_percent // 100
+        )
         speed = fighter.fatigue
-        startup = max(2, base_rule.startup * 100 // speed - hand_speed_bonus)
-        recovery = max(4, base_rule.recovery * 100 // speed)
+        startup = max(
+            2,
+            base_rule.startup * 100 // speed
+            - hand_speed_bonus
+            + style.startup_ticks.get(action.punch_class, 0),
+        )
+        recovery = max(
+            4,
+            base_rule.recovery * 100 // speed + style.recovery_ticks.get(action.punch_class, 0),
+        )
         strength = TIRED_IMPACT_PERCENT if tired else 100
         if tired:
             startup += TIRED_STARTUP_TICKS
@@ -729,7 +755,9 @@ class BoxingEngine:
             recovery=recovery,
             reach=base_rule.reach,
             lateral_arc=base_rule.lateral_arc,
-            impact=(base_rule.impact + rear_power_bonus) * strength // 100,
+            impact=((base_rule.impact + rear_power_bonus) * strength // 100)
+            * style.impact_percent
+            // 100,
             stamina_cost=base_rule.stamina_cost,
             whiff_cost=base_rule.whiff_cost,
             guard_damage=base_rule.guard_damage * strength // 100,
@@ -794,7 +822,13 @@ class BoxingEngine:
             or lateral_distance > effective_arc
         ):
             attacker.stamina = max(0, attacker.stamina - rule.whiff_cost)
-            attacker.conditioning = max(0, attacker.conditioning - max(2, rule.whiff_cost // 10))
+            attacker.conditioning = max(
+                0,
+                attacker.conditioning
+                - max(2, rule.whiff_cost // 10)
+                * attacker.style_rule.conditioning_loss_percent
+                // 100,
+            )
             self._emit(
                 "whiff",
                 attacker.player_id,
@@ -809,7 +843,7 @@ class BoxingEngine:
             defender, action, distance_squared, rule.reach, lateral_distance
         ):
             defender.performance.evasions += 1
-            defender.counter_ticks = COUNTER_WINDOW_TICKS
+            defender.counter_ticks = COUNTER_WINDOW_TICKS + defender.style_rule.counter_window_ticks
             self._emit(
                 "evade", defender.player_id, attacker.player_id, detail=defender.defense.value
             )
@@ -823,16 +857,19 @@ class BoxingEngine:
         perfect = (
             blocked
             and not blind
-            and self.tick - defender.defense_started_tick <= PERFECT_BLOCK_TICKS
+            and self.tick - defender.defense_started_tick
+            <= PERFECT_BLOCK_TICKS + defender.style_rule.perfect_block_ticks
         )
         counter = attacker.counter_ticks > 0 or self._counter_vulnerable(defender.attack)
         # A combination flows through a blocked punch but not a parried one.
         attack.landed = not perfect
         fatigue = attacker.fatigue
-        counter_multiplier = 128 if counter else 100
+        counter_multiplier = 100 + attacker.style_rule.counter_bonus_percent if counter else 100
         impact = (
             rule.impact * counter_multiplier * fatigue * (100 + attack.combo_bonus) // 1_000_000
         )
+        if action.target is Target.BODY:
+            impact = impact * attacker.style_rule.body_damage_percent // 100
         if blind:
             impact = impact * BLIND_SIDE_IMPACT_PERCENT // 100
         impact = max(1, impact)
@@ -842,7 +879,9 @@ class BoxingEngine:
             if perfect:
                 guard_damage //= 3
                 impact //= 8
-                defender.counter_ticks = COUNTER_WINDOW_TICKS
+                defender.counter_ticks = (
+                    COUNTER_WINDOW_TICKS + defender.style_rule.counter_window_ticks
+                )
                 self._emit(
                     "perfect_block",
                     defender.player_id,
@@ -896,6 +935,7 @@ class BoxingEngine:
                 * (PERFECT_BLOCK_POISE_PERCENT if perfect else BLOCK_POISE_PERCENT)
                 // 100
             )
+        poise_damage = poise_damage * defender.style_rule.poise_taken_percent // 100
         shut_eye: str | None = None
         if action.target is Target.HEAD:
             shut_eye = self._apply_head_damage(defender, action, damage, clean=not blocked)
@@ -1132,7 +1172,7 @@ class BoxingEngine:
             fighter.conditioning = max(0, fighter.conditioning - 1)
             fighter.defense = pose_by_action[action.kind]
             fighter.defense_started_tick = self.tick
-            fighter.evasion_ticks = EVASION_TICKS
+            fighter.evasion_ticks = EVASION_TICKS + fighter.style_rule.evasion_ticks
             self._emit("defense", fighter.player_id, detail=fighter.defense.value)
             return True
         if action.kind is ActionKind.SWITCH_STANCE:
@@ -1276,6 +1316,8 @@ class BoxingEngine:
         if fighter.stunned_ticks > 0:
             # A stunned fighter stumbles: still on his feet, at a fraction of his footwork.
             speed = max(2, speed * STUNNED_SPEED_PERCENT // 100)
+        # In thousandths of a unit, so a style's few percent of footspeed survive the rounding.
+        fixed_speed = speed * MOVEMENT_FIXED_SCALE * fighter.style_rule.move_speed_percent // 100
         if (
             fighter.attack is not None
             or fighter.evasion_ticks > 0
@@ -1286,11 +1328,11 @@ class BoxingEngine:
             move_x = 0
             move_y = 0
         move_x, move_y = _normalize_move_vector(move_x, move_y)
-        desired_fixed_x = move_x * speed
-        desired_fixed_y = move_y * speed
+        desired_fixed_x = _symmetric_divide(move_x * fixed_speed, MOVEMENT_FIXED_SCALE)
+        desired_fixed_y = _symmetric_divide(move_y * fixed_speed, MOVEMENT_FIXED_SCALE)
         fighter.velocity_fixed_x = _blend_velocity(fighter.velocity_fixed_x, desired_fixed_x)
         fighter.velocity_fixed_y = _blend_velocity(fighter.velocity_fixed_y, desired_fixed_y)
-        fixed_cap = speed * MOVEMENT_FIXED_SCALE
+        fixed_cap = fixed_speed
         fixed_magnitude_squared = (
             fighter.velocity_fixed_x * fighter.velocity_fixed_x
             + fighter.velocity_fixed_y * fighter.velocity_fixed_y
@@ -1314,6 +1356,7 @@ class BoxingEngine:
                     fighter.velocity_fixed_y -= 1 if fighter.velocity_fixed_y > 0 else -1
         fighter.velocity_x = _rounded_fixed_velocity(fighter.velocity_fixed_x)
         fighter.velocity_y = _rounded_fixed_velocity(fighter.velocity_fixed_y)
+        # The velocity a snapshot reports stays within the base speed; the footwork is in fixed point.
         while (
             fighter.velocity_x * fighter.velocity_x + fighter.velocity_y * fighter.velocity_y
             > speed * speed
@@ -1339,7 +1382,7 @@ class BoxingEngine:
         moving = bool(input_magnitude_squared or velocity_magnitude_squared)
         # Squared comparisons preserve exact deterministic ceil-bucket boundaries.
         above_half_speed = (
-            input_magnitude_squared > 500**2 or velocity_magnitude_squared > (500 * speed) ** 2
+            input_magnitude_squared > 500**2 or velocity_magnitude_squared > (fixed_speed // 2) ** 2
         )
         movement_load = 2 if above_half_speed else int(moving)
         fighter.movement_load = movement_load
@@ -2100,6 +2143,7 @@ class BoxingEngine:
             velocity_x=fighter.velocity_x,
             velocity_y=fighter.velocity_y,
             stance=fighter.stance,
+            style=fighter.style,
             defense=fighter.defense,
             stamina=fighter.stamina,
             maximum_stamina=fighter.maximum_stamina,

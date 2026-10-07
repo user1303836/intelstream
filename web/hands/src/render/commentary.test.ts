@@ -189,6 +189,15 @@ describe("the ring announcer", () => {
     ]);
   });
 
+  it("names each fighter's style in the introduction, and none for a balanced fighter", () => {
+    const speak = vi.fn();
+    const director = new CommentaryDirector({ speak });
+    feed(director, state(1, "countdown", [{ style: "slugger" }, {}], { phase_ticks_remaining: 90 }), [], 0);
+    expect(director.current(0.05)?.line.card?.detail).toBe("SLUGGER · RATED 1512");
+    expect(director.current(1.6)?.line.card?.detail).toBe("RATED 1494");
+    expect(speak.mock.calls[0]![0]).toEqual(["In the blue corner... the slugger, Azure Vector!", "And in the red corner... Crimson Geometry!"]);
+  });
+
   it("does not introduce the fighters to someone who arrives after the opening bell", () => {
     const speak = vi.fn();
     const director = new CommentaryDirector({ speak });

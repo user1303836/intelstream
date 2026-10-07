@@ -1,6 +1,6 @@
 import { safeError } from "./api";
-import { decodeServerFrame, encodeCpuRequest, encodeInput } from "./protocol";
-import { PROTOCOL_VERSION, type ConnectionRole, type CornerKind, type CpuLevel, type EngineSnapshot, type InputFrame, type ServerMessage } from "./types";
+import { decodeServerFrame, encodeCpuRequest, encodeInput, encodeStyleChoice } from "./protocol";
+import { PROTOCOL_VERSION, type ConnectionRole, type CornerKind, type CpuLevel, type EngineSnapshot, type FighterStyle, type InputFrame, type ServerMessage } from "./types";
 
 export function websocketUrl(location: Location = window.location): string {
   const url = new URL("/api/hands/ws", location.origin);
@@ -278,6 +278,19 @@ export class NetworkController {
     if (this.role !== "fighter" || this.disposed || this.terminal || socket?.readyState !== OPEN) return false;
     try {
       socket.send(encodeCpuRequest(level));
+      return true;
+    } catch {
+      this.handleClose(socket);
+      return false;
+    }
+  }
+
+  /** Tells the room which style this fighter is choosing, or has settled on when `ready`. */
+  chooseStyle(style: FighterStyle, ready: boolean): boolean {
+    const socket = this.socket;
+    if (this.role !== "fighter" || this.disposed || this.terminal || socket?.readyState !== OPEN) return false;
+    try {
+      socket.send(encodeStyleChoice(style, ready));
       return true;
     } catch {
       this.handleClose(socket);

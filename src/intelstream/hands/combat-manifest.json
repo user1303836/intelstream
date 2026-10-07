@@ -228,6 +228,45 @@
     "collapse_delay_ticks": 10,
     "collapse_cooldown_ticks": 300
   },
+  "styles": {
+    "balanced": {},
+    "boxer": {
+      "recovery_ticks": {
+        "jab": -1
+      },
+      "reach_percent": 102,
+      "impact_percent": 92
+    },
+    "slugger": {
+      "impact_percent": 110,
+      "poise_damage_percent": 108,
+      "poise_taken_percent": 90,
+      "stamina_cost_percent": 110,
+      "recovery_ticks": {
+        "hook": 1,
+        "uppercut": 1
+      },
+      "move_speed_percent": 96
+    },
+    "swarmer": {
+      "move_speed_percent": 110,
+      "startup_ticks": {
+        "hook": -1,
+        "uppercut": -1
+      },
+      "body_damage_percent": 115,
+      "conditioning_loss_percent": 80,
+      "impact_percent": 96,
+      "evasion_ticks": 1
+    },
+    "counter_puncher": {
+      "counter_bonus_percent": 38,
+      "counter_window_ticks": 3,
+      "evasion_ticks": 1,
+      "perfect_block_ticks": 1,
+      "impact_percent": 96
+    }
+  },
   "stun": {
     "flinch_minimum_damage": 36,
     "flinch_base_ticks": 5,

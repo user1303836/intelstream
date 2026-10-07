@@ -717,6 +717,16 @@ describe("round stats", () => {
     expect(texts.some((text) => text.startsWith("DEBUT · ELO"))).toBe(true);
   });
 
+  it("puts a fighter's style on the plate, and nothing for a balanced one", () => {
+    const texts: string[] = [];
+    const players = Object.fromEntries(publicPlayers.map((player) => [player.id, player]));
+    const styled = snapshot();
+    drawHud(mockHudContext(texts), 1280, 720, { ...styled, fighters: [{ ...styled.fighters[0], style: "counter_puncher" }, styled.fighters[1]] }, players, "one", null, 0, 30);
+    expect(texts.some((text) => text.startsWith("COUNTER · ELO"))).toBe(true);
+    expect(texts.filter((text) => text.startsWith("ELO "))).toHaveLength(1);
+    expect(texts.some((text) => text.includes("BALANCED"))).toBe(false);
+  });
+
   it("warns the local fighter of a slow connection and otherwise keeps latency off the broadcast", () => {
     const texts: string[] = [];
     const ctx = mockHudContext(texts);
@@ -764,8 +774,8 @@ describe("the broadcast HUD after the QA pass", () => {
     const measure = ctx.measureText.bind(ctx);
     ctx.measureText = (text: string) => { const metrics = measure(text); widths.push(metrics.width); return metrics; };
     drawHud(ctx, 390, 844, { ...snapshot(), fighters: [{ ...fighter("one"), knockdowns: 2 }, { ...fighter("two"), knockdowns: 1 }] as const }, long, "one", null, 0, 30);
-    const details = texts.filter((text) => /^\d+-\d+/u.test(text));
-    expect(details).toHaveLength(2);
+    const details = texts.filter((text) => / KD$/u.test(text));
+    expect(details).toEqual(["2 KD", "1 KD"]);
     for (const detail of details) expect(ctx.measureText(detail).width).toBeLessThanOrEqual((390 - 56) / 2 - 24);
   });
 
@@ -976,6 +986,21 @@ describe("compact scoreboard labels", () => {
     expect(texts.some((text) => text.startsWith("STA "))).toBe(true);
     expect(texts.some((text) => text.startsWith("HP "))).toBe(true);
     expect(texts.some((text) => text.startsWith("STAMINA"))).toBe(false);
+  });
+
+  it("keeps a phone's plates to the style and the bout's count so the two lines do not run together", () => {
+    const texts: string[] = [];
+    const players = Object.fromEntries(publicPlayers.map((p) => [p.id, { ...p, record: { wins: 12, losses: 3, draws: 1, knockouts: 8 } }]));
+    const styled = snapshot();
+    drawHud(mockHudContext(texts), 390, 844, { ...styled, fighters: [{ ...styled.fighters[0], style: "counter_puncher" }, styled.fighters[1]] }, players, "one", null, 0, 30);
+    expect(texts).toContain("COUNTER");
+    expect(texts.some((text) => text.includes("ELO") || text.includes("12-3-1") || text.includes("KD"))).toBe(false);
+    const down = snapshot();
+    texts.length = 0;
+    drawHud(mockHudContext(texts), 390, 844, { ...down, fighters: [{ ...down.fighters[0], style: "counter_puncher", knockdowns: 2 }, down.fighters[1]] }, players, "one", null, 0, 30);
+    expect(texts).toContain("COUNTER · 2 KD");
+    // 7 px a character in this context: every line stays inside its 167 px plate.
+    expect(texts.filter((text) => text.includes("KD")).every((text) => text.length * 7 <= 167 - 20 - 14)).toBe(true);
   });
 });
 

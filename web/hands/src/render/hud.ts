@@ -1,5 +1,6 @@
 import { EYE_SHUT_TRAUMA } from "../manifest";
 import { isDebut, recordLine } from "../record";
+import { styleTag } from "../styles";
 import type { CombatEvent, CornerChoice, EngineSnapshot, FighterSnapshot, FinalMessage, FinishMethod, PublicPlayer, RatingDelta, TraumaSnapshot } from "../types";
 import { monogram } from "./avatars";
 
@@ -197,8 +198,13 @@ function fighterPlate(
   ctx.font = `800 ${nameSize}px Inter, system-ui, sans-serif`;
   ctx.fillText(fit(ctx, label, nameWidth), textX, y + 21);
   ctx.fillStyle = "#93a3bd";
-  ctx.font = "600 10px Inter, system-ui, sans-serif";
-  ctx.fillText(fit(ctx, detail, nameWidth), textX, y + 35);
+  const detailWidth = width - inset - 14;
+  const detailSize = fitFontSize((size) => {
+    ctx.font = `600 ${size}px Inter, system-ui, sans-serif`;
+    return ctx.measureText(detail).width;
+  }, detailWidth, 10, 8);
+  ctx.font = `600 ${detailSize}px Inter, system-ui, sans-serif`;
+  ctx.fillText(fit(ctx, detail, detailWidth), textX, y + 35);
 
   const barWidth = (width - 52) / bars.length;
   const groupWidth = bars.length * barWidth + (bars.length - 1) * 12;
@@ -437,7 +443,10 @@ export function drawHud(
     const mirror = index === 1;
     const x = mirror ? width - 24 - plateWidth : 24;
     const player = players[fighter.player_id];
-    const detail = plateDetail(player, fighter, compact);
+    // A phone's plate only has room for the style and the bout's own knockdowns; the introductions give the record.
+    const detail = (compact ? [styleTag(fighter.style), fighter.knockdowns > 0 ? `${fighter.knockdowns} KD` : null] : [styleTag(fighter.style), plateDetail(player, fighter, false)])
+      .filter((part) => part !== null && part !== "")
+      .join(" · ");
     const bars: BarSpec[] = [
       { label: `${compact ? "STA" : "STAMINA"} ${Math.round(fighter.stamina)}`, value: fighter.stamina, maximum: fighter.maximum_stamina, from: "#ffe08a", to: "#d9a53a" },
       { label: `${compact ? "HP" : "HEALTH"} ${Math.round(fighter.conditioning)}`, value: fighter.conditioning, maximum: HUD_MAX_CONDITIONING, from: "#ff8a7a", to: "#b02a20" },

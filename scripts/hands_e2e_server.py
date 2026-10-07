@@ -80,7 +80,12 @@ async def run(args: argparse.Namespace) -> None:
         port=args.port,
         dev_mode=True,
         auth=DevAuth(),
-        rooms=HandsRoomManager(repository, config=RoomConfig(engine_config=engine_config)),
+        rooms=HandsRoomManager(
+            repository,
+            config=RoomConfig(
+                engine_config=engine_config, style_select_seconds=args.style_select_seconds
+            ),
+        ),
     )
     await server.start()
     print(f"hands e2e server listening on http://127.0.0.1:{server.bound_port}", flush=True)
@@ -101,6 +106,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--rounds", type=int, default=3)
     parser.add_argument("--round-seconds", type=int, default=120)
     parser.add_argument("--rest-seconds", type=int, default=15)
+    parser.add_argument("--style-select-seconds", type=float, default=10.0)
     return parser.parse_args(argv)
 
 
