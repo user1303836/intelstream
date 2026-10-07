@@ -1,4 +1,4 @@
-import { punchStaminaCost } from "./manifest";
+import { cancelsRecovery, punchStaminaCost, punchTiming, recoveryCancelAge } from "./manifest";
 import { attackTicksRemaining, canAffordPunch, constrainPrediction, fatigueFactor, MINIMUM_SEPARATION, movementLocked, predictMovement, predictedPunchTiming } from "./prediction";
 import { fighter } from "./test/fixtures";
 import timingTable from "./test/punch-timing-table.json";
@@ -121,5 +121,18 @@ describe("local movement prediction", () => {
     const moving = { ...fighter("one"), conditioning: 1000, velocity_x: 6 };
     const coast = predictMovement(moving, { moveX: 0, moveY: 0, defense: "none" }, 3);
     expect(coast.dx).toBeCloseTo(3 + 1.5 + 0.75, 5);
+  });
+
+  it("mirrors the engine's recovery cancel: a landed, chained, affordable follow-up on a defender who is not stunned", () => {
+    expect(recoveryCancelAge(punchTiming("straight", "head", "normal"))).toBe(6 + 2 + 5);
+    expect(recoveryCancelAge(punchTiming("hook", "head", "normal"))).toBe(7 + 3 + 6);
+    expect(recoveryCancelAge({ startup: 4, active: 2, recovery: 9 })).toBe(4 + 2 + 4);
+    const hook = { class: "hook" as const, target: "head" as const, power: "normal" as const };
+    expect(cancelsRecovery("straight", true, hook, 900, false)).toBe(true);
+    expect(cancelsRecovery("straight", false, hook, 900, false)).toBe(false);
+    expect(cancelsRecovery("straight", true, hook, 900, true)).toBe(false);
+    expect(cancelsRecovery("straight", true, hook, punchStaminaCost("hook", "head", "normal") - 1, false)).toBe(false);
+    expect(cancelsRecovery("straight", true, { ...hook, class: "jab" }, 900, false)).toBe(false);
+    expect(cancelsRecovery("hook", true, { ...hook, class: "uppercut" }, 900, false)).toBe(true);
   });
 });

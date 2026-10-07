@@ -1,9 +1,9 @@
 import * as THREE from "three";
 import { GLTFLoader, type GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
-import { GLOVE_HITBOX_RADIUS, HURTBOXES, punchTiming, totalTicks, type PunchTiming } from "../manifest";
+import { GLOVE_HITBOX_RADIUS, HURTBOXES, cancelsRecovery, punchTiming, recoveryCancelAge, totalTicks, type PunchTiming } from "../manifest";
 import type { BloodLevel } from "../settings";
-import type { FighterSnapshot, Hand, Power, PunchClass, SemanticAction, Target } from "../types";
+import type { CombatEvent, FighterSnapshot, Hand, Power, PunchAction, PunchClass, SemanticAction, Target } from "../types";
 import { FIGHTER_GLB_GZIP_BASE64 } from "../assets/fighter-glb";
 import { BONE_ADAPTER } from "./skeleton";
 export { BONE_ADAPTER };
@@ -290,6 +290,18 @@ interface Spring3 {
   readonly velocity: THREE.Vector3;
 }
 
+/** A press of the viewer's own punch, kept until it plays. */
+interface OwnPress {
+  readonly action: PunchAction & { readonly id: string };
+  readonly timing: PunchTiming;
+  readonly leadTicks: number;
+  readonly pressedAt: number;
+  /** The input frame that carries it, until the server has started it. */
+  sequence: number | null;
+  /** Real ticks since the key was pressed. */
+  waited: number;
+}
+
 const springStep = (spring: Spring3, dt: number, stiffness: number, damping: number, limit: number): void => {
   const value = spring.value;
   const velocity = spring.velocity;
@@ -337,6 +349,14 @@ export class BoxingGraph {
   private ownPressedAt = 0;
   /** The server refused the punch or cut it off before contact, so the pull-back is final. */
   private ownRefused = false;
+  /** A press made during a punch: the server holds it until that punch lets it go, and so does the graph. */
+  private ownQueued: OwnPress | null = null;
+  /** This fighter's newest punch the server reported meeting the opponent, and whether it was parried. */
+  private contactId: string | null = null;
+  private contactParried = false;
+  /** The fighters as last shown, for the recovery cancel's stamina and stun checks. */
+  private shownFighter: FighterSnapshot | null = null;
+  private shownOpponent: FighterSnapshot | null = null;
   /** Own punches already played or cut short here; the server's copy of them is not played again. */
   private readonly retiredOwnIds: string[] = [];
   private hitstop = 0;
@@ -492,6 +512,7 @@ export class BoxingGraph {
     this.yawInitialized = false;
     this.feetInitialized = false;
     this.retirePunch();
+    this.ownQueued = null;
     this.completedActionId = null;
     this.retiredOwnIds.length = 0;
   }
@@ -553,25 +574,87 @@ export class BoxingGraph {
    * Starts the viewer's own punch on the key press. `leadTicks` estimates how far ahead of the
    * server's presentation that is (input latency plus the interpolation delay); the startup is
    * stretched by it so the glove arrives when the hit is shown. `sequence` is the input frame that
-   * carries the press, so `acknowledge` can tell when the server has had its chance to start it.
+   * carries the press, so `acknowledge` can tell when the server has had its chance to start it. A
+   * press made during a punch waits, as it does on the server, until that punch lets it go.
    */
   predict(action: SemanticAction, timeSeconds: number, tickRate: number, leadTicks = 0, expected?: PunchTiming, sequence?: number): void {
     if (action.kind !== "punch" || action.id === undefined) return;
+    const press: OwnPress = {
+      action: { ...action, id: action.id },
+      timing: expected ?? punchTiming(action.class, action.target, action.power),
+      leadTicks,
+      pressedAt: timeSeconds,
+      sequence: sequence ?? null,
+      waited: 0,
+    };
     // The server keeps one press waiting and a newer one takes its place. Two presses in the same
     // input frame, or less than half a tick apart, usually reach it before the same step, so only the
     // second starts there: it replaces the first here too, unless the server has already started it.
     const unstarted = this.punchActive && this.ownActionId !== null && this.ownAuthoritativeAge === null && !this.ownPulled
       && (sequence === undefined || this.ownSequence !== null);
-    const replaces = unstarted && (sequence === this.ownSequence || (timeSeconds - this.ownPressedAt) * tickRate < SAME_STEP_TICKS);
-    // Not retired: if the first did start after all, it plays on the server's timeline.
-    if (replaces) this.ownActionId = null;
-    // Mid-punch the server queues the press, so it plays on the server's timeline. Late in the
-    // recovery the follow-up cuts in at once, and a punch on its way back holds nothing up.
-    const busy = this.punchActive && !this.ownPulled && !replaces;
-    const remaining = busy ? this.punchTotalTicks - this.punchAgeTicks : 0;
-    if (busy && this.punchAgeTicks / this.punchTotalTicks <= 0.55) return;
+    if (unstarted && (sequence === this.ownSequence || (timeSeconds - this.ownPressedAt) * tickRate < SAME_STEP_TICKS)) {
+      // Not retired: if the first did start after all, it plays on the server's timeline.
+      this.ownActionId = null;
+    } else if (this.punchActive && !this.ownPulled) {
+      // Behind a punch the server holds the press until a combination cuts the recovery short or the
+      // punch ends. A press it already holds is replaced only if it is still held when this one
+      // arrives; otherwise it has started by then, and this one waits behind it and plays when shown.
+      if (this.ownQueued !== null && this.followUpStartAge(this.ownQueued) - this.punchAgeTicks <= leadTicks) return;
+      if (this.punchAgeTicks < this.followUpStartAge(press)) {
+        this.ownQueued = press;
+        return;
+      }
+    }
+    this.ownQueued = null;
     this.retirePunch();
-    const timing = expected ?? punchTiming(action.class, action.target, action.power);
+    this.startOwnPunch(press, leadTicks);
+  }
+
+  /** True while the viewer's own punch, started on the key press, is playing. */
+  get ownPunchActive(): boolean {
+    return this.punchActive && this.ownActionId !== null;
+  }
+
+  /**
+   * Squares the viewer's own punches with the newest snapshot, which is ahead of the one on screen by
+   * the interpolation delay. Once that snapshot has the frame that carried a press, the punch has
+   * started on the server or never will: a guard raised in the same tick, a newer press or a stun
+   * clears it there. A stun, a clinch or the end of the fight phase also cuts off a punch the server
+   * did start, unless it had already landed. Either way the glove comes straight back. `contacts` are
+   * the snapshot's contact events for this fighter's punches.
+   */
+  acknowledge(server: FighterSnapshot, fighting: boolean, contacts: readonly CombatEvent[] = []): void {
+    for (const event of contacts) {
+      if (event.action_id === null || !CONNECTING_CONTACTS.has(event.kind)) continue;
+      if (event.action_id !== this.contactId) {
+        this.contactId = event.action_id;
+        this.contactParried = false;
+      }
+      if (event.kind === "perfect_block") this.contactParried = true;
+    }
+    const cutOff = !fighting || server.stunned_ticks > 0 || server.clinch_ticks > 0 || server.clinch_startup_ticks > 0;
+    const queued = this.ownQueued;
+    if (queued !== null) {
+      // A held press the server has started is no longer its to refuse; one it has dropped is forgotten.
+      if (server.action_id === queued.action.id) queued.sequence = null;
+      else if (queued.sequence !== null && (cutOff || (server.last_input_sequence >= queued.sequence && server.queued_actions === 0))) this.ownQueued = null;
+    }
+    if (!this.punchActive || this.ownActionId === null || this.ownPulled || this.ownRefused) return;
+    const started = server.action_id === this.ownActionId;
+    if (started) this.ownSequence = null;
+    const refused = started
+      ? cutOff && server.action_contact_tick === null
+      : this.ownSequence !== null && this.ownAuthoritativeAge === null
+        && (cutOff || (server.last_input_sequence >= this.ownSequence && server.queued_actions === 0));
+    if (!refused) return;
+    this.ownRefused = true;
+    // Before contact the glove comes back the way it went; after it the punch simply finishes.
+    if (this.punchAgeTicks < this.punchTiming.startup) this.ownPulled = true;
+  }
+
+  /** Plays the viewer's own press from its first frame, its startup stretched by `leadTicks`. */
+  private startOwnPunch(press: OwnPress, leadTicks: number): void {
+    const { action, timing } = press;
     this.punchClass = action.class;
     this.punchHand = action.hand;
     this.punchTarget = action.target;
@@ -582,36 +665,40 @@ export class BoxingGraph {
     this.punchActive = true;
     this.ownActionId = action.id;
     this.ownLeadTicks = clamp(leadTicks, 0, MAX_OWN_LEAD_TICKS);
-    this.ownExpectedTicks = Math.max(0, leadTicks) + remaining;
-    this.ownSequence = sequence ?? null;
-    this.ownPressedAt = timeSeconds;
-  }
-
-  /** True while the viewer's own punch, started on the key press, is playing. */
-  get ownPunchActive(): boolean {
-    return this.punchActive && this.ownActionId !== null;
+    this.ownExpectedTicks = Math.max(0, leadTicks);
+    this.ownSequence = press.sequence;
+    this.ownPressedAt = press.pressedAt;
   }
 
   /**
-   * Squares the viewer's own punch with the newest snapshot, which is ahead of the one on screen by
-   * the interpolation delay. Once that snapshot has the frame that carried the press, the punch has
-   * started on the server or never will: a guard raised in the same tick, a newer press or a stun
-   * clears it there. A stun, a clinch or the end of the fight phase also cuts off a punch the server
-   * did start, unless it had already landed. Either way the glove comes straight back.
+   * Age of the punch being played at which the server starts `press`, held behind it: the cancel age
+   * when a combination may cut the recovery short (the engine's rule, with the fighters as shown),
+   * otherwise the tick after the punch ends.
    */
-  acknowledge(server: FighterSnapshot, fighting: boolean): void {
-    if (!this.punchActive || this.ownActionId === null || this.ownPulled || this.ownRefused) return;
-    const started = server.action_id === this.ownActionId;
-    if (started) this.ownSequence = null;
-    const cutOff = !fighting || server.stunned_ticks > 0 || server.clinch_ticks > 0 || server.clinch_startup_ticks > 0;
-    const refused = started
-      ? cutOff && server.action_contact_tick === null
-      : this.ownSequence !== null && this.ownAuthoritativeAge === null
-        && (cutOff || (server.last_input_sequence >= this.ownSequence && server.queued_actions === 0));
-    if (!refused) return;
-    this.ownRefused = true;
-    // Before contact the glove comes back the way it went; after it the punch simply finishes.
-    if (this.punchAgeTicks < this.punchTiming.startup) this.ownPulled = true;
+  private followUpStartAge(press: OwnPress): number {
+    const fighter = this.shownFighter;
+    const opponent = this.shownOpponent;
+    const id = this.actionId ?? this.ownActionId;
+    const landed = id !== null && id === this.contactId && !this.contactParried;
+    if (fighter !== null && opponent !== null && cancelsRecovery(this.punchClass, landed, press.action, fighter.stamina, opponent.stunned_ticks > 0)) {
+      return recoveryCancelAge(this.punchTiming);
+    }
+    return this.punchTotalTicks + 1;
+  }
+
+  /**
+   * Starts the held press when the server would: at the cancel age when a combination cuts the
+   * recovery short, the tick after the punch ends otherwise, and at once if the punch in front of it
+   * was refused. Its startup is stretched by whatever lead the wait has not used up.
+   */
+  private releaseQueuedPress(simDt: number, ended: boolean): void {
+    const press = this.ownQueued;
+    if (press === null) return;
+    press.waited += simDt * 30;
+    if (this.punchActive && !this.ownPulled && this.punchAgeTicks < this.followUpStartAge(press)) return;
+    this.ownQueued = null;
+    this.retirePunch();
+    this.startOwnPunch(press, Math.max(ended ? 1 : 0, press.leadTicks - press.waited));
   }
 
   /** Marks the punch being played as done so neither copy of it is started again. */
@@ -787,7 +874,7 @@ export class BoxingGraph {
     this.hitstopScale = this.hitstop > 0 ? 0.12 : 1;
     const simDt = dt * this.hitstopScale;
 
-    this.syncAction(fighter, sampledTick, simDt);
+    this.syncAction(fighter, opponent, sampledTick, simDt);
     if (!this.debugHoldImpact) {
       this.boxer.headInjury.update(simDt);
       this.boxer.bodyInjury.update(simDt);
@@ -1112,7 +1199,16 @@ export class BoxingGraph {
     return this.headWorld.set(-0.08, metrics.headHeight - metrics.hipsHeight + this.torso.hips.y, 0.02);
   }
 
-  private syncAction(fighter: FighterSnapshot, sampledTick: number, simDt: number): void {
+  private syncAction(fighter: FighterSnapshot, opponent: FighterSnapshot, sampledTick: number, simDt: number): void {
+    this.shownFighter = fighter;
+    this.shownOpponent = opponent;
+    const queued = this.ownQueued;
+    if (queued !== null && fighter.action_id === queued.action.id) {
+      // The server let the held press go sooner than expected: it plays on the server's timeline.
+      this.ownQueued = null;
+      this.retirePunch();
+      this.startOwnPunch(queued, 0);
+    }
     if (
       fighter.action_id !== null
       && fighter.action_id !== this.actionId
@@ -1176,6 +1272,7 @@ export class BoxingGraph {
       this.ownWaitedTicks += simDt * 30;
       if (this.ownWaitedTicks > this.ownExpectedTicks * 1.5 + OWN_PUNCH_GRACE_TICKS && this.punchAgeTicks < this.punchTiming.startup) this.ownPulled = true;
     }
+    let ended = false;
     if (this.punchActive && this.ownPulled) {
       this.punchAgeTicks -= simDt * 30 * OWN_PUNCH_PULL_RATE;
       if (this.punchAgeTicks <= 0) {
@@ -1186,9 +1283,16 @@ export class BoxingGraph {
       }
     } else if (this.punchActive) {
       this.punchAgeTicks += simDt * 30 * this.ownPunchRate();
-      if (this.punchAgeTicks >= this.punchTotalTicks) this.retirePunch();
+      if (this.punchAgeTicks >= this.punchTotalTicks) {
+        this.retirePunch();
+        ended = true;
+      }
     }
-    if (fighter.is_downed && this.punchActive) this.retirePunch();
+    if (fighter.is_downed) {
+      if (this.punchActive) this.retirePunch();
+      this.ownQueued = null;
+    }
+    this.releaseQueuedPress(simDt, ended);
   }
 
   /**
@@ -1943,6 +2047,8 @@ const OWN_PUNCH_GRACE_TICKS = 5;
 const OWN_PUNCH_PULL_RATE = 1.5;
 /** Presses closer together than this usually reach the server before the same step, where the newer one replaces the older. */
 const SAME_STEP_TICKS = 0.5;
+/** Contact events in which a punch met the opponent: a hit or a block, a parry included. */
+const CONNECTING_CONTACTS: ReadonlySet<string> = new Set(["hit", "counter_hit", "block", "perfect_block"]);
 
 /** Age in `to`'s timing at the same progress through the same phase as `age` in `from`'s. */
 export function remapPunchAge(age: number, from: PunchTiming, to: PunchTiming): number {

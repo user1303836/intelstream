@@ -46,11 +46,37 @@ export const RING_HALF_WIDTH = manifestJson.ring.half_width;
 export const RING_HALF_HEIGHT = manifestJson.ring.half_height;
 export const FIGHTER_RADIUS = manifestJson.ring.fighter_radius;
 export const RING_CORNER_REACH = manifestJson.corners.reach;
+/** Percent of a punch's recovery that must pass before a chained follow-up may cut the rest of it short. */
+export const RECOVERY_CANCEL_PERCENT = manifestJson.combos.recovery_cancel_percent;
 const comboChains = new Set(manifestJson.combos.chains.map(([first, second]) => `${first}:${second}`));
 
 /** Whether the engine counts `second` straight after `first` as a combination. */
 export function comboChain(first: PunchClass, second: PunchClass): boolean {
   return comboChains.has(`${first}:${second}`);
+}
+
+/** Age from which a punch's recovery may give way to a follow-up: the engine's `cancel_age`. */
+export function recoveryCancelAge(timing: Pick<PunchTiming, "startup" | "active" | "recovery">): number {
+  return timing.startup + timing.active + Math.floor((timing.recovery * RECOVERY_CANCEL_PERCENT) / 100);
+}
+
+/**
+ * The engine's `_can_cancel_recovery` for a punch past its `recoveryCancelAge`: the follow-up waiting
+ * on it starts at once only if the punch landed (a hit or an ordinary block, not a whiff, an evade or a
+ * parry), the two form a combination, the fighter can pay the follow-up's full cost and the defender is
+ * not stunned. Otherwise the follow-up starts the tick after the punch ends.
+ */
+export function cancelsRecovery(
+  punch: PunchClass,
+  landed: boolean,
+  followUp: { readonly class: PunchClass; readonly target: Target; readonly power: Power },
+  stamina: number,
+  defenderStunned: boolean,
+): boolean {
+  return landed
+    && !defenderStunned
+    && comboChain(punch, followUp.class)
+    && stamina >= punchStaminaCost(followUp.class, followUp.target, followUp.power);
 }
 
 /** Ticks after a punch ends during which a compatible follow-up still counts as a combination. */

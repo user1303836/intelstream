@@ -1000,17 +1000,19 @@ export class FightRenderer {
     this.graphs?.[index]?.predict(action, performance.now() / 1000, this.simulation.tick_rate, leadTicks, predictedPunchTiming(fighter, action, latest.tick + 1), sequence);
   }
 
-  /** Every snapshot, as it arrives, tells the viewer's own punch whether the server took it. */
-  private acknowledgeActions(snapshot: EngineSnapshot): void {
+  /** Every snapshot, as it arrives, tells the viewer's own punches whether the server took them and how they met the opponent. */
+  private acknowledgeActions(snapshot: EngineSnapshot, events: readonly CombatEvent[]): void {
     if (this.viewerId === null) return;
     const index = snapshot.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
-    if (index >= 0) this.graphs?.[index]?.acknowledge(snapshot.fighters[index]!, snapshot.phase === "fight");
+    if (index < 0) return;
+    const contacts = events.filter((event) => contactParticipants(event, snapshot).puncherIndex === index);
+    this.graphs?.[index]?.acknowledge(snapshot.fighters[index]!, snapshot.phase === "fight", contacts);
   }
 
   push(snapshot: EngineSnapshot): void {
     if (!this.buffer.push(snapshot, this.manualClock ? this.lastManualTime : performance.now())) return;
-    this.acknowledgeActions(snapshot);
     const accepted = this.dedupe.accept(snapshot.events);
+    this.acknowledgeActions(snapshot, accepted);
     this.history.push(snapshot);
     if (this.history.length > HISTORY_LIMIT) this.history.shift();
     for (const event of accepted) {
