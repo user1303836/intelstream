@@ -241,11 +241,11 @@ export class SkinnedBoxer {
     if (this.headMeshes.length !== 1) throw new Error(`fighter GLB requires one BoxerHead mesh, found ${this.headMeshes.length}`);
     const headShadow = this.headInjury.shadowMaterial();
     this.headMeshes[0]!.customDepthMaterial = headShadow;
-    // A fighter's head is drawn from inside too, so a cut through it shows flesh where it is open (the
-    // injury shading drops back faces while it is whole); an official's head is never cut open. Shadows
-    // still come from the back faces as for a one-sided skin, or the face would shadow itself in stripes.
+    // A head is one-sided until a finisher cuts it open, when the injury shading draws it from inside too
+    // so the cut shows flesh. Shadows come from the back faces as for a one-sided skin either way, or the
+    // face would shadow itself in stripes.
     const headMaterial = this.headMeshes[0]!.material as THREE.Material;
-    headMaterial.side = this.dressed ? THREE.FrontSide : THREE.DoubleSide;
+    headMaterial.side = THREE.FrontSide;
     headMaterial.shadowSide = THREE.BackSide;
     this.ownedMaterials.push(headShadow);
     for (const side of ["left", "right"] as const) {

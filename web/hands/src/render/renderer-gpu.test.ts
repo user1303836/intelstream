@@ -17,6 +17,8 @@ interface Internals {
   readonly effects: Effects3D;
   readonly graphs: readonly [BoxingGraph, BoxingGraph];
   restoreAllInjuries(): void;
+  applyArcadeInjury(index: number, injury: string, event: CombatEvent): boolean;
+  knockOutMouthpiece(index: number, direction: number, eventId: number, again: boolean): void;
 }
 
 const punch = (eventId: number, tick: number, detail = "straight:head"): CombatEvent => ({
@@ -244,11 +246,12 @@ describe("graphics memory across rematches on a shared context", () => {
 });
 
 describe("shaders for effects that start hidden", () => {
-  it("are compiled before the first bloody hit, decapitation and severed hand", async () => {
+  it("are compiled before the first bloody hit, decapitation, severed hand, burst head, gouged eye and lost gum shield", async () => {
     const { gl, fight, internals } = await mount();
     let time = settle(fight);
     const programs = gl.created.programs;
-    land(fight, 20, [punch(41, 20)], exchange(20, "head"));
+    // A straight on an open cut, the bleeding behind most of its blood, splashes the canvas as it lands.
+    land(fight, 20, [{ ...punch(41, 20), amount: 90, blood: 60 }], exchange(20, "head"));
     fight.labFrame((time += 0.1));
     expect(internals.effects.canvasStains).toBeGreaterThan(0);
     land(fight, 22, [punch(42, 22)], exchange(22, "head", true), knockout(22));
@@ -258,6 +261,18 @@ describe("shaders for effects that start hidden", () => {
     land(fight, 24, [punch(44, 24, "straight:body")], exchange(24, "body", true), knockout(24));
     fight.labFrame((time += 0.1));
     expect(internals.effects.activeHands).toBe(1);
+    // The other finishers, whatever punch earns them, and the gum shield a big punch knocks out.
+    internals.restoreAllInjuries();
+    expect(internals.applyArcadeInjury(1, "head_burst", punch(46, 26))).toBe(true);
+    fight.labFrame((time += 0.1));
+    expect(internals.effects.headBurst(1)).toBe(true);
+    internals.restoreAllInjuries();
+    expect(internals.applyArcadeInjury(1, "eye_left", punch(47, 27))).toBe(true);
+    fight.labFrame((time += 0.1));
+    expect(internals.effects.eyeOut(1)).toBe(true);
+    internals.knockOutMouthpiece(1, 1, 48, false);
+    fight.labFrame((time += 0.1));
+    expect(internals.effects.mouthpieceOut(1)).toBe(true);
     fight.labFrame((time += 0.1));
     expect(gl.created.programs).toBe(programs);
   });

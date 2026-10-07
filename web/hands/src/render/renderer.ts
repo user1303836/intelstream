@@ -741,9 +741,9 @@ export function bakeSkinnedPart(
   return { geometry, map, color, cut: { position, flesh } };
 }
 
-/** A severed head as it leaves the neck: the head bone's own shape of it, in its owner's look, measured from the given pivot. */
+/** A severed head as it leaves the neck: the head bone's own shape of it, in its owner's look and with his injuries, measured from the given pivot. */
 export function bakeSeveredHead(boxer: SkinnedBoxer, pivotPosition: THREE.Vector3, pivotQuaternion: THREE.Quaternion): BakedPart {
-  return { ...bakeSkinnedPart(boxer.headMesh, pivotPosition, pivotQuaternion, aboveNeckCut, boxer.look, boxer.bone("head") ?? undefined), look: boxer.look };
+  return { ...bakeSkinnedPart(boxer.headMesh, pivotPosition, pivotQuaternion, aboveNeckCut, boxer.look, boxer.bone("head") ?? undefined), look: boxer.look, injury: boxer.headInjury };
 }
 
 function blankFighter(playerId: string): FighterSnapshot {
@@ -1174,6 +1174,10 @@ export class FightRenderer {
         // neither the first frame with fighters nor the first bloody hit stalls the page.
         const staging = new THREE.Group();
         staging.add(first.root, second.root, official.root, blueCorner.root, redCorner.root, blueCutman.root, redCutman.root, ...this.trails.map((trail) => trail.mesh), ...this.effects.compileStandIns());
+        // A finisher opens a head, which a shader of its own draws, and another its shadow: the first
+        // fighter's head is opened for the warm-up and closed again before it is drawn.
+        const opened = first.headInjury.open;
+        first.headInjury.setOpen(true);
         try {
           await compileForComposer(this.renderer, this.composer, staging, this.camera, this.scene);
         } catch {
@@ -1183,6 +1187,7 @@ export class FightRenderer {
         this.scene.add(first.root, second.root, official.root, blueCorner.root, redCorner.root, blueCutman.root, redCutman.root);
         for (const trail of this.trails) this.scene.add(trail.mesh);
         this.compileShadowsOf(staging);
+        first.headInjury.setOpen(opened);
       })
       .catch((error: unknown) => {
         this.glbLoading = false;

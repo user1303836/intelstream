@@ -4,7 +4,7 @@ import { fighter } from "../test/fixtures";
 import type { TraumaSnapshot } from "../types";
 import { wearCornerColour } from "./gear";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
-import { BODY_SITES, EYE_LIDS, EYE_SHUT_TRAUMA, HEAD_SITES, InjuryShading, applyHeadTrauma, eyeShut, trunksBloodFor } from "./injury";
+import { BODY_SITES, CHEEK_SWELL, EYE_LIDS, EYE_SHUT_TRAUMA, EYE_SWELL, HEAD_SITES, HEAD_SWELL_CORE, InjuryShading, applyHeadTrauma, eyeShut, trunksBloodFor } from "./injury";
 import { REFEREE_OUTFIT } from "./outfit";
 import { worldMapping } from "./world";
 
@@ -23,22 +23,45 @@ function compile(material: THREE.Material): { uniforms: Record<string, { value: 
 
 
 describe("the inside of a head", () => {
-  it("is drawn only for a fighter, whose head can be cut open, and a whole head's back faces do no work", () => {
-    const fighterHead = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
-    const referee = new SkinnedBoxer(gltf, { skin: 0xc79b76, gear: 0x3b57b8, outfit: REFEREE_OUTFIT });
-    const headOf = (boxer: SkinnedBoxer): THREE.Material => {
-      let found: THREE.Material | null = null;
-      boxer.root.traverse((object) => { if (object instanceof THREE.SkinnedMesh && object.name === "BoxerHead") found = object.material as THREE.Material; });
-      return found!;
+  /** A shader as the GPU compiles it while the head is whole: without the code a finisher opens it with. */
+  const whole = (shader: string): string => shader.replace(/#ifdef HANDS_INJURY_OPEN[\s\S]*?#endif/gu, "");
+
+  it("is drawn one-sided, by a shader that discards nothing, until a finisher opens the head", () => {
+    const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
+    const head = boxer.headMesh.material as THREE.MeshStandardMaterial;
+    const shadow = boxer.headMesh.customDepthMaterial!;
+    const closed = (): void => {
+      expect(head.side).toBe(THREE.FrontSide);
+      expect(head.defines).not.toHaveProperty("HANDS_INJURY_OPEN");
+      expect(shadow.defines ?? {}).not.toHaveProperty("HANDS_INJURY_OPEN");
+      expect(boxer.headInjury.open).toBe(false);
     };
-    expect(headOf(fighterHead).side).toBe(THREE.DoubleSide);
-    expect(headOf(referee).side).toBe(THREE.FrontSide);
-    const material = new THREE.MeshStandardMaterial();
-    new InjuryShading(material, HEAD_SITES);
-    const shader = { uniforms: {} as Record<string, { value: unknown }>, vertexShader: SHADER.vertexShader, fragmentShader: "#include <common>\nvoid main() {\n#include <clipping_planes_fragment>\n#include <map_fragment>\n#include <roughnessmap_fragment>\n}" };
-    material.onBeforeCompile(shader as unknown as THREE.WebGLProgramParametersWithUniforms, null as unknown as THREE.WebGLRenderer);
-    const lines = shader.fragmentShader.split("\n");
-    expect(lines[lines.indexOf("#include <clipping_planes_fragment>") + 1]).toMatch(/^if \(!gl_FrontFacing && uInjurySever >= \d+\.0\) discard;$/u);
+    closed();
+    const skin = compile(head);
+    expect(skin.fragmentShader).toContain("discard");
+    expect(whole(skin.fragmentShader)).not.toContain("discard");
+    expect(whole(skin.fragmentShader)).not.toContain("gl_FrontFacing");
+    const depth = { uniforms: {}, vertexShader: SHADER.vertexShader, fragmentShader: "#include <common>\n#include <clipping_planes_fragment>" };
+    shadow.onBeforeCompile(depth as unknown as THREE.WebGLProgramParametersWithUniforms, null as unknown as THREE.WebGLRenderer);
+    expect(whole(depth.fragmentShader)).not.toContain("discard");
+    for (const open of [() => boxer.setDecapitated(true), () => boxer.setHeadBurst(true)]) {
+      open();
+      expect(head.side).toBe(THREE.DoubleSide);
+      expect(head.shadowSide).toBe(THREE.BackSide);
+      expect(head.defines).toHaveProperty("HANDS_INJURY_OPEN");
+      expect(shadow.defines).toHaveProperty("HANDS_INJURY_OPEN");
+      // A replay puts the head back on.
+      boxer.setDecapitated(false);
+      closed();
+    }
+    // The body shares the shader and is never opened; an official's head never is either.
+    expect(boxer.bodyInjury.material!.defines).not.toHaveProperty("HANDS_INJURY_OPEN");
+    expect(boxer.bodyInjury.material!.side).toBe(THREE.FrontSide);
+    const referee = new SkinnedBoxer(gltf, { skin: 0xc79b76, gear: 0x3b57b8, outfit: REFEREE_OUTFIT });
+    referee.setDecapitated(true);
+    expect((referee.headMesh.material as THREE.Material).side).toBe(THREE.FrontSide);
+    referee.dispose();
+    boxer.dispose();
   });
 });
 
@@ -48,7 +71,7 @@ describe("swelling", () => {
   it("pushes tissue out from inside the skull, so the hollow round an eye cannot fold over itself", () => {
     const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
     const head = compile(boxer.headMesh.material as THREE.Material);
-    expect(head.vertexShader).toContain("transformed += normalize(transformed - injuryCore");
+    expect(head.vertexShader).toContain("injuryMoved += normalize(injuryMoved - injuryCore");
     expect(head.vertexShader).not.toContain("objectNormal * injurySwell");
     const core = boxer.headInjury.uniforms.uInjuryCore.value;
     expect(core.w).toBe(0);
@@ -62,11 +85,61 @@ describe("swelling", () => {
     boxer.dispose();
   });
 
-  it("stays within a centimetre and a quarter however badly the face is beaten", () => {
+  it("swells a beaten eye into a two-centimetre mound that still folds no triangle of the face", () => {
     const shading = new InjuryShading(new THREE.MeshStandardMaterial(), HEAD_SITES);
     applyHeadTrauma(shading, trauma({ head: 1400, left_eye: 1000, right_eye: 1000, left_cut: 1000, right_cut: 1000, swelling: 1000, bleeding: 1000 }), "full");
-    expect(Math.max(...shading.uniforms.uInjurySwell.value)).toBeLessThanOrEqual(1.25);
-    expect(Math.max(...shading.uniforms.uInjurySwell.value)).toBeGreaterThan(1);
+    expect(Math.max(...shading.uniforms.uInjurySwell.value)).toBe(EYE_SWELL);
+    expect(EYE_SWELL).toBe(2);
+    expect(shading.level("rightCheek").swell).toBeCloseTo(CHEEK_SWELL, 6);
+    // The vertex shader's push, out from the skull's core, on the real head at the worst of it.
+    const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
+    const position = boxer.headMesh.geometry.getAttribute("position");
+    const index = boxer.headMesh.geometry.getIndex()!;
+    const core = new THREE.Vector3(...HEAD_SWELL_CORE.slice(0, 3) as [number, number, number]);
+    const smooth = (edge: number, x: number): number => {
+      const t = THREE.MathUtils.clamp(x / edge, 0, 1);
+      return t * t * (3 - 2 * t);
+    };
+    const swollen = Array.from({ length: position.count }, (_, vertex) => {
+      const at = new THREE.Vector3().fromBufferAttribute(position, vertex);
+      let push = 0;
+      for (const [site, place] of HEAD_SITES.entries()) {
+        const weight = 1 - smooth(place.radius * 1.15, at.distanceTo(new THREE.Vector3(...place.position)));
+        push += shading.uniforms.uInjurySwell.value[site]! * weight * weight;
+      }
+      return at.clone().addScaledVector(at.clone().sub(core).add(new THREE.Vector3(0, 0, 0.001)).normalize(), push);
+    });
+    let face = 0;
+    let folded = 0;
+    const [a, b, c] = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+    for (let corner = 0; corner < index.count; corner += 3) {
+      const [i, j, k] = [index.getX(corner), index.getX(corner + 1), index.getX(corner + 2)];
+      a.fromBufferAttribute(position, i);
+      b.fromBufferAttribute(position, j);
+      c.fromBufferAttribute(position, k);
+      // The front of the face, from the jaw up.
+      if ((a.y + b.y + c.y) / 3 < 113 || (a.z + b.z + c.z) / 3 < -1) continue;
+      const before = b.clone().sub(a).cross(c.clone().sub(a));
+      const after = swollen[j]!.clone().sub(swollen[i]!).cross(swollen[k]!.clone().sub(swollen[i]!));
+      if (before.lengthSq() < 1e-12) continue;
+      face += 1;
+      if (before.dot(after) <= 0) folded += 1;
+    }
+    expect(face).toBeGreaterThan(2000);
+    expect(folded).toBe(0);
+    boxer.dispose();
+  });
+
+  it("opens a cheek cut wide before the doctor stops the bout, and splits a forehead swollen for a round or two", () => {
+    const shading = new InjuryShading(new THREE.MeshStandardMaterial(), HEAD_SITES);
+    // The doctor stops a bout at a cut of 800.
+    applyHeadTrauma(shading, trauma({ left_cut: 760, swelling: 450 }), "full");
+    expect(shading.level("leftCheek").cut).toBe(1);
+    expect(shading.level("forehead").cut).toBeGreaterThan(0.15);
+    expect(shading.level("forehead").blood).toBeGreaterThan(0.15);
+    applyHeadTrauma(shading, trauma({ left_cut: 300, swelling: 360 }), "full");
+    expect(shading.level("leftCheek").cut).toBe(0);
+    expect(shading.level("forehead").cut).toBe(0);
   });
 });
 
@@ -126,6 +199,29 @@ describe("blood running from a wound", () => {
     expect(boxer.headInjury.uniforms.uInjuryWash.value).toBe(0);
     expect(new InjuryShading(new THREE.MeshStandardMaterial(), BODY_SITES, { core: [0, 0, -2, 1] }).uniforms.uInjuryWash.value).toBe(0);
     boxer.dispose();
+  });
+});
+
+describe("a cut with blood off", () => {
+  it("is still drawn, as a closed dark line with no raw lips and nothing wet, and bleeds nowhere", () => {
+    const shading = new InjuryShading(new THREE.MeshStandardMaterial(), HEAD_SITES, { core: HEAD_SWELL_CORE, lids: EYE_LIDS });
+    const beaten = trauma({ head: 600, left_eye: 500, right_eye: 300, left_cut: 300, right_cut: 120, swelling: 400, bleeding: 120 });
+    applyHeadTrauma(shading, beaten, "off");
+    expect(shading.level("leftBrow").cut).toBe(1);
+    expect(shading.level("mouth").cut).toBeGreaterThan(0.2);
+    for (const site of HEAD_SITES) expect(shading.level(site.name).blood).toBe(0);
+    expect(shading.uniforms.uInjuryRaw.value).toBe(0);
+    applyHeadTrauma(shading, beaten, "reduced");
+    expect(shading.uniforms.uInjuryRaw.value).toBeGreaterThan(0);
+    expect(shading.uniforms.uInjuryRaw.value).toBeLessThan(1);
+    applyHeadTrauma(shading, beaten, "full");
+    expect(shading.uniforms.uInjuryRaw.value).toBe(1);
+    // The raw lips, the width of the gash and its wetness all go with it.
+    const head = compile(shading.material!);
+    expect(head.uniforms.uInjuryRaw).toBe(shading.uniforms.uInjuryRaw);
+    expect(head.fragmentShader).toContain("float lip = (1.0 - smoothstep(0.1 * taper, (0.22 + cut * 0.12) * taper, slit)) * (1.0 - gash) * uInjuryRaw;");
+    expect(head.fragmentShader).toContain("(0.03 + cut * 0.05 * uInjuryRaw) * taper");
+    expect(head.fragmentShader).toContain("injuryWet = max(injuryWet, cut * max(gash, lip * 0.6) * uInjuryRaw);");
   });
 });
 

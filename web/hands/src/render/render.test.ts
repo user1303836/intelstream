@@ -174,9 +174,9 @@ describe("effects", () => {
     const full = new Effects3D(new THREE.Scene());
     full.addEvent(severeHit(1), origin, false);
     expect(full.liveBloodParticles).toBe(140);
-    expect(full.liveMist).toBe(10);
-    expect(full.liveGibs).toBe(11);
-    expect(full.canvasStains).toBe(12);
+    expect(full.liveMist).toBe(18);
+    expect(full.liveGibs).toBe(8);
+    expect(full.canvasStains).toBe(8);
     full.dispose();
 
     const reduced = new Effects3D(new THREE.Scene());
@@ -185,7 +185,7 @@ describe("effects", () => {
     expect(reduced.liveBloodParticles).toBe(24);
     expect(reduced.liveMist).toBe(2);
     expect(reduced.liveGibs).toBe(0);
-    expect(reduced.canvasStains).toBe(3);
+    expect(reduced.canvasStains).toBe(2);
     reduced.decapitate(0, new THREE.Vector3(0, 1.5, 0), new THREE.Quaternion(), 1, 2);
     expect(reduced.activeHeads).toBe(0);
     expect(reduced.activeStumps).toBe(0);
@@ -250,7 +250,7 @@ describe("effects", () => {
     effects.decapitate(0, origin, new THREE.Quaternion(), 1, 10);
     const sweat = effects.liveParticles - effects.liveBloodParticles;
     expect(sweat).toBeGreaterThan(0);
-    expect(effects.liveGibs).toBe(35);
+    expect(effects.liveGibs).toBe(32);
     expect(effects.activeHeads).toBe(1);
     expect(effects.activeStumps).toBe(1);
     expect(effects.canvasStains).toBeGreaterThan(0);
@@ -369,7 +369,8 @@ describe("effects", () => {
     expect(effects.liveBloodParticles).toBeGreaterThan(initialBlood);
 
     for (let i = 0; i < 360; i += 1) effects.update(1 / 60);
-    expect(effects.liveGibs).toBe(0);
+    // The flesh lies where it fell for the rest of the bout; the blood in the air has all come down.
+    expect(effects.liveGibs).toBe(24);
     expect(effects.liveBloodParticles).toBe(0);
     expect(effects.liveMist).toBe(0);
     expect(effects.activeHeads).toBe(1);
@@ -552,7 +553,7 @@ describe("effects", () => {
     expect(effects.liveBloodParticles).toBeLessThanOrEqual(900);
     expect(effects.liveMist).toBeLessThanOrEqual(90);
     expect(scene.children.length).toBe(children);
-    expect(effects.liveGibs).toBe(48);
+    expect(effects.liveGibs).toBe(96);
     expect(effects.activeHeads).toBeLessThanOrEqual(2);
     expect(effects.activeStumps).toBeLessThanOrEqual(2);
 

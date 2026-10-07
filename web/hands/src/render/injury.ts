@@ -106,42 +106,52 @@ uniform float uInjuryJawLevel;
 uniform vec4 uInjuryImpact;
 uniform vec3 uInjuryImpactPush;
 uniform vec4 uInjuryNose;
+uniform mat3 uInjuryBindToPart;
 varying vec3 vInjuryPos;
 `;
 
-const VERTEX_BODY = /* glsl */ `
-vInjuryPos = transformed;
+/**
+ * The swelling, the broken nose, a punch's dent, an empty socket and a dislocated jaw, worked out on a
+ * bind-space point (centimetres). A live head is drawn in bind space and moves the point itself. A
+ * severed head is baked into a frame of its own: it reads its bind positions from the `bindPosition`
+ * attribute, which its baked look declares, and turns the offsets into its frame.
+ */
+const vertexBody = (baked: boolean): string => /* glsl */ `
 {
+  vec3 injuryBind = ${baked ? "bindPosition" : "transformed"};
+  vInjuryPos = injuryBind;
+  vec3 injuryMoved = injuryBind;
   float injurySwell = 0.0;
   for (int i = 0; i < ${INJURY_SITE_COUNT}; i++) {
     float radius = uInjurySite[i].w;
     if (radius <= 0.0) continue;
-    float d = distance(transformed, uInjurySite[i].xyz);
+    float d = distance(injuryMoved, uInjurySite[i].xyz);
     float w = 1.0 - smoothstep(0.0, radius * 1.15, d);
     injurySwell += uInjurySwell[i] * w * w;
   }
-  vec3 injuryCore = uInjuryCore.w > 0.5 ? vec3(uInjuryCore.x, transformed.y, uInjuryCore.z) : uInjuryCore.xyz;
-  transformed += normalize(transformed - injuryCore + vec3(0.0, 0.0, 0.001)) * injurySwell;
-  float noseWeight = 1.0 - smoothstep(0.0, 2.6, distance(transformed, uInjuryNose.xyz));
-  transformed.x += uInjuryNose.w * 1.1 * noseWeight * noseWeight;
-  transformed.z -= abs(uInjuryNose.w) * 0.5 * noseWeight * noseWeight;
-  float impactDistance = distance(transformed, uInjuryImpact.xyz);
+  vec3 injuryCore = uInjuryCore.w > 0.5 ? vec3(uInjuryCore.x, injuryMoved.y, uInjuryCore.z) : uInjuryCore.xyz;
+  injuryMoved += normalize(injuryMoved - injuryCore + vec3(0.0, 0.0, 0.001)) * injurySwell;
+  float noseWeight = 1.0 - smoothstep(0.0, 2.6, distance(injuryMoved, uInjuryNose.xyz));
+  injuryMoved.x += uInjuryNose.w * 1.1 * noseWeight * noseWeight;
+  injuryMoved.z -= abs(uInjuryNose.w) * 0.5 * noseWeight * noseWeight;
+  float impactDistance = distance(injuryMoved, uInjuryImpact.xyz);
   float impactWeight = 1.0 - smoothstep(0.0, max(uInjuryImpact.w, 0.001), impactDistance);
-  transformed += uInjuryImpactPush * (impactWeight * impactWeight);
+  injuryMoved += uInjuryImpactPush * (impactWeight * impactWeight);
   // An eye forced out leaves its socket hollow.
   for (int e = 0; e < 2; e++) {
     float gone = e == 0 ? uInjuryEyeOut.x : uInjuryEyeOut.y;
     if (gone <= 0.0) continue;
-    float socket = 1.0 - smoothstep(0.0, 1.7, distance(transformed, uInjuryLid[e].xyz));
-    transformed.z -= 1.1 * socket * socket * gone;
+    float socket = 1.0 - smoothstep(0.0, 1.7, distance(injuryMoved, uInjuryLid[e].xyz));
+    injuryMoved.z -= 1.1 * socket * socket * gone;
   }
   // Only the mandible: the mask fades out again under the chin, above the throat and the seam with the body.
-  float jawMask = (1.0 - smoothstep(uInjuryJawLevel - 2.5, uInjuryJawLevel + 1.5, transformed.y))
-    * smoothstep(uInjuryJawLevel - 6.0, uInjuryJawLevel - 4.0, transformed.y)
-    * smoothstep(-6.0, 0.0, transformed.z);
-  transformed.x += uInjuryJaw * 1.7 * jawMask;
-  transformed.y -= uInjuryJaw * 0.9 * jawMask;
-  transformed.z -= uInjuryJaw * 0.4 * jawMask;
+  float jawMask = (1.0 - smoothstep(uInjuryJawLevel - 2.5, uInjuryJawLevel + 1.5, injuryMoved.y))
+    * smoothstep(uInjuryJawLevel - 6.0, uInjuryJawLevel - 4.0, injuryMoved.y)
+    * smoothstep(-6.0, 0.0, injuryMoved.z);
+  injuryMoved.x += uInjuryJaw * 1.7 * jawMask;
+  injuryMoved.y -= uInjuryJaw * 0.9 * jawMask;
+  injuryMoved.z -= uInjuryJaw * 0.4 * jawMask;
+  ${baked ? "transformed += uInjuryBindToPart * (injuryMoved - injuryBind);" : "transformed = injuryMoved;"}
 }
 `;
 
@@ -152,6 +162,7 @@ uniform float uInjuryBruise[${INJURY_SITE_COUNT}];
 uniform float uInjuryBlood[${INJURY_SITE_COUNT}];
 uniform float uInjuryWetness;
 uniform float uInjuryWash;
+uniform float uInjuryRaw;
 uniform vec4 uInjuryLid[2];
 uniform vec2 uInjuryEyeOut;
 varying vec3 vInjuryPos;
@@ -161,19 +172,25 @@ ${SEVER}
 float injuryHash(float n) { return fract(sin(n) * 43758.5453123); }
 `;
 
-/** A head drawn from both sides only shows its inside once it is cut open: until then a back face does no work. */
-const CLOSED_BACK_FACE = /* glsl */ `if (!gl_FrontFacing && uInjurySever >= ${UNCUT}.0) discard;`;
+/**
+ * Set on a head while a finisher has it open (cut off or burst): only then is its shader the one that
+ * cuts it away along the line and draws its inside, from both sides. A whole head, and the body, draw
+ * one-sided with nothing that can discard a pixel, which a tile-based phone GPU needs to cull early.
+ */
+const OPEN = "HANDS_INJURY_OPEN";
 
 const FRAGMENT_BODY = /* glsl */ `
 {
   vec3 injuryPos = vInjuryPos;
-  if (uInjurySever < ${UNCUT}.0) {
+#ifdef ${OPEN}
+  {
     float below = injuryCutLine(injuryPos) - injuryPos.y;
     if (below < 0.0) discard;
     float torn = 1.0 - smoothstep(0.0, 1.8, below);
     diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.2, 0.008, 0.012), torn * 0.94);
     injuryWet = max(injuryWet, torn);
   }
+#endif
   vec3 hematomaFresh = vec3(0.42, 0.09, 0.11);
   vec3 hematomaDeep = vec3(0.2, 0.04, 0.07);
   vec3 bloodColor = vec3(0.30, 0.008, 0.012);
@@ -200,17 +217,18 @@ const FRAGMENT_BODY = /* glsl */ `
     float cut = uInjuryCut[i].y;
     float halfLength = uInjuryCut[i].x;
     if (cut > 0.001 && halfLength > 0.0) {
-      // A split: a dark gash between swollen raw lips, tapering to its ends.
+      // A split: a dark gash between swollen raw lips, tapering to its ends. Without blood it is closed,
+      // a thin dark line with no raw flesh and nothing wet about it.
       vec3 local = injuryPos - site;
       float along = clamp(local.x, -halfLength, halfLength);
       float taper = 1.0 - 0.6 * (abs(along) / halfLength) * (abs(along) / halfLength);
       vec2 delta = vec2(local.x - along, local.y - 0.18 * sin(local.x * 3.0));
       float slit = length(delta) + abs(local.z) * 0.25;
-      float gash = 1.0 - smoothstep((0.03 + cut * 0.05) * taper, (0.09 + cut * 0.09) * taper, slit);
-      float lip = (1.0 - smoothstep(0.1 * taper, (0.22 + cut * 0.12) * taper, slit)) * (1.0 - gash);
+      float gash = 1.0 - smoothstep((0.03 + cut * 0.05 * uInjuryRaw) * taper, (0.09 + cut * 0.09 * uInjuryRaw) * taper, slit);
+      float lip = (1.0 - smoothstep(0.1 * taper, (0.22 + cut * 0.12) * taper, slit)) * (1.0 - gash) * uInjuryRaw;
       diffuseColor.rgb = mix(diffuseColor.rgb, rawFlesh, cut * lip * 0.75);
-      diffuseColor.rgb = mix(diffuseColor.rgb, cutColor, cut * gash);
-      injuryWet = max(injuryWet, cut * max(gash, lip * 0.6));
+      diffuseColor.rgb = mix(diffuseColor.rgb, mix(vec3(0.12, 0.06, 0.05), cutColor, uInjuryRaw), cut * gash);
+      injuryWet = max(injuryWet, cut * max(gash, lip * 0.6) * uInjuryRaw);
     }
   }
   // An eye swollen shut: the lids meet over it in a tight, shiny, purple-red mound closed to a dark slit.
@@ -283,11 +301,13 @@ const FRAGMENT_BODY = /* glsl */ `
     }
     injuryWet = max(injuryWet, w);
   }
+#ifdef ${OPEN}
   // Where a cut or a burst opens the head, its inside shows as raw flesh rather than nothing.
   if (!gl_FrontFacing) {
     diffuseColor.rgb = vec3(0.2, 0.012, 0.022);
     injuryWet = 1.0;
   }
+#endif
   injuryWet *= uInjuryWetness;
 }
 `;
@@ -311,20 +331,27 @@ export class InjuryShading {
     uInjuryImpactPush: { value: new THREE.Vector3() },
     uInjuryNose: { value: new THREE.Vector4(0, -1000, 0, 0) },
     uInjuryWetness: { value: 1 },
+    uInjuryRaw: { value: 1 },
     uInjurySever: { value: UNCUT },
     uInjurySeverShape: { value: new THREE.Vector2(NECK_CUT_SLOPE, 1) },
     uInjuryCore: { value: new THREE.Vector4(...HEAD_SWELL_CORE) },
     uInjuryWash: { value: 0 },
     uInjuryLid: { value: [new THREE.Vector4(0, -1000, 0, 0), new THREE.Vector4(0, -1000, 0, 0)] },
     uInjuryEyeOut: { value: new THREE.Vector2() },
+    uInjuryBindToPart: { value: new THREE.Matrix3() },
   };
   private readonly index = new Map<string, number>();
+  private shadow: THREE.MeshDepthMaterial | null = null;
 
-  /** With no material the state is kept but shades nothing: an official, who never takes damage. */
+  /**
+   * With no material the state is kept but shades nothing: an official, who never takes damage. A
+   * `baked` material draws a severed head, whose geometry is in a frame of its own and carries its bind
+   * positions, read through the baked look the material must also be given (see `setBindToPart`).
+   */
   constructor(
     readonly material: THREE.MeshStandardMaterial | null,
     readonly sites: readonly InjurySite[],
-    shape: { readonly core: readonly [number, number, number, number]; readonly lids?: readonly (readonly [number, number, number])[]; readonly wash?: boolean } = { core: HEAD_SWELL_CORE },
+    shape: { readonly core: readonly [number, number, number, number]; readonly lids?: readonly (readonly [number, number, number])[]; readonly wash?: boolean; readonly baked?: boolean } = { core: HEAD_SWELL_CORE },
   ) {
     if (sites.length !== INJURY_SITE_COUNT) throw new Error(`injury shading requires ${INJURY_SITE_COUNT} sites`);
     this.uniforms.uInjuryCore.value.set(...shape.core);
@@ -337,18 +364,18 @@ export class InjuryShading {
     }
     if (material === null) return;
     const uniforms = this.uniforms;
+    const baked = shape.baked === true;
     material.onBeforeCompile = (shader) => {
       Object.assign(shader.uniforms, uniforms);
       shader.vertexShader = shader.vertexShader
         .replace("#include <common>", `#include <common>\n${VERTEX_DECLARATIONS}`)
-        .replace("#include <begin_vertex>", `#include <begin_vertex>\n${VERTEX_BODY}`);
+        .replace("#include <begin_vertex>", `#include <begin_vertex>\n${vertexBody(baked)}`);
       shader.fragmentShader = shader.fragmentShader
         .replace("#include <common>", `#include <common>\n${FRAGMENT_DECLARATIONS}`)
-        .replace("#include <clipping_planes_fragment>", `#include <clipping_planes_fragment>\n${CLOSED_BACK_FACE}`)
         .replace("#include <map_fragment>", `#include <map_fragment>\n${FRAGMENT_BODY}`)
         .replace("#include <roughnessmap_fragment>", `#include <roughnessmap_fragment>\n${ROUGHNESS_BODY}`);
     };
-    material.customProgramCacheKey = () => `hands-injury-${INJURY_SITE_COUNT}`;
+    material.customProgramCacheKey = () => `hands-injury-${INJURY_SITE_COUNT}${baked ? "-baked" : ""}`;
     material.needsUpdate = true;
   }
 
@@ -396,12 +423,36 @@ export class InjuryShading {
   setSevered(severed: boolean): void {
     this.uniforms.uInjurySever.value = severed ? NECK_CUT_HEIGHT : UNCUT;
     this.uniforms.uInjurySeverShape.value.set(NECK_CUT_SLOPE, 1);
+    this.setOpen(severed);
   }
 
   /** Removes everything above the mouth in a ragged tear, as when the head bursts. */
   setBurst(burst: boolean): void {
     this.uniforms.uInjurySever.value = burst ? BURST_CUT_HEIGHT : UNCUT;
     this.uniforms.uInjurySeverShape.value.set(burst ? 0 : NECK_CUT_SLOPE, burst ? BURST_RAGGED : 1);
+    this.setOpen(burst);
+  }
+
+  /** Whether the head is drawn by the shader that cuts it open, from both sides. */
+  get open(): boolean {
+    return this.material?.defines?.[OPEN] !== undefined;
+  }
+
+  /**
+   * Switches the head and its shadow to the shaders that cut it open, or back. Each is a program of its
+   * own, which the renderer compiles before the bout so that a finisher compiles nothing.
+   */
+  setOpen(open: boolean): void {
+    const material = this.material;
+    if (material === null || open === this.open) return;
+    for (const variant of [material, this.shadow]) {
+      if (variant === null) continue;
+      const defines = (variant.defines ??= {});
+      if (open) defines[OPEN] = "";
+      else delete defines[OPEN];
+      variant.needsUpdate = true;
+    }
+    material.side = open ? THREE.DoubleSide : THREE.FrontSide;
   }
 
   /** Shadow pass material for the same mesh, so a severed head casts no shadow from the shoulders. */
@@ -415,10 +466,42 @@ export class InjuryShading {
         .replace("#include <begin_vertex>", "#include <begin_vertex>\nvInjuryPos = transformed;");
       shader.fragmentShader = shader.fragmentShader
         .replace("#include <common>", `#include <common>\nvarying vec3 vInjuryPos;\n${SEVER}`)
-        .replace("#include <clipping_planes_fragment>", `#include <clipping_planes_fragment>\nif (uInjurySever < ${UNCUT}.0 && vInjuryPos.y > injuryCutLine(vInjuryPos)) discard;`);
+        .replace("#include <clipping_planes_fragment>", `#include <clipping_planes_fragment>\n#ifdef ${OPEN}\nif (vInjuryPos.y > injuryCutLine(vInjuryPos)) discard;\n#endif`);
     };
     material.customProgramCacheKey = () => "hands-injury-shadow";
+    if (this.open) material.defines = { [OPEN]: "" };
+    this.shadow = material;
     return material;
+  }
+
+  /**
+   * Takes on another head's injuries as they are now, all but its cut through the neck and the dent of a
+   * punch landing: a severed head keeps the face it was beaten into.
+   */
+  copyFrom(other: InjuryShading): void {
+    const from = other.uniforms;
+    const to = this.uniforms;
+    to.uInjuryBruise.value.set(from.uInjuryBruise.value);
+    to.uInjurySwell.value.set(from.uInjurySwell.value);
+    to.uInjuryBlood.value.set(from.uInjuryBlood.value);
+    for (const [index, cut] of to.uInjuryCut.value.entries()) cut.y = from.uInjuryCut.value[index]?.y ?? 0;
+    for (const [index, lid] of to.uInjuryLid.value.entries()) lid.w = from.uInjuryLid.value[index]?.w ?? 0;
+    to.uInjuryEyeOut.value.copy(from.uInjuryEyeOut.value);
+    to.uInjuryNose.value.copy(from.uInjuryNose.value);
+    to.uInjuryJaw.value = from.uInjuryJaw.value;
+    to.uInjuryWetness.value = from.uInjuryWetness.value;
+    to.uInjuryRaw.value = from.uInjuryRaw.value;
+    to.uInjuryImpactPush.value.set(0, 0, 0);
+  }
+
+  /** For a baked head: the turn and scale from bind space (centimetres) into the frame its geometry is baked in. */
+  setBindToPart(matrix: THREE.Matrix3): void {
+    this.uniforms.uInjuryBindToPart.value.copy(matrix);
+  }
+
+  /** How open and raw the cuts are drawn, from 1 (gashes between raw lips) to 0 (closed dark lines, for blood off). */
+  setRawCuts(raw: number): void {
+    this.uniforms.uInjuryRaw.value = THREE.MathUtils.clamp(raw, 0, 1) || 0;
   }
 
   setJaw(amount: number): void {
@@ -460,6 +543,8 @@ export class InjuryShading {
     this.uniforms.uInjuryJaw.value = 0;
     for (const lid of this.uniforms.uInjuryLid.value) lid.w = 0;
     this.uniforms.uInjuryEyeOut.value.set(0, 0);
+    this.uniforms.uInjuryNose.value.w = 0;
+    this.uniforms.uInjuryImpactPush.value.set(0, 0, 0);
   }
 
   level(name: string): { bruise: number; swell: number; cut: number; blood: number } {
@@ -485,12 +570,25 @@ export function eyeShut(eyeTrauma: number, swelling: number): number {
   return THREE.MathUtils.clamp((eyeTrauma - EYE_CLOSING_TRAUMA) / (EYE_SHUT_TRAUMA - EYE_CLOSING_TRAUMA) + Math.max(0, swelling - 200) / 1600, 0, 1);
 }
 
+/**
+ * The most an eye and a cheek swell, in bind-space centimetres pushed out from inside the skull: an eye
+ * beaten shut stands out two centimetres in a grotesque mound. The push is radial from the skull's core,
+ * so even this much folds no triangle of the face.
+ */
+export const EYE_SWELL = 2;
+export const CHEEK_SWELL = 1.8;
+/** A cheek cut is wide open by this much cut damage, short of the 800 at which the doctor stops the bout. */
+const CHEEK_CUT_OPEN = 750;
+/** Swelling at which the forehead splits: a face battered for a round or two, where 520 was all but out of reach. */
+const FOREHEAD_SPLITS = 380;
+
 /** Maps authoritative trauma onto head injury sites. */
 export function applyHeadTrauma(shading: InjuryShading, trauma: TraumaSnapshot, blood: BloodLevel): void {
   const bleed = bloodScale(blood);
   const graphic = blood === "full" ? 1 : 0.6;
+  shading.setRawCuts(blood === "full" ? 1 : blood === "reduced" ? 0.6 : 0);
   const eye = (value: number): number => Math.min(1.2, value / 380 + trauma.swelling / 900);
-  const swell = (value: number): number => Math.min(1.25, (value / 600 + trauma.swelling / 900) * graphic);
+  const swell = (value: number): number => Math.min(EYE_SWELL, (value / 600 + trauma.swelling / 900) * graphic);
   shading.set("leftEye", { bruise: eye(trauma.left_eye), swell: swell(trauma.left_eye) });
   shading.set("rightEye", { bruise: eye(trauma.right_eye), swell: swell(trauma.right_eye) });
   shading.setEyesShut(eyeShut(trauma.left_eye, trauma.swelling), eyeShut(trauma.right_eye, trauma.swelling));
@@ -499,8 +597,10 @@ export function applyHeadTrauma(shading: InjuryShading, trauma: TraumaSnapshot, 
   shading.set("leftBrow", { bruise: Math.min(1, trauma.left_eye / 700), swell: Math.min(1.2, trauma.left_eye / 900) * graphic, cut: browCut(trauma.left_cut), blood: browBlood(trauma.left_cut) });
   shading.set("rightBrow", { bruise: Math.min(1, trauma.right_eye / 700), swell: Math.min(1.2, trauma.right_eye / 900) * graphic, cut: browCut(trauma.right_cut), blood: browBlood(trauma.right_cut) });
   const cheek = Math.min(1, trauma.head / 950 + trauma.swelling / 1100);
-  shading.set("leftCheek", { bruise: cheek * 0.9, swell: Math.min(1.4, trauma.swelling / 800) * graphic, cut: Math.min(1, Math.max(0, trauma.left_cut - 350) / 500), blood: Math.min(1, Math.max(0, trauma.left_cut - 350) / 400) * bleed });
-  shading.set("rightCheek", { bruise: cheek * 0.85, swell: Math.min(1.4, trauma.swelling / 800) * graphic, cut: Math.min(1, Math.max(0, trauma.right_cut - 350) / 500), blood: Math.min(1, Math.max(0, trauma.right_cut - 350) / 400) * bleed });
+  const cheekSwell = Math.min(CHEEK_SWELL, trauma.swelling / 520) * graphic;
+  const cheekCut = (cut: number): number => Math.min(1, Math.max(0, cut - 350) / (CHEEK_CUT_OPEN - 350));
+  shading.set("leftCheek", { bruise: cheek * 0.9, swell: cheekSwell, cut: cheekCut(trauma.left_cut), blood: Math.min(1, Math.max(0, trauma.left_cut - 350) / 400) * bleed });
+  shading.set("rightCheek", { bruise: cheek * 0.85, swell: cheekSwell, cut: cheekCut(trauma.right_cut), blood: Math.min(1, Math.max(0, trauma.right_cut - 350) / 400) * bleed });
   shading.set("nose", { bruise: Math.min(1, trauma.head / 800), swell: Math.min(0.8, trauma.head / 1400) * graphic, blood: Math.min(1.4, (Math.max(0, trauma.head - 160) / 520 + trauma.bleeding / 420) * bleed) });
   shading.set("mouth", { bruise: Math.min(0.8, trauma.head / 1100), cut: Math.min(1, Math.max(0, trauma.head - 420) / 700), blood: Math.min(1.2, (Math.max(0, trauma.head - 280) / 650 + trauma.bleeding / 500) * bleed) });
   shading.set("chin", { bruise: Math.min(0.7, trauma.head / 1300) });
@@ -508,7 +608,7 @@ export function applyHeadTrauma(shading: InjuryShading, trauma: TraumaSnapshot, 
   shading.setNoseShift(noseSide * Math.min(1.1, Math.max(0, trauma.head - 520) / 450) * graphic);
   shading.set("leftJaw", { bruise: Math.min(0.9, trauma.left_eye / 900 + trauma.head / 1600) });
   shading.set("rightJaw", { bruise: Math.min(0.9, trauma.right_eye / 900 + trauma.head / 1600) });
-  shading.set("forehead", { bruise: Math.min(0.6, trauma.swelling / 1200), cut: Math.min(1, Math.max(0, trauma.swelling - 520) / 480), blood: Math.min(1.2, Math.max(0, trauma.swelling - 520) / 420) * bleed });
+  shading.set("forehead", { bruise: Math.min(0.6, trauma.swelling / 1200), cut: Math.min(1, Math.max(0, trauma.swelling - FOREHEAD_SPLITS) / 400), blood: Math.min(1.2, Math.max(0, trauma.swelling - FOREHEAD_SPLITS) / 360) * bleed });
 }
 
 /** How far a fighter's own blood has run down into the front of the trunks, 0 to 1. */
