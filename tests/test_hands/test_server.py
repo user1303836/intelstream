@@ -478,6 +478,72 @@ async def test_two_websockets_start_and_third_is_read_only_spectator(
         await server.close()
 
 
+async def test_a_lone_fighter_calls_the_computer_and_a_spectator_cannot(
+    repository: Repository,
+) -> None:
+    auth = FakeAuth()
+    auth.tickets = {
+        "one": AuthenticatedPlayer("one", GUILD, "room", "One", None),
+        "two": AuthenticatedPlayer("two", GUILD, "room", "Two", None),
+    }
+    rooms = HandsRoomManager(
+        repository,
+        config=RoomConfig(
+            tick_interval_seconds=0.002,
+            broadcast_every_ticks=1,
+            reconnect_grace_seconds=0.1,
+            result_hold_seconds=0.05,
+            engine_config=EngineConfig(
+                rounds=1,
+                round_ticks=5000,
+                rest_ticks=0,
+                countdown_ticks=1,
+                flash_ko_enabled=False,
+            ),
+        ),
+        match_id_factory=lambda: "server-cpu",
+    )
+    server, _auth, base = await start_server(repository, auth=auth, rooms=rooms)
+
+    async def receive_type(ws: aiohttp.ClientWebSocketResponse, kind: str) -> dict:
+        async with asyncio.timeout(1):
+            while True:
+                message = await ws.receive()
+                if message.type != aiohttp.WSMsgType.TEXT:
+                    raise AssertionError(f"socket closed before {kind}")
+                payload = json.loads(message.data)
+                if payload["type"] == kind:
+                    return payload
+
+    async with aiohttp.ClientSession() as client:
+        fighter = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
+        await fighter.send_json({"version": 3, "type": "authenticate", "ticket": "one"})
+        await receive_type(fighter, "waiting")
+        await fighter.send_json({"version": 3, "type": "cpu", "level": "champion"})
+        ready = await receive_type(fighter, "ready")
+        assert [player["id"] for player in ready["players"]] == ["one", "cpu:champion"]
+        assert ready["players"][1]["cpu"] is True
+        snapshot = await receive_type(fighter, "snapshot")
+        assert [entry["player_id"] for entry in snapshot["payload"]["fighters"]] == [
+            "one",
+            "cpu:champion",
+        ]
+
+        watcher = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
+        await watcher.send_json({"version": 3, "type": "authenticate", "ticket": "two"})
+        welcome = await receive_type(watcher, "welcome")
+        assert welcome["role"] == "spectator"
+        await watcher.send_json({"version": 3, "type": "cpu", "level": "rookie"})
+        error = await receive_type(watcher, "error")
+        assert error["code"] == "spectator_read_only"
+        await watcher.close()
+        assert not fighter.closed
+        async with asyncio.timeout(1):
+            await fighter.close()
+    async with asyncio.timeout(1):
+        await server.close()
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [

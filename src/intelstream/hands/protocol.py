@@ -5,6 +5,7 @@ import json
 from dataclasses import asdict, replace
 from typing import Any, Never
 
+from intelstream.hands.cpu import CpuLevel
 from intelstream.hands.types import (
     ActionKind,
     DefensivePose,
@@ -206,6 +207,28 @@ def parse_ticket_ack(frame: str | bytes) -> str | None:
     ):
         raise ProtocolError("invalid ticket refresh identifier")
     return refresh_id
+
+
+def parse_cpu_request(frame: str | bytes) -> CpuLevel | None:
+    """The level of computer opponent asked for, or None when the frame is not that request."""
+    encoded = frame.encode() if isinstance(frame, str) else frame
+    if len(encoded) > MAX_FRAME_BYTES:
+        raise ProtocolError("input frame is too large")
+    try:
+        raw = json.loads(
+            encoded,
+            parse_constant=_reject_constant,
+            object_pairs_hook=_unique_object,
+        )
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ProtocolError("input frame is not valid JSON") from exc
+    envelope = _object(raw, "envelope")
+    if envelope.get("type") != "cpu":
+        return None
+    _exact_fields(envelope, {"version", "type", "level"}, "computer opponent request")
+    if envelope.get("version") != PROTOCOL_VERSION:
+        raise ProtocolError("unsupported protocol version")
+    return _enum(CpuLevel, envelope.get("level"), "computer level")
 
 
 def _action_dict(action: SemanticAction) -> dict[str, object]:

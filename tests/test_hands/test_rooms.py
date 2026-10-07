@@ -9,6 +9,7 @@ import pytest
 
 from intelstream.database.repository import Repository
 from intelstream.hands.auth import AuthenticatedPlayer
+from intelstream.hands.cpu import PROFILES, CpuLevel
 from intelstream.hands.engine import EngineConfig
 from intelstream.hands.protocol import encode_client_input
 from intelstream.hands.rooms import HandsRoomManager, RoomConfig, RoomError
@@ -1400,3 +1401,167 @@ async def test_close_is_idempotent_and_leaves_no_hands_tasks(repository: Reposit
         if task is not asyncio.current_task() and not task.done()
     }
     assert not {name for name in active_names if name.startswith("hands-")}
+
+
+def payloads(socket: FakeSocket, kind: str) -> list[dict[str, object]]:
+    return [
+        json.loads(message) for message in socket.messages if json.loads(message)["type"] == kind
+    ]
+
+
+async def test_a_lone_fighter_calls_in_the_computer_for_an_unrated_bout(
+    repository: Repository,
+) -> None:
+    manager = HandsRoomManager(
+        repository,
+        config=room_config(round_ticks=90),
+        match_id_factory=lambda: "match-cpu",
+        seed_factory=lambda: 11,
+    )
+    socket = FakeSocket()
+    one = await manager.join(player("one"), socket)
+    await wait_until(lambda: "waiting" in message_types(socket))
+
+    assert await one.room.request_cpu("one", one.connection, CpuLevel.CONTENDER)
+    engine = one.room.engine
+    assert engine is not None
+    assert engine.players == ("one", "cpu:contender")
+    await wait_until(lambda: "ready" in message_types(socket))
+    ready = payloads(socket, "ready")[0]
+    assert ready["players"][1] == {
+        "id": "cpu:contender",
+        "name": PROFILES[CpuLevel.CONTENDER].name,
+        "avatar": None,
+        "rating": PROFILES[CpuLevel.CONTENDER].rating,
+        "connected": True,
+        "cpu": True,
+    }
+    assert "cpu" not in ready["players"][0]
+    await wait_until(lambda: "final" in message_types(socket), deadline_seconds=5)
+
+    final = payloads(socket, "final")[0]
+    assert final["ratings"] == {
+        "one": {"before": 1000, "after": 1000},
+        "cpu:contender": {
+            "before": PROFILES[CpuLevel.CONTENDER].rating,
+            "after": PROFILES[CpuLevel.CONTENDER].rating,
+        },
+    }
+    assert await repository.get_hands_match("match-cpu") is None
+    rating = await repository.get_hands_rating("guild-1", "one")
+    assert rating is not None and rating.bouts == 0 and rating.rating == 1000
+    assert await repository.get_hands_rating("guild-1", "cpu:contender") is None
+    await wait_until(lambda: manager.room_count == 0)
+    await manager.close()
+
+
+async def test_the_run_loop_plays_the_computer_through_the_engine(
+    repository: Repository,
+) -> None:
+    manager = HandsRoomManager(repository, config=room_config(round_ticks=600))
+    one = await manager.join(player("one"), FakeSocket())
+    assert await one.room.request_cpu("one", one.connection, CpuLevel.CHAMPION)
+    engine = one.room.engine
+    assert engine is not None
+    await wait_until(lambda: engine.tick > 40, deadline_seconds=3)
+    computer = engine.fighter("cpu:champion")
+    assert computer.last_sequence >= 30
+    assert (computer.x, computer.y) != (180, 0)
+    await manager.close()
+
+
+async def test_the_computer_is_not_called_once_a_second_fighter_is_seated(
+    repository: Repository,
+) -> None:
+    manager = HandsRoomManager(repository, config=room_config(round_ticks=1000))
+    one = await manager.join(player("one"), FakeSocket())
+    two = await manager.join(player("two"), FakeSocket())
+    assert not await one.room.request_cpu("one", one.connection, CpuLevel.ROOKIE)
+    assert not await two.room.request_cpu("two", two.connection, CpuLevel.ROOKIE)
+    assert one.room.cpu is None
+    assert one.room.engine is not None and one.room.engine.players == ("one", "two")
+    await manager.close()
+
+
+async def test_the_computer_is_called_once(repository: Repository) -> None:
+    manager = HandsRoomManager(repository, config=room_config(round_ticks=1000))
+    socket = FakeSocket()
+    one = await manager.join(player("one"), socket)
+    assert await one.room.request_cpu("one", one.connection, CpuLevel.ROOKIE)
+    engine = one.room.engine
+    assert not await one.room.request_cpu("one", one.connection, CpuLevel.CHAMPION)
+    assert one.room.engine is engine
+    assert one.room.cpu is not None and one.room.cpu.level is CpuLevel.ROOKIE
+    await wait_until(lambda: "snapshot" in message_types(socket))
+    assert message_types(socket).count("ready") == 1
+    await manager.close()
+
+
+async def test_only_the_current_connection_can_call_the_computer(
+    repository: Repository,
+) -> None:
+    manager = HandsRoomManager(repository, config=room_config(round_ticks=1000))
+    first = await manager.join(player("one"), FakeSocket())
+    await manager.join(player("one"), FakeSocket())
+    with pytest.raises(RoomError, match="connection_replaced"):
+        await first.room.request_cpu("one", first.connection, CpuLevel.ROOKIE)
+    assert first.room.engine is None
+    await manager.close()
+
+
+async def test_a_spectator_joining_a_computer_bout_sees_both_fighters(
+    repository: Repository,
+) -> None:
+    manager = HandsRoomManager(repository, config=room_config(round_ticks=1000))
+    one = await manager.join(player("one"), FakeSocket())
+    assert await one.room.request_cpu("one", one.connection, CpuLevel.ROOKIE)
+    watcher_socket = FakeSocket()
+    watcher = await manager.join(player("two"), watcher_socket)
+    assert watcher.role == "spectator"
+    await wait_until(lambda: "snapshot" in message_types(watcher_socket))
+    welcome = payloads(watcher_socket, "welcome")[0]
+    assert [entry["id"] for entry in welcome["players"]] == ["one", "cpu:rookie"]
+    await manager.close()
+
+
+async def test_a_computer_bout_is_abandoned_when_its_fighter_never_returns(
+    repository: Repository,
+) -> None:
+    manager = HandsRoomManager(
+        repository,
+        config=room_config(round_ticks=1000, reconnect_grace=0.02),
+        match_id_factory=lambda: "match-cpu-abandoned",
+    )
+    one = await manager.join(player("one"), FakeSocket())
+    assert await one.room.request_cpu("one", one.connection, CpuLevel.CHAMPION)
+    engine = one.room.engine
+    assert engine is not None
+    await manager.leave(one)
+    tick = engine.tick
+    await wait_until(lambda: manager.room_count == 0)
+    assert engine.result is None and engine.tick - tick <= 2
+    assert await repository.get_hands_match("match-cpu-abandoned") is None
+    await manager.close()
+
+
+async def test_a_rematch_against_the_computer_starts_a_fresh_bout(
+    repository: Repository,
+) -> None:
+    ids = iter(("match-cpu-1", "match-cpu-2"))
+    manager = HandsRoomManager(
+        repository, config=room_config(round_ticks=30), match_id_factory=lambda: next(ids)
+    )
+    first_socket = FakeSocket()
+    first = await manager.join(player("one"), first_socket)
+    assert await first.room.request_cpu("one", first.connection, CpuLevel.ROOKIE)
+    await wait_until(lambda: "final" in message_types(first_socket), deadline_seconds=5)
+    await wait_until(lambda: manager.room_count == 0)
+
+    second_socket = FakeSocket()
+    second = await manager.join(player("one"), second_socket)
+    assert second.room is not first.room
+    await wait_until(lambda: "waiting" in message_types(second_socket))
+    assert await second.room.request_cpu("one", second.connection, CpuLevel.ROOKIE)
+    await wait_until(lambda: "final" in message_types(second_socket), deadline_seconds=5)
+    assert payloads(second_socket, "final")[0]["match_id"] == "match-cpu-2"
+    await manager.close()

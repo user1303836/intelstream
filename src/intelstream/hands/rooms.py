@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import structlog
 
+from intelstream.hands.cpu import PROFILES, CpuBrain, CpuLevel, cpu_player_id
 from intelstream.hands.engine import BoxingEngine, EngineConfig
 from intelstream.hands.protocol import (
     PROTOCOL_VERSION,
@@ -124,6 +125,30 @@ class PlayerSlot:
 
 
 @dataclass(slots=True)
+class CpuOpponent:
+    """The computer in the second seat. It is not a PlayerSlot: it never disconnects or forfeits."""
+
+    level: CpuLevel
+    brain: CpuBrain | None = None
+
+    @property
+    def player_id(self) -> str:
+        return cpu_player_id(self.level)
+
+    @property
+    def name(self) -> str:
+        return PROFILES[self.level].name
+
+    @property
+    def rating(self) -> int:
+        return PROFILES[self.level].rating
+
+
+# Seeds the computer's own dice from the match seed, so a bout replays from its inputs.
+CPU_SEED_SALT = 0x5DEECE66D
+
+
+@dataclass(slots=True)
 class SpectatorSlot:
     identity: AuthenticatedPlayer
     connection: PlayerConnection
@@ -171,9 +196,10 @@ class HandsRoom:
         self._seed_factory = seed_factory
         self._slots: dict[str, PlayerSlot] = {}
         self._spectators: dict[str, SpectatorSlot] = {}
+        self._cpu: CpuOpponent | None = None
         self._engine: BoxingEngine | None = None
         self._tick_task: asyncio.Task[None] | None = None
-        self._persistence_task: asyncio.Task[HandsMatch] | None = None
+        self._persistence_task: asyncio.Task[HandsMatch | None] | None = None
         self._finish_task: asyncio.Task[None] | None = None
         self._cleanup_task: asyncio.Task[None] | None = None
         self._closed = False
@@ -207,6 +233,10 @@ class HandsRoom:
     @property
     def finished(self) -> bool:
         return self._finished
+
+    @property
+    def cpu(self) -> CpuOpponent | None:
+        return self._cpu
 
     async def add(
         self,
@@ -468,7 +498,7 @@ class HandsRoom:
         )
 
     def _public_players(self) -> list[dict[str, object]]:
-        return [
+        players: list[dict[str, object]] = [
             {
                 "id": slot.identity.user_id,
                 "name": slot.identity.display_name,
@@ -478,6 +508,18 @@ class HandsRoom:
             }
             for slot in self._slots.values()
         ]
+        if self._cpu is not None:
+            players.append(
+                {
+                    "id": self._cpu.player_id,
+                    "name": self._cpu.name,
+                    "avatar": None,
+                    "rating": self._cpu.rating,
+                    "connected": True,
+                    "cpu": True,
+                }
+            )
+        return players
 
     def _enqueue(
         self, connection: PlayerConnection, message: str, *, bounded_update: bool = False
@@ -533,25 +575,50 @@ class HandsRoom:
 
     def _start_match(self) -> None:
         players = tuple(self._slots)
+        if self._cpu is not None:
+            players = (*players, self._cpu.player_id)
         assert len(players) == 2
         now = self._clock()
         for slot in self._slots.values():
             if slot.connection is None:
                 self._refresh_grace(slot, now)
             slot.pre_match_grace_event.set()
+        seed = self._seed_factory()
         self._engine = BoxingEngine(
             match_id=self._match_id_factory(),
             activity_instance_id=self.instance_id,
             guild_id=self.guild_id,
             player_one_id=players[0],
             player_two_id=players[1],
-            seed=self._seed_factory(),
+            seed=seed,
             config=self.config.engine_config,
         )
+        if self._cpu is not None:
+            self._cpu.brain = CpuBrain(
+                self._cpu.player_id, players[0], self._cpu.level, seed ^ CPU_SEED_SALT
+            )
         self._enqueue_all(self._message("ready", players=self._public_players()))
         self._tick_task = asyncio.create_task(
             self._run_match(), name=f"hands-match-{self._engine.match_id}"
         )
+
+    async def request_cpu(
+        self, player_id: str, connection: PlayerConnection, level: CpuLevel
+    ) -> bool:
+        """Puts the computer in the empty seat and starts the bout.
+
+        Only the one fighter waiting alone can ask. If a second fighter got there first the bout
+        is already starting, so the request is dropped rather than treated as a protocol error.
+        """
+        async with self._lock:
+            slot = self._slots.get(player_id)
+            if slot is None or slot.connection is not connection:
+                raise RoomError("connection_replaced")
+            if self._closed or self._finished or self._engine is not None:
+                return False
+            self._cpu = CpuOpponent(level)
+            self._start_match()
+            return True
 
     async def submit_frame(
         self, player_id: str, connection: PlayerConnection, frame: str | bytes
@@ -766,7 +833,12 @@ class HandsRoom:
                     ticks_due = self.config.max_catch_up_ticks
                     next_tick = now - (ticks_due - 1) * interval
                 self._apply_deferred_inputs(now)
+                brain = self._cpu.brain if self._cpu is not None else None
                 for _ in range(ticks_due):
+                    if brain is not None:
+                        command = brain.decide(engine)
+                        if command is not None:
+                            engine.submit_input(brain.player_id, command)
                     snapshot = engine.step()
                     next_tick += interval
                     if (
@@ -812,7 +884,7 @@ class HandsRoom:
             return None
         if self._persistence_task is None:
             self._persistence_task = asyncio.create_task(
-                self.repository.record_hands_match(result),
+                self._persist(result),
                 name=f"hands-persist-{result.match_id}",
             )
         if self._finish_task is None:
@@ -826,6 +898,12 @@ class HandsRoom:
             self._finish_task = asyncio.create_task(
                 self._finish_abandoned(), name=f"hands-abandon-{self.instance_id}"
             )
+
+    async def _persist(self, result: MatchResult) -> HandsMatch | None:
+        # A bout against the computer is unrated and leaves no record.
+        if self._cpu is not None:
+            return None
+        return await self.repository.record_hands_match(result)
 
     async def _finish_abandoned(self) -> None:
         self._finished = True
@@ -876,7 +954,23 @@ class HandsRoom:
         except TimeoutError:
             logger.warning("Hands final delivery timed out", instance_id=self.instance_id)
 
-    def _final_message(self, match: HandsMatch, result: MatchResult) -> str:
+    def _final_message(self, match: HandsMatch | None, result: MatchResult) -> str:
+        if match is None:
+            ratings = {
+                player_id: {"before": rating, "after": rating}
+                for player_id, rating in self._unrated_ratings().items()
+            }
+        else:
+            ratings = {
+                result.player_one_id: {
+                    "before": match.player_one_rating_before,
+                    "after": match.player_one_rating_after,
+                },
+                result.player_two_id: {
+                    "before": match.player_two_rating_before,
+                    "after": match.player_two_rating_after,
+                },
+            }
         return self._message(
             "final",
             match_id=result.match_id,
@@ -891,17 +985,14 @@ class HandsRoom:
                 }
                 for card in result.scorecards
             ],
-            ratings={
-                result.player_one_id: {
-                    "before": match.player_one_rating_before,
-                    "after": match.player_one_rating_after,
-                },
-                result.player_two_id: {
-                    "before": match.player_two_rating_before,
-                    "after": match.player_two_rating_after,
-                },
-            },
+            ratings=ratings,
         )
+
+    def _unrated_ratings(self) -> dict[str, int]:
+        ratings = {player_id: slot.rating for player_id, slot in self._slots.items()}
+        if self._cpu is not None:
+            ratings[self._cpu.player_id] = self._cpu.rating
+        return ratings
 
     async def _stop_connection(
         self, connection: PlayerConnection, *, code: int, reason: bytes
