@@ -9,6 +9,7 @@ from intelstream.hands.protocol import (
     MAX_FRAME_BYTES,
     MAX_TICK_LAG,
     MAX_TICK_LEAD,
+    PROTOCOL_VERSION,
     ProtocolError,
     StyleChoice,
     decode_client_frame,
@@ -63,9 +64,14 @@ def test_round_trip_every_semantic_action() -> None:
         assert parse_client_input(encode_client_input(command), server_tick=20) == command
 
 
+def current_frame(raw: str) -> str:
+    """A raw frame written by hand (for what json.dumps cannot write) in the current version."""
+    return raw.replace('"version":V,', f'"version":{PROTOCOL_VERSION},', 1)
+
+
 def valid_payload() -> dict[str, object]:
     return {
-        "version": 3,
+        "version": PROTOCOL_VERSION,
         "type": "input",
         "sequence": 2,
         "client_tick": 10,
@@ -127,8 +133,8 @@ def test_rejects_unknown_nested_fields_and_malformed_actions() -> None:
 
 
 def test_rejects_duplicate_fields() -> None:
-    frame = (
-        '{"version":3,"type":"input","sequence":1,"sequence":2,'
+    frame = current_frame(
+        '{"version":V,"type":"input","sequence":1,"sequence":2,'
         '"client_tick":1,"move":{"x":0,"y":0},"defense":"none","actions":[]}'
     )
 
@@ -180,13 +186,15 @@ def test_rejects_malformed_frames(frame: str | bytes) -> None:
 
 
 def test_ticket_ack_is_strict_and_distinct_from_semantic_input() -> None:
-    frame = '{"version":3,"type":"ticket_ack","refresh_id":"refresh-identifier"}'
+    frame = current_frame('{"version":V,"type":"ticket_ack","refresh_id":"refresh-identifier"}')
     assert parse_ticket_ack(frame) == "refresh-identifier"
     assert parse_ticket_ack(json.dumps(valid_payload())) is None
     for malformed in (
-        '{"version":3,"type":"ticket_ack","refresh_id":"short"}',
-        '{"version":3,"type":"ticket_ack","refresh_id":"refresh-identifier","extra":1}',
-        '{"version":3,"type":"ticket_ack","refresh_id":"one","refresh_id":"two"}',
+        current_frame('{"version":V,"type":"ticket_ack","refresh_id":"short"}'),
+        current_frame(
+            '{"version":V,"type":"ticket_ack","refresh_id":"refresh-identifier","extra":1}'
+        ),
+        current_frame('{"version":V,"type":"ticket_ack","refresh_id":"one","refresh_id":"two"}'),
     ):
         with pytest.raises(ProtocolError):
             parse_ticket_ack(malformed)
@@ -194,17 +202,22 @@ def test_ticket_ack_is_strict_and_distinct_from_semantic_input() -> None:
 
 def test_computer_request_is_strict_and_distinct_from_other_frames() -> None:
     for level in CpuLevel:
-        frame = json.dumps({"version": 3, "type": "cpu", "level": level.value})
+        frame = json.dumps({"version": PROTOCOL_VERSION, "type": "cpu", "level": level.value})
         assert parse_cpu_request(frame) is level
     assert parse_cpu_request(json.dumps(valid_payload())) is None
-    assert parse_cpu_request('{"version":3,"type":"ticket_ack","refresh_id":"refresh-id"}') is None
+    assert (
+        parse_cpu_request(
+            current_frame('{"version":V,"type":"ticket_ack","refresh_id":"refresh-id"}')
+        )
+        is None
+    )
     for malformed in (
-        '{"version":3,"type":"cpu","level":"legend"}',
-        '{"version":3,"type":"cpu"}',
-        '{"version":3,"type":"cpu","level":1}',
-        '{"version":3,"type":"cpu","level":"rookie","extra":1}',
+        current_frame('{"version":V,"type":"cpu","level":"legend"}'),
+        current_frame('{"version":V,"type":"cpu"}'),
+        current_frame('{"version":V,"type":"cpu","level":1}'),
+        current_frame('{"version":V,"type":"cpu","level":"rookie","extra":1}'),
         '{"version":2,"type":"cpu","level":"rookie"}',
-        '{"version":3,"type":"cpu","level":"rookie","level":"champion"}',
+        current_frame('{"version":V,"type":"cpu","level":"rookie","level":"champion"}'),
         "not json",
         "x" * (MAX_FRAME_BYTES + 1),
     ):
@@ -216,20 +229,22 @@ def test_style_choice_is_strict_and_distinct_from_other_frames() -> None:
     for style in FighterStyle:
         for ready in (True, False):
             frame = json.dumps(
-                {"version": 3, "type": "style", "style": style.value, "ready": ready}
+                {"version": PROTOCOL_VERSION, "type": "style", "style": style.value, "ready": ready}
             )
             assert parse_style_choice(frame) == StyleChoice(style, ready)
     assert parse_style_choice(json.dumps(valid_payload())) is None
-    assert parse_style_choice('{"version":3,"type":"cpu","level":"rookie"}') is None
+    assert parse_style_choice(current_frame('{"version":V,"type":"cpu","level":"rookie"}')) is None
     for malformed in (
-        '{"version":3,"type":"style","style":"brawler","ready":true}',
-        '{"version":3,"type":"style","style":"boxer"}',
-        '{"version":3,"type":"style","style":"boxer","ready":1}',
-        '{"version":3,"type":"style","style":"boxer","ready":"yes"}',
-        '{"version":3,"type":"style","style":"boxer","ready":true,"extra":1}',
+        current_frame('{"version":V,"type":"style","style":"brawler","ready":true}'),
+        current_frame('{"version":V,"type":"style","style":"boxer"}'),
+        current_frame('{"version":V,"type":"style","style":"boxer","ready":1}'),
+        current_frame('{"version":V,"type":"style","style":"boxer","ready":"yes"}'),
+        current_frame('{"version":V,"type":"style","style":"boxer","ready":true,"extra":1}'),
         '{"version":2,"type":"style","style":"boxer","ready":true}',
-        '{"version":3,"type":"style","style":"boxer","style":"slugger","ready":true}',
-        '{"version":3,"type":"style","style":5,"ready":true}',
+        current_frame(
+            '{"version":V,"type":"style","style":"boxer","style":"slugger","ready":true}'
+        ),
+        current_frame('{"version":V,"type":"style","style":5,"ready":true}'),
         "not json",
         "x" * (MAX_FRAME_BYTES + 1),
     ):
@@ -371,11 +386,23 @@ def test_corner_instructions_and_choice_travel_on_the_wire() -> None:
 
 
 def test_a_frame_is_decoded_once_and_then_read_as_whichever_message_it_is() -> None:
-    request = decode_client_frame(json.dumps({"version": 3, "type": "cpu", "level": "rookie"}))
+    request = decode_client_frame(
+        json.dumps({"version": PROTOCOL_VERSION, "type": "cpu", "level": "rookie"})
+    )
     assert parse_ticket_ack(request) is None
     assert parse_cpu_request(request) is CpuLevel.ROOKIE
+    assert parse_style_choice(request) is None
+    pick = decode_client_frame(
+        json.dumps(
+            {"version": PROTOCOL_VERSION, "type": "style", "style": "slugger", "ready": True}
+        )
+    )
+    assert parse_cpu_request(pick) is None
+    assert parse_style_choice(pick) == StyleChoice(FighterStyle.SLUGGER, True)
     frame = encode_client_input(InputCommand(sequence=4, client_tick=0, move_x=500))
-    command = parse_client_input(decode_client_frame(frame), last_sequence=3)
+    envelope = decode_client_frame(frame)
+    assert parse_style_choice(envelope) is None
+    command = parse_client_input(envelope, last_sequence=3)
     assert command.sequence == 4 and command.move_x == 500
     for bad in ("x" * (MAX_FRAME_BYTES + 1), "[1, 2]", "{", b"\xff\xfe"):
         with pytest.raises(ProtocolError):

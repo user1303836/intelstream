@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import type { Settings } from "../settings";
 import { fighter, snapshot } from "../test/fixtures";
-import type { CombatEvent, FighterSnapshot, FinalMessage, MatchResult } from "../types";
+import { PROTOCOL_VERSION, type CombatEvent, type FighterSnapshot, type FinalMessage, type MatchResult } from "../types";
 import { attachFakeWebGl, type FakeWebGl } from "../test/webgl";
 import type { Effects3D } from "./effects";
 import type { BoxingGraph } from "./graph";
@@ -180,7 +180,7 @@ describe("stoppage without a replay", () => {
       draw((tick * 1000) / 30);
     }
     // The final message lands a moment after the result, while the screen is still two ticks behind it.
-    fight.setFinal({ version: 3, type: "final", match_id: "m", winner_id: "one", method: "tko", round: 1, scorecards: [], ratings: {} });
+    fight.setFinal({ version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: "one", method: "tko", round: 1, scorecards: [], ratings: {} });
     expect(presentFinish).not.toHaveBeenCalled();
     for (let time = 1000; time < 1500 && presentFinish.mock.calls.length === 0; time += 1000 / 60) {
       now.mockReturnValue(time);

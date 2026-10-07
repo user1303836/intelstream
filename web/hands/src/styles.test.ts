@@ -3,7 +3,7 @@ import { CONTROL_SECTIONS } from "./input/bindings";
 import { FIGHTER_STYLES } from "./protocol";
 import { loadStyle, saveStyle, STYLE_CARDS, StylePicker, styleTag, styleTitle } from "./styles";
 import { publicPlayers } from "./test/fixtures";
-import type { ConnectionRole, FighterStyle, SelectMessage } from "./types";
+import { PROTOCOL_VERSION, type ConnectionRole, type FighterStyle, type SelectMessage } from "./types";
 
 /** A style's rule as the manifest gives it; every number it leaves out is the balanced fighter's. */
 interface ManifestStyle {
@@ -18,7 +18,7 @@ interface ManifestStyle {
   readonly recovery_ticks?: Readonly<Record<string, number>>;
 }
 
-const choosing = (fields: Partial<SelectMessage> = {}): SelectMessage => ({ version: 3, type: "select", deadline_ms: 9_500, players: [publicPlayers[0], publicPlayers[1]], ready: [], ...fields });
+const choosing = (fields: Partial<SelectMessage> = {}): SelectMessage => ({ version: PROTOCOL_VERSION, type: "select", deadline_ms: 9_500, players: [publicPlayers[0], publicPlayers[1]], ready: [], ...fields });
 const press = (code: string, init: KeyboardEventInit = {}): void => { window.dispatchEvent(new KeyboardEvent("keydown", { code, cancelable: true, ...init })); };
 
 describe("style cards", () => {
@@ -122,6 +122,16 @@ describe("the style picker", () => {
     picker.update(null, "one", "fighter");
     show(picker);
     expect(sent).toEqual(["swarmer:false", "swarmer:false"]);
+    picker.destroy();
+  });
+
+  it("begins choosing, with last time's style, when a spectator is seated before the bell", () => {
+    const picker = make("swarmer");
+    show(picker, choosing(), "one", "spectator");
+    expect(sent).toEqual([]);
+    show(picker, choosing({ deadline_ms: 9_000 }));
+    expect(sent).toEqual(["swarmer:false"]);
+    expect(card(picker, "swarmer").disabled).toBe(false);
     picker.destroy();
   });
 
@@ -330,12 +340,28 @@ describe("the style picker", () => {
     picker.destroy();
   });
 
-  it("names the other corner's style once that fighter has settled", () => {
+  it("says the other corner has settled without saying on what", () => {
     const picker = make();
     show(picker);
     expect(status(picker)).toBe("Tap a style, or use the arrow keys and Enter.");
+    // Even a style the room let slip would not be named: the bell reveals both together.
     show(picker, choosing({ players: [publicPlayers[0], { ...publicPlayers[1], style: "slugger" }], ready: ["two"] }));
-    expect(status(picker)).toBe("Two: Slugger. Tap a style or press Enter to settle on yours.");
+    expect(status(picker)).toBe("Two is ready. Tap a style or press Enter to settle on yours.");
+    expect(status(picker)).not.toContain("Slugger");
+    picker.destroy();
+  });
+
+  it("says who the pick is waiting on when the other corner drops, and that he is back", () => {
+    const picker = make();
+    const away = choosing({ players: [publicPlayers[0], { ...publicPlayers[1], connected: false }] });
+    show(picker, away);
+    expect(status(picker)).toBe("Waiting for Two to reconnect. Tap a style or press Enter to settle on yours.");
+    card(picker, "slugger").click();
+    expect(status(picker)).toBe("Ready as Slugger. Waiting for Two to reconnect.");
+    show(picker, choosing());
+    expect(status(picker)).toBe("Ready as Slugger. Waiting for your opponent.");
+    show(picker, away, null, "spectator");
+    expect(status(picker)).toBe("The fighters are choosing. Waiting for Two to reconnect.");
     picker.destroy();
   });
 
@@ -357,7 +383,7 @@ describe("the style picker", () => {
     press("Enter");
     card(picker, "boxer").click();
     expect(sent).toEqual([]);
-    expect(status(picker)).toBe("The fighters are choosing. One: Boxer");
+    expect(status(picker)).toBe("The fighters are choosing. One is ready.");
     picker.destroy();
   });
 

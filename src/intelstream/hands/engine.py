@@ -207,6 +207,29 @@ class RoundPerformance:
 
 
 @dataclass(slots=True)
+class PunchCount:
+    """A fighter's punches over the whole bout, as CompuBox counts them for the result card.
+
+    Landed means clean: a punch the guard took, blocked or parried, did not land. The counts follow
+    from the event history, which the checksum already covers, so they are not hashed again.
+    """
+
+    thrown: int = 0
+    landed: int = 0
+    jabs_thrown: int = 0
+    jabs_landed: int = 0
+
+    def add(self, punch_class: PunchClass, *, landed: bool) -> None:
+        jab = 1 if punch_class is PunchClass.JAB else 0
+        if landed:
+            self.landed += 1
+            self.jabs_landed += jab
+        else:
+            self.thrown += 1
+            self.jabs_thrown += jab
+
+
+@dataclass(slots=True)
 class FighterState:
     player_id: str
     x: int
@@ -263,6 +286,7 @@ class FighterState:
     last_action_until_tick: int = -1
     performance: RoundPerformance = field(default_factory=RoundPerformance)
     damage_dealt: int = 0
+    punches: PunchCount = field(default_factory=PunchCount)
     movement_load: int = 0
     corner_choice: CornerChoice | None = None
     body_collapse_ticks: int = 0
@@ -787,6 +811,7 @@ class BoxingEngine:
             detail=f"{action.hand.value}:{action.punch_class.value}:{action.target.value}",
             action_id=self._action_id(fighter, fighter.attack),
         )
+        fighter.punches.add(action.punch_class, landed=False)
 
     @staticmethod
     def _action_key(action: PunchAction) -> str:
@@ -941,6 +966,7 @@ class BoxingEngine:
                 )
         else:
             attacker.performance.clean_hits += 1
+            attacker.punches.add(action.punch_class, landed=True)
 
         damage = max(1, impact)
         poise_damage = rule.poise_damage * counter_multiplier * POISE_DAMAGE_PERCENT // 10_000

@@ -5,7 +5,7 @@ import { TouchInput, coarsePointer } from "./input/touch";
 import { FightRenderer } from "./render/renderer";
 import { CAMERA_MODES } from "./settings";
 import { FIGHTER_STYLES } from "./protocol";
-import type { CombatEvent, EngineSnapshot, FighterSnapshot, FighterStyle, PublicPlayer } from "./types";
+import { PROTOCOL_VERSION, type CombatEvent, type EngineSnapshot, type FighterSnapshot, type FighterStyle, type PublicPlayer } from "./types";
 
 type Draft = { -readonly [K in keyof FighterSnapshot]: FighterSnapshot[K] };
 
@@ -269,14 +269,14 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       const winner = search.get("winner") === "two" ? two : one;
       const cards = ["Impact", "Craft", "Generalship"].map((judge) => ({ judge, player_one: winner === one ? [10, 10, 10] : [9, 9, 10], player_two: winner === one ? [9, 9, 10] : [10, 10, 10] }));
       renderer.setFinal({
-        version: 3, type: "final", match_id: "fixture", winner_id: search.get("winner") === "none" ? null : winner.player_id, method: search.get("winner") === "none" ? "draw" : "decision", round: 3,
+        version: PROTOCOL_VERSION, type: "final", match_id: "fixture", winner_id: search.get("winner") === "none" ? null : winner.player_id, method: search.get("winner") === "none" ? "draw" : "decision", round: 3,
         scorecards: search.get("winner") === "none" ? cards.map((card) => ({ ...card, player_one: [10, 10, 10], player_two: [10, 10, 10] })) : cards,
         ratings: { [one.player_id]: { before: 1512, after: winner === one ? 1528 : 1496 }, [two.player_id]: { before: 1494, after: winner === one ? 1478 : 1510 } },
       });
     }
     if (finisher !== null && t >= 3.4 && !finalSent) {
       finalSent = true;
-      renderer.setFinal({ version: 3, type: "final", match_id: "fixture", winner_id: one.player_id, method: flash ? "flash_ko" : "ko", round: 3, scorecards: [], ratings: {} });
+      renderer.setFinal({ version: PROTOCOL_VERSION, type: "final", match_id: "fixture", winner_id: one.player_id, method: flash ? "flash_ko" : "ko", round: 3, scorecards: [], ratings: {} });
     }
     (window as unknown as Record<string, unknown>).__fixtureRenderer = renderer;
     (window as unknown as Record<string, unknown>).__fixtureDebug = {

@@ -98,10 +98,10 @@ function padIntents(pad: Gamepad | null): Set<PadIntent> {
 }
 
 /**
- * The pick of styles before the bout: five cards with their strengths, a countdown, and the other
- * corner's style once it is settled. Arrow keys, the D-pad or the left stick move the choice, a number
- * or a tap picks a card, and Enter or the controller's bottom face button settles on the one chosen;
- * every change is sent so the deadline uses the latest.
+ * The pick of styles before the bout: five cards with their strengths, a countdown, and whether the
+ * other corner has settled (not on what). Arrow keys, the D-pad or the left stick move the choice, a
+ * number or a tap picks a card, and Enter or the controller's bottom face button settles on the one
+ * chosen; every change is sent so the deadline uses the latest.
  */
 export class StylePicker {
   readonly element: HTMLElement;
@@ -207,7 +207,8 @@ export class StylePicker {
       this.settled = false;
       return;
     }
-    const begun = this.context === null;
+    // A spectator seated before the bell begins choosing then.
+    const begun = this.context === null || (!this.choosing && role === "fighter");
     if (this.context?.select !== select) this.deadlineAt = this.now() + select.deadline_ms - CLOSING_MS;
     this.context = { select, viewerId };
     this.choosing = role === "fighter" && viewerId !== null;
@@ -264,15 +265,17 @@ export class StylePicker {
     const seconds = Math.max(0, Math.ceil((this.deadlineAt - this.now()) / 1000));
     const clock = `${seconds}s`;
     if (this.clock.textContent !== clock) this.clock.textContent = clock;
+    // Who has settled, never on what: the styles are revealed together at the bell, since showing a
+    // settled one would reward waiting to pick its counter. Who has dropped, while the pick goes on.
     const named = select.players
-      .filter((player) => player.id !== viewerId && player.style !== undefined)
-      .map((player) => `${player.name}: ${cardOf(player.style!).name}`)
-      .join(" · ");
+      .filter((player) => player.id !== viewerId && (!player.connected || select.ready.includes(player.id)))
+      .map((player) => (player.connected ? `${player.name} is ready.` : `Waiting for ${player.name} to reconnect.`))
+      .join(" ");
     const text = !this.choosing
       ? named.length > 0 ? `The fighters are choosing. ${named}` : "The fighters are choosing their styles."
       : this.settled
         ? named.length > 0 ? `Ready as ${cardOf(this.highlighted).name}. ${named}` : `Ready as ${cardOf(this.highlighted).name}. Waiting for your opponent.`
-        : named.length > 0 ? `${named}. Tap a style or press Enter to settle on yours.` : "Tap a style, or use the arrow keys and Enter.";
+        : named.length > 0 ? `${named} Tap a style or press Enter to settle on yours.` : "Tap a style, or use the arrow keys and Enter.";
     if (this.status.textContent !== text) this.status.textContent = text;
   }
 

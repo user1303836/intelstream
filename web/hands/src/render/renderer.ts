@@ -641,7 +641,8 @@ export function resultCardTop(
   const known = cardTops.get(final);
   if (known !== undefined && known.width === width && known.height === height) return known.top;
   const punches = fighters.map((fighter) => roundStats.total(fighter.player_id)) as [RoundPunchStats, RoundPunchStats];
-  const top = resultCardLayout(width, height, resultCard(final, fighters, players, punches), fighters.some((fighter) => fighter.player_id === viewerId)).y;
+  // Every viewer gets a button under the card, a spectator too (Next bout).
+  const top = resultCardLayout(width, height, resultCard(final, fighters, players, punches), true).y;
   cardTops.set(final, { width, height, top });
   return top;
 }

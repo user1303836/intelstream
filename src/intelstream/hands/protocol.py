@@ -23,7 +23,7 @@ from intelstream.hands.types import (
     Target,
 )
 
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 MAX_FRAME_BYTES = 4096
 MAX_ACTIONS_PER_INPUT = 4
 MAX_SERVER_FRAME_BYTES = 65_536
@@ -228,20 +228,9 @@ class StyleChoice:
     """True once the fighter has settled on the style; False while still choosing."""
 
 
-def parse_style_choice(frame: str | bytes) -> StyleChoice | None:
+def parse_style_choice(frame: str | bytes | ClientEnvelope) -> StyleChoice | None:
     """The style a fighter is choosing before the bout, or None when the frame is not that message."""
-    encoded = frame.encode() if isinstance(frame, str) else frame
-    if len(encoded) > MAX_FRAME_BYTES:
-        raise ProtocolError("input frame is too large")
-    try:
-        raw = json.loads(
-            encoded,
-            parse_constant=_reject_constant,
-            object_pairs_hook=_unique_object,
-        )
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise ProtocolError("input frame is not valid JSON") from exc
-    envelope = _object(raw, "envelope")
+    envelope = _client_envelope(frame)
     if envelope.get("type") != "style":
         return None
     _exact_fields(envelope, {"version", "type", "style", "ready"}, "style choice")

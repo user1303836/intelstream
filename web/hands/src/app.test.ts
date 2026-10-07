@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => {
     sessionDestroy,
     authorize: vi.fn(async () => ({
       sdk: {},
-      bootstrap: { client_id: "123", state: "state", protocol: 3, simulation: { tick_rate: 20, ring_half_width: 500, ring_half_height: 500 } },
+      bootstrap: { client_id: "123", state: "state", protocol: PROTOCOL_VERSION, simulation: { tick_rate: 20, ring_half_width: 500, ring_half_height: 500 } },
       player: { id: "one", name: "One", avatar: null, rating: 1500 },
       takeTicket: () => "ticket",
       destroy: sessionDestroy,
@@ -86,7 +86,7 @@ const fakeDiscord = (instanceId: string) => ({
 });
 const json = (value: unknown): Response => new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
 const handsBackend = () => vi.fn(async (input: URL | RequestInfo) => String(input).includes("bootstrap")
-  ? json({ client_id: "123", state: "state", protocol: 3, simulation: { tick_rate: 30, ring_half_width: 500, ring_half_height: 500 } })
+  ? json({ client_id: "123", state: "state", protocol: PROTOCOL_VERSION, simulation: { tick_rate: 30, ring_half_width: 500, ring_half_height: 500 } })
   : json({ access_token: "access", ticket: "ticket", player: { id: "one", name: "One", avatar: null, rating: 1500 } }));
 const players = [
   { id: "one", name: "One", avatar: null, rating: 1500, connected: true },
@@ -147,9 +147,9 @@ describe("browser lifecycle and accessible overlays", () => {
     const app = new HandsApp(root);
     app.start();
     await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
-    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 0, next_sequence: 0, reconnect_ticket: "rotated" });
-    send({ version: 3, type: "ready", players: [...players] });
-    send({ version: 3, type: "snapshot", payload: makeSnapshot(10) });
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 0, next_sequence: 0, reconnect_ticket: "rotated" });
+    send({ version: PROTOCOL_VERSION, type: "ready", players: [...players] });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(10) });
     window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyW", bubbles: true, cancelable: true }));
     expect(mocks.input!()).toMatchObject({ moveX: 0, moveY: 1000 });
     mocks.viewForward = { x: 1, z: 0 };
@@ -176,8 +176,8 @@ describe("browser lifecycle and accessible overlays", () => {
     const app = new HandsApp(root);
     app.start();
     await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
-    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [players[0]], server_tick: 0, next_sequence: 0, reconnect_ticket: "rotated" });
-    send({ version: 3, type: "waiting", open_seats: 1 });
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [players[0]], server_tick: 0, next_sequence: 0, reconnect_ticket: "rotated" });
+    send({ version: PROTOCOL_VERSION, type: "waiting", open_seats: 1 });
     expect(root.querySelector("[data-invite]")).toBeNull();
     expect(root.querySelector("[data-status]")?.textContent).toContain("Play now");
     expect(root.querySelector<HTMLElement>("[data-status]")?.hidden).toBe(false);
@@ -185,9 +185,9 @@ describe("browser lifecycle and accessible overlays", () => {
     const hint = root.querySelector<HTMLElement>("[data-hint]")!;
     expect(hint.hidden).toBe(false);
     expect(hint.textContent).toContain("Jab");
-    send({ version: 3, type: "ready", players: [...players] });
+    send({ version: PROTOCOL_VERSION, type: "ready", players: [...players] });
     const cards = ["A", "B", "C"].map((judge) => ({ judge, player_one: [10], player_two: [9] }));
-    send({ version: 3, type: "final", match_id: "m", winner_id: "one", method: "decision", round: 1, scorecards: cards, ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } });
+    send({ version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: "one", method: "decision", round: 1, scorecards: cards, ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } });
     expect(root.querySelector("[data-final]")?.textContent).toContain("A: 10 to 9");
     expect(root.querySelector<HTMLElement>("[data-hint]")!.hidden).toBe(true);
     expect(mocks.activityClose).not.toHaveBeenCalled();
@@ -209,9 +209,9 @@ describe("browser lifecycle and accessible overlays", () => {
     controls.click();
     expect(root.querySelector<HTMLElement>("[data-controls-panel]")!.hidden).toBe(false);
 
-    send({ version: 3, type: "welcome", role: "spectator", player_id: "viewer", players: [...players], server_tick: 30, reconnect_ticket: "spectator-ticket" });
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "spectator", player_id: "viewer", players: [...players], server_tick: 30, reconnect_ticket: "spectator-ticket" });
     const redacted = makeSnapshot(30, "knockdown");
-    send({ version: 3, type: "snapshot", payload: redacted });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: redacted });
 
     expect(root.querySelector<HTMLElement>("[data-role]")!.hidden).toBe(false);
     expect(root.querySelector("[data-role]")?.textContent).toContain("SPECTATING");
@@ -254,7 +254,7 @@ describe("browser lifecycle and accessible overlays", () => {
     app.start();
     if (source === "the socket") {
       await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
-      send({ version: 3, type: "error", code: "client_outdated" });
+      send({ version: PROTOCOL_VERSION, type: "error", code: "client_outdated" });
       mocks.callbacks?.onFatal("client_outdated");
     }
     await vi.waitFor(() => expect(root.querySelector("[data-status]")?.textContent).toBe("Hands was updated. Reload to continue (client_outdated)."));
@@ -273,12 +273,12 @@ describe("browser lifecycle and accessible overlays", () => {
     const app = new HandsApp(root);
     app.start();
     await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
-    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 100, next_sequence: 8, reconnect_ticket: "rotated" });
-    send({ version: 3, type: "snapshot", payload: makeSnapshot(100) });
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 100, next_sequence: 8, reconnect_ticket: "rotated" });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(100) });
     const overlay = root.querySelector<HTMLElement>("[data-overlay]")!;
     expect(overlay.hidden).toBe(false);
     vi.useFakeTimers();
-    send({ version: 3, type: "snapshot", payload: makeSnapshot(101, "complete") });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(101, "complete") });
     expect(overlay.hidden).toBe(true);
     vi.advanceTimersByTime(4_200);
     expect(overlay.hidden).toBe(false);
@@ -291,13 +291,13 @@ describe("browser lifecycle and accessible overlays", () => {
     const app = new HandsApp(root);
     app.start();
     await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
-    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 100, next_sequence: 8, reconnect_ticket: "rotated" });
-    send({ version: 3, type: "snapshot", payload: makeSnapshot(100) });
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 100, next_sequence: 8, reconnect_ticket: "rotated" });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(100) });
     const overlay = root.querySelector<HTMLElement>("[data-overlay]")!;
     expect(overlay.hidden).toBe(false);
     mocks.resultVisible = false;
     vi.useFakeTimers();
-    send({ version: 3, type: "final", match_id: "m-replay", winner_id: "one", method: "ko", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } });
+    send({ version: PROTOCOL_VERSION, type: "final", match_id: "m-replay", winner_id: "one", method: "ko", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } });
     expect(overlay.hidden).toBe(true);
     vi.advanceTimersByTime(1_000);
     expect(overlay.hidden).toBe(true);
@@ -314,21 +314,21 @@ describe("browser lifecycle and accessible overlays", () => {
     const app = new HandsApp(root);
     app.start();
     await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
-    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 100, next_sequence: 8, reconnect_ticket: "rotated" });
-    send({ version: 3, type: "snapshot", payload: makeSnapshot(100) });
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 100, next_sequence: 8, reconnect_ticket: "rotated" });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(100) });
     vi.useFakeTimers();
-    send({ version: 3, type: "final", match_id: "m1", winner_id: "one", method: "decision", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } });
+    send({ version: PROTOCOL_VERSION, type: "final", match_id: "m1", winner_id: "one", method: "decision", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } });
     vi.advanceTimersByTime(11_500);
     const first = mocks.callbacks;
     root.querySelector<HTMLButtonElement>("[data-rematch]")!.click();
     vi.useRealTimers();
     await vi.waitFor(() => expect(mocks.callbacks).not.toBe(first));
-    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1516, players: [players[0]], server_tick: 0, next_sequence: 0, reconnect_ticket: "again" });
-    send({ version: 3, type: "waiting", open_seats: 1 });
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1516, players: [players[0]], server_tick: 0, next_sequence: 0, reconnect_ticket: "again" });
+    send({ version: PROTOCOL_VERSION, type: "waiting", open_seats: 1 });
     expect(root.querySelector("[data-status]")?.textContent).toBe("Waiting for Two to take the rematch…");
     expect(root.querySelector("[data-cpu-prompt]")?.textContent).toBe("Or fight the computer instead:");
-    send({ version: 3, type: "ready", players: [...players] });
-    send({ version: 3, type: "snapshot", payload: makeSnapshot(1, "countdown") });
+    send({ version: PROTOCOL_VERSION, type: "ready", players: [...players] });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(1, "countdown") });
     expect(root.querySelector("[data-cpu-prompt]")?.textContent).toBe("No one here yet? Fight the computer.");
     app.destroy();
   });
@@ -352,9 +352,9 @@ describe("browser lifecycle and accessible overlays", () => {
     const app = new HandsApp(root);
     app.start();
     await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
-    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 100, next_sequence: 8, reconnect_ticket: "rotated" });
-    send({ version: 3, type: "snapshot", payload: makeSnapshot(100) });
-    const final = (matchId: string): ServerMessage => ({ version: 3, type: "final", match_id: matchId, winner_id: "one", method: "decision", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } });
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 100, next_sequence: 8, reconnect_ticket: "rotated" });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(100) });
+    const final = (matchId: string): ServerMessage => ({ version: PROTOCOL_VERSION, type: "final", match_id: matchId, winner_id: "one", method: "decision", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } });
     const button = root.querySelector<HTMLButtonElement>("[data-rematch]")!;
     expect(button.hidden).toBe(true);
     vi.useFakeTimers();
@@ -370,7 +370,7 @@ describe("browser lifecycle and accessible overlays", () => {
     vi.useRealTimers();
     await vi.waitFor(() => expect(mocks.callbacks).not.toBe(first));
     expect(button.hidden).toBe(true);
-    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1516, players: [...players], server_tick: 900, next_sequence: 0, reconnect_ticket: "again" });
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1516, players: [...players], server_tick: 900, next_sequence: 0, reconnect_ticket: "again" });
     vi.useFakeTimers();
     const held = mocks.callbacks;
     send(final("m1"));
@@ -379,8 +379,8 @@ describe("browser lifecycle and accessible overlays", () => {
     vi.advanceTimersByTime(3_100);
     vi.useRealTimers();
     await vi.waitFor(() => expect(mocks.callbacks).not.toBe(held));
-    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1516, players: [...players], server_tick: 1, next_sequence: 0, reconnect_ticket: "fresh" });
-    send({ version: 3, type: "snapshot", payload: makeSnapshot(1, "countdown") });
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1516, players: [...players], server_tick: 1, next_sequence: 0, reconnect_ticket: "fresh" });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(1, "countdown") });
     expect(root.querySelector("[data-status]")?.textContent).toBe("Bout countdown.");
     expect(root.querySelector<HTMLElement>("[data-status]")?.hidden).toBe(true);
     expect(root.querySelector("[data-overlay]")?.hasAttribute("data-raised")).toBe(true);
@@ -394,11 +394,46 @@ describe("browser lifecycle and accessible overlays", () => {
     app.destroy();
   });
 
+  it("lets a spectator stay for the next bout: he watches the corners fill, or takes a seat left empty", async () => {
+    history.replaceState({}, "", "/?instance_id=launch");
+    const root = document.createElement("div");
+    const app = new HandsApp(root);
+    app.start();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "spectator", player_id: "viewer", players: [...players], server_tick: 100, reconnect_ticket: "watching" });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(100) });
+    vi.useFakeTimers();
+    send({ version: PROTOCOL_VERSION, type: "final", match_id: "m1", winner_id: "one", method: "decision", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } });
+    const button = root.querySelector<HTMLButtonElement>("[data-rematch]")!;
+    expect(button.hidden).toBe(false);
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toContain("Next bout in");
+    vi.advanceTimersByTime(11_500);
+    expect(button.textContent).toBe("Next bout");
+    const first = mocks.callbacks;
+    button.click();
+    vi.useRealTimers();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBe(first));
+    // The fighters' seats are held for their rematch, so he watches the corners fill.
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "spectator", player_id: "viewer", players: [], server_tick: 0, reconnect_ticket: "again" });
+    send({ version: PROTOCOL_VERSION, type: "waiting", open_seats: 2 });
+    expect(root.querySelector("[data-status]")?.textContent).toBe("Spectating — Waiting for the fighters…");
+    expect(root.querySelector<HTMLElement>("[data-cpu]")!.hidden).toBe(true);
+    expect(mocks.cpuRequests).toEqual([]);
+    // Nobody came back for a seat: it is his, on the connection he has.
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "viewer", seat: 1, rating: 1500, players: [{ id: "viewer", name: "Viewer", avatar: null, rating: 1500, connected: true }], server_tick: 0, next_sequence: 0, reconnect_ticket: "seated" });
+    send({ version: PROTOCOL_VERSION, type: "waiting", open_seats: 1 });
+    expect(root.querySelector("[data-status]")?.textContent).toBe("Waiting for an opponent. Anyone in this channel can join with Play now.");
+    expect(root.querySelector<HTMLElement>("[data-cpu]")!.hidden).toBe(false);
+    expect(root.querySelector<HTMLElement>("[data-role]")!.hidden).toBe(true);
+    app.destroy();
+  });
+
   describe("fighting the computer", () => {
     const computer = { id: "cpu:champion", name: "Viktor 'Iron' Volkov", avatar: null, rating: 1400, connected: true, cpu: true };
     const alone = (): void => {
-      send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [players[0]], server_tick: 0, next_sequence: 0, reconnect_ticket: "rotated" });
-      send({ version: 3, type: "waiting", open_seats: 1 });
+      send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [players[0]], server_tick: 0, next_sequence: 0, reconnect_ticket: "rotated" });
+      send({ version: PROTOCOL_VERSION, type: "waiting", open_seats: 1 });
     };
     const launch = async (): Promise<{ app: HandsApp; root: HTMLElement }> => {
       history.replaceState({}, "", "/?instance_id=launch");
@@ -423,22 +458,22 @@ describe("browser lifecycle and accessible overlays", () => {
       expect(root.querySelector("[data-status]")?.textContent).toBe("Calling in the computer…");
       pick(root, "rookie");
       expect(mocks.cpuRequests).toEqual(["contender"]);
-      send({ version: 3, type: "ready", players: [players[0], computer] });
+      send({ version: PROTOCOL_VERSION, type: "ready", players: [players[0], computer] });
       expect(picker.hidden).toBe(true);
       app.destroy();
     });
 
     it("keeps the offer away from spectators and from a bout already under way", async () => {
       const { app, root } = await launch();
-      send({ version: 3, type: "welcome", role: "spectator", player_id: "viewer", players: [...players], server_tick: 40, reconnect_ticket: "spectator" });
-      send({ version: 3, type: "waiting", open_seats: 1 });
+      send({ version: PROTOCOL_VERSION, type: "welcome", role: "spectator", player_id: "viewer", players: [...players], server_tick: 40, reconnect_ticket: "spectator" });
+      send({ version: PROTOCOL_VERSION, type: "waiting", open_seats: 1 });
       expect(root.querySelector<HTMLElement>("[data-cpu]")!.hidden).toBe(true);
       pick(root, "rookie");
       expect(mocks.cpuRequests).toEqual([]);
       app.destroy();
       const second = await launch();
-      send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 0, next_sequence: 0, reconnect_ticket: "rotated" });
-      send({ version: 3, type: "ready", players: [...players] });
+      send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 0, next_sequence: 0, reconnect_ticket: "rotated" });
+      send({ version: PROTOCOL_VERSION, type: "ready", players: [...players] });
       expect(second.root.querySelector<HTMLElement>("[data-cpu]")!.hidden).toBe(true);
       second.app.destroy();
     });
@@ -452,22 +487,22 @@ describe("browser lifecycle and accessible overlays", () => {
       expect(root.querySelector("[data-status]")?.textContent).toContain("Play now");
       mocks.cpuAccepted = true;
       pick(root, "rookie");
-      send({ version: 3, type: "waiting", open_seats: 1 });
+      send({ version: PROTOCOL_VERSION, type: "waiting", open_seats: 1 });
       expect(mocks.cpuRequests).toEqual(["rookie", "rookie", "rookie"]);
       app.destroy();
     });
 
-    it("calls the bout unrated and brings the same computer back for a rematch", async () => {
+    it("calls the bout unrated and brings the same computer back for a rematch, after a wait for a friend", async () => {
       const { app, root } = await launch();
       alone();
       pick(root, "champion");
-      send({ version: 3, type: "ready", players: [players[0], computer] });
-      send({ version: 3, type: "snapshot", payload: { ...makeSnapshot(100), fighters: [fighter("one", -100), fighter("cpu:champion", 100)] } });
+      send({ version: PROTOCOL_VERSION, type: "ready", players: [players[0], computer] });
+      send({ version: PROTOCOL_VERSION, type: "snapshot", payload: { ...makeSnapshot(100), fighters: [fighter("one", -100), fighter("cpu:champion", 100)] } });
       const summary = root.querySelector("[data-fight-summary]")?.textContent ?? "";
       expect(summary).toContain("Viktor 'Iron' Volkov, computer opponent");
       expect(summary).not.toContain("ELO 1400");
       vi.useFakeTimers();
-      send({ version: 3, type: "final", match_id: "m1", winner_id: "cpu:champion", method: "decision", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1500 }, "cpu:champion": { before: 1400, after: 1400 } } });
+      send({ version: PROTOCOL_VERSION, type: "final", match_id: "m1", winner_id: "cpu:champion", method: "decision", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1500 }, "cpu:champion": { before: 1400, after: 1400 } } });
       expect(root.querySelector("[data-final]")?.textContent).toContain("Unrated bout against the computer.");
       expect(root.querySelector("[data-final]")?.textContent).not.toContain("Ratings:");
       expect(root.querySelector("[data-status]")?.textContent).toContain("unrated");
@@ -477,18 +512,87 @@ describe("browser lifecycle and accessible overlays", () => {
       vi.useRealTimers();
       await vi.waitFor(() => expect(mocks.callbacks).not.toBe(first));
       expect(mocks.cpuRequests).toEqual(["champion"]);
+      vi.useFakeTimers();
       alone();
+      // Not straight back: a friend who joins in the next few seconds fights instead.
+      expect(mocks.cpuRequests).toEqual(["champion"]);
+      expect(root.querySelector("[data-status]")?.textContent).toBe("Rematch with the Champion in 5s, unless someone joins first.");
+      expect(root.querySelector<HTMLElement>("[data-cpu]")!.hidden).toBe(false);
+      expect(root.querySelector("[data-cpu-prompt]")?.textContent).toBe("Or start now:");
+      vi.advanceTimersByTime(2_100);
+      expect(root.querySelector("[data-status]")?.textContent).toBe("Rematch with the Champion in 3s, unless someone joins first.");
+      vi.advanceTimersByTime(3_000);
       expect(mocks.cpuRequests).toEqual(["champion", "champion"]);
       expect(root.querySelector<HTMLElement>("[data-cpu]")!.hidden).toBe(true);
+      expect(root.querySelector("[data-status]")?.textContent).toBe("Calling in the computer…");
+      vi.useRealTimers();
+      app.destroy();
+    });
+
+    it("lets a friend who joins during the wait fight the rematch instead of the computer", async () => {
+      const { app, root } = await launch();
+      alone();
+      pick(root, "rookie");
+      send({ version: PROTOCOL_VERSION, type: "ready", players: [players[0], { ...computer, id: "cpu:rookie" }] });
+      vi.useFakeTimers();
+      send({ version: PROTOCOL_VERSION, type: "final", match_id: "m1", winner_id: "one", method: "decision", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1500 }, "cpu:rookie": { before: 900, after: 900 } } });
+      vi.advanceTimersByTime(11_500);
+      const first = mocks.callbacks;
+      root.querySelector<HTMLButtonElement>("[data-rematch]")!.click();
+      vi.useRealTimers();
+      await vi.waitFor(() => expect(mocks.callbacks).not.toBe(first));
+      vi.useFakeTimers();
+      alone();
+      vi.advanceTimersByTime(1_000);
+      send({ version: PROTOCOL_VERSION, type: "select", deadline_ms: 9_000, players: [...players], ready: [] });
+      vi.advanceTimersByTime(10_000);
+      expect(mocks.cpuRequests).toEqual(["rookie"]);
+      vi.useRealTimers();
+      app.destroy();
+    });
+
+    it("lets a tap call the computer at once during the wait", async () => {
+      const { app, root } = await launch();
+      alone();
+      pick(root, "contender");
+      send({ version: PROTOCOL_VERSION, type: "ready", players: [players[0], { ...computer, id: "cpu:contender" }] });
+      vi.useFakeTimers();
+      send({ version: PROTOCOL_VERSION, type: "final", match_id: "m1", winner_id: "one", method: "decision", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1500 }, "cpu:contender": { before: 1200, after: 1200 } } });
+      vi.advanceTimersByTime(11_500);
+      const first = mocks.callbacks;
+      root.querySelector<HTMLButtonElement>("[data-rematch]")!.click();
+      vi.useRealTimers();
+      await vi.waitFor(() => expect(mocks.callbacks).not.toBe(first));
+      vi.useFakeTimers();
+      alone();
+      pick(root, "champion");
+      expect(mocks.cpuRequests).toEqual(["contender", "champion"]);
+      vi.advanceTimersByTime(10_000);
+      expect(mocks.cpuRequests).toEqual(["contender", "champion"]);
+      vi.useRealTimers();
+      app.destroy();
+    });
+
+    it("forgets the computer once a person takes its seat before the bell", async () => {
+      const { app, root } = await launch();
+      alone();
+      pick(root, "rookie");
+      expect(mocks.cpuRequests).toEqual(["rookie"]);
+      // A friend arrived during the computer's pick and took its seat.
+      send({ version: PROTOCOL_VERSION, type: "select", deadline_ms: 9_000, players: [...players], ready: [] });
+      // He drops out of the pick for good: back to waiting, and the computer is not called by itself.
+      send({ version: PROTOCOL_VERSION, type: "waiting", open_seats: 1 });
+      expect(mocks.cpuRequests).toEqual(["rookie"]);
+      expect(root.querySelector<HTMLElement>("[data-cpu]")!.hidden).toBe(false);
       app.destroy();
     });
 
     it("does not call the computer for a rematch against a person", async () => {
       const { app, root } = await launch();
       alone();
-      send({ version: 3, type: "ready", players: [...players] });
+      send({ version: PROTOCOL_VERSION, type: "ready", players: [...players] });
       vi.useFakeTimers();
-      send({ version: 3, type: "final", match_id: "m1", winner_id: "one", method: "decision", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } });
+      send({ version: PROTOCOL_VERSION, type: "final", match_id: "m1", winner_id: "one", method: "decision", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } });
       expect(root.querySelector("[data-final]")?.textContent).toContain("Ratings:");
       vi.advanceTimersByTime(11_500);
       const first = mocks.callbacks;
@@ -508,10 +612,10 @@ describe("browser lifecycle and accessible overlays", () => {
     const app = new HandsApp(root);
     app.start();
     await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
-    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 100, next_sequence: 8, reconnect_ticket: "rotated" });
-    send({ version: 3, type: "snapshot", payload: makeSnapshot(100) });
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 100, next_sequence: 8, reconnect_ticket: "rotated" });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(100) });
     vi.useFakeTimers();
-    send({ version: 3, type: "final", match_id: "m1", winner_id: "one", method: "decision", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } });
+    send({ version: PROTOCOL_VERSION, type: "final", match_id: "m1", winner_id: "one", method: "decision", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } });
     vi.advanceTimersByTime(11_500);
     const first = mocks.callbacks;
     root.querySelector<HTMLButtonElement>("[data-rematch]")!.click();
@@ -520,16 +624,16 @@ describe("browser lifecycle and accessible overlays", () => {
     const closing = mocks.callbacks;
     const authorizations = mocks.authorize.mock.calls.length;
     vi.useFakeTimers();
-    send({ version: 3, type: "error", code: "room_closed" });
+    send({ version: PROTOCOL_VERSION, type: "error", code: "room_closed" });
     closing?.onFatal("room_closed");
     expect(root.querySelector("[data-status]")?.textContent).toContain("still being cleared");
     vi.advanceTimersByTime(3_100);
     vi.useRealTimers();
     await vi.waitFor(() => expect(mocks.callbacks).not.toBe(closing));
     expect(mocks.authorize.mock.calls.length).toBe(authorizations + 1);
-    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1516, players: [players[0]], server_tick: 0, next_sequence: 0, reconnect_ticket: "fresh" });
-    send({ version: 3, type: "waiting", open_seats: 1 });
-    send({ version: 3, type: "error", code: "room_closed" });
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1516, players: [players[0]], server_tick: 0, next_sequence: 0, reconnect_ticket: "fresh" });
+    send({ version: PROTOCOL_VERSION, type: "waiting", open_seats: 1 });
+    send({ version: PROTOCOL_VERSION, type: "error", code: "room_closed" });
     expect(root.querySelector("[data-status]")?.textContent).toContain("already ended");
     app.destroy();
   });
@@ -541,12 +645,12 @@ describe("browser lifecycle and accessible overlays", () => {
     app.start();
     await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
     mocks.rendererResyncs = 0;
-    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 100, next_sequence: 8, reconnect_ticket: "rotated" });
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 100, next_sequence: 8, reconnect_ticket: "rotated" });
     expect(mocks.rendererResyncs).toBe(1);
-    send({ version: 3, type: "snapshot", payload: makeSnapshot(100) });
-    send({ version: 3, type: "paused", player_id: "two", grace_ms: 20_000 });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(100) });
+    send({ version: PROTOCOL_VERSION, type: "paused", player_id: "two", grace_ms: 20_000 });
     expect(mocks.rendererResyncs).toBe(1);
-    send({ version: 3, type: "resumed", player_id: "two" });
+    send({ version: PROTOCOL_VERSION, type: "resumed", player_id: "two" });
     expect(mocks.rendererResyncs).toBe(2);
     app.destroy();
   });
@@ -582,8 +686,8 @@ describe("browser lifecycle and accessible overlays", () => {
     const app = new HandsApp(root);
     app.start();
     await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
-    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 100, next_sequence: 8, reconnect_ticket: "rotated" });
-    send({ version: 3, type: "snapshot", payload: makeSnapshot(100) });
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 100, next_sequence: 8, reconnect_ticket: "rotated" });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(100) });
     const firstCallbacks = mocks.callbacks!;
     firstCallbacks.onFatal("persistence_failed");
     expect(mocks.rendererDestroy).toHaveBeenCalledOnce();
@@ -594,9 +698,9 @@ describe("browser lifecycle and accessible overlays", () => {
     expect(mocks.rendererDestroy).toHaveBeenCalledOnce();
     expect(mocks.sessionDestroy).toHaveBeenCalledOnce();
     expect(mocks.rendererPushes).toHaveLength(1);
-    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 1, next_sequence: 0, reconnect_ticket: "new" });
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 1, next_sequence: 0, reconnect_ticket: "new" });
     expect(mocks.rendererPushes).toHaveLength(2);
-    send({ version: 3, type: "snapshot", payload: makeSnapshot(1, "countdown") });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(1, "countdown") });
     expect(mocks.rendererPushes).toEqual([[100], [1]]);
     expect(root.querySelector("[data-final]")?.textContent).toBe("");
     expect(root.querySelector("[data-status]")?.textContent).toBe("Bout countdown.");
@@ -610,10 +714,10 @@ describe("browser lifecycle and accessible overlays", () => {
     app.start();
     await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
     const longName = "A very long authoritative fighter name that canvas must truncate but semantics retain";
-    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [{ ...players[0], name: longName }, players[1]], server_tick: 1, next_sequence: 0, reconnect_ticket: "new" });
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [{ ...players[0], name: longName }, players[1]], server_tick: 1, next_sequence: 0, reconnect_ticket: "new" });
     const downed = { ...fighter("one", -100), is_downed: true, get_up_prompt: "get_up_left" as const, get_up_meter: 12, get_up_required: 50, get_up_count: 0 };
     const snapshot = { ...makeSnapshot(2, "knockdown"), fighters: [downed, fighter("two", 100)] as const };
-    send({ version: 3, type: "snapshot", payload: snapshot });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: snapshot });
     const summary = root.querySelector("[data-fight-summary]")!;
     const live = root.querySelector("[data-fight-status]")!;
     expect(summary.hasAttribute("aria-live")).toBe(false);
@@ -623,10 +727,10 @@ describe("browser lifecycle and accessible overlays", () => {
     expect(live.textContent).toBe("Knockdown. Count 0. Press left now.");
     const firstLiveNode = live.firstChild;
     const staminaChanged = { ...snapshot, tick: 3, fighters: [{ ...downed, stamina: downed.stamina - 1 }, snapshot.fighters[1]] as const };
-    send({ version: 3, type: "snapshot", payload: staminaChanged });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: staminaChanged });
     expect(summary.textContent).toContain(`stamina ${downed.stamina - 1}`);
     expect(live.firstChild).toBe(firstLiveNode);
-    send({ version: 3, type: "snapshot", payload: { ...staminaChanged, tick: 4, fighters: [{ ...staminaChanged.fighters[0], get_up_prompt: "get_up_right" }, staminaChanged.fighters[1]] } });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: { ...staminaChanged, tick: 4, fighters: [{ ...staminaChanged.fighters[0], get_up_prompt: "get_up_right" }, staminaChanged.fighters[1]] } });
     expect(live.textContent).toBe("Knockdown. Count 0. Press right now.");
     expect(live.firstChild).not.toBe(firstLiveNode);
     app.destroy();
@@ -640,19 +744,19 @@ describe("browser lifecycle and accessible overlays", () => {
     app.start();
     await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
     const controls = root.querySelector<HTMLElement>(".touch-controls")!;
-    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [players[0]], server_tick: 0, next_sequence: 0, reconnect_ticket: "rotated" });
-    send({ version: 3, type: "waiting", open_seats: 1 });
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [players[0]], server_tick: 0, next_sequence: 0, reconnect_ticket: "rotated" });
+    send({ version: PROTOCOL_VERSION, type: "waiting", open_seats: 1 });
     expect(controls.classList.contains("disabled")).toBe(true);
-    send({ version: 3, type: "ready", players: [...players] });
-    send({ version: 3, type: "snapshot", payload: makeSnapshot(100) });
+    send({ version: PROTOCOL_VERSION, type: "ready", players: [...players] });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(100) });
     expect(controls.classList.contains("disabled")).toBe(false);
     expect(controls.classList.contains("resting")).toBe(false);
-    send({ version: 3, type: "snapshot", payload: makeSnapshot(101, "rest") });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(101, "rest") });
     expect(controls.classList.contains("disabled")).toBe(false);
     expect(controls.classList.contains("resting")).toBe(true);
-    send({ version: 3, type: "snapshot", payload: makeSnapshot(102, "fight") });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(102, "fight") });
     expect(controls.classList.contains("resting")).toBe(false);
-    send({ version: 3, type: "snapshot", payload: makeSnapshot(103, "complete") });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(103, "complete") });
     expect(controls.classList.contains("disabled")).toBe(true);
     app.destroy();
   });
@@ -667,10 +771,10 @@ describe("browser lifecycle and accessible overlays", () => {
     const app = new HandsApp(root, vi.fn(), new DiscordActivity(makeSdk));
     app.start();
     await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
-    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 100, next_sequence: 8, reconnect_ticket: "rotated" });
-    send({ version: 3, type: "snapshot", payload: makeSnapshot(100) });
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 100, next_sequence: 8, reconnect_ticket: "rotated" });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(100) });
     vi.useFakeTimers();
-    send({ version: 3, type: "final", match_id: "m1", winner_id: "one", method: "decision", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } });
+    send({ version: PROTOCOL_VERSION, type: "final", match_id: "m1", winner_id: "one", method: "decision", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } });
     vi.advanceTimersByTime(11_500);
     const first = mocks.callbacks;
     root.querySelector<HTMLButtonElement>("[data-rematch]")!.click();
@@ -727,16 +831,16 @@ describe("the corner panel", () => {
     const app = new HandsApp(root);
     app.start();
     await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
-    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 0, next_sequence: 0, reconnect_ticket: "rotated" });
-    send({ version: 3, type: "ready", players: [...players] });
-    send({ version: 3, type: "snapshot", payload: makeSnapshot(10) });
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 0, next_sequence: 0, reconnect_ticket: "rotated" });
+    send({ version: PROTOCOL_VERSION, type: "ready", players: [...players] });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(10) });
     const panel = root.querySelector<HTMLElement>("[data-corner]")!;
     expect(panel.hidden).toBe(true);
-    send({ version: 3, type: "snapshot", payload: makeSnapshot(11, "rest") });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(11, "rest") });
     expect(panel.hidden).toBe(false);
     root.querySelector<HTMLButtonElement>('[data-corner-pick="corner_breath"]')!.click();
     expect(mocks.cornerPicks).toEqual(["corner_breath"]);
-    send({ version: 3, type: "snapshot", payload: makeSnapshot(12, "fight") });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(12, "fight") });
     expect(panel.hidden).toBe(true);
     app.destroy();
   });
@@ -747,8 +851,8 @@ describe("the corner panel", () => {
     const app = new HandsApp(root);
     app.start();
     await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
-    send({ version: 3, type: "welcome", role: "spectator", player_id: "viewer", players: [...players], server_tick: 0, reconnect_ticket: "spectator" });
-    send({ version: 3, type: "snapshot", payload: makeSnapshot(11, "rest") });
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "spectator", player_id: "viewer", players: [...players], server_tick: 0, reconnect_ticket: "spectator" });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(11, "rest") });
     expect(root.querySelector<HTMLElement>("[data-corner]")!.hidden).toBe(true);
     app.destroy();
   });
@@ -772,15 +876,15 @@ describe("the pick of styles", () => {
 
   it("offers last time's style when the pick begins, without settling on it, and never for a spectator", async () => {
     localStorage.setItem("hands.style.v1", "swarmer");
-    const select = { version: 3, type: "select", deadline_ms: 9_000, players: [...players], ready: [] } as const;
+    const select = { version: PROTOCOL_VERSION, type: "select", deadline_ms: 9_000, players: [...players], ready: [] } as const;
     const fighterView = await launch("styles-join");
-    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [players[0]], server_tick: 0, next_sequence: 0 });
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [players[0]], server_tick: 0, next_sequence: 0 });
     expect(mocks.styleChoices).toEqual([]);
     send(select);
     expect(mocks.styleChoices).toEqual(["swarmer:false"]);
     fighterView.app.destroy();
     const watcher = await launch("styles-watch");
-    send({ version: 3, type: "welcome", role: "spectator", player_id: "viewer", players: [...players], server_tick: 0 });
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "spectator", player_id: "viewer", players: [...players], server_tick: 0 });
     send(select);
     expect(mocks.styleChoices).toEqual(["swarmer:false"]);
     watcher.app.destroy();
@@ -788,18 +892,18 @@ describe("the pick of styles", () => {
 
   it("shows the pick while the room is choosing and sends a tap as the fighter's settled style", async () => {
     const { app, root } = await launch("styles-pick");
-    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [players[0]], server_tick: 0, next_sequence: 0 });
-    send({ version: 3, type: "waiting", open_seats: 1 });
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [players[0]], server_tick: 0, next_sequence: 0 });
+    send({ version: PROTOCOL_VERSION, type: "waiting", open_seats: 1 });
     const picker = root.querySelector<HTMLElement>("[data-style-picker]")!;
     expect(picker.hidden).toBe(true);
-    send({ version: 3, type: "select", deadline_ms: 9_000, players: [players[0], { ...players[1], style: "boxer" }], ready: ["two"] });
+    send({ version: PROTOCOL_VERSION, type: "select", deadline_ms: 9_000, players: [...players], ready: ["two"] });
     expect(picker.hidden).toBe(false);
     expect(root.querySelector<HTMLElement>("[data-status]")!.hidden).toBe(true);
     expect(root.querySelector<HTMLElement>("[data-cpu]")!.hidden).toBe(true);
-    expect(picker.textContent).toContain("Two: Boxer");
+    expect(picker.textContent).toContain("Two is ready.");
     picker.querySelector<HTMLButtonElement>('[data-style="slugger"]')!.click();
     expect(mocks.styleChoices.at(-1)).toBe("slugger:true");
-    send({ version: 3, type: "ready", players: [{ ...players[0], style: "slugger" }, { ...players[1], style: "boxer" }] });
+    send({ version: PROTOCOL_VERSION, type: "ready", players: [{ ...players[0], style: "slugger" }, { ...players[1], style: "boxer" }] });
     expect(localStorage.getItem("hands.style.v1")).toBe("slugger");
     expect(picker.hidden).toBe(true);
     app.destroy();
@@ -808,17 +912,17 @@ describe("the pick of styles", () => {
   it("remembers the style the room says the fighter boxes in, picked or left to the deadline", async () => {
     localStorage.setItem("hands.style.v1", "boxer");
     const { app, root } = await launch("styles-remember");
-    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [players[0]], server_tick: 0, next_sequence: 0 });
-    send({ version: 3, type: "select", deadline_ms: 9_000, players: [...players], ready: [] });
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [players[0]], server_tick: 0, next_sequence: 0 });
+    send({ version: PROTOCOL_VERSION, type: "select", deadline_ms: 9_000, players: [...players], ready: [] });
     root.querySelector<HTMLButtonElement>('[data-style="slugger"]')!.click();
     // The tap reached the room after it closed: it boxes, and next time offers, the style the room used.
     expect(localStorage.getItem("hands.style.v1")).toBe("boxer");
-    send({ version: 3, type: "ready", players: [{ ...players[0], style: "counter_puncher" }, { ...players[1], style: "swarmer" }] });
+    send({ version: PROTOCOL_VERSION, type: "ready", players: [{ ...players[0], style: "counter_puncher" }, { ...players[1], style: "swarmer" }] });
     expect(localStorage.getItem("hands.style.v1")).toBe("counter_puncher");
     app.destroy();
     const watcher = await launch("styles-remember-watch");
-    send({ version: 3, type: "welcome", role: "spectator", player_id: "viewer", players: [...players], server_tick: 0 });
-    send({ version: 3, type: "ready", players: [{ ...players[0], style: "slugger" }, { ...players[1], style: "swarmer" }] });
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "spectator", player_id: "viewer", players: [...players], server_tick: 0 });
+    send({ version: PROTOCOL_VERSION, type: "ready", players: [{ ...players[0], style: "slugger" }, { ...players[1], style: "swarmer" }] });
     expect(localStorage.getItem("hands.style.v1")).toBe("counter_puncher");
     watcher.app.destroy();
   });
@@ -845,7 +949,7 @@ describe("the broadcast", () => {
     const app = new HandsApp(root);
     app.start();
     await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
-    send({ version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 0, next_sequence: 0 });
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 0, next_sequence: 0 });
     return { root, app };
   };
 
@@ -914,12 +1018,12 @@ describe("the broadcast", () => {
     Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: class { onend = null; onerror = null; constructor(readonly text: string) {} } });
     const { app } = await launch();
     vi.useFakeTimers();
-    send({ version: 3, type: "snapshot", payload: makeSnapshot(1, "countdown") });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(1, "countdown") });
     mocks.renderers.at(-1)!.onAnnouncement!(["In the blue corner, One!"]);
     mocks.renderers.at(-1)!.onAnnouncement!(["And in the red corner, Two!"]);
     cancel.mockClear();
-    send({ version: 3, type: "snapshot", payload: makeSnapshot(2, "countdown") });
-    send({ version: 3, type: "snapshot", payload: makeSnapshot(3, "fight") });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(2, "countdown") });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(3, "fight") });
     // A slow voice still reading the blue corner's name at the bell gets to finish it, briefly.
     expect(cancel).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1_499);
@@ -944,15 +1048,25 @@ describe("the broadcast", () => {
     mocks.renderers.at(-1)!.onRocked!(1, 40);
     expect(rocked).toHaveBeenLastCalledWith(1, 40);
     app.destroy();
+    rocked.mockClear();
+    history.replaceState({}, "", "/?instance_id=watch");
+    const root = document.createElement("div");
+    const watcher = new HandsApp(root);
+    watcher.start();
+    await vi.waitFor(() => expect(mocks.callbacks).not.toBeNull());
+    send({ version: PROTOCOL_VERSION, type: "welcome", role: "spectator", player_id: "three", players: [...players], server_tick: 0 });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: { ...hit, fighters: [{ ...hit.fighters[0], stunned_ticks: 45 }, hit.fighters[1]] } });
+    expect(rocked).not.toHaveBeenCalled();
+    watcher.destroy();
   });
 
   it("lets the crowd follow the fight", async () => {
     const tension = vi.spyOn(AudioFeedback.prototype, "tension");
     const chant = vi.spyOn(AudioFeedback.prototype, "chant");
     const { app } = await launch();
-    send({ version: 3, type: "ready", players: [...players] });
+    send({ version: PROTOCOL_VERSION, type: "ready", players: [...players] });
     const hurt = makeSnapshot(40);
-    send({ version: 3, type: "snapshot", payload: { ...hurt, fighters: [hurt.fighters[0], { ...hurt.fighters[1], stunned_ticks: 12 }] } });
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: { ...hurt, fighters: [hurt.fighters[0], { ...hurt.fighters[1], stunned_ticks: 12 }] } });
     expect(tension).toHaveBeenLastCalledWith(0.75);
     mocks.renderers.at(-1)!.onCrowdCue!("chant");
     expect(chant).toHaveBeenCalledOnce();

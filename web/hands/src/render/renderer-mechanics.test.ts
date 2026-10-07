@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { EventDeduplicator, SnapshotBuffer } from "../interpolation";
 import { EvasionPrediction, MovementPrediction } from "../prediction";
 import { fighter, snapshot } from "../test/fixtures";
-import type { CombatEvent, EngineSnapshot } from "../types";
+import { PROTOCOL_VERSION, type CombatEvent, type EngineSnapshot } from "../types";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
 import { RoundStatsTracker } from "./hud";
 import { bodySideStruck, contactPresentationPlan, cutmanWork, FightRenderer, isDelayedBodyKnockdown } from "./renderer";
@@ -183,7 +183,7 @@ describe("a bout that ends on the punch itself", () => {
     const downed = { ...fighter("two", 60), is_downed: method === "tko" };
     methods.push.call(stub, { ...snapshot(160), phase: "complete", fighters: [{ ...fighter("one", -60), action: "uppercut", action_key: "uppercut:right:head:power", action_contact_tick: 160 }, downed], events, result: result(method) });
     // The final follows at once, while the render clock is still a few ticks behind the punch.
-    setFinal.call(stub, { version: 3, type: "final", match_id: "m", winner_id: "one", method, round: 2, scorecards: [], ratings: {} });
+    setFinal.call(stub, { version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: "one", method, round: 2, scorecards: [], ratings: {} });
     return { stub, ...spies };
   };
 

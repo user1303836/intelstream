@@ -225,6 +225,15 @@ class HandsAuth:
                 raise HandsAuthError("service_unavailable")
         return state, validated
 
+    def instance_for_state(self, state: object) -> str | None:
+        """The Activity instance a live OAuth state was issued for, without spending the state."""
+        if not isinstance(state, str):
+            return None
+        record = self._states.get(state)
+        if record is None or record.expires_at <= self._monotonic():
+            return None
+        return record.instance_id
+
     async def exchange(self, *, code: object, state: object) -> AuthExchange:
         self._ensure_open()
         if not isinstance(code, str) or not 1 <= len(code) <= MAX_CODE_LENGTH:

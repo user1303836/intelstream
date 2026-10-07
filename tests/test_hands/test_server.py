@@ -21,6 +21,7 @@ from intelstream.database.repository import Repository
 from intelstream.hands import server as server_module
 from intelstream.hands.auth import AuthenticatedPlayer, AuthExchange, HandsAuth, HandsAuthError
 from intelstream.hands.engine import EngineConfig
+from intelstream.hands.protocol import PROTOCOL_VERSION
 from intelstream.hands.rooms import (
     SNAPSHOT_BACKLOG_BYTES,
     HandsRoomManager,
@@ -81,6 +82,9 @@ class FakeAuth:
             if owner == player and candidate != ticket:
                 self.tickets.pop(candidate, None)
 
+    def instance_for_state(self, state: object) -> str | None:
+        return {"oauth-state": "instance", "other-state": "elsewhere"}.get(str(state))
+
     async def close(self) -> None:
         self.closed = True
 
@@ -127,6 +131,7 @@ async def start_server(
     admission: AdmissionConfig | None = None,
     monotonic_clock: Callable[[], float] = time.monotonic,
     static_root: Path | None = None,
+    websocket_heartbeat: float = server_module.WEBSOCKET_HEARTBEAT_SECONDS,
 ) -> tuple[HandsServer, FakeAuth, str]:
     fake_auth = auth or FakeAuth()
     server = HandsServer(
@@ -146,6 +151,7 @@ async def start_server(
         admission=admission,
         monotonic_clock=monotonic_clock,
         static_root=static_root,
+        websocket_heartbeat_seconds=websocket_heartbeat,
     )
     await server.start()
     assert server.bound_port is not None
@@ -179,7 +185,9 @@ async def connect_reader_that_stalls(
     while b"\r\n\r\n" not in received:
         received += await loop.sock_recv(raw, 1)
     assert b" 101 " in received.split(b"\r\n", 1)[0]
-    payload = json.dumps({"version": 3, "type": "authenticate", "ticket": ticket}).encode()
+    payload = json.dumps(
+        {"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": ticket}
+    ).encode()
     assert len(payload) < 126
     mask = os.urandom(4)
     masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
@@ -230,7 +238,9 @@ async def connect_deflate_client(
         ),
         "",
     )
-    payload = json.dumps({"version": 3, "type": "authenticate", "ticket": ticket}).encode()
+    payload = json.dumps(
+        {"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": ticket}
+    ).encode()
     mask = os.urandom(4)
     masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
     writer.write(bytes([0x81, 0x80 | len(payload)]) + mask + masked)
@@ -348,7 +358,8 @@ async def test_health_static_security_and_safe_resolution(
             directive.strip().split(" ", 1)
             for directive in index.headers["Content-Security-Policy"].split(";")
         )
-        assert policy["img-src"] == "'self' data: blob: https://cdn.discordapp.com"
+        # Discord's image host only for the players' avatars, as the bundle scan allows.
+        assert policy["img-src"] == "'self' data: blob: https://cdn.discordapp.com/avatars/"
         assert policy["connect-src"] == "'self'"
         assert policy["script-src"] == "'self'"
         assert policy["default-src"] == "'self'"
@@ -400,7 +411,7 @@ async def test_bootstrap_token_origin_schema_media_and_no_store(
         bootstrap = await post_bootstrap(client, base, "instance", headers=headers)
         assert await bootstrap.json() == {
             "client_id": APP,
-            "protocol": 3,
+            "protocol": PROTOCOL_VERSION,
             "state": "oauth-state",
             "simulation": {
                 "tick_rate": 30,
@@ -496,7 +507,9 @@ async def test_websocket_requires_ticket_first_without_query_and_times_out(
         await ws.close()
 
         malformed = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
-        await malformed.send_json({"version": 3, "type": "authenticate", "ticket": "bad"})
+        await malformed.send_json(
+            {"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": "bad"}
+        )
         message = await malformed.receive(timeout=1)
         assert json.loads(message.data)["code"] == "invalid_ticket"
         await malformed.close()
@@ -512,8 +525,14 @@ async def test_an_outdated_client_is_told_in_its_own_version_without_spending_it
     server, _auth, base = await start_server(repository, auth=auth)
     async with aiohttp.ClientSession() as client:
         for frame in (
-            {"version": 2, "type": "authenticate", "ticket": "valid"},
-            {"version": 4, "type": "authenticate", "ticket": "valid", "build": "next"},
+            # A window still on the build before this protocol, and one from a newer build.
+            {"version": PROTOCOL_VERSION - 1, "type": "authenticate", "ticket": "valid"},
+            {
+                "version": PROTOCOL_VERSION + 1,
+                "type": "authenticate",
+                "ticket": "valid",
+                "build": "next",
+            },
         ):
             socket = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
             await socket.send_json(frame)
@@ -530,9 +549,9 @@ async def test_an_outdated_client_is_told_in_its_own_version_without_spending_it
         assert "valid" in auth.tickets
 
         socket = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
-        await socket.send_json({"version": 3, "type": "resume", "ticket": "valid"})
+        await socket.send_json({"version": PROTOCOL_VERSION, "type": "resume", "ticket": "valid"})
         error = json.loads((await socket.receive(timeout=1)).data)
-        assert error == {"code": "invalid_ticket", "type": "error", "version": 3}
+        assert error == {"code": "invalid_ticket", "type": "error", "version": PROTOCOL_VERSION}
         await socket.close()
     await server.close()
 
@@ -565,7 +584,9 @@ async def test_authenticated_room_admission_is_not_part_of_first_frame_timeout(
     )
     async with aiohttp.ClientSession() as client:
         socket = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
-        await socket.send_json({"version": 3, "type": "authenticate", "ticket": "valid"})
+        await socket.send_json(
+            {"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": "valid"}
+        )
         async with asyncio.timeout(2):
             await rooms.entered.wait()
         await asyncio.sleep(2 * auth_timeout)
@@ -605,7 +626,9 @@ async def test_welcome_ticket_is_issued_after_blocking_room_admission(
     server, _auth, base = await start_server(repository, auth=auth)
     async with aiohttp.ClientSession() as client:
         socket = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
-        await socket.send_json({"version": 3, "type": "authenticate", "ticket": "valid"})
+        await socket.send_json(
+            {"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": "valid"}
+        )
         await admission_entered.wait()
         assert auth.ticket_counter == 0
         now = 2000.0
@@ -656,7 +679,9 @@ async def test_two_websockets_start_and_third_is_read_only_spectator(
         sockets = []
         for ticket in ("one", "two"):
             ws = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
-            await ws.send_json({"version": 3, "type": "authenticate", "ticket": ticket})
+            await ws.send_json(
+                {"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": ticket}
+            )
             sockets.append(ws)
         async with asyncio.timeout(1):
             seen_ready = False
@@ -665,7 +690,9 @@ async def test_two_websockets_start_and_third_is_read_only_spectator(
                 if message.type == aiohttp.WSMsgType.TEXT:
                     seen_ready = json.loads(message.data)["type"] == "ready"
         third = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
-        await third.send_json({"version": 3, "type": "authenticate", "ticket": "three"})
+        await third.send_json(
+            {"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": "three"}
+        )
         welcome = json.loads((await third.receive(timeout=1)).data)
         assert welcome["type"] == "welcome"
         assert welcome["role"] == "spectator"
@@ -726,9 +753,11 @@ async def test_a_lone_fighter_calls_the_computer_and_a_spectator_cannot(
 
     async with aiohttp.ClientSession() as client:
         fighter = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
-        await fighter.send_json({"version": 3, "type": "authenticate", "ticket": "one"})
+        await fighter.send_json(
+            {"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": "one"}
+        )
         await receive_type(fighter, "waiting")
-        await fighter.send_json({"version": 3, "type": "cpu", "level": "champion"})
+        await fighter.send_json({"version": PROTOCOL_VERSION, "type": "cpu", "level": "champion"})
         ready = await receive_type(fighter, "ready")
         assert [player["id"] for player in ready["players"]] == ["one", "cpu:champion"]
         assert ready["players"][1]["cpu"] is True
@@ -739,10 +768,12 @@ async def test_a_lone_fighter_calls_the_computer_and_a_spectator_cannot(
         ]
 
         watcher = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
-        await watcher.send_json({"version": 3, "type": "authenticate", "ticket": "two"})
+        await watcher.send_json(
+            {"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": "two"}
+        )
         welcome = await receive_type(watcher, "welcome")
         assert welcome["role"] == "spectator"
-        await watcher.send_json({"version": 3, "type": "cpu", "level": "rookie"})
+        await watcher.send_json({"version": PROTOCOL_VERSION, "type": "cpu", "level": "rookie"})
         error = await receive_type(watcher, "error")
         assert error["code"] == "spectator_read_only"
         await watcher.close()
@@ -792,7 +823,7 @@ async def test_fighters_pick_their_styles_over_the_socket_and_a_spectator_cannot
                     return payload
 
     def choice(style: str, ready: bool) -> dict:
-        return {"version": 3, "type": "style", "style": style, "ready": ready}
+        return {"version": PROTOCOL_VERSION, "type": "style", "style": style, "ready": ready}
 
     async with aiohttp.ClientSession() as client:
         sockets = {}
@@ -800,7 +831,9 @@ async def test_fighters_pick_their_styles_over_the_socket_and_a_spectator_cannot
             sockets[name] = await client.ws_connect(
                 f"{base}/api/hands/ws", headers={"Origin": ORIGIN}
             )
-            await sockets[name].send_json({"version": 3, "type": "authenticate", "ticket": name})
+            await sockets[name].send_json(
+                {"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": name}
+            )
         await receive_type(sockets["one"], "select")
         await sockets["one"].send_json(choice("swarmer", True))
         await sockets["two"].send_json(choice("counter_puncher", True))
@@ -816,13 +849,79 @@ async def test_fighters_pick_their_styles_over_the_socket_and_a_spectator_cannot
         ]
 
         watcher = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
-        await watcher.send_json({"version": 3, "type": "authenticate", "ticket": "three"})
+        await watcher.send_json(
+            {"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": "three"}
+        )
         assert (await receive_type(watcher, "welcome"))["role"] == "spectator"
         await watcher.send_json(choice("slugger", True))
         assert (await receive_type(watcher, "error"))["code"] == "spectator_read_only"
         await watcher.close()
         async with asyncio.timeout(1):
             for ws in sockets.values():
+                await ws.close()
+    async with asyncio.timeout(1):
+        await server.close()
+
+
+async def test_a_spectator_seated_before_the_bell_fights_over_the_same_socket(
+    repository: Repository,
+) -> None:
+    auth = FakeAuth()
+    auth.tickets = {
+        name: AuthenticatedPlayer(name, GUILD, "room", name.title(), None)
+        for name in ("one", "two", "three")
+    }
+    rooms = HandsRoomManager(
+        repository,
+        config=RoomConfig(
+            style_select_seconds=5.0,
+            tick_interval_seconds=0.002,
+            reconnect_grace_seconds=0.1,
+            result_hold_seconds=0.05,
+            engine_config=EngineConfig(rounds=1, round_ticks=5000, rest_ticks=0, countdown_ticks=1),
+        ),
+    )
+    server, _auth, base = await start_server(repository, auth=auth, rooms=rooms)
+
+    async def receive_type(ws: aiohttp.ClientWebSocketResponse, kind: str) -> dict:
+        async with asyncio.timeout(2):
+            while True:
+                message = await ws.receive()
+                if message.type != aiohttp.WSMsgType.TEXT:
+                    raise AssertionError(f"socket closed before {kind}")
+                payload = json.loads(message.data)
+                assert payload["type"] != "error", payload
+                if payload["type"] == kind:
+                    return payload
+
+    async def connect(name: str) -> aiohttp.ClientWebSocketResponse:
+        ws = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
+        await ws.send_json({"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": name})
+        return ws
+
+    def choice(style: str) -> dict:
+        return {"version": PROTOCOL_VERSION, "type": "style", "style": style, "ready": True}
+
+    async with aiohttp.ClientSession() as client:
+        one = await connect("one")
+        two = await connect("two")
+        await receive_type(one, "select")
+        three = await connect("three")
+        assert (await receive_type(three, "welcome"))["role"] == "spectator"
+        await two.close()
+        seated = await receive_type(three, "welcome")
+        assert (seated["role"], seated["seat"]) == ("fighter", 2)
+        assert seated["reconnect_ticket"] in auth.tickets
+        await three.send_json(choice("slugger"))
+        await one.send_json(choice("boxer"))
+        ready = await receive_type(three, "ready")
+        assert {player["id"]: player["style"] for player in ready["players"]} == {
+            "one": "boxer",
+            "three": "slugger",
+        }
+        await receive_type(three, "snapshot")
+        async with asyncio.timeout(1):
+            for ws in (one, three):
                 await ws.close()
     async with asyncio.timeout(1):
         await server.close()
@@ -868,7 +967,7 @@ async def test_state_updates_are_deflated_but_frames_carrying_a_ticket_never_are
 
     async with aiohttp.ClientSession() as client:
         two = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
-        await two.send_json({"version": 3, "type": "authenticate", "ticket": "two"})
+        await two.send_json({"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": "two"})
         await read_until("snapshot", 3)
         refresh_now.set()
         await read_until("ticket")
@@ -923,12 +1022,16 @@ async def test_a_spectator_on_a_slow_mobile_link_keeps_up_with_the_fight(
             socket = await client.ws_connect(
                 f"{base}/api/hands/ws", headers={"Origin": ORIGIN}, compress=15
             )
-            await socket.send_json({"version": 3, "type": "authenticate", "ticket": ticket})
+            await socket.send_json(
+                {"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": ticket}
+            )
             fighters.append(asyncio.create_task(fight(socket)))
         spectator = await client.ws_connect(
             f"http://127.0.0.1:{proxy_port}/api/hands/ws", headers={"Origin": ORIGIN}, compress=15
         )
-        await spectator.send_json({"version": 3, "type": "authenticate", "ticket": "three"})
+        await spectator.send_json(
+            {"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": "three"}
+        )
         loop = asyncio.get_running_loop()
         started = loop.time()
         lag_ticks: list[int] = []
@@ -965,7 +1068,7 @@ async def test_a_fighter_whose_socket_stops_reading_is_paused_then_forfeits(
     assert server.bound_port is not None
     async with aiohttp.ClientSession() as client:
         one = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
-        await one.send_json({"version": 3, "type": "authenticate", "ticket": "one"})
+        await one.send_json({"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": "one"})
         await receive_until(one, "waiting")
         stalled, _frames = await connect_reader_that_stalls(server.bound_port, "two")
         try:
@@ -996,7 +1099,7 @@ async def test_reconnecting_over_a_stalled_socket_does_not_hold_up_any_join(
     assert server.bound_port is not None
     async with aiohttp.ClientSession() as client:
         one = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
-        await one.send_json({"version": 3, "type": "authenticate", "ticket": "one"})
+        await one.send_json({"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": "one"})
         await receive_until(one, "waiting")
         stalled, frames = await connect_reader_that_stalls(server.bound_port, "two", read_frames=1)
         try:
@@ -1025,9 +1128,15 @@ async def test_reconnecting_over_a_stalled_socket_does_not_hold_up_any_join(
             )
             elsewhere = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
             await replacement.send_json(
-                {"version": 3, "type": "authenticate", "ticket": frames[0]["reconnect_ticket"]}
+                {
+                    "version": PROTOCOL_VERSION,
+                    "type": "authenticate",
+                    "ticket": frames[0]["reconnect_ticket"],
+                }
             )
-            await elsewhere.send_json({"version": 3, "type": "authenticate", "ticket": "elsewhere"})
+            await elsewhere.send_json(
+                {"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": "elsewhere"}
+            )
             welcome = await receive_until(replacement, "welcome", deadline_seconds=2)
             assert welcome["player_id"] == "two"
             await receive_until(replacement, "resumed", deadline_seconds=2)
@@ -1135,7 +1244,7 @@ async def test_http_admission_is_per_caller_and_forwarded_headers_require_trust(
         spoofed = await post_bootstrap(
             client,
             direct_base,
-            "two",
+            "one",
             headers={"Origin": ORIGIN, "X-Forwarded-For": "203.0.113.2"},
         )
         assert first.status == 200
@@ -1164,7 +1273,7 @@ async def test_http_admission_is_per_caller_and_forwarded_headers_require_trust(
         forged_left = await post_bootstrap(
             client,
             trusted_base,
-            "two",
+            "one",
             headers={
                 "Origin": ORIGIN,
                 "X-Forwarded-For": "192.0.2.99, 203.0.113.10",
@@ -1187,6 +1296,46 @@ async def test_http_admission_is_per_caller_and_forwarded_headers_require_trust(
         assert other.status == 200
         assert malformed.status == 400
     await trusted.close()
+
+
+async def test_players_behind_one_proxy_address_are_limited_per_activity_instance(
+    repository: Repository,
+) -> None:
+    # Discord's Activity proxy hides players' addresses: every request arrives from its address.
+    server, _auth, base = await start_server(
+        repository,
+        admission=AdmissionConfig(
+            request_limit=10,
+            per_caller_request_limit=1,
+            request_window_seconds=60,
+            trusted_proxy_cidrs=("127.0.0.0/8", "::1/128"),
+        ),
+    )
+    proxy = {"Origin": ORIGIN, "X-Forwarded-For": "162.159.0.1"}
+    async with aiohttp.ClientSession() as client:
+        statuses = [
+            (await post_bootstrap(client, base, instance, headers=proxy)).status
+            for instance in ("voice-a", "voice-b", "voice-a")
+        ]
+        # One voice channel's sign-ins cannot crowd out another's, and each is still limited.
+        assert statuses == [200, 200, 429]
+
+        async def token(state: str) -> int:
+            response = await client.post(
+                f"{base}/api/hands/token",
+                json={"code": "code", "state": state},
+                headers=proxy,
+            )
+            return response.status
+
+        # The exchange is scoped through the state the server issued for an instance; a state it
+        # never issued names nothing and counts against the address.
+        assert await token("oauth-state") == 200
+        assert await token("other-state") == 401
+        assert await token("oauth-state") == 429
+        assert await token("forged-one") == 401
+        assert await token("forged-two") == 429
+    await server.close()
 
 
 async def test_per_caller_window_capacity_purges_expired_callers(
@@ -1227,7 +1376,7 @@ async def test_per_caller_window_capacity_purges_expired_callers(
         assert len(server._bootstrap_caller_limit._requests) == 2
         clock.value = 11
         assert await bootstrap("203.0.113.3", "three") == 200
-        assert list(server._bootstrap_caller_limit._requests) == ["203.0.113.3"]
+        assert list(server._bootstrap_caller_limit._requests) == ["203.0.113.3 three"]
     await server.close()
 
 
@@ -1274,7 +1423,7 @@ async def test_per_caller_upstream_concurrency_does_not_block_other_callers(
         same = await post_bootstrap(
             client,
             base,
-            "same",
+            "one",
             headers={"Origin": ORIGIN, "X-Forwarded-For": "203.0.113.1"},
         )
         other = asyncio.create_task(
@@ -1314,11 +1463,15 @@ async def test_per_caller_websocket_auth_slots_release_and_isolate_callers(
         assert caught.value.status == 503
 
         other = await client.ws_connect(f"{base}/api/hands/ws", headers=headers_two)
-        await other.send_json({"version": 3, "type": "authenticate", "ticket": "bad"})
+        await other.send_json(
+            {"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": "bad"}
+        )
         assert json.loads((await other.receive(timeout=1)).data)["code"] == "invalid_ticket"
         await other.close()
 
-        await first.send_json({"version": 3, "type": "authenticate", "ticket": "bad"})
+        await first.send_json(
+            {"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": "bad"}
+        )
         assert json.loads((await first.receive(timeout=1)).data)["code"] == "invalid_ticket"
         await first.close()
         replacement = await client.ws_connect(f"{base}/api/hands/ws", headers=headers_one)
@@ -1368,13 +1521,17 @@ async def test_concurrent_upstream_and_websocket_auth_are_bounded(
         with pytest.raises(aiohttp.WSServerHandshakeError) as caught:
             await client.ws_connect(f"{base}/api/hands/ws", headers=headers)
         assert caught.value.status == 503
-        await first_ws.send_json({"version": 3, "type": "authenticate", "ticket": "bad"})
+        await first_ws.send_json(
+            {"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": "bad"}
+        )
         await first_ws.receive(timeout=1)
         await first_ws.close()
 
         auth.tickets["valid"] = AuthenticatedPlayer("one", GUILD, "room", "One", None)
         available = await client.ws_connect(f"{base}/api/hands/ws", headers=headers)
-        await available.send_json({"version": 3, "type": "authenticate", "ticket": "valid"})
+        await available.send_json(
+            {"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": "valid"}
+        )
         welcome = await available.receive(timeout=1)
         assert json.loads(welcome.data)["type"] == "welcome"
         await available.close()
@@ -1387,13 +1544,17 @@ async def test_ticket_replay_does_not_replace_live_socket(repository: Repository
     server, _auth, base = await start_server(repository, auth=auth)
     async with aiohttp.ClientSession() as client:
         live = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
-        await live.send_json({"version": 3, "type": "authenticate", "ticket": "one-use"})
+        await live.send_json(
+            {"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": "one-use"}
+        )
         welcome = json.loads((await live.receive(timeout=1)).data)
         assert welcome["type"] == "welcome"
         assert welcome["reconnect_ticket"].startswith("rotated-")
 
         replay = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
-        await replay.send_json({"version": 3, "type": "authenticate", "ticket": "one-use"})
+        await replay.send_json(
+            {"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": "one-use"}
+        )
         error = json.loads((await replay.receive(timeout=1)).data)
         assert error["code"] == "invalid_ticket"
         await replay.close()
@@ -1454,7 +1615,9 @@ async def test_refreshed_ticket_survives_original_rotation_expiry(
     base = f"http://127.0.0.1:{server.bound_port}"
     async with aiohttp.ClientSession() as client:
         live = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
-        await live.send_json({"version": 3, "type": "authenticate", "ticket": initial_ticket})
+        await live.send_json(
+            {"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": initial_ticket}
+        )
         welcome = json.loads((await live.receive(timeout=1)).data)
         original_rotation = welcome["reconnect_ticket"]
 
@@ -1468,7 +1631,7 @@ async def test_refreshed_ticket_survives_original_rotation_expiry(
         assert refreshed_ticket != original_rotation
         await live.send_json(
             {
-                "version": 3,
+                "version": PROTOCOL_VERSION,
                 "type": "ticket_ack",
                 "refresh_id": refreshed["refresh_id"],
             }
@@ -1482,7 +1645,7 @@ async def test_refreshed_ticket_survives_original_rotation_expiry(
 
         replacement = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
         await replacement.send_json(
-            {"version": 3, "type": "authenticate", "ticket": refreshed_ticket}
+            {"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": refreshed_ticket}
         )
         replacement_welcome = json.loads((await replacement.receive(timeout=1)).data)
         assert replacement_welcome["type"] == "welcome"
@@ -1507,9 +1670,11 @@ async def test_unexpected_post_upgrade_failure_closes_with_generic_error(
     auth.tickets["valid"] = AuthenticatedPlayer("one", GUILD, "room", "One", None)
     async with aiohttp.ClientSession() as client:
         socket = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
-        await socket.send_json({"version": 3, "type": "authenticate", "ticket": "valid"})
+        await socket.send_json(
+            {"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": "valid"}
+        )
         error = json.loads((await socket.receive(timeout=1)).data)
-        assert error == {"code": "internal_error", "type": "error", "version": 3}
+        assert error == {"code": "internal_error", "type": "error", "version": PROTOCOL_VERSION}
         assert socket.closed or (await socket.receive(timeout=1)).type in {
             aiohttp.WSMsgType.CLOSE,
             aiohttp.WSMsgType.CLOSED,
@@ -1602,16 +1767,18 @@ async def _bout_against_the_computer(
 ) -> aiohttp.ClientWebSocketResponse:
     auth.tickets[name] = AuthenticatedPlayer(name, GUILD, f"room-{name}", name, None)
     ws = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
-    await ws.send_json({"version": 3, "type": "authenticate", "ticket": name})
+    await ws.send_json({"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": name})
     async with asyncio.timeout(2):
         while json.loads((await ws.receive()).data)["type"] != "waiting":
             pass
-    await ws.send_json({"version": 3, "type": "cpu", "level": "rookie"})
+    await ws.send_json({"version": PROTOCOL_VERSION, "type": "cpu", "level": "rookie"})
     async with asyncio.timeout(2):
         while json.loads((await ws.receive()).data)["type"] != "select":
             pass
     # The computer picks its style at once; the bout starts as soon as this fighter confirms one.
-    await ws.send_json({"version": 3, "type": "style", "style": "balanced", "ready": True})
+    await ws.send_json(
+        {"version": PROTOCOL_VERSION, "type": "style", "style": "balanced", "ready": True}
+    )
     async with asyncio.timeout(2):
         while json.loads((await ws.receive()).data)["type"] != "ready":
             pass
@@ -1658,15 +1825,74 @@ async def test_a_flood_of_computer_requests_is_cut_off_like_a_flood_of_inputs(
     )
     async with aiohttp.ClientSession() as client:
         repeat = await _bout_against_the_computer(client, base, auth, "repeat")
-        await repeat.send_json({"version": 3, "type": "cpu", "level": "champion"})
+        await repeat.send_json({"version": PROTOCOL_VERSION, "type": "cpu", "level": "champion"})
         assert await _errors_until_closed(repeat, 0.3) == ["open"]
         await repeat.close()
 
         flooder = await _bout_against_the_computer(client, base, auth, "flooder")
-        frame = json.dumps({"version": 3, "type": "cpu", "level": "champion"})
+        frame = json.dumps({"version": PROTOCOL_VERSION, "type": "cpu", "level": "champion"})
         for _ in range(4000):
             await flooder.send_str(frame)
         assert await _errors_until_closed(flooder, 2.0) == ["rate_limited", "closed"]
+    async with asyncio.timeout(1):
+        await server.close()
+
+
+async def test_a_fighter_who_vanishes_without_a_close_pauses_the_bout_within_the_heartbeat(
+    repository: Repository,
+) -> None:
+    # In production a silent drop pauses the bout about 7.5 s after the fighter's last frame.
+    assert server_module.WEBSOCKET_HEARTBEAT_SECONDS == 5.0
+    heartbeat = 0.2
+    auth = FakeAuth()
+    rooms = _cpu_bout_rooms(repository)
+    server, _auth, base = await start_server(
+        repository, auth=auth, rooms=rooms, websocket_heartbeat=heartbeat
+    )
+    async with aiohttp.ClientSession() as client:
+        # A page that sends nothing (blurred, hidden) but whose browser answers pings stays.
+        idle = await _bout_against_the_computer(client, base, auth, "idle")
+        deadline = asyncio.get_running_loop().time() + 6 * heartbeat
+        while asyncio.get_running_loop().time() < deadline:
+            message = await idle.receive(timeout=1)
+            assert message.type == aiohttp.WSMsgType.TEXT
+        await idle.close()
+
+        auth.tickets["vanish"] = AuthenticatedPlayer("vanish", GUILD, "room-vanish", "V", None)
+        vanish = await client.ws_connect(
+            f"{base}/api/hands/ws", headers={"Origin": ORIGIN}, autoping=False
+        )
+        await vanish.send_json(
+            {"version": PROTOCOL_VERSION, "type": "authenticate", "ticket": "vanish"}
+        )
+        for request, until in (
+            ({"version": PROTOCOL_VERSION, "type": "cpu", "level": "rookie"}, "select"),
+            (
+                {"version": PROTOCOL_VERSION, "type": "style", "style": "boxer", "ready": True},
+                "ready",
+            ),
+        ):
+            await vanish.send_json(request)
+            async with asyncio.timeout(2):
+                while True:
+                    message = await vanish.receive()
+                    text = message.data if message.type == aiohttp.WSMsgType.TEXT else "{}"
+                    if json.loads(text).get("type") == until:
+                        break
+        room = rooms._rooms["room-vanish"]
+        engine = room.engine
+        assert engine is not None
+        # The fighter's connection goes quiet: no frames, no pongs, no close.
+        silent_since = asyncio.get_running_loop().time()
+        async with asyncio.timeout(3):
+            while room._slots["vanish"].connection is not None:  # noqa: ASYNC110
+                await asyncio.sleep(0.01)
+        noticed_after = asyncio.get_running_loop().time() - silent_since
+        assert noticed_after < 1.5 * heartbeat + 0.3
+        paused_at = engine.tick
+        await asyncio.sleep(0.1)
+        assert engine.tick == paused_at
+        await vanish.close()
     async with asyncio.timeout(1):
         await server.close()
 
@@ -1678,15 +1904,18 @@ async def test_each_frame_is_decoded_once(
 
     decoded: list[object] = []
     arrived = asyncio.Event()
-    original = protocol.decode_client_frame
 
-    def counting(frame: str | bytes) -> dict[str, object]:
+    def counting(frame: str | bytes, **kwargs: object) -> object:
+        # Every JSON parse the protocol module makes, whichever function makes it.
         decoded.append(frame)
         arrived.set()
-        return original(frame)
+        return json.loads(frame, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(protocol, "decode_client_frame", counting)
-    monkeypatch.setattr(server_module, "decode_client_frame", counting)
+    monkeypatch.setattr(
+        protocol,
+        "json",
+        SimpleNamespace(loads=counting, dumps=json.dumps, JSONDecodeError=json.JSONDecodeError),
+    )
     auth = FakeAuth()
     server, _auth, base = await start_server(
         repository, auth=auth, rooms=_cpu_bout_rooms(repository)
@@ -1697,7 +1926,7 @@ async def test_each_frame_is_decoded_once(
         arrived.clear()
         await fighter.send_json(
             {
-                "version": 3,
+                "version": PROTOCOL_VERSION,
                 "type": "input",
                 "sequence": 0,
                 "client_tick": 0,

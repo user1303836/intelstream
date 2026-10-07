@@ -1,7 +1,7 @@
 import { snapshot } from "./test/fixtures";
 import { SharedActionIntent } from "./input/action-buffer";
 import { NetworkController, websocketUrl } from "./network";
-import type { ServerMessage } from "./types";
+import { PROTOCOL_VERSION, type ServerMessage } from "./types";
 
 class FakeSocket {
   readyState = 1;
@@ -33,18 +33,18 @@ const callbacks = (overrides: Partial<{
 });
 
 const welcome = (ticket = "ticket-b") => ({
-  version: 3, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500,
+  version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500,
   players: [{ id: "one", name: "One", avatar: null, rating: 1500, connected: true }],
   server_tick: 40, next_sequence: 5, reconnect_ticket: ticket,
 });
 const ready = {
-  version: 3, type: "ready", players: [
+  version: PROTOCOL_VERSION, type: "ready", players: [
     { id: "one", name: "One", avatar: null, rating: 1500, connected: true },
     { id: "two", name: "Two", avatar: null, rating: 1500, connected: true },
   ],
 };
 const final = {
-  version: 3, type: "final", match_id: "match", winner_id: "one", method: "decision", round: 1,
+  version: PROTOCOL_VERSION, type: "final", match_id: "match", winner_id: "one", method: "decision", round: 1,
   scorecards: ["A", "B", "C"].map((judge) => ({ judge, player_one: [10], player_two: [9] })),
   ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } },
 };
@@ -103,13 +103,13 @@ describe("same-origin WebSocket controller", () => {
     vi.advanceTimersByTime(70);
     const base = snapshot();
     const acknowledged = { ...base, tick: 44, fighters: [{ ...base.fighters[0], player_id: welcome().player_id, last_input_sequence: sent.sequence }, base.fighters[1]] as const };
-    socket.message({ version: 3, type: "snapshot", payload: acknowledged });
+    socket.message({ version: PROTOCOL_VERSION, type: "snapshot", payload: acknowledged });
     const measured = controller.inputLatencyMs;
     expect(measured).not.toBeNull();
     expect(measured!).toBeGreaterThanOrEqual(70);
     expect(measured!).toBeLessThan(120);
     vi.advanceTimersByTime(40);
-    socket.message({ version: 3, type: "snapshot", payload: { ...acknowledged, tick: 45 } });
+    socket.message({ version: PROTOCOL_VERSION, type: "snapshot", payload: { ...acknowledged, tick: 45 } });
     expect(controller.inputLatencyMs).toBe(measured);
     controller.dispose();
   });
@@ -122,7 +122,7 @@ describe("same-origin WebSocket controller", () => {
     controller.start();
     socket.open();
     socket.message({
-      version: 3,
+      version: PROTOCOL_VERSION,
       type: "welcome",
       role: "spectator",
       player_id: "viewer",
@@ -140,6 +140,29 @@ describe("same-origin WebSocket controller", () => {
     controller.dispose();
   });
 
+  it("starts sending input once a spectator is seated as a fighter before the bell", () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket();
+    const getInput = vi.fn(() => ({ moveX: 1000, moveY: 0, defense: "none" as const, actions: [] }));
+    const controller = new NetworkController("ticket", getInput, callbacks(), () => socket);
+    controller.start();
+    socket.open();
+    const watching = [{ ...ready.players[1] }, { id: "three", name: "Three", avatar: null, rating: 1500, connected: false }];
+    socket.message({ version: PROTOCOL_VERSION, type: "welcome", role: "spectator", player_id: "one", players: watching, server_tick: 0, reconnect_ticket: "spectator-ticket" });
+    vi.advanceTimersByTime(200);
+    expect(getInput).not.toHaveBeenCalled();
+    socket.message({ ...welcome("seated-ticket"), server_tick: 0, next_sequence: 0 });
+    socket.message(ready);
+    vi.advanceTimersByTime(100);
+    const frames = socket.sent.map((frame) => JSON.parse(frame) as { type: string; sequence?: number });
+    expect(frames[0]?.type).toBe("authenticate");
+    expect(frames.slice(1).length).toBeGreaterThan(0);
+    expect(frames.slice(1).every((frame) => frame.type === "input")).toBe(true);
+    expect(frames[1]?.sequence).toBe(0);
+    controller.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("uses the latest in-memory ticket refresh without exposing it to app callbacks", () => {
     vi.useFakeTimers();
     const sockets: FakeSocket[] = [];
@@ -154,9 +177,9 @@ describe("same-origin WebSocket controller", () => {
     controller.start();
     sockets[0]!.open();
     sockets[0]!.message(welcome("ticket-b"));
-    sockets[0]!.message({ version: 3, type: "ticket", reconnect_ticket: "ticket-c", refresh_id: "refresh-identifier" });
+    sockets[0]!.message({ version: PROTOCOL_VERSION, type: "ticket", reconnect_ticket: "ticket-c", refresh_id: "refresh-identifier" });
     expect(messages.map((message) => message.type)).toEqual(["welcome"]);
-    expect(JSON.parse(sockets[0]!.sent[1]!)).toEqual({ version: 3, type: "ticket_ack", refresh_id: "refresh-identifier" });
+    expect(JSON.parse(sockets[0]!.sent[1]!)).toEqual({ version: PROTOCOL_VERSION, type: "ticket_ack", refresh_id: "refresh-identifier" });
     sockets[0]!.disconnect();
     vi.advanceTimersByTime(250);
     sockets[1]!.open();
@@ -196,11 +219,11 @@ describe("same-origin WebSocket controller", () => {
     socket.open();
     socket.message(welcome());
     socket.message(ready);
-    socket.message({ version: 3, type: "snapshot", payload: { ...snapshot(41), phase: "fight" } });
+    socket.message({ version: PROTOCOL_VERSION, type: "snapshot", payload: { ...snapshot(41), phase: "fight" } });
     vi.advanceTimersByTime(40);
     expect(inputs().at(-1)).toMatchObject({ move: { x: 0, y: 1000 }, defense: "guard_high" });
     const held = inputs().length;
-    socket.message({ version: 3, type: "snapshot", payload: { ...snapshot(42), phase: "rest" } });
+    socket.message({ version: PROTOCOL_VERSION, type: "snapshot", payload: { ...snapshot(42), phase: "rest" } });
     expect(inputs()).toHaveLength(held + 1);
     expect(inputs().at(-1)).toMatchObject({ move: { x: 0, y: 0 }, defense: "none", actions: [] });
     controller.setActive(false);
@@ -260,7 +283,7 @@ describe("same-origin WebSocket controller", () => {
     controller.start();
     socket.open();
     socket.message(welcome());
-    socket.message({ version: 3, type: "waiting", open_seats: 1 });
+    socket.message({ version: PROTOCOL_VERSION, type: "waiting", open_seats: 1 });
     controller.setActive(false);
     window.dispatchEvent(new Event("blur"));
     vi.advanceTimersByTime(200);
@@ -278,7 +301,7 @@ describe("same-origin WebSocket controller", () => {
     controller.start();
     socket.open();
     socket.message(welcome());
-    socket.message({ version: 3, type: "error", code });
+    socket.message({ version: PROTOCOL_VERSION, type: "error", code });
     expect(fatal).toHaveBeenCalledOnce();
     expect(fatal).toHaveBeenCalledWith(code);
     expect(socket.closed).toBe(true);
@@ -296,7 +319,7 @@ describe("same-origin WebSocket controller", () => {
     controller.start();
     outdated.open();
     // A server that moved on answers authenticate with its own version, so the frame itself does not decode.
-    outdated.message({ version: 4, type: "error", code: "client_outdated" });
+    outdated.message({ version: PROTOCOL_VERSION + 1, type: "error", code: "client_outdated" });
     expect(fatal).toHaveBeenCalledWith("client_outdated");
     controller.dispose();
 
@@ -305,7 +328,7 @@ describe("same-origin WebSocket controller", () => {
     const other = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks({ onFatal: protocolFatal }), () => malformed);
     other.start();
     malformed.open();
-    malformed.message({ version: 3, type: "waiting", open_seats: 2 });
+    malformed.message({ version: PROTOCOL_VERSION, type: "waiting", open_seats: 3 });
     expect(protocolFatal).toHaveBeenCalledWith("protocol_error");
     other.dispose();
   });
@@ -316,7 +339,7 @@ describe("same-origin WebSocket controller", () => {
     const socket = new FakeSocket();
     const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks({ onReconnect: reconnect }), () => socket, () => Date.now());
     controller.start(); socket.open(); socket.message(welcome());
-    socket.message({ version: 3, type: "paused", player_id: "two", grace_ms: 1_000 });
+    socket.message({ version: PROTOCOL_VERSION, type: "paused", player_id: "two", grace_ms: 1_000 });
     expect(reconnect).toHaveBeenLastCalledWith(1_000);
     vi.advanceTimersByTime(250); expect(reconnect).toHaveBeenLastCalledWith(750);
     vi.advanceTimersByTime(750); expect(reconnect).toHaveBeenLastCalledWith(0);
@@ -330,14 +353,35 @@ describe("same-origin WebSocket controller", () => {
     const socket = new FakeSocket();
     const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks({ onReconnect: reconnect }), () => socket, () => Date.now());
     controller.start(); socket.open(); socket.message(welcome());
-    socket.message({ version: 3, type: "paused", player_id: "two", grace_ms: 2_000 });
+    socket.message({ version: PROTOCOL_VERSION, type: "paused", player_id: "two", grace_ms: 2_000 });
     vi.advanceTimersByTime(250);
-    socket.message({ version: 3, type: "resumed", player_id: "two" });
+    socket.message({ version: PROTOCOL_VERSION, type: "resumed", player_id: "two" });
     expect(reconnect).toHaveBeenLastCalledWith(0);
     const calls = reconnect.mock.calls.length;
     vi.advanceTimersByTime(3_000);
     expect(reconnect).toHaveBeenCalledTimes(calls);
     controller.dispose();
+  });
+
+  it("lets the pick and the bell end an opponent pause, so no countdown runs over the picker or the bout", () => {
+    vi.useFakeTimers();
+    const reconnect = vi.fn();
+    const socket = new FakeSocket();
+    const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks({ onReconnect: reconnect }), () => socket, () => Date.now());
+    controller.start(); socket.open(); socket.message(welcome());
+    const select = { version: PROTOCOL_VERSION, type: "select", deadline_ms: 9_000, players: ready.players, ready: [] };
+    for (const ends of [select, ready, { version: PROTOCOL_VERSION, type: "waiting", open_seats: 1 }]) {
+      socket.message({ version: PROTOCOL_VERSION, type: "paused", player_id: "two", grace_ms: 8_500 });
+      vi.advanceTimersByTime(250);
+      expect(reconnect).toHaveBeenLastCalledWith(8_250);
+      socket.message(ends);
+      expect(reconnect).toHaveBeenLastCalledWith(0);
+      const calls = reconnect.mock.calls.length;
+      vi.advanceTimersByTime(9_000);
+      expect(reconnect).toHaveBeenCalledTimes(calls);
+    }
+    controller.dispose();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("gives its own dropped transport a fresh grace while the opponent is paused", () => {
@@ -346,7 +390,7 @@ describe("same-origin WebSocket controller", () => {
     const socket = new FakeSocket();
     const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks({ onReconnect: reconnect }), () => socket, () => Date.now());
     controller.start(); socket.open(); socket.message(welcome());
-    socket.message({ version: 3, type: "paused", player_id: "two", grace_ms: 5_000 });
+    socket.message({ version: PROTOCOL_VERSION, type: "paused", player_id: "two", grace_ms: 5_000 });
     vi.advanceTimersByTime(4_000);
     socket.disconnect();
     expect(reconnect).toHaveBeenLastCalledWith(20_000);
@@ -360,7 +404,7 @@ describe("same-origin WebSocket controller", () => {
     const finalSocket = new FakeSocket();
     const finalController = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks({ onReconnect: finalReconnect }), () => finalSocket, () => Date.now());
     finalController.start(); finalSocket.open(); finalSocket.message(welcome());
-    finalSocket.message({ version: 3, type: "paused", player_id: "two", grace_ms: 2_000 });
+    finalSocket.message({ version: PROTOCOL_VERSION, type: "paused", player_id: "two", grace_ms: 2_000 });
     finalSocket.message(final);
     expect(finalReconnect).toHaveBeenLastCalledWith(0);
     expect(vi.getTimerCount()).toBe(0);
@@ -369,7 +413,7 @@ describe("same-origin WebSocket controller", () => {
     const disposeSocket = new FakeSocket();
     const disposeController = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none", actions: [] }), callbacks({ onReconnect: disposeReconnect }), () => disposeSocket, () => Date.now());
     disposeController.start(); disposeSocket.open(); disposeSocket.message(welcome());
-    disposeSocket.message({ version: 3, type: "paused", player_id: "two", grace_ms: 2_000 });
+    disposeSocket.message({ version: PROTOCOL_VERSION, type: "paused", player_id: "two", grace_ms: 2_000 });
     disposeController.dispose();
     expect(disposeReconnect).toHaveBeenLastCalledWith(0);
     expect(vi.getTimerCount()).toBe(0);
@@ -389,9 +433,9 @@ describe("same-origin WebSocket controller", () => {
     controller.start();
     sockets[0]!.open();
     sockets[0]!.message(welcome());
-    sockets[0]!.message({ version: 3, type: "paused", player_id: "two", grace_ms: 5_000 });
+    sockets[0]!.message({ version: PROTOCOL_VERSION, type: "paused", player_id: "two", grace_ms: 5_000 });
     now = 5_500;
-    sockets[0]!.message({ version: 3, type: "resumed", player_id: "two" });
+    sockets[0]!.message({ version: PROTOCOL_VERSION, type: "resumed", player_id: "two" });
     now = 8_000;
     sockets[0]!.disconnect();
     expect(reconnect).toHaveBeenLastCalledWith(20_000);
@@ -420,9 +464,9 @@ describe("calling in the computer", () => {
     controller.start();
     socket.open();
     socket.message(welcome());
-    socket.message({ version: 3, type: "waiting", open_seats: 1 });
+    socket.message({ version: PROTOCOL_VERSION, type: "waiting", open_seats: 1 });
     expect(controller.requestCpu("champion")).toBe(true);
-    expect(JSON.parse(socket.sent.at(-1)!)).toEqual({ version: 3, type: "cpu", level: "champion" });
+    expect(JSON.parse(socket.sent.at(-1)!)).toEqual({ version: PROTOCOL_VERSION, type: "cpu", level: "champion" });
     socket.readyState = 3;
     expect(controller.requestCpu("champion")).toBe(false);
     expect(socket.sent.filter((frame) => JSON.parse(frame).type === "cpu")).toHaveLength(1);
@@ -434,7 +478,7 @@ describe("calling in the computer", () => {
     const controller = new NetworkController("ticket", neutral, callbacks(), () => socket);
     controller.start();
     socket.open();
-    socket.message({ version: 3, type: "welcome", role: "spectator", player_id: "viewer", players: ready.players, server_tick: 40, reconnect_ticket: "spectator-ticket" });
+    socket.message({ version: PROTOCOL_VERSION, type: "welcome", role: "spectator", player_id: "viewer", players: ready.players, server_tick: 40, reconnect_ticket: "spectator-ticket" });
     expect(controller.requestCpu("rookie")).toBe(false);
     expect(socket.sent.map((frame) => JSON.parse(frame).type)).toEqual(["authenticate"]);
     controller.dispose();
@@ -700,10 +744,10 @@ describe("corner instructions between rounds", () => {
     socket.open();
     socket.message(welcome());
     socket.message(ready);
-    socket.message({ version: 3, type: "snapshot", payload: snapshot() });
+    socket.message({ version: PROTOCOL_VERSION, type: "snapshot", payload: snapshot() });
     expect(controller.sendCornerChoice("corner_cut")).toBe(false);
 
-    socket.message({ version: 3, type: "snapshot", payload: { ...snapshot(11), phase: "rest", phase_ticks_remaining: 300 } });
+    socket.message({ version: PROTOCOL_VERSION, type: "snapshot", payload: { ...snapshot(11), phase: "rest", phase_ticks_remaining: 300 } });
     const before = socket.sent.length;
     vi.advanceTimersByTime(200);
     expect(socket.sent.length).toBe(before);
@@ -722,8 +766,8 @@ describe("corner instructions between rounds", () => {
     const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none" as const, actions: [] }), callbacks(), () => socket);
     controller.start();
     socket.open();
-    socket.message({ version: 3, type: "welcome", role: "spectator", player_id: "viewer", players: ready.players, server_tick: 40, reconnect_ticket: "spectator-ticket" });
-    socket.message({ version: 3, type: "snapshot", payload: { ...snapshot(11), phase: "rest", phase_ticks_remaining: 300 } });
+    socket.message({ version: PROTOCOL_VERSION, type: "welcome", role: "spectator", player_id: "viewer", players: ready.players, server_tick: 40, reconnect_ticket: "spectator-ticket" });
+    socket.message({ version: PROTOCOL_VERSION, type: "snapshot", payload: { ...snapshot(11), phase: "rest", phase_ticks_remaining: 300 } });
     expect(controller.sendCornerChoice("corner_cut")).toBe(false);
     expect(socket.sent.map((sent) => JSON.parse(sent).type)).toEqual(["authenticate"]);
     controller.dispose();
