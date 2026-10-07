@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { Effects3D } from "../render/effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "../render/graph";
 import { OFFICIAL_LOOKS, lookFor, type FighterLook } from "../render/looks";
 import { BLUE_CORNER_OUTFIT, CUTMAN_OUTFIT, RED_CORNER_OUTFIT, REFEREE_OUTFIT, type OfficialOutfit } from "../render/outfit";
@@ -43,6 +44,7 @@ const CAMERAS: Record<string, [number, number, number]> = {
   face: [0.25, 1.55, 1.0],
   portrait: [0.12, 1.62, 0.62],
   eyes: [-0.2, 1.65, 0.44],
+  floor: [1.62, 0.3, 0.18],
   hand: [0.55, 1.05, 0.75],
   front: [0, 1.35, 3.4],
   side: [3.4, 1.3, 0.2],
@@ -63,6 +65,12 @@ export class ModelLab {
   private readonly treatEye = new THREE.Vector3(0, 1.22, 0.78);
   private readonly treatFacing = new THREE.Vector3(0, 0, -1);
   private skeletonHelper: THREE.SkeletonHelper | null = null;
+  /** `mouthpiece=1` knocks the gum shield out of the mouth every few seconds. */
+  private effects: Effects3D | null = null;
+  private shieldClock = Infinity;
+  private shieldEvent = 0;
+  private readonly mouth = new THREE.Vector3();
+  private readonly headTurn = new THREE.Quaternion();
   private raf = 0;
   private previous = performance.now();
   private elapsed = 0;
@@ -87,6 +95,7 @@ export class ModelLab {
     if (this.params.get("cam") === "hand") this.camera.lookAt(0.27, 0.84, 0.12);
     else if (this.params.get("cam") === "portrait") this.camera.lookAt(0, 1.6, 0.05);
     else if (this.params.get("cam") === "eyes") this.camera.lookAt(0.01, 1.6, 0.06);
+    else if (this.params.get("cam") === "floor") this.camera.lookAt(1.3, 0.0, -0.24);
     else this.camera.lookAt(0, this.params.get("cam") === "face" ? 1.5 : 1.0, 0);
     this.setupLighting();
   }
@@ -194,6 +203,7 @@ export class ModelLab {
         this.skeletonHelper = new THREE.SkeletonHelper(this.boxer.root);
         this.scene.add(this.skeletonHelper);
       }
+      if (this.params.get("mouthpiece") === "1") this.effects = new Effects3D(this.scene);
       const dislocation = this.params.get("dislocation");
       if (dislocation === "jaw" || dislocation === "shoulder_left" || dislocation === "shoulder_right") this.graph.setArcadeDislocation(dislocation);
       this.statusEl.textContent = `pose ${this.params.get("pose") ?? "idle"}`;
@@ -260,6 +270,18 @@ export class ModelLab {
     graph.attend(this.params.get("pose") === "attend");
     graph.treat(this.params.get("pose") === "treat" ? this.treatEye : null, this.treatFacing, 1);
     graph.update(fighter, opponent, dt, this.elapsed, false, "full", sampledTick, head);
+    if (this.effects !== null) {
+      this.shieldClock += dt;
+      if (this.shieldClock > 3) {
+        this.shieldClock = 0;
+        this.shieldEvent += 1;
+        const head = this.boxer!.bone("head")!;
+        head.getWorldQuaternion(this.headTurn);
+        head.getWorldPosition(this.mouth).add(new THREE.Vector3(0, 0.045, 0.12).applyQuaternion(this.headTurn));
+        this.effects.ejectMouthpiece(0, this.mouth, this.headTurn, 1, this.shieldEvent, 0x1d4ed8, true);
+      }
+      this.effects.update(dt);
+    }
     for (const [index, bone] of (["gloveL", "gloveR"] as const).entries()) {
       this.boxer!.rig.bones[bone].getWorldPosition(this.trailGlove);
       this.trails[index]?.update(this.trailGlove, dt, this.camera.position, dt > 0);
@@ -270,11 +292,13 @@ export class ModelLab {
       gloveR: this.boxer!.bone("gloveR")!.getWorldPosition(new THREE.Vector3()).toArray().map((v) => Number(v.toFixed(3))),
       ankleL: this.boxer!.bone("ankleL")!.getWorldPosition(new THREE.Vector3()).toArray().map((v) => Number(v.toFixed(3))),
       ankleR: this.boxer!.bone("ankleR")!.getWorldPosition(new THREE.Vector3()).toArray().map((v) => Number(v.toFixed(3))),
+      mouthpiece: this.effects !== null && this.effects.mouthpiecePosition(0, this.mouth) ? this.mouth.toArray().map((v) => Number(v.toFixed(3))) : null,
     };
   }
 
   destroy(): void {
     cancelAnimationFrame(this.raf);
+    this.effects?.dispose();
     this.graph?.dispose();
     this.renderer.dispose();
     this.root.replaceChildren();

@@ -80,6 +80,8 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       one.velocity_x = two.velocity_x = 0;
       if (tauntCycle > 3.6) one.clinch_ticks = two.clinch_ticks = Math.round((5.1 - tauntCycle) * 30);
     }
+    // `mouthpiece=1` puts the gum shields back before every exchange so each big head shot knocks one out.
+    if (new URLSearchParams(window.location.search).get("mouthpiece") === "1" && cycle < 0.1) renderer.labEffects.clearMouthpieces();
     if (cycle < 0.55 && one.taunt_ticks === 0 && two.taunt_ticks === 0 && !closing) {
       const punch = PUNCHES[Math.floor(t / 3.2) % PUNCHES.length]!;
       attacker.action = punch;
@@ -187,6 +189,7 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       downed: two.is_downed,
       severedHeads: renderer.labEffects.activeHeads,
       severedHands: renderer.labEffects.activeHands,
+      mouthpieces: [renderer.labEffects.mouthpieceOut(0), renderer.labEffects.mouthpieceOut(1)],
       rigs: renderer.labRigs.length,
       resolutionScale: renderer.resolutionScale,
       heads: renderer.labRigs.map((root) => {

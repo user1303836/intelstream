@@ -18,6 +18,7 @@ import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, type ArcadeDislocation } from 
 import { drawHud, finalRevealDelay, resultCard, resultCardLayout, RoundStatsTracker, STOPPAGE_METHODS, RoundClock, type RoundPunchStats } from "./hud";
 import { NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE } from "./injury";
 import { closeCut, cutRim, teethFor } from "./gore";
+import { mouthpieceFlies } from "./mouthpiece";
 import { OFFICIAL_LOOKS, lookFor } from "./looks";
 import { BLUE_CORNER_OUTFIT, CUTMAN_OUTFIT, RED_CORNER_OUTFIT, REFEREE_OUTFIT } from "./outfit";
 import { ResolutionScaler } from "./quality";
@@ -1005,6 +1006,8 @@ export class FightRenderer {
     const hand = (keyParts[1] ?? null) as Hand | null;
     this.graphs?.[recipientIndex]?.react("hit", event.detail.endsWith(":body") ? "body" : "head", event.direction, punchClass, hand, Math.max(300, event.amount));
     if (puncherIndex >= 0) this.graphs?.[puncherIndex]?.landedHit(false);
+    // The punch that floored him knocks the gum shield out again, in slow motion.
+    if (event.detail.endsWith(":head") && !this.settings().reducedMotion) this.knockOutMouthpiece(recipientIndex, event.direction, event.event_id + REPLAY_EVENT_ID_OFFSET, true);
     this.onContact?.(event);
     this.reapplyReplayInjuries();
   }
@@ -1320,6 +1323,9 @@ export class FightRenderer {
         this.applyArcadeInjury(recipientIndex, injury, event);
       }
       const graphs = this.graphs;
+      if (presentImpact && recipientIndex >= 0 && !currentSettings.reducedMotion && mouthpieceFlies(event.kind, event.amount, presentationEvent.detail.endsWith(":head"))) {
+        this.knockOutMouthpiece(recipientIndex, presentationEvent.direction, event.event_id, false);
+      }
       const teeth = presentImpact && recipientIndex >= 0 ? teethFor(event.kind, event.amount, presentationEvent.detail.endsWith(":head")) : 0;
       if (teeth > 0 && !currentSettings.reducedMotion && currentSettings.blood !== "off") {
         const pose = this.headWorldPose(recipientIndex);
@@ -1352,6 +1358,20 @@ export class FightRenderer {
       }
       this.onContact?.(event);
     }
+  }
+
+  /** The bell ends the round: the rest starts and the corners put the gum shields back in. */
+  private enterRest(seconds: number): void {
+    this.restStartedAt = seconds;
+    this.effects.clearMouthpieces();
+  }
+
+  /** The gum shield flies out of the mouth along the punch, from the head as it is posed. */
+  private knockOutMouthpiece(index: number, direction: number, eventId: number, again: boolean): void {
+    const pose = this.headWorldPose(index);
+    if (pose === null) return;
+    this.tmpB.set(0, -0.075, 0.1).applyQuaternion(pose.quaternion).add(pose.position);
+    this.effects.ejectMouthpiece(index, this.tmpB, pose.quaternion, direction, eventId, this.gearColor(index), again);
   }
 
   /** True once the result panel is on screen, after any knockout replay and close-up. */
@@ -1527,7 +1547,7 @@ export class FightRenderer {
           this.roundCalloutUntil = seconds + ROUND_CALLOUT_SECONDS;
           this.roundCalloutRound = snapshot.round_number;
         }
-        if (snapshot.phase === "rest" && this.lastPhase !== "rest") this.restStartedAt = seconds;
+        if (snapshot.phase === "rest" && this.lastPhase !== "rest") this.enterRest(seconds);
         this.lastPhase = snapshot.phase;
         this.anticipatePunches(latest, sampledTick);
         graphs[0].update(a, b, actorDt, seconds, current.reducedMotion, current.blood, sampledTick, headB);

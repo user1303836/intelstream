@@ -4,6 +4,7 @@ import type { CombatEvent, Hand } from "../types";
 import { wearCornerColour } from "./gear";
 import { HARD_SHOT, bloodDropsFor, bloodShade, buildChunkGeometry, buildDropletGeometry, buildWoundGeometry, closeCut, dropletShape, woundTexture } from "./gore";
 import { LookShading, SCANNED_LOOK, type FighterLook } from "./looks";
+import { SHIELD_RADIUS, buildMouthpieceGeometry, idleShield, stepShield, type ShieldState } from "./mouthpiece";
 import { CANVAS_TOP, RING_FIGHT_HALF, ROPE_LINE } from "./world";
 
 const MAX_DROPLETS = 900;
@@ -120,6 +121,8 @@ const seeded = (seed: number): (() => number) => () => {
 };
 
 const finite = (value: number, fallback = 0): number => Number.isFinite(value) ? value : fallback;
+const SHIELD_WHITE = new THREE.Color(0xf4f7fb);
+const SALIVA = { r: 0.82, g: 0.86, b: 0.9 } as const;
 const unitY = new THREE.Vector3(0, 1, 0);
 const safeStep = (dt: number): number => Number.isFinite(dt) ? THREE.MathUtils.clamp(dt, 0, MAX_STEP) : 0;
 const IMPACT_KINDS = new Set(["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown", "bleed"]);
@@ -263,6 +266,12 @@ export class Effects3D {
   private readonly lastDecapitationEvent = [null, null] as Array<number | null>;
   private readonly lastDismembermentEvent = Array<number | null>(MAX_HANDS).fill(null);
 
+  private readonly shieldGeometry: THREE.BufferGeometry;
+  private readonly shieldMaterials: THREE.MeshStandardMaterial[] = [];
+  private readonly shieldMeshes: THREE.Mesh[] = [];
+  private readonly shields: ShieldState[] = [idleShield(), idleShield()];
+  private readonly lastShieldEvent = [null, null] as Array<number | null>;
+
   private readonly dripEmitters: [DripEmitter, DripEmitter] = [
     { position: new THREE.Vector3(), active: false, rate: 0, accumulator: 0 },
     { position: new THREE.Vector3(), active: false, rate: 0, accumulator: 0 },
@@ -359,6 +368,16 @@ export class Effects3D {
       scene.add(stumpMesh);
       this.stumps.push({ mesh: stumpMesh, flesh: new THREE.BufferGeometry(), active: false, fountainLife: 0, accumulator: 0, seed: 1, direction: 1 });
     }
+    this.shieldGeometry = buildMouthpieceGeometry();
+    for (let index = 0; index < MAX_HEADS; index += 1) {
+      const material = new THREE.MeshStandardMaterial({ color: 0xe8eef5, roughness: 0.22, metalness: 0, side: THREE.DoubleSide });
+      this.shieldMaterials.push(material);
+      const mesh = new THREE.Mesh(this.shieldGeometry, material);
+      mesh.castShadow = true;
+      mesh.visible = false;
+      scene.add(mesh);
+      this.shieldMeshes.push(mesh);
+    }
     for (let index = 0; index < MAX_HANDS; index += 1) {
       const material = new THREE.MeshStandardMaterial({ color: 0x1d4ed8, roughness: 0.38, metalness: 0.03 });
       wearCornerColour(material, true);
@@ -439,6 +458,103 @@ export class Effects3D {
     if (head === undefined || !head.active) return false;
     out.set(0, 0, 1).applyQuaternion(head.mesh.quaternion);
     return true;
+  }
+
+  /** Whether a fighter's gum shield is out of his mouth. */
+  mouthpieceOut(fighterIndex: number): boolean {
+    return this.shields[Math.trunc(fighterIndex)]?.out === true;
+  }
+
+  /** Copies where a fighter's gum shield is into `out`; false while it is still in his mouth. */
+  mouthpiecePosition(fighterIndex: number, out: THREE.Vector3): boolean {
+    const shield = this.shields[Math.trunc(fighterIndex)];
+    if (shield === undefined || !shield.out) return false;
+    out.set(shield.x, shield.y, shield.z);
+    return true;
+  }
+
+  /**
+   * Knocks a fighter's gum shield out of his mouth along the punch: it tumbles, bounces and slides on
+   * the canvas and lies there until the round ends. Once out it stays out, unless `again` replays the
+   * blow. A spray of spit, and of blood when blood is shown, follows it.
+   */
+  ejectMouthpiece(fighterIndex: number, mouth: THREE.Vector3, quaternion: THREE.Quaternion, direction: number, eventId: number, color: number, again = false): boolean {
+    if (fighterIndex < 0 || fighterIndex >= MAX_HEADS) return false;
+    const index = Math.trunc(fighterIndex);
+    const shield = this.shields[index]!;
+    const safeEventId = Number.isSafeInteger(eventId) ? eventId : 0;
+    if ((shield.out && !again) || this.lastShieldEvent[index] === safeEventId) return false;
+    this.lastShieldEvent[index] = safeEventId;
+    const rand = seeded(safeEventId * 48271 + index * 7907 + 5);
+    const launch = direction < 0 ? -1 : 1;
+    Object.assign(shield, idleShield(), {
+      out: true,
+      moving: true,
+      x: finite(mouth.x), y: finite(mouth.y, 1.45), z: finite(mouth.z),
+      vx: launch * (0.9 + rand() * 0.9),
+      vy: 0.9 + rand() * 0.9,
+      vz: (rand() - 0.5) * 1.1,
+      wx: (rand() - 0.5) * 26,
+      wy: (rand() - 0.5) * 18,
+      wz: (rand() - 0.5) * 26,
+      restYaw: rand() * Math.PI * 2,
+    } satisfies Partial<ShieldState>);
+    const mesh = this.shieldMeshes[index]!;
+    mesh.position.set(shield.x, shield.y, shield.z);
+    copyFiniteQuaternion(mesh.quaternion, quaternion);
+    mesh.visible = true;
+    const material = this.shieldMaterials[index]!;
+    material.color.setHex(color).lerp(SHIELD_WHITE, 0.55);
+    const bloody = this.bloodLevel !== "off";
+    for (let drop = 0; drop < (bloody ? 22 : 12); drop += 1) {
+      const angle = rand() * Math.PI * 2;
+      const blood = bloody && drop % 3 !== 0;
+      this.spawnDroplet(
+        shield.x + (rand() - 0.5) * 0.03,
+        shield.y + (rand() - 0.5) * 0.03,
+        shield.z + (rand() - 0.5) * 0.03,
+        shield.vx * (0.5 + rand() * 0.6) + Math.sin(angle) * 0.4,
+        shield.vy * (0.4 + rand() * 0.6),
+        shield.vz * 0.5 + Math.cos(angle) * 0.4,
+        blood ? bloodShade(rand()) : SALIVA,
+        0.5 + rand() * 0.5,
+        blood,
+      );
+    }
+    return true;
+  }
+
+  /** The corner puts the gum shield back in between rounds. */
+  clearMouthpieces(): void {
+    for (const [index, shield] of this.shields.entries()) {
+      Object.assign(shield, idleShield());
+      this.shieldMeshes[index]!.visible = false;
+      this.lastShieldEvent[index] = null;
+    }
+  }
+
+  private updateShields(step: number): void {
+    for (const [index, shield] of this.shields.entries()) {
+      if (!shield.out || !shield.moving) continue;
+      const mesh = this.shieldMeshes[index]!;
+      const flying = shield.age < 0.3 && !shield.sliding;
+      const fromX = shield.x;
+      const fromZ = shield.z;
+      stepShield(shield, mesh.quaternion, step, CANVAS_TOP);
+      const limit = ROPE_LINE - SHIELD_RADIUS - SEVERED_PART_MARGIN;
+      const x = confineToRopes(shield.x, shield.vx, fromX, limit);
+      const z = confineToRopes(shield.z, shield.vz, fromZ, limit);
+      shield.x = x.position;
+      shield.vx = x.velocity;
+      shield.z = z.position;
+      shield.vz = z.velocity;
+      mesh.position.set(shield.x, shield.y, shield.z);
+      // A thread of spit and blood trails it for the first moments of its flight.
+      if (flying && this.ambientRandom() < step * 40) {
+        const blood = this.bloodLevel !== "off" && this.ambientRandom() < 0.6;
+        this.spawnDroplet(shield.x, shield.y, shield.z, shield.vx * 0.6, shield.vy * 0.6, shield.vz * 0.6, blood ? bloodShade(this.ambientRandom()) : SALIVA, 0.45, blood, 0.003);
+      }
+    }
   }
 
   get activeHands(): number {
@@ -1233,6 +1349,7 @@ export class Effects3D {
     this.updateStumpFountains(step);
     this.updateDetachedParts(this.heads, step);
     this.updateDetachedParts(this.hands, step);
+    this.updateShields(step);
     this.updateGibs(step);
 
     let dropletsChanged = false;
@@ -1335,6 +1452,7 @@ export class Effects3D {
     this.clearDroplets(false);
     this.clearMists();
     this.clearGibs();
+    this.clearMouthpieces();
     for (let index = 0; index < MAX_HEADS; index += 1) this.restoreFighter(index);
     this.shake = 0;
     this.stopDrip(0);
@@ -1383,6 +1501,9 @@ export class Effects3D {
     for (const material of this.handMaterials) material.dispose();
     this.stumpGeometry.dispose();
     this.wristStumpGeometry.dispose();
+    this.shieldGeometry.dispose();
+    for (const material of this.shieldMaterials) material.dispose();
+    for (const mesh of this.shieldMeshes) this.scene.remove(mesh);
     this.stumpMaterial.dispose();
     this.stumpMap.dispose();
     for (const head of this.heads) this.scene.remove(head.mesh);
