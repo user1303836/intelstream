@@ -1,7 +1,7 @@
 import { RoundClock } from "./render/hud";
 import { AudioFeedback } from "./audio";
 import { ClientError, safeError } from "./api";
-import { authorizeDiscord, type DiscordSession } from "./discord";
+import { DiscordActivity, type ActivityAuthorizer, type DiscordSession } from "./discord";
 import { describeError } from "./errors";
 import { HapticFeedback } from "./haptics";
 import { CONTROL_HELP } from "./input/bindings";
@@ -39,6 +39,7 @@ export class HandsApp {
   private destroyed = false;
   private generation = 0;
   private reloadOnRetry = false;
+  private reloading = false;
 
   private readonly canvas: HTMLCanvasElement;
   private readonly status: HTMLElement;
@@ -66,7 +67,7 @@ export class HandsApp {
   constructor(
     private readonly root: HTMLElement,
     private readonly reloadPage: () => void = () => window.location.reload(),
-    private readonly authorizer: (signal: AbortSignal) => Promise<DiscordSession> = authorizeDiscord,
+    private readonly authorizer: ActivityAuthorizer = new DiscordActivity(),
   ) {
     root.innerHTML = `<section class="activity" aria-label="Hands boxing activity"><canvas class="fight" aria-label="Authoritative two-player boxing match"></canvas><header class="topbar"><strong>HANDS</strong><span>authoritative two-player boxing</span><span class="spectator-role" data-role hidden>SPECTATING · READ ONLY</span><button type="button" data-controls aria-expanded="false">Controls</button><button type="button" data-settings aria-expanded="false">Settings</button></header><section class="overlay" data-overlay><p class="status" data-status></p><p class="hint" data-hint hidden></p><button type="button" class="primary" data-retry hidden>Retry securely</button><button type="button" class="primary" data-rematch hidden>Rematch</button></section><aside class="panel" data-controls-panel hidden aria-label="Controls"><h2>Controls</h2><ul>${CONTROL_HELP.map((item) => `<li>${item}</li>`).join("")}</ul></aside><aside class="panel settings" data-settings-panel hidden aria-label="Accessibility and feedback settings"><h2>Settings</h2><label>Volume <input data-volume type="range" min="0" max="1" step="0.05"></label><label><input data-haptics type="checkbox"> Haptics</label><label><input data-motion type="checkbox"> Reduced motion</label><label>Blood <select data-blood><option value="full">Full (arcade gore)</option><option value="reduced">Reduced</option><option value="off">Off</option></select></label><section class="diagnostics"><h3>Diagnostics</h3><pre data-diagnostics></pre><button type="button" data-copy-diagnostics>Copy diagnostics</button></section><p class="model-credit"><a href="https://sketchfab.com/3d-models/boxer-84767168720948b38728ff78ee6f6090" target="_blank" rel="noreferrer">“Boxer” by Texel, Inc.</a> · <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">CC BY 4.0</a> · modified</p></aside><section class="sr-summary" data-fight-summary aria-label="Fight summary"></section><p class="sr-summary" data-fight-status role="status" aria-live="polite" aria-atomic="true"></p><section class="sr-summary" data-final aria-live="polite" aria-label="Final result"></section></section>`;
     this.canvas = root.querySelector<HTMLCanvasElement>("canvas")!;
@@ -179,7 +180,7 @@ export class HandsApp {
     this.setText(this.status, "Securing Discord Activity session…");
     this.retry.hidden = true;
     try {
-      const session = await this.authorizer(this.abort.signal);
+      const session = await this.authorizer.authorize(this.abort.signal);
       if (this.destroyed || generation !== this.generation) {
         session.destroy();
         return;
@@ -375,6 +376,8 @@ export class HandsApp {
 
   private readonly onRetry = (): void => {
     if (this.reloadOnRetry) {
+      // The reload brings up a new page and SDK; closing this SDK on the way out would close the Activity.
+      this.reloading = true;
       this.reloadPage();
       return;
     }
@@ -499,6 +502,7 @@ export class HandsApp {
     this.abort.abort();
     this.network?.dispose();
     this.session?.destroy();
+    if (!this.reloading) this.authorizer.close();
     this.renderer?.destroy();
     this.input.destroy();
     this.audio.destroy();

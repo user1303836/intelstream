@@ -9,7 +9,13 @@ export interface DiscordSession {
   readonly bootstrap: BootstrapResponse;
   readonly player: TokenPlayer;
   takeTicket(): string | null;
+  /** Drops the unused ticket; the SDK stays open for the next session. */
   destroy(): void;
+}
+/** Signs the page in for each bout. `close` ends the Activity, so it belongs to final teardown only. */
+export interface ActivityAuthorizer {
+  authorize(signal: AbortSignal): Promise<DiscordSession>;
+  close(): void;
 }
 type SDKFactory = (clientId: string) => IDiscordSDK;
 
@@ -81,97 +87,102 @@ async function sdkOperation<T>(
   }
 }
 
-function closeSdk(sdk: IDiscordSDK, message: string): void {
-  try {
-    sdk.close(RPCCloseCodes.CLOSE_NORMAL, message);
-  } catch {
-    // Construction succeeded, but an incomplete host bridge can still reject close.
-  }
-}
+/**
+ * The page's one Discord SDK. `sdk.close` posts the host CLOSE opcode, which closes the Activity, so
+ * a rematch, a retry or a failure authorizes again on the same SDK, and only `close`, at final
+ * teardown, ends it.
+ */
+export class DiscordActivity implements ActivityAuthorizer {
+  private sdk: IDiscordSDK | null = null;
+  private closed = false;
 
-export async function authorizeDiscord(
-  signal?: AbortSignal,
-  makeSDK: SDKFactory = (id) => new DiscordSDK(id),
-): Promise<DiscordSession> {
-  const instance = launchInstance();
-  validateSdkLaunch();
-  const boot = await bootstrap(instance, signal);
-  let sdk: IDiscordSDK;
-  try {
-    sdk = makeSDK(boot.client_id);
-  } catch (error) {
-    const failure = clientFailure(error, "sdk_initialization_failed");
-    throw new ClientError(failure.code, true);
-  }
-  const requireActive = (): void => {
-    if (signal?.aborted) throw new ClientError("cancelled");
-  };
-  try {
-    requireActive();
-    await sdkOperation(
-      () => sdk.ready(),
-      signal,
-      "sdk_ready_failed",
-      "sdk_ready_timeout",
-      SDK_READY_TIMEOUT_MS,
-    );
-    requireActive();
-    if (sdk.instanceId !== instance) throw new ClientError("instance_mismatch");
-    const authorization = await sdkOperation(
-      () => sdk.commands.authorize({
-        client_id: boot.client_id,
-        response_type: "code",
-        state: boot.state,
-        prompt: "none",
-        scope: [...OAUTH_SCOPES],
-      }),
-      signal,
-      "authorize_failed",
-      "authorize_timeout",
-      SDK_AUTHORIZE_TIMEOUT_MS,
-    );
-    requireActive();
-    const token = await exchangeToken(authorization.code, boot.state, signal);
-    requireActive();
-    const authentication = await sdkOperation(
-      () => sdk.commands.authenticate({ access_token: token.access_token }),
-      signal,
-      "sdk_authenticate_failed",
-      "sdk_authenticate_timeout",
-      SDK_AUTHENTICATE_TIMEOUT_MS,
-    );
-    if (authentication == null) throw new ClientError("sdk_authenticate_failed");
-    requireActive();
-    let ticket: string | null = token.ticket;
-    let destroyed = false;
-    return {
-      sdk,
-      bootstrap: boot,
-      player: token.player,
-      takeTicket: () => {
-        const current = ticket;
-        ticket = null;
-        return current;
-      },
-      destroy: () => {
-        if (destroyed) return;
-        destroyed = true;
-        ticket = null;
-        closeSdk(sdk, "Hands session closed");
-      },
+  constructor(private readonly makeSDK: SDKFactory = (id) => new DiscordSDK(id)) {}
+
+  async authorize(signal?: AbortSignal): Promise<DiscordSession> {
+    const instance = launchInstance();
+    validateSdkLaunch();
+    const boot = await bootstrap(instance, signal);
+    const sdk = this.open(boot.client_id);
+    const requireActive = (): void => {
+      if (signal?.aborted) throw new ClientError("cancelled");
     };
-  } catch (error) {
-    const failure = signal?.aborted
-      ? new ClientError("cancelled")
-      : clientFailure(error, "authorization_failed");
-    if (
-      failure.code === "cancelled"
-      || failure.code === "instance_mismatch"
-      || failure.code.endsWith("_timeout")
-    ) {
-      closeSdk(sdk, "Hands authorization closed");
-      throw failure;
+    try {
+      requireActive();
+      await sdkOperation(
+        () => sdk.ready(),
+        signal,
+        "sdk_ready_failed",
+        "sdk_ready_timeout",
+        SDK_READY_TIMEOUT_MS,
+      );
+      requireActive();
+      if (sdk.instanceId !== instance) throw new ClientError("instance_mismatch");
+      const authorization = await sdkOperation(
+        () => sdk.commands.authorize({
+          client_id: boot.client_id,
+          response_type: "code",
+          state: boot.state,
+          prompt: "none",
+          scope: [...OAUTH_SCOPES],
+        }),
+        signal,
+        "authorize_failed",
+        "authorize_timeout",
+        SDK_AUTHORIZE_TIMEOUT_MS,
+      );
+      requireActive();
+      const token = await exchangeToken(authorization.code, boot.state, signal);
+      requireActive();
+      const authentication = await sdkOperation(
+        () => sdk.commands.authenticate({ access_token: token.access_token }),
+        signal,
+        "sdk_authenticate_failed",
+        "sdk_authenticate_timeout",
+        SDK_AUTHENTICATE_TIMEOUT_MS,
+      );
+      if (authentication == null) throw new ClientError("sdk_authenticate_failed");
+      requireActive();
+      let ticket: string | null = token.ticket;
+      return {
+        sdk,
+        bootstrap: boot,
+        player: token.player,
+        takeTicket: () => {
+          const current = ticket;
+          ticket = null;
+          return current;
+        },
+        destroy: () => {
+          ticket = null;
+        },
+      };
+    } catch (error) {
+      if (signal?.aborted) throw new ClientError("cancelled");
+      // The SDK stays open so the failure stays on screen; the reload behind Retry replaces it,
+      // together with any command it was left waiting on.
+      throw new ClientError(clientFailure(error, "authorization_failed").code, true);
     }
-    throw new ClientError(failure.code, true);
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    if (this.sdk === null) return;
+    try {
+      this.sdk.close(RPCCloseCodes.CLOSE_NORMAL, "Hands session closed");
+    } catch {
+      // Construction succeeded, but an incomplete host bridge can still reject close.
+    }
+  }
+
+  private open(clientId: string): IDiscordSDK {
+    if (this.closed) throw new ClientError("cancelled");
+    if (this.sdk !== null) return this.sdk;
+    try {
+      this.sdk = this.makeSDK(clientId);
+    } catch (error) {
+      throw new ClientError(clientFailure(error, "sdk_initialization_failed").code, true);
+    }
+    return this.sdk;
   }
 }
