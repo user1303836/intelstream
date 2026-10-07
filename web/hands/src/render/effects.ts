@@ -76,7 +76,7 @@ interface Stump {
   fountainLife: number;
   accumulator: number;
   seed: number;
-  direction: number;
+  direction: SprayDirection;
 }
 
 interface DripEmitter {
@@ -93,6 +93,20 @@ const seeded = (seed: number): (() => number) => () => {
 };
 
 const finite = (value: number, fallback = 0): number => Number.isFinite(value) ? value : fallback;
+
+/** Horizontal world direction (x and z) a spray flies in. */
+export interface SprayDirection {
+  readonly x: number;
+  readonly z: number;
+}
+
+/** A spray direction as a unit vector; a bare number is the world-x sign that hit events carry. */
+function unitSpray(direction: number | SprayDirection): SprayDirection {
+  if (typeof direction === "number") return { x: direction < 0 ? -1 : 1, z: 0 };
+  const length = Math.hypot(direction.x, direction.z);
+  return Number.isFinite(length) && length > 1e-6 ? { x: direction.x / length, z: direction.z / length } : { x: 1, z: 0 };
+}
+
 const unitY = new THREE.Vector3(0, 1, 0);
 const safeStep = (dt: number): number => Number.isFinite(dt) ? THREE.MathUtils.clamp(dt, 0, MAX_STEP) : 0;
 const IMPACT_KINDS = new Set(["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown", "bleed"]);
@@ -314,7 +328,7 @@ export class Effects3D {
       const stumpMesh = new THREE.Mesh(this.stumpGeometry, this.stumpMaterial);
       stumpMesh.visible = false;
       scene.add(stumpMesh);
-      this.stumps.push({ mesh: stumpMesh, active: false, fountainLife: 0, accumulator: 0, seed: 1, direction: 1 });
+      this.stumps.push({ mesh: stumpMesh, active: false, fountainLife: 0, accumulator: 0, seed: 1, direction: { x: 1, z: 0 } });
     }
     for (let index = 0; index < MAX_HANDS; index += 1) {
       const material = new THREE.MeshStandardMaterial({ color: 0x1d4ed8, roughness: 0.38, metalness: 0.03 });
@@ -334,7 +348,7 @@ export class Effects3D {
       const stumpMesh = new THREE.Mesh(this.wristStumpGeometry, this.stumpMaterial);
       stumpMesh.visible = false;
       scene.add(stumpMesh);
-      this.handStumps.push({ mesh: stumpMesh, active: false, fountainLife: 0, accumulator: 0, seed: 1, direction: 1 });
+      this.handStumps.push({ mesh: stumpMesh, active: false, fountainLife: 0, accumulator: 0, seed: 1, direction: { x: 1, z: 0 } });
     }
   }
 
@@ -426,6 +440,11 @@ export class Effects3D {
     if (this.dropletMesh.instanceColor !== null) this.dropletMesh.instanceColor.needsUpdate = true;
     this.writeDropletMatrix(index, droplet);
     this.dropletMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  /** Spawns a droplet whose horizontal velocity is given along the spray and across it. */
+  private sprayDroplet(spray: SprayDirection, x: number, y: number, z: number, along: number, vy: number, across: number, color: { r: number; g: number; b: number }, life: number, blood: boolean): void {
+    this.spawnDroplet(x, y, z, along * spray.x - across * spray.z, vy, along * spray.z + across * spray.x, color, life, blood);
   }
 
   private writeDropletMatrix(index: number, droplet: Droplet): void {
@@ -523,12 +542,18 @@ export class Effects3D {
     }
   }
 
-  addEvent(event: CombatEvent, targetWorld: THREE.Vector3, reducedMotion: boolean): void {
+  /**
+   * Blood, sweat and chunks for a contact. `spray` is the way the punch travelled (from puncher to
+   * recipient); without it the event's world-x sign stands in.
+   */
+  addEvent(event: CombatEvent, targetWorld: THREE.Vector3, reducedMotion: boolean, spray?: SprayDirection): void {
     if (!IMPACT_KINDS.has(event.kind)) return;
     const rand = seeded(event.event_id * 7919 + 17);
     const blocked = event.kind === "block" || event.kind === "perfect_block";
     const pattern = bloodPatternFor(event);
-    const launchDirection = event.direction < 0 ? -1 : 1;
+    const launch = unitSpray(spray ?? event.direction);
+    // Sweat and chunks are pushed along the punch as hard as the event's sign says (a block may carry none).
+    const push = spray === undefined ? Math.abs(finite(event.direction)) : 1;
     const origin = { x: finite(targetWorld.x), y: event.detail.endsWith(":body") ? 1.05 : 1.58, z: finite(targetWorld.z) };
     const sweatCount = reducedMotion ? 0 : Math.round((blocked ? 6 : 16) + Math.min(20, Math.max(0, event.amount) / 20));
     const bloodCount = reducedMotion || event.blood <= 0 || this.bloodLevel === "off"
@@ -542,11 +567,12 @@ export class Effects3D {
     for (let i = 0; i < sweatCount; i += 1) {
       const angle = rand() * Math.PI * 2;
       const outward = 0.4 + rand() * 0.9;
-      this.spawnDroplet(
+      this.sprayDroplet(
+        launch,
         origin.x + (rand() - 0.5) * 0.12,
         origin.y + (rand() - 0.5) * 0.14,
         origin.z + (rand() - 0.5) * 0.12,
-        Math.sin(angle) * outward + event.direction * (0.5 + rand() * 0.9),
+        Math.sin(angle) * outward + push * (0.5 + rand() * 0.9),
         0.6 + rand() * 1.5,
         Math.cos(angle) * outward,
         { r: 0.82, g: 0.9, b: 1.0 },
@@ -558,43 +584,44 @@ export class Effects3D {
       const arterial = i % 4 === 0;
       const angle = (rand() - 0.5) * Math.PI;
       const speed = arterial ? 2.2 + rand() * 1.8 : 0.9 + rand() * 1.5;
-      let vx = launchDirection * speed;
+      let along = speed;
       let vy = 0.5 + rand() * 1.25;
-      let vz = (rand() - 0.5) * 0.5;
+      let across = (rand() - 0.5) * 0.5;
       if (pattern === "fan") {
-        vx = launchDirection * speed * (0.45 + Math.cos(angle) * 0.35);
+        along = speed * (0.45 + Math.cos(angle) * 0.35);
         vy = 0.55 + rand() * 1.15;
-        vz = Math.sin(angle) * speed * 0.9;
+        across = Math.sin(angle) * speed * 0.9;
       } else if (pattern === "plume") {
-        vx = launchDirection * speed * (0.25 + rand() * 0.25);
+        along = speed * (0.25 + rand() * 0.25);
         vy = 1.8 + rand() * 2.2;
-        vz = (rand() - 0.5) * speed * 0.65;
+        across = (rand() - 0.5) * speed * 0.65;
       } else if (pattern === "body_burst") {
-        vx = launchDirection * speed * (0.55 + rand() * 0.45);
+        along = speed * (0.55 + rand() * 0.45);
         vy = -0.15 + rand() * 1.05;
-        vz = Math.sin(angle) * speed * 0.75;
+        across = Math.sin(angle) * speed * 0.75;
       } else if (pattern === "ooze") {
-        vx = launchDirection * (0.08 + rand() * 0.22);
+        along = 0.08 + rand() * 0.22;
         vy = -0.3 - rand() * 0.55;
-        vz = (rand() - 0.5) * 0.22;
+        across = (rand() - 0.5) * 0.22;
       } else if (pattern === "impact") {
-        vx = launchDirection * speed * (0.45 + rand() * 0.65);
+        along = speed * (0.45 + rand() * 0.65);
         vy = 0.9 + rand() * 2.1;
-        vz = Math.sin(angle) * speed;
+        across = Math.sin(angle) * speed;
       } else {
         const spread = arterial ? 0.12 : 0.34;
-        vx = launchDirection * speed * (0.8 + rand() * 0.35);
+        along = speed * (0.8 + rand() * 0.35);
         vy = arterial ? 1.3 + rand() * 1.6 : 0.5 + rand() * 1.25;
-        vz = (rand() - 0.5) * speed * spread;
+        across = (rand() - 0.5) * speed * spread;
       }
       const shade = rand();
-      this.spawnDroplet(
+      this.sprayDroplet(
+        launch,
         origin.x + (rand() - 0.5) * 0.12,
         origin.y + (rand() - 0.5) * 0.14,
         origin.z + (rand() - 0.5) * 0.12,
-        vx,
+        along,
         vy,
-        vz,
+        across,
         shade < 0.3 ? { r: 0.72, g: 0.055, b: 0.08 } : shade < 0.7 ? { r: 0.5, g: 0.025, b: 0.045 } : { r: 0.3, g: 0.012, b: 0.025 },
         0.65 + rand() * 0.85,
         true,
@@ -620,11 +647,12 @@ export class Effects3D {
       for (let index = 0; index < chunks; index += 1) {
         const angle = rand() * Math.PI * 2;
         const speed = 0.5 + rand() * 1.8;
-        this.spawnGib(
+        this.sprayGib(
+          launch,
           origin.x + (rand() - 0.5) * 0.12,
           origin.y + (rand() - 0.5) * 0.14,
           origin.z + (rand() - 0.5) * 0.12,
-          event.direction * (0.5 + rand() * 1.4) + Math.sin(angle) * speed * 0.5,
+          push * (0.5 + rand() * 1.4) + Math.sin(angle) * speed * 0.5,
           0.5 + rand() * 1.7,
           Math.cos(angle) * speed,
           rand,
@@ -663,7 +691,7 @@ export class Effects3D {
     fighterIndex: number,
     position: THREE.Vector3,
     quaternion: THREE.Quaternion,
-    direction: number,
+    direction: number | SprayDirection,
     eventId: number,
     skinColor = 0x8a4d32,
     baked?: BakedPart,
@@ -675,15 +703,17 @@ export class Effects3D {
     if (head.active || this.lastDecapitationEvent[index] === safeEventId) return;
     this.applyBakedPart(head, baked, skinColor);
     const rand = seeded(safeEventId * 104729 + index * 8191 + 23);
-    const launchDirection = direction < 0 ? -1 : 1;
+    const launch = unitSpray(direction);
     this.lastDecapitationEvent[index] = safeEventId;
 
     head.active = true;
     head.moving = true;
     head.eventId = safeEventId;
-    head.vx = launchDirection * (1.8 + rand() * 1.1);
+    const along = 1.8 + rand() * 1.1;
     head.vy = 2.3 + rand() * 1.1;
-    head.vz = (rand() - 0.5) * 2.2;
+    const across = (rand() - 0.5) * 2.2;
+    head.vx = along * launch.x - across * launch.z;
+    head.vz = along * launch.z + across * launch.x;
     head.vrx = (rand() - 0.5) * 12;
     head.vry = (rand() - 0.5) * 12;
     head.vrz = (rand() - 0.5) * 12;
@@ -698,7 +728,7 @@ export class Effects3D {
     stump.fountainLife = 1.25;
     stump.accumulator = 0;
     stump.seed = safeEventId | 1;
-    stump.direction = launchDirection;
+    stump.direction = launch;
     stump.mesh.position.copy(head.mesh.position);
     stump.mesh.quaternion.copy(head.mesh.quaternion);
     stump.mesh.visible = true;
@@ -706,11 +736,12 @@ export class Effects3D {
     for (let i = 0; i < GIBS_PER_DECAPITATION; i += 1) {
       const angle = rand() * Math.PI * 2;
       const speed = 0.8 + rand() * 2.4;
-      this.spawnGib(
+      this.sprayGib(
+        launch,
         head.mesh.position.x + (rand() - 0.5) * 0.12,
         head.mesh.position.y + (rand() - 0.5) * 0.12,
         head.mesh.position.z + (rand() - 0.5) * 0.12,
-        launchDirection * (0.7 + rand() * 1.8) + Math.sin(angle) * speed * 0.55,
+        0.7 + rand() * 1.8 + Math.sin(angle) * speed * 0.55,
         0.8 + rand() * 2.4,
         Math.cos(angle) * speed,
         rand,
@@ -720,11 +751,12 @@ export class Effects3D {
       const angle = rand() * Math.PI * 2;
       const speed = 1 + rand() * 2.6;
       const shade = rand();
-      this.spawnDroplet(
+      this.sprayDroplet(
+        launch,
         head.mesh.position.x + (rand() - 0.5) * 0.12,
         head.mesh.position.y + (rand() - 0.5) * 0.1,
         head.mesh.position.z + (rand() - 0.5) * 0.12,
-        launchDirection * (1.2 + rand() * 2.2) + Math.sin(angle) * speed * 0.35,
+        1.2 + rand() * 2.2 + Math.sin(angle) * speed * 0.35,
         0.7 + rand() * 2.7,
         Math.cos(angle) * speed,
         shade < 0.5 ? { r: 0.64, g: 0.035, b: 0.055 } : { r: 0.36, g: 0.015, b: 0.03 },
@@ -743,7 +775,7 @@ export class Effects3D {
     side: Hand,
     position: THREE.Vector3,
     quaternion: THREE.Quaternion,
-    direction: number,
+    direction: number | SprayDirection,
     eventId: number,
     color: number,
     baked?: BakedPart,
@@ -755,14 +787,16 @@ export class Effects3D {
     if (hand.active || this.lastDismembermentEvent[index] === safeEventId) return;
     this.applyBakedPart(hand, baked, color);
     const rand = seeded(safeEventId * 130363 + index * 12289 + 37);
-    const launchDirection = direction < 0 ? -1 : 1;
+    const launch = unitSpray(direction);
     this.lastDismembermentEvent[index] = safeEventId;
     hand.active = true;
     hand.moving = true;
     hand.eventId = safeEventId;
-    hand.vx = launchDirection * (1.3 + rand() * 1.1);
+    const along = 1.3 + rand() * 1.1;
     hand.vy = 1.5 + rand() * 1.2;
-    hand.vz = (rand() - 0.5) * 1.8;
+    const across = (rand() - 0.5) * 1.8;
+    hand.vx = along * launch.x - across * launch.z;
+    hand.vz = along * launch.z + across * launch.x;
     hand.vrx = (rand() - 0.5) * 16;
     hand.vry = (rand() - 0.5) * 16;
     hand.vrz = (rand() - 0.5) * 16;
@@ -777,7 +811,7 @@ export class Effects3D {
     stump.fountainLife = 0.9;
     stump.accumulator = 0;
     stump.seed = safeEventId | 1;
-    stump.direction = launchDirection;
+    stump.direction = launch;
     stump.mesh.position.copy(hand.mesh.position);
     stump.mesh.quaternion.copy(hand.mesh.quaternion);
     stump.mesh.visible = true;
@@ -785,11 +819,12 @@ export class Effects3D {
     for (let gib = 0; gib < GIBS_PER_HAND; gib += 1) {
       const angle = rand() * Math.PI * 2;
       const speed = 0.55 + rand() * 1.8;
-      this.spawnGib(
+      this.sprayGib(
+        launch,
         hand.mesh.position.x + (rand() - 0.5) * 0.08,
         hand.mesh.position.y + (rand() - 0.5) * 0.08,
         hand.mesh.position.z + (rand() - 0.5) * 0.08,
-        launchDirection * (0.5 + rand() * 1.4) + Math.sin(angle) * speed * 0.45,
+        0.5 + rand() * 1.4 + Math.sin(angle) * speed * 0.45,
         0.5 + rand() * 1.9,
         Math.cos(angle) * speed,
         rand,
@@ -798,11 +833,12 @@ export class Effects3D {
     for (let drop = 0; drop < 80; drop += 1) {
       const angle = rand() * Math.PI * 2;
       const speed = 0.8 + rand() * 2.1;
-      this.spawnDroplet(
+      this.sprayDroplet(
+        launch,
         hand.mesh.position.x + (rand() - 0.5) * 0.08,
         hand.mesh.position.y + (rand() - 0.5) * 0.08,
         hand.mesh.position.z + (rand() - 0.5) * 0.08,
-        launchDirection * (0.8 + rand() * 1.7) + Math.sin(angle) * speed * 0.35,
+        0.8 + rand() * 1.7 + Math.sin(angle) * speed * 0.35,
         0.5 + rand() * 2.1,
         Math.cos(angle) * speed,
         { r: 0.56, g: 0.025, b: 0.045 },
@@ -916,17 +952,19 @@ export class Effects3D {
   }
 
   /** Ejects teeth from the mouth on heavy head contact. */
-  spawnTeeth(mouthWorld: THREE.Vector3, direction: number, count: number, eventId: number): void {
+  spawnTeeth(mouthWorld: THREE.Vector3, direction: number | SprayDirection, count: number, eventId: number): void {
     if (this.bloodLevel === "off") return;
     const rand = seeded((Number.isSafeInteger(eventId) ? eventId : 0) * 7331 + 91);
+    const launch = unitSpray(direction);
     const teeth = Math.min(4, Math.max(1, Math.round(count * (this.bloodLevel === "reduced" ? 0.5 : 1))));
     for (let i = 0; i < teeth; i += 1) {
       const angle = rand() * Math.PI * 2;
-      this.spawnGib(
+      this.sprayGib(
+        launch,
         finite(mouthWorld.x) + (rand() - 0.5) * 0.04,
         finite(mouthWorld.y, 1.4) + (rand() - 0.5) * 0.02,
         finite(mouthWorld.z) + (rand() - 0.5) * 0.04,
-        direction * (0.9 + rand() * 1.6) + Math.sin(angle) * 0.6,
+        0.9 + rand() * 1.6 + Math.sin(angle) * 0.6,
         1.1 + rand() * 1.4,
         Math.cos(angle) * 0.7,
         rand,
@@ -935,7 +973,7 @@ export class Effects3D {
     }
     for (let i = 0; i < 18; i += 1) {
       const angle = rand() * Math.PI * 2;
-      this.spawnDroplet(finite(mouthWorld.x), finite(mouthWorld.y, 1.4), finite(mouthWorld.z), direction * (0.8 + rand() * 1.4) + Math.sin(angle) * 0.5, 0.6 + rand() * 1.3, Math.cos(angle) * 0.5, { r: 0.55, g: 0.02, b: 0.04 }, 0.6 + rand() * 0.6, true);
+      this.sprayDroplet(launch, finite(mouthWorld.x), finite(mouthWorld.y, 1.4), finite(mouthWorld.z), 0.8 + rand() * 1.4 + Math.sin(angle) * 0.5, 0.6 + rand() * 1.3, Math.cos(angle) * 0.5, { r: 0.55, g: 0.02, b: 0.04 }, 0.6 + rand() * 0.6, true);
     }
   }
 
@@ -965,6 +1003,11 @@ export class Effects3D {
     gib.stained = false;
     this.writeGibMatrix(index, gib);
     this.gibMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  /** Spawns a gib whose horizontal velocity is given along the spray and across it. */
+  private sprayGib(spray: SprayDirection, x: number, y: number, z: number, along: number, vy: number, across: number, rand: () => number, tooth = false): void {
+    this.spawnGib(x, y, z, along * spray.x - across * spray.z, vy, along * spray.z + across * spray.x, rand, tooth);
   }
 
   private writeGibMatrix(index: number, gib: Gib): void {
@@ -1113,11 +1156,12 @@ export class Effects3D {
         const first = this.stumpRandom(stump);
         const second = this.stumpRandom(stump);
         const third = this.stumpRandom(stump);
-        this.spawnDroplet(
+        this.sprayDroplet(
+          stump.direction,
           stump.mesh.position.x + (first - 0.5) * 0.08,
           stump.mesh.position.y + 0.015,
           stump.mesh.position.z + (second - 0.5) * 0.08,
-          stump.direction * (0.35 + first * 0.55),
+          0.35 + first * 0.55,
           1.3 + second * 1.45,
           (third - 0.5) * 0.85,
           { r: 0.58, g: 0.025, b: 0.045 },

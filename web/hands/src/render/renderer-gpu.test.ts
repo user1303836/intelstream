@@ -92,6 +92,41 @@ describe("quality tiers on the graphics card", () => {
   });
 });
 
+describe("spray direction", () => {
+  it("throws the blood and the severed head along the punch when the fighters face each other along y", async () => {
+    const { fight, internals } = await mount();
+    let time = settle(fight);
+    // One at (0, -60) punches two at (0, 60), towards world -z; the event still carries the engine's
+    // world-x sign, +1.
+    const fighters = [
+      { ...fighter("one"), x: 0, y: -60, facing_x: 0, facing_y: 1000, action_key: "straight:right:head:normal", action_contact_tick: 20 },
+      { ...fighter("two"), x: 0, y: 60, facing_x: 0, facing_y: -1000, is_downed: true },
+    ] as const;
+    land(fight, 20, [punch(40, 20)], fighters);
+    for (let frame = 0; frame < 18; frame += 1) fight.labFrame((time += 1 / 60));
+    expect(internals.effects.activeHeads).toBe(1);
+    const target = { x: 0, z: -60 * (3.05 / 500) };
+    const positions = internals.effects.dropletBuffers.position;
+    const colors = internals.effects.dropletBuffers.color;
+    let x = 0;
+    let z = 0;
+    let count = 0;
+    for (let index = 0; index < positions.count; index += 1) {
+      if (positions.getY(index) < -10 || colors.getY(index) >= 0.2) continue;
+      x += positions.getX(index) - target.x;
+      z += positions.getZ(index) - target.z;
+      count += 1;
+    }
+    expect(count).toBeGreaterThan(50);
+    expect(z / count).toBeLessThan(-0.15);
+    expect(Math.abs(x / count)).toBeLessThan(Math.abs(z / count) / 2);
+    const head = new THREE.Vector3();
+    internals.effects.severedHeadPosition(1, head);
+    expect(head.z - target.z).toBeLessThan(-0.2);
+    expect(Math.abs(head.x - target.x)).toBeLessThan(Math.abs(head.z - target.z));
+  });
+});
+
 describe("knockdown punch", () => {
   it("leaves the punch's own dent in the face, not the knockdown's minimum one", async () => {
     const { fight, internals } = await mount({ blood: "reduced" });

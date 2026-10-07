@@ -388,6 +388,75 @@ describe("effects", () => {
     expect(simulate(1 / 30)).toEqual(simulate(1 / 60));
   });
 
+  it("sprays blood, teeth and severed parts along the line the punch travelled", () => {
+    const towardsAway = { x: 0, z: -1 };
+    /** Mean horizontal position of the airborne blood droplets, or of the airborne gibs. */
+    const bloodCentre = (effects: Effects3D): THREE.Vector2 => {
+      const positions = effects.dropletBuffers.position;
+      const colors = effects.dropletBuffers.color;
+      const centre = new THREE.Vector2();
+      let count = 0;
+      for (let index = 0; index < positions.count; index += 1) {
+        if (positions.getY(index) < -10 || colors.getY(index) >= 0.2) continue;
+        centre.x += positions.getX(index);
+        centre.y += positions.getZ(index);
+        count += 1;
+      }
+      return centre.divideScalar(Math.max(1, count));
+    };
+    const gibCentre = (scene: THREE.Scene): THREE.Vector2 => {
+      const gibs = scene.children.find((child) => child instanceof THREE.InstancedMesh && child.count === 48) as THREE.InstancedMesh;
+      const matrix = new THREE.Matrix4();
+      const position = new THREE.Vector3();
+      const centre = new THREE.Vector2();
+      let count = 0;
+      for (let index = 0; index < gibs.count; index += 1) {
+        gibs.getMatrixAt(index, matrix);
+        position.setFromMatrixPosition(matrix);
+        if (position.y < -10) continue;
+        centre.x += position.x;
+        centre.y += position.z;
+        count += 1;
+      }
+      return centre.divideScalar(Math.max(1, count));
+    };
+    const run = (effects: Effects3D, seconds: number): void => {
+      for (let elapsed = 0; elapsed < seconds; elapsed += 1 / 60) effects.update(1 / 60);
+    };
+    const along = (centre: { x: number; y: number }): void => {
+      expect(centre.y).toBeLessThan(-0.15);
+      expect(Math.abs(centre.x)).toBeLessThan(Math.abs(centre.y));
+    };
+
+    const scene = new THREE.Scene();
+    const effects = new Effects3D(scene);
+    effects.addEvent({ ...severeHit(30), detail: "straight:head" }, new THREE.Vector3(), false, towardsAway);
+    run(effects, 0.25);
+    along(bloodCentre(effects));
+    along(gibCentre(scene));
+    effects.clearDynamic();
+    effects.spawnTeeth(new THREE.Vector3(0, 1.5, 0), towardsAway, 4, 31);
+    run(effects, 0.25);
+    along(gibCentre(scene));
+    const head = new THREE.Vector3();
+    effects.decapitate(0, new THREE.Vector3(0, 1.55, 0), new THREE.Quaternion(), towardsAway, 32);
+    run(effects, 0.3);
+    effects.severedHeadPosition(0, head);
+    along({ x: head.x, y: head.z });
+    effects.dismemberHand(1, "left", new THREE.Vector3(0, 1.3, 0), new THREE.Quaternion(), towardsAway, 33, 0x1d4ed8);
+    run(effects, 0.3);
+    const hand = scene.children.find((child) => child instanceof THREE.Mesh && child.visible && child.geometry instanceof THREE.CapsuleGeometry)!;
+    along({ x: hand.position.x, y: hand.position.z });
+    effects.dispose();
+
+    // Without the fighters' positions the event's world-x sign still decides.
+    const fallback = new Effects3D(new THREE.Scene());
+    fallback.addEvent({ ...severeHit(34), detail: "straight:head", direction: -1 }, new THREE.Vector3(), false);
+    run(fallback, 0.25);
+    expect(bloodCentre(fallback).x).toBeLessThan(-0.15);
+    fallback.dispose();
+  });
+
   it("never exceeds any fixed pool under repeated production-valid events", () => {
     const scene = new THREE.Scene();
     const effects = new Effects3D(scene);

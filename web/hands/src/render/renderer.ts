@@ -12,7 +12,7 @@ import type { BloodLevel, Settings } from "../settings";
 import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, Hand, MatchResult, PublicPlayer, PunchClass, SemanticAction, SimulationInfo } from "../types";
 import { buildArena, type BuiltArena } from "./arena";
 import { CameraDirector, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE, cornerFrame, cornerPoint, cornerShot, cornerShotProgress } from "./camera";
-import { Effects3D, type BakedPart } from "./effects";
+import { Effects3D, type BakedPart, type SprayDirection } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, releaseFighterGpu, type ArcadeDislocation } from "./graph";
 import { drawHud, finalRevealDelay, RoundStatsTracker, STOPPAGE_METHODS, RoundClock } from "./hud";
 import { ResolutionScaler } from "./quality";
@@ -96,6 +96,20 @@ export function contactParticipants(event: CombatEvent, snapshot: EngineSnapshot
     recipientIndex: defenderIsActor ? actorIndex : targetIndex,
     puncherIndex: defenderIsActor ? targetIndex : actorIndex,
   };
+}
+
+/**
+ * The way a punch travelled in the world, from the puncher to the recipient, for its blood, teeth and
+ * severed parts. Hit events only carry the sign of the puncher's world-x facing, which is wrong
+ * whenever the fighters exchange along any other line of the square ring; undefined leaves effects
+ * to that sign, when a fighter is missing or the two stand on the same spot.
+ */
+export function sprayDirection(puncher: FighterSnapshot | undefined, recipient: FighterSnapshot | undefined, mapping: WorldMapping): SprayDirection | undefined {
+  if (puncher === undefined || recipient === undefined) return undefined;
+  const x = mapping.x(recipient.x) - mapping.x(puncher.x);
+  const z = mapping.z(recipient.y) - mapping.z(puncher.y);
+  const length = Math.hypot(x, z);
+  return Number.isFinite(length) && length > 1e-3 ? { x: x / length, z: z / length } : undefined;
 }
 
 export interface ContactPresentation {
@@ -828,7 +842,8 @@ export class FightRenderer {
     const recipient = snapshot.fighters[recipientIndex];
     if (recipient === undefined) return;
     this.tmpA.set(this.mapping.x(recipient.x), 0, this.mapping.z(recipient.y));
-    this.effects.addEvent(event, this.tmpA, this.settings().reducedMotion);
+    const spray = sprayDirection(snapshot.fighters[puncherIndex], recipient, this.mapping);
+    this.effects.addEvent(event, this.tmpA, this.settings().reducedMotion, spray);
     const puncher = puncherIndex >= 0 ? snapshot.fighters[puncherIndex] : undefined;
     const keyParts = puncher?.action_key?.split(":") ?? [];
     const punchClass = (keyParts[0] ?? null) as PunchClass | null;
@@ -836,7 +851,7 @@ export class FightRenderer {
     this.graphs?.[recipientIndex]?.react("hit", event.detail.endsWith(":body") ? "body" : "head", event.direction, punchClass, hand, Math.max(300, event.amount));
     if (puncherIndex >= 0) this.graphs?.[puncherIndex]?.landedHit(false);
     this.onContact?.(event);
-    this.reapplyReplayInjuries();
+    this.reapplyReplayInjuries(spray);
   }
 
   private replayFrame(snapshot: EngineSnapshot, elapsed: number): { position: THREE.Vector3; lookAt: THREE.Vector3; tight: boolean } {
@@ -932,8 +947,11 @@ export class FightRenderer {
     }
   }
 
-  /** Severs the head or a hand from the fighter's current pose, or sets a dislocation, and records it. */
-  private applyArcadeInjury(index: number, injury: ArcadeInjury, event: CombatEvent): boolean {
+  /**
+   * Severs the head or a hand from the fighter's current pose, flying the way the punch travelled, or
+   * sets a dislocation, and records it.
+   */
+  private applyArcadeInjury(index: number, injury: ArcadeInjury, event: CombatEvent, spray?: SprayDirection): boolean {
     let applied = this.graphs !== null
       && (injury === "jaw_dislocation" || injury === "shoulder_left" || injury === "shoulder_right");
     if (injury === "decapitation") {
@@ -945,7 +963,7 @@ export class FightRenderer {
           index,
           pose.position,
           pose.quaternion,
-          event.direction,
+          spray ?? event.direction,
           event.event_id,
           this.skinColor(index),
           baked,
@@ -965,7 +983,7 @@ export class FightRenderer {
           side,
           pose.position,
           pose.quaternion,
-          event.direction,
+          spray ?? event.direction,
           event.event_id,
           this.gearColor(index),
           baked,
@@ -984,14 +1002,14 @@ export class FightRenderer {
   }
 
   /** Severed parts go back on for the replay and come off again, from the replayed pose, at its impact. */
-  private reapplyReplayInjuries(): void {
+  private reapplyReplayInjuries(spray?: SprayDirection): void {
     for (const index of [0, 1] as const) {
       const stash = this.replayInjuries[index];
       if (stash === null) continue;
       this.replayInjuries[index] = null;
       const settings = this.settings();
       if (settings.blood !== "full" || settings.reducedMotion) continue;
-      this.applyArcadeInjury(index, stash.injury, { ...stash.event, event_id: stash.event.event_id + REPLAY_EVENT_ID_OFFSET });
+      this.applyArcadeInjury(index, stash.injury, { ...stash.event, event_id: stash.event.event_id + REPLAY_EVENT_ID_OFFSET }, spray);
     }
   }
 
@@ -1115,9 +1133,10 @@ export class FightRenderer {
       this.pendingContacts.splice(index, 1);
       const { event, presentationEvent, presentImpact, reactAmount, recipientIndex, puncherIndex, injury } = pending;
       const target = this.buffer.latest()?.fighters[recipientIndex];
+      const spray = sprayDirection(this.buffer.latest()?.fighters[puncherIndex], target, this.mapping);
       if (presentImpact && target !== undefined) {
         this.tmpA.set(this.mapping.x(target.x), 0, this.mapping.z(target.y));
-        this.effects.addEvent(presentationEvent, this.tmpA, this.settings().reducedMotion);
+        this.effects.addEvent(presentationEvent, this.tmpA, this.settings().reducedMotion, spray);
       }
       const currentSettings = this.settings();
       if (presentImpact) this.arena.excite(CROWD_EXCITEMENT[event.kind] ?? 0);
@@ -1137,7 +1156,7 @@ export class FightRenderer {
         && currentSettings.blood === "full"
         && !currentSettings.reducedMotion
       ) {
-        this.applyArcadeInjury(recipientIndex, injury, event);
+        this.applyArcadeInjury(recipientIndex, injury, event, spray);
       }
       const graphs = this.graphs;
       if (
@@ -1152,7 +1171,7 @@ export class FightRenderer {
         const pose = this.headWorldPose(recipientIndex);
         if (pose !== null) {
           this.tmpB.set(0, -0.07, 0.1).applyQuaternion(pose.quaternion).add(pose.position);
-          this.effects.spawnTeeth(this.tmpB, presentationEvent.direction, event.kind === "knockdown" ? 3 : 1 + Math.floor((event.amount - 260) / 120), event.event_id);
+          this.effects.spawnTeeth(this.tmpB, spray ?? presentationEvent.direction, event.kind === "knockdown" ? 3 : 1 + Math.floor((event.amount - 260) / 120), event.event_id);
         }
       }
       if (

@@ -2,7 +2,8 @@ import { fighter, snapshot } from "../test/fixtures";
 import type { CombatEvent, MatchResult } from "../types";
 import * as THREE from "three";
 import { releaseSharedGpu, disposeSkeletons } from "./graph";
-import { arcadeInjuryFor, canStartPunch, compileForComposer, contactParticipants, contactPresentationPlan, disposeComposer, FightRenderer, isArcadeInjuryCandidate, presentationTickFor, refereeSpacing, replayCameraSide, replayReattaches } from "./renderer";
+import { arcadeInjuryFor, canStartPunch, compileForComposer, contactParticipants, contactPresentationPlan, disposeComposer, FightRenderer, isArcadeInjuryCandidate, presentationTickFor, refereeSpacing, replayCameraSide, replayReattaches, sprayDirection } from "./renderer";
+import { worldMapping } from "./world";
 
 const event = (kind: string, detail: string): CombatEvent => ({
   event_id: 1,
@@ -80,6 +81,24 @@ describe("contact presentation tick", () => {
     // Through a block, the block's entry presents the punch, so the knockdown reacts for the hit that leaked.
     const block = { ...event("block", ""), actor_id: "two", target_id: "one", amount: 30, blood: 0, direction: 0 };
     expect(contactPresentationPlan([block, { ...hit, amount: 18 }, knockdown], frame).map((entry) => entry.reactAmount)).toEqual([30, 18, 18]);
+  });
+});
+
+describe("spray direction", () => {
+  const mapping = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 });
+
+  it("runs from the puncher to the recipient in the world, whichever way they face", () => {
+    const towards = (from: [number, number], to: [number, number]) => sprayDirection({ ...fighter("one"), x: from[0], y: from[1] }, { ...fighter("two"), x: to[0], y: to[1] }, mapping);
+    expect(towards([0, -60], [0, 60])).toEqual({ x: 0, z: -1 });
+    expect(towards([60, 0], [-60, 0])).toEqual({ x: -1, z: 0 });
+    const diagonal = towards([0, 0], [100, 100])!;
+    expect(diagonal.x).toBeCloseTo(Math.SQRT1_2);
+    expect(diagonal.z).toBeCloseTo(-Math.SQRT1_2);
+  });
+
+  it("leaves effects to the event's sign when a fighter is missing or both stand on one spot", () => {
+    expect(sprayDirection(undefined, fighter("two"), mapping)).toBeUndefined();
+    expect(sprayDirection(fighter("one", 40), fighter("two", 40), mapping)).toBeUndefined();
   });
 });
 
