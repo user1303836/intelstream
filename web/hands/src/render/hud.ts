@@ -416,8 +416,13 @@ export function finalRevealDelay(final: FinalMessage | null): number {
 export const headlineBaseline = (height: number, compact: boolean): number => Math.max(height * 0.16, (compact ? 112 : 56) + 40);
 /** How far below the headline the knockdown count's baseline sits. */
 export const COUNT_BELOW_HEADLINE = 64;
-/** Engine latency that is worth telling a player about on the broadcast screen. */
+/** Engine latency that is worth telling a player about on the broadcast screen... */
 export const LAG_WARNING_MS = 120;
+/** ...and the warning stays up until the latency is back under this, so a value hovering at the line cannot flicker it. */
+export const LAG_CLEAR_MS = 100;
+
+/** Whether the slow-connection warning is up, from the latency now and whether it was up a moment ago. */
+export const lagWarning = (latencyMs: number | null, shown: boolean): boolean => latencyMs !== null && latencyMs >= (shown ? LAG_CLEAR_MS : LAG_WARNING_MS);
 
 export function drawHud(
   ctx: CanvasRenderingContext2D,
@@ -431,6 +436,7 @@ export function drawHud(
   tickRate = 30,
   roundStats: RoundStatsTracker | null = null,
   replayLabel: string | null = null,
+  /** The latency while the slow-connection warning is up (lagWarning), else null. */
   inputLatencyMs: number | null = null,
   roundCallout: string | null = null,
   clockTicks: number | null = null,
@@ -485,14 +491,15 @@ export function drawHud(
   const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
   if (final === null) roundCard(ctx, width / 2, compact ? 54 : height - 84, clock, `ROUND ${snapshot.round_number}`, snapshot.phase === "complete" ? "FINAL" : snapshot.phase.replace("_", " ").toUpperCase());
   // Only a connection slow enough to feel is worth the broadcast screen; Settings, Diagnostics always shows it.
-  // A phone has no free corner for it beside the clock, the centre panels and the captions.
+  // A phone has no free corner for it beside the clock, the centre panels and the captions. With the touch pads up
+  // it goes top left, where they never reach and where the knockout replay's tag has the corner to itself.
   const lag = inputLatencyMs === null ? 0 : Math.round(inputLatencyMs);
-  if (lag >= LAG_WARNING_MS && !compact && final === null && snapshot.fighters.some((fighter) => fighter.player_id === viewerId)) {
+  if (lag >= LAG_CLEAR_MS && !compact && final === null && !(touch && replayLabel !== null) && snapshot.fighters.some((fighter) => fighter.player_id === viewerId)) {
     ctx.save();
-    ctx.textAlign = "right";
+    ctx.textAlign = touch ? "left" : "right";
     ctx.font = "700 11px ui-monospace, monospace";
     ctx.fillStyle = lag < 200 ? "rgba(240,200,110,0.9)" : "rgba(255,110,100,0.95)";
-    ctx.fillText(`SLOW CONNECTION ${lag} ms`, width - 24, 76);
+    ctx.fillText(`SLOW CONNECTION ${lag} ms`, touch ? 24 : width - 24, 76);
     ctx.restore();
   }
   if (replayLabel !== null) {

@@ -4,11 +4,13 @@ import { buildArena } from "./arena";
 import { CameraDirector, ceremonyShot, cornerFrame, cornerPoint, cornerShot, cornerShotProgress, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE } from "./camera";
 import { captionSlot, drawCaption } from "./caption";
 import { bloodPatternFor, Effects3D } from "./effects";
-import { CLOCK_PORTRAIT_RADIUS, cardRows, decisionLabel, drawHud, finalRevealDelay as revealDelay, hudScale, plateDetails, REFEREE_REVEAL_DELAY_SECONDS, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, PLATE_PORTRAIT_RADIUS, RESULT_CARD_FOOTER, resultCard, resultCardLayout, RoundClock, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
+import { CLOCK_PORTRAIT_RADIUS, cardRows, decisionLabel, drawHud, finalRevealDelay as revealDelay, hudScale, lagWarning, plateDetails, REFEREE_REVEAL_DELAY_SECONDS, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, PLATE_PORTRAIT_RADIUS, RESULT_CARD_FOOTER, resultCard, resultCardLayout, RoundClock, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
+import { FightRenderer } from "./renderer";
 import { buildRing, disposeRing, nearRopeOpacityFor, ROPE_FLEX_GLSL, ROPE_GIVE_GLSL, ropePress } from "./ring";
 import { resizeHighDpi } from "./viewport";
 import { CORNER_COLORS, PALETTES, ROPE_LINE, worldMapping } from "./world";
 import { fighter, mockHudContext, publicPlayers, snapshot, type DrawnPicture } from "../test/fixtures";
+import type { EngineSnapshot } from "../types";
 
 const mapping = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 });
 
@@ -841,6 +843,51 @@ describe("round stats", () => {
     texts.length = 0;
     drawHud(ctx, 390, 844, snapshot(), players, "one", null, 0, 30, null, null, 180.2);
     expect(texts.some((text) => text.startsWith("SLOW"))).toBe(false);
+  });
+
+  it("puts the slow-connection warning where the touch pads never reach, and leaves the replay's tag its corner", () => {
+    const players = Object.fromEntries(publicPlayers.map((player) => [player.id, player]));
+    const warning = (width: number, height: number, touch: boolean, replay: string | null = null) => {
+      const lines: { text: string; x: number; y: number; align: CanvasTextAlign }[] = [];
+      let align: CanvasTextAlign = "left";
+      const ctx = Object.assign(mockHudContext([]), { fillText: (text: string, x: number, y: number) => lines.push({ text, x, y, align }) });
+      Object.defineProperty(ctx, "textAlign", { set: (value: CanvasTextAlign) => { align = value; } });
+      drawHud(ctx, width, height, snapshot(), players, "one", null, 0, 30, null, replay, 180.2, null, null, null, null, touch);
+      return lines.find((line) => line.text.startsWith("SLOW CONNECTION"));
+    };
+    // On a phone on its side the pads (style.css) come 202 px in from the right edge, 336 px at their foot,
+    // from 118 + 196 px up: at 640x360 to 844x390 that is over the top-right corner where the warning was.
+    for (const [width, height] of [[640, 360], [667, 375], [740, 360], [844, 390], [932, 430]] as const) {
+      const shown = warning(width, height, true)!;
+      expect(shown, `${width}x${height}`).toMatchObject({ x: 24, y: 76, align: "left" });
+      expect(shown.x + shown.text.length * 7).toBeLessThan(width - 336);
+    }
+    expect(warning(1280, 720, false)).toMatchObject({ x: 1280 - 24, y: 76, align: "right" });
+    expect(warning(844, 390, true, "KNOCKOUT REPLAY")).toBeUndefined();
+    expect(warning(1280, 720, false, "KNOCKOUT REPLAY")).toBeDefined();
+  });
+
+  it("raises the slow-connection warning at 120 ms and lowers it only under 100 ms, so it cannot flicker", () => {
+    let shown = false;
+    expect([119, 125, 110, 105, 99.5, 112, 121].map((latency) => (shown = lagWarning(latency, shown)))).toEqual([false, true, true, true, false, false, true]);
+    expect(lagWarning(null, true)).toBe(false);
+    // The renderer keeps the latency it shows on screen to the warning's own state.
+    const players = Object.fromEntries(publicPlayers.map((player) => [player.id, player]));
+    const texts: string[] = [];
+    const ctx = mockHudContext(texts);
+    const renderer = Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, {
+      hudCanvas: { getBoundingClientRect: () => ({ width: 1280, height: 720 }), width: 0, height: 0, getContext: () => ctx },
+      hudViewport: { width: 0, height: 0 }, viewerHitFlash: 0, settings: () => ({ reducedMotion: false }), players, viewerId: "one", final: null,
+      frameSeconds: 0, finalRevealAt: 0, reconnectMs: 0, simulation: { tick_rate: 30 }, roundStats: new RoundStatsTracker(), replay: null,
+      roundCalloutUntil: 0, roundCalloutRound: 0, eventCallout: null, roundClock: { ticks: () => null }, avatars: { get: () => null }, drawCaption: () => undefined,
+    }) as unknown as { setInputLatency(milliseconds: number | null): void; drawHudOverlay(snapshot: EngineSnapshot): void };
+    const shownAt = (latency: number): string | undefined => {
+      texts.length = 0;
+      renderer.setInputLatency(latency);
+      renderer.drawHudOverlay(snapshot());
+      return texts.find((text) => text.startsWith("SLOW CONNECTION"));
+    };
+    expect([119, 125, 105, 95].map(shownAt)).toEqual([undefined, "SLOW CONNECTION 125 ms", "SLOW CONNECTION 105 ms", undefined]);
   });
 
   it("shows the landed counts on the rest panel", () => {

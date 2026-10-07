@@ -59,6 +59,17 @@ describe("caption placement", () => {
     expect(captionSlot(scene(390, 844, "knockdown", { touch: true, viewerDown: true }))).toBeNull();
   });
 
+  it("leaves the slow-connection warning its corner beside the touch pads", () => {
+    // hud.ts sets it from x 24 on a 76 px baseline: "SLOW CONNECTION 180 ms" in 11 px monospace is about 135 px.
+    const quiet = captionSlot(scene(932, 430, "fight", { touch: true }))!;
+    const slow = captionSlot(scene(932, 430, "fight", { touch: true, lag: true }))!;
+    expect(quiet.x - quiet.maxWidth / 2).toBeLessThan(24 + 135);
+    expect(slow.x - slow.maxWidth / 2).toBeGreaterThanOrEqual(24 + 160 + 8);
+    // A phone held upright has no warning on its broadcast, and a caption below it has nothing to leave room for.
+    expect(captionSlot(scene(390, 844, "fight", { touch: true, lag: true }))).toEqual(captionSlot(scene(390, 844, "fight", { touch: true })));
+    expect(captionSlot(scene(932, 430, "rest", { touch: true, lag: true }))).toEqual(captionSlot(scene(932, 430, "rest", { touch: true })));
+  });
+
   it("keeps a knockdown caption under the count on a phone, or gives way", () => {
     for (const [width, height] of [[320, 568], [360, 640], [375, 667], [360, 740], [375, 812], [390, 844], [412, 915]] as const) {
       // The 36 px figures stand on this baseline (hud.ts), with nothing below it.

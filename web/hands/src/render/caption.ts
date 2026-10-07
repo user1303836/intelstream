@@ -20,6 +20,8 @@ export interface CaptionScene {
   readonly cornerPanelTop?: number | null;
   /** A big callout ("ROUND 2", "PARRIED") is on screen. */
   readonly callout?: boolean;
+  /** The slow-connection warning is up: beside the touch pads it stands at the top left (hud.ts). */
+  readonly lag?: boolean;
 }
 
 export interface CaptionSlot {
@@ -66,6 +68,8 @@ export const TOUCH_PADS = {
 } as const;
 /** A caption squeezed between the pads and their mirror image narrower than this gives way instead. */
 const BESIDE_PADS_MIN_WIDTH = 200;
+/** The slow-connection warning at the top left (hud.ts): how far in its longest reading reaches, with room to spare, and its foot. */
+const LAG_WARNING = { reach: 24 + 160 + 8, bottom: 80 } as const;
 
 const BACKGROUND = "rgba(3,6,12,0.86)";
 const COVER_BACKGROUND = "rgb(4,7,13)";
@@ -107,8 +111,11 @@ export function captionSlot(scene: CaptionScene): CaptionSlot | null {
   }
   const limit = result !== null ? result - 8 : height * (short ? 0.46 : 0.5);
   if (top + CAPTION_ROOM * scale > limit) return null;
-  // The pads are part of the page, over the canvas, until the bout is over.
-  const reach = result === null && scene.touch && scene.phase !== "complete" ? padsReach(width, height, top + lineRoom(scale)) : 0;
+  // The pads are part of the page, over the canvas, until the bout is over. With them up, the slow-connection
+  // warning has the top left corner, which the caption leaves it as it leaves the pads their side.
+  const pads = result === null && scene.touch && scene.phase !== "complete";
+  const lag = pads && scene.lag === true && !compact && !scene.replay && top < LAG_WARNING.bottom ? LAG_WARNING.reach : 0;
+  const reach = Math.max(pads ? padsReach(width, height, top + lineRoom(scale)) : 0, lag);
   if (reach === 0) return { x: width / 2, y: top, maxWidth, anchor: "top", scale, cover: null };
   const beside = Math.min(maxWidth, width - reach * 2);
   return beside < BESIDE_PADS_MIN_WIDTH ? null : { x: width / 2, y: top, maxWidth: beside, anchor: "top", scale, cover: null };

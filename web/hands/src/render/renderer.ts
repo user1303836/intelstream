@@ -17,7 +17,7 @@ import { captionSlot, drawCaption } from "./caption";
 import { CommentaryDirector, type CrowdCue } from "./commentary";
 import { Effects3D, type BakedPart, type SprayDirection } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, releaseFighterGpu, type ArcadeDislocation, type CutmanProp } from "./graph";
-import { drawHud, finalRevealDelay, hudScale, resultCard, resultCardLayout, RoundStatsTracker, STOPPAGE_METHODS, RoundClock, wasBlocked, type RoundPunchStats } from "./hud";
+import { drawHud, finalRevealDelay, hudScale, lagWarning, resultCard, resultCardLayout, RoundStatsTracker, STOPPAGE_METHODS, RoundClock, wasBlocked, type RoundPunchStats } from "./hud";
 import { BURST_CUT_HEIGHT, EYE_LIDS, NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE } from "./injury";
 import { BIG_SHOT, closeCut, cutRim, teethFor } from "./gore";
 import { mouthpieceFlies } from "./mouthpiece";
@@ -977,6 +977,8 @@ export class FightRenderer {
   private readonly bloomPass: UnrealBloomPass;
   private readonly avatars = new Avatars();
   private inputLatencyMs: number | null = null;
+  /** The slow-connection warning is up (lagWarning). */
+  private lagWarned = false;
   private frameMsAverage = 16.7;
   private readonly replayCameraPosition = new THREE.Vector3();
   private readonly replayLookAt = new THREE.Vector3();
@@ -1589,6 +1591,7 @@ export class FightRenderer {
 
   setInputLatency(milliseconds: number | null): void {
     this.inputLatencyMs = milliseconds;
+    this.lagWarned = lagWarning(milliseconds, this.lagWarned);
   }
 
   /** The server clock starts over after a new connection or a paused bout, so the render clock relearns it. */
@@ -2635,7 +2638,7 @@ export class FightRenderer {
       ctx.fillStyle = vignette;
       ctx.fillRect(0, 0, viewport.width, viewport.height);
     }
-    drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.frameSeconds >= this.finalRevealAt ? this.final : null, this.reconnectMs, this.simulation.tick_rate, this.roundStats, this.replay !== null ? "KNOCKOUT REPLAY" : null, this.inputLatencyMs, this.frameSeconds < this.roundCalloutUntil ? `ROUND ${this.roundCalloutRound}` : this.eventCallout !== null && this.frameSeconds < this.eventCallout.until ? this.eventCallout.text : null, this.roundClock.ticks(snapshot), (player) => this.avatars.get(player), this.lastKnockdown?.knockdown.target_id ?? null, this.touchControls && snapshot.fighters.some((fighter) => fighter.player_id === this.viewerId));
+    drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.frameSeconds >= this.finalRevealAt ? this.final : null, this.reconnectMs, this.simulation.tick_rate, this.roundStats, this.replay !== null ? "KNOCKOUT REPLAY" : null, this.lagWarned ? this.inputLatencyMs : null, this.frameSeconds < this.roundCalloutUntil ? `ROUND ${this.roundCalloutRound}` : this.eventCallout !== null && this.frameSeconds < this.eventCallout.until ? this.eventCallout.text : null, this.roundClock.ticks(snapshot), (player) => this.avatars.get(player), this.lastKnockdown?.knockdown.target_id ?? null, this.touchControls && snapshot.fighters.some((fighter) => fighter.player_id === this.viewerId));
     this.drawCaption(ctx, viewport.width, viewport.height, snapshot);
   }
 
@@ -2668,7 +2671,7 @@ export class FightRenderer {
     const resultTop = final === null ? null : resultCardTop(final, width, height, snapshot.fighters, this.players, this.roundStats, this.viewerId) / scale;
     const callout = this.frameSeconds < this.roundCalloutUntil || (this.eventCallout !== null && this.frameSeconds < this.eventCallout.until);
     const cornerPanelTop = this.cornerPanelTop === null ? null : this.cornerPanelTop / scale;
-    const slot = captionSlot({ width: width / scale, height: height / scale, phase: snapshot.phase, resultTop, touch: this.touchControls && viewer !== undefined, hint: snapshot.phase === "countdown" && viewer !== undefined, viewerDown: viewer?.is_downed === true, replay: this.replay !== null, cornerPanelTop, callout });
+    const slot = captionSlot({ width: width / scale, height: height / scale, phase: snapshot.phase, resultTop, touch: this.touchControls && viewer !== undefined, hint: snapshot.phase === "countdown" && viewer !== undefined, viewerDown: viewer?.is_downed === true, replay: this.replay !== null, cornerPanelTop, callout, lag: this.lagWarned });
     if (slot === null) return;
     ctx.save();
     ctx.scale(scale, scale);
