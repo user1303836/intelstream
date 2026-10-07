@@ -9854,7 +9854,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "2ee6a63a0b0d9a8ca04a571812139968acdcbbe74665f904af0e49df7530cb23",
+     "checksum": "ee9bda0d0cbbcc7b0e11961108a47859ee603b87609c513d78e0ba7231de3f79",
      "events": [
       {
        "action_id": "one@72",
@@ -9972,7 +9972,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 590,
+       "poise": 592,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -10022,7 +10022,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "e71d732a693fe4cf42846fe26483e2c36fc2dec2c2a08911e65e813cb7603880",
+     "checksum": "fa3856d8baa98521bb7482006224f2779e2207aa4822099bc2848fab1919a3d7",
      "events": [],
      "fighters": [
       {
@@ -10115,7 +10115,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 591,
+       "poise": 593,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -10165,7 +10165,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "29e09173c3918e385e3d1a1190d1b36c3949d07b38b70bb2213159c1e8058bb8",
+     "checksum": "db95121ddaabf4fbda3a5378a79ff405c800d7fb31087301f13a9968ee9417cd",
      "events": [],
      "fighters": [
       {
@@ -10258,7 +10258,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 591,
+       "poise": 593,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -10308,7 +10308,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "60fc1b169bb009427b25ea115931e4f940310ad915a62a280ea0e9c8fb78615d",
+     "checksum": "6762e9c1b4af975e1ae3dce54ded493ea000db60fa57b29d9adb26335f51a262",
      "events": [],
      "fighters": [
       {
@@ -10401,7 +10401,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 592,
+       "poise": 594,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -10451,7 +10451,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "1869ed09ddac9c135848598798d4d05c747d7dad951c9bb98f28448123468fb0",
+     "checksum": "2429558c112f672d35dd6665504f2531c83feb9166f00ddd2bdaae0a222d49e9",
      "events": [],
      "fighters": [
       {
@@ -10544,7 +10544,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 592,
+       "poise": 594,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -10594,7 +10594,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "75ff0c9a93ad68ae4295b01e391f14156ff214534aa3f218fa724c6d276e8782",
+     "checksum": "cc2c4ae7a914a1af6728ffb09e15e388c809c2bfb4b9012e6de63fe4a0a1483e",
      "events": [],
      "fighters": [
       {
@@ -10687,7 +10687,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 593,
+       "poise": 595,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -10737,7 +10737,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "859aa281afc19ff4516eaaafdbf9edd4fcc7157aec7611d5d519721b850cf413",
+     "checksum": "b8a2fda982749628150d4ea9f69bab6a051e8b7d9a59f5b395629a7bbba5ad78",
      "events": [],
      "fighters": [
       {
@@ -10830,7 +10830,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 593,
+       "poise": 595,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -10880,7 +10880,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "8da496721135a5a31bd6649249436343698e2e742399ece21cb7f5569f8e6eb5",
+     "checksum": "73a50b5153e08c96c17056db7fd1ac7f639296dbde887be634f106be5aa44786",
      "events": [],
      "fighters": [
       {
@@ -10973,7 +10973,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 594,
+       "poise": 596,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -11023,7 +11023,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "bc65c03cad83d62b230f44d097e0d2d252c2ba616da3ea33e1bf8d54659075a7",
+     "checksum": "cdb096f0a76f1349e1fa14e931a3688035572fa152beb2a8d4065c974fdf652a",
      "events": [],
      "fighters": [
       {
@@ -11116,7 +11116,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 594,
+       "poise": 596,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -11155,7 +11155,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "a3f2f303a5aeba8809d613c04887cb388d40db8797e115b72efd26e9fb24955b",
+     "checksum": "8659901fe24c685e41b29598e4cf46467fbb98acdd125548fb5a7153fcaeaea2",
      "events": [],
      "fighters": [
       {
@@ -11248,7 +11248,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 595,
+       "poise": 597,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -11287,7 +11287,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "6ca2e7e5e70951dc33c6dfa6336cadcd3435890762602efc7ec9e79152af84b5",
+     "checksum": "7a8b7ece7bcee57966e16e31bbd10018efd2f055c77019e09a92dae66e5a603a",
      "events": [],
      "fighters": [
       {
@@ -11380,7 +11380,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 595,
+       "poise": 597,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -11419,7 +11419,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "5a4ea87eef5f55306db443b81cdde8cd1631ade1f44d9b0f9ebfbe066982979d",
+     "checksum": "6c08612590ce5f36c736c796cc0320dac964cefe26ba4983641ad7021be80fef",
      "events": [],
      "fighters": [
       {
@@ -11512,7 +11512,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 596,
+       "poise": 598,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -11551,7 +11551,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "68b450464969182b81625975761e2160a2c66ba3809748b0aed125d8818a743b",
+     "checksum": "034adce9d8eaa363cb6585255fb974cb13e26219a8df0b8f994246bbd2dc0f8c",
      "events": [],
      "fighters": [
       {
@@ -11644,7 +11644,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 596,
+       "poise": 598,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -11683,7 +11683,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "b010f1ae8b7f83f447d43c81844bd18d634c19e591162d1555d1c373360a4fa4",
+     "checksum": "ac2642e92d5f7374713274df8bbfaf797493a45d05228dd649e73ef669b497e5",
      "events": [],
      "fighters": [
       {
@@ -11776,7 +11776,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 597,
+       "poise": 599,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -11815,7 +11815,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "e5a344acb66a18e91779ed6da683c94e46999a8172317e48332a4a8cdd8f3837",
+     "checksum": "840082817ef3b0bbe55b09b2a7d80497a0a34ee9cd446c11a9e3683a8a834616",
      "events": [],
      "fighters": [
       {
@@ -11908,7 +11908,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 597,
+       "poise": 599,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -11947,7 +11947,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "ad85d08a5cbd0b0f8b2d22afdab3176076c33e9d2376311e42a8fc650da0e510",
+     "checksum": "391be1ce15177b64a7aec19f62ec81cd577b36371769bb311552deebae21d3f6",
      "events": [],
      "fighters": [
       {
@@ -12040,7 +12040,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 598,
+       "poise": 599,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -12079,7 +12079,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "a3ea7dbcce2e817e0ed147e72f852db6d7c8b19a1e0b91e5256f40088257f243",
+     "checksum": "360722049c30d065cf314c2f38c136c8c6d59b3abbd759cae5f14b2ec1191886",
      "events": [],
      "fighters": [
       {
@@ -12172,7 +12172,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 598,
+       "poise": 599,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -13720,7 +13720,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "08d39a0f33c382e898e7cfc6b083bc74b7571a5414f8d664b2c8e28cae7c6899",
+     "checksum": "135db788c99f6140427ffeb5f47c168fc5fcb83b6488f862428db4886f19a71b",
      "events": [
       {
        "action_id": "one@100",
@@ -13838,7 +13838,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 589,
+       "poise": 591,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -13888,7 +13888,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "ab52bae6ca5b6267e2d423fc7cc0e31c69eb80a82bbb50b37f6eb554618616fa",
+     "checksum": "2192992f0200cc0f2b60bab67eb53b80f65768b10f5f17b1a2ca225e8d24fe80",
      "events": [],
      "fighters": [
       {
@@ -13981,7 +13981,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 590,
+       "poise": 592,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -14031,7 +14031,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "4f7f088e5a2b4d33063132aa8a8f58dc1b86f2f2a152d9b0de790a43c792570d",
+     "checksum": "693159b3766d49b3a057bd6bff3192a8811a3d648e601e63481a127f780edc0f",
      "events": [],
      "fighters": [
       {
@@ -14124,7 +14124,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 590,
+       "poise": 592,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -14174,7 +14174,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "f89d02f550457c028095367a986baf4d763301e22916dc0d3eba62383c6bea45",
+     "checksum": "e522f9e88bf810106be320ed4d690392bf11a43f1c15addb69938bb3b4bafc27",
      "events": [],
      "fighters": [
       {
@@ -14267,7 +14267,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 591,
+       "poise": 593,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -14317,7 +14317,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "f84542e60c22f484947970da79a26d8d30337442f868186f139cdebeaefdb3d0",
+     "checksum": "acb6ff92bc8028472ccd3451f955c45c2d67a2884120c7da6cb0ad7e3f00fa64",
      "events": [],
      "fighters": [
       {
@@ -14410,7 +14410,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 591,
+       "poise": 593,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -14460,7 +14460,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "abf2f1912291c38e39187acc129c25a3f2d4dda07ea070acaf320bf6b1bec6c1",
+     "checksum": "80e9ec411b349a9503ad2c506bea2993e3355fe327f3d577bf2e1289e7e56764",
      "events": [],
      "fighters": [
       {
@@ -14553,7 +14553,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 592,
+       "poise": 594,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -14603,7 +14603,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "e72fcaa01cf764ddeaa17ffd907f8cd8ac975a588c07628de56d7e01f19c4203",
+     "checksum": "04ec98df608641a2f4ec01934c0c810f5dec3fec5ca947bef1304e4ef3600695",
      "events": [],
      "fighters": [
       {
@@ -14696,7 +14696,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 592,
+       "poise": 594,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -14746,7 +14746,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "297b9a46d4422571105d34d44e81fb88bdd6d1d60c12801ead8e7d5b282cc208",
+     "checksum": "ab08634d060772fff7931cd83915b968f5b8ebc6d2772801029cb7102738cf6a",
      "events": [],
      "fighters": [
       {
@@ -14839,7 +14839,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 593,
+       "poise": 595,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -14889,7 +14889,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "7e6df6eabcbbfe69f9d8a45e9a5420f78b63576695c90c47c83aa7b5d81da9da",
+     "checksum": "50d28aa3d5286941d17a2fe6963f00fdd66e761f5007559c463671792358c9d1",
      "events": [],
      "fighters": [
       {
@@ -14982,7 +14982,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 593,
+       "poise": 595,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -15021,7 +15021,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "3e63047102206a77aa0fc9f34af1248a3063437d17997d61e008d8f52c2828f0",
+     "checksum": "26978d0ad04f7f78f46765eed01666cba500bc7e8f48622c546c39c76d61e4a3",
      "events": [],
      "fighters": [
       {
@@ -15114,7 +15114,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 594,
+       "poise": 596,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
@@ -15153,7 +15153,7 @@
    "attack_two": null,
    "snapshot": {
     "payload": {
-     "checksum": "323bdc10f8c775905c1bdddcfc56a825a36977e309408c2f493f5c1fa0c4c3cf",
+     "checksum": "b27286923778718a4be86aa76be74a3778d83bcd912c7097686d83a0deaf18d0",
      "events": [],
      "fighters": [
       {
@@ -15246,7 +15246,7 @@
        "last_input_sequence": -1,
        "maximum_stamina": 1000,
        "player_id": "two",
-       "poise": 594,
+       "poise": 596,
        "queued_actions": 0,
        "stamina": 1000,
        "stance": "orthodox",
