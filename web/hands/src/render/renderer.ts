@@ -840,7 +840,7 @@ const POOL_RATE = 2;
 const POOL_REACH = 0.42;
 /**
  * A finisher's open wound bleeds out whatever the engine says of his cuts: as badly as the worst cut does
- * (the pool's ceiling), three times as fast, and spreading to 0.8 m across, which takes about 18 s.
+ * (the pool's ceiling), three times as fast, and spreading out to 0.8 m from it, which takes about 18 s.
  */
 const OPEN_WOUNDS: ReadonlySet<ArcadeInjury> = new Set(["decapitation", "head_burst", "eye_left", "eye_right", "dismember_left", "dismember_right", "ribs_left", "ribs_right"]);
 const OPEN_WOUND_SEVERITY = 1.6;

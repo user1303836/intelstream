@@ -135,19 +135,19 @@ interface Stump {
  * last FOUNTAIN_FADE_SECONDS the pressure falls away.
  */
 export const NECK_FOUNTAIN_SECONDS = 6.5;
-export const BURST_FOUNTAIN_SECONDS = 7.5;
-export const WRIST_FOUNTAIN_SECONDS = 5;
-export const FOUNTAIN_FADE_SECONDS = 4;
+const BURST_FOUNTAIN_SECONDS = 7.5;
+const WRIST_FOUNTAIN_SECONDS = 5;
+const FOUNTAIN_FADE_SECONDS = 4;
 /** Beats a second of a heart going flat out, and how much of each beat (a share of it) the spurt lasts. */
-export const HEART_RATE = 1.7;
+const HEART_RATE = 1.7;
 const SPURT_WIDTH = 0.14;
 /** Drops a second at the top of a beat at full pressure, and the share of that still running between beats. */
 const FOUNTAIN_PEAK_RATE = 110;
 const FOUNTAIN_BETWEEN_BEATS = 0.12;
 /** Arterial blood leaves at 4 to 6 m/s at the top of a beat, within this angle (radians) of the wound's axis. */
-export const FOUNTAIN_SPEED_LOW = 4;
-export const FOUNTAIN_SPEED_HIGH = 6;
-export const FOUNTAIN_CONE = 0.35;
+const FOUNTAIN_SPEED_LOW = 4;
+const FOUNTAIN_SPEED_HIGH = 6;
+const FOUNTAIN_CONE = 0.35;
 const fountainAxis = new THREE.Vector3();
 const fountainSide = new THREE.Vector3();
 const fountainUp = new THREE.Vector3();
