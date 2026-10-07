@@ -9,8 +9,10 @@ export interface CameraFrame {
   readonly lookAt: THREE.Vector3;
 }
 
+/** Seconds before the bell at which the corners are cleared: the fighters stand and the crews climb out. */
+export const SECONDS_OUT = 3;
 export const CORNER_SHOT_LEAD_SECONDS = 2.5;
-export const CORNER_SHOT_TAIL_SECONDS = 2;
+export const CORNER_SHOT_TAIL_SECONDS = SECONDS_OUT;
 export const CORNER_SHOT_SECONDS = 5.5;
 
 /** Which corner the broadcast cuts to during the rest, or null for the wide shot while the fighters walk over and before the bell. */

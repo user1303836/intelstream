@@ -1,8 +1,10 @@
+import * as THREE from "three";
 import { fighter, mockHudContext, snapshot, type DrawnPicture } from "../test/fixtures";
 import { Avatars } from "./avatars";
 import { RoundClock } from "./hud";
 import type { CombatEvent, MatchResult } from "../types";
-import { arcadeInjuryFor, canStartPunch, CEREMONY_MARKS, ceremonyStep, contactParticipants, contactPresentationPlan, FightRenderer, isArcadeInjuryCandidate, presentationTickFor, refereeSpacing, replayCameraSide, replayReattaches, visualSeparation } from "./renderer";
+import { arcadeInjuryFor, canStartPunch, CEREMONY_MARKS, ceremonyStep, contactParticipants, contactPresentationPlan, cornersAtWork, FightRenderer, isArcadeInjuryCandidate, presentationTickFor, refereeSpacing, replayCameraSide, replayReattaches, visualSeparation } from "./renderer";
+import { worldMapping } from "./world";
 
 const event = (kind: string, detail: string): CombatEvent => ({
   event_id: 1,
@@ -384,5 +386,52 @@ describe("players' pictures", () => {
     overlay.call(self, snapshot());
     expect(drawn.map((picture) => picture.image)).toEqual([made[0]]);
     expect(made).toHaveLength(1);
+  });
+});
+
+describe("the rest between rounds", () => {
+  it("clears the corners three seconds before the bell", () => {
+    const rest = (remaining: number) => ({ phase: "rest" as const, phase_ticks_remaining: remaining });
+    expect(cornersAtWork(rest(450), 30)).toBe(true);
+    expect(cornersAtWork(rest(91), 30)).toBe(true);
+    expect(cornersAtWork(rest(90), 30)).toBe(false);
+    expect(cornersAtWork(rest(0), 30)).toBe(false);
+    expect(cornersAtWork(rest(61), 20)).toBe(true);
+    expect(cornersAtWork(rest(60), 20)).toBe(false);
+    expect(cornersAtWork({ phase: "fight", phase_ticks_remaining: 450 }, 30)).toBe(false);
+    expect(cornersAtWork(null, 30)).toBe(false);
+  });
+
+  const shot = (FightRenderer.prototype as unknown as { cornerShotFrame(this: unknown, seconds: number, frame: unknown, reducedMotion: boolean): { position: THREE.Vector3; lookAt: THREE.Vector3 } | null }).cornerShotFrame;
+  const crew = (progress: [number, number], cutmen: unknown = [{}, {}]) => ({
+    graphs: [{ stoolVisible: true }, { stoolVisible: true }],
+    cutmen,
+    cutmanProgress: progress,
+    viewerId: "one",
+    restStartedAt: 10,
+    simulation: { tick_rate: 30 },
+    mapping: worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }),
+    cornerPosition: new THREE.Vector3(),
+    cornerLookAt: new THREE.Vector3(),
+  });
+  const resting = { ...snapshot(), phase: "rest" as const, phase_ticks_remaining: 300 };
+
+  it("stays on the wide shot until the cutman has got down to his work", () => {
+    expect(shot.call(crew([0.6, 1]), 13, resting, false)).toBeNull();
+    expect(shot.call(crew([0.97, 1]), 13, resting, false)).toBeNull();
+    const close = shot.call(crew([1, 0]), 13, resting, false);
+    expect(close).not.toBeNull();
+    expect(close!.lookAt.x).toBeLessThan(-1);
+    expect(shot.call(crew([1, 0.5]), 13 + 5.5, resting, false)).toBeNull();
+    expect(shot.call(crew([1, 1]), 13 + 5.5, resting, false)!.lookAt.x).toBeGreaterThan(1);
+  });
+
+  it("does not wait for a crew that was never loaded", () => {
+    expect(shot.call(crew([0, 0], null), 13, resting, false)).not.toBeNull();
+  });
+
+  it("is back on the wide shot once the seconds are out", () => {
+    expect(shot.call(crew([1, 1]), 13, { ...resting, phase_ticks_remaining: 91 }, false)).not.toBeNull();
+    expect(shot.call(crew([1, 1]), 13, { ...resting, phase_ticks_remaining: 89 }, false)).toBeNull();
   });
 });

@@ -11,7 +11,7 @@ import { canAffordPunch, predictMovement, predictedPunchTiming, type HeldInput }
 import type { BloodLevel, Settings } from "../settings";
 import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, Hand, MatchResult, PublicPlayer, PunchClass, SemanticAction, SimulationInfo } from "../types";
 import { buildArena, type BuiltArena } from "./arena";
-import { CameraDirector, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE, ceremonyShot, cornerFrame, cornerPoint, cornerShot, cornerShotProgress } from "./camera";
+import { CameraDirector, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE, SECONDS_OUT, ceremonyShot, cornerFrame, cornerPoint, cornerShot, cornerShotProgress } from "./camera";
 import { Avatars } from "./avatars";
 import { Effects3D, type BakedPart } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, type ArcadeDislocation } from "./graph";
@@ -31,6 +31,11 @@ export type ArcadeInjury =
   | "jaw_dislocation"
   | "shoulder_left"
   | "shoulder_right";
+
+/** Whether the corners are at work: through the rest until the seconds are called out before the bell. */
+export function cornersAtWork(snapshot: Pick<EngineSnapshot, "phase" | "phase_ticks_remaining"> | null, tickRate: number): boolean {
+  return snapshot !== null && snapshot.phase === "rest" && snapshot.phase_ticks_remaining > SECONDS_OUT * tickRate;
+}
 
 export function isArcadeInjuryCandidate(
   event: CombatEvent,
@@ -82,6 +87,7 @@ const STANDING_BLOCK_RADIUS = 0.5;
 const DRAWN_MINIMUM_GAP = 104;
 const CORNERMAN_WORK_DISTANCE = 2.95;
 const CUTMAN_WALK_SECONDS = 1.6;
+const CUTMAN_IN_PLACE = 0.98;
 // Broadcast finish: a soft vignette and a whisper of grain, applied before tone mapping.
 const BROADCAST_FINISH_SHADER = {
   uniforms: { tDiffuse: { value: null }, uTime: { value: 0 }, uVignette: { value: 0.32 }, uGrain: { value: 0.035 } },
@@ -898,6 +904,8 @@ export class FightRenderer {
     const elapsed = seconds - this.restStartedAt;
     const index = cornerShot(elapsed, snapshot.phase_ticks_remaining / this.simulation.tick_rate, viewer === 1 ? 1 : 0);
     if (index === null || !this.graphs[index].stoolVisible) return null;
+    // The shot waits for the cutman to get down to his work, or he walks across it.
+    if (this.cutmen !== null && this.cutmanProgress[index]! < CUTMAN_IN_PLACE) return null;
     cornerFrame(index, this.mapping.x(REST_CORNER_OFFSET), cornerShotProgress(elapsed), this.cornerPosition, this.cornerLookAt);
     return { position: this.cornerPosition, lookAt: this.cornerLookAt };
   }
@@ -1489,8 +1497,9 @@ export class FightRenderer {
         const headB = this.headCacheValid[1] ? this.headCache[1] : undefined;
         graphs[0].boxer.root.visible = true;
         graphs[1].boxer.root.visible = true;
-        graphs[0].setResting(snapshot.phase === "rest");
-        graphs[1].setResting(snapshot.phase === "rest");
+        const resting = cornersAtWork(snapshot, this.simulation.tick_rate);
+        graphs[0].setResting(resting);
+        graphs[1].setResting(resting);
         const countdown = snapshot.phase === "countdown" ? snapshot.phase_ticks_remaining : null;
         graphs[0].setCountdown(countdown);
         graphs[1].setCountdown(countdown);
@@ -1753,7 +1762,7 @@ export class FightRenderer {
   private updateCornermen(dt: number, time: number, snapshot: EngineSnapshot | null, sampledTick: number): void {
     const cornermen = this.cornermen;
     if (cornermen === null) return;
-    const resting = snapshot?.phase === "rest";
+    const resting = cornersAtWork(snapshot, this.simulation.tick_rate);
     for (const [index, graph] of cornermen.entries()) {
       const sign = index === 0 ? -1 : 1;
       const reach = resting ? CORNERMAN_WORK_DISTANCE : CORNERMAN_APRON_DISTANCE;
@@ -1789,16 +1798,16 @@ export class FightRenderer {
       if (!wasVisible) last.copy(this.cornermanPosition);
       this.cornermanVelocity.copy(this.cornermanPosition).sub(last).divideScalar(Math.max(dt, 1e-3));
       last.copy(this.cornermanPosition);
-      const travelling = next > 0.02 && next < 0.98;
+      const travelling = next > 0.02 && next < CUTMAN_IN_PLACE;
       const head = this.headCacheValid[index] ? this.headCache[index]! : null;
       const yaw = travelling
         ? Math.atan2(this.cutmanTo.x - this.cutmanFrom.x, this.cutmanTo.z - this.cutmanFrom.z) + (wanted === 1 ? 0 : Math.PI)
-        : next >= 0.98
+        : next >= CUTMAN_IN_PLACE
           ? (head !== null ? Math.atan2(head.x - this.cutmanTo.x, head.z - this.cutmanTo.z) : Math.atan2(sign, -sign))
           : Math.atan2(-this.cutmanFrom.x, -this.cutmanFrom.z);
       const trauma = snapshot?.fighters[index]?.trauma;
       const side = trauma !== undefined && trauma.right_eye + trauma.right_cut > trauma.left_eye + trauma.left_cut ? -1 : 1;
-      if (next >= 0.98 && head !== null) {
+      if (next >= CUTMAN_IN_PLACE && head !== null) {
         const fighterYaw = graphs[index]!.boxer.root.rotation.y;
         this.cutmanFacing.set(Math.sin(fighterYaw), 0, Math.cos(fighterYaw));
         this.cutmanEye.copy(head).addScaledVector(this.cutmanFacing, 0.09);
