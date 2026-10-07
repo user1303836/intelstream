@@ -605,10 +605,15 @@ class CpuBrain:
             assert evasion is not None
             self._punish_start = attack.start_tick
             return _EVASION_ACTIONS[evasion]
+        held = me.defense is guard
+        perfect = not held and self._roll(self.profile.perfect_percent)
+        window = PERFECT_BLOCK_TICKS + self.style_rule.perfect_block_ticks
+        if not held and not perfect and contact - (tick + 1) <= window:
+            # Raised now, the guard would still be fresh when the punch lands: a parry, which the
+            # roll did not give. There is no time left for an ordinary block.
+            return None
         self._guard_pose = guard
         self._guard_until = contact + attack.rule.active
-        perfect = me.defense is not guard and self._roll(self.profile.perfect_percent)
-        window = PERFECT_BLOCK_TICKS + self.style_rule.perfect_block_ticks
         self._guard_from = contact - window - 1 if perfect else tick
         if self._roll(self.profile.counter_percent):
             # Blocked, he is still in his recovery when the guard comes down.

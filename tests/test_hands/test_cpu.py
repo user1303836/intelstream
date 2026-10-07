@@ -207,6 +207,95 @@ def test_a_body_hook_it_cannot_duck_is_met_with_a_perfect_low_block() -> None:
     assert "perfect_block" in events
 
 
+def body_hook_outcome(
+    style: FighterStyle, *, puncher_conditioning: int = 1000, perfect_roll: bool = False
+) -> str:
+    """How a champion who reads a power body hook 6 ticks after it starts, and fails or passes the
+    perfect roll, meets it."""
+    engine = engine_at(100)
+    engine.checksums = False
+    engine.fighter("cpu").style = style
+    engine.fighter("human").conditioning = puncher_conditioning
+    brain = CpuBrain("cpu", "human", CpuLevel.CHAMPION, 4, style)
+    brain.profile = profile = replace(brain.profile, reaction_ticks=6)
+    assert profile.read_percent != profile.perfect_percent
+    brain._roll = lambda percent: (
+        percent == profile.read_percent
+        or (  # type: ignore[method-assign]
+            perfect_roll and percent == profile.perfect_percent
+        )
+    )
+    brain._movement = lambda *_args: (0, 0)  # type: ignore[method-assign]
+    brain._attack = lambda *_args: None  # type: ignore[method-assign]
+    throw(engine, PunchAction(Hand.RIGHT, PunchClass.HOOK, Target.BODY, Power.POWER))
+    for _ in range(40):
+        command = brain.decide(engine)
+        assert command is not None
+        engine.submit_input("cpu", command)
+        for event in engine.step().events:
+            if event.kind in ("hit", "counter_hit", "block", "perfect_block"):
+                return "hit" if event.kind == "counter_hit" else event.kind
+    raise AssertionError("the hook never arrived")
+
+
+@pytest.mark.parametrize("style", [FighterStyle.BALANCED, FighterStyle.COUNTER_PUNCHER])
+def test_a_guard_raised_too_late_for_a_plain_block_is_only_a_parry_when_the_roll_says_so(
+    style: FighterStyle,
+) -> None:
+    # A fresh puncher's hook, read 4 ticks before contact, leaves no time to raise a guard that is
+    # not still fresh when it lands: without the perfect roll it gets through, not parried anyway.
+    assert body_hook_outcome(style) == "hit"
+    assert body_hook_outcome(style, perfect_roll=True) == "perfect_block"
+    # A worn-out puncher is slow enough for an ordinary block.
+    assert body_hook_outcome(style, puncher_conditioning=0) == "block"
+
+
+def parry_share(
+    level: CpuLevel, style: FighterStyle, *, perfect_percent: int | None = None, trials: int = 120
+) -> float:
+    """Share of power body hooks thrown at random moments that the computer parries, standing still."""
+    parried = 0
+    for trial in range(trials):
+        engine = engine_at(100, seed=trial)
+        engine.checksums = False
+        engine.fighter("cpu").style = style
+        brain = CpuBrain("cpu", "human", level, 1000 + trial, style)
+        if perfect_percent is not None:
+            brain.profile = replace(brain.profile, perfect_percent=perfect_percent)
+        brain._movement = lambda *_args: (0, 0)  # type: ignore[method-assign]
+        brain._attack = lambda *_args: None  # type: ignore[method-assign]
+        brain._head_movement = lambda *_args: None  # type: ignore[method-assign]
+        wait = 20 + trial % 40
+        for tick in range(wait + 30):
+            command = brain.decide(engine)
+            if command is not None:
+                engine.submit_input("cpu", command)
+            if tick == wait:
+                throw(engine, PunchAction(Hand.LEFT, PunchClass.HOOK, Target.BODY, Power.POWER))
+            events = engine.step().events
+            if any(event.kind == "perfect_block" for event in events):
+                parried += 1
+                break
+            if any(event.kind in ("hit", "counter_hit", "block") for event in events):
+                break
+    return parried / trials
+
+
+def test_how_often_the_computer_parries_follows_its_reads_and_its_perfect_blocks() -> None:
+    """A guard raised late enough to parry is the perfect-block roll's to give, at every level."""
+    for level, style in (
+        (CpuLevel.CONTENDER, FighterStyle.BALANCED),
+        (CpuLevel.CHAMPION, FighterStyle.BALANCED),
+        (CpuLevel.CHAMPION, FighterStyle.COUNTER_PUNCHER),
+    ):
+        assert parry_share(level, style, perfect_percent=0) == 0
+    champion = styled_profile(PROFILES[CpuLevel.CHAMPION], FighterStyle.COUNTER_PUNCHER)
+    expected = champion.read_percent * champion.perfect_percent / 10_000
+    share = parry_share(CpuLevel.CHAMPION, FighterStyle.COUNTER_PUNCHER)
+    assert abs(share - expected) <= 0.1
+    assert parry_share(CpuLevel.CONTENDER, FighterStyle.BALANCED) < share
+
+
 def test_a_misread_punch_gets_no_answer() -> None:
     engine = engine_at(120)
     brain = never(CpuBrain("cpu", "human", CpuLevel.CHAMPION, 5))
@@ -658,8 +747,8 @@ def test_a_skilled_player_beats_the_rookie_on_the_cards_and_not_by_cutting_him_u
 
 
 def test_the_champion_can_be_outboxed_or_outcountered_but_not_mashed() -> None:
-    """Measured with every style alike, a skilled player beats the champion about a third of the
-    time and a counter-puncher about one bout in eight; a button masher next to never."""
+    """A skilled player and a counter-puncher each win some bouts against the champion and lose
+    others; a button masher next to never wins."""
     config = EngineConfig()
 
     def winner(human: str, seed: int, style: FighterStyle) -> int | None:
@@ -668,7 +757,7 @@ def test_the_champion_can_be_outboxed_or_outcountered_but_not_mashed() -> None:
     assert winner("skilled", 2, FighterStyle.COUNTER_PUNCHER) == 0
     assert winner("skilled", 2, FighterStyle.SWARMER) == 1
     assert winner("counter", 4, FighterStyle.BOXER) == 0
-    assert winner("counter", 3, FighterStyle.SLUGGER) == 1
+    assert winner("counter", 5, FighterStyle.SLUGGER) == 1
     assert winner("mash", 1, FighterStyle.BOXER) == 1
 
 
