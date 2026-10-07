@@ -73,6 +73,7 @@ export class NetworkController {
   private nextSequence = 0;
   private playerId: string | null = null;
   private readonly sentAt = new Map<number, number>();
+  private readonly actionSequences = new Map<string, number>();
   private latencyMs: number | null = null;
   private serverTick = 0;
   private role: ConnectionRole | null = null;
@@ -330,6 +331,14 @@ export class NetworkController {
     return this.latencyMs;
   }
 
+  /**
+   * The input sequence that carried the press with this instance id, or null before it is sent. Once
+   * the fighter's last_input_sequence reaches it, the server has seen the press.
+   */
+  sequenceOf(actionId: string): number | null {
+    return this.actionSequences.get(actionId) ?? null;
+  }
+
   private observeAcknowledgement(snapshot: EngineSnapshot): void {
     if (this.playerId === null) return;
     const self = snapshot.fighters.find((fighter) => fighter.player_id === this.playerId);
@@ -346,9 +355,12 @@ export class NetworkController {
     const socket = this.socket;
     if (this.role !== "fighter" || (!this.active && !whileInactive) || this.disposed || this.terminal || socket?.readyState !== OPEN) return false;
     try {
-      socket.send(encodeInput(this.nextSequence, this.serverTick, { ...frame, actions: frame.actions.slice(0, 4) }));
+      const actions = frame.actions.slice(0, 4);
+      socket.send(encodeInput(this.nextSequence, this.serverTick, { ...frame, actions }));
       this.sentAt.set(this.nextSequence, this.now());
       if (this.sentAt.size > 128) this.sentAt.delete(this.sentAt.keys().next().value!);
+      for (const action of actions) if (action.id !== undefined) this.actionSequences.set(action.id, this.nextSequence);
+      while (this.actionSequences.size > 64) this.actionSequences.delete(this.actionSequences.keys().next().value!);
       this.nextSequence += 1;
       this.lastInputSentAt = this.now();
       this.sendTimes.push(this.lastInputSentAt);

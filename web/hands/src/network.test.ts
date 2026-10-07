@@ -535,6 +535,36 @@ describe("edge-triggered action sends", () => {
     vi.useRealTimers();
   });
 
+  it("remembers which input sequence carried each press, for telling a refused press from a late one", () => {
+    vi.useFakeTimers();
+    let now = 1000;
+    const socket = new FakeSocket();
+    const queued: string[] = [];
+    const controller = new NetworkController(
+      "ticket",
+      () => ({ moveX: 0, moveY: 0, defense: "none" as const, actions: queued.splice(0, 4).map((id) => ({ kind: "punch" as const, hand: "left" as const, class: "jab" as const, target: "head" as const, power: "normal" as const, id })) }),
+      callbacks(),
+      () => socket,
+      () => now,
+    );
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message(ready);
+    controller.setActive(true);
+    queued.push("c1");
+    expect(controller.sequenceOf("c1")).toBeNull();
+    controller.notifyAction();
+    expect(controller.sequenceOf("c1")).toBe(5);
+    now += 20;
+    queued.push("c2", "c3");
+    controller.notifyAction();
+    expect([controller.sequenceOf("c2"), controller.sequenceOf("c3")]).toEqual([6, 6]);
+    expect(controller.sequenceOf("c9")).toBeNull();
+    controller.dispose();
+    vi.useRealTimers();
+  });
+
   it("holds its input while the connection is stalled and sends the current state when it clears", () => {
     vi.useFakeTimers();
     let now = 1000;
