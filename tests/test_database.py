@@ -2222,13 +2222,14 @@ class TestHandsRatings:
         guild_id: str = "guild-a",
         winner_id: str | None = "user-1",
         finish_method: FinishMethod = FinishMethod.KO,
+        player_two_id: str = "user-2",
     ) -> MatchResult:
         return MatchResult(
             match_id=match_id,
             activity_instance_id="instance-1",
             guild_id=guild_id,
             player_one_id="user-1",
-            player_two_id="user-2",
+            player_two_id=player_two_id,
             winner_id=winner_id,
             finish_method=finish_method,
             round_number=2,
@@ -2320,6 +2321,48 @@ class TestHandsRatings:
         assert match.player_one_rating_after - match.player_one_rating_before == -(
             match.player_two_rating_after - match.player_two_rating_before
         )
+
+    async def test_repeat_pairings_within_a_day_exchange_less_and_less_rating(
+        self, repository: Repository
+    ) -> None:
+        gains = []
+        for index in range(8):
+            match = await repository.record_hands_match(self.result(f"rematch-{index}"))
+            assert match.player_one_rating_after + match.player_two_rating_after == 2000
+            gains.append(match.player_one_rating_after - match.player_one_rating_before)
+        one = await repository.get_hands_rating("guild-a", "user-1")
+
+        assert gains == [16, 7, 3, 2, 1, 0, 0, 0]
+        assert one is not None
+        assert one.rating == 1000 + sum(gains)
+        assert (one.bouts, one.wins) == (8, 8)
+
+    async def test_a_pairing_counts_in_full_again_once_the_window_has_passed(
+        self, repository: Repository
+    ) -> None:
+        await repository.record_hands_match(self.result("earlier"))
+        async with repository.session() as session:
+            earlier = await session.get(HandsMatch, "earlier")
+            assert earlier is not None
+            earlier.created_at = datetime.now(UTC) - timedelta(hours=25)
+            await session.commit()
+
+        later = await repository.record_hands_match(self.result("later"))
+
+        # 1016 against 984 at the full K of 32; a damped K of 16 would give 7.
+        assert later.player_one_rating_after - later.player_one_rating_before == 15
+
+    async def test_damping_applies_only_to_the_same_two_fighters(
+        self, repository: Repository
+    ) -> None:
+        await repository.record_hands_match(self.result("versus-two"))
+
+        other = await repository.record_hands_match(
+            self.result("versus-three", player_two_id="user-3")
+        )
+
+        # 1016 against a new 1000 at the full K of 32; a damped K of 16 would give 8.
+        assert other.player_one_rating_after - other.player_one_rating_before == 15
 
     async def test_transaction_rolls_back_match_and_both_ratings_on_flush_failure(
         self, repository: Repository, monkeypatch: pytest.MonkeyPatch
