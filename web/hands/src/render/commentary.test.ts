@@ -387,6 +387,13 @@ describe("reading the fight", () => {
     expect(watch(director, 20, 24).some((text) => /closed|shut|one eye/u.test(text))).toBe(true);
   });
 
+  it("sends them back to it after the eight count", () => {
+    const director = new CommentaryDirector();
+    feed(director, state(200, "knockdown"), [event("box", 200, { target_id: "two" })], 0);
+    const lines = watch(director, 0, 4);
+    expect(lines.some((text) => /Crimson Geometry|Azure Vector/u.test(text) && /referee|Box|Here comes/u.test(text))).toBe(true);
+  });
+
   it("calls the blind side, a parry and the corner's work", () => {
     const blind = new CommentaryDirector();
     feed(blind, state(100), [event("blind_side", 100, { actor_id: "one", target_id: "two", detail: "left" })], 0);

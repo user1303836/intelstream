@@ -132,6 +132,12 @@ describe("fight mechanics on screen", () => {
     expect((observe.mock.calls[0]![1] as CombatEvent[]).map((event) => event.event_id)).toEqual([6]);
   });
 
+  it("calls BOX! when the referee sends them back to it after the eight", () => {
+    const stub = { ...pushStub(fakeGraphs()), eventCallout: null as { text: string; until: number } | null };
+    methods.push.call(stub, { ...snapshot(300), phase: "knockdown", events: [combat("box", { event_id: 7, tick: 300, actor_id: null, target_id: "two" })] });
+    expect(stub.eventCallout).toMatchObject({ text: "BOX!" });
+  });
+
   it("queues the parry and the body collapse to be shown with their punch", () => {
     const stub = pushStub(fakeGraphs());
     methods.push.call(stub, { ...snapshot(30), events: [combat("parry", { event_id: 4, actor_id: "two", target_id: "one" }), combat("body_collapse", { event_id: 5, amount: 10 })] });

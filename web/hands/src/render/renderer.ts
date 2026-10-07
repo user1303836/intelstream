@@ -223,6 +223,7 @@ const CROWD_EXCITEMENT: Readonly<Record<string, number>> = { hit: 0.18, counter_
 const CONTACT_KINDS = new Set(["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown", "parry", "body_collapse", "eye_shut"]);
 /** Events that change how a fighter moves or what the broadcast says, but carry no impact of their own. */
 const UNIMPACTFUL_KINDS = new Set(["parry", "body_collapse", "eye_shut"]);
+const BOX_CALLOUT_SECONDS = 1.2;
 const EVENT_CALLOUTS: Readonly<Record<string, { readonly text: string; readonly seconds: number }>> = {
   parry: { text: "PARRIED", seconds: 1 },
   eye_shut: { text: "EYE SWOLLEN SHUT", seconds: 1.6 },
@@ -1701,6 +1702,8 @@ export class FightRenderer {
         }
       }
       if (event.kind === "referee_break") this.referee?.breakClinch();
+      // The fighter who beat the count is ready and the referee sends them back to it.
+      if (event.kind === "box") this.eventCallout = { text: "BOX!", until: this.frameSeconds + BOX_CALLOUT_SECONDS };
       if (event.kind === "body_collapse" && event.target_id === this.viewerId) this.ownCollapseUntil = event.tick + event.amount;
     }
     this.commentary.observe(snapshot, accepted, this.players, this.simulation.tick_rate, this.frameSeconds);

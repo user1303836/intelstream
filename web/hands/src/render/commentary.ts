@@ -107,6 +107,7 @@ const LINES = {
   warning: ["A warning for {a}. One more and it costs a point.", "The referee warns {a}. That can't happen again."],
   deduction: ["The referee takes a point from {a}!", "That costs {a} a point!", "Point deduction! {a} has been warned enough."],
   resume: ["And we're back underway.", "Time in. Let's box."],
+  box: ["The referee waves them on. {b} has to survive now.", "Box! {a} will be looking to finish it.", "{b} has convinced the referee. Here comes {a}."],
   evade: ["{a} slips it! Lovely head movement.", "{b} misses, and {a} was never there.", "Great defence from {a}."],
   parry: ["{a} picks that off with the gloves.", "{a} parries it away.", "Tight defence from {a}."],
   whiff: ["{a} misses wildly with the {punch}.", "Big swing and a miss from {a}.", "{a} throws everything into that {punch} and hits nothing but air."],
@@ -147,7 +148,7 @@ const URGENT: ReadonlySet<LineKey> = new Set<LineKey>(["knockdown", "knockdownAg
 const PRIORITY: Readonly<Record<LineKey, number>> = {
   ko: 98, flashKo: 98, tko: 98, doctorStop: 98, disqualified: 98, forfeit: 98,
   knockdown: 95, knockdownAgain: 95, knockdownCounter: 95, knockdownBody: 95, bodyCollapse: 86, upLate: 90, upEarly: 90, replay: 88,
-  deduction: 84, lowBlow: 82, headbutt: 82, hurt: 80, hurtBadly: 80, holdingOn: 76, savedByBell: 74, finalBell: 72, struggle: 70,
+  deduction: 84, lowBlow: 82, headbutt: 82, hurt: 80, box: 78, hurtBadly: 80, holdingOn: 76, savedByBell: 74, finalBell: 72, struggle: 70,
   guardBreak: 65, eyeShut: 62, counter: 60, parried: 58, bigShot: 55, roundEnd: 52, cut: 50, cutWorse: 50, summary: 50, cutDoctor: 48, doctor: 48, eyeSwelling: 48,
   cornerCut: 47, cornerSwelling: 47, cornerBreath: 47, blindSide: 42,
   roundFor: 46, roundBig: 46, roundClose: 46, pullingAway: 46, unanswered: 45, finishCall: 44, warning: 42,
@@ -564,6 +565,9 @@ export class CommentaryDirector {
         return;
       case "resume":
         this.say("resume", event.event_id, now, names, null);
+        return;
+      case "box":
+        this.say("box", event.event_id, now, { a: this.nameOf(this.otherId(target)), b: this.nameOf(target) }, moment);
         return;
       case "stance":
         this.say(event.detail === "southpaw" ? "southpaw" : "orthodox", event.event_id, now, names, null, REACTION_SECONDS, undefined, actor);
