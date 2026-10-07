@@ -24,18 +24,38 @@ const WORKING: Readonly<Record<CornerChoice, string>> = {
 const PENDING_MS = 1500;
 const MAX_CONDITIONING = 1000;
 
-/** What each instruction would do for this fighter, in the HUD's own terms. */
+/** A cut in the words a corner would use; the ringside doctor stops a bout at about 700. */
+export function cutWord(cut: number): string {
+  return cut < 150 ? "small" : cut < 350 ? "nasty" : cut < 550 ? "deep" : "dangerous";
+}
+
+const percent = (value: number, of: number): number => Math.round(Math.max(0, Math.min(1, value / of)) * 100);
+
+/** What each instruction would do for this fighter, in plain words: an eye at 100% is swollen shut. */
 export function cornerPreview(fighter: FighterSnapshot): Readonly<Record<CornerChoice, string>> {
   const { trauma } = fighter;
   const worseCut = Math.max(trauma.left_cut, trauma.right_cut);
+  const cutAfter = Math.max(0, worseCut - CORNER_TREATMENTS.cut.worse_cut);
   const worseEye = Math.max(trauma.left_eye, trauma.right_eye);
   const eyeAfter = Math.max(0, worseEye - CORNER_TREATMENTS.swelling.eyes);
   const shut = worseEye >= EYE_SHUT_TRAUMA ? (eyeAfter < EYE_SHUT_TRAUMA ? " · opens the eye" : " · stays shut") : "";
+  const cutNow = cutWord(worseCut);
   return {
-    cut: worseCut === 0 ? "No cut to close" : `Cut ${worseCut} → ${Math.max(0, worseCut - CORNER_TREATMENTS.cut.worse_cut)}`,
-    swelling: worseEye === 0 && trauma.swelling === 0 ? "No swelling" : `Eye ${worseEye} → ${eyeAfter}${shut}`,
-    breath: `Health ${fighter.conditioning} → ${Math.min(MAX_CONDITIONING, fighter.conditioning + CORNER_TREATMENTS.breath.conditioning)} · full stamina`,
+    cut: worseCut === 0 ? "No cut to close" : `${cutNow[0]!.toUpperCase()}${cutNow.slice(1)} cut → ${cutAfter === 0 ? "closed" : cutWord(cutAfter)}`,
+    swelling: worseEye === 0 && trauma.swelling === 0 ? "No swelling" : `Eye ${percent(worseEye, EYE_SHUT_TRAUMA)}% swollen → ${percent(eyeAfter, EYE_SHUT_TRAUMA)}%${shut}`,
+    breath: `Health ${percent(fighter.conditioning, MAX_CONDITIONING)}% → ${percent(fighter.conditioning + CORNER_TREATMENTS.breath.conditioning, MAX_CONDITIONING)}% · full stamina`,
     balanced: "",
+  };
+}
+
+/** An instruction with nothing to work on cannot be picked. */
+export function cornerAvailable(fighter: FighterSnapshot): Readonly<Record<CornerChoice, boolean>> {
+  const { trauma } = fighter;
+  return {
+    cut: Math.max(trauma.left_cut, trauma.right_cut) > 0,
+    swelling: Math.max(trauma.left_eye, trauma.right_eye) > 0 || trauma.swelling > 0,
+    breath: true,
+    balanced: false,
   };
 }
 
@@ -56,6 +76,10 @@ export class CornerPanel {
   private visible = false;
   private choice: CornerChoice | null = null;
   private pending: { readonly kind: CornerKind; readonly at: number } | null = null;
+  /** What the cards said when the pick was made: the treatment changes the fighter, not what was chosen. */
+  private shown: Readonly<Record<CornerChoice, string>> | null = null;
+  private frozen: Readonly<Record<CornerChoice, string>> | null = null;
+  private available: Readonly<Record<CornerChoice, boolean>> | null = null;
   private padFrame = 0;
   private readonly padPrevious = new Set<number>();
   private measuredTop: number | null = null;
@@ -114,17 +138,24 @@ export class CornerPanel {
       this.setVisible(false);
       this.choice = null;
       this.pending = null;
+      this.shown = null;
+      this.frozen = null;
       return;
     }
     this.setVisible(true);
     this.choice = viewer.corner_choice;
     if (this.choice !== null || (this.pending !== null && this.now() - this.pending.at > PENDING_MS)) this.pending = null;
-    const preview = cornerPreview(viewer);
+    const picked = this.choice !== null || this.pending !== null;
+    if (!picked) this.frozen = null;
+    const preview = picked && this.frozen !== null ? this.frozen : cornerPreview(viewer);
+    this.shown = preview;
+    const available = cornerAvailable(viewer);
+    this.available = available;
     for (const { kind, choice } of CHOICES) {
       const button = this.buttons.get(kind)!;
       const detail = this.details.get(kind)!;
       if (detail.textContent !== preview[choice]) detail.textContent = preview[choice];
-      button.disabled = this.choice !== null || this.pending !== null;
+      button.disabled = picked || !available[choice];
       button.toggleAttribute("data-picked", this.choice === choice || this.pending?.kind === kind);
     }
     const text = this.choice !== null ? WORKING[this.choice] : this.pending !== null ? "Calling it to your corner…" : "Tell your corner what to work on before the bell.";
@@ -133,7 +164,10 @@ export class CornerPanel {
 
   private choose(kind: CornerKind): void {
     if (!this.visible || this.choice !== null || this.pending !== null) return;
+    const choice = CHOICES.find((candidate) => candidate.kind === kind)?.choice;
+    if (choice === undefined || this.available?.[choice] === false) return;
     if (!this.pick(kind)) return;
+    this.frozen = this.shown;
     this.pending = { kind, at: this.now() };
     for (const [candidate, button] of this.buttons) {
       button.disabled = true;

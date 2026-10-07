@@ -17,7 +17,7 @@ import { captionSlot, drawCaption } from "./caption";
 import { CommentaryDirector, type CrowdCue } from "./commentary";
 import { Effects3D, type BakedPart } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, releaseFighterGpu, type ArcadeDislocation, type CutmanProp } from "./graph";
-import { drawHud, finalRevealDelay, resultCard, resultCardLayout, RoundStatsTracker, STOPPAGE_METHODS, RoundClock, type RoundPunchStats } from "./hud";
+import { drawHud, finalRevealDelay, hudScale, resultCard, resultCardLayout, RoundStatsTracker, STOPPAGE_METHODS, RoundClock, type RoundPunchStats } from "./hud";
 import { BURST_CUT_HEIGHT, EYE_LIDS, NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE } from "./injury";
 import { BIG_SHOT, closeCut, cutRim, teethFor } from "./gore";
 import { mouthpieceFlies } from "./mouthpiece";
@@ -2360,10 +2360,17 @@ export class FightRenderer {
     }
     if (caption === null || !settings.commentary) return;
     const viewer = snapshot.fighters.find((fighter) => fighter.player_id === this.viewerId);
-    const resultTop = final === null ? null : resultCardTop(final, width, height, snapshot.fighters, this.players, this.roundStats, this.viewerId);
+    // Laid out like the rest of the HUD for a 1280 x 720 screen and drawn larger on a bigger one.
+    const scale = hudScale(width, height);
+    const resultTop = final === null ? null : resultCardTop(final, width, height, snapshot.fighters, this.players, this.roundStats, this.viewerId) / scale;
     const callout = this.frameSeconds < this.roundCalloutUntil || (this.eventCallout !== null && this.frameSeconds < this.eventCallout.until);
-    const slot = captionSlot({ width, height, phase: snapshot.phase, resultTop, touch: this.touchControls && viewer !== undefined, hint: snapshot.phase === "countdown" && viewer !== undefined, viewerDown: viewer?.is_downed === true, replay: this.replay !== null, cornerPanelTop: this.cornerPanelTop, callout });
-    if (slot !== null) drawCaption(ctx, caption, slot, settings.reducedMotion);
+    const cornerPanelTop = this.cornerPanelTop === null ? null : this.cornerPanelTop / scale;
+    const slot = captionSlot({ width: width / scale, height: height / scale, phase: snapshot.phase, resultTop, touch: this.touchControls && viewer !== undefined, hint: snapshot.phase === "countdown" && viewer !== undefined, viewerDown: viewer?.is_downed === true, replay: this.replay !== null, cornerPanelTop, callout });
+    if (slot === null) return;
+    ctx.save();
+    ctx.scale(scale, scale);
+    drawCaption(ctx, caption, slot, settings.reducedMotion);
+    ctx.restore();
   }
 
   destroy(): void {

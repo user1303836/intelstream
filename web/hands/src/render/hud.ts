@@ -124,6 +124,25 @@ function warningTag(ctx: CanvasRenderingContext2D, x: number, y: number, text: s
   ctx.restore();
 }
 
+/** The HUD is laid out for a 1280 x 720 screen and drawn larger on bigger ones: a 1920 x 1080 window gets 1.5x. */
+export function hudScale(width: number, height: number): number {
+  return Math.max(1, Math.min(1.6, width / 1280, height / 720));
+}
+
+/**
+ * The line under a fighter's name: the record, the rating (or CPU), then knockdowns, warnings and points taken
+ * only when there are any. A narrow phone plate keeps the record, the rating and the knockdowns.
+ */
+export function plateDetail(player: PublicPlayer | undefined, fighter: Pick<FighterSnapshot, "knockdowns" | "warnings" | "deductions">, compact: boolean): string {
+  const parts: string[] = [];
+  if (player?.record !== undefined) parts.push(isDebut(player.record) ? "DEBUT" : recordLine(player.record));
+  parts.push(player?.cpu === true ? "CPU" : `ELO ${player?.rating ?? "—"}`);
+  if (fighter.knockdowns > 0) parts.push(`${fighter.knockdowns} KD`);
+  if (!compact && fighter.warnings > 0) parts.push(`${fighter.warnings} WARNING${fighter.warnings === 1 ? "" : "S"}`);
+  if (!compact && fighter.deductions > 0) parts.push(`−${fighter.deductions} PT${fighter.deductions === 1 ? "" : "S"}`);
+  return parts.join(" · ");
+}
+
 export const PLATE_PORTRAIT_RADIUS = 16;
 export const CLOCK_PORTRAIT_RADIUS = 20;
 const ROUND_CARD_WIDTH = 168;
@@ -179,7 +198,7 @@ function fighterPlate(
   ctx.fillText(fit(ctx, label, nameWidth), textX, y + 21);
   ctx.fillStyle = "#93a3bd";
   ctx.font = "600 10px Inter, system-ui, sans-serif";
-  ctx.fillText(detail, textX, y + 35);
+  ctx.fillText(fit(ctx, detail, nameWidth), textX, y + 35);
 
   const barWidth = (width - 52) / bars.length;
   const groupWidth = bars.length * barWidth + (bars.length - 1) * 12;
@@ -269,7 +288,8 @@ export class RoundClock {
       this.fightTicks = null;
     }
     if (snapshot.phase === "fight") this.fightTicks = snapshot.phase_ticks_remaining;
-    const held = snapshot.phase === "knockdown" || snapshot.phase === "foul_recovery";
+    // A stoppage freezes the clock where the bout ended, as the broadcast does.
+    const held = snapshot.phase === "knockdown" || snapshot.phase === "foul_recovery" || snapshot.phase === "complete";
     return held && this.fightTicks !== null ? this.fightTicks : snapshot.phase_ticks_remaining;
   }
 }
@@ -365,11 +385,20 @@ export function decisionLabel(final: FinalMessage): string {
 
 export const STOPPAGE_METHODS: ReadonlySet<string> = new Set(["ko", "flash_ko", "tko"]);
 export const FINAL_REVEAL_DELAY_SECONDS = 3.6;
+/** A disqualification or a doctor's stoppage is the referee's call: a moment for it before the result. */
+export const REFEREE_REVEAL_DELAY_SECONDS = 2.4;
 
 /** Seconds to hold the result panel back so a stoppage's slow-motion fall stays visible. */
 export function finalRevealDelay(final: FinalMessage | null): number {
-  return final !== null && STOPPAGE_METHODS.has(final.method) ? FINAL_REVEAL_DELAY_SECONDS : 0;
+  if (final === null) return 0;
+  if (STOPPAGE_METHODS.has(final.method)) return FINAL_REVEAL_DELAY_SECONDS;
+  return final.method === "disqualification" || final.method === "doctor_stoppage" ? REFEREE_REVEAL_DELAY_SECONDS : 0;
 }
+
+/** Below the top bar, or below the round card where a phone puts it under the top bar. */
+const headlineBaseline = (height: number, compact: boolean): number => Math.max(height * 0.16, (compact ? 112 : 56) + 40);
+/** Engine latency that is worth telling a player about on the broadcast screen. */
+export const LAG_WARNING_MS = 120;
 
 export function drawHud(
   ctx: CanvasRenderingContext2D,
@@ -389,6 +418,10 @@ export function drawHud(
   pictures: PictureSource | null = null,
 ): void {
   ctx.save();
+  const scale = hudScale(width, height);
+  ctx.scale(scale, scale);
+  width /= scale;
+  height /= scale;
   ctx.textBaseline = "alphabetic";
   const pictureOf = (fighter: FighterSnapshot): CanvasImageSource | null => {
     const player = players[fighter.player_id];
@@ -404,8 +437,7 @@ export function drawHud(
     const mirror = index === 1;
     const x = mirror ? width - 24 - plateWidth : 24;
     const player = players[fighter.player_id];
-    const record = player?.record === undefined ? "" : `${isDebut(player.record) ? "DEBUT" : recordLine(player.record)} · `;
-    const detail = `${record}${player?.cpu === true ? "CPU" : `ELO ${player?.rating ?? "—"}`} · KD ${fighter.knockdowns} · W ${fighter.warnings} · −${fighter.deductions}`;
+    const detail = plateDetail(player, fighter, compact);
     const bars: BarSpec[] = [
       { label: `${compact ? "STA" : "STAMINA"} ${Math.round(fighter.stamina)}`, value: fighter.stamina, maximum: fighter.maximum_stamina, from: "#ffe08a", to: "#d9a53a" },
       { label: `${compact ? "HP" : "HEALTH"} ${Math.round(fighter.conditioning)}`, value: fighter.conditioning, maximum: HUD_MAX_CONDITIONING, from: "#ff8a7a", to: "#b02a20" },
@@ -425,15 +457,16 @@ export function drawHud(
 
   const seconds = Math.floor((clockTicks ?? snapshot.phase_ticks_remaining) / tickRate);
   const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-  if (final === null) roundCard(ctx, width / 2, compact ? 54 : height - 84, clock, `ROUND ${snapshot.round_number}`, snapshot.phase.replace("_", " ").toUpperCase());
-  // A phone has no free corner for it beside the clock, the centre panels and the captions; Settings shows it there.
-  if (inputLatencyMs !== null && !compact && final === null && snapshot.fighters.some((fighter) => fighter.player_id === viewerId)) {
-    const rounded = Math.round(inputLatencyMs);
+  if (final === null) roundCard(ctx, width / 2, compact ? 54 : height - 84, clock, `ROUND ${snapshot.round_number}`, snapshot.phase === "complete" ? "FINAL" : snapshot.phase.replace("_", " ").toUpperCase());
+  // Only a connection slow enough to feel is worth the broadcast screen; Settings, Diagnostics always shows it.
+  // A phone has no free corner for it beside the clock, the centre panels and the captions.
+  const lag = inputLatencyMs === null ? 0 : Math.round(inputLatencyMs);
+  if (lag >= LAG_WARNING_MS && !compact && final === null && snapshot.fighters.some((fighter) => fighter.player_id === viewerId)) {
     ctx.save();
     ctx.textAlign = "right";
     ctx.font = "700 11px ui-monospace, monospace";
-    ctx.fillStyle = rounded < 90 ? "rgba(170,200,180,0.75)" : rounded < 160 ? "rgba(240,200,110,0.9)" : "rgba(255,110,100,0.95)";
-    ctx.fillText(`INPUT ${rounded} ms`, width - 24, 36);
+    ctx.fillStyle = lag < 200 ? "rgba(240,200,110,0.9)" : "rgba(255,110,100,0.95)";
+    ctx.fillText(`SLOW CONNECTION ${lag} ms`, width - 24, 76);
     ctx.restore();
   }
   if (replayLabel !== null) {
@@ -466,42 +499,46 @@ export function drawHud(
   if (snapshot.phase === "countdown") {
     centerPanel(ctx, width, height, `ROUND ${snapshot.round_number}`, "Touch gloves. Protect yourself at all times.", topPanelOffset(width, height));
   }
-  if (snapshot.phase === "knockdown") {
+  // The replay's own tag says what it shows; the live count panel would only cover it.
+  const headline = headlineBaseline(height, compact);
+  if (snapshot.phase === "knockdown" && replayLabel === null) {
     const viewer = snapshot.fighters.find((fighter) => fighter.player_id === viewerId);
     const downed = snapshot.fighters.find((fighter) => fighter.is_downed) ?? viewer;
-    const count = Math.max(...snapshot.fighters.map((fighter) => fighter.get_up_count));
     const downedName = players[downed?.player_id ?? ""]?.name ?? "Fighter";
     ctx.save();
     ctx.textAlign = "center";
     ctx.font = "900 44px Inter, system-ui, sans-serif";
     ctx.lineWidth = 6;
     ctx.strokeStyle = "rgba(0,0,0,0.75)";
-    ctx.strokeText("KNOCKDOWN", width / 2, height * 0.16);
+    ctx.strokeText("KNOCKDOWN", width / 2, headline);
     ctx.fillStyle = "#ff4d4d";
-    ctx.fillText("KNOCKDOWN", width / 2, height * 0.16);
+    ctx.fillText("KNOCKDOWN", width / 2, headline);
     ctx.font = "700 15px Inter, system-ui, sans-serif";
     ctx.fillStyle = "#e6ecf7";
-    ctx.fillText(`${fit(ctx, downedName.toUpperCase(), width * 0.5)} IS DOWN`, width / 2, height * 0.16 + 24);
+    ctx.fillText(`${fit(ctx, downedName.toUpperCase(), width * 0.5)} IS DOWN`, width / 2, headline + 24);
     ctx.restore();
   }
   if (snapshot.phase === "knockdown" && replayLabel === null) {
     const viewer = snapshot.fighters.find((fighter) => fighter.player_id === viewerId);
+    // The referee's first word is "one", a second after the fighter lands.
     const count = Math.max(...snapshot.fighters.map((fighter) => fighter.get_up_count));
     if (viewer?.is_downed !== true) {
-      ctx.save();
-      ctx.textAlign = "center";
-      ctx.font = "900 36px Inter, system-ui, sans-serif";
-      ctx.lineWidth = 5;
-      ctx.strokeStyle = "rgba(0,0,0,0.75)";
-      ctx.strokeText(`COUNT ${count}`, width / 2, height * 0.16 + 64);
-      ctx.fillStyle = "#ffd77a";
-      ctx.fillText(`COUNT ${count}`, width / 2, height * 0.16 + 64);
-      ctx.restore();
+      if (count >= 1) {
+        ctx.save();
+        ctx.textAlign = "center";
+        ctx.font = "900 36px Inter, system-ui, sans-serif";
+        ctx.lineWidth = 5;
+        ctx.strokeStyle = "rgba(0,0,0,0.75)";
+        ctx.strokeText(`COUNT ${count}`, width / 2, headline + 64);
+        ctx.fillStyle = "#ffd77a";
+        ctx.fillText(`COUNT ${count}`, width / 2, headline + 64);
+        ctx.restore();
+      }
     } else {
       const panelWidth = Math.min(380, width - 24);
       const panelHeight = 150;
       const x = width / 2 - panelWidth / 2;
-      const y = height * 0.24;
+      const y = Math.max(height * 0.24, headline + 34);
       ctx.fillStyle = "rgba(3,6,12,0.88)";
       ctx.fillRect(x, y, panelWidth, panelHeight);
       ctx.strokeStyle = "rgba(246,213,122,0.5)";
@@ -510,7 +547,7 @@ export function drawHud(
       ctx.textAlign = "center";
       ctx.fillStyle = "#ffd77a";
       ctx.font = "800 30px Inter, system-ui, sans-serif";
-      ctx.fillText(`COUNT ${count}`, width / 2, y + 40);
+      ctx.fillText(count >= 1 ? `COUNT ${count}` : "GET UP!", width / 2, y + 40);
       const prompt = viewer?.is_downed === true ? viewer.get_up_prompt : null;
       if (prompt !== null && prompt !== undefined && viewer !== undefined) {
         const inWindow = snapshot.tick >= viewer.get_up_window_start_tick && snapshot.tick <= viewer.get_up_window_end_tick;
@@ -551,10 +588,11 @@ export function drawHud(
     centerPanel(ctx, width, height, "FOUL RECOVERY", `${players[victim?.player_id ?? ""]?.name ?? "Fighter"} is recovering`, topPanelOffset(width, height));
   }
   if (snapshot.phase === "rest") {
+    // By corner rather than by name, so two long names cannot push the second fighter's numbers off the panel.
     const statsLine = snapshot.fighters
-      .map((fighter) => ({ name: players[fighter.player_id]?.name ?? "Fighter", stats: roundStats?.get(fighter.player_id) ?? blankPunches() }))
+      .map((fighter, seat) => ({ corner: seat === 0 ? "Blue" : "Red", stats: roundStats?.get(fighter.player_id) ?? blankPunches() }))
       .filter(({ stats }) => stats.thrown > 0 || stats.landed > 0)
-      .map(({ name, stats }) => `${fit(ctx, name, width * 0.22)} ${stats.landed}/${stats.thrown}`)
+      .map(({ corner, stats }) => `${corner} ${stats.landed} of ${stats.thrown}`)
       .join("  ·  ");
     const corners = cornerWorkLine(snapshot.fighters);
     centerPanel(ctx, width, height, "CORNERS · RECOVER", corners ?? (statsLine.length > 0 ? `Landed this round: ${statsLine}` : "Conditioning governs recovery"), topPanelOffset(width, height));
@@ -649,7 +687,7 @@ export function resultCard(
   return {
     headline: METHOD_HEADLINES[final.method] ?? decisionLabel(final),
     detail: `ROUND ${final.round}`,
-    verdict: winnerSeat === null ? (final.winner_id === null ? "DRAW" : `${players[final.winner_id]?.name ?? "Winner"} WINS`) : `${names[winnerSeat]} WINS`,
+    verdict: winnerSeat === null ? (final.winner_id === null ? "DRAW" : `${(players[final.winner_id]?.name ?? "Winner").toUpperCase()} WINS`) : `${names[winnerSeat].toUpperCase()} WINS`,
     winnerSeat,
     names,
     judges,
@@ -677,25 +715,37 @@ export interface ResultCardLayout {
 }
 
 /** The card's place on the screen: along the bottom, so the winner and the crowd stay in view above it. */
+/** The result card's place on the screen, in screen pixels: the HUD draws it scaled up on big screens. */
 export function resultCardLayout(width: number, height: number, card: ResultCard, fighter: boolean): ResultCardLayout {
+  const scale = hudScale(width, height);
+  const layout = logicalResultCardLayout(width / scale, height / scale, card, fighter);
+  if (scale === 1) return layout;
+  return { ...layout, x: layout.x * scale, y: layout.y * scale, width: layout.width * scale, height: layout.height * scale, rowHeight: layout.rowHeight * scale, verdictHeight: layout.verdictHeight * scale, judgesHeight: layout.judgesHeight * scale };
+}
+
+/** On a short screen (a phone on its side) the card keeps the rows that matter most, so it leaves the ring in view. */
+const DENSE_ROWS: ReadonlySet<string> = new Set(["KNOCKDOWNS", "TOTAL PUNCHES", "RATING"]);
+export const cardRows = (card: ResultCard, dense: boolean): readonly ResultRow[] => (dense ? card.rows.filter((row) => DENSE_ROWS.has(row.label)) : card.rows);
+
+function logicalResultCardLayout(width: number, height: number, card: ResultCard, fighter: boolean): ResultCardLayout {
   const dense = height < 480;
   // Side by side where there is the width for it, or no height to stack.
   const wide = width >= 900 || (width >= 640 && dense);
   const cardWidth = Math.min(width - 24, wide ? 980 : 720);
   const footer = fighter ? RESULT_CARD_FOOTER : CARD_PADDING;
-  const verdictHeight = dense ? 86 : 112;
-  const judgesHeight = card.judges.length === 0 ? 0 : dense ? 42 : 52;
+  const verdictHeight = dense ? 72 : 112;
+  const judgesHeight = card.judges.length === 0 ? 0 : dense ? 36 : 52;
   const verdict = verdictHeight + judgesHeight;
-  const rows = card.rows.length + 1;
+  const rows = cardRows(card, dense).length + 1;
   const room = height - (width < 640 ? 118 : 70) - 14 - CARD_PADDING - footer - (wide ? 0 : verdict);
-  const rowHeight = Math.max(16, Math.min(dense ? 22 : 28, room / rows));
+  const rowHeight = Math.max(16, Math.min(dense ? 20 : 28, room / rows));
   const body = wide ? Math.max(verdict, rows * rowHeight) : verdict + rows * rowHeight;
   const cardHeight = CARD_PADDING + body + footer;
   return { x: (width - cardWidth) / 2, y: height - 14 - cardHeight, width: cardWidth, height: cardHeight, wide, dense, rowHeight, verdictHeight, judgesHeight };
 }
 
 function drawResultCard(ctx: CanvasRenderingContext2D, width: number, height: number, card: ResultCard, fighter: boolean, pictures: readonly [CanvasImageSource | null, CanvasImageSource | null]): void {
-  const layout = resultCardLayout(width, height, card, fighter);
+  const layout = logicalResultCardLayout(width, height, card, fighter);
   const { x, y } = layout;
   ctx.fillStyle = "rgba(3,6,12,0.9)";
   ctx.fillRect(x, y, layout.width, layout.height);
@@ -745,9 +795,10 @@ function drawResultCard(ctx: CanvasRenderingContext2D, width: number, height: nu
     portrait(ctx, columns[seat] + outward * (side / 2 - 10 - face), tableTop + rowHeight / 2, face, pictures[seat], card.names[seat], CORNER_ACCENTS[seat]);
     ctx.textAlign = "center";
     ctx.fillStyle = "#f6f7fb";
-    fitted(ctx, card.names[seat], columns[seat] - outward * (face + 3), baseline, side - 22 - face * 2, 800, text, 9);
+    // The names have the header row to themselves, so they may reach into the label column.
+    fitted(ctx, card.names[seat], columns[seat] - outward * (face + 3 + label / 4), baseline, side + label / 2 - 22 - face * 2, 800, text, 9);
   }
-  for (const row of card.rows) {
+  for (const row of cardRows(card, layout.dense)) {
     baseline += rowHeight;
     ctx.fillStyle = "#8fa3c8";
     fitted(ctx, row.label, tableLeft + tableWidth / 2, baseline, label, 700, Math.min(12, text), 8);

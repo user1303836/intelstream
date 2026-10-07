@@ -11,7 +11,8 @@ export class KeyboardInput {
     if (event.code === "KeyQ" || event.code === "KeyE") this.clearActions();
     const punch = PUNCH_KEYS[event.code];
     if (punch !== undefined) this.push({ kind: "punch", hand: punch[0], class: punch[1], target: this.hasShift() ? "body" : "head", power: this.hasAlt() ? "power" : "normal" });
-    else { const action = ACTION_KEYS[event.code]; if (action !== undefined) this.push(action); }
+    // A foul needs Shift held, so a number pressed for the corner as the bell goes cannot become one.
+    else { const action = ACTION_KEYS[event.code]; if (action !== undefined && (action.kind !== "foul" || this.hasShift())) this.push(action); }
   };
   private readonly keyup = (event: KeyboardEvent): void => { if (ACTIVE_CODES.has(event.code)) { if (this.enabled) event.preventDefault(); this.held.delete(event.code); } };
   private readonly visibility = (): void => { if (document.hidden) this.reset(); };

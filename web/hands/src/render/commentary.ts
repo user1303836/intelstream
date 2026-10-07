@@ -1,6 +1,6 @@
 import { ROCKED_MAX_TICKS } from "../manifest";
 import { isDebut, recordCard } from "../record";
-import type { CombatEvent, EngineSnapshot, FighterRecord, FighterSnapshot, FinalMessage, PublicPlayer } from "../types";
+import type { CombatEvent, EngineSnapshot, FighterRecord, FighterSnapshot, FinalMessage, MatchPhase, PublicPlayer } from "../types";
 import { decisionLabel, wasBlocked } from "./hud";
 
 export type Speaker = "play" | "colour" | "announcer";
@@ -135,6 +135,12 @@ type LineKey = keyof typeof LINES;
 
 const RESULT_LINES: Readonly<Partial<Record<string, LineKey>>> = { ko: "ko", flash_ko: "flashKo", tko: "tko", doctor_stoppage: "doctorStop", disqualification: "disqualified", forfeit: "forfeit" };
 
+/** Lines about a moment that ends with its phase: "can he beat the count?" means nothing once he is up. */
+const PHASES: Readonly<Partial<Record<LineKey, ReadonlySet<MatchPhase>>>> = { struggle: new Set<MatchPhase>(["knockdown"]) };
+const COUNTDOWN_ONLY: ReadonlySet<MatchPhase> = new Set<MatchPhase>(["countdown"]);
+/** The bell is called as it rings, or straight after the line on screen, or not at all: seconds late reads as a mistake. */
+const BELL_FRESH_SECONDS = 3.2;
+
 const URGENT: ReadonlySet<LineKey> = new Set<LineKey>(["knockdown", "knockdownAgain", "knockdownCounter", "knockdownBody", "bodyCollapse", "upLate", "upEarly", "hurt", "hurtBadly", "lowBlow", "headbutt", "deduction", "ko", "flashKo", "tko", "doctorStop", "disqualified", "forfeit", "replay", "savedByBell", "finalBell", "roundEnd", "roundStart"]);
 
 /** Knockdowns over hurt fighters over big counters over cuts over combinations over colour. */
@@ -229,6 +235,8 @@ interface Queued {
   at: number;
   expires: number;
   moment: string | null;
+  /** The phases in which the line still makes sense, or null for any. */
+  phases: ReadonlySet<MatchPhase> | null;
 }
 
 interface Showing {
@@ -236,6 +244,7 @@ interface Showing {
   start: number;
   end: number;
   moment: string | null;
+  phases: ReadonlySet<MatchPhase> | null;
 }
 
 interface RoundTally {
@@ -311,6 +320,17 @@ export class CommentaryDirector {
     for (const event of events) this.consider(event, snapshot, result, now);
     this.inspect(snapshot, now);
     this.lastPhase = snapshot.phase;
+    this.dropOutOfPhase(snapshot.phase, now);
+  }
+
+  /** A line about a moment that has passed (a count already beaten, the introductions after the bell) goes unsaid. */
+  private dropOutOfPhase(phase: MatchPhase, now: number): void {
+    for (let index = this.queue.length - 1; index >= 0; index -= 1) {
+      const phases = this.queue[index]!.phases;
+      if (phases !== null && !phases.has(phase)) this.queue.splice(index, 1);
+    }
+    const showing = this.showing;
+    if (showing !== null && showing.phases !== null && !showing.phases.has(phase)) showing.end = Math.min(showing.end, now + FADE_SECONDS);
   }
 
   /** The bout's result has arrived. A decision opens with the announcer going to the scorecards. */
@@ -391,7 +411,7 @@ export class CommentaryDirector {
         : best.line.urgent && best.line.priority > showing.line.priority && now - showing.start >= PREEMPT_AFTER_SECONDS;
       if (start) {
         this.queue.splice(this.queue.indexOf(best), 1);
-        this.showing = { line: best.line, start: now, end: now + best.line.hold, moment: best.moment };
+        this.showing = { line: best.line, start: now, end: now + best.line.hold, moment: best.moment, phases: best.phases };
       }
     }
     const showing = this.showing;
@@ -429,8 +449,8 @@ export class CommentaryDirector {
     for (const seat of [0, 1] as const) {
       const corner = seat === 0 ? "blue" : "red";
       const player = this.players[snapshot.fighters[seat].player_id];
-      const detail = player === undefined ? "" : `${player.record === undefined ? "" : `${recordCard(player.record)} · `}RATED ${player.rating}`;
-      this.enqueue(this.announcement(`In the ${corner} corner, ${names[seat]}.`, { kicker: `IN THE ${corner.toUpperCase()} CORNER`, title: names[seat]!.toUpperCase(), detail, corner: seat }, hold, 97), now + seat * hold, null, 30);
+      const detail = player === undefined ? "" : `${player.record === undefined ? "" : `${recordCard(player.record)} · `}${player.cpu === true ? "COMPUTER" : `RATED ${player.rating}`}`;
+      this.enqueue(this.announcement(`In the ${corner} corner, ${names[seat]}.`, { kicker: `IN THE ${corner.toUpperCase()} CORNER`, title: names[seat]!.toUpperCase(), detail, corner: seat }, hold, 97), now + seat * hold, null, 30, COUNTDOWN_ONLY);
     }
     const spoken = snapshot.fighters.map((fighter) => recordSpoken(this.players[fighter.player_id]?.record));
     this.hooks.speak?.([`In the blue corner${spoken[0]}... ${names[0]}!`, `And in the red corner${spoken[1]}... ${names[1]}!`]);
@@ -554,7 +574,7 @@ export class CommentaryDirector {
       case "bell":
         if (event.detail === "round_start") {
           this.tallies.clear();
-          if (snapshot.round_number >= 2) this.say("roundStart", event.event_id, now, { r: snapshot.round_number }, null);
+          if (snapshot.round_number >= 2) this.say("roundStart", event.event_id, now, { r: snapshot.round_number }, null, REACTION_SECONDS, BELL_FRESH_SECONDS);
         } else if (event.detail === "round_end") {
           this.roundEnded(event, snapshot, result, now);
         }
@@ -614,15 +634,15 @@ export class CommentaryDirector {
   private roundEnded(event: CombatEvent, snapshot: EngineSnapshot, result: CombatEvent | null, now: number): void {
     const round = snapshot.round_number;
     if (result !== null) {
-      if (result.detail === "decision" || result.detail === "draw") this.say("finalBell", event.event_id, now, {}, "bell");
+      if (result.detail === "decision" || result.detail === "draw") this.say("finalBell", event.event_id, now, {}, "bell", REACTION_SECONDS, BELL_FRESH_SECONDS);
       return;
     }
     const saved = snapshot.fighters.find((fighter) => {
       const notes = this.notesFor(fighter.player_id);
       return fighter.stunned_ticks > 0 || fighter.poise < HURT_POISE || event.tick - notes.knockedDownAt <= 12 * this.tickRate;
     });
-    if (saved !== undefined) this.say("savedByBell", event.event_id, now, { b: this.nameOf(saved.player_id) }, "bell");
-    else this.say("roundEnd", event.event_id, now, { r: round }, "bell");
+    if (saved !== undefined) this.say("savedByBell", event.event_id, now, { b: this.nameOf(saved.player_id) }, "bell", REACTION_SECONDS, BELL_FRESH_SECONDS);
+    else this.say("roundEnd", event.event_id, now, { r: round }, "bell", REACTION_SECONDS, BELL_FRESH_SECONDS);
     const [one, two] = snapshot.fighters.map((fighter) => ({ id: fighter.player_id, tally: this.tally(fighter.player_id) })) as [{ id: string; tally: RoundTally }, { id: string; tally: RoundTally }];
     const [lead, trail] = one.tally.landed >= two.tally.landed ? [one, two] : [two, one];
     if (lead.tally.thrown + trail.tally.thrown > 0) this.sayAt("summary", event.event_id, now + 2.4, { r: round, a: this.nameOf(lead.id), x: lead.tally.landed, y: lead.tally.thrown, b: this.nameOf(trail.id), z: trail.tally.landed, w: trail.tally.thrown }, 5);
@@ -692,7 +712,7 @@ export class CommentaryDirector {
     }
     const text = fillLine(this.choose(key, seed), vars);
     const line: BroadcastLine = { speaker: SPEAKER[key] ?? "play", text, priority: PRIORITY[key], urgent: URGENT.has(key), hold: holdFor(text), card: null };
-    return this.enqueue(line, now + delay, moment, expiresAfter);
+    return this.enqueue(line, now + delay, moment, expiresAfter, PHASES[key] ?? null);
   }
 
   private sayAt(key: LineKey, seed: number, at: number, vars: Vars, expiresAfter: number): void {
@@ -713,13 +733,13 @@ export class CommentaryDirector {
     return options[index]!;
   }
 
-  private enqueue(line: BroadcastLine, at: number, moment: string | null, expiresAfter?: number): boolean {
+  private enqueue(line: BroadcastLine, at: number, moment: string | null, expiresAfter?: number, phases: ReadonlySet<MatchPhase> | null = null): boolean {
     if (moment !== null) {
       if (this.queue.some((entry) => entry.moment === moment && entry.line.priority >= line.priority)) return false;
       if (this.showing?.moment === moment && this.showing.line.priority >= line.priority) return false;
       for (let index = this.queue.length - 1; index >= 0; index -= 1) if (this.queue[index]!.moment === moment) this.queue.splice(index, 1);
     }
-    this.queue.push({ line, at, expires: at + (expiresAfter ?? (line.urgent ? URGENT_STALE_SECONDS : STALE_SECONDS)), moment });
+    this.queue.push({ line, at, expires: at + (expiresAfter ?? (line.urgent ? URGENT_STALE_SECONDS : STALE_SECONDS)), moment, phases });
     if (this.queue.length > MAX_QUEUE) {
       let lowest = 0;
       for (let index = 1; index < this.queue.length; index += 1) if (this.queue[index]!.line.priority < this.queue[lowest]!.line.priority) lowest = index;

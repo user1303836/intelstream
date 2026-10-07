@@ -130,12 +130,38 @@ describe("caption drawing", () => {
   it("fades and eases in, but with reduced motion it simply appears", () => {
     const fading = mockHudContext([]);
     drawCaption(fading, shown(line("Big right hand from Azure Vector!"), 0.4, 0.6), captionSlot(scene(1280, 720))!, false);
-    expect(fading.globalAlpha).toBe(0.4);
+    // The last thing drawn is the words, which fade as the square of the plate's opacity.
+    expect(fading.globalAlpha).toBeCloseTo(0.16, 6);
     const still = mockHudContext([]);
     drawCaption(still, shown(line("Big right hand from Azure Vector!"), 0.4, 0.6), captionSlot(scene(1280, 720))!, true);
     expect(still.globalAlpha).toBe(1);
     const hidden: string[] = [];
     drawCaption(mockHudContext(hidden), shown(line("Gone"), 0), captionSlot(scene(1280, 720))!, false);
     expect(hidden).toEqual([]);
+  });
+});
+
+describe("a caption fading in or out", () => {
+  it("fades its words faster than its plate, so no ghost text floats over the fighters", () => {
+    const plates: number[] = [];
+    const words: number[] = [];
+    const ctx = {
+      globalAlpha: 1, font: "", fillStyle: "", textAlign: "left", textBaseline: "alphabetic",
+      save: () => undefined, restore: () => undefined,
+      measureText: (text: string) => ({ width: text.length * 7 }),
+      fillRect(this: { globalAlpha: number }) { plates.push(this.globalAlpha); },
+      fillText(this: { globalAlpha: number }) { words.push(this.globalAlpha); },
+    } as unknown as CanvasRenderingContext2D;
+    const slot = { x: 640, y: 600, maxWidth: 600, anchor: "bottom" as const, scale: 1, cover: null };
+    const line = { speaker: "play" as const, text: "Down goes Two!", priority: 95, urgent: true, hold: 3, card: null };
+    drawCaption(ctx, { line, opacity: 0.3, entering: 0 }, slot, false);
+    expect(Math.min(...plates)).toBeCloseTo(0.3, 6);
+    expect(Math.max(...words)).toBeCloseTo(0.09, 6);
+    plates.length = 0;
+    words.length = 0;
+    drawCaption(ctx, { line: { ...line, card: { kicker: "THE WINNER, BY UNANIMOUS DECISION", title: "TWO", detail: "", corner: 1 } }, opacity: 0.3, entering: 0 }, slot, false);
+    expect(Math.max(...words)).toBeCloseTo(0.09, 6);
+    drawCaption(ctx, { line, opacity: 1, entering: 0 }, slot, false);
+    expect(words.at(-1)).toBe(1);
   });
 });
