@@ -15,7 +15,6 @@ import { NetworkController } from "./network";
 import { CPU_LEVELS } from "./protocol";
 import { crowdTension } from "./render/commentary";
 import { FightRenderer } from "./render/renderer";
-import { rockedLevel } from "./render/rocked";
 import { CAMERA_MODES, SettingsStore, type BloodLevel } from "./settings";
 import { initialState, reduceState, type GameState } from "./state";
 import type { CpuLevel, EngineSnapshot, PublicPlayer, ServerMessage } from "./types";
@@ -300,6 +299,8 @@ export class HandsApp {
     renderer.onArcadeInjury = (injury) => this.audio.injury(injury);
     renderer.onAnnouncement = (lines) => this.voice.speak(lines);
     renderer.onCrowdCue = () => this.audio.chant();
+    // The muffle follows the hurt vision: from the punch that rocked him as the screen shows it.
+    renderer.onRocked = (level, tick) => this.audio.rocked(level, tick);
     this.renderer = renderer;
   }
 
@@ -354,10 +355,7 @@ export class HandsApp {
     this.renderer?.push(snapshot);
     const viewer = snapshot.fighters.find((fighter) => fighter.player_id === this.state.playerId);
     this.input.setKnockdown(viewer?.is_downed === true);
-    if (viewer !== undefined) {
-      this.audio.snapshot(snapshot.tick, viewer.stamina, viewer.maximum_stamina, viewer.trauma.head + viewer.trauma.body);
-      this.audio.rocked(rockedLevel(viewer, snapshot.phase), snapshot.tick);
-    }
+    if (viewer !== undefined) this.audio.snapshot(snapshot.tick, viewer.stamina, viewer.maximum_stamina, viewer.trauma.head + viewer.trauma.body);
     this.audio.roundClock(snapshot.phase, snapshot.round_number, snapshot.phase_ticks_remaining, this.state.simulation?.tick_rate ?? 30);
     this.audio.tension(crowdTension(snapshot));
     for (const event of this.feedbackEvents.accept(snapshot.events)) {

@@ -6,8 +6,8 @@ import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { EventDeduplicator, SnapshotBuffer } from "../interpolation";
 import { coarsePointer } from "../input/touch";
-import { FIGHTER_RADIUS, REST_CORNER_OFFSET, RING_HALF_HEIGHT, RING_HALF_WIDTH, punchTiming, styleTiming } from "../manifest";
-import { EVASION_STAMINA, EVASION_TICKS, EvasionPrediction, MovementPrediction, attackTicksRemaining, constrainPrediction, isEvasion, predictedDefense, predictedPunchTiming, type HeldInput } from "../prediction";
+import { FIGHTER_RADIUS, REST_CORNER_OFFSET, RING_CORNER_REACH, RING_HALF_HEIGHT, RING_HALF_WIDTH, punchTiming, styleTiming } from "../manifest";
+import { EVASION_STAMINA, EVASION_TICKS, EvasionPrediction, MovementPrediction, attackTicksRemaining, constrainPrediction, isEvasion, predictedDefense, predictedPunchTiming, ringPoint, type HeldInput } from "../prediction";
 import type { BloodLevel, Settings } from "../settings";
 import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, Hand, MatchResult, PublicPlayer, PunchClass, SemanticAction, SimulationInfo } from "../types";
 import { buildArena, type BuiltArena } from "./arena";
@@ -152,14 +152,32 @@ const HISTORY_LIMIT = 480;
 const LOW_TIER_SCALE = 0.56;
 const ROUND_CALLOUT_SECONDS = 1.8;
 const FINISH_CLOSE_UP_SECONDS = 1.7;
-/** On a screen narrower than this (as a pull), the rest's wide shot looks down the ring's diagonal, from this far behind the near fighter and this high. */
+/** The close-up waits this long at most for a body still falling to come to rest before it picks its side. */
+const CLOSE_UP_SETTLE_SECONDS = 1.2;
+/**
+ * On a screen narrower than this (as a pull), the rest's wide shot looks down the ring's diagonal from high
+ * over the near corner: this far back from its stool, swung this many degrees off the diagonal (clear of the
+ * post, its pads and the cornerman leaning over the ropes), this high, aimed this far toward the far stool.
+ */
 const REST_DIAGONAL_PULL = 1.6;
-const REST_DIAGONAL_BACK = 5;
-const REST_DIAGONAL_HEIGHT = 3.4;
+const REST_DIAGONAL_BACK = 3.5;
+const REST_DIAGONAL_SWING = 30;
+const REST_DIAGONAL_HEIGHT = 6.5;
+const REST_DIAGONAL_AIM = 0.4;
 /** After a stoppage the winner celebrates until the bout is gone, and the referee lifts his arm once the fight is waved off. */
 const WINNER_CELEBRATION_SECONDS = 600;
 const STOPPAGE_RAISE_DELAY_SECONDS = 2.8;
 const STOPPAGE_RAISE_SPACING = 0.6;
+/**
+ * The spots beside the winner the referee tries in turn for the arm raise, each as [toward the middle of
+ * the ring, toward the broadcast camera] in STOPPAGE_RAISE_SPACINGs: either side of him, then a little
+ * behind, then a little in front.
+ */
+const RAISE_SPOTS = [[1, 0], [-1, 0], [0.75, -0.66], [-0.75, -0.66], [0.75, 0.66], [-0.75, 0.66]] as const;
+/** A spot is his once he stands this near it; it keeps this far from the beaten fighter and inside this square. */
+const RAISE_ARRIVED = 0.15;
+const RAISE_CLEARANCE = 0.6;
+const RAISE_LIMIT = 2.3;
 /** Longest a finish waits for its punch to be shown (the render clock runs at most 6 ticks behind). */
 const FINISH_WAIT_LIMIT_SECONDS = 0.5;
 const CORNERMAN_APRON_DISTANCE = 3.42;
@@ -179,6 +197,16 @@ const STANDING_BLOCK_RADIUS = 0.5;
 const FALLEN_BLOCK_RADIUS = 0.28;
 /** The engine lets fighters stand 76 units apart, which puts two drawn bodies inside each other. */
 const DRAWN_MINIMUM_GAP = 104;
+/**
+ * How quickly (per second) a fighter drawn off his engine place follows where he should be drawn, and how
+ * fast at most (engine units per second, about a walk), so a clinch, a knockdown, the ropes or a body landing
+ * beside him never jump him.
+ */
+const DRAWN_SHIFT_RATE = 14;
+const DRAWN_SHIFT_SPEED = 260;
+/** How far, in metres, a fighter slides along the ropes at most to find a place clear of a body on the canvas, in steps of this much. */
+const ROPE_SLIDE_LIMIT = 2;
+const ROPE_SLIDE_STEP = 0.05;
 const CORNERMAN_WORK_DISTANCE = 2.95;
 /** Metres per second the referee steps in at to break a clinch. */
 const REFEREE_BREAK_SPEED = 2.4;
@@ -524,9 +552,27 @@ export function closeUpAngle(
 }
 
 /**
+ * How far a fighter at (x, y) can step along the unit direction (dx, dy) before the ropes or a corner pad
+ * stop him: inside |x| <= limitX, |y| <= limitY and |x| + |y| <= cornerReach.
+ */
+function roomAlong(x: number, y: number, dx: number, dy: number, limitX: number, limitY: number, cornerReach: number): number {
+  let room = Number.POSITIVE_INFINITY;
+  if (Math.abs(dx) > 1e-9) room = Math.min(room, (Math.sign(dx) * limitX - x) / dx);
+  if (Math.abs(dy) > 1e-9) room = Math.min(room, (Math.sign(dy) * limitY - y) / dy);
+  for (const sx of [-1, 1]) {
+    for (const sy of [-1, 1]) {
+      const toward = sx * dx + sy * dy;
+      if (toward > 1e-9) room = Math.min(room, (cornerReach - sx * x - sy * y) / toward);
+    }
+  }
+  return Math.max(0, room);
+}
+
+/**
  * Positions for drawing two fighters the engine has closer than `minimum`: both step back along the
- * line between them. One held by the ropes stays, and the other gives the whole way. Null when they
- * are already far enough apart.
+ * line between them. One held by the ropes or a corner pad steps back as far as he has room to, and the
+ * other gives the rest, so the split changes as smoothly as the room does. Null when they are already far
+ * enough apart.
  */
 export function visualSeparation(
   ax: number,
@@ -536,17 +582,18 @@ export function visualSeparation(
   minimum: number,
   limitX: number,
   limitY: number,
+  cornerReach = Number.POSITIVE_INFINITY,
 ): { ax: number; ay: number; bx: number; by: number } | null {
   const gap = Math.hypot(bx - ax, by - ay);
   if (gap >= minimum) return null;
   const ux = gap < 1e-6 ? 1 : (bx - ax) / gap;
   const uy = gap < 1e-6 ? 0 : (by - ay) / gap;
-  const inside = (x: number, y: number): boolean => Math.abs(x) <= limitX && Math.abs(y) <= limitY;
-  const back = (minimum - gap) / 2;
-  const aFree = inside(ax - ux * back, ay - uy * back);
-  const bFree = inside(bx + ux * back, by + uy * back);
-  const aBack = aFree ? (bFree ? back : back * 2) : 0;
-  const bBack = bFree ? (aFree ? back : back * 2) : 0;
+  const short = minimum - gap;
+  const roomA = roomAlong(ax, ay, -ux, -uy, limitX, limitY, cornerReach);
+  const roomB = roomAlong(bx, by, ux, uy, limitX, limitY, cornerReach);
+  let aBack = Math.min(short / 2, roomA);
+  const bBack = Math.min(short - aBack, roomB);
+  aBack = Math.min(short - bBack, roomA);
   const clamp = THREE.MathUtils.clamp;
   return {
     ax: clamp(ax - ux * aBack, -limitX, limitX),
@@ -923,6 +970,9 @@ export class FightRenderer {
   private graphsReady: Promise<void> = Promise.resolve();
   private readonly headCache = [new THREE.Vector3(), new THREE.Vector3()];
   private readonly headCacheValid = [false, false];
+  /** The tick on screen when each fighter's knockout physics last began a fall, outside the replay; null before any. */
+  private readonly liveFallTicks: [number | null, number | null] = [null, null];
+  private readonly fallingLive = [false, false];
   private readonly arcadeInjuries: [ArcadeInjury | null, ArcadeInjury | null] = [null, null];
   private readonly observedInjuryDown: [boolean, boolean] = [false, false];
   private readonly arcadeInjuryEvents: [CombatEvent | null, CombatEvent | null] = [null, null];
@@ -930,6 +980,11 @@ export class FightRenderer {
   private readonly closeUpTarget = new THREE.Vector3();
   private readonly closeUpFacing = new THREE.Vector3();
   private readonly drawnFighters: [FighterSnapshot, FighterSnapshot] = [blankFighter("a"), blankFighter("b")];
+  /** How far each fighter is drawn from his engine place, in engine units, eased; and where it is heading. */
+  private readonly drawnOffsets: [{ x: number; y: number }, { x: number; y: number }] = [{ x: 0, y: 0 }, { x: 0, y: 0 }];
+  private readonly drawnTargets: [{ x: number; y: number }, { x: number; y: number }] = [{ x: 0, y: 0 }, { x: 0, y: 0 }];
+  /** False when the next frame takes the offsets as they are due, without easing: the first, and at a replay's cuts. */
+  private drawnOffsetsLive = false;
   private readonly lookIds: [string | null, string | null] = [null, null];
   private readonly downedPoolAccumulators: [number, number] = [0, 0];
   private readonly downedPoolCounts: [number, number] = [0, 0];
@@ -956,9 +1011,17 @@ export class FightRenderer {
   private finishCloseUpUntil = 0;
   private finishCloseUpIndex = -1;
   private finishCloseUpBearing: number | null = null;
+  /** When the close-up was asked for, and whether the eye it shoots hangs in sight (decided with its side). */
+  private finishCloseUpAt = 0;
+  private finishCloseUpHanging = false;
   /** The seat whose arm the referee lifts after a stoppage, from `stoppageRaiseAt`; -1 for none. */
   private stoppageWinner = -1;
   private stoppageRaiseAt = Number.POSITIVE_INFINITY;
+  /** Where the referee stands to lift the winner's arm, from the winner; chosen as he sets off for it. */
+  private stoppageSpot: { readonly x: number; readonly z: number } | null = null;
+  /** The middle of the winner and the referee the arm-raise shot holds, eased, once it has started. */
+  private readonly raiseCentre = new THREE.Vector3();
+  private raiseFramed = false;
   private readonly stoppageWrist = new THREE.Vector3();
   private readonly stoppageOtherWrist = new THREE.Vector3();
   private readonly closeUpPosition = new THREE.Vector3();
@@ -996,6 +1059,8 @@ export class FightRenderer {
   /** The ring announcer's lines for a voice to read. */
   onAnnouncement: ((lines: readonly string[]) => void) | null = null;
   onCrowdCue: ((cue: CrowdCue) => void) | null = null;
+  /** Every frame, how rocked the viewer's own fighter is on screen (0 to 1) and the newest server tick; never for a spectator. */
+  onRocked: ((level: number, tick: number) => void) | null = null;
   private readonly commentary = new CommentaryDirector({ speak: (lines) => this.onAnnouncement?.(lines), cue: (cue) => this.onCrowdCue?.(cue) });
   private readonly touchControls = coarsePointer();
   private resultAnnounced = false;
@@ -1220,9 +1285,13 @@ export class FightRenderer {
 
   /** A stoppage's result panel waits for the slow-motion fall; decisions show at once. */
   setFinal(final: FinalMessage | null): void {
+    // The result already being shown, again, would start its walk to the marks or its replay over.
+    if (final !== null && final.match_id === this.final?.match_id) return;
     this.final = final;
     this.stoppageWinner = -1;
     this.stoppageRaiseAt = Number.POSITIVE_INFINITY;
+    this.stoppageSpot = null;
+    this.raiseFramed = false;
     this.ceremony = this.ceremonyFor(final);
     this.finalRevealAt = this.frameSeconds + (this.ceremony === null ? finalRevealDelay(final) : CEREMONY_REVEAL_LIMIT_SECONDS);
     this.ovationUntil = final === null ? 0 : this.frameSeconds + CROWD_OVATION_SECONDS;
@@ -1284,11 +1353,17 @@ export class FightRenderer {
     this.referee?.raise(null, null);
   }
 
-  /** The fighters as drawn during the decision: walking to their marks, then standing square to the camera. */
-  private ceremonyFighters(ceremony: Ceremony, fighters: readonly [FighterSnapshot, FighterSnapshot], dt: number, seconds: number): readonly [FighterSnapshot, FighterSnapshot] {
+  /**
+   * The fighters as drawn during the decision: walking to their marks, then standing square to the camera.
+   * The walk starts where they were drawn at the bell, `drawnFrom` their engine places.
+   */
+  private ceremonyFighters(ceremony: Ceremony, fighters: readonly [FighterSnapshot, FighterSnapshot], dt: number, seconds: number, drawnFrom: readonly [{ readonly x: number; readonly y: number }, { readonly x: number; readonly y: number }] | null = null): readonly [FighterSnapshot, FighterSnapshot] {
     if (ceremony.positions === null) {
-      ceremony.positions = [{ x: fighters[0].x, y: fighters[0].y }, { x: fighters[1].x, y: fighters[1].y }];
-      ceremony.marks = fighters[0].x <= fighters[1].x ? [0, 1] : [1, 0];
+      ceremony.positions = [
+        { x: fighters[0].x + (drawnFrom?.[0].x ?? 0), y: fighters[0].y + (drawnFrom?.[0].y ?? 0) },
+        { x: fighters[1].x + (drawnFrom?.[1].x ?? 0), y: fighters[1].y + (drawnFrom?.[1].y ?? 0) },
+      ];
+      ceremony.marks = ceremony.positions[0].x <= ceremony.positions[1].x ? [0, 1] : [1, 0];
     }
     const marks = ceremony.marks ?? SEAT_MARKS;
     let arrived = ceremony.refereeArrived;
@@ -1350,6 +1425,31 @@ export class FightRenderer {
     return { position: this.cornerPosition, lookAt: this.cornerLookAt, framed: true };
   }
 
+  /**
+   * After a stoppage, once the close-up of the beaten fighter is done, the broadcast holds the winner and
+   * the referee who lifts his arm, shot from the front in the part of the screen the result card leaves
+   * free, as the decision is. The count's framing, low over the body, put the raised glove off the top.
+   */
+  private raiseFrame(seconds: number, dt: number, reducedMotion: boolean): { position: THREE.Vector3; lookAt: THREE.Vector3; framed: boolean } | null {
+    const latest = this.buffer.latest();
+    if (this.stoppageWinner < 0 || this.final === null || this.replay !== null || this.ceremony !== null || latest === null || seconds < this.finishCloseUpUntil) return null;
+    const winner = this.stoppageWinner === 0 ? this.tmpA : this.tmpB;
+    // The referee's spot is chosen as he sets off; until then the one he would take first.
+    const spotX = this.stoppageSpot?.x ?? (winner.x > 0 ? -1 : 1) * STOPPAGE_RAISE_SPACING;
+    const spotZ = this.stoppageSpot?.z ?? 0;
+    if (!this.raiseFramed) this.raiseCentre.set(winner.x + spotX / 2, 0, winner.z + spotZ / 2);
+    this.raiseCentre.lerp(this.tmpCamera.set(winner.x + spotX / 2, 0, winner.z + spotZ / 2), 1 - Math.exp(-3 * dt));
+    this.raiseFramed = true;
+    const { width, height } = this.hudViewport;
+    const top = resultCardTop(this.final, width, height, latest.fighters, this.players, this.roundStats, this.viewerId);
+    const shot = ceremonyShot(this.camera.aspect, this.baseFov, (height - top) / Math.max(1, height));
+    const waved = seconds - (this.stoppageRaiseAt - STOPPAGE_RAISE_DELAY_SECONDS);
+    const drift = reducedMotion ? 0 : Math.sin(waved * 0.35) * 0.06 * shot.distance;
+    this.cornerPosition.set(THREE.MathUtils.clamp(this.raiseCentre.x, -1.4, 1.4) + drift, shot.height + 0.05 * shot.distance, this.raiseCentre.z + shot.distance);
+    this.cornerLookAt.set(this.raiseCentre.x, shot.height, this.raiseCentre.z);
+    return { position: this.cornerPosition, lookAt: this.cornerLookAt, framed: true };
+  }
+
   private presentFinish(final: FinalMessage): void {
     this.referee?.waveOff();
     const fighters = this.buffer.latest()?.fighters;
@@ -1358,6 +1458,7 @@ export class FightRenderer {
       this.finishCloseUpIndex = loserIndex;
       this.finishCloseUpUntil = this.frameSeconds + FINISH_CLOSE_UP_SECONDS;
       this.finishCloseUpBearing = null;
+      this.finishCloseUpAt = this.frameSeconds;
     }
     if (final.winner_id === null) return;
     const index = fighters?.findIndex((fighter) => fighter.player_id === final.winner_id) ?? -1;
@@ -1382,19 +1483,18 @@ export class FightRenderer {
 
   /**
    * Between rounds the fighters sit in opposite corners, too far apart across a phone held upright for
-   * any shot from the side. The wide shot there looks down the diagonal from behind the blue corner,
-   * the near fighter low in the picture and the far one above him.
+   * any shot from the side. The wide shot there looks down the diagonal from high over the viewer's own
+   * corner (the blue one for a spectator), the near fighter low in the picture and the far one above him.
+   * It is set by the corners the fighters rest in, never by where they stand, so their walk across to
+   * them cannot swing it round the ring.
    */
   private restWideFrame(snapshot: EngineSnapshot | null): { position: THREE.Vector3; lookAt: THREE.Vector3; framed: boolean } | null {
     if (snapshot?.phase !== "rest" || this.portraitPull <= REST_DIAGONAL_PULL) return null;
-    const near = this.tmpA;
-    const far = this.tmpB;
-    const dx = near.x - far.x;
-    const dz = near.z - far.z;
-    const apart = Math.hypot(dx, dz);
-    if (apart < 1e-3) return null;
-    this.cornerPosition.set(near.x + (dx / apart) * REST_DIAGONAL_BACK, REST_DIAGONAL_HEIGHT, near.z + (dz / apart) * REST_DIAGONAL_BACK);
-    this.cornerLookAt.set((near.x + far.x) / 2, 0.75, (near.z + far.z) / 2);
+    const near = snapshot.fighters.findIndex((fighter) => fighter.player_id === this.viewerId) === 1 ? 1 : 0;
+    const corner = this.mapping.x(REST_CORNER_OFFSET);
+    cornerPoint(near, corner, -REST_DIAGONAL_BACK, REST_DIAGONAL_SWING, this.cornerPosition).setY(REST_DIAGONAL_HEIGHT);
+    cornerPoint(near, corner, 0, 0, this.cornerLookAt);
+    this.cornerLookAt.lerp(cornerPoint(near === 0 ? 1 : 0, corner, 0, 0, this.tmpCamera), REST_DIAGONAL_AIM).setY(0.9);
     return { position: this.cornerPosition, lookAt: this.cornerLookAt, framed: true };
   }
 
@@ -1403,10 +1503,19 @@ export class FightRenderer {
     if (seconds >= this.finishCloseUpUntil || this.finishCloseUpIndex < 0 || !this.headCacheValid[this.finishCloseUpIndex]) return null;
     const injury = this.arcadeInjuries[this.finishCloseUpIndex];
     const severed = injury === "decapitation" && this.effects.severedHeadPosition(this.finishCloseUpIndex, this.closeUpTarget);
+    const fallen = severed ? null : this.graphs?.[this.finishCloseUpIndex]?.fallBody ?? null;
+    // A body still falling has not yet shown which way its face will lie: the shot waits for it to come to
+    // rest (the finish holds the broadcast's shot meanwhile), and then runs its full length.
+    if (this.finishCloseUpBearing === null && fallen !== null && !fallen.body.asleep && seconds - this.finishCloseUpAt < CLOSE_UP_SETTLE_SECONDS) {
+      this.finishCloseUpUntil = seconds + FINISH_CLOSE_UP_SECONDS;
+      return null;
+    }
     // An eye out of its socket is shot close, on the side the face points to; one hanging under a face on
-    // the canvas cannot be seen from any side, and the shot is the head's own.
-    const hanging = !severed && (injury === "eye_left" || injury === "eye_right") && this.effects.eyePosition(this.finishCloseUpIndex, this.closeUpTarget)
-      && this.eyeInSight(this.closeUpTarget);
+    // the canvas cannot be seen from any side, and the shot is the head's own. Which it is, is decided with
+    // the side: an eye swinging across that line would otherwise jump the shot between the two.
+    const eyeOut = !severed && (injury === "eye_left" || injury === "eye_right") && this.effects.eyePosition(this.finishCloseUpIndex, this.closeUpTarget);
+    if (this.finishCloseUpBearing === null) this.finishCloseUpHanging = eyeOut && this.eyeInSight(this.closeUpTarget);
+    const hanging = eyeOut && this.finishCloseUpHanging;
     const head = severed || hanging ? this.closeUpTarget : this.headCache[this.finishCloseUpIndex]!;
     const reach = severed ? 0.8 : hanging ? 0.45 : 1.05;
     const drift = (seconds - (this.finishCloseUpUntil - FINISH_CLOSE_UP_SECONDS)) * 0.25 - 0.2;
@@ -1417,7 +1526,6 @@ export class FightRenderer {
       const skull = hanging ? this.headWorldPose(this.finishCloseUpIndex) : null;
       // A hanging eye is shot from the side of the head it hangs on.
       // A head on the canvas is shot from the side its face turns to, and never across its own body.
-      const fallen = severed ? null : this.graphs?.[this.finishCloseUpIndex]?.fallBody ?? null;
       const facing = severed && this.effects.severedHeadFacing(this.finishCloseUpIndex, this.closeUpFacing)
         ? this.closeUpFacing
         : skull !== null
@@ -1443,6 +1551,39 @@ export class FightRenderer {
     return { position: this.closeUpPosition, lookAt: this.replayLookAt, tight: true };
   }
 
+  /**
+   * Where the referee stands to lift the winner's arm, as an offset from the winner: the first of
+   * RAISE_SPOTS clear of the beaten fighter, of a body and a head on the canvas, and inside the ropes, or the
+   * least crowded of them. A spot taken by any of those would keep him stepping in and being pushed back out.
+   */
+  private raiseSpot(winner: THREE.Vector3, loser: THREE.Vector3): { x: number; z: number } {
+    const toCentre = winner.x > 0 ? -1 : 1;
+    let best = { x: toCentre * STOPPAGE_RAISE_SPACING, z: 0 };
+    let bestRoom = Number.NEGATIVE_INFINITY;
+    for (const [across, along] of RAISE_SPOTS) {
+      const x = winner.x + toCentre * across * STOPPAGE_RAISE_SPACING;
+      const z = winner.z + along * STOPPAGE_RAISE_SPACING;
+      let room = Math.min(RAISE_LIMIT - Math.abs(x), RAISE_LIMIT - Math.abs(z), Math.hypot(x - loser.x, z - loser.z) - RAISE_CLEARANCE);
+      for (const graph of this.graphs ?? []) {
+        const body = graph.fallBody;
+        if (body === null) continue;
+        for (const point of [0, 1, 2, 3, 4] as const) {
+          body.bodyPoint(point, this.bodyPoint);
+          room = Math.min(room, Math.hypot(x - this.bodyPoint.x, z - this.bodyPoint.z) - BODY_CLEARANCE - 0.05);
+        }
+      }
+      for (const index of [0, 1]) {
+        if (this.effects.severedHeadPosition(index, this.closeUpTarget)) room = Math.min(room, Math.hypot(x - this.closeUpTarget.x, z - this.closeUpTarget.z) - HEAD_CLEARANCE - 0.05);
+      }
+      if (room >= 0) return { x: x - winner.x, z: z - winner.z };
+      if (room > bestRoom) {
+        bestRoom = room;
+        best = { x: x - winner.x, z: z - winner.z };
+      }
+    }
+    return best;
+  }
+
   /** The winner's glove nearer the referee, in world space. */
   private nearerGlove(left: THREE.Bone, right: THREE.Bone): THREE.Vector3 {
     left.getWorldPosition(this.stoppageWrist);
@@ -1464,6 +1605,8 @@ export class FightRenderer {
     const buffer = new SnapshotBuffer(plan.snapshots.length + 2, this.simulation.tick_rate);
     for (const snapshot of plan.snapshots) buffer.push(snapshot);
     this.replay = { plan, buffer, startedAt: this.frameSeconds, impactFired: false, side: null };
+    // The replay cuts to other moments: the fighters are drawn there at once, not eased across.
+    this.drawnOffsetsLive = false;
     this.commentary.replay(this.frameSeconds);
     this.replayFollow = 0;
     this.replayFollowAt = 0;
@@ -1476,12 +1619,17 @@ export class FightRenderer {
       }
     }
     // The replay shows the punch that ended the bout. A contact still waiting for the live clock is not
-    // shown live as well; the injury it carried lands at the replay's impact instead.
+    // shown live as well: the injury it carried lands at the replay's impact instead, and what came with
+    // the punch (the knockdown it caused, with its thud, roar and rumble) is held for that impact.
     for (const pending of this.pendingContacts.splice(0)) {
       const index = pending.recipientIndex;
       if (pending.injury !== null && (index === 0 || index === 1) && this.replayInjuries[index] === null && this.arcadeInjuries[index] === null) {
         this.replayInjuries[index] = { injury: pending.injury, event: pending.event };
       }
+      if (pending.event.event_id === plan.impact.event_id) continue;
+      pending.injury = null;
+      pending.contactTick = Number.POSITIVE_INFINITY;
+      this.pendingContacts.push(pending);
     }
     const victim = plan.snapshots[0]?.fighters.findIndex((fighter) => fighter.player_id === plan.impact.target_id) ?? -1;
     // The replay's punch knocks the gum shield out again, so it is back in his mouth for the lead-up.
@@ -1489,8 +1637,12 @@ export class FightRenderer {
     // The impact is the body punch itself, so the knockdown it caused says whether he went to one knee.
     const kneels = this.lastKnockdown?.knockdown.detail === BODY_KNOCKDOWN;
     for (const [index, graph] of (this.graphs ?? []).entries()) {
+      // The physics runs the recorded fall again only when it is this knockdown's. One the render clock had
+      // not reached when the bout ended on the punch was never recorded: the fall recorded is an earlier
+      // knockdown's, somewhere else, and the replay runs a new one from the replayed blow instead.
+      const recorded = this.liveFallTicks[index] ?? null;
       graph.resetTransient(false);
-      graph.primeReplayFall();
+      if (recorded !== null && recorded >= plan.impact.tick - 1) graph.primeReplayFall();
       if (index === victim && kneels) graph.fallToKnee(true);
     }
     this.finalRevealAt = this.frameSeconds + plan.durationSeconds + finalRevealDelay(this.final);
@@ -1498,6 +1650,7 @@ export class FightRenderer {
 
   private endReplay(): void {
     this.replay = null;
+    this.drawnOffsetsLive = false;
     this.reapplyReplayInjuries();
     const live = this.buffer.latest();
     for (const [index, graph] of (this.graphs ?? []).entries()) {
@@ -1516,7 +1669,8 @@ export class FightRenderer {
     const { recipientIndex, puncherIndex } = contactParticipants(event, snapshot);
     const recipient = snapshot.fighters[recipientIndex];
     if (recipient === undefined) return;
-    this.contactPoint.set(this.mapping.x(recipient.x), 0, this.mapping.z(recipient.y));
+    // Where he is drawn, apart from the puncher, rather than his engine place up to 17 cm into him.
+    this.contactPoint.copy(recipientIndex === 0 ? this.tmpA : this.tmpB);
     const spray = sprayDirection(snapshot.fighters[puncherIndex], recipient, this.mapping);
     this.effects.addEvent(event, this.contactPoint, this.settings().reducedMotion, spray);
     const puncher = puncherIndex >= 0 ? snapshot.fighters[puncherIndex] : undefined;
@@ -1533,6 +1687,10 @@ export class FightRenderer {
     if (event.detail.endsWith(":head") && !this.settings().reducedMotion) this.knockOutMouthpiece(recipientIndex, spray ?? event.direction, event.event_id + REPLAY_EVENT_ID_OFFSET, true);
     this.onContact?.(event);
     this.reapplyReplayInjuries(spray);
+    // What came with the punch and was held for this moment (see startReplay) is shown with it.
+    for (const pending of this.pendingContacts) {
+      if (pending.contactTick === Number.POSITIVE_INFINITY) pending.contactTick = this.replay?.plan.impact.tick ?? snapshot.tick;
+    }
   }
 
   private replayFrame(snapshot: EngineSnapshot, elapsed: number): { position: THREE.Vector3; lookAt: THREE.Vector3; tight: boolean } {
@@ -2118,7 +2276,7 @@ export class FightRenderer {
     this.setBloodLevel(current.blood);
 
     const latest = this.buffer.latest();
-    this.updateRocked(latest, dt, current.reducedMotion);
+    const frameDt = dt;
     const finishing = latest?.result !== null && latest?.result !== undefined
       && STOPPAGE_METHODS.has(latest.result.finish_method);
     this.cheer(seconds, dt);
@@ -2134,6 +2292,11 @@ export class FightRenderer {
     }
     this.viewerHitFlash = Math.max(0, this.viewerHitFlash - dt * 3.2);
     let sampledTick = latest === null ? 0 : manual ? presentationTickFor(latest) : this.buffer.renderTick(time);
+    // The hurt vision and the muffle start with the punch that rocked him, when the render clock shows it,
+    // not when the snapshot carrying the stun arrives a playback delay earlier. The sound follows the
+    // newest server tick, which its own clocks count.
+    const rocked = this.updateRocked(latest === null ? null : this.shownAt(sampledTick), frameDt, current.reducedMotion);
+    if (rocked !== null && latest !== null) this.onRocked?.(rocked, latest.tick);
     let snapshot = latest === null ? null : this.applyLocalPrediction(this.buffer.sample(sampledTick), dt, time);
     const replay = this.replay;
     if (replay !== null) {
@@ -2156,7 +2319,7 @@ export class FightRenderer {
     let downedAt: { x: number; z: number } | null = null;
     if (snapshot !== null) {
       const ceremony = this.replay === null ? this.ceremony : null;
-      const [a, b] = ceremony !== null ? this.ceremonyFighters(ceremony, snapshot.fighters, actorDt, seconds) : this.standApart(snapshot.fighters);
+      const [a, b] = ceremony !== null ? this.ceremonyFighters(ceremony, snapshot.fighters, actorDt, seconds, this.drawnOffsets) : this.standApart(snapshot.fighters, actorDt);
       for (const [index, fighter] of snapshot.fighters.entries()) {
         if (this.arcadeInjuries[index] === null || this.replay !== null) continue;
         if (fighter.is_downed) this.observedInjuryDown[index] = true;
@@ -2199,6 +2362,10 @@ export class FightRenderer {
             headBone.getWorldPosition(this.headCache[index]!);
             this.headCacheValid[index] = true;
           }
+          // Which knockdown the physics last recorded a fall for, so the replay runs only that one again.
+          const falling = graph.fallBody !== null;
+          if (falling && !this.fallingLive[index] && this.replay === null) this.liveFallTicks[index] = sampledTick;
+          this.fallingLive[index] = falling;
         }
       }
       for (let index = 0; index < this.arcadeInjuries.length; index += 1) {
@@ -2224,12 +2391,13 @@ export class FightRenderer {
       const bx = this.mapping.x(b.x);
       const bz = this.mapping.z(b.y);
       separation = Math.hypot(ax - bx, az - bz);
-      knockdown = a.is_downed || b.is_downed;
+      // Over a count the broadcast frames the man on the canvas; the result has its own shots (raiseFrame).
+      knockdown = snapshot.result === null && (a.is_downed || b.is_downed);
       const fallenA = this.graphs?.[0]?.fallBody?.centre(this.bodyPoint) ?? null;
       const contactA = fallenA === null ? { x: ax, z: az } : { x: fallenA.x, z: fallenA.z };
       const fallenB = this.graphs?.[1]?.fallBody?.centre(this.bodyPoint) ?? null;
       const contactB = fallenB === null ? { x: bx, z: bz } : { x: fallenB.x, z: fallenB.z };
-      downedAt = a.is_downed ? contactA : b.is_downed ? contactB : null;
+      downedAt = !knockdown ? null : a.is_downed ? contactA : contactB;
       this.ring.setRopeContacts(contactA, contactB);
       this.tmpA.set(ax, 0, az);
       this.tmpB.set(bx, 0, bz);
@@ -2292,18 +2460,20 @@ export class FightRenderer {
     );
     const viewerIndex = snapshot === null ? -1 : snapshot.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
     const ownView = current.camera === "fighter" && viewerIndex >= 0 && ownViewPhase(snapshot)
-      ? this.fighterCam.update(dt, seconds, viewerIndex === 0 ? this.tmpA : this.tmpB, viewerIndex === 0 ? this.tmpB : this.tmpA, this.effects.shakeAmount, current.reducedMotion)
+      ? this.fighterCam.update(dt, seconds, viewerIndex === 0 ? this.tmpA : this.tmpB, viewerIndex === 0 ? this.tmpB : this.tmpA, this.effects.shakeAmount, current.reducedMotion, this.camera.aspect)
       : null;
     if (ownView === null) this.fighterCam.reset();
     const replaying = this.replay;
-    const frame: { position: THREE.Vector3; lookAt: THREE.Vector3; tight?: boolean; framed?: boolean } = this.cameraOverride ?? (replaying !== null && snapshot !== null ? this.replayFrame(snapshot, seconds - replaying.startedAt) : (this.closeUpFrame(seconds) ?? this.cornerShotFrame(seconds, snapshot, current.reducedMotion) ?? this.restWideFrame(snapshot) ?? this.ceremonyFrame(seconds) ?? ownView ?? directed));
+    const frame: { position: THREE.Vector3; lookAt: THREE.Vector3; tight?: boolean; framed?: boolean } = this.cameraOverride ?? (replaying !== null && snapshot !== null ? this.replayFrame(snapshot, seconds - replaying.startedAt) : (this.closeUpFrame(seconds) ?? this.raiseFrame(seconds, dt, current.reducedMotion) ?? this.cornerShotFrame(seconds, snapshot, current.reducedMotion) ?? this.restWideFrame(snapshot) ?? this.ceremonyFrame(seconds) ?? ownView ?? directed));
     this.ownViewActive = ownView !== null && frame === ownView;
     const fov = this.ownViewActive ? this.baseFov * FIGHTER_CAM_FOV_SCALE : this.baseFov;
     if (this.camera.fov !== fov) {
       this.camera.fov = fov;
       this.camera.updateProjectionMatrix();
     }
-    if (this.cameraOverride === null && this.portraitPull > 1 && frame.framed !== true) {
+    // The player's own camera frames itself for the screen (FighterCam) and may stand over the apron, so it
+    // is neither pulled back nor kept inside the ropes like the broadcast's shots.
+    if (this.cameraOverride === null && this.portraitPull > 1 && frame.framed !== true && !this.ownViewActive) {
       const tight = frame.tight === true;
       const pull = this.portraitPull / Math.min(1.3, Math.sqrt(this.portraitPull));
       const distanceScale = tight ? Math.min(pull, 1.25) : pull;
@@ -2378,33 +2548,100 @@ export class FightRenderer {
     this.graphs?.[index]?.boxer.setLook(lookFor(playerId));
   }
 
-  /** The fighters as drawn: eased apart when the engine has them closer than two bodies can stand, and off a fighter lying on the canvas. */
-  private standApart(fighters: readonly [FighterSnapshot, FighterSnapshot]): readonly [FighterSnapshot, FighterSnapshot] {
+  /**
+   * The fighters as drawn: apart when the engine has them closer than two bodies can stand, and off a
+   * fighter lying on the canvas (in the replay as live). Each is eased toward where he should be drawn, at
+   * no more than a walk, rather than jumped there.
+   */
+  private standApart(fighters: readonly [FighterSnapshot, FighterSnapshot], dt: number): readonly [FighterSnapshot, FighterSnapshot] {
     const [a, b] = fighters;
     const tied = [a, b].some((fighter) => fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0 || fighter.is_downed);
-    const apart = tied ? null : visualSeparation(a.x, a.y, b.x, b.y, DRAWN_MINIMUM_GAP, RING_HALF_WIDTH - FIGHTER_RADIUS, RING_HALF_HEIGHT - FIGHTER_RADIUS);
-    const drawn: readonly [FighterSnapshot, FighterSnapshot] = apart === null ? fighters : [Object.assign(this.drawnFighters[0], a, { x: apart.ax, y: apart.ay }), Object.assign(this.drawnFighters[1], b, { x: apart.bx, y: apart.by })];
-    return this.replay === null ? this.clearOfTheFallen(drawn) : drawn;
+    const apart = tied ? null : visualSeparation(a.x, a.y, b.x, b.y, DRAWN_MINIMUM_GAP, RING_HALF_WIDTH - FIGHTER_RADIUS, RING_HALF_HEIGHT - FIGHTER_RADIUS, RING_CORNER_REACH);
+    const [targetA, targetB] = this.drawnTargets;
+    targetA.x = apart === null ? 0 : apart.ax - a.x;
+    targetA.y = apart === null ? 0 : apart.ay - a.y;
+    targetB.x = apart === null ? 0 : apart.bx - b.x;
+    targetB.y = apart === null ? 0 : apart.by - b.y;
+    this.clearOfTheFallen(fighters);
+    const rate = 1 - Math.exp(-DRAWN_SHIFT_RATE * dt);
+    for (const seat of [0, 1] as const) {
+      const offset = this.drawnOffsets[seat];
+      const target = this.drawnTargets[seat];
+      let stepX = target.x - offset.x;
+      let stepY = target.y - offset.y;
+      if (this.drawnOffsetsLive) {
+        stepX *= rate;
+        stepY *= rate;
+        const step = Math.hypot(stepX, stepY);
+        if (step > DRAWN_SHIFT_SPEED * dt) {
+          stepX *= (DRAWN_SHIFT_SPEED * dt) / step;
+          stepY *= (DRAWN_SHIFT_SPEED * dt) / step;
+        }
+      }
+      offset.x += stepX;
+      offset.y += stepY;
+    }
+    this.drawnOffsetsLive = true;
+    return [this.drawnAt(0, a), this.drawnAt(1, b)];
   }
 
-  /** Whoever is still on his feet stands off the body of a fighter lying where the fall took him, never in it. */
-  private clearOfTheFallen(fighters: readonly [FighterSnapshot, FighterSnapshot]): readonly [FighterSnapshot, FighterSnapshot] {
+  /** A fighter where he is drawn this frame: his engine place and his offset, inside the ropes and corner pads. */
+  private drawnAt(seat: 0 | 1, fighter: FighterSnapshot): FighterSnapshot {
+    const offset = this.drawnOffsets[seat];
+    if (Math.abs(offset.x) < 0.01 && Math.abs(offset.y) < 0.01) return fighter;
+    const inside = ringPoint(fighter.x + offset.x, fighter.y + offset.y);
+    return Object.assign(this.drawnFighters[seat], fighter, { x: inside.x, y: inside.y });
+  }
+
+  /**
+   * Whoever is still on his feet stands off the body of a fighter lying where the fall took him, never in it,
+   * and inside the ropes: his drawn target moves by as much.
+   */
+  private clearOfTheFallen(fighters: readonly [FighterSnapshot, FighterSnapshot]): void {
     for (const lying of [0, 1] as const) {
       const body = this.graphs?.[lying]?.fallBody ?? null;
       const seat = lying === 0 ? 1 : 0;
       const standing = fighters[seat];
       if (body === null || standing.is_downed || (this.graphs?.[seat]?.fallBody ?? null) !== null) continue;
-      let x = this.mapping.x(standing.x);
-      let z = this.mapping.z(standing.y);
-      for (const point of [0, 1, 2, 3, 4] as const) {
-        body.bodyPoint(point, this.bodyPoint);
-        ({ x, z } = keepClear(x, z, this.bodyPoint.x, this.bodyPoint.z, STANDING_BODY_CLEARANCE));
-      }
-      if (x === this.mapping.x(standing.x) && z === this.mapping.z(standing.y)) continue;
-      const moved = Object.assign(this.drawnFighters[seat], standing, { x: x / this.mapping.x(1), y: z / this.mapping.z(1) });
-      return seat === 0 ? [moved, fighters[1]] : [fighters[0], moved];
+      const target = this.drawnTargets[seat];
+      const fromX = this.mapping.x(standing.x + target.x);
+      const fromZ = this.mapping.z(standing.y + target.y);
+      const clear = this.clearOf(body, fromX, fromZ);
+      target.x += (clear.x - fromX) / this.mapping.x(1);
+      target.y += (clear.z - fromZ) / this.mapping.z(1);
+      return;
     }
-    return fighters;
+  }
+
+  /**
+   * The place nearest (x, z) at least STANDING_BODY_CLEARANCE from every point of a body on the canvas, and
+   * inside the ropes: pushed off the body, then, where the ropes stop the push, slid along them.
+   */
+  private clearOf(body: Pick<NonNullable<BoxingGraph["fallBody"]>, "bodyPoint">, x: number, z: number): { x: number; z: number } {
+    let pushed = { x, z };
+    for (const point of [0, 1, 2, 3, 4] as const) {
+      body.bodyPoint(point, this.bodyPoint);
+      pushed = keepClear(pushed.x, pushed.z, this.bodyPoint.x, this.bodyPoint.z, STANDING_BODY_CLEARANCE);
+    }
+    const inside = this.insideRopes(pushed.x, pushed.z);
+    if (Math.hypot(inside.x - pushed.x, inside.z - pushed.z) < 1e-6) return pushed;
+    const clear = (at: { x: number; z: number }): boolean => ([0, 1, 2, 3, 4] as const).every((point) => {
+      body.bodyPoint(point, this.bodyPoint);
+      return Math.hypot(at.x - this.bodyPoint.x, at.z - this.bodyPoint.z) >= STANDING_BODY_CLEARANCE - 1e-6;
+    });
+    for (let slid = ROPE_SLIDE_STEP; slid <= ROPE_SLIDE_LIMIT + 1e-9; slid += ROPE_SLIDE_STEP) {
+      for (const [alongX, alongZ] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+        const along = this.insideRopes(inside.x + alongX * slid, inside.z + alongZ * slid);
+        if (clear(along)) return along;
+      }
+    }
+    return inside;
+  }
+
+  /** The nearest place inside the ropes and corner pads to (x, z), in world space. */
+  private insideRopes(x: number, z: number): { x: number; z: number } {
+    const inside = ringPoint(x / this.mapping.x(1), z / this.mapping.z(1));
+    return { x: this.mapping.x(inside.x), z: this.mapping.z(inside.y) };
   }
 
   private headHeightOf(index: number): number {
@@ -2433,11 +2670,20 @@ export class FightRenderer {
     referee.boxer.root.visible = this.replay === null;
     const shadow = this.blobShadows[2];
     if (shadow !== undefined) shadow.visible = this.replay === null;
-    const downed = snapshot?.fighters.find((fighter) => fighter.is_downed) ?? null;
+    // He counts over the fighter who went down from the knockdown until "Box!": one who beats the count is
+    // still counted to the mandatory eight, on his feet, and looked over.
+    const counted = snapshot?.fighters.find((fighter) => fighter.is_downed)
+      ?? (snapshot?.phase === "knockdown" ? snapshot.fighters.find((fighter) => fighter.player_id === this.lastKnockdown?.knockdown.target_id) : undefined)
+      ?? null;
     const clinched = snapshot?.fighters.some((fighter) => fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0) ?? false;
-    const breaking = downed === null && referee.breaking;
-    const focusX = downed !== null ? this.mapping.x(downed.x) : (this.tmpA.x + this.tmpB.x) / 2;
-    const focusZ = downed !== null ? this.mapping.z(downed.y) : (this.tmpA.z + this.tmpB.z) / 2;
+    const breaking = counted === null && referee.breaking;
+    // He counts over the fighter where he is: his body where the fall left it, or, once up (a fall the
+    // physics carried off is got up from where it lies), where he is drawn walking back to his place.
+    const countedGraph = counted === null ? undefined : this.graphs?.[snapshot?.fighters.indexOf(counted) ?? -1];
+    const fallen = countedGraph?.fallBody?.centre(this.bodyPoint) ?? null;
+    const risen = counted !== null && !counted.is_downed ? countedGraph?.currentRoot ?? null : null;
+    const focusX = counted === null ? (this.tmpA.x + this.tmpB.x) / 2 : fallen?.x ?? risen?.x ?? this.mapping.x(counted.x);
+    const focusZ = counted === null ? (this.tmpA.z + this.tmpB.z) / 2 : fallen?.z ?? risen?.z ?? this.mapping.z(counted.y);
     const away = this.refereeAway.set(this.refereePosition.x - focusX, 0, this.refereePosition.z - focusZ);
     if (away.lengthSq() < 0.01) away.set(0, 0, -1);
     away.normalize();
@@ -2449,23 +2695,23 @@ export class FightRenderer {
       const side = acrossX * away.x + acrossZ * away.z >= 0 ? 1 : -1;
       if (across > 0.01) away.set((acrossX / across) * side, 0, (acrossZ / across) * side);
     }
-    const { standoff, clearance } = refereeSpacing(downed !== null, clinched, breaking);
+    const { standoff, clearance } = refereeSpacing(counted !== null, clinched, breaking);
     const targetX = THREE.MathUtils.clamp(focusX + away.x * standoff, -2.4, 2.4);
     const targetZ = THREE.MathUtils.clamp(focusZ + away.z * standoff, -2.4, 2.4);
     const previousX = this.refereePosition.x;
     const previousZ = this.refereePosition.z;
     const ceremony = this.replay === null && this.ceremony?.positions !== null ? this.ceremony : null;
-    // Once the fight is waved off, the referee goes to the winner's side, the side nearer the middle of the ring.
+    // Once the fight is waved off, the referee goes to the winner's side: the side nearer the middle of the
+    // ring, or the first one clear of the beaten fighter and his body (see raiseSpot).
     const winner = ceremony === null && this.replay === null && this.stoppageWinner >= 0 && this.frameSeconds >= this.stoppageRaiseAt
       ? (this.stoppageWinner === 0 ? this.tmpA : this.tmpB)
       : null;
-    const side = winner !== null && winner.x > 0 ? -1 : 1;
-    let beside = false;
-    if (winner !== null) {
-      const step = ceremonyStep(this.refereePosition.x, this.refereePosition.z, { x: winner.x + side * STOPPAGE_RAISE_SPACING, y: winner.z }, CEREMONY_REFEREE_SPEED * dt);
+    const spot = winner === null ? null : (this.stoppageSpot ??= this.raiseSpot(winner, this.stoppageWinner === 0 ? this.tmpB : this.tmpA));
+    const side = spot !== null && spot.x < 0 ? -1 : 1;
+    if (winner !== null && spot !== null) {
+      const step = ceremonyStep(this.refereePosition.x, this.refereePosition.z, { x: winner.x + spot.x, y: winner.z + spot.z }, CEREMONY_REFEREE_SPEED * dt);
       this.refereePosition.x = step.x;
       this.refereePosition.z = step.y;
-      beside = step.arrived;
     } else if (ceremony !== null) {
       // The referee walks to the mark between the fighters and turns to the camera.
       const step = ceremonyStep(this.refereePosition.x, this.refereePosition.z, { x: CEREMONY_REFEREE.x, y: CEREMONY_REFEREE.z }, CEREMONY_REFEREE_SPEED * dt);
@@ -2510,6 +2756,9 @@ export class FightRenderer {
     if (dt > 0) {
       this.refereeVelocity.set((this.refereePosition.x - previousX) / dt, 0, (this.refereePosition.z - previousZ) / dt);
     }
+    // Arrived is where the keep-offs above let him stand, not where his step would have put him.
+    const beside = winner !== null && spot !== null
+      && Math.hypot(this.refereePosition.x - winner.x - spot.x, this.refereePosition.z - winner.z - spot.z) <= RAISE_ARRIVED;
     const walking = ceremony !== null && !ceremony.refereeArrived;
     const yaw = winner !== null ? (beside ? 0 : Math.atan2(winner.x - this.refereePosition.x, winner.z - this.refereePosition.z))
       : ceremony === null ? Math.atan2(focusX - this.refereePosition.x, focusZ - this.refereePosition.z)
@@ -2523,7 +2772,7 @@ export class FightRenderer {
     const yawDelta = ((yaw - this.refereeYaw + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
     this.refereeYaw += yawDelta * (1 - Math.exp(-(breaking ? 8 : 3) * dt));
     const state = refereeSnapshot(this.refereePosition, this.refereeYaw, this.refereeVelocity, this.mapping);
-    referee.setRefereeCount(downed !== null, downed?.get_up_count ?? 0);
+    referee.setRefereeCount(counted !== null, counted?.get_up_count ?? 0);
     referee.aimBreak(this.tmpA, this.tmpB);
     referee.update(state.self, state.focus, dt, time, false, "off", sampledTick);
   }
@@ -2635,12 +2884,25 @@ export class FightRenderer {
     this.drawCaption(ctx, viewport.width, viewport.height, snapshot);
   }
 
-  /** Hurt vision while the viewer's own fighter is rocked; never for a spectator, in a replay or with reduced motion. */
-  private updateRocked(latest: EngineSnapshot | null, dt: number, reducedMotion: boolean): void {
-    const viewer = latest?.fighters.find((fighter) => fighter.player_id === this.viewerId);
-    const target = latest === null || this.replay !== null || this.final !== null || reducedMotion ? 0 : rockedLevel(viewer, latest.phase);
-    const level = this.rocked.update(target, dt);
+  /**
+   * Hurt vision while the viewer's own fighter is rocked; never for a spectator, in a replay or with reduced
+   * motion. `shown` is the snapshot on screen, so it starts with the punch that rocked him. Returns how rocked
+   * he is for the sound, or null for a spectator.
+   */
+  private updateRocked(shown: EngineSnapshot | null, dt: number, reducedMotion: boolean): number | null {
+    const viewer = shown?.fighters.find((fighter) => fighter.player_id === this.viewerId);
+    const rocked = shown === null || this.replay !== null || this.final !== null ? 0 : rockedLevel(viewer, shown.phase);
+    const level = this.rocked.update(reducedMotion ? 0 : rocked, dt);
     this.finishPass.uniforms.uRocked!.value = reducedMotion ? 0 : level;
+    return viewer === undefined ? null : rocked;
+  }
+
+  /** The newest snapshot the render clock has reached: the fight as the screen has shown it so far. */
+  private shownAt(tick: number): EngineSnapshot | null {
+    for (let index = this.history.length - 1; index >= 0; index -= 1) {
+      if (this.history[index]!.tick <= tick) return this.history[index]!;
+    }
+    return null;
   }
 
   /** The broadcast caption: commentary, the ring announcer and the decision read-out. */

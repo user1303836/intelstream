@@ -141,7 +141,7 @@ describe("gum shield", () => {
     const hit = { event_id: 9, tick: 40, kind: "counter_hit", actor_id: "one", target_id: "two", amount: 120, detail: "hook:head", blood: 20, direction: -1, action_id: null };
     const stub = {
       lastKnockdown: { knockdown: { ...hit, kind: "knockdown", amount: 1, detail: "" }, hit, finisher: null },
-      contactPoint: new THREE.Vector3(),
+      contactPoint: new THREE.Vector3(), tmpA: new THREE.Vector3(-1, 0, 0), tmpB: new THREE.Vector3(1, 0, 0), pendingContacts: [],
       mapping: { x: (value: number) => value / 100, z: (value: number) => value / 100 },
       effects: { addEvent: () => undefined },
       settings: () => ({ reducedMotion: false }),

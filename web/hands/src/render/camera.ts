@@ -141,9 +141,11 @@ export const FIGHTER_CAM_ORBIT = 31;
 export const FIGHTER_CAM_CLOSE_ORBIT = 60;
 const FIGHTER_CAM_HEIGHT = 2.25;
 const FIGHTER_CAM_LOOK_HEIGHT = 1.35;
-/** Over the apron at most: the camera stands high enough there to look over the top rope (1.26 m). */
-export const FIGHTER_CAM_LIMIT = 3.2;
+/** Over the apron at most (it ends at 3.85 m): the camera stands high enough there to look over the top rope (1.26 m). */
+export const FIGHTER_CAM_LIMIT = 3.5;
 export const FIGHTER_CAM_FOV_SCALE = 1.25;
+/** On a screen narrower than it is tall the orbit shrinks with the aspect, to no less than this share of it. */
+const FIGHTER_CAM_NARROW_ORBIT = 0.45;
 
 /**
  * Where the over-the-shoulder camera stands: behind the player's own fighter and `orbitDegrees`
@@ -164,10 +166,15 @@ export function fighterCamFrame(
   const side = Math.sin(orbit) * FIGHTER_CAM_DISTANCE;
   const rightX = -forwardZ;
   const rightZ = forwardX;
+  const offsetX = -forwardX * back + rightX * side;
+  const offsetZ = -forwardZ * back + rightZ * side;
+  // Short of room behind him, the camera comes in along the same line rather than sliding round to his side.
+  const room = (from: number, offset: number): number => Math.abs(offset) < 1e-9 ? 1 : THREE.MathUtils.clamp((Math.sign(offset) * FIGHTER_CAM_LIMIT - from) / offset, 0, 1);
+  const reach = Math.min(room(viewer.x, offsetX), room(viewer.z, offsetZ));
   position.set(
-    THREE.MathUtils.clamp(viewer.x - forwardX * back + rightX * side, -FIGHTER_CAM_LIMIT, FIGHTER_CAM_LIMIT),
+    THREE.MathUtils.clamp(viewer.x + offsetX * reach, -FIGHTER_CAM_LIMIT, FIGHTER_CAM_LIMIT),
     FIGHTER_CAM_HEIGHT,
-    THREE.MathUtils.clamp(viewer.z - forwardZ * back + rightZ * side, -FIGHTER_CAM_LIMIT, FIGHTER_CAM_LIMIT),
+    THREE.MathUtils.clamp(viewer.z + offsetZ * reach, -FIGHTER_CAM_LIMIT, FIGHTER_CAM_LIMIT),
   );
   lookAt.set(opponent.x, FIGHTER_CAM_LOOK_HEIGHT, opponent.z);
 }
@@ -188,7 +195,11 @@ export class FighterCam {
 
   reset(): void { this.initialised = false; }
 
-  update(dt: number, time: number, viewer: { x: number; z: number }, opponent: { x: number; z: number }, shake: number, reducedMotion: boolean): CameraFrame & { tight: true } {
+  /**
+   * `aspect` is the screen's width over its height. A phone held upright sees too little to the sides for
+   * the orbit, so the camera comes round behind his back until he and the opponent fit across it.
+   */
+  update(dt: number, time: number, viewer: { x: number; z: number }, opponent: { x: number; z: number }, shake: number, reducedMotion: boolean, aspect = 16 / 9): CameraFrame & { tight: true } {
     const dx = opponent.x - viewer.x;
     const dz = opponent.z - viewer.z;
     const apart = Math.hypot(dx, dz);
@@ -202,7 +213,8 @@ export class FighterCam {
       this.angle += turn * (1 - Math.exp(-4.5 * dt));
       this.closeness += (closeness - this.closeness) * (1 - Math.exp(-3 * dt));
     }
-    fighterCamFrame(viewer, opponent, this.forwardX, this.forwardZ, this.target, this.aim, THREE.MathUtils.lerp(FIGHTER_CAM_ORBIT, FIGHTER_CAM_CLOSE_ORBIT, this.closeness));
+    const narrow = THREE.MathUtils.clamp(aspect, FIGHTER_CAM_NARROW_ORBIT, 1);
+    fighterCamFrame(viewer, opponent, this.forwardX, this.forwardZ, this.target, this.aim, THREE.MathUtils.lerp(FIGHTER_CAM_ORBIT, FIGHTER_CAM_CLOSE_ORBIT, this.closeness) * narrow);
     if (!this.initialised) {
       this.position.copy(this.target);
       this.look.copy(this.aim);
