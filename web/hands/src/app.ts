@@ -30,6 +30,8 @@ const REMATCH_HOLD_MS = 11_000;
 const RESULT_WAIT_MS = 4_000;
 const REMATCH_RETRY_MS = 3_000;
 const REMATCH_MAX_ATTEMPTS = 6;
+/** A rematch against the computer waits this long first, so a friend who joins in the meantime fights instead. */
+const CPU_REMATCH_DELAY_MS = 5_000;
 const CPU_CHOICES: readonly { readonly level: CpuLevel; readonly label: string; readonly detail: string }[] = [
   { level: "rookie", label: "Rookie", detail: "Slow hands, leaves openings" },
   { level: "contender", label: "Contender", detail: "Works the body, punishes mistakes" },
@@ -71,6 +73,9 @@ export class HandsApp {
   private rematchOpponent: string | null = null;
   private lastPhase: EngineSnapshot["phase"] | null = null;
   private cpuRematchLevel: CpuLevel | null = null;
+  /** The computer a rematch calls back once its short wait is over, while it lasts. */
+  private cpuRematch: { readonly level: CpuLevel; readonly at: number } | null = null;
+  private cpuRematchTimer: number | null = null;
   private diagnosticsTimer: number | null = null;
   private finalReceivedAt = 0;
   private lastFinalMatchId: string | null = null;
@@ -187,6 +192,31 @@ export class HandsApp {
     if (this.rematchCountdownTimer !== null) window.clearInterval(this.rematchCountdownTimer);
     this.rematchTimer = null;
     this.rematchCountdownTimer = null;
+    this.clearCpuRematch();
+  }
+
+  /**
+   * A rematch against the computer does not call it straight back: a friend who joins in the next
+   * few seconds takes the seat instead. A tap on a level calls the computer at once.
+   */
+  private scheduleCpuRematch(level: CpuLevel): void {
+    this.clearCpuRematch();
+    this.cpuRematch = { level, at: Date.now() + CPU_REMATCH_DELAY_MS };
+    this.cpuRematchTimer = window.setInterval(() => {
+      const pending = this.cpuRematch;
+      if (pending === null || this.state.stage !== "waiting" || this.state.role !== "fighter" || this.cpuLevel !== null) this.clearCpuRematch();
+      else if (Date.now() >= pending.at) {
+        this.clearCpuRematch();
+        this.callCpu(pending.level);
+      }
+      this.renderState();
+    }, 250);
+  }
+
+  private clearCpuRematch(): void {
+    if (this.cpuRematchTimer !== null) window.clearInterval(this.cpuRematchTimer);
+    this.cpuRematchTimer = null;
+    this.cpuRematch = null;
   }
 
   /** Keeps the overlay out of the knockout replay's way until the result panel is on screen. */
@@ -319,10 +349,13 @@ export class HandsApp {
     }
     this.dispatch({ type: "message", message });
     if (message.type === "snapshot") this.receiveSnapshot(message.payload);
+    // A person took the computer's seat before the bell: the request is spent, and a later wait
+    // for an opponent does not bring the computer back by itself.
+    if ((message.type === "select" || message.type === "ready") && !message.players.some((player) => player.cpu === true)) this.cpuLevel = null;
     if (message.type === "waiting") {
-      // Asked again after a reconnect lost the request, and on a rematch against the computer.
-      const level = this.cpuLevel ?? (rematching ? this.cpuRematchLevel : null);
-      if (level !== null) this.callCpu(level);
+      // Asked again after a reconnect lost the request; a rematch against the computer waits first.
+      if (this.cpuLevel !== null) this.callCpu(this.cpuLevel);
+      else if (rematching && this.cpuRematchLevel !== null) this.scheduleCpuRematch(this.cpuRematchLevel);
     }
     if (message.type === "final") {
       this.cpuRematchLevel = this.cpuBout ? this.cpuLevel : null;
@@ -378,7 +411,7 @@ export class HandsApp {
       bootstrapping: "Loading…",
       authorizing: "Authorizing with Discord…",
       connecting: "Connecting securely…",
-      waiting: this.state.role === "spectator" ? "Waiting for the fighters…" : this.cpuLevel !== null ? "Calling in the computer…" : this.rematchOpponent !== null ? `Waiting for ${this.rematchOpponent} to take the rematch…` : "Waiting for an opponent. Anyone in this channel can join with Play now.",
+      waiting: this.state.role === "spectator" ? "Waiting for the fighters…" : this.cpuLevel !== null ? "Calling in the computer…" : this.cpuRematch !== null ? `Rematch with the ${CPU_CHOICES.find((choice) => choice.level === this.cpuRematch?.level)?.label ?? "computer"} in ${Math.max(1, Math.ceil((this.cpuRematch.at - Date.now()) / 1000))}s, unless someone joins first.` : this.rematchOpponent !== null ? `Waiting for ${this.rematchOpponent} to take the rematch…` : "Waiting for an opponent. Anyone in this channel can join with Play now.",
       select: "Pick how your fighter boxes.",
       countdown: "Bout countdown.",
       fight: `Round ${this.state.snapshot?.round_number ?? 1} in progress.`,
@@ -434,7 +467,7 @@ export class HandsApp {
     if (this.state.stage !== "complete") this.rematchButton.hidden = true;
     this.cpuPicker.hidden = spectating || this.state.stage !== "waiting" || this.cpuLevel !== null;
     // While a rematch waits for the other fighter, the computer is the fallback rather than the invitation.
-    this.setText(this.cpuPrompt, this.rematchOpponent !== null ? "Or fight the computer instead:" : "No one here yet? Fight the computer.");
+    this.setText(this.cpuPrompt, this.cpuRematch !== null ? "Or start now:" : this.rematchOpponent !== null ? "Or fight the computer instead:" : "No one here yet? Fight the computer.");
     const showHint = !spectating && (this.state.stage === "waiting" || this.state.stage === "countdown");
     this.hint.hidden = !showHint;
     if (showHint) this.setText(this.hint, coarsePointer() ? CONTROL_HINT_TOUCH : CONTROL_HINT_KEYBOARD);

@@ -491,7 +491,7 @@ describe("browser lifecycle and accessible overlays", () => {
       app.destroy();
     });
 
-    it("calls the bout unrated and brings the same computer back for a rematch", async () => {
+    it("calls the bout unrated and brings the same computer back for a rematch, after a wait for a friend", async () => {
       const { app, root } = await launch();
       alone();
       pick(root, "champion");
@@ -511,9 +511,78 @@ describe("browser lifecycle and accessible overlays", () => {
       vi.useRealTimers();
       await vi.waitFor(() => expect(mocks.callbacks).not.toBe(first));
       expect(mocks.cpuRequests).toEqual(["champion"]);
+      vi.useFakeTimers();
       alone();
+      // Not straight back: a friend who joins in the next few seconds fights instead.
+      expect(mocks.cpuRequests).toEqual(["champion"]);
+      expect(root.querySelector("[data-status]")?.textContent).toBe("Rematch with the Champion in 5s, unless someone joins first.");
+      expect(root.querySelector<HTMLElement>("[data-cpu]")!.hidden).toBe(false);
+      expect(root.querySelector("[data-cpu-prompt]")?.textContent).toBe("Or start now:");
+      vi.advanceTimersByTime(2_100);
+      expect(root.querySelector("[data-status]")?.textContent).toBe("Rematch with the Champion in 3s, unless someone joins first.");
+      vi.advanceTimersByTime(3_000);
       expect(mocks.cpuRequests).toEqual(["champion", "champion"]);
       expect(root.querySelector<HTMLElement>("[data-cpu]")!.hidden).toBe(true);
+      expect(root.querySelector("[data-status]")?.textContent).toBe("Calling in the computer…");
+      vi.useRealTimers();
+      app.destroy();
+    });
+
+    it("lets a friend who joins during the wait fight the rematch instead of the computer", async () => {
+      const { app, root } = await launch();
+      alone();
+      pick(root, "rookie");
+      send({ version: PROTOCOL_VERSION, type: "ready", players: [players[0], { ...computer, id: "cpu:rookie" }] });
+      vi.useFakeTimers();
+      send({ version: PROTOCOL_VERSION, type: "final", match_id: "m1", winner_id: "one", method: "decision", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1500 }, "cpu:rookie": { before: 900, after: 900 } } });
+      vi.advanceTimersByTime(11_500);
+      const first = mocks.callbacks;
+      root.querySelector<HTMLButtonElement>("[data-rematch]")!.click();
+      vi.useRealTimers();
+      await vi.waitFor(() => expect(mocks.callbacks).not.toBe(first));
+      vi.useFakeTimers();
+      alone();
+      vi.advanceTimersByTime(1_000);
+      send({ version: PROTOCOL_VERSION, type: "select", deadline_ms: 9_000, players: [...players], ready: [] });
+      vi.advanceTimersByTime(10_000);
+      expect(mocks.cpuRequests).toEqual(["rookie"]);
+      vi.useRealTimers();
+      app.destroy();
+    });
+
+    it("lets a tap call the computer at once during the wait", async () => {
+      const { app, root } = await launch();
+      alone();
+      pick(root, "contender");
+      send({ version: PROTOCOL_VERSION, type: "ready", players: [players[0], { ...computer, id: "cpu:contender" }] });
+      vi.useFakeTimers();
+      send({ version: PROTOCOL_VERSION, type: "final", match_id: "m1", winner_id: "one", method: "decision", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1500 }, "cpu:contender": { before: 1200, after: 1200 } } });
+      vi.advanceTimersByTime(11_500);
+      const first = mocks.callbacks;
+      root.querySelector<HTMLButtonElement>("[data-rematch]")!.click();
+      vi.useRealTimers();
+      await vi.waitFor(() => expect(mocks.callbacks).not.toBe(first));
+      vi.useFakeTimers();
+      alone();
+      pick(root, "champion");
+      expect(mocks.cpuRequests).toEqual(["contender", "champion"]);
+      vi.advanceTimersByTime(10_000);
+      expect(mocks.cpuRequests).toEqual(["contender", "champion"]);
+      vi.useRealTimers();
+      app.destroy();
+    });
+
+    it("forgets the computer once a person takes its seat before the bell", async () => {
+      const { app, root } = await launch();
+      alone();
+      pick(root, "rookie");
+      expect(mocks.cpuRequests).toEqual(["rookie"]);
+      // A friend arrived during the computer's pick and took its seat.
+      send({ version: PROTOCOL_VERSION, type: "select", deadline_ms: 9_000, players: [...players], ready: [] });
+      // He drops out of the pick for good: back to waiting, and the computer is not called by itself.
+      send({ version: PROTOCOL_VERSION, type: "waiting", open_seats: 1 });
+      expect(mocks.cpuRequests).toEqual(["rookie"]);
+      expect(root.querySelector<HTMLElement>("[data-cpu]")!.hidden).toBe(false);
       app.destroy();
     });
 
