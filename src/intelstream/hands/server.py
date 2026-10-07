@@ -48,7 +48,7 @@ SECURITY_HEADERS = {
     "Content-Security-Policy": (
         "default-src 'self'; base-uri 'none'; object-src 'none'; "
         "script-src 'self'; style-src 'self'; "
-        "img-src 'self' data: blob: https://cdn.discordapp.com; "
+        "img-src 'self' data: blob: https://cdn.discordapp.com/avatars/; "
         "connect-src 'self'; media-src 'self' blob:; "
         "frame-ancestors https://discord.com https://*.discord.com"
     ),

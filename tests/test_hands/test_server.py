@@ -348,7 +348,8 @@ async def test_health_static_security_and_safe_resolution(
             directive.strip().split(" ", 1)
             for directive in index.headers["Content-Security-Policy"].split(";")
         )
-        assert policy["img-src"] == "'self' data: blob: https://cdn.discordapp.com"
+        # Discord's image host only for the players' avatars, as the bundle scan allows.
+        assert policy["img-src"] == "'self' data: blob: https://cdn.discordapp.com/avatars/"
         assert policy["connect-src"] == "'self'"
         assert policy["script-src"] == "'self'"
         assert policy["default-src"] == "'self'"
