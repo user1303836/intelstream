@@ -66,12 +66,18 @@ ROCKED_DAMAGE_DIVISOR: int = _STUN["rocked_damage_divisor"]
 ROCKED_MAX_TICKS: int = _STUN["rocked_max_ticks"]
 STUN_CHAIN_MAX_TICKS: int = _STUN["chain_max_ticks"]
 STUN_IMMUNITY_TICKS: int = _STUN["immunity_ticks"]
+# Even a rocking shot cannot stop a fighter again this soon after a stun wears off: long enough to
+# raise a guard through a round trip of latency.
+ROCKED_IMMUNITY_TICKS: int = _STUN["rocked_immunity_ticks"]
 STUNNED_SPEED_PERCENT: int = _STUN["moving_speed_percent"]
 BLOCK_POISE_PERCENT: int = _MANIFEST["guard"]["block_poise_percent"]
 PERFECT_BLOCK_POISE_PERCENT: int = _MANIFEST["guard"]["perfect_block_poise_percent"]
 GUARD_LEAK_BASE_PERCENT: int = _MANIFEST["guard"]["leak_base_percent"]
 GUARD_LEAK_MINIMUM_PERCENT: int = _MANIFEST["guard"]["leak_minimum_percent"]
 GUARD_BLOCK_MINIMUM: int = _MANIFEST["guard"]["block_minimum"]
+# A raised guard only perfect-blocks once the guard has been let down for this many ticks: a guard
+# flicked down and straight back up blocks, but keeps no parry window open.
+PERFECT_BLOCK_REARM_TICKS: int = _MANIFEST["guard"]["perfect_rearm_ticks"]
 GUARD_HELD_REGEN_EVERY_TICKS: int = _MANIFEST["guard"]["held_regen_every_ticks"]
 GUARD_DAMAGE_PERCENT: int = _MANIFEST["guard"]["damage_percent"]
 GUARD_STAMINA_REGEN_PERCENT: int = _MANIFEST["guard"]["stamina_regen_percent"]

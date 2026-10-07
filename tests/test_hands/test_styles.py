@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import random
+from math import isqrt
+
 import pytest
 
 from intelstream.hands.engine import BoxingEngine, EngineConfig
@@ -206,6 +209,35 @@ def test_a_miss_costs_a_slugger_more_and_tires_a_swarmer_less() -> None:
     assert swarmer_conditioning < balanced_conditioning
 
 
+def _conditioning_spent(style: FighterStyle, jabs: int, *, stamina: int, gap: int) -> int:
+    """Conditioning a fighter of `style` spends on `jabs` lead jabs, each thrown with `stamina`."""
+    engine = styled_engine(style, gap=gap)
+    fighter = engine.fighter("one")
+    before = fighter.conditioning
+    for sequence in range(1, jabs + 1):
+        fighter.stamina = stamina
+        engine.fighter("two").poise = 600
+        engine.step({"one": command(sequence, action=punch(PunchClass.JAB, hand=Hand.LEFT))})
+        while fighter.attack is not None:
+            engine.step()
+    return before - fighter.conditioning
+
+
+def test_a_swarmer_keeps_its_whole_conditioning_saving_however_little_each_punch_costs() -> None:
+    saving = STYLE_RULES[SWARMER].conditioning_loss_percent
+    assert saving < 100
+    # Sixty whiffed jabs: three points to throw each and two for the miss, for a balanced fighter.
+    balanced = _conditioning_spent(BALANCED, 60, stamina=1000, gap=400)
+    assert balanced == 60 * (3 + 2)
+    assert (
+        abs(_conditioning_spent(SWARMER, 60, stamina=1000, gap=400) - balanced * saving // 100) <= 1
+    )
+    # Arm punches out of breath cost a point each, and the swarmer his share of it, not nothing.
+    tired = _conditioning_spent(BALANCED, 30, stamina=10, gap=90)
+    assert tired == 30
+    assert abs(_conditioning_spent(SWARMER, 30, stamina=10, gap=90) - tired * saving // 100) <= 1
+
+
 def test_a_combination_waits_out_a_punch_the_style_cannot_yet_pay_for() -> None:
     straight = (PunchClass.STRAIGHT, Target.HEAD, Power.NORMAL)
     base_cost = PUNCH_RULES[straight].stamina_cost
@@ -264,6 +296,58 @@ def test_a_quick_fighter_still_reports_a_velocity_clients_accept() -> None:
         fighter = snapshot.fighters[0]
         assert -7 <= fighter.velocity_x <= 7
         assert -7 <= fighter.velocity_y <= 7
+
+
+def test_a_quick_fighter_pushed_onto_a_corner_pad_still_reports_a_velocity_clients_accept() -> None:
+    # The pad keeps the speed along it, which for a fresh swarmer is 7.7 units a tick.
+    pad = styled_engine(SWARMER, SWARMER).fighter("one")
+    pad.x, pad.y = 400, 340
+    pad.velocity_fixed_x, pad.velocity_fixed_y = -7700, 0
+    BoxingEngine._clamp_to_ring(pad)
+    assert (pad.velocity_x, pad.velocity_y) == (-7, 0)
+    assert pad.velocity_fixed_x == -7700
+
+    # Walking out of a corner while the other swarmer walks him back onto the pad.
+    engine = styled_engine(SWARMER, SWARMER)
+    one, two = engine.fighter("one"), engine.fighter("two")
+    one.x, one.y, two.x, two.y = -369, 364, -300, 330
+    velocities = set()
+    for sequence in range(1, 80):
+        dx, dy = one.x - two.x, one.y - two.y
+        distance = max(1, isqrt(dx * dx + dy * dy))
+        snapshot = engine.step(
+            {
+                "one": InputCommand(sequence, sequence, 1000, 0),
+                "two": InputCommand(
+                    sequence, sequence, dx * 1000 // distance, dy * 1000 // distance
+                ),
+            }
+        )
+        velocities.update((f.velocity_x, f.velocity_y) for f in snapshot.fighters)
+    assert max(max(abs(x), abs(y)) for x, y in velocities) == 7
+
+    # Random scrambles in every corner, both fighters fresh swarmers.
+    rng = random.Random(4205227423)
+    for _ in range(40):
+        engine = styled_engine(SWARMER, SWARMER)
+        one, two = engine.fighter("one"), engine.fighter("two")
+        sign_x, sign_y = rng.choice((-1, 1)), rng.choice((-1, 1))
+        one.x, one.y = sign_x * rng.randrange(300, 420), sign_y * rng.randrange(300, 420)
+        two.x, two.y = (
+            one.x - sign_x * rng.randrange(60, 120),
+            one.y - sign_y * rng.randrange(0, 80),
+        )
+        for sequence in range(1, 45):
+            moves = [(rng.randrange(-1000, 1001), rng.randrange(-1000, 1001)) for _ in range(2)]
+            snapshot = engine.step(
+                {
+                    "one": InputCommand(sequence, sequence, *moves[0]),
+                    "two": InputCommand(sequence, sequence, *moves[1]),
+                }
+            )
+            for fighter in snapshot.fighters:
+                assert -7 <= fighter.velocity_x <= 7
+                assert -7 <= fighter.velocity_y <= 7
 
 
 def test_a_counter_puncher_makes_a_miss_cost_more() -> None:

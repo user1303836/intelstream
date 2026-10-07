@@ -58,6 +58,7 @@ from intelstream.hands.rules import (
     MINIMUM_SEPARATION,
     PARRY_STAGGER_TICKS,
     PERFECT_BLOCK_POISE_PERCENT,
+    PERFECT_BLOCK_REARM_TICKS,
     POISE_DAMAGE_PERCENT,
     POISE_REGEN_EVERY_TICKS,
     PUNCH_RULES,
@@ -73,6 +74,7 @@ from intelstream.hands.rules import (
     ROCKED_COUNTER_DAMAGE,
     ROCKED_DAMAGE_DIVISOR,
     ROCKED_HURT_POISE,
+    ROCKED_IMMUNITY_TICKS,
     ROCKED_MAX_TICKS,
     ROCKED_POWER_DAMAGE,
     ROUND_TICKS,
@@ -133,6 +135,11 @@ GET_UP_WINDOW_START_OFFSET: Final = 3
 GET_UP_WINDOW_END_OFFSET: Final = 13
 TAUNT_TICKS: Final = 60
 MOVEMENT_FIXED_SCALE: Final = 1000
+# Conditioning a punch costs is worked out in thousandths of a point, so a style's saving survives
+# the rounding of per-punch losses of only a few points.
+CONDITIONING_FIXED_SCALE: Final = 1000
+# A fresh fighter's walking speed in units a tick, and the fastest velocity a snapshot reports.
+MAX_SPEED: Final = 7
 CORNER_INSTRUCTIONS: Final = {
     ActionKind.CORNER_CUT: CornerChoice.CUT,
     ActionKind.CORNER_SWELLING: CornerChoice.SWELLING,
@@ -247,16 +254,24 @@ class FighterState:
     position_remainder_y: int = 0
     stamina: int = MAX_STAMINA
     conditioning: int = MAX_CONDITIONING
+    conditioning_remainder: int = 0
+    """Thousandths of a point of conditioning spent on punches and not yet taken off."""
     guard: int = MAX_GUARD
     poise: int = MAX_POISE
     trauma: Trauma = field(default_factory=Trauma)
     defense: DefensivePose = DefensivePose.NONE
     defense_started_tick: int = -1000
+    guard_held_tick: int = -1000
+    """The last tick the fighter was holding a guard (his input, whatever the stun or slip did)."""
+    guard_raised_tick: int = -1000
+    """When the guard he has up was raised, if it can perfect-block: after being let down a while."""
     evasion_ticks: int = 0
     stunned_ticks: int = 0
     stunned_at_tick: int = -1
+    staggered_until_tick: int = -1
     stun_chain_ticks: int = 0
     stun_immune_until_tick: int = -1
+    rocked_immune_until_tick: int = -1
     counter_ticks: int = 0
     clinch_startup_ticks: int = 0
     clinch_ticks: int = 0
@@ -400,6 +415,25 @@ def _blend_velocity(current: int, desired: int) -> int:
 def _rounded_fixed_velocity(velocity: int) -> int:
     rounded = (abs(velocity) + MOVEMENT_FIXED_SCALE // 2) // MOVEMENT_FIXED_SCALE
     return rounded if velocity >= 0 else -rounded
+
+
+def _report_velocity(fighter: FighterState, limit: int) -> None:
+    """Rounds the fixed-point velocity to the whole units a snapshot reports, within `limit`.
+
+    The footwork stays in fixed point, so a style's few percent of footspeed survive, but the
+    velocity a snapshot reports keeps within the walking speed: a quick fighter's 7.7 would round
+    to 8, past what clients accept.
+    """
+    fighter.velocity_x = _rounded_fixed_velocity(fighter.velocity_fixed_x)
+    fighter.velocity_y = _rounded_fixed_velocity(fighter.velocity_fixed_y)
+    while (
+        fighter.velocity_x * fighter.velocity_x + fighter.velocity_y * fighter.velocity_y
+        > limit * limit
+    ):
+        if abs(fighter.velocity_x) >= abs(fighter.velocity_y):
+            fighter.velocity_x -= 1 if fighter.velocity_x > 0 else -1
+        else:
+            fighter.velocity_y -= 1 if fighter.velocity_y > 0 else -1
 
 
 def _consume_fixed_position(velocity: int, remainder: int) -> tuple[int, int]:
@@ -635,6 +669,16 @@ class BoxingEngine:
         if fighter.combo_ticks > 0:
             fighter.combo_ticks -= 1
 
+        held_guard = fighter.held_input.defense in (
+            DefensivePose.GUARD_HIGH,
+            DefensivePose.GUARD_LOW,
+        )
+        # A perfect block needs a real raise: a guard let down for a moment first, not one flicked
+        # down and back up, switched from high to low, or coming back up after a stun.
+        guard_rested = self.tick - fighter.guard_held_tick > PERFECT_BLOCK_REARM_TICKS
+        if held_guard:
+            fighter.guard_held_tick = self.tick
+
         attack = fighter.attack
         imminent_trade = (
             fighter.stunned_at_tick == self.tick
@@ -645,10 +689,11 @@ class BoxingEngine:
             fighter.stunned_ticks -= 1
             fighter.stun_chain_ticks += 1
             if fighter.stunned_ticks == 0:
-                # Clear-headed again: the next clean shot is a moment before it can stop him again.
-                fighter.stun_chain_ticks = 0
-                fighter.stun_immune_until_tick = self.tick + STUN_IMMUNITY_TICKS
+                self._clear_head(fighter)
             fighter.defense = DefensivePose.NONE
+            # A stun ends the slip, weave or pull it caught him in: he stumbles rather than standing
+            # frozen through the evasion's leftover ticks.
+            fighter.evasion_ticks = 0
             fighter.clinch_startup_ticks = 0
             fighter.pending_actions.clear()
             if not imminent_trade:
@@ -666,6 +711,7 @@ class BoxingEngine:
         else:
             if fighter.defense is not fighter.held_input.defense:
                 fighter.defense_started_tick = self.tick
+                fighter.guard_raised_tick = self.tick if held_guard and guard_rested else -1000
             fighter.defense = fighter.held_input.defense
 
         if (
@@ -767,9 +813,7 @@ class BoxingEngine:
             combo_bonus = 10
             cost = max(1, cost * 90 // 100)
         fighter.stamina -= cost
-        fighter.conditioning = max(
-            0, fighter.conditioning - max(1, cost // 12) * style.conditioning_loss_percent // 100
-        )
+        self._spend_conditioning(fighter, max(1, cost // 12))
         speed = fighter.fatigue
         startup = max(
             2,
@@ -812,6 +856,23 @@ class BoxingEngine:
             action_id=self._action_id(fighter, fighter.attack),
         )
         fighter.punches.add(action.punch_class, landed=False)
+
+    @staticmethod
+    def _spend_conditioning(fighter: FighterState, points: int) -> None:
+        """Takes `points` of conditioning off at the rate the fighter's style tires at.
+
+        The fraction of a point is carried to the next punch, so a style that tires 20% less saves
+        20% of every punch, and even a tired arm punch costs it something.
+        """
+        owed = (
+            fighter.conditioning_remainder
+            + points
+            * CONDITIONING_FIXED_SCALE
+            * fighter.style_rule.conditioning_loss_percent
+            // 100
+        )
+        fighter.conditioning = max(0, fighter.conditioning - owed // CONDITIONING_FIXED_SCALE)
+        fighter.conditioning_remainder = owed % CONDITIONING_FIXED_SCALE
 
     @staticmethod
     def _action_key(action: PunchAction) -> str:
@@ -859,13 +920,7 @@ class BoxingEngine:
             or lateral_distance > effective_arc
         ):
             attacker.stamina = max(0, attacker.stamina - rule.whiff_cost)
-            attacker.conditioning = max(
-                0,
-                attacker.conditioning
-                - max(2, rule.whiff_cost // 10)
-                * attacker.style_rule.conditioning_loss_percent
-                // 100,
-            )
+            self._spend_conditioning(attacker, max(2, rule.whiff_cost // 10))
             self._emit(
                 "whiff",
                 attacker.player_id,
@@ -897,7 +952,7 @@ class BoxingEngine:
         perfect = (
             blocked
             and not blind
-            and self.tick - defender.defense_started_tick
+            and self.tick - defender.guard_raised_tick
             <= PERFECT_BLOCK_TICKS + defender.style_rule.perfect_block_ticks
         )
         counter = attacker.counter_ticks > 0 or self._counter_vulnerable(defender.attack)
@@ -931,6 +986,7 @@ class BoxingEngine:
                 if action.power is Power.POWER:
                     attacker.stunned_ticks = max(attacker.stunned_ticks, PARRY_STAGGER_TICKS)
                     attacker.stunned_at_tick = self.tick
+                    attacker.staggered_until_tick = self.tick + PARRY_STAGGER_TICKS
                     attacker.taunt_ticks = 0
                     self._emit(
                         "parry",
@@ -954,7 +1010,8 @@ class BoxingEngine:
                 )
             defender.guard = max(0, defender.guard - guard_damage)
             defender.performance.blocked_hits += 1
-            if defender.guard == 0:
+            if defender.guard < GUARD_BLOCK_MINIMUM:
+                # Worn too thin to stop the next one: the guard is broken, and he is told so.
                 defender.stunned_ticks = max(defender.stunned_ticks, 8)
                 defender.stunned_at_tick = self.tick
                 defender.taunt_ticks = 0
@@ -1089,19 +1146,29 @@ class BoxingEngine:
         fighter is rocked. A punch on a fighter who is still stunned does not start his stun again,
         however hard it lands, and the attacker cannot cut his recovery short into him either, so a
         run of punches cannot hold him past the stun the first one started. A flinch cannot land
-        again in the moment after a stun wears off, though a rocking shot can, and no stun runs
-        past the chain limit: one clean punch cannot be strung into a knockdown with the defender
-        unable to answer.
+        again in the moment after a stun wears off, and even a rocking shot cannot in the first
+        few ticks of it, and no stun runs past the chain limit: one clean punch cannot be strung
+        into a knockdown with the defender unable to answer.
         """
         if fighter.stunned_ticks > 0:
             return False
-        if not rocked and self.tick < fighter.stun_immune_until_tick:
+        if self.tick < (
+            fighter.rocked_immune_until_tick if rocked else fighter.stun_immune_until_tick
+        ):
             return False
         fighter.stun_chain_ticks = 0
         fighter.stunned_ticks = min(ticks, STUN_CHAIN_MAX_TICKS)
         fighter.stunned_at_tick = self.tick
         fighter.taunt_ticks = 0
         return True
+
+    def _clear_head(self, fighter: FighterState) -> None:
+        """Ends a fighter's stun. A clean shot has to wait a moment before it can stop him again,
+        and a mere flinch longer, so he always gets a chance to raise his guard or move."""
+        fighter.stunned_ticks = 0
+        fighter.stun_chain_ticks = 0
+        fighter.stun_immune_until_tick = self.tick + STUN_IMMUNITY_TICKS
+        fighter.rocked_immune_until_tick = self.tick + ROCKED_IMMUNITY_TICKS
 
     def _apply_head_damage(
         self, defender: FighterState, action: PunchAction, damage: int, *, clean: bool
@@ -1284,6 +1351,8 @@ class BoxingEngine:
         opponent.stunned_ticks = 30
         opponent.stunned_at_tick = self.tick
         opponent.taunt_ticks = 0
+        # The referee stops the action: a punch the fouled man was throwing goes no further.
+        self._retain_action(opponent)
         self._emit("foul", fighter.player_id, opponent.player_id, detail=action.foul.value)
         if fighter.warnings == 2:
             fighter.deductions += 1
@@ -1312,6 +1381,12 @@ class BoxingEngine:
         if target is not None:
             target.stamina = min(target.maximum_stamina, target.stamina + 4)
         if self.phase_ticks_remaining <= 0:
+            for fighter in self._fighters.values():
+                # The two seconds were the fouled man's recovery: both box on clear-headed, so
+                # the fouler gets no free shot at a man with his guard still forced down.
+                if fighter.stunned_ticks > 0:
+                    self._clear_head(fighter)
+                fighter.evasion_ticks = 0
             self.phase = MatchPhase.FIGHT
             self.phase_ticks_remaining = max(1, self._paused_fight_ticks)
             self._foul_recovery_target = None
@@ -1359,7 +1434,7 @@ class BoxingEngine:
     def _move_fighter(self, fighter: FighterState, opponent: FighterState) -> None:
         move_x = fighter.held_input.move_x
         move_y = fighter.held_input.move_y
-        speed = max(2, 7 * fighter.fatigue // 100)
+        speed = max(2, MAX_SPEED * fighter.fatigue // 100)
         if fighter.defense in (DefensivePose.GUARD_HIGH, DefensivePose.GUARD_LOW):
             speed = max(2, speed * 70 // 100)
         if fighter.stunned_ticks > 0:
@@ -1373,6 +1448,8 @@ class BoxingEngine:
             or fighter.clinch_startup_ticks > 0
             or fighter.taunt_ticks > 0
             or fighter.body_collapse_ticks > 0
+            # Parried, he is caught off balance and rooted, so the counter it opens can land.
+            or (fighter.stunned_ticks > 0 and self.tick < fighter.staggered_until_tick)
         ):
             move_x = 0
             move_y = 0
@@ -1403,17 +1480,8 @@ class BoxingEngine:
                     fighter.velocity_fixed_x -= 1 if fighter.velocity_fixed_x > 0 else -1
                 else:
                     fighter.velocity_fixed_y -= 1 if fighter.velocity_fixed_y > 0 else -1
-        fighter.velocity_x = _rounded_fixed_velocity(fighter.velocity_fixed_x)
-        fighter.velocity_y = _rounded_fixed_velocity(fighter.velocity_fixed_y)
         # The velocity a snapshot reports stays within the base speed; the footwork is in fixed point.
-        while (
-            fighter.velocity_x * fighter.velocity_x + fighter.velocity_y * fighter.velocity_y
-            > speed * speed
-        ):
-            if abs(fighter.velocity_x) >= abs(fighter.velocity_y):
-                fighter.velocity_x -= 1 if fighter.velocity_x > 0 else -1
-            else:
-                fighter.velocity_y -= 1 if fighter.velocity_y > 0 else -1
+        _report_velocity(fighter, speed)
         delta_x, fighter.position_remainder_x = _consume_fixed_position(
             fighter.velocity_fixed_x, fighter.position_remainder_x
         )
@@ -1454,8 +1522,7 @@ class BoxingEngine:
                 half = (outward + 1) // 2
                 fighter.velocity_fixed_x -= sign_x * half
                 fighter.velocity_fixed_y -= sign_y * half
-            fighter.velocity_x = _rounded_fixed_velocity(fighter.velocity_fixed_x)
-            fighter.velocity_y = _rounded_fixed_velocity(fighter.velocity_fixed_y)
+            _report_velocity(fighter, MAX_SPEED)
             fighter.position_remainder_x = fighter.position_remainder_y = 0
         else:
             if rope_x:
@@ -1787,7 +1854,10 @@ class BoxingEngine:
         if self.tick > downed.get_up_window_end_tick:
             self._schedule_get_up_prompt(downed)
         required = self._get_up_required(downed)
-        if downed.get_up_meter >= required and count >= 1:
+        if self.phase_ticks_remaining <= 0:
+            # Ten: the count is over, however full the meter got on its last tick.
+            self._complete(winner.player_id, FinishMethod.KO)
+        elif downed.get_up_meter >= required and count >= 1:
             downed.poise = min(poise_ceiling(downed.trauma.head), MAX_POISE // 2)
             downed.stamina = max(downed.stamina, min(downed.maximum_stamina, GET_UP_STAMINA))
             downed.get_up_prompt = None
@@ -1796,8 +1866,6 @@ class BoxingEngine:
             self._count_at_rise = count
             self.phase_ticks_remaining = self._box_tick - self.tick
             self._emit("get_up", downed.player_id, amount=count)
-        elif self.phase_ticks_remaining <= 0:
-            self._complete(winner.player_id, FinishMethod.KO)
         elif new_second:
             self._emit("count", target_id=downed.player_id, amount=count)
 
@@ -1915,6 +1983,7 @@ class BoxingEngine:
                 fighter.stunned_ticks = 0
                 fighter.stun_chain_ticks = 0
                 fighter.stun_immune_until_tick = -1
+                fighter.rocked_immune_until_tick = -1
                 fighter.taunt_ticks = 0
                 fighter.defense = DefensivePose.NONE
                 fighter.corner_choice = None
@@ -2017,6 +2086,7 @@ class BoxingEngine:
             fighter.stunned_ticks = 0
             fighter.stun_chain_ticks = 0
             fighter.stun_immune_until_tick = -1
+            fighter.rocked_immune_until_tick = -1
             fighter.taunt_ticks = 0
             fighter.evasion_ticks = 0
             fighter.counter_ticks = 0
@@ -2261,19 +2331,23 @@ class BoxingEngine:
                         fighter.position_remainder_y,
                     ],
                     "stance": fighter.stance,
+                    "style": fighter.style,
                     "resources": [
                         fighter.stamina,
                         fighter.conditioning,
+                        fighter.conditioning_remainder,
                         fighter.guard,
                         fighter.poise,
                     ],
                     "trauma": fighter.trauma,
                     "defense": fighter.defense,
                     "defense_started_tick": fighter.defense_started_tick,
+                    "guard_timing": [fighter.guard_held_tick, fighter.guard_raised_tick],
                     "timers": [
                         fighter.evasion_ticks,
                         fighter.stunned_ticks,
                         fighter.stunned_at_tick,
+                        fighter.staggered_until_tick,
                         fighter.counter_ticks,
                         fighter.clinch_startup_ticks,
                         fighter.clinch_ticks,
@@ -2282,6 +2356,7 @@ class BoxingEngine:
                         fighter.last_action_until_tick,
                         fighter.stun_chain_ticks,
                         fighter.stun_immune_until_tick,
+                        fighter.rocked_immune_until_tick,
                     ],
                     "attack": fighter.attack,
                     "last_punch": fighter.last_punch,
