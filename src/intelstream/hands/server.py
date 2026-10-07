@@ -810,7 +810,7 @@ class HandsServer:
                                 membership.player_id, membership.connection, cpu_level
                             )
                             continue
-                        style_choice = parse_style_choice(message.data)
+                        style_choice = parse_style_choice(envelope)
                         if style_choice is not None:
                             await membership.room.choose_style(
                                 membership.player_id, membership.connection, style_choice

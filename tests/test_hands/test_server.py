@@ -1678,15 +1678,18 @@ async def test_each_frame_is_decoded_once(
 
     decoded: list[object] = []
     arrived = asyncio.Event()
-    original = protocol.decode_client_frame
 
-    def counting(frame: str | bytes) -> dict[str, object]:
+    def counting(frame: str | bytes, **kwargs: object) -> object:
+        # Every JSON parse the protocol module makes, whichever function makes it.
         decoded.append(frame)
         arrived.set()
-        return original(frame)
+        return json.loads(frame, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(protocol, "decode_client_frame", counting)
-    monkeypatch.setattr(server_module, "decode_client_frame", counting)
+    monkeypatch.setattr(
+        protocol,
+        "json",
+        SimpleNamespace(loads=counting, dumps=json.dumps, JSONDecodeError=json.JSONDecodeError),
+    )
     auth = FakeAuth()
     server, _auth, base = await start_server(
         repository, auth=auth, rooms=_cpu_bout_rooms(repository)

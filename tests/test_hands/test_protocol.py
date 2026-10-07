@@ -374,8 +374,16 @@ def test_a_frame_is_decoded_once_and_then_read_as_whichever_message_it_is() -> N
     request = decode_client_frame(json.dumps({"version": 3, "type": "cpu", "level": "rookie"}))
     assert parse_ticket_ack(request) is None
     assert parse_cpu_request(request) is CpuLevel.ROOKIE
+    assert parse_style_choice(request) is None
+    pick = decode_client_frame(
+        json.dumps({"version": 3, "type": "style", "style": "slugger", "ready": True})
+    )
+    assert parse_cpu_request(pick) is None
+    assert parse_style_choice(pick) == StyleChoice(FighterStyle.SLUGGER, True)
     frame = encode_client_input(InputCommand(sequence=4, client_tick=0, move_x=500))
-    command = parse_client_input(decode_client_frame(frame), last_sequence=3)
+    envelope = decode_client_frame(frame)
+    assert parse_style_choice(envelope) is None
+    command = parse_client_input(envelope, last_sequence=3)
     assert command.sequence == 4 and command.move_x == 500
     for bad in ("x" * (MAX_FRAME_BYTES + 1), "[1, 2]", "{", b"\xff\xfe"):
         with pytest.raises(ProtocolError):
