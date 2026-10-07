@@ -653,6 +653,14 @@ describe("round stats", () => {
     expect(texts.filter((text) => text === "ROUND 2").length).toBe(1);
   });
 
+  it("puts each fighter's record on the plate, and a first bout as a debut", () => {
+    const texts: string[] = [];
+    const players = Object.fromEntries(publicPlayers.map((player, index) => [player.id, { ...player, record: index === 0 ? { wins: 12, losses: 3, draws: 1, knockouts: 8 } : { wins: 0, losses: 0, draws: 0, knockouts: 0 } }]));
+    drawHud(mockHudContext(texts), 1280, 720, snapshot(), players, "one", null, 0, 30);
+    expect(texts.some((text) => text.startsWith("12-3-1 · ELO"))).toBe(true);
+    expect(texts.some((text) => text.startsWith("DEBUT · ELO"))).toBe(true);
+  });
+
   it("shows the local fighter's input latency readout", () => {
     const texts: string[] = [];
     const ctx = mockHudContext(texts);

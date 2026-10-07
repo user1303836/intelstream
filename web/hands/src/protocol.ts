@@ -1,7 +1,7 @@
 import {
   MAX_SERVER_FRAME_BYTES, PROTOCOL_VERSION,
   type BootstrapResponse, type CombatEvent, type CornerChoice, type CpuLevel, type DefensivePose, type EngineSnapshot,
-  type FighterSnapshot, type FinalMessage, type FinishMethod, type Foul, type Hand,
+  type FighterRecord, type FighterSnapshot, type FinalMessage, type FinishMethod, type Foul, type Hand,
   type HeldDefense, type JudgeCard, type MatchPhase, type MatchResult, type MovementKind,
   type Power, type PublicPlayer, type PunchClass, type SemanticAction, type ServerMessage,
   type Stance, type Target, type TokenResponse, type TraumaSnapshot,
@@ -93,10 +93,16 @@ const fouls = ["low_blow", "headbutt"] as const;
 const phases = ["countdown", "fight", "knockdown", "foul_recovery", "rest", "complete"] as const;
 const methods = ["ko", "flash_ko", "tko", "doctor_stoppage", "disqualification", "decision", "draw", "forfeit"] as const;
 
+function fighterRecord(value: unknown): FighterRecord {
+  const o = object(value, "record"); exact(o, ["wins", "losses", "draws", "knockouts"]);
+  return { wins: integer(o.wins, "record.wins"), losses: integer(o.losses, "record.losses"), draws: integer(o.draws, "record.draws"), knockouts: integer(o.knockouts, "record.knockouts") };
+}
+
 function publicPlayer(value: unknown): PublicPlayer {
-  const o = object(value, "player"); exact(o, ["id", "name", "avatar", "rating", "connected"], ["cpu"]);
+  const o = object(value, "player"); exact(o, ["id", "name", "avatar", "rating", "connected"], ["cpu", "record"]);
   const cpu = o.cpu === undefined ? {} : { cpu: bool(o.cpu, "cpu") };
-  return { id: string(o.id, "player.id"), name: string(o.name, "player.name", 80), avatar: nullableString(o.avatar, "player.avatar", 128), rating: integer(o.rating, "rating"), connected: bool(o.connected, "connected"), ...cpu };
+  const record = o.record === undefined ? {} : { record: fighterRecord(o.record) };
+  return { id: string(o.id, "player.id"), name: string(o.name, "player.name", 80), avatar: nullableString(o.avatar, "player.avatar", 128), rating: integer(o.rating, "rating"), connected: bool(o.connected, "connected"), ...cpu, ...record };
 }
 function players(value: unknown, exactLength?: number): PublicPlayer[] {
   const result = array(value, "players", 2).map(publicPlayer);

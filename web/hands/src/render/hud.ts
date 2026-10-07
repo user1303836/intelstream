@@ -1,4 +1,5 @@
 import { EYE_SHUT_TRAUMA } from "../manifest";
+import { isDebut, recordLine } from "../record";
 import type { CombatEvent, CornerChoice, EngineSnapshot, FighterSnapshot, FinalMessage, FinishMethod, PublicPlayer, RatingDelta, TraumaSnapshot } from "../types";
 import { monogram } from "./avatars";
 
@@ -390,7 +391,8 @@ export function drawHud(
     const mirror = index === 1;
     const x = mirror ? width - 24 - plateWidth : 24;
     const player = players[fighter.player_id];
-    const detail = `${player?.cpu === true ? "CPU" : `ELO ${player?.rating ?? "—"}`} · KD ${fighter.knockdowns} · W ${fighter.warnings} · −${fighter.deductions}`;
+    const record = player?.record === undefined ? "" : `${isDebut(player.record) ? "DEBUT" : recordLine(player.record)} · `;
+    const detail = `${record}${player?.cpu === true ? "CPU" : `ELO ${player?.rating ?? "—"}`} · KD ${fighter.knockdowns} · W ${fighter.warnings} · −${fighter.deductions}`;
     const bars: BarSpec[] = [
       { label: `${compact ? "STA" : "STAMINA"} ${Math.round(fighter.stamina)}`, value: fighter.stamina, maximum: fighter.maximum_stamina, from: "#ffe08a", to: "#d9a53a" },
       { label: `${compact ? "HP" : "HEALTH"} ${Math.round(fighter.conditioning)}`, value: fighter.conditioning, maximum: HUD_MAX_CONDITIONING, from: "#ff8a7a", to: "#b02a20" },

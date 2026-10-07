@@ -12,7 +12,13 @@ from intelstream.hands.auth import AuthenticatedPlayer
 from intelstream.hands.cpu import PROFILES, CpuLevel
 from intelstream.hands.engine import EngineConfig
 from intelstream.hands.protocol import encode_client_input
-from intelstream.hands.rooms import HandsRoomManager, RoomConfig, RoomError, RoomMembership
+from intelstream.hands.rooms import (
+    CPU_RECORDS,
+    HandsRoomManager,
+    RoomConfig,
+    RoomError,
+    RoomMembership,
+)
 from intelstream.hands.types import ActionKind, InputCommand, MovementAction
 
 
@@ -1045,6 +1051,27 @@ async def test_both_disconnect_abandons_without_match_or_elo_change(
     await manager.close()
 
 
+async def test_the_ready_message_carries_each_fighters_record(repository: Repository) -> None:
+    original_get = repository.get_or_create_hands_rating
+
+    async def with_record(guild_id: str, user_id: str):
+        rating = await original_get(guild_id, user_id)
+        if user_id == "one":
+            rating.wins, rating.losses, rating.draws, rating.knockouts = 12, 3, 1, 8
+        return rating
+
+    repository.get_or_create_hands_rating = with_record
+    manager = HandsRoomManager(repository, config=room_config(round_ticks=1000))
+    first_socket = FakeSocket()
+    await manager.join(player("one"), first_socket)
+    await manager.join(player("two"), FakeSocket())
+    await wait_until(lambda: "ready" in message_types(first_socket))
+    players = {entry["id"]: entry for entry in payloads(first_socket, "ready")[0]["players"]}
+    assert players["one"]["record"] == {"wins": 12, "losses": 3, "draws": 1, "knockouts": 8}
+    assert players["two"]["record"] == {"wins": 0, "losses": 0, "draws": 0, "knockouts": 0}
+    await manager.close()
+
+
 async def test_slow_rating_lookup_does_not_block_independent_join(
     repository: Repository,
 ) -> None:
@@ -1451,6 +1478,7 @@ async def test_a_lone_fighter_calls_in_the_computer_for_an_unrated_bout(
         "rating": PROFILES[CpuLevel.CONTENDER].rating,
         "connected": True,
         "cpu": True,
+        "record": CPU_RECORDS[CpuLevel.CONTENDER].payload(),
     }
     assert "cpu" not in ready["players"][0]
     await wait_until(lambda: "final" in message_types(socket), deadline_seconds=5)

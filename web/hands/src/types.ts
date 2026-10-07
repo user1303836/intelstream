@@ -26,7 +26,8 @@ export interface InputFrame { readonly moveX: number; readonly moveY: number; re
 
 export type CpuLevel = "rookie" | "contender" | "champion";
 /** `cpu` marks the computer opponent, which plays unrated bouts. */
-export interface PublicPlayer { readonly id: string; readonly name: string; readonly avatar: string | null; readonly rating: number; readonly connected: boolean; readonly cpu?: boolean }
+export interface FighterRecord { readonly wins: number; readonly losses: number; readonly draws: number; readonly knockouts: number }
+export interface PublicPlayer { readonly id: string; readonly name: string; readonly avatar: string | null; readonly rating: number; readonly connected: boolean; readonly cpu?: boolean; readonly record?: FighterRecord }
 export interface TraumaSnapshot { readonly head: number; readonly body: number; readonly left_eye: number; readonly right_eye: number; readonly left_cut: number; readonly right_cut: number; readonly swelling: number; readonly bleeding: number }
 export interface FighterSnapshot {
   readonly player_id: string; readonly x: number; readonly y: number; readonly facing: number;

@@ -1,4 +1,5 @@
-import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, PublicPlayer } from "../types";
+import { isDebut, recordCard } from "../record";
+import type { CombatEvent, EngineSnapshot, FighterRecord, FighterSnapshot, FinalMessage, PublicPlayer } from "../types";
 import { decisionLabel } from "./hud";
 
 export type Speaker = "play" | "colour" | "announcer";
@@ -159,6 +160,17 @@ const COOLDOWN: Readonly<Partial<Record<LineKey, number>>> = {
 
 const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen"] as const;
 const numberWord = (value: number): string => NUMBER_WORDS[value] ?? String(value);
+const counted = (value: number, one: string, many: string): string => `${numberWord(value)} ${value === 1 ? one : many}`;
+
+/** How the ring announcer reads a record out loud, after the corner and before the name. */
+export function recordSpoken(record: FighterRecord | undefined): string {
+  if (record === undefined) return "";
+  if (isDebut(record)) return ", making a professional debut";
+  const results = [counted(record.wins, "win", "wins"), counted(record.losses, "loss", "losses")];
+  if (record.draws > 0) results.push(counted(record.draws, "draw", "draws"));
+  const tail = results.length === 3 ? `${results[0]}, ${results[1]} and ${results[2]}` : `${results[0]} and ${results[1]}`;
+  return `, with a record of ${tail}${record.knockouts > 0 ? `, ${numberWord(record.knockouts)} by knockout` : ""}`;
+}
 
 type Vars = Partial<Record<"a" | "b" | "n" | "side" | "punch" | "r" | "x" | "y" | "z" | "w", string | number>>;
 
@@ -416,9 +428,11 @@ export class CommentaryDirector {
     for (const seat of [0, 1] as const) {
       const corner = seat === 0 ? "blue" : "red";
       const player = this.players[snapshot.fighters[seat].player_id];
-      this.enqueue(this.announcement(`In the ${corner} corner, ${names[seat]}.`, { kicker: `IN THE ${corner.toUpperCase()} CORNER`, title: names[seat]!.toUpperCase(), detail: player === undefined ? "" : `RATED ${player.rating}`, corner: seat }, hold, 97), now + seat * hold, null, 30);
+      const detail = player === undefined ? "" : `${player.record === undefined ? "" : `${recordCard(player.record)} · `}RATED ${player.rating}`;
+      this.enqueue(this.announcement(`In the ${corner} corner, ${names[seat]}.`, { kicker: `IN THE ${corner.toUpperCase()} CORNER`, title: names[seat]!.toUpperCase(), detail, corner: seat }, hold, 97), now + seat * hold, null, 30);
     }
-    this.hooks.speak?.([`In the blue corner... ${names[0]}!`, `And in the red corner... ${names[1]}!`]);
+    const spoken = snapshot.fighters.map((fighter) => recordSpoken(this.players[fighter.player_id]?.record));
+    this.hooks.speak?.([`In the blue corner${spoken[0]}... ${names[0]}!`, `And in the red corner${spoken[1]}... ${names[1]}!`]);
   }
 
   private consider(event: CombatEvent, snapshot: EngineSnapshot, result: CombatEvent | null, now: number): void {

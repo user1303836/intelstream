@@ -162,6 +162,19 @@ describe("the ring announcer", () => {
     expect(speak.mock.calls[0]![0]).toEqual(["In the blue corner... Azure Vector!", "And in the red corner... Crimson Geometry!"]);
   });
 
+  it("reads each fighter's record in the introduction", () => {
+    const speak = vi.fn();
+    const director = new CommentaryDirector({ speak });
+    const recorded = { one: { ...players.one!, record: { wins: 12, losses: 3, draws: 1, knockouts: 8 } }, two: { ...players.two!, record: { wins: 0, losses: 0, draws: 0, knockouts: 0 } } };
+    director.observe({ ...state(1, "countdown", [{}, {}], { phase_ticks_remaining: 90 }), events: [] }, [], recorded, 30, 0);
+    expect(director.current(0.05)?.line.card?.detail).toBe("12-3-1 (8 KO) · RATED 1512");
+    expect(director.current(1.6)?.line.card?.detail).toBe("PRO DEBUT · RATED 1494");
+    expect(speak.mock.calls[0]![0]).toEqual([
+      "In the blue corner, with a record of twelve wins, three losses and one draw, eight by knockout... Azure Vector!",
+      "And in the red corner, making a professional debut... Crimson Geometry!",
+    ]);
+  });
+
   it("does not introduce the fighters to someone who arrives after the opening bell", () => {
     const speak = vi.fn();
     const director = new CommentaryDirector({ speak });

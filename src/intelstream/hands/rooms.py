@@ -127,6 +127,7 @@ class PlayerSlot:
     rating: int
     connection: PlayerConnection | None
     grace_remaining: float
+    record: FighterRecord | None = None
     last_sequence: int = -1
     input_budget: float | None = None
     input_budget_at: float = 0.0
@@ -136,6 +137,32 @@ class PlayerSlot:
     reconnect_deadline: float | None = None
     pre_match_grace_event: asyncio.Event = field(default_factory=asyncio.Event)
     pre_match_grace_task: asyncio.Task[None] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FighterRecord:
+    """A fighter's professional record in this server, as the ring announcer reads it."""
+
+    wins: int
+    losses: int
+    draws: int
+    knockouts: int
+
+    def payload(self) -> dict[str, int]:
+        return {
+            "wins": self.wins,
+            "losses": self.losses,
+            "draws": self.draws,
+            "knockouts": self.knockouts,
+        }
+
+
+# The computer's boxers come with a record of their own.
+CPU_RECORDS: dict[CpuLevel, FighterRecord] = {
+    CpuLevel.ROOKIE: FighterRecord(wins=3, losses=4, draws=1, knockouts=1),
+    CpuLevel.CONTENDER: FighterRecord(wins=19, losses=5, draws=1, knockouts=12),
+    CpuLevel.CHAMPION: FighterRecord(wins=36, losses=1, draws=0, knockouts=29),
+}
 
 
 @dataclass(slots=True)
@@ -156,6 +183,10 @@ class CpuOpponent:
     @property
     def rating(self) -> int:
         return PROFILES[self.level].rating
+
+    @property
+    def record(self) -> FighterRecord:
+        return CPU_RECORDS[self.level]
 
 
 # Seeds the computer's own dice from the match seed, so a bout replays from its inputs.
@@ -258,6 +289,7 @@ class HandsRoom:
         socket: SocketLike,
         rating: int,
         *,
+        record: FighterRecord | None = None,
         reconnect_ticket: str | None = None,
         reconnect_ticket_factory: Callable[[], str] | None = None,
     ) -> RoomMembership:
@@ -332,6 +364,7 @@ class HandsRoom:
                         rating=rating,
                         connection=connection,
                         grace_remaining=self.config.reconnect_grace_seconds,
+                        record=record,
                     )
                     self._slots[identity.user_id] = fighter
                 seat = tuple(self._slots).index(identity.user_id) + 1
@@ -520,6 +553,7 @@ class HandsRoom:
                 "avatar": slot.identity.avatar_hash,
                 "rating": slot.rating,
                 "connected": slot.connection is not None,
+                **({} if slot.record is None else {"record": slot.record.payload()}),
             }
             for slot in self._slots.values()
         ]
@@ -532,6 +566,7 @@ class HandsRoom:
                     "rating": self._cpu.rating,
                     "connected": True,
                     "cpu": True,
+                    "record": self._cpu.record.payload(),
                 }
             )
         return players
@@ -1194,6 +1229,12 @@ class HandsRoomManager:
                         player,
                         socket,
                         rating.rating,
+                        record=FighterRecord(
+                            wins=rating.wins,
+                            losses=rating.losses,
+                            draws=rating.draws,
+                            knockouts=rating.knockouts,
+                        ),
                         reconnect_ticket=reconnect_ticket,
                         reconnect_ticket_factory=reconnect_ticket_factory,
                     )

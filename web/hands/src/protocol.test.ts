@@ -21,6 +21,14 @@ describe("strict protocol v3", () => {
     expect(() => decodeServerFrame(JSON.stringify({ ...ready, players: [publicPlayers[0], { ...computer, cpu: "yes" }] }))).toThrow(ProtocolError);
     expect(() => decodeServerFrame(JSON.stringify({ ...ready, players: [publicPlayers[0], { ...computer, level: "champion" }] }))).toThrow(ProtocolError);
   });
+  it("carries each fighter's record and rejects a malformed one", () => {
+    const veteran = { ...publicPlayers[0], record: { wins: 12, losses: 3, draws: 1, knockouts: 8 } };
+    const ready = { version: 3, type: "ready", players: [veteran, publicPlayers[1]] };
+    expect(decodeServerFrame(JSON.stringify(ready))).toEqual(ready);
+    for (const record of [{ wins: -1, losses: 0, draws: 0, knockouts: 0 }, { wins: 1, losses: 0, draws: 0 }, { wins: 1, losses: 0, draws: 0, knockouts: 0, titles: 2 }, { wins: "1", losses: 0, draws: 0, knockouts: 0 }, null]) {
+      expect(() => decodeServerFrame(JSON.stringify({ ...ready, players: [{ ...veteran, record }, publicPlayers[1]] }))).toThrow(ProtocolError);
+    }
+  });
   it("asks for a computer opponent by level only", () => {
     expect(JSON.parse(encodeCpuRequest("contender"))).toEqual({ version: 3, type: "cpu", level: "contender" });
     expect(() => encodeCpuRequest("legend" as CpuLevel)).toThrow(ProtocolError);
