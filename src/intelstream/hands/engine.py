@@ -586,7 +586,7 @@ class BoxingEngine:
             if fighter.stunned_ticks > 0 or attack.age >= attack.total_ticks:
                 self._retain_action(fighter)
                 return
-            if not self._can_cancel_recovery(fighter, attack):
+            if not self._can_cancel_recovery(fighter, opponent, attack):
                 return
             self._retain_action(fighter)
 
@@ -617,8 +617,14 @@ class BoxingEngine:
         )
 
     @staticmethod
-    def _can_cancel_recovery(fighter: FighterState, attack: AttackState) -> bool:
+    def _can_cancel_recovery(
+        fighter: FighterState, opponent: FighterState, attack: AttackState
+    ) -> bool:
         if not attack.landed or attack.age < attack.cancel_age or not fighter.pending_actions:
+            return False
+        if opponent.stunned_ticks > 0:
+            # A stunned man is already open. Cutting the recovery short would only chain stun
+            # into stun before he has a tick to answer.
             return False
         follow_up = fighter.pending_actions[0]
         return (
@@ -845,7 +851,9 @@ class BoxingEngine:
             action.target is Target.HEAD and defender.trauma.head > 850 and damage >= 40
         ):
             self._knock_down(defender, attacker)
-        elif action.target is Target.HEAD and damage >= 36:
+        elif action.target is Target.HEAD and damage >= 36 and defender.stunned_ticks == 0:
+            # A punch on a man who is still stunned does not start his stun again, so a run of
+            # punches cannot hold him past the first stun.
             defender.stunned_ticks = min(90, 8 + damage // 2)
             defender.stunned_at_tick = self.tick
             defender.taunt_ticks = 0

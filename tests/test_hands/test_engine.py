@@ -1181,12 +1181,14 @@ def test_buffered_punch_survives_the_current_attack_and_dispatches_after_it() ->
 
 def test_landed_punch_recovery_cancels_into_a_compatible_follow_up() -> None:
     def follow_up_start(
-        first: PunchAction, second: PunchAction, *, in_range: bool
+        first: PunchAction, second: PunchAction, *, in_range: bool, stunned: bool = False
     ) -> tuple[int, int, int]:
         engine = make_engine(round_ticks=2000)
         if not in_range:
             engine.fighter("one").x = -300
             engine.fighter("two").x = 300
+        if stunned:
+            engine.fighter("two").stunned_ticks = 90
         engine.step({"one": command(1, action=first)})
         attack = engine.fighter("one").attack
         assert attack is not None
@@ -1211,6 +1213,8 @@ def test_landed_punch_recovery_cancels_into_a_compatible_follow_up() -> None:
     assert whiffed == total + 1
     incompatible, _cancel_age, total = follow_up_start(jab, uppercut, in_range=True)
     assert incompatible == total + 1
+    into_a_stun, _cancel_age, total = follow_up_start(jab, straight, in_range=True, stunned=True)
+    assert into_a_stun == total + 1
 
 
 def test_facing_vector_turns_toward_the_opponent_and_the_hit_test_follows() -> None:
@@ -1997,6 +2001,48 @@ def test_a_parried_punch_cannot_be_cut_short_into_a_combo_but_a_blocked_one_can(
     blocked, blocked_events = cut_short(parried=False)
     assert "block" in blocked_events and "perfect_block" not in blocked_events
     assert blocked
+
+
+@pytest.mark.parametrize("mashes_weave", [False, True])
+def test_an_early_buffered_hook_uppercut_chain_cannot_hold_a_stunned_fighter(
+    mashes_weave: bool,
+) -> None:
+    engine = make_engine(round_ticks=2000)
+    one = engine.fighter("one")
+    two = engine.fighter("two")
+    follow_ups = {
+        PunchClass.STRAIGHT: punch(PunchClass.HOOK, hand=Hand.LEFT),
+        PunchClass.HOOK: punch(PunchClass.UPPERCUT),
+        PunchClass.UPPERCUT: punch(PunchClass.HOOK, hand=Hand.LEFT),
+    }
+    engine.step({"one": command(1, action=punch(PunchClass.STRAIGHT))})
+    pressed_during = None
+    sequence = 1
+    stunned = False
+    free_ticks = 0
+    while engine.phase is MatchPhase.FIGHT and engine.tick < 300:
+        inputs = {}
+        attack = one.attack
+        if attack is not None and attack is not pressed_during:
+            # One press early in every punch: the buffer keeps it until the punch gives way.
+            sequence += 1
+            inputs["one"] = command(sequence, action=follow_ups[attack.action.punch_class])
+            pressed_during = attack
+        if mashes_weave:
+            inputs["two"] = command(engine.tick, action=MovementAction(ActionKind.WEAVE))
+        running_stun = two.stunned_ticks
+        before = one.attack
+        engine.step(inputs)
+        cut_short = before is not None and one.attack is not None and one.attack is not before
+        if running_stun > 1:
+            assert two.stunned_ticks < running_stun, "a punch started a running stun again"
+            assert not cut_short, "a punch was cut short into a stunned fighter"
+        stunned = stunned or two.stunned_ticks > 0
+        if stunned and engine.phase is MatchPhase.FIGHT and two.stunned_ticks == 0:
+            free_ticks += 1
+
+    assert stunned
+    assert free_ticks > 0
 
 
 def test_fighters_walking_to_their_corners_go_round_each_other() -> None:
