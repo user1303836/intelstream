@@ -315,6 +315,9 @@ describe("browser lifecycle and accessible overlays", () => {
       pick(root, "champion");
       send({ version: 3, type: "ready", players: [players[0], computer] });
       send({ version: 3, type: "snapshot", payload: { ...makeSnapshot(100), fighters: [fighter("one", -100), fighter("cpu:champion", 100)] } });
+      const summary = root.querySelector("[data-fight-summary]")?.textContent ?? "";
+      expect(summary).toContain("Viktor 'Iron' Volkov, computer opponent");
+      expect(summary).not.toContain("ELO 1400");
       vi.useFakeTimers();
       send({ version: 3, type: "final", match_id: "m1", winner_id: "cpu:champion", method: "decision", round: 1, scorecards: [], ratings: { one: { before: 1500, after: 1500 }, "cpu:champion": { before: 1400, after: 1400 } } });
       expect(root.querySelector("[data-final]")?.textContent).toContain("Unrated bout against the computer.");
