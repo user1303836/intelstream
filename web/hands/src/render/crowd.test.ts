@@ -223,6 +223,37 @@ describe("crowd and reduced motion", () => {
     arena.dispose();
   });
 
+  it("seats the arms with the bodies when the low tier had frozen them, so they come back hanging from the shoulders", () => {
+    const arena = buildArena();
+    arena.excite(1);
+    arena.update(1, 0, false);
+    arena.update(1, 0, false);
+    expect(armsUp(arena)).toBe(total);
+    // The scaler drops to the low tier, reduced motion seats the crowd, then quality recovers with motion still reduced.
+    arena.setLowTier(true);
+    arena.update(1.02, 1 / 60, true);
+    arena.setLowTier(false);
+    arena.update(1.04, 1 / 60, true);
+    expect(armsUp(arena)).toBe(0);
+    const crowd = arena.group.getObjectByName("crowd")!;
+    const [torsos, , , armsLeft, armsRight] = crowd.children.filter((child): child is THREE.InstancedMesh => child instanceof THREE.InstancedMesh);
+    const body = new THREE.Matrix4();
+    const arm = new THREE.Matrix4();
+    const shoulder = new THREE.Vector3();
+    const root = new THREE.Vector3();
+    let worst = 0;
+    for (let index = 0; index < torsos!.count; index += 1) {
+      torsos!.getMatrixAt(index, body);
+      for (const [mesh, side] of [[armsLeft!, 1], [armsRight!, -1]] as const) {
+        mesh.getMatrixAt(index, arm);
+        root.setFromMatrixPosition(arm);
+        worst = Math.max(worst, root.distanceTo(shoulder.set(side * 0.235, 0.9, 0).applyMatrix4(body)));
+      }
+    }
+    expect(worst).toBeLessThan(0.001);
+    arena.dispose();
+  });
+
   it("reaches everyone within two frames of motion coming back", () => {
     const arena = buildArena();
     arena.update(0, 1 / 60, true);

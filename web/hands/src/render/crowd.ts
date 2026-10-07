@@ -304,7 +304,9 @@ export function buildCrowd(rand: () => number, tiers: readonly CrowdTier[] = CRO
     const first = (pass % parts) * block;
     const last = Math.min(total, first + block);
     pass += 1;
-    const armed = !lowTier;
+    // A pass over everyone poses the arms too, even while the low tier hides them: reduced motion seats the
+    // crowd once and then stops updating it, so arms left raised would come back floating over seated bodies.
+    const armed = !lowTier || all;
     for (let index = first; index < last; index += 1) {
       const spectator = spectators[index]!;
       spectatorPose(spectator, time, excitement, pose);
