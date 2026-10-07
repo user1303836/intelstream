@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
+
 from intelstream.hands.engine import EngineConfig
 from intelstream.hands.rules import (
     BLOCK_POISE_PERCENT,
@@ -29,6 +31,7 @@ from intelstream.hands.rules import (
     PUNCH_RULES,
     ROCKED_BASE_TICKS,
     ROCKED_HURT_POISE,
+    ROCKED_IMMUNITY_TICKS,
     STUN_CHAIN_MAX_TICKS,
     STUN_IMMUNITY_TICKS,
     SWELLING_PER_DAMAGE_PERCENT,
@@ -144,12 +147,50 @@ def test_a_stun_keeps_counting_toward_the_chain_and_then_leaves_a_moment_of_clea
         engine.step()
     assert fighter.stunned_ticks == 0
     assert fighter.stun_chain_ticks == 0
+    # Clear-headed: not even a rocking shot stops him again for a few ticks, a flinch for longer.
+    assert not engine._stun(fighter, 8, rocked=False)
+    assert not engine._stun(fighter, 20, rocked=True)
+    for _ in range(ROCKED_IMMUNITY_TICKS - 1):
+        engine.step()
+        assert not engine._stun(fighter, 20, rocked=True)
+    engine.step()
     assert not engine._stun(fighter, 8, rocked=False)
     assert engine._stun(fighter, 20, rocked=True)
     fighter.stunned_ticks = 0
     for _ in range(STUN_IMMUNITY_TICKS + 1):
         engine.step()
     assert engine._stun(fighter, 8, rocked=False)
+
+
+@pytest.mark.parametrize("lands_after", range(-1, ROCKED_IMMUNITY_TICKS + 2))
+@pytest.mark.parametrize("stunned_first", [False, True])
+def test_a_power_shot_landing_as_a_stun_wears_off_cannot_start_another_at_once(
+    lands_after: int, stunned_first: bool
+) -> None:
+    """A power straight thrown during a stun, timed to land the tick it wears off or just after,
+    with the stunned fighter taking his turn before or after the puncher on that tick."""
+    engine = make_engine()
+    two = engine.fighter("two")
+    if stunned_first:
+        engine.step()
+    assert engine._stun(two, 30, rocked=True)
+    worn_off = engine.tick + 30
+    straight = punch(PunchClass.STRAIGHT, power=Power.POWER)
+    startup = PUNCH_RULES[(PunchClass.STRAIGHT, Target.HEAD, Power.POWER)].startup
+    while engine.tick + 1 + startup < worn_off + lands_after:
+        engine.step()
+    engine.step({"one": command(1, action=straight)})
+    attack = engine.fighter("one").attack
+    assert attack is not None and attack.start_tick + attack.rule.startup == worn_off + lands_after
+    events: list[CombatEvent] = []
+    while not attack.resolved:
+        events.extend(engine.step().events)
+    assert "hit" in kinds(events)
+    assert hit_amount(events) >= 70
+    rocked = "stun" in kinds(events)
+    assert rocked is (lands_after >= ROCKED_IMMUNITY_TICKS)
+    if not rocked:
+        assert two.stunned_ticks == 0 or lands_after < 0
 
 
 def test_a_guarded_punch_never_stuns_and_takes_a_quarter_of_its_poise() -> None:

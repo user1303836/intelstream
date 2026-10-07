@@ -279,6 +279,7 @@
     "rocked_max_ticks": 36,
     "chain_max_ticks": 45,
     "immunity_ticks": 24,
+    "rocked_immunity_ticks": 8,
     "moving_speed_percent": 75
   },
   "guard": {

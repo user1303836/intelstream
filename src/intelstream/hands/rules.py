@@ -66,6 +66,9 @@ ROCKED_DAMAGE_DIVISOR: int = _STUN["rocked_damage_divisor"]
 ROCKED_MAX_TICKS: int = _STUN["rocked_max_ticks"]
 STUN_CHAIN_MAX_TICKS: int = _STUN["chain_max_ticks"]
 STUN_IMMUNITY_TICKS: int = _STUN["immunity_ticks"]
+# Even a rocking shot cannot stop a fighter again this soon after a stun wears off: long enough to
+# raise a guard through a round trip of latency.
+ROCKED_IMMUNITY_TICKS: int = _STUN["rocked_immunity_ticks"]
 STUNNED_SPEED_PERCENT: int = _STUN["moving_speed_percent"]
 BLOCK_POISE_PERCENT: int = _MANIFEST["guard"]["block_poise_percent"]
 PERFECT_BLOCK_POISE_PERCENT: int = _MANIFEST["guard"]["perfect_block_poise_percent"]

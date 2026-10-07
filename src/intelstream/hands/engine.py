@@ -73,6 +73,7 @@ from intelstream.hands.rules import (
     ROCKED_COUNTER_DAMAGE,
     ROCKED_DAMAGE_DIVISOR,
     ROCKED_HURT_POISE,
+    ROCKED_IMMUNITY_TICKS,
     ROCKED_MAX_TICKS,
     ROCKED_POWER_DAMAGE,
     ROUND_TICKS,
@@ -236,6 +237,7 @@ class FighterState:
     stunned_at_tick: int = -1
     stun_chain_ticks: int = 0
     stun_immune_until_tick: int = -1
+    rocked_immune_until_tick: int = -1
     counter_ticks: int = 0
     clinch_startup_ticks: int = 0
     clinch_ticks: int = 0
@@ -642,9 +644,7 @@ class BoxingEngine:
             fighter.stunned_ticks -= 1
             fighter.stun_chain_ticks += 1
             if fighter.stunned_ticks == 0:
-                # Clear-headed again: the next clean shot is a moment before it can stop him again.
-                fighter.stun_chain_ticks = 0
-                fighter.stun_immune_until_tick = self.tick + STUN_IMMUNITY_TICKS
+                self._clear_head(fighter)
             fighter.defense = DefensivePose.NONE
             # A stun ends the slip, weave or pull it caught him in: he stumbles rather than standing
             # frozen through the evasion's leftover ticks.
@@ -1087,19 +1087,29 @@ class BoxingEngine:
         fighter is rocked. A punch on a fighter who is still stunned does not start his stun again,
         however hard it lands, and the attacker cannot cut his recovery short into him either, so a
         run of punches cannot hold him past the stun the first one started. A flinch cannot land
-        again in the moment after a stun wears off, though a rocking shot can, and no stun runs
-        past the chain limit: one clean punch cannot be strung into a knockdown with the defender
-        unable to answer.
+        again in the moment after a stun wears off, and even a rocking shot cannot in the first
+        few ticks of it, and no stun runs past the chain limit: one clean punch cannot be strung
+        into a knockdown with the defender unable to answer.
         """
         if fighter.stunned_ticks > 0:
             return False
-        if not rocked and self.tick < fighter.stun_immune_until_tick:
+        if self.tick < (
+            fighter.rocked_immune_until_tick if rocked else fighter.stun_immune_until_tick
+        ):
             return False
         fighter.stun_chain_ticks = 0
         fighter.stunned_ticks = min(ticks, STUN_CHAIN_MAX_TICKS)
         fighter.stunned_at_tick = self.tick
         fighter.taunt_ticks = 0
         return True
+
+    def _clear_head(self, fighter: FighterState) -> None:
+        """Ends a fighter's stun. A clean shot has to wait a moment before it can stop him again,
+        and a mere flinch longer, so he always gets a chance to raise his guard or move."""
+        fighter.stunned_ticks = 0
+        fighter.stun_chain_ticks = 0
+        fighter.stun_immune_until_tick = self.tick + STUN_IMMUNITY_TICKS
+        fighter.rocked_immune_until_tick = self.tick + ROCKED_IMMUNITY_TICKS
 
     def _apply_head_damage(
         self, defender: FighterState, action: PunchAction, damage: int, *, clean: bool
@@ -1904,6 +1914,7 @@ class BoxingEngine:
                 fighter.stunned_ticks = 0
                 fighter.stun_chain_ticks = 0
                 fighter.stun_immune_until_tick = -1
+                fighter.rocked_immune_until_tick = -1
                 fighter.taunt_ticks = 0
                 fighter.defense = DefensivePose.NONE
                 fighter.corner_choice = None
@@ -2006,6 +2017,7 @@ class BoxingEngine:
             fighter.stunned_ticks = 0
             fighter.stun_chain_ticks = 0
             fighter.stun_immune_until_tick = -1
+            fighter.rocked_immune_until_tick = -1
             fighter.taunt_ticks = 0
             fighter.evasion_ticks = 0
             fighter.counter_ticks = 0
@@ -2272,6 +2284,7 @@ class BoxingEngine:
                         fighter.last_action_until_tick,
                         fighter.stun_chain_ticks,
                         fighter.stun_immune_until_tick,
+                        fighter.rocked_immune_until_tick,
                     ],
                     "attack": fighter.attack,
                     "last_punch": fighter.last_punch,

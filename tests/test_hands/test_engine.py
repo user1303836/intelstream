@@ -43,6 +43,7 @@ from intelstream.hands.rules import (
     RING_HALF_HEIGHT,
     RING_HALF_WIDTH,
     ROCKED_HURT_POISE,
+    ROCKED_IMMUNITY_TICKS,
     STUN_CHAIN_MAX_TICKS,
     STUN_IMMUNITY_TICKS,
     STUNNED_SPEED_PERCENT,
@@ -2530,6 +2531,9 @@ def _chain_into_a_still_defender(poise: int | None, power: Power) -> _ChainAgain
         if two.stunned_ticks > 0:
             seen.stuns.append(two.stunned_ticks)
             assert two.stunned_ticks <= STUN_CHAIN_MAX_TICKS
+            assert worn_off_at is None or engine.tick - worn_off_at >= ROCKED_IMMUNITY_TICKS, (
+                "a stun started again before he could raise a guard"
+            )
             if clear_moment:
                 assert rocked, "a flinch landed in the clear moment after a stun"
                 seen.rocked_in_the_clear_moment += 1
