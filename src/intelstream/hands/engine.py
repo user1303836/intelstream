@@ -953,7 +953,8 @@ class BoxingEngine:
                 )
             defender.guard = max(0, defender.guard - guard_damage)
             defender.performance.blocked_hits += 1
-            if defender.guard == 0:
+            if defender.guard < GUARD_BLOCK_MINIMUM:
+                # Worn too thin to stop the next one: the guard is broken, and he is told so.
                 defender.stunned_ticks = max(defender.stunned_ticks, 8)
                 defender.stunned_at_tick = self.tick
                 defender.taunt_ticks = 0

@@ -238,6 +238,30 @@ def test_a_worn_out_guard_stops_nothing_and_is_not_broken_again() -> None:
     assert "hit" in kinds(events)
 
 
+def test_a_block_that_wears_the_guard_too_thin_to_stop_a_punch_breaks_it() -> None:
+    engine = make_engine()
+    settled_guard(engine, DefensivePose.GUARD_HIGH)
+    two = engine.fighter("two")
+    two.guard = GUARD_BLOCK_MINIMUM + 15
+    events = land(engine, punch(PunchClass.STRAIGHT), defense=DefensivePose.GUARD_HIGH)
+    assert "block" in kinds(events)
+    assert "guard_break" in kinds(events)
+    assert 0 < two.guard < GUARD_BLOCK_MINIMUM
+    assert two.stunned_ticks > 0
+    while two.stunned_ticks:
+        engine.step()
+    # Still holding it up, but the next punch goes straight through.
+    events = land(engine, punch(PunchClass.STRAIGHT), defense=DefensivePose.GUARD_HIGH)
+    assert two.defense is DefensivePose.GUARD_HIGH
+    assert "hit" in kinds(events)
+    assert "block" not in kinds(events) and "guard_break" not in kinds(events)
+    # Once it has come back past the minimum, it blocks again.
+    while two.guard < GUARD_BLOCK_MINIMUM:
+        engine.step()
+    events = land(engine, punch(PunchClass.JAB, hand=Hand.LEFT), defense=DefensivePose.GUARD_HIGH)
+    assert "block" in kinds(events)
+
+
 def test_a_blocked_punch_wears_the_guard_by_its_share() -> None:
     engine = make_engine()
     settled_guard(engine, DefensivePose.GUARD_HIGH)
