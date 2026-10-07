@@ -93,8 +93,8 @@ describe("strict protocol v3", () => {
   });
   it.each([
     ["x below", "x", -463], ["x above", "x", 463], ["y below", "y", -463], ["y above", "y", 463],
-    ["zero facing", "facing", 0], ["velocity x below", "velocity_x", -8], ["velocity x above", "velocity_x", 8],
-    ["velocity y below", "velocity_y", -8], ["velocity y above", "velocity_y", 8], ["maximum stamina below", "maximum_stamina", 329],
+    ["zero facing", "facing", 0], ["velocity x fraction", "velocity_x", 6.5],
+    ["velocity y fraction", "velocity_y", -6.5], ["maximum stamina below", "maximum_stamina", 329],
     ["maximum stamina above", "maximum_stamina", 1001], ["poise below", "poise", -1], ["poise above", "poise", 601],
     ["get-up gap start", "get_up_required", 1], ["get-up gap end", "get_up_required", GET_UP_REQUIRED_MIN - 1], ["get-up above", "get_up_required", GET_UP_REQUIRED_MAX + 1],
   ])("rejects %s fighter output", (_name, field, value) => {

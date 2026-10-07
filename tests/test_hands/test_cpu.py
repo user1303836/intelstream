@@ -226,6 +226,9 @@ def test_a_body_hook_it_cannot_duck_is_met_with_a_perfect_low_block() -> None:
     brain = always(CpuBrain("cpu", "human", CpuLevel.CHAMPION, 4))
     brain._movement = lambda *_args: (0, 0)  # type: ignore[method-assign]
     brain._attack = lambda *_args: None  # type: ignore[method-assign]
+    # Its hands are down when the punch comes: only a guard let down a moment can parry.
+    brain._hold_guard = False
+    brain._guard_window_until = 1_000_000
     throw(engine, PunchAction(Hand.RIGHT, PunchClass.HOOK, Target.BODY, Power.POWER))
     events: list[str] = []
     for _ in range(20):

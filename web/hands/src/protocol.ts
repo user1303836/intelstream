@@ -122,6 +122,12 @@ function trauma(value: unknown): TraumaSnapshot {
     swelling: integer(o.swelling, "swelling", 0, 1000), bleeding: integer(o.bleeding, "bleeding", 0, 1000),
   };
 }
+/** The engine reports a fighter's velocity within his walking speed. */
+const MAX_REPORTED_SPEED = 7;
+/** The velocity only seeds the movement prediction, so one past the walking speed is clamped rather than ending the bout for everyone in the room. */
+function velocity(value: unknown, name: string): number {
+  return Math.max(-MAX_REPORTED_SPEED, Math.min(MAX_REPORTED_SPEED, integer(value, name, -MAX_INT, MAX_INT)));
+}
 function fighter(value: unknown): FighterSnapshot {
   const o = object(value, "fighter");
   exact(o, [
@@ -155,7 +161,7 @@ function fighter(value: unknown): FighterSnapshot {
   if (getUpRequired !== 0 && getUpRequired < GET_UP_REQUIRED_MIN) throw new ProtocolError("invalid get-up requirement");
   return {
     player_id: string(o.player_id, "player_id"), x: integer(o.x, "x", -462, 462), y: integer(o.y, "y", -462, 462),
-    facing, facing_x: facingX, facing_y: facingY, velocity_x: integer(o.velocity_x, "velocity_x", -7, 7), velocity_y: integer(o.velocity_y, "velocity_y", -7, 7),
+    facing, facing_x: facingX, facing_y: facingY, velocity_x: velocity(o.velocity_x, "velocity_x"), velocity_y: velocity(o.velocity_y, "velocity_y"),
     stance: oneOf<Stance>(o.stance, stances, "stance"), style: oneOf<FighterStyle>(o.style, FIGHTER_STYLES, "style"), defense: oneOf<DefensivePose>(o.defense, defenses, "defense"),
     stamina, maximum_stamina: maximumStamina,
     conditioning: integer(o.conditioning, "conditioning", 0, 1000), guard: integer(o.guard, "guard", 0, 700), poise: integer(o.poise, "poise", 0, 600),
