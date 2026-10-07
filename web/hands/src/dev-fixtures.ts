@@ -3,20 +3,28 @@ import * as THREE from "three";
 import { SharedActionIntent } from "./input/action-buffer";
 import { TouchInput, coarsePointer } from "./input/touch";
 import { FightRenderer } from "./render/renderer";
-import type { CombatEvent, EngineSnapshot, FighterSnapshot, PublicPlayer } from "./types";
+import { CAMERA_MODES } from "./settings";
+import { FIGHTER_STYLES } from "./protocol";
+import { PROTOCOL_VERSION, type CombatEvent, type EngineSnapshot, type FighterSnapshot, type FighterStyle, type PublicPlayer } from "./types";
 
 type Draft = { -readonly [K in keyof FighterSnapshot]: FighterSnapshot[K] };
 
+// `styles=<one>,<two>` boxes the fixture fighters in those styles, for the plates and the introduction.
+const fixtureStyles = (new URLSearchParams(window.location.search).get("styles") ?? "").split(",");
+const fixtureStyle = (id: string): FighterStyle => {
+  const wanted = fixtureStyles[id === "fixture-one" ? 0 : 1];
+  return FIGHTER_STYLES.find((style) => style === wanted) ?? "balanced";
+};
 const base = (id: string): Draft => ({
   player_id: id, x: 0, y: 0, facing: id === "fixture-one" ? 1 : -1, facing_x: id === "fixture-one" ? 1000 : -1000, facing_y: 0, velocity_x: 0, velocity_y: 0,
-  stance: id === "fixture-one" ? "orthodox" : "southpaw", defense: "guard_high",
+  stance: id === "fixture-one" ? "orthodox" : "southpaw", style: fixtureStyle(id), defense: "guard_high",
   stamina: 760, maximum_stamina: 1000, conditioning: 820, guard: 670, poise: 520,
   trauma: id === "fixture-two"
     ? { head: 420, body: 640, left_eye: 430, right_eye: 210, left_cut: 330, right_cut: 170, swelling: 280, bleeding: 380 }
     : { head: 150, body: 260, left_eye: 120, right_eye: 60, left_cut: 90, right_cut: 20, swelling: 100, bleeding: 70 },
   knockdowns: 0, warnings: 0, deductions: 0, stunned_ticks: 0, is_downed: false,
   action: null, action_hand: null, action_target: null, action_power: null, action_id: null, action_key: null, action_start_tick: 0, action_startup_ticks: 0, action_active_ticks: 0, action_recovery_ticks: 0, action_contact_tick: null, queued_actions: 0,
-  clinch_startup_ticks: 0, clinch_ticks: 0, is_foul_recovery_target: false, taunt_ticks: 0,
+  clinch_startup_ticks: 0, clinch_ticks: 0, is_foul_recovery_target: false, taunt_ticks: 0, corner_choice: null,
   get_up_prompt: null, get_up_meter: 0, get_up_required: 0, get_up_count: 0, get_up_window_start_tick: 0, get_up_window_end_tick: 0,
   last_input_sequence: -1,
 });
@@ -27,15 +35,19 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
   root.innerHTML = `<section class="activity"><canvas class="fight"></canvas><header class="topbar"><strong>HANDS · DEV FIXTURE</strong><span>Production never enters this harness</span></header></section>`;
   const bloodParam = new URLSearchParams(window.location.search).get("blood");
   const blood = bloodParam === "reduced" || bloodParam === "off" ? bloodParam : "full";
+  const cameraParam = new URLSearchParams(window.location.search).get("camera");
+  const camera = CAMERA_MODES.find((mode) => mode === cameraParam) ?? "broadcast";
   const renderer = new FightRenderer(
     root.querySelector("canvas")!,
     { tick_rate: 30, ring_half_width: 500, ring_half_height: 500 },
-    () => ({ volume: 0, haptics: false, reducedMotion: false, blood }),
+    () => ({ volume: 0, haptics: false, reducedMotion: false, blood, commentary: true, announcer: false, camera }),
   );
   renderer.setBloodLevel(blood);
+  // `avatars=<discord id>:<avatar hash>,<discord id>:<avatar hash>` draws real pictures on the plates.
+  const pictured = (new URLSearchParams(window.location.search).get("avatars") ?? "").split(",").map((entry) => entry.split(":"));
   const players: Record<string, PublicPlayer> = {
-    "fixture-one": { id: "fixture-one", name: "Azure Vector", avatar: null, rating: 1512, connected: true },
-    "fixture-two": { id: "fixture-two", name: "Crimson Geometry", avatar: null, rating: 1494, connected: true },
+    "fixture-one": { id: pictured[0]?.[0] || "fixture-one", name: "Azure Vector", avatar: pictured[0]?.[1] || null, rating: 1512, connected: true },
+    "fixture-two": { id: pictured[1]?.[0] || "fixture-two", name: "Crimson Geometry", avatar: pictured[1]?.[1] || null, rating: 1494, connected: true },
   };
   renderer.setPlayers(players, "fixture-one");
   const touch = coarsePointer() ? new TouchInput(root.querySelector<HTMLElement>(".activity")!, new SharedActionIntent()) : null;
@@ -43,6 +55,9 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
   let tick = 0;
   let eventId = 0;
   let finalSent = false;
+  let bellRung = false;
+  let thrownWindow = -1;
+  let landedWindow = -1;
   const interval = window.setInterval(() => {
     tick += 3;
     const t = tick / 30;
@@ -78,6 +93,8 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       one.velocity_x = two.velocity_x = 0;
       if (tauntCycle > 3.6) one.clinch_ticks = two.clinch_ticks = Math.round((5.1 - tauntCycle) * 30);
     }
+    // `mouthpiece=1` puts the gum shields back before every exchange so each big head shot knocks one out.
+    if (new URLSearchParams(window.location.search).get("mouthpiece") === "1" && cycle < 0.1) renderer.labEffects.clearMouthpieces();
     if (cycle < 0.55 && one.taunt_ticks === 0 && two.taunt_ticks === 0 && !closing) {
       const punch = PUNCHES[Math.floor(t / 3.2) % PUNCHES.length]!;
       attacker.action = punch;
@@ -85,7 +102,14 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       attacker.action_target = Math.floor(t / 3.2) % 4 === 1 ? "body" : "head";
       attacker.action_power = Math.floor(t / 3.2) % 5 === 2 ? "power" : "normal";
       defender.defense = Math.floor(t / 6.4) % 2 === 0 ? "guard_high" : "none";
-      if (cycle > 0.2 && cycle < 0.3) {
+      const punchWindow = Math.floor(t / 3.2);
+      if (thrownWindow !== punchWindow) {
+        thrownWindow = punchWindow;
+        eventId += 1;
+        events.push({ event_id: eventId, tick, kind: "punch_start", actor_id: attacker.player_id, target_id: null, amount: 0, detail: `${attacker.action_hand}:${punch}:${attacker.action_target}`, blood: 0, direction: 0, action_id: null });
+      }
+      if (cycle >= 0.2 && landedWindow !== punchWindow) {
+        landedWindow = punchWindow;
         eventId += 1;
         events.push({ event_id: eventId, tick, kind: "hit", actor_id: attacker.player_id, target_id: defender.player_id, amount: 210, detail: `${attacker.action_hand}:${punch}:${attacker.action_target}`, blood: 100, direction: attacker.facing, action_id: null });
         defender.stunned_ticks = 12;
@@ -93,11 +117,44 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
     }
     const search = new URLSearchParams(window.location.search);
     const finisher = search.get("finisher");
-    const forcedRest = search.get("phase") === "rest";
+    // `phase=bell` fights for ten seconds and then rings the bell for the rest; `intro=1` opens with the countdown.
+    const bellAt = search.get("phase") === "bell" ? 10.5 : null;
+    const forcedRest = search.get("phase") === "rest" || (bellAt !== null && t >= bellAt);
+    const introducing = search.get("intro") === "1" && t < 3;
+    // `ko=<jab|straight|hook|uppercut|body>` chooses the finishing punch; `finisher=flash` ends the bout on it without a count.
+    const ko = search.get("ko");
+    const flash = finisher === "flash";
     const pinned = search.get("pin") === "1";
     const knockdownCycle = finisher === null ? t % 14 : (t < 2.5 ? 0 : 12);
-    if (knockdownCycle > 11 && knockdownCycle < 13.4) {
+    // A body shot that puts him on a knee a third of a second after it lands.
+    const bodyCollapse = finisher === "body" && t >= 2.5 && t < 2.85;
+    // The sparring stops for the body shot; a punch on a fighter who is down would be an arcade finisher.
+    if (finisher === "body" && t >= 2.5) events.length = 0;
+    if (bodyCollapse) {
+      two.stunned_ticks = 11;
+      two.x = 140;
+      two.y = 40;
+      one.x = 60;
+      one.y = 30;
+      if (t < 2.65) {
+        eventId += 1;
+        events.push({ event_id: eventId, tick, kind: "hit", actor_id: one.player_id, target_id: two.player_id, amount: 90, detail: "hook:body", blood: 30, direction: 1, action_id: "fixture-body" });
+        eventId += 1;
+        events.push({ event_id: eventId, tick, kind: "body_collapse", actor_id: one.player_id, target_id: two.player_id, amount: 10, detail: "", blood: 0, direction: 0, action_id: "fixture-body" });
+      }
+    } else if (finisher === "body" && t >= 2.85) {
       two.is_downed = true;
+      two.action = null;
+      two.x = 140;
+      two.y = 40;
+      one.x = -60;
+      one.y = -30;
+      if (t < 3.0) {
+        eventId += 1;
+        events.push({ event_id: eventId, tick, kind: "knockdown", actor_id: one.player_id, target_id: two.player_id, amount: 1, detail: "body", blood: 0, direction: 0, action_id: "fixture-body" });
+      }
+    } else if (knockdownCycle > 11 && knockdownCycle < 13.4) {
+      two.is_downed = !flash;
       two.action = null;
       two.x = 140;
       two.y = 40;
@@ -106,17 +163,42 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       const trigger = finisher === null ? knockdownCycle > 11 && knockdownCycle < 11.15 : t >= 2.5 && t < 2.65;
       if (trigger) {
         eventId += 1;
-        if (finisher !== null && eventId % 2 === 1) eventId += 1;
-        events.push({ event_id: eventId, tick, kind: "counter_hit", actor_id: one.player_id, target_id: two.player_id, amount: 500, detail: finisher === "hand" ? "left:hook:body" : "right:uppercut:head", blood: 100, direction: 1, action_id: null });
+        // `finisher=head` severs the head, `burst` bursts it with a big counter, `eye` forces an eye out
+        // with a hook, `hand` takes a hand. Finishers are picked by the event id, so it is made even or odd.
+        const burst = finisher === "burst";
+        const eye = finisher === "eye";
+        if (finisher !== null && eventId % 2 === (eye ? 0 : 1)) eventId += 1;
+        let detail = finisher === "hand" ? "left:hook:body" : eye ? "left:hook:head" : "right:uppercut:head";
+        if (ko !== null) {
+          const target = ko === "body" ? "body" : "head";
+          const punch = ko === "body" ? "hook" : ko === "jab" || ko === "straight" || ko === "hook" ? ko : "uppercut";
+          const hand = ko === "jab" ? "left" : "right";
+          Object.assign(one, { action: punch, action_hand: hand, action_target: target, action_power: "power", action_key: `${punch}:${hand}:${target}:power` });
+          detail = `${punch}:${target}`;
+        }
+        events.push({ event_id: eventId, tick, kind: finisher === "head" || eye ? "hit" : "counter_hit", actor_id: one.player_id, target_id: two.player_id, amount: burst ? 130 : finisher === "head" || eye ? 90 : 500, detail, blood: 100, direction: 1, action_id: null });
         eventId += 1;
-        events.push({ event_id: eventId, tick, kind: "knockdown", actor_id: one.player_id, target_id: two.player_id, amount: 420, detail: "knockdown", blood: 60, direction: 1, action_id: null });
+        if (flash) events.push({ event_id: eventId, tick, kind: "result", actor_id: one.player_id, target_id: null, amount: 0, detail: "flash_ko", blood: 0, direction: 0, action_id: null });
+        else events.push({ event_id: eventId, tick, kind: "knockdown", actor_id: one.player_id, target_id: two.player_id, amount: 420, detail: "knockdown", blood: 60, direction: 1, action_id: null });
       }
     }
+    // `rocked=1` keeps the viewer's fighter stunned, for the hurt vision.
+    if (search.get("rocked") === "1") one.stunned_ticks = 60;
     if (pinned) {
       two.x = 460;
       two.y = 40;
       one.x = 330;
       one.y = 20;
+    }
+    const fixedGap = Number(search.get("gap"));
+    if (Number.isFinite(fixedGap) && fixedGap > 0) {
+      one.x = -Math.round(fixedGap / 2);
+      two.x = one.x + Math.round(fixedGap);
+      one.y = two.y = 0;
+      one.velocity_x = two.velocity_x = 0;
+      one.facing_x = 1000;
+      two.facing_x = -1000;
+      one.facing_y = two.facing_y = 0;
     }
     if (search.get("pin") === "corner") {
       two.x = 366;
@@ -125,7 +207,9 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       one.y = 284;
     }
     if (forcedRest) {
+      const corner = search.get("corner");
       for (const [fighter, sign] of [[one, -1], [two, 1]] as const) {
+        if (corner === "cut" || corner === "swelling" || corner === "breath") fighter.corner_choice = corner;
         fighter.x = sign * REST_CORNER_OFFSET;
         fighter.y = sign * REST_CORNER_OFFSET;
         fighter.velocity_x = fighter.velocity_y = 0;
@@ -137,22 +221,74 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
         fighter.defense = "none";
       }
       events.length = 0;
+      if (bellAt !== null && !bellRung) {
+        bellRung = true;
+        eventId += 1;
+        events.push({ event_id: eventId, tick, kind: "bell", actor_id: null, target_id: null, amount: 0, detail: "round_end", blood: 0, direction: 0, action_id: null });
+      }
     }
+    if (introducing) {
+      for (const [fighter, sign] of [[one, -1], [two, 1]] as const) {
+        fighter.x = sign * 150;
+        fighter.y = 0;
+        fighter.velocity_x = fighter.velocity_y = 0;
+        fighter.facing_x = -sign * 1000;
+        fighter.facing_y = 0;
+        fighter.facing = -sign;
+        fighter.action = null;
+        fighter.taunt_ticks = fighter.stunned_ticks = fighter.clinch_ticks = 0;
+        fighter.is_downed = false;
+      }
+      events.length = 0;
+    }
+    if (search.get("eye") === "shut") two.trauma = { ...two.trauma, right_eye: 760, swelling: Math.max(two.trauma.swelling, 420) };
+    const decided = search.get("finish") === "decision" && t >= 3.4;
+    if (decided) {
+      for (const fighter of [one, two]) {
+        fighter.action = null;
+        fighter.velocity_x = fighter.velocity_y = 0;
+        fighter.taunt_ticks = fighter.stunned_ticks = fighter.clinch_ticks = 0;
+        fighter.is_downed = false;
+        fighter.defense = "none";
+      }
+      events.length = 0;
+    }
+    const flashOver = flash && t >= 2.5;
     const snapshot: EngineSnapshot = {
-      tick, phase: forcedRest ? "rest" : "fight", round_number: 3, phase_ticks_remaining: Math.max(0, 5400 - tick),
-      fighters: [{ ...one }, { ...two }], events, result: null, checksum: "a".repeat(64),
+      tick, phase: decided || flashOver ? "complete" : introducing ? "countdown" : forcedRest ? "rest" : "fight", round_number: search.get("intro") === "1" ? 1 : 3, phase_ticks_remaining: decided ? 0 : introducing ? Math.max(0, 90 - tick) : forcedRest ? Math.max(0, 450 - tick) : Math.max(0, 5400 - tick),
+      fighters: [{ ...one }, { ...two }], events,
+      result: flashOver ? {
+        match_id: "fixture", activity_instance_id: "fixture", guild_id: "fixture", player_one_id: one.player_id, player_two_id: two.player_id, winner_id: one.player_id,
+        finish_method: "flash_ko", round_number: 3, tick, scorecards: [], player_one_knockdowns: 0, player_two_knockdowns: 0, player_one_damage: 900, player_two_damage: 400,
+      } : null,
+      checksum: "a".repeat(64),
     };
     renderer.push(snapshot);
+    if (decided && !finalSent) {
+      finalSent = true;
+      const winner = search.get("winner") === "two" ? two : one;
+      const cards = ["Impact", "Craft", "Generalship"].map((judge) => ({ judge, player_one: winner === one ? [10, 10, 10] : [9, 9, 10], player_two: winner === one ? [9, 9, 10] : [10, 10, 10] }));
+      renderer.setFinal({
+        version: PROTOCOL_VERSION, type: "final", match_id: "fixture", winner_id: search.get("winner") === "none" ? null : winner.player_id, method: search.get("winner") === "none" ? "draw" : "decision", round: 3,
+        scorecards: search.get("winner") === "none" ? cards.map((card) => ({ ...card, player_one: [10, 10, 10], player_two: [10, 10, 10] })) : cards,
+        ratings: { [one.player_id]: { before: 1512, after: winner === one ? 1528 : 1496 }, [two.player_id]: { before: 1494, after: winner === one ? 1478 : 1510 } },
+      });
+    }
     if (finisher !== null && t >= 3.4 && !finalSent) {
       finalSent = true;
-      renderer.setFinal({ version: 3, type: "final", match_id: "fixture", winner_id: one.player_id, method: "ko", round: 3, scorecards: [], ratings: {} });
+      renderer.setFinal({ version: PROTOCOL_VERSION, type: "final", match_id: "fixture", winner_id: one.player_id, method: flash ? "flash_ko" : "ko", round: 3, scorecards: [], ratings: {} });
     }
+    (window as unknown as Record<string, unknown>).__fixtureRenderer = renderer;
     (window as unknown as Record<string, unknown>).__fixtureDebug = {
       tick,
       t: Number(t.toFixed(2)),
       downed: two.is_downed,
       severedHeads: renderer.labEffects.activeHeads,
       severedHands: renderer.labEffects.activeHands,
+      mouthpieces: [renderer.labEffects.mouthpieceOut(0), renderer.labEffects.mouthpieceOut(1)],
+      bursts: [renderer.labEffects.headBurst(0), renderer.labEffects.headBurst(1)],
+      eyes: [renderer.labEffects.eyeOut(0), renderer.labEffects.eyeOut(1)],
+      eyeAt: (() => { const at = new THREE.Vector3(); return renderer.labEffects.eyePosition(1, at) ? at.toArray().map((value) => Number(value.toFixed(3))) : null; })(),
       rigs: renderer.labRigs.length,
       resolutionScale: renderer.resolutionScale,
       heads: renderer.labRigs.map((root) => {

@@ -15,7 +15,7 @@
   "action_buffer_ticks": 6,
   "facing": {
     "scale": 1000,
-    "turn_percent_per_update": 35
+    "turn_degrees_per_second": 75
   },
   "combos": {
     "recovery_cancel_percent": 50,
@@ -43,8 +43,25 @@
     ]
   },
   "knockdown": {
-    "neutral_separation": 230,
-    "referee_walk_speed": 4
+    "referee_walk_speed": 5,
+    "mandatory_count": 8,
+    "box_pause_ticks": 60,
+    "get_up_stun_ticks": 20,
+    "get_up_stamina": 500,
+    "get_up_base": 34,
+    "get_up_per_knockdown": 20,
+    "get_up_trauma_divisor": 18
+  },
+  "countdown": {
+    "opening_ticks": 240
+  },
+  "tired": {
+    "startup_ticks": 3,
+    "recovery_ticks": 5,
+    "impact_percent": 40
+  },
+  "foul": {
+    "separation": 45
   },
   "hitstop_ms": {
     "hit": 78,
@@ -174,6 +191,127 @@
   "clinch": {
     "hold_distance": 60,
     "draw_speed": 6
+  },
+  "corner": {
+    "cut": {
+      "worse_cut": 250,
+      "other_cut": 100,
+      "bleeding_kept_percent": 30
+    },
+    "swelling": {
+      "swelling": 250,
+      "eyes": 200
+    },
+    "breath": {
+      "conditioning": 180,
+      "body": 150
+    },
+    "balanced": {
+      "worse_cut": 80,
+      "bleeding_kept_percent": 75,
+      "swelling": 80,
+      "eyes": 60
+    }
+  },
+  "blind_side": {
+    "eye_threshold": 700,
+    "impact_percent": 120
+  },
+  "doctor": {
+    "cut": 800,
+    "swelling": 900
+  },
+  "parry": {
+    "stagger_ticks": 20
+  },
+  "body": {
+    "wind_percent": 90,
+    "collapse_body_trauma": 650,
+    "collapse_stamina": 350,
+    "collapse_minimum_damage": 40,
+    "collapse_delay_ticks": 10,
+    "collapse_cooldown_ticks": 300
+  },
+  "styles": {
+    "balanced": {},
+    "boxer": {
+      "recovery_ticks": {
+        "jab": -1
+      },
+      "reach_percent": 102,
+      "impact_percent": 98,
+      "poise_damage_percent": 98
+    },
+    "slugger": {
+      "impact_percent": 108,
+      "poise_damage_percent": 108,
+      "poise_taken_percent": 95,
+      "stamina_cost_percent": 115,
+      "recovery_ticks": {
+        "hook": 1,
+        "uppercut": 1
+      },
+      "move_speed_percent": 96
+    },
+    "swarmer": {
+      "move_speed_percent": 103,
+      "startup_ticks": {
+        "hook": -1,
+        "uppercut": -1
+      },
+      "body_damage_percent": 110,
+      "conditioning_loss_percent": 85,
+      "impact_percent": 96,
+      "poise_damage_percent": 96,
+      "evasion_ticks": 1
+    },
+    "counter_puncher": {
+      "counter_bonus_percent": 38,
+      "counter_window_ticks": 3,
+      "evasion_ticks": 1,
+      "perfect_block_ticks": 1,
+      "impact_percent": 96,
+      "poise_damage_percent": 96
+    }
+  },
+  "stun": {
+    "flinch_minimum_damage": 36,
+    "flinch_base_ticks": 5,
+    "flinch_damage_divisor": 16,
+    "rocked_counter_damage": 50,
+    "rocked_power_damage": 70,
+    "rocked_hurt_poise": 180,
+    "rocked_base_ticks": 16,
+    "rocked_damage_divisor": 6,
+    "rocked_max_ticks": 36,
+    "chain_max_ticks": 45,
+    "immunity_ticks": 24,
+    "rocked_immunity_ticks": 8,
+    "moving_speed_percent": 75
+  },
+  "guard": {
+    "block_poise_percent": 25,
+    "perfect_block_poise_percent": 0,
+    "leak_base_percent": 70,
+    "leak_minimum_percent": 10,
+    "block_minimum": 60,
+    "perfect_rearm_ticks": 6,
+    "held_regen_every_ticks": 4,
+    "damage_percent": 60,
+    "stamina_regen_percent": 50
+  },
+  "trauma": {
+    "head_per_damage_percent": 100,
+    "eye_per_damage_percent": 70,
+    "cut_per_damage_percent": 50,
+    "jab_cut_percent": 25,
+    "jab_swelling_percent": 50,
+    "swelling_per_damage_percent": 33,
+    "poise_ceiling_per_head_percent": 30,
+    "poise_ceiling_floor": 220,
+    "body_per_damage_percent": 100,
+    "poise_regen_every_ticks": 2,
+    "poise_damage_percent": 100
   },
   "hitbox": {
     "glove_radius": 0.11

@@ -108,7 +108,7 @@ export class SolvedRig {
   readonly bones: Readonly<Record<CanonicalBone, THREE.Bone>>;
   readonly metrics: RigMetrics;
   private readonly restLocal = new Map<THREE.Bone, THREE.Quaternion>();
-  private readonly restLocalPosition = new Map<THREE.Bone, THREE.Vector3>();
+  private readonly restPositions = new Map<THREE.Bone, THREE.Vector3>();
   private readonly limb = { reached: false, joint: new THREE.Vector3() };
 
   constructor(root: THREE.Object3D) {
@@ -126,7 +126,7 @@ export class SolvedRig {
     root.updateMatrixWorld(true);
     for (const bone of found.values()) {
       this.restLocal.set(bone, bone.quaternion.clone());
-      this.restLocalPosition.set(bone, bone.position.clone());
+      this.restPositions.set(bone, bone.position.clone());
     }
     const distance = (from: CanonicalBone, to: CanonicalBone): number =>
       worldPosition(bones[from], scratchA).distanceTo(worldPosition(bones[to], scratchB));
@@ -152,13 +152,17 @@ export class SolvedRig {
   resetToRest(): void {
     for (const [bone, quaternion] of this.restLocal) {
       bone.quaternion.copy(quaternion);
-      const position = this.restLocalPosition.get(bone);
+      const position = this.restPositions.get(bone);
       if (position !== undefined) bone.position.copy(position);
     }
   }
 
   restLocalQuaternion(bone: THREE.Bone): THREE.Quaternion {
     return this.restLocal.get(bone) ?? bone.quaternion;
+  }
+
+  restLocalPosition(bone: THREE.Bone): THREE.Vector3 {
+    return this.restPositions.get(bone) ?? bone.position;
   }
 
   position(bone: CanonicalBone, target: THREE.Vector3): THREE.Vector3 {

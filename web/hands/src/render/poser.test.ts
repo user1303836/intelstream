@@ -1,12 +1,14 @@
 import * as THREE from "three";
-import { punchTiming } from "../manifest";
+import { FIGHTER_RADIUS, RING_HALF_WIDTH, punchTiming } from "../manifest";
 import { fighter as baseFighter } from "../test/fixtures";
 import type { FighterSnapshot } from "../types";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, remapPunchAge } from "./graph";
 import { applyHeadTrauma } from "./injury";
 import { STANCE } from "./poser";
 import { worldPosition, worldQuaternion, type CanonicalBone } from "./rig";
-import { worldMapping } from "./world";
+import { aboveNeckCut } from "./renderer";
+import { ROPE_BACK, ROPE_MAX_GIVE } from "./ring";
+import { ROPE_HEIGHTS, ROPE_LINE, worldMapping } from "./world";
 
 const mapping = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 });
 const gltf = await loadBoxerGlb();
@@ -101,20 +103,39 @@ describe("celebration", () => {
 });
 
 describe("fall direction", () => {
+  it("goes down the way the blow drove him: a hook to the side, an uppercut or a straight onto his back", () => {
+    for (const [punchClass, hand] of [["hook", "left"], ["hook", "right"], ["uppercut", "left"], ["straight", "right"]] as const) {
+      const { boxer, graph } = makeGraph();
+      const fighter = facingOpponent(baseFighter("one"));
+      const opponent = opponentFor("two");
+      run(graph, fighter, opponent, 10, undefined);
+      graph.react("hit", "head", 1, punchClass, hand, 420);
+      run(graph, { ...fighter, is_downed: true }, opponent, 70, undefined, 5, 10 / 60);
+      const head = bone(boxer, "head");
+      const hips = bone(boxer, "hips");
+      expect(head.y).toBeLessThan(0.45);
+      // The fighter faces +z; a left hook drives the head toward his own left (+x), a right hook toward -x.
+      if (punchClass === "hook") expect(Math.sign(head.x - hips.x)).toBe(hand === "left" ? 1 : -1);
+      else expect(head.z).toBeLessThan(hips.z);
+    }
+  });
+
   // The engine's hardest hit does about 153 damage, and the knockdown event that follows the hit carries
-  // the knockdown count (1-3) as its amount, so the fall must not depend on the amount at all.
+  // the knockdown count (1-3) as its amount, so the fall must not depend on the amount at all. Live, the
+  // knockout physics plays the fall (above); these are the animated falls that reduced motion plays.
   const fall = (punchClass: "hook" | "uppercut" | "straight", target: "head" | "body", hand: "left" | "right", damage: number): { head: THREE.Vector3; hips: THREE.Vector3 } => {
     const { boxer, graph } = makeGraph();
     const fighter = facingOpponent(baseFighter("one"));
     const opponent = opponentFor("two");
     run(graph, fighter, opponent, 10, undefined);
+    graph.useAuthoredFall();
     graph.react("hit", target, 1, punchClass, hand, damage);
     graph.react("hit", target, 1, punchClass, hand, 1);
     run(graph, { ...fighter, is_downed: true }, opponent, 70, undefined, 5, 10 / 60);
     return { head: bone(boxer, "head"), hips: bone(boxer, "hips") };
   };
 
-  it("drops face down after a hook or a body shot and onto the back after an uppercut, whatever the damage", () => {
+  it("animates a face-down fall after a hook or a body shot and onto the back after an uppercut, whatever the damage", () => {
     for (const [punchClass, target, faceDown] of [["hook", "head", true], ["uppercut", "head", false], ["straight", "body", true]] as const) {
       for (const damage of [40, 153]) {
         const { head, hips } = fall(punchClass, target, "left", damage);
@@ -181,13 +202,15 @@ function kneeBend(boxer: SkinnedBoxer, side: "L" | "R"): number | null {
 describe("down and get-up poses", () => {
   /**
    * Knocks a fighter down with `punchClass`, fills his get-up meter in two good presses while he is down,
-   * then lets him up, sampling every frame.
+   * then lets him up, sampling every frame. These are the animated falls (reduced motion, and a body shot to
+   * one knee); the knockout physics' falls hand over to the same get-up (see "hand-over to the get-up").
    */
   const knockdown = (punchClass: "hook" | "uppercut", stance: "orthodox" | "southpaw", sample: (boxer: SkinnedBoxer, frame: number) => void): void => {
     const { boxer, graph } = makeGraph();
     const fighter = facingOpponent({ ...baseFighter("one"), stance, get_up_required: 60 });
     const opponent = opponentFor("two");
     run(graph, fighter, opponent, 20, undefined);
+    graph.useAuthoredFall();
     graph.react("hit", "head", 1, punchClass, "left", 120);
     let tick = 10;
     for (let frame = 0; frame < 240; frame += 1) {
@@ -233,7 +256,7 @@ describe("down and get-up poses", () => {
 describe("get-up", () => {
   // The engine puts a fighter straight back in the fight when he beats the count: he can walk at once and
   // act once a 20-tick (0.67 s) stun runs out.
-  const knockedDown = (): { boxer: SkinnedBoxer; step: (fighter: FighterSnapshot, frames: number) => number; standing: FighterSnapshot; downed: FighterSnapshot; guardZ: number } => {
+  const knockedDown = (): { boxer: SkinnedBoxer; graph: BoxingGraph; step: (fighter: FighterSnapshot, frames: number) => number; standing: FighterSnapshot; downed: FighterSnapshot; guardZ: number } => {
     const { boxer, graph } = makeGraph();
     const opponent = opponentFor("two");
     const head = new THREE.Vector3(0, 1.5, mapping.z(-150));
@@ -247,11 +270,12 @@ describe("get-up", () => {
       return tick;
     };
     step(standing, 20);
-    const guardZ = bone(boxer, "gloveL").z;
+    // Measured from where he stands: after the physics' fall he gets up where his body lies and steps back as he rises.
+    const guardZ = bone(boxer, "gloveL").z - boxer.root.position.z;
     graph.react("hit", "head", 1, "uppercut", "right", 120);
     const downed = { ...standing, is_downed: true };
     step(downed, 60);
-    return { boxer, step, standing, downed, guardZ };
+    return { boxer, graph, step, standing, downed, guardZ };
   };
 
   it("rises with the get-up meter while down, then stands inside the stun and throws at full reach", () => {
@@ -273,16 +297,18 @@ describe("get-up", () => {
     let reach = -Infinity;
     for (let frame = 0; frame < (timing.startup + timing.active) * 2; frame += 1) {
       step(jab, 1);
-      reach = Math.max(reach, bone(boxer, "gloveL").z);
+      reach = Math.max(reach, bone(boxer, "gloveL").z - boxer.root.position.z);
     }
     expect(reach).toBeGreaterThan(guardZ + 0.25);
   });
 
   it("falls again from where the get-up had him when he is knocked down mid-rise", () => {
-    const { boxer, step, standing, downed } = knockedDown();
+    const { boxer, graph, step, standing, downed } = knockedDown();
     step({ ...downed, get_up_meter: 22 }, 30);
     step({ ...downed, get_up_meter: 44 }, 30);
     step({ ...standing, get_up_meter: 66, stunned_ticks: 20 }, 8);
+    // The animated fall (reduced motion); the knockout physics starts its fall from the pose on screen too.
+    graph.useAuthoredFall();
     const names = Object.keys(boxer.rig.bones) as CanonicalBone[];
     let previous = names.map((name) => bone(boxer, name));
     expect(previous[names.indexOf("head")]!.y).toBeLessThan(1.3);
@@ -351,6 +377,8 @@ describe("falls near the ropes", () => {
     const opponent = { ...baseFighter("two"), x: 0, y: 0 };
     run(graph, fighter, opponent, 20, undefined);
     const start = furthest(boxer);
+    // The animated landing (reduced motion): the knockout physics has the ropes and posts in its own world.
+    graph.useAuthoredFall();
     graph.react("hit", "head", 1, punchClass, "left", 120);
     let widest = 0;
     for (let frame = 0; frame < 70; frame += 5) {
@@ -528,6 +556,28 @@ describe("taunt", () => {
   });
 });
 
+describe("a spent guard", () => {
+  it("drops the gloves toward the chest once the guard is worn under what stops a punch, held up or not", async () => {
+    const { GUARD_BLOCK_MINIMUM } = await import("../manifest");
+    const gloves = (guard: number, defense: FighterSnapshot["defense"]) => {
+      const { boxer, graph } = makeGraph();
+      run(graph, { ...facingOpponent(baseFighter("one")), guard, defense }, opponentFor("two"), 45, undefined);
+      return { left: bone(boxer, "gloveL"), right: bone(boxer, "gloveR"), head: bone(boxer, "head") };
+    };
+    for (const defense of ["guard_high", "none"] as const) {
+      const fresh = gloves(80, defense);
+      const spent = gloves(40, defense);
+      expect(fresh.left.y - spent.left.y, defense).toBeGreaterThan(0.1);
+      expect(fresh.right.y - spent.right.y, defense).toBeGreaterThan(0.1);
+    }
+    // Held up but spent, the gloves sit under the chin: the opening shows.
+    const opening = gloves(40, "guard_high");
+    expect(Math.max(opening.left.y, opening.right.y)).toBeLessThan(gloves(80, "guard_high").head.y - 0.15);
+    // At the line itself the guard still stops punches, and stays up.
+    expect(gloves(GUARD_BLOCK_MINIMUM, "guard_high").left.y).toBeCloseTo(gloves(80, "guard_high").left.y, 3);
+  });
+});
+
 describe("cutman", () => {
   it("crouches before the seated fighter, presses the enswell on the eye, and stands back up when done", () => {
     const { boxer, graph } = makeGraph();
@@ -691,6 +741,223 @@ describe("own punch prediction", () => {
     expect(active(graph)).toBe(true);
   });
 
+  it("shows an opponent's punch as soon as the newest snapshot carries it and still lands it on the server's contact tick", () => {
+    const { graph } = makeGraph();
+    const idle = facingOpponent(baseFighter("one"));
+    const timing = punchTiming("hook", "head", "normal");
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    let tick = 1000;
+    const startTick = tick + 2;
+    const thrown = serverPunch(idle, "theirs-early", "hook", startTick);
+    const ages: number[] = [];
+    let contactAt: number | null = null;
+    for (let frame = 0; frame < 80; frame += 1) {
+      tick += 0.5;
+      graph.anticipate(thrown, startTick - tick);
+      graph.update(tick >= startTick ? thrown : idle, opponentFor("two"), 1 / 60, tick / 30, false, "full", tick, undefined);
+      if (frame === 0) expect(active(graph)).toBe(true);
+      if (!active(graph)) break;
+      ages.push(age(graph));
+      if (contactAt === null && age(graph) >= timing.startup) contactAt = tick;
+    }
+    for (let index = 1; index < ages.length; index += 1) expect(ages[index]!).toBeGreaterThanOrEqual(ages[index - 1]!);
+    expect(contactAt).not.toBeNull();
+    expect(Math.abs(contactAt! - (startTick + timing.startup))).toBeLessThanOrEqual(1);
+  });
+
+  it("holds back a punch that is too far ahead until it can be shown at half speed or faster", () => {
+    const { graph } = makeGraph();
+    const idle = facingOpponent(baseFighter("one"));
+    const timing = punchTiming("jab", "head", "normal");
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    let tick = 3000;
+    const startTick = tick + 6;
+    const thrown = serverPunch(idle, "theirs-far", "jab", startTick);
+    let startedAt: number | null = null;
+    let contactAt: number | null = null;
+    let previous = 0;
+    for (let frame = 0; frame < 80; frame += 1) {
+      tick += 0.5;
+      graph.anticipate(thrown, startTick - tick);
+      graph.update(tick >= startTick ? thrown : idle, opponentFor("two"), 1 / 60, tick / 30, false, "full", tick, undefined);
+      if (!active(graph)) {
+        if (startedAt !== null) break;
+        continue;
+      }
+      startedAt ??= tick;
+      if (age(graph) < timing.startup) expect(age(graph) - previous).toBeGreaterThanOrEqual(0.5 * 0.5 - 1e-6);
+      previous = age(graph);
+      if (contactAt === null && age(graph) >= timing.startup) contactAt = tick;
+    }
+    expect(startedAt).not.toBeNull();
+    expect(startTick - startedAt!).toBeLessThanOrEqual(timing.startup);
+    expect(startTick - startedAt!).toBeGreaterThan(timing.startup - 1);
+    expect(Math.abs(contactAt! - (startTick + timing.startup))).toBeLessThanOrEqual(1);
+  });
+
+  it("starts an early punch once even when the delayed clock never reaches it", () => {
+    const { graph } = makeGraph();
+    const idle = facingOpponent(baseFighter("one"));
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    const thrown = serverPunch(idle, "theirs-stalled", "hook", 4002);
+    let starts = 0;
+    let wasActive = false;
+    for (let frame = 0; frame < 400; frame += 1) {
+      graph.anticipate(thrown, 2);
+      graph.update(idle, opponentFor("two"), 1 / 60, frame / 60, false, "full", 4000, undefined);
+      if (active(graph) && !wasActive) starts += 1;
+      wasActive = active(graph);
+    }
+    expect(starts).toBe(1);
+    expect(active(graph)).toBe(false);
+  });
+
+  it("does not start a punch early twice or bring back one that has finished", () => {
+    const { graph } = makeGraph();
+    const idle = facingOpponent(baseFighter("one"));
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    let tick = 2000;
+    const thrown = serverPunch(idle, "theirs-once", "jab", tick + 2);
+    let starts = 0;
+    let wasActive = false;
+    for (let frame = 0; frame < 120; frame += 1) {
+      tick += 0.5;
+      graph.anticipate(thrown, thrown.action_start_tick - tick);
+      const retained = tick < thrown.action_start_tick + 28;
+      graph.update(tick >= thrown.action_start_tick && retained ? thrown : idle, opponentFor("two"), 1 / 60, tick / 30, false, "full", tick, undefined);
+      if (active(graph) && !wasActive) starts += 1;
+      wasActive = active(graph);
+    }
+    expect(starts).toBe(1);
+  });
+
+  it("leaves the viewer's own punch alone when the newest snapshot brings the server's copy of it", () => {
+    const { graph } = makeGraph();
+    const idle = facingOpponent(baseFighter("one"));
+    const timing = punchTiming("hook", "head", "normal");
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    graph.predict({ kind: "punch", id: "own-early", class: "hook", hand: "left", target: "head", power: "normal" }, 0, 30, 4);
+    let tick = 100;
+    const startTick = 103;
+    const confirmed = serverPunch(idle, "own-early", "hook", startTick);
+    const ages: number[] = [];
+    let contactAt: number | null = null;
+    let starts = 0;
+    let wasActive = true;
+    for (let frame = 0; frame < 80; frame += 1) {
+      tick += 0.5;
+      if (tick + 2 >= startTick) graph.anticipate(confirmed, startTick - tick);
+      graph.update(tick > startTick - 1 ? confirmed : idle, opponentFor("two"), 1 / 60, tick / 30, false, "full", tick, undefined);
+      if (active(graph) && !wasActive) starts += 1;
+      wasActive = active(graph);
+      if (!active(graph)) break;
+      ages.push(age(graph));
+      if (contactAt === null && age(graph) >= timing.startup) contactAt = tick;
+    }
+    for (let index = 1; index < ages.length; index += 1) expect(ages[index]!).toBeGreaterThanOrEqual(ages[index - 1]!);
+    expect(starts).toBe(0);
+    expect(Math.abs(contactAt! - (startTick + timing.startup))).toBeLessThanOrEqual(1);
+  });
+
+  const followUp = (startTick: number, lead: number): { startedAt: number; progress: number; starts: number } => {
+    const { graph } = makeGraph();
+    const idle = facingOpponent(baseFighter("one"));
+    const jab = punchTiming("jab", "head", "normal");
+    const total = jab.startup + jab.active + jab.recovery;
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    const first = serverPunch(idle, "theirs-first", "jab", 201);
+    const second = serverPunch(idle, "theirs-second", "hook", startTick);
+    let tick = 200;
+    let startedAt = Infinity;
+    let progress = 0;
+    let starts = 0;
+    let previous = "";
+    let wasActive = false;
+    for (let frame = 0; frame < 120; frame += 1) {
+      tick += 0.5;
+      const newest = tick + lead >= startTick ? second : tick + lead >= 201 ? first : idle;
+      const before = age(graph) / total;
+      if (newest !== idle) graph.anticipate(newest, newest.action_start_tick - tick);
+      graph.update(tick > startTick - 1 ? second : tick > 200 ? first : idle, opponentFor("two"), 1 / 60, tick / 30, false, "full", tick, undefined);
+      const shown = active(graph) ? state(graph).punchClass : "";
+      if (shown === "hook" && (previous !== "hook" || !wasActive)) {
+        starts += 1;
+        if (starts === 1) {
+          startedAt = tick;
+          progress = before;
+        }
+      }
+      previous = shown;
+      wasActive = active(graph);
+    }
+    return { startedAt, progress, starts };
+  };
+
+  it("starts a follow-up early once the punch in flight is past half way, and only once", () => {
+    const late = followUp(211, 3);
+    expect(late.startedAt).toBeLessThan(210);
+    expect(late.progress).toBeGreaterThan(0.55);
+    expect(late.starts).toBe(1);
+  });
+
+  it("leaves a follow-up to the server's clock when the punch in flight is not yet half way", () => {
+    // The server cancels the jab's recovery into a hook, and the news of it is five ticks ahead of the screen.
+    const soon = followUp(208, 5);
+    expect(soon.startedAt).toBeGreaterThanOrEqual(207);
+    expect(soon.startedAt).toBeLessThanOrEqual(208.5);
+    expect(soon.starts).toBe(1);
+  });
+
+  it("does not throw the viewer's own punch again when the server's copy arrives after it has finished", () => {
+    const { graph } = makeGraph();
+    const idle = facingOpponent(baseFighter("one"));
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    graph.predict({ kind: "punch", id: "own-late", class: "jab", hand: "left", target: "head", power: "normal" }, 0, 30, 4);
+    let tick = 500;
+    for (let frame = 0; frame < 80 && active(graph); frame += 1) {
+      tick += 0.5;
+      graph.update(idle, opponentFor("two"), 1 / 60, tick / 30, false, "full", tick, undefined);
+    }
+    expect(active(graph)).toBe(false);
+    graph.anticipate(serverPunch(idle, "own-late", "jab", tick + 2), 2);
+    expect(active(graph)).toBe(false);
+  });
+
+  it("finishes an early punch at full speed when the server stops reporting it", () => {
+    const timing = punchTiming("hook", "head", "normal");
+    const total = timing.startup + timing.active + timing.recovery;
+    const endsAt = (early: boolean): number => {
+      const { graph } = makeGraph();
+      const idle = facingOpponent(baseFighter("one"));
+      run(graph, idle, opponentFor("two"), 10, undefined);
+      const startTick = 303;
+      const thrown = serverPunch(idle, "theirs-cleared", "hook", startTick);
+      let tick = 300;
+      for (let frame = 0; frame < 200; frame += 1) {
+        tick += 0.5;
+        if (early && tick + 3 >= startTick && tick < startTick + 4) graph.anticipate(thrown, startTick - tick);
+        graph.update(tick >= startTick && tick < startTick + 4 ? thrown : idle, opponentFor("two"), 1 / 60, tick / 30, false, "full", tick, undefined);
+        if (tick > startTick && !active(graph)) return tick - startTick;
+      }
+      return Infinity;
+    };
+    expect(endsAt(false)).toBeLessThanOrEqual(total);
+    expect(endsAt(true)).toBeLessThanOrEqual(total + 1);
+  });
+
+  it("forgets a punch it started early when the fighter is reset", () => {
+    const { graph } = makeGraph();
+    const idle = facingOpponent(baseFighter("one"));
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    const thrown = serverPunch(idle, "theirs-again", "hook", 403);
+    graph.anticipate(thrown, 2);
+    expect(active(graph)).toBe(true);
+    graph.resetTransient();
+    expect(active(graph)).toBe(false);
+    graph.anticipate(thrown, 2);
+    expect(active(graph)).toBe(true);
+  });
+
   it("plays an opponent's punch on the server's timeline", () => {
     const { graph } = makeGraph();
     const idle = facingOpponent(baseFighter("one"));
@@ -702,12 +969,123 @@ describe("own punch prediction", () => {
   });
 });
 
+describe("decision ceremony", () => {
+  const square = (id: string): FighterSnapshot => ({ ...baseFighter(id), x: 0, y: 0, facing_x: 0, facing_y: -1000 });
+  const beside = (): FighterSnapshot => ({ ...baseFighter("other"), x: 204, y: 0, facing_x: 0, facing_y: -1000 });
+  const settle = (prepare: (graph: BoxingGraph) => void, frames = 150): { boxer: SkinnedBoxer; graph: BoxingGraph } => {
+    const made = makeGraph();
+    prepare(made.graph);
+    run(made.graph, square("one"), beside(), frames, undefined);
+    return made;
+  };
+
+  it("stands the fighter square to the camera with the gloves down while the cards are read", () => {
+    const { boxer } = settle((graph) => graph.awaitVerdict(1));
+    const left = bone(boxer, "gloveL");
+    const right = bone(boxer, "gloveR");
+    expect(left.y).toBeLessThan(1.05);
+    expect(right.y).toBeLessThan(1.05);
+    expect(Math.abs(left.y - right.y)).toBeLessThan(0.05);
+    expect(Math.abs(left.z - right.z)).toBeLessThan(0.06);
+    expect(left.x).toBeGreaterThan(0.15);
+    expect(right.x).toBeLessThan(-0.15);
+    expect(Math.abs(bone(boxer, "ankleL").z - bone(boxer, "ankleR").z)).toBeLessThan(0.1);
+  });
+
+  it("raises the winner's arm on the referee's side and leaves the other down", () => {
+    for (const side of [1, -1] as const) {
+      const { boxer } = settle((graph) => {
+        graph.awaitVerdict(side);
+        graph.announce("winner");
+      });
+      const raised = bone(boxer, side === 1 ? "gloveL" : "gloveR");
+      const lowered = bone(boxer, side === 1 ? "gloveR" : "gloveL");
+      expect(raised.y).toBeGreaterThan(bone(boxer, "head").y + 0.2);
+      expect(Math.sign(raised.x)).toBe(side);
+      expect(lowered.y).toBeLessThan(1.05);
+    }
+  });
+
+  it("raises both fighters' arms after a draw and bows the loser's head", () => {
+    const level = settle((graph) => {
+      graph.awaitVerdict(-1);
+      graph.announce("level");
+    });
+    expect(bone(level.boxer, "gloveR").y).toBeGreaterThan(bone(level.boxer, "head").y + 0.2);
+    const waiting = settle((graph) => graph.awaitVerdict(1));
+    const loser = settle((graph) => {
+      graph.awaitVerdict(1);
+      graph.announce("loser");
+    });
+    expect(bone(loser.boxer, "gloveL").y).toBeLessThan(1.05);
+    expect(bone(loser.boxer, "gloveR").y).toBeLessThan(1.05);
+    const chin = (boxer: SkinnedBoxer): number => new THREE.Vector3(0, 0, 1).applyQuaternion(boxer.rig.bones.head.getWorldQuaternion(new THREE.Quaternion())).y;
+    expect(chin(loser.boxer)).toBeLessThan(chin(waiting.boxer) - 0.2);
+  });
+
+  it("puts the referee's hand around the wrist it is given, on that side", () => {
+    const made = new SkinnedBoxer(gltf, { skin: 0xc79b76, gear: 0x1b2230 });
+    const referee = new BoxingGraph(made, mapping, { referee: true });
+    const wrist = new THREE.Vector3(-0.3, 1.9, 0.3);
+    referee.raise(null, wrist);
+    run(referee, square("referee"), { ...square("focus"), y: -300 }, 150, undefined);
+    const hand = bone(made, "gloveR");
+    expect(hand.distanceTo(new THREE.Vector3(-0.3, 1.73, 0.3))).toBeLessThan(0.04);
+    expect(bone(made, "gloveL").y).toBeLessThan(1.05);
+    referee.raise(null, null);
+    run(referee, square("referee"), { ...square("focus"), y: -300 }, 150, undefined);
+    expect(bone(made, "gloveR").y).toBeLessThan(1.05);
+  });
+
+  it("ends with the bout", () => {
+    const { boxer, graph } = settle((made) => {
+      made.awaitVerdict(1);
+      made.announce("winner");
+    });
+    expect(bone(boxer, "gloveL").y).toBeGreaterThan(1.8);
+    graph.awaitVerdict(null);
+    run(graph, facingOpponent(baseFighter("one")), opponentFor("two"), 150, undefined);
+    expect(bone(boxer, "gloveL").y).toBeLessThan(1.7);
+    graph.awaitVerdict(1);
+    graph.announce("winner");
+    graph.resetTransient();
+    run(graph, facingOpponent(baseFighter("one")), opponentFor("two"), 5, undefined);
+    expect(bone(boxer, "gloveL").y).toBeLessThan(1.7);
+  });
+});
+
+describe("infighting", () => {
+  const settle = (gapUnits: number): { glove: number; head: THREE.Vector3 } => {
+    const { boxer, graph } = makeGraph();
+    const fighter = { ...facingOpponent(baseFighter("one")), defense: "guard_high" as const };
+    const opponent = { ...opponentFor("two"), y: -gapUnits };
+    run(graph, fighter, opponent, 90, undefined);
+    return { glove: bone(boxer, "gloveL").z - boxer.root.position.z, head: bone(boxer, "head").sub(boxer.root.position) };
+  };
+
+  it("tucks the guard in and takes the head off the centre line when the opponent is on top of the fighter", () => {
+    const open = settle(300);
+    const inside = settle(76);
+    const toward = Math.sign(open.glove);
+    expect(toward * (open.glove - inside.glove)).toBeGreaterThan(0.08);
+    expect(Math.abs(inside.head.x - open.head.x)).toBeGreaterThan(0.04);
+    expect(toward * (open.head.z - inside.head.z)).toBeGreaterThan(0.03);
+  });
+
+  it("stands in the open stance at punching range", () => {
+    const open = settle(300);
+    const ranged = settle(170);
+    expect(Math.abs(open.glove - ranged.glove)).toBeLessThan(0.005);
+    expect(open.head.distanceTo(ranged.head)).toBeLessThan(0.005);
+  });
+});
+
 describe("clinch hold", () => {
   it("ties up over the arms for the first-sorted fighter and under them for the other, heads to the right", () => {
     const clinched = (id: string): FighterSnapshot => ({ ...facingOpponent(baseFighter(id)), clinch_ticks: 30 });
     const held = (id: string): FighterSnapshot => ({ ...opponentFor(id), y: -100, clinch_ticks: 30 });
     const idle = makeGraph();
-    run(idle.graph, facingOpponent(baseFighter("one")), held("two"), 60, undefined);
+    run(idle.graph, facingOpponent(baseFighter("one")), { ...opponentFor("two"), y: -300 }, 60, undefined);
     const over = makeGraph();
     run(over.graph, clinched("one"), held("two"), 60, undefined);
     const under = makeGraph();
@@ -732,21 +1110,169 @@ describe("clinch hold", () => {
     }
     expect(Math.max(...sway) - Math.min(...sway)).toBeGreaterThan(0.008);
   });
+
+  /** The skinned skull above the neck cut, sampled, and the ellipsoid its bounding box holds in the head bone's frame. */
+  const skull = (boxer: SkinnedBoxer): { inverse: THREE.Matrix4; centre: THREE.Vector3; radii: THREE.Vector3; points: THREE.Vector3[] } => {
+    boxer.root.updateMatrixWorld(true);
+    const mesh = boxer.headMesh;
+    const inverse = boxer.bone("head")!.matrixWorld.clone().invert();
+    const position = mesh.geometry.getAttribute("position");
+    const points: THREE.Vector3[] = [];
+    const box = new THREE.Box3();
+    for (let index = 0; index < position.count; index += 7) {
+      if (!aboveNeckCut(skinnedVertex.fromBufferAttribute(position, index))) continue;
+      const point = mesh.getVertexPosition(index, new THREE.Vector3()).applyMatrix4(mesh.matrixWorld);
+      points.push(point);
+      box.expandByPoint(point.clone().applyMatrix4(inverse));
+    }
+    return { inverse, centre: box.getCenter(new THREE.Vector3()), radii: box.getSize(new THREE.Vector3()).multiplyScalar(0.5), points };
+  };
+  /** How many sampled points of one skull are inside the other's. */
+  const inside = (one: SkinnedBoxer, other: SkinnedBoxer): number => {
+    const from = skull(one);
+    const into = skull(other);
+    const local = new THREE.Vector3();
+    return from.points.filter((point) => {
+      local.copy(point).applyMatrix4(into.inverse).sub(into.centre);
+      return Math.hypot(local.x / into.radii.x, local.y / into.radii.y, local.z / into.radii.z) < 1;
+    }).length;
+  };
+
+  it("rests the two heads on opposite shoulders whatever the stances, clear of each other through the struggle", () => {
+    for (const [first, second] of [["orthodox", "orthodox"], ["orthodox", "southpaw"], ["southpaw", "orthodox"], ["southpaw", "southpaw"]] as const) {
+      const one = makeGraph();
+      const two = makeGraph();
+      // Held at the engine's clinch distance, 60 units, as the hold draws them in.
+      const a: FighterSnapshot = { ...facingOpponent(baseFighter("one")), stance: first, clinch_ticks: 30 };
+      const b: FighterSnapshot = { ...opponentFor("two"), stance: second, y: -60, clinch_ticks: 30 };
+      const headA = new THREE.Vector3();
+      const headB = new THREE.Vector3();
+      let closest = Infinity;
+      let overlapping = 0;
+      for (let frame = 0; frame < 150; frame += 1) {
+        const time = 1 + frame / 60;
+        one.graph.update(a, b, 1 / 60, time, false, "full", 10 + frame * 0.5, frame > 0 ? headB : undefined);
+        two.graph.update(b, a, 1 / 60, time, false, "full", 10 + frame * 0.5, frame > 0 ? headA : undefined);
+        bone(one.boxer, "head", headA);
+        bone(two.boxer, "head", headB);
+        if (frame < 30) continue;
+        closest = Math.min(closest, headA.distanceTo(headB));
+        if (frame % 15 === 0) overlapping += inside(one.boxer, two.boxer) + inside(two.boxer, one.boxer);
+      }
+      expect(closest, `${first} v ${second}`).toBeGreaterThan(0.3);
+      expect(overlapping, `${first} v ${second}`).toBe(0);
+      // Each to his own right: one faces -z here, so his right is -x, and two's is +x.
+      expect(headA.x).toBeLessThan(-0.1);
+      expect(headB.x).toBeGreaterThan(0.1);
+      one.boxer.dispose();
+      two.boxer.dispose();
+    }
+  });
+});
+
+describe("on the ropes", () => {
+  /** Fighter one with his back to the +x ropes, facing the middle, and two on top of him: `units` is one's engine x. */
+  const pinned = (units: number): [FighterSnapshot, FighterSnapshot] => [
+    { ...baseFighter("one"), x: units, y: 0, facing_x: -1000, facing_y: 0, defense: "guard_high" },
+    { ...baseFighter("two"), x: units - 115, y: 0, facing_x: 1000, facing_y: 0 },
+  ];
+  const fight = (one: { boxer: SkinnedBoxer; graph: BoxingGraph }, two: { boxer: SkinnedBoxer; graph: BoxingGraph }, [a, b]: [FighterSnapshot, FighterSnapshot], frames: number, from = 0): void => {
+    const headA = new THREE.Vector3();
+    const headB = new THREE.Vector3();
+    for (let frame = 0; frame < frames; frame += 1) {
+      const time = 1 + (from + frame) / 60;
+      one.graph.update(a, b, 1 / 60, time, false, "full", 10 + (from + frame) * 0.5, from + frame > 0 ? headB : undefined);
+      two.graph.update(b, a, 1 / 60, time, false, "full", 10 + (from + frame) * 0.5, from + frame > 0 ? headA : undefined);
+      bone(one.boxer, "head", headA);
+      bone(two.boxer, "head", headB);
+    }
+  };
+  /** How far past the line `ropeX` the skin reaches, near each rope's height and across the fighter's back. */
+  const pastTheRope = (boxer: SkinnedBoxer, height: number, ropeX: number): number => {
+    boxer.root.updateMatrixWorld(true);
+    let furthest = -Infinity;
+    boxer.root.traverse((object) => {
+      if (!(object instanceof THREE.SkinnedMesh)) return;
+      const count = object.geometry.getAttribute("position").count;
+      for (let index = 0; index < count; index += 2) {
+        object.getVertexPosition(index, skinnedVertex).applyMatrix4(object.matrixWorld);
+        if (Math.abs(skinnedVertex.y - (height - 0.02)) < 0.03 && Math.abs(skinnedVertex.z) < 0.35) furthest = Math.max(furthest, skinnedVertex.x - ropeX);
+      }
+    });
+    return furthest;
+  };
+  const lean = (boxer: SkinnedBoxer): number => bone(boxer, "upperChest").x - bone(boxer, "hips").x;
+
+  it("draws a fighter the engine has past the ropes' give in, his back resting on the top rope, leaning back on it", () => {
+    const limit = RING_HALF_WIDTH - FIGHTER_RADIUS;
+    const open = [makeGraph(), makeGraph()] as const;
+    fight(open[0], open[1], pinned(300), 90);
+    const one = makeGraph();
+    const two = makeGraph();
+    fight(one, two, pinned(limit), 90);
+    // Drawn in so that his back is no further out than the ropes give.
+    expect(one.boxer.root.position.x + ROPE_BACK).toBeLessThanOrEqual(ROPE_LINE + ROPE_MAX_GIVE + 1e-6);
+    // The man on top of him comes in with him: the gap between them is the engine's.
+    expect(one.boxer.root.position.x - two.boxer.root.position.x).toBeCloseTo(mapping.x(115), 2);
+    // No rope passes through him, and his back rests against the top one rather than standing off it.
+    const rope = ROPE_LINE + ROPE_MAX_GIVE;
+    const ropeRadius = 0.028;
+    for (const height of [ROPE_HEIGHTS[1], ROPE_HEIGHTS[2]]) expect(pastTheRope(one.boxer, height, rope)).toBeLessThan(ropeRadius);
+    expect(pastTheRope(one.boxer, ROPE_HEIGHTS[2], rope)).toBeGreaterThan(-0.06);
+    // Leaning back toward the ropes from the hips.
+    expect(lean(one.boxer) - lean(open[0].boxer)).toBeGreaterThan(0.05);
+    // He eases back upright once he comes off the ropes.
+    fight(one, two, pinned(300), 90, 90);
+    expect(Math.abs(lean(one.boxer) - lean(open[0].boxer))).toBeLessThan(0.01);
+    expect(one.boxer.root.position.x).toBeCloseTo(mapping.x(300), 2);
+    for (const made of [...open, one, two]) made.boxer.dispose();
+  });
+
+  it("leaves the ropes alone short of their furthest give, where they bow behind him", () => {
+    const one = makeGraph();
+    const two = makeGraph();
+    fight(one, two, pinned(380), 90);
+    expect(one.boxer.root.position.x).toBeCloseTo(mapping.x(380), 3);
+    expect(Math.abs(lean(one.boxer))).toBeLessThan(0.1);
+    for (const made of [one, two]) made.boxer.dispose();
+  });
+});
+
+describe("two heads at close range", () => {
+  it("leans the head away from the other's rather than through it", () => {
+    const { boxer, graph } = makeGraph();
+    const fighter = facingOpponent(baseFighter("one"));
+    const opponent = opponentFor("two");
+    run(graph, fighter, opponent, 40, undefined);
+    const own = bone(boxer, "head").clone();
+    const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(boxer.root.getWorldQuaternion(new THREE.Quaternion()));
+    forward.y = 0;
+    const other = own.clone().addScaledVector(forward.normalize(), 0.06);
+    for (let frame = 0; frame < 60; frame += 1) run(graph, fighter, opponent, 1, other, 20 + frame * 0.5, (40 + frame) / 60);
+    expect(bone(boxer, "head").distanceTo(other)).toBeGreaterThan(0.15);
+    // Clear of it, he stands as he did.
+    for (let frame = 0; frame < 60; frame += 1) run(graph, fighter, opponent, 1, other.clone().addScaledVector(forward, 1), 50 + frame * 0.5, (100 + frame) / 60);
+    expect(bone(boxer, "head").distanceTo(own)).toBeLessThan(0.03);
+  });
 });
 
 describe("wave-off", () => {
-  it("sweeps both gloves across overhead while waving the fight off", () => {
+  it("sweeps both gloves wide across the chest, below the face, while waving the fight off", () => {
     const { boxer, graph } = makeGraph();
     const fighter = facingOpponent(baseFighter("one"));
     const opponent = opponentFor("two");
     graph.waveOff(4);
-    run(graph, fighter, opponent, 60, undefined);
-    const first = bone(boxer, "gloveL").clone();
-    expect(first.y).toBeGreaterThan(1.45);
-    run(graph, fighter, opponent, 12, undefined, 30, 1);
-    const later = bone(boxer, "gloveL");
-    expect(later.y).toBeGreaterThan(1.45);
-    expect(Math.abs(later.x - first.x)).toBeGreaterThan(0.15);
+    const xs: number[] = [];
+    for (let frame = 0; frame < 120; frame += 1) {
+      run(graph, fighter, opponent, 1, undefined, frame * 0.5, frame / 60);
+      if (frame < 40) continue;
+      const glove = bone(boxer, "gloveL");
+      const head = bone(boxer, "head");
+      xs.push(glove.x);
+      expect(glove.y).toBeGreaterThan(0.95);
+      expect(glove.y).toBeLessThan(head.y - 0.05);
+    }
+    expect(Math.max(...xs) - Math.min(...xs)).toBeGreaterThan(0.6);
   });
 });
 
@@ -995,6 +1521,98 @@ describe("runtime boxing graph", () => {
   });
 });
 
+describe("body-shot knockdown", () => {
+  const kneelAfterBodyShot = (): { boxer: SkinnedBoxer; graph: BoxingGraph; fighter: FighterSnapshot; opponent: FighterSnapshot } => {
+    const { boxer, graph } = makeGraph();
+    const fighter = facingOpponent(baseFighter("one"));
+    const opponent = opponentFor("two");
+    run(graph, fighter, opponent, 10, undefined);
+    graph.windedFor(0.35, -1);
+    run(graph, { ...fighter, stunned_ticks: 10 }, opponent, 20, undefined, 5, 10 / 60);
+    graph.fallToKnee(true);
+    run(graph, { ...fighter, is_downed: true }, opponent, 90, undefined, 15, 30 / 60);
+    return { boxer, graph, fighter, opponent };
+  };
+
+  it("takes a knee: the rear knee on the canvas, the glove on the struck side clamped on the ribs, the other on the front knee", () => {
+    const { boxer } = kneelAfterBodyShot();
+    const rearKnee = bone(boxer, "kneeR");
+    const frontKnee = bone(boxer, "kneeL");
+    const hips = bone(boxer, "hips");
+    expect(rearKnee.y).toBeLessThan(0.16);
+    expect(frontKnee.y).toBeGreaterThan(0.4);
+    expect(bone(boxer, "ankleL").y).toBeLessThan(0.2);
+    expect(hips.y).toBeGreaterThan(0.4);
+    expect(hips.y).toBeLessThan(0.65);
+    const head = bone(boxer, "head");
+    expect(head.y).toBeGreaterThan(0.75);
+    expect(head.y).toBeLessThan(1.25);
+    expect(bone(boxer, "gloveL").distanceTo(frontKnee)).toBeLessThan(0.25);
+    const clutch = bone(boxer, "gloveR");
+    expect(clutch.x).toBeLessThan(hips.x);
+    expect(clutch.y).toBeGreaterThan(0.5);
+    expect(clutch.y).toBeLessThan(0.85);
+  });
+
+  it("gets up off the knee, and the next knockdown that is not a body shot is a fall again", () => {
+    const { boxer, graph, fighter, opponent } = kneelAfterBodyShot();
+    run(graph, fighter, opponent, 140, undefined, 60, 2);
+    expect(bone(boxer, "hips").y).toBeGreaterThan(0.72);
+    graph.react("hit", "head", 1, "uppercut", "right", 420);
+    run(graph, { ...fighter, is_downed: true }, opponent, 70, undefined, 140, 5);
+    expect(bone(boxer, "head").y).toBeLessThan(0.45);
+  });
+
+  it("folds over the shot before he goes down", () => {
+    const { boxer, graph } = makeGraph();
+    const fighter = facingOpponent(baseFighter("one"));
+    const opponent = opponentFor("two");
+    run(graph, fighter, opponent, 30, undefined);
+    const upright = bone(boxer, "head").clone();
+    graph.windedFor(1, 1);
+    run(graph, { ...fighter, stunned_ticks: 20 }, opponent, 20, undefined, 15, 0.5);
+    const folded = bone(boxer, "head");
+    expect(folded.y).toBeLessThan(upright.y - 0.12);
+    const clutch = bone(boxer, "gloveL");
+    expect(clutch.y).toBeLessThan(1.1);
+    expect(clutch.x).toBeGreaterThan(bone(boxer, "hips").x);
+  });
+});
+
+describe("parry", () => {
+  it("knocks the puncher back with his guard thrown off", () => {
+    const { boxer, graph } = makeGraph();
+    const fighter = facingOpponent(baseFighter("one"));
+    const opponent = opponentFor("two");
+    run(graph, fighter, opponent, 40, undefined);
+    const head = bone(boxer, "head").clone();
+    const lean = head.z - bone(boxer, "hips").z;
+    const glove = bone(boxer, "gloveL").clone();
+    graph.stagger();
+    run(graph, fighter, opponent, 6, undefined, 20, 40 / 60);
+    expect(bone(boxer, "head").z).toBeLessThan(head.z - 0.03);
+    expect(bone(boxer, "head").z - bone(boxer, "hips").z).toBeLessThan(lean - 0.02);
+    expect(bone(boxer, "gloveL").y).toBeLessThan(glove.y - 0.02);
+  });
+});
+
+describe("cutman's bottle", () => {
+  it("holds a bottle at the mouth for the breath and the enswell for a cut", () => {
+    const { boxer, graph } = makeGraph();
+    const mouth = new THREE.Vector3(0.03, 1.1, 0.5);
+    graph.treat(mouth, new THREE.Vector3(0, 0, -1), 1, "bottle");
+    run(graph, facingOpponent(baseFighter("one")), opponentFor("two"), 90, undefined);
+    const glove = boxer.rig.bones.gloveL;
+    expect(glove.getObjectByName("bottle")?.visible).toBe(true);
+    expect(glove.getObjectByName("enswell")?.visible).toBe(false);
+    expect(bone(boxer, "gloveL").distanceTo(new THREE.Vector3(mouth.x, mouth.y + 0.02, mouth.z - 0.3))).toBeLessThan(0.12);
+    graph.treat(mouth, new THREE.Vector3(0, 0, -1), 1, "enswell");
+    run(graph, facingOpponent(baseFighter("one")), opponentFor("two"), 30, undefined, 45, 1.5);
+    expect(glove.getObjectByName("bottle")?.visible).toBe(false);
+    expect(glove.getObjectByName("enswell")?.visible).toBe(true);
+  });
+});
+
 describe("per-frame allocations", () => {
   /** Counts the vectors, quaternions and Euler angles built (clones included) while `body` runs. */
   const constructions = (body: () => void): number => {
@@ -1037,8 +1655,9 @@ describe("per-frame allocations", () => {
 
 describe("transition sweep", () => {
   const PUNCHES = ["jab", "straight", "hook", "uppercut"] as const;
-  // 9 m/s: a straight's glove peaks near 7 m/s, while the snaps this guards against moved bones 0.5 m in a frame.
-  const MAX_STEP = 0.15;
+  // 9.6 m/s: a straight's glove peaks near 7 m/s and a hook's elbow from the crowded guard of fighters this close
+  // near 9.2 m/s, while the snaps this guards against moved bones 0.5 m in a frame.
+  const MAX_STEP = 0.16;
 
   it("moves every bone smoothly, keeps the skin above the canvas and bends the knees forward from idle through punches, falls, get-ups, the corner stool and a taunt", () => {
     const { boxer, graph } = makeGraph();
@@ -1101,14 +1720,18 @@ describe("transition sweep", () => {
 
     step("idle", idle, 30);
     for (const punchClass of PUNCHES) step(punchClass, punch(punchClass, punchClass === "jab" || punchClass === "hook" ? "left" : "right"), 40);
+    // The animated falls (reduced motion); "hand-over to the get-up" sweeps the knockout physics' ones.
+    graph.useAuthoredFall();
     graph.react("hit", "head", 1, "hook", "left", 140);
     step("fall face down", downed, 70);
     getUp("first");
     step("stand", idle, 30);
+    graph.useAuthoredFall();
     graph.react("hit", "head", 1, "uppercut", "right", 120);
     step("fall on the back", downed, 70);
     step("get-up meter", (frame) => ({ ...downed, get_up_meter: frame < 30 ? 22 : 44 }), 60);
     step("get-up", released, 8);
+    graph.useAuthoredFall();
     step("knocked down rising", downed, 70);
     getUp("second");
     step("fight on", idle, 30);
@@ -1122,5 +1745,68 @@ describe("transition sweep", () => {
     expect(jump.distance, jump.at).toBeLessThan(MAX_STEP);
     expect(lowest.height, lowest.at).toBeGreaterThan(-0.02);
     expect(knee.along, knee.at).toBeGreaterThan(0.25);
+  });
+});
+
+describe("hand-over to the get-up", () => {
+  // Live, the knockout physics plays the fall. As the fighter starts to get up it hands the body to the animated
+  // get-up, which begins from the pose the fall left (hips, spine, gloves, ankles and the way each joint bends)
+  // and follows the meter from there.
+  const knockedDown = (punchClass: "hook" | "uppercut", hand: "left" | "right") => {
+    const { boxer, graph } = makeGraph();
+    const opponent = opponentFor("two");
+    const head = new THREE.Vector3(0, 1.5, mapping.z(-150));
+    const standing = facingOpponent({ ...baseFighter("one"), get_up_required: 66 });
+    const downed = { ...standing, is_downed: true };
+    const names = Object.keys(boxer.rig.bones) as CanonicalBone[];
+    let previous: THREE.Vector3[] = [];
+    let tick = 0;
+    let jump = { distance: 0, at: "" };
+    let under = Infinity;
+    const step = (label: string, fighter: FighterSnapshot, frames: number, measure = true): void => {
+      for (let frame = 0; frame < frames; frame += 1) {
+        tick += 0.5;
+        graph.update(fighter, opponent, 1 / 60, tick / 30, false, "full", tick, head);
+        const now = names.map((name) => bone(boxer, name));
+        if (measure) {
+          for (const [index, position] of now.entries()) {
+            const distance = position.distanceTo(previous[index]!);
+            if (distance > jump.distance) jump = { distance, at: `${label} frame ${frame} ${names[index]}` };
+          }
+          if (frame % 3 === 0) under = Math.min(under, lowestVertex(boxer, "MHeadMat0"), lowestVertex(boxer, "GlovesMat0"));
+        }
+        previous = now;
+      }
+    };
+    step("guard", standing, 20, false);
+    graph.react("hit", "head", 1, punchClass, hand, 120);
+    step("fall", downed, 70, false);
+    return { boxer, graph, step, standing, downed, jump: () => jump, lowest: () => under };
+  };
+
+  it.each([["hook", "left"], ["uppercut", "right"]] as const)("takes the body a %s left on the canvas into the get-up with no snap", (punchClass, hand) => {
+    const { boxer, graph, step, standing, downed, jump, lowest } = knockedDown(punchClass, hand);
+    expect(graph.fallBody).not.toBeNull();
+    step("first press", { ...downed, get_up_meter: 22 }, 30);
+    // The physics follows the get-up off the canvas, and lets go once he is on all fours.
+    expect(graph.fallBody?.handingOver).toBe(true);
+    step("second press", { ...downed, get_up_meter: 44 }, 30);
+    expect(graph.fallBody).toBeNull();
+    step("up", { ...standing, get_up_meter: 66, stunned_ticks: 20 }, 40);
+    // The body used to freeze where the physics left it and then snap 1.3 m into the get-up; turning the bones
+    // straight from the fall's pose to the get-up's then swung limbs up to 0.85 m in a frame and 0.5 m through the canvas.
+    expect(jump().distance, jump().at).toBeLessThan(0.16);
+    expect(lowest(), "skin under the canvas").toBeGreaterThan(-0.03);
+    expect(bone(boxer, "head").y).toBeGreaterThan(1.4);
+  });
+
+  it("leaves a fighter the bout is over for where the physics left him, whatever his meter says", () => {
+    const { graph, step, downed } = knockedDown("hook", "left");
+    graph.stayDown(true);
+    step("counted out", { ...downed, get_up_meter: 44 }, 30, false);
+    expect(graph.fallBody).not.toBeNull();
+    graph.stayDown(false);
+    step("pressing", { ...downed, get_up_meter: 44 }, 2, false);
+    expect(graph.fallBody?.handingOver).toBe(true);
   });
 });

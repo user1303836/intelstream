@@ -76,3 +76,27 @@ def test_knockdown_score_preserves_explicit_point_deduction() -> None:
 
     assert score.player_one == 9
     assert score.player_two == 8
+
+
+def test_ring_control_alone_never_wins_a_round() -> None:
+    """A round in which nobody lands a clean punch and the damage is even is even on every card,
+    however long one fighter held the centre of the ring."""
+    mover = RoundPerformance(damage=30, blocked_hits=4, control=2 * 3600)
+    still = RoundPerformance(damage=30, blocked_hits=4)
+
+    for profile in JUDGE_PROFILES:
+        score = score_round(mover, still, profile)
+        assert (score.player_one, score.player_two) == (10, 10)
+
+
+def test_ring_control_settles_an_even_round_of_boxing_but_never_outweighs_a_clean_punch() -> None:
+    mover = RoundPerformance(damage=300, clean_hits=12, control=2 * 3600)
+    still = RoundPerformance(damage=300, clean_hits=12)
+    # One clean straight more, with its damage.
+    puncher = RoundPerformance(damage=330, clean_hits=13)
+
+    scores = {profile.name: score_round(mover, still, profile) for profile in JUDGE_PROFILES}
+    assert (scores["Generalship"].player_one, scores["Generalship"].player_two) == (10, 9)
+    for profile in JUDGE_PROFILES:
+        score = score_round(mover, puncher, profile)
+        assert score.player_one <= score.player_two

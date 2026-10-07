@@ -7,12 +7,21 @@
  * Each scenario spawns scripts/hands_e2e_server.py on port 8091, drives two headless players with
  * keyboard or touch input, reads the client's screen-reader status text, and writes screenshots to
  * $TMPDIR/hands-e2e. Set E2E_GPU=1 to render on the machine's GPU instead of the software renderer
- * (real frame pacing and input latency).
+ * (real frame pacing and input latency). The response scenario takes E2E_DELAY_MS and E2E_JITTER_MS.
  *
- *   node scripts/hands_e2e_scenarios.js ko|reconnect|rest|spectator|touch|mash|latency|soak|background|rematch|rematchloop|clinch|response
+ * The reconnect scenario drops one player's link the way a lost network does, with no close in either
+ * direction, through a TCP proxy, times how long the room takes to pause the other player, and checks
+ * both resume once the link is back.
+ * The cpu scenario is one player against the computer (E2E_CPU_LEVEL, default contender) through to the
+ * result card. The tko scenario gets the floored player up twice, so the bout ends on the punch of the
+ * third knockdown, and fails unless the knockout replay still plays. The styles scenario has one fighter pick a style with the keyboard and the other by
+ * touch while a spectator watches; every other scenario settles on the offered style at once. E2E_PORT
+ * moves the server off 8091.
+ *
+ *   node scripts/hands_e2e_scenarios.js ko|tko|reconnect|rest|spectator|touch|mash|latency|soak|background|rematch|rematchloop|clinch|response|cpu|styles
  */
 const { chromium, devices } = require('playwright');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const http = require('node:http');
 const net = require('node:net');
 
@@ -26,6 +35,11 @@ fs.mkdirSync(out, { recursive: true });
 const scenario = process.argv[2] || 'ko';
 const PORT = Number(process.env.E2E_PORT ?? 8091);
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+/**
+ * A link lost without a goodbye is noticed only by the room's websocket heartbeat: a ping 15 s after
+ * the last frame, half that to answer, then the room's own close (23.7 s measured on Windows).
+ */
+const SILENT_DROP_NOTICE_MS = 30_000;
 
 function healthz() {
   return new Promise((resolve) => {
@@ -35,30 +49,88 @@ function healthz() {
   });
 }
 
-/** TCP proxy that delays every chunk in both directions, so websocket frames see real latency. */
-function delayProxy(listenPort, targetPort, delayMs) {
+/**
+ * TCP proxy that delays every chunk in both directions, so websocket frames see real latency.
+ * `jitterMs` adds a random extra wait to each chunk while keeping them in order. `silence` and
+ * `restore` drop a player's link the way a lost connection does (see `silence`).
+ */
+function delayProxy(listenPort, targetPort, delayMs, jitterMs = 0) {
+  const links = new Set();
   const server = net.createServer((client) => {
     const upstream = net.connect(targetPort, '127.0.0.1');
-    const pipe = (from, to) => {
-      from.on('data', (chunk) => setTimeout(() => { if (!to.destroyed) to.write(chunk); }, delayMs));
-      from.on('end', () => setTimeout(() => to.end(), delayMs));
-      from.on('error', () => to.destroy());
+    // `head` keeps the start of what the page sent (its websocket handshake); `dark` swallows the link.
+    const link = { client, upstream, head: '', dark: false, upstreamGone: false };
+    links.add(link);
+    client.on('close', () => { if (!link.dark) links.delete(link); });
+    const pipe = (from, to, fromPage) => {
+      const queue = [];
+      let timer = null;
+      const drain = () => {
+        timer = null;
+        while (queue.length > 0 && queue[0].due <= Date.now()) {
+          const { chunk } = queue.shift();
+          if (chunk === null) to.end();
+          else if (!to.destroyed) to.write(chunk);
+        }
+        if (queue.length > 0) timer = setTimeout(drain, Math.max(1, queue[0].due - Date.now()));
+      };
+      const hold = (chunk) => {
+        if (fromPage && chunk !== null && link.head.length < 8192) link.head += chunk.toString('latin1');
+        // A silenced link passes nothing, not even the room hanging up on it.
+        if (link.dark) {
+          if (chunk === null && !fromPage) link.upstreamGone = true;
+          return;
+        }
+        const due = Math.max(queue.at(-1)?.due ?? 0, Date.now() + delayMs + Math.random() * jitterMs);
+        queue.push({ chunk, due });
+        if (timer === null) timer = setTimeout(drain, Math.max(1, queue[0].due - Date.now()));
+      };
+      from.on('data', hold);
+      from.on('end', () => hold(null));
+      from.on('error', () => {
+        if (!link.dark) to.destroy();
+        else if (!fromPage) link.upstreamGone = true;
+      });
     };
-    pipe(client, upstream);
-    pipe(upstream, client);
+    pipe(client, upstream, true);
+    pipe(upstream, client, false);
   });
   server.listen(listenPort, '127.0.0.1');
+  /**
+   * Every open websocket whose handshake carries `marker` goes silent in both directions, as when a
+   * phone loses its network: no close frame and no FIN either way, so the room learns of it only from
+   * its websocket heartbeat and the page goes on thinking it is connected. Returns how many it silenced.
+   */
+  server.silence = (marker) => {
+    let silenced = 0;
+    for (const link of links) {
+      if (!/upgrade:\s*websocket/i.test(link.head) || !link.head.includes(marker)) continue;
+      link.dark = true;
+      silenced += 1;
+    }
+    return silenced;
+  };
+  /** The network is back: a link the room gave up on meanwhile now fails on the page too, so it reconnects. */
+  server.restore = () => {
+    for (const link of links) {
+      if (!link.dark) continue;
+      link.dark = false;
+      links.delete(link);
+      if (link.upstreamGone || link.upstream.destroyed) link.client.destroy();
+    }
+  };
   return server;
 }
 
-async function startServer(args, { oneWayDelayMs = 0 } = {}) {
-  const backendPort = oneWayDelayMs > 0 ? PORT + 1 : PORT;
+async function startServer(args, { oneWayDelayMs = 0, jitterMs = 0, proxy = false } = {}) {
+  const proxied = proxy || oneWayDelayMs > 0;
+  const backendPort = proxied ? PORT + 1 : PORT;
   const child = spawn('uv', ['run', 'python', 'scripts/hands_e2e_server.py', '--port', String(backendPort), ...args], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] });
   const log = [];
   child.stdout.on('data', (d) => log.push(String(d)));
   child.stderr.on('data', (d) => log.push(String(d)));
-  const proxy = oneWayDelayMs > 0 ? delayProxy(PORT, backendPort, oneWayDelayMs) : null;
-  for (let i = 0; i < 60; i += 1) { if (await healthz()) return { child, log, proxy }; await wait(500); }
+  const tcpProxy = proxied ? delayProxy(PORT, backendPort, oneWayDelayMs, jitterMs) : null;
+  for (let i = 0; i < 60; i += 1) { if (await healthz()) return { child, log, proxy: tcpProxy }; await wait(500); }
   throw new Error('server did not start: ' + log.join(''));
 }
 
@@ -70,6 +142,26 @@ async function status(page) {
     final: document.querySelector('[data-final]')?.textContent ?? null,
     role: document.querySelector('[data-role]')?.hidden === false ? document.querySelector('[data-role]')?.textContent : null,
   }));
+}
+
+/** Settles on the style the picker offers, as soon as the pick before the bout appears. */
+async function settleStyle(page) {
+  await page.waitForSelector('[data-style-picker]:not([hidden])', { timeout: 60000 });
+  await page.keyboard.press('Enter');
+}
+
+async function pickerState(page) {
+  return page.evaluate(() => {
+    const element = document.querySelector('[data-style-picker]');
+    if (element === null) return null;
+    return {
+      hidden: element.hidden,
+      chosen: element.querySelector('[data-chosen]')?.dataset.style ?? null,
+      disabled: [...element.querySelectorAll('[data-style]')].filter((button) => button.disabled).length,
+      clock: element.querySelector('.style-clock')?.textContent ?? null,
+      status: element.querySelector('.style-status')?.textContent ?? null,
+    };
+  });
 }
 
 async function waitFor(page, predicate, timeoutMs, label) {
@@ -133,6 +225,8 @@ async function main() {
   const instance = `e2e-${scenario}-${Date.now()}`;
   const open = async (name, options = {}) => {
     const context = await browser.newContext(options.mobile ? { ...devices['Pixel 7'], viewport: { width: 844, height: 390 } } : { viewport: { width: 1280, height: 720 } });
+    // Rides along on every request to the room, websocket handshake included, so the TCP proxy can tell the players apart.
+    await context.addCookies([{ name: 'hands_e2e_player', value: name, url: base }]);
     const page = await context.newPage();
     if (scenario === 'rematchloop') await page.addInitScript(countLiveGlObjects);
     if (scenario === 'response') {
@@ -157,6 +251,7 @@ async function main() {
 
   const serverArgs = {
     ko: ['--rounds', '3', '--round-seconds', '90', '--rest-seconds', '5'],
+    tko: ['--rounds', '3', '--round-seconds', '90', '--rest-seconds', '5'],
     reconnect: ['--rounds', '1', '--round-seconds', '70', '--rest-seconds', '5'],
     rest: ['--rounds', '2', '--round-seconds', '14', '--rest-seconds', '9'],
     spectator: ['--rounds', '1', '--round-seconds', '30', '--rest-seconds', '5'],
@@ -169,12 +264,22 @@ async function main() {
     rematchloop: ['--rounds', '1', '--round-seconds', '20', '--rest-seconds', '5'],
     clinch: ['--rounds', '1', '--round-seconds', '30', '--rest-seconds', '5'],
     response: ['--rounds', '1', '--round-seconds', '40', '--rest-seconds', '5'],
+    cpu: ['--rounds', '2', '--round-seconds', '40', '--rest-seconds', '6'],
+    styles: ['--rounds', '1', '--round-seconds', '30', '--rest-seconds', '5', '--style-select-seconds', '30'],
   }[scenario];
   const responseDelayMs = Number(process.env.E2E_DELAY_MS ?? 60);
-  const server = await startServer(serverArgs, { oneWayDelayMs: scenario === 'latency' ? 110 : scenario === 'response' ? responseDelayMs : 0 });
+  const responseJitterMs = Number(process.env.E2E_JITTER_MS ?? 0);
+  const server = await startServer(serverArgs, { oneWayDelayMs: scenario === 'latency' ? 110 : scenario === 'response' ? responseDelayMs : 0, jitterMs: scenario === 'response' ? responseJitterMs : 0, proxy: scenario === 'reconnect' });
   try {
     const A = await open('Alpha');
-    const B = await open('Bravo', { mobile: scenario === 'touch' });
+    if (scenario === 'cpu') {
+      await runCpu(A, note);
+      report.errors.push(...A.errors);
+      return;
+    }
+    const B = await open('Bravo', { mobile: scenario === 'touch' || scenario === 'rest' || scenario === 'styles' });
+    if (scenario === 'styles') await pickStyles(A, B, open, note, report);
+    else await Promise.all([settleStyle(A.page), settleStyle(B.page)]);
     if (scenario === 'latency') note('both clients behind a TCP proxy adding 110 ms each way (220 ms round trip) to every frame');
     const startedState = await waitFor(A.page, (s) => /countdown|fight/.test(s.summary ?? ''), 60000, 'bout start');
     note('bout started:', startedState !== null);
@@ -182,7 +287,27 @@ async function main() {
     // Approach: A right, B left.
     await A.page.keyboard.down('d'); await B.page.keyboard.down('a'); await wait(1600); await A.page.keyboard.up('d'); await B.page.keyboard.up('a');
 
-    if (scenario === 'ko') {
+    if (scenario === 'tko') {
+      // Presses each get-up prompt once, in the middle of its window, from inside the page.
+      await B.page.evaluate(() => {
+        let answered = -1;
+        const press = () => {
+          const app = window.__handsApp;
+          const snapshot = app?.state?.snapshot;
+          const me = snapshot?.fighters.find((fighter) => fighter.player_id === app.state.playerId);
+          if (me?.is_downed && me.get_up_prompt !== null && answered !== me.get_up_window_start_tick && snapshot.tick >= me.get_up_window_start_tick + 2) {
+            answered = me.get_up_window_start_tick;
+            const code = me.get_up_prompt === 'get_up_left' ? 'ArrowLeft' : 'ArrowRight';
+            window.dispatchEvent(new KeyboardEvent('keydown', { code, key: code }));
+            window.dispatchEvent(new KeyboardEvent('keyup', { code, key: code }));
+          }
+          requestAnimationFrame(press);
+        };
+        requestAnimationFrame(press);
+      });
+    }
+
+    if (scenario === 'ko' || scenario === 'tko') {
       // Records every fighter's punch phase while the knockout replay plays, to catch a stuttering replay.
       await A.page.evaluate(() => {
         const state = { frames: 0, jumps: 0, worst: 0 };
@@ -213,13 +338,27 @@ async function main() {
         if (/^Knockdown/.test(live) || /\. knockdown\./.test(sB.summary ?? '')) {
           if (!downSeen) { downSeen = true; note('KNOCKDOWN seen at', ((Date.now() - started) / 1000).toFixed(1), 's:', live); await A.page.screenshot({ path: `${out}/e2e-ko-A-down.png` }); await B.page.screenshot({ path: `${out}/e2e-ko-B-down.png` }); }
           const count = /Count (\d+)/.exec(live); if (count && Number(count[1]) !== lastCount) { lastCount = Number(count[1]); note('count', lastCount, '|', live); }
-          if (/Press left now/.test(live)) { await B.page.keyboard.press('ArrowLeft'); promptsPressed += 1; }
+          if (scenario === 'tko') { /* the page answers its own prompts */ }
+          else if (/Press left now/.test(live)) { await B.page.keyboard.press('ArrowLeft'); promptsPressed += 1; }
           else if (/Press right now/.test(live)) { await B.page.keyboard.press('ArrowRight'); promptsPressed += 1; }
           await wait(60);
           continue;
         }
-        // A keeps pressure: step in, throw power hooks and uppercuts, occasionally straights.
-        await A.page.keyboard.down('d'); await wait(120); await A.page.keyboard.up('d');
+        // A keeps pressure: walk at B (after a count A comes back from a neutral corner), then throw
+        // power hooks and uppercuts, occasionally straights.
+        const gap = await A.page.evaluate(() => {
+          const app = window.__handsApp;
+          const fighters = app?.state?.snapshot?.fighters ?? [];
+          const me = fighters.find((fighter) => fighter.player_id === app.state.playerId);
+          const other = fighters.find((fighter) => fighter.player_id !== app.state.playerId);
+          return me && other ? { dx: other.x - me.x, dy: other.y - me.y, stamina: me.stamina } : null;
+        });
+        const steps = gap === null ? ['d'] : [gap.dx > 60 ? 'd' : gap.dx < -60 ? 'a' : null, gap.dy > 60 ? 'w' : gap.dy < -60 ? 's' : null].filter(Boolean);
+        for (const step of steps) await A.page.keyboard.down(step);
+        await wait(gap !== null && Math.hypot(gap.dx, gap.dy) > 180 ? 320 : 120);
+        for (const step of steps) await A.page.keyboard.up(step);
+        // A tired fighter's punches are weak arm punches, so A gets the breath back before the next one.
+        if (gap !== null && gap.stamina < 350) { await wait(500); continue; }
         const key = ['g', 't', 'h', 'y', 'u'][Math.floor(Math.random() * 5)];
         await A.page.keyboard.press(key);
         await wait(380);
@@ -232,20 +371,43 @@ async function main() {
       await A.page.screenshot({ path: `${out}/e2e-ko-A-final.png` }); await B.page.screenshot({ path: `${out}/e2e-ko-B-final.png` });
       await wait(8000);
       await A.page.screenshot({ path: `${out}/e2e-ko-A-result.png` });
-      note('knockout replay:', JSON.stringify(await A.page.evaluate(() => window.__replayProbe)));
+      const replay = await A.page.evaluate(() => window.__replayProbe);
+      note('knockout replay:', JSON.stringify(replay));
+      if (scenario === 'tko') {
+        const ending = await A.page.evaluate(() => {
+          const renderer = window.__handsApp?.renderer;
+          return { lastRecordedTick: renderer?.history?.at(-1)?.tick ?? null, knockdownTick: renderer?.lastKnockdown?.knockdown?.tick ?? null };
+        });
+        note('recording ends at tick', ending.lastRecordedTick, '| last knockdown at tick', ending.knockdownTick);
+        if (!/^tko\b/i.test(final?.final ?? '')) report.errors.push(`expected a TKO on the third knockdown, got: ${final?.final ?? 'no result'}`);
+        else if (!(replay?.frames > 0)) report.errors.push('no knockout replay after a TKO that ended on its punch');
+      }
+    }
+
+    if (scenario === 'styles') {
+      await wait(800);
+      await A.page.screenshot({ path: `${out}/e2e-styles-A-plates.png` });
+      await B.page.screenshot({ path: `${out}/e2e-styles-B-plates.png` });
     }
 
     if (scenario === 'reconnect') {
       for (let i = 0; i < 6; i += 1) { await A.page.keyboard.press('f'); await B.page.keyboard.press('j'); await wait(400); }
       note('before drop A:', (await status(A.page)).status, '| B:', (await status(B.page)).status);
-      await B.context.setOffline(true);
-      note('B offline');
-      const paused = await waitFor(A.page, (s) => /paused|reconnect/i.test((s.status ?? '') + (s.live ?? '')), 30000, 'opponent pause on A');
-      note('A during drop:', paused?.status, '|', paused?.live);
-      await B.page.screenshot({ path: `${out}/e2e-reconnect-B-offline.png` });
+      // Bravo's network goes: nothing more passes either way and nobody hangs up, as when Wi-Fi drops
+      // or the phone suspends Discord. Only the room's websocket heartbeat can notice; a close() from
+      // the page would tell the room at once, which a lost connection never does.
+      const droppedAt = Date.now();
+      const silenced = server.proxy.silence('hands_e2e_player=Bravo');
+      note(`B's link goes silent (${silenced} websocket)`);
+      if (silenced !== 1) report.errors.push(`expected to silence Bravo's one websocket, silenced ${silenced}`);
+      const paused = await waitFor(A.page, (s) => /paused|reconnect/i.test((s.status ?? '') + (s.live ?? '')), SILENT_DROP_NOTICE_MS + 5000, 'opponent pause on A');
+      const noticedMs = Date.now() - droppedAt;
+      note(`A sees the pause ${(noticedMs / 1000).toFixed(1)} s after the drop:`, paused?.status, '|', paused?.live);
+      if (paused === null || noticedMs > SILENT_DROP_NOTICE_MS) report.errors.push(`the room took ${noticedMs} ms to pause for a silent drop (limit ${SILENT_DROP_NOTICE_MS} ms)`);
+      await B.page.screenshot({ path: `${out}/e2e-reconnect-B-dark.png` });
       await wait(3000);
-      await B.context.setOffline(false);
-      note('B online');
+      server.proxy.restore();
+      note('B network back');
       const resumed = await waitFor(A.page, (s) => /in progress|fight/i.test((s.status ?? '') + (s.summary ?? '')) && !/paused|reconnect/i.test(s.status ?? ''), 40000, 'resume on A');
       note('A after resume:', resumed?.status, '|', resumed?.live);
       const bBack = await waitFor(B.page, (s) => /in progress|fight/i.test((s.status ?? '') + (s.summary ?? '')) && !/Unable|paused|reconnect/i.test(s.status ?? ''), 40000, 'B resumed');
@@ -283,10 +445,40 @@ async function main() {
       for (let i = 0; i < 8; i += 1) { await A.page.keyboard.press('f'); await B.page.keyboard.press('j'); await wait(400); }
       const rest = await waitFor(A.page, (s) => /\. rest\./.test(s.summary ?? ''), 40000, 'rest phase');
       note('rest reached:', rest !== null, '|', rest?.status, '|', rest?.live);
-      await wait(4500);
+      // Each corner gets an instruction: Alpha with the 3 key, Bravo by tapping the panel on a phone.
+      const own = (page) => page.evaluate(() => {
+        const app = window.__handsApp;
+        return app?.state?.snapshot?.fighters.find((fighter) => fighter.player_id === app.state.playerId) ?? null;
+      });
+      const panelShown = (page) => page.evaluate(() => document.querySelector('[data-corner]')?.hidden === false);
+      await wait(800);
+      note('corner panels shown:', await panelShown(A.page), await panelShown(B.page));
+      await A.page.screenshot({ path: `${out}/e2e-rest-A-panel.png` }); await B.page.screenshot({ path: `${out}/e2e-rest-B-panel.png` });
+      const beforeA = await own(A.page);
+      const beforeB = await own(B.page);
+      await A.page.keyboard.press('3');
+      await B.page.tap('[data-corner-pick="corner_cut"]');
+      await wait(1200);
+      const afterA = await own(A.page);
+      const afterB = await own(B.page);
+      const corner = await Promise.all([A.page, B.page].map((page) => page.evaluate(() => document.querySelector('.corner-status')?.textContent ?? null)));
+      note('corner choices:', afterA?.corner_choice, afterB?.corner_choice, '|', corner.join(' | '));
+      note('Alpha health', beforeA?.conditioning, '->', afterA?.conditioning, '| Bravo cuts', beforeB?.trauma.left_cut, beforeB?.trauma.right_cut, '->', afterB?.trauma.left_cut, afterB?.trauma.right_cut);
+      const cutBefore = Math.max(beforeB?.trauma.left_cut ?? 0, beforeB?.trauma.right_cut ?? 0);
+      const cutAfter = Math.max(afterB?.trauma.left_cut ?? 0, afterB?.trauma.right_cut ?? 0);
+      const cornerWorked = afterA?.corner_choice === 'breath' && afterB?.corner_choice === 'cut'
+        && afterA.conditioning === Math.min(1000, beforeA.conditioning + 180)
+        && cutAfter === Math.max(0, cutBefore - 250);
+      note('CORNER CHECK:', cornerWorked ? 'PASS' : 'FAIL');
+      if (!cornerWorked) report.errors.push('corner instructions did not take effect');
+      await wait(2500);
       await A.page.screenshot({ path: `${out}/e2e-rest-A.png` }); await B.page.screenshot({ path: `${out}/e2e-rest-B.png` });
+      await B.page.setViewportSize({ width: 390, height: 844 });
+      await wait(700);
+      await B.page.screenshot({ path: `${out}/e2e-rest-B-portrait.png` });
+      await B.page.setViewportSize({ width: 844, height: 390 });
       const round2 = await waitFor(A.page, (s) => /Round 2\. fight/.test(s.summary ?? ''), 40000, 'round 2');
-      note('round 2 reached:', round2 !== null, '|', round2?.summary?.slice(0, 60));
+      note('round 2 reached:', round2 !== null, '|', round2?.summary?.slice(0, 60), '| panels hidden:', !(await panelShown(A.page)) && !(await panelShown(B.page)));
       await A.page.keyboard.down('d'); await B.page.keyboard.down('a'); await wait(2500); await A.page.keyboard.up('d'); await B.page.keyboard.up('a');
       await A.page.screenshot({ path: `${out}/e2e-rest-A-round2.png` });
       const final = await waitFor(A.page, (s) => Boolean(s.final), 90000, 'final');
@@ -406,6 +598,7 @@ async function main() {
       note('rematch enabled after', ((Date.now() - enabledAt) / 1000).toFixed(1), 's:', JSON.stringify(await rematchState(A.page)), JSON.stringify(await rematchState(B.page)));
       await A.page.click('[data-rematch]');
       await B.page.click('[data-rematch]');
+      await Promise.all([settleStyle(A.page), settleStyle(B.page)]);
       const second = await waitFor(A.page, (s) => /countdown|\. fight\./.test(s.summary ?? '') && !s.final, 60000, 'second bout start');
       note('second bout started:', second !== null, '|', second?.status, '|', second?.summary?.slice(0, 60));
       await waitFor(A.page, (s) => /\. fight\./.test(s.summary ?? ''), 20000, 'second fight phase');
@@ -432,6 +625,7 @@ async function main() {
         for (let i = 0; i < 60; i += 1) { if ((await rematchReady(A.page)) && (await rematchReady(B.page))) break; await wait(500); }
         await A.page.click('[data-rematch]');
         await B.page.click('[data-rematch]');
+        await Promise.all([settleStyle(A.page), settleStyle(B.page)]);
         const next = await waitFor(A.page, (s) => /countdown|\. fight\./.test(s.summary ?? '') && !s.final, 60000, `bout ${bout + 1} start`);
         note(`bout ${bout + 1} started: ${next !== null}`);
       }
@@ -448,7 +642,7 @@ async function main() {
     }
 
     if (scenario === 'response') {
-      note(`network delay ${responseDelayMs} ms each way (${responseDelayMs * 2} ms round trip); times are key press to the first rendered frame, within one frame`);
+      note(`network delay ${responseDelayMs} ms each way (${responseDelayMs * 2} ms round trip), up to ${responseJitterMs} ms of jitter; times are key press to the first rendered frame, within one frame`);
       const probe = () => {
         const state = { frames: [], keys: [] };
         window.__probe = state;
@@ -460,7 +654,7 @@ async function main() {
           const latest = renderer?.buffer?.latest?.();
           if (graphs && latest) {
             const Vector3 = graphs[0].boxer.root.position.constructor;
-            const frame = { at: epoch(), viewer: latest.fighters.findIndex((fighter) => fighter.player_id === renderer.viewerId), fighters: [] };
+            const frame = { at: epoch(), viewer: latest.fighters.findIndex((fighter) => fighter.player_id === renderer.viewerId), news: latest.fighters.map((fighter) => fighter.action_id), delay: renderer.buffer.interpolationDelayTicks, fighters: [] };
             for (const graph of graphs) {
               const left = graph.boxer.rig.bones.gloveL.getWorldPosition(new Vector3());
               const right = graph.boxer.rig.bones.gloveR.getWorldPosition(new Vector3());
@@ -490,7 +684,7 @@ async function main() {
       const median = (values) => { const sorted = values.filter((v) => v !== null).sort((x, y) => x - y); return sorted.length === 0 ? null : Math.round(sorted[Math.floor(sorted.length / 2)]); };
       const viewerA = a.frames.at(-1).viewer;
       const punchKeys = a.keys.filter((key) => ['KeyF', 'KeyU', 'KeyG'].includes(key.code));
-      const local = []; const moved = []; const remote = [];
+      const local = []; const moved = []; const remote = []; const shown = [];
       for (const key of punchKeys) {
         const hand = key.code === 'KeyU' ? 'right' : 'left';
         const before = frameAt(a.frames, key.at).fighters[viewerA];
@@ -498,6 +692,9 @@ async function main() {
         const glove = a.frames.find((frame) => frame.at > key.at && distance(frame.fighters[viewerA][hand], before[hand]) > 0.03);
         const seen = b.frames.find((frame) => frame.at > key.at && frame.fighters[viewerA].active && frame.fighters[viewerA].age < 8);
         local.push(started ? started.at - key.at : null); moved.push(glove ? glove.at - key.at : null); remote.push(seen ? seen.at - key.at : null);
+        const known = frameAt(b.frames, key.at).news[viewerA];
+        const news = b.frames.find((frame) => frame.at > key.at && frame.news[viewerA] !== null && frame.news[viewerA] !== known);
+        shown.push(news && seen ? seen.at - news.at : null);
       }
       // Progress through the punch (0 at the press, 1 at contact, 2 at the end of the active phase, 3 when
       // recovered), so a change in the server's timing is not mistaken for the glove going back.
@@ -532,6 +729,8 @@ async function main() {
       note('own punch starts on screen, ms:', JSON.stringify(local.map((v) => (v === null ? null : Math.round(v)))), '| median', median(local));
       note('own glove has moved 3 cm, ms:', JSON.stringify(moved.map((v) => (v === null ? null : Math.round(v)))), '| median', median(moved));
       note('opponent sees the punch start, ms:', JSON.stringify(remote.map((v) => (v === null ? null : Math.round(v)))), '| median', median(remote));
+      note('of which waiting on the opponent\'s screen after the news arrived, ms:', JSON.stringify(shown.map((v) => (v === null ? null : Math.round(v)))), '| median', median(shown));
+      note('opponent\'s playback delay, ticks:', JSON.stringify([...new Set(b.frames.map((frame) => frame.delay))]));
       const step = a.keys.find((key) => key.code === 'KeyA');
       if (step) {
         const before = frameAt(a.frames, step.at).fighters[viewerA];
@@ -613,13 +812,129 @@ async function main() {
 
     report.errors.push(...A.errors, ...B.errors);
   } finally {
-    server.child.kill('SIGTERM');
+    // On Windows `uv run` starts the server two processes down; killing uv alone leaves it running
+    // with this script's pipes open, and the script never exits.
+    if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(server.child.pid), '/T', '/F'], { stdio: 'ignore' });
+    else server.child.kill('SIGTERM');
     server.proxy?.close();
     await browser.close();
+    const serverErrors = server.log.join('').split('\n').filter((l) => /error|warning|Traceback/i.test(l) && !/healthz/.test(l));
+    if (scenario === 'cpu') {
+      console.log('client errors:', JSON.stringify(report.errors.filter((e) => !/GL Driver/.test(e)).slice(0, 20), null, 1));
+      console.log('server log lines of interest:', JSON.stringify(serverErrors.slice(0, 20), null, 1));
+    }
   }
+  if (scenario === 'cpu') return;
   const serverErrors = server.log.join('').split('\n').filter((l) => /error|warning|Traceback/i.test(l) && !/healthz/.test(l));
   console.log('client errors:', JSON.stringify(report.errors.filter((e) => !/GL Driver/.test(e)).slice(0, 20), null, 1));
   console.log('server log lines of interest:', JSON.stringify(serverErrors.slice(0, 20), null, 1));
+}
+
+/** One player calls in the computer from the waiting screen and boxes it to the result card. */
+async function runCpu(A, note) {
+  const level = process.env.E2E_CPU_LEVEL || 'contender';
+  const picker = await A.page.waitForSelector('[data-cpu]:not([hidden])', { timeout: 60000 });
+  note('computer offered while waiting:', picker !== null, '|', (await status(A.page)).status);
+  await A.page.screenshot({ path: `${out}/e2e-cpu-waiting.png` });
+  await A.page.click(`[data-cpu-level="${level}"]`);
+  note('asked for:', level, '|', (await status(A.page)).status);
+  await A.page.waitForSelector('[data-style-picker]:not([hidden])', { timeout: 30000 });
+  note('the computer has picked:', (await pickerState(A.page))?.status);
+  await A.page.keyboard.press('Enter');
+  const started = await waitFor(A.page, (s) => /\. fight\./.test(s.summary ?? ''), 30000, 'fight phase');
+  note('bout started against:', /computer opponent/.test(started?.summary ?? '') ? 'the computer' : 'someone else', '|', started?.summary?.slice(0, 160));
+  const begun = Date.now();
+  let final = null; let downs = 0; let shots = 0; let rested = false; let cornered = null;
+  while (Date.now() - begun < 240000) {
+    const s = await status(A.page);
+    if (s.final) { final = s; break; }
+    if (/\. rest\./.test(s.summary ?? '')) {
+      // Between rounds the computer gives its corner an instruction like a player does.
+      rested = true;
+      const choice = await A.page.evaluate(() => window.__handsApp?.state?.snapshot?.fighters.find((fighter) => fighter.player_id.startsWith('cpu:'))?.corner_choice ?? null);
+      if (choice !== null && choice !== 'balanced') cornered = choice;
+      await wait(250);
+      continue;
+    }
+    if (/You are down/.test(s.summary ?? '')) {
+      const press = /Press left/.test(s.summary) ? 'ArrowLeft' : /Press right/.test(s.summary) ? 'ArrowRight' : null;
+      if (press) { await A.page.keyboard.press(press); downs += 1; }
+      await wait(120);
+      continue;
+    }
+    // A plain plan: step in, jab and follow with a right, keep the guard up between.
+    await A.page.keyboard.down('d'); await wait(150); await A.page.keyboard.up('d');
+    await A.page.keyboard.press('f'); await wait(120); await A.page.keyboard.press(['u', 'h', 'y'][shots % 3]);
+    await A.page.keyboard.down('q'); await wait(450); await A.page.keyboard.up('q');
+    if (shots % 10 === 4) await A.page.screenshot({ path: `${out}/e2e-cpu-bout-${shots}.png` });
+    shots += 1;
+  }
+  note('get-up presses:', downs);
+  note('computer corner instruction in the rest:', rested ? (cornered ?? 'none (a forgetful corner, or the rest was missed)') : 'no rest reached');
+  if (rested && cornered === null && level === 'champion') A.errors.push('the champion gave its corner no instruction');
+  if (final === null) final = await waitFor(A.page, (s) => Boolean(s.final), 120000, 'final');
+  note('FINAL:', final?.final);
+  for (let i = 0; i < 80; i += 1) { if (await A.page.evaluate(() => window.__handsApp?.renderer?.resultVisible ?? false)) break; await wait(250); }
+  await wait(800);
+  await A.page.screenshot({ path: `${out}/e2e-cpu-result.png` });
+  note('result card shown:', await A.page.evaluate(() => window.__handsApp?.renderer?.resultVisible ?? false), '| status:', (await status(A.page)).status);
+  const rematch = await A.page.waitForSelector('[data-rematch]:not([disabled]):not([hidden])', { timeout: 30000 }).catch(() => null);
+  note('rematch offered:', rematch !== null);
+  if (rematch !== null) {
+    await A.page.click('[data-rematch]');
+    await settleStyle(A.page);
+    const again = await waitFor(A.page, (s) => /countdown|\. fight\./.test(s.summary ?? '') && !s.final, 60000, 'rematch start');
+    note('rematch against the computer started:', /computer opponent/.test(again?.summary ?? ''));
+  }
+}
+
+/** Alpha picks with the keyboard and Bravo by touch while Charlie watches; the bout starts once both settle. */
+async function pickStyles(A, B, open, note, report) {
+  await Promise.all([A.page.waitForSelector('[data-style-picker]:not([hidden])', { timeout: 60000 }), B.page.waitForSelector('[data-style-picker]:not([hidden])', { timeout: 60000 })]);
+  note('pick shown to Alpha:', JSON.stringify(await pickerState(A.page)));
+  const C = await open('Charlie');
+  await C.page.waitForSelector('[data-style-picker]:not([hidden])', { timeout: 30000 });
+  await C.page.keyboard.press('Digit3');
+  const watching = await pickerState(C.page);
+  note('pick shown to the spectator:', JSON.stringify(watching));
+  if (watching?.disabled !== 5 || watching.chosen !== null) report.errors.push('the spectator could pick a style');
+  await A.page.keyboard.press('ArrowRight');
+  await A.page.keyboard.press('ArrowRight');
+  note('Alpha moves to:', (await pickerState(A.page))?.chosen);
+  await A.page.keyboard.press('Enter');
+  // Bravo learns that Alpha has settled, never on what: both styles are revealed at the bell.
+  let heard = null;
+  for (let i = 0; i < 40 && heard === null; i += 1) { const state = await pickerState(B.page); if (/Alpha is ready/.test(state?.status ?? '')) heard = state; else await wait(250); }
+  note('Bravo hears:', heard?.status ?? 'nothing');
+  if (heard === null) report.errors.push('Bravo never heard that Alpha had settled');
+  else if (/slugger/i.test(heard.status ?? '')) report.errors.push("Bravo saw Alpha's style before the bell");
+  const watched = (await pickerState(C.page))?.status ?? '';
+  note('the spectator hears:', watched);
+  if (/slugger/i.test(watched)) report.errors.push("the spectator saw Alpha's style before the bell");
+  await A.page.screenshot({ path: `${out}/e2e-styles-A-pick.png` });
+  await B.page.screenshot({ path: `${out}/e2e-styles-B-pick.png` });
+  // A phone on its side, narrower than 700 px: the five cards in one row, each with its strengths.
+  for (const [width, height] of [[568, 320], [667, 375]]) {
+    await B.page.setViewportSize({ width, height });
+    const layout = await B.page.evaluate(() => [...document.querySelectorAll('.style-cards button')].map((button) => ({ top: Math.round(button.getBoundingClientRect().top), stats: getComputedStyle(button.querySelector('.style-stats')).display })));
+    note(`pick on a ${width}x${height} phone:`, JSON.stringify(layout));
+    if (new Set(layout.map((card) => card.top)).size !== 1 || layout.some((card) => card.stats === 'none')) report.errors.push(`the pick at ${width}x${height} does not show the five cards in a row with their strengths`);
+  }
+  await B.page.setViewportSize({ width: 844, height: 390 });
+  await B.page.tap('[data-style="swarmer"]');
+  const started = await waitFor(A.page, (s) => /countdown|\. fight\./.test(s.summary ?? ''), 20000, 'bout start after the pick');
+  note('bout started once both settled:', started !== null);
+  await wait(600);
+  await A.page.screenshot({ path: `${out}/e2e-styles-A-intro.png` });
+  const styles = await A.page.evaluate(() => { const state = window.__handsApp?.state; return state?.snapshot?.fighters.map((fighter) => `${state.players[fighter.player_id]?.name}:${fighter.style}`) ?? null; });
+  note('styles in the bout:', JSON.stringify(styles));
+  if (JSON.stringify(styles) !== JSON.stringify(['Alpha:slugger', 'Bravo:swarmer'])) report.errors.push(`unexpected styles in the bout: ${JSON.stringify(styles)}`);
+  const remembered = [await A.page.evaluate(() => localStorage.getItem('hands.style.v1')), await B.page.evaluate(() => localStorage.getItem('hands.style.v1'))];
+  note('remembered for next time:', JSON.stringify(remembered));
+  if (remembered[0] !== 'slugger' || remembered[1] !== 'swarmer') report.errors.push(`styles not remembered: ${JSON.stringify(remembered)}`);
+  note('pick hidden once the bout began:', (await pickerState(A.page))?.hidden, (await pickerState(C.page))?.hidden);
+  report.errors.push(...C.errors);
+  await C.context.close();
 }
 
 main().catch((e) => { console.error('ERR', e.stack || e.message); process.exit(1); });

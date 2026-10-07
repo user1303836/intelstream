@@ -1,6 +1,6 @@
 import { ClientError, safeError } from "./api";
-import { decodeServerFrame, encodeInput, parseStrictJson } from "./protocol";
-import { PROTOCOL_VERSION, type ConnectionRole, type EngineSnapshot, type InputFrame, type ServerMessage } from "./types";
+import { decodeServerFrame, encodeCpuRequest, encodeInput, encodeStyleChoice, parseStrictJson } from "./protocol";
+import { PROTOCOL_VERSION, type ConnectionRole, type CornerKind, type CpuLevel, type EngineSnapshot, type FighterStyle, type InputFrame, type ServerMessage } from "./types";
 
 export function websocketUrl(location: Location = window.location): string {
   const url = new URL("/api/hands/ws", location.origin);
@@ -78,6 +78,7 @@ export class NetworkController {
   private serverTick = 0;
   private role: ConnectionRole | null = null;
   private active = false;
+  private resting = false;
   /** Input has been on, so the server's engine exists and accepts a frame in any phase. */
   private boutStarted = false;
   private disposed = false;
@@ -102,13 +103,17 @@ export class NetworkController {
 
   start(): void {
     if (this.disposed || this.listenersBound) return;
+    this.bindInputListeners();
+    this.connect();
+    if (!this.disposed && !this.terminal) this.inputTimer = window.setInterval(() => this.flushInput(), INPUT_FLUSH_MS);
+  }
+
+  private bindInputListeners(): void {
     this.listenersBound = true;
     window.addEventListener("blur", this.onInputLoss);
     window.addEventListener("focus", this.onInputRegain);
     window.addEventListener("pointerdown", this.onPagePointer, true);
     document.addEventListener("visibilitychange", this.onVisibilityChange);
-    this.connect();
-    if (!this.disposed && !this.terminal) this.inputTimer = window.setInterval(() => this.flushInput(), INPUT_FLUSH_MS);
   }
 
   setActive(active: boolean): void {
@@ -252,11 +257,17 @@ export class NetworkController {
       if (message.reconnect_ticket === undefined) throw new Error("missing_reconnect_ticket");
       this.reconnectTicket = message.reconnect_ticket;
       this.serverTick = message.server_tick;
+      // A seat that opens before the bell goes to a spectator, who is welcomed again as a fighter.
+      const seated = this.role === "spectator" && message.role === "fighter";
       this.role = message.role;
       this.playerId = message.role === "fighter" ? message.player_id : null;
       this.sentAt.clear();
       if (message.role === "fighter") this.nextSequence = Math.max(this.nextSequence, message.next_sequence);
       else this.stopInputLifecycle();
+      if (seated) {
+        if (!this.listenersBound) this.bindInputListeners();
+        this.inputTimer ??= window.setInterval(() => this.flushInput(), INPUT_FLUSH_MS);
+      }
       this.attempts = 0;
       this.clearTransportReconnect(true);
     } else if (message.type === "ticket") {
@@ -264,6 +275,7 @@ export class NetworkController {
     } else if (message.type === "snapshot") {
       this.serverTick = Math.max(this.serverTick, message.payload.tick);
       this.setInputActive(["countdown", "fight", "knockdown", "foul_recovery"].includes(message.payload.phase));
+      this.resting = message.payload.phase === "rest";
       this.observeAcknowledgement(message.payload);
     } else if (message.type === "paused") {
       this.setInputActive(false);
@@ -272,9 +284,15 @@ export class NetworkController {
       this.setInputActive(true);
       this.attempts = 0;
       this.clearOpponentPause(true);
+    } else if (message.type === "select") {
+      // A pause belongs to the bout. Before the bell the pick itself says who is connected, and an
+      // empty seat at the bell comes with a fresh pause after the ready.
+      this.clearOpponentPause(true);
     } else if (message.type === "ready") {
+      this.clearOpponentPause(true);
       this.setInputActive(true);
     } else if (message.type === "waiting") {
+      this.clearOpponentPause(true);
       this.setInputActive(false);
     } else if (message.type === "final" || message.type === "error") {
       this.active = false;
@@ -326,6 +344,32 @@ export class NetworkController {
     }, delay);
   }
 
+  /** Asks the room to put the computer in the empty seat; false when there is no open connection to ask on. */
+  requestCpu(level: CpuLevel): boolean {
+    const socket = this.socket;
+    if (this.role !== "fighter" || this.disposed || this.terminal || socket?.readyState !== OPEN) return false;
+    try {
+      socket.send(encodeCpuRequest(level));
+      return true;
+    } catch {
+      this.handleClose(socket);
+      return false;
+    }
+  }
+
+  /** Tells the room which style this fighter is choosing, or has settled on when `ready`. */
+  chooseStyle(style: FighterStyle, ready: boolean): boolean {
+    const socket = this.socket;
+    if (this.role !== "fighter" || this.disposed || this.terminal || socket?.readyState !== OPEN) return false;
+    try {
+      socket.send(encodeStyleChoice(style, ready));
+      return true;
+    } catch {
+      this.handleClose(socket);
+      return false;
+    }
+  }
+
   /** Smoothed round trip from an input send to the first snapshot acknowledging it, in milliseconds. */
   get inputLatencyMs(): number | null {
     return this.latencyMs;
@@ -352,8 +396,18 @@ export class NetworkController {
   }
 
   private sendInput(frame: InputFrame, whileInactive = false): boolean {
+    return (this.active || whileInactive) && this.transmit(frame);
+  }
+
+  /** Tells the corner what to work on. The rest is the one phase the input stream is off, so this frame goes on its own. */
+  sendCornerChoice(kind: CornerKind): boolean {
+    if (!this.resting) return false;
+    return this.transmit({ moveX: 0, moveY: 0, defense: "none", actions: [{ kind }] });
+  }
+
+  private transmit(frame: InputFrame): boolean {
     const socket = this.socket;
-    if (this.role !== "fighter" || (!this.active && !whileInactive) || this.disposed || this.terminal || socket?.readyState !== OPEN) return false;
+    if (this.role !== "fighter" || this.disposed || this.terminal || socket?.readyState !== OPEN) return false;
     try {
       const actions = frame.actions.slice(0, 4);
       socket.send(encodeInput(this.nextSequence, this.serverTick, { ...frame, actions }));

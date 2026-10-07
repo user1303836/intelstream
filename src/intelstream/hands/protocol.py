@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Never
 
+from intelstream.hands.cpu import CpuLevel
 from intelstream.hands.types import (
     ActionKind,
     DefensivePose,
     EngineSnapshot,
+    FighterStyle,
     Foul,
     FoulAction,
     Hand,
@@ -21,7 +23,7 @@ from intelstream.hands.types import (
     Target,
 )
 
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 MAX_FRAME_BYTES = 4096
 MAX_ACTIONS_PER_INPUT = 4
 MAX_SERVER_FRAME_BYTES = 65_536
@@ -112,12 +114,11 @@ def _parse_action(raw: object) -> SemanticAction:
     return MovementAction(kind=kind, client_action_id=_client_action_id(action))
 
 
-def parse_client_input(
-    frame: str | bytes,
-    *,
-    last_sequence: int = -1,
-    server_tick: int = 0,
-) -> InputCommand:
+type ClientEnvelope = dict[str, object]
+
+
+def decode_client_frame(frame: str | bytes) -> ClientEnvelope:
+    """The JSON object of one client frame. A frame is decoded once and each message type is read from it."""
     encoded = frame.encode() if isinstance(frame, str) else frame
     if len(encoded) > MAX_FRAME_BYTES:
         raise ProtocolError("input frame is too large")
@@ -129,8 +130,20 @@ def parse_client_input(
         )
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ProtocolError("input frame is not valid JSON") from exc
+    return _object(raw, "envelope")
 
-    envelope = _object(raw, "envelope")
+
+def _client_envelope(frame: str | bytes | ClientEnvelope) -> ClientEnvelope:
+    return frame if isinstance(frame, dict) else decode_client_frame(frame)
+
+
+def parse_client_input(
+    frame: str | bytes | ClientEnvelope,
+    *,
+    last_sequence: int = -1,
+    server_tick: int = 0,
+) -> InputCommand:
+    envelope = _client_envelope(frame)
     _exact_fields(
         envelope,
         {"version", "type", "sequence", "client_tick", "move", "defense", "actions"},
@@ -180,19 +193,8 @@ def parse_client_input(
     )
 
 
-def parse_ticket_ack(frame: str | bytes) -> str | None:
-    encoded = frame.encode() if isinstance(frame, str) else frame
-    if len(encoded) > MAX_FRAME_BYTES:
-        raise ProtocolError("input frame is too large")
-    try:
-        raw = json.loads(
-            encoded,
-            parse_constant=_reject_constant,
-            object_pairs_hook=_unique_object,
-        )
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise ProtocolError("input frame is not valid JSON") from exc
-    envelope = _object(raw, "envelope")
+def parse_ticket_ack(frame: str | bytes | ClientEnvelope) -> str | None:
+    envelope = _client_envelope(frame)
     if envelope.get("type") != "ticket_ack":
         return None
     _exact_fields(envelope, {"version", "type", "refresh_id"}, "ticket acknowledgement")
@@ -206,6 +208,38 @@ def parse_ticket_ack(frame: str | bytes) -> str | None:
     ):
         raise ProtocolError("invalid ticket refresh identifier")
     return refresh_id
+
+
+def parse_cpu_request(frame: str | bytes | ClientEnvelope) -> CpuLevel | None:
+    """The level of computer opponent asked for, or None when the frame is not that request."""
+    envelope = _client_envelope(frame)
+    if envelope.get("type") != "cpu":
+        return None
+    _exact_fields(envelope, {"version", "type", "level"}, "computer opponent request")
+    if envelope.get("version") != PROTOCOL_VERSION:
+        raise ProtocolError("unsupported protocol version")
+    return _enum(CpuLevel, envelope.get("level"), "computer level")
+
+
+@dataclass(frozen=True, slots=True)
+class StyleChoice:
+    style: FighterStyle
+    ready: bool
+    """True once the fighter has settled on the style; False while still choosing."""
+
+
+def parse_style_choice(frame: str | bytes | ClientEnvelope) -> StyleChoice | None:
+    """The style a fighter is choosing before the bout, or None when the frame is not that message."""
+    envelope = _client_envelope(frame)
+    if envelope.get("type") != "style":
+        return None
+    _exact_fields(envelope, {"version", "type", "style", "ready"}, "style choice")
+    if envelope.get("version") != PROTOCOL_VERSION:
+        raise ProtocolError("unsupported protocol version")
+    ready = envelope.get("ready")
+    if not isinstance(ready, bool):
+        raise ProtocolError("ready must be true or false")
+    return StyleChoice(_enum(FighterStyle, envelope.get("style"), "fighter style"), ready)
 
 
 def _action_dict(action: SemanticAction) -> dict[str, object]:

@@ -188,6 +188,23 @@ async def test_state_is_one_use_expiring_bounded_and_instance_bound() -> None:
     await auth.close()
 
 
+async def test_a_live_state_names_its_instance_without_being_spent() -> None:
+    monotonic = Clock()
+    auth = make_auth(monotonic, Clock())
+    state, _ = await auth.begin(INSTANCE)
+
+    assert auth.instance_for_state(state) == INSTANCE
+    assert auth.instance_for_state(state) == INSTANCE
+    assert auth.instance_for_state("forged") is None
+    assert auth.instance_for_state(42) is None
+    await auth.exchange(code="sdk-code", state=state)
+    assert auth.instance_for_state(state) is None
+    expiring, _ = await auth.begin(INSTANCE)
+    monotonic.value += 11
+    assert auth.instance_for_state(expiring) is None
+    await auth.close()
+
+
 @pytest.mark.parametrize(
     "overrides",
     [

@@ -43,7 +43,7 @@ from intelstream.hands.rating import (
     calculate_elo,
     repeat_pairing_k_factor,
 )
-from intelstream.hands.types import FinishMethod, MatchResult
+from intelstream.hands.types import FighterStyle, FinishMethod, MatchResult
 
 logger = structlog.get_logger()
 
@@ -66,6 +66,11 @@ CONTENT_ITEM_INDEX_MIGRATIONS: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS ix_content_items_unposted_published "
     "ON content_items (published_at, id) "
     "WHERE posted_to_discord = 0 AND summary IS NOT NULL",
+)
+
+# A boxing record counts a doctor's stoppage as a technical knockout.
+HANDS_KNOCKOUT_METHODS: frozenset[FinishMethod] = frozenset(
+    {FinishMethod.KO, FinishMethod.FLASH_KO, FinishMethod.TKO, FinishMethod.DOCTOR_STOPPAGE}
 )
 
 MIN_POLL_INTERVAL_MINUTES = 1
@@ -99,6 +104,7 @@ class Repository:
             await conn.run_sync(Base.metadata.create_all)
             await self._migrate_sources_table(conn)
             await self._migrate_content_item_indexes(conn)
+            await self._recount_hands_knockouts(conn)
         logger.info("Database initialization complete")
 
     async def _migrate_sources_table(self, conn: AsyncConnection) -> None:
@@ -115,6 +121,26 @@ class Repository:
     async def _migrate_content_item_indexes(self, conn: AsyncConnection) -> None:
         for statement in CONTENT_ITEM_INDEX_MIGRATIONS:
             await conn.execute(text(statement))
+
+    async def _recount_hands_knockouts(self, conn: AsyncConnection) -> None:
+        """Counts each fighter's knockouts again from the stored bouts.
+
+        Wins by doctor stoppage were once left out. The count is exact and idempotent, so it runs at
+        every start and only writes a row whose count was wrong.
+        """
+        counted = (
+            select(func.count())
+            .select_from(HandsMatch)
+            .where(
+                HandsMatch.guild_id == HandsRating.guild_id,
+                HandsMatch.winner_id == HandsRating.user_id,
+                HandsMatch.finish_method.in_(sorted(HANDS_KNOCKOUT_METHODS)),
+            )
+            .scalar_subquery()
+        )
+        await conn.execute(
+            update(HandsRating).where(HandsRating.knockouts != counted).values(knockouts=counted)
+        )
 
     async def migrate_sources_to_channel(self, guild_id: str, channel_id: str) -> int:
         """Assign existing sources without a channel to the specified guild and channel."""
@@ -938,12 +964,22 @@ class Repository:
             )
             return result.scalar_one_or_none()
 
-    async def record_hands_match(self, match_result: MatchResult) -> HandsMatch:
+    async def record_hands_match(
+        self,
+        match_result: MatchResult,
+        *,
+        styles: tuple[FighterStyle, FighterStyle] | None = None,
+    ) -> HandsMatch:
+        """Records a rated bout; `styles` are the two fighters' styles, in player order."""
         self._validate_hands_result(match_result)
         async with self._hands_write_lock:
-            return await self._record_hands_match_locked(match_result)
+            return await self._record_hands_match_locked(match_result, styles)
 
-    async def _record_hands_match_locked(self, match_result: MatchResult) -> HandsMatch:
+    async def _record_hands_match_locked(
+        self,
+        match_result: MatchResult,
+        styles: tuple[FighterStyle, FighterStyle] | None,
+    ) -> HandsMatch:
         try:
             async with self.session() as session, session.begin():
                 existing_result = await session.execute(
@@ -1017,16 +1053,17 @@ class Repository:
                     separators=(",", ":"),
                     sort_keys=True,
                 )
-                result_json = json.dumps(
-                    {
-                        "player_one_damage": match_result.player_one_damage,
-                        "player_one_knockdowns": match_result.player_one_knockdowns,
-                        "player_two_damage": match_result.player_two_damage,
-                        "player_two_knockdowns": match_result.player_two_knockdowns,
-                    },
-                    separators=(",", ":"),
-                    sort_keys=True,
-                )
+                result_details: dict[str, object] = {
+                    "player_one_damage": match_result.player_one_damage,
+                    "player_one_knockdowns": match_result.player_one_knockdowns,
+                    "player_two_damage": match_result.player_two_damage,
+                    "player_two_knockdowns": match_result.player_two_knockdowns,
+                }
+                if styles is not None:
+                    # Win rates by style in rated play are what a balance change is checked against.
+                    result_details["player_one_style"] = styles[0].value
+                    result_details["player_two_style"] = styles[1].value
+                result_json = json.dumps(result_details, separators=(",", ":"), sort_keys=True)
                 match = HandsMatch(
                     match_id=match_result.match_id,
                     activity_instance_id=match_result.activity_instance_id,
@@ -1113,11 +1150,7 @@ class Repository:
         winner.current_streak += 1
         loser.losses += 1
         loser.current_streak = 0
-        if match_result.finish_method in (
-            FinishMethod.KO,
-            FinishMethod.FLASH_KO,
-            FinishMethod.TKO,
-        ):
+        if match_result.finish_method in HANDS_KNOCKOUT_METHODS:
             winner.knockouts += 1
 
     async def record_suck_boobs_usage(

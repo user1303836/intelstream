@@ -4,13 +4,16 @@ import type { EngineSnapshot, FighterSnapshot } from "../types";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
 import { FightRenderer, refereeSpacing } from "./renderer";
 import { applyHeadTrauma } from "./injury";
+import { OFFICIAL_LOOKS } from "./looks";
+import { REFEREE_OUTFIT } from "./outfit";
 import { worldPosition } from "./rig";
 import { worldMapping } from "./world";
 
 const mapping = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 });
 const gltf = await loadBoxerGlb();
 
-const official = (): SkinnedBoxer => new SkinnedBoxer(gltf, { skin: 0xc79b76, gear: 0x3b57b8, pants: 0x14161c, bodyMap: new THREE.Texture() });
+/** The referee, dressed as the renderer dresses him. */
+const official = (): SkinnedBoxer => new SkinnedBoxer(gltf, { skin: 0xc79b76, gear: 0x3b57b8, look: OFFICIAL_LOOKS.referee, outfit: REFEREE_OUTFIT });
 
 /** Skinned world positions of a boxer's mesh vertices, optionally only those bound mostly to bones matching `bones`. */
 function surface(boxer: SkinnedBoxer, meshes: RegExp, bones?: RegExp): THREE.Vector3[] {
@@ -48,10 +51,13 @@ describe("referee clinch break", () => {
     const red = new SkinnedBoxer(gltf, { skin: 0x6e4128, gear: 0xb91c1c });
     const blueGraph = new BoxingGraph(blue, mapping);
     const redGraph = new BoxingGraph(red, mapping);
-    // The renderer's referee state, driven through its own placement code.
+    // The renderer's referee state, driven through its own placement code: live, with no replay, ceremony,
+    // stoppage, body or severed head on the canvas to keep him elsewhere.
     const renderer = {
       referee: graph, mapping, tmpA: new THREE.Vector3(), tmpB: new THREE.Vector3(),
       refereePosition: new THREE.Vector3(Math.cos(angle) * 2, 0, Math.sin(angle) * 2), refereeAway: new THREE.Vector3(), refereeVelocity: new THREE.Vector3(), refereeYaw: 0,
+      replay: null, ceremony: null, stoppageWinner: -1, stoppageRaiseAt: Number.POSITIVE_INFINITY, frameSeconds: 0, blobShadows: [], graphs: null,
+      effects: { severedHeadPosition: () => false }, closeUpTarget: new THREE.Vector3(), bodyPoint: new THREE.Vector3(),
     };
     let tick = 0;
     const step = (one: FighterSnapshot, two: FighterSnapshot): void => {

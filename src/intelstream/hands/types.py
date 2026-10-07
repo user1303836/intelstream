@@ -31,6 +31,14 @@ class Stance(StrEnum):
     SOUTHPAW = "southpaw"
 
 
+class FighterStyle(StrEnum):
+    BALANCED = "balanced"
+    BOXER = "boxer"
+    SLUGGER = "slugger"
+    SWARMER = "swarmer"
+    COUNTER_PUNCHER = "counter_puncher"
+
+
 class DefensivePose(StrEnum):
     NONE = "none"
     GUARD_HIGH = "guard_high"
@@ -58,6 +66,16 @@ class ActionKind(StrEnum):
     GET_UP_LEFT = "get_up_left"
     GET_UP_RIGHT = "get_up_right"
     TAUNT = "taunt"
+    CORNER_CUT = "corner_cut"
+    CORNER_SWELLING = "corner_swelling"
+    CORNER_BREATH = "corner_breath"
+
+
+class CornerChoice(StrEnum):
+    CUT = "cut"
+    SWELLING = "swelling"
+    BREATH = "breath"
+    BALANCED = "balanced"
 
 
 class MatchPhase(StrEnum):
@@ -143,6 +161,7 @@ class FighterSnapshot:
     velocity_x: int
     velocity_y: int
     stance: Stance
+    style: FighterStyle
     defense: DefensivePose
     stamina: int
     maximum_stamina: int
@@ -171,6 +190,7 @@ class FighterSnapshot:
     clinch_ticks: int
     is_foul_recovery_target: bool
     taunt_ticks: int
+    corner_choice: CornerChoice | None
     get_up_prompt: ActionKind | None
     get_up_meter: int
     get_up_required: int

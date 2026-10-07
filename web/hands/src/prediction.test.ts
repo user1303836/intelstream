@@ -1,11 +1,14 @@
-import { cancelsRecovery, punchStaminaCost, punchTiming, recoveryCancelAge } from "./manifest";
+import { cancelsRecovery, punchStaminaCost, punchTiming, recoveryCancelAge, styledStaminaCost, styleTiming } from "./manifest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { SnapshotBuffer } from "./interpolation";
-import { attackTicksRemaining, canAffordPunch, constrainPrediction, EVASION_STAMINA, EVASION_TICKS, EvasionPrediction, fatigueFactor, MINIMUM_SEPARATION, MovementPrediction, movementLocked, predictedDefense, predictMovement, predictedPunchTiming, type HeldInput } from "./prediction";
+import { attackTicksRemaining, constrainPrediction, EVASION_STAMINA, EVASION_TICKS, EvasionPrediction, fatigueFactor, MINIMUM_SEPARATION, MovementPrediction, movementLocked, parryRootedUntil, predictedDefense, predictMovement, predictedPunchTiming, type FootworkHolds, type HeldInput } from "./prediction";
+import { decodeServerFrame, ProtocolError } from "./protocol";
 import { fighter, snapshot } from "./test/fixtures";
+import movementTraces from "./test/movement-traces.json";
 import timingTable from "./test/punch-timing-table.json";
-import type { EngineSnapshot, FighterSnapshot, PunchClass } from "./types";
+import styleTimingTable from "./test/style-timing-table.json";
+import { PROTOCOL_VERSION, type EngineSnapshot, type FighterSnapshot, type FighterStyle, type PunchClass } from "./types";
 
 describe("local movement prediction", () => {
   it("mirrors the authoritative fatigue factor", () => {
@@ -25,7 +28,7 @@ describe("local movement prediction", () => {
     expect(Math.hypot(diagonal.dx, diagonal.dy)).toBeLessThanOrEqual(7 * 4 + 1e-9);
     expect(diagonal.dx).toBeCloseTo(diagonal.dy, 9);
   });
-  it("slows while guarding and stops entirely while punching, stunned, or down", () => {
+  it("slows while guarding and stops entirely while punching, slipping, or down", () => {
     const still = { ...fighter("one"), conditioning: 1000 };
     const guarded = predictMovement(still, { moveX: 1000, moveY: 0, defense: "guard_high" }, 4);
     const open = predictMovement(still, { moveX: 1000, moveY: 0, defense: "none" }, 4);
@@ -33,7 +36,6 @@ describe("local movement prediction", () => {
     expect(guarded.dx).toBeGreaterThan(0);
     for (const locked of [
       { ...still, action: "jab" as const },
-      { ...still, stunned_ticks: 5 },
       { ...still, is_downed: true },
       { ...still, defense: "weave" as const },
     ]) {
@@ -41,6 +43,21 @@ describe("local movement prediction", () => {
       expect(predictMovement(locked, { moveX: 1000, moveY: 0, defense: "none" }, 4)).toEqual({ dx: 0, dy: 0 });
     }
     expect(movementLocked(still)).toBe(false);
+  });
+  it("lets a stunned fighter stumble at the engine's share of his speed, with his guard down", () => {
+    const still = { ...fighter("one"), conditioning: 1000, velocity_x: 0, velocity_y: 0 };
+    const held = { moveX: 1000, moveY: 0, defense: "none" as const };
+    const free = predictMovement(still, held, 6);
+    const stunned = { ...still, stunned_ticks: 20 };
+    const stumbling = predictMovement(stunned, held, 6);
+    expect(movementLocked(stunned)).toBe(false);
+    expect(stumbling.dx).toBeGreaterThan(0);
+    expect(stumbling.dx).toBeLessThan(free.dx * 0.75);
+    // Engine order: the stun counts down before the footwork, and a stunned fighter's guard is down.
+    const lastStunnedTick = predictMovement({ ...still, stunned_ticks: 1 }, held, 1);
+    expect(lastStunnedTick.dx).toBeCloseTo(free.dx === 0 ? 0 : predictMovement(still, held, 1).dx, 9);
+    const guardDropped = predictMovement(stunned, { ...held, defense: "guard_high" }, 6);
+    expect(guardDropped.dx).toBeCloseTo(stumbling.dx, 9);
   });
   it("frees the fighter when the punch ends even though the snapshot still presents it", () => {
     const still = { ...fighter("one"), conditioning: 1000 };
@@ -53,12 +70,47 @@ describe("local movement prediction", () => {
     expect(movementLocked(hook, 122)).toBe(false);
     expect(predictMovement(hook, held, 4, 110)).toEqual({ dx: 0, dy: 0 });
     expect(predictMovement(hook, held, 4, 130)).toEqual(predictMovement(still, held, 4));
+    // The engine frees him on the tick the punch ends, 122: three of the four ticks after 120.
     const leaving = predictMovement(hook, held, 4, 120);
     expect(leaving.dx).toBeGreaterThan(0);
-    expect(leaving.dx).toBeCloseTo(predictMovement(still, held, 2).dx);
-    expect(predictMovement({ ...hook, stunned_ticks: 5 }, held, 4, 130)).toEqual({ dx: 0, dy: 0 });
+    expect(leaving.dx).toBeCloseTo(predictMovement(still, held, 3).dx);
+    const stumbling = predictMovement({ ...hook, stunned_ticks: 5 }, held, 4, 130);
+    expect(stumbling.dx).toBeGreaterThan(0);
+    expect(stumbling.dx).toBeLessThan(predictMovement(still, held, 4).dx);
     expect(predictMovement({ ...hook, queued_actions: 1 }, held, 4, 130)).toEqual({ dx: 0, dy: 0 });
     expect(movementLocked({ ...still, queued_actions: 1 }, 130)).toBe(true);
+  });
+
+  it("lets a stunned fighter stumble though the punch the stun cut short is still presented", () => {
+    const held = { moveX: -1000, moveY: 0, defense: "none" as const };
+    const still = { ...fighter("one"), conditioning: 1000, stunned_ticks: 20 };
+    const hook = { ...still, action: "hook" as const, action_id: "c1", action_start_tick: 197, action_startup_ticks: 9, action_active_ticks: 2, action_recovery_ticks: 14 };
+    const stumble = predictMovement(still, held, 4, 200);
+    expect(stumble.dx).toBeLessThan(-10);
+    expect(predictMovement(hook, held, 4, 200)).toEqual(stumble);
+    // Once the stun is over, the punch it cut no longer holds him, for a player who saw him stunned in it.
+    const after = { ...hook, stunned_ticks: 0 };
+    expect(predictMovement(after, held, 4, 205)).toEqual({ dx: 0, dy: 0 });
+    expect(predictMovement(after, held, 4, 205, { cutActionId: "c1" })).toEqual(predictMovement({ ...after, action: null, action_id: null }, held, 4, 205));
+    const prediction = new MovementPrediction();
+    prediction.update(hook, held, false, 0, 4, 200, 1, 30);
+    expect(prediction.update(after, held, false, 1000, 4, 205, 1, 30).dx).toBeLessThan(-10);
+    expect(new MovementPrediction().update(after, held, false, 1000, 4, 205, 1, 30)).toEqual({ dx: 0, dy: 0 });
+  });
+
+  it("holds the player's own fighter still for a parry's stagger once it hears of the parry, then walks him off", () => {
+    const held = { moveX: -1000, moveY: 0, defense: "none" as const };
+    const parried = { ...fighter("one"), conditioning: 1000, stunned_ticks: 18 };
+    const parry = { event_id: 1, tick: 98, kind: "parry", actor_id: "two", target_id: "one", amount: 20, detail: "", blood: 0, direction: 0, action_id: "c4" };
+    const prediction = new MovementPrediction();
+    prediction.observe({ ...parry, target_id: "two" }, "one");
+    expect(prediction.update(parried, held, false, 0, 4, 100, 1, 30).dx).toBeLessThan(-5);
+    const rooted = new MovementPrediction();
+    rooted.observe(parry, "one");
+    expect(rooted.update(parried, held, false, 0, 4, 100, 1, 30)).toEqual({ dx: 0, dy: 0 });
+    // With two ticks of the stagger left the engine roots him for one more: three of the four ticks ahead are his.
+    const leaving = rooted.update({ ...parried, stunned_ticks: 2 }, held, false, 1000, 4, 116, 1, 30);
+    expect(leaving.dx).toBeCloseTo(predictMovement({ ...parried, stunned_ticks: 0 }, held, 3).dx, 5);
   });
 
   it("predicts the timing and cost the engine will use", () => {
@@ -75,8 +127,21 @@ describe("local movement prediction", () => {
     expect(punchStaminaCost("jab", "body", "normal")).toBe(46);
     expect(punchStaminaCost("jab", "head", "power")).toBe(65);
     expect(punchStaminaCost("jab", "body", "power")).toBe(71);
-    expect(canAffordPunch({ ...fresh, stamina: 42 }, jab)).toBe(true);
-    expect(canAffordPunch({ ...fresh, stamina: 41 }, jab)).toBe(false);
+  });
+
+  it("predicts the slow arm punch the engine throws for a fighter who cannot pay in full", () => {
+    const fresh = { ...fighter("one"), conditioning: 1000, stance: "orthodox" as const };
+    const jab = { class: "jab" as const, hand: "left" as const, target: "head" as const, power: "normal" as const };
+    expect(predictedPunchTiming({ ...fresh, stamina: 42 }, jab)).toMatchObject({ startup: 3, recovery: 7 });
+    expect(predictedPunchTiming({ ...fresh, stamina: 10 }, jab)).toMatchObject({ startup: 6, recovery: 12 });
+    expect(predictedPunchTiming({ ...fresh, conditioning: 640, stamina: 41 }, jab)).toMatchObject({ startup: 7, recovery: 13 });
+    expect(predictedPunchTiming({ ...fresh, conditioning: 640, stamina: 119 }, { ...jab, class: "hook", power: "power" })).toMatchObject({ startup: 14, recovery: 23 });
+    expect(predictedPunchTiming({ ...fresh, conditioning: 820, stamina: 0, trauma: { ...fresh.trauma, body: 350 } }, { class: "uppercut", hand: "right", target: "body", power: "normal" })).toMatchObject({ startup: 14, recovery: 21 });
+    // No combination discount for a tired punch, inside the window or out of it.
+    const afterJab = { ...fresh, conditioning: 108, stamina: 50, action: "jab" as const, action_start_tick: 100, action_startup_ticks: 3, action_active_ticks: 2, action_recovery_ticks: 7 };
+    const straight = { class: "straight" as const, hand: "right" as const, target: "head" as const, power: "power" as const };
+    expect(predictedPunchTiming(afterJab, straight, 110)).toMatchObject({ startup: 18, recovery: 30 });
+    expect(predictedPunchTiming(afterJab, straight, 125)).toMatchObject({ startup: 18, recovery: 30 });
   });
 
   it("predicts the startup and recovery the engine gives every punch, its own cost taken off the conditioning first", () => {
@@ -91,6 +156,31 @@ describe("local movement prediction", () => {
     }
     expect(timingTable.length).toBeGreaterThan(1000);
     expect(mismatches).toEqual([]);
+  });
+
+  it("predicts each style's timing and price for every punch exactly as the engine gives them", () => {
+    const classes: Record<string, PunchClass> = { j: "jab", s: "straight", h: "hook", u: "uppercut" };
+    const mismatches: string[] = [];
+    for (const row of styleTimingTable as string[]) {
+      const [style, key, conditioning, body, startup, recovery, cost] = row.split(",") as [FighterStyle, string, string, string, string, string, string];
+      const base = fighter("one");
+      const state: FighterSnapshot = { ...base, style, stance: "orthodox", conditioning: Number(conditioning), trauma: { ...base.trauma, body: Number(body) } };
+      const punch = { class: classes[key[0]!]!, target: key[1] === "h" ? "head" as const : "body" as const, power: key[2] === "p" ? "power" as const : "normal" as const, hand: key[3] === "l" ? "left" as const : "right" as const };
+      const timing = predictedPunchTiming(state, punch);
+      if (timing.startup !== Number(startup) || timing.recovery !== Number(recovery)) mismatches.push(`${row} -> ${timing.startup},${timing.recovery}`);
+      if (styledStaminaCost(style, punch.class, punch.target, punch.power) !== Number(cost)) mismatches.push(`${row} cost`);
+    }
+    expect(styleTimingTable.length).toBe(1280);
+    expect(mismatches).toEqual([]);
+  });
+
+  it("moves a swarmer as much quicker, and a slugger as much slower, as the engine does", () => {
+    const held = { moveX: 1000, moveY: 0, defense: "none" as const };
+    const balanced = predictMovement({ ...fighter("one"), conditioning: 1000 }, held, 20);
+    const swarmer = predictMovement({ ...fighter("one"), conditioning: 1000, style: "swarmer" }, held, 20);
+    const slugger = predictMovement({ ...fighter("one"), conditioning: 1000, style: "slugger" }, held, 20);
+    expect(swarmer.dx / balanced.dx).toBeCloseTo(styleTiming("swarmer").moveSpeedPercent / 100, 2);
+    expect(slugger.dx / balanced.dx).toBeCloseTo(0.96, 2);
   });
 
   it("charges a punch thrown inside the combination window at the engine's discount", () => {
@@ -126,6 +216,21 @@ describe("local movement prediction", () => {
     expect(coast.dx).toBeCloseTo(3 + 1.5 + 0.75, 5);
   });
 
+  it("takes a velocity past the walking speed clamped to it rather than ending the bout, and seeds the step from that", () => {
+    const base = snapshot();
+    const decode = (one: FighterSnapshot): FighterSnapshot => {
+      const message = decodeServerFrame(JSON.stringify({ version: PROTOCOL_VERSION, type: "snapshot", payload: { ...base, fighters: [one, base.fighters[1]] } }));
+      if (message.type !== "snapshot") throw new Error(message.type);
+      return message.payload.fighters[0];
+    };
+    // A fresh swarmer pushed back onto a corner pad keeps 7.7 units a tick along it.
+    const swarmer = decode({ ...base.fighters[0], style: "swarmer", conditioning: 1000, velocity_x: 8, velocity_y: -9 });
+    expect([swarmer.velocity_x, swarmer.velocity_y]).toEqual([7, -7]);
+    const coast = predictMovement(swarmer, { moveX: 0, moveY: 0, defense: "none" }, 1);
+    expect(Math.hypot(coast.dx, coast.dy)).toBeLessThanOrEqual(7 * 1.1);
+    expect(() => decode({ ...base.fighters[0], velocity_x: 7.5 })).toThrow(ProtocolError);
+  });
+
   it("mirrors the engine's recovery cancel: a landed, chained, affordable follow-up on a defender who is not stunned", () => {
     expect(recoveryCancelAge(punchTiming("straight", "head", "normal"))).toBe(6 + 2 + 5);
     expect(recoveryCancelAge(punchTiming("hook", "head", "normal"))).toBe(7 + 3 + 6);
@@ -137,7 +242,50 @@ describe("local movement prediction", () => {
     expect(cancelsRecovery("straight", true, hook, punchStaminaCost("hook", "head", "normal") - 1, false)).toBe(false);
     expect(cancelsRecovery("straight", true, { ...hook, class: "jab" }, 900, false)).toBe(false);
     expect(cancelsRecovery("hook", true, { ...hook, class: "uppercut" }, 900, false)).toBe(true);
+    // The engine charges the style's price: a slugger short of it throws a tired follow-up, and no combination.
+    const sluggerCost = styledStaminaCost("slugger", "hook", "head", "normal");
+    expect(sluggerCost).toBeGreaterThan(punchStaminaCost("hook", "head", "normal"));
+    expect(cancelsRecovery("straight", true, hook, sluggerCost - 1, false, "slugger")).toBe(false);
+    expect(cancelsRecovery("straight", true, hook, sluggerCost - 1, false)).toBe(true);
   });
+});
+
+describe("footwork predicted against what the engine did", () => {
+  interface TraceRecord { readonly tick: number; readonly fighter: unknown; readonly events: unknown[]; readonly held: HeldInput }
+  const LOOKAHEAD = 4;
+
+  /** Each tick's snapshot as the client decodes it, with what it has learnt so far of parries and cut punches. */
+  function replay(records: readonly TraceRecord[]): { fighter: FighterSnapshot; holds: FootworkHolds; held: HeldInput; struck: boolean }[] {
+    let rootedUntil = 0;
+    let cutActionId: string | null = null;
+    return records.map((record) => {
+      const payload = { ...snapshot(record.tick), fighters: [record.fighter, fighter("two", 400)], events: record.events };
+      const message = decodeServerFrame(JSON.stringify({ version: PROTOCOL_VERSION, type: "snapshot", payload }));
+      if (message.type !== "snapshot") throw new Error(message.type);
+      const one = message.payload.fighters[0];
+      for (const event of message.payload.events) rootedUntil = parryRootedUntil(event, "one", rootedUntil);
+      if (one.stunned_ticks > 0 && one.action_id !== null) cutActionId = one.action_id;
+      const struck = message.payload.events.some((event) => event.target_id === "one" && ["hit", "counter_hit", "parry"].includes(event.kind));
+      return { fighter: one, holds: { rootedUntil, cutActionId }, held: record.held, struck };
+    });
+  }
+
+  for (const [name, records] of Object.entries(movementTraces as Record<string, TraceRecord[]>)) {
+    it(`${name}: every tick's ${LOOKAHEAD}-tick step is the engine's to within 2 units`, () => {
+      const decoded = replay(records);
+      const misses: string[] = [];
+      // A punch landing on him inside the look-ahead is news no snapshot before it carries.
+      for (let index = 0; index + LOOKAHEAD < decoded.length; index += 1) {
+        if (decoded.slice(index + 1, index + 1 + LOOKAHEAD).some((later) => later.struck)) continue;
+        const { fighter: now, holds, held } = decoded[index]!;
+        const later = decoded[index + LOOKAHEAD]!.fighter;
+        const step = predictMovement(now, held, LOOKAHEAD, records[index]!.tick, holds);
+        const miss = Math.hypot(step.dx - (later.x - now.x), step.dy - (later.y - now.y));
+        if (miss > 2) misses.push(`tick ${records[index]!.tick}: predicted ${step.dx.toFixed(1)}, engine ${later.x - now.x}`);
+      }
+      expect(misses).toEqual([]);
+    });
+  }
 });
 
 describe("walking behind a round trip", () => {
@@ -256,6 +404,19 @@ describe("the player's own defence", () => {
     expect(evasion.pose(1000 + (6 + EVASION_TICKS) * tick)).toBeNull();
   });
 
+  it("holds a style's longer evasion as long as the engine plays it", () => {
+    const tick = 1000 / 30;
+    const ticks = EVASION_TICKS + styleTiming("swarmer").evasionTicks;
+    expect(ticks).toBe(EVASION_TICKS + 1);
+    expect(styleTiming("balanced").evasionTicks).toBe(0);
+    const evasion = new EvasionPrediction();
+    evasion.press("weave", "c3", 0, 6, 30, ticks);
+    expect(evasion.holdsFeet((ticks - 1) * tick, 30)).toBe(true);
+    expect(evasion.holdsFeet(ticks * tick, 30)).toBe(false);
+    expect(evasion.pose((6 + ticks - 1) * tick)).toBe("weave");
+    expect(evasion.pose((6 + ticks) * tick)).toBeNull();
+  });
+
   it("drops a slip the server turned down or a stun cut short", () => {
     const sequenceOf = (id: string): number | null => (id === "c8" ? 41 : null);
     const refused = new EvasionPrediction();
@@ -286,5 +447,6 @@ describe("the player's own defence", () => {
     const engine = readFileSync(resolve(process.cwd(), "../../src/intelstream/hands/engine.py"), "utf8");
     expect(engine).toContain(`EVASION_TICKS: Final = ${EVASION_TICKS}`);
     expect(engine).toContain(`if fighter.stamina < ${EVASION_STAMINA}:`);
+    expect(engine).toContain("fighter.evasion_ticks = EVASION_TICKS + fighter.style_rule.evasion_ticks");
   });
 });

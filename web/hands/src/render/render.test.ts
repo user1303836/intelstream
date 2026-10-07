@@ -1,13 +1,18 @@
+import { PROTOCOL_VERSION } from "../types";
 import * as THREE from "three";
-import { punchTiming, totalTicks } from "../manifest";
+import { FIGHTER_RADIUS, punchTiming, REST_CORNER_OFFSET, RING_HALF_WIDTH, totalTicks } from "../manifest";
 import { buildArena } from "./arena";
-import { CameraDirector, cornerFrame, cornerPoint, cornerShot, cornerShotProgress, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE } from "./camera";
-import { bloodPatternFor, Effects3D } from "./effects";
-import { decisionLabel, drawHud, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, RoundClock, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
-import { buildRing, ropePress } from "./ring";
+import { CameraDirector, ceremonyShot, cornerFrame, cornerPoint, cornerShot, cornerShotProgress, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE } from "./camera";
+import { captionSlot, drawCaption } from "./caption";
+import { bloodPatternFor, Effects3D, NECK_FOUNTAIN_SECONDS } from "./effects";
+import { CLOCK_PORTRAIT_RADIUS, cardRows, decisionLabel, drawHud, finalRevealDelay as revealDelay, hudScale, lagWarning, plateDetails, REFEREE_REVEAL_DELAY_SECONDS, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, PLATE_PORTRAIT_RADIUS, RESULT_CARD_FOOTER, resultCard, resultCardLayout, RoundClock, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
+import { FightRenderer } from "./renderer";
+import { buildRing, disposeRing, nearRopeOpacityFor, ROPE_FLEX_GLSL, ROPE_GIVE_GLSL, ropePress, ROPE_BACK, ROPE_MAX_GIVE, ropeExcess } from "./ring";
+import { GloveTrail } from "./trails";
 import { resizeHighDpi } from "./viewport";
-import { PALETTES, worldMapping } from "./world";
-import { fighter, publicPlayers, snapshot } from "../test/fixtures";
+import { CORNER_COLORS, PALETTES, ROPE_HEIGHTS, ROPE_LINE, worldMapping } from "./world";
+import { fighter, mockHudContext, publicPlayers, snapshot, type DrawnPicture } from "../test/fixtures";
+import type { EngineSnapshot } from "../types";
 
 const mapping = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 });
 
@@ -56,6 +61,32 @@ describe("scene construction", () => {
     expect(ring.geometries.some((geometry) => geometry.type === "PlaneGeometry")).toBe(true);
   });
 
+  it("pads the corner each fighter rests in with his colour, and the other two white", () => {
+    const ring = buildRing();
+    ring.group.updateMatrixWorld(true);
+    const padsIn = (color: number): THREE.Vector3[] => {
+      const found: THREE.Vector3[] = [];
+      ring.group.traverse((object) => {
+        if (!(object instanceof THREE.Mesh) || !(object.geometry instanceof THREE.BoxGeometry) || object.geometry.parameters.height !== 0.52) return;
+        if ((object.material as THREE.MeshStandardMaterial).color.equals(new THREE.Color(color))) found.push(object.getWorldPosition(new THREE.Vector3()));
+      });
+      return found;
+    };
+    // The engine walks seat one (blue) to (-offset, -offset) for the rest and seat two (red) to (offset, offset).
+    for (const [color, sign] of [[CORNER_COLORS.blue, -1], [CORNER_COLORS.red, 1]] as const) {
+      const pads = padsIn(color);
+      expect(pads).toHaveLength(2);
+      for (const pad of pads) {
+        expect(Math.sign(pad.x)).toBe(Math.sign(mapping.x(sign * REST_CORNER_OFFSET)));
+        expect(Math.sign(pad.z)).toBe(Math.sign(mapping.z(sign * REST_CORNER_OFFSET)));
+      }
+    }
+    const neutral = padsIn(CORNER_COLORS.neutral);
+    expect(neutral).toHaveLength(4);
+    for (const pad of neutral) expect(Math.sign(pad.x)).toBe(Math.sign(pad.z));
+    disposeRing(ring);
+  });
+
   it("builds and animates the arena crowd deterministically", () => {
     const arena = buildArena();
     arena.update(1.5, 1 / 60, false);
@@ -66,6 +97,22 @@ describe("scene construction", () => {
 });
 
 describe("camera direction", () => {
+  it("keeps a fighter on the canvas up in the close shot over a count, clear of the plates along the bottom", () => {
+    const director = new CameraDirector();
+    const standing = { x: -0.2, z: -1.3 };
+    const down = { x: 0.4, z: 1.1 };
+    let frame = director.update(1 / 60, 0, standing, down, 2.5, true, 0, true, true, down);
+    for (let i = 1; i < 300; i += 1) frame = director.update(1 / 60, i / 60, standing, down, 2.5, true, 0, true, true, down);
+    const camera = new THREE.PerspectiveCamera(36, 16 / 9, 0.1, 80);
+    camera.position.copy(frame.position);
+    camera.lookAt(frame.lookAt);
+    camera.updateMatrixWorld(true);
+    const onScreen = new THREE.Vector3(down.x, 0.15, down.z).project(camera);
+    // The plates take the bottom sixth of the screen.
+    expect(onScreen.y).toBeGreaterThan(-0.55);
+    expect(Math.abs(onScreen.x)).toBeLessThan(0.6);
+  });
+
   it("follows the fighters midpoint and pushes in on knockdowns", () => {
     const director = new CameraDirector();
     for (let i = 0; i < 300; i += 1) director.update(1 / 60, i / 60, { x: -1.5, z: 0 }, { x: 1.5, z: 0 }, 3, false, 0, true);
@@ -128,10 +175,10 @@ describe("effects", () => {
 
     const full = new Effects3D(new THREE.Scene());
     full.addEvent(severeHit(1), origin, false);
-    expect(full.liveBloodParticles).toBe(110);
-    expect(full.liveMist).toBe(10);
-    expect(full.liveGibs).toBe(11);
-    expect(full.visibleDecals).toBe(12);
+    expect(full.liveBloodParticles).toBe(140);
+    expect(full.liveMist).toBe(18);
+    expect(full.liveGibs).toBe(8);
+    expect(full.canvasStains).toBe(8);
     full.dispose();
 
     const reduced = new Effects3D(new THREE.Scene());
@@ -140,7 +187,7 @@ describe("effects", () => {
     expect(reduced.liveBloodParticles).toBe(24);
     expect(reduced.liveMist).toBe(2);
     expect(reduced.liveGibs).toBe(0);
-    expect(reduced.visibleDecals).toBe(3);
+    expect(reduced.canvasStains).toBe(2);
     reduced.decapitate(0, new THREE.Vector3(0, 1.5, 0), new THREE.Quaternion(), 1, 2);
     expect(reduced.activeHeads).toBe(0);
     expect(reduced.activeStumps).toBe(0);
@@ -154,7 +201,7 @@ describe("effects", () => {
     expect(off.liveBloodParticles).toBe(0);
     expect(off.liveMist).toBe(0);
     expect(off.liveGibs).toBe(0);
-    expect(off.visibleDecals).toBe(0);
+    expect(off.canvasStains).toBe(0);
     off.dispose();
   });
 
@@ -205,10 +252,10 @@ describe("effects", () => {
     effects.decapitate(0, origin, new THREE.Quaternion(), 1, 10);
     const sweat = effects.liveParticles - effects.liveBloodParticles;
     expect(sweat).toBeGreaterThan(0);
-    expect(effects.liveGibs).toBe(35);
+    expect(effects.liveGibs).toBe(32);
     expect(effects.activeHeads).toBe(1);
     expect(effects.activeStumps).toBe(1);
-    expect(effects.visibleDecals).toBeGreaterThan(0);
+    expect(effects.canvasStains).toBeGreaterThan(0);
 
     effects.setBloodLevel("off");
     expect(effects.liveParticles).toBe(sweat);
@@ -217,12 +264,12 @@ describe("effects", () => {
     expect(effects.liveGibs).toBe(0);
     expect(effects.activeHeads).toBe(0);
     expect(effects.activeStumps).toBe(0);
-    expect(effects.visibleDecals).toBe(0);
+    expect(effects.canvasStains).toBe(0);
 
     effects.addEvent(severeHit(11), origin, false);
     expect(effects.liveParticles).toBeGreaterThan(sweat);
     expect(effects.liveBloodParticles).toBe(0);
-    expect(effects.visibleDecals).toBe(0);
+    expect(effects.canvasStains).toBe(0);
     effects.dispose();
   });
 
@@ -269,7 +316,7 @@ describe("effects", () => {
     expect(effects.liveGibs).toBe(0);
     expect(effects.liveBloodParticles).toBe(0);
     expect(effects.liveMist).toBe(0);
-    expect(effects.visibleDecals).toBe(0);
+    expect(effects.canvasStains).toBe(0);
 
     effects.decapitate(0, position, quaternion, 1, 42);
     expect(effects.activeHeads).toBe(0);
@@ -315,21 +362,26 @@ describe("effects", () => {
   it("keeps ballistic updates finite, bounded to the ring, and stains the floor", () => {
     const scene = new THREE.Scene();
     const effects = new Effects3D(scene);
+    const children = scene.children.length;
     effects.decapitate(0, new THREE.Vector3(2.9, 0.2, 2.9), new THREE.Quaternion(), 1, 70);
     const initialBlood = effects.liveBloodParticles;
-    const initialDecals = effects.visibleDecals;
+    const initialDecals = effects.canvasStains;
     effects.anchorStump(0, new THREE.Vector3(0.4, 1.4, -0.2), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.4));
     for (let i = 0; i < 10; i += 1) effects.update(1 / 60);
     expect(effects.liveBloodParticles).toBeGreaterThan(initialBlood);
+    // The severed neck pumps for NECK_FOUNTAIN_SECONDS; what follows is once it has bled out.
+    for (let i = 0; i < NECK_FOUNTAIN_SECONDS * 60; i += 1) effects.update(1 / 60);
 
     for (let i = 0; i < 360; i += 1) effects.update(1 / 60);
-    expect(effects.liveGibs).toBe(0);
+    // The flesh lies where it fell for the rest of the bout; the blood in the air has all come down.
+    expect(effects.liveGibs).toBe(24);
     expect(effects.liveBloodParticles).toBe(0);
     expect(effects.liveMist).toBe(0);
     expect(effects.activeHeads).toBe(1);
     expect(effects.activeStumps).toBe(1);
-    expect(effects.visibleDecals).toBeGreaterThan(initialDecals);
-    expect(effects.visibleDecals).toBeLessThanOrEqual(48);
+    expect(effects.canvasStains).toBeGreaterThan(initialDecals);
+    // Stains are painted into the one canvas, so however many there are the scene holds no more objects.
+    expect(scene.children.length).toBe(children);
 
     effects.decapitate(
       1,
@@ -380,7 +432,7 @@ describe("effects", () => {
         head: head.position.toArray(),
         gib: gibPosition.toArray(),
         particles: Array.from(effects.dropletBuffers.position.array),
-        decals: effects.visibleDecals,
+        decals: effects.canvasStains,
       };
       effects.dispose();
       return result;
@@ -490,6 +542,7 @@ describe("effects", () => {
   it("never exceeds any fixed pool under repeated production-valid events", () => {
     const scene = new THREE.Scene();
     const effects = new Effects3D(scene);
+    const children = scene.children.length;
     const position = new THREE.Vector3(0, 1.5, 0);
     const quaternion = new THREE.Quaternion();
     for (let eventId = 0; eventId < 100; eventId += 1) {
@@ -503,12 +556,12 @@ describe("effects", () => {
     expect(effects.liveParticles).toBeLessThanOrEqual(900);
     expect(effects.liveBloodParticles).toBeLessThanOrEqual(900);
     expect(effects.liveMist).toBeLessThanOrEqual(90);
-    expect(effects.visibleDecals).toBeLessThanOrEqual(48);
-    expect(effects.liveGibs).toBe(48);
+    expect(scene.children.length).toBe(children);
+    expect(effects.liveGibs).toBe(96);
     expect(effects.activeHeads).toBeLessThanOrEqual(2);
     expect(effects.activeStumps).toBeLessThanOrEqual(2);
 
-    const stains = effects.visibleDecals;
+    const stains = effects.canvasStains;
     effects.clearDynamic();
     expect(effects.liveParticles).toBe(0);
     expect(effects.liveBloodParticles).toBe(0);
@@ -516,7 +569,7 @@ describe("effects", () => {
     expect(effects.liveGibs).toBe(0);
     expect(effects.activeHeads).toBe(0);
     expect(effects.activeStumps).toBe(0);
-    expect(effects.visibleDecals).toBe(stains);
+    expect(effects.canvasStains).toBe(stains);
     effects.dispose();
     expect(scene.children).toHaveLength(0);
   });
@@ -566,6 +619,16 @@ describe("viewport and broadcast HUD", () => {
     expect(HUD_MAX_POISE).toBe(600);
   });
 
+  it("tags the computer's plate instead of showing a rating for it", () => {
+    const texts: string[] = [];
+    const ctx = mockHudContext(texts);
+    const players = Object.fromEntries(publicPlayers.map((p) => [p.id, p.id === "two" ? { ...p, cpu: true } : p]));
+    drawHud(ctx, 1280, 720, snapshot(), players, "one", null, 0, 30);
+    expect(texts).toContain("ELO 1500");
+    expect(texts).toContain("CPU");
+    expect(texts.filter((text) => text.startsWith("ELO "))).toHaveLength(1);
+  });
+
   it("uses the bootstrap tick rate for the authoritative HUD clock", () => {
     const texts: string[] = [];
     const ctx = mockHudContext(texts);
@@ -575,14 +638,178 @@ describe("viewport and broadcast HUD", () => {
   });
 });
 
-describe("rope flex", () => {
-  it("presses into the nearest ropes only when a fighter is within reach of them", () => {
+describe("near ropes", () => {
+  it("are solid while the fighters are across the ring and mostly clear when they are against them", () => {
+    expect(nearRopeOpacityFor(-2)).toBe(1);
+    expect(nearRopeOpacityFor(0)).toBeGreaterThan(0.75);
+    expect(nearRopeOpacityFor(1.8)).toBeCloseTo(0.26, 6);
+    expect(nearRopeOpacityFor(1)).toBeLessThan(nearRopeOpacityFor(0));
+  });
+
+  it("fade only on the side that faces the broadcast camera", () => {
+    const ring = buildRing();
+    ring.setNearRopeOpacity(0.3);
+    expect(ring.nearRopeOpacity()).toBeCloseTo(0.3, 6);
+    const faded = ring.materials.filter((material) => material.transparent && material.opacity < 1);
+    expect(faded).toHaveLength(3 + 1);
+    ring.group.updateMatrixWorld(true);
+    const box = new THREE.Box3();
+    ring.group.traverse((object) => {
+      if (!(object instanceof THREE.Mesh) || !faded.includes(object.material as THREE.Material)) return;
+      box.setFromObject(object);
+      expect(box.min.z).toBeGreaterThan(2.3);
+    });
+    ring.setNearRopeOpacity(4);
+    expect(ring.nearRopeOpacity()).toBe(1);
+    expect(faded.every((material) => material.visible)).toBe(true);
+    ring.setNearRopeOpacity(0);
+    expect(faded.every((material) => !material.visible)).toBe(true);
+    expect(ring.materials.filter((material) => !material.visible)).toHaveLength(faded.length);
+    disposeRing(ring);
+  });
+
+  it("blend last and write no depth while faded, so the blob shadows and glove trails seen through them are not cut", () => {
+    const ring = buildRing();
+    ring.setNearRopeOpacity(0.26);
+    const faded = ring.materials.filter((material) => material.transparent && material.opacity < 1);
+    expect(faded).toHaveLength(3 + 1);
+    for (const material of faded) expect(material.depthWrite).toBe(false);
+    const trail = new GloveTrail(new THREE.Color(0xffffff));
+    const blobShadowOrder = 1;
+    let near = 0;
+    ring.group.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      if (faded.includes(object.material as THREE.Material)) {
+        near += 1;
+        expect(object.renderOrder).toBeGreaterThan(Math.max(trail.mesh.renderOrder, blobShadowOrder));
+      } else {
+        expect(object.renderOrder).toBe(0);
+      }
+    });
+    // Three ropes and two straps on the side that faces the broadcast camera.
+    expect(near).toBe(5);
+    // Solid again for the shots from inside the ring, they write depth as before.
+    ring.setNearRopeOpacity(1);
+    for (const material of faded) expect(material.depthWrite).toBe(true);
+    disposeRing(ring);
+  });
+});
+
+describe("rope give", () => {
+  it("leaves the ropes alone until a fighter's back reaches them, and gives no further than their furthest give", () => {
     expect(ropePress(0, 0)).toEqual({ pressX: 0, pressZ: 0 });
-    expect(ropePress(2.82, 0).pressX).toBeGreaterThan(0.95);
-    expect(ropePress(2.82, 0).pressZ).toBe(0);
-    expect(ropePress(0, -2.82).pressZ).toBeGreaterThan(0.95);
-    expect(ropePress(2.6, 0).pressX).toBeGreaterThan(0.1);
-    expect(ropePress(2.6, 0).pressX).toBeLessThan(0.6);
+    expect(ropePress(ROPE_LINE - ROPE_BACK - 0.01, 0.4)).toEqual({ pressX: 0, pressZ: 0 });
+    expect(ropePress(-(ROPE_LINE - 0.1), 0).pressX).toBeCloseTo(ROPE_BACK - 0.1, 9);
+    expect(ropePress(0, -2.82).pressZ).toBeCloseTo(ROPE_MAX_GIVE, 9);
+    expect(ropePress(0, -2.82).pressX).toBe(0);
+  });
+
+  /** The shader's own function, run as JavaScript: its scalar GLSL is valid once the types are dropped. */
+  const ropeGive = new Function(`
+    const smoothstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+    const abs = Math.abs;
+    ${ROPE_GIVE_GLSL.replace(/\bfloat (\w+)\((float \w+(?:, )?)+\)/u, (signature) => signature.replace(/^float /u, "function ").replaceAll("float ", "")).replace(/\bfloat (?=\w+\s*=)/gu, "let ")}
+    return ropeGive;
+  `)() as (along: number, position: number, height: number) => number;
+
+  it("moves each part of a rope by the most any fighter pushes it there", () => {
+    expect(ROPE_FLEX_GLSL).toContain("ropeFlex = max(ropeFlex, press * sameSide * ropeGive(ropeAlong - along, ropeAlong, ropeWorld.y));");
+    expect(ROPE_FLEX_GLSL).toContain("transformed += ropeOut * ropeFlex;");
+  });
+
+  it("keeps the top ropes on the back of a fighter anywhere the engine lets one stand, drawn in where they can give no more", () => {
+    const limit = mapping.x(RING_HALF_WIDTH - FIGHTER_RADIUS);
+    // The engine lets his middle reach 0.36 m past the rope line.
+    expect(limit - ROPE_LINE).toBeGreaterThan(0.35);
+    for (const x of [2.1, 2.3, 2.5, 2.7, limit]) {
+      const drawn = x - ropeExcess(x, 0.3, { x: 0, z: 0 }).x;
+      expect(drawn + ROPE_BACK).toBeLessThanOrEqual(ROPE_LINE + ROPE_MAX_GIVE + 1e-9);
+      for (const along of [-1.6, 0, 1.2]) {
+        for (const height of [0.88, 1.26]) {
+          const rope = ROPE_LINE + ropePress(x, along).pressX * ropeGive(0, along, height);
+          expect(rope).toBeGreaterThanOrEqual(drawn + ROPE_BACK - 1e-9);
+          const beside = ROPE_LINE + ropePress(x, along).pressX * ropeGive(0.2, along + 0.2, height);
+          expect(beside).toBeGreaterThanOrEqual(drawn + ROPE_BACK - 1e-9);
+        }
+      }
+    }
+  });
+
+  it("never bows a rope as far as the next one, so the ropes do not wrap round a fighter on them", () => {
+    const limit = mapping.x(RING_HALF_WIDTH - FIGHTER_RADIUS);
+    let furthest = 0;
+    for (const height of ROPE_HEIGHTS) furthest = Math.max(furthest, ropePress(limit, limit).pressX * ropeGive(0, 0, height), ropePress(limit, limit).pressZ * ropeGive(0, 0, height));
+    expect(furthest).toBeLessThanOrEqual(0.25);
+    expect(furthest).toBeLessThan(ROPE_HEIGHTS[1] - ROPE_HEIGHTS[0]);
+    expect(ropeExcess(limit, -limit, { x: 0, z: 0 })).toEqual({ x: expect.closeTo(limit + ROPE_BACK - ROPE_LINE - ROPE_MAX_GIVE, 9), z: expect.closeTo(-(limit + ROPE_BACK - ROPE_LINE - ROPE_MAX_GIVE), 9) });
+    expect(ropeExcess(ROPE_LINE + ROPE_MAX_GIVE - ROPE_BACK - 1e-6, 0, { x: 1, z: 1 })).toEqual({ x: 0, z: 0 });
+  });
+
+  it("gives a little less at the bottom rope, nothing at the posts and nothing away from the fighter", () => {
+    expect(ropeGive(0, 0, 0.5)).toBeCloseTo(0.9, 9);
+    expect(ropeGive(0, 0, 1.26)).toBe(1);
+    expect(ropeGive(0, ROPE_LINE, 1.26)).toBeCloseTo(0, 9);
+    expect(ropeGive(0, -ROPE_LINE, 1.26)).toBeCloseTo(0, 9);
+    expect(ropeGive(1.2, 0, 1.26)).toBe(0);
+    expect(ropeGive(0.6, 0, 1.26)).toBeGreaterThan(0.3);
+    expect(ropeGive(0.6, 0, 1.26)).toBeLessThan(0.9);
+  });
+
+  it("gives the straps that tie the ropes together the ropes' own give", () => {
+    const ring = buildRing();
+    const ropes: THREE.Material[] = [];
+    const straps: THREE.Mesh[] = [];
+    ring.group.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      if (object.geometry.type === "TubeGeometry") ropes.push(object.material as THREE.Material);
+      if (object.geometry.type === "BoxGeometry" && (object.geometry as THREE.BoxGeometry).parameters.width === 0.035) straps.push(object);
+    });
+    const flex = (ropes[0] as THREE.MeshStandardMaterial).onBeforeCompile.toString();
+    for (const strap of straps) expect((strap.material as THREE.MeshStandardMaterial).onBeforeCompile.toString()).toBe(flex);
+    expect(new Set(straps.map((strap) => strap.geometry)).size).toBe(1);
+  });
+
+  it("ties the ropes with one strap at each tie, from under the bottom rope to over the top one, that bends with them", () => {
+    const ring = buildRing();
+    ring.group.updateMatrixWorld(true);
+    const straps: THREE.Mesh[] = [];
+    ring.group.traverse((object) => {
+      if (object instanceof THREE.Mesh && object.geometry.type === "BoxGeometry" && (object.geometry as THREE.BoxGeometry).parameters.width === 0.035) straps.push(object);
+    });
+    // Two ties on each side; a strap per tie rather than three overlapping ones, which banded as the near side faded.
+    expect(straps).toHaveLength(8);
+    expect(new Set(straps.map((strap) => `${strap.position.x.toFixed(3)},${strap.position.z.toFixed(3)}`)).size).toBe(8);
+    const ropeRadius = 0.028;
+    const box = new THREE.Box3();
+    for (const strap of straps) {
+      box.setFromObject(strap);
+      expect(box.min.y).toBeLessThan(ROPE_HEIGHTS[0] - 0.02 - ropeRadius);
+      expect(box.max.y).toBeGreaterThan(ROPE_HEIGHTS[2] - 0.02 + ropeRadius);
+    }
+    expect((straps[0]!.geometry as THREE.BoxGeometry).parameters.heightSegments).toBeGreaterThanOrEqual(4);
+    disposeRing(ring);
+  });
+
+  it("casts the ropes' shadows from where they have given, not from where they hang", () => {
+    const ring = buildRing();
+    const casting: THREE.Mesh[] = [];
+    ring.group.traverse((object) => {
+      if (object instanceof THREE.Mesh && object.geometry.type === "TubeGeometry" && object.castShadow) casting.push(object);
+    });
+    expect(casting).toHaveLength(12);
+    const depth = casting[0]!.customDepthMaterial;
+    expect(depth).toBeInstanceOf(THREE.MeshDepthMaterial);
+    for (const rope of casting) expect(rope.customDepthMaterial).toBe(depth);
+    // It is the ring's to free, with its other materials.
+    expect(ring.materials).toContain(depth);
+    const shader = { uniforms: {} as Record<string, { value: unknown }>, vertexShader: "#include <common>\nvoid main() {\n#include <begin_vertex>\n#include <project_vertex>\n}", fragmentShader: "" };
+    depth!.onBeforeCompile(shader as unknown as THREE.WebGLProgramParametersWithUniforms, null as unknown as THREE.WebGLRenderer);
+    expect(shader.vertexShader).toContain(ROPE_GIVE_GLSL);
+    expect(shader.vertexShader).toContain(ROPE_FLEX_GLSL);
+    expect(shader.vertexShader.indexOf(ROPE_FLEX_GLSL)).toBeLessThan(shader.vertexShader.indexOf("#include <project_vertex>"));
+    expect(shader.uniforms.uRopeContactA!.value).toBe(ring.ropeContacts[0]);
+    expect(shader.uniforms.uRopeContactB!.value).toBe(ring.ropeContacts[1]);
+    disposeRing(ring);
   });
 
   it("writes fighter contacts into the rope shader uniforms and clears them", () => {
@@ -590,7 +817,8 @@ describe("rope flex", () => {
     ring.setRopeContacts({ x: 2.82, z: 0.4 }, null);
     expect(ring.ropeContacts[0].x).toBeCloseTo(2.82);
     expect(ring.ropeContacts[0].y).toBeCloseTo(0.4);
-    expect(ring.ropeContacts[0].z).toBeGreaterThan(0.95);
+    expect(ring.ropeContacts[0].z).toBeCloseTo(ROPE_MAX_GIVE, 9);
+    expect(ring.ropeContacts[0].w).toBe(0);
     expect(ring.ropeContacts[1].toArray()).toEqual([0, 0, 0, 0]);
     ring.setRopeContacts(null, null);
     expect(ring.ropeContacts[0].toArray()).toEqual([0, 0, 0, 0]);
@@ -608,13 +836,40 @@ describe("round stats", () => {
     tracker.record(event("hit", "one"));
     tracker.record(event("punch_start", "two"));
     tracker.record(event("counter_hit", "two"));
-    tracker.record(event("block", "two"));
-    expect(tracker.get("one")).toEqual({ thrown: 2, landed: 1 });
-    expect(tracker.get("two")).toEqual({ thrown: 1, landed: 1 });
+    // A punch the guard took comes as a block and a hit of the same punch, never a lone block.
+    const guarded = [{ ...event("block", "one"), target_id: "two", action_id: "two@9" }, { ...event("hit", "two", "jab:head"), target_id: "one", action_id: "two@9" }];
+    for (const part of guarded) tracker.record(part, guarded);
+    expect(tracker.get("one")).toMatchObject({ thrown: 2, landed: 1 });
+    expect(tracker.get("two")).toMatchObject({ thrown: 1, landed: 1 });
     tracker.record(event("bell", "", "round_end"));
-    expect(tracker.get("one")).toEqual({ thrown: 2, landed: 1 });
+    expect(tracker.get("one")).toMatchObject({ thrown: 2, landed: 1 });
     tracker.record(event("bell", "", "round_start"));
-    expect(tracker.get("one")).toEqual({ thrown: 0, landed: 0 });
+    expect(tracker.get("one")).toEqual({ thrown: 0, landed: 0, jabsThrown: 0, jabsLanded: 0 });
+  });
+
+  it("does not count a punch the guard took as landed", () => {
+    const tracker = new RoundStatsTracker();
+    const thrown = { ...event("punch_start", "one", "right:straight:head"), action_id: "p1" };
+    const block = { ...event("block", "two"), target_id: "one", action_id: "p1" };
+    const leaked = { ...event("hit", "one", "straight:head"), target_id: "two", action_id: "p1" };
+    const clean = { ...event("hit", "one", "straight:head"), target_id: "two", action_id: "p2" };
+    tracker.record(thrown, [thrown]);
+    tracker.record(block, [block, leaked]);
+    tracker.record(leaked, [block, leaked]);
+    expect(tracker.get("one")).toMatchObject({ thrown: 1, landed: 0 });
+    tracker.record(clean, [clean]);
+    expect(tracker.get("one")).toMatchObject({ landed: 1 });
+  });
+
+  it("counts jabs apart from power punches", () => {
+    const tracker = new RoundStatsTracker();
+    tracker.record(event("punch_start", "one", "left:jab:head"));
+    tracker.record(event("hit", "one", "jab:head"));
+    tracker.record(event("punch_start", "one", "right:straight:head"));
+    tracker.record(event("punch_start", "one", "left:hook:body"));
+    tracker.record(event("counter_hit", "one", "hook:body"));
+    expect(tracker.get("one")).toEqual({ thrown: 3, landed: 2, jabsThrown: 1, jabsLanded: 1 });
+    expect(tracker.total("one")).toEqual({ thrown: 3, landed: 2, jabsThrown: 1, jabsLanded: 1 });
   });
 
   it("keeps bout totals across rounds and prints them on the result panel", () => {
@@ -624,14 +879,15 @@ describe("round stats", () => {
     tracker.record(event("bell", "", "round_start"));
     tracker.record(event("punch_start", "one"));
     tracker.record(event("punch_start", "two"));
-    expect(tracker.get("one")).toEqual({ thrown: 1, landed: 0 });
-    expect(tracker.total("one")).toEqual({ thrown: 2, landed: 1 });
+    expect(tracker.get("one")).toMatchObject({ thrown: 1, landed: 0 });
+    expect(tracker.total("one")).toMatchObject({ thrown: 2, landed: 1 });
     const texts: string[] = [];
     const ctx = mockHudContext(texts);
     const players = Object.fromEntries(publicPlayers.map((player) => [player.id, player]));
-    const final = { version: 3 as const, type: "final" as const, match_id: "m", winner_id: "one", method: "decision" as const, round: 3, scorecards: [], ratings: {} };
+    const final = { version: PROTOCOL_VERSION, type: "final" as const, match_id: "m", winner_id: "one", method: "decision" as const, round: 3, scorecards: [], ratings: {} };
     drawHud(ctx, 1280, 720, { ...snapshot(), phase: "complete" }, players, "one", final, 0, 30, tracker);
-    expect(texts.some((text) => text.includes("One 1/2 landed") && text.includes("Two 0/1 landed"))).toBe(true);
+    const row = texts.indexOf("TOTAL PUNCHES");
+    expect(texts.slice(row + 1, row + 3)).toEqual(["1/2 (50%)", "0/1 (0%)"]);
   });
 
   it("draws the round callout only while the renderer asks for it", () => {
@@ -645,15 +901,83 @@ describe("round stats", () => {
     expect(texts.filter((text) => text === "ROUND 2").length).toBe(1);
   });
 
-  it("shows the local fighter's input latency readout", () => {
+  it("puts each fighter's record on the plate, and a first bout as a debut", () => {
+    const texts: string[] = [];
+    const players = Object.fromEntries(publicPlayers.map((player, index) => [player.id, { ...player, record: index === 0 ? { wins: 12, losses: 3, draws: 1, knockouts: 8 } : { wins: 0, losses: 0, draws: 0, knockouts: 0 } }]));
+    drawHud(mockHudContext(texts), 1280, 720, snapshot(), players, "one", null, 0, 30);
+    expect(texts.some((text) => text.startsWith("12-3-1 · ELO"))).toBe(true);
+    expect(texts.some((text) => text.startsWith("DEBUT · ELO"))).toBe(true);
+  });
+
+  it("puts a fighter's style on the plate, and nothing for a balanced one", () => {
+    const texts: string[] = [];
+    const players = Object.fromEntries(publicPlayers.map((player) => [player.id, player]));
+    const styled = snapshot();
+    drawHud(mockHudContext(texts), 1280, 720, { ...styled, fighters: [{ ...styled.fighters[0], style: "counter_puncher" }, styled.fighters[1]] }, players, "one", null, 0, 30);
+    expect(texts.some((text) => text.startsWith("COUNTER · ELO"))).toBe(true);
+    expect(texts.filter((text) => text.startsWith("ELO "))).toHaveLength(1);
+    expect(texts.some((text) => text.includes("BALANCED"))).toBe(false);
+  });
+
+  it("warns the local fighter of a slow connection and otherwise keeps latency off the broadcast", () => {
     const texts: string[] = [];
     const ctx = mockHudContext(texts);
     const players = Object.fromEntries(publicPlayers.map((player) => [player.id, player]));
     drawHud(ctx, 1280, 720, snapshot(), players, "one", null, 0, 30, null, null, 48.4);
-    expect(texts).toContain("INPUT 48 ms");
+    expect(texts.some((text) => /INPUT|SLOW CONNECTION/u.test(text))).toBe(false);
+    drawHud(ctx, 1280, 720, snapshot(), players, "one", null, 0, 30, null, null, 180.2);
+    expect(texts).toContain("SLOW CONNECTION 180 ms");
     texts.length = 0;
-    drawHud(ctx, 1280, 720, snapshot(), players, null, null, 0, 30, null, null, 48.4);
-    expect(texts.some((text) => text.startsWith("INPUT"))).toBe(false);
+    drawHud(ctx, 1280, 720, snapshot(), players, null, null, 0, 30, null, null, 180.2);
+    expect(texts.some((text) => text.startsWith("SLOW"))).toBe(false);
+    texts.length = 0;
+    drawHud(ctx, 390, 844, snapshot(), players, "one", null, 0, 30, null, null, 180.2);
+    expect(texts.some((text) => text.startsWith("SLOW"))).toBe(false);
+  });
+
+  it("puts the slow-connection warning where the touch pads never reach, and leaves the replay's tag its corner", () => {
+    const players = Object.fromEntries(publicPlayers.map((player) => [player.id, player]));
+    const warning = (width: number, height: number, touch: boolean, replay: string | null = null) => {
+      const lines: { text: string; x: number; y: number; align: CanvasTextAlign }[] = [];
+      let align: CanvasTextAlign = "left";
+      const ctx = Object.assign(mockHudContext([]), { fillText: (text: string, x: number, y: number) => lines.push({ text, x, y, align }) });
+      Object.defineProperty(ctx, "textAlign", { set: (value: CanvasTextAlign) => { align = value; } });
+      drawHud(ctx, width, height, snapshot(), players, "one", null, 0, 30, null, replay, 180.2, null, null, null, null, touch);
+      return lines.find((line) => line.text.startsWith("SLOW CONNECTION"));
+    };
+    // On a phone on its side the pads (style.css) come 202 px in from the right edge, 336 px at their foot,
+    // from 118 + 196 px up: at 640x360 to 844x390 that is over the top-right corner where the warning was.
+    for (const [width, height] of [[640, 360], [667, 375], [740, 360], [844, 390], [932, 430]] as const) {
+      const shown = warning(width, height, true)!;
+      expect(shown, `${width}x${height}`).toMatchObject({ x: 24, y: 76, align: "left" });
+      expect(shown.x + shown.text.length * 7).toBeLessThan(width - 336);
+    }
+    expect(warning(1280, 720, false)).toMatchObject({ x: 1280 - 24, y: 76, align: "right" });
+    expect(warning(844, 390, true, "KNOCKOUT REPLAY")).toBeUndefined();
+    expect(warning(1280, 720, false, "KNOCKOUT REPLAY")).toBeDefined();
+  });
+
+  it("raises the slow-connection warning at 120 ms and lowers it only under 100 ms, so it cannot flicker", () => {
+    let shown = false;
+    expect([119, 125, 110, 105, 99.5, 112, 121].map((latency) => (shown = lagWarning(latency, shown)))).toEqual([false, true, true, true, false, false, true]);
+    expect(lagWarning(null, true)).toBe(false);
+    // The renderer keeps the latency it shows on screen to the warning's own state.
+    const players = Object.fromEntries(publicPlayers.map((player) => [player.id, player]));
+    const texts: string[] = [];
+    const ctx = mockHudContext(texts);
+    const renderer = Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, {
+      hudCanvas: { getBoundingClientRect: () => ({ width: 1280, height: 720 }), width: 0, height: 0, getContext: () => ctx },
+      hudViewport: { width: 0, height: 0 }, viewerHitFlash: 0, settings: () => ({ reducedMotion: false }), players, viewerId: "one", final: null,
+      frameSeconds: 0, finalRevealAt: 0, reconnectMs: 0, simulation: { tick_rate: 30 }, roundStats: new RoundStatsTracker(), replay: null,
+      roundCalloutUntil: 0, roundCalloutRound: 0, eventCallout: null, roundClock: { ticks: () => null }, avatars: { get: () => null }, drawCaption: () => undefined,
+    }) as unknown as { setInputLatency(milliseconds: number | null): void; drawHudOverlay(snapshot: EngineSnapshot): void };
+    const shownAt = (latency: number): string | undefined => {
+      texts.length = 0;
+      renderer.setInputLatency(latency);
+      renderer.drawHudOverlay(snapshot());
+      return texts.find((text) => text.startsWith("SLOW CONNECTION"));
+    };
+    expect([119, 125, 105, 95].map(shownAt)).toEqual([undefined, "SLOW CONNECTION 125 ms", "SLOW CONNECTION 105 ms", undefined]);
   });
 
   it("shows the landed counts on the rest panel", () => {
@@ -663,14 +987,150 @@ describe("round stats", () => {
     tracker.record(event("punch_start", "one"));
     tracker.record(event("hit", "one"));
     drawHud(ctx, 1280, 720, { ...snapshot(), phase: "rest" }, Object.fromEntries(publicPlayers.map((player) => [player.id, player])), "one", null, 0, 30, tracker);
-    expect(texts.some((text) => text.includes("One 1/1"))).toBe(true);
+    expect(texts.some((text) => text.includes("Blue 1 of 1"))).toBe(true);
+  });
+});
+
+describe("the broadcast HUD after the QA pass", () => {
+  const players = Object.fromEntries(publicPlayers.map((player) => [player.id, player]));
+  const down = (count: number, viewerDown: boolean) => ({ ...snapshot(), phase: "knockdown" as const, fighters: [{ ...fighter("one", -100), is_downed: viewerDown, get_up_count: count, get_up_prompt: viewerDown ? ("get_up_left" as const) : null }, { ...fighter("two", 100), is_downed: !viewerDown, get_up_count: count }] as const });
+
+  it("writes the plate detail plainly, with warnings and points taken only when there are any", () => {
+    const record = { wins: 19, losses: 5, draws: 1, knockouts: 12 };
+    const clean = { style: "balanced" as const, knockdowns: 0, warnings: 0, deductions: 0 };
+    const fouled = { style: "counter_puncher" as const, knockdowns: 1, warnings: 2, deductions: 1 };
+    expect(plateDetails({ ...publicPlayers[0]!, record }, clean, false)).toEqual(["19-5-1 · ELO 1500", "ELO 1500"]);
+    expect(plateDetails({ ...publicPlayers[0]!, cpu: true, record }, { ...fouled, style: "balanced" }, false)[0]).toBe("19-5-1 · CPU · 1 KD · 2 WARNINGS · −1 PT");
+    // Too long for its plate, a line drops the record, then the rating, then shortens the counts, then drops the style.
+    expect(plateDetails({ ...publicPlayers[0]!, record }, fouled, false)).toEqual([
+      "COUNTER · 19-5-1 · ELO 1500 · 1 KD · 2 WARNINGS · −1 PT",
+      "COUNTER · ELO 1500 · 1 KD · 2 WARNINGS · −1 PT",
+      "COUNTER · 1 KD · 2 WARNINGS · −1 PT",
+      "COUNTER · 1 KD · W2 · −1",
+      "1 KD · W2 · −1",
+    ]);
+    // A phone's plate is the style and the counts, which it keeps all of.
+    expect(plateDetails({ ...publicPlayers[0]!, record }, fouled, true)).toEqual(["COUNTER · 1 KD · W2 · −1", "1 KD · W2 · −1"]);
+    expect(plateDetails({ ...publicPlayers[0]!, record }, clean, true)).toEqual([]);
+  });
+
+  it("keeps the plate detail inside its plate on a phone", () => {
+    const texts: string[] = [];
+    const long = Object.fromEntries(publicPlayers.map((player) => [player.id, { ...player, record: { wins: 123, losses: 45, draws: 6, knockouts: 78 } }]));
+    const widths: number[] = [];
+    const ctx = mockHudContext(texts);
+    const measure = ctx.measureText.bind(ctx);
+    ctx.measureText = (text: string) => { const metrics = measure(text); widths.push(metrics.width); return metrics; };
+    drawHud(ctx, 390, 844, { ...snapshot(), fighters: [{ ...fighter("one"), knockdowns: 2 }, { ...fighter("two"), knockdowns: 1 }] as const }, long, "one", null, 0, 30);
+    const details = texts.filter((text) => / KD$/u.test(text));
+    expect(details).toEqual(["2 KD", "1 KD"]);
+    for (const detail of details) expect(ctx.measureText(detail).width).toBeLessThanOrEqual((390 - 56) / 2 - 24);
+  });
+
+  it("keeps the knockdown headline below the top bar and the round card, and the commentary caption off the count, on every screen", () => {
+    const line = { speaker: "play" as const, text: "Down goes Two! What a right hand from One, and the referee starts the count!", priority: 95, urgent: true, hold: 3, card: null };
+    for (const [width, height, top] of [[844, 390, 42], [390, 844, 112], [1280, 720, 42], [320, 568, 112], [360, 640, 112], [375, 667, 112], [360, 740, 112], [375, 812, 112]] as const) {
+      const ctx = mockHudContext([]);
+      const ys: number[] = [];
+      let count = 0;
+      let font = "";
+      Object.defineProperty(ctx, "font", { get: () => font, set: (value: string) => { font = value; } });
+      const fill = ctx.fillText.bind(ctx);
+      ctx.fillText = (text: string, x: number, y: number) => {
+        if (text === "KNOCKDOWN" && font.includes("44px")) ys.push(y);
+        if (text.startsWith("COUNT") && font.includes("36px")) count = y;
+        fill(text, x, y);
+      };
+      drawHud(ctx, width, height, down(3, false), players, "one", null, 0, 30);
+      expect(ys.length).toBeGreaterThan(0);
+      for (const y of ys) expect(y - 36).toBeGreaterThanOrEqual(top);
+      // The caption is drawn after the HUD, over it: on a phone it starts under the count's figures or not at all.
+      for (const touch of [false, true]) {
+        const slot = captionSlot({ width, height, phase: "knockdown", resultTop: null, touch, hint: false, viewerDown: false, replay: false });
+        if (slot === null) continue;
+        const plates: number[] = [];
+        drawCaption(Object.assign(mockHudContext([]), { fillRect: (_x: number, y: number) => plates.push(y) }), { line, opacity: 1, entering: 0 }, slot, true);
+        expect(plates[0], `${width}x${height}${touch ? " with the pads" : ""}`).toBeGreaterThanOrEqual(count + 4);
+      }
+    }
+  });
+
+  it("names the fighter who beat the count through the rest of the eight, and never the viewer for want of one", () => {
+    const named = Object.fromEntries(publicPlayers.map((player) => [player.id, { ...player, name: player.id === "one" ? "Azure Vector" : "Crimson Geometry" }]));
+    // Up at the count of three, the referee counts on to eight with the phase still the knockdown's.
+    const standing = { ...snapshot(), phase: "knockdown" as const, fighters: [{ ...fighter("one", -100), get_up_count: 6 }, { ...fighter("two", 100), get_up_count: 6 }] as const };
+    const countLines = (texts: string[]) => texts.filter((text) => /IS DOWN$|BEAT THE COUNT$|^STANDING EIGHT$/u.test(text));
+    for (const viewer of ["one", "two", null]) {
+      const texts: string[] = [];
+      drawHud(mockHudContext(texts), 390, 844, standing, named, viewer, null, 0, 30, null, null, null, null, null, null, "two");
+      expect(countLines(texts), `viewer ${viewer}`).toEqual(["CRIMSON GEOMETRY BEAT THE COUNT"]);
+      expect(texts).toContain("COUNT 6");
+      // A spectator who arrived after the knockdown saw nobody go down, and is told no name.
+      const late: string[] = [];
+      drawHud(mockHudContext(late), 390, 844, standing, named, viewer, null, 0, 30);
+      expect(countLines(late), `viewer ${viewer}`).toEqual(["STANDING EIGHT"]);
+    }
+    // While he is on the canvas the snapshot says who it is.
+    const texts: string[] = [];
+    drawHud(mockHudContext(texts), 390, 844, { ...standing, fighters: [standing.fighters[0], { ...standing.fighters[1], is_downed: true }] as const }, named, "one", null, 0, 30, null, null, null, null, null, null, "one");
+    expect(countLines(texts)).toEqual(["CRIMSON GEOMETRY IS DOWN"]);
+  });
+
+  it("leaves the knockdown banner off the knockout replay", () => {
+    const texts: string[] = [];
+    drawHud(mockHudContext(texts), 1280, 720, down(3, false), players, "one", null, 0, 30, null, "KNOCKOUT REPLAY");
+    expect(texts).toContain("KNOCKOUT REPLAY");
+    expect(texts.some((text) => text.endsWith("IS DOWN") || text.startsWith("COUNT"))).toBe(false);
+  });
+
+  it("starts the count at one, as a referee does", () => {
+    const watching: string[] = [];
+    drawHud(mockHudContext(watching), 1280, 720, down(0, false), players, "one", null, 0, 30);
+    expect(watching.some((text) => text.startsWith("COUNT"))).toBe(false);
+    const downed: string[] = [];
+    drawHud(mockHudContext(downed), 1280, 720, down(0, true), players, "one", null, 0, 30);
+    expect(downed).toContain("GET UP!");
+    expect(downed.some((text) => text === "COUNT 0")).toBe(false);
+    const later: string[] = [];
+    drawHud(mockHudContext(later), 1280, 720, down(1, false), players, "one", null, 0, 30);
+    expect(later).toContain("COUNT 1");
+  });
+
+  it("freezes the clock where a bout was stopped instead of running it to zero", () => {
+    const clock = new RoundClock();
+    expect(clock.ticks({ ...snapshot(), phase: "fight", round_number: 2, phase_ticks_remaining: 2880 })).toBe(2880);
+    expect(clock.ticks({ ...snapshot(), phase: "complete", round_number: 2, phase_ticks_remaining: 0 })).toBe(2880);
+    const texts: string[] = [];
+    drawHud(mockHudContext(texts), 1280, 720, { ...snapshot(), phase: "complete", round_number: 2, phase_ticks_remaining: 0 }, players, "one", null, 0, 30, null, null, null, null, 2880);
+    expect(texts).toContain("1:36");
+    expect(texts).toContain("FINAL");
+    expect(texts).not.toContain("COMPLETE");
+  });
+
+  it("gives the referee a moment before a disqualification or a doctor's stoppage is shown", () => {
+    const final = (method: string) => ({ version: PROTOCOL_VERSION, type: "final" as const, match_id: "m", winner_id: "one", method: method as "decision", round: 1, scorecards: [], ratings: {} });
+    expect(revealDelay(final("disqualification"))).toBe(REFEREE_REVEAL_DELAY_SECONDS);
+    expect(revealDelay(final("doctor_stoppage"))).toBe(REFEREE_REVEAL_DELAY_SECONDS);
+    expect(revealDelay(final("decision"))).toBe(0);
+  });
+
+  it("draws the HUD larger on a big screen and the same on a 1280 x 720 one", () => {
+    expect(hudScale(1280, 720)).toBe(1);
+    expect(hudScale(800, 450)).toBe(1);
+    expect(hudScale(1920, 1080)).toBe(1.5);
+    expect(hudScale(3840, 2160)).toBe(1.6);
+    const scales: number[] = [];
+    const ctx = mockHudContext([]);
+    ctx.scale = (x: number) => { scales.push(x); };
+    drawHud(ctx, 1920, 1080, snapshot(), players, "one", null, 0, 30);
+    expect(scales).toEqual([1.5]);
   });
 });
 
 describe("decision label", () => {
   const card = (one: number[], two: number[], judge = "J") => ({ judge, player_one: one, player_two: two });
   const final = (method: "decision" | "draw" | "ko" | "tko", scorecards: ReturnType<typeof card>[]) =>
-    ({ version: 3 as const, type: "final" as const, match_id: "m", winner_id: method === "draw" ? null : "one", method, round: 3, scorecards, ratings: {} });
+    ({ version: PROTOCOL_VERSION, type: "final" as const, match_id: "m", winner_id: method === "draw" ? null : "one", method, round: 3, scorecards, ratings: {} });
 
   it("names unanimous, split and majority decisions and draws from the scorecards", () => {
     expect(decisionLabel(final("decision", [card([10, 10, 10], [9, 9, 9]), card([10, 10, 9], [9, 9, 10]), card([10, 10, 10], [9, 9, 9])]))).toBe("UNANIMOUS DECISION");
@@ -685,7 +1145,7 @@ describe("decision label", () => {
 });
 
 describe("final reveal", () => {
-  const final = { version: 3 as const, type: "final" as const, match_id: "m", winner_id: "one", method: "ko" as const, round: 1, scorecards: [], ratings: {} };
+  const final = { version: PROTOCOL_VERSION, type: "final" as const, match_id: "m", winner_id: "one", method: "ko" as const, round: 1, scorecards: [], ratings: {} };
   it("holds stoppage results back for the slow-motion fall and shows decisions at once", () => {
     expect(finalRevealDelay(final)).toBe(FINAL_REVEAL_DELAY_SECONDS);
     expect(finalRevealDelay({ ...final, method: "tko" })).toBe(FINAL_REVEAL_DELAY_SECONDS);
@@ -694,34 +1154,6 @@ describe("final reveal", () => {
     expect(finalRevealDelay(null)).toBe(0);
   });
 });
-
-function mockHudContext(texts: string[]): CanvasRenderingContext2D {
-  const gradient = { addColorStop: () => {} };
-  return {
-    save: () => {},
-    restore: () => {},
-    beginPath: () => {},
-    closePath: () => {},
-    moveTo: () => {},
-    lineTo: () => {},
-    fill: () => {},
-    stroke: () => {},
-    fillRect: () => {},
-    strokeRect: () => {},
-    clearRect: () => {},
-    fillText: (text: string) => texts.push(text),
-    strokeText: () => undefined,
-    measureText: (text: string) => ({ width: text.length * 7 }),
-    createLinearGradient: () => gradient,
-    createRadialGradient: () => gradient,
-    set fillStyle(_value: unknown) {},
-    set strokeStyle(_value: unknown) {},
-    set font(_value: string) {},
-    set lineWidth(_value: number) {},
-    set textAlign(_value: CanvasTextAlign) {},
-    set textBaseline(_value: CanvasTextBaseline) {},
-  } as unknown as CanvasRenderingContext2D;
-}
 
 describe("fitFontSize", () => {
   it("returns the largest size that fits and the minimum when nothing does", () => {
@@ -768,6 +1200,34 @@ describe("corner shots", () => {
   });
 });
 
+describe("announcement shot", () => {
+  const visible = (shot: { distance: number; height: number }, fov: number, fromTop: number): number =>
+    shot.height + (0.5 - fromTop) * 2 * shot.distance * Math.tan(THREE.MathUtils.degToRad(fov) / 2);
+
+  it("fits the three from the raised glove to the waist between the top bar and the card", () => {
+    for (const covered of [0.2, 0.35, 0.5]) {
+      const shot = ceremonyShot(16 / 9, 36, covered);
+      expect(visible(shot, 36, 0.09)).toBeCloseTo(2.42, 6);
+      expect(visible(shot, 36, 1 - covered)).toBeCloseTo(0.95, 6);
+    }
+  });
+
+  it("stands further back the more of the screen the card covers", () => {
+    expect(ceremonyShot(16 / 9, 36, 0.5).distance).toBeGreaterThan(ceremonyShot(16 / 9, 36, 0.3).distance);
+  });
+
+  it("stands back far enough on a tall screen to keep all three in the width", () => {
+    const aspect = 390 / 844;
+    const shot = ceremonyShot(aspect, 46.8, 0.45);
+    const span = 2 * shot.distance * Math.tan(THREE.MathUtils.degToRad(46.8) / 2);
+    expect(span * aspect).toBeCloseTo(2.4, 6);
+    expect(visible(shot, 46.8, 0.09)).toBeGreaterThan(2.42);
+    expect(visible(shot, 46.8, 0.55)).toBeLessThan(0.95);
+    const middle = visible(shot, 46.8, 0.09 + (1 - 0.45 - 0.09) / 2);
+    expect(middle).toBeCloseTo((2.42 + 0.95) / 2, 6);
+  });
+});
+
 describe("corner staging", () => {
   it("puts the cutman on the fighter's left and the camera on the right, both inside the ropes", () => {
     const cutman = cornerPoint(1, 2.56, CUTMAN_WORK_DISTANCE, CUTMAN_WORK_DEGREES, new THREE.Vector3());
@@ -809,6 +1269,92 @@ describe("compact scoreboard labels", () => {
     expect(texts.some((text) => text.startsWith("STA "))).toBe(true);
     expect(texts.some((text) => text.startsWith("HP "))).toBe(true);
     expect(texts.some((text) => text.startsWith("STAMINA"))).toBe(false);
+  });
+
+  it("keeps a phone's plates to the style and the bout's count so the two lines do not run together", () => {
+    const texts: string[] = [];
+    const players = Object.fromEntries(publicPlayers.map((p) => [p.id, { ...p, record: { wins: 12, losses: 3, draws: 1, knockouts: 8 } }]));
+    const styled = snapshot();
+    drawHud(mockHudContext(texts), 390, 844, { ...styled, fighters: [{ ...styled.fighters[0], style: "counter_puncher" }, styled.fighters[1]] }, players, "one", null, 0, 30);
+    expect(texts).toContain("COUNTER");
+    expect(texts.some((text) => text.includes("ELO") || text.includes("12-3-1") || text.includes("KD"))).toBe(false);
+    const down = snapshot();
+    texts.length = 0;
+    drawHud(mockHudContext(texts), 390, 844, { ...down, fighters: [{ ...down.fighters[0], style: "counter_puncher", knockdowns: 2 }, down.fighters[1]] }, players, "one", null, 0, 30);
+    expect(texts).toContain("COUNTER · 2 KD");
+    // 7 px a character in this context: every line stays inside its 167 px plate.
+    expect(texts.filter((text) => text.includes("KD")).every((text) => text.length * 7 <= 167 - 20 - 14)).toBe(true);
+  });
+});
+
+describe("players' pictures", () => {
+  const players = { one: { id: "one", name: "alpha", avatar: null, rating: 1500, connected: true }, two: { id: "two", name: "  ~bravo", avatar: null, rating: 1500, connected: true } };
+  const picture = { of: "one" } as unknown as CanvasImageSource;
+  const onlyOne = (player: { id: string }): CanvasImageSource | null => (player.id === "one" ? picture : null);
+
+  it("are drawn on the plates, with the first letter of the name where there is none", () => {
+    const texts: string[] = [];
+    const drawn: DrawnPicture[] = [];
+    const arcs: Array<{ x: number; y: number; radius: number }> = [];
+    drawHud(mockHudContext(texts, drawn, arcs), 1280, 720, snapshot(), players, "one", null, 0, 30, null, null, null, null, null, onlyOne);
+    expect(drawn).toEqual([{ image: picture, x: 35, y: 640, width: PLATE_PORTRAIT_RADIUS * 2, height: PLATE_PORTRAIT_RADIUS * 2 }]);
+    expect(texts).toContain("B");
+    expect(texts).not.toContain("A");
+    const rings = arcs.filter((arc) => arc.radius === PLATE_PORTRAIT_RADIUS);
+    expect(new Set(rings.map((arc) => arc.x))).toEqual(new Set([51, 1280 - 51]));
+    expect(rings.every((arc) => arc.y === 656)).toBe(true);
+  });
+
+  it("are both letters when no pictures are on offer", () => {
+    const texts: string[] = [];
+    const drawn: DrawnPicture[] = [];
+    drawHud(mockHudContext(texts, drawn), 1280, 720, snapshot(), players, "one", null, 0, 30);
+    expect(drawn).toHaveLength(0);
+    expect(texts).toContain("A");
+    expect(texts).toContain("B");
+  });
+
+  it("stand beside the clock where the plates are too narrow for them", () => {
+    const drawn: DrawnPicture[] = [];
+    const arcs: Array<{ x: number; y: number; radius: number }> = [];
+    drawHud(mockHudContext([], drawn, arcs), 390, 844, snapshot(), players, "one", null, 0, 30, null, null, null, null, null, onlyOne);
+    expect(arcs.some((arc) => arc.radius === PLATE_PORTRAIT_RADIUS)).toBe(false);
+    const rings = arcs.filter((arc) => arc.radius === CLOCK_PORTRAIT_RADIUS);
+    expect(new Set(rings.map((arc) => arc.x))).toEqual(new Set([195 - 112, 195 + 112]));
+    expect(rings.every((arc) => arc.y === 83)).toBe(true);
+    expect(drawn).toEqual([{ image: picture, x: 195 - 112 - 20, y: 63, width: 40, height: 40 }]);
+    for (const ring of rings) {
+      expect(ring.x - ring.radius).toBeGreaterThan(0);
+      expect(ring.x + ring.radius).toBeLessThan(390);
+      expect(Math.abs(ring.x - 195) - ring.radius).toBeGreaterThan(84);
+    }
+  });
+
+  it("stay off a narrow phone on its side while the touch pads stand where the red corner's would go", () => {
+    const clockRings = (width: number, height: number, touch: boolean): number => {
+      const arcs: Array<{ x: number; y: number; radius: number }> = [];
+      drawHud(mockHudContext([], [], arcs), width, height, snapshot(), players, "one", null, 0, 30, null, null, null, null, null, onlyOne, null, touch);
+      return new Set(arcs.filter((arc) => arc.radius === CLOCK_PORTRAIT_RADIUS).map((arc) => arc.x)).size;
+    };
+    // At 568x320 the red corner's picture (x 376-416, y 63-103) would sit under the modifiers and punch pads (from x 368).
+    expect(clockRings(568, 320, true)).toBe(0);
+    expect(clockRings(568, 320, false)).toBe(2);
+    expect(clockRings(390, 844, true)).toBe(2);
+  });
+
+  it("head the columns of the result card", () => {
+    const texts: string[] = [];
+    const drawn: DrawnPicture[] = [];
+    const final = { version: PROTOCOL_VERSION, type: "final" as const, match_id: "m", winner_id: "one", method: "decision" as const, round: 3, scorecards: [], ratings: { one: { before: 1000, after: 1016 }, two: { before: 1000, after: 984 } } };
+    drawHud(mockHudContext(texts, drawn), 1280, 720, { ...snapshot(), phase: "complete" }, players, "one", final, 0, 30, null, null, null, null, null, onlyOne);
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0]!.image).toBe(picture);
+    const layout = resultCardLayout(1280, 720, resultCard(final, snapshot().fighters, players, [{ thrown: 0, landed: 0, jabsThrown: 0, jabsLanded: 0 }, { thrown: 0, landed: 0, jabsThrown: 0, jabsLanded: 0 }]), true);
+    expect(drawn[0]!.x).toBeGreaterThan(layout.x + layout.width * 0.42);
+    expect(drawn[0]!.x + drawn[0]!.width).toBeLessThan(layout.x + layout.width * 0.6);
+    expect(drawn[0]!.y).toBeGreaterThanOrEqual(layout.y + 14);
+    expect(drawn[0]!.y + drawn[0]!.height).toBeLessThanOrEqual(layout.y + 14 + layout.rowHeight);
+    expect(texts).toContain("B");
   });
 });
 
@@ -865,16 +1411,228 @@ describe("compact scoreboard mini bars", () => {
   });
 });
 
+describe("the guard bar", () => {
+  it("marks the line under which a guard stops nothing, and shows a guard worn under it as spent, on a desktop and a 320 px phone", async () => {
+    const { GUARD_BLOCK_MINIMUM } = await import("../manifest");
+    const players = Object.fromEntries(publicPlayers.map((player) => [player.id, player]));
+    const drawn = (width: number, height: number, guards: readonly [number, number]) => {
+      const fills: Array<{ x: number; y: number; w: number; h: number; style: string }> = [];
+      const labels: Array<{ text: string; style: string }> = [];
+      const strokes: string[] = [];
+      let fill = "";
+      let stroke = "";
+      const ctx = Object.assign(mockHudContext([]), {
+        fillRect: (x: number, y: number, w: number, h: number) => fills.push({ x, y, w, h, style: fill }),
+        fillText: (text: string) => labels.push({ text, style: fill }),
+        stroke: () => strokes.push(stroke),
+      });
+      Object.defineProperty(ctx, "fillStyle", { set: (value: unknown) => { fill = typeof value === "string" ? value : "gradient"; } });
+      Object.defineProperty(ctx, "strokeStyle", { set: (value: unknown) => { stroke = typeof value === "string" ? value : "gradient"; } });
+      const state = { ...snapshot(), fighters: [{ ...fighter("one", -100), guard: guards[0] }, { ...fighter("two", 100), guard: guards[1] }] as const };
+      drawHud(ctx, width, height, state, players, "one", null, 0, 30);
+      return { fills, labels: labels.filter((label) => label.text === "GUARD"), strokes };
+    };
+    for (const [width, height] of [[1280, 720], [320, 568]] as const) {
+      // The guard bars ride above the plates: the blue corner's fills from the left, the red corner's from the right.
+      const plateWidth = width < 640 ? (width - 56) / 2 : Math.min(300, width * 0.38, width / 2 - 84 - 8 - 24);
+      const bar = Math.min(64, (plateWidth - 52) / 2);
+      const line = (bar * GUARD_BLOCK_MINIMUM) / HUD_MAX_GUARD;
+      const { fills, labels, strokes } = drawn(width, height, [40, 650]);
+      const marks = fills.filter((rect) => rect.w === 1.5 && rect.y === height - 96 - 2);
+      expect(marks.map((mark) => mark.x + 0.75), `${width}x${height}`).toEqual([44 + line, width - 44 - bar - line]);
+      // Worn to 40 the blue corner's guard is spent: its label, its mark and hatching across its bar in one red.
+      const red = labels[0]!.style;
+      expect(labels[1]!.style).not.toBe(red);
+      expect(marks[0]!.style).toBe(red);
+      expect(marks[1]!.style).not.toBe(red);
+      expect(strokes.filter((style) => style === red)).toHaveLength(1);
+      // At the line itself the guard still stops punches.
+      expect(drawn(width, height, [GUARD_BLOCK_MINIMUM, 650]).strokes.filter((style) => style === red)).toHaveLength(0);
+    }
+  });
+});
+
+describe("the line under a fighter's name", () => {
+  /** Records where each text and filled rectangle lands, measuring text at 0.55 em a character, about what a phone's system font gives these lines. */
+  function measuring(): { ctx: CanvasRenderingContext2D; texts: { text: string; left: number; right: number }[]; rects: { x: number; y: number; w: number; h: number }[] } {
+    const texts: { text: string; left: number; right: number }[] = [];
+    const rects: { x: number; y: number; w: number; h: number }[] = [];
+    let size = 10;
+    let align: CanvasTextAlign = "left";
+    const width = (text: string): number => text.length * size * 0.55;
+    const ctx = Object.assign(mockHudContext([]), {
+      fillRect: (x: number, y: number, w: number, h: number) => rects.push({ x, y, w, h }),
+      fillText: (text: string, x: number) => {
+        const left = align === "right" ? x - width(text) : align === "center" ? x - width(text) / 2 : x;
+        texts.push({ text, left, right: left + width(text) });
+      },
+      measureText: (text: string) => ({ width: width(text) }),
+    });
+    Object.defineProperty(ctx, "font", { set: (font: string) => { size = Number(/(\d+)px/.exec(font)?.[1] ?? 10); } });
+    Object.defineProperty(ctx, "textAlign", { set: (value: CanvasTextAlign) => { align = value; } });
+    return { ctx, texts, rects };
+  }
+  const players = Object.fromEntries(publicPlayers.map((player) => [player.id, { ...player, name: player.id === "one" ? "Azure Vector" : "Crimson Geometry", record: { wins: 12, losses: 3, draws: 1, knockouts: 8 } }]));
+  const fouled = { ...snapshot(), fighters: [{ ...fighter("one", -100), style: "counter_puncher" as const, knockdowns: 2, warnings: 2, deductions: 1 }, { ...fighter("two", 100), style: "swarmer" as const, knockdowns: 1, warnings: 1, deductions: 0 }] as const };
+
+  it("keeps every count on a phone's plate, in short, and stays inside the plate", () => {
+    for (const [width, height, lines] of [[360, 640, ["COUNTER · 2 KD · W2 · −1", "SWARMER · 1 KD · W1"]], [320, 568, ["2 KD · W2 · −1", "SWARMER · 1 KD · W1"]]] as const) {
+      const { ctx, texts } = measuring();
+      drawHud(ctx, width, height, fouled, players, "one", null, 0, 30);
+      const details = texts.filter((text) => text.text.includes("KD"));
+      // At 320 px the style is the part that gives way, never a count.
+      expect(details.map((text) => text.text)).toEqual(lines);
+      const plate = (width - 56) / 2;
+      expect(details[0]!.left).toBeGreaterThanOrEqual(24 + 20);
+      expect(details[0]!.right).toBeLessThanOrEqual(24 + plate - 14);
+      expect(details[1]!.left).toBeGreaterThanOrEqual(width - 24 - plate + 14);
+      expect(details[1]!.right).toBeLessThanOrEqual(width - 24 - 20);
+    }
+  });
+
+  it("keeps the counts on a landscape plate and the whole plate clear of the round card", () => {
+    for (const [width, height] of [[640, 360], [667, 375], [740, 360], [800, 600]] as const) {
+      const { ctx, texts, rects } = measuring();
+      drawHud(ctx, width, height, fouled, players, "one", null, 0, 30);
+      const card = { left: width / 2 - 84, right: width / 2 + 84 };
+      const [left, right] = texts.filter((text) => text.text.includes("KD"));
+      expect(left!.text, `${width}x${height}`).toMatch(/2 KD · (2 WARNINGS|W2) · −1/u);
+      expect(right!.text, `${width}x${height}`).toMatch(/1 KD · (1 WARNING|W1)$/u);
+      // Nothing on a plate runs under the card, which is drawn over them: not the line, the name or the bars.
+      const names = texts.filter((text) => text.text.startsWith("AZURE") || text.text.startsWith("CRIMSON"));
+      for (const text of [left!, ...names.slice(0, 1)]) expect(text.right, `${width}x${height} ${text.text}`).toBeLessThanOrEqual(card.left - 8);
+      for (const text of [right!, ...names.slice(1)]) expect(text.left, `${width}x${height} ${text.text}`).toBeGreaterThanOrEqual(card.right + 8);
+      for (const bar of rects.filter((rect) => rect.y === height - 84 + 47 && rect.h === 11)) expect(bar.x + bar.w <= card.left - 8 || bar.x >= card.right + 8, `${width}x${height} bar at ${bar.x}`).toBe(true);
+    }
+  });
+});
+
 describe("result panel text", () => {
   it("keeps a long winner name whole on a narrow screen instead of cutting the verdict", () => {
     const texts: string[] = [];
     const ctx = mockHudContext(texts);
     const longName = "Anastasia-the-Great5";
     const players = { one: { id: "one", name: longName, avatar: null, rating: 1500, connected: true }, two: { id: "two", name: "Bo", avatar: null, rating: 1500, connected: true } };
-    const final = { version: 3 as const, type: "final" as const, match_id: "m", winner_id: "one", method: "decision" as const, round: 2, scorecards: [{ judge: "Impact", player_one: [10, 10], player_two: [9, 10] }], ratings: { one: { before: 1000, after: 1016 }, two: { before: 1000, after: 984 } } };
+    const final = { version: PROTOCOL_VERSION, type: "final" as const, match_id: "m", winner_id: "one", method: "decision" as const, round: 2, scorecards: [{ judge: "Impact", player_one: [10, 10], player_two: [9, 10] }], ratings: { one: { before: 1000, after: 1016 }, two: { before: 1000, after: 984 } } };
     drawHud(ctx, 390, 844, { ...snapshot(), phase: "complete" }, players, "one", final, 0, 30);
-    expect(texts).toContain(`${longName} WINS`);
-    expect(texts.some((text) => text.startsWith(`${longName}  1000`))).toBe(true);
+    expect(texts).toContain(`${longName.toUpperCase()} WINS`);
+    expect(texts).toContain("1016 (+16)");
+    expect(texts).toContain("984 (−16)");
     expect(texts.some((text) => text.startsWith("INPUT"))).toBe(false);
+  });
+});
+
+describe("result card", () => {
+  const players = { one: { id: "one", name: "Alpha", avatar: null, rating: 1500, connected: true }, two: { id: "two", name: "Bravo", avatar: null, rating: 1500, connected: true } };
+  const fighters = (downOne = 0, downTwo = 0): [ReturnType<typeof fighter>, ReturnType<typeof fighter>] => [{ ...fighter("one"), knockdowns: downOne }, { ...fighter("two"), knockdowns: downTwo }];
+  const result = (method: "decision" | "draw" | "ko" | "flash_ko" | "tko" | "forfeit", winner: string | null, scorecards: { judge: string; player_one: number[]; player_two: number[] }[] = [], ratings: Record<string, { before: number; after: number }> = {}) =>
+    ({ version: PROTOCOL_VERSION, type: "final" as const, match_id: "m", winner_id: winner, method, round: 2, scorecards, ratings });
+  const none = { thrown: 0, landed: 0, jabsThrown: 0, jabsLanded: 0 };
+
+  it("lists each judge's total for a decision, with the fighter who took the card in the lead", () => {
+    const card = resultCard(result("decision", "two", [{ judge: "Impact", player_one: [10, 9], player_two: [9, 10] }, { judge: "Craft", player_one: [9, 9], player_two: [10, 10] }]), fighters(), players, [none, none]);
+    expect(card.headline).toBe("MAJORITY DECISION");
+    expect(card.detail).toBe("ROUND 2");
+    expect(card.verdict).toBe("BRAVO WINS");
+    expect(card.winnerSeat).toBe(1);
+    expect(card.names).toEqual(["Alpha", "Bravo"]);
+    expect(card.judges).toEqual([
+      { label: "IMPACT", values: ["19", "19"], lead: null },
+      { label: "CRAFT", values: ["18", "20"], lead: 1 },
+    ]);
+    expect(card.rows).toEqual([]);
+  });
+
+  it("leaves the unfinished scorecards off a stoppage and spells the method out", () => {
+    const empty = [{ judge: "Impact", player_one: [], player_two: [] }];
+    expect(resultCard(result("ko", "one", empty), fighters(0, 3), players, [none, none])).toMatchObject({ headline: "KNOCKOUT", verdict: "ALPHA WINS", winnerSeat: 0, judges: [], rows: [{ label: "KNOCKDOWNS", values: ["3", "0"], lead: 0 }] });
+    expect(resultCard(result("flash_ko", "one", empty), fighters(), players, [none, none]).headline).toBe("FLASH KNOCKOUT");
+    expect(resultCard(result("tko", "one", empty), fighters(), players, [none, none]).headline).toBe("TECHNICAL KNOCKOUT");
+    expect(resultCard(result("forfeit", "one", empty), fighters(), players, [none, none])).toMatchObject({ headline: "FORFEIT", rows: [] });
+  });
+
+  it("credits a knockdown to the fighter who scored it", () => {
+    const card = resultCard(result("decision", "one"), fighters(1, 2), players, [none, none]);
+    expect(card.rows).toEqual([{ label: "KNOCKDOWNS", values: ["2", "1"], lead: 0 }]);
+  });
+
+  it("shows the punch stats the way CompuBox counts them, and the rating changes", () => {
+    const card = resultCard(result("decision", "one", [], { one: { before: 1000, after: 1016 }, two: { before: 1000, after: 984 } }), fighters(), players, [{ thrown: 9, landed: 6, jabsThrown: 4, jabsLanded: 1 }, none]);
+    expect(card.rows).toEqual([
+      { label: "TOTAL PUNCHES", values: ["6/9 (67%)", "0/0"], lead: 0 },
+      { label: "JABS", values: ["1/4 (25%)", "0/0"], lead: 0 },
+      { label: "POWER PUNCHES", values: ["5/5 (100%)", "0/0"], lead: 0 },
+      { label: "RATING", values: ["1016 (+16)", "984 (−16)"], lead: null, news: [true, false] },
+    ]);
+  });
+
+  it("shows the engine's count for the whole bout when the result carries it, not what this client saw", () => {
+    const counted = { ...result("decision", "one"), punches: { one: { thrown: 120, landed: 41, jabs_thrown: 60, jabs_landed: 15 }, two: { thrown: 98, landed: 30, jabs_thrown: 50, jabs_landed: 12 } } };
+    // A spectator who arrived for the last round saw only a few of those punches.
+    const card = resultCard(counted, fighters(), players, [{ thrown: 9, landed: 2, jabsThrown: 4, jabsLanded: 1 }, none]);
+    expect(card.rows.slice(0, 3)).toEqual([
+      { label: "TOTAL PUNCHES", values: ["41/120 (34%)", "30/98 (31%)"], lead: 0 },
+      { label: "JABS", values: ["15/60 (25%)", "12/50 (24%)"], lead: 0 },
+      { label: "POWER PUNCHES", values: ["26/60 (43%)", "18/48 (38%)"], lead: 0 },
+    ]);
+  });
+
+  it("never shows more punches landed than thrown", () => {
+    const card = resultCard(result("decision", "one"), fighters(), players, [{ thrown: 2, landed: 3, jabsThrown: 2, jabsLanded: 0 }, none]);
+    expect(card.rows.find((row) => row.label === "POWER PUNCHES")!.values[0]).toBe("0/0");
+    expect(card.rows.find((row) => row.label === "TOTAL PUNCHES")!.values[0]).toBe("2/2 (100%)");
+  });
+
+  it("calls a bout against the computer unrated", () => {
+    const computer = { ...players, two: { ...players.two, cpu: true } };
+    const card = resultCard(result("decision", "one", [], { one: { before: 1000, after: 1000 }, two: { before: 1400, after: 1400 } }), fighters(), computer, [none, none]);
+    expect(card.rows).toEqual([{ label: "RATING", values: ["Unrated", "Unrated"], lead: null }]);
+  });
+
+  it("calls a draw a draw and names a winner who is not in either seat", () => {
+    expect(resultCard(result("draw", null, [{ judge: "Impact", player_one: [10], player_two: [10] }]), fighters(), players, [none, none])).toMatchObject({ headline: "UNANIMOUS DRAW", verdict: "DRAW", winnerSeat: null });
+    expect(resultCard(result("forfeit", "three"), fighters(), { ...players, three: { id: "three", name: "Carol", avatar: null, rating: 1500, connected: true } }, [none, none])).toMatchObject({ verdict: "CAROL WINS", winnerSeat: null });
+  });
+
+  const full = result("decision", "one", [{ judge: "Impact", player_one: [10, 10], player_two: [9, 9] }, { judge: "Craft", player_one: [10, 10], player_two: [9, 9] }, { judge: "Generalship", player_one: [10, 10], player_two: [9, 9] }], { one: { before: 1000, after: 1016 }, two: { before: 1000, after: 984 } });
+  const fullCard = resultCard(full, fighters(0, 1), players, [{ thrown: 9, landed: 6, jabsThrown: 5, jabsLanded: 3 }, { thrown: 4, landed: 1, jabsThrown: 2, jabsLanded: 1 }]);
+
+  it("sits along the bottom of the screen and leaves the ring in view above it", () => {
+    for (const [width, height, clear] of [[1280, 720, 0.55], [1920, 1080, 0.6], [390, 844, 0.45], [844, 390, 0.15], [640, 360, 0.1]] as const) {
+      const layout = resultCardLayout(width, height, fullCard, true);
+      expect(layout.x).toBeGreaterThanOrEqual(12);
+      expect(layout.x + layout.width).toBeLessThanOrEqual(width - 12);
+      expect(layout.y + layout.height).toBeCloseTo(height - 14 * hudScale(width, height), 6);
+      expect(layout.y).toBeGreaterThanOrEqual(height * clear);
+      expect(layout.rowHeight).toBeGreaterThanOrEqual(16);
+    }
+  });
+
+  it("keeps the rows that matter on a phone on its side, so the card leaves the ring in view", () => {
+    const layout = resultCardLayout(844, 390, fullCard, true);
+    expect(layout.dense).toBe(true);
+    expect(cardRows(fullCard, true).map((row) => row.label)).toEqual(["KNOCKDOWNS", "TOTAL PUNCHES", "RATING"]);
+    expect(layout.height / 390).toBeLessThan(0.5);
+    expect(cardRows(fullCard, false)).toHaveLength(fullCard.rows.length);
+  });
+
+  it("puts the verdict beside the table on a wide or a short screen and above it on a tall one", () => {
+    expect(resultCardLayout(1280, 720, fullCard, true).wide).toBe(true);
+    expect(resultCardLayout(844, 390, fullCard, true).wide).toBe(true);
+    expect(resultCardLayout(390, 844, fullCard, true).wide).toBe(false);
+    expect(resultCardLayout(800, 900, fullCard, true).wide).toBe(false);
+  });
+
+  it("leaves room for the rematch button on a fighter's card only", () => {
+    expect(resultCardLayout(1280, 720, fullCard, true).height - resultCardLayout(1280, 720, fullCard, false).height).toBe(RESULT_CARD_FOOTER - 14);
+  });
+
+  it("replaces the plates and the clock", () => {
+    const texts: string[] = [];
+    const tracker = new RoundStatsTracker();
+    tracker.record({ event_id: 1, tick: 1, kind: "punch_start", actor_id: "one", target_id: "two", amount: 0, detail: "", blood: 0, direction: 1, action_id: null });
+    drawHud(mockHudContext(texts), 1280, 720, { ...snapshot(), phase: "complete" }, players, "one", full, 0, 30, tracker);
+    expect(texts.some((text) => /STAMINA|HEALTH|GUARD|POISE|COMPLETE/.test(text))).toBe(false);
+    expect(texts).toEqual(expect.arrayContaining(["UNANIMOUS DECISION", "ROUND 2", "ALPHA WINS", "IMPACT", "20 – 18", "Alpha", "Bravo", "TOTAL PUNCHES", "0/1 (0%)", "RATING"]));
   });
 });

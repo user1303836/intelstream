@@ -1,4 +1,11 @@
-import type { CombatEvent, EngineSnapshot, FinalMessage, PublicPlayer } from "../types";
+import { EYE_SHUT_TRAUMA, GUARD_BLOCK_MINIMUM } from "../manifest";
+import { isDebut, recordLine } from "../record";
+import { styleTag } from "../styles";
+import type { CombatEvent, CornerChoice, EngineSnapshot, FighterSnapshot, FinalMessage, FinishMethod, PublicPlayer, PunchTotals, RatingDelta, TraumaSnapshot } from "../types";
+import { monogram } from "./avatars";
+
+/** Hands out a player's picture once it has loaded. */
+export type PictureSource = (player: PublicPlayer) => CanvasImageSource | null;
 
 export const HUD_MAX_GUARD = 700;
 export const HUD_MAX_POISE = 600;
@@ -24,33 +31,154 @@ interface BarSpec {
   readonly maximum: number;
   readonly from: string;
   readonly to: string;
+  /** Below this the bar's resource is spent: it is marked on the bar, which shows spent while under it. */
+  readonly spentBelow?: number;
 }
+
+/** Spent: a red frame, mark and label, a dimmed fill and red hatching across the bar. */
+const SPENT_RED = "#ff7066";
 
 function broadcastBar(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, spec: BarSpec, mirror: boolean): void {
   const height = 9;
+  const spent = spec.spentBelow !== undefined && spec.value < spec.spentBelow;
   ctx.fillStyle = "rgba(2,4,9,0.85)";
   ctx.fillRect(x - 1, y - 1, width + 2, height + 2);
   const frame = ctx.createLinearGradient(0, y, 0, y + height);
   frame.addColorStop(0, "rgba(210,220,235,0.5)");
   frame.addColorStop(0.5, "rgba(90,100,120,0.25)");
   frame.addColorStop(1, "rgba(30,36,50,0.4)");
-  ctx.strokeStyle = frame;
+  ctx.strokeStyle = spent ? SPENT_RED : frame;
   ctx.lineWidth = 1;
   ctx.strokeRect(x - 1.5, y - 1.5, width + 3, height + 3);
   const ratio = Math.max(0, Math.min(1, spec.value / Math.max(1, spec.maximum)));
   const fill = ctx.createLinearGradient(0, y, 0, y + height);
-  fill.addColorStop(0, spec.from);
-  fill.addColorStop(1, spec.to);
+  fill.addColorStop(0, spent ? "#7b8494" : spec.from);
+  fill.addColorStop(1, spent ? "#434a57" : spec.to);
   ctx.fillStyle = fill;
   const fillWidth = width * ratio;
   ctx.fillRect(mirror ? x + width - fillWidth : x, y, fillWidth, height);
   ctx.fillStyle = "rgba(255,255,255,0.22)";
   ctx.fillRect(mirror ? x + width - fillWidth : x, y, fillWidth, 2);
-  ctx.fillStyle = "#dfe7f5";
+  if (spent) {
+    // Hatched across the whole bar, so even a 40 px phone bar reads as spent at a glance.
+    ctx.beginPath();
+    for (let start = -height; start < width; start += 5) {
+      const from = Math.max(0, start);
+      const to = Math.min(width, start + height);
+      ctx.moveTo(x + from, y + height - (from - start));
+      ctx.lineTo(x + to, y + height - (to - start));
+    }
+    ctx.strokeStyle = SPENT_RED;
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+  }
+  if (spec.spentBelow !== undefined) {
+    // The line it has to stay over, standing proud of the bar.
+    const at = width * Math.min(1, spec.spentBelow / Math.max(1, spec.maximum));
+    ctx.fillStyle = spent ? SPENT_RED : "#f6d57a";
+    ctx.fillRect((mirror ? x + width - at : x + at) - 0.75, y - 2, 1.5, height + 4);
+  }
+  ctx.fillStyle = spent ? SPENT_RED : "#dfe7f5";
   ctx.font = "700 9px Inter, system-ui, sans-serif";
   ctx.textAlign = mirror ? "right" : "left";
   ctx.fillText(spec.label, mirror ? x + width : x, y - 4);
 }
+
+/** A player's picture in a ring of their corner's colour, or the first letter of their name until there is one. */
+function portrait(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number, picture: CanvasImageSource | null, name: string, accent: string): void {
+  const circle = (): void => {
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.closePath();
+  };
+  ctx.save();
+  circle();
+  ctx.fillStyle = "#0b1220";
+  ctx.fill();
+  if (picture !== null) {
+    ctx.save();
+    ctx.clip();
+    ctx.drawImage(picture, x - radius, y - radius, radius * 2, radius * 2);
+    ctx.restore();
+  } else {
+    ctx.globalAlpha = 0.4;
+    ctx.fillStyle = accent;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#f5f8ff";
+    ctx.textAlign = "center";
+    ctx.font = `800 ${Math.round(radius * 1.1)}px Inter, system-ui, sans-serif`;
+    ctx.fillText(monogram(name), x, y + radius * 0.39);
+  }
+  circle();
+  ctx.lineWidth = Math.max(1.5, radius / 9);
+  ctx.strokeStyle = accent;
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** The plate's warning when an eye is swollen shut and that side is blind, or null while both eyes see. */
+export function shutEyeTag(trauma: TraumaSnapshot): string | null {
+  const left = trauma.left_eye >= EYE_SHUT_TRAUMA;
+  const right = trauma.right_eye >= EYE_SHUT_TRAUMA;
+  return left && right ? "BOTH EYES SHUT" : left ? "LEFT EYE SHUT" : right ? "RIGHT EYE SHUT" : null;
+}
+
+const CORNER_WORK: Readonly<Record<CornerChoice, string>> = {
+  cut: "closing the cut",
+  swelling: "icing the swelling",
+  breath: "catching breath",
+  balanced: "a little of everything",
+};
+
+/** What each corner is working on, for the rest panel; null until a corner has been told. Seat 0 is the blue corner. */
+export function cornerWorkLine(fighters: readonly FighterSnapshot[]): string | null {
+  const told = fighters.flatMap((fighter, seat) => (fighter.corner_choice === null ? [] : [`${seat === 0 ? "Blue" : "Red"}: ${CORNER_WORK[fighter.corner_choice]}`]));
+  return told.length === 0 ? null : told.join("  ·  ");
+}
+
+function warningTag(ctx: CanvasRenderingContext2D, x: number, y: number, text: string, mirror: boolean): void {
+  ctx.save();
+  ctx.font = "800 9px Inter, system-ui, sans-serif";
+  const width = ctx.measureText(text).width + 12;
+  const left = mirror ? x - width : x;
+  ctx.fillStyle = "rgba(150,22,18,0.92)";
+  ctx.fillRect(left, y, width, 14);
+  ctx.fillStyle = "#ffe8e3";
+  ctx.textAlign = "left";
+  ctx.fillText(text, left + 6, y + 10);
+  ctx.restore();
+}
+
+/** The HUD is laid out for a 1280 x 720 screen and drawn larger on bigger ones: a 1920 x 1080 window gets 1.5x. */
+export function hudScale(width: number, height: number): number {
+  return Math.max(1, Math.min(1.6, width / 1280, height / 720));
+}
+
+/**
+ * The line under a fighter's name, fullest first: the style, the record, the rating (or CPU), then knockdowns,
+ * warnings and points taken only when there are any. A plate too narrow for the whole line takes the next one
+ * that fits: without the record, then without the rating, then with the counts in short ("W2", "−1"), then
+ * without the style, so the counts, which can decide a close round, are the last thing a plate gives up. A
+ * phone's plate is only the style and the counts in short: the introductions give the record.
+ */
+export function plateDetails(player: PublicPlayer | undefined, fighter: Pick<FighterSnapshot, "style" | "knockdowns" | "warnings" | "deductions">, compact: boolean): readonly string[] {
+  const style = styleTag(fighter.style);
+  const record = player?.record === undefined ? null : isDebut(player.record) ? "DEBUT" : recordLine(player.record);
+  const rating = player?.cpu === true ? "CPU" : `ELO ${player?.rating ?? "—"}`;
+  const knockdowns = fighter.knockdowns > 0 ? `${fighter.knockdowns} KD` : null;
+  const counts = [knockdowns, fighter.warnings > 0 ? `${fighter.warnings} WARNING${fighter.warnings === 1 ? "" : "S"}` : null, fighter.deductions > 0 ? `−${fighter.deductions} PT${fighter.deductions === 1 ? "" : "S"}` : null];
+  const short = [knockdowns, fighter.warnings > 0 ? `W${fighter.warnings}` : null, fighter.deductions > 0 ? `−${fighter.deductions}` : null];
+  const line = (...parts: (string | null)[]): string => parts.filter((part) => part !== null).join(" · ");
+  const lines = compact
+    ? [line(style, ...short), line(...short)]
+    : [line(style, record, rating, ...counts), line(style, rating, ...counts), line(style, ...counts), line(style, ...short), line(...short)];
+  return lines.filter((text, index) => text !== "" && lines.indexOf(text) === index);
+}
+
+export const PLATE_PORTRAIT_RADIUS = 16;
+export const CLOCK_PORTRAIT_RADIUS = 20;
+const ROUND_CARD_WIDTH = 168;
 
 function fighterPlate(
   ctx: CanvasRenderingContext2D,
@@ -58,10 +186,13 @@ function fighterPlate(
   y: number,
   width: number,
   name: string,
-  detail: string,
+  /** The line under the name, fullest first (plateDetails). */
+  details: readonly string[],
   bars: readonly BarSpec[],
   mirror: boolean,
   accent: string,
+  /** Drawn at the plate's outer end when there is the width for it. */
+  picture: CanvasImageSource | null | undefined,
 ): void {
   const height = 62;
   ctx.save();
@@ -86,19 +217,30 @@ function fighterPlate(
   ctx.fillStyle = accent;
   ctx.fillRect(mirror ? x + width - 5 : x, y + 4, 5, height - 8);
 
-  const textX = mirror ? x + width - 20 : x + 20;
+  const inset = picture === undefined ? 20 : 19 + PLATE_PORTRAIT_RADIUS * 2;
+  if (picture !== undefined) portrait(ctx, mirror ? x + width - 11 - PLATE_PORTRAIT_RADIUS : x + 11 + PLATE_PORTRAIT_RADIUS, y + 4 + PLATE_PORTRAIT_RADIUS, PLATE_PORTRAIT_RADIUS, picture, name, accent);
+  const textX = mirror ? x + width - inset : x + inset;
   ctx.textAlign = mirror ? "right" : "left";
   ctx.fillStyle = "#f5f8ff";
   const label = name.toUpperCase();
+  const nameWidth = width - inset - 24;
   const nameSize = fitFontSize((size) => {
     ctx.font = `800 ${size}px Inter, system-ui, sans-serif`;
     return ctx.measureText(label).width;
-  }, width - 44, 16, 11);
+  }, nameWidth, 16, 11);
   ctx.font = `800 ${nameSize}px Inter, system-ui, sans-serif`;
-  ctx.fillText(fit(ctx, label, width - 44), textX, y + 21);
+  ctx.fillText(fit(ctx, label, nameWidth), textX, y + 21);
   ctx.fillStyle = "#93a3bd";
-  ctx.font = "600 10px Inter, system-ui, sans-serif";
-  ctx.fillText(detail, textX, y + 35);
+  const detailWidth = width - inset - 14;
+  const measureDetail = (text: string, size: number): number => {
+    ctx.font = `600 ${size}px Inter, system-ui, sans-serif`;
+    return ctx.measureText(text).width;
+  };
+  // The fullest line that fits at the smallest size, set as large as it fits; whole parts go, never letters.
+  const detail = details.find((text) => measureDetail(text, 8) <= detailWidth) ?? details.at(-1) ?? "";
+  const detailSize = fitFontSize((size) => measureDetail(detail, size), detailWidth, 10, 8);
+  ctx.font = `600 ${detailSize}px Inter, system-ui, sans-serif`;
+  ctx.fillText(fit(ctx, detail, detailWidth), textX, y + 35);
 
   const barWidth = (width - 52) / bars.length;
   const groupWidth = bars.length * barWidth + (bars.length - 1) * 12;
@@ -110,7 +252,7 @@ function fighterPlate(
 }
 
 function roundCard(ctx: CanvasRenderingContext2D, centerX: number, y: number, clock: string, round: string, phase: string): void {
-  const width = 168;
+  const width = ROUND_CARD_WIDTH;
   const height = 58;
   ctx.save();
   ctx.beginPath();
@@ -147,30 +289,126 @@ function roundCard(ctx: CanvasRenderingContext2D, centerX: number, y: number, cl
 
 const PANEL_HEIGHT = 78;
 const SHORT_PANEL_HEIGHT = 50;
-const panelHeightFor = (height: number): number => (height < 480 ? SHORT_PANEL_HEIGHT : PANEL_HEIGHT);
+/** The big callouts ("ROUND 2", "PARRIED"): 46 px type on a baseline this far down the screen. */
+export const CALLOUT_BASELINE = 0.22;
+export const CALLOUT_BELOW_BASELINE = 14;
+
+export const panelHeightFor = (height: number): number => (height < 480 ? SHORT_PANEL_HEIGHT : PANEL_HEIGHT);
 
 /** Offset that parks a centre panel under the top bar, or under the round card on narrow screens, clear of the fighters. */
 export const topPanelOffset = (width: number, height: number): number =>
   Math.max(width < 640 ? 112 : 56, height * 0.1) + panelHeightFor(height) / 2 - height / 2;
 
-function centerPanel(ctx: CanvasRenderingContext2D, width: number, height: number, title: string, subtitle: string, yOffset = 0): void {
-  const panelWidth = Math.min(320, width - 24);
-  const panelHeight = panelHeightFor(height);
-  const short = panelHeight === SHORT_PANEL_HEIGHT;
-  const x = width / 2 - panelWidth / 2;
-  const y = height / 2 - panelHeight / 2 + yOffset;
+/**
+ * The touch pads (style.css .touch-pads). Held upright they are one column 118 px up from the bottom, 274 px
+ * tall: the moves, the modifiers and the punch pads. On its side the modifiers and punch pads stand 196 px tall
+ * and the moves have their own column to their left, 102 px tall at the foot; on a screen 350 px tall or less
+ * all of them are smaller, 154 and 86 px tall, and 112 px up. `grid` is the height of the punch pads at the foot,
+ * the only ones shown while the player is down, when they are the get-up pads. `reach` is how far in from the
+ * right edge the modifiers' and punch pads' column comes, and `movesReach` how much further the moves' column
+ * does, with a little to spare.
+ */
+export const TOUCH_PADS = {
+  upright: { bottom: 118, height: 274, moves: 0, grid: 118 },
+  landscape: { bottom: 118, height: 196, moves: 102, grid: 118 },
+  short: { bottom: 112, height: 154, moves: 86, grid: 92 },
+  shortHeight: 350,
+  reach: 12 + 190 + 14,
+  movesReach: 122 + 12,
+} as const;
+
+/** The touch pads as they stand on a screen this size. */
+const touchPadsFor = (width: number, height: number): (typeof TOUCH_PADS)["upright" | "landscape" | "short"] =>
+  width <= height ? TOUCH_PADS.upright : height <= TOUCH_PADS.shortHeight ? TOUCH_PADS.short : TOUCH_PADS.landscape;
+
+/** How far in from the right edge the touch pads come beside something that ends at `bottom`: 0 while it stays above them. */
+export function touchPadsReach(width: number, height: number, bottom: number): number {
+  const pads = touchPadsFor(width, height);
+  if (bottom <= height - pads.bottom - pads.height) return 0;
+  // Upright the pads are one column; on its side the moves only come out at the foot of the block.
+  return TOUCH_PADS.reach + (pads.moves > 0 && bottom > height - pads.bottom - pads.moves ? TOUCH_PADS.movesReach : 0);
+}
+
+export interface PanelRect {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+/** A centre panel moved up beside the round card is no narrower than this. */
+const BESIDE_CARD_MIN_WIDTH = 160;
+
+/**
+ * Where a centre panel goes for the countdown, a foul's recovery and the rest: under the top bar, or under the
+ * round card on a narrow screen. With the touch pads up it keeps clear of them: held upright it is the short
+ * panel where the pads come up to within 8 px of it, and on its side it moves left of them, narrower where it
+ * must. A narrow screen on its side has room for it up beside the round card, above the controls hint.
+ */
+export function topPanel(width: number, height: number, touch = false): PanelRect {
+  let panelHeight = panelHeightFor(height);
+  let y = height / 2 + topPanelOffset(width, height) - panelHeight / 2;
+  let panelWidth = Math.min(320, width - 24);
+  let right = width / 2 + panelWidth / 2;
+  if (touch && width <= height) {
+    if (touchPadsReach(width, height, y + panelHeight + 8) > 0) panelHeight = SHORT_PANEL_HEIGHT;
+  } else if (touch) {
+    const besideCard = width < 640 ? Math.min(width / 2 - ROUND_CARD_WIDTH / 2 - 8, width - touchPadsReach(width, height, 56 + panelHeight)) : 0;
+    const up = besideCard - 12 >= BESIDE_CARD_MIN_WIDTH;
+    if (up) y = 56;
+    const limit = up ? besideCard : width - touchPadsReach(width, height, y + panelHeight);
+    if (right > limit) {
+      panelWidth = Math.min(panelWidth, limit - 12);
+      right = limit;
+    }
+  }
+  return { x: right - panelWidth, y, width: panelWidth, height: panelHeight };
+}
+
+/** The downed viewer's get-up panel: the count, the rhythm prompt and its meter. */
+const GET_UP_PANEL = { width: 380, height: 150 } as const;
+/** The plates' guard and poise bars, with their labels, come this far up from the bottom. */
+const PLATE_BARS_TOP = 84 + 12 + 16;
+
+/**
+ * Where the downed viewer's get-up panel goes: under the knockdown headline and above the plates' guard and poise
+ * bars. While he is down the touch pads show only the get-up pads (style.css), and the panel keeps clear of them
+ * and of the thumbs on them: above them on a phone held upright, left of them on its side. Where there is too
+ * little room under the headline it moves up over it, and on a narrow screen on its side over the round card,
+ * whose clock stands still through the count.
+ */
+export function getUpPanel(width: number, height: number, touch = false): PanelRect {
+  const pads = touchPadsFor(width, height);
+  const getUpPadsTop = height - pads.bottom - pads.grid;
+  const upright = width <= height;
+  const bottom = touch && upright ? Math.min(height - PLATE_BARS_TOP, getUpPadsTop - 8) : height - PLATE_BARS_TOP;
+  const y = Math.max(56, Math.min(Math.max(height * 0.24, headlineBaseline(height, width < 640) + 34), bottom - GET_UP_PANEL.height));
+  let panelWidth = Math.min(GET_UP_PANEL.width, width - 24);
+  let right = width / 2 + panelWidth / 2;
+  if (touch && !upright && y + GET_UP_PANEL.height > getUpPadsTop) {
+    const limit = width - TOUCH_PADS.reach;
+    if (right > limit) {
+      panelWidth = Math.min(panelWidth, limit - 12);
+      right = limit;
+    }
+  }
+  return { x: right - panelWidth, y, width: panelWidth, height: GET_UP_PANEL.height };
+}
+
+function centerPanel(ctx: CanvasRenderingContext2D, panel: PanelRect, title: string, subtitle: string): void {
+  const short = panel.height === SHORT_PANEL_HEIGHT;
+  const centre = panel.x + panel.width / 2;
   ctx.fillStyle = "rgba(3,6,12,0.88)";
-  ctx.fillRect(x, y, panelWidth, panelHeight);
+  ctx.fillRect(panel.x, panel.y, panel.width, panel.height);
   ctx.strokeStyle = "rgba(246,213,122,0.45)";
   ctx.lineWidth = 1.5;
-  ctx.strokeRect(x + 2, y + 2, panelWidth - 4, panelHeight - 4);
+  ctx.strokeRect(panel.x + 2, panel.y + 2, panel.width - 4, panel.height - 4);
   ctx.textAlign = "center";
   ctx.fillStyle = "#ffd77a";
-  ctx.font = `800 ${short ? 17 : 22}px Inter, system-ui, sans-serif`;
-  ctx.fillText(title, width / 2, y + (short ? 22 : 34));
+  fitted(ctx, title, centre, panel.y + (short ? 22 : 34), panel.width - 24, 800, short ? 17 : 22, 12);
   ctx.fillStyle = "#c8d3e6";
   ctx.font = `600 ${short ? 11 : 12}px Inter, system-ui, sans-serif`;
-  ctx.fillText(fit(ctx, subtitle, panelWidth - 24), width / 2, y + (short ? 39 : 58));
+  ctx.fillText(fit(ctx, subtitle, panel.width - 24), centre, panel.y + (short ? 39 : 58));
 }
 
 /** Holds the round clock while a knockdown count or a foul timeout runs its own timer. */
@@ -184,7 +422,8 @@ export class RoundClock {
       this.fightTicks = null;
     }
     if (snapshot.phase === "fight") this.fightTicks = snapshot.phase_ticks_remaining;
-    const held = snapshot.phase === "knockdown" || snapshot.phase === "foul_recovery";
+    // A stoppage freezes the clock where the bout ended, as the broadcast does.
+    const held = snapshot.phase === "knockdown" || snapshot.phase === "foul_recovery" || snapshot.phase === "complete";
     return held && this.fightTicks !== null ? this.fightTicks : snapshot.phase_ticks_remaining;
   }
 }
@@ -192,6 +431,19 @@ export class RoundClock {
 export interface RoundPunchStats {
   thrown: number;
   landed: number;
+  /** Of those, the jabs; every other punch counts as a power punch, as CompuBox counts them. */
+  jabsThrown: number;
+  jabsLanded: number;
+}
+
+const blankPunches = (): RoundPunchStats => ({ thrown: 0, landed: 0, jabsThrown: 0, jabsLanded: 0 });
+
+/**
+ * The engine reports a punch that met the guard twice: the defender's block, then the hit that leaked
+ * through. Only a hit with no block of the same punch beside it landed clean.
+ */
+export function wasBlocked(hit: CombatEvent, events: readonly CombatEvent[]): boolean {
+  return hit.action_id !== null && events.some((event) => (event.kind === "block" || event.kind === "perfect_block") && event.tick === hit.tick && event.action_id === hit.action_id && event.actor_id === hit.target_id);
 }
 
 /** Punches thrown and landed per fighter in the current round, reset on the round-start bell. */
@@ -199,34 +451,43 @@ export class RoundStatsTracker {
   private readonly stats = new Map<string, RoundPunchStats>();
   private readonly totals = new Map<string, RoundPunchStats>();
 
-  record(event: CombatEvent): void {
+  /** `events` is the rest of the snapshot the event came in, to tell a punch that landed from one that was blocked. */
+  record(event: CombatEvent, events: readonly CombatEvent[] = []): void {
     if (event.kind === "bell") {
       if (event.detail === "round_start") this.stats.clear();
       return;
     }
     if (event.actor_id === null) return;
     if (event.kind === "punch_start") {
-      this.entry(this.stats, event.actor_id).thrown += 1;
-      this.entry(this.totals, event.actor_id).thrown += 1;
-    } else if (event.kind === "hit" || event.kind === "counter_hit") {
-      this.entry(this.stats, event.actor_id).landed += 1;
-      this.entry(this.totals, event.actor_id).landed += 1;
+      // The detail is "hand:class:target".
+      const jab = event.detail.split(":")[1] === "jab" ? 1 : 0;
+      for (const entry of [this.entry(this.stats, event.actor_id), this.entry(this.totals, event.actor_id)]) {
+        entry.thrown += 1;
+        entry.jabsThrown += jab;
+      }
+    } else if ((event.kind === "hit" || event.kind === "counter_hit") && !wasBlocked(event, events)) {
+      // The detail is "class:target".
+      const jab = event.detail.split(":")[0] === "jab" ? 1 : 0;
+      for (const entry of [this.entry(this.stats, event.actor_id), this.entry(this.totals, event.actor_id)]) {
+        entry.landed += 1;
+        entry.jabsLanded += jab;
+      }
     }
   }
 
   get(playerId: string): RoundPunchStats {
-    return this.stats.get(playerId) ?? { thrown: 0, landed: 0 };
+    return this.stats.get(playerId) ?? blankPunches();
   }
 
   /** Punches over the whole bout, for the result panel. */
   total(playerId: string): RoundPunchStats {
-    return this.totals.get(playerId) ?? { thrown: 0, landed: 0 };
+    return this.totals.get(playerId) ?? blankPunches();
   }
 
   private entry(map: Map<string, RoundPunchStats>, playerId: string): RoundPunchStats {
     let entry = map.get(playerId);
     if (entry === undefined) {
-      entry = { thrown: 0, landed: 0 };
+      entry = blankPunches();
       map.set(playerId, entry);
     }
     return entry;
@@ -258,11 +519,27 @@ export function decisionLabel(final: FinalMessage): string {
 
 export const STOPPAGE_METHODS: ReadonlySet<string> = new Set(["ko", "flash_ko", "tko"]);
 export const FINAL_REVEAL_DELAY_SECONDS = 3.6;
+/** A disqualification or a doctor's stoppage is the referee's call: a moment for it before the result. */
+export const REFEREE_REVEAL_DELAY_SECONDS = 2.4;
 
 /** Seconds to hold the result panel back so a stoppage's slow-motion fall stays visible. */
 export function finalRevealDelay(final: FinalMessage | null): number {
-  return final !== null && STOPPAGE_METHODS.has(final.method) ? FINAL_REVEAL_DELAY_SECONDS : 0;
+  if (final === null) return 0;
+  if (STOPPAGE_METHODS.has(final.method)) return FINAL_REVEAL_DELAY_SECONDS;
+  return final.method === "disqualification" || final.method === "doctor_stoppage" ? REFEREE_REVEAL_DELAY_SECONDS : 0;
 }
+
+/** Below the top bar, or below the round card where a phone puts it under the top bar. */
+export const headlineBaseline = (height: number, compact: boolean): number => Math.max(height * 0.16, (compact ? 112 : 56) + 40);
+/** How far below the headline the knockdown count's baseline sits. */
+export const COUNT_BELOW_HEADLINE = 64;
+/** Engine latency that is worth telling a player about on the broadcast screen... */
+export const LAG_WARNING_MS = 120;
+/** ...and the warning stays up until the latency is back under this, so a value hovering at the line cannot flicker it. */
+export const LAG_CLEAR_MS = 100;
+
+/** Whether the slow-connection warning is up, from the latency now and whether it was up a moment ago. */
+export const lagWarning = (latencyMs: number | null, shown: boolean): boolean => latencyMs !== null && latencyMs >= (shown ? LAG_CLEAR_MS : LAG_WARNING_MS);
 
 export function drawHud(
   ctx: CanvasRenderingContext2D,
@@ -276,46 +553,75 @@ export function drawHud(
   tickRate = 30,
   roundStats: RoundStatsTracker | null = null,
   replayLabel: string | null = null,
+  /** The latency while the slow-connection warning is up (lagWarning), else null. */
   inputLatencyMs: number | null = null,
   roundCallout: string | null = null,
   clockTicks: number | null = null,
+  pictures: PictureSource | null = null,
+  /** The fighter the referee is counting over, as the renderer saw him go down: he is no longer on the canvas once he has beaten the count. */
+  countTarget: string | null = null,
+  /** The touch pads are up over the right of the screen. */
+  touch = false,
 ): void {
   ctx.save();
+  const scale = hudScale(width, height);
+  ctx.scale(scale, scale);
+  width /= scale;
+  height /= scale;
   ctx.textBaseline = "alphabetic";
-  // Below 640 px the two plates share the bottom edge and the round card moves under the top bar.
+  const pictureOf = (fighter: FighterSnapshot): CanvasImageSource | null => {
+    const player = players[fighter.player_id];
+    return player === undefined || pictures === null ? null : pictures(player);
+  };
+  // Below 640 px the two plates share the bottom edge and the round card moves under the top bar. Wider, each
+  // plate ends 8 px short of the round card between them.
   const compact = width < 640;
-  const plateWidth = compact ? (width - 56) / 2 : Math.min(300, width * 0.38);
+  const plateWidth = compact ? (width - 56) / 2 : Math.min(300, width * 0.38, width / 2 - ROUND_CARD_WIDTH / 2 - 8 - 24);
   const plateY = height - 84;
 
-  snapshot.fighters.forEach((fighter, index) => {
+  // The result card takes the place of the plates and the clock once the bout is over.
+  if (final === null) snapshot.fighters.forEach((fighter, index) => {
     const mirror = index === 1;
     const x = mirror ? width - 24 - plateWidth : 24;
     const player = players[fighter.player_id];
-    const detail = `ELO ${player?.rating ?? "—"} · KD ${fighter.knockdowns} · W ${fighter.warnings} · −${fighter.deductions}`;
     const bars: BarSpec[] = [
       { label: `${compact ? "STA" : "STAMINA"} ${Math.round(fighter.stamina)}`, value: fighter.stamina, maximum: fighter.maximum_stamina, from: "#ffe08a", to: "#d9a53a" },
       { label: `${compact ? "HP" : "HEALTH"} ${Math.round(fighter.conditioning)}`, value: fighter.conditioning, maximum: HUD_MAX_CONDITIONING, from: "#ff8a7a", to: "#b02a20" },
-      { label: "GUARD", value: fighter.guard, maximum: HUD_MAX_GUARD, from: "#9ec7ff", to: "#3d6fb8" },
+      // Under the mark a guard stops nothing: a block that takes it there breaks it (guard_break).
+      { label: "GUARD", value: fighter.guard, maximum: HUD_MAX_GUARD, from: "#9ec7ff", to: "#3d6fb8", spentBelow: GUARD_BLOCK_MINIMUM },
       { label: `POISE ${Math.round(fighter.poise)}`, value: fighter.poise, maximum: HUD_MAX_POISE, from: "#e8c890", to: "#8a6a34" },
     ];
-    fighterPlate(ctx, x, plateY, plateWidth, player?.name ?? "Fighter", detail, bars.slice(0, 2), mirror, index === 0 ? "#3d6fb8" : "#b02a20");
+    const accent = index === 0 ? "#3d6fb8" : "#b02a20";
+    // A narrow plate has no room for a picture, so it goes beside the clock at the top, unless the phone is on its
+    // side with the touch pads up, which stand where the red corner's would go.
+    fighterPlate(ctx, x, plateY, plateWidth, player?.name ?? "Fighter", plateDetails(player, fighter, compact), bars.slice(0, 2), mirror, accent, compact ? undefined : pictureOf(fighter));
+    if (compact && !(touch && width > height)) portrait(ctx, width / 2 + (mirror ? 1 : -1) * (ROUND_CARD_WIDTH / 2 + 8 + CLOCK_PORTRAIT_RADIUS), 54 + 29, CLOCK_PORTRAIT_RADIUS, pictureOf(fighter), player?.name ?? "Fighter", accent);
     const miniY = plateY - 12;
     // Guard and poise ride above the plate, as wide as the plate's own bars once the plate is narrow.
     const miniWidth = Math.min(64, (plateWidth - 52) / 2);
     broadcastBar(ctx, mirror ? x + plateWidth - 20 - 2 * miniWidth : x + 20, miniY, miniWidth, bars[2]!, mirror);
     broadcastBar(ctx, mirror ? x + plateWidth - 8 - miniWidth : x + 32 + miniWidth, miniY, miniWidth, bars[3]!, mirror);
+    const eyeTag = shutEyeTag(fighter.trauma);
+    if (eyeTag !== null) warningTag(ctx, mirror ? x + plateWidth - 20 : x + 20, miniY - 34, eyeTag, mirror);
   });
 
   const seconds = Math.floor((clockTicks ?? snapshot.phase_ticks_remaining) / tickRate);
   const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-  roundCard(ctx, width / 2, compact ? 54 : height - 84, clock, `ROUND ${snapshot.round_number}`, snapshot.phase.replace("_", " ").toUpperCase());
-  if (inputLatencyMs !== null && final === null && snapshot.fighters.some((fighter) => fighter.player_id === viewerId)) {
-    const rounded = Math.round(inputLatencyMs);
+  // A downed viewer's get-up panel takes the room it needs from the knockdown headline, and on a narrow screen on
+  // its side from the round card too, whose clock stands still through the count.
+  const getUp = snapshot.phase === "knockdown" && replayLabel === null && snapshot.fighters.some((fighter) => fighter.player_id === viewerId && fighter.is_downed) ? getUpPanel(width, height, touch) : null;
+  const cardCovered = getUp !== null && compact && getUp.y < 54 + 58;
+  if (final === null && !cardCovered) roundCard(ctx, width / 2, compact ? 54 : height - 84, clock, `ROUND ${snapshot.round_number}`, snapshot.phase === "complete" ? "FINAL" : snapshot.phase.replace("_", " ").toUpperCase());
+  // Only a connection slow enough to feel is worth the broadcast screen; Settings, Diagnostics always shows it.
+  // A phone has no free corner for it beside the clock, the centre panels and the captions. With the touch pads up
+  // it goes top left, where they never reach and where the knockout replay's tag has the corner to itself.
+  const lag = inputLatencyMs === null ? 0 : Math.round(inputLatencyMs);
+  if (lag >= LAG_CLEAR_MS && !compact && final === null && !(touch && replayLabel !== null) && snapshot.fighters.some((fighter) => fighter.player_id === viewerId)) {
     ctx.save();
-    ctx.textAlign = "right";
+    ctx.textAlign = touch ? "left" : "right";
     ctx.font = "700 11px ui-monospace, monospace";
-    ctx.fillStyle = rounded < 90 ? "rgba(170,200,180,0.75)" : rounded < 160 ? "rgba(240,200,110,0.9)" : "rgba(255,110,100,0.95)";
-    ctx.fillText(`INPUT ${rounded} ms`, width - 24, compact ? 128 : 36);
+    ctx.fillStyle = lag < 200 ? "rgba(240,200,110,0.9)" : "rgba(255,110,100,0.95)";
+    ctx.fillText(`SLOW CONNECTION ${lag} ms`, touch ? 24 : width - 24, 76);
     ctx.restore();
   }
   if (replayLabel !== null) {
@@ -340,50 +646,59 @@ export function drawHud(
     ctx.font = "900 46px Inter, system-ui, sans-serif";
     ctx.lineWidth = 6;
     ctx.strokeStyle = "rgba(0,0,0,0.75)";
-    ctx.strokeText(roundCallout, width / 2, height * 0.22);
+    ctx.strokeText(roundCallout, width / 2, height * CALLOUT_BASELINE);
     ctx.fillStyle = "#f6d57a";
-    ctx.fillText(roundCallout, width / 2, height * 0.22);
+    ctx.fillText(roundCallout, width / 2, height * CALLOUT_BASELINE);
     ctx.restore();
   }
   if (snapshot.phase === "countdown") {
-    centerPanel(ctx, width, height, `ROUND ${snapshot.round_number}`, "Touch gloves. Protect yourself at all times.", topPanelOffset(width, height));
+    centerPanel(ctx, topPanel(width, height, touch), `ROUND ${snapshot.round_number}`, "Touch gloves. Protect yourself at all times.");
   }
-  if (snapshot.phase === "knockdown") {
-    const viewer = snapshot.fighters.find((fighter) => fighter.player_id === viewerId);
-    const downed = snapshot.fighters.find((fighter) => fighter.is_downed) ?? viewer;
-    const count = Math.max(...snapshot.fighters.map((fighter) => fighter.get_up_count));
-    const downedName = players[downed?.player_id ?? ""]?.name ?? "Fighter";
+  // The replay's own tag says what it shows; the live count panel would only cover it.
+  const headline = headlineBaseline(height, compact);
+  if (snapshot.phase === "knockdown" && replayLabel === null) {
+    // Once he has beaten the count he stands for the rest of the eight, and the snapshot no longer says who went
+    // down: it is the fighter the renderer saw fall, or nobody by name for a spectator who arrived after it.
+    const downed = snapshot.fighters.find((fighter) => fighter.is_downed);
+    const counted = downed ?? snapshot.fighters.find((fighter) => fighter.player_id === countTarget);
+    const name = counted === undefined ? null : (players[counted.player_id]?.name ?? "Fighter").toUpperCase();
     ctx.save();
     ctx.textAlign = "center";
     ctx.font = "900 44px Inter, system-ui, sans-serif";
     ctx.lineWidth = 6;
     ctx.strokeStyle = "rgba(0,0,0,0.75)";
-    ctx.strokeText("KNOCKDOWN", width / 2, height * 0.16);
-    ctx.fillStyle = "#ff4d4d";
-    ctx.fillText("KNOCKDOWN", width / 2, height * 0.16);
+    // A downed viewer's own get-up panel says it all where it needs the headline's room.
+    if (getUp === null || getUp.y >= headline + 6) {
+      ctx.strokeText("KNOCKDOWN", width / 2, headline);
+      ctx.fillStyle = "#ff4d4d";
+      ctx.fillText("KNOCKDOWN", width / 2, headline);
+    }
     ctx.font = "700 15px Inter, system-ui, sans-serif";
     ctx.fillStyle = "#e6ecf7";
-    ctx.fillText(`${fit(ctx, downedName.toUpperCase(), width * 0.5)} IS DOWN`, width / 2, height * 0.16 + 24);
+    const verb = downed === undefined ? " BEAT THE COUNT" : " IS DOWN";
+    const line = name === null ? "STANDING EIGHT" : `${fit(ctx, name, Math.min(width * 0.5, width - 32 - ctx.measureText(verb).width))}${verb}`;
+    if (getUp === null || getUp.y >= headline + 30) ctx.fillText(line, width / 2, headline + 24);
     ctx.restore();
   }
   if (snapshot.phase === "knockdown" && replayLabel === null) {
     const viewer = snapshot.fighters.find((fighter) => fighter.player_id === viewerId);
+    // The referee's first word is "one", a second after the fighter lands.
     const count = Math.max(...snapshot.fighters.map((fighter) => fighter.get_up_count));
     if (viewer?.is_downed !== true) {
-      ctx.save();
-      ctx.textAlign = "center";
-      ctx.font = "900 36px Inter, system-ui, sans-serif";
-      ctx.lineWidth = 5;
-      ctx.strokeStyle = "rgba(0,0,0,0.75)";
-      ctx.strokeText(`COUNT ${count}`, width / 2, height * 0.16 + 64);
-      ctx.fillStyle = "#ffd77a";
-      ctx.fillText(`COUNT ${count}`, width / 2, height * 0.16 + 64);
-      ctx.restore();
+      if (count >= 1) {
+        ctx.save();
+        ctx.textAlign = "center";
+        ctx.font = "900 36px Inter, system-ui, sans-serif";
+        ctx.lineWidth = 5;
+        ctx.strokeStyle = "rgba(0,0,0,0.75)";
+        ctx.strokeText(`COUNT ${count}`, width / 2, headline + COUNT_BELOW_HEADLINE);
+        ctx.fillStyle = "#ffd77a";
+        ctx.fillText(`COUNT ${count}`, width / 2, headline + COUNT_BELOW_HEADLINE);
+        ctx.restore();
+      }
     } else {
-      const panelWidth = Math.min(380, width - 24);
-      const panelHeight = 150;
-      const x = width / 2 - panelWidth / 2;
-      const y = height * 0.24;
+      const { x, y, width: panelWidth, height: panelHeight } = getUp ?? getUpPanel(width, height, touch);
+      const centre = x + panelWidth / 2;
       ctx.fillStyle = "rgba(3,6,12,0.88)";
       ctx.fillRect(x, y, panelWidth, panelHeight);
       ctx.strokeStyle = "rgba(246,213,122,0.5)";
@@ -392,7 +707,7 @@ export function drawHud(
       ctx.textAlign = "center";
       ctx.fillStyle = "#ffd77a";
       ctx.font = "800 30px Inter, system-ui, sans-serif";
-      ctx.fillText(`COUNT ${count}`, width / 2, y + 40);
+      ctx.fillText(count >= 1 ? `COUNT ${count}` : "GET UP!", centre, y + 40);
       const prompt = viewer?.is_downed === true ? viewer.get_up_prompt : null;
       if (prompt !== null && prompt !== undefined && viewer !== undefined) {
         const inWindow = snapshot.tick >= viewer.get_up_window_start_tick && snapshot.tick <= viewer.get_up_window_end_tick;
@@ -400,14 +715,14 @@ export function drawHud(
         if (inWindow) {
           ctx.fillStyle = "#ffe9a8";
           ctx.font = "900 64px Inter, system-ui, sans-serif";
-          ctx.fillText(arrow, width / 2 - 90, y + 106);
+          ctx.fillText(arrow, centre - 90, y + 106);
           ctx.fillStyle = "#7dffa8";
           ctx.font = "900 34px Inter, system-ui, sans-serif";
-          ctx.fillText("NOW!", width / 2 + 62, y + 100);
+          ctx.fillText("NOW!", centre + 62, y + 100);
         } else {
           ctx.fillStyle = "#8fa3c8";
           ctx.font = "800 30px Inter, system-ui, sans-serif";
-          ctx.fillText(`GET READY ${arrow}`, width / 2, y + 98);
+          ctx.fillText(`GET READY ${arrow}`, centre, y + 98);
         }
         const meterWidth = panelWidth - 60;
         const ratio = Math.max(0, Math.min(1, viewer.get_up_meter / Math.max(1, viewer.get_up_required)));
@@ -424,26 +739,36 @@ export function drawHud(
       } else {
         ctx.fillStyle = "#c8d3e6";
         ctx.font = "600 14px Inter, system-ui, sans-serif";
-        ctx.fillText("Waiting for your rhythm instruction…", width / 2, y + 100);
+        ctx.fillText(fit(ctx, "Waiting for your rhythm instruction…", panelWidth - 24), centre, y + 100);
       }
     }
   }
   if (snapshot.phase === "foul_recovery") {
     const victim = snapshot.fighters.find((fighter) => fighter.is_foul_recovery_target);
-    centerPanel(ctx, width, height, "FOUL RECOVERY", `${players[victim?.player_id ?? ""]?.name ?? "Fighter"} is recovering`, topPanelOffset(width, height));
+    centerPanel(ctx, topPanel(width, height, touch), "FOUL RECOVERY", `${players[victim?.player_id ?? ""]?.name ?? "Fighter"} is recovering`);
   }
   if (snapshot.phase === "rest") {
+    // By corner rather than by name, so two long names cannot push the second fighter's numbers off the panel.
     const statsLine = snapshot.fighters
-      .map((fighter) => ({ name: players[fighter.player_id]?.name ?? "Fighter", stats: roundStats?.get(fighter.player_id) ?? { thrown: 0, landed: 0 } }))
+      .map((fighter, seat) => ({ corner: seat === 0 ? "Blue" : "Red", stats: roundStats?.get(fighter.player_id) ?? blankPunches() }))
       .filter(({ stats }) => stats.thrown > 0 || stats.landed > 0)
-      .map(({ name, stats }) => `${fit(ctx, name, width * 0.22)} ${stats.landed}/${stats.thrown}`)
+      .map(({ corner, stats }) => `${corner} ${stats.landed} of ${stats.thrown}`)
       .join("  ·  ");
-    centerPanel(ctx, width, height, "CORNERS · RECOVER", statsLine.length > 0 ? `Landed this round: ${statsLine}` : "Conditioning governs recovery", topPanelOffset(width, height));
+    const corners = cornerWorkLine(snapshot.fighters);
+    centerPanel(ctx, topPanel(width, height, touch), "CORNERS · RECOVER", corners ?? (statsLine.length > 0 ? `Landed this round: ${statsLine}` : "Conditioning governs recovery"));
   }
   if (reconnectMs > 0) {
-    centerPanel(ctx, width, height, `OPPONENT RECONNECTING · ${Math.ceil(reconnectMs / 1000)}s`, "The bout is paused");
+    // Mid-screen, or with the touch pads up in the centre panels' place, which they never reach.
+    const pauseWidth = Math.min(320, width - 24);
+    const pauseHeight = panelHeightFor(height);
+    const pause = touch ? topPanel(width, height, true) : { x: width / 2 - pauseWidth / 2, y: height / 2 - pauseHeight / 2, width: pauseWidth, height: pauseHeight };
+    centerPanel(ctx, pause, `OPPONENT RECONNECTING · ${Math.ceil(reconnectMs / 1000)}s`, "The bout is paused");
   }
-  if (final !== null) drawFinal(ctx, width, height, final, players, snapshot.fighters.map((fighter) => ({ name: players[fighter.player_id]?.name ?? "Fighter", stats: roundStats?.total(fighter.player_id) ?? { thrown: 0, landed: 0 } })));
+  if (final !== null) {
+    const punches = snapshot.fighters.map((fighter) => roundStats?.total(fighter.player_id) ?? blankPunches()) as [RoundPunchStats, RoundPunchStats];
+    // Every viewer gets a button under the card: Rematch for a fighter, Next bout for a spectator.
+    drawResultCard(ctx, width, height, resultCard(final, snapshot.fighters, players, punches), true, [pictureOf(snapshot.fighters[0]), pictureOf(snapshot.fighters[1])]);
+  }
   ctx.restore();
 }
 
@@ -456,35 +781,200 @@ function fitted(ctx: CanvasRenderingContext2D, text: string, x: number, y: numbe
   ctx.fillText(fit(ctx, text, maxWidth), x, y);
 }
 
-function drawFinal(ctx: CanvasRenderingContext2D, width: number, height: number, final: FinalMessage, players: Readonly<Record<string, PublicPlayer>>, punches: readonly { name: string; stats: RoundPunchStats }[] = []): void {
-  ctx.fillStyle = "rgba(2,4,9,0.94)";
-  ctx.fillRect(width * 0.14, height * 0.13, width * 0.72, height * 0.74);
-  ctx.strokeStyle = "rgba(246,213,122,0.5)";
-  ctx.lineWidth = 2;
-  ctx.strokeRect(width * 0.14 + 4, height * 0.13 + 4, width * 0.72 - 8, height * 0.74 - 8);
-  const inner = width * 0.72 - 32;
-  ctx.textAlign = "center";
-  ctx.fillStyle = "#f6d57a";
-  fitted(ctx, decisionLabel(final), width / 2, height * 0.21, inner, 800, 26, 14);
-  const winner = final.winner_id === null ? "DRAW" : `${players[final.winner_id]?.name ?? "Winner"} WINS`;
-  ctx.fillStyle = "white";
-  fitted(ctx, winner, width / 2, height * 0.27, inner, 700, 18, 11);
-  const thrown = punches.filter(({ stats }) => stats.thrown > 0);
-  if (thrown.length > 0) {
-    ctx.fillStyle = "#c8d3e6";
-    ctx.font = "600 13px Inter, system-ui, sans-serif";
-    const line = thrown.map(({ name, stats }) => `${fit(ctx, name, inner / thrown.length - 70)} ${stats.landed}/${stats.thrown} landed`).join("   ·   ");
-    fitted(ctx, line, width / 2, height * 0.32, inner, 600, 13, 9);
+const METHOD_HEADLINES: Readonly<Partial<Record<FinishMethod, string>>> = {
+  ko: "KNOCKOUT",
+  flash_ko: "FLASH KNOCKOUT",
+  tko: "TECHNICAL KNOCKOUT",
+  doctor_stoppage: "DOCTOR STOPPAGE",
+  disqualification: "DISQUALIFICATION",
+  forfeit: "FORFEIT",
+};
+
+export interface ResultRow {
+  readonly label: string;
+  readonly values: readonly [string, string];
+  /** The seat with the better value, or null when they are level. */
+  readonly lead: 0 | 1 | null;
+  /** Whether each value is good or bad news for its fighter, where that applies. */
+  readonly news?: readonly [boolean, boolean];
+}
+
+export interface ResultCard {
+  readonly headline: string;
+  readonly detail: string;
+  readonly verdict: string;
+  readonly winnerSeat: 0 | 1 | null;
+  readonly names: readonly [string, string];
+  /** One per judge, for a bout that went to the cards. */
+  readonly judges: readonly ResultRow[];
+  readonly rows: readonly ResultRow[];
+}
+
+const lead = (one: number, two: number): 0 | 1 | null => (one > two ? 0 : two > one ? 1 : null);
+
+/** What the result card says. Seat 0 is the blue corner, the first fighter in every snapshot and on every scorecard. */
+export function resultCard(
+  final: FinalMessage,
+  fighters: readonly [FighterSnapshot, FighterSnapshot],
+  players: Readonly<Record<string, PublicPlayer>>,
+  punches: readonly [RoundPunchStats, RoundPunchStats],
+): ResultCard {
+  const names = fighters.map((fighter) => players[fighter.player_id]?.name ?? "Fighter") as [string, string];
+  const winnerSeat = final.winner_id === null ? null : fighters[0].player_id === final.winner_id ? 0 : fighters[1].player_id === final.winner_id ? 1 : null;
+  const rows: ResultRow[] = [];
+  const judges: ResultRow[] = [];
+  if (final.method === "decision" || final.method === "draw") {
+    for (const card of final.scorecards) {
+      const one = scoreTotal(card.player_one);
+      const two = scoreTotal(card.player_two);
+      judges.push({ label: card.judge.toUpperCase(), values: [String(one), String(two)], lead: lead(one, two) });
+    }
   }
-  final.scorecards.forEach((card, index) => {
-    const y = height * 0.37 + index * 36;
-    ctx.fillStyle = "#aebbd0";
-    fitted(ctx, `${card.judge}  ${scoreTotal(card.player_one)} — ${scoreTotal(card.player_two)}  [${card.player_one.join("·")}] [${card.player_two.join("·")}]`, width / 2, y, inner, 400, 12, 8, "ui-monospace, monospace");
+  const scored: [number, number] = [fighters[1].knockdowns, fighters[0].knockdowns];
+  if (scored[0] > 0 || scored[1] > 0) rows.push({ label: "KNOCKDOWNS", values: [String(scored[0]), String(scored[1])], lead: lead(scored[0], scored[1]) });
+  // The engine's count for the whole bout when the result carries it; what this client saw can miss
+  // a reconnect or a late arrival.
+  const [blueCount, redCount] = fighters.map((fighter) => final.punches?.[fighter.player_id]);
+  const counted = (total: PunchTotals): RoundPunchStats => ({ thrown: total.thrown, landed: total.landed, jabsThrown: total.jabs_thrown, jabsLanded: total.jabs_landed });
+  const totals: readonly [RoundPunchStats, RoundPunchStats] = blueCount !== undefined && redCount !== undefined ? [counted(blueCount), counted(redCount)] : punches;
+  if (totals[0].thrown > 0 || totals[1].thrown > 0) {
+    // CompuBox: landed of thrown and the share that landed, for all punches, the jabs and the power punches.
+    // A client that joined mid-punch saw the hit but not the throw; never show more landed than thrown.
+    const count = (landed: number, thrown: number): string => (thrown > 0 ? `${Math.min(landed, thrown)}/${thrown} (${Math.round((Math.min(landed, thrown) / thrown) * 100)}%)` : "0/0");
+    const power = totals.map((stats) => ({ landed: stats.landed - stats.jabsLanded, thrown: stats.thrown - stats.jabsThrown }));
+    rows.push({ label: "TOTAL PUNCHES", values: [count(totals[0].landed, totals[0].thrown), count(totals[1].landed, totals[1].thrown)], lead: lead(totals[0].landed, totals[1].landed) });
+    rows.push({ label: "JABS", values: [count(totals[0].jabsLanded, totals[0].jabsThrown), count(totals[1].jabsLanded, totals[1].jabsThrown)], lead: lead(totals[0].jabsLanded, totals[1].jabsLanded) });
+    rows.push({ label: "POWER PUNCHES", values: [count(power[0]!.landed, power[0]!.thrown), count(power[1]!.landed, power[1]!.thrown)], lead: lead(power[0]!.landed, power[1]!.landed) });
+  }
+  const ratings = fighters.map((fighter) => final.ratings[fighter.player_id]);
+  const [first, second] = ratings;
+  if (fighters.some((fighter) => players[fighter.player_id]?.cpu === true)) {
+    rows.push({ label: "RATING", values: ["Unrated", "Unrated"], lead: null });
+  } else if (first !== undefined && second !== undefined) {
+    const change = (rating: RatingDelta): string => `${rating.after} (${rating.after >= rating.before ? "+" : "−"}${Math.abs(rating.after - rating.before)})`;
+    rows.push({ label: "RATING", values: [change(first), change(second)], lead: null, news: [first.after >= first.before, second.after >= second.before] });
+  }
+  return {
+    headline: METHOD_HEADLINES[final.method] ?? decisionLabel(final),
+    detail: `ROUND ${final.round}`,
+    verdict: winnerSeat === null ? (final.winner_id === null ? "DRAW" : `${(players[final.winner_id]?.name ?? "Winner").toUpperCase()} WINS`) : `${names[winnerSeat].toUpperCase()} WINS`,
+    winnerSeat,
+    names,
+    judges,
+    rows,
+  };
+}
+
+const CORNER_ACCENTS = ["#4f86d9", "#d9483c"] as const;
+/** Room at the foot of the card for the rematch button, which the page draws over the canvas. */
+export const RESULT_CARD_FOOTER = 62;
+const CARD_PADDING = 14;
+
+export interface ResultCardLayout {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+  /** The verdict beside the table rather than above it. */
+  readonly wide: boolean;
+  /** A short screen: everything is set smaller. */
+  readonly dense: boolean;
+  readonly rowHeight: number;
+  readonly verdictHeight: number;
+  readonly judgesHeight: number;
+}
+
+/** The card's place on the screen: along the bottom, so the winner and the crowd stay in view above it. */
+/** The result card's place on the screen, in screen pixels: the HUD draws it scaled up on big screens. */
+export function resultCardLayout(width: number, height: number, card: ResultCard, fighter: boolean): ResultCardLayout {
+  const scale = hudScale(width, height);
+  const layout = logicalResultCardLayout(width / scale, height / scale, card, fighter);
+  if (scale === 1) return layout;
+  return { ...layout, x: layout.x * scale, y: layout.y * scale, width: layout.width * scale, height: layout.height * scale, rowHeight: layout.rowHeight * scale, verdictHeight: layout.verdictHeight * scale, judgesHeight: layout.judgesHeight * scale };
+}
+
+/** On a short screen (a phone on its side) the card keeps the rows that matter most, so it leaves the ring in view. */
+const DENSE_ROWS: ReadonlySet<string> = new Set(["KNOCKDOWNS", "TOTAL PUNCHES", "RATING"]);
+export const cardRows = (card: ResultCard, dense: boolean): readonly ResultRow[] => (dense ? card.rows.filter((row) => DENSE_ROWS.has(row.label)) : card.rows);
+
+function logicalResultCardLayout(width: number, height: number, card: ResultCard, fighter: boolean): ResultCardLayout {
+  const dense = height < 480;
+  // Side by side where there is the width for it, or no height to stack.
+  const wide = width >= 900 || (width >= 640 && dense);
+  const cardWidth = Math.min(width - 24, wide ? 980 : 720);
+  const footer = fighter ? RESULT_CARD_FOOTER : CARD_PADDING;
+  const verdictHeight = dense ? 72 : 112;
+  const judgesHeight = card.judges.length === 0 ? 0 : dense ? 36 : 52;
+  const verdict = verdictHeight + judgesHeight;
+  const rows = cardRows(card, dense).length + 1;
+  const room = height - (width < 640 ? 118 : 70) - 14 - CARD_PADDING - footer - (wide ? 0 : verdict);
+  const rowHeight = Math.max(16, Math.min(dense ? 20 : 28, room / rows));
+  const body = wide ? Math.max(verdict, rows * rowHeight) : verdict + rows * rowHeight;
+  const cardHeight = CARD_PADDING + body + footer;
+  return { x: (width - cardWidth) / 2, y: height - 14 - cardHeight, width: cardWidth, height: cardHeight, wide, dense, rowHeight, verdictHeight, judgesHeight };
+}
+
+function drawResultCard(ctx: CanvasRenderingContext2D, width: number, height: number, card: ResultCard, fighter: boolean, pictures: readonly [CanvasImageSource | null, CanvasImageSource | null]): void {
+  const layout = logicalResultCardLayout(width, height, card, fighter);
+  const { x, y } = layout;
+  ctx.fillStyle = "rgba(3,6,12,0.9)";
+  ctx.fillRect(x, y, layout.width, layout.height);
+  ctx.strokeStyle = "rgba(246,213,122,0.55)";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x + 1, y + 1, layout.width - 2, layout.height - 2);
+  ctx.textAlign = "center";
+
+  const verdictWidth = (layout.wide ? layout.width * 0.42 : layout.width) - 32;
+  const verdictCentre = layout.wide ? x + layout.width * 0.21 + 4 : width / 2;
+  const top = y + CARD_PADDING;
+  const scale = layout.verdictHeight / 112;
+  ctx.fillStyle = "#f6d57a";
+  fitted(ctx, card.headline, verdictCentre, top + 34 * scale, verdictWidth, 800, (layout.wide || width >= 640 ? 32 : 28) * scale, 14);
+  ctx.fillStyle = "#aebbd0";
+  fitted(ctx, card.detail, verdictCentre, top + 56 * scale, verdictWidth, 700, 13 * scale, 9);
+  ctx.fillStyle = card.winnerSeat === null ? "#f6f7fb" : CORNER_ACCENTS[card.winnerSeat];
+  fitted(ctx, card.verdict, verdictCentre, top + 92 * scale, verdictWidth, 800, 25 * scale, 12);
+  const cell = verdictWidth / Math.max(1, card.judges.length);
+  const judgesTop = top + layout.verdictHeight;
+  card.judges.forEach((judge, index) => {
+    const centre = verdictCentre - verdictWidth / 2 + cell * (index + 0.5);
+    ctx.fillStyle = "rgba(255,255,255,0.06)";
+    ctx.fillRect(centre - cell / 2 + 3, judgesTop, cell - 6, layout.judgesHeight - 8);
+    ctx.fillStyle = "#8fa3c8";
+    fitted(ctx, judge.label, centre, judgesTop + layout.judgesHeight * 0.3, cell - 14, 700, 10, 7);
+    ctx.fillStyle = "#f6f7fb";
+    fitted(ctx, `${judge.values[0]} – ${judge.values[1]}`, centre, judgesTop + layout.judgesHeight * 0.7, cell - 14, 800, layout.dense ? 14 : 17, 10);
   });
-  const ratings = Object.entries(final.ratings);
-  ratings.forEach(([id, rating], index) => {
-    ctx.fillStyle = rating.after >= rating.before ? "#55df9b" : "#ff7b74";
-    const change = `${rating.before} → ${rating.after} (${rating.after - rating.before >= 0 ? "+" : ""}${rating.after - rating.before})`;
-    fitted(ctx, `${players[id]?.name ?? "Fighter"}  ${change}`, width / 2, height * 0.61 + index * 27, inner, 600, 13, 9);
-  });
+
+  const tableLeft = layout.wide ? x + layout.width * 0.42 : x + 12;
+  const tableWidth = x + layout.width - 12 - tableLeft;
+  const tableTop = layout.wide ? top : judgesTop + layout.judgesHeight;
+  const label = tableWidth * 0.36;
+  const side = (tableWidth - label) / 2;
+  const columns = [tableLeft + side / 2, tableLeft + tableWidth - side / 2] as const;
+  const rowHeight = layout.rowHeight;
+  const text = Math.min(16, rowHeight * 0.6);
+  let baseline = tableTop + rowHeight * 0.7;
+  ctx.fillStyle = "rgba(255,255,255,0.06)";
+  ctx.fillRect(tableLeft, tableTop, tableWidth, rowHeight);
+  const face = Math.max(6, rowHeight / 2 - 2);
+  for (const seat of [0, 1] as const) {
+    const outward = seat === 0 ? -1 : 1;
+    ctx.fillStyle = CORNER_ACCENTS[seat];
+    ctx.fillRect(seat === 0 ? tableLeft : tableLeft + tableWidth - 4, tableTop, 4, rowHeight);
+    portrait(ctx, columns[seat] + outward * (side / 2 - 10 - face), tableTop + rowHeight / 2, face, pictures[seat], card.names[seat], CORNER_ACCENTS[seat]);
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#f6f7fb";
+    // The names have the header row to themselves, so they may reach into the label column.
+    fitted(ctx, card.names[seat], columns[seat] - outward * (face + 3 + label / 4), baseline, side + label / 2 - 22 - face * 2, 800, text, 9);
+  }
+  for (const row of cardRows(card, layout.dense)) {
+    baseline += rowHeight;
+    ctx.fillStyle = "#8fa3c8";
+    fitted(ctx, row.label, tableLeft + tableWidth / 2, baseline, label, 700, Math.min(12, text), 8);
+    for (const seat of [0, 1] as const) {
+      ctx.fillStyle = row.news !== undefined ? (row.news[seat] ? "#55df9b" : "#ff7b74") : row.lead === seat ? "#f6f7fb" : "#aebbd0";
+      fitted(ctx, row.values[seat], columns[seat], baseline, side - 16, row.lead === seat ? 800 : 600, text, 9);
+    }
+  }
 }

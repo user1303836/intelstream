@@ -6,19 +6,23 @@ import json
 import secrets
 import time
 from collections import deque
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from typing import TYPE_CHECKING, Literal, Never, Protocol
 from uuid import uuid4
 
 import structlog
 
+from intelstream.hands.cpu import PROFILES, CpuBrain, CpuLevel, cpu_player_id, cpu_style
 from intelstream.hands.engine import BoxingEngine, EngineConfig
 from intelstream.hands.protocol import (
     PROTOCOL_VERSION,
+    ClientEnvelope,
     ProtocolError,
+    StyleChoice,
     encode_snapshot,
     parse_client_input,
 )
+from intelstream.hands.types import FighterStyle
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine
@@ -91,6 +95,16 @@ class RoomConfig:
     # this many snapshots in a row were replaced before it could be sent one.
     outbound_queue_size: int = 16
     max_spectators: int = 20
+    # Every bout in progress steps a 30 Hz engine and encodes a snapshot per viewer on the bot's one
+    # event loop (about 1 ms a tick for a computer bout measured on a dev machine, so ~30 ms of
+    # every second), and one person alone can start a computer bout. Past these, a new room or a
+    # computer is refused as service_busy rather than slowing every bout down.
+    max_rooms: int = 64
+    max_cpu_rooms: int = 16
+    style_select_seconds: float = 10.0
+    """How long the fighters have to pick a style once both corners are filled; 0 starts at once."""
+    rematch_seat_seconds: float = 60.0
+    """How long an instance's next room holds the seats of the people who fought its last bout."""
     engine_config: EngineConfig = field(default_factory=EngineConfig)
 
     def __post_init__(self) -> None:
@@ -115,6 +129,10 @@ class RoomConfig:
             raise ValueError("room durations are invalid")
         if self.max_spectators < 0:
             raise ValueError("spectator bound must not be negative")
+        if self.max_rooms < 1 or self.max_cpu_rooms < 0:
+            raise ValueError("room bounds are invalid")
+        if self.style_select_seconds < 0 or self.rematch_seat_seconds < 0:
+            raise ValueError("style select and rematch seat times must not be negative")
         if self.max_input_frames_per_second < self.max_inputs_per_second:
             raise ValueError("input frame bound must not be below the accepted input bound")
 
@@ -157,10 +175,13 @@ class PlayerSlot:
     rating: int
     connection: PlayerConnection | None
     grace_remaining: float
+    record: FighterRecord | None = None
+    style: FighterStyle = FighterStyle.BALANCED
+    """The style this fighter has picked, or would like: it is fixed when the bout starts."""
     last_sequence: int = -1
     input_budget: float | None = None
     input_budget_at: float = 0.0
-    deferred_frame: str | bytes | None = None
+    deferred_frame: str | bytes | ClientEnvelope | None = None
     frame_times: deque[float] = field(default_factory=deque)
     flood_started: float | None = None
     reconnect_deadline: float | None = None
@@ -168,10 +189,79 @@ class PlayerSlot:
     pre_match_grace_task: asyncio.Task[None] | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class FighterRecord:
+    """A fighter's professional record in this server, as the ring announcer reads it."""
+
+    wins: int
+    losses: int
+    draws: int
+    knockouts: int
+
+    def payload(self) -> dict[str, int]:
+        return {
+            "wins": self.wins,
+            "losses": self.losses,
+            "draws": self.draws,
+            "knockouts": self.knockouts,
+        }
+
+
+# The computer's boxers come with a record of their own.
+CPU_RECORDS: dict[CpuLevel, FighterRecord] = {
+    CpuLevel.ROOKIE: FighterRecord(wins=3, losses=4, draws=1, knockouts=1),
+    CpuLevel.CONTENDER: FighterRecord(wins=19, losses=5, draws=1, knockouts=12),
+    CpuLevel.CHAMPION: FighterRecord(wins=36, losses=1, draws=0, knockouts=29),
+}
+
+
+@dataclass(slots=True)
+class CpuOpponent:
+    """The computer in the second seat. It is not a PlayerSlot: it never disconnects or forfeits."""
+
+    level: CpuLevel
+    brain: CpuBrain | None = None
+    style: FighterStyle = FighterStyle.BALANCED
+
+    @property
+    def player_id(self) -> str:
+        return cpu_player_id(self.level)
+
+    @property
+    def name(self) -> str:
+        return PROFILES[self.level].name
+
+    @property
+    def rating(self) -> int:
+        return PROFILES[self.level].rating
+
+    @property
+    def record(self) -> FighterRecord:
+        return CPU_RECORDS[self.level]
+
+
+# Seeds the computer's own dice from the match seed, so a bout replays from its inputs.
+CPU_SEED_SALT = 0x5DEECE66D
+
+
+@dataclass(slots=True)
+class StyleSelect:
+    """The fighters picking their styles: the bout starts when both are ready or at the deadline."""
+
+    deadline: float
+    seed: int
+    ready: set[str] = field(default_factory=set)
+    task: asyncio.Task[None] | None = None
+
+
 @dataclass(slots=True)
 class SpectatorSlot:
     identity: AuthenticatedPlayer
     connection: PlayerConnection
+    # What seating him needs, if a fighter's seat opens before the bell.
+    rating: int = 0
+    record: FighterRecord | None = None
+    reconnect_ticket_factory: Callable[[], str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,8 +269,18 @@ class RoomMembership:
     room: HandsRoom
     player_id: str
     role: ConnectionRole
+    """The role the connection joined in. A spectator can be seated before the bell, so the room
+    itself decides what each frame may do."""
     connection: PlayerConnection
     reconnect_ticket: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _HeldSeats:
+    """The people who fought an instance's last bout, whose seats its next room holds."""
+
+    fighters: frozenset[str]
+    until: float
 
 
 @dataclass(slots=True)
@@ -204,6 +304,9 @@ class HandsRoom:
         on_finished: Callable[[HandsRoom], Awaitable[None]],
         match_id_factory: Callable[[], str],
         seed_factory: Callable[[], int],
+        held_seats: frozenset[str] = frozenset(),
+        held_until: float = 0.0,
+        cpu_allowed: Callable[[], bool] = lambda: True,
     ) -> None:
         self.instance_id = instance_id
         self.guild_id = guild_id
@@ -214,11 +317,14 @@ class HandsRoom:
         self._on_finished = on_finished
         self._match_id_factory = match_id_factory
         self._seed_factory = seed_factory
+        self._cpu_allowed = cpu_allowed
         self._slots: dict[str, PlayerSlot] = {}
         self._spectators: dict[str, SpectatorSlot] = {}
+        self._cpu: CpuOpponent | None = None
+        self._select: StyleSelect | None = None
         self._engine: BoxingEngine | None = None
         self._tick_task: asyncio.Task[None] | None = None
-        self._persistence_task: asyncio.Task[HandsMatch] | None = None
+        self._persistence_task: asyncio.Task[HandsMatch | None] | None = None
         self._finish_task: asyncio.Task[None] | None = None
         self._cleanup_task: asyncio.Task[None] | None = None
         self._closed = False
@@ -229,6 +335,16 @@ class HandsRoom:
         self._lock = asyncio.Lock()
         self._admission_lock = asyncio.Lock()
         self._background_tasks: set[asyncio.Task[None]] = set()
+        # The last bout's fighters, whose seats this room holds for a rematch until held_until.
+        self._held_seats = held_seats
+        self._held_until = held_until
+        self._seated_ids: set[str] = set()
+        self._rematch_ids: tuple[str, ...] = ()
+        self._held_seats_task: asyncio.Task[None] | None = None
+        if held_seats and held_until > monotonic_clock():
+            self._held_seats_task = self._spawn(
+                self._release_held_seats(), name=f"hands-held-seats-{instance_id}"
+            )
 
     @property
     def engine(self) -> BoxingEngine | None:
@@ -254,9 +370,15 @@ class HandsRoom:
     def finished(self) -> bool:
         return self._finished
 
+    @property
+    def cpu(self) -> CpuOpponent | None:
+        return self._cpu
+
     def retire(self) -> None:
         """The manager no longer routes joins here; a join already on its way must not land."""
         self._retired = True
+        if self._held_seats_task is not None:
+            self._held_seats_task.cancel()
 
     async def add(
         self,
@@ -264,6 +386,7 @@ class HandsRoom:
         socket: SocketLike,
         rating: int,
         *,
+        record: FighterRecord | None = None,
         reconnect_ticket: str | None = None,
         reconnect_ticket_factory: Callable[[], str] | None = None,
     ) -> RoomMembership:
@@ -303,7 +426,7 @@ class HandsRoom:
                 role = "fighter"
             elif existing_spectator is not None:
                 role = "spectator"
-            elif self._engine is None and len(self._slots) < 2:
+            elif self._seat_open_for(identity.user_id):
                 role = "fighter"
             else:
                 role = "spectator"
@@ -331,20 +454,27 @@ class HandsRoom:
                     existing_fighter.pre_match_grace_event.set()
                     fighter = existing_fighter
                 else:
+                    if self._cpu is not None:
+                        # A person takes the computer's seat before the bell: the computer's pick
+                        # is dropped and the two of them pick afresh below.
+                        self._cancel_select()
+                        self._cpu = None
                     fighter = PlayerSlot(
                         identity=identity,
                         rating=rating,
                         connection=connection,
                         grace_remaining=self.config.reconnect_grace_seconds,
+                        record=record,
                     )
                     self._slots[identity.user_id] = fighter
+                    self._seated_ids.add(identity.user_id)
                 seat = tuple(self._slots).index(identity.user_id) + 1
                 welcome: dict[str, object] = {
                     "role": role,
                     "player_id": identity.user_id,
                     "seat": seat,
                     "rating": fighter.rating,
-                    "players": self._public_players(),
+                    "players": self._public_players(identity.user_id),
                     "server_tick": self._engine.tick if self._engine is not None else 0,
                     "next_sequence": fighter.last_sequence + 1,
                 }
@@ -352,8 +482,13 @@ class HandsRoom:
                 if existing_spectator is not None:
                     existing_spectator.connection = connection
                     existing_spectator.identity = identity
+                    existing_spectator.rating = rating
+                    existing_spectator.record = record
+                    existing_spectator.reconnect_ticket_factory = reconnect_ticket_factory
                 else:
-                    self._spectators[identity.user_id] = SpectatorSlot(identity, connection)
+                    self._spectators[identity.user_id] = SpectatorSlot(
+                        identity, connection, rating, record, reconnect_ticket_factory
+                    )
                 welcome = {
                     "role": role,
                     "player_id": identity.user_id,
@@ -364,8 +499,7 @@ class HandsRoom:
             if reconnect_ticket is not None:
                 welcome["reconnect_ticket"] = reconnect_ticket
             self._enqueue(connection, self._message("welcome", **welcome), uncompressed=True)
-            if (existing is not None and self._engine is not None) or role == "spectator":
-                assert self._engine is not None
+            if self._engine is not None and (existing is not None or role == "spectator"):
                 self._enqueue(
                     connection,
                     encode_snapshot(
@@ -375,6 +509,12 @@ class HandsRoom:
                 )
             if self._final_payload is not None:
                 self._enqueue(connection, self._final_payload)
+            elif not final_recovery and self._select is not None:
+                if existing_fighter is not None:
+                    # Back during the pick: the other corner sees him connected again.
+                    self._broadcast_select(bounded_update=True)
+                else:
+                    self._enqueue(connection, self._select_message(None))
             elif (
                 not final_recovery
                 and role == "fighter"
@@ -413,22 +553,14 @@ class HandsRoom:
                             grace_ms=max(0, int(opponent.grace_remaining * 1000)),
                         ),
                     )
-            elif not final_recovery and len(self._slots) == 1:
-                self._enqueue(connection, self._message("waiting", open_seats=1))
             elif not final_recovery and self._engine is None:
-                self._start_match()
-                disconnected = [
-                    current for current in self._slots.values() if current.connection is None
-                ]
-                if disconnected:
-                    opponent = disconnected[0]
+                if len(self._slots) == 2:
+                    # An opponent still away shows as disconnected in the pick itself.
+                    self._begin_select()
+                else:
+                    # A fighter waiting for an opponent, or someone watching an empty corner.
                     self._enqueue(
-                        connection,
-                        self._message(
-                            "paused",
-                            player_id=opponent.identity.user_id,
-                            grace_ms=max(0, int(opponent.grace_remaining * 1000)),
-                        ),
+                        connection, self._message("waiting", open_seats=2 - len(self._slots))
                     )
             return RoomMembership(
                 self,
@@ -461,6 +593,86 @@ class HandsRoom:
             if not connection.ticket_refresh_queued:
                 connection.ticket_refresh_queued = True
                 connection.outbox.put_nowait(_OutboundMessage(ticket_refresh=True))
+
+    def _seat_open_for(self, player_id: str) -> bool:
+        """Whether this person can take a fighter's seat.
+
+        Seats are taken before the bell. The computer holds its seat only once the bout is on:
+        until then a person who arrives takes it, since bouts against the computer are unrated.
+        A seat held for one of the last bout's fighters is his alone until the rematch window ends.
+        """
+        if self._engine is not None:
+            return False
+        held = 0
+        if self._clock() < self._held_until:
+            held = len(self._held_seats - self._seated_ids - {player_id})
+        return len(self._slots) + held < 2
+
+    @property
+    def rematch_fighters(self) -> tuple[str, ...]:
+        """The people still in the ring when the bout reached its result."""
+        return self._rematch_ids
+
+    async def _release_held_seats(self) -> None:
+        """The rematch window is over: a held seat nobody came back for goes to whoever waits."""
+        await self._sleep(max(0.0, self._held_until - self._clock()))
+        async with self._lock:
+            self._held_seats = frozenset()
+            if not self._closed and self._engine is None:
+                self._fill_open_seats()
+
+    def _fill_open_seats(self, *, collapsed: bool = False) -> None:
+        """Seats whoever waits for an open seat, then tells the room where the pick stands."""
+        seated = self._seat_waiting_spectators()
+        if self._engine is None and self._select is None and len(self._slots) == 2:
+            self._begin_select()
+        elif collapsed or seated:
+            self._enqueue_all(self._message("waiting", open_seats=2 - len(self._slots)))
+
+    def _seat_waiting_spectators(self) -> bool:
+        """A fighter's seat that opens before the bell goes to whoever has watched longest.
+
+        The spectator keeps his connection and is welcomed again as a fighter; whoever else is in
+        the room hears of it from the waiting or select that follows. Returns whether anyone was
+        seated.
+        """
+        seated = False
+        while not self._closed:
+            player_id = next(
+                (waiting for waiting in self._spectators if self._seat_open_for(waiting)), None
+            )
+            if player_id is None:
+                break
+            spectator = self._spectators.pop(player_id)
+            if self._cpu is not None:
+                self._cancel_select()
+                self._cpu = None
+            slot = PlayerSlot(
+                identity=spectator.identity,
+                rating=spectator.rating,
+                connection=spectator.connection,
+                grace_remaining=self.config.reconnect_grace_seconds,
+                record=spectator.record,
+            )
+            self._slots[player_id] = slot
+            self._seated_ids.add(player_id)
+            welcome: dict[str, object] = {
+                "role": "fighter",
+                "player_id": player_id,
+                "seat": tuple(self._slots).index(player_id) + 1,
+                "rating": slot.rating,
+                "players": self._public_players(player_id),
+                "server_tick": 0,
+                "next_sequence": 0,
+            }
+            if spectator.reconnect_ticket_factory is not None:
+                welcome["reconnect_ticket"] = spectator.reconnect_ticket_factory()
+            self._enqueue(
+                spectator.connection, self._message("welcome", **welcome), uncompressed=True
+            )
+            logger.info("Hands spectator seated", instance_id=self.instance_id)
+            seated = True
+        return seated
 
     def _new_connection(
         self, player_id: str, role: ConnectionRole, socket: SocketLike
@@ -507,7 +719,7 @@ class HandsRoom:
         except (ConnectionError, RuntimeError, asyncio.CancelledError):
             if not self._closed:
                 self._spawn(
-                    self.disconnect(player_id, role, connection),
+                    self.disconnect(player_id, connection),
                     name=f"hands-disconnect-{role}-{player_id}",
                 )
 
@@ -525,17 +737,46 @@ class HandsRoom:
             sort_keys=True,
         )
 
-    def _public_players(self) -> list[dict[str, object]]:
-        return [
+    def _public_players(self, viewer_id: str | None = None) -> list[dict[str, object]]:
+        players: list[dict[str, object]] = [
             {
                 "id": slot.identity.user_id,
                 "name": slot.identity.display_name,
                 "avatar": slot.identity.avatar_hash,
                 "rating": slot.rating,
                 "connected": slot.connection is not None,
+                **self._public_style(slot.identity.user_id, slot.style, viewer_id),
+                **({} if slot.record is None else {"record": slot.record.payload()}),
             }
             for slot in self._slots.values()
         ]
+        if self._cpu is not None:
+            players.append(
+                {
+                    "id": self._cpu.player_id,
+                    "name": self._cpu.name,
+                    "avatar": None,
+                    "rating": self._cpu.rating,
+                    "connected": True,
+                    "cpu": True,
+                    **self._public_style(self._cpu.player_id, self._cpu.style, viewer_id),
+                    "record": self._cpu.record.payload(),
+                }
+            )
+        return players
+
+    def _public_style(
+        self, player_id: str, style: FighterStyle, viewer_id: str | None
+    ) -> dict[str, object]:
+        """Both styles are revealed together at the bell.
+
+        During the pick a settled style is shown only to its own fighter: showing it to the other
+        corner would reward waiting to pick its counter.
+        """
+        if self._engine is not None:
+            return {"style": style.value}
+        settled = self._select is not None and player_id in self._select.ready
+        return {"style": style.value} if settled and player_id == viewer_id else {}
 
     def _enqueue(
         self,
@@ -626,9 +867,9 @@ class HandsRoom:
             ):
                 connection.slow_drop_started = False
                 return
-            for player_id, role, current in self._connected_members():
+            for player_id, _role, current in self._connected_members():
                 if current is connection:
-                    await self.disconnect(player_id, role, connection)
+                    await self.disconnect(player_id, connection)
                     return
         finally:
             if connection.slow_drop_task is asyncio.current_task():
@@ -643,55 +884,81 @@ class HandsRoom:
         if slot.reconnect_deadline is not None:
             slot.grace_remaining = max(0.0, slot.reconnect_deadline - now)
 
-    def _start_match(self) -> None:
-        players = tuple(self._slots)
-        assert len(players) == 2
-        now = self._clock()
-        for slot in self._slots.values():
-            if slot.connection is None:
-                self._refresh_grace(slot, now)
-            slot.pre_match_grace_event.set()
-        self._engine = BoxingEngine(
-            match_id=self._match_id_factory(),
-            activity_instance_id=self.instance_id,
-            guild_id=self.guild_id,
-            player_one_id=players[0],
-            player_two_id=players[1],
-            seed=self._seed_factory(),
-            config=self.config.engine_config,
+    def _begin_select(self) -> None:
+        """Both corners are filled: the fighters pick their styles, then the bout starts."""
+        seed = self._seed_factory()
+        ready: set[str] = set()
+        if self._cpu is not None:
+            self._cpu.style = cpu_style(self._cpu.level, seed)
+            ready.add(self._cpu.player_id)
+        if self.config.style_select_seconds <= 0:
+            self._start_match(seed)
+            return
+        select = StyleSelect(
+            deadline=self._clock() + self.config.style_select_seconds, seed=seed, ready=ready
         )
-        self._enqueue_all(self._message("ready", players=self._public_players()))
-        self._tick_task = asyncio.create_task(
-            self._run_match(), name=f"hands-match-{self._engine.match_id}"
+        self._select = select
+        select.task = self._spawn(
+            self._close_select_at_deadline(select), name=f"hands-style-select-{self.instance_id}"
+        )
+        self._broadcast_select()
+
+    def _select_message(self, viewer_id: str | None) -> str:
+        select = self._select
+        assert select is not None
+        return self._message(
+            "select",
+            deadline_ms=max(0, int((select.deadline - self._clock()) * 1000)),
+            players=self._public_players(viewer_id),
+            ready=sorted(select.ready),
         )
 
-    async def submit_frame(
-        self, player_id: str, connection: PlayerConnection, frame: str | bytes
+    def _broadcast_select(self, *, bounded_update: bool = False) -> None:
+        """The pick as it stands, to everyone: each fighter's own settled style is his alone."""
+        for player_id, role, connection in self._connected_members():
+            self._enqueue(
+                connection,
+                self._select_message(player_id if role == "fighter" else None),
+                bounded_update=bounded_update,
+            )
+
+    def _seated_styles(self) -> dict[str, FighterStyle]:
+        styles = {player_id: slot.style for player_id, slot in self._slots.items()}
+        if self._cpu is not None:
+            styles[self._cpu.player_id] = self._cpu.style
+        return styles
+
+    async def _close_select_at_deadline(self, select: StyleSelect) -> None:
+        await self._sleep(max(0.0, select.deadline - self._clock()))
+        async with self._lock:
+            if self._select is select and self._engine is None and not self._closed:
+                self._start_match(select.seed)
+
+    def _cancel_select(self) -> None:
+        select = self._select
+        self._select = None
+        if (
+            select is not None
+            and select.task is not None
+            and select.task is not asyncio.current_task()
+        ):
+            select.task.cancel()
+
+    async def choose_style(
+        self, player_id: str, connection: PlayerConnection, choice: StyleChoice
     ) -> None:
+        """A fighter's style during the pick; outside it, or once settled, it changes nothing."""
         async with self._lock:
             spectator = self._spectators.get(player_id)
             if spectator is not None:
                 if spectator.connection is not connection:
                     raise RoomError("connection_replaced")
                 raise RoomError("spectator_read_only")
-            if (
-                self._closed
-                or self._finished
-                or self._persistence_task is not None
-                or (self._engine is not None and self._engine.result is not None)
-            ):
-                # Inputs already in flight when the bout ends arrive after the result on any
-                # real connection; dropping them keeps the final on the player's screen.
-                return
             slot = self._slots.get(player_id)
             if slot is None or slot.connection is not connection:
                 raise RoomError("connection_replaced")
-            engine = self._engine
-            if engine is None:
-                raise RoomError("match_not_started")
-            paused = any(current.connection is None for current in self._slots.values())
-            # A paused bout drops inputs; none is held back to fire once it resumes.
-            held = None if paused else frame
+            # Counted with the fighter's input frames, so a flood of picks is throttled and then
+            # refused like a flood of inputs.
             now = self._clock()
             while slot.frame_times and slot.frame_times[0] <= now - 1.0:
                 slot.frame_times.popleft()
@@ -705,9 +972,145 @@ class HandsRoom:
                     or now - slot.flood_started >= FLOOD_GRACE_SECONDS
                 ):
                     raise RoomError("rate_limited")
-                slot.deferred_frame = held
                 return
             slot.flood_started = None
+            select = self._select
+            if select is None or self._closed or player_id in select.ready:
+                return
+            slot.style = choice.style
+            if not choice.ready:
+                # Still choosing: the other corner learns nothing until this fighter settles.
+                return
+            select.ready.add(player_id)
+            if set(self._seated_styles()) <= select.ready:
+                self._start_match(select.seed)
+            else:
+                self._broadcast_select(bounded_update=True)
+
+    def _start_match(self, seed: int) -> None:
+        self._cancel_select()
+        players = tuple(self._slots)
+        if self._cpu is not None:
+            players = (*players, self._cpu.player_id)
+        assert len(players) == 2
+        now = self._clock()
+        for slot in self._slots.values():
+            if slot.connection is None:
+                self._refresh_grace(slot, now)
+            slot.pre_match_grace_event.set()
+        styles = self._seated_styles()
+        self._engine = BoxingEngine(
+            match_id=self._match_id_factory(),
+            activity_instance_id=self.instance_id,
+            guild_id=self.guild_id,
+            player_one_id=players[0],
+            player_two_id=players[1],
+            seed=seed,
+            config=self.config.engine_config,
+            styles=(styles[players[0]], styles[players[1]]),
+        )
+        if self._cpu is not None:
+            self._cpu.brain = CpuBrain(
+                self._cpu.player_id,
+                players[0],
+                self._cpu.level,
+                seed ^ CPU_SEED_SALT,
+                self._cpu.style,
+            )
+        logger.info(
+            "Hands bout started",
+            instance_id=self.instance_id,
+            match_id=self._engine.match_id,
+            cpu_level=None if self._cpu is None else self._cpu.level.value,
+            player_one_style=styles[players[0]].value,
+            player_two_style=styles[players[1]].value,
+        )
+        self._enqueue_all(self._message("ready", players=self._public_players()))
+        absent = [slot for slot in self._slots.values() if slot.connection is None]
+        if absent:
+            # A seat still empty at the bell: the bout opens paused until he is back or forfeits.
+            self._enqueue_all(
+                self._message(
+                    "paused",
+                    player_id=absent[0].identity.user_id,
+                    grace_ms=max(0, int(absent[0].grace_remaining * 1000)),
+                ),
+                bounded_update=True,
+            )
+        self._tick_task = asyncio.create_task(
+            self._run_match(), name=f"hands-match-{self._engine.match_id}"
+        )
+
+    async def request_cpu(
+        self, player_id: str, connection: PlayerConnection, level: CpuLevel
+    ) -> bool:
+        """Puts the computer in the empty seat and starts the bout.
+
+        Only the one fighter waiting alone can ask. If a second fighter got there first the bout
+        is already starting, so the request is dropped rather than treated as a protocol error.
+        """
+        async with self._lock:
+            spectator = self._spectators.get(player_id)
+            if spectator is not None:
+                if spectator.connection is not connection:
+                    raise RoomError("connection_replaced")
+                raise RoomError("spectator_read_only")
+            slot = self._slots.get(player_id)
+            if slot is None or slot.connection is not connection:
+                raise RoomError("connection_replaced")
+            # A request is a frame like any other, so a stream of them is a flood like any other.
+            if not self._account_frame(slot, self._clock()):
+                return False
+            if (
+                self._closed
+                or self._finished
+                or self._engine is not None
+                or self._select is not None
+            ):
+                return False
+            if not self._cpu_allowed():
+                raise RoomError("service_busy")
+            self._cpu = CpuOpponent(level)
+            self._begin_select()
+            return True
+
+    async def submit_frame(
+        self, player_id: str, connection: PlayerConnection, frame: str | bytes | ClientEnvelope
+    ) -> None:
+        async with self._lock:
+            spectator = self._spectators.get(player_id)
+            if spectator is not None:
+                if spectator.connection is not connection:
+                    raise RoomError("connection_replaced")
+                raise RoomError("spectator_read_only")
+            ended = (
+                self._closed
+                or self._finished
+                or self._persistence_task is not None
+                or (self._engine is not None and self._engine.result is not None)
+            )
+            slot = self._slots.get(player_id)
+            if slot is None or slot.connection is not connection:
+                if ended:
+                    return
+                raise RoomError("connection_replaced")
+            now = self._clock()
+            if ended:
+                # Inputs already in flight when the bout ends arrive after the result on any
+                # real connection; dropping them keeps the final on the player's screen. Each one
+                # still draws on the connection's allowance, so a flood through the result hold
+                # is cut off like any other.
+                self._account_frame(slot, now)
+                return
+            engine = self._engine
+            if engine is None:
+                raise RoomError("match_not_started")
+            paused = any(current.connection is None for current in self._slots.values())
+            # A paused bout drops inputs; none is held back to fire once it resumes.
+            held = None if paused else frame
+            if not self._account_frame(slot, now):
+                slot.deferred_frame = held
+                return
             if not self._spend_input_budget(slot, now):
                 # A stalled connection delivers its backlog in one burst. The frames past the
                 # budget are not applied, but the newest is kept and goes in as soon as there is
@@ -728,6 +1131,28 @@ class HandsRoom:
             slot.last_sequence = command.sequence
             if not engine.submit_input(player_id, command):
                 raise RoomError("input_queue_full")
+
+    def _account_frame(self, slot: PlayerSlot, now: float) -> bool:
+        """Counts one frame from a fighter's connection.
+
+        Past the per-second limit the frame is not acted on; a flood that lasts, or one far past
+        the limit, ends the connection.
+        """
+        while slot.frame_times and slot.frame_times[0] <= now - 1.0:
+            slot.frame_times.popleft()
+        slot.frame_times.append(now)
+        limit = self.config.max_input_frames_per_second
+        if len(slot.frame_times) > limit:
+            if slot.flood_started is None:
+                slot.flood_started = now
+            if (
+                len(slot.frame_times) > FLOOD_HARD_LIMIT_FACTOR * limit
+                or now - slot.flood_started >= FLOOD_GRACE_SECONDS
+            ):
+                raise RoomError("rate_limited")
+            return False
+        slot.flood_started = None
+        return True
 
     @staticmethod
     def _forget_connection_input(slot: PlayerSlot) -> None:
@@ -770,19 +1195,16 @@ class HandsRoom:
             slot.last_sequence = command.sequence
             engine.submit_input(player_id, command)
 
-    async def disconnect(
-        self, player_id: str, role: ConnectionRole, connection: PlayerConnection
-    ) -> None:
+    async def disconnect(self, player_id: str, connection: PlayerConnection) -> None:
         async with self._lock:
-            if role == "spectator":
+            slot = self._slots.get(player_id)
+            if slot is None or slot.connection is not connection:
+                # Not (or no longer) a fighter on this connection: a spectator leaving, if any.
                 spectator = self._spectators.get(player_id)
                 if spectator is None or spectator.connection is not connection:
                     return
                 self._spectators.pop(player_id, None)
             else:
-                slot = self._slots.get(player_id)
-                if slot is None or slot.connection is not connection:
-                    return
                 # The pause and its deadline are settled before the socket is touched: closing
                 # a stalled socket can wait or fail, and the bout must not depend on it.
                 slot.connection = None
@@ -803,6 +1225,9 @@ class HandsRoom:
                             name=f"hands-waiting-grace-{player_id}",
                         )
                     slot.pre_match_grace_event.set()
+                    if self._select is not None and not self._closed:
+                        # The pick goes on; the other corner sees him disconnected in it.
+                        self._broadcast_select(bounded_update=True)
                 elif not self._finished:
                     self._enqueue_all(
                         self._message(
@@ -856,6 +1281,12 @@ class HandsRoom:
                         if slot.grace_remaining <= 0:
                             self._slots.pop(player_id, None)
                             expired = True
+                            collapsed = self._select is not None
+                            if collapsed:
+                                # The corner is empty again: the pick is off.
+                                self._cancel_select()
+                                self._cpu = None
+                            self._fill_open_seats(collapsed=collapsed)
                         else:
                             delay = slot.grace_remaining
                 if expired:
@@ -905,7 +1336,12 @@ class HandsRoom:
                     ticks_due = self.config.max_catch_up_ticks
                     next_tick = now - (ticks_due - 1) * interval
                 self._apply_deferred_inputs(now)
+                brain = self._cpu.brain if self._cpu is not None else None
                 for _ in range(ticks_due):
+                    if brain is not None:
+                        command = brain.decide(engine)
+                        if command is not None:
+                            engine.submit_input(brain.player_id, command)
                     snapshot = engine.step()
                     next_tick += interval
                     if (
@@ -959,8 +1395,11 @@ class HandsRoom:
         if result is None:
             return None
         if self._persistence_task is None:
+            self._rematch_ids = tuple(
+                player_id for player_id, slot in self._slots.items() if slot.connection is not None
+            )
             self._persistence_task = asyncio.create_task(
-                self.repository.record_hands_match(result),
+                self._persist(result),
                 name=f"hands-persist-{result.match_id}",
             )
         if self._finish_task is None:
@@ -974,6 +1413,20 @@ class HandsRoom:
             self._finish_task = asyncio.create_task(
                 self._finish_abandoned(), name=f"hands-abandon-{self.instance_id}"
             )
+
+    async def _persist(self, result: MatchResult) -> HandsMatch | None:
+        # A bout against the computer is unrated and leaves no record.
+        if self._cpu is not None:
+            return None
+        engine = self._engine
+        assert engine is not None
+        return await self.repository.record_hands_match(
+            result,
+            styles=(
+                engine.fighter(result.player_one_id).style,
+                engine.fighter(result.player_two_id).style,
+            ),
+        )
 
     async def _finish_abandoned(self) -> None:
         self._finished = True
@@ -1036,7 +1489,25 @@ class HandsRoom:
         except TimeoutError:
             logger.warning("Hands final delivery timed out", instance_id=self.instance_id)
 
-    def _final_message(self, match: HandsMatch, result: MatchResult) -> str:
+    def _final_message(self, match: HandsMatch | None, result: MatchResult) -> str:
+        engine = self._engine
+        assert engine is not None
+        if match is None:
+            ratings = {
+                player_id: {"before": rating, "after": rating}
+                for player_id, rating in self._unrated_ratings().items()
+            }
+        else:
+            ratings = {
+                result.player_one_id: {
+                    "before": match.player_one_rating_before,
+                    "after": match.player_one_rating_after,
+                },
+                result.player_two_id: {
+                    "before": match.player_two_rating_before,
+                    "after": match.player_two_rating_after,
+                },
+            }
         return self._message(
             "final",
             match_id=result.match_id,
@@ -1051,17 +1522,19 @@ class HandsRoom:
                 }
                 for card in result.scorecards
             ],
-            ratings={
-                result.player_one_id: {
-                    "before": match.player_one_rating_before,
-                    "after": match.player_one_rating_after,
-                },
-                result.player_two_id: {
-                    "before": match.player_two_rating_before,
-                    "after": match.player_two_rating_after,
-                },
+            ratings=ratings,
+            # The engine's own count over the whole bout: what a client saw can miss a reconnect
+            # or a late arrival, so the result card shows these.
+            punches={
+                player_id: asdict(engine.fighter(player_id).punches) for player_id in engine.players
             },
         )
+
+    def _unrated_ratings(self) -> dict[str, int]:
+        ratings = {player_id: slot.rating for player_id, slot in self._slots.items()}
+        if self._cpu is not None:
+            ratings[self._cpu.player_id] = self._cpu.rating
+        return ratings
 
     async def _stop_connection(
         self, connection: PlayerConnection, *, code: int, reason: bytes
@@ -1175,6 +1648,7 @@ class HandsRoomManager:
         self._seed_factory = seed_factory
         self._rooms: dict[str, HandsRoom] = {}
         self._user_rooms: dict[str, UserRoomReservation] = {}
+        self._held_seats: dict[str, _HeldSeats] = {}
         self._lock = asyncio.Lock()
         self._closed = False
 
@@ -1218,7 +1692,19 @@ class HandsRoomManager:
             if reservation is not None and reservation.room.instance_id != player.instance_id:
                 raise RoomError("already_in_room")
             room = self._rooms.get(player.instance_id)
+            if room is None and len(self._rooms) >= self.config.max_rooms:
+                logger.warning(
+                    "Hands room refused at the cap",
+                    rooms=len(self._rooms),
+                    cpu_rooms=self._cpu_room_count(),
+                )
+                raise RoomError("service_busy")
             if room is None:
+                # A rematch: the last bout's fighters keep their seats for a while, so nobody who
+                # arrives first can take one; everyone else watches until then.
+                held = self._held_seats.pop(player.instance_id, None)
+                if held is not None and held.until <= self._clock():
+                    held = None
                 room = HandsRoom(
                     instance_id=player.instance_id,
                     guild_id=player.guild_id,
@@ -1229,6 +1715,9 @@ class HandsRoomManager:
                     on_finished=self._room_finished,
                     match_id_factory=self._match_id_factory,
                     seed_factory=self._seed_factory,
+                    held_seats=frozenset() if held is None else held.fighters,
+                    held_until=0.0 if held is None else held.until,
+                    cpu_allowed=self._cpu_allowed,
                 )
                 self._rooms[player.instance_id] = room
             if reservation is None:
@@ -1257,6 +1746,12 @@ class HandsRoomManager:
                         player,
                         socket,
                         rating.rating,
+                        record=FighterRecord(
+                            wins=rating.wins,
+                            losses=rating.losses,
+                            draws=rating.draws,
+                            knockouts=rating.knockouts,
+                        ),
                         reconnect_ticket=reconnect_ticket,
                         reconnect_ticket_factory=reconnect_ticket_factory,
                     )
@@ -1281,6 +1776,19 @@ class HandsRoomManager:
             raise
         return membership
 
+    def _cpu_room_count(self) -> int:
+        return sum(room.cpu is not None for room in self._rooms.values())
+
+    def _cpu_allowed(self) -> bool:
+        if self._cpu_room_count() < self.config.max_cpu_rooms:
+            return True
+        logger.warning(
+            "Hands computer refused at the cap",
+            rooms=len(self._rooms),
+            cpu_rooms=self._cpu_room_count(),
+        )
+        return False
+
     def _raise_unavailable(self, player: AuthenticatedPlayer, room: HandsRoom) -> Never:
         if self._closed:
             raise RoomError("server_shutting_down")
@@ -1296,7 +1804,7 @@ class HandsRoomManager:
     async def _room_finished(self, room: HandsRoom) -> None:
         async with self._lock:
             active_member_ids = set(room.member_ids)
-            if not room.finished and room.player_ids:
+            if not room.finished and active_member_ids:
                 for player_id, reservation in list(self._user_rooms.items()):
                     if reservation.room is room and player_id not in active_member_ids:
                         self._user_rooms.pop(player_id, None)
@@ -1304,17 +1812,26 @@ class HandsRoomManager:
             for player_id, reservation in list(self._user_rooms.items()):
                 if reservation.room is room:
                     self._user_rooms.pop(player_id, None)
+            if room.finished and self._rooms.get(room.instance_id) is room:
+                self._hold_rematch_seats(room)
             self._retire_room(room)
 
+    def _hold_rematch_seats(self, room: HandsRoom) -> None:
+        now = self._clock()
+        for instance_id, held in list(self._held_seats.items()):
+            if held.until <= now:
+                self._held_seats.pop(instance_id, None)
+        fighters = frozenset(room.rematch_fighters)
+        if fighters and self.config.rematch_seat_seconds > 0:
+            self._held_seats[room.instance_id] = _HeldSeats(
+                fighters, now + self.config.rematch_seat_seconds
+            )
+
     async def leave(self, membership: RoomMembership) -> None:
-        await membership.room.disconnect(
-            membership.player_id,
-            membership.role,
-            membership.connection,
-        )
-        if membership.role == "spectator" or (
-            not membership.room.started and membership.player_id not in membership.room.player_ids
-        ):
+        await membership.room.disconnect(membership.player_id, membership.connection)
+        # A fighter keeps his place through the grace; a spectator, or a fighter whose place is
+        # already gone, leaves the room.
+        if membership.player_id not in membership.room.member_ids:
             async with self._lock:
                 reservation = self._user_rooms.get(membership.player_id)
                 if (
@@ -1335,6 +1852,7 @@ class HandsRoomManager:
             rooms = list(self._rooms.values())
             self._rooms.clear()
             self._user_rooms.clear()
+            self._held_seats.clear()
         results = await asyncio.gather(*(room.close() for room in rooms), return_exceptions=True)
         first_error = next(
             (result for result in results if isinstance(result, BaseException)), None

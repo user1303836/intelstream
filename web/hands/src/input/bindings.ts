@@ -16,13 +16,35 @@ export const ACTIVE_CODES = new Set([...Object.keys(PUNCH_KEYS), ...Object.keys(
 export const CONTROL_HELP = [
   "Move: W up · S down · A left · D right", "High / low guard: Q / E", "Left/right jab: F / J", "Left/right straight: R / U",
   "Left/right hook: G / H", "Left/right uppercut: T / Y", "Body: Shift · Power: Alt",
-  "Slip: Z / X · Weave: C · Pull: V", "Clinch: B · Stance: N · Taunt: M · Fouls: 1 / 2", "Get-up rhythm: ← / →",
+  "Slip: Z / X · Weave: C · Pull: V", "Clinch: B · Stance: N · Taunt: M · Fouls (on purpose): Shift+1 low blow / Shift+2 headbutt", "Get-up rhythm: ← / →",
+  "Camera: K cycles broadcast, close and over the shoulder (behind your fighter, W walks at the opponent and A / D circle him).",
+  "Style pick before the bout: arrow keys choose · Enter settles · 1–5 settle on that card at once.",
   "Controller move: left stick. High / low guard: left / right shoulder (independent of punches).",
   "Controller face classes: bottom jab · right straight · left hook · top uppercut.",
   "Controller face hand: hold D-pad left for left hand or D-pad right for right hand, then press a face punch; otherwise punches use the right hand. A direction used for a punch is consumed and does not evade.",
   "Controller modifiers: left trigger body · right trigger power.",
   "Controller actions: left stick press clinch · right stick press switch stance · hold right trigger + right stick press to taunt · D-pad up weave · D-pad down pull · tap and release D-pad left/right to slip; while down, D-pad left/right performs the private get-up rhythm immediately.",
   "Controller fouls: View/Back low blow · Menu/Start headbutt.",
+  "Controller style pick: D-pad or left stick to choose · bottom face button settles.",
   "Right-stick gesture: horizontal 0–22.5° hook · 22.5–45° jab · 45–70° straight · 70–90° uppercut; left/right direction selects hand.",
+  "Between rounds, tell your corner what to work on: 1 close the cut · 2 bring down the swelling · 3 catch your breath (controller: left, top or right face button; or tap).",
   "Touch: drag the left side to move · tap a punch pad's left or right half for that hand · hold BODY, POWER, GUARD or LOW · tap ◀ SLIP, SLIP ▶, WEAVE, PULL or CLINCH.",
 ] as const;
+
+const CONTROL_HINT_KEYBOARD = "Move WASD · Jab F/J · Straight R/U · Hook G/H · Uppercut T/Y · Guard Q/E · Body Shift · Power Alt";
+const CONTROL_HINT_TOUCH = "Drag on the left to move · Tap the pads to punch, L or R hand · Hold BODY, POWER or GUARD · Tap SLIP, WEAVE, PULL or CLINCH";
+/** A phone held upright has only a narrow column beside the pads for the hint: the essentials, which the pads' own labels fill in. */
+const CONTROL_HINT_TOUCH_SHORT = "Drag left to move · Tap pads to punch · Hold GUARD";
+/** Screens narrower than this, phones held upright, get the short touch hint. */
+export const SHORT_HINT_WIDTH = 480;
+
+/** The controls hint shown before and during the countdown, for a keyboard or for the touch pads on a screen this wide. */
+export const controlHint = (touch: boolean, width: number): string => (!touch ? CONTROL_HINT_KEYBOARD : width < SHORT_HINT_WIDTH ? CONTROL_HINT_TOUCH_SHORT : CONTROL_HINT_TOUCH);
+
+/** The Controls panel in sections instead of one list. */
+export const CONTROL_SECTIONS: readonly { readonly title: string; readonly items: readonly string[] }[] = [
+  { title: "Keyboard", items: CONTROL_HELP.filter((item) => !item.startsWith("Controller") && !item.startsWith("Right-stick") && !item.startsWith("Between rounds") && !item.startsWith("Touch")) },
+  { title: "Between rounds", items: CONTROL_HELP.filter((item) => item.startsWith("Between rounds")) },
+  { title: "Controller", items: CONTROL_HELP.filter((item) => item.startsWith("Controller") || item.startsWith("Right-stick")) },
+  { title: "Touch", items: CONTROL_HELP.filter((item) => item.startsWith("Touch")) },
+];

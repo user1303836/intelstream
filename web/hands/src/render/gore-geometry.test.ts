@@ -34,7 +34,7 @@ function shaderJawMask(): (y: number, z: number) => number {
     const t = THREE.MathUtils.clamp((x - edge0) / (edge1 - edge0), 0, 1);
     return t * t * (3 - 2 * t);
   };
-  const mask = new Function("smoothstep", "transformed", "uInjuryJawLevel", `return ${expression};`) as (step: typeof smoothstep, transformed: { y: number; z: number }, level: number) => number;
+  const mask = new Function("smoothstep", "injuryMoved", "uInjuryJawLevel", `return ${expression};`) as (step: typeof smoothstep, moved: { y: number; z: number }, level: number) => number;
   material.dispose();
   return (y, z) => mask(smoothstep, { y, z }, shading.uniforms.uInjuryJawLevel.value);
 }

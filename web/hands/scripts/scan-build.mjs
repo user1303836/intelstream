@@ -19,6 +19,8 @@ const reviewedExternalUrls = new Set([
   "https://staging.discord.co",
   "http://localhost:3333",
   "https://pax.discord.com",
+  // Discord's image host, for the players' own avatars. Discord's Activity proxy allows it in img-src.
+  "https://cdn.discordapp.com/avatars/",
   // Texel Boxer source and CC BY 4.0 license attribution shown in-app.
   "https://sketchfab.com/3d-models/boxer-84767168720948b38728ff78ee6f6090",
   "https://creativecommons.org/licenses/by/4.0/",

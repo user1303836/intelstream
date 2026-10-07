@@ -1,17 +1,22 @@
 import * as THREE from "three";
 import { GLTFLoader, type GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
-import { GLOVE_HITBOX_RADIUS, HURTBOXES, cancelsRecovery, punchTiming, recoveryCancelAge, totalTicks, type PunchTiming } from "../manifest";
+import { GLOVE_HITBOX_RADIUS, GUARD_BLOCK_MINIMUM, HURTBOXES, cancelsRecovery, punchTiming, recoveryCancelAge, totalTicks, type PunchTiming } from "../manifest";
 import type { BloodLevel } from "../settings";
 import type { CombatEvent, FighterSnapshot, Hand, Power, PunchAction, PunchClass, SemanticAction, Target } from "../types";
 import { FIGHTER_GLB_GZIP_BASE64 } from "../assets/fighter-glb";
 import { BONE_ADAPTER } from "./skeleton";
 export { BONE_ADAPTER };
 import { FIGHTER_TEXTURE_DATA_URLS } from "../assets/fighter-textures";
-import { BODY_SITES, HEAD_SITES, InjuryShading, applyBodyTrauma, applyHeadTrauma } from "./injury";
+import { wearCornerColour } from "./gear";
+import { BODY_SITES, BODY_SWELL_CORE, EYE_LIDS, HEAD_SITES, HEAD_SWELL_CORE, InjuryShading, applyBodyTrauma, applyHeadTrauma, trunksBloodFor } from "./injury";
+import { LookShading, SCANNED_LOOK, type FighterLook } from "./looks";
+import { applyOutfitShading, buildCuffGeometry, buildHandGeometry, type OfficialOutfit, type OutfitPart } from "./outfit";
 import { PoseSolver, STANCE, easeIn, easeOut, mirrorX, smoothstep, vec, type FootTarget, type HandTarget, type PoseDescription } from "./poser";
+import { KnockoutRagdoll, blowImpulse, fallStyleFor } from "./ragdoll";
+import { ropeExcess } from "./ring";
 import { SolvedRig } from "./rig";
-import { POST_RADIUS, type WorldMapping } from "./world";
+import { CANVAS_TOP, PLATFORM_HALF, POST_RADIUS, type WorldMapping } from "./world";
 
 export const FIGHTER_MODEL_SCALE = 1;
 
@@ -104,19 +109,49 @@ function fighterTexture(name: FighterTexture): THREE.Texture {
 
 interface AppliedFighterMaterials {
   readonly skin: readonly THREE.MeshStandardMaterial[];
-  readonly gloves: THREE.MeshStandardMaterial;
+  readonly gloveBlood: { value: number };
+  readonly trunksBlood: { value: number };
   readonly owned: readonly THREE.Material[];
   readonly headInjury: InjuryShading;
   readonly bodyInjury: InjuryShading;
 }
 
+/**
+ * Lifts a posed vertex that is under the ring's floor onto it, in the mesh's own space, just before it is projected.
+ * Off the platform the floor is the arena's, a metre lower, and a vertex there is left alone.
+ */
+export const PRESS_ONTO_CANVAS_GLSL = /* glsl */ `{
+  vec4 pressedOntoCanvas = modelMatrix * vec4( transformed, 1.0 );
+  if ( pressedOntoCanvas.y < ${CANVAS_TOP.toFixed(4)} && max( abs( pressedOntoCanvas.x ), abs( pressedOntoCanvas.z ) ) < ${PLATFORM_HALF.toFixed(4)} ) {
+    transformed += inverse( mat3( modelMatrix ) ) * vec3( 0.0, ${CANVAS_TOP.toFixed(4)} - pressedOntoCanvas.y, 0.0 );
+  }
+}`;
+
+/**
+ * Skin and kit meet the canvas instead of passing through it: a vertex the skeleton puts below the canvas is drawn on
+ * it, as flesh or cloth pressed flat on the floor. A body lying on the canvas rests on spheres at its joints, which the
+ * calves, the loose trunks and the gloves' padding reach past: they went 5-10 cm under it. Composes with a shader
+ * patch already on the material.
+ */
+export function pressOntoCanvas(material: THREE.Material): void {
+  const before = material.onBeforeCompile;
+  const beforeKey = Object.hasOwn(material, "customProgramCacheKey") ? material.customProgramCacheKey() : "plain";
+  material.onBeforeCompile = (shader, renderer) => {
+    before.call(material, shader, renderer);
+    shader.vertexShader = shader.vertexShader.replace("#include <project_vertex>", `${PRESS_ONTO_CANVAS_GLSL}\n#include <project_vertex>`);
+  };
+  material.customProgramCacheKey = () => `${beforeKey}-on-canvas`;
+  material.needsUpdate = true;
+}
+
 export function applyFighterSkin(target: THREE.Object3D, palette: BoxerPaletteColors): AppliedFighterMaterials {
   // An official never takes damage or sweats: plain materials, injury state that shades nothing, and no shadow.
-  const official = palette.bodyMap !== undefined;
+  const official = palette.outfit !== undefined;
   const skin: THREE.MeshStandardMaterial[] = [];
   const owned: THREE.Material[] = [];
   const bySource = new Map<string, THREE.MeshStandardMaterial>();
-  let gloves: THREE.MeshStandardMaterial | null = null;
+  let gloveBlood: { value: number } | null = null;
+  let trunksBlood: { value: number } = { value: 0 };
   let headInjury: InjuryShading | null = null;
   let bodyInjury: InjuryShading | null = null;
   target.traverse((object) => {
@@ -127,39 +162,58 @@ export function applyFighterSkin(target: THREE.Object3D, palette: BoxerPaletteCo
     let material = bySource.get(sourceName);
     if (material === undefined) {
       const isSkin = sourceName === "MHeadMat0" || sourceName === "MBodyMat0";
-      const color = sourceName === "GlovesMat0" ? palette.gear : sourceName === "PantsMat0" ? (palette.pants ?? palette.gear) : 0xffffff;
-      const map = sourceName === "MBodyMat0" && palette.bodyMap !== undefined ? palette.bodyMap : fighterTexture(textureName);
+      const outfit = palette.outfit;
+      const color = sourceName === "GlovesMat0" ? palette.gear
+        : sourceName === "PantsMat0" ? (outfit?.trousers ?? palette.gear)
+        : sourceName === "ShoesMat0" && outfit !== undefined ? outfit.shoes
+        : 0xffffff;
+      const map = fighterTexture(textureName);
+      // Only a fighter's skin takes the clearcoat that sweat shows on; the outfit makes an official's shirt cloth.
       material = isSkin && !official
         ? new THREE.MeshPhysicalMaterial({ map, color, roughness: 0.58, metalness: 0.02, clearcoat: 0.25, clearcoatRoughness: 0.6 })
-        : new THREE.MeshStandardMaterial({ map, color, roughness: isSkin ? (sourceName === "MBodyMat0" ? 0.85 : 0.58) : 0.4, metalness: isSkin ? 0.02 : 0.03 });
+        : new THREE.MeshStandardMaterial({ map, color, roughness: isSkin ? 0.58 : 0.4, metalness: isSkin ? 0.02 : 0.03 });
       material.name = sourceName;
       bySource.set(sourceName, material);
       owned.push(material);
       if (isSkin) skin.push(material);
-      if (sourceName === "GlovesMat0") gloves = material;
-      if (sourceName === "MHeadMat0") headInjury = new InjuryShading(official ? null : material, HEAD_SITES);
-      if (sourceName === "MBodyMat0") bodyInjury = new InjuryShading(official ? null : material, BODY_SITES);
+      if (sourceName === "MHeadMat0") headInjury = new InjuryShading(official ? null : material, HEAD_SITES, { core: HEAD_SWELL_CORE, lids: EYE_LIDS });
+      if (sourceName === "MBodyMat0") bodyInjury = new InjuryShading(official ? null : material, BODY_SITES, { core: BODY_SWELL_CORE, wash: true });
+      const part = OUTFIT_PARTS[sourceName];
+      if (outfit !== undefined && part !== undefined) applyOutfitShading(material, part, outfit);
+      else if (sourceName === "PantsMat0") trunksBlood = wearCornerColour(material, false, "trunks");
+      else if (sourceName === "GlovesMat0") gloveBlood = wearCornerColour(material);
+      pressOntoCanvas(material);
     }
     object.material = material;
     object.castShadow = !official;
     object.receiveShadow = true;
     object.frustumCulled = false;
   });
-  if (skin.length !== 2 || gloves === null || owned.length !== 5 || headInjury === null || bodyInjury === null) {
+  if (skin.length !== 2 || gloveBlood === null || owned.length !== 5 || headInjury === null || bodyInjury === null) {
     throw new Error(`fighter GLB material contract failed: ${skin.length} skin, ${owned.length} total`);
   }
-  return { skin, gloves, owned, headInjury, bodyInjury };
+  return { skin, gloveBlood, trunksBlood, owned, headInjury, bodyInjury };
 }
 
 export interface BoxerPaletteColors {
   readonly skin: number;
   readonly gear: number;
-  readonly pants?: number;
-  /** An official's shirt. Officials get plain materials: no injury shading, no sweat and no shadow (see applyFighterSkin). */
-  readonly bodyMap?: THREE.Texture;
+  /** Skin tone, hair, beard and face shape; the scanned man when omitted. */
+  readonly look?: FighterLook;
+  /**
+   * Dresses the body as a ring official and swaps the gloves for hands. Officials get plain materials:
+   * no injury shading, no sweat and no shadow (see applyFighterSkin).
+   */
+  readonly outfit?: OfficialOutfit;
 }
 
+const OUTFIT_PARTS: Readonly<Record<string, OutfitPart>> = { MHeadMat0: "head", MBodyMat0: "body", ShoesMat0: "shoes", PantsMat0: "pants" };
+/** The lit tone of the scanned face texture in linear light, so bare hands match the face. */
+const SCANNED_SKIN = new THREE.Color().setRGB(0.6, 0.32, 0.19, THREE.LinearSRGBColorSpace);
+
 export type ArcadeDislocation = "jaw" | "shoulder_left" | "shoulder_right";
+/** What the cutman has in his hand: the enswell for a cut or a swelling, a water bottle for the breath. */
+export type CutmanProp = "enswell" | "bottle";
 
 const smooth = (current: number, target: number, rate: number, dt: number): number => current + (target - current) * (1 - Math.exp(-rate * dt));
 const smoothAngle = (current: number, target: number, rate: number, dt: number): number => {
@@ -175,16 +229,22 @@ export class SkinnedBoxer {
   /** Bone-derived measurements in world units (after MODEL_SCALE). */
   readonly metrics: { armUpper: number; armFore: number; legThigh: number; legShin: number; headRestY: number; chestRestY: number; ankleRestY: number };
   private readonly skinMaterials: readonly THREE.MeshStandardMaterial[];
-  private readonly ownedMaterials: readonly THREE.Material[];
-  private readonly gearMaterial: THREE.MeshStandardMaterial;
+  private readonly ownedMaterials: THREE.Material[];
+  private readonly gloveBlood: { value: number };
+  private readonly trunksBlood: { value: number };
   private readonly headMeshes: THREE.SkinnedMesh[] = [];
   private readonly handMeshes: Record<Hand, THREE.SkinnedMesh[]> = { left: [], right: [] };
   private decapitated = false;
+  private burst = false;
   private readonly dismemberedHands: Record<Hand, boolean> = { left: false, right: false };
+  private readonly dressed: boolean;
+  private readonly ownedGeometries: THREE.BufferGeometry[] = [];
   readonly gearBaseColor: THREE.Color;
   readonly skinBaseColor: THREE.Color;
   readonly headInjury: InjuryShading;
   readonly bodyInjury: InjuryShading;
+  private readonly headLook: LookShading;
+  private readonly bareHand: THREE.MeshStandardMaterial | null;
 
   constructor(gltf: GLTF, palette: BoxerPaletteColors) {
     const instance = cloneSkeleton(gltf.scene);
@@ -192,12 +252,14 @@ export class SkinnedBoxer {
     this.root.add(instance);
     const materials = applyFighterSkin(instance, palette);
     this.skinMaterials = materials.skin;
-    this.ownedMaterials = materials.owned;
-    this.gearMaterial = materials.gloves;
+    this.ownedMaterials = [...materials.owned];
+    this.gloveBlood = materials.gloveBlood;
+    this.trunksBlood = materials.trunksBlood;
     this.headInjury = materials.headInjury;
     this.bodyInjury = materials.bodyInjury;
     this.gearBaseColor = new THREE.Color(palette.gear);
     this.skinBaseColor = new THREE.Color(palette.skin);
+    this.dressed = palette.outfit !== undefined;
     instance.traverse((object) => {
       if (object instanceof THREE.SkinnedMesh && object.name === "BoxerHead") this.headMeshes.push(object);
       if (object instanceof THREE.SkinnedMesh && object.name === "BoxerGloveLeft") this.handMeshes.left.push(object);
@@ -207,6 +269,15 @@ export class SkinnedBoxer {
     const missing = Object.values(BONE_ADAPTER).filter((name) => !this.bones.has(name));
     if (missing.length > 0) throw new Error(`fighter GLB missing required bones: ${missing.join(", ")}`);
     if (this.headMeshes.length !== 1) throw new Error(`fighter GLB requires one BoxerHead mesh, found ${this.headMeshes.length}`);
+    const headShadow = this.headInjury.shadowMaterial();
+    this.headMeshes[0]!.customDepthMaterial = headShadow;
+    // A head is one-sided until a finisher cuts it open, when the injury shading draws it from inside too
+    // so the cut shows flesh. Shadows come from the back faces as for a one-sided skin either way, or the
+    // face would shadow itself in stripes.
+    const headMaterial = this.headMeshes[0]!.material as THREE.Material;
+    headMaterial.side = THREE.FrontSide;
+    headMaterial.shadowSide = THREE.BackSide;
+    this.ownedMaterials.push(headShadow);
     for (const side of ["left", "right"] as const) {
       if (this.handMeshes[side].length !== 1) {
         throw new Error(`fighter GLB requires one ${side} glove mesh, found ${this.handMeshes[side].length}`);
@@ -214,6 +285,10 @@ export class SkinnedBoxer {
     }
     this.root.updateMatrixWorld(true);
     this.rig = new SolvedRig(this.root);
+    // Last on, so it runs first in the shader: the look, then the clothes over it, then the injuries.
+    this.headLook = new LookShading(this.headMeshes[0]!.material as THREE.MeshStandardMaterial);
+    this.bareHand = palette.outfit === undefined ? null : this.addHands(palette.outfit);
+    this.setLook(palette.look ?? SCANNED_LOOK);
     const rigMetrics = this.rig.metrics;
     this.metrics = {
       armUpper: rigMetrics.armL.upper,
@@ -230,8 +305,22 @@ export class SkinnedBoxer {
     return this.bones.get(BONE_ADAPTER[name] ?? name) ?? null;
   }
 
-  get gloveGear(): THREE.MeshStandardMaterial {
-    return this.gearMaterial;
+  /** How much of the opponent's blood is on the gloves, 0 to 1. */
+  setGloveBlood(amount: number): void {
+    this.gloveBlood.value = clamp(amount, 0, 1);
+  }
+
+  get gloveBloodLevel(): number {
+    return this.gloveBlood.value;
+  }
+
+  /** How far the fighter's own blood has run into the front of the trunks, 0 to 1. */
+  setTrunksBlood(amount: number): void {
+    this.trunksBlood.value = clamp(amount, 0, 1);
+  }
+
+  get trunksBloodLevel(): number {
+    return this.trunksBlood.value;
   }
 
   get headMesh(): THREE.SkinnedMesh {
@@ -250,9 +339,23 @@ export class SkinnedBoxer {
     return this.decapitated;
   }
 
+  /** Cuts the head off through the neck; the collar of the head mesh stays on the shoulders. */
   setDecapitated(value: boolean): void {
     this.decapitated = value;
-    for (const mesh of this.headMeshes) mesh.visible = !value;
+    this.burst = false;
+    this.headInjury.setSevered(value);
+    this.bone("head")!.visible = !value;
+  }
+
+  get isHeadBurst(): boolean {
+    return this.burst;
+  }
+
+  /** Bursts the head above the mouth; the lower jaw stays on the neck. */
+  setHeadBurst(value: boolean): void {
+    this.burst = value;
+    this.decapitated = false;
+    this.headInjury.setBurst(value);
     this.bone("head")!.visible = !value;
   }
 
@@ -262,7 +365,51 @@ export class SkinnedBoxer {
 
   setHandDismembered(side: Hand, value: boolean): void {
     this.dismemberedHands[side] = value;
-    for (const mesh of this.handMeshes[side]) mesh.visible = !value;
+    for (const mesh of this.handMeshes[side]) mesh.visible = !value && !this.dressed;
+  }
+
+  /** Changes who this fighter is: skin tone, hair, beard and face shape. */
+  setLook(look: FighterLook): void {
+    this.headLook.set(look);
+    for (const material of this.skinMaterials) material.color.setHex(look.tint);
+    this.bareHand?.color.copy(SCANNED_SKIN).multiply(this.skinMaterials[0]!.color);
+  }
+
+  get look(): FighterLook {
+    return this.headLook.look;
+  }
+
+  /** Returns the material of bare hands, which follows the skin tone, or null for gloved ones. */
+  private addHands(outfit: OfficialOutfit): THREE.MeshStandardMaterial | null {
+    const gloved = outfit.gloves !== null;
+    const hand = new THREE.MeshStandardMaterial({
+      color: gloved ? outfit.gloves! : SCANNED_SKIN,
+      roughness: gloved ? 0.38 : 0.6,
+      metalness: 0.02,
+    });
+    const cuff = gloved ? hand : new THREE.MeshStandardMaterial({ color: new THREE.Color(outfit.shirt).multiplyScalar(0.9), roughness: 0.88, metalness: 0 });
+    this.ownedMaterials.push(hand);
+    if (cuff !== hand) this.ownedMaterials.push(cuff);
+    const cuffGeometry = buildCuffGeometry();
+    this.ownedGeometries.push(cuffGeometry);
+    for (const side of ["left", "right"] as const) {
+      for (const mesh of this.handMeshes[side]) mesh.visible = false;
+      const geometry = buildHandGeometry(side);
+      this.ownedGeometries.push(geometry);
+      const suffix = side === "left" ? "L" : "R";
+      for (const [bone, part, material, name] of [
+        [this.rig.bones[`glove${suffix}`], geometry, hand, `hand-${side}`],
+        [this.rig.bones[`elbow${suffix}`], cuffGeometry, cuff, `cuff-${side}`],
+      ] as const) {
+        const mesh = new THREE.Mesh(part, material);
+        mesh.name = name;
+        // Too small to throw a shadow anyone would see; it would only cost a draw in the shadow pass.
+        mesh.castShadow = false;
+        mesh.receiveShadow = true;
+        bone.add(mesh);
+      }
+    }
+    return gloved ? null : hand;
   }
 
   /** Sweat sheen; only a fighter's skin is clearcoated, an official's stays matte. */
@@ -272,13 +419,14 @@ export class SkinnedBoxer {
 
   dispose(): void {
     for (const material of this.ownedMaterials) material.dispose();
+    for (const geometry of this.ownedGeometries) geometry.dispose();
     disposeSkeletons(this.root);
   }
 }
 
-const BLOODED_GLOVE_COLOR = new THREE.Color(0x5c0a0e);
-
 export type ReactionKind = "block" | "hit";
+
+export type Verdict = "winner" | "loser" | "level";
 
 interface FootState {
   readonly planted: THREE.Vector3;
@@ -319,6 +467,53 @@ const springStep = (spring: Spring3, dt: number, stiffness: number, damping: num
 const PUNCH_CONTACT_OFFSET = 0.06;
 /** Damage of the hardest hit the engine deals (a countered power uppercut in a combination, about 153). */
 const HARDEST_HIT = 150;
+/** Between these gaps (metres between the fighters' feet) the stance closes up for infighting. */
+const CROWDED_GAP = 0.58;
+/** Two heads keep at least this far apart: closer, each leans his head and shoulders away from the other's, and eases back once they are clear. */
+const HEAD_SPACE = 0.25;
+const HEAD_SPACE_CLEAR = 0.32;
+const HEAD_SPACE_RATE = 9;
+const OPEN_GAP = 1;
+/** In a clinch each fighter rests his head this far to his own right (metres), leaning his shoulders that way (radians). */
+const CLINCH_HEAD_SIDE = 0.08;
+const CLINCH_HEAD_LEAN = 0.3;
+/** Within this gap (metres between them) an opponent on top of a fighter held on the ropes comes in with him, and from the second on not at all. */
+const ROPE_HOLD_CLOSE = 1;
+const ROPE_HOLD_OPEN = 1.6;
+/**
+ * Held on the ropes, a fighter leans back on them like a man against a wall: in full once the engine has him
+ * this far past their furthest give (metres), with his feet this much further in, so his back rests on the top
+ * rope. He tips back from the hips toward the ropes, or sideways when they are at his side (radians), and the
+ * lean follows the engine's place for him, quickly settling.
+ */
+const ROPE_LEAN_FULL = 0.25;
+const ROPE_LEAN_ROOM = 0.12;
+const ROPE_LEAN_PITCH = 0.3;
+const ROPE_LEAN_ROLL = 0.3;
+const ROPE_LEAN_RATE = 8;
+
+/**
+ * How far (world x and z, into `out`) a fighter whose place is (x, z) is drawn in off the ropes, and how far
+ * he leans back on them, 0 to 1; `excess` takes how far past the ropes' furthest give his place is.
+ */
+function ropeHoldAt(x: number, z: number, excess: { x: number; z: number }, out: { x: number; z: number }): number {
+  ropeExcess(x, z, excess);
+  const past = Math.hypot(excess.x, excess.z);
+  if (past <= 0) {
+    out.x = 0;
+    out.z = 0;
+    return 0;
+  }
+  const lean = smoothstep(0, ROPE_LEAN_FULL, past);
+  const reach = 1 + (ROPE_LEAN_ROOM * lean) / past;
+  out.x = excess.x * reach;
+  out.z = excess.z * reach;
+  return lean;
+}
+
+/** Along one axis, how far in to draw a fighter held `own` on the ropes, or with an opponent held `theirs`. */
+const heldIn = (own: number, theirs: number): number => (own === 0 || (Math.sign(theirs) === Math.sign(own) && Math.abs(theirs) > Math.abs(own)) ? theirs : own);
+
 const KNOCKDOWN_FALL_SECONDS = 0.75;
 /**
  * The get-up runs lying -> all fours (RISE_FOURS) -> one knee (RISE_KNEE) -> standing (1). While he is down it
@@ -334,6 +529,21 @@ const RISE_PUSH_RATE = 0.55;
 const RISE_SINK_RATE = 0.4;
 /** Rolling off the back onto all fours is a big movement, never hurried past this. */
 const RISE_ROLL_RATE = 0.7;
+/**
+ * How fast a knee's or an elbow's pole that has to come round a long way swings round its limb, down and getting up,
+ * and how long after he is up the swing may still be finishing.
+ */
+const POLE_TURN_RATE = 6;
+const POLE_SETTLE_SECONDS = 0.4;
+/** Seconds over which the get-up takes the body over from the pose the knockout physics left it in. */
+const RISE_BLEND_SECONDS = 0.2;
+/**
+ * The knockout physics follows the get-up from the canvas until he is on all fours (and for at least this long): the
+ * get-up's first stage, blended from wherever the fall left him, can pass through the canvas; all fours does not.
+ */
+const RISE_HANDOVER_SECONDS = 0.3;
+/** A root this far from the fighter's place when he goes down was drawn there before a gap: he falls at his place. */
+const FALL_ROOT_JUMP = 0.5;
 
 const SIDE_FROM_HAND = (hand: Hand): "L" | "R" => (hand === "left" ? "L" : "R");
 
@@ -382,6 +592,7 @@ export class BoxingGraph {
   private shownOpponent: FighterSnapshot | null = null;
   /** Own punches already played or cut short here; the server's copy of them is not played again. */
   private readonly retiredOwnIds: string[] = [];
+  private anticipatedId: string | null = null;
   private hitstop = 0;
   private hitstopScale = 1;
   private downState: "up" | "falling" | "down" | "rising" = "up";
@@ -391,11 +602,38 @@ export class BoxingGraph {
   private riseFrom = 0;
   private fallSide = 0;
   private fallProne = false;
-  /** The fall played: the punch's own, or the nearest variant that keeps the body inside the ropes, moved in as far as it must. */
+  /** The knockdown was a body shot: the fighter goes to a knee instead of falling. */
+  private fallKneel = false;
+  /** Which side of the body took the shot that is putting him down: 1 his left, -1 his right. */
+  private windedSide = -1;
+  private windedTime = 0;
+  private winded = 0;
+  /**
+   * The fall played: the punch's own, or the nearest variant that keeps the body inside the ropes, moved in as
+   * far as it must; after a fall the knockout physics played, where and how that left the body.
+   */
   private landProne = false;
   private landSide = 0;
   private readonly landShift = new THREE.Vector3();
   private landSettled = false;
+  /** Where the knockout physics left the body, as a down pose the get-up starts from; set when it hands him over. */
+  private readonly fallen = downPose();
+  private fallenFromPhysics = false;
+  /**
+   * How far (world x and z) the drawn fighter stands from his place in the engine after the physics took the body
+   * somewhere else, and how far it was when he started to get up: he gets up where he lies and steps back to his place
+   * as he rises off his knee. `riseRootVelocity` is that step's, for the feet.
+   */
+  private readonly riseRoot = new THREE.Vector3();
+  private readonly riseRootFrom = new THREE.Vector3();
+  /** The knee and elbow poles last drawn down or getting up (lead knee, rear knee, lead elbow, rear elbow). */
+  private readonly downPoles = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()] as const;
+  private downPolesSet = false;
+  private poleSettle = 0;
+  private readonly characterInverse = new THREE.Matrix4();
+  /** Where the engine has the fighter this frame (with the glove-touch walk and the walk back from a fall). */
+  private readonly place = new THREE.Vector3();
+  private readonly riseRootVelocity = new THREE.Vector3();
   private readonly liveOpponentHead = new THREE.Vector3();
   private hasLiveHead = false;
   /**
@@ -419,6 +657,8 @@ export class BoxingGraph {
   private guardKick = 0;
   private guardHigh = 0;
   private guardLow = 0;
+  /** The guard is spent, worn below what can stop a punch: the gloves sag toward the chest. */
+  private guardSpent = 0;
   private slip = 0;
   private weave = 0;
   private weaveTime = 0;
@@ -434,6 +674,25 @@ export class BoxingGraph {
   private clinchWeight = 0;
   private foulWeight = 0;
   private tauntWeight = 0;
+  private crowding = 0;
+  /** How far he has stepped into the punch he is throwing, out of the tall, tucked stance of the inside. */
+  private punchCommit = 0;
+  /** How far, in his own frame (x to the side, y ahead), the fighter is leaning his head away from the other's. */
+  private readonly headSpace = new THREE.Vector2();
+  private readonly ownHead = new THREE.Vector3();
+  /**
+   * On the ropes: how far (world x and z) he is drawn in from his place in the engine, so his back stays on
+   * the ropes at their furthest give (an opponent on top of him comes in with him), how far past that give
+   * the engine has him himself, and how far he leans back on the ropes, toward `ropeOutward`.
+   */
+  private readonly ropeHold = new THREE.Vector3();
+  private readonly ropeExcess = { x: 0, z: 0 };
+  private readonly ropeOwn = { x: 0, z: 0 };
+  private readonly ropeTheirs = { x: 0, z: 0 };
+  private ropeLeanTarget = 0;
+  private ropeLean = 0;
+  private readonly ropeOutward = new THREE.Vector3(1, 0, 0);
+  private readonly ropeLocal = new THREE.Vector3();
   /** Render tick the taunt ends on (see latchEndTick). */
   private tauntEnd: number | null = null;
   private lastSpeed = 0;
@@ -442,6 +701,8 @@ export class BoxingGraph {
   private readonly stoolRoot = new THREE.Vector3();
   private stoolYaw = 0;
   private readonly enswell: { group: THREE.Group; dispose: () => void };
+  private readonly bottle: { group: THREE.Group; dispose: () => void };
+  private treatProp: CutmanProp = "enswell";
   private readonly treatTarget = new THREE.Vector3();
   private readonly treatScratch = new THREE.Vector3();
   private readonly treatFacing = new THREE.Vector3(0, 0, -1);
@@ -461,6 +722,15 @@ export class BoxingGraph {
   private readonly breakFighters: [THREE.Vector3, THREE.Vector3] = [new THREE.Vector3(), new THREE.Vector3()];
   private breakAimed = false;
   private attending = false;
+  /** Where the referee stands at the announcement (1 = on this fighter's left), or 0 outside it. */
+  private verdictSide = 0;
+  private verdict: Verdict | null = null;
+  private squareWeight = 0;
+  private raisedWeight = 0;
+  private bowedWeight = 0;
+  private readonly wrists: [THREE.Vector3 | null, THREE.Vector3 | null] = [null, null];
+  private readonly wristTargets = [new THREE.Vector3(), new THREE.Vector3()] as const;
+  private readonly wristWeights: [number, number] = [0, 0];
   private attendWeight = 0;
   private countdownTicks: number | null = null;
   /** Render tick the opening countdown ends on (see latchEndTick). */
@@ -527,6 +797,18 @@ export class BoxingGraph {
   private refereeCounting = false;
   /** Render tick the referee's count last changed on; the counting arm is timed from it. */
   private countChangedTick: number | null = null;
+  /** Knockout physics; officials have none. */
+  private readonly ragdoll: KnockoutRagdoll | null;
+  /** Knocked out on his feet (a flash knockout): down although the engine never counts him. */
+  private forcedDown = false;
+  /** The bout is over, or being replayed, with him on the canvas: he does not try to get up. */
+  private heldDown = false;
+  /** The next fall is the animation's, not the physics' (a body shot that takes him to one knee). */
+  private authoredNextFall = false;
+  private obstacle: { x: number; z: number } | null = null;
+  private blows = 0;
+  /** Seconds since the knockout physics handed the body to the get-up, which blends in from where it left it. */
+  private riseBlendAge = 0;
 
   constructor(boxer: SkinnedBoxer, private readonly mapping: WorldMapping, options: { referee?: boolean } = {}) {
     this.boxer = boxer;
@@ -538,6 +820,44 @@ export class BoxingGraph {
     boxer.root.add(this.stool.group);
     this.enswell = buildEnswell();
     boxer.rig.bones.gloveL.add(this.enswell.group);
+    this.bottle = buildBottle();
+    boxer.rig.bones.gloveL.add(this.bottle.group);
+    this.ragdoll = this.referee ? null : new KnockoutRagdoll(boxer.rig, boxer.root);
+  }
+
+  /** The knockout replay runs the recorded fall again rather than a new one. */
+  primeReplayFall(): void {
+    this.ragdoll?.prime();
+  }
+
+  /** The next knockdown plays the animation rather than the physics: a body shot drops him to one knee. */
+  useAuthoredFall(): void {
+    this.authoredNextFall = true;
+  }
+
+  /** Puts the fighter down for a flash knockout, which the engine ends without a count. */
+  knockOut(): void {
+    this.forcedDown = true;
+  }
+
+  /**
+   * Once the bout is over, and while its finish is replayed, a fighter on the canvas stays there: the
+   * get-up stops following his meter and the knockout physics keeps the body.
+   */
+  stayDown(held: boolean): void {
+    this.heldDown = held;
+  }
+
+  /** The standing opponent, whom a falling fighter does not fall through. */
+  setObstacle(x: number, z: number): void {
+    this.obstacle ??= { x, z };
+    this.obstacle.x = x;
+    this.obstacle.z = z;
+  }
+
+  /** The knockout physics while it drives this fighter, for the camera and the officials. */
+  get fallBody(): KnockoutRagdoll | null {
+    return this.ragdoll?.active === true ? this.ragdoll : null;
   }
 
   /** Between rounds the fighter walks to the corner, and once still, sits on the stool. */
@@ -560,8 +880,24 @@ export class BoxingGraph {
    * knockout replay. `downed` seeds the lying pose instead of standing.
    */
   resetTransient(downed = false): void {
+    this.forcedDown = false;
+    const ragdoll = this.ragdoll;
+    if (ragdoll !== null) {
+      if (!downed) {
+        ragdoll.stop();
+        ragdoll.clearRise();
+      } else if (ragdoll.active) {
+        ragdoll.settle();
+      } else {
+        ragdoll.restoreSettled();
+      }
+    }
     this.downState = downed ? "down" : "up";
     this.landSettled = false;
+    this.fallenFromPhysics = false;
+    this.riseRoot.set(0, 0, 0);
+    this.riseRootFrom.set(0, 0, 0);
+    this.riseRootVelocity.set(0, 0, 0);
     this.fallAge = downed ? KNOCKDOWN_FALL_SECONDS : 0;
     this.riseProgress = 0;
     this.hitstop = 0;
@@ -574,10 +910,19 @@ export class BoxingGraph {
     this.pendingFold = 0;
     this.guardKick = 0;
     this.stunAmount = 0;
+    this.windedTime = 0;
+    this.winded = 0;
     this.celebrateTime = 0;
     this.celebration = 0;
     this.waveTime = 0;
     this.wave = 0;
+    this.verdictSide = 0;
+    this.verdict = null;
+    this.squareWeight = 0;
+    this.raisedWeight = 0;
+    this.bowedWeight = 0;
+    this.wrists.fill(null);
+    this.wristWeights.fill(0);
     this.seated = 0;
     this.stillTime = 0;
     this.rootX = null;
@@ -587,9 +932,10 @@ export class BoxingGraph {
     this.ownQueued = null;
     this.completedActionId = null;
     this.retiredOwnIds.length = 0;
+    this.anticipatedId = null;
   }
 
-  /** Referee wave-off: both arms sweep crossing overhead to call the fight. */
+  /** Referee wave-off: both arms sweep crossing in front of the chest to call the fight. */
   waveOff(seconds = 2.6): void {
     this.waveTime = seconds;
   }
@@ -608,12 +954,33 @@ export class BoxingGraph {
    * Cutman: crouch by a seated fighter and press the enswell on the eye at `eye` (world). `facing` is
    * the direction the fighter's face points and `side` is 1 when the eye is the fighter's left.
    */
-  treat(eye: THREE.Vector3 | null, facing?: THREE.Vector3, side = 1): void {
+  treat(eye: THREE.Vector3 | null, facing?: THREE.Vector3, side = 1, prop: CutmanProp = "enswell"): void {
     this.treating = eye !== null;
     if (eye === null) return;
     this.treatTarget.copy(eye);
     if (facing !== undefined) this.treatFacing.copy(facing);
     this.treatSide = side;
+    this.treatProp = prop;
+  }
+
+  /**
+   * The announcement of a decision. The fighter stands square to the camera beside the referee, who
+   * is on the side given (1 = the fighter's left); null ends it.
+   */
+  awaitVerdict(side: 1 | -1 | null): void {
+    this.verdictSide = side ?? 0;
+    if (side === null) this.verdict = null;
+  }
+
+  /** The winner's arm on the referee's side goes up, as do both fighters' after a draw; the loser's head goes down. */
+  announce(verdict: Verdict): void {
+    this.verdict = verdict;
+  }
+
+  /** Referee: hold up the wrists at these world positions, one to each side; null lets that arm down. */
+  raise(left: THREE.Vector3 | null, right: THREE.Vector3 | null): void {
+    this.wrists[0] = left === null ? null : this.wristTargets[0].copy(left);
+    this.wrists[1] = right === null ? null : this.wristTargets[1].copy(right);
   }
 
   /** Referee break: both arms push out and apart at chest height to separate a clinch. */
@@ -749,23 +1116,54 @@ export class BoxingGraph {
     if (this.punchAgeTicks < this.punchTiming.startup) this.ownPulled = true;
   }
 
+  /**
+   * Starts a punch the server has begun but the delayed render clock has not reached, so an
+   * opponent's punch is seen as early as the network allows. `leadTicks` is how long the render
+   * clock will take to reach the punch's first tick. The wind-up is stretched over that wait, so
+   * a punch too far ahead is held back until it can be shown at half speed or faster.
+   */
+  anticipate(fighter: FighterSnapshot, leadTicks: number): void {
+    const id = fighter.action_id;
+    if (id === null || fighter.action === null || leadTicks <= 0) return;
+    if (id === this.anticipatedId || id === this.actionId || id === this.completedActionId || id === this.ownActionId || this.retiredOwnIds.includes(id)) return;
+    if (leadTicks > fighter.action_startup_ticks * (1 / MIN_ANTICIPATION_RATE - 1)) return;
+    if (this.punchActive && this.punchAgeTicks / this.punchTotalTicks <= 0.55) return;
+    this.anticipatedId = id;
+    const target = fighter.action_target ?? "head";
+    const power = fighter.action_power ?? "normal";
+    const timing = {
+      ...punchTiming(fighter.action, target, power),
+      startup: fighter.action_startup_ticks,
+      active: fighter.action_active_ticks,
+      recovery: fighter.action_recovery_ticks,
+    };
+    const hand = fighter.action_hand ?? (fighter.stance === "orthodox" ? "left" : "right");
+    this.startEarly(id, fighter.action, hand, target, power, timing, leadTicks, leadTicks);
+  }
+
   /** Plays the viewer's own press from its first frame, its startup stretched by `leadTicks`. */
   private startOwnPunch(press: OwnPress, leadTicks: number): void {
     const { action, timing } = press;
-    this.punchClass = action.class;
-    this.punchHand = action.hand;
-    this.punchTarget = action.target;
-    this.punchPower = action.power;
+    this.startEarly(action.id, action.class, action.hand, action.target, action.power, timing, leadTicks, Math.max(0, leadTicks));
+    this.ownSequence = press.sequence;
+    this.ownStarted = press.started;
+    this.ownPressedAt = press.pressedAt;
+  }
+
+  /** Starts a punch ahead of the server's presentation of it: the viewer's own press, or a punch seen early. */
+  private startEarly(id: string, punchClass: PunchClass, hand: Hand, target: Target, power: Power, timing: PunchTiming, leadTicks: number, expectedTicks: number): void {
+    this.retirePunch();
+    this.punchClass = punchClass;
+    this.punchHand = hand;
+    this.punchTarget = target;
+    this.punchPower = power;
     this.punchTiming = timing;
     this.punchTotalTicks = Math.max(1, totalTicks(timing));
     this.punchAgeTicks = 0;
     this.punchActive = true;
-    this.ownActionId = action.id;
+    this.ownActionId = id;
     this.ownLeadTicks = clamp(leadTicks, 0, MAX_OWN_LEAD_TICKS);
-    this.ownExpectedTicks = Math.max(0, leadTicks);
-    this.ownSequence = press.sequence;
-    this.ownStarted = press.started;
-    this.ownPressedAt = press.pressedAt;
+    this.ownExpectedTicks = expectedTicks;
   }
 
   /**
@@ -778,7 +1176,7 @@ export class BoxingGraph {
     const opponent = this.shownOpponent;
     const id = this.actionId ?? this.ownActionId;
     const landed = id !== null && id === this.contactId && !this.contactParried;
-    if (fighter !== null && opponent !== null && cancelsRecovery(this.punchClass, landed, press.action, fighter.stamina, opponent.stunned_ticks > 0)) {
+    if (fighter !== null && opponent !== null && cancelsRecovery(this.punchClass, landed, press.action, fighter.stamina, opponent.stunned_ticks > 0, fighter.style)) {
       return recoveryCancelAge(this.punchTiming);
     }
     return this.punchTotalTicks + 1;
@@ -896,6 +1294,36 @@ export class BoxingGraph {
       this.fallSide = punchClass === "hook" ? lateral : lateral * 0.5;
       this.fallProne = punchClass === "hook" || target === "body";
     }
+    // The knockdown itself is presented as a hit too, carrying the count rather than the damage.
+    if (kind === "hit" && amount >= 10 && this.ragdoll !== null) {
+      const blow = blowImpulse({ target, punchClass, hand, lateral, amount });
+      const snap = this.scratchE.set(blow.x, blow.y, blow.z).applyAxisAngle(worldUpVector, this.yaw);
+      const drive = this.scratchD.set(blow.driveX, blow.driveY, blow.driveZ).applyAxisAngle(worldUpVector, this.yaw);
+      this.blows += 1;
+      this.ragdoll.takeBlow(snap, drive, target, blow.twist, fallStyleFor(punchClass, target, amount, this.blows + Math.round(amount)));
+    }
+  }
+
+  /** The puncher's power shot was parried: he is knocked back off balance with his hands thrown wide. */
+  stagger(): void {
+    this.torsoKick.velocity.x -= 2.6;
+    this.headKick.velocity.z -= 1.4;
+    this.headKick.velocity.y += 0.5;
+    this.rootKick.velocity.z -= 1.1;
+    this.guardKick = Math.max(this.guardKick, 1.1);
+  }
+
+  /** A body shot that is going to put him down: he freezes, folds over the shot and clutches it. `side` is 1 for his left. */
+  windedFor(seconds: number, side: number): void {
+    this.windedTime = Math.max(this.windedTime, seconds);
+    this.windedSide = side >= 0 ? 1 : -1;
+  }
+
+  /** Sets how the next knockdown looks: to a knee after a body shot, otherwise a fall. */
+  fallToKnee(knee: boolean): void {
+    this.fallKneel = knee;
+    // Taking a knee is played by the animation, never by the knockout physics.
+    if (knee) this.authoredNextFall = true;
   }
 
   /** Transient compression of the struck surface at contact; the injury shading releases it. */
@@ -918,7 +1346,7 @@ export class BoxingGraph {
       const foot = this.feet[index]!;
       const isLead = (index === 0) === (mirror > 0);
       const offset = isLead ? STANCE.leadFoot : STANCE.rearFoot;
-      if (this.referee) desired.set((index === 0 ? 0.16 : -0.16), 0, index === 0 ? 0.02 : -0.02).applyQuaternion(rotate).add(rootPosition);
+      if (this.referee || this.squareWeight > 0.5) desired.set((index === 0 ? 0.16 : -0.16), 0, index === 0 ? 0.02 : -0.02).applyQuaternion(rotate).add(rootPosition);
       else desired.set(offset.x * mirror, 0, offset.z).applyQuaternion(rotate).add(rootPosition);
       desired.y = 0;
       if (!this.feetInitialized) {
@@ -977,8 +1405,11 @@ export class BoxingGraph {
     const motionScale = reducedMotion ? 0.35 : 1;
 
     const touch = this.touchWalk(fighter, opponent, dt, sampledTick);
-    const worldX = this.mapping.x(fighter.x) + touch.x;
-    const worldZ = this.mapping.z(fighter.y) + touch.z;
+    this.walkBackFromTheFall(dt);
+    const hold = this.holdOnTheRopes(opponent, this.mapping.x(fighter.x) + touch.x + this.riseRoot.x, this.mapping.z(fighter.y) + touch.z + this.riseRoot.z);
+    const worldX = this.mapping.x(fighter.x) + touch.x + this.riseRoot.x - hold.x;
+    const worldZ = this.mapping.z(fighter.y) + touch.z + this.riseRoot.z - hold.z;
+    this.place.set(worldX, 0, worldZ);
     if (this.rootX === null) {
       this.rootX = worldX;
       this.rootZ = worldZ;
@@ -1009,8 +1440,10 @@ export class BoxingGraph {
 
     if (opponentHeadWorld !== undefined) this.trackOpponentHead(opponent, opponentHeadWorld, dt);
 
-    const velocityWorld = this.scratchB.set(this.mapping.x(fighter.velocity_x) * 30, 0, this.mapping.z(fighter.velocity_y) * 30).add(this.touchVelocity);
+    const velocityWorld = this.scratchB.set(this.mapping.x(fighter.velocity_x) * 30, 0, this.mapping.z(fighter.velocity_y) * 30).add(this.touchVelocity).add(this.riseRootVelocity);
     const speed = velocityWorld.length();
+    // His own walking, without the step back to his place that a get-up takes.
+    const ownSpeed = Math.hypot(velocityWorld.x - this.riseRootVelocity.x, velocityWorld.z - this.riseRootVelocity.z);
     this.lastSpeed = speed;
     this.stillTime = speed < 0.03 ? this.stillTime + dt : 0;
     const wantSeated = this.resting && this.stillTime > 0.2 && this.downState === "up";
@@ -1033,8 +1466,17 @@ export class BoxingGraph {
     this.breakTime = Math.max(0, this.breakTime - dt);
     this.breakWeight = smooth(this.breakWeight, this.breakTime > 0 && this.downState === "up" ? 1 : 0, 6, dt);
     this.attendWeight = smooth(this.attendWeight, this.attending ? 1 : 0, 2.5, dt);
+    this.squareWeight = smooth(this.squareWeight, this.verdictSide !== 0 ? 1 : 0, 3, dt);
+    this.raisedWeight = smooth(this.raisedWeight, this.verdictSide !== 0 && (this.verdict === "winner" || this.verdict === "level") ? 1 : 0, 3.2, dt);
+    this.bowedWeight = smooth(this.bowedWeight, this.verdictSide !== 0 && this.verdict === "loser" ? 1 : 0, 2.2, dt);
+    for (const index of [0, 1] as const) this.wristWeights[index] = smooth(this.wristWeights[index], this.wrists[index] !== null ? 1 : 0, 3.2, dt);
     this.treatWeight = smooth(this.treatWeight, this.treating ? 1 : 0, 3, dt);
-    this.enswell.group.visible = this.treatWeight > 0.4;
+    this.windedTime = Math.max(0, this.windedTime - dt);
+    // Folded over the body shot until he is down on the knee, so the fall starts from the hunch.
+    const sinking = this.fallKneel && this.downState === "falling";
+    this.winded = smooth(this.winded, (this.windedTime > 0 && this.downState === "up") || sinking ? 1 : 0, this.windedTime > 0 || sinking ? 12 : 4, dt);
+    this.enswell.group.visible = this.treatWeight > 0.4 && this.treatProp === "enswell";
+    this.bottle.group.visible = this.treatWeight > 0.4 && this.treatProp === "bottle";
     const touching = this.countdownTicks !== null && this.countdownTicks <= TOUCH_GLOVES_START_TICKS && this.countdownTicks >= TOUCH_GLOVES_END_TICKS;
     this.touchWeight = smooth(this.touchWeight, touching ? 1 : 0, 6, dt);
     const stamina = fighter.stamina / Math.max(1, fighter.maximum_stamina);
@@ -1043,6 +1485,7 @@ export class BoxingGraph {
     const defending = fighter.defense;
     this.guardHigh = smooth(this.guardHigh, defending === "guard_high" ? 1 : 0, 14, dt);
     this.guardLow = smooth(this.guardLow, defending === "guard_low" ? 1 : 0, 14, dt);
+    this.guardSpent = smooth(this.guardSpent, fighter.guard < GUARD_BLOCK_MINIMUM ? 1 : 0, 10, dt);
     const slipTarget = defending === "slip_left" ? 1 : defending === "slip_right" ? -1 : 0;
     this.slip = smooth(this.slip, slipTarget, 16, dt);
     const weaving = defending === "weave";
@@ -1052,6 +1495,27 @@ export class BoxingGraph {
     this.clinchWeight = smooth(this.clinchWeight, fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0 ? 1 : 0, 10, dt);
     this.foulWeight = smooth(this.foulWeight, fighter.is_foul_recovery_target ? 1 : 0, 8, dt);
     this.tauntWeight = smooth(this.tauntWeight, fighter.taunt_ticks > 0 ? 1 : 0, 10, dt);
+    const gap = Math.hypot(this.mapping.x(opponent.x) - this.mapping.x(fighter.x), this.mapping.z(opponent.y) - this.mapping.z(fighter.y));
+    const crowded = this.referee || fighter.is_downed || opponent.is_downed ? 0 : 1 - smoothstep(CROWDED_GAP, OPEN_GAP, gap);
+    this.crowding = smooth(this.crowding, crowded, 9, dt);
+    let apart = Number.POSITIVE_INFINITY;
+    if (this.hasLiveHead && !this.referee && this.downState === "up") {
+      const own = this.boxer.rig.bones.head.getWorldPosition(this.ownHead);
+      const dx = own.x - this.liveOpponentHead.x;
+      const dz = own.z - this.liveOpponentHead.z;
+      const flat = Math.hypot(dx, dz);
+      apart = Math.hypot(dx, own.y - this.liveOpponentHead.y, dz);
+      if (apart < HEAD_SPACE && flat > 1e-4) {
+        // The lean builds while the heads are too close, in his own frame: x to his side, y ahead of him.
+        const push = ((HEAD_SPACE - apart) / HEAD_SPACE) * HEAD_SPACE_RATE * dt;
+        const cos = Math.cos(-this.yaw);
+        const sin = Math.sin(-this.yaw);
+        this.headSpace.x += ((dx * cos + dz * sin) / flat) * push;
+        this.headSpace.y += ((-dx * sin + dz * cos) / flat) * push;
+        if (this.headSpace.lengthSq() > 1) this.headSpace.normalize();
+      }
+    }
+    if (apart > HEAD_SPACE_CLEAR) this.headSpace.multiplyScalar(Math.exp(-3 * dt));
     this.tauntEnd = latchEndTick(this.tauntEnd, sampledTick, fighter.taunt_ticks > 0 ? fighter.taunt_ticks : null);
 
     springStep(this.headKick, dt, 190, 7.5, 0.24);
@@ -1067,7 +1531,8 @@ export class BoxingGraph {
     }
     this.guardKick = Math.max(0, this.guardKick - dt * 2.4);
 
-    this.updateDownState(fighter, dt, speed);
+    this.ragdoll?.tick(dt);
+    this.updateDownState(fighter, dt, reducedMotion, ownSpeed);
 
     const bounceTempo = (1.9 - this.tired * 0.7) * (1 - this.stunAmount * 0.6);
     this.bouncePhase += dt * bounceTempo * Math.PI * 2 * motionScale;
@@ -1130,6 +1595,11 @@ export class BoxingGraph {
     const rearTarget = this.scratchB.copy(STANCE.relaxedRear).lerp(STANCE.guardHighRear, this.guardHigh).lerp(STANCE.guardLowRear, this.guardLow);
     leadTarget.y -= this.tired * 0.12 + this.stunAmount * 0.22;
     rearTarget.y -= this.tired * 0.1 + this.stunAmount * 0.2;
+    // A spent guard, raised or not, sags from the cheekbones toward the chest: the opening shows.
+    leadTarget.y -= this.guardSpent * GUARD_SPENT_DROP;
+    rearTarget.y -= this.guardSpent * GUARD_SPENT_DROP;
+    leadTarget.z -= this.guardSpent * 0.04;
+    rearTarget.z -= this.guardSpent * 0.03;
     leadTarget.z += this.feint * 0.1 + Math.sin(time * 2.3) * 0.012 * motionScale;
     leadTarget.x += Math.sin(time * 1.9) * 0.01 * motionScale;
     rearTarget.y += Math.cos(time * 2.7) * 0.01 * motionScale;
@@ -1178,6 +1648,48 @@ export class BoxingGraph {
       torso.hips.x -= p * 0.05 * mirror;
       torso.headOffset.z -= p * 0.06;
       torso.headPitch -= p * 0.1;
+    }
+
+    // Inside, the fighter stands taller with the guard tucked in and the head off the centre line,
+    // so two fighters chest to chest do not pass through each other.
+    // Throwing, he steps into the punch out of the tall, tucked stance, so it reaches the contact point the engine hit.
+    this.punchCommit = smooth(this.punchCommit, this.punchActive ? 1 : 0, 10, dt);
+    const inside = this.crowding * (1 - this.clinchWeight) * (1 - this.punchCommit);
+    if (inside > 0.001) {
+      torso.headOffset.x -= inside * 0.075;
+      torso.headOffset.z -= inside * 0.05;
+      torso.headYaw -= inside * 0.2;
+      torso.spinePitch -= inside * 0.07;
+      torso.hips.z -= inside * 0.05;
+      leadHand.position.z -= inside * 0.14;
+      leadHand.position.x -= inside * 0.035 * mirror;
+      rearHand.position.z -= inside * 0.07;
+    }
+
+    // Heads never pass through each other: the one too close leans away from the other's. Tied up in a
+    // clinch, which already rests the heads on opposite shoulders, only the head moves.
+    if (Math.abs(this.headSpace.x) + Math.abs(this.headSpace.y) > 0.001) {
+      const side = this.headSpace.x;
+      const ahead = this.headSpace.y;
+      const free = 1 - this.clinchWeight;
+      torso.spinePitch += ahead * 0.7 * free;
+      torso.spineRoll -= side * 0.7 * free;
+      torso.hips.z += ahead * 0.1 * free;
+      torso.hips.x += side * 0.05 * free;
+      torso.headOffset.x += side * 0.05;
+      torso.headOffset.z += ahead * 0.05;
+      torso.headPitch += ahead * 0.2;
+      torso.headRoll -= side * 0.3;
+    }
+
+    // Drawn in off the ropes (see holdOnTheRopes), he leans back on them.
+    this.ropeLean = smooth(this.ropeLean, this.referee || this.downState !== "up" ? 0 : this.ropeLeanTarget, ROPE_LEAN_RATE, dt);
+    if (this.ropeLean > 0.001) {
+      // The way to the ropes in his own frame: x to his left, z ahead of him.
+      const toRopes = this.ropeLocal.copy(this.ropeOutward).applyAxisAngle(worldUpVector, -this.yaw);
+      // The whole body tips back from the hips, as against a wall.
+      torso.hipsPitch += toRopes.z * ROPE_LEAN_PITCH * this.ropeLean;
+      torso.hipsRoll -= toRopes.x * ROPE_LEAN_ROLL * this.ropeLean;
     }
 
     // Reactions.
@@ -1247,22 +1759,50 @@ export class BoxingGraph {
       hand.palm.set(-side, 0, 0.2);
     }
 
+    if (this.winded > 0.001 && (this.downState === "up" || sinking)) this.applyWindedPose(this.winded, time, mirror, leadHand, rearHand);
+
     // Knockdown overrides everything above.
     if (this.touchWeight > 0.001 && this.downState === "up") this.applyTouchGlovesPose(this.touchWeight, mirror, leadHand, rearHand);
     if (this.celebration > 0.001 && this.downState === "up") this.applyCelebratePose(this.celebration, time, mirror, leadHand, rearHand, lead, rear);
     if (this.wave > 0.001 && this.downState === "up") this.applyWaveOffPose(this.wave, time, mirror, leadHand, rearHand);
+    if (this.squareWeight > 0.001 && this.downState === "up") this.applyVerdictPose(this.squareWeight, time, mirror, leadHand, rearHand, lead, rear, headRest);
+    if ((this.wristWeights[0] > 0.001 || this.wristWeights[1] > 0.001) && this.downState === "up") this.applyRaisePose(mirror, leadHand, rearHand);
     if (this.breakWeight > 0.001 && this.downState === "up") this.applyBreakPose(this.breakWeight, mirror, leadHand, rearHand);
     if (this.attendWeight > 0.001 && this.downState === "up") this.applyAttendPose(this.attendWeight, time, mirror, leadHand, rearHand);
     if (this.treatWeight > 0.001 && this.downState === "up") this.applyTreatPose(this.treatWeight, time, mirror, leadHand, rearHand, lead, rear);
     if (this.seated > 0.001 && this.downState === "up") this.applySeatedPose(this.seated, time, mirror, leadHand, rearHand, lead, rear);
     if (this.downState !== "up") this.applyDownPose(mirror, leadHand, rearHand, lead, rear);
+    this.steadyJointPoles(mirror, leadHand, rearHand, lead, rear, dt);
 
     crouch = 0;
     void crouch;
     const pose = this.pose as { shrugL: number; shrugR: number };
     pose.shrugL = mirror > 0 ? shrugLead : shrugRear;
     pose.shrugR = mirror > 0 ? shrugRear : shrugLead;
-    this.solver.apply(boxer.root, this.pose);
+    const ragdoll = this.ragdoll;
+    if (ragdoll?.active === true && reducedMotion) {
+      ragdoll.stop();
+      ragdoll.clearRise();
+    }
+    if (ragdoll?.active === true && !ragdoll.handingOver) {
+      ragdoll.setLost(boxer.isDecapitated, boxer.isHandDismembered("left"), boxer.isHandDismembered("right"));
+      ragdoll.update(dt, this.obstacle);
+    } else {
+      this.solver.apply(boxer.root, this.pose);
+      if (ragdoll?.handingOver === true) {
+        ragdoll.followPose(dt, this.obstacle);
+        // On all fours the physics lets go, and what it left short of the get-up pose blends out from there.
+        if (this.riseProgress >= RISE_FOURS && ragdoll.handOverSeconds >= RISE_HANDOVER_SECONDS) {
+          ragdoll.letGo();
+          this.riseBlendAge = 0;
+        }
+      } else if (ragdoll !== null && ragdoll.hasRisePose) {
+        const settled = smoothstep(0, RISE_BLEND_SECONDS, this.riseBlendAge);
+        if (settled < 1 && this.downState !== "up") ragdoll.blendRise(settled);
+        else ragdoll.clearRise();
+      }
+      ragdoll?.sample(dt);
+    }
     this.applyDislocation();
 
     const opponentBlood = Math.min(
@@ -1270,7 +1810,8 @@ export class BoxingGraph {
       (opponent.trauma.bleeding + opponent.trauma.left_cut + opponent.trauma.right_cut) / 620
         * (blood === "off" ? 0 : blood === "reduced" ? 0.3 : 1.5),
     );
-    boxer.gloveGear.color.copy(boxer.gearBaseColor).lerp(BLOODED_GLOVE_COLOR, opponentBlood);
+    boxer.setGloveBlood(opponentBlood);
+    boxer.setTrunksBlood(trunksBloodFor(fighter.trauma, blood));
     applyHeadTrauma(boxer.headInjury, fighter.trauma, blood);
     applyBodyTrauma(boxer.bodyInjury, fighter.trauma, blood);
     boxer.setSkinClearcoat(0.25 + (1 - stamina) * 0.4);
@@ -1301,21 +1842,27 @@ export class BoxingGraph {
 
   /**
    * Tie-up: the fighter whose id sorts first hooks over the opponent's arms,
-   * the other digs under them around the ribs. Both lean in over the bladed
-   * chest line and rest the head to their own right, so the skulls pass on
-   * opposite shoulders, and both keep working for position while they hold.
+   * the other digs under them around the ribs. Both square up chest to chest,
+   * lean in and rest the head to their own right, so the skulls pass on
+   * opposite shoulders whatever their stances, and both keep working for
+   * position while they hold.
    */
   private applyClinchPose(c: number, time: number, mirror: number, fighter: FighterSnapshot, opponent: FighterSnapshot, leadHand: HandTarget, rearHand: HandTarget, headRest: THREE.Vector3): void {
     const torso = this.torso;
     const over = fighter.player_id < opponent.player_id;
     const struggle = Math.sin(time * 7.3) * 0.5 + Math.sin(time * 4.1 + 1.2) * 0.5;
+    // Held on the ropes, the two are drawn in together (see holdOnTheRopes).
     const centre = this.clinchCentre
-      .set(this.mapping.x(opponent.x) - (this.rootX ?? 0), 0, this.mapping.z(opponent.y) - this.rootZ)
+      .set(this.mapping.x(opponent.x) - this.ropeHold.x - (this.rootX ?? 0), 0, this.mapping.z(opponent.y) - this.ropeHold.z - this.rootZ)
       .applyQuaternion(this.scratchQ.setFromAxisAngle(worldUpVector, -this.yaw));
     if (centre.lengthSq() < 0.04) centre.set(0, 0, 0.5);
     const forward = this.clinchForward.copy(centre).normalize();
     const acrossX = forward.z;
     const acrossZ = -forward.x;
+    // Bladed, a lean in takes the head toward the rear hand's side: an orthodox fighter's to his right, a
+    // southpaw's to his left, into the head of an orthodox opponent. Squared up, both rest it to the right.
+    torso.hipsYaw *= 1 - c;
+    torso.shouldersYaw *= 1 - c;
     torso.spinePitch += c * (over ? 0.28 : 0.42) + struggle * 0.025 * c;
     torso.hips.z += c * (over ? 0.04 : 0.06);
     torso.hips.x += struggle * 0.02 * c;
@@ -1323,7 +1870,8 @@ export class BoxingGraph {
     torso.hipsYaw += struggle * 0.06 * c;
     torso.headPitch += c * (over ? 0.15 : 0.3);
     torso.headYaw -= c * 0.3;
-    torso.headOffset.x -= c * 0.05;
+    torso.headOffset.x -= c * CLINCH_HEAD_SIDE;
+    torso.spineRoll += c * CLINCH_HEAD_LEAN;
     torso.headOffset.y -= c * (over ? 0.02 : 0.06);
     const metrics = this.boxer.rig.metrics;
     const reach = Math.min(metrics.armL.upper + metrics.armL.lower, metrics.armR.upper + metrics.armR.lower) * 0.92;
@@ -1351,6 +1899,27 @@ export class BoxingGraph {
       hand.knuckles.lerp(this.clinchTemp.set(-acrossX * side * 0.9 + forward.x * 0.3, over ? -0.25 : 0.1, -acrossZ * side * 0.9 + forward.z * 0.3), c).normalize();
       hand.palm.lerp(this.clinchTemp.set(-forward.x, over ? 0.1 : 0.35, -forward.z), c).normalize();
     }
+  }
+
+  /**
+   * How far (world x and z) to draw this fighter in from `x`, `z`, where he would stand: the engine lets a
+   * fighter's middle reach 0.36 m past the rope line, further than the ropes give, so one it has past their
+   * furthest give is drawn in, his back on the ropes, and leans back on them (see ropeHoldAt). An opponent
+   * on top of him comes in with him, so the two keep the gap the engine has between them.
+   */
+  private holdOnTheRopes(opponent: FighterSnapshot, x: number, z: number): THREE.Vector3 {
+    if (this.referee) {
+      this.ropeLeanTarget = 0;
+      return this.ropeHold.set(0, 0, 0);
+    }
+    this.ropeLeanTarget = ropeHoldAt(x, z, this.ropeExcess, this.ropeOwn);
+    const pressed = Math.hypot(this.ropeExcess.x, this.ropeExcess.z);
+    if (pressed > 0) this.ropeOutward.set(this.ropeExcess.x / pressed, 0, this.ropeExcess.z / pressed);
+    const opponentX = this.mapping.x(opponent.x);
+    const opponentZ = this.mapping.z(opponent.y);
+    ropeHoldAt(opponentX, opponentZ, this.ropeTheirs, this.ropeTheirs);
+    const close = 1 - smoothstep(ROPE_HOLD_CLOSE, ROPE_HOLD_OPEN, Math.hypot(opponentX - x, opponentZ - z));
+    return this.ropeHold.set(heldIn(this.ropeOwn.x, this.ropeTheirs.x * close), 0, heldIn(this.ropeOwn.z, this.ropeTheirs.z * close));
   }
 
   /** Character-space head rest position for hand offsets (before torso deltas). */
@@ -1483,6 +2052,8 @@ export class BoxingGraph {
     const startup = this.punchTiming.startup;
     const authoritative = this.ownAuthoritativeAge;
     if (authoritative === null) return this.punchAgeTicks < startup ? startup / (startup + this.ownLeadTicks) : 1;
+    // The server has stopped reporting it, for a clinch or the bell: the age it last gave is stale.
+    if (this.actionId !== this.ownActionId) return 1;
     if (this.punchAgeTicks - authoritative <= 0.25) return 1;
     if (this.punchAgeTicks < startup && authoritative < startup) return clamp((startup - this.punchAgeTicks) / (startup - authoritative), 0.25, 1);
     return 0.5;
@@ -1759,8 +2330,9 @@ export class BoxingGraph {
     }
   }
 
-  private updateDownState(fighter: FighterSnapshot, dt: number, speed: number): void {
-    if (fighter.is_downed) {
+  private updateDownState(fighter: FighterSnapshot, dt: number, reducedMotion: boolean, speed: number): void {
+    this.riseBlendAge += dt;
+    if (fighter.is_downed || this.forcedDown) {
       if (this.downState === "up" || this.downState === "rising") {
         // Knocked down again while getting up, he falls from where the get-up had him, not from standing.
         this.fallFromGetUp = this.downState === "rising";
@@ -1771,20 +2343,41 @@ export class BoxingGraph {
         this.downState = "falling";
         this.fallAge = 0;
         this.riseProgress = 0;
+        this.riseRootFrom.copy(this.riseRoot);
         this.landSettled = false;
+        this.fallenFromPhysics = false;
+        this.downPolesSet = false;
+        // The knockout physics plays the fall, from the pose on screen (so a knockdown mid-rise falls from
+        // where he was), unless the animation does: a body shot to one knee, or reduced motion.
+        this.ragdoll?.clearRise();
+        if (this.authoredNextFall) this.ragdoll?.forget();
+        else if (!reducedMotion) this.startFall(fighter);
+        this.authoredNextFall = false;
       } else if (this.downState === "falling") {
         this.fallAge += dt;
         if (this.fallAge >= KNOCKDOWN_FALL_SECONDS) this.downState = "down";
+      } else if (this.fallKneel) {
+        // Down on one knee after a body shot: the get-up from there is only its last stage.
+        this.riseProgress = RISE_KNEE;
       } else {
-        // Each good press of the get-up prompt pushes him further up; a bad one lets him sink back.
-        const meter = fighter.get_up_required > 0 ? clamp(fighter.get_up_meter / fighter.get_up_required, 0, 1) : 0;
+        // Each good press of the get-up prompt pushes him further up; a bad one lets him sink back. Knocked
+        // out, or once the bout is over, he stays down.
+        const trying = !this.forcedDown && !this.heldDown && fighter.get_up_required > 0;
+        const meter = trying ? clamp(fighter.get_up_meter / fighter.get_up_required, 0, 1) : 0;
         const target = meter * RISE_KNEE;
+        // The physics keeps the body until he starts to get up, then hands it to the animated get-up.
+        if (this.ragdoll?.active === true && !this.ragdoll.handingOver) {
+          if (target <= 0) return;
+          this.handOverFall(fighter);
+        }
         this.riseProgress += clamp(target - this.riseProgress, -RISE_SINK_RATE * dt, RISE_PUSH_RATE * dt);
       }
       return;
     }
     if (this.downState === "down" || this.downState === "falling") {
       this.downState = "rising";
+      if (this.ragdoll?.active === true && !this.ragdoll.handingOver) this.handOverFall(fighter);
+      if (this.fallKneel) this.riseProgress = Math.max(this.riseProgress, RISE_KNEE);
       this.riseFrom = this.riseProgress;
       this.feetInitialized = false;
     }
@@ -1793,7 +2386,225 @@ export class BoxingGraph {
     const hurried = speed > 0.3 || this.punchActive;
     const rate = (1 - this.riseFrom) / (hurried ? GETUP_HURRIED_SECONDS : GETUP_SECONDS);
     this.riseProgress = Math.min(1, this.riseProgress + (this.riseProgress < RISE_FOURS ? Math.min(rate, RISE_ROLL_RATE) : rate) * dt);
-    if (this.riseProgress >= 1) this.downState = "up";
+    if (this.riseProgress >= 1) {
+      this.downState = "up";
+      this.fallKneel = false;
+    }
+  }
+
+  /**
+   * Starts the knockout physics. After a gap in drawing (the Activity hidden, a reconnect, a spectator joining
+   * mid-count) the fighter was last drawn where he stood then, which can be metres from his place: he falls at his
+   * place instead, and when the count is already running he is put down where that fall ends.
+   */
+  private startFall(fighter: FighterSnapshot): void {
+    const ragdoll = this.ragdoll;
+    if (ragdoll === null) return;
+    if (this.rootX !== null && Math.hypot(this.place.x - this.rootX, this.place.z - this.rootZ) > FALL_ROOT_JUMP) {
+      this.rootX = this.place.x;
+      this.rootZ = this.place.z;
+      this.boxer.root.position.set(this.rootX, 0, this.rootZ);
+    }
+    ragdoll.start("crumple");
+    if (fighter.get_up_count > 0) {
+      ragdoll.settle();
+      this.fallAge = KNOCKDOWN_FALL_SECONDS;
+    }
+  }
+
+  /**
+   * The knockout physics hands the body to the animated get-up: the down pose it starts from is read off
+   * the skeleton as the fall left it (the hips' place and turn, the spine, the gloves and the ankles), so
+   * the get-up begins exactly there, and the joints' own turns blend in over RISE_BLEND_SECONDS.
+   */
+  private handOverFall(fighter: FighterSnapshot): void {
+    const ragdoll = this.ragdoll;
+    if (ragdoll === null || !ragdoll.active || ragdoll.handingOver) return;
+    const mirror = fighter.stance === "orthodox" ? 1 : -1;
+    const bones = this.boxer.rig.bones;
+    // The bones still carry the physics' last frame; read them in character space under this frame's root.
+    this.boxer.root.updateMatrixWorld(true);
+    const root = this.scratchC.set(this.rootX ?? 0, 0, this.rootZ);
+    const inverse = this.scratchQ.setFromAxisAngle(worldUpVector, -this.yaw);
+    const fallen = this.fallen;
+    const toCharacter = (bone: THREE.Bone, out: THREE.Vector3): THREE.Vector3 => out.setFromMatrixPosition(bone.matrixWorld).sub(root).applyQuaternion(inverse);
+    // The poser builds the spine and head by adding to the hips' angles, so each turn is read as the angles nearest
+    // the ones it is built on: the hips' nearest the authored lying pose's, the chest's nearest the hips', the head's
+    // nearest the chest's.
+    const turnOf = (bone: THREE.Bone, pitch: number, yaw: number, roll: number): THREE.Euler =>
+      nearestTurn(downEuler.setFromQuaternion(bone.getWorldQuaternion(fallenTurn).premultiply(inverse), "YXZ"), pitch, yaw, roll);
+    toCharacter(bones.hips, fallen.hips);
+    this.landProne = ragdoll.faceDown();
+    const side = Math.abs(fallen.hips.x) > 0.12 ? Math.sign(fallen.hips.x) : 0;
+    const authored = this.landProne
+      ? placeDownPose(this.downTo, PRONE, PRONE_TWIST, mirror, side, this.boxer.rig.metrics.ankleHeight)
+      : placeDownPose(this.downTo, LYING, LYING_TWIST, mirror, side, this.boxer.rig.metrics.ankleHeight);
+    this.landSide = side;
+    this.landShift.set(fallen.hips.x - authored.hips.x, 0, fallen.hips.z - authored.hips.z);
+    const hips = turnOf(bones.hips, authored.hipsPitch, authored.hipsYaw, authored.hipsRoll);
+    fallen.hipsPitch = hips.x;
+    fallen.hipsYaw = hips.y;
+    fallen.hipsRoll = hips.z;
+    // The chest's turn is the upper chest's whole turn on the hips, its side bend included: dropped, the get-up's
+    // first frame drew the head and shoulders 30-70 cm from where the fall had left them.
+    const chest = turnOf(bones.upperChest, fallen.hipsPitch, fallen.hipsYaw, fallen.hipsRoll);
+    fallen.shouldersYaw = chest.y;
+    fallen.spinePitch = chest.x - fallen.hipsPitch;
+    fallen.spineRoll = chest.z - fallen.hipsRoll;
+    const head = turnOf(bones.head, chest.x, chest.y, chest.z);
+    fallen.headPitch = head.x;
+    fallen.turn = head.y;
+    fallen.headRoll = head.z;
+    toCharacter(mirror > 0 ? bones.gloveL : bones.gloveR, fallen.leadHand);
+    toCharacter(mirror > 0 ? bones.gloveR : bones.gloveL, fallen.rearHand);
+    toCharacter(mirror > 0 ? bones.ankleL : bones.ankleR, fallen.leadFoot);
+    toCharacter(mirror > 0 ? bones.ankleR : bones.ankleL, fallen.rearFoot);
+    // The get-up draws each foot sole down, so an ankle the fall left lower than a standing one (a foot on its side,
+    // or toes up) is put at the ankle's height: below it the foot went into the canvas.
+    const ankle = this.boxer.rig.metrics.ankleHeight;
+    fallen.leadFoot.y = Math.max(fallen.leadFoot.y, ankle);
+    fallen.rearFoot.y = Math.max(fallen.rearFoot.y, ankle);
+    // Each knee and elbow keeps the way it is bent: from the line between the limb's ends out to the joint. A limb
+    // lying nearly straight has no such line to speak of, so the way the joint faces (the kneecap, the back of the
+    // elbow) settles it: read off a straight limb's noise, a knee could bend into the canvas and then flip over.
+    const bend = (root: THREE.Bone, joint: THREE.Bone, end: THREE.Bone, out: THREE.Vector3, faces: THREE.Vector3): void => {
+      const from = toCharacter(root, this.scratchB);
+      const along = toCharacter(end, this.scratchD).sub(from).normalize();
+      toCharacter(joint, out).sub(from);
+      out.addScaledVector(downScratch.copy(faces).applyQuaternion(root.getWorldQuaternion(fallenTurn)).applyQuaternion(inverse), STRAIGHT_LIMB_BEND);
+      out.addScaledVector(along, -out.dot(along));
+      if (out.lengthSq() > 1e-6) out.normalize();
+      else out.copy(faces === KNEECAP ? downForward : downBelow);
+    };
+    const left = mirror > 0;
+    bend(left ? bones.hipL : bones.hipR, left ? bones.kneeL : bones.kneeR, left ? bones.ankleL : bones.ankleR, fallen.leadKnee, KNEECAP);
+    bend(left ? bones.hipR : bones.hipL, left ? bones.kneeR : bones.kneeL, left ? bones.ankleR : bones.ankleL, fallen.rearKnee, KNEECAP);
+    bend(left ? bones.shoulderL : bones.shoulderR, left ? bones.elbowL : bones.elbowR, left ? bones.gloveL : bones.gloveR, fallen.leadElbow, left ? ELBOW_BACK_L : ELBOW_BACK_R);
+    bend(left ? bones.shoulderR : bones.shoulderL, left ? bones.elbowR : bones.elbowL, left ? bones.gloveR : bones.gloveL, fallen.rearElbow, left ? ELBOW_BACK_R : ELBOW_BACK_L);
+    // The gloves as they lie: knuckles along the bone's y axis, the palm along its z axis.
+    const glove = (bone: THREE.Bone, knuckles: THREE.Vector3, palm: THREE.Vector3): void => {
+      const turn = bone.getWorldQuaternion(fallenTurn).premultiply(inverse);
+      knuckles.set(0, 1, 0).applyQuaternion(turn);
+      palm.set(0, 0, 1).applyQuaternion(turn);
+    };
+    glove(left ? bones.gloveL : bones.gloveR, fallen.leadKnuckles, fallen.leadPalm);
+    glove(left ? bones.gloveR : bones.gloveL, fallen.rearKnuckles, fallen.rearPalm);
+    fallen.ownJoints = 1;
+    fallen.leadHeel = 0;
+    fallen.rearHeel = 0;
+    fallen.palmsDown = this.landProne ? 1 : 0;
+    this.fallenFromPhysics = true;
+    this.landSettled = true;
+    this.downPolesSet = false;
+    ragdoll.handOver();
+    this.riseBlendAge = 0;
+    // The drawn fighter's root moves under the body, which gets up where it lies; the fitted pose and the pose
+    // the physics left move with it the other way, so nothing jumps. He steps back to his place as he rises.
+    const shift = this.scratchE.set(ragdoll.pelvis(this.scratchD).x - (this.rootX ?? 0), 0, this.scratchD.z - this.rootZ);
+    const local = this.scratchB.copy(shift).applyQuaternion(inverse);
+    for (const point of [fallen.hips, fallen.leadHand, fallen.rearHand, fallen.leadFoot, fallen.rearFoot]) {
+      point.x -= local.x;
+      point.z -= local.z;
+    }
+    ragdoll.shiftRise(this.scratchC.copy(shift).negate());
+    this.rootX = (this.rootX ?? 0) + shift.x;
+    this.rootZ += shift.z;
+    this.boxer.root.position.set(this.rootX, 0, this.rootZ);
+    this.riseRoot.set(this.rootX - this.mapping.x(fighter.x) - this.touchOffset.x, 0, this.rootZ - this.mapping.z(fighter.y) - this.touchOffset.z);
+    this.riseRootFrom.copy(this.riseRoot);
+  }
+
+  /**
+   * Getting up from where the physics took the body, he steps back to his place in the engine as he rises off his
+   * knee and stands up on it. Walking back only once he was up left him drawn up to 0.6 m from the place the
+   * opponent's punches aim at for half a second after the server had him fighting again.
+   */
+  private walkBackFromTheFall(dt: number): void {
+    const share = this.downState === "rising" ? 1 - smoothstep(RISE_KNEE, 1, this.riseProgress) : this.downState === "up" ? 0 : 1;
+    const x = this.riseRootFrom.x * share;
+    const z = this.riseRootFrom.z * share;
+    if (dt > 0) this.riseRootVelocity.set((x - this.riseRoot.x) / dt, 0, (z - this.riseRoot.z) / dt);
+    else this.riseRootVelocity.set(0, 0, 0);
+    this.riseRoot.set(x, 0, z);
+    if (share === 0) this.riseRootFrom.set(0, 0, 0);
+  }
+
+  /**
+   * Down and getting up, a knee or an elbow whose pole has to come a long way round (from how the physics left the limb
+   * to how the get-up has it) swings round the limb at POLE_TURN_RATE rather than straight across: a pole crossing the
+   * line of the limb flipped the knee to its other side in one frame, 62 cm. Each limb's line runs from its hip or
+   * shoulder as last drawn to where its foot or glove goes now.
+   */
+  private steadyJointPoles(mirror: number, leadHand: HandTarget, rearHand: HandTarget, lead: FootTarget, rear: FootTarget, dt: number): void {
+    this.poleSettle = this.downState !== "up" ? POLE_SETTLE_SECONDS : Math.max(0, this.poleSettle - dt);
+    if (this.poleSettle <= 0 || (this.ragdoll?.active === true && !this.ragdoll.handingOver)) {
+      this.downPolesSet = false;
+      return;
+    }
+    const bones = this.boxer.rig.bones;
+    const left = mirror > 0;
+    // The skeleton and the root's matrix are both still last frame's, so together they give last frame's character space.
+    this.characterInverse.copy(this.boxer.root.matrixWorld).invert();
+    // Lead knee, rear knee, lead elbow, rear elbow.
+    for (let index = 0; index < 4; index += 1) {
+      const leg = index < 2;
+      const leading = index % 2 === 0;
+      const onLeft = leading === left;
+      const root = leg ? (onLeft ? bones.hipL : bones.hipR) : (onLeft ? bones.shoulderL : bones.shoulderR);
+      const target = leg ? (leading ? lead : rear) : (leading ? leadHand : rearHand);
+      const end = target.position;
+      const pole = target.pole;
+      const last = this.downPoles[index]!;
+      if (!this.downPolesSet) {
+        last.copy(pole);
+        continue;
+      }
+      const axis = this.scratchB.setFromMatrixPosition(root.matrixWorld).applyMatrix4(this.characterInverse).sub(end).negate();
+      if (axis.lengthSq() < 1e-6) {
+        last.copy(pole);
+        continue;
+      }
+      axis.normalize();
+      // Both poles seen across the limb; the drawn one turns toward the wanted one about the limb, the short way, and only so fast.
+      const from = this.scratchD.copy(last).addScaledVector(axis, -last.dot(axis));
+      const to = this.scratchE.copy(pole).addScaledVector(axis, -pole.dot(axis));
+      if (from.lengthSq() < 1e-4 || to.lengthSq() < 1e-4) {
+        last.copy(pole);
+        continue;
+      }
+      const angle = Math.atan2(this.scratch.crossVectors(from, to).dot(axis), from.dot(to));
+      const most = POLE_TURN_RATE * Math.max(dt, 1 / 120);
+      if (Math.abs(angle) <= most) {
+        last.copy(pole);
+        continue;
+      }
+      pole.copy(from.normalize().applyAxisAngle(axis, Math.sign(angle) * most));
+      last.copy(pole);
+    }
+    this.downPolesSet = true;
+  }
+
+  /** Folded over a body shot: knees giving, the glove on the struck side clamped over the ribs, the other hanging. */
+  private applyWindedPose(blend: number, time: number, mirror: number, leadHand: HandTarget, rearHand: HandTarget): void {
+    const torso = this.torso;
+    const lerp = THREE.MathUtils.lerp;
+    const side = this.windedSide;
+    const shudder = Math.sin(time * 23) * 0.006;
+    torso.hips.y = lerp(torso.hips.y, STANCE.hipsHeight - 0.1, blend);
+    torso.hips.z = lerp(torso.hips.z, -0.04, blend);
+    torso.hipsPitch = lerp(torso.hipsPitch, 0.2, blend);
+    torso.spinePitch = lerp(torso.spinePitch, 0.62 + shudder, blend);
+    torso.spineRoll = lerp(torso.spineRoll, side * 0.16, blend);
+    torso.headPitch = lerp(torso.headPitch, 0.38, blend);
+    const clutch = side > 0 ? this.hand.L : this.hand.R;
+    const free = clutch === leadHand ? rearHand : leadHand;
+    clutch.position.lerp(seatedScratch.set(side * 0.13, 0.98, 0.17), blend);
+    clutch.palm.lerp(seatedScratch.set(-side * 0.6, 0, -0.8), blend).normalize();
+    clutch.knuckles.lerp(seatedScratch.set(-side * 0.5, 0.5, 0.2), blend).normalize();
+    clutch.pole.lerp(seatedScratch.set(side * 0.9, -0.3, -0.3), blend).normalize();
+    free.position.lerp(seatedScratch.set(-side * 0.2, 0.86, 0.3), blend);
+    free.pole.lerp(seatedScratch.set(-side * 0.8, -0.6, 0), blend).normalize();
+    void mirror;
   }
 
   private applyTouchGlovesPose(
@@ -1927,10 +2738,13 @@ export class BoxingGraph {
     rear.toe.lerp(this.treatScratch.set(-0.1 * mirror, 0, 1), blend).normalize();
     lead.pole.lerp(this.treatScratch.set(0.25 * mirror, 0.4, 1), blend).normalize();
     rear.pole.lerp(this.treatScratch.set(-0.2 * mirror, 0.4, 1), blend).normalize();
-    const reach = 0.08 - press;
-    leadHand.position.lerp(this.treatScratch.set(eye.x + facing.x * reach, eye.y - 0.07, eye.z + facing.z * reach), blend);
-    leadHand.knuckles.lerp(this.treatScratch.set(0, 1, 0.05), blend).normalize();
-    leadHand.palm.lerp(this.treatScratch.set(-facing.x, 0, -facing.z), blend).normalize();
+    // The enswell's plate sits above the fist and presses on the eye; the bottle points from the fist into the mouth.
+    const bottle = this.treatProp === "bottle";
+    const reach = bottle ? 0.3 : 0.08 - press;
+    leadHand.position.lerp(this.treatScratch.set(eye.x + facing.x * reach, eye.y + (bottle ? 0.02 : -0.07), eye.z + facing.z * reach), blend);
+    if (bottle) leadHand.knuckles.lerp(this.treatScratch.set(-facing.x, -0.25, -facing.z), blend).normalize();
+    else leadHand.knuckles.lerp(this.treatScratch.set(0, 1, 0.05), blend).normalize();
+    leadHand.palm.lerp(bottle ? this.treatScratch.set(0, -1, 0) : this.treatScratch.set(-facing.x, 0, -facing.z), blend).normalize();
     leadHand.pole.lerp(this.treatScratch.set(0.85 * mirror, -0.35, 0.1), blend).normalize();
     const jaw = this.treatSide * 0.135;
     rearHand.position.lerp(this.treatScratch.set(eye.x - leftX * jaw + facing.x * 0.05, eye.y - 0.2, eye.z - leftZ * jaw + facing.z * 0.05), blend);
@@ -1977,6 +2791,64 @@ export class BoxingGraph {
     rearHand.pole.lerp(seatedScratch.set(-0.2 * mirror, -1, 0.1), blend).normalize();
   }
 
+  /** Standing square beside the referee for the decision, then the arm on the referee's side going up or the head going down. */
+  private applyVerdictPose(
+    blend: number,
+    time: number,
+    mirror: number,
+    leadHand: HandTarget,
+    rearHand: HandTarget,
+    lead: FootTarget,
+    rear: FootTarget,
+    headRest: THREE.Vector3,
+  ): void {
+    const torso = this.torso;
+    const lerp = THREE.MathUtils.lerp;
+    const raised = this.raisedWeight;
+    const bowed = this.bowedWeight;
+    const breath = Math.sin(time * 1.9) * 0.008;
+    torso.hips.x = lerp(torso.hips.x, this.verdictSide * 0.02 * raised, blend);
+    torso.hips.y = lerp(torso.hips.y, STANCE.hipsHeight + 0.03 + raised * 0.01 - bowed * 0.015, blend);
+    torso.hips.z = lerp(torso.hips.z, 0, blend);
+    torso.hipsYaw = lerp(torso.hipsYaw, 0, blend);
+    torso.hipsPitch = lerp(torso.hipsPitch, 0, blend);
+    torso.shouldersYaw = lerp(torso.shouldersYaw, 0, blend);
+    torso.spinePitch = lerp(torso.spinePitch, 0.05 - raised * 0.1 + bowed * 0.12, blend);
+    torso.spineRoll = lerp(torso.spineRoll, -this.verdictSide * 0.06 * raised, blend);
+    torso.headYaw = lerp(torso.headYaw, 0, blend);
+    torso.headPitch = lerp(torso.headPitch, 0.04 - raised * 0.2 + bowed * 0.34, blend);
+    lead.toe.lerp(seatedScratch.set(0.12 * mirror, 0, 1), blend).normalize();
+    rear.toe.lerp(seatedScratch.set(-0.12 * mirror, 0, 1), blend).normalize();
+    lead.pole.lerp(seatedScratch.set(0.12 * mirror, 0.3, 1), blend).normalize();
+    rear.pole.lerp(seatedScratch.set(-0.12 * mirror, 0.3, 1), blend).normalize();
+    for (const [hand, side] of [[leadHand, mirror], [rearHand, -mirror]] as const) {
+      const lifted = side === this.verdictSide ? raised : 0;
+      hand.position.lerp(seatedScratch.set(side * (0.27 + lifted * 0.11), lerp(0.88 + breath, headRest.y + 0.44, lifted), lerp(0.12, 0.05, lifted)), blend);
+      hand.knuckles.lerp(seatedScratch.set(side * 0.15, lerp(-0.9, 1, lifted), lerp(0.35, 0, lifted)), blend).normalize();
+      hand.palm.lerp(seatedScratch.set(lerp(-0.9 * side, 0, lifted), 0.1, lerp(0.35, 1, lifted)), blend).normalize();
+      hand.pole.lerp(seatedScratch.set(side * lerp(0.5, 1, lifted), lerp(-0.4, 0.1, lifted), lerp(-0.8, -0.3, lifted)), blend).normalize();
+    }
+  }
+
+  /** Referee: a hand around each wrist it has been given, just below the glove. */
+  private applyRaisePose(mirror: number, leadHand: HandTarget, rearHand: HandTarget): void {
+    const root = this.treatScratch.set(this.rootX ?? 0, 0, this.rootZ);
+    const inverse = this.scratchQ.setFromAxisAngle(worldUpVector, -this.yaw);
+    for (const [index, side] of [[0, 1], [1, -1]] as const) {
+      const wrist = this.wrists[index] ?? this.wristTargets[index];
+      const weight = this.wristWeights[index];
+      if (weight <= 0.001) continue;
+      const hand = side === mirror ? leadHand : rearHand;
+      const held = seatedScratch.copy(wrist).sub(root).applyQuaternion(inverse);
+      held.y -= 0.17;
+      hand.position.lerp(held, weight);
+      hand.knuckles.lerp(seatedScratch.set(0, 1, 0), weight).normalize();
+      hand.palm.lerp(seatedScratch.set(side, 0, 0.2), weight).normalize();
+      hand.pole.lerp(seatedScratch.set(side * 0.6, -0.5, -0.6), weight).normalize();
+    }
+    this.torso.headPitch = THREE.MathUtils.lerp(this.torso.headPitch, -0.05, Math.max(this.wristWeights[0], this.wristWeights[1]));
+  }
+
   private applyWaveOffPose(
     blend: number,
     time: number,
@@ -1990,8 +2862,10 @@ export class BoxingGraph {
     torso.hipsPitch = lerp(torso.hipsPitch, 0.08, blend);
     torso.spinePitch = lerp(torso.spinePitch, 0.05, blend);
     torso.headPitch = lerp(torso.headPitch, -0.1, blend);
-    leadHand.position.lerp(seatedScratch.set(0.42 * sweep * mirror, 1.66 + Math.abs(sweep) * 0.08, 0.34), blend);
-    rearHand.position.lerp(seatedScratch.set(-0.42 * sweep * mirror, 1.62 + Math.abs(sweep) * 0.08, 0.24), blend);
+    // Arms all but straight, crossing below the chin and swinging wide past the shoulders, so the call
+    // reads from any side and the hands never come up over the face.
+    leadHand.position.lerp(seatedScratch.set(0.62 * sweep * mirror, 1.3 + Math.abs(sweep) * 0.1, 0.44), blend);
+    rearHand.position.lerp(seatedScratch.set(-0.62 * sweep * mirror, 1.24 + Math.abs(sweep) * 0.1, 0.36), blend);
     leadHand.palm.lerp(seatedScratch.set(0, 0, 1), blend).normalize();
     rearHand.palm.lerp(seatedScratch.set(0, 0, 1), blend).normalize();
     leadHand.knuckles.lerp(seatedScratch.set(0, 1, 0), blend).normalize();
@@ -2070,9 +2944,13 @@ export class BoxingGraph {
       // Down and getting up: lying -> all fours -> one knee -> stand, as far as the get-up has come.
       const u = this.riseProgress;
       let stand = 0;
-      if (u < RISE_FOURS) {
+      if (this.fallKneel) {
+        // On one knee after a body shot he rises from there straight to his feet.
+        stand = smoothstep(RISE_KNEE, 1, u);
+        lerpDownPose(pose, this.placeKneel(this.downFrom, mirror), standing, stand);
+      } else if (u < RISE_FOURS) {
         const s = smoothstep(0, RISE_FOURS, u);
-        const lying = this.placeLying(mirror);
+        const lying = this.fallenFromPhysics ? this.fallen : this.placeLying(mirror);
         const fours = this.placeDown(this.downTo, ALL_FOURS, mirror);
         lerpDownPose(pose, lying, fours, s);
         // Face down, he pushes up on his gloves before the knees come under him: the hips rise first.
@@ -2084,9 +2962,10 @@ export class BoxingGraph {
         lerpDownPose(pose, this.placeDown(this.downFrom, ONE_KNEE, mirror), standing, stand);
       }
       this.writeDown(pose, mirror, leadHand, rearHand, lead, rear, 0, stand);
+      if (this.fallKneel) this.orientKneel(1 - stand, mirror, leadHand, rearHand, lead, rear);
       return;
     }
-    const lying = this.placeLying(mirror);
+    const lying = this.fallKneel ? this.placeKneel(this.downFrom, mirror) : this.placeLying(mirror);
     const u = clamp(this.fallAge / KNOCKDOWN_FALL_SECONDS, 0, 1);
     const t = easeIn(u, 2.1);
     const start = this.fallFromGetUp ? this.fallStart : standing;
@@ -2099,7 +2978,9 @@ export class BoxingGraph {
     pose.rearFoot.lerpVectors(start.rearFoot, lying.rearFoot, feet);
     pose.leadHeel = THREE.MathUtils.lerp(start.leadHeel, lying.leadHeel, feet);
     pose.rearHeel = THREE.MathUtils.lerp(start.rearHeel, lying.rearHeel, feet);
-    if (this.landProne) {
+    if (this.fallKneel) {
+      // Sinking to the knee he stays folded over the shot, the gloves on the ribs and the front knee.
+    } else if (this.landProne) {
       // Pitching forward, the gloves reach out ahead of him to break the fall.
       const reach = easeOut(u, 2.5);
       pose.leadHand.lerpVectors(start.leadHand, lying.leadHand, reach);
@@ -2111,6 +2992,32 @@ export class BoxingGraph {
     }
     const stand = (this.fallFromGetUp ? this.fallStartStand : 1) * (1 - t);
     this.writeDown(pose, mirror, leadHand, rearHand, lead, rear, Math.sin(u * Math.PI) * 0.12, stand);
+    if (this.fallKneel) this.orientKneel(t, mirror, leadHand, rearHand, lead, rear);
+  }
+
+  /**
+   * Taking a knee after a body shot: the rear knee on the canvas, folded over the shot with that side's
+   * glove clamped on the ribs and the other glove braced on the front knee.
+   */
+  private placeKneel(out: DownPose, mirror: number): DownPose {
+    const struck = this.windedSide;
+    const clutchLead = (struck > 0) === (mirror > 0);
+    out.hips.set(0.02 * mirror, 0.53, -0.06);
+    out.hipsYaw = STANCE.bladeYaw * mirror * 0.3;
+    out.hipsPitch = 0.24;
+    out.hipsRoll = 0;
+    out.shouldersYaw = STANCE.bladeYaw * mirror * 0.2;
+    out.spinePitch = 0.62;
+    out.headPitch = 0.48;
+    (clutchLead ? out.leadHand : out.rearHand).set(struck * 0.13, 0.66, 0.2);
+    (clutchLead ? out.rearHand : out.leadHand).set(0.13 * mirror, 0.66, 0.37);
+    // Ankle positions: the lead foot flat on the canvas, the rear one behind the knee on its toes.
+    out.leadFoot.set(0.16 * mirror, 0.125, 0.32);
+    out.rearFoot.set(-0.12 * mirror, 0.12, -0.5);
+    out.leadHeel = 0;
+    out.rearHeel = 0;
+    out.palmsDown = 1;
+    return out;
   }
 
   /** The pose the fighter ends up in on the canvas: face down or on his back, twisted by the fall side. */
@@ -2178,6 +3085,25 @@ export class BoxingGraph {
     return out.set(fitInsideRopes(minX, maxX), 0, fitInsideRopes(minZ, maxZ)).applyQuaternion(turn.invert());
   }
 
+  /** The knees, feet and gloves of the kneel, which the lying poses' orientations do not fit. */
+  private orientKneel(weight: number, mirror: number, leadHand: HandTarget, rearHand: HandTarget, lead: FootTarget, rear: FootTarget): void {
+    if (weight <= 0.001) return;
+    const struck = this.windedSide;
+    const clutchLead = (struck > 0) === (mirror > 0);
+    const clutch = clutchLead ? leadHand : rearHand;
+    const brace = clutchLead ? rearHand : leadHand;
+    lead.pole.lerp(seatedScratch.set(0.15 * mirror, 0.35, 1), weight).normalize();
+    rear.pole.lerp(seatedScratch.set(-0.1 * mirror, -1, 0.3), weight).normalize();
+    lead.toe.lerp(seatedScratch.set(0.15 * mirror, 0, 1), weight).normalize();
+    rear.toe.lerp(seatedScratch.set(0, -0.35, -1), weight).normalize();
+    clutch.palm.lerp(seatedScratch.set(-struck * 0.75, 0, -0.65), weight).normalize();
+    clutch.knuckles.lerp(seatedScratch.set(-struck * 0.35, 0.25, 0.9), weight).normalize();
+    clutch.pole.lerp(seatedScratch.set(struck * 0.9, -0.35, -0.25), weight).normalize();
+    brace.palm.lerp(seatedScratch.set(0, -1, 0.1), weight).normalize();
+    brace.knuckles.lerp(seatedScratch.set(0.2 * mirror, -0.2, 1), weight).normalize();
+    brace.pole.lerp(seatedScratch.set(mirror * 0.7, 0.1, -0.7), weight).normalize();
+  }
+
   /**
    * Writes a down or rising pose over the targets. `stand` is the share of the live standing pose in
    * it: what the standing layers set (the guard's arm and knee directions, reactions) fades out on the
@@ -2202,10 +3128,10 @@ export class BoxingGraph {
     torso.hipsRoll = state.hipsRoll;
     torso.shouldersYaw = state.shouldersYaw;
     torso.spinePitch = state.spinePitch;
-    torso.spineRoll *= stand;
+    torso.spineRoll = torso.spineRoll * stand + state.spineRoll;
     torso.headPitch = state.headPitch;
-    torso.headYaw *= stand;
-    torso.headRoll *= stand;
+    torso.headYaw = torso.headYaw * stand + state.turn;
+    torso.headRoll = torso.headRoll * stand + state.headRoll;
     torso.headOffset.multiplyScalar(stand);
     torso.headOffset.z -= headLag;
     leadHand.position.copy(state.leadHand);
@@ -2222,6 +3148,18 @@ export class BoxingGraph {
     const forward = downScratch.set(0, 0, 1).applyEuler(downEuler.set(state.hipsPitch, state.hipsYaw, state.hipsRoll, "YXZ"));
     lead.pole.lerp(forward, down);
     rear.pole.lerp(forward, down);
+    if (state.ownJoints > 0) {
+      // Turned round the limb rather than mixed: a joint bent the other way from the authored one swings over.
+      const own = state.ownJoints * down;
+      turnToward(lead.pole, state.leadKnee, own);
+      turnToward(rear.pole, state.rearKnee, own);
+      turnToward(leadHand.pole, state.leadElbow, own);
+      turnToward(rearHand.pole, state.rearElbow, own);
+      turnToward(leadHand.knuckles, state.leadKnuckles, own);
+      turnToward(leadHand.palm, state.leadPalm, own);
+      turnToward(rearHand.knuckles, state.rearKnuckles, own);
+      turnToward(rearHand.palm, state.rearPalm, own);
+    }
   }
 
   private applyDislocation(): void {
@@ -2236,6 +3174,7 @@ export class BoxingGraph {
   dispose(): void {
     this.stool.dispose();
     this.enswell.dispose();
+    this.bottle.dispose();
     this.boxer.dispose();
   }
 }
@@ -2263,6 +3202,8 @@ const TOUCH_WALK_TOP_SPEED = 1.5;
 /** The engine's taunt length in ticks, over which the lead glove beckons TAUNT_BECKONS times. */
 const TAUNT_TICKS = 60;
 const TAUNT_BECKONS = 4;
+/** How far a spent guard's gloves sag, in metres: from the cheekbones to about the collarbones. */
+const GUARD_SPENT_DROP = 0.15;
 const seatedScratch = new THREE.Vector3();
 const JAW_DISLOCATION = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.08, 0.2, -0.22));
 
@@ -2274,7 +3215,10 @@ interface DownPose {
   hipsRoll: number;
   shouldersYaw: number;
   spinePitch: number;
+  /** The spine's and the head's side bend: only a body the knockout physics left has them; the authored poses have none. */
+  spineRoll: number;
   headPitch: number;
+  headRoll: number;
   readonly leadHand: THREE.Vector3;
   readonly rearHand: THREE.Vector3;
   /** Ankle positions; the tables give the sole's height above the canvas instead. */
@@ -2285,9 +3229,34 @@ interface DownPose {
   rearHeel: number;
   /** 0 with the arms thrown out palm-up, 1 with the gloves pressed palm-down on the canvas. */
   palmsDown: number;
+  /** The head's yaw on the canvas: only a body the knockout physics left has one; the authored poses look along the spine. */
+  turn: number;
+  /**
+   * Where the knees and elbows point, held against the authored directions by `ownJoints`: a body the knockout
+   * physics left keeps its own, so the limbs solve the way they lie.
+   */
+  readonly leadKnee: THREE.Vector3;
+  readonly rearKnee: THREE.Vector3;
+  readonly leadElbow: THREE.Vector3;
+  readonly rearElbow: THREE.Vector3;
+  /** And how the gloves are turned: the knuckles' and the palm's directions. */
+  readonly leadKnuckles: THREE.Vector3;
+  readonly leadPalm: THREE.Vector3;
+  readonly rearKnuckles: THREE.Vector3;
+  readonly rearPalm: THREE.Vector3;
+  ownJoints: number;
 }
 
 const downScratch = new THREE.Vector3();
+const downForward = new THREE.Vector3(0, 0, 1);
+const downBelow = new THREE.Vector3(0, -1, 0);
+/** The way a knee faces in its thigh bone's own frame, and the back of each elbow in its upper arm's. */
+const KNEECAP = new THREE.Vector3(0, 0, 1);
+const ELBOW_BACK_L = new THREE.Vector3(1, 0, 0);
+const ELBOW_BACK_R = new THREE.Vector3(-1, 0, 0);
+/** How much the way a joint faces counts against its bend, as metres of bend: it decides only for a limb lying nearly straight. */
+const STRAIGHT_LIMB_BEND = 0.04;
+const fallenTurn = new THREE.Quaternion();
 const downEuler = new THREE.Euler();
 /** Arm directions on the canvas for an orthodox fighter's lead arm, thrown out palm-up or pressing palm-down. */
 const PALM_UP = { pole: vec(0.4, 0.9, 0.2), knuckles: vec(0.6, 0.2, -0.75).normalize(), palm: vec(0, 1, 0.2).normalize() };
@@ -2314,7 +3283,9 @@ function downPose(pose: Partial<DownPose> = {}): DownPose {
     hipsRoll: 0,
     shouldersYaw: 0,
     spinePitch: 0,
+    spineRoll: 0,
     headPitch: 0,
+    headRoll: 0,
     leadHand: new THREE.Vector3(),
     rearHand: new THREE.Vector3(),
     leadFoot: new THREE.Vector3(),
@@ -2322,6 +3293,16 @@ function downPose(pose: Partial<DownPose> = {}): DownPose {
     leadHeel: 0,
     rearHeel: 0,
     palmsDown: 0,
+    turn: 0,
+    leadKnee: new THREE.Vector3(0, 0, 1),
+    rearKnee: new THREE.Vector3(0, 0, 1),
+    leadElbow: new THREE.Vector3(0, -1, 0),
+    rearElbow: new THREE.Vector3(0, -1, 0),
+    leadKnuckles: new THREE.Vector3(0, 0, 1),
+    leadPalm: new THREE.Vector3(0, -1, 0),
+    rearKnuckles: new THREE.Vector3(0, 0, 1),
+    rearPalm: new THREE.Vector3(0, -1, 0),
+    ownJoints: 0,
     ...pose,
   };
 }
@@ -2358,7 +3339,9 @@ function placeDownPose(out: DownPose, base: DownPose, twist: DownPose | null, mi
   out.hipsRoll = base.hipsRoll * mirror;
   out.shouldersYaw = base.shouldersYaw * mirror;
   out.spinePitch = base.spinePitch;
+  out.spineRoll = 0;
   out.headPitch = base.headPitch;
+  out.headRoll = 0;
   mirrorX(base.leadHand, mirror, out.leadHand);
   mirrorX(base.rearHand, mirror, out.rearHand);
   mirrorX(base.leadFoot, mirror, out.leadFoot).y += ankle;
@@ -2366,6 +3349,8 @@ function placeDownPose(out: DownPose, base: DownPose, twist: DownPose | null, mi
   out.leadHeel = base.leadHeel;
   out.rearHeel = base.rearHeel;
   out.palmsDown = base.palmsDown;
+  out.turn = 0;
+  out.ownJoints = 0;
   if (twist === null || side === 0) return out;
   out.hips.addScaledVector(twist.hips, side);
   out.hipsYaw += twist.hipsYaw * side;
@@ -2379,6 +3364,39 @@ function placeDownPose(out: DownPose, base: DownPose, twist: DownPose | null, mi
   out.leadFoot.addScaledVector(twist.leadFoot, side);
   out.rearFoot.addScaledVector(twist.rearFoot, side);
   return out;
+}
+
+const wrapAngle = (angle: number): number => Math.atan2(Math.sin(angle), Math.cos(angle));
+const turnAxis = new THREE.Vector3();
+
+/** Turns the direction `out` toward `target` by `t` of the angle between them (both unit length, or near it). */
+function turnToward(out: THREE.Vector3, target: THREE.Vector3, t: number): THREE.Vector3 {
+  if (t <= 0) return out;
+  out.normalize();
+  const angle = out.angleTo(target);
+  if (angle < 1e-4) return out;
+  turnAxis.crossVectors(out, target);
+  // Opposite directions have no one way round: go over the top, or round the side for a vertical one.
+  if (turnAxis.lengthSq() < 1e-8) turnAxis.crossVectors(out, Math.abs(out.y) < 0.9 ? worldUpVector : downForward);
+  return out.applyAxisAngle(turnAxis.normalize(), angle * Math.min(1, t));
+}
+
+/**
+ * Of the two sets of yaw-pitch-roll angles (YXZ) that give a turn, (pitch, yaw, roll) and (half a turn - pitch,
+ * yaw + half a turn, roll + half a turn), the one nearest the angles given, each wrapped to within half a turn of
+ * them, so blending toward them takes the short way round. Keeping the pitch within a quarter turn instead made a
+ * body lying back past it read with its yaw and roll half a turn out, and the spine built on those was wrung round.
+ */
+function nearestTurn(turn: THREE.Euler, pitch: number, yaw: number, roll: number): THREE.Euler {
+  const ax = pitch + wrapAngle(turn.x - pitch);
+  const ay = yaw + wrapAngle(turn.y - yaw);
+  const az = roll + wrapAngle(turn.z - roll);
+  const bx = pitch + wrapAngle(Math.PI - turn.x - pitch);
+  const by = yaw + wrapAngle(turn.y + Math.PI - yaw);
+  const bz = roll + wrapAngle(turn.z + Math.PI - roll);
+  const first = Math.abs(ax - pitch) + Math.abs(ay - yaw) + Math.abs(az - roll);
+  const second = Math.abs(bx - pitch) + Math.abs(by - yaw) + Math.abs(bz - roll);
+  return first <= second ? turn.set(ax, ay, az, "YXZ") : turn.set(bx, by, bz, "YXZ");
 }
 
 /** Moves a whole pose by `shift` (character space). */
@@ -2430,7 +3448,9 @@ function lerpDownPose(out: DownPose, a: DownPose, b: DownPose, t: number): DownP
   out.hipsRoll = lerp(a.hipsRoll, b.hipsRoll, t);
   out.shouldersYaw = lerp(a.shouldersYaw, b.shouldersYaw, t);
   out.spinePitch = lerp(a.spinePitch, b.spinePitch, t);
+  out.spineRoll = lerp(a.spineRoll, b.spineRoll, t);
   out.headPitch = lerp(a.headPitch, b.headPitch, t);
+  out.headRoll = lerp(a.headRoll, b.headRoll, t);
   out.leadHand.copy(a.leadHand).lerp(b.leadHand, t);
   out.rearHand.copy(a.rearHand).lerp(b.rearHand, t);
   out.leadFoot.copy(a.leadFoot).lerp(b.leadFoot, t);
@@ -2438,6 +3458,16 @@ function lerpDownPose(out: DownPose, a: DownPose, b: DownPose, t: number): DownP
   out.leadHeel = lerp(a.leadHeel, b.leadHeel, t);
   out.rearHeel = lerp(a.rearHeel, b.rearHeel, t);
   out.palmsDown = lerp(a.palmsDown, b.palmsDown, t);
+  out.turn = lerp(a.turn, b.turn, t);
+  turnToward(out.leadKnee.copy(a.leadKnee), b.leadKnee, t);
+  turnToward(out.rearKnee.copy(a.rearKnee), b.rearKnee, t);
+  turnToward(out.leadElbow.copy(a.leadElbow), b.leadElbow, t);
+  turnToward(out.rearElbow.copy(a.rearElbow), b.rearElbow, t);
+  turnToward(out.leadKnuckles.copy(a.leadKnuckles), b.leadKnuckles, t);
+  turnToward(out.leadPalm.copy(a.leadPalm), b.leadPalm, t);
+  turnToward(out.rearKnuckles.copy(a.rearKnuckles), b.rearKnuckles, t);
+  turnToward(out.rearPalm.copy(a.rearPalm), b.rearPalm, t);
+  out.ownJoints = lerp(a.ownJoints, b.ownJoints, t);
   return out;
 }
 
@@ -2465,15 +3495,15 @@ function buildEnswell(): { group: THREE.Group; dispose: () => void } {
   const group = new THREE.Group();
   group.name = "enswell";
   group.visible = false;
-  const plateGeometry = new THREE.CylinderGeometry(0.03, 0.03, 0.008, 16);
-  const handleGeometry = new THREE.CylinderGeometry(0.008, 0.008, 0.06, 8);
+  const plateGeometry = new THREE.CylinderGeometry(3.2, 3.2, 0.9, 20);
+  const handleGeometry = new THREE.CylinderGeometry(0.8, 0.8, 6, 10);
   const metal = new THREE.MeshStandardMaterial({ color: 0xc8ccd2, roughness: 0.3, metalness: 0.9 });
   const plate = new THREE.Mesh(plateGeometry, metal);
   plate.rotation.x = Math.PI / 2;
-  plate.position.set(0, 0.07, 0.075);
+  plate.position.set(0, 9.5, 3.4);
   group.add(plate);
   const handle = new THREE.Mesh(handleGeometry, metal);
-  handle.position.set(0, 0.035, 0.075);
+  handle.position.set(0, 5.5, 2.4);
   group.add(handle);
   return {
     group,
@@ -2481,6 +3511,35 @@ function buildEnswell(): { group: THREE.Group; dispose: () => void } {
       plateGeometry.dispose();
       handleGeometry.dispose();
       metal.dispose();
+    },
+  };
+}
+
+/** A squeeze bottle held at its base, the spout along the fingers. Centimetres, in the glove bone's frame. */
+function buildBottle(): { group: THREE.Group; dispose: () => void } {
+  const group = new THREE.Group();
+  group.name = "bottle";
+  group.visible = false;
+  const bodyGeometry = new THREE.CylinderGeometry(3.3, 3.3, 15, 18);
+  const shoulderGeometry = new THREE.CylinderGeometry(1.3, 3.3, 3, 18);
+  const spoutGeometry = new THREE.CylinderGeometry(0.7, 1.1, 3.2, 10);
+  const plastic = new THREE.MeshStandardMaterial({ color: 0xd9e6ee, roughness: 0.32, metalness: 0 });
+  const cap = new THREE.MeshStandardMaterial({ color: 0x1d4ed8, roughness: 0.5, metalness: 0 });
+  const body = new THREE.Mesh(bodyGeometry, plastic);
+  body.position.set(0, 9, 2.6);
+  const shoulder = new THREE.Mesh(shoulderGeometry, plastic);
+  shoulder.position.set(0, 18, 2.6);
+  const spout = new THREE.Mesh(spoutGeometry, cap);
+  spout.position.set(0, 21, 2.6);
+  group.add(body, shoulder, spout);
+  return {
+    group,
+    dispose: () => {
+      bodyGeometry.dispose();
+      shoulderGeometry.dispose();
+      spoutGeometry.dispose();
+      plastic.dispose();
+      cap.dispose();
     },
   };
 }
@@ -2521,6 +3580,8 @@ const worldUpVector = new THREE.Vector3(0, 1, 0);
 const MAX_OWN_LEAD_TICKS = 6;
 const OWN_PUNCH_GRACE_TICKS = 5;
 const OWN_PUNCH_PULL_RATE = 1.5;
+/** An opponent's punch seen early is held back unless its wind-up can play at this share of its speed or faster. */
+const MIN_ANTICIPATION_RATE = 0.5;
 /** Presses closer together than this usually reach the server before the same step, where the newer one replaces the older. */
 const SAME_STEP_TICKS = 0.5;
 /** Contact events in which a punch met the opponent: a hit or a block, a parry included. */

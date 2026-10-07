@@ -1,5 +1,8 @@
 import { INJURY_SOUNDS } from "./assets/injury-sounds";
 import type { ArcadeInjury } from "./render/renderer";
+
+/** Finishers without a voice of their own borrow the nearest one. */
+const BORROWED_VOICE: Partial<Readonly<Record<ArcadeInjury, ArcadeInjury>>> = { head_burst: "decapitation", eye_left: "jaw_dislocation", eye_right: "jaw_dislocation", ribs_left: "shoulder_left", ribs_right: "shoulder_right" };
 import type { Settings } from "./settings";
 import type { CombatEvent, FinalMessage, PunchClass } from "./types";
 
@@ -10,7 +13,32 @@ interface NoiseSpec {
   readonly type?: BiquadFilterType;
   readonly q?: number;
   readonly sweepTo?: number;
+  readonly delay?: number;
+  /** Seconds into the noise loop to start from, so layered bursts do not line up. */
+  readonly offset?: number;
 }
+
+/** Many voices on one vowel: noise through two formant filters gliding between the given centres. */
+interface CrowdVoiceSpec {
+  readonly duration: number;
+  readonly first: readonly [number, number];
+  readonly second: readonly [number, number];
+  readonly gain: number;
+  readonly delay?: number;
+}
+
+/** The crowd's "ooh" after a big shot lands: the vowel opens and falls away. */
+const OOH: CrowdVoiceSpec = { duration: 1.1, first: [330, 420], second: [760, 880], gain: 0.16 };
+/** The groan at a low blow, sliding down. */
+const GROAN: CrowdVoiceSpec = { duration: 1.2, first: [520, 360], second: [980, 720], gain: 0.13 };
+const BOO: CrowdVoiceSpec = { duration: 1.3, first: [300, 280], second: [640, 600], gain: 0.11, delay: 0.75 };
+const OOH_COOLDOWN_SECONDS = 2.5;
+const CHANT_COOLDOWN_SECONDS = 20;
+/** Murmur level at full tension. */
+const MURMUR_GAIN = 0.05;
+/** The master bus is open to here, and muffled down to here when the player's fighter is badly rocked. */
+const MUFFLE_OPEN = 20_000;
+const MUFFLE_CLOSED = 650;
 
 interface ToneSpec {
   readonly from: number;
@@ -31,6 +59,11 @@ const WHOOSH: Record<PunchClass, { from: number; to: number; duration: number }>
   uppercut: { from: 240, to: 820, duration: 0.15 },
 };
 
+/** Ticks between heartbeats while rocked: racing at first, slowing as the fighter recovers. */
+export function rockedBeatTicks(level: number): number {
+  return Math.round(14 + (1 - Math.max(0, Math.min(1, level))) * 22);
+}
+
 export class AudioFeedback {
   private context: AudioContext | null = null;
   private master: GainNode | null = null;
@@ -45,6 +78,14 @@ export class AudioFeedback {
   private lastBreathTick = -300;
   private lastHeartbeatTick = -300;
   private clapperRound = 0;
+  private murmurGain: GainNode | null = null;
+  private murmurLevel = 0;
+  private lastOohAt = -Infinity;
+  private lastChantAt = -Infinity;
+  private muffle: BiquadFilterNode | null = null;
+  private rockedLevel = 0;
+  private lastRockedBeat = -300;
+  private lastTick = -1;
 
   private readonly unlockListener = (): void => {
     // Every gesture resumes the context itself until audio is unlocked: a resume() made during a
@@ -82,9 +123,14 @@ export class AudioFeedback {
       context = new AudioContext();
       const master = context.createGain();
       master.gain.value = Math.min(0.8, Math.max(0, this.settings().volume));
-      master.connect(context.destination);
+      const muffle = context.createBiquadFilter();
+      muffle.type = "lowpass";
+      muffle.frequency.value = MUFFLE_OPEN;
+      muffle.Q.value = 0.7;
+      master.connect(muffle).connect(context.destination);
       this.context = context;
       this.master = master;
+      this.muffle = muffle;
     }
     if (context.state === "suspended") await context.resume();
     if (this.destroyed || this.context !== context) return;
@@ -122,6 +168,7 @@ export class AudioFeedback {
         const loud = Math.min(0.36, 0.14 + weight * 0.2) * (event.kind === "counter_hit" ? 1.25 : 1);
         this.impact(loud, body, weight);
         if (event.kind === "counter_hit" || weight > 0.7) this.crowdSwell(0.35 + weight * 0.4);
+        if ((event.kind === "counter_hit" && event.amount >= 50) || event.amount >= 90) this.ooh(Math.min(1, event.amount / 160));
         break;
       }
       case "block":
@@ -137,16 +184,34 @@ export class AudioFeedback {
         this.impact(0.3, false, 0.9);
         this.tone({ from: 230, to: 78, duration: 0.2, type: "sawtooth", gain: 0.08 });
         this.crowdSwell(0.5);
+        this.ooh(0.6);
         break;
       case "stun":
         this.tone({ from: 96, to: 74, duration: 0.22, type: "sine", gain: 0.1 });
         this.crowdSwell(0.3);
+        break;
+      case "parry":
+        this.noise({ duration: 0.06, frequency: 2400, sweepTo: 1100, gain: 0.18, type: "bandpass", q: 1.8 });
+        this.tone({ from: 330, to: 180, duration: 0.09, type: "triangle", gain: 0.07 });
+        this.crowdSwell(0.35);
+        break;
+      case "body_collapse":
+        this.tone({ from: 118, to: 52, duration: 0.42, type: "sine", gain: 0.16 });
+        this.noise({ duration: 0.26, frequency: 420, sweepTo: 180, gain: 0.05, type: "bandpass", q: 0.9 });
+        this.crowdSwell(0.6);
+        break;
+      case "eye_shut":
+        this.crowdSwell(0.25);
+        break;
+      case "corner":
+        this.noise({ duration: 0.22, frequency: 2600, sweepTo: 1500, gain: 0.05, type: "bandpass", q: 0.8 });
         break;
       case "knockdown":
         this.impact(0.34, false, 1);
         this.tone({ from: 60, to: 28, duration: 0.42, type: "sine", gain: 0.3 });
         this.noise({ duration: 0.3, frequency: 140, gain: 0.24 });
         this.crowdRoar(1);
+        this.hush();
         break;
       case "bell": {
         const strikes = event.detail === "round_start" ? 3 : 1;
@@ -158,8 +223,13 @@ export class AudioFeedback {
         break;
       case "get_up":
         this.tone({ from: 420, to: 840, duration: 0.16, type: "triangle", gain: 0.1 });
+        this.crowdRoar(0.9);
         break;
       case "foul":
+        this.whistle();
+        if (event.detail === "low_blow") this.crowdVoice(GROAN);
+        this.crowdVoice(BOO);
+        break;
       case "referee_break":
         this.whistle();
         break;
@@ -188,6 +258,32 @@ export class AudioFeedback {
     }
   }
 
+  /**
+   * A new bout starts its clock at zero again: the heartbeats, the breathing and the clapper start over,
+   * and the world is no longer muffled.
+   */
+  reset(): void {
+    this.lastBreathTick = -300;
+    this.lastHeartbeatTick = -300;
+    this.lastRockedBeat = -300;
+    this.clapperRound = 0;
+    this.lastTick = -1;
+    this.openMuffle();
+  }
+
+  private openMuffle(): void {
+    if (this.rockedLevel === 0) return;
+    this.rockedLevel = 0;
+    const context = this.context;
+    if (context !== null && this.muffle !== null) this.muffle.frequency.setTargetAtTime(MUFFLE_OPEN, context.currentTime, 0.9);
+  }
+
+  /** A tick earlier than the last one heard is a new bout's clock: the old bout's timers would silence it. */
+  private follow(tick: number): void {
+    if (tick < this.lastTick) this.reset();
+    this.lastTick = tick;
+  }
+
   /** The ten-second clapper: two wood-block cracks once per round when ten seconds remain. */
   roundClock(phase: string, roundNumber: number, ticksRemaining: number, tickRate: number): void {
     if (phase !== "fight" || ticksRemaining > 10 * tickRate || this.clapperRound === roundNumber) return;
@@ -203,20 +299,67 @@ export class AudioFeedback {
     this.timers.add(timer);
   }
 
+  /** The crowd takes up a rhythmic clap behind a fighter who has taken over. */
+  chant(): void {
+    const context = this.context;
+    if (!this.unlocked || context === null || context.currentTime - this.lastChantAt < CHANT_COOLDOWN_SECONDS) return;
+    this.lastChantAt = context.currentTime;
+    for (let beat = 0; beat < 8; beat += 1) {
+      const swell = 0.5 + beat / 14;
+      for (let layer = 0; layer < 3; layer += 1) {
+        this.noise({ duration: 0.045, frequency: 1500 + layer * 450, gain: 0.07 * swell, type: "bandpass", q: 1.1, delay: beat * 0.42 + layer * 0.013, offset: (beat * 3 + layer) * 0.131 });
+      }
+    }
+    this.crowdVoice({ duration: 1.4, first: [380, 460], second: [820, 940], gain: 0.08, delay: 3.2 });
+  }
+
+  /** The murmur under the crowd: 0 calm, 1 with a fighter in trouble or a count running. */
+  tension(level: number): void {
+    const context = this.context;
+    const murmur = this.murmurGain;
+    const target = Math.max(0, Math.min(1, level));
+    if (context === null || murmur === null || Math.abs(target - this.murmurLevel) < 0.02) return;
+    const rising = target > this.murmurLevel;
+    this.murmurLevel = target;
+    murmur.gain.setTargetAtTime(target * MURMUR_GAIN, context.currentTime, rising ? 0.3 : 0.8);
+  }
+
+  /** The player's own fighter is rocked: the world goes muffled and the heartbeat pounds, slowing as the head clears. */
+  rocked(level: number, tick: number): void {
+    this.follow(tick);
+    const context = this.context;
+    const muffle = this.muffle;
+    if (!this.unlocked || context === null || muffle === null) return;
+    const target = Math.max(0, Math.min(1, level));
+    if (Math.abs(target - this.rockedLevel) >= 0.02 || (target === 0 && this.rockedLevel !== 0)) {
+      const rising = target > this.rockedLevel;
+      this.rockedLevel = target;
+      muffle.frequency.setTargetAtTime(MUFFLE_OPEN * Math.pow(MUFFLE_CLOSED / MUFFLE_OPEN, target), context.currentTime, rising ? 0.05 : 0.9);
+    }
+    if (target > 0.15 && tick - this.lastRockedBeat >= rockedBeatTicks(target)) {
+      this.lastRockedBeat = tick;
+      this.tone({ from: 58, to: 40, duration: 0.12, type: "sine", gain: 0.09 + target * 0.08 });
+      this.tone({ from: 50, to: 36, duration: 0.14, type: "sine", gain: 0.07 + target * 0.06, delay: 0.16 });
+    }
+  }
+
   snapshot(tick: number, stamina: number, maximumStamina: number, trauma: number): void {
+    this.follow(tick);
     if (!this.unlocked) return;
     const fatigue = 1 - stamina / Math.max(1, maximumStamina);
     if (fatigue > 0.55 && tick - this.lastBreathTick >= 75) {
       this.lastBreathTick = tick;
       this.noise({ duration: 0.18, frequency: 420, gain: 0.045 + fatigue * 0.04 });
     }
-    if ((fatigue > 0.72 || trauma > 500) && tick - this.lastHeartbeatTick >= 24) {
+    if ((fatigue > 0.72 || trauma > 500) && this.rockedLevel <= 0.15 && tick - this.lastHeartbeatTick >= 24) {
       this.lastHeartbeatTick = tick;
       this.tone({ from: 52, duration: 0.09, type: "sine", gain: 0.055 });
     }
   }
 
   result(final: FinalMessage): void {
+    // The bout is over, however it ended (a forfeit sends no last snapshot to clear it).
+    this.openMuffle();
     if (!this.unlocked) return;
     this.crowdSwell(1);
     this.tone({ from: final.winner_id === null ? 280 : 520, duration: 0.45, type: "triangle", gain: 0.18 });
@@ -230,7 +373,7 @@ export class AudioFeedback {
   injury(injury: ArcadeInjury): void {
     const context = this.context;
     const master = this.master;
-    const buffer = this.injuryBuffers.get(injury);
+    const buffer = this.injuryBuffers.get(BORROWED_VOICE[injury] ?? injury);
     const current = this.settings();
     if (!this.unlocked || context === null || master === null || buffer === undefined) return;
     if (current.blood !== "full" || current.reducedMotion) return;
@@ -276,9 +419,56 @@ export class AudioFeedback {
     const crowd = this.crowdGain;
     if (crowd !== null) {
       const now = context.currentTime;
+      crowd.gain.cancelScheduledValues(now);
       crowd.gain.setValueAtTime(Math.min(0.16, 0.06 + intensity * 0.1), now);
       crowd.gain.exponentialRampToValueAtTime(0.022, now + 4.5);
     }
+  }
+
+  /** After the roar at a knockdown the arena goes quiet for the count. */
+  private hush(): void {
+    const context = this.context;
+    const crowd = this.crowdGain;
+    if (context === null || crowd === null) return;
+    const now = context.currentTime;
+    crowd.gain.cancelScheduledValues(now);
+    crowd.gain.setValueAtTime(0.16, now);
+    crowd.gain.exponentialRampToValueAtTime(0.1, now + 1.2);
+    crowd.gain.exponentialRampToValueAtTime(0.004, now + 3);
+  }
+
+  private ooh(weight: number): void {
+    const context = this.context;
+    if (context === null || context.currentTime - this.lastOohAt < OOH_COOLDOWN_SECONDS) return;
+    this.lastOohAt = context.currentTime;
+    this.crowdVoice({ ...OOH, gain: OOH.gain * (0.6 + 0.4 * weight), delay: 0.12 });
+  }
+
+  private crowdVoice(spec: CrowdVoiceSpec): void {
+    const context = this.context;
+    const master = this.master;
+    if (context === null || master === null) return;
+    const buffer = this.noiseLoop(context);
+    const start = context.currentTime + (spec.delay ?? 0);
+    const end = start + spec.duration;
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    source.loop = true;
+    const envelope = context.createGain();
+    envelope.gain.setValueAtTime(0.0001, start);
+    envelope.gain.exponentialRampToValueAtTime(Math.min(0.3, spec.gain), start + spec.duration * 0.22);
+    envelope.gain.exponentialRampToValueAtTime(0.0001, end);
+    for (const [from, to] of [spec.first, spec.second]) {
+      const formant = context.createBiquadFilter();
+      formant.type = "bandpass";
+      formant.Q.value = 5;
+      formant.frequency.setValueAtTime(from, start);
+      formant.frequency.exponentialRampToValueAtTime(to, end);
+      source.connect(formant).connect(envelope);
+    }
+    envelope.connect(master);
+    source.start(start, (spec.duration * 0.37) % 1);
+    source.stop(end + 0.05);
   }
 
   private tone(spec: ToneSpec): void {
@@ -301,10 +491,7 @@ export class AudioFeedback {
     oscillator.stop(start + Math.min(1.4, spec.duration) + 0.03);
   }
 
-  private noise(spec: NoiseSpec): void {
-    const context = this.context;
-    const master = this.master;
-    if (context === null || master === null) return;
+  private noiseLoop(context: AudioContext): AudioBuffer {
     if (this.noiseBuffer === null) {
       const length = Math.floor(context.sampleRate * 1.2);
       const buffer = context.createBuffer(1, length, context.sampleRate);
@@ -319,12 +506,20 @@ export class AudioFeedback {
       }
       this.noiseBuffer = buffer;
     }
-    const start = context.currentTime;
+    return this.noiseBuffer;
+  }
+
+  private noise(spec: NoiseSpec): void {
+    const context = this.context;
+    const master = this.master;
+    if (context === null || master === null) return;
+    const loop = this.noiseLoop(context);
+    const start = context.currentTime + (spec.delay ?? 0);
     const duration = Math.min(0.5, spec.duration);
     const source = context.createBufferSource();
     const filter = context.createBiquadFilter();
     const envelope = context.createGain();
-    source.buffer = this.noiseBuffer;
+    source.buffer = loop;
     source.loop = true;
     filter.type = spec.type ?? "lowpass";
     filter.frequency.setValueAtTime(Math.max(60, Math.min(4000, spec.frequency)), start);
@@ -336,7 +531,7 @@ export class AudioFeedback {
     envelope.gain.exponentialRampToValueAtTime(Math.min(0.35, spec.gain), start + 0.008);
     envelope.gain.exponentialRampToValueAtTime(0.0001, start + duration);
     source.connect(filter).connect(envelope).connect(master);
-    source.start();
+    source.start(start, (spec.offset ?? 0) % 1.1);
     source.stop(start + duration + 0.02);
   }
 
@@ -359,6 +554,7 @@ export class AudioFeedback {
     const crowd = this.crowdGain;
     if (crowd !== null) {
       const now = context.currentTime;
+      crowd.gain.cancelScheduledValues(now);
       crowd.gain.setValueAtTime(Math.min(0.09, 0.03 + intensity * 0.05), now);
       crowd.gain.exponentialRampToValueAtTime(0.022, now + 1.4);
     }
@@ -397,6 +593,14 @@ export class AudioFeedback {
     source.connect(filter).connect(gain).connect(master);
     source.start();
     lfo.start();
+    const murmurFilter = context.createBiquadFilter();
+    murmurFilter.type = "bandpass";
+    murmurFilter.frequency.value = 620;
+    murmurFilter.Q.value = 0.9;
+    const murmur = context.createGain();
+    murmur.gain.value = 0;
+    this.murmurGain = murmur;
+    source.connect(murmurFilter).connect(murmur).connect(master);
   }
 
   destroy(): void {
@@ -411,6 +615,8 @@ export class AudioFeedback {
     this.noiseBuffer = null;
     this.injuryBuffers = new Map();
     this.crowdGain = null;
+    this.murmurGain = null;
+    this.muffle = null;
     this.unlocked = false;
     if (context !== null) void context.close().catch(() => undefined);
   }

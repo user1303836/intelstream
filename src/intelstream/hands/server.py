@@ -19,11 +19,19 @@ from urllib.parse import urlsplit
 import structlog
 from aiohttp import WSMsgType, web
 
-from intelstream.hands.auth import DEFAULT_TICKET_TTL_SECONDS, HandsAuth, HandsAuthError
+from intelstream.hands.auth import (
+    DEFAULT_TICKET_TTL_SECONDS,
+    HandsAuth,
+    HandsAuthError,
+    validate_instance_id,
+)
 from intelstream.hands.protocol import (
     MAX_FRAME_BYTES,
     PROTOCOL_VERSION,
     ProtocolError,
+    decode_client_frame,
+    parse_cpu_request,
+    parse_style_choice,
     parse_ticket_ack,
 )
 from intelstream.hands.rooms import HandsRoomManager, RoomError, RoomMembership, SocketLike
@@ -41,10 +49,16 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 MAX_HTTP_BODY_BYTES = 16_384
 MAX_AUTH_FRAME_BYTES = 4096
+# aiohttp pings a socket after this long without a frame from it and drops it when no pong comes
+# within half as long again, so a fighter who vanishes without a close (lost Wi-Fi, a phone that
+# suspended the app) pauses the bout about 7.5 s after his last frame. The browser's network stack
+# answers pings by itself, so a fighter whose page is blurred or hidden is never dropped for it.
+WEBSOCKET_HEARTBEAT_SECONDS = 5.0
 SECURITY_HEADERS = {
     "Content-Security-Policy": (
         "default-src 'self'; base-uri 'none'; object-src 'none'; "
-        "script-src 'self'; style-src 'self'; img-src 'self' data: blob:; "
+        "script-src 'self'; style-src 'self'; "
+        "img-src 'self' data: blob: https://cdn.discordapp.com/avatars/; "
         "connect-src 'self'; media-src 'self' blob:; "
         "frame-ancestors https://discord.com https://*.discord.com"
     ),
@@ -61,7 +75,9 @@ class AdmissionConfig:
     request_window_seconds: float = 60.0
     max_tracked_callers: int = 1024
     max_concurrent_upstream: int = 16
-    max_concurrent_upstream_per_caller: int = 2
+    # Sign-in calls are scoped to the Activity instance as well as the address (see _caller_key),
+    # so this is how many players in one voice channel can sign in at the same moment.
+    max_concurrent_upstream_per_caller: int = 4
     max_concurrent_ws_auth: int = 64
     max_concurrent_ws_auth_per_caller: int = 4
     trusted_proxy_cidrs: tuple[str, ...] = ()
@@ -280,6 +296,8 @@ class AuthBackend(Protocol):
 
     def activate_ticket(self, ticket: object, player: AuthenticatedPlayer) -> None: ...
 
+    def instance_for_state(self, state: object) -> str | None: ...
+
     async def close(self) -> None: ...
 
 
@@ -391,9 +409,12 @@ class HandsServer:
         ticket_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         admission: AdmissionConfig | None = None,
         monotonic_clock: Callable[[], float] = time.monotonic,
+        websocket_heartbeat_seconds: float = WEBSOCKET_HEARTBEAT_SECONDS,
     ) -> None:
         if auth_timeout_seconds <= 0:
             raise ValueError("auth timeout must be positive")
+        if not math.isfinite(websocket_heartbeat_seconds) or websocket_heartbeat_seconds <= 0:
+            raise ValueError("websocket heartbeat must be finite and positive")
         self.repository = repository
         self.application_id = application_id
         self.guild_id = guild_id
@@ -402,6 +423,7 @@ class HandsServer:
         self.bound_port: int | None = None
         self.dev_mode = dev_mode
         self.auth_timeout_seconds = auth_timeout_seconds
+        self.websocket_heartbeat_seconds = websocket_heartbeat_seconds
         ticket_ttl_seconds = (
             auth.ticket_ttl_seconds if auth is not None else DEFAULT_TICKET_TTL_SECONDS
         )
@@ -563,7 +585,20 @@ class HandsServer:
                 return
         raise web.HTTPForbidden(text="origin not allowed")
 
-    def _caller_key(self, request: web.Request) -> str:
+    def _caller_key(self, request: web.Request, instance_id: str | None = None) -> str:
+        """Who a request counts against for the per-caller ceilings.
+
+        Discord's Activity proxy hides players' addresses, so every player reaches Hands from the
+        proxy's few addresses and a per-address ceiling would be one ceiling for everybody. A
+        sign-in names its Activity instance (the bootstrap in its body, the token exchange through
+        the OAuth state the server issued for it), so its bucket is the address and that instance:
+        one voice channel's sign-ins cannot crowd out another's, and the global ceilings still bound
+        the total. Requests that name no instance stay keyed on the address alone.
+        """
+        address = self._caller_address(request)
+        return address if instance_id is None else f"{address} {instance_id}"
+
+    def _caller_address(self, request: web.Request) -> str:
         remote = request.remote
         try:
             peer = ip_address(remote) if remote is not None else None
@@ -638,14 +673,18 @@ class HandsServer:
 
     async def _bootstrap(self, request: web.Request) -> web.Response:
         self._require_origin(request)
-        caller = self._caller_key(request)
+        if request.content_type != "application/json":
+            raise web.HTTPUnsupportedMediaType(text="application/json required")
+        payload = _strict_object(await request.read(), fields={"instance_id"})
+        try:
+            instance_id: str | None = validate_instance_id(payload["instance_id"])
+        except HandsAuthError:
+            instance_id = None
+        caller = self._caller_key(request, instance_id)
         if not await self._admit_scoped(
             self._bootstrap_limit, self._bootstrap_caller_limit, caller
         ):
             return _json_response({"error": "rate_limited"}, status=429)
-        if request.content_type != "application/json":
-            raise web.HTTPUnsupportedMediaType(text="application/json required")
-        payload = _strict_object(await request.read(), fields={"instance_id"})
         if not await self._try_acquire_scoped(
             self._upstream_slots, self._upstream_caller_slots, caller
         ):
@@ -674,12 +713,13 @@ class HandsServer:
 
     async def _token(self, request: web.Request) -> web.Response:
         self._require_origin(request)
-        caller = self._caller_key(request)
-        if not await self._admit_scoped(self._token_limit, self._token_caller_limit, caller):
-            return _json_response({"error": "rate_limited"}, status=429)
         if request.content_type != "application/json":
             raise web.HTTPUnsupportedMediaType(text="application/json required")
         payload = _strict_object(await request.read(), fields={"code", "state"})
+        # Only a state this server issued names an instance; anything else counts against the address.
+        caller = self._caller_key(request, self.auth.instance_for_state(payload["state"]))
+        if not await self._admit_scoped(self._token_limit, self._token_caller_limit, caller):
+            return _json_response({"error": "rate_limited"}, status=429)
         logger.info("Hands OAuth token request received")
         if not await self._try_acquire_scoped(
             self._upstream_slots, self._upstream_caller_slots, caller
@@ -725,7 +765,7 @@ class HandsServer:
             return _json_response({"error": "service_busy"}, status=503)
         websocket = web.WebSocketResponse(
             autoping=True,
-            heartbeat=15.0,
+            heartbeat=self.websocket_heartbeat_seconds,
             max_msg_size=MAX_FRAME_BYTES,
             compress=True,
         )
@@ -789,7 +829,8 @@ class HandsServer:
             async for message in websocket:
                 if message.type in (WSMsgType.TEXT, WSMsgType.BINARY):
                     try:
-                        refresh_id = parse_ticket_ack(message.data)
+                        envelope = decode_client_frame(message.data)
+                        refresh_id = parse_ticket_ack(envelope)
                         if refresh_id is not None:
                             reconnect_ticket = ticket_refresh_state.ticket_for(refresh_id)
                             if reconnect_ticket is None:
@@ -797,12 +838,24 @@ class HandsServer:
                             self.auth.activate_ticket(reconnect_ticket, player)
                             ticket_refresh_state.confirm()
                             continue
-                        if membership.role == "spectator":
-                            raise RoomError("spectator_read_only")
+                        # The room decides what a frame may do: a spectator can be seated as a
+                        # fighter before the bell.
+                        cpu_level = parse_cpu_request(envelope)
+                        if cpu_level is not None:
+                            await membership.room.request_cpu(
+                                membership.player_id, membership.connection, cpu_level
+                            )
+                            continue
+                        style_choice = parse_style_choice(envelope)
+                        if style_choice is not None:
+                            await membership.room.choose_style(
+                                membership.player_id, membership.connection, style_choice
+                            )
+                            continue
                         await membership.room.submit_frame(
                             membership.player_id,
                             membership.connection,
-                            message.data,
+                            envelope,
                         )
                     except ProtocolError:
                         await self._ws_error(websocket, "invalid_input", close_code=4008)

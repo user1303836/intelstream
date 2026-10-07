@@ -1,5 +1,5 @@
-import { comboChain, comboWindow, FIGHTER_RADIUS, punchStaminaCost, punchTiming, RING_CORNER_REACH, RING_HALF_HEIGHT, RING_HALF_WIDTH, type PunchTiming } from "./manifest";
-import type { DefensivePose, FighterSnapshot, Hand, HeldDefense, MovementKind, Power, PunchClass, Target } from "./types";
+import { comboChain, comboWindow, FIGHTER_RADIUS, punchTiming, RING_CORNER_REACH, RING_HALF_HEIGHT, RING_HALF_WIDTH, STUNNED_SPEED_PERCENT, styledStaminaCost, styleTiming, TIRED_RECOVERY_TICKS, TIRED_STARTUP_TICKS, type PunchTiming } from "./manifest";
+import type { CombatEvent, DefensivePose, FighterSnapshot, Hand, HeldDefense, MovementKind, Power, PunchClass, Target } from "./types";
 
 export interface HeldInput {
   readonly moveX: number;
@@ -38,26 +38,28 @@ export function inComboWindow(fighter: FighterSnapshot, punch: PunchIntent, tick
 /**
  * The timing the engine will give this punch if it starts at `tick`: slower for a tired fighter, a
  * tick quicker for the lead-hand jab. The engine takes the punch's own cost off the conditioning
- * before it measures fatigue, at the combination discount inside the window.
+ * before it measures fatigue, at the combination discount inside the window and at the rate the
+ * fighter's style tires at. A fighter who cannot pay the full cost throws a tired arm punch on what
+ * stamina is left, slower still and never a combination. For a style that tires less, the engine
+ * carries the fraction of a point it saves from punch to punch, which no snapshot shows; this takes
+ * none, as for a fresh fighter, so it can be a point off, and in about one such punch in a hundred
+ * that crosses a fatigue step and puts the timing a tick out.
  */
 export function predictedPunchTiming(fighter: FighterSnapshot, punch: PunchIntent, tick?: number): PunchTiming {
   const base = punchTiming(punch.class, punch.target, punch.power);
-  const fullCost = punchStaminaCost(punch.class, punch.target, punch.power);
-  const cost = tick !== undefined && inComboWindow(fighter, punch, tick) ? Math.max(1, Math.floor((fullCost * 90) / 100)) : fullCost;
-  const conditioning = Math.max(0, fighter.conditioning - Math.max(1, Math.floor(cost / 12)));
+  const style = styleTiming(fighter.style);
+  const fullCost = styledStaminaCost(fighter.style, punch.class, punch.target, punch.power);
+  const tired = fighter.stamina < fullCost;
+  const cost = tired ? fighter.stamina : tick !== undefined && inComboWindow(fighter, punch, tick) ? Math.max(1, Math.floor((fullCost * 90) / 100)) : fullCost;
+  const conditioning = Math.max(0, fighter.conditioning - Math.floor((Math.max(1, Math.floor(cost / 12)) * style.conditioningLossPercent) / 100));
   const speed = fatigueFactor(conditioning, fighter.trauma.body);
   const lead = fighter.stance === "orthodox" ? "left" : "right";
   const quick = punch.class === "jab" && punch.hand === lead ? 1 : 0;
   return {
     ...base,
-    startup: Math.max(2, Math.floor((base.startup * 100) / speed) - quick),
-    recovery: Math.max(4, Math.floor((base.recovery * 100) / speed)),
+    startup: Math.max(2, Math.floor((base.startup * 100) / speed) - quick + (style.startupTicks[punch.class] ?? 0)) + (tired ? TIRED_STARTUP_TICKS : 0),
+    recovery: Math.max(4, Math.floor((base.recovery * 100) / speed) + (style.recoveryTicks[punch.class] ?? 0)) + (tired ? TIRED_RECOVERY_TICKS : 0),
   };
-}
-
-/** False when the fighter cannot pay the punch's full cost: the engine checks it before any combo discount. */
-export function canAffordPunch(fighter: FighterSnapshot, punch: PunchIntent): boolean {
-  return fighter.stamina >= punchStaminaCost(punch.class, punch.target, punch.power);
 }
 
 /**
@@ -80,7 +82,6 @@ function stateLocked(fighter: FighterSnapshot): boolean {
   // A queued punch starts the tick the current one ends, so the fighter is never free in between.
   return fighter.queued_actions > 0
     || fighter.is_downed
-    || fighter.stunned_ticks > 0
     || fighter.clinch_ticks > 0
     || fighter.clinch_startup_ticks > 0
     || fighter.taunt_ticks > 0
@@ -95,10 +96,20 @@ export interface MovementIntent {
   readonly speed: number;
 }
 
-/** The fatigue- and guard-scaled walking intent of `held`, as the engine's `_move_fighter` works it out, written to `out`. */
-export function movementIntent(fighter: FighterSnapshot, held: HeldInput, out: { x: number; y: number; speed: number } = { x: 0, y: 0, speed: 0 }): MovementIntent {
-  let speed = Math.max(2, Math.floor((MAX_SPEED * fatigueFactor(fighter.conditioning, fighter.trauma.body)) / 100));
-  if (held.defense === "guard_high" || held.defense === "guard_low") speed = Math.max(2, Math.floor((speed * GUARD_SPEED_PERCENT) / 100));
+/**
+ * The fatigue-, guard-, stun- and style-scaled walking intent of `held` on the tick `step` ticks after
+ * the snapshot, as the engine's `_move_fighter` works it out, written to `out`. The engine counts a
+ * stun down before the footwork of each tick, and a stunned fighter's guard is down: he stumbles at a
+ * share of his plain speed while the stun has ticks left after that.
+ */
+export function movementIntent(fighter: FighterSnapshot, held: HeldInput, out: { x: number; y: number; speed: number } = { x: 0, y: 0, speed: 0 }, step = 0): MovementIntent {
+  const base = Math.max(2, Math.floor((MAX_SPEED * fatigueFactor(fighter.conditioning, fighter.trauma.body)) / 100));
+  const stunned = fighter.stunned_ticks - step;
+  let speed = base;
+  if (stunned > 1) speed = Math.max(2, Math.floor((base * STUNNED_SPEED_PERCENT) / 100));
+  else if (stunned <= 0 && (held.defense === "guard_high" || held.defense === "guard_low")) speed = Math.max(2, Math.floor((base * GUARD_SPEED_PERCENT) / 100));
+  // The engine moves in thousandths of a unit, so a style's few percent of footspeed are kept.
+  speed *= styleTiming(fighter.style).moveSpeedPercent / 100;
   const magnitude = Math.hypot(held.moveX, held.moveY);
   const scale = magnitude > 1000 ? 1000 / magnitude : 1;
   out.x = (held.moveX * scale * speed) / 1000;
@@ -108,16 +119,48 @@ export function movementIntent(fighter: FighterSnapshot, held: HeldInput, out: {
 }
 
 /**
+ * The tick until which `playerId` stands rooted, given an event from the engine and the tick known so
+ * far: a parry roots the fighter it staggers for the stagger (its `amount`), so the counter it opens
+ * can land.
+ */
+export function parryRootedUntil(event: CombatEvent, playerId: string | null, current: number): number {
+  return event.kind === "parry" && event.target_id === playerId ? Math.max(current, event.tick + event.amount) : current;
+}
+
+/** What holds a fighter's feet that a snapshot does not show: `MovementPrediction` keeps track of it. */
+export interface FootworkHolds {
+  /** The tick a parry roots him until (`parryRootedUntil`). */
+  readonly rootedUntil?: number;
+  /** A punch he was seen stunned in: the stun cut it short, though snapshots go on presenting it. */
+  readonly cutActionId?: string | null;
+}
+
+/**
+ * Steps of the replay from snapshot `tick` that the engine holds the fighter's feet still. A punch
+ * holds them through its last tick, and the engine frees him on the tick it ends. A stun cuts a
+ * punch short on the tick it lands, though snapshots go on presenting the punch with its own timing
+ * for a while, so a stunned fighter is not held by one, nor afterwards by the punch a stun was seen
+ * to cut. A parry roots him while its stagger lasts.
+ */
+function heldSteps(fighter: FighterSnapshot, tick: number, holds: FootworkHolds): number {
+  const cut = fighter.stunned_ticks > 0 || (fighter.action_id !== null && fighter.action_id === holds.cutActionId);
+  const punch = cut ? 0 : Math.max(0, attackTicksRemaining(fighter, tick) - 1);
+  const rooted = fighter.stunned_ticks > 0 ? Math.min((holds.rootedUntil ?? 0) - tick, fighter.stunned_ticks) - 1 : 0;
+  return Math.max(punch, rooted);
+}
+
+/**
  * Mirrors the authoritative movement integrator (velocity blends halfway to
  * the held direction each tick, capped at the fatigue-scaled speed) so the
  * viewer's own fighter can be shown `ticks` ahead of the delayed snapshot,
  * walking toward `intent(step)` on each tick. With the snapshot `tick`, a
- * punch only holds the fighter for the ticks it has left, so stepping out of
- * a punch is predicted as soon as it ends.
+ * punch or a parry's stagger only holds the fighter for the ticks it has
+ * left (see `heldSteps`), so stepping out of it is predicted as soon as it
+ * ends.
  */
-export function replayMovement(fighter: FighterSnapshot, intent: (step: number) => MovementIntent, ticks: number, tick?: number): PredictedOffset {
+export function replayMovement(fighter: FighterSnapshot, intent: (step: number) => MovementIntent, ticks: number, tick?: number, holds: FootworkHolds = {}): PredictedOffset {
   if (ticks <= 0 || stateLocked(fighter)) return { dx: 0, dy: 0 };
-  const committed = tick === undefined ? (fighter.action !== null ? Infinity : 0) : attackTicksRemaining(fighter, tick);
+  const committed = tick === undefined ? (fighter.action !== null ? Infinity : 0) : heldSteps(fighter, tick, holds);
   if (committed >= ticks) return { dx: 0, dy: 0 };
   let vx = fighter.velocity_x;
   let vy = fighter.velocity_y;
@@ -148,9 +191,9 @@ export function replayMovement(fighter: FighterSnapshot, intent: (step: number) 
 }
 
 /** `replayMovement` with the same input held on every tick. */
-export function predictMovement(fighter: FighterSnapshot, held: HeldInput, ticks: number, tick?: number): PredictedOffset {
-  const intent = movementIntent(fighter, held);
-  return replayMovement(fighter, () => intent, ticks, tick);
+export function predictMovement(fighter: FighterSnapshot, held: HeldInput, ticks: number, tick?: number, holds: FootworkHolds = {}): PredictedOffset {
+  const intent = { x: 0, y: 0, speed: 0 };
+  return replayMovement(fighter, (step) => movementIntent(fighter, held, intent, step), ticks, tick, holds);
 }
 
 /** Held input kept for replay, longer than any lead the renderer works with. */
@@ -173,6 +216,12 @@ export class MovementPrediction {
   private readonly mean = { x: 0, y: 0, speed: 0 };
   private readonly sample = { x: 0, y: 0, speed: 0 };
   private horizon: number | null = null;
+  private readonly holds: { rootedUntil: number; cutActionId: string | null } = { rootedUntil: 0, cutActionId: null };
+
+  /** Takes note of an event from the engine for the fighter `playerId` (see `parryRootedUntil`). */
+  observe(event: CombatEvent, playerId: string | null): void {
+    this.holds.rootedUntil = parryRootedUntil(event, playerId, this.holds.rootedUntil);
+  }
 
   /**
    * The offset to draw `fighter`, as shown, by this frame. `held` is the input held now; with
@@ -184,11 +233,12 @@ export class MovementPrediction {
     while (this.history.length > 2 && this.history[1]!.at < nowMs - HELD_HISTORY_MS) this.history.shift();
     this.horizon = this.horizon === null ? horizonTicks : this.horizon + (horizonTicks - this.horizon) * (1 - Math.exp(-HORIZON_EASE_RATE * dt));
     let target: PredictedOffset = { dx: 0, dy: 0 };
+    if (fighter !== null && fighter.stunned_ticks > 0 && fighter.action_id !== null) this.holds.cutActionId = fighter.action_id;
     if (fighter !== null) {
       const tickMs = 1000 / tickRate;
       const lead = this.horizon;
       // The input applied `step` ticks ahead left with a flush around `lead - 1 - step` ticks ago.
-      target = replayMovement(fighter, (step) => this.meanIntent(fighter, nowMs - (lead - 1 - step) * tickMs, tickMs), lead, tick);
+      target = replayMovement(fighter, (step) => this.meanIntent(fighter, step, nowMs - (lead - 1 - step) * tickMs, tickMs), lead, tick, this.holds);
     }
     const limit = OFFSET_SPEED_LIMIT * MAX_SPEED * tickRate * dt;
     const changeX = target.dx - this.offset.dx;
@@ -200,8 +250,11 @@ export class MovementPrediction {
     return { dx: this.offset.dx, dy: this.offset.dy };
   }
 
-  /** The walking intent averaged over the `width` ms around `centre`, the input held after now being the current one. */
-  private meanIntent(fighter: FighterSnapshot, centre: number, width: number): MovementIntent {
+  /**
+   * The walking intent `step` ticks ahead, averaged over the `width` ms around `centre`, the input held
+   * after now being the current one.
+   */
+  private meanIntent(fighter: FighterSnapshot, step: number, centre: number, width: number): MovementIntent {
     const from = centre - width / 2;
     const to = centre + width / 2;
     const mean = this.mean;
@@ -212,7 +265,7 @@ export class MovementPrediction {
       const start = index === 0 ? from : Math.max(from, this.history[index]!.at);
       const end = Math.min(to, this.history[index + 1]?.at ?? Infinity);
       if (end <= start) continue;
-      const intent = movementIntent(fighter, this.history[index]!.held, this.sample);
+      const intent = movementIntent(fighter, this.history[index]!.held, this.sample, step);
       const weight = (end - start) / width;
       mean.x += intent.x * weight;
       mean.y += intent.y * weight;
@@ -267,7 +320,7 @@ export function constrainPrediction(fighter: { readonly x: number; readonly y: n
   return { dx: inside.x - fighter.x, dy: inside.y - fighter.y };
 }
 
-/** Ticks a slip, weave or pull lasts on the server (the engine's EVASION_TICKS). */
+/** Ticks a slip, weave or pull lasts on the server (the engine's EVASION_TICKS), before a style's own. */
 export const EVASION_TICKS = 10;
 /** Stamina the server asks of a slip, weave or pull before it starts one. */
 export const EVASION_STAMINA = 25;
@@ -302,14 +355,17 @@ export class EvasionPrediction {
   private id = "";
   private pressedAt = 0;
   private until = 0;
+  private ticks = EVASION_TICKS;
   private sequence: number | null = null;
   private started = false;
 
-  press(kind: EvasionKind, id: string, nowMs: number, leadTicks: number, tickRate: number): void {
+  /** `evasionTicks` is how long the server plays it: EVASION_TICKS plus the fighter's style's own. */
+  press(kind: EvasionKind, id: string, nowMs: number, leadTicks: number, tickRate: number, evasionTicks = EVASION_TICKS): void {
     this.kind = kind;
     this.id = id;
     this.pressedAt = nowMs;
-    this.until = nowMs + ((Math.max(0, leadTicks) + EVASION_TICKS) * 1000) / tickRate;
+    this.ticks = evasionTicks;
+    this.until = nowMs + ((Math.max(0, leadTicks) + evasionTicks) * 1000) / tickRate;
     this.sequence = null;
     this.started = false;
   }
@@ -332,6 +388,6 @@ export class EvasionPrediction {
 
   /** True while the server, evading, keeps the fighter's feet still for inputs sent now. */
   holdsFeet(nowMs: number, tickRate: number): boolean {
-    return this.kind !== null && nowMs < this.pressedAt + (EVASION_TICKS * 1000) / tickRate;
+    return this.kind !== null && nowMs < this.pressedAt + (this.ticks * 1000) / tickRate;
   }
 }
