@@ -2292,7 +2292,7 @@ export class FightRenderer {
     );
     const viewerIndex = snapshot === null ? -1 : snapshot.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
     const ownView = current.camera === "fighter" && viewerIndex >= 0 && ownViewPhase(snapshot)
-      ? this.fighterCam.update(dt, seconds, viewerIndex === 0 ? this.tmpA : this.tmpB, viewerIndex === 0 ? this.tmpB : this.tmpA, this.effects.shakeAmount, current.reducedMotion)
+      ? this.fighterCam.update(dt, seconds, viewerIndex === 0 ? this.tmpA : this.tmpB, viewerIndex === 0 ? this.tmpB : this.tmpA, this.effects.shakeAmount, current.reducedMotion, this.camera.aspect)
       : null;
     if (ownView === null) this.fighterCam.reset();
     const replaying = this.replay;
@@ -2303,7 +2303,9 @@ export class FightRenderer {
       this.camera.fov = fov;
       this.camera.updateProjectionMatrix();
     }
-    if (this.cameraOverride === null && this.portraitPull > 1 && frame.framed !== true) {
+    // The player's own camera frames itself for the screen (FighterCam) and may stand over the apron, so it
+    // is neither pulled back nor kept inside the ropes like the broadcast's shots.
+    if (this.cameraOverride === null && this.portraitPull > 1 && frame.framed !== true && !this.ownViewActive) {
       const tight = frame.tight === true;
       const pull = this.portraitPull / Math.min(1.3, Math.sqrt(this.portraitPull));
       const distanceScale = tight ? Math.min(pull, 1.25) : pull;

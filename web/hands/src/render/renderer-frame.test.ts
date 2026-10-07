@@ -263,6 +263,30 @@ describe("a rendered frame", () => {
     expect(watching.camera.fov).toBe(36);
   });
 
+  it("keeps the player's own camera behind his back on a phone held upright", () => {
+    const scale = 3.05 / 500;
+    const portrait = { canvas: { clientWidth: 390, clientHeight: 844 }, renderer: { getSize: (out: THREE.Vector2) => out.set(1, 1), setSize: vi.fn() } };
+    for (const z of [1, 1.5, 2, 2.4]) {
+      // Facing -z, the opponent a metre ahead: his back is toward +z.
+      const own = frame(fighting({ x: 0, y: -z / scale, facing_x: 0, facing_y: 1000 }, { x: 0, y: -(z - 1) / scale }), portrait);
+      own.settings.camera = "fighter";
+      own.run(240);
+      const behind = own.camera.position.z - z;
+      const offHisBack = THREE.MathUtils.radToDeg(Math.atan2(Math.abs(own.camera.position.x), behind));
+      // Was 1.2 / 0.7 / 0.2 / -0.2 m behind and 60 / 71 / 84 / 96 degrees round: a side view, clamped inside the ropes.
+      // Now 2.3 / 2.0 / 1.5 / 1.1 m behind and 19 degrees round throughout.
+      expect(behind).toBeGreaterThan(z < 2.4 ? 1.4 : 1);
+      expect(offHisBack).toBeLessThan(22);
+      // His own chest and the opponent's head are on the screen.
+      own.camera.updateMatrixWorld(true);
+      for (const point of [new THREE.Vector3(0, 1.2, z), new THREE.Vector3(0, 1.55, z - 1)]) {
+        const shown = point.project(own.camera);
+        expect(Math.abs(shown.x)).toBeLessThan(0.9);
+        expect(Math.abs(shown.y)).toBeLessThan(0.9);
+      }
+    }
+  });
+
   it("spreads a pool of blood under a bleeding fighter who is down", () => {
     const bleeding = { ...fighter("two").trauma, bleeding: 500, left_cut: 300 };
     const { renderer, run } = frame(fighting({}, { is_downed: true, trauma: bleeding }, { phase: "knockdown" }));
