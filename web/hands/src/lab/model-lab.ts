@@ -1,4 +1,6 @@
 import * as THREE from "three";
+import { Effects3D } from "../render/effects";
+import { eyeSocket, measureBurstStump } from "../render/renderer";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "../render/graph";
 import { OFFICIAL_LOOKS, lookFor, type FighterLook } from "../render/looks";
 import { BLUE_CORNER_OUTFIT, CUTMAN_OUTFIT, RED_CORNER_OUTFIT, REFEREE_OUTFIT, type OfficialOutfit } from "../render/outfit";
@@ -43,6 +45,8 @@ const KNEEL_WINDED_SECONDS = 0.45;
 const CAMERAS: Record<string, [number, number, number]> = {
   face: [0.25, 1.55, 1.0],
   portrait: [0.12, 1.62, 0.62],
+  eyes: [-0.2, 1.65, 0.44],
+  floor: [1.62, 0.3, 0.18],
   hand: [0.55, 1.05, 0.75],
   front: [0, 1.35, 3.4],
   side: [3.4, 1.3, 0.2],
@@ -64,6 +68,15 @@ export class ModelLab {
   private readonly treatFacing = new THREE.Vector3(0, 0, -1);
   private readonly treatTarget = new THREE.Vector3();
   private skeletonHelper: THREE.SkeletonHelper | null = null;
+  /** `mouthpiece=1` knocks the gum shield out of the mouth every few seconds. */
+  private effects: Effects3D | null = null;
+  private shieldClock = Infinity;
+  private shieldEvent = 0;
+  private readonly mouth = new THREE.Vector3();
+  private readonly headTurn = new THREE.Quaternion();
+  /** `burst=1` shows what a burst leaves on the neck. */
+  private burstRim = new Float32Array(0);
+  private readonly burstStump = { position: new THREE.Vector3(), quaternion: new THREE.Quaternion(), across: new THREE.Vector3(), scratch: new THREE.Vector3() };
   private raf = 0;
   private previous = performance.now();
   private elapsed = 0;
@@ -87,6 +100,8 @@ export class ModelLab {
     this.camera.position.set(...cam);
     if (this.params.get("cam") === "hand") this.camera.lookAt(0.27, 0.84, 0.12);
     else if (this.params.get("cam") === "portrait") this.camera.lookAt(0, 1.6, 0.05);
+    else if (this.params.get("cam") === "eyes") this.camera.lookAt(0.01, 1.6, 0.06);
+    else if (this.params.get("cam") === "floor") this.camera.lookAt(1.3, 0.0, -0.24);
     else this.camera.lookAt(0, this.params.get("cam") === "face" ? 1.5 : 1.0, 0);
     this.setupLighting();
   }
@@ -119,6 +134,12 @@ export class ModelLab {
     if (trauma === "light") fighter.trauma = { head: 220, body: 260, left_eye: 190, right_eye: 60, left_cut: 40, right_cut: 0, swelling: 120, bleeding: 60 };
     if (trauma === "heavy") fighter.trauma = { head: 900, body: 700, left_eye: 720, right_eye: 380, left_cut: 520, right_cut: 190, swelling: 620, bleeding: 520 };
     if (trauma === "cut") fighter.trauma = { head: 420, body: 120, left_eye: 380, right_eye: 120, left_cut: 300, right_cut: 0, swelling: 260, bleeding: 380 };
+    // `trauma=head,body,left_eye,right_eye,left_cut,right_cut,swelling,bleeding` sets every value.
+    const values = trauma?.split(",").map(Number) ?? [];
+    if (values.length === 8 && values.every(Number.isFinite)) {
+      const [head, body, leftEye, rightEye, leftCut, rightCut, swelling, bleeding] = values as [number, number, number, number, number, number, number, number];
+      fighter.trauma = { head, body, left_eye: leftEye, right_eye: rightEye, left_cut: leftCut, right_cut: rightCut, swelling, bleeding };
+    }
     const opponent = { ...base(), player_id: "other", x: 0, y: -150, facing_x: 0, facing_y: 1000 } as FighterSnapshot;
     const tick = Math.floor(seconds * 30);
     const punch = /^(jab|straight|hook|uppercut)_(left|right)(_body)?(_power)?$/.exec(pose);
@@ -195,6 +216,8 @@ export class ModelLab {
         this.skeletonHelper = new THREE.SkeletonHelper(this.boxer.root);
         this.scene.add(this.skeletonHelper);
       }
+      if (this.params.get("mouthpiece") === "1" || this.params.get("burst") === "1" || this.params.has("eye")) this.effects = new Effects3D(this.scene);
+      if (this.params.get("burst") === "1") this.boxer.setHeadBurst(true);
       const dislocation = this.params.get("dislocation");
       if (dislocation === "jaw" || dislocation === "shoulder_left" || dislocation === "shoulder_right") this.graph.setArcadeDislocation(dislocation);
       this.statusEl.textContent = `pose ${this.params.get("pose") ?? "idle"}`;
@@ -273,6 +296,33 @@ export class ModelLab {
     const bottle = this.params.get("prop") === "bottle";
     graph.treat(this.params.get("pose") === "treat" ? this.treatTarget.copy(this.treatEye).setY(this.treatEye.y - (bottle ? 0.075 : 0)) : null, this.treatFacing, 1, bottle ? "bottle" : "enswell");
     graph.update(fighter, opponent, dt, this.elapsed, false, "full", sampledTick, head);
+    if (this.effects !== null && this.params.get("burst") === "1") {
+      const rim = measureBurstStump(this.boxer!, this.burstRim, this.burstStump);
+      if (rim !== null) {
+        this.burstRim = rim;
+        if (!this.effects.headBurst(0)) this.effects.burstHead(0, this.burstStump.position, 1, 7);
+        this.effects.anchorStump(0, this.burstStump.position, this.burstStump.quaternion, rim, this.burstStump.across);
+      }
+    }
+    // `eye=left|right` forces that eye out and lets it hang.
+    const eye = this.params.get("eye");
+    if (this.effects !== null && (eye === "left" || eye === "right") && eyeSocket(this.boxer!, eye, this.mouth, this.burstStump.scratch, this.headTurn)) {
+      this.boxer!.headInjury.setEyeOut(eye);
+      if (!this.effects.eyeOut(0)) this.effects.gougeEye(0, this.mouth, this.burstStump.scratch, 1, 9);
+      this.effects.anchorEye(0, this.mouth, this.burstStump.scratch, this.boxer!.bone("head")!.getWorldPosition(this.burstStump.position).add(new THREE.Vector3(0, 0.12, 0.02).applyQuaternion(this.headTurn)), this.headTurn);
+    }
+    if (this.effects !== null && this.params.get("mouthpiece") === "1") {
+      this.shieldClock += dt;
+      if (this.shieldClock > 3) {
+        this.shieldClock = 0;
+        this.shieldEvent += 1;
+        const head = this.boxer!.bone("head")!;
+        head.getWorldQuaternion(this.headTurn);
+        head.getWorldPosition(this.mouth).add(new THREE.Vector3(0, 0.045, 0.12).applyQuaternion(this.headTurn));
+        this.effects.ejectMouthpiece(0, this.mouth, this.headTurn, 1, this.shieldEvent, 0x1d4ed8, true);
+      }
+    }
+    this.effects?.update(dt);
     for (const [index, bone] of (["gloveL", "gloveR"] as const).entries()) {
       this.boxer!.rig.bones[bone].getWorldPosition(this.trailGlove);
       this.trails[index]?.update(this.trailGlove, dt, this.camera.position, dt > 0);
@@ -286,11 +336,13 @@ export class ModelLab {
       kneeL: this.boxer!.bone("kneeL")!.getWorldPosition(new THREE.Vector3()).toArray().map((v) => Number(v.toFixed(3))),
       kneeR: this.boxer!.bone("kneeR")!.getWorldPosition(new THREE.Vector3()).toArray().map((v) => Number(v.toFixed(3))),
       metrics: this.boxer!.rig.metrics,
+      mouthpiece: this.effects !== null && this.effects.mouthpiecePosition(0, this.mouth) ? this.mouth.toArray().map((v) => Number(v.toFixed(3))) : null,
     };
   }
 
   destroy(): void {
     cancelAnimationFrame(this.raf);
+    this.effects?.dispose();
     this.graph?.dispose();
     this.renderer.dispose();
     this.root.replaceChildren();

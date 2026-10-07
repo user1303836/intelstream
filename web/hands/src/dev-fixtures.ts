@@ -86,6 +86,8 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       one.velocity_x = two.velocity_x = 0;
       if (tauntCycle > 3.6) one.clinch_ticks = two.clinch_ticks = Math.round((5.1 - tauntCycle) * 30);
     }
+    // `mouthpiece=1` puts the gum shields back before every exchange so each big head shot knocks one out.
+    if (new URLSearchParams(window.location.search).get("mouthpiece") === "1" && cycle < 0.1) renderer.labEffects.clearMouthpieces();
     if (cycle < 0.55 && one.taunt_ticks === 0 && two.taunt_ticks === 0 && !closing) {
       const punch = PUNCHES[Math.floor(t / 3.2) % PUNCHES.length]!;
       attacker.action = punch;
@@ -151,8 +153,12 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       const trigger = finisher === null ? knockdownCycle > 11 && knockdownCycle < 11.15 : t >= 2.5 && t < 2.65;
       if (trigger) {
         eventId += 1;
-        if (finisher !== null && eventId % 2 === 1) eventId += 1;
-        events.push({ event_id: eventId, tick, kind: "counter_hit", actor_id: one.player_id, target_id: two.player_id, amount: 500, detail: finisher === "hand" ? "left:hook:body" : "right:uppercut:head", blood: 100, direction: 1, action_id: null });
+        // `finisher=head` severs the head, `burst` bursts it with a big counter, `eye` forces an eye out
+        // with a hook, `hand` takes a hand. Finishers are picked by the event id, so it is made even or odd.
+        const burst = finisher === "burst";
+        const eye = finisher === "eye";
+        if (finisher !== null && eventId % 2 === (eye ? 0 : 1)) eventId += 1;
+        events.push({ event_id: eventId, tick, kind: finisher === "head" || eye ? "hit" : "counter_hit", actor_id: one.player_id, target_id: two.player_id, amount: burst ? 130 : finisher === "head" || eye ? 90 : 500, detail: finisher === "hand" ? "left:hook:body" : eye ? "left:hook:head" : "right:uppercut:head", blood: 100, direction: 1, action_id: null });
         eventId += 1;
         events.push({ event_id: eventId, tick, kind: "knockdown", actor_id: one.player_id, target_id: two.player_id, amount: 420, detail: "knockdown", blood: 60, direction: 1, action_id: null });
       }
@@ -254,6 +260,10 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       downed: two.is_downed,
       severedHeads: renderer.labEffects.activeHeads,
       severedHands: renderer.labEffects.activeHands,
+      mouthpieces: [renderer.labEffects.mouthpieceOut(0), renderer.labEffects.mouthpieceOut(1)],
+      bursts: [renderer.labEffects.headBurst(0), renderer.labEffects.headBurst(1)],
+      eyes: [renderer.labEffects.eyeOut(0), renderer.labEffects.eyeOut(1)],
+      eyeAt: (() => { const at = new THREE.Vector3(); return renderer.labEffects.eyePosition(1, at) ? at.toArray().map((value) => Number(value.toFixed(3))) : null; })(),
       rigs: renderer.labRigs.length,
       resolutionScale: renderer.resolutionScale,
       heads: renderer.labRigs.map((root) => {

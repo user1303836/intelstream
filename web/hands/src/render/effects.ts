@@ -1,15 +1,20 @@
 import * as THREE from "three";
 import type { BloodLevel } from "../settings";
 import type { CombatEvent, Hand } from "../types";
+import { CanvasBlood } from "./canvas-blood";
 import { wearCornerColour } from "./gear";
-import { bloodShade, buildChunkGeometry, buildDropletGeometry, buildWoundGeometry, closeCut, dropletShape, woundTexture } from "./gore";
+import { HARD_SHOT, bloodDropsFor, bloodShade, buildChunkGeometry, buildDropletGeometry, buildShardGeometry, buildWoundGeometry, closeCut, dropletShape, eyeTexture, jawWoundTexture, woundTexture, wristWoundTexture } from "./gore";
 import { LookShading, SCANNED_LOOK, type FighterLook } from "./looks";
+import { SHIELD_RADIUS, buildMouthpieceGeometry, idleShield, stepShield, type ShieldState } from "./mouthpiece";
 import { CANVAS_TOP, RING_FIGHT_HALF, ROPE_LINE } from "./world";
 
 const MAX_DROPLETS = 900;
 const MAX_MIST = 90;
-const MAX_DECALS = 48;
 const MAX_GIBS = 48;
+const MAX_SHARDS = 24;
+const SHARDS_PER_BURST = 18;
+const BRAIN_PER_BURST = 14;
+const TEETH_PER_BURST = 5;
 const MAX_HEADS = 2;
 const MAX_HANDS = 4;
 const GIBS_PER_DECAPITATION = 24;
@@ -72,8 +77,13 @@ interface Gib {
   stretch: number;
   bounces: number;
   stained: boolean;
-  tooth: boolean;
+  kind: DebrisKind;
 }
+
+/** Flesh is gone once it lands; teeth, brain and skull lie on the canvas a while. */
+type DebrisKind = "flesh" | "tooth" | "brain" | "shard";
+const DEBRIS_LIFE: Readonly<Record<DebrisKind, number>> = { flesh: 3, tooth: 6, brain: 14, shard: 14 };
+const DEBRIS_BOUNCES: Readonly<Record<DebrisKind, number>> = { flesh: 1, tooth: 3, brain: 1, shard: 2 };
 
 interface SeveredHead {
   readonly mesh: THREE.Mesh;
@@ -106,6 +116,23 @@ interface Stump {
   direction: number;
 }
 
+/** An eye hanging out of its socket on its nerve, swinging as a weight on a cord. */
+interface HangingEye {
+  active: boolean;
+  eventId: number | null;
+  readonly position: THREE.Vector3;
+  readonly previous: THREE.Vector3;
+  readonly socket: THREE.Vector3;
+  /** The way the face points, which the pupil half turns to as it hangs. */
+  readonly facing: THREE.Vector3;
+  /** The middle of the skull and how the head is turned: the eye lies against the head rather than hanging through it. */
+  readonly skull: THREE.Vector3;
+  readonly skullTurn: THREE.Quaternion;
+  hasSkull: boolean;
+  bleeding: number;
+  accumulator: number;
+}
+
 interface DripEmitter {
   readonly position: THREE.Vector3;
   active: boolean;
@@ -120,7 +147,19 @@ const seeded = (seed: number): (() => number) => () => {
 };
 
 const finite = (value: number, fallback = 0): number => Number.isFinite(value) ? value : fallback;
+const idleGib = (): Gib => ({ alive: false, x: 0, y: -50, z: 0, vx: 0, vy: 0, vz: 0, rx: 0, ry: 0, rz: 0, vrx: 0, vry: 0, vrz: 0, life: 0, scale: 0, stretch: 1, bounces: 0, stained: false, kind: "flesh" });
+const SHIELD_WHITE = new THREE.Color(0xf4f7fb);
+const EYE_RADIUS = 0.012;
+/** How far an eye forced out hangs below its socket on the nerve. */
+export const EYE_NERVE_LENGTH = 0.055;
+const EYE_DAMPING = 0.985;
+/** Half the width and height of the head about the middle of the skull, plus the eye, for a hanging eye. */
+const SKULL_RADII = new THREE.Vector2(0.085 + EYE_RADIUS, 0.12 + EYE_RADIUS);
+/** How far in front of the socket's plane a hanging eye lies on the face, for the cheekbone and the lids. */
+const FACE_CLEARANCE = 0.012;
+const SALIVA = { r: 0.82, g: 0.86, b: 0.9 } as const;
 const unitY = new THREE.Vector3(0, 1, 0);
+const UNIT_Z = new THREE.Vector3(0, 0, 1);
 const safeStep = (dt: number): number => Number.isFinite(dt) ? THREE.MathUtils.clamp(dt, 0, MAX_STEP) : 0;
 const IMPACT_KINDS = new Set(["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown", "bleed"]);
 
@@ -155,39 +194,6 @@ function copyFiniteQuaternion(target: THREE.Quaternion, source: THREE.Quaternion
   else target.normalize();
 }
 
-function splatTexture(seed: number): THREE.CanvasTexture {
-  const canvas = document.createElement("canvas");
-  canvas.width = 128;
-  canvas.height = 128;
-  const ctx = canvas.getContext("2d");
-  if (ctx !== null) {
-    const rand = seeded(seed);
-    ctx.clearRect(0, 0, 128, 128);
-    ctx.fillStyle = "rgba(255,255,255,1)";
-    const blobs = 7 + Math.floor(rand() * 6);
-    for (let i = 0; i < blobs; i += 1) {
-      const angle = rand() * Math.PI * 2;
-      const distance = i === 0 ? 0 : 8 + rand() * 40;
-      const radius = i === 0 ? 24 + rand() * 12 : 3 + rand() * 12;
-      ctx.globalAlpha = i === 0 ? 1 : 0.7 + rand() * 0.3;
-      ctx.beginPath();
-      ctx.ellipse(64 + Math.cos(angle) * distance, 64 + Math.sin(angle) * distance, radius, radius * (0.55 + rand() * 0.5), rand() * Math.PI, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.globalAlpha = 1;
-    for (let i = 0; i < 12; i += 1) {
-      const angle = rand() * Math.PI * 2;
-      const distance = 30 + rand() * 30;
-      ctx.beginPath();
-      ctx.arc(64 + Math.cos(angle) * distance, 64 + Math.sin(angle) * distance, 1 + rand() * 3, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.NoColorSpace;
-  return texture;
-}
-
 function mistTexture(): THREE.CanvasTexture {
   const canvas = document.createElement("canvas");
   canvas.width = 64;
@@ -218,7 +224,6 @@ export class Effects3D {
   private readonly dropletScale = new THREE.Vector3();
   private readonly dropletVelocity = new THREE.Vector3();
   private readonly dropletColor = new THREE.Color();
-  private readonly splatMaps: THREE.CanvasTexture[] = [];
   private dropletIndex = 0;
 
   readonly mistPoints: THREE.Points;
@@ -230,13 +235,16 @@ export class Effects3D {
   private readonly mistMap: THREE.CanvasTexture;
   private mistIndex = 0;
 
-  private readonly decals: THREE.Mesh[] = [];
-  private readonly decalGeometry: THREE.PlaneGeometry;
-  private decalIndex = 0;
+  private readonly canvasBlood: CanvasBlood;
 
   private readonly gibGeometry: THREE.BufferGeometry;
   private readonly gibMaterial: THREE.MeshStandardMaterial;
   private readonly gibMesh: THREE.InstancedMesh;
+  private readonly shardGeometry: THREE.BufferGeometry;
+  private readonly shardMaterial: THREE.MeshStandardMaterial;
+  private readonly shardMesh: THREE.InstancedMesh;
+  private readonly shards: Gib[] = [];
+  private shardIndex = 0;
   private readonly gibColor = new THREE.Color();
   private readonly gibs: Gib[] = [];
   private gibIndex = 0;
@@ -256,12 +264,35 @@ export class Effects3D {
   private readonly wristStumpGeometry: THREE.BufferGeometry;
   private readonly stumpMaterial: THREE.MeshStandardMaterial;
   private readonly stumpMap: THREE.CanvasTexture;
+  private readonly wristMaterial: THREE.MeshStandardMaterial;
+  private readonly wristMap: THREE.CanvasTexture;
+  private readonly jawMaterial: THREE.MeshStandardMaterial;
+  private readonly jawMap: THREE.CanvasTexture;
+  private readonly stumpAcross = new THREE.Vector3();
   private dropletCloseness = 1;
   private readonly stumpOutward = new THREE.Vector3();
   private readonly stumps: Stump[] = [];
   private readonly handStumps: Stump[] = [];
   private readonly lastDecapitationEvent = [null, null] as Array<number | null>;
+  private readonly lastBurstEvent = [null, null] as Array<number | null>;
   private readonly lastDismembermentEvent = Array<number | null>(MAX_HANDS).fill(null);
+
+  private readonly eyeGeometry: THREE.SphereGeometry;
+  private readonly eyeMap: THREE.CanvasTexture;
+  private readonly eyeMaterial: THREE.MeshStandardMaterial;
+  private readonly nerveGeometry: THREE.CylinderGeometry;
+  private readonly nerveMaterial: THREE.MeshStandardMaterial;
+  private readonly eyeMeshes: THREE.Mesh[] = [];
+  private readonly nerveMeshes: THREE.Mesh[] = [];
+  private readonly eyes: HangingEye[] = [];
+  private readonly eyeDirection = new THREE.Vector3();
+  private readonly eyeTurn = new THREE.Quaternion();
+  private readonly eyeSocketLocal = new THREE.Vector3();
+  private readonly shieldGeometry: THREE.BufferGeometry;
+  private readonly shieldMaterials: THREE.MeshStandardMaterial[] = [];
+  private readonly shieldMeshes: THREE.Mesh[] = [];
+  private readonly shields: ShieldState[] = [idleShield(), idleShield()];
+  private readonly lastShieldEvent = [null, null] as Array<number | null>;
 
   private readonly dripEmitters: [DripEmitter, DripEmitter] = [
     { position: new THREE.Vector3(), active: false, rate: 0, accumulator: 0 },
@@ -272,7 +303,8 @@ export class Effects3D {
   private shake = 0;
   private bloodLevel: BloodLevel = "full";
 
-  constructor(private readonly scene: THREE.Scene) {
+  /** `bloodCanvasSize` is the resolution blood on the canvas is painted at, in pixels across the ring. */
+  constructor(private readonly scene: THREE.Scene, bloodCanvasSize = 1024) {
     this.dropletPositions = new Float32Array(MAX_DROPLETS * 3);
     this.dropletColors = new Float32Array(MAX_DROPLETS * 3);
     this.dropletBuffers = {
@@ -293,7 +325,6 @@ export class Effects3D {
       this.writeDropletMatrix(i, this.droplets[i]!);
     }
     this.dropletMesh.instanceMatrix.needsUpdate = true;
-    for (let i = 0; i < 4; i += 1) this.splatMaps.push(splatTexture(0x3a1f_00d1 + i * 977));
 
     this.mistPositions = new Float32Array(MAX_MIST * 3);
     this.mistColors = new Float32Array(MAX_MIST * 4).fill(1);
@@ -310,29 +341,36 @@ export class Effects3D {
       this.mistPositions[i * 3 + 1] = -50;
     }
 
-    this.decalGeometry = new THREE.PlaneGeometry(0.2, 0.2);
-    for (let i = 0; i < MAX_DECALS; i += 1) {
-      const decal = new THREE.Mesh(this.decalGeometry, new THREE.MeshStandardMaterial({ color: 0x6e0d13, map: this.splatMaps[i % this.splatMaps.length]!, alphaMap: this.splatMaps[i % this.splatMaps.length]!, transparent: true, opacity: 0.42, depthWrite: false, roughness: 0.6, metalness: 0 }));
-      decal.rotation.x = -Math.PI / 2;
-      decal.position.y = CANVAS_TOP + 0.004 + i * 0.00015;
-      decal.visible = false;
-      this.decals.push(decal);
-      scene.add(decal);
-    }
+    this.canvasBlood = new CanvasBlood(scene, bloodCanvasSize);
 
     this.gibGeometry = buildChunkGeometry();
-    this.gibMaterial = new THREE.MeshStandardMaterial({ color: 0x5c0a10, roughness: 0.34, metalness: 0 });
+    // Each piece carries its whole colour, so teeth are white and brain is grey beside the flesh.
+    this.gibMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.34, metalness: 0 });
     this.gibMesh = new THREE.InstancedMesh(this.gibGeometry, this.gibMaterial, MAX_GIBS);
     this.gibMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.gibMesh.frustumCulled = false;
     scene.add(this.gibMesh);
     for (let i = 0; i < MAX_GIBS; i += 1) {
-      const gib: Gib = { alive: false, x: 0, y: -50, z: 0, vx: 0, vy: 0, vz: 0, rx: 0, ry: 0, rz: 0, vrx: 0, vry: 0, vrz: 0, life: 0, scale: 0, stretch: 1, bounces: 0, stained: false, tooth: false };
+      const gib = idleGib();
       this.gibs.push(gib);
-      this.gibMesh.setColorAt(i, this.gibColor.setHex(0xffffff));
-      this.writeGibMatrix(i, gib);
+      this.gibMesh.setColorAt(i, this.gibColor.setHex(0x5c0a10));
+      this.writeDebrisMatrix(this.gibMesh, i, gib);
     }
     this.gibMesh.instanceMatrix.needsUpdate = true;
+    this.shardGeometry = buildShardGeometry();
+    this.shardMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5, metalness: 0, vertexColors: true, side: THREE.DoubleSide });
+    this.shardMesh = new THREE.InstancedMesh(this.shardGeometry, this.shardMaterial, MAX_SHARDS);
+    this.shardMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.shardMesh.frustumCulled = false;
+    this.shardMesh.castShadow = true;
+    scene.add(this.shardMesh);
+    for (let i = 0; i < MAX_SHARDS; i += 1) {
+      const shard = idleGib();
+      this.shards.push(shard);
+      this.shardMesh.setColorAt(i, this.gibColor.setHex(0xffffff));
+      this.writeDebrisMatrix(this.shardMesh, i, shard);
+    }
+    this.shardMesh.instanceMatrix.needsUpdate = true;
 
     this.headGeometry = new THREE.SphereGeometry(HEAD_RADIUS, 18, 14);
     this.handGeometry = new THREE.CapsuleGeometry(0.055, 0.09, 6, 12);
@@ -340,6 +378,10 @@ export class Effects3D {
     this.wristStumpGeometry = buildWoundGeometry(0.038, 0.042, 0.006);
     this.stumpMap = woundTexture();
     this.stumpMaterial = new THREE.MeshStandardMaterial({ map: this.stumpMap, roughness: 0.3, metalness: 0 });
+    this.wristMap = wristWoundTexture();
+    this.wristMaterial = new THREE.MeshStandardMaterial({ map: this.wristMap, roughness: 0.3, metalness: 0 });
+    this.jawMap = jawWoundTexture();
+    this.jawMaterial = new THREE.MeshStandardMaterial({ map: this.jawMap, roughness: 0.28, metalness: 0 });
     for (let i = 0; i < MAX_HEADS; i += 1) {
       const headMaterial = new THREE.MeshStandardMaterial({ color: 0x8a4d32, roughness: 0.76, metalness: 0 });
       this.headMaterials.push(headMaterial);
@@ -359,6 +401,33 @@ export class Effects3D {
       scene.add(stumpMesh);
       this.stumps.push({ mesh: stumpMesh, flesh: new THREE.BufferGeometry(), active: false, fountainLife: 0, accumulator: 0, seed: 1, direction: 1 });
     }
+    this.eyeGeometry = new THREE.SphereGeometry(EYE_RADIUS, 16, 12);
+    this.eyeMap = eyeTexture();
+    this.eyeMaterial = new THREE.MeshStandardMaterial({ map: this.eyeMap, roughness: 0.18, metalness: 0 });
+    this.nerveGeometry = new THREE.CylinderGeometry(0.0034, 0.0045, 1, 8, 1, true);
+    this.nerveGeometry.translate(0, 0.5, 0);
+    this.nerveMaterial = new THREE.MeshStandardMaterial({ color: 0xb04048, roughness: 0.25, metalness: 0, side: THREE.DoubleSide });
+    for (let index = 0; index < MAX_HEADS; index += 1) {
+      const eye = new THREE.Mesh(this.eyeGeometry, this.eyeMaterial);
+      const nerve = new THREE.Mesh(this.nerveGeometry, this.nerveMaterial);
+      eye.visible = false;
+      nerve.visible = false;
+      eye.castShadow = true;
+      scene.add(eye, nerve);
+      this.eyeMeshes.push(eye);
+      this.nerveMeshes.push(nerve);
+      this.eyes.push({ active: false, eventId: null, position: new THREE.Vector3(), previous: new THREE.Vector3(), socket: new THREE.Vector3(), facing: new THREE.Vector3(0, 0, 1), skull: new THREE.Vector3(), skullTurn: new THREE.Quaternion(), hasSkull: false, bleeding: 0, accumulator: 0 });
+    }
+    this.shieldGeometry = buildMouthpieceGeometry();
+    for (let index = 0; index < MAX_HEADS; index += 1) {
+      const material = new THREE.MeshStandardMaterial({ color: 0xe8eef5, roughness: 0.22, metalness: 0, side: THREE.DoubleSide });
+      this.shieldMaterials.push(material);
+      const mesh = new THREE.Mesh(this.shieldGeometry, material);
+      mesh.castShadow = true;
+      mesh.visible = false;
+      scene.add(mesh);
+      this.shieldMeshes.push(mesh);
+    }
     for (let index = 0; index < MAX_HANDS; index += 1) {
       const material = new THREE.MeshStandardMaterial({ color: 0x1d4ed8, roughness: 0.38, metalness: 0.03 });
       wearCornerColour(material, true);
@@ -368,14 +437,14 @@ export class Effects3D {
       handMesh.castShadow = true;
       handMesh.visible = false;
       scene.add(handMesh);
-      const cap = new THREE.Mesh(this.wristStumpGeometry, this.stumpMaterial);
+      const cap = new THREE.Mesh(this.wristStumpGeometry, this.wristMaterial);
       cap.rotation.x = Math.PI;
       cap.position.y = 0.02;
       cap.visible = false;
       handMesh.add(cap);
       this.hands.push({ mesh: handMesh, defaultGeometry: this.handGeometry, defaultScale: handMesh.scale.clone(), cap, defaultCap: this.wristStumpGeometry, look: null, baked: null, bakedFlesh: null, radius: HAND_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false });
 
-      const stumpMesh = new THREE.Mesh(this.wristStumpGeometry, this.stumpMaterial);
+      const stumpMesh = new THREE.Mesh(this.wristStumpGeometry, this.wristMaterial);
       stumpMesh.visible = false;
       scene.add(stumpMesh);
       this.handStumps.push({ mesh: stumpMesh, flesh: new THREE.BufferGeometry(), active: false, fountainLife: 0, accumulator: 0, seed: 1, direction: 1 });
@@ -413,16 +482,32 @@ export class Effects3D {
     return this.mists.filter((mist) => mist.alive).length;
   }
 
-  get visibleDecals(): number {
-    return this.decals.filter((decal) => decal.visible).length;
+  /** Stains of blood painted on the canvas since it was last cleaned. */
+  get canvasStains(): number {
+    return this.canvasBlood.stains;
   }
 
   get liveGibs(): number {
     return this.gibs.filter((gib) => gib.alive).length;
   }
 
+  get liveShards(): number {
+    return this.shards.filter((shard) => shard.alive).length;
+  }
+
+  /** How many teeth, pieces of brain and pieces of skull are out, by kind. */
+  debrisCount(kind: DebrisKind): number {
+    return [...this.gibs, ...this.shards].filter((gib) => gib.alive && gib.kind === kind).length;
+  }
+
   get activeHeads(): number {
     return this.heads.filter((head) => head.active).length;
+  }
+
+  /** Whether a fighter's head has burst, leaving the jaw on his neck. */
+  headBurst(fighterIndex: number): boolean {
+    const stump = this.stumps[Math.trunc(fighterIndex)];
+    return stump !== undefined && stump.active && stump.mesh.material === this.jawMaterial;
   }
 
   /** Copies the world position of a fighter's severed head into `out`; false when the head is still on. */
@@ -439,6 +524,236 @@ export class Effects3D {
     if (head === undefined || !head.active) return false;
     out.set(0, 0, 1).applyQuaternion(head.mesh.quaternion);
     return true;
+  }
+
+  /** Whether a fighter's gum shield is out of his mouth. */
+  mouthpieceOut(fighterIndex: number): boolean {
+    return this.shields[Math.trunc(fighterIndex)]?.out === true;
+  }
+
+  /** Copies where a fighter's gum shield is into `out`; false while it is still in his mouth. */
+  mouthpiecePosition(fighterIndex: number, out: THREE.Vector3): boolean {
+    const shield = this.shields[Math.trunc(fighterIndex)];
+    if (shield === undefined || !shield.out) return false;
+    out.set(shield.x, shield.y, shield.z);
+    return true;
+  }
+
+  /**
+   * Knocks a fighter's gum shield out of his mouth along the punch: it tumbles, bounces and slides on
+   * the canvas and lies there until the round ends. Once out it stays out, unless `again` replays the
+   * blow. A spray of spit, and of blood when blood is shown, follows it.
+   */
+  ejectMouthpiece(fighterIndex: number, mouth: THREE.Vector3, quaternion: THREE.Quaternion, direction: number, eventId: number, color: number, again = false): boolean {
+    if (fighterIndex < 0 || fighterIndex >= MAX_HEADS) return false;
+    const index = Math.trunc(fighterIndex);
+    const shield = this.shields[index]!;
+    const safeEventId = Number.isSafeInteger(eventId) ? eventId : 0;
+    if ((shield.out && !again) || this.lastShieldEvent[index] === safeEventId) return false;
+    this.lastShieldEvent[index] = safeEventId;
+    const rand = seeded(safeEventId * 48271 + index * 7907 + 5);
+    const launch = direction < 0 ? -1 : 1;
+    Object.assign(shield, idleShield(), {
+      out: true,
+      moving: true,
+      x: finite(mouth.x), y: finite(mouth.y, 1.45), z: finite(mouth.z),
+      vx: launch * (0.9 + rand() * 0.9),
+      vy: 0.9 + rand() * 0.9,
+      vz: (rand() - 0.5) * 1.1,
+      wx: (rand() - 0.5) * 26,
+      wy: (rand() - 0.5) * 18,
+      wz: (rand() - 0.5) * 26,
+      restYaw: rand() * Math.PI * 2,
+    } satisfies Partial<ShieldState>);
+    const mesh = this.shieldMeshes[index]!;
+    mesh.position.set(shield.x, shield.y, shield.z);
+    copyFiniteQuaternion(mesh.quaternion, quaternion);
+    mesh.visible = true;
+    const material = this.shieldMaterials[index]!;
+    material.color.setHex(color).lerp(SHIELD_WHITE, 0.55);
+    const bloody = this.bloodLevel !== "off";
+    for (let drop = 0; drop < (bloody ? 22 : 12); drop += 1) {
+      const angle = rand() * Math.PI * 2;
+      const blood = bloody && drop % 3 !== 0;
+      this.spawnDroplet(
+        shield.x + (rand() - 0.5) * 0.03,
+        shield.y + (rand() - 0.5) * 0.03,
+        shield.z + (rand() - 0.5) * 0.03,
+        shield.vx * (0.5 + rand() * 0.6) + Math.sin(angle) * 0.4,
+        shield.vy * (0.4 + rand() * 0.6),
+        shield.vz * 0.5 + Math.cos(angle) * 0.4,
+        blood ? bloodShade(rand()) : SALIVA,
+        0.5 + rand() * 0.5,
+        blood,
+      );
+    }
+    return true;
+  }
+
+  /**
+   * Forces a fighter's eye out of its socket at `socket`, along `forward` (the way the face points):
+   * it springs out, then hangs and swings on its nerve, bleeding from the empty socket.
+   */
+  gougeEye(fighterIndex: number, socket: THREE.Vector3, forward: THREE.Vector3, direction: number, eventId: number): void {
+    if (this.bloodLevel !== "full" || fighterIndex < 0 || fighterIndex >= MAX_HEADS) return;
+    const index = Math.trunc(fighterIndex);
+    const eye = this.eyes[index]!;
+    const safeEventId = Number.isSafeInteger(eventId) ? eventId : 0;
+    if (eye.active || eye.eventId === safeEventId) return;
+    eye.active = true;
+    eye.eventId = safeEventId;
+    eye.socket.set(finite(socket.x), finite(socket.y, 1.6), finite(socket.z));
+    eye.facing.copy(forward);
+    eye.hasSkull = false;
+    eye.position.copy(eye.socket).addScaledVector(forward, EYE_RADIUS * 1.5);
+    // It leaves at about a metre and a half a second, out of the face and away from the punch.
+    this.eyeDirection.copy(forward).multiplyScalar(1.3);
+    this.eyeDirection.x += (direction < 0 ? -1 : 1) * 0.5;
+    eye.previous.copy(eye.position).addScaledVector(this.eyeDirection, -SIMULATION_STEP);
+    eye.bleeding = 2;
+    eye.accumulator = 0;
+    this.eyeMeshes[index]!.visible = true;
+    this.nerveMeshes[index]!.visible = true;
+    const rand = seeded(safeEventId * 52_711 + index * 3571 + 13);
+    for (let drop = 0; drop < 36; drop += 1) {
+      const angle = rand() * Math.PI * 2;
+      this.spawnDroplet(eye.socket.x, eye.socket.y, eye.socket.z, forward.x * (0.8 + rand()) + Math.sin(angle) * 0.6, 0.4 + rand() * 1.2, forward.z * (0.8 + rand()) + Math.cos(angle) * 0.6, bloodShade(rand()), 0.6 + rand() * 0.6, true);
+    }
+    for (let puff = 0; puff < 4; puff += 1) this.spawnMist(eye.socket.x + (rand() - 0.5) * 0.1, eye.socket.y + (rand() - 0.5) * 0.08, eye.socket.z + (rand() - 0.5) * 0.1, 0.7 + rand() * 0.6, 0.5 + rand() * 0.4);
+    this.writeEye(index);
+  }
+
+  /**
+   * Keeps the nerve of a hanging eye in its socket as the head moves; `facing` is the way the face
+   * points and `skull` the middle of the head, which the eye lies against.
+   */
+  anchorEye(fighterIndex: number, socket: THREE.Vector3, facing?: THREE.Vector3, skull?: THREE.Vector3, skullTurn?: THREE.Quaternion): void {
+    const eye = this.eyes[Math.trunc(fighterIndex)];
+    if (eye === undefined || !eye.active) return;
+    eye.socket.set(finite(socket.x), finite(socket.y, 1.6), finite(socket.z));
+    if (facing !== undefined && facing.lengthSq() > 1e-8) eye.facing.copy(facing).normalize();
+    if (skull !== undefined && skullTurn !== undefined) {
+      eye.skull.set(finite(skull.x), finite(skull.y, 1.6), finite(skull.z));
+      copyFiniteQuaternion(eye.skullTurn, skullTurn);
+      eye.hasSkull = true;
+    }
+  }
+
+  eyeOut(fighterIndex: number): boolean {
+    return this.eyes[Math.trunc(fighterIndex)]?.active === true;
+  }
+
+  /** Copies where a fighter's hanging eye is into `out`; false while it is in his head. */
+  eyePosition(fighterIndex: number, out: THREE.Vector3): boolean {
+    const eye = this.eyes[Math.trunc(fighterIndex)];
+    if (eye === undefined || !eye.active) return false;
+    out.copy(eye.position);
+    return true;
+  }
+
+  private updateEyes(step: number): void {
+    for (const [index, eye] of this.eyes.entries()) {
+      if (!eye.active) continue;
+      // Verlet: what it moved last step, a little damped, plus gravity; then the nerve holds it.
+      this.eyeDirection.copy(eye.position).sub(eye.previous).multiplyScalar(EYE_DAMPING);
+      eye.previous.copy(eye.position);
+      eye.position.add(this.eyeDirection);
+      eye.position.y -= DROPLET_GRAVITY * step * step;
+      this.eyeDirection.copy(eye.position).sub(eye.socket);
+      const stretch = this.eyeDirection.length();
+      if (stretch > EYE_NERVE_LENGTH) eye.position.copy(eye.socket).addScaledVector(this.eyeDirection, EYE_NERVE_LENGTH / stretch);
+      if (eye.hasSkull && this.restOnFace(eye)) {
+        // It rests where it touches rather than sliding round the head, and the nerve still holds it.
+        eye.previous.lerp(eye.position, 0.6);
+        this.eyeDirection.copy(eye.position).sub(eye.socket);
+        const held = this.eyeDirection.length();
+        if (held > EYE_NERVE_LENGTH) eye.position.copy(eye.socket).addScaledVector(this.eyeDirection, EYE_NERVE_LENGTH / held);
+      }
+      if (eye.position.y < CANVAS_TOP + EYE_RADIUS) eye.position.y = CANVAS_TOP + EYE_RADIUS;
+      if (this.bloodLevel === "full" && eye.bleeding > 0) {
+        eye.bleeding = Math.max(0, eye.bleeding - step);
+        eye.accumulator += step * 14;
+        while (eye.accumulator >= 1) {
+          eye.accumulator -= 1;
+          this.spawnDroplet(eye.socket.x, eye.socket.y - 0.005, eye.socket.z, (this.ambientRandom() - 0.5) * 0.2, -0.2 - this.ambientRandom() * 0.3, (this.ambientRandom() - 0.5) * 0.2, bloodShade(this.ambientRandom()), 0.9, true);
+        }
+      }
+      this.writeEye(index);
+    }
+  }
+
+  /**
+   * Keeps a hanging eye out of the head. Seen in the head's own frame the head behind the face is a
+   * column as wide and tall as the skull, ending in the plane of the face just in front of the socket;
+   * an eye inside it goes out the shorter way, to the face or to the side. True when it was moved.
+   */
+  private restOnFace(eye: HangingEye): boolean {
+    this.eyeTurn.copy(eye.skullTurn).invert();
+    const local = this.eyeDirection.copy(eye.position).sub(eye.skull).applyQuaternion(this.eyeTurn);
+    const face = this.eyeSocketLocal.copy(eye.socket).sub(eye.skull).applyQuaternion(this.eyeTurn).z + EYE_RADIUS + FACE_CLEARANCE;
+    if (local.z >= face) return false;
+    const across = Math.hypot(local.x / SKULL_RADII.x, local.y / SKULL_RADII.y);
+    if (across >= 1) return false;
+    const toFace = face - local.z;
+    const toSide = (1 - across) * Math.min(SKULL_RADII.x, SKULL_RADII.y);
+    if (toFace <= toSide || across < 1e-6) local.z = face;
+    else {
+      local.x /= across;
+      local.y /= across;
+    }
+    eye.position.copy(eye.skull).add(local.applyQuaternion(eye.skullTurn));
+    return true;
+  }
+
+  private writeEye(index: number): void {
+    const eye = this.eyes[index]!;
+    const ball = this.eyeMeshes[index]!;
+    const nerve = this.nerveMeshes[index]!;
+    ball.position.copy(eye.position);
+    // The nerve leaves the back of the eye, so the pupil looks away from the socket.
+    this.eyeDirection.copy(eye.position).sub(eye.socket);
+    const length = this.eyeDirection.length();
+    if (length > 1e-5) {
+      this.eyeDirection.multiplyScalar(1 / length);
+      nerve.quaternion.setFromUnitVectors(unitY, this.eyeDirection);
+      this.eyeDirection.addScaledVector(eye.facing, 0.9).normalize();
+      ball.quaternion.setFromUnitVectors(UNIT_Z, this.eyeDirection);
+    }
+    nerve.position.copy(eye.socket);
+    nerve.scale.set(1, Math.max(0.001, length - EYE_RADIUS * 0.8), 1);
+  }
+
+  /** The corner puts the gum shield back in between rounds. */
+  clearMouthpieces(): void {
+    for (const [index, shield] of this.shields.entries()) {
+      Object.assign(shield, idleShield());
+      this.shieldMeshes[index]!.visible = false;
+      this.lastShieldEvent[index] = null;
+    }
+  }
+
+  private updateShields(step: number): void {
+    for (const [index, shield] of this.shields.entries()) {
+      if (!shield.out || !shield.moving) continue;
+      const mesh = this.shieldMeshes[index]!;
+      const flying = shield.age < 0.3 && !shield.sliding;
+      const fromX = shield.x;
+      const fromZ = shield.z;
+      stepShield(shield, mesh.quaternion, step, CANVAS_TOP);
+      const limit = ROPE_LINE - SHIELD_RADIUS - SEVERED_PART_MARGIN;
+      const x = confineToRopes(shield.x, shield.vx, fromX, limit);
+      const z = confineToRopes(shield.z, shield.vz, fromZ, limit);
+      shield.x = x.position;
+      shield.vx = x.velocity;
+      shield.z = z.position;
+      shield.vz = z.velocity;
+      mesh.position.set(shield.x, shield.y, shield.z);
+      // A thread of spit and blood trails it for the first moments of its flight.
+      if (flying && this.ambientRandom() < step * 40) {
+        const blood = this.bloodLevel !== "off" && this.ambientRandom() < 0.6;
+        this.spawnDroplet(shield.x, shield.y, shield.z, shield.vx * 0.6, shield.vy * 0.6, shield.vz * 0.6, blood ? bloodShade(this.ambientRandom()) : SALIVA, 0.45, blood, 0.003);
+      }
+    }
   }
 
   get activeHands(): number {
@@ -521,16 +836,15 @@ export class Effects3D {
   }
 
   private placeDecal(x: number, z: number, scaleX: number, scaleZ: number, rotation: number, opacity: number, color: number): void {
-    const decal = this.decals[this.decalIndex % MAX_DECALS]!;
-    this.decalIndex += 1;
-    decal.visible = true;
-    decal.position.x = finite(x);
-    decal.position.z = finite(z);
-    decal.rotation.z = finite(rotation);
-    decal.scale.set(Math.max(0.01, finite(scaleX, 0.2)) * 1.4, Math.max(0.01, finite(scaleZ, 0.15)) * 1.4, 1);
-    const material = decal.material as THREE.MeshStandardMaterial;
-    material.opacity = THREE.MathUtils.clamp(finite(opacity, 0.4) * 1.6, 0, 1);
-    material.color.setHex(color);
+    this.canvasBlood.stain(
+      finite(x),
+      finite(z),
+      Math.max(0.01, finite(scaleX, 0.2)) * 0.28,
+      Math.max(0.01, finite(scaleZ, 0.15)) * 0.28,
+      finite(rotation),
+      THREE.MathUtils.clamp(finite(opacity, 0.4) * 2.1, 0, 0.95),
+      color,
+    );
   }
 
   private ambientRandom(): number {
@@ -559,17 +873,11 @@ export class Effects3D {
     }
   }
 
-  pool(x: number, z: number, scale: number, rand: () => number = () => this.ambientRandom()): void {
+  /** Blood pooling on the canvas, `radius` metres from `x`, `z`; `stamp` picks the shape of its edge. */
+  pool(x: number, z: number, radius: number, stamp: number): void {
     if (this.bloodLevel === "off") return;
     const reduced = this.bloodLevel === "reduced";
-    const modeScale = reduced ? 0.35 : 1;
-    this.placeDecal(x, z, 2.8 * scale * modeScale, 2.0 * scale * modeScale, rand() * Math.PI, 0.56 * modeScale, 0x450609);
-    if (reduced) return;
-    for (let i = 0; i < 3; i += 1) {
-      const angle = rand() * Math.PI * 2;
-      const radius = 0.18 + rand() * 0.32;
-      this.placeDecal(x + Math.sin(angle) * radius, z + Math.cos(angle) * radius, 0.45 + rand() * 0.55, 0.22 + rand() * 0.38, rand() * Math.PI, 0.38 + rand() * 0.18, 0x620a10);
-    }
+    this.canvasBlood.pool(finite(x), finite(z), Math.max(0.02, finite(radius, 0.1)) * (reduced ? 0.5 : 1), reduced ? 0.45 : 0.92, stamp);
   }
 
   addEvent(event: CombatEvent, targetWorld: THREE.Vector3, reducedMotion: boolean): void {
@@ -585,7 +893,7 @@ export class Effects3D {
       ? 0
       : this.bloodLevel === "reduced"
         ? Math.min(24, Math.round(event.blood * 0.24))
-        : Math.min(120, Math.round(event.blood * 1.1));
+        : bloodDropsFor(event.blood, event.kind === "knockdown" ? 0 : event.amount);
     this.shake = Math.min(0.09, this.shake + (blocked ? 0.008 : Math.max(0.012, event.amount / 2600)));
     if (event.kind === "knockdown") this.shake = Math.min(0.14, this.shake + 0.06);
 
@@ -663,7 +971,7 @@ export class Effects3D {
       strand.radius = 0.008 + rand() * 0.008;
       this.spawnDroplet(x, y, z, vx, vy, vz, color, life, true, strand.radius);
     }
-    if (!reducedMotion && event.blood > 0 && this.bloodLevel !== "off" && (event.amount > 190 || event.kind === "knockdown" || event.kind === "counter_hit")) {
+    if (!reducedMotion && event.blood > 0 && this.bloodLevel !== "off" && ((event.kind === "hit" && event.amount >= HARD_SHOT) || event.kind === "knockdown" || event.kind === "counter_hit")) {
       const puffs = this.bloodLevel === "reduced" ? (event.kind === "knockdown" ? 3 : 2) : (event.kind === "knockdown" ? 14 : 10);
       const scale = this.bloodLevel === "reduced" ? 0.35 : 1;
       for (let i = 0; i < puffs; i += 1) {
@@ -768,6 +1076,7 @@ export class Effects3D {
     head.mesh.visible = true;
 
     const stump = this.stumps[index]!;
+    stump.mesh.material = this.stumpMaterial;
     stump.active = true;
     stump.fountainLife = 1.25;
     stump.accumulator = 0;
@@ -810,6 +1119,76 @@ export class Effects3D {
       this.spawnMist(head.mesh.position.x + (rand() - 0.5) * 0.35, head.mesh.position.y + (rand() - 0.5) * 0.25, head.mesh.position.z + (rand() - 0.5) * 0.35, 1 + rand() * 1.4, 0.65 + rand() * 0.55);
     }
     this.splatter(head.mesh.position.x, head.mesh.position.z, 1.5, rand);
+  }
+
+  /**
+   * The head bursts above the mouth: pieces of skull and brain, teeth and a great spray of blood go out
+   * from the middle of the skull at `position`, and the lower jaw is left on the neck.
+   */
+  burstHead(fighterIndex: number, position: THREE.Vector3, direction: number, eventId: number): void {
+    if (this.bloodLevel !== "full" || fighterIndex < 0 || fighterIndex >= MAX_HEADS) return;
+    const index = Math.trunc(fighterIndex);
+    const safeEventId = Number.isSafeInteger(eventId) ? eventId : 0;
+    const stump = this.stumps[index]!;
+    if (stump.active || this.lastBurstEvent[index] === safeEventId) return;
+    this.lastBurstEvent[index] = safeEventId;
+    const rand = seeded(safeEventId * 91_813 + index * 6151 + 41);
+    const launch = direction < 0 ? -1 : 1;
+    const x = finite(position.x);
+    const y = finite(position.y, 1.6);
+    const z = finite(position.z);
+    const scatter = (count: number, kind: DebrisKind, speed: number, spread: number, lift: number): void => {
+      for (let piece = 0; piece < count; piece += 1) {
+        const around = rand() * Math.PI * 2;
+        const up = rand() * 1.2 - 0.2;
+        const flat = Math.sqrt(Math.max(0, 1 - up * up));
+        const pace = speed + rand() * spread;
+        this.spawnGib(
+          x + Math.cos(around) * flat * 0.06,
+          y + up * 0.05 - (kind === "tooth" ? 0.07 : 0),
+          z + Math.sin(around) * flat * 0.06,
+          Math.cos(around) * flat * pace + launch * pace * 0.45,
+          up * pace + lift,
+          Math.sin(around) * flat * pace,
+          rand,
+          kind,
+        );
+      }
+    };
+    scatter(SHARDS_PER_BURST, "shard", 2.2, 2.4, 1);
+    scatter(BRAIN_PER_BURST, "brain", 1.2, 1.8, 0.8);
+    scatter(TEETH_PER_BURST, "tooth", 1, 1.4, 0.6);
+    for (let drop = 0; drop < 180; drop += 1) {
+      const around = rand() * Math.PI * 2;
+      const up = rand() * 1.3 - 0.3;
+      const flat = Math.sqrt(Math.max(0, 1 - Math.min(1, up * up)));
+      const pace = 1.4 + rand() * 3.2;
+      this.spawnDroplet(
+        x + (rand() - 0.5) * 0.1,
+        y + (rand() - 0.5) * 0.1,
+        z + (rand() - 0.5) * 0.1,
+        Math.cos(around) * flat * pace + launch * pace * 0.35,
+        up * pace + 0.8,
+        Math.sin(around) * flat * pace,
+        bloodShade(rand()),
+        0.8 + rand() * 1.1,
+        true,
+        0.004 + rand() ** 2 * 0.014,
+      );
+    }
+    for (let puff = 0; puff < 24; puff += 1) {
+      this.spawnMist(x + (rand() - 0.5) * 0.5, y + (rand() - 0.3) * 0.4, z + (rand() - 0.5) * 0.5, 1.2 + rand() * 1.6, 0.8 + rand() * 0.7);
+    }
+    this.splatter(x + launch * 0.3, z, 2.2, rand);
+    this.shake = Math.min(0.16, this.shake + 0.1);
+    stump.mesh.material = this.jawMaterial;
+    stump.active = true;
+    stump.fountainLife = 1.8;
+    stump.accumulator = 0;
+    stump.seed = safeEventId | 1;
+    stump.direction = launch;
+    stump.mesh.position.set(x, y - 0.08, z);
+    stump.mesh.visible = true;
   }
 
   dismemberHand(
@@ -914,7 +1293,7 @@ export class Effects3D {
    * Keeps the wound on the neck. `rim` is the edge of the cut as the skin is posed, both ends of each
    * edge in turn: with it the wound closes the opening exactly, and without it a disc stands in.
    */
-  anchorStump(fighterIndex: number, position: THREE.Vector3, quaternion: THREE.Quaternion, rim?: ArrayLike<number>): void {
+  anchorStump(fighterIndex: number, position: THREE.Vector3, quaternion: THREE.Quaternion, rim?: ArrayLike<number>, across?: THREE.Vector3): void {
     if (this.bloodLevel !== "full" || fighterIndex < 0 || fighterIndex >= MAX_HEADS) return;
     const stump = this.stumps[Math.trunc(fighterIndex)]!;
     if (!stump.active) return;
@@ -924,7 +1303,7 @@ export class Effects3D {
       copyFiniteQuaternion(stump.mesh.quaternion, quaternion);
       return;
     }
-    closeCut(stump.flesh, rim, stump.mesh.position, this.stumpOutward.set(0, 1, 0).applyQuaternion(quaternion));
+    closeCut(stump.flesh, rim, stump.mesh.position, this.stumpOutward.set(0, 1, 0).applyQuaternion(quaternion), 0.01, across);
     stump.mesh.geometry = stump.flesh;
     stump.mesh.quaternion.identity();
   }
@@ -944,6 +1323,12 @@ export class Effects3D {
     stump.accumulator = 0;
     stump.mesh.visible = false;
     stump.mesh.position.y = -50;
+    stump.mesh.material = this.stumpMaterial;
+    const eye = this.eyes[index]!;
+    eye.active = false;
+    eye.bleeding = 0;
+    this.eyeMeshes[index]!.visible = false;
+    this.nerveMeshes[index]!.visible = false;
     for (const handIndex of [index * 2, index * 2 + 1]) {
       const hand = this.hands[handIndex]!;
       hand.active = false;
@@ -1015,7 +1400,7 @@ export class Effects3D {
         1.1 + rand() * 1.4,
         Math.cos(angle) * 0.7,
         rand,
-        true,
+        "tooth",
       );
     }
     for (let i = 0; i < 18; i += 1) {
@@ -1024,17 +1409,24 @@ export class Effects3D {
     }
   }
 
-  private spawnGib(x: number, y: number, z: number, vx: number, vy: number, vz: number, rand: () => number, tooth = false): void {
-    const index = this.gibIndex % MAX_GIBS;
-    this.gibIndex += 1;
-    const gib = this.gibs[index]!;
+  private spawnGib(x: number, y: number, z: number, vx: number, vy: number, vz: number, rand: () => number, kind: DebrisKind = "flesh"): void {
+    const shard = kind === "shard";
+    const pool = shard ? this.shards : this.gibs;
+    const mesh = shard ? this.shardMesh : this.gibMesh;
+    const index = shard ? this.shardIndex++ % MAX_SHARDS : this.gibIndex++ % MAX_GIBS;
+    const gib = pool[index]!;
     gib.alive = true;
-    gib.tooth = tooth;
+    gib.kind = kind;
     const shade = 0.55 + rand() * 0.45;
-    if (tooth) this.gibColor.setHex(0xf3ead6);
-    else this.gibColor.setRGB(shade, shade * (0.75 + rand() * 0.25), shade);
-    this.gibMesh.setColorAt(index, this.gibColor);
-    if (this.gibMesh.instanceColor !== null) this.gibMesh.instanceColor.needsUpdate = true;
+    if (kind === "tooth") this.gibColor.setHex(0xf3ead6);
+    else if (kind === "brain") this.gibColor.setHex(rand() < 0.3 ? 0x8a3a3c : 0xb7918e).multiplyScalar(0.8 + shade * 0.25);
+    else if (shard) this.gibColor.setScalar(0.85 + shade * 0.15);
+    else {
+      this.gibColor.setHex(0x5c0a10).multiplyScalar(shade);
+      this.gibColor.g *= 0.75 + rand() * 0.25;
+    }
+    mesh.setColorAt(index, this.gibColor);
+    if (mesh.instanceColor !== null) mesh.instanceColor.needsUpdate = true;
     gib.x = finite(x);
     gib.y = finite(y, 1.5);
     gib.z = finite(z);
@@ -1047,16 +1439,16 @@ export class Effects3D {
     gib.vrx = (rand() - 0.5) * 18;
     gib.vry = (rand() - 0.5) * 18;
     gib.vrz = (rand() - 0.5) * 18;
-    gib.life = tooth ? 6 : 1.8 + rand() * 1.2;
-    gib.scale = tooth ? 0.22 + rand() * 0.12 : 0.3 + rand() * 0.6;
-    gib.stretch = tooth ? 1 : 0.7 + rand() * 0.9;
+    gib.life = kind === "flesh" ? 1.8 + rand() * 1.2 : DEBRIS_LIFE[kind];
+    gib.scale = kind === "tooth" ? 0.22 + rand() * 0.12 : shard ? 0.6 + rand() * 0.6 : kind === "brain" ? 0.45 + rand() * 0.55 : 0.3 + rand() * 0.6;
+    gib.stretch = kind === "tooth" ? 1 : 0.7 + rand() * 0.9;
     gib.bounces = 0;
     gib.stained = false;
-    this.writeGibMatrix(index, gib);
-    this.gibMesh.instanceMatrix.needsUpdate = true;
+    this.writeDebrisMatrix(mesh, index, gib);
+    mesh.instanceMatrix.needsUpdate = true;
   }
 
-  private writeGibMatrix(index: number, gib: Gib): void {
+  private writeDebrisMatrix(mesh: THREE.InstancedMesh, index: number, gib: Gib): void {
     if (!gib.alive) {
       this.gibPosition.set(0, -50, 0);
       this.gibQuaternion.identity();
@@ -1068,18 +1460,18 @@ export class Effects3D {
       this.gibScale.set(gib.scale * gib.stretch, gib.scale, gib.scale / Math.sqrt(gib.stretch));
     }
     this.gibMatrix.compose(this.gibPosition, this.gibQuaternion, this.gibScale);
-    this.gibMesh.setMatrixAt(index, this.gibMatrix);
+    mesh.setMatrixAt(index, this.gibMatrix);
   }
 
-  private updateGibs(dt: number): void {
+  private updateDebris(pool: readonly Gib[], mesh: THREE.InstancedMesh, dt: number): void {
     let changed = false;
-    for (const [index, gib] of this.gibs.entries()) {
+    for (const [index, gib] of pool.entries()) {
       if (!gib.alive) continue;
       changed = true;
       gib.life -= dt;
       if (gib.life <= 0) {
         gib.alive = false;
-        this.writeGibMatrix(index, gib);
+        this.writeDebrisMatrix(mesh, index, gib);
         continue;
       }
       gib.vy -= 6.4 * dt;
@@ -1092,11 +1484,11 @@ export class Effects3D {
       this.confineGib(gib);
       if (gib.y <= CANVAS_TOP + 0.015) {
         gib.y = CANVAS_TOP + 0.015;
-        if (!gib.stained && this.bloodLevel === "full" && !gib.tooth) {
+        if (!gib.stained && this.bloodLevel === "full" && gib.kind !== "tooth") {
           gib.stained = true;
           this.placeDecal(gib.x, gib.z, 0.24 + gib.scale * 0.16, 0.14 + gib.scale * 0.1, gib.rz, 0.42, 0x620a10);
         }
-        if (gib.bounces < (gib.tooth ? 3 : 1) && Math.abs(gib.vy) > 0.35) {
+        if (gib.bounces < DEBRIS_BOUNCES[gib.kind] && Math.abs(gib.vy) > 0.35) {
           gib.bounces += 1;
           gib.vy = Math.abs(gib.vy) * 0.3;
           gib.vx *= 0.68;
@@ -1104,18 +1496,20 @@ export class Effects3D {
           gib.vrx *= 0.7;
           gib.vry *= 0.7;
           gib.vrz *= 0.7;
-        } else if (gib.tooth) {
+        } else if (gib.kind !== "flesh") {
+          // It lies where it came down; a piece of skull settles on its back or its face.
           gib.vx = 0;
           gib.vy = 0;
           gib.vz = 0;
           gib.vrx = gib.vry = gib.vrz = 0;
+          if (gib.kind === "shard") gib.rx = Math.round(gib.rx / Math.PI) * Math.PI;
         } else {
           gib.alive = false;
         }
       }
-      this.writeGibMatrix(index, gib);
+      this.writeDebrisMatrix(mesh, index, gib);
     }
-    if (changed) this.gibMesh.instanceMatrix.needsUpdate = true;
+    if (changed) mesh.instanceMatrix.needsUpdate = true;
   }
 
   private confineGib(gib: Gib): void {
@@ -1220,6 +1614,7 @@ export class Effects3D {
   }
 
   update(dt: number): void {
+    this.canvasBlood.update(safeStep(dt));
     this.simulationRemainder += safeStep(dt);
     while (this.simulationRemainder + 1e-9 >= SIMULATION_STEP) {
       this.simulationRemainder = Math.max(0, this.simulationRemainder - SIMULATION_STEP);
@@ -1233,7 +1628,10 @@ export class Effects3D {
     this.updateStumpFountains(step);
     this.updateDetachedParts(this.heads, step);
     this.updateDetachedParts(this.hands, step);
-    this.updateGibs(step);
+    this.updateShields(step);
+    this.updateEyes(step);
+    this.updateDebris(this.gibs, this.gibMesh, step);
+    this.updateDebris(this.shards, this.shardMesh, step);
 
     let dropletsChanged = false;
     for (const [i, droplet] of this.droplets.entries()) {
@@ -1321,20 +1719,23 @@ export class Effects3D {
   }
 
   private clearGibs(): void {
-    let changed = false;
-    for (const [index, gib] of this.gibs.entries()) {
-      if (!gib.alive) continue;
-      gib.alive = false;
-      this.writeGibMatrix(index, gib);
-      changed = true;
+    for (const [pool, mesh] of [[this.gibs, this.gibMesh], [this.shards, this.shardMesh]] as const) {
+      let changed = false;
+      for (const [index, gib] of pool.entries()) {
+        if (!gib.alive) continue;
+        gib.alive = false;
+        this.writeDebrisMatrix(mesh, index, gib);
+        changed = true;
+      }
+      if (changed) mesh.instanceMatrix.needsUpdate = true;
     }
-    if (changed) this.gibMesh.instanceMatrix.needsUpdate = true;
   }
 
   clearDynamic(): void {
     this.clearDroplets(false);
     this.clearMists();
     this.clearGibs();
+    this.clearMouthpieces();
     for (let index = 0; index < MAX_HEADS; index += 1) this.restoreFighter(index);
     this.shake = 0;
     this.stopDrip(0);
@@ -1355,18 +1756,18 @@ export class Effects3D {
   }
 
   clearDecals(): void {
-    for (const decal of this.decals) decal.visible = false;
-    this.decalIndex = 0;
+    this.canvasBlood.clear();
   }
 
   dispose(): void {
     this.scene.remove(this.dropletMesh);
     this.scene.remove(this.mistPoints);
     this.scene.remove(this.gibMesh);
+    this.scene.remove(this.shardMesh);
     this.dropletMesh.dispose();
     this.dropletGeometry.dispose();
     this.dropletMaterial.dispose();
-    for (const map of this.splatMaps) map.dispose();
+    this.canvasBlood.dispose();
     for (const part of [...this.heads, ...this.hands]) {
       part.baked?.dispose();
       part.bakedFlesh?.dispose();
@@ -1377,21 +1778,32 @@ export class Effects3D {
     this.mistMap.dispose();
     this.gibGeometry.dispose();
     this.gibMaterial.dispose();
+    this.shardMesh.dispose();
+    this.shardGeometry.dispose();
+    this.shardMaterial.dispose();
+    this.jawMaterial.dispose();
+    this.jawMap.dispose();
     this.headGeometry.dispose();
     for (const material of this.headMaterials) material.dispose();
     this.handGeometry.dispose();
     for (const material of this.handMaterials) material.dispose();
     this.stumpGeometry.dispose();
     this.wristStumpGeometry.dispose();
+    this.shieldGeometry.dispose();
+    for (const material of this.shieldMaterials) material.dispose();
+    for (const mesh of this.shieldMeshes) this.scene.remove(mesh);
+    this.eyeGeometry.dispose();
+    this.eyeMap.dispose();
+    this.eyeMaterial.dispose();
+    this.nerveGeometry.dispose();
+    this.nerveMaterial.dispose();
+    for (const mesh of [...this.eyeMeshes, ...this.nerveMeshes]) this.scene.remove(mesh);
     this.stumpMaterial.dispose();
     this.stumpMap.dispose();
+    this.wristMaterial.dispose();
+    this.wristMap.dispose();
     for (const head of this.heads) this.scene.remove(head.mesh);
     for (const hand of this.hands) this.scene.remove(hand.mesh);
     for (const stump of [...this.stumps, ...this.handStumps]) this.scene.remove(stump.mesh);
-    this.decalGeometry.dispose();
-    for (const decal of this.decals) {
-      this.scene.remove(decal);
-      (decal.material as THREE.Material).dispose();
-    }
   }
 }

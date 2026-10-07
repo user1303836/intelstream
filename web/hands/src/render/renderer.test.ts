@@ -3,7 +3,7 @@ import { fighter, mockHudContext, snapshot, type DrawnPicture } from "../test/fi
 import { Avatars } from "./avatars";
 import { RoundClock } from "./hud";
 import type { CombatEvent, EngineSnapshot, MatchResult } from "../types";
-import { arcadeInjuryFor, canStartPunch, CEREMONY_MARKS, ceremonyStep, contactParticipants, contactPresentationPlan, cornersAtWork, FightRenderer, ownViewPhase, isArcadeInjuryCandidate, presentationTickFor, refereeSpacing, replayCameraSide, replayReattaches, visualSeparation } from "./renderer";
+import { arcadeInjuryFor, canStartPunch, CEREMONY_MARKS, ceremonyStep, contactParticipants, contactPresentationPlan, cornersAtWork, FightRenderer, ownViewPhase, isArcadeInjuryCandidate, knockdownFinisher, presentationTickFor, refereeSpacing, replayCameraSide, replayReattaches, visualSeparation } from "./renderer";
 import { RockedVision } from "./rocked";
 import { worldMapping } from "./world";
 
@@ -77,32 +77,79 @@ describe("contact presentation tick", () => {
 });
 
 describe("arcade injury candidate routing", () => {
-  it("accepts authoritative downing anatomical hits and winning flash KOs", () => {
-    expect(isArcadeInjuryCandidate(event("hit", "straight:head"), { ...fighter("two"), is_downed: true }, null)).toBe(true);
-    expect(isArcadeInjuryCandidate(event("hit", "hook:body"), { ...fighter("two"), is_downed: true }, null)).toBe(true);
+  const tko: MatchResult = { ...flashKo, finish_method: "tko" };
+
+  it("accepts only the blow that ends the bout: a stoppage on the canvas or a winning flash KO", () => {
+    expect(isArcadeInjuryCandidate(event("hit", "straight:head"), { ...fighter("two"), is_downed: true }, tko)).toBe(true);
+    expect(isArcadeInjuryCandidate(event("hit", "hook:body"), { ...fighter("two"), is_downed: true }, tko)).toBe(true);
     expect(isArcadeInjuryCandidate(event("counter_hit", "hook:head"), fighter("two"), flashKo)).toBe(true);
+  });
+
+  it("leaves a fighter who is going to get up in one piece", () => {
+    expect(isArcadeInjuryCandidate(event("hit", "straight:head"), { ...fighter("two"), is_downed: true }, null)).toBe(false);
+    expect(isArcadeInjuryCandidate(event("hit", "straight:head"), fighter("two"), tko)).toBe(false);
+    expect(isArcadeInjuryCandidate(event("hit", "straight:head"), { ...fighter("two"), is_downed: true }, { ...tko, finish_method: "decision" })).toBe(false);
   });
 
   it("routes head trauma to head injuries and body trauma to the struck-side limbs", () => {
     const downed = { ...fighter("two"), is_downed: true };
     const leftPunch = { ...fighter("one"), action_key: "hook:left:body:heavy" };
     const rightPunch = { ...fighter("one"), action_key: "hook:right:body:heavy" };
-    expect(arcadeInjuryFor({ ...event("hit", "hook:head"), event_id: 0 }, downed, null, leftPunch)).toBe("decapitation");
-    expect(arcadeInjuryFor({ ...event("hit", "hook:head"), event_id: 1 }, downed, null, leftPunch)).toBe("jaw_dislocation");
-    expect(arcadeInjuryFor({ ...event("hit", "hook:body"), event_id: 0 }, downed, null, leftPunch)).toBe("dismember_right");
-    expect(arcadeInjuryFor({ ...event("hit", "hook:body"), event_id: 1 }, downed, null, leftPunch)).toBe("shoulder_right");
-    expect(arcadeInjuryFor({ ...event("hit", "hook:body"), event_id: 0 }, downed, null, rightPunch)).toBe("dismember_left");
-    expect(arcadeInjuryFor({ ...event("hit", "hook:body"), event_id: 1 }, downed, null, rightPunch)).toBe("shoulder_left");
+    expect(arcadeInjuryFor({ ...event("hit", "hook:head"), event_id: 0 }, downed, tko, leftPunch)).toBe("decapitation");
+    expect(arcadeInjuryFor({ ...event("hit", "hook:head"), event_id: 1 }, downed, tko, leftPunch)).toBe("eye_right");
+    expect(arcadeInjuryFor({ ...event("hit", "uppercut:head"), event_id: 1 }, downed, tko, leftPunch)).toBe("jaw_dislocation");
+    expect(arcadeInjuryFor({ ...event("hit", "hook:body"), event_id: 0 }, downed, tko, leftPunch)).toBe("dismember_right");
+    expect(arcadeInjuryFor({ ...event("hit", "hook:body"), event_id: 1 }, downed, tko, leftPunch)).toBe("shoulder_right");
+    expect(arcadeInjuryFor({ ...event("hit", "hook:body"), event_id: 0 }, downed, tko, rightPunch)).toBe("dismember_left");
+    expect(arcadeInjuryFor({ ...event("hit", "hook:body"), event_id: 1 }, downed, tko, rightPunch)).toBe("shoulder_left");
   });
 
   it.each([
-    ["standing hit", event("hit", "left:jab:head"), fighter("two"), null],
-    ["unknown target", event("hit", "straight:arm"), { ...fighter("two"), is_downed: true }, null],
-    ["block", event("block", "left:straight:head"), { ...fighter("two"), is_downed: true }, null],
-    ["bleed", event("bleed", "left:straight:head"), { ...fighter("two"), is_downed: true }, null],
+    ["standing hit", event("hit", "left:jab:head"), fighter("two"), tko],
+    ["unknown target", event("hit", "straight:arm"), { ...fighter("two"), is_downed: true }, tko],
+    ["block", event("block", "left:straight:head"), { ...fighter("two"), is_downed: true }, tko],
+    ["bleed", event("bleed", "left:straight:head"), { ...fighter("two"), is_downed: true }, tko],
     ["wrong winner", event("counter_hit", "right:hook:head"), fighter("two"), { ...flashKo, winner_id: "two" }],
   ] as const)("rejects %s", (_name, combatEvent, target, result) => {
     expect(isArcadeInjuryCandidate(combatEvent, target, result)).toBe(false);
+  });
+
+  it("works out at the knockdown what the punch earns if the count is beaten by no one", () => {
+    const floored = { ...snapshot(), fighters: [{ ...fighter("one"), action_key: "hook:right:body:power" }, { ...fighter("two"), is_downed: true }] as const };
+    expect(knockdownFinisher({ ...event("hit", "hook:body"), event_id: 0 }, floored)).toBe("dismember_left");
+    expect(knockdownFinisher({ ...event("hit", "uppercut:head"), event_id: 0 }, floored)).toBe("decapitation");
+    expect(knockdownFinisher(null, floored)).toBeNull();
+  });
+});
+
+describe("a knockout by the count", () => {
+  type Finisher = { index: number; injury: string; event: CombatEvent } | null;
+  const hit = { ...event("counter_hit", "uppercut:head"), event_id: 8 };
+  const final = (method: string, winner: string | null = "one") => ({ version: 3, type: "final", match_id: "m", winner_id: winner, method, round: 2, scorecards: [], ratings: {} });
+  const finishing = (overrides: Record<string, unknown> = {}, method = "ko", winner: string | null = "one"): Finisher => {
+    const stub = {
+      lastKnockdown: { knockdown: event("knockdown", ""), hit, finisher: "decapitation" },
+      settings: () => ({ blood: "full", reducedMotion: false }),
+      buffer: { latest: () => snapshot() },
+      arcadeInjuries: [null, null],
+      ...overrides,
+    };
+    return (FightRenderer.prototype as unknown as { finishingInjury(this: unknown, final: unknown): Finisher }).finishingInjury.call(stub, final(method, winner));
+  };
+
+  it("earns the beaten fighter the finisher of the punch that put him down", () => {
+    expect(finishing()).toEqual({ index: 1, injury: "decapitation", event: hit });
+    expect(finishing({}, "tko")).toEqual({ index: 1, injury: "decapitation", event: hit });
+  });
+
+  it("earns nothing after another ending, another winner, an injury already done or with gore turned down", () => {
+    expect(finishing({}, "decision")).toBeNull();
+    expect(finishing({}, "ko", "two")).toBeNull();
+    expect(finishing({ arcadeInjuries: [null, "jaw_dislocation"] })).toBeNull();
+    expect(finishing({ settings: () => ({ blood: "reduced", reducedMotion: false }) })).toBeNull();
+    expect(finishing({ settings: () => ({ blood: "full", reducedMotion: true }) })).toBeNull();
+    expect(finishing({ lastKnockdown: { knockdown: event("knockdown", ""), hit, finisher: null } })).toBeNull();
+    expect(finishing({ lastKnockdown: null })).toBeNull();
   });
 });
 

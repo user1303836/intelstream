@@ -23,6 +23,27 @@ export function buildChunkGeometry(): THREE.BufferGeometry {
   return geometry;
 }
 
+/**
+ * Engine damage of a landed punch: most deal 30 to 80, a hard shot 70 or more and a big counter
+ * 95 or more (the largest, a power counter, about 150). A knockdown event carries the count, not damage.
+ */
+export const HARD_SHOT = 70;
+export const BIG_SHOT = 95;
+
+/** Teeth a blow to the head knocks out: two more as the punch floors a man, one or two by a big counter or a huge shot, none otherwise. */
+export function teethFor(kind: string, amount: number, head: boolean): number {
+  if (!head) return 0;
+  if (kind === "knockdown") return 2;
+  if (kind === "counter_hit" && amount >= BIG_SHOT) return amount >= 120 ? 2 : 1;
+  if (kind === "hit" && amount >= 115) return 1;
+  return 0;
+}
+
+/** Drops of blood a blow throws at full blood: more from an open wound, and more from a harder punch. */
+export function bloodDropsFor(blood: number, amount: number): number {
+  return Math.min(140, Math.round(Math.max(0, blood) * 1.4 + Math.max(0, amount - 50) * 0.5));
+}
+
 const DROPLET_TAIL = 2;
 const DROPLET_TAIL_TAPER = 0.45;
 const DROPLET_STRETCH_RATE = 0.6;
@@ -151,9 +172,10 @@ const cutFace = new THREE.Vector3();
 /**
  * Closes the opening a cut leaves with flesh: a fan from the middle of the cut, raised a little, to
  * every edge of its rim, so it meets the skin all the way round. `rim` holds both ends of each edge
- * in turn. The surface is written into `geometry`, measured from `centre`, and faces `outward`.
+ * in turn. The surface is written into `geometry`, measured from `centre`, and faces `outward`. The
+ * texture runs along `across` when it is given, so a wound with a front and back turns with the body.
  */
-export function closeCut(geometry: THREE.BufferGeometry, rim: ArrayLike<number>, centre: THREE.Vector3, outward: THREE.Vector3, rise = 0.01): void {
+export function closeCut(geometry: THREE.BufferGeometry, rim: ArrayLike<number>, centre: THREE.Vector3, outward: THREE.Vector3, rise = 0.01, across?: THREE.Vector3): void {
   const edges = Math.floor(rim.length / 6);
   let position = geometry.getAttribute("position") as THREE.BufferAttribute | undefined;
   let normal = geometry.getAttribute("normal") as THREE.BufferAttribute | undefined;
@@ -168,6 +190,7 @@ export function closeCut(geometry: THREE.BufferGeometry, rim: ArrayLike<number>,
   }
   cutAcross.set(1, 0, 0);
   if (Math.abs(outward.x) > 0.9) cutAcross.set(0, 0, 1);
+  if (across !== undefined && across.lengthSq() > 1e-8 && Math.abs(across.dot(outward)) < 0.95 * across.length()) cutAcross.copy(across);
   cutAlong.crossVectors(outward, cutAcross).normalize();
   cutAcross.crossVectors(cutAlong, outward).normalize();
   let reach = 1e-6;
@@ -242,6 +265,213 @@ export function woundTexture(): THREE.CanvasTexture {
       const distance = rand() * 60;
       disc(64 + Math.cos(angle) * distance, 64 + Math.sin(angle) * distance, 0.6 + rand() * 1.6, rand() < 0.4 ? "rgba(190,60,50,0.5)" : "rgba(20,2,4,0.55)");
     }
+    skinAndFat(ctx);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+/** The layers just under the edge of any cut: a rim of skin, then a band of yellow fat over the muscle. */
+function skinAndFat(ctx: CanvasRenderingContext2D): void {
+  ctx.lineWidth = 7;
+  ctx.strokeStyle = "rgba(214,178,92,0.85)";
+  ctx.beginPath();
+  ctx.arc(64, 64, 55, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = "#b8775c";
+  ctx.beginPath();
+  ctx.arc(64, 64, 61, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
+/** Cross-section of a forearm cut through at the wrist: the two bones with their marrow, tendons and vessels round them. */
+export function wristWoundTexture(): THREE.CanvasTexture {
+  const size = 128;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  if (ctx !== null) {
+    const base = ctx.createRadialGradient(64, 64, 6, 64, 64, 64);
+    base.addColorStop(0, "#741014");
+    base.addColorStop(0.7, "#52090d");
+    base.addColorStop(1, "#300407");
+    ctx.fillStyle = base;
+    ctx.fillRect(0, 0, size, size);
+    const disc = (x: number, y: number, radius: number, fill: string): void => {
+      ctx.fillStyle = fill;
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fill();
+    };
+    // Radius and ulna: bone with a ring of hard cortex round the marrow.
+    for (const [x, y, radius] of [[46, 60, 13], [84, 66, 10]] as const) {
+      disc(x, y, radius, "#e4d8c0");
+      disc(x, y, radius * 0.62, "#a4483c");
+      disc(x - radius * 0.2, y - radius * 0.2, radius * 0.25, "rgba(220,110,90,0.6)");
+    }
+    for (let tendon = 0; tendon < 9; tendon += 1) {
+      const angle = Math.PI * (0.15 + (tendon / 8) * 0.7);
+      disc(64 + Math.cos(angle) * 34, 64 + Math.sin(angle) * 34, 3.2, "#d9c9b3");
+    }
+    disc(30, 84, 3.4, "#1a0204");
+    disc(98, 46, 3, "#1a0204");
+    disc(66, 30, 2.6, "#1a0204");
+    skinAndFat(ctx);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+/**
+ * A piece of skull blown out of a bursting head: a curved plate of bone with a ragged outline, scalp
+ * outside and bone and blood inside, about five centimetres across, centred on its middle. Faceted,
+ * with vertex colours.
+ */
+export function buildShardGeometry(): THREE.BufferGeometry {
+  const skull = 0.09;
+  const thickness = 0.007;
+  const sides = 9;
+  const spread = 0.32;
+  const outline: [number, number][] = [];
+  for (let side = 0; side < sides; side += 1) {
+    const angle = (side / sides) * Math.PI * 2;
+    const reach = spread * (0.62 + 0.38 * Math.abs(Math.sin(side * 2.3 + 0.4)));
+    outline.push([Math.cos(angle) * reach, Math.sin(angle) * reach]);
+  }
+  const on = (u: number, v: number, radius: number): [number, number, number] => {
+    const length = Math.hypot(u, v, 1);
+    return [(u / length) * radius, (v / length) * radius, (1 / length) * radius - skull];
+  };
+  const positions: number[] = [];
+  const colors: number[] = [];
+  const scalp = [0.07, 0.035, 0.025];
+  const bone = [0.78, 0.7, 0.58];
+  const bloodied = [0.42, 0.05, 0.05];
+  const triangle = (a: [number, number, number], b: [number, number, number], c: [number, number, number], color: number[]): void => {
+    positions.push(...a, ...b, ...c);
+    for (let corner = 0; corner < 3; corner += 1) colors.push(...color);
+  };
+  for (let side = 0; side < sides; side += 1) {
+    const [u0, v0] = outline[side]!;
+    const [u1, v1] = outline[(side + 1) % sides]!;
+    triangle(on(0, 0, skull), on(u0, v0, skull), on(u1, v1, skull), scalp);
+    triangle(on(0, 0, skull - thickness), on(u1, v1, skull - thickness), on(u0, v0, skull - thickness), side % 3 === 0 ? bone : bloodied);
+    triangle(on(u0, v0, skull), on(u0, v0, skull - thickness), on(u1, v1, skull), bone);
+    triangle(on(u1, v1, skull), on(u0, v0, skull - thickness), on(u1, v1, skull - thickness), bone);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  geometry.computeVertexNormals();
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
+/**
+ * What is left on the neck when a head bursts, seen from above: the tongue at the back, the lower
+ * teeth in an arch toward the front (the bottom of the texture) and the jawbone round them.
+ */
+export function jawWoundTexture(): THREE.CanvasTexture {
+  const size = 128;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  if (ctx !== null) {
+    const base = ctx.createRadialGradient(64, 60, 6, 64, 64, 66);
+    base.addColorStop(0, "#7a1016");
+    base.addColorStop(0.75, "#530a0e");
+    base.addColorStop(1, "#300408");
+    ctx.fillStyle = base;
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = "#8a2a2e";
+    ctx.beginPath();
+    ctx.ellipse(64, 50, 22, 17, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "rgba(220,120,120,0.35)";
+    ctx.beginPath();
+    ctx.ellipse(60, 45, 9, 5, -0.3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#a99c86";
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.ellipse(64, 62, 50, 50, 0, Math.PI * 0.08, Math.PI * 0.92);
+    ctx.stroke();
+    for (let tooth = 0; tooth < 12; tooth += 1) {
+      const angle = Math.PI * (0.14 + (tooth / 11) * 0.72);
+      ctx.save();
+      ctx.translate(64 + Math.cos(angle) * 42, 62 + Math.sin(angle) * 42);
+      ctx.rotate(angle + Math.PI / 2);
+      ctx.fillStyle = tooth % 5 === 2 ? "#3a0508" : "#ece4cf";
+      ctx.fillRect(-3.5, -4.5, 7, 9);
+      ctx.restore();
+    }
+    let seed = 0x2545f491;
+    const rand = (): number => {
+      seed = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      seed ^= seed + Math.imul(seed ^ (seed >>> 7), 61 | seed);
+      return ((seed ^ (seed >>> 14)) >>> 0) / 4294967296;
+    };
+    for (let fleck = 0; fleck < 60; fleck += 1) {
+      ctx.fillStyle = rand() < 0.5 ? "rgba(150,20,24,0.6)" : "rgba(20,2,4,0.5)";
+      ctx.beginPath();
+      ctx.arc(rand() * size, rand() * size, 0.8 + rand() * 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    skinAndFat(ctx);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+/**
+ * An eye torn from its socket, for a sphere's own mapping: the iris and pupil face +Z (a quarter of the
+ * way round the texture), white veined with red round them, and the torn back of it raw.
+ */
+export function eyeTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = 128;
+  canvas.height = 64;
+  const ctx = canvas.getContext("2d");
+  if (ctx !== null) {
+    const sclera = ctx.createLinearGradient(0, 0, 128, 0);
+    sclera.addColorStop(0, "#e9ddd4");
+    sclera.addColorStop(0.42, "#e9ddd4");
+    sclera.addColorStop(0.62, "#8a2a2c");
+    sclera.addColorStop(0.85, "#4a070b");
+    sclera.addColorStop(1, "#e9ddd4");
+    ctx.fillStyle = sclera;
+    ctx.fillRect(0, 0, 128, 64);
+    ctx.strokeStyle = "rgba(170,20,26,0.75)";
+    ctx.lineWidth = 0.8;
+    for (let vein = 0; vein < 14; vein += 1) {
+      const angle = (vein / 14) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.moveTo(32 + Math.cos(angle) * 30, 32 + Math.sin(angle) * 26);
+      ctx.quadraticCurveTo(32 + Math.cos(angle + 0.3) * 20, 32 + Math.sin(angle + 0.3) * 18, 32 + Math.cos(angle) * 11, 32 + Math.sin(angle) * 11);
+      ctx.stroke();
+    }
+    const iris = ctx.createRadialGradient(32, 32, 2, 32, 32, 9);
+    iris.addColorStop(0, "#6b4524");
+    iris.addColorStop(0.8, "#4a2d14");
+    iris.addColorStop(1, "#1e1208");
+    ctx.fillStyle = iris;
+    ctx.beginPath();
+    ctx.arc(32, 32, 9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#050302";
+    ctx.beginPath();
+    ctx.arc(32, 32, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.beginPath();
+    ctx.arc(29.5, 29.5, 1.4, 0, Math.PI * 2);
+    ctx.fill();
   }
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;

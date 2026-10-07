@@ -182,6 +182,15 @@ describe("authoritative audio and haptics", () => {
     feedback.destroy();
   });
 
+  it("gives a finisher without a voice of its own the nearest one", async () => {
+    const feedback = new AudioFeedback(() => settings);
+    await feedback.unlock();
+    feedback.injury("head_burst");
+    const played = MockAudioContext.playedBuffers.at(-1) as unknown as { decodeIndex: number };
+    expect(played.decodeIndex).toBe(0);
+    feedback.destroy();
+  });
+
   it("suppresses gore voices for accessibility settings and tolerates an undecodable WAV", async () => {
     let blood: "off" | "reduced" | "full" = "full";
     let reducedMotion = false;
