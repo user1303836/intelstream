@@ -172,7 +172,7 @@ const FRAGMENT_BODY = /* glsl */ `
     injuryWet = max(injuryWet, torn);
   }
   vec3 hematomaFresh = vec3(0.42, 0.09, 0.11);
-  vec3 hematomaDeep = vec3(0.17, 0.05, 0.15);
+  vec3 hematomaDeep = vec3(0.2, 0.04, 0.07);
   vec3 bloodColor = vec3(0.30, 0.008, 0.012);
   vec3 bloodEdge = vec3(0.13, 0.0, 0.004);
   vec3 cutColor = vec3(0.1, 0.002, 0.004);

@@ -232,6 +232,25 @@ describe("knockouts on the fighter", () => {
     expect(worldPosition(bones.head, new THREE.Vector3()).distanceTo(where)).toBeLessThan(0.001);
   });
 
+  it("lies with his shoulders turned on his hips no further than a spine turns, however he went down", () => {
+    let worst = 0;
+    for (const punch of ["jab", "hook"] as const) {
+      for (const target of ["head", "body"] as const) {
+        const { graph, fighter, opponent, time } = standing();
+        graph.react("hit", target, 1, punch, "left", 300);
+        frames(graph, { ...fighter, is_downed: true }, opponent, 240, time);
+        const p = graph.fallBody!.body.position;
+        const spine = at(p, P.upper).sub(at(p, P.pelvis)).normalize();
+        const hips = at(p, P.hipL).sub(at(p, P.hipR));
+        hips.addScaledVector(spine, -hips.dot(spine));
+        const shoulders = at(p, P.shoulderL).sub(at(p, P.shoulderR));
+        shoulders.addScaledVector(spine, -shoulders.dot(spine));
+        worst = Math.max(worst, Math.abs(Math.atan2(new THREE.Vector3().crossVectors(hips, shoulders).dot(spine), hips.dot(shoulders))));
+      }
+    }
+    expect(THREE.MathUtils.radToDeg(worst)).toBeLessThan(45);
+  });
+
   it("keeps the authored fall under reduced motion", () => {
     const { boxer, graph, fighter, opponent, time } = standing();
     graph.react("hit", "head", 1, "straight", "right", 420);
