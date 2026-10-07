@@ -16,6 +16,8 @@ const STARVATION_STEP_TICKS = 0.5;
 const RELAX_STEP_TICKS = 0.25;
 const RELAX_AFTER_MS = 8000;
 const OFFSET_DRIFT_PER_PUSH = 0.01;
+/** Consecutive snapshots this far behind the clock mean the server stopped (a paused bout), not jitter. */
+const RESEED_AFTER_PUSHES = 4;
 
 /**
  * Holds recent authoritative snapshots and provides a continuously advancing
@@ -29,8 +31,9 @@ export class SnapshotBuffer {
   private offsetTicks: number | null = null;
   private delayTicks: number;
   private lastStarvationMs = -Infinity;
-  private lastRelaxMs = 0;
-  constructor(private readonly maximum = 8, private readonly tickRate = 30, initialDelayTicks = 2) {
+  private lastRelaxMs: number | null = 0;
+  private behindPushes = 0;
+  constructor(private readonly maximum = 8, private readonly tickRate = 30, private readonly initialDelayTicks = 2) {
     this.delayTicks = initialDelayTicks;
   }
   get interpolationDelayTicks(): number { return this.delayTicks; }
@@ -39,9 +42,27 @@ export class SnapshotBuffer {
     this.snapshots.push(snapshot); if (this.snapshots.length > this.maximum) this.snapshots.shift();
     if (nowMs !== undefined && Number.isFinite(nowMs)) {
       const sample = snapshot.tick - (nowMs * this.tickRate) / 1000;
+      this.lastRelaxMs ??= nowMs;
+      if (this.offsetTicks !== null && sample < this.offsetTicks - MAX_DELAY_TICKS) this.behindPushes += 1;
+      else this.behindPushes = 0;
+      if (this.behindPushes >= RESEED_AFTER_PUSHES) {
+        this.restartClock();
+        this.lastRelaxMs = nowMs;
+      }
       this.offsetTicks = this.offsetTicks === null ? sample : Math.max(sample, this.offsetTicks - OFFSET_DRIFT_PER_PUSH);
     }
     return true;
+  }
+  /** Forgets the server clock and the delay it taught, for a new connection or a bout resuming after a pause. */
+  resync(): void {
+    this.restartClock();
+    this.lastRelaxMs = null;
+  }
+  private restartClock(): void {
+    this.offsetTicks = null;
+    this.delayTicks = this.initialDelayTicks;
+    this.lastStarvationMs = -Infinity;
+    this.behindPushes = 0;
   }
   latest(): EngineSnapshot | null { return this.snapshots.at(-1) ?? null; }
   /** Fractional tick to present at `nowMs`, clamped to the buffered range. */
@@ -55,7 +76,7 @@ export class SnapshotBuffer {
       this.lastStarvationMs = nowMs;
       this.lastRelaxMs = nowMs;
       this.delayTicks = Math.min(MAX_DELAY_TICKS, this.delayTicks + STARVATION_STEP_TICKS);
-    } else if (nowMs - this.lastRelaxMs > RELAX_AFTER_MS) {
+    } else if (this.lastRelaxMs !== null && nowMs - this.lastRelaxMs > RELAX_AFTER_MS) {
       this.lastRelaxMs = nowMs;
       this.delayTicks = Math.max(MIN_DELAY_TICKS, this.delayTicks - RELAX_STEP_TICKS);
     }

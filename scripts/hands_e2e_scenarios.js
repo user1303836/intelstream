@@ -24,7 +24,7 @@ const repo = path.resolve(__dirname, '..');
 const out = path.join(os.tmpdir(), 'hands-e2e');
 fs.mkdirSync(out, { recursive: true });
 const scenario = process.argv[2] || 'ko';
-const PORT = 8091;
+const PORT = Number(process.env.E2E_PORT ?? 8091);
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function healthz() {
@@ -84,6 +84,47 @@ async function waitFor(page, predicate, timeoutMs, label) {
   return null;
 }
 
+/**
+ * Counts the WebGL objects alive in the page and the bytes their textures hold. renderer.info cannot
+ * show a leak across rematches: it starts again at zero with every renderer on the shared context.
+ */
+function countLiveGlObjects() {
+  const live = { buffers: 0, textures: 0, programs: 0, shaders: 0, framebuffers: 0, renderbuffers: 0 };
+  const proto = WebGL2RenderingContext.prototype;
+  for (const [create, remove, key] of [['createBuffer', 'deleteBuffer', 'buffers'], ['createTexture', 'deleteTexture', 'textures'], ['createProgram', 'deleteProgram', 'programs'], ['createShader', 'deleteShader', 'shaders'], ['createFramebuffer', 'deleteFramebuffer', 'framebuffers'], ['createRenderbuffer', 'deleteRenderbuffer', 'renderbuffers']]) {
+    const made = proto[create];
+    const gone = proto[remove];
+    proto[create] = function (...args) { const object = made.apply(this, args); if (object) live[key] += 1; return object; };
+    proto[remove] = function (object) { if (object) live[key] -= 1; return gone.call(this, object); };
+  }
+  const bytes = new Map();
+  const bound = new Map();
+  let unit = 0;
+  const activeTexture = proto.activeTexture;
+  proto.activeTexture = function (value) { unit = value; return activeTexture.call(this, value); };
+  const bindTexture = proto.bindTexture;
+  proto.bindTexture = function (target, texture) { bound.set(`${unit}:${target}`, texture); return bindTexture.call(this, target, texture); };
+  const texelBytes = (format) => (format === 0x8814 || format === 0x8D70 ? 16 : format === 0x881A ? 8 : 4);
+  const texStorage2D = proto.texStorage2D;
+  proto.texStorage2D = function (target, levels, format, width, height) {
+    const texture = bound.get(`${unit}:${target}`);
+    let total = 0;
+    for (let level = 0, w = width, h = height; level < levels; level += 1, w = Math.max(1, w >> 1), h = Math.max(1, h >> 1)) total += w * h * texelBytes(format);
+    if (texture) bytes.set(texture, total * (target === 0x8513 ? 6 : 1));
+    return texStorage2D.call(this, target, levels, format, width, height);
+  };
+  const texImage2D = proto.texImage2D;
+  proto.texImage2D = function (...args) {
+    const texture = bound.get(`${unit}:${args[0]}`);
+    if (texture && args.length >= 9 && args[1] === 0) bytes.set(texture, args[3] * args[4] * 4);
+    else if (texture && args.length === 6 && args[1] === 0 && args[5] && args[5].width) bytes.set(texture, args[5].width * args[5].height * 4);
+    return texImage2D.apply(this, args);
+  };
+  const deleteTexture = proto.deleteTexture;
+  proto.deleteTexture = function (texture) { bytes.delete(texture); return deleteTexture.call(this, texture); };
+  window.__glLive = () => ({ ...live, textureMb: Math.round([...bytes.values()].reduce((a, b) => a + b, 0) / 104857.6) / 10 });
+}
+
 async function main() {
   const gpuArgs = process.env.E2E_GPU === '1'
     ? ['--enable-gpu', '--ignore-gpu-blocklist']
@@ -93,6 +134,18 @@ async function main() {
   const open = async (name, options = {}) => {
     const context = await browser.newContext(options.mobile ? { ...devices['Pixel 7'], viewport: { width: 844, height: 390 } } : { viewport: { width: 1280, height: 720 } });
     const page = await context.newPage();
+    if (scenario === 'rematchloop') await page.addInitScript(countLiveGlObjects);
+    if (scenario === 'response') {
+      // Records when each input frame that carries a press leaves the page, to time press to send.
+      await page.addInitScript(() => {
+        const send = WebSocket.prototype.send;
+        window.__actionSends = [];
+        WebSocket.prototype.send = function (data) {
+          if (typeof data === 'string' && data.includes('"actions":[{')) window.__actionSends.push(performance.timeOrigin + performance.now());
+          return send.call(this, data);
+        };
+      });
+    }
     const errors = [];
     page.on('pageerror', (e) => errors.push(`${name} pageerror: ${e.message.slice(0, 240)}`));
     page.on('console', (m) => { if (m.type() === 'error') errors.push(`${name} console.error: ${m.text().slice(0, 240)}`); });
@@ -197,6 +250,28 @@ async function main() {
       note('A after resume:', resumed?.status, '|', resumed?.live);
       const bBack = await waitFor(B.page, (s) => /in progress|fight/i.test((s.status ?? '') + (s.summary ?? '')) && !/Unable|paused|reconnect/i.test(s.status ?? ''), 40000, 'B resumed');
       note('B after resume:', bBack?.status, '|', bBack?.live);
+      // The server stopped for the drop; the render clock must find it again rather than show only the newest snapshot.
+      await wait(1500);
+      for (const [label, page] of [['A', A.page], ['B', B.page]]) {
+        const clock = await page.evaluate(() => new Promise((resolve) => {
+          const buffer = window.__handsApp?.renderer?.buffer;
+          let frames = 0;
+          let atLatest = 0;
+          const end = performance.now() + 2000;
+          const tick = (now) => {
+            const latest = buffer?.latest?.();
+            if (buffer && latest && buffer.offsetTicks !== null) {
+              frames += 1;
+              if ((now * 30) / 1000 + buffer.offsetTicks - buffer.interpolationDelayTicks >= latest.tick) atLatest += 1;
+            }
+            if (now < end) requestAnimationFrame(tick);
+            else resolve({ frames, atLatest, delayTicks: buffer?.interpolationDelayTicks ?? null });
+          };
+          requestAnimationFrame(tick);
+        }));
+        note(`${label} render clock after the resume: ${clock.atLatest} of ${clock.frames} frames held on the newest snapshot, delay ${clock.delayTicks} ticks`);
+        if (clock.frames === 0 || clock.atLatest > clock.frames * 0.2) report.errors.push(`${label} render clock did not recover after the resume (${clock.atLatest} of ${clock.frames} frames at the newest snapshot)`);
+      }
       for (let i = 0; i < 6; i += 1) { await A.page.keyboard.press('f'); await B.page.keyboard.press('j'); await wait(400); }
       note('B summary after resume:', (await status(B.page)).summary?.slice(0, 160));
       const final = await waitFor(A.page, (s) => Boolean(s.final), 120000, 'final');
@@ -342,7 +417,7 @@ async function main() {
     }
 
     if (scenario === 'rematchloop') {
-      const sample = (page) => page.evaluate(() => ({ heapMb: typeof performance.memory === 'object' && performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null, gpu: window.__handsApp?.networkStats?.gpu ?? null }));
+      const sample = (page) => page.evaluate(() => ({ heapMb: typeof performance.memory === 'object' && performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null, gpu: window.__glLive?.() ?? null }));
       const rematchReady = (page) => page.evaluate(() => { const b = document.querySelector('[data-rematch]'); return Boolean(b && !b.hidden && !b.disabled); });
       const samples = [];
       for (let bout = 1; bout <= 4; bout += 1) {
@@ -362,8 +437,13 @@ async function main() {
       }
       if (samples.length >= 2) {
         const first = samples[0]; const last = samples.at(-1);
-        note('growth A: heap', last.a.heapMb - first.a.heapMb, 'MB; geometries', (last.a.gpu?.geometries ?? 0) - (first.a.gpu?.geometries ?? 0), '; textures', (last.a.gpu?.textures ?? 0) - (first.a.gpu?.textures ?? 0), '; programs', (last.a.gpu?.programs ?? 0) - (first.a.gpu?.programs ?? 0));
-        note('growth B: heap', last.b.heapMb - first.b.heapMb, 'MB; geometries', (last.b.gpu?.geometries ?? 0) - (first.b.gpu?.geometries ?? 0), '; textures', (last.b.gpu?.textures ?? 0) - (first.b.gpu?.textures ?? 0), '; programs', (last.b.gpu?.programs ?? 0) - (first.b.gpu?.programs ?? 0));
+        const rebuilds = samples.length - 1;
+        for (const side of ['a', 'b']) {
+          const growth = Object.fromEntries(Object.keys(last[side].gpu ?? {}).map((key) => [key, Math.round(((last[side].gpu?.[key] ?? 0) - (first[side].gpu?.[key] ?? 0)) * 10) / 10]));
+          note(`growth ${side.toUpperCase()} over ${rebuilds} rematches: heap ${last[side].heapMb - first[side].heapMb} MB; live GL objects ${JSON.stringify(growth)}`);
+          // Each renderer leaves a few small objects inside three.js itself; a leaked model or bloom chain is megabytes.
+          if ((growth.textureMb ?? 0) > rebuilds * 0.5) report.errors.push(`${side.toUpperCase()} texture memory grew ${growth.textureMb} MB over ${rebuilds} rematches`);
+        }
       }
     }
 
@@ -444,6 +524,10 @@ async function main() {
       });
       note('own glove fully extended, ms after the key:', JSON.stringify(contacts), '| median', median(contacts));
       note('punch keys measured:', punchKeys.length, 'of', presses.length);
+      const sends = await A.page.evaluate(() => window.__actionSends ?? []);
+      const sent = punchKeys.map((key) => { const at = sends.find((time) => time >= key.at); return at === undefined ? null : Math.round(at - key.at); });
+      note('press leaves the page, ms after the key:', JSON.stringify(sent), '| median', median(sent));
+      if (sent.some((ms) => ms === null || ms > 25)) report.errors.push(`a press waited for the periodic input flush: ${JSON.stringify(sent)}`);
       note('own punch rewinds (progress the animation went back, and when):', JSON.stringify(rewinds));
       note('own punch starts on screen, ms:', JSON.stringify(local.map((v) => (v === null ? null : Math.round(v)))), '| median', median(local));
       note('own glove has moved 3 cm, ms:', JSON.stringify(moved.map((v) => (v === null ? null : Math.round(v)))), '| median', median(moved));

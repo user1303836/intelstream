@@ -503,6 +503,8 @@ class BoxingEngine:
         two = self._fighters[self._player_ids[1]]
         one.movement_load = 0
         two.movement_load = 0
+        # The facing blends toward the opponent here and again after each fighter's footwork
+        # (`_move_fighter`), so in the fight phase it turns about 58% of the way per tick.
         self._update_facing(one, two)
         self._update_facing(two, one)
 
@@ -622,6 +624,9 @@ class BoxingEngine:
         return (
             isinstance(follow_up, PunchAction)
             and (attack.action.punch_class, follow_up.punch_class) in COMPATIBLE_COMBO_CHAINS
+            # `_start_punch` refuses a punch the fighter cannot pay for in full.
+            and fighter.stamina
+            >= PUNCH_RULES[(follow_up.punch_class, follow_up.target, follow_up.power)].stamina_cost
         )
 
     def _start_punch(self, fighter: FighterState, action: PunchAction) -> bool:
@@ -745,7 +750,8 @@ class BoxingEngine:
         ) or (action.target is Target.BODY and defender.defense is DefensivePose.GUARD_LOW)
         perfect = guarding and self.tick - defender.defense_started_tick <= PERFECT_BLOCK_TICKS
         counter = attacker.counter_ticks > 0 or self._counter_vulnerable(defender.attack)
-        attack.landed = True
+        # A combination flows through a blocked punch but not a parried one.
+        attack.landed = not perfect
         fatigue = attacker.fatigue
         counter_multiplier = 128 if counter else 100
         impact = (
@@ -1563,6 +1569,7 @@ class BoxingEngine:
         two = self._fighters[self._player_ids[1]]
         self._walk_to_corner(one, -REST_CORNER_OFFSET, -REST_CORNER_OFFSET, two)
         self._walk_to_corner(two, REST_CORNER_OFFSET, REST_CORNER_OFFSET, one)
+        self._separate_fighters(one, two)
         for fighter in self._fighters.values():
             fighter.stamina = min(fighter.maximum_stamina, fighter.stamina + 3)
             fighter.guard = min(MAX_GUARD, fighter.guard + 2)
@@ -1612,6 +1619,9 @@ class BoxingEngine:
             fighter.clinch_startup_ticks = 0
             fighter.stunned_ticks = 0
             fighter.taunt_ticks = 0
+            fighter.evasion_ticks = 0
+            fighter.counter_ticks = 0
+            fighter.combo_ticks = 0
             fighter.last_action_until_tick = -1
         self.phase = MatchPhase.FIGHT
         self.phase_ticks_remaining = self.config.round_ticks

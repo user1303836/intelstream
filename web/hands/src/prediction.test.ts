@@ -1,6 +1,8 @@
 import { punchStaminaCost } from "./manifest";
-import { attackTicksRemaining, canAffordPunch, fatigueFactor, movementLocked, predictMovement, predictedPunchTiming } from "./prediction";
+import { attackTicksRemaining, canAffordPunch, constrainPrediction, fatigueFactor, MINIMUM_SEPARATION, movementLocked, predictMovement, predictedPunchTiming } from "./prediction";
 import { fighter } from "./test/fixtures";
+import timingTable from "./test/punch-timing-table.json";
+import type { FighterSnapshot, PunchClass } from "./types";
 
 describe("local movement prediction", () => {
   it("mirrors the authoritative fatigue factor", () => {
@@ -70,8 +72,49 @@ describe("local movement prediction", () => {
     expect(punchStaminaCost("jab", "body", "normal")).toBe(46);
     expect(punchStaminaCost("jab", "head", "power")).toBe(65);
     expect(punchStaminaCost("jab", "body", "power")).toBe(71);
-    expect(canAffordPunch({ ...fresh, stamina: 38 }, jab)).toBe(true);
-    expect(canAffordPunch({ ...fresh, stamina: 36 }, jab)).toBe(false);
+    expect(canAffordPunch({ ...fresh, stamina: 42 }, jab)).toBe(true);
+    expect(canAffordPunch({ ...fresh, stamina: 41 }, jab)).toBe(false);
+  });
+
+  it("predicts the startup and recovery the engine gives every punch, its own cost taken off the conditioning first", () => {
+    const classes: Record<string, PunchClass> = { j: "jab", s: "straight", h: "hook", u: "uppercut" };
+    const mismatches: string[] = [];
+    for (const row of timingTable as string[]) {
+      const [key, conditioning, body, startup, recovery] = row.split(",") as [string, string, string, string, string];
+      const base = fighter("one");
+      const state: FighterSnapshot = { ...base, stance: "orthodox", conditioning: Number(conditioning), trauma: { ...base.trauma, body: Number(body) } };
+      const timing = predictedPunchTiming(state, { class: classes[key[0]!]!, target: key[1] === "h" ? "head" : "body", power: key[2] === "p" ? "power" : "normal", hand: key[3] === "l" ? "left" : "right" });
+      if (timing.startup !== Number(startup) || timing.recovery !== Number(recovery)) mismatches.push(`${row} -> ${timing.startup},${timing.recovery}`);
+    }
+    expect(timingTable.length).toBeGreaterThan(1000);
+    expect(mismatches).toEqual([]);
+  });
+
+  it("charges a punch thrown inside the combination window at the engine's discount", () => {
+    const afterJab = { ...fighter("one"), stance: "orthodox" as const, conditioning: 108, action: "jab" as const, action_start_tick: 100, action_startup_ticks: 3, action_active_ticks: 2, action_recovery_ticks: 7 };
+    const straight = { class: "straight" as const, hand: "right" as const, target: "head" as const, power: "power" as const };
+    expect(predictedPunchTiming(afterJab, straight, 110)).toMatchObject({ startup: 15, recovery: 25 });
+    expect(predictedPunchTiming(afterJab, straight, 125)).toMatchObject({ startup: 16, recovery: 26 });
+    expect(predictedPunchTiming(afterJab, { ...straight, class: "uppercut" }, 110)).toEqual(predictedPunchTiming(afterJab, { ...straight, class: "uppercut" }, 125));
+  });
+
+  it("keeps the predicted fighter inside the ropes and corner pads and clear of the opponent", () => {
+    const held = { moveX: 1000, moveY: 0, defense: "none" as const };
+    const onRope = { ...fighter("one", 462), conditioning: 1000 };
+    const pressing = predictMovement(onRope, held, 4);
+    expect(pressing.dx).toBeGreaterThan(10);
+    expect(constrainPrediction(onRope, pressing, null).dx).toBeCloseTo(0, 9);
+    const corner = { ...fighter("one", 400), y: 330 };
+    const intoCorner = constrainPrediction(corner, { dx: 30, dy: 30 }, null);
+    expect(Math.abs(corner.x + intoCorner.dx) + Math.abs(corner.y + intoCorner.dy)).toBeLessThanOrEqual(733 + 1e-9);
+    const facing = { ...fighter("one", 0), conditioning: 1000 };
+    const opponent = fighter("two", MINIMUM_SEPARATION);
+    const closer = constrainPrediction(facing, predictMovement(facing, held, 4), opponent);
+    expect(Math.hypot(facing.x + closer.dx - opponent.x, facing.y + closer.dy - opponent.y)).toBeGreaterThanOrEqual(MINIMUM_SEPARATION - 1e-9);
+    const clinched = fighter("two", 60);
+    expect(constrainPrediction(facing, { dx: 0, dy: 0 }, clinched)).toEqual({ dx: 0, dy: 0 });
+    const away = constrainPrediction(facing, { dx: -12, dy: 0 }, opponent);
+    expect(away.dx).toBeCloseTo(-12, 9);
   });
 
   it("carries existing velocity forward when the stick is released", () => {

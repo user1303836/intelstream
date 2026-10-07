@@ -341,6 +341,61 @@ describe("edge-triggered action sends", () => {
     vi.useRealTimers();
   });
 
+  it("sends a press at once in the middle of a bout, when the periodic flush has filled the last second", () => {
+    vi.useFakeTimers();
+    let now = 1000;
+    const socket = new FakeSocket();
+    const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none" as const, actions: [] }), callbacks(), () => socket, () => now);
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message(ready);
+    controller.setActive(true);
+    for (let millisecond = 0; millisecond < 1500; millisecond += 1) {
+      now += 1;
+      vi.advanceTimersByTime(1);
+    }
+    now += 10;
+    const before = socket.sent.length;
+    controller.notifyAction();
+    expect(socket.sent.length).toBe(before + 1);
+    let edges = 0;
+    for (let millisecond = 0; millisecond < 1000; millisecond += 10) {
+      now += 10;
+      vi.advanceTimersByTime(10);
+      const sent = socket.sent.length;
+      controller.notifyAction();
+      edges += socket.sent.length - sent;
+    }
+    expect(edges).toBeLessThanOrEqual(20);
+    expect(edges).toBeGreaterThanOrEqual(15);
+    controller.dispose();
+    vi.useRealTimers();
+  });
+
+  it("keeps room for the periodic flush when presses come in a burst", () => {
+    vi.useFakeTimers();
+    let now = 1000;
+    const socket = new FakeSocket();
+    const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none" as const, actions: [] }), callbacks(), () => socket, () => now);
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message(ready);
+    controller.setActive(true);
+    let edges = 0;
+    for (let millisecond = 0; millisecond < 400; millisecond += 9) {
+      now += 9;
+      vi.advanceTimersByTime(9);
+      const sent = socket.sent.length;
+      controller.notifyAction();
+      edges += socket.sent.length - sent;
+    }
+    expect(edges).toBe(20);
+    controller.dispose();
+    vi.useRealTimers();
+  });
+
   it("holds its input while the connection is stalled and sends the current state when it clears", () => {
     vi.useFakeTimers();
     let now = 1000;

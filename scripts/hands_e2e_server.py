@@ -94,13 +94,18 @@ async def run(args: argparse.Namespace) -> None:
         await server.close()
 
 
-def main() -> None:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--port", type=int, default=8080)
+    # Not 8080: that is the production server's port, which a live tunnel may forward.
+    parser.add_argument("--port", type=int, default=8091)
     parser.add_argument("--rounds", type=int, default=3)
     parser.add_argument("--round-seconds", type=int, default=120)
     parser.add_argument("--rest-seconds", type=int, default=15)
-    asyncio.run(run(parser.parse_args()))
+    return parser.parse_args(argv)
+
+
+def main() -> None:
+    asyncio.run(run(parse_args()))
 
 
 if __name__ == "__main__":

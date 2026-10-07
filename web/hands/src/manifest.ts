@@ -29,6 +29,7 @@ interface ManifestPunch {
   readonly reach: number;
   readonly lateral_arc: number;
   readonly stamina_cost: number;
+  readonly combo_window: number;
 }
 
 const punches = manifestJson.punches as unknown as Record<PunchClass, ManifestPunch>;
@@ -41,6 +42,21 @@ export const HURTBOXES = manifestJson.hurtboxes;
 export const GLOVE_HITBOX_RADIUS = manifestJson.hitbox.glove_radius;
 export const FATIGUE_SCALING = manifestJson.fatigue_scaling;
 export const REST_CORNER_OFFSET = manifestJson.rest.corner_offset;
+export const RING_HALF_WIDTH = manifestJson.ring.half_width;
+export const RING_HALF_HEIGHT = manifestJson.ring.half_height;
+export const FIGHTER_RADIUS = manifestJson.ring.fighter_radius;
+export const RING_CORNER_REACH = manifestJson.corners.reach;
+const comboChains = new Set(manifestJson.combos.chains.map(([first, second]) => `${first}:${second}`));
+
+/** Whether the engine counts `second` straight after `first` as a combination. */
+export function comboChain(first: PunchClass, second: PunchClass): boolean {
+  return comboChains.has(`${first}:${second}`);
+}
+
+/** Ticks after a punch ends during which a compatible follow-up still counts as a combination. */
+export function comboWindow(punchClass: PunchClass): number {
+  return punches[punchClass].combo_window;
+}
 
 export function punchTiming(punchClass: PunchClass, target: Target, power: Power): PunchTiming {
   const base = punches[punchClass];

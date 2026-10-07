@@ -27,6 +27,7 @@ const MATERIAL_TEXTURE: Readonly<Record<string, FighterTexture>> = {
 const cachedTextures = new Map<FighterTexture, THREE.Texture>();
 const cachedTextureLoads = new Map<FighterTexture, Promise<THREE.Texture>>();
 let cachedGltf: Promise<GLTF> | null = null;
+let loadedScene: THREE.Object3D | null = null;
 
 function configureFighterTexture(texture: THREE.Texture): THREE.Texture {
   texture.colorSpace = THREE.SRGBColorSpace;
@@ -63,9 +64,34 @@ export function loadBoxerGlb(): Promise<GLTF> {
     const gltf = decompressFighterGlb().then((bytes) => new Promise<GLTF>((resolve, reject) => {
       new GLTFLoader().parse(bytes, "", resolve, (error: unknown) => reject(error instanceof Error ? error : new Error(String(error))));
     }));
-    cachedGltf = Promise.all([gltf, preloadFighterTextures()]).then(([loaded]) => loaded);
+    cachedGltf = Promise.all([gltf, preloadFighterTextures()]).then(([loaded]) => {
+      loadedScene = loaded.scene;
+      return loaded;
+    });
   }
   return cachedGltf;
+}
+
+/**
+ * Every fighter shares the model's geometry and textures, and a rematch builds a new renderer on the
+ * same graphics context: the last renderer frees their graphics copies, and the next uploads them again.
+ */
+export function releaseFighterGpu(): void {
+  releaseSharedGpu(loadedScene, cachedTextures.values());
+}
+
+export function releaseSharedGpu(scene: THREE.Object3D | null, textures: Iterable<THREE.Texture>): void {
+  scene?.traverse((object) => {
+    if (object instanceof THREE.Mesh) object.geometry.dispose();
+  });
+  for (const texture of textures) texture.dispose();
+}
+
+/** Each skinned mesh's skeleton holds its bones in a texture on the graphics card. */
+export function disposeSkeletons(root: THREE.Object3D): void {
+  root.traverse((object) => {
+    if (object instanceof THREE.SkinnedMesh) object.skeleton.dispose();
+  });
 }
 
 function fighterTexture(name: FighterTexture): THREE.Texture {
@@ -242,6 +268,7 @@ export class SkinnedBoxer {
 
   dispose(): void {
     for (const material of this.ownedMaterials) material.dispose();
+    disposeSkeletons(this.root);
   }
 }
 

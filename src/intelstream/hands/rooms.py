@@ -31,6 +31,12 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+JOIN_ATTEMPTS = 3
+# A stalled uplink delivers its backlog in one burst. Frames past the per-second limit are dropped;
+# the bout only ends for a flood that lasts this long or one this many times past the limit.
+FLOOD_GRACE_SECONDS = 3.0
+FLOOD_HARD_LIMIT_FACTOR = 4
+
 ConnectionRole = Literal["fighter", "spectator"]
 
 
@@ -47,6 +53,13 @@ class RoomError(Exception):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+class _RoomRetiredError(RoomError):
+    """The room a join found finished and was retired while the join was being admitted."""
+
+    def __init__(self) -> None:
+        super().__init__("room_closed")
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +131,7 @@ class PlayerSlot:
     input_budget_at: float = 0.0
     deferred_frame: str | bytes | None = None
     frame_times: deque[float] = field(default_factory=deque)
+    flood_started: float | None = None
     reconnect_deadline: float | None = None
     pre_match_grace_event: asyncio.Event = field(default_factory=asyncio.Event)
     pre_match_grace_task: asyncio.Task[None] | None = None
@@ -275,6 +289,7 @@ class HandsRoom:
 
             if role == "fighter":
                 if existing_fighter is not None:
+                    self._forget_connection_input(existing_fighter)
                     existing_fighter.connection = connection
                     existing_fighter.identity = identity
                     existing_fighter.grace_remaining = self.config.reconnect_grace_seconds
@@ -580,9 +595,19 @@ class HandsRoom:
             now = self._clock()
             while slot.frame_times and slot.frame_times[0] <= now - 1.0:
                 slot.frame_times.popleft()
-            if len(slot.frame_times) >= self.config.max_input_frames_per_second:
-                raise RoomError("rate_limited")
             slot.frame_times.append(now)
+            limit = self.config.max_input_frames_per_second
+            if len(slot.frame_times) > limit:
+                if slot.flood_started is None:
+                    slot.flood_started = now
+                if (
+                    len(slot.frame_times) > FLOOD_HARD_LIMIT_FACTOR * limit
+                    or now - slot.flood_started >= FLOOD_GRACE_SECONDS
+                ):
+                    raise RoomError("rate_limited")
+                slot.deferred_frame = frame
+                return
+            slot.flood_started = None
             if not self._spend_input_budget(slot, now):
                 # A stalled connection delivers its backlog in one burst. The frames past the
                 # budget are not applied, but the newest is kept and goes in as soon as there is
@@ -603,6 +628,14 @@ class HandsRoom:
             slot.last_sequence = command.sequence
             if not engine.submit_input(player_id, command):
                 raise RoomError("input_queue_full")
+
+    @staticmethod
+    def _forget_connection_input(slot: PlayerSlot) -> None:
+        """Input pacing belongs to a connection: a new one starts with a full allowance."""
+        slot.deferred_frame = None
+        slot.frame_times.clear()
+        slot.flood_started = None
+        slot.input_budget = None
 
     def _spend_input_budget(self, slot: PlayerSlot, now: float) -> bool:
         limit = float(self.config.max_inputs_per_second)
@@ -860,6 +893,8 @@ class HandsRoom:
         await self._drain_outboxes()
         if self.config.result_hold_seconds:
             await self._sleep(self.config.result_hold_seconds)
+        # Closing can wait on a stalled member; a rematch from here starts a new room instead.
+        await self._on_finished(self)
         async with self._lock:
             self._accepting_reconnects = False
         await self._drain_outboxes()
@@ -1000,6 +1035,26 @@ class HandsRoomManager:
         reconnect_ticket: str | None = None,
         reconnect_ticket_factory: Callable[[], str] | None = None,
     ) -> RoomMembership:
+        for _attempt in range(JOIN_ATTEMPTS):
+            try:
+                return await self._join_once(
+                    player,
+                    socket,
+                    reconnect_ticket=reconnect_ticket,
+                    reconnect_ticket_factory=reconnect_ticket_factory,
+                )
+            except _RoomRetiredError:
+                continue
+        raise RoomError("room_closed")
+
+    async def _join_once(
+        self,
+        player: AuthenticatedPlayer,
+        socket: SocketLike,
+        *,
+        reconnect_ticket: str | None,
+        reconnect_ticket_factory: Callable[[], str] | None,
+    ) -> RoomMembership:
         owner = object()
         async with self._lock:
             if self._closed:
@@ -1039,8 +1094,11 @@ class HandsRoomManager:
                         and reservation.owner is owner
                     )
                     if not valid:
-                        rejection = "server_shutting_down" if self._closed else "room_closed"
-                        raise RoomError(rejection)
+                        if self._closed:
+                            raise RoomError("server_shutting_down")
+                        if room.finished and self._rooms.get(player.instance_id) is not room:
+                            raise _RoomRetiredError
+                        raise RoomError("room_closed")
                     membership = await room.add(
                         player,
                         socket,
