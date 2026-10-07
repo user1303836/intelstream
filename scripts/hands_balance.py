@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from math import hypot
 from typing import ClassVar, Protocol
 
-from intelstream.hands.cpu import CpuBrain, CpuLevel
+from intelstream.hands.cpu import CpuBrain, CpuLevel, cpu_style
 from intelstream.hands.engine import BoxingEngine, EngineConfig, FighterState
 from intelstream.hands.rules import TICKS_PER_SECOND
 from intelstream.hands.types import (
@@ -160,7 +160,9 @@ class ScriptedHuman:
     - hooks: walks inside and swings power hooks from alternate hands.
     - turtle: walks in behind a high guard and jabs now and then.
     - brawler: straights, hooks, uppercuts and the odd body shot from behind a high guard.
-    - counter: holds a guard at range and answers each punch once a human could have seen it.
+    - counter: holds a guard at range, high or low for the punch he sees coming, and answers each
+      punch once a human could have seen it; like the skilled player he keeps stamina back and
+      sends his corner an instruction between rounds.
     - mash: a newcomer pressing every punch button as fast as he can, never guarding.
     """
 
@@ -203,6 +205,8 @@ class ScriptedHuman:
             if prompt is not None and not me.get_up_prompt_resolved and tick + 1 >= window_middle:
                 return self._command(tick, actions=(MovementAction(prompt),))
             return self._command(tick)
+        if engine.phase is MatchPhase.REST and self.kind == "counter":
+            return self._command(tick, actions=_corner_pick(me))
         if engine.phase is not MatchPhase.FIGHT:
             return self._command(tick)
         dx, dy = them.x - me.x, them.y - me.y
@@ -219,13 +223,18 @@ class ScriptedHuman:
                 move = (-toward[0], -toward[1])
             attack = them.attack
             seen = attack is not None and tick - attack.start_tick >= HUMAN_REACTION_TICKS
-            if seen and attack is not None and attack.resolved and free and distance <= 160:
+            answer = seen and attack is not None and attack.resolved and me.stamina >= 120
+            if answer and free and distance <= 160:
                 punch = PunchClass.STRAIGHT if distance > 120 else PunchClass.HOOK
                 return self._command(tick, actions=(PunchAction(Hand.RIGHT, punch, Target.HEAD),))
-            if tick >= self._next_tick and free and distance <= 150 and roll < 300:
+            jab_ready = tick >= self._next_tick and me.stamina >= 300
+            if jab_ready and free and distance <= 150 and roll < 300:
                 self._next_tick = tick + 20
                 jab = PunchAction(Hand.LEFT, PunchClass.JAB, Target.HEAD)
                 return self._command(tick, move, actions=(jab,))
+            if seen and attack is not None and not attack.resolved:
+                body = attack.action.target is Target.BODY
+                defense = DefensivePose.GUARD_LOW if body else DefensivePose.GUARD_HIGH
             return self._command(tick, move, defense)
         if self.kind == "mash":
             if tick < self._next_tick or distance > 150:
@@ -380,6 +389,14 @@ def play(
     )
 
 
+def bout_styles(one: str, two: str, seed: int) -> tuple[FighterStyle, FighterStyle]:
+    """Against a scripted player the computer fights in the style the room would give it for
+    this match seed; between two computer levels both box balanced, as the style matrix varies."""
+    if one in HUMAN_STRATEGIES and two not in HUMAN_STRATEGIES:
+        return FighterStyle.BALANCED, cpu_style(CpuLevel(two), seed)
+    return FighterStyle.BALANCED, FighterStyle.BALANCED
+
+
 def summarise(one: str, two: str, bouts: list[BoutStats], elapsed: float) -> str:
     count = len(bouts)
     methods = Counter(bout.method for bout in bouts)
@@ -482,7 +499,7 @@ def main() -> None:
     for one, two in pairs:
         started = time.perf_counter()
         bouts = [
-            play(one, two, seed, config)
+            play(one, two, seed, config, bout_styles(one, two, seed))
             for seed in range(args.first_seed, args.first_seed + args.seeds)
         ]
         print(summarise(one, two, bouts, time.perf_counter() - started), flush=True)

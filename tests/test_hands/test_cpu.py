@@ -6,7 +6,7 @@ from itertools import pairwise
 from math import hypot
 
 import pytest
-from scripts.hands_balance import play
+from scripts.hands_balance import HUMAN_REACTION_TICKS, ScriptedHuman, bout_styles, play
 
 from intelstream.hands.cpu import (
     CPU_STYLES,
@@ -585,6 +585,50 @@ def test_a_newcomer_mashing_every_punch_button_can_beat_the_rookie() -> None:
     ]
     assert [bout.method for bout in bouts] == ["decision"] * 3
     assert sum(bout.winner_seat == 0 for bout in bouts) >= 2
+
+
+def test_against_a_scripted_player_the_computer_boxes_in_its_room_style() -> None:
+    assert bout_styles("skilled", "champion", 5) == (
+        FighterStyle.BALANCED,
+        cpu_style(CpuLevel.CHAMPION, 5),
+    )
+    assert bout_styles("champion", "rookie", 5) == (FighterStyle.BALANCED, FighterStyle.BALANCED)
+
+
+def test_the_scripted_counter_puncher_minds_its_breath_guards_low_and_talks_to_its_corner() -> None:
+    def wants_to_throw(stamina: int) -> set[PunchClass]:
+        """What it would throw in range of a jab that has landed, given the breath it has."""
+        engine = engine_at(140)
+        engine.fighter("human").stamina = stamina
+        counter = ScriptedHuman("counter", "human", "cpu")
+        jab = PunchAction(Hand.LEFT, PunchClass.JAB, Target.HEAD)
+        engine.submit_input("cpu", InputCommand(1, engine.tick, actions=(jab,)))
+        wanted: set[PunchClass] = set()
+        for _ in range(HUMAN_REACTION_TICKS + 4):
+            engine.step()
+            command = counter.decide(engine)
+            assert command is not None
+            wanted.update(punch.punch_class for punch in punches([command]))
+        return wanted
+
+    assert wants_to_throw(1000) == {PunchClass.JAB, PunchClass.STRAIGHT}
+    assert wants_to_throw(200) == {PunchClass.STRAIGHT}
+    assert wants_to_throw(60) == set()
+
+    engine = engine_at(130)
+    engine.fighter("human").stamina = 250
+    body_hook = PunchAction(Hand.LEFT, PunchClass.HOOK, Target.BODY, Power.POWER)
+    engine.submit_input("cpu", InputCommand(1, engine.tick, actions=(body_hook,)))
+    for _ in range(HUMAN_REACTION_TICKS + 1):
+        engine.step()
+    attack = engine.fighter("cpu").attack
+    assert attack is not None and not attack.resolved
+    command = ScriptedHuman("counter", "human", "cpu").decide(engine)
+    assert command is not None and command.defense is DefensivePose.GUARD_LOW
+
+    engine.phase = MatchPhase.REST
+    command = ScriptedHuman("counter", "human", "cpu").decide(engine)
+    assert command is not None and kinds([command]) == [ActionKind.CORNER_BREATH]
 
 
 def test_profiles_get_better_with_the_level() -> None:
