@@ -37,15 +37,21 @@ export interface RopePress {
   readonly pressZ: number;
 }
 
-/** The ropes run behind a fighter's back, this far from the middle of the body. */
-const ROPE_BACK = 0.2;
+/** The ropes run behind a fighter's back, this far from the middle of the body (his back, and his rear leg in the stance). */
+export const ROPE_BACK = 0.23;
+/**
+ * The furthest the ropes give behind a fighter: well short of the 0.38 m between them, so they never wrap
+ * round him. The engine lets his middle reach 0.36 m past the rope line; the rest is made up by drawing
+ * him in and leaning him back on the ropes (see `ropeExcess`).
+ */
+export const ROPE_MAX_GIVE = 0.22;
 /** Along the rope, the give is full across the back and gone this far from the fighter. */
 const ROPE_GIVE_FLAT = 0.22;
 const ROPE_GIVE_REACH = 1.15;
 /** The rope is tied at the post and gives nothing there. */
 const ROPE_TIE = 0.5;
-/** The bottom rope is pushed by the legs, which lean back less than the shoulders. */
-const ROPE_LOW_GIVE = 0.6;
+/** The bottom rope is pushed by the legs: in the stance the rear one reaches almost as far back as the shoulders. */
+const ROPE_LOW_GIVE = 0.9;
 /** The ropes sag this far in the middle of a side. */
 const ROPE_SAG = 0.045;
 /** Where along each side the straps tie the ropes together. */
@@ -56,13 +62,24 @@ const TIE_WRAP = 0.04;
 
 /**
  * How far, in metres, a fighter at (x, z) pushes the ropes on the x and z sides outward. The engine
- * lets a fighter's middle pass the line of the ropes, so they give way to stay behind the back.
+ * lets a fighter's middle pass the line of the ropes, so they give way to stay behind the back, as far
+ * as `ROPE_MAX_GIVE`.
  */
 export function ropePress(x: number, z: number): RopePress {
   return {
-    pressX: Math.max(0, Math.abs(x) + ROPE_BACK - ROPE_LINE),
-    pressZ: Math.max(0, Math.abs(z) + ROPE_BACK - ROPE_LINE),
+    pressX: Math.min(ROPE_MAX_GIVE, Math.max(0, Math.abs(x) + ROPE_BACK - ROPE_LINE)),
+    pressZ: Math.min(ROPE_MAX_GIVE, Math.max(0, Math.abs(z) + ROPE_BACK - ROPE_LINE)),
   };
+}
+
+/**
+ * How far past the ropes' furthest give the engine has a fighter at (x, z), per axis and signed outward,
+ * in metres: he is drawn that much nearer the middle, his back on the ropes, and leans back on them.
+ */
+export function ropeExcess(x: number, z: number, out: { x: number; z: number }): { x: number; z: number } {
+  out.x = Math.sign(x) * Math.max(0, Math.abs(x) + ROPE_BACK - ROPE_LINE - ROPE_MAX_GIVE);
+  out.z = Math.sign(z) * Math.max(0, Math.abs(z) + ROPE_BACK - ROPE_LINE - ROPE_MAX_GIVE);
+  return out;
 }
 
 /**

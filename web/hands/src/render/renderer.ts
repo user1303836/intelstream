@@ -1516,7 +1516,7 @@ export class FightRenderer {
     const { recipientIndex, puncherIndex } = contactParticipants(event, snapshot);
     const recipient = snapshot.fighters[recipientIndex];
     if (recipient === undefined) return;
-    this.contactPoint.set(this.mapping.x(recipient.x), 0, this.mapping.z(recipient.y));
+    this.placeContact(recipientIndex, recipient);
     const spray = sprayDirection(snapshot.fighters[puncherIndex], recipient, this.mapping);
     this.effects.addEvent(event, this.contactPoint, this.settings().reducedMotion, spray);
     const puncher = puncherIndex >= 0 ? snapshot.fighters[puncherIndex] : undefined;
@@ -1762,6 +1762,15 @@ export class FightRenderer {
   }
 
   /**
+   * Where a fighter's blood, sweat and chunks leave from: under him as he is drawn, which is not always his
+   * place in the engine (held on the ropes he is drawn in off them, and he gets up where a fall left him).
+   */
+  private placeContact(index: number, fighter: FighterSnapshot): void {
+    const drawn = this.graphs?.[index]?.currentRoot;
+    this.contactPoint.set(drawn?.x ?? this.mapping.x(fighter.x), 0, drawn?.z ?? this.mapping.z(fighter.y));
+  }
+
+  /**
    * The exposed cut through the neck, measured on the skin as it is posed: its middle, facing up the
    * neck, and its edge, both ends of each of its edges in turn.
    */
@@ -1868,7 +1877,7 @@ export class FightRenderer {
         ?? snapshot.fighters[targetIndex]
         ?? snapshot.fighters[actorIndex]
         ?? snapshot.fighters[0];
-      this.contactPoint.set(this.mapping.x(recipient.x), 0, this.mapping.z(recipient.y));
+      this.placeContact(snapshot.fighters.indexOf(recipient), recipient);
       if (CONTACT_KINDS.has(event.kind)) {
         const puncher = puncherIndex >= 0 ? snapshot.fighters[puncherIndex]! : null;
         this.pendingContacts.push({
@@ -1903,7 +1912,7 @@ export class FightRenderer {
       const spray = sprayDirection(this.buffer.latest()?.fighters[puncherIndex], target, this.mapping);
       this.presentFightEvent(event, recipientIndex, puncherIndex);
       if (presentImpact && target !== undefined) {
-        this.contactPoint.set(this.mapping.x(target.x), 0, this.mapping.z(target.y));
+        this.placeContact(recipientIndex, target);
         this.effects.addEvent(presentationEvent, this.contactPoint, this.settings().reducedMotion, spray);
       }
       const currentSettings = this.settings();

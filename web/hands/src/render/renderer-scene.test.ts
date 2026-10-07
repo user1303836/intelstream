@@ -128,6 +128,24 @@ const fighting = (one: Partial<FighterSnapshot> = {}, two: Partial<FighterSnapsh
   return { ...base, fighters: [{ ...base.fighters[0], ...one }, { ...base.fighters[1], ...two }], ...extra };
 };
 
+describe("blood from a fighter held on the ropes", () => {
+  it("leaves from where he is drawn, not from his place in the engine past the ropes", () => {
+    const event = { event_id: 9, tick: 40, kind: "hit", actor_id: "one", target_id: "two", amount: 80, detail: "straight:head", blood: 30, direction: 1, action_id: null };
+    const engine = { ...snapshot(), fighters: [fighter("one", 345), fighter("two", 462)] as [FighterSnapshot, FighterSnapshot] };
+    const addEvent = vi.fn();
+    const stub = Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, {
+      pendingContacts: [{ event, presentationEvent: event, presentImpact: true, reactAmount: null, contactTick: 40, recipientIndex: 1, puncherIndex: 0, injury: null }],
+      buffer: { latest: () => engine }, presentFightEvent: vi.fn(), mapping: worldMapping(SIMULATION), contactPoint: new THREE.Vector3(), mouthPoint: new THREE.Vector3(),
+      effects: { addEvent, spawnTeeth: vi.fn() }, settings: () => ({ reducedMotion: false, blood: "full" }), arena: { excite: vi.fn() }, viewerId: null,
+      arcadeInjuries: [null, null], graphs: [{ currentRoot: { x: 1.6, z: 0 }, landedHit: vi.fn() }, { currentRoot: { x: 2.33, z: 0.05 }, react: vi.fn() }], headWorldPose: () => null, knockOutMouthpiece: vi.fn(), onContact: null, viewerHitFlash: 0,
+    });
+    (FightRenderer.prototype as unknown as { fireContacts(this: unknown, tick: number): void }).fireContacts.call(stub, 50);
+    const [, at] = addEvent.mock.calls[0]! as [unknown, THREE.Vector3];
+    expect(at.x).toBeCloseTo(2.33, 6);
+    expect(at.z).toBeCloseTo(0.05, 6);
+  });
+});
+
 describe("the stands in a rendered frame", () => {
   it("make room for the broadcast camera only while it stands on its platform", () => {
     const placed = (camera: Settings["camera"], portraitPull = 1): boolean => {

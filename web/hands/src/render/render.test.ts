@@ -1,10 +1,10 @@
 import * as THREE from "three";
-import { punchTiming, REST_CORNER_OFFSET, totalTicks } from "../manifest";
+import { FIGHTER_RADIUS, punchTiming, REST_CORNER_OFFSET, RING_HALF_WIDTH, totalTicks } from "../manifest";
 import { buildArena } from "./arena";
 import { CameraDirector, ceremonyShot, cornerFrame, cornerPoint, cornerShot, cornerShotProgress, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE } from "./camera";
 import { bloodPatternFor, Effects3D } from "./effects";
 import { CLOCK_PORTRAIT_RADIUS, cardRows, decisionLabel, drawHud, finalRevealDelay as revealDelay, hudScale, plateDetail, REFEREE_REVEAL_DELAY_SECONDS, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, PLATE_PORTRAIT_RADIUS, RESULT_CARD_FOOTER, resultCard, resultCardLayout, RoundClock, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
-import { buildRing, disposeRing, nearRopeOpacityFor, ROPE_FLEX_GLSL, ROPE_GIVE_GLSL, ropePress } from "./ring";
+import { buildRing, disposeRing, nearRopeOpacityFor, ROPE_BACK, ROPE_FLEX_GLSL, ROPE_GIVE_GLSL, ROPE_MAX_GIVE, ropeExcess, ropePress } from "./ring";
 import { GloveTrail } from "./trails";
 import { resizeHighDpi } from "./viewport";
 import { CORNER_COLORS, PALETTES, ROPE_HEIGHTS, ROPE_LINE, worldMapping } from "./world";
@@ -689,11 +689,11 @@ describe("near ropes", () => {
 });
 
 describe("rope give", () => {
-  it("leaves the ropes alone until a fighter's back reaches them", () => {
+  it("leaves the ropes alone until a fighter's back reaches them, and gives no further than their furthest give", () => {
     expect(ropePress(0, 0)).toEqual({ pressX: 0, pressZ: 0 });
-    expect(ropePress(ROPE_LINE - 0.21, 0.4)).toEqual({ pressX: 0, pressZ: 0 });
-    expect(ropePress(-(ROPE_LINE - 0.1), 0).pressX).toBeCloseTo(0.1, 9);
-    expect(ropePress(0, -2.82).pressZ).toBeCloseTo(2.82 + 0.2 - ROPE_LINE, 9);
+    expect(ropePress(ROPE_LINE - ROPE_BACK - 0.01, 0.4)).toEqual({ pressX: 0, pressZ: 0 });
+    expect(ropePress(-(ROPE_LINE - 0.1), 0).pressX).toBeCloseTo(ROPE_BACK - 0.1, 9);
+    expect(ropePress(0, -2.82).pressZ).toBeCloseTo(ROPE_MAX_GIVE, 9);
     expect(ropePress(0, -2.82).pressX).toBe(0);
   });
 
@@ -710,21 +710,36 @@ describe("rope give", () => {
     expect(ROPE_FLEX_GLSL).toContain("transformed += ropeOut * ropeFlex;");
   });
 
-  it("keeps the top ropes behind the back of a fighter anywhere the engine lets one stand", () => {
-    for (const x of [2.3, 2.5, 2.7, 2.82]) {
+  it("keeps the top ropes on the back of a fighter anywhere the engine lets one stand, drawn in where they can give no more", () => {
+    const limit = mapping.x(RING_HALF_WIDTH - FIGHTER_RADIUS);
+    // The engine lets his middle reach 0.36 m past the rope line.
+    expect(limit - ROPE_LINE).toBeGreaterThan(0.35);
+    for (const x of [2.1, 2.3, 2.5, 2.7, limit]) {
+      const drawn = x - ropeExcess(x, 0.3, { x: 0, z: 0 }).x;
+      expect(drawn + ROPE_BACK).toBeLessThanOrEqual(ROPE_LINE + ROPE_MAX_GIVE + 1e-9);
       for (const along of [-1.6, 0, 1.2]) {
         for (const height of [0.88, 1.26]) {
           const rope = ROPE_LINE + ropePress(x, along).pressX * ropeGive(0, along, height);
-          expect(rope).toBeGreaterThanOrEqual(x + 0.2 - 1e-9);
+          expect(rope).toBeGreaterThanOrEqual(drawn + ROPE_BACK - 1e-9);
           const beside = ROPE_LINE + ropePress(x, along).pressX * ropeGive(0.2, along + 0.2, height);
-          expect(beside).toBeGreaterThanOrEqual(x + 0.2 - 1e-9);
+          expect(beside).toBeGreaterThanOrEqual(drawn + ROPE_BACK - 1e-9);
         }
       }
     }
   });
 
-  it("gives less at the bottom rope, nothing at the posts and nothing away from the fighter", () => {
-    expect(ropeGive(0, 0, 0.5)).toBeCloseTo(0.6, 9);
+  it("never bows a rope as far as the next one, so the ropes do not wrap round a fighter on them", () => {
+    const limit = mapping.x(RING_HALF_WIDTH - FIGHTER_RADIUS);
+    let furthest = 0;
+    for (const height of ROPE_HEIGHTS) furthest = Math.max(furthest, ropePress(limit, limit).pressX * ropeGive(0, 0, height), ropePress(limit, limit).pressZ * ropeGive(0, 0, height));
+    expect(furthest).toBeLessThanOrEqual(0.25);
+    expect(furthest).toBeLessThan(ROPE_HEIGHTS[1] - ROPE_HEIGHTS[0]);
+    expect(ropeExcess(limit, -limit, { x: 0, z: 0 })).toEqual({ x: expect.closeTo(limit + ROPE_BACK - ROPE_LINE - ROPE_MAX_GIVE, 9), z: expect.closeTo(-(limit + ROPE_BACK - ROPE_LINE - ROPE_MAX_GIVE), 9) });
+    expect(ropeExcess(ROPE_LINE + ROPE_MAX_GIVE - ROPE_BACK - 1e-6, 0, { x: 1, z: 1 })).toEqual({ x: 0, z: 0 });
+  });
+
+  it("gives a little less at the bottom rope, nothing at the posts and nothing away from the fighter", () => {
+    expect(ropeGive(0, 0, 0.5)).toBeCloseTo(0.9, 9);
     expect(ropeGive(0, 0, 1.26)).toBe(1);
     expect(ropeGive(0, ROPE_LINE, 1.26)).toBeCloseTo(0, 9);
     expect(ropeGive(0, -ROPE_LINE, 1.26)).toBeCloseTo(0, 9);
@@ -795,7 +810,7 @@ describe("rope give", () => {
     ring.setRopeContacts({ x: 2.82, z: 0.4 }, null);
     expect(ring.ropeContacts[0].x).toBeCloseTo(2.82);
     expect(ring.ropeContacts[0].y).toBeCloseTo(0.4);
-    expect(ring.ropeContacts[0].z).toBeCloseTo(2.82 + 0.2 - ROPE_LINE, 9);
+    expect(ring.ropeContacts[0].z).toBeCloseTo(ROPE_MAX_GIVE, 9);
     expect(ring.ropeContacts[0].w).toBe(0);
     expect(ring.ropeContacts[1].toArray()).toEqual([0, 0, 0, 0]);
     ring.setRopeContacts(null, null);
