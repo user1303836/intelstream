@@ -496,6 +496,7 @@ export class HandsApp {
     this.root.querySelector<HTMLInputElement>("[data-volume]")!.addEventListener("input", (event) => {
       this.settings.update({ volume: Number((event.target as HTMLInputElement).value) });
       this.audio.setVolume();
+      this.voice.settingsChanged();
     });
     this.root.querySelector<HTMLInputElement>("[data-haptics]")!.addEventListener("change", (event) => {
       this.settings.update({ haptics: (event.target as HTMLInputElement).checked });

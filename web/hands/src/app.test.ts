@@ -636,6 +636,19 @@ describe("the broadcast", () => {
     app.destroy();
   });
 
+  it("stops the announcer mid-line when the player turns the volume down to nothing", async () => {
+    const cancel = vi.fn();
+    Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { speak: () => undefined, cancel, getVoices: () => [] } });
+    Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: class { onend = null; onerror = null; constructor(readonly text: string) {} } });
+    const { root, app } = await launch();
+    mocks.renderers.at(-1)!.onAnnouncement!(["In the blue corner... One!"]);
+    const volume = root.querySelector<HTMLInputElement>("[data-volume]")!;
+    volume.value = "0";
+    volume.dispatchEvent(new Event("input"));
+    expect(cancel).toHaveBeenCalled();
+    app.destroy();
+  });
+
   it("muffles the sound only when the player's own fighter is rocked, never for a spectator", async () => {
     const rocked = vi.spyOn(AudioFeedback.prototype, "rocked");
     const { app } = await launch();

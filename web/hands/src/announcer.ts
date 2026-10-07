@@ -41,6 +41,12 @@ export class AnnouncerVoice {
     if (this.speaking === null) this.next();
   }
 
+  /** A line already being read keeps the volume it started with, so muting, or switching the voice off, stops it. */
+  settingsChanged(): void {
+    const settings = this.settings();
+    if (!settings.announcer || settings.volume <= 0) this.cancel();
+  }
+
   /** Stops the current announcement and forgets the rest. */
   cancel(): void {
     this.queue.length = 0;

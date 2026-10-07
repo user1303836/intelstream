@@ -79,6 +79,19 @@ describe("the announcer's voice", () => {
     expect(synthesis.spoken).toHaveLength(1);
   });
 
+  it("stops the line being read when the player mutes, and keeps it when the volume only changes", () => {
+    const announcer = make();
+    announcer.speak(["In the blue corner...", "And in the red corner..."]);
+    settings = { ...settings, volume: 0.3 };
+    announcer.settingsChanged();
+    expect(synthesis.cancels).toBe(0);
+    settings = { ...settings, volume: 0 };
+    announcer.settingsChanged();
+    expect(synthesis.cancels).toBe(1);
+    synthesis.finishLast();
+    expect(synthesis.spoken).toHaveLength(1);
+  });
+
   it("is cancelled for a rematch and after teardown says nothing", () => {
     const announcer = make();
     announcer.speak(["one", "two"]);
