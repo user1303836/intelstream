@@ -21,7 +21,7 @@ import { drawHud, finalRevealDelay, resultCard, resultCardLayout, RoundStatsTrac
 import { BURST_CUT_HEIGHT, EYE_LIDS, NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE } from "./injury";
 import { BIG_SHOT, closeCut, cutRim, teethFor } from "./gore";
 import { mouthpieceFlies } from "./mouthpiece";
-import { OFFICIAL_LOOKS, lookFor } from "./looks";
+import { OFFICIAL_LOOKS, lookFor, lookShape, type FighterLook } from "./looks";
 import { BLUE_CORNER_OUTFIT, CUTMAN_OUTFIT, RED_CORNER_OUTFIT, REFEREE_OUTFIT } from "./outfit";
 import { ResolutionScaler } from "./quality";
 import { RockedVision, rockedLevel } from "./rocked";
@@ -383,10 +383,9 @@ export function measureBurstStump(
   const edges = burstRim(mesh.geometry);
   if (edges.length === 0) return null;
   const written = rim.length === edges.length * 3 ? rim : new Float32Array(edges.length * 3);
-  const bind = mesh.geometry.getAttribute("position");
   out.position.set(0, 0, 0);
   for (const [at, corner] of edges.entries()) {
-    mesh.applyBoneTransform(corner, out.scratch.fromBufferAttribute(bind, corner)).applyMatrix4(mesh.matrixWorld);
+    posedHeadVertex(boxer, corner, out.scratch);
     out.scratch.toArray(written, at * 3);
     out.position.add(out.scratch);
   }
@@ -479,6 +478,13 @@ export function visualSeparation(
   };
 }
 
+/** A head vertex in world space as the GPU draws it: reshaped by the fighter's look, then posed. */
+function posedHeadVertex(boxer: SkinnedBoxer, vertex: number, out: THREE.Vector3): THREE.Vector3 {
+  const mesh = boxer.headMesh;
+  lookShape(out.fromBufferAttribute(mesh.geometry.getAttribute("position"), vertex), boxer.look, out);
+  return mesh.applyBoneTransform(vertex, out).applyMatrix4(mesh.matrixWorld);
+}
+
 /** True for the part of the head mesh that leaves with the head. */
 export function aboveNeckCut(bind: THREE.Vector3): boolean {
   return bind.y > NECK_CUT_HEIGHT - NECK_CUT_SLOPE * (bind.z - NECK_CUT_DEPTH) - 0.3;
@@ -495,6 +501,7 @@ export function bakeSkinnedPart(
   pivotPosition: THREE.Vector3,
   pivotQuaternion: THREE.Quaternion,
   keep?: (bind: THREE.Vector3) => boolean,
+  look?: FighterLook,
 ): BakedPart {
   const source = mesh.geometry;
   const positions = source.getAttribute("position");
@@ -504,6 +511,8 @@ export function bakeSkinnedPart(
   mesh.updateMatrixWorld(true);
   for (let index = 0; index < positions.count; index += 1) {
     vertex.fromBufferAttribute(positions, index);
+    // A head is drawn reshaped by its owner's look; the severed head keeps that shape.
+    if (look !== undefined) lookShape(vertex, look, vertex);
     mesh.applyBoneTransform(index, vertex);
     vertex.applyMatrix4(mesh.matrixWorld).sub(pivotPosition).applyQuaternion(inverse);
     baked[index * 3] = vertex.x;
@@ -673,8 +682,7 @@ export function eyeSocket(boxer: SkinnedBoxer, side: "left" | "right", position:
   if (head === null) return false;
   boxer.root.updateMatrixWorld(true);
   const mesh = boxer.headMesh;
-  const vertex = eyeVertex(mesh.geometry, side);
-  mesh.applyBoneTransform(vertex, position.fromBufferAttribute(mesh.geometry.getAttribute("position"), vertex)).applyMatrix4(mesh.matrixWorld);
+  posedHeadVertex(boxer, eyeVertex(mesh.geometry, side), position);
   head.getWorldQuaternion(turn);
   forward.set(0, 0, 1).applyQuaternion(turn);
   position.addScaledVector(forward, -0.004);
@@ -1361,7 +1369,7 @@ export class FightRenderer {
       const pose = this.headWorldPose(index);
       if (pose !== null) {
         const graph = this.graphs?.[index];
-        const baked = graph === undefined ? undefined : { ...bakeSkinnedPart(graph.boxer.headMesh, pose.position, pose.quaternion, aboveNeckCut), look: graph.boxer.look };
+        const baked = graph === undefined ? undefined : { ...bakeSkinnedPart(graph.boxer.headMesh, pose.position, pose.quaternion, aboveNeckCut, graph.boxer.look), look: graph.boxer.look };
         this.effects.decapitate(
           index,
           pose.position,
@@ -1394,7 +1402,7 @@ export class FightRenderer {
       const pose = this.handWorldPose(index, side);
       if (pose !== null) {
         const graph = this.graphs?.[index];
-        const baked = graph === undefined ? undefined : bakeSkinnedPart(graph.boxer.gloveMesh(side), pose.position, pose.quaternion);
+        const baked = graph === undefined ? undefined : { ...bakeSkinnedPart(graph.boxer.gloveMesh(side), pose.position, pose.quaternion), gloveBlood: graph.boxer.gloveBloodLevel };
         this.effects.dismemberHand(
           index,
           side,
@@ -1491,10 +1499,9 @@ export class FightRenderer {
     const rim = neckRim(mesh.geometry);
     if (rim.length === 0) return null;
     if (this.stumpRim.length !== rim.length * 3) this.stumpRim = new Float32Array(rim.length * 3);
-    const bind = mesh.geometry.getAttribute("position");
     this.tmpStump.set(0, 0, 0);
     for (const [at, corner] of rim.entries()) {
-      mesh.applyBoneTransform(corner, this.tmpStumpOffset.fromBufferAttribute(bind, corner)).applyMatrix4(mesh.matrixWorld);
+      posedHeadVertex(boxer, corner, this.tmpStumpOffset);
       this.tmpStumpOffset.toArray(this.stumpRim, at * 3);
       this.tmpStump.add(this.tmpStumpOffset);
     }

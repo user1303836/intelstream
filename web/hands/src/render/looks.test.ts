@@ -2,9 +2,9 @@ import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import { Effects3D } from "./effects";
 import { SkinnedBoxer, loadBoxerGlb } from "./graph";
-import { LookShading, OFFICIAL_LOOKS, SCANNED_LOOK, lookFor, type FighterLook } from "./looks";
+import { LOOK_MASKS_GLSL, LOOK_SHAPE_GLSL, LookShading, OFFICIAL_LOOKS, SCANNED_LOOK, lookFor, lookShape, type FighterLook } from "./looks";
 import { REFEREE_OUTFIT } from "./outfit";
-import { aboveNeckCut, bakeSkinnedPart } from "./renderer";
+import { aboveNeckCut, bakeSkinnedPart, measureBurstStump } from "./renderer";
 
 const gltf = await loadBoxerGlb();
 
@@ -148,5 +148,119 @@ describe("a fighter wearing a look", () => {
     expect((uniforms.uLookGroom!.value as THREE.Vector2).x).toBe(lookFor("dave").shaved);
     effects.dispose();
     boxer.dispose();
+  });
+});
+
+/** Runs the shader's own text in JavaScript: its scalar GLSL is valid JavaScript once the types are dropped. */
+function shaderShape(): (position: THREE.Vector3, look: FighterLook) => { x: number; y: number; z: number } {
+  const js = (glsl: string): string => glsl
+    .replace(/^\s*(uniform|varying|attribute)\b.*$/gm, "")
+    .replace(/\bfloat (\w+)\(vec3 (\w+)\)/g, "function $1($2)")
+    .replace(/\b(float|vec3) (?=\w+\s*=)/g, "let ");
+  const run = new Function("position", "uLookFace", "uLookGroom", `
+    const smoothstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+    const mix = (a, b, t) => a + (b - a) * t;
+    const abs = Math.abs;
+    const vec3 = (x, y, z) => ({ x, y, z });
+    const distance = (p, q) => Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z);
+    const normalize = (v) => { const l = Math.hypot(v.x, v.y, v.z); return { x: v.x / l, y: v.y / l, z: v.z / l }; };
+    let vLookPos;
+    ${js(LOOK_MASKS_GLSL)}
+    const transformed = { x: position.x, y: position.y, z: position.z };
+    ${js(LOOK_SHAPE_GLSL)}
+    return transformed;
+  `) as (position: THREE.Vector3, face: { x: number; y: number; z: number; w: number }, groom: { x: number; y: number }) => { x: number; y: number; z: number };
+  return (position, look) => run(position, { x: look.jaw, y: look.nose, z: look.brow, w: look.skull }, { x: look.shaved, y: look.beard });
+}
+
+describe("a head's shape off the GPU", () => {
+  const looks: FighterLook[] = [SCANNED_LOOK, lookFor("dave"), lookFor("erin"), ...Object.values(OFFICIAL_LOOKS), { ...SCANNED_LOOK, shaved: 1, jaw: 1, nose: -1, brow: 1, skull: -1 }];
+
+  it("is the shader's own reshaping, for every look and all over the head", () => {
+    const shader = shaderShape();
+    const point = new THREE.Vector3();
+    const out = new THREE.Vector3();
+    let checked = 0;
+    for (const look of looks) {
+      for (let y = 104; y <= 128; y += 1.5) {
+        for (let x = -8; x <= 8; x += 2) {
+          for (let z = -8; z <= 7; z += 2.5) {
+            const expected = shader(point.set(x, y, z), look);
+            lookShape(point, look, out);
+            expect(out.x).toBeCloseTo(expected.x, 9);
+            expect(out.y).toBeCloseTo(expected.y, 9);
+            expect(out.z).toBeCloseTo(expected.z, 9);
+            checked += 1;
+          }
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(5000);
+  });
+
+  it("leaves the scanned man's head as it is", () => {
+    const out = new THREE.Vector3();
+    expect(lookShape(new THREE.Vector3(4, 111, 2), SCANNED_LOOK, out).toArray()).toEqual([4, 111, 2]);
+  });
+
+  it("keeps the owner's jaw, nose, brow and skull on a severed head", () => {
+    const look = { ...lookFor("dave"), jaw: 1, nose: 1, brow: 1, skull: 1, shaved: 1 };
+    const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8, look });
+    boxer.root.updateMatrixWorld(true);
+    const pivot = boxer.bone("head")!;
+    const at = pivot.getWorldPosition(new THREE.Vector3());
+    const turn = pivot.getWorldQuaternion(new THREE.Quaternion());
+    const shaped = bakeSkinnedPart(boxer.headMesh, at, turn, aboveNeckCut, look);
+    const plain = bakeSkinnedPart(boxer.headMesh, at, turn, aboveNeckCut);
+    const bind = boxer.headMesh.geometry.getAttribute("position");
+    const inverse = turn.clone().invert();
+    const expected = new THREE.Vector3();
+    const baked = new THREE.Vector3();
+    let moved = 0;
+    for (let vertex = 0; vertex < bind.count; vertex += 211) {
+      lookShape(expected.fromBufferAttribute(bind, vertex), look, expected);
+      boxer.headMesh.applyBoneTransform(vertex, expected).applyMatrix4(boxer.headMesh.matrixWorld).sub(at).applyQuaternion(inverse);
+      baked.fromBufferAttribute(shaped.geometry.getAttribute("position"), vertex);
+      expect(baked.distanceTo(expected)).toBeLessThan(1e-6);
+      if (baked.distanceTo(new THREE.Vector3().fromBufferAttribute(plain.geometry.getAttribute("position"), vertex)) > 1e-4) moved += 1;
+    }
+    expect(moved).toBeGreaterThan(3);
+    for (const part of [shaped, plain]) part.geometry.dispose();
+    boxer.dispose();
+  });
+});
+
+describe("wounds on a reshaped head", () => {
+  it("are measured on the head as it is drawn, reshaped by the fighter's look", () => {
+    const rimFor = (look: FighterLook): Float32Array => {
+      const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8, look });
+      const out = { position: new THREE.Vector3(), quaternion: new THREE.Quaternion(), across: new THREE.Vector3(), scratch: new THREE.Vector3() };
+      const rim = measureBurstStump(boxer, new Float32Array(0), out)!;
+      boxer.dispose();
+      return rim;
+    };
+    const plain = rimFor(SCANNED_LOOK);
+    const wide = rimFor({ ...SCANNED_LOOK, jaw: 1 });
+    expect(wide.length).toBe(plain.length);
+    let moved = 0;
+    for (let index = 0; index < plain.length; index += 1) if (Math.abs(wide[index]! - plain[index]!) > 1e-4) moved += 1;
+    expect(moved).toBeGreaterThan(plain.length / 6);
+  });
+});
+
+describe("a severed glove", () => {
+  it("keeps the blood that was on it and loses it when the hand is put back", () => {
+    const scene = new THREE.Scene();
+    const effects = new Effects3D(scene);
+    const geometry = new THREE.BoxGeometry(0.1, 0.1, 0.1);
+    geometry.setAttribute("bindPosition", geometry.getAttribute("position").clone());
+    effects.dismemberHand(0, "left", new THREE.Vector3(0, 1.2, 0), new THREE.Quaternion(), 1, 21, 0x1d4ed8, { geometry, map: null, color: 0x1d4ed8, gloveBlood: 0.7 });
+    const hand = scene.children.find((child): child is THREE.Mesh => child instanceof THREE.Mesh && child.geometry === geometry)!;
+    const blood = () => compile(hand.material as THREE.Material).uniforms.uGearBlood!.value;
+    expect(blood()).toBeCloseTo(0.7, 6);
+    effects.restoreFighter(0);
+    effects.dismemberHand(0, "left", new THREE.Vector3(0, 1.2, 0), new THREE.Quaternion(), 1, 22, 0x1d4ed8);
+    expect(blood()).toBe(0);
+    effects.dispose();
   });
 });
