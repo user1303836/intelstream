@@ -152,6 +152,8 @@ const HISTORY_LIMIT = 480;
 const LOW_TIER_SCALE = 0.56;
 const ROUND_CALLOUT_SECONDS = 1.8;
 const FINISH_CLOSE_UP_SECONDS = 1.7;
+/** The close-up waits this long at most for a body still falling to come to rest before it picks its side. */
+const CLOSE_UP_SETTLE_SECONDS = 1.2;
 /** On a screen narrower than this (as a pull), the rest's wide shot looks down the ring's diagonal, from this far behind the near fighter and this high. */
 const REST_DIAGONAL_PULL = 1.6;
 const REST_DIAGONAL_BACK = 5;
@@ -969,6 +971,9 @@ export class FightRenderer {
   private finishCloseUpUntil = 0;
   private finishCloseUpIndex = -1;
   private finishCloseUpBearing: number | null = null;
+  /** When the close-up was asked for, and whether the eye it shoots hangs in sight (decided with its side). */
+  private finishCloseUpAt = 0;
+  private finishCloseUpHanging = false;
   /** The seat whose arm the referee lifts after a stoppage, from `stoppageRaiseAt`; -1 for none. */
   private stoppageWinner = -1;
   private stoppageRaiseAt = Number.POSITIVE_INFINITY;
@@ -1376,6 +1381,7 @@ export class FightRenderer {
       this.finishCloseUpIndex = loserIndex;
       this.finishCloseUpUntil = this.frameSeconds + FINISH_CLOSE_UP_SECONDS;
       this.finishCloseUpBearing = null;
+      this.finishCloseUpAt = this.frameSeconds;
     }
     if (final.winner_id === null) return;
     const index = fighters?.findIndex((fighter) => fighter.player_id === final.winner_id) ?? -1;
@@ -1421,10 +1427,19 @@ export class FightRenderer {
     if (seconds >= this.finishCloseUpUntil || this.finishCloseUpIndex < 0 || !this.headCacheValid[this.finishCloseUpIndex]) return null;
     const injury = this.arcadeInjuries[this.finishCloseUpIndex];
     const severed = injury === "decapitation" && this.effects.severedHeadPosition(this.finishCloseUpIndex, this.closeUpTarget);
+    const fallen = severed ? null : this.graphs?.[this.finishCloseUpIndex]?.fallBody ?? null;
+    // A body still falling has not yet shown which way its face will lie: the shot waits for it to come to
+    // rest (the finish holds the broadcast's shot meanwhile), and then runs its full length.
+    if (this.finishCloseUpBearing === null && fallen !== null && !fallen.body.asleep && seconds - this.finishCloseUpAt < CLOSE_UP_SETTLE_SECONDS) {
+      this.finishCloseUpUntil = seconds + FINISH_CLOSE_UP_SECONDS;
+      return null;
+    }
     // An eye out of its socket is shot close, on the side the face points to; one hanging under a face on
-    // the canvas cannot be seen from any side, and the shot is the head's own.
-    const hanging = !severed && (injury === "eye_left" || injury === "eye_right") && this.effects.eyePosition(this.finishCloseUpIndex, this.closeUpTarget)
-      && this.eyeInSight(this.closeUpTarget);
+    // the canvas cannot be seen from any side, and the shot is the head's own. Which it is, is decided with
+    // the side: an eye swinging across that line would otherwise jump the shot between the two.
+    const eyeOut = !severed && (injury === "eye_left" || injury === "eye_right") && this.effects.eyePosition(this.finishCloseUpIndex, this.closeUpTarget);
+    if (this.finishCloseUpBearing === null) this.finishCloseUpHanging = eyeOut && this.eyeInSight(this.closeUpTarget);
+    const hanging = eyeOut && this.finishCloseUpHanging;
     const head = severed || hanging ? this.closeUpTarget : this.headCache[this.finishCloseUpIndex]!;
     const reach = severed ? 0.8 : hanging ? 0.45 : 1.05;
     const drift = (seconds - (this.finishCloseUpUntil - FINISH_CLOSE_UP_SECONDS)) * 0.25 - 0.2;
@@ -1435,7 +1450,6 @@ export class FightRenderer {
       const skull = hanging ? this.headWorldPose(this.finishCloseUpIndex) : null;
       // A hanging eye is shot from the side of the head it hangs on.
       // A head on the canvas is shot from the side its face turns to, and never across its own body.
-      const fallen = severed ? null : this.graphs?.[this.finishCloseUpIndex]?.fallBody ?? null;
       const facing = severed && this.effects.severedHeadFacing(this.finishCloseUpIndex, this.closeUpFacing)
         ? this.closeUpFacing
         : skull !== null

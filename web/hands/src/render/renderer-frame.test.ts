@@ -477,6 +477,57 @@ describe("around the fight", () => {
     expect((left as THREE.Vector3).distanceTo(new THREE.Vector3(0.8, 1.9, 0.3))).toBeLessThan(1e-6);
   });
 
+  /** A close-up on fighter two, beaten, with the winner and the referee out of the way. */
+  const closeUp = (fields: Record<string, unknown>) => prototypeOf({
+    finishCloseUpUntil: 101.7, finishCloseUpAt: 100, finishCloseUpIndex: 1, finishCloseUpBearing: null, finishCloseUpHanging: false, headCacheValid: [true, true],
+    headCache: [new THREE.Vector3(), new THREE.Vector3(0.4, 0.3, 0.1)], arcadeInjuries: [null, null], graphs: null,
+    closeUpTarget: new THREE.Vector3(), closeUpFacing: new THREE.Vector3(), closeUpPosition: new THREE.Vector3(), replayLookAt: new THREE.Vector3(), bodyPoint: new THREE.Vector3(),
+    tmpA: new THREE.Vector3(-1.6, 0, -1.2), tmpB: new THREE.Vector3(0.4, 0, 0.1), refereePosition: new THREE.Vector3(-0.6, 0, -1.9),
+    effects: { severedHeadPosition: () => false, eyePosition: () => false },
+    ...fields,
+  });
+  const shoot = (stub: Record<string, unknown>, seconds: number) => method("closeUpFrame").call(stub, seconds) as { position: THREE.Vector3; lookAt: THREE.Vector3 } | null;
+
+  it("frames an eye out of its socket one way for the whole close-up, however it swings", () => {
+    const skull = new THREE.Vector3(0.5, 0.3, 0.2);
+    const eye = new THREE.Vector3(0.62, 0.3, 0.2);
+    const stub = closeUp({
+      arcadeInjuries: [null, "eye_right"],
+      effects: { severedHeadPosition: () => false, eyePosition: (_index: number, out: THREE.Vector3) => { out.copy(eye); return true; } },
+      headWorldPose: () => ({ position: skull, quaternion: new THREE.Quaternion() }),
+    });
+    const beside = shoot(stub, 100.2)!;
+    const before = { position: beside.position.clone(), lookAt: beside.lookAt.clone() };
+    // The eye swings under the skull, past the line where it would no longer be in sight.
+    const swung = eye.distanceTo(new THREE.Vector3(0.5, 0.16, 0.2));
+    eye.set(0.5, 0.16, 0.2);
+    const under = shoot(stub, 100.2 + 1 / 60)!;
+    // Before, the shot switched to the head's own framing there and the camera jumped 55 cm in one frame;
+    // now it only goes with the eye.
+    expect(under.position.distanceTo(before.position)).toBeLessThan(swung + 0.01);
+    expect(under.position.y - under.lookAt.y).toBeCloseTo(before.position.y - before.lookAt.y, 6);
+  });
+
+  it("waits for a falling body to come to rest before it picks the side to shoot his face from", () => {
+    const face = new THREE.Vector3(1, 0, 0);
+    const body = { body: { asleep: false }, faceDirection: (out: THREE.Vector3) => out.copy(face), bodyPoint: (_point: number, out: THREE.Vector3) => out.set(0.4, 0, 1.2) };
+    const stub = closeUp({ graphs: [{ fallBody: null }, { fallBody: body }] });
+    // Still falling, face to +x: no close-up yet, and no side picked from a face that is still turning.
+    let seconds = 100;
+    for (; seconds < 100.8; seconds += 1 / 60) expect(shoot(stub, seconds)).toBeNull();
+    expect(stub.finishCloseUpBearing).toBeNull();
+    // He lands face to -z and comes to rest: the shot comes from there, for its full length.
+    face.set(0, 0, -1);
+    body.body.asleep = true;
+    const shot = shoot(stub, seconds)!;
+    expect(stub.finishCloseUpBearing).toBeCloseTo(Math.PI, 6);
+    expect(shot.position.z).toBeLessThan(shot.lookAt.z);
+    expect(stub.finishCloseUpUntil).toBeCloseTo(seconds + 1.7, 1);
+    // A body that never comes to rest is not waited for past 1.2 s.
+    const restless = closeUp({ graphs: [{ fallBody: null }, { fallBody: { ...body, body: { asleep: false } } }] });
+    expect(shoot(restless, 101.25)).not.toBeNull();
+  });
+
   /** The referee's own stand-ins, with the winner (seat one) and the beaten fighter where they are drawn. */
   const officiating = (fields: Record<string, unknown>) => {
     const glove = (x: number): THREE.Object3D => {
