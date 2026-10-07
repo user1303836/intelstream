@@ -1,11 +1,12 @@
 import { readFileSync } from "node:fs";
 import * as THREE from "three";
 import { fighter as baseFighter } from "../test/fixtures";
-import type { FighterSnapshot } from "../types";
-import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
+import type { DefensivePose, FighterSnapshot } from "../types";
+import { BoxingGraph, PRESS_ONTO_CANVAS_GLSL, SkinnedBoxer, loadBoxerGlb } from "./graph";
+import { NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE } from "./injury";
 import { KnockoutRagdoll, P, PARTICLES, RADIUS, RagdollBody, blowImpulse, fallStyleFor, type ImpulseRecord } from "./ragdoll";
 import { closeUpAngle } from "./renderer";
-import { worldPosition } from "./rig";
+import { worldPosition, worldQuaternion } from "./rig";
 import { ROPE_LINE, RING_FIGHT_HALF, worldMapping } from "./world";
 
 const mapping = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 });
@@ -14,10 +15,10 @@ const gltf = await loadBoxerGlb();
 const facing = (fighter: FighterSnapshot, x = 0, y = 0): FighterSnapshot => ({ ...fighter, facing_x: 0, facing_y: -1000, x, y });
 const opponentAt = (x = 0, y = -150): FighterSnapshot => ({ ...baseFighter("two"), x, y, facing_x: 0, facing_y: 1000 });
 
-function standing(x = 0, y = 0): { boxer: SkinnedBoxer; graph: BoxingGraph; fighter: FighterSnapshot; opponent: FighterSnapshot; time: number } {
+function standing(x = 0, y = 0, defense?: DefensivePose): { boxer: SkinnedBoxer; graph: BoxingGraph; fighter: FighterSnapshot; opponent: FighterSnapshot; time: number } {
   const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
   const graph = new BoxingGraph(boxer, mapping);
-  const fighter = facing(baseFighter("one"), x, y);
+  const fighter = { ...facing(baseFighter("one"), x, y), ...(defense === undefined ? {} : { defense }) };
   const opponent = opponentAt(x, y - 150);
   for (let frame = 0; frame < 12; frame += 1) graph.update(fighter, opponent, 1 / 60, frame / 60, false, "full", frame / 2);
   return { boxer, graph, fighter, opponent, time: 12 / 60 };
@@ -177,6 +178,22 @@ describe("knockout physics", () => {
     expect(Math.abs(blowImpulse({ target: "head", punchClass: "straight", hand: "right", lateral: -1, amount: 5000 }).z)).toBeLessThan(3.5);
   });
 
+  it("doubles him over a body shot onto his knees, where a crumple drops him in a heap", () => {
+    // fold had crumple's stiffness, so a body shot that dropped him played the same fall as any other.
+    const knees = (style: "fold" | "crumple"): number => {
+      const { body, start } = bodyFromStance();
+      body.start(start, new Float64Array(PARTICLES * 3), style);
+      const shot = blowImpulse({ target: "body", punchClass: "hook", hand: "left", lateral: 1, amount: 120 });
+      // The fighter faces -z: his left is -x, the puncher is toward -z.
+      body.impulse({ step: 0, x: -shot.x, y: shot.y, z: -shot.z, driveX: -shot.driveX, driveY: shot.driveY, driveZ: -shot.driveZ, target: "body", twist: 0 });
+      for (let step = 0; step < 36; step += 1) body.step();
+      return Math.max(body.position[P.kneeL * 3 + 1]!, body.position[P.kneeR * 3 + 1]!);
+    };
+    // A third of a second in, the folded fighter is down on one knee with the other still up under him, while the
+    // crumpled one's legs have gone from under him.
+    expect(knees("fold")).toBeGreaterThan(knees("crumple") + 0.08);
+  });
+
   it("chooses how he goes down from the blow", () => {
     expect(fallStyleFor("hook", "body", 200, 1)).toBe("fold");
     expect(fallStyleFor("straight", "head", 60, 1)).toBe("sag");
@@ -188,7 +205,7 @@ describe("knockout physics", () => {
 
   it("builds nothing while it steps or draws", () => {
     const source = readFileSync("src/render/ragdoll.ts", "utf8");
-    const hot = ["step", "carryHinges", "solveRigid", "solveRanges", "solveKnees", "solveElbows", "solveNeck", "solveFeet", "footNormal", "cone", "rotateAbout", "hinge", "satisfy", "hingeAxis", "solveArmsAgainstTorso", "closestOnSegment", "solveEnvironment", "applyFriction", "limitSpeed", "interpolate", "drive", "prepareFrames", "segment", "frameFor", "blend", "elbowAxis", "kneeAxis"];
+    const hot = ["step", "carryHinges", "solveRigid", "solveRanges", "solveKnees", "solveTwist", "spinInertia", "solveElbows", "solveNeck", "solveFeet", "footNormal", "cone", "rotateAbout", "hinge", "satisfy", "hingeAxis", "solveArmsAgainstTorso", "closestOnSegment", "solveEnvironment", "applyFriction", "limitSpeed", "interpolate", "keepRest", "restore", "replayLosses", "runAhead", "followPose", "drive", "tiltHips", "prepareFrames", "segment", "frameFor", "blend", "elbowAxis", "kneeAxis"];
     for (const name of hot) {
       const start = source.search(new RegExp(`\\n  (private )?(get )?${name}\\(`));
       expect(start, name).toBeGreaterThan(0);
@@ -216,6 +233,36 @@ describe("knockouts on the fighter", () => {
     expect(head.distanceTo(particle)).toBeLessThan(0.06);
   });
 
+  it("turns the body into the fall from its first frame instead of holding the pose and then snapping", () => {
+    // The blend-in from the standing pose used to slerp each bone into itself, so the bones held that pose for the
+    // whole blend and then snapped: the chest turned 15 degrees and the head jumped 21 cm in one frame.
+    for (const punchClass of ["straight", "hook"] as const) {
+      const { boxer, graph, fighter, opponent, time } = standing();
+      const bones = boxer.rig.bones;
+      graph.react("hit", "head", 1, punchClass, "right", 120);
+      let now = time;
+      let chest = worldQuaternion(bones.chest, new THREE.Quaternion());
+      let head = worldPosition(bones.head, new THREE.Vector3());
+      let early = 0;
+      let turn = 0;
+      let move = 0;
+      for (let frame = 1; frame <= 12; frame += 1) {
+        now = frames(graph, { ...fighter, is_downed: true }, opponent, 1, now);
+        const turned = worldQuaternion(bones.chest, new THREE.Quaternion());
+        const moved = worldPosition(bones.head, new THREE.Vector3());
+        const angle = THREE.MathUtils.radToDeg(turned.angleTo(chest));
+        if (frame <= 5) early += angle;
+        turn = Math.max(turn, angle);
+        move = Math.max(move, moved.distanceTo(head));
+        chest = turned;
+        head = moved;
+      }
+      expect(early, punchClass).toBeGreaterThan(2);
+      expect(turn, punchClass).toBeLessThan(8);
+      expect(move, punchClass).toBeLessThan(0.12);
+    }
+  }, 30_000);
+
   it("brings the head back onto the neck when the fall starts with it thrown off by a slip or a blow", () => {
     const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
     const ragdoll = new KnockoutRagdoll(boxer.rig, boxer.root);
@@ -231,6 +278,136 @@ describe("knockouts on the fighter", () => {
     const where = bones.neck.localToWorld(onTheNeck.clone());
     expect(worldPosition(bones.head, new THREE.Vector3()).distanceTo(where)).toBeLessThan(0.001);
   });
+
+  it("keeps the head on the neck, the belly its length and the skull on the canvas however the fall starts", () => {
+    // Falls that start mid-slip or mid-weave, where the poser has moved the head off the neck. The physics' neck used to
+    // keep that stretched length (15-21 cm against 10.7) and the skull ended up to 14.5 cm under the canvas, the head
+    // bone up to 16 cm off its particle; pinning the chest to its particle then stretched the belly by up to 16 cm.
+    const aboveNeckCut = (bind: THREE.Vector3): boolean => bind.y > NECK_CUT_HEIGHT - NECK_CUT_SLOPE * (bind.z - NECK_CUT_DEPTH) - 0.3;
+    const vertex = new THREE.Vector3();
+    const rest = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
+    rest.rig.resetToRest();
+    rest.root.updateMatrixWorld(true);
+    const neck = worldPosition(rest.rig.bones.neck, new THREE.Vector3()).distanceTo(worldPosition(rest.rig.bones.head, vertex));
+    const spine = worldPosition(rest.rig.bones.spine, new THREE.Vector3()).distanceTo(worldPosition(rest.rig.bones.chest, vertex));
+    for (const defense of ["slip_left", "slip_right", "weave"] as const) {
+      for (const punchClass of ["jab", "hook"] as const) {
+        const { boxer, graph, fighter, opponent, time } = standing(0, 0, defense);
+        const bones = boxer.rig.bones;
+        graph.react("hit", "head", 1, punchClass, "right", 110);
+        frames(graph, { ...fighter, is_downed: true, defense: "none" }, opponent, 300, time);
+        const body = graph.fallBody!.body;
+        const label = `${defense} ${punchClass}`;
+        expect(at(body.position, P.neck).distanceTo(at(body.position, P.head)), label).toBeCloseTo(neck, 2);
+        expect(worldPosition(bones.head, vertex).distanceTo(at(body.position, P.head)), label).toBeLessThan(0.01);
+        expect(worldPosition(bones.spine, new THREE.Vector3()).distanceTo(worldPosition(bones.chest, vertex)), label).toBeCloseTo(spine, 2);
+        const mesh = boxer.headMesh;
+        mesh.updateMatrixWorld(true);
+        const position = mesh.geometry.getAttribute("position");
+        let lowest = Infinity;
+        for (let index = 0; index < position.count; index += 1) {
+          if (!aboveNeckCut(vertex.fromBufferAttribute(position, index))) continue;
+          lowest = Math.min(lowest, mesh.getVertexPosition(index, vertex).applyMatrix4(mesh.matrixWorld).y);
+        }
+        expect(lowest, label).toBeGreaterThan(-0.035);
+      }
+    }
+  }, 30_000);
+
+  it("rolls the feet only as far as an ankle goes and never flicks them, in the air or on the canvas", () => {
+    // Nothing bounded a foot's roll onto its edge: feet lay 60-90 degrees on their sides against the shin in 20 of
+    // 21 falls, and the turn about the shin measured from a nearly degenerate projection (and only off the canvas)
+    // flicked toes 39 cm in a 1/120 s step and toe bones 47 cm in a frame.
+    let tilt = 0;
+    let rest = 0;
+    let stepMove = 0;
+    let frameMove = 0;
+    const tip = new THREE.Vector3();
+    for (const punchClass of ["jab", "straight", "hook", "uppercut"] as const) {
+      for (const hand of ["left", "right"] as const) {
+        for (const amount of [60, 150]) {
+          const { boxer, graph, fighter, opponent, time } = standing();
+          graph.react("hit", "head", 1, punchClass, hand, amount);
+          let now = frames(graph, { ...fighter, is_downed: true }, opponent, 12, time);
+          const body = graph.fallBody!.body;
+          const before = new Float64Array(PARTICLES * 3);
+          const step = body.step.bind(body);
+          const feet = (into: (value: number) => void): void => {
+            for (const [toe, heel, ankle, knee] of [[P.toeL, P.heelL, P.ankleL, P.kneeL], [P.toeR, P.heelR, P.ankleR, P.kneeR]] as const) {
+              const side = at(body.position, toe).sub(at(body.position, heel)).cross(at(body.position, ankle).sub(at(body.position, heel))).normalize();
+              const shin = at(body.position, ankle).sub(at(body.position, knee)).normalize();
+              into(THREE.MathUtils.radToDeg(Math.asin(Math.min(1, Math.abs(side.dot(shin))))));
+            }
+          };
+          body.step = (replay) => {
+            before.set(body.position);
+            step(replay);
+            feet((value) => { tilt = Math.max(tilt, value); });
+            for (const toe of [P.toeL, P.toeR]) stepMove = Math.max(stepMove, at(body.position, toe).distanceTo(at(before, toe)));
+          };
+          const toes = [boxer.rig.bones.toeL, boxer.rig.bones.toeR];
+          const last = toes.map((bone) => worldPosition(bone, new THREE.Vector3()));
+          for (let frame = 0; frame < 228; frame += 1) {
+            now = frames(graph, { ...fighter, is_downed: true }, opponent, 1, now);
+            for (const [index, bone] of toes.entries()) {
+              frameMove = Math.max(frameMove, worldPosition(bone, tip).distanceTo(last[index]!));
+              last[index]!.copy(tip);
+            }
+          }
+          feet((value) => { rest = Math.max(rest, value); });
+        }
+      }
+    }
+    // A foot pinned under a falling leg can be held past its range for a few frames, but it lies within it.
+    expect(tilt).toBeLessThan(80);
+    expect(rest).toBeLessThan(40);
+    expect(stepMove).toBeLessThan(0.1);
+    expect(frameMove).toBeLessThan(0.2);
+  }, 30_000);
+
+  it("lands the head on the canvas without the skull flipping or skidding across it", () => {
+    // The skull's lean on the neck was corrected by turning only the skull, into the canvas when the head lay on it;
+    // the canvas lifted it back out and the head skidded 11-30 cm a step, the head bone turning up to 95 degrees in a frame.
+    let crownStep = 0;
+    let headTurn = 0;
+    let skullRest = 0;
+    let carried = 0;
+    const turned = new THREE.Quaternion();
+    for (const punchClass of ["jab", "straight", "hook", "uppercut"] as const) {
+      for (const hand of ["left", "right"] as const) {
+        for (const amount of [60, 105, 150]) {
+          const { boxer, graph, fighter, opponent, time } = standing();
+          graph.react("hit", "head", 1, punchClass, hand, amount);
+          let now = frames(graph, { ...fighter, is_downed: true }, opponent, 12, time);
+          const body = graph.fallBody!.body;
+          const before = new Float64Array(PARTICLES * 3);
+          const step = body.step.bind(body);
+          body.step = (replay) => {
+            before.set(body.position);
+            step(replay);
+            crownStep = Math.max(crownStep, at(body.position, P.crown).distanceTo(at(before, P.crown)));
+          };
+          let head = worldQuaternion(boxer.rig.bones.head, new THREE.Quaternion());
+          for (let frame = 0; frame < 228; frame += 1) {
+            now = frames(graph, { ...fighter, is_downed: true }, opponent, 1, now);
+            worldQuaternion(boxer.rig.bones.head, turned);
+            headTurn = Math.max(headTurn, THREE.MathUtils.radToDeg(turned.angleTo(head)));
+            head.copy(turned);
+          }
+          const neck = at(body.position, P.head).sub(at(body.position, P.neck)).normalize();
+          const skull = at(body.position, P.crown).sub(at(body.position, P.head)).normalize();
+          skullRest = Math.max(skullRest, THREE.MathUtils.radToDeg(neck.angleTo(skull)));
+          carried = Math.max(carried, Math.hypot(body.position[P.pelvis * 3]!, body.position[P.pelvis * 3 + 2]!));
+        }
+      }
+    }
+    expect(crownStep).toBeLessThan(0.1);
+    expect(headTurn).toBeLessThan(60);
+    // The skull leans on the neck no further than its 32 degrees, give or take a pass.
+    expect(skullRest).toBeLessThan(36);
+    // Bringing the head back never drags the body across the ring: a turn handed to the neck alone once slid it 2.3 m.
+    expect(carried).toBeLessThan(0.8);
+  }, 30_000);
 
   it("lies with his shoulders turned on his hips no further than a spine turns, however he went down", () => {
     let worst = 0;
@@ -251,6 +428,24 @@ describe("knockouts on the fighter", () => {
     expect(THREE.MathUtils.radToDeg(worst)).toBeLessThan(45);
   });
 
+  it("falls at his place after a gap in drawing, already down if the count has started", () => {
+    // Last drawn standing at x = -1.1 m, the next frame drawn has him down at +0.91 m (the Activity was hidden, or a
+    // spectator joined mid-count). The fall used to start where he was last drawn, 1.9 m from his place: the referee
+    // counted over empty canvas and the get-up later slid him across the ring.
+    for (const count of [3, 0]) {
+      const { boxer, graph, opponent, time } = standing(-180, 0);
+      const downed = { ...facing(baseFighter("one"), 149, 0), is_downed: true, get_up_count: count };
+      graph.react("hit", "head", 1, "straight", "right", 120);
+      frames(graph, downed, { ...opponent, x: 149 }, 1, time + 30);
+      // With the count running he is already down; otherwise he falls from there.
+      if (count > 0) expect(graph.fallBody!.body.asleep).toBe(true);
+      frames(graph, downed, { ...opponent, x: 149 }, 300, time + 30 + 1 / 60);
+      const pelvis = graph.fallBody!.pelvis(new THREE.Vector3());
+      expect(boxer.root.position.x, `count ${count}`).toBeCloseTo(mapping.x(149), 2);
+      expect(Math.hypot(pelvis.x - boxer.root.position.x, pelvis.z - boxer.root.position.z), `count ${count}`).toBeLessThan(0.7);
+    }
+  }, 30_000);
+
   it("keeps the authored fall under reduced motion", () => {
     const { boxer, graph, fighter, opponent, time } = standing();
     graph.react("hit", "head", 1, "straight", "right", 420);
@@ -265,15 +460,15 @@ describe("knockouts on the fighter", () => {
     let now = frames(graph, { ...fighter, is_downed: true }, opponent, 150, time);
     const pelvis = graph.fallBody!.pelvis(new THREE.Vector3());
     now = frames(graph, fighter, opponent, 1, now);
-    expect(graph.fallBody).toBeNull();
-    // The first frame of the get-up starts from the body on the canvas, not from the authored lying pose.
+    // The physics carries the body into the get-up (until he is on all fours), from where it lay.
+    expect(graph.fallBody?.handingOver).toBe(true);
     expect(worldPosition(boxer.rig.bones.hips, new THREE.Vector3()).distanceTo(pelvis)).toBeLessThan(0.08);
     frames(graph, fighter, opponent, 130, now);
     expect(graph.isDown).toBe(false);
     expect(worldPosition(boxer.rig.bones.head, new THREE.Vector3()).y).toBeGreaterThan(1.45);
   });
 
-  it("starts the get-up where the body lies, and only then walks back to his spot", () => {
+  it("starts the get-up where the body lies, and steps back to his spot as he rises", () => {
     const { boxer, graph, fighter, opponent, time } = standing();
     graph.react("hit", "head", 1, "straight", "right", 420);
     let now = frames(graph, { ...fighter, is_downed: true }, opponent, 200, time);
@@ -291,6 +486,87 @@ describe("knockouts on the fighter", () => {
     expect(Math.hypot(standingHips.x - boxer.root.position.x, standingHips.z - boxer.root.position.z)).toBeLessThan(0.2);
   });
 
+  it("is carried by the physics into the get-up and stands up on his place, smoothly and above the canvas", () => {
+    // Handed to the get-up at the first press, the body froze and then snapped 1.3 m; turning each bone from the fall's
+    // pose to the get-up's then swung limbs up to 0.85 m in a frame and 0.5 m through the canvas, knees flipped across
+    // the leg 0.6 m in a frame, and once up he walked back to his place for up to half a second.
+    const vertex = new THREE.Vector3();
+    const lowest = (boxer: SkinnedBoxer): number => {
+      boxer.root.updateMatrixWorld(true);
+      let height = Infinity;
+      for (const mesh of [boxer.headMesh, boxer.gloveMesh("left"), boxer.gloveMesh("right")]) {
+        const count = mesh.geometry.getAttribute("position").count;
+        for (let index = 0; index < count; index += 2) height = Math.min(height, mesh.getVertexPosition(index, vertex).applyMatrix4(mesh.matrixWorld).y);
+      }
+      return height;
+    };
+    let move = { distance: 0, at: "" };
+    let under = { height: Infinity, at: "" };
+    let away = 0;
+    for (const defense of ["guard_high", "slip_left"] as const) {
+      for (const punchClass of ["jab", "straight", "hook", "uppercut"] as const) {
+        for (const hand of ["left", "right"] as const) {
+          const { boxer, graph, fighter, opponent, time } = standing(0, 0, defense);
+          const ready = { ...fighter, get_up_required: 66 };
+          graph.react("hit", "head", 1, punchClass, hand, 110);
+          let now = frames(graph, { ...ready, is_downed: true, defense: "none" }, opponent, 160, time);
+          const names = Object.keys(boxer.rig.bones) as (keyof typeof boxer.rig.bones)[];
+          let last = names.map((name) => worldPosition(boxer.rig.bones[name], new THREE.Vector3()));
+          let frame = 0;
+          for (const [stage, state, count] of [
+            ["first press", { ...ready, is_downed: true, defense: "none" as const, get_up_meter: 22 }, 30],
+            ["second press", { ...ready, is_downed: true, defense: "none" as const, get_up_meter: 44 }, 30],
+            ["up", { ...ready, get_up_meter: 66, stunned_ticks: 20 }, 40],
+          ] as const) {
+            for (let index = 0; index < count; index += 1) {
+              now = frames(graph, state, opponent, 1, now);
+              const label = `${defense} ${punchClass} ${hand} ${stage} frame ${index}`;
+              const here = names.map((name) => worldPosition(boxer.rig.bones[name], new THREE.Vector3()));
+              for (const [bone, position] of here.entries()) {
+                const distance = position.distanceTo(last[bone]!);
+                if (distance > move.distance) move = { distance, at: `${label} ${names[bone]}` };
+              }
+              last = here;
+              if (frame % 3 === 0) {
+                const height = lowest(boxer);
+                if (height < under.height) under = { height, at: label };
+              }
+              frame += 1;
+            }
+          }
+          away = Math.max(away, Math.hypot(boxer.root.position.x - mapping.x(0), boxer.root.position.z - mapping.z(0)));
+        }
+      }
+    }
+    expect(move.distance, move.at).toBeLessThan(0.16);
+    // A glove's padding reaches a few centimetres past the particles it lies on; no limb swings through the canvas.
+    expect(under.height, under.at).toBeGreaterThan(-0.06);
+    // Up off his knee he is on his place: the opponent's punches aim there.
+    expect(away).toBeLessThan(0.01);
+  }, 60_000);
+
+  it("draws the skin and kit a body lying on the canvas reaches under it pressed flat on the canvas", () => {
+    // The body lies on spheres at its joints, which the calves, the loose trunks and the gloves' padding reach past:
+    // drawn as the skeleton put them, they went 5-10 cm under the canvas.
+    const { boxer } = standing();
+    const materials = new Set<THREE.MeshStandardMaterial>();
+    boxer.root.traverse((object) => {
+      if (object instanceof THREE.SkinnedMesh) materials.add(object.material as THREE.MeshStandardMaterial);
+    });
+    expect(materials.size).toBe(5);
+    for (const material of materials) {
+      const shader = { uniforms: {}, vertexShader: THREE.ShaderLib.physical.vertexShader, fragmentShader: THREE.ShaderLib.physical.fragmentShader };
+      material.onBeforeCompile(shader as unknown as THREE.WebGLProgramParametersWithUniforms, null as unknown as THREE.WebGLRenderer);
+      // Once, on the vertex as posed: after the skeleton and every other patch move it, just before it is projected.
+      const press = shader.vertexShader.indexOf(PRESS_ONTO_CANVAS_GLSL);
+      expect(press, material.name).toBeGreaterThan(shader.vertexShader.indexOf("#include <skinning_vertex>"));
+      expect(shader.vertexShader.indexOf(PRESS_ONTO_CANVAS_GLSL, press + 1), material.name).toBe(-1);
+      expect(shader.vertexShader.slice(press + PRESS_ONTO_CANVAS_GLSL.length).trimStart().startsWith("#include <project_vertex>"), material.name).toBe(true);
+      // A program of its own, not one cached for the same material without it.
+      expect(material.customProgramCacheKey(), material.name).toContain("on-canvas");
+    }
+  });
+
   it("runs the recorded fall again for the replay and ends where the live fall ended", () => {
     const { graph, fighter, opponent, time } = standing();
     graph.react("hit", "head", 1, "straight", "right", 420);
@@ -305,6 +581,65 @@ describe("knockouts on the fighter", () => {
     frames(graph, { ...fighter, is_downed: true }, opponent, 400, now);
     expect(Float64Array.from(graph.fallBody!.body.position)).toEqual(live);
   });
+
+  it("replays a knockout that loses its head in the replay the way the count showed it", () => {
+    // A knockout by the count loses the head only at the replay's impact. The replay used to fall with the severed
+    // head's weightless particles and ended 4-18 cm off at the pelvis and up to 1.3 m off at a glove or a toe.
+    for (const punchClass of ["straight", "hook", "uppercut"] as const) {
+      const { boxer, graph, fighter, opponent, time } = standing();
+      graph.react("hit", "head", 1, punchClass, "right", 120);
+      let now = frames(graph, { ...fighter, is_downed: true }, opponent, 400, time);
+      const live = Float64Array.from(graph.fallBody!.body.position);
+      graph.resetTransient(false);
+      graph.primeReplayFall();
+      now = frames(graph, fighter, opponent, 20, now);
+      graph.react("hit", "head", 1, punchClass, "right", 120);
+      boxer.setDecapitated(true);
+      frames(graph, { ...fighter, is_downed: true }, opponent, 400, now);
+      expect(Float64Array.from(graph.fallBody!.body.position), punchClass).toEqual(live);
+      graph.resetTransient(true);
+      expect(Float64Array.from(graph.fallBody!.body.position), punchClass).toEqual(live);
+    }
+  }, 30_000);
+
+  it("puts the body where the fall ends without running it when the replay cuts back to live", () => {
+    // settle() ran the rest of the fall in the frame of the cut to the close-up (up to 280 steps, about 20 ms on a
+    // desktop and several times that on a phone) and restoreSettled() ran all of it again.
+    const replay = (graph: BoxingGraph, fighter: FighterSnapshot, opponent: FighterSnapshot, from: number, count: number): number => {
+      let time = from;
+      for (let frame = 0; frame < count; frame += 1) {
+        time += 1 / 60;
+        graph.update({ ...fighter, is_downed: true }, opponent, 0.4 / 60, time, false, "full", time * 30);
+      }
+      return time;
+    };
+    for (const liveFrames of [400, 18]) {
+      // Counted out, the live fall has come to rest; a flash knockout's replay starts before it has.
+      const { graph, fighter, opponent, time } = standing();
+      graph.react("hit", "head", 1, "hook", "left", 120);
+      let now = frames(graph, { ...fighter, is_downed: true }, opponent, liveFrames, time);
+      graph.resetTransient(false);
+      graph.primeReplayFall();
+      now = frames(graph, fighter, opponent, 20, now);
+      graph.react("hit", "head", 1, "hook", "left", 120);
+      // The slow-motion replay of the punch and the first second of the fall.
+      replay(graph, fighter, opponent, now, liveFrames === 400 ? 15 : 160);
+      const body = graph.fallBody!.body;
+      let steps = 0;
+      const step = body.step.bind(body);
+      body.step = (impulses) => {
+        steps += 1;
+        step(impulses);
+      };
+      graph.resetTransient(true);
+      const settled = Float64Array.from(body.position);
+      graph.resetTransient(false);
+      graph.resetTransient(true);
+      expect(steps, `${liveFrames}`).toBe(0);
+      expect(body.asleep, `${liveFrames}`).toBe(true);
+      expect(Float64Array.from(body.position), `${liveFrames}`).toEqual(settled);
+    }
+  }, 30_000);
 
   it("settles the recorded fall at once when the replay cuts back to live", () => {
     const { graph, fighter, opponent, time } = standing();
@@ -396,7 +731,7 @@ describe("knockouts on the fighter", () => {
         }
       }
     }
-  });
+  }, 30_000);
 
   it("replays the fall exactly when the opponent walks off another way", () => {
     const fallWith = (graph: BoxingGraph, fighter: FighterSnapshot, opponent: FighterSnapshot, from: number, walk: (frame: number) => number): number => {
