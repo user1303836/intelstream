@@ -1,5 +1,5 @@
 import { comboChain, comboWindow, FIGHTER_RADIUS, punchStaminaCost, punchTiming, RING_CORNER_REACH, RING_HALF_HEIGHT, RING_HALF_WIDTH, type PunchTiming } from "./manifest";
-import type { FighterSnapshot, Hand, HeldDefense, Power, PunchClass, Target } from "./types";
+import type { DefensivePose, FighterSnapshot, Hand, HeldDefense, MovementKind, Power, PunchClass, Target } from "./types";
 
 export interface HeldInput {
   readonly moveX: number;
@@ -265,4 +265,73 @@ export function constrainPrediction(fighter: { readonly x: number; readonly y: n
   }
   const inside = ringPoint(x, y);
   return { dx: inside.x - fighter.x, dy: inside.y - fighter.y };
+}
+
+/** Ticks a slip, weave or pull lasts on the server (the engine's EVASION_TICKS). */
+export const EVASION_TICKS = 10;
+/** Stamina the server asks of a slip, weave or pull before it starts one. */
+export const EVASION_STAMINA = 25;
+
+export type EvasionKind = "slip_left" | "slip_right" | "weave" | "pull";
+
+export function isEvasion(kind: MovementKind | "punch" | "foul" | DefensivePose): kind is EvasionKind {
+  return kind === "slip_left" || kind === "slip_right" || kind === "weave" || kind === "pull";
+}
+
+/**
+ * The defence the viewer's own fighter is shown in during the fight: the guard held now, ahead of the
+ * snapshot like his feet, or the slip, weave or pull just pressed. The server's own defence stands
+ * while it overrides the held guard: none while stunned or taunting, unchanged in a clinch, and an
+ * evasion it is playing.
+ */
+export function predictedDefense(server: FighterSnapshot, held: HeldInput, evasion: EvasionKind | null): DefensivePose {
+  if (server.stunned_ticks > 0 || server.taunt_ticks > 0 || server.clinch_ticks > 0) return server.defense;
+  if (evasion !== null) return evasion;
+  if (isEvasion(server.defense)) return server.defense;
+  return held.defense;
+}
+
+/**
+ * A slip, weave or pull the viewer pressed, shown on the press the way his punches are. It lasts the
+ * lead plus its own ticks, so it ends as the server's copy does on screen, unless the server turns it
+ * down: once a snapshot has the frame that carried it, the fighter is evading or never will for it, and
+ * a stun, a clinch or the end of the fight phase clears it.
+ */
+export class EvasionPrediction {
+  private kind: EvasionKind | null = null;
+  private id = "";
+  private pressedAt = 0;
+  private until = 0;
+  private sequence: number | null = null;
+  private started = false;
+
+  press(kind: EvasionKind, id: string, nowMs: number, leadTicks: number, tickRate: number): void {
+    this.kind = kind;
+    this.id = id;
+    this.pressedAt = nowMs;
+    this.until = nowMs + ((Math.max(0, leadTicks) + EVASION_TICKS) * 1000) / tickRate;
+    this.sequence = null;
+    this.started = false;
+  }
+
+  /** Squares the pressed evasion with the newest snapshot; `sequenceOf` gives the frame that carried a press once it has gone out. */
+  acknowledge(server: FighterSnapshot, fighting: boolean, sequenceOf: ((actionId: string) => number | null) | null): void {
+    if (this.kind === null) return;
+    this.sequence ??= sequenceOf?.(this.id) ?? null;
+    if (server.defense === this.kind) this.started = true;
+    const cutOff = !fighting || server.stunned_ticks > 0 || server.clinch_ticks > 0;
+    const refused = !this.started && this.sequence !== null && server.last_input_sequence >= this.sequence && server.queued_actions === 0;
+    if (cutOff || refused) this.kind = null;
+  }
+
+  /** The evasion to show at `nowMs`, or null. */
+  pose(nowMs: number): EvasionKind | null {
+    if (this.kind !== null && nowMs >= this.until) this.kind = null;
+    return this.kind;
+  }
+
+  /** True while the server, evading, keeps the fighter's feet still for inputs sent now. */
+  holdsFeet(nowMs: number, tickRate: number): boolean {
+    return this.kind !== null && nowMs < this.pressedAt + (EVASION_TICKS * 1000) / tickRate;
+  }
 }

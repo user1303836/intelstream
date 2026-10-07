@@ -7,7 +7,7 @@ import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { EventDeduplicator, SnapshotBuffer } from "../interpolation";
 import { coarsePointer } from "../input/touch";
 import { REST_CORNER_OFFSET, punchTiming } from "../manifest";
-import { MovementPrediction, canAffordPunch, constrainPrediction, predictedPunchTiming, type HeldInput } from "../prediction";
+import { EVASION_STAMINA, EvasionPrediction, MovementPrediction, attackTicksRemaining, canAffordPunch, constrainPrediction, isEvasion, predictedDefense, predictedPunchTiming, type HeldInput } from "../prediction";
 import type { BloodLevel, Settings } from "../settings";
 import type { CombatEvent, EngineSnapshot, FighterSnapshot, FinalMessage, Hand, MatchResult, PublicPlayer, PunchClass, SemanticAction, SimulationInfo } from "../types";
 import { buildArena, type BuiltArena } from "./arena";
@@ -426,6 +426,7 @@ export class FightRenderer {
   /** Sequence of the input frame that carried a press, once it has gone out; null before then. */
   private readonly inputSequenceOf: ((actionId: string) => number | null) | null;
   private readonly movement = new MovementPrediction();
+  private readonly evasion = new EvasionPrediction();
   private lastManualTime = 0;
   private readonly dedupe = new EventDeduplicator();
   private readonly hudCanvas: HTMLCanvasElement;
@@ -995,10 +996,19 @@ export class FightRenderer {
     if (latest === null || this.viewerId === null || this.replay !== null) return;
     const index = latest.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
     if (index < 0) return;
-    // The server turns a punch down outside the fight phase and while the fighter cannot act or pay for it.
+    // The server turns a punch or an evasion down outside the fight phase and while the fighter cannot act or pay for it.
     const fighter = latest.fighters[index]!;
-    if (action.kind !== "punch" || latest.phase !== "fight" || !canStartPunch(fighter) || !canAffordPunch(fighter, action)) return;
+    if (latest.phase !== "fight" || !canStartPunch(fighter)) return;
     const leadTicks = ((this.inputLatencyMs ?? 60) / 1000) * this.simulation.tick_rate + this.buffer.interpolationDelayTicks;
+    if (isEvasion(action.kind)) {
+      // Behind a punch the server holds it, so it is shown at once only when the fighter is free.
+      const busy = this.graphs?.[index]?.ownPunchActive === true || attackTicksRemaining(fighter, latest.tick) > 0 || fighter.queued_actions > 0;
+      if (!busy && action.id !== undefined && fighter.stamina >= EVASION_STAMINA) {
+        this.evasion.press(action.kind, action.id, this.manualClock ? this.lastManualTime : performance.now(), leadTicks, this.simulation.tick_rate);
+      }
+      return;
+    }
+    if (action.kind !== "punch" || !canAffordPunch(fighter, action)) return;
     this.graphs?.[index]?.predict(action, performance.now() / 1000, this.simulation.tick_rate, leadTicks, predictedPunchTiming(fighter, action, latest.tick + 1));
   }
 
@@ -1007,11 +1017,11 @@ export class FightRenderer {
    * each press to the input frame that carried it), and both fighters' punches how they met the opponent.
    */
   private acknowledgeActions(snapshot: EngineSnapshot, events: readonly CombatEvent[]): void {
-    const graphs = this.graphs;
-    if (graphs === null) return;
     for (const [index, fighter] of snapshot.fighters.entries()) {
+      const viewer = fighter.player_id === this.viewerId;
+      if (viewer) this.evasion.acknowledge(fighter, snapshot.phase === "fight", this.inputSequenceOf);
       const contacts = events.filter((event) => contactParticipants(event, snapshot).puncherIndex === index);
-      graphs[index]?.acknowledge(fighter, snapshot.phase === "fight", contacts, fighter.player_id === this.viewerId ? this.inputSequenceOf : null);
+      this.graphs?.[index]?.acknowledge(fighter, snapshot.phase === "fight", contacts, viewer ? this.inputSequenceOf : null);
     }
   }
 
@@ -1418,11 +1428,17 @@ export class FightRenderer {
     // has it, and holds the feet from then on.
     const leadTicks = ((this.inputLatencyMs ?? 60) / 1000) * this.simulation.tick_rate + this.buffer.interpolationDelayTicks;
     const fighting = index >= 0 && snapshot.phase === "fight" ? snapshot.fighters[index]! : null;
-    const local = this.movement.update(fighting, held, this.graphs?.[index]?.ownPunchActive === true, timeMs, leadTicks, snapshot.tick, dt, this.simulation.tick_rate);
-    if (index < 0 || (Math.abs(local.dx) < 0.01 && Math.abs(local.dy) < 0.01)) return snapshot;
+    const holdFeet = this.graphs?.[index]?.ownPunchActive === true || this.evasion.holdsFeet(timeMs, this.simulation.tick_rate);
+    const local = this.movement.update(fighting, held, holdFeet, timeMs, leadTicks, snapshot.tick, dt, this.simulation.tick_rate);
+    // The guard is the most latency-sensitive thing the player controls: it is shown as held, and a
+    // slip, weave or pull on the press, wherever the server is not overriding it.
+    const evading = this.evasion.pose(timeMs);
+    if (index < 0) return snapshot;
     const viewer = snapshot.fighters[index]!;
+    const defense = fighting !== null ? predictedDefense(fighting, held, evading) : viewer.defense;
+    if (Math.abs(local.dx) < 0.01 && Math.abs(local.dy) < 0.01 && defense === viewer.defense) return snapshot;
     const offset = constrainPrediction(viewer, local, snapshot.fighters[index === 0 ? 1 : 0] ?? null);
-    const predicted = { ...viewer, x: viewer.x + offset.dx, y: viewer.y + offset.dy };
+    const predicted = { ...viewer, x: viewer.x + offset.dx, y: viewer.y + offset.dy, defense };
     const fighters: [FighterSnapshot, FighterSnapshot] = index === 0 ? [predicted, snapshot.fighters[1]] : [snapshot.fighters[0], predicted];
     return { ...snapshot, fighters };
   }

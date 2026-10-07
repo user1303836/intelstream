@@ -1,6 +1,8 @@
 import { cancelsRecovery, punchStaminaCost, punchTiming, recoveryCancelAge } from "./manifest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { SnapshotBuffer } from "./interpolation";
-import { attackTicksRemaining, canAffordPunch, constrainPrediction, fatigueFactor, MINIMUM_SEPARATION, MovementPrediction, movementLocked, predictMovement, predictedPunchTiming, type HeldInput } from "./prediction";
+import { attackTicksRemaining, canAffordPunch, constrainPrediction, EVASION_STAMINA, EVASION_TICKS, EvasionPrediction, fatigueFactor, MINIMUM_SEPARATION, MovementPrediction, movementLocked, predictedDefense, predictMovement, predictedPunchTiming, type HeldInput } from "./prediction";
 import { fighter, snapshot } from "./test/fixtures";
 import timingTable from "./test/punch-timing-table.json";
 import type { EngineSnapshot, FighterSnapshot, PunchClass } from "./types";
@@ -222,4 +224,67 @@ describe("walking behind a round trip", () => {
       });
     }
   }
+});
+
+describe("the player's own defence", () => {
+  const guarding: HeldInput = { moveX: 0, moveY: 0, defense: "guard_high" };
+  const open = fighter("one");
+
+  it("shows the guard held now instead of the one in the delayed snapshot, unless the server overrides it", () => {
+    expect(predictedDefense(open, guarding, null)).toBe("guard_high");
+    expect(predictedDefense({ ...open, defense: "guard_low" }, { ...guarding, defense: "none" }, null)).toBe("none");
+    // A stun drops the guard, a taunt has none and a clinch keeps what it had.
+    expect(predictedDefense({ ...open, stunned_ticks: 12 }, guarding, "weave")).toBe("none");
+    expect(predictedDefense({ ...open, taunt_ticks: 30 }, guarding, null)).toBe("none");
+    expect(predictedDefense({ ...open, clinch_ticks: 30, defense: "guard_low" }, guarding, null)).toBe("guard_low");
+    // An evasion the server is playing stands; one just pressed shows at once.
+    expect(predictedDefense({ ...open, defense: "slip_left" }, guarding, null)).toBe("slip_left");
+    expect(predictedDefense(open, guarding, "weave")).toBe("weave");
+  });
+
+  it("plays a slip from the press until the server's copy has played on screen, and keeps the feet still while the server does", () => {
+    const evasion = new EvasionPrediction();
+    const tick = 1000 / 30;
+    evasion.press("slip_left", "c7", 1000, 6, 30);
+    expect(evasion.pose(1000)).toBe("slip_left");
+    expect(evasion.holdsFeet(1000 + (EVASION_TICKS - 1) * tick, 30)).toBe(true);
+    expect(evasion.holdsFeet(1000 + EVASION_TICKS * tick, 30)).toBe(false);
+    // The server starts it and plays it out; the frame that carried it is long acknowledged by then.
+    evasion.acknowledge({ ...open, defense: "slip_left", last_input_sequence: 30 }, true, (id) => (id === "c7" ? 30 : null));
+    evasion.acknowledge({ ...open, last_input_sequence: 34 }, true, (id) => (id === "c7" ? 30 : null));
+    expect(evasion.pose(1000 + (6 + EVASION_TICKS - 1) * tick)).toBe("slip_left");
+    expect(evasion.pose(1000 + (6 + EVASION_TICKS) * tick)).toBeNull();
+  });
+
+  it("drops a slip the server turned down or a stun cut short", () => {
+    const sequenceOf = (id: string): number | null => (id === "c8" ? 41 : null);
+    const refused = new EvasionPrediction();
+    refused.press("pull", "c8", 0, 4, 30);
+    // Snapshots before the frame went out say nothing about it.
+    refused.acknowledge({ ...open, last_input_sequence: 40 }, true, sequenceOf);
+    expect(refused.pose(10)).toBe("pull");
+    // Not enough stamina there, or a punch pressed in the same tick took its place.
+    refused.acknowledge({ ...open, last_input_sequence: 41 }, true, sequenceOf);
+    expect(refused.pose(20)).toBeNull();
+    const waiting = new EvasionPrediction();
+    waiting.press("pull", "c8", 0, 4, 30);
+    waiting.acknowledge({ ...open, last_input_sequence: 41, queued_actions: 1 }, true, sequenceOf);
+    expect(waiting.pose(20)).toBe("pull");
+    const stunned = new EvasionPrediction();
+    stunned.press("weave", "c9", 0, 4, 30);
+    stunned.acknowledge({ ...open, defense: "weave" }, true, null);
+    stunned.acknowledge({ ...open, stunned_ticks: 20 }, true, null);
+    expect(stunned.pose(20)).toBeNull();
+    const bell = new EvasionPrediction();
+    bell.press("weave", "c9", 0, 4, 30);
+    bell.acknowledge(open, false, null);
+    expect(bell.pose(20)).toBeNull();
+  });
+
+  it("matches the engine's evasion length and stamina gate", () => {
+    // Tests run from the client's package root, two levels below the repository's.
+    const engine = readFileSync(resolve(process.cwd(), "../../src/intelstream/hands/engine.py"), "utf8");
+    expect(engine).toContain(`EVASION_TICKS: Final = ${EVASION_TICKS}`);
+    expect(engine).toContain(`if fighter.stamina < ${EVASION_STAMINA}:`);
+  });
 });
