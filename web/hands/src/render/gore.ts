@@ -23,6 +23,27 @@ export function buildChunkGeometry(): THREE.BufferGeometry {
   return geometry;
 }
 
+/**
+ * Engine damage of a landed punch: most deal 30 to 80, a hard shot 70 or more and a big counter
+ * 95 or more (the largest, a power counter, about 150). A knockdown event carries the count, not damage.
+ */
+export const HARD_SHOT = 70;
+export const BIG_SHOT = 95;
+
+/** Teeth a blow to the head knocks out: two more as the punch floors a man, one or two by a big counter or a huge shot, none otherwise. */
+export function teethFor(kind: string, amount: number, head: boolean): number {
+  if (!head) return 0;
+  if (kind === "knockdown") return 2;
+  if (kind === "counter_hit" && amount >= BIG_SHOT) return amount >= 120 ? 2 : 1;
+  if (kind === "hit" && amount >= 115) return 1;
+  return 0;
+}
+
+/** Drops of blood a blow throws at full blood: more from an open wound, and more from a harder punch. */
+export function bloodDropsFor(blood: number, amount: number): number {
+  return Math.min(140, Math.round(Math.max(0, blood) * 1.4 + Math.max(0, amount - 50) * 0.5));
+}
+
 const DROPLET_TAIL = 2;
 const DROPLET_TAIL_TAPER = 0.45;
 const DROPLET_STRETCH_RATE = 0.6;

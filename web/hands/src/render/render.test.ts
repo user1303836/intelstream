@@ -128,7 +128,7 @@ describe("effects", () => {
 
     const full = new Effects3D(new THREE.Scene());
     full.addEvent(severeHit(1), origin, false);
-    expect(full.liveBloodParticles).toBe(110);
+    expect(full.liveBloodParticles).toBe(140);
     expect(full.liveMist).toBe(10);
     expect(full.liveGibs).toBe(11);
     expect(full.visibleDecals).toBe(12);

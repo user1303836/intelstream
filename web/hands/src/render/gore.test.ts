@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import { fighter } from "../test/fixtures";
-import { BLOOD_SHADES, bloodShade, buildChunkGeometry, buildDropletGeometry, buildWoundGeometry, closeCut, cutRim, dropletShape } from "./gore";
+import { BIG_SHOT, BLOOD_SHADES, HARD_SHOT, bloodDropsFor, bloodShade, buildChunkGeometry, buildDropletGeometry, buildWoundGeometry, closeCut, cutRim, dropletShape, teethFor } from "./gore";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
 import { HEAD_SITES, InjuryShading, NECK_CUT_HEIGHT } from "./injury";
 import { SCANNED_LOOK } from "./looks";
@@ -346,7 +346,7 @@ describe("blood in the air", () => {
     const effects = new Effects3D(new THREE.Scene());
     effects.addEvent(hit, new THREE.Vector3(0, 1.5, 0), false);
     const slots = bloodSlots(effects);
-    expect(slots.length).toBe(110);
+    expect(slots.length).toBe(140);
     const origin = slots.map((slot) => dropAt(effects, slot));
     for (let frame = 0; frame < 9; frame += 1) effects.update(1 / 60);
     const matrix = new THREE.Matrix4();
@@ -371,7 +371,7 @@ describe("blood in the air", () => {
       expect(size(slots[lead + 2]!)).toBeLessThan(size(slots[lead + 1]!));
       strands += 1;
     }
-    expect(strands).toBe(22);
+    expect(strands).toBe(28);
     const free = dropAt(effects, slots[3]!).sub(dropAt(effects, slots[0]!));
     const trailing = dropAt(effects, slots[1]!).sub(dropAt(effects, slots[0]!));
     expect(free.clone().cross(trailing).length()).toBeGreaterThan(1e-4);
@@ -601,5 +601,42 @@ describe("severed head close-up", () => {
   it("keeps the fallback when every side is taken", () => {
     const ringed = Array.from({ length: 12 }, (_, index) => ({ x: 0.5 + Math.sin(index * 0.5236) * 0.8, z: 0.2 + Math.cos(index * 0.5236) * 0.8, radius: 0.5 }));
     expect(closeUpAngle(0.5, 0.2, { x: 1, y: 0, z: 0 }, 0.8, 2.2, fallback, ringed)).toBe(fallback);
+  });
+});
+
+describe("gore from a real punch", () => {
+  // Engine damage: a landed jab is about 30, a straight 50 to 80, a power counter up to about 150.
+  it("knocks teeth out with the punch that floors a man and with big counters, never with an ordinary shot", () => {
+    expect(teethFor("knockdown", 1, true)).toBe(2);
+    expect(teethFor("counter_hit", BIG_SHOT, true)).toBe(1);
+    expect(teethFor("counter_hit", 130, true)).toBe(2);
+    expect(teethFor("counter_hit", BIG_SHOT - 1, true)).toBe(0);
+    expect(teethFor("hit", 80, true)).toBe(0);
+    expect(teethFor("hit", 118, true)).toBe(1);
+    expect(teethFor("counter_hit", 140, false)).toBe(0);
+    expect(teethFor("knockdown", 1, false)).toBe(0);
+    expect(teethFor("block", 140, true)).toBe(0);
+  });
+
+  it("throws more blood from an open wound and from a harder punch, up to a limit", () => {
+    expect(bloodDropsFor(8, 30)).toBeLessThan(15);
+    expect(bloodDropsFor(25, 110)).toBeGreaterThan(bloodDropsFor(25, 50) + 25);
+    expect(bloodDropsFor(60, 60)).toBeGreaterThan(bloodDropsFor(20, 60) + 50);
+    expect(bloodDropsFor(100, 500)).toBe(140);
+    expect(bloodDropsFor(0, 0)).toBe(0);
+  });
+
+  it("puts a mist in the air from a hard shot, which an ordinary one does not", () => {
+    const origin = new THREE.Vector3();
+    const mist = (kind: string, amount: number): number => {
+      const effects = new Effects3D(new THREE.Scene());
+      effects.addEvent({ event_id: 3, tick: 1, kind, actor_id: "one", target_id: "two", amount, detail: "straight:head", blood: 20, direction: 1, action_id: null }, origin, false);
+      const live = effects.liveMist;
+      effects.dispose();
+      return live;
+    };
+    expect(mist("hit", HARD_SHOT)).toBeGreaterThan(0);
+    expect(mist("hit", HARD_SHOT - 1)).toBe(0);
+    expect(mist("counter_hit", 40)).toBeGreaterThan(0);
   });
 });

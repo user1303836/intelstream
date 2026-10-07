@@ -17,7 +17,7 @@ import { Effects3D, type BakedPart } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, type ArcadeDislocation } from "./graph";
 import { drawHud, finalRevealDelay, resultCard, resultCardLayout, RoundStatsTracker, STOPPAGE_METHODS, RoundClock, type RoundPunchStats } from "./hud";
 import { NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE } from "./injury";
-import { closeCut, cutRim } from "./gore";
+import { closeCut, cutRim, teethFor } from "./gore";
 import { OFFICIAL_LOOKS, lookFor } from "./looks";
 import { BLUE_CORNER_OUTFIT, CUTMAN_OUTFIT, RED_CORNER_OUTFIT, REFEREE_OUTFIT } from "./outfit";
 import { ResolutionScaler } from "./quality";
@@ -37,18 +37,22 @@ export function cornersAtWork(snapshot: Pick<EngineSnapshot, "phase" | "phase_ti
   return snapshot !== null && snapshot.phase === "rest" && snapshot.phase_ticks_remaining > SECONDS_OUT * tickRate;
 }
 
+export type BoutEnding = Pick<MatchResult, "finish_method" | "winner_id">;
+
+/**
+ * Whether a blow earns an arcade finisher: only the one that ends the bout. A fighter who is going to
+ * get up keeps his head; the punch that floors a man for the count earns it in the knockout replay.
+ */
 export function isArcadeInjuryCandidate(
   event: CombatEvent,
   target: FighterSnapshot | undefined,
-  result: MatchResult | null,
+  result: BoutEnding | null,
 ): boolean {
   const anatomicalTarget = event.detail.endsWith(":head") || event.detail.endsWith(":body");
   if (target === undefined || !["hit", "counter_hit"].includes(event.kind) || !anatomicalTarget) return false;
-  return target.is_downed || (
-    result?.finish_method === "flash_ko"
-    && result.winner_id !== null
-    && result.winner_id === event.actor_id
-  );
+  if (result === null || result.winner_id === null || result.winner_id !== event.actor_id) return false;
+  if (result.finish_method === "flash_ko") return true;
+  return (result.finish_method === "ko" || result.finish_method === "tko") && target.is_downed;
 }
 
 export function contactParticipants(event: CombatEvent, snapshot: EngineSnapshot): {
@@ -220,7 +224,7 @@ export function presentationTickFor(snapshot: EngineSnapshot): number {
 export function arcadeInjuryFor(
   event: CombatEvent,
   target: FighterSnapshot | undefined,
-  result: MatchResult | null,
+  result: BoutEnding | null,
   puncher?: FighterSnapshot,
 ): ArcadeInjury | null {
   if (!isArcadeInjuryCandidate(event, target, result)) return null;
@@ -482,6 +486,14 @@ export function canStartPunch(fighter: FighterSnapshot): boolean {
     && !fighter.is_foul_recovery_target;
 }
 
+/** The finisher the punch that floored a fighter earns him if he does not beat the count. */
+export function knockdownFinisher(hit: CombatEvent | null, snapshot: EngineSnapshot): ArcadeInjury | null {
+  if (hit === null) return null;
+  const target = snapshot.fighters.find((fighter) => fighter.player_id === hit.target_id);
+  const puncher = snapshot.fighters.find((fighter) => fighter.player_id === hit.actor_id);
+  return arcadeInjuryFor(hit, target === undefined ? undefined : { ...target, is_downed: true }, { finish_method: "ko", winner_id: hit.actor_id }, puncher);
+}
+
 /** Whether the knockout replay puts this injury back so it can happen again on screen. */
 export function replayReattaches(injury: ArcadeInjury): boolean {
   return injury === "decapitation" || injury === "dismember_left" || injury === "dismember_right";
@@ -606,7 +618,7 @@ export class FightRenderer {
   private readonly tmpCamera = new THREE.Vector3();
   private readonly roundStats = new RoundStatsTracker();
   private readonly history: EngineSnapshot[] = [];
-  private lastKnockdown: { readonly knockdown: CombatEvent; readonly hit: CombatEvent | null } | null = null;
+  private lastKnockdown: { readonly knockdown: CombatEvent; readonly hit: CombatEvent | null; readonly finisher: ArcadeInjury | null } | null = null;
   private replay: { readonly plan: ReplayPlan; readonly buffer: SnapshotBuffer; readonly startedAt: number; impactFired: boolean; side: 1 | -1 | null } | null = null;
   private readonly finishPass: ShaderPass;
   private readonly bloomPass: UnrealBloomPass;
@@ -802,11 +814,26 @@ export class FightRenderer {
     if (this.ceremony === null) this.endCeremony();
     if (final === null || !STOPPAGE_METHODS.has(final.method)) return;
     const plan = this.lastKnockdown === null ? null : planKnockoutReplay(this.history, this.lastKnockdown.knockdown, this.simulation.tick_rate);
+    const finisher = this.finishingInjury(final);
     if (plan !== null && this.graphs !== null && !this.settings().reducedMotion) {
+      // The blow that floored him for the count does its damage at the impact of the replay.
+      if (finisher !== null) this.replayInjuries[finisher.index] = { injury: finisher.injury, event: finisher.event };
       this.startReplay(plan);
       return;
     }
+    if (finisher !== null) this.applyArcadeInjury(finisher.index, finisher.injury, finisher.event);
     this.presentFinish(final);
+  }
+
+  /** The finisher earned by a knockout whose blow was not yet known to end the bout when it landed. */
+  private finishingInjury(final: FinalMessage): { index: number; injury: ArcadeInjury; event: CombatEvent } | null {
+    const record = this.lastKnockdown;
+    const settings = this.settings();
+    if (record === null || record.hit === null || record.finisher === null || settings.blood !== "full" || settings.reducedMotion) return null;
+    if ((final.method !== "ko" && final.method !== "tko") || final.winner_id !== record.hit.actor_id) return null;
+    const index = this.buffer.latest()?.fighters.findIndex((fighter) => fighter.player_id === record.hit!.target_id) ?? -1;
+    if (index < 0 || this.arcadeInjuries[index] !== null) return null;
+    return { index, injury: record.finisher, event: record.hit };
   }
 
   /** A bout that went to the cards ends with both fighters beside the referee for the decision. */
@@ -1228,7 +1255,7 @@ export class FightRenderer {
       this.roundStats.record(event);
       if (event.kind === "knockdown") {
         const hit = accepted.find((candidate) => (candidate.kind === "hit" || candidate.kind === "counter_hit") && candidate.target_id === event.target_id) ?? null;
-        this.lastKnockdown = { knockdown: event, hit };
+        this.lastKnockdown = { knockdown: event, hit, finisher: knockdownFinisher(hit, snapshot) };
       }
       if (event.kind === "referee_break") this.referee?.breakClinch();
     }
@@ -1293,19 +1320,12 @@ export class FightRenderer {
         this.applyArcadeInjury(recipientIndex, injury, event);
       }
       const graphs = this.graphs;
-      if (
-        presentImpact
-        && recipientIndex >= 0
-        && ["hit", "counter_hit", "knockdown"].includes(event.kind)
-        && presentationEvent.detail.endsWith(":head")
-        && event.amount >= 260
-        && !currentSettings.reducedMotion
-        && currentSettings.blood !== "off"
-      ) {
+      const teeth = presentImpact && recipientIndex >= 0 ? teethFor(event.kind, event.amount, presentationEvent.detail.endsWith(":head")) : 0;
+      if (teeth > 0 && !currentSettings.reducedMotion && currentSettings.blood !== "off") {
         const pose = this.headWorldPose(recipientIndex);
         if (pose !== null) {
           this.tmpB.set(0, -0.07, 0.1).applyQuaternion(pose.quaternion).add(pose.position);
-          this.effects.spawnTeeth(this.tmpB, presentationEvent.direction, event.kind === "knockdown" ? 3 : 1 + Math.floor((event.amount - 260) / 120), event.event_id);
+          this.effects.spawnTeeth(this.tmpB, presentationEvent.direction, teeth, event.event_id);
         }
       }
       if (

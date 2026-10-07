@@ -2,7 +2,7 @@ import * as THREE from "three";
 import type { BloodLevel } from "../settings";
 import type { CombatEvent, Hand } from "../types";
 import { wearCornerColour } from "./gear";
-import { bloodShade, buildChunkGeometry, buildDropletGeometry, buildWoundGeometry, closeCut, dropletShape, woundTexture } from "./gore";
+import { HARD_SHOT, bloodDropsFor, bloodShade, buildChunkGeometry, buildDropletGeometry, buildWoundGeometry, closeCut, dropletShape, woundTexture } from "./gore";
 import { LookShading, SCANNED_LOOK, type FighterLook } from "./looks";
 import { CANVAS_TOP, RING_FIGHT_HALF, ROPE_LINE } from "./world";
 
@@ -585,7 +585,7 @@ export class Effects3D {
       ? 0
       : this.bloodLevel === "reduced"
         ? Math.min(24, Math.round(event.blood * 0.24))
-        : Math.min(120, Math.round(event.blood * 1.1));
+        : bloodDropsFor(event.blood, event.kind === "knockdown" ? 0 : event.amount);
     this.shake = Math.min(0.09, this.shake + (blocked ? 0.008 : Math.max(0.012, event.amount / 2600)));
     if (event.kind === "knockdown") this.shake = Math.min(0.14, this.shake + 0.06);
 
@@ -663,7 +663,7 @@ export class Effects3D {
       strand.radius = 0.008 + rand() * 0.008;
       this.spawnDroplet(x, y, z, vx, vy, vz, color, life, true, strand.radius);
     }
-    if (!reducedMotion && event.blood > 0 && this.bloodLevel !== "off" && (event.amount > 190 || event.kind === "knockdown" || event.kind === "counter_hit")) {
+    if (!reducedMotion && event.blood > 0 && this.bloodLevel !== "off" && ((event.kind === "hit" && event.amount >= HARD_SHOT) || event.kind === "knockdown" || event.kind === "counter_hit")) {
       const puffs = this.bloodLevel === "reduced" ? (event.kind === "knockdown" ? 3 : 2) : (event.kind === "knockdown" ? 14 : 10);
       const scale = this.bloodLevel === "reduced" ? 0.35 : 1;
       for (let i = 0; i < puffs; i += 1) {
