@@ -365,6 +365,46 @@ describe("knockouts on the fighter", () => {
     expect(frameMove).toBeLessThan(0.2);
   });
 
+  it("lands the head on the canvas without the skull flipping or skidding across it", () => {
+    // The skull's lean on the neck was corrected by turning only the skull, into the canvas when the head lay on it;
+    // the canvas lifted it back out and the head skidded 11-30 cm a step, the head bone turning up to 95 degrees in a frame.
+    let crownStep = 0;
+    let headTurn = 0;
+    let skullRest = 0;
+    const turned = new THREE.Quaternion();
+    for (const punchClass of ["jab", "straight", "hook", "uppercut"] as const) {
+      for (const hand of ["left", "right"] as const) {
+        for (const amount of [60, 105, 150]) {
+          const { boxer, graph, fighter, opponent, time } = standing();
+          graph.react("hit", "head", 1, punchClass, hand, amount);
+          let now = frames(graph, { ...fighter, is_downed: true }, opponent, 12, time);
+          const body = graph.fallBody!.body;
+          const before = new Float64Array(PARTICLES * 3);
+          const step = body.step.bind(body);
+          body.step = (replay) => {
+            before.set(body.position);
+            step(replay);
+            crownStep = Math.max(crownStep, at(body.position, P.crown).distanceTo(at(before, P.crown)));
+          };
+          let head = worldQuaternion(boxer.rig.bones.head, new THREE.Quaternion());
+          for (let frame = 0; frame < 228; frame += 1) {
+            now = frames(graph, { ...fighter, is_downed: true }, opponent, 1, now);
+            worldQuaternion(boxer.rig.bones.head, turned);
+            headTurn = Math.max(headTurn, THREE.MathUtils.radToDeg(turned.angleTo(head)));
+            head.copy(turned);
+          }
+          const neck = at(body.position, P.head).sub(at(body.position, P.neck)).normalize();
+          const skull = at(body.position, P.crown).sub(at(body.position, P.head)).normalize();
+          skullRest = Math.max(skullRest, THREE.MathUtils.radToDeg(neck.angleTo(skull)));
+        }
+      }
+    }
+    expect(crownStep).toBeLessThan(0.1);
+    expect(headTurn).toBeLessThan(60);
+    // The skull leans on the neck no further than its 32 degrees, give or take a pass.
+    expect(skullRest).toBeLessThan(36);
+  });
+
   it("lies with his shoulders turned on his hips no further than a spine turns, however he went down", () => {
     let worst = 0;
     for (const punch of ["jab", "hook"] as const) {

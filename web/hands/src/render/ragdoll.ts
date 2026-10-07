@@ -79,6 +79,9 @@ const HEAD_SHARES = Float64Array.from([P.head, 1, P.crown, 0.9, P.face, 1, P.nec
 const BODY_SHARES = Float64Array.from([P.belly, 1, P.chest, 0.6, P.pelvis, 0.4, P.hipL, 0.3, P.hipR, 0.3]);
 const HEAD_PARTS = [P.head, P.crown, P.face] as const;
 const SKULL_PARTS = [P.crown, P.face] as const;
+/** What turns the other way as a leaning neck or skull is brought back: the upper chest below the neck, the neck below the skull. */
+const NECK_BASE = [P.upper] as const;
+const SKULL_BASE = [P.neck] as const;
 const FOOT_PARTS = [[P.toeL, P.heelL], [P.toeR, P.heelR]] as const;
 const HEEL_PARTS = [[P.heelL], [P.heelR]] as const;
 const LOST_HEAD = [P.head, P.crown, P.face] as const;
@@ -148,6 +151,8 @@ const FOOT_GROUNDED = 0.5;
 const FOOT_TURN = 0.01;
 const FOOT_ROLL_TURN = 0.04;
 const CONE_STIFFNESS = 0.4;
+/** No pass turns a neck or a skull back further than this. */
+const NECK_TURN = 0.02;
 
 interface StyleStiffness {
   /** How much further the knees may bend, in radians, while the legs still hold. */
@@ -708,9 +713,9 @@ export class RagdollBody {
   /** The neck and the skull lean from the line of the spine only so far, whatever the blow. */
   private solveNeck(): void {
     this.upperFrame(this.position);
-    this.cone(this.gy, P.neck, P.head, NECK_CONE, P.neck, HEAD_PARTS);
+    this.cone(this.gy, P.neck, P.head, NECK_CONE, P.neck, HEAD_PARTS, NECK_BASE);
     const neck = this.dir(P.neck, P.head, this.e);
-    this.cone(neck, P.head, P.crown, SKULL_CONE, P.head, SKULL_PARTS);
+    this.cone(neck, P.head, P.crown, SKULL_CONE, P.head, SKULL_PARTS, SKULL_BASE);
   }
 
   /**
@@ -779,16 +784,38 @@ export class RagdollBody {
   }
 
   /**
-   * Keeps the direction from `from` to `to` within `limit` of `axis`, turning the `moved` particles
-   * about `pivot` back toward it a share of the excess each pass.
+   * Keeps the direction from `from` to `to` within `limit` of `axis`: the `moved` particles turn about `pivot` back
+   * toward it and the `base` particles the other way, a share of the excess each pass split by their masses. A side
+   * lying on the canvas that the turn would press into it does not turn, and the other side takes the whole turn: a
+   * skull on the canvas turned into it was lifted straight back out and skidded across it instead. No pass turns
+   * more than NECK_TURN.
    */
-  private cone(axis: THREE.Vector3, from: number, to: number, limit: number, pivot: number, moved: readonly number[]): void {
+  private cone(axis: THREE.Vector3, from: number, to: number, limit: number, pivot: number, moved: readonly number[], base: readonly number[]): void {
     const direction = this.dir(from, to, this.turnPoint);
     const angle = Math.acos(Math.min(1, Math.max(-1, direction.dot(axis))));
     if (angle <= limit) return;
     const turn = this.turnAxis.crossVectors(direction, axis);
     if (turn.lengthSq() < 1e-10) return;
-    this.rotateAbout(moved, pivot, turn.normalize(), (angle - limit) * CONE_STIFFNESS);
+    turn.normalize();
+    const movedWeight = this.pressed(moved, pivot, turn, 1) ? 0 : this.invMass[moved[0]!]!;
+    const baseWeight = this.pressed(base, pivot, turn, -1) ? 0 : this.invMass[base[0]!]!;
+    if (movedWeight + baseWeight <= 0) return;
+    const amount = Math.min(NECK_TURN, (angle - limit) * CONE_STIFFNESS) / (movedWeight + baseWeight);
+    if (movedWeight > 0) this.rotateAbout(moved, pivot, turn, amount * movedWeight);
+    if (baseWeight > 0) this.rotateAbout(base, pivot, turn, -amount * baseWeight);
+  }
+
+  /** Whether turning `parts` about `pivot` on `axis` (by `sign`) would press one lying on the canvas into it. */
+  private pressed(parts: readonly number[], pivot: number, axis: THREE.Vector3, sign: number): boolean {
+    const p = this.position;
+    for (let k = 0; k < parts.length; k += 1) {
+      const i = parts[k]!;
+      if (p[i * 3 + 1]! > RADIUS[i]! + 0.005) continue;
+      // The part's way at the start of the turn is axis x (part - pivot); only its height matters.
+      const down = sign * (axis.z * (p[i * 3]! - p[pivot * 3]!) - axis.x * (p[i * 3 + 2]! - p[pivot * 3 + 2]!));
+      if (down < -1e-9) return true;
+    }
+    return false;
   }
 
   /** Turns particles rigidly by `angle` about `axis` through the particle `pivot`. */
