@@ -191,13 +191,15 @@ export class InjuryShading {
   };
   private readonly index = new Map<string, number>();
 
-  constructor(readonly material: THREE.MeshStandardMaterial, readonly sites: readonly InjurySite[]) {
+  /** With no material the state is kept but shades nothing: an official, who never takes damage. */
+  constructor(readonly material: THREE.MeshStandardMaterial | null, readonly sites: readonly InjurySite[]) {
     if (sites.length !== INJURY_SITE_COUNT) throw new Error(`injury shading requires ${INJURY_SITE_COUNT} sites`);
     for (const [index, site] of sites.entries()) {
       this.index.set(site.name, index);
       this.uniforms.uInjurySite.value.push(new THREE.Vector4(site.position[0], site.position[1], site.position[2], site.radius));
       this.uniforms.uInjuryCut.value.push(new THREE.Vector4(site.cutHalfLength, 0, 0, 0));
     }
+    if (material === null) return;
     const uniforms = this.uniforms;
     material.onBeforeCompile = (shader) => {
       Object.assign(shader.uniforms, uniforms);

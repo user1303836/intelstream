@@ -103,7 +103,7 @@ function fighterTexture(name: FighterTexture): THREE.Texture {
 }
 
 interface AppliedFighterMaterials {
-  readonly skin: readonly THREE.MeshPhysicalMaterial[];
+  readonly skin: readonly THREE.MeshStandardMaterial[];
   readonly gloves: THREE.MeshStandardMaterial;
   readonly owned: readonly THREE.Material[];
   readonly headInjury: InjuryShading;
@@ -111,7 +111,9 @@ interface AppliedFighterMaterials {
 }
 
 export function applyFighterSkin(target: THREE.Object3D, palette: BoxerPaletteColors): AppliedFighterMaterials {
-  const skin: THREE.MeshPhysicalMaterial[] = [];
+  // An official never takes damage or sweats: plain materials, injury state that shades nothing, and no shadow.
+  const official = palette.bodyMap !== undefined;
+  const skin: THREE.MeshStandardMaterial[] = [];
   const owned: THREE.Material[] = [];
   const bySource = new Map<string, THREE.MeshStandardMaterial>();
   let gloves: THREE.MeshStandardMaterial | null = null;
@@ -127,19 +129,19 @@ export function applyFighterSkin(target: THREE.Object3D, palette: BoxerPaletteCo
       const isSkin = sourceName === "MHeadMat0" || sourceName === "MBodyMat0";
       const color = sourceName === "GlovesMat0" ? palette.gear : sourceName === "PantsMat0" ? (palette.pants ?? palette.gear) : 0xffffff;
       const map = sourceName === "MBodyMat0" && palette.bodyMap !== undefined ? palette.bodyMap : fighterTexture(textureName);
-      material = isSkin
-        ? new THREE.MeshPhysicalMaterial({ map, color, roughness: sourceName === "MBodyMat0" && palette.bodyMap !== undefined ? 0.85 : 0.58, metalness: 0.02, clearcoat: palette.bodyMap !== undefined && sourceName === "MBodyMat0" ? 0 : 0.25, clearcoatRoughness: 0.6 })
-        : new THREE.MeshStandardMaterial({ map, color, roughness: 0.4, metalness: 0.03 });
+      material = isSkin && !official
+        ? new THREE.MeshPhysicalMaterial({ map, color, roughness: 0.58, metalness: 0.02, clearcoat: 0.25, clearcoatRoughness: 0.6 })
+        : new THREE.MeshStandardMaterial({ map, color, roughness: isSkin ? (sourceName === "MBodyMat0" ? 0.85 : 0.58) : 0.4, metalness: isSkin ? 0.02 : 0.03 });
       material.name = sourceName;
       bySource.set(sourceName, material);
       owned.push(material);
-      if (material instanceof THREE.MeshPhysicalMaterial) skin.push(material);
+      if (isSkin) skin.push(material);
       if (sourceName === "GlovesMat0") gloves = material;
-      if (sourceName === "MHeadMat0") headInjury = new InjuryShading(material, HEAD_SITES);
-      if (sourceName === "MBodyMat0") bodyInjury = new InjuryShading(material, BODY_SITES);
+      if (sourceName === "MHeadMat0") headInjury = new InjuryShading(official ? null : material, HEAD_SITES);
+      if (sourceName === "MBodyMat0") bodyInjury = new InjuryShading(official ? null : material, BODY_SITES);
     }
     object.material = material;
-    object.castShadow = true;
+    object.castShadow = !official;
     object.receiveShadow = true;
     object.frustumCulled = false;
   });
@@ -153,6 +155,7 @@ export interface BoxerPaletteColors {
   readonly skin: number;
   readonly gear: number;
   readonly pants?: number;
+  /** An official's shirt. Officials get plain materials: no injury shading, no sweat and no shadow (see applyFighterSkin). */
   readonly bodyMap?: THREE.Texture;
 }
 
@@ -171,7 +174,7 @@ export class SkinnedBoxer {
   readonly rig: SolvedRig;
   /** Bone-derived measurements in world units (after MODEL_SCALE). */
   readonly metrics: { armUpper: number; armFore: number; legThigh: number; legShin: number; headRestY: number; chestRestY: number; ankleRestY: number };
-  private readonly skinMaterials: readonly THREE.MeshPhysicalMaterial[];
+  private readonly skinMaterials: readonly THREE.MeshStandardMaterial[];
   private readonly ownedMaterials: readonly THREE.Material[];
   private readonly gearMaterial: THREE.MeshStandardMaterial;
   private readonly headMeshes: THREE.SkinnedMesh[] = [];
@@ -239,7 +242,7 @@ export class SkinnedBoxer {
     return this.handMeshes[side][0]!;
   }
 
-  get skin(): THREE.MeshPhysicalMaterial {
+  get skin(): THREE.MeshStandardMaterial {
     return this.skinMaterials[0]!;
   }
 
@@ -262,8 +265,9 @@ export class SkinnedBoxer {
     for (const mesh of this.handMeshes[side]) mesh.visible = !value;
   }
 
+  /** Sweat sheen; only a fighter's skin is clearcoated, an official's stays matte. */
   setSkinClearcoat(value: number): void {
-    for (const material of this.skinMaterials) material.clearcoat = value;
+    for (const material of this.skinMaterials) if (material instanceof THREE.MeshPhysicalMaterial) material.clearcoat = value;
   }
 
   dispose(): void {

@@ -3,6 +3,7 @@ import { fighter as baseFighter, snapshot as baseSnapshot } from "../test/fixtur
 import type { EngineSnapshot, FighterSnapshot } from "../types";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
 import { FightRenderer, refereeSpacing } from "./renderer";
+import { applyHeadTrauma } from "./injury";
 import { worldPosition } from "./rig";
 import { worldMapping } from "./world";
 
@@ -125,5 +126,50 @@ describe("referee count", () => {
       expect(heights[change]!).toBeLessThan(Math.min(...around) + 0.005);
       expect(heights[change - 6]! - heights[change]!).toBeGreaterThan(0.05);
     }
+  });
+});
+
+describe("officials' materials", () => {
+  const meshes = (boxer: SkinnedBoxer): THREE.SkinnedMesh[] => {
+    const out: THREE.SkinnedMesh[] = [];
+    boxer.root.traverse((object) => {
+      if (object instanceof THREE.SkinnedMesh) out.push(object);
+    });
+    return out;
+  };
+  const materialOf = (mesh: THREE.SkinnedMesh): THREE.MeshStandardMaterial => mesh.material as THREE.MeshStandardMaterial;
+
+  it("dresses officials in plain materials that skip the injury shader, the sweat sheen and the shadow pass", () => {
+    const fighter = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
+    const referee = official();
+    // Fighters keep the clearcoated, injury-shaded skin and cast shadows.
+    expect(fighter.headMesh.material).toBeInstanceOf(THREE.MeshPhysicalMaterial);
+    expect(materialOf(fighter.headMesh).customProgramCacheKey()).toContain("hands-injury");
+    for (const mesh of meshes(fighter)) expect(mesh.castShadow).toBe(true);
+    for (const mesh of meshes(referee)) {
+      expect(mesh.material).toBeInstanceOf(THREE.MeshStandardMaterial);
+      expect(mesh.material).not.toBeInstanceOf(THREE.MeshPhysicalMaterial);
+      expect(materialOf(mesh).customProgramCacheKey()).not.toContain("hands-injury");
+      expect(mesh.castShadow).toBe(false);
+    }
+    // An official never takes damage, but the graph can still hand him trauma.
+    expect(() => applyHeadTrauma(referee.headInjury, { ...baseFighter("one").trauma, head: 900, left_cut: 600 }, "full")).not.toThrow();
+
+    // A tired fighter's skin takes on a sweaty sheen; the officials' skin and shirts stay matte.
+    const tired: FighterSnapshot = { ...baseFighter("one"), stamina: 100 };
+    new BoxingGraph(fighter, mapping).update(tired, baseFighter("two"), 1 / 60, 0, false, "full", 1);
+    new BoxingGraph(referee, mapping, { referee: true }).update(tired, baseFighter("two"), 1 / 60, 0, false, "off", 1);
+    expect((fighter.headMesh.material as THREE.MeshPhysicalMaterial).clearcoat).toBeGreaterThan(0.5);
+    for (const mesh of meshes(referee)) expect("clearcoat" in mesh.material ? mesh.material.clearcoat : 0).toBe(0);
+  });
+
+  it("still frees every material an official owns", () => {
+    const referee = official();
+    const materials = new Set(meshes(referee).map(materialOf));
+    const freed = new Set<THREE.Material>();
+    for (const material of materials) material.addEventListener("dispose", () => freed.add(material));
+    referee.dispose();
+    expect(materials.size).toBe(5);
+    expect(freed).toEqual(materials);
   });
 });
