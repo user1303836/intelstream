@@ -16,7 +16,13 @@ from intelstream.hands.cpu import (
     cpu_player_id,
 )
 from intelstream.hands.engine import BoxingEngine, EngineConfig
-from intelstream.hands.rules import COMPATIBLE_COMBO_CHAINS, PUNCH_RULES
+from intelstream.hands.rules import (
+    BLIND_SIDE_EYE_THRESHOLD,
+    BODY_COLLAPSE_STAMINA,
+    BODY_COLLAPSE_TRAUMA,
+    COMPATIBLE_COMBO_CHAINS,
+    PUNCH_RULES,
+)
 from intelstream.hands.types import (
     ActionKind,
     DefensivePose,
@@ -331,7 +337,7 @@ def test_down_it_answers_each_prompt_once_inside_its_window() -> None:
 def test_a_badly_hurt_rookie_can_stay_down() -> None:
     outcomes = Counter()
     for seed in range(12):
-        engine, brain = knocked_down(CpuLevel.ROOKIE, seed, head=1300)
+        engine, brain = knocked_down(CpuLevel.ROOKIE, seed, head=1400)
         engine.fighter("cpu").knockdowns = 2
         while engine.phase is MatchPhase.KNOCKDOWN:
             command = brain.decide(engine)
@@ -353,16 +359,149 @@ def test_the_standing_fighter_sends_nothing_during_the_count() -> None:
         engine.step()
 
 
-def test_between_rounds_and_after_the_bout_it_is_still() -> None:
+def test_between_rounds_it_stays_put_and_only_talks_to_its_corner() -> None:
     engine = engine_at(120, rounds=2, round_ticks=5, rest_ticks=40)
     brain = always(CpuBrain("cpu", "human", CpuLevel.CHAMPION, 13))
-    run(engine, brain, 6)
+    run(engine, brain, 5)
     assert engine.phase is MatchPhase.REST
     command = brain.decide(engine)
     assert command is not None
-    assert (command.move_x, command.move_y, command.actions) == (0, 0, ())
+    assert (command.move_x, command.move_y) == (0, 0)
+    assert [action.kind for action in command.actions] == [ActionKind.CORNER_BREATH]
     engine.complete_forfeit("human")
     assert brain.decide(engine) is None
+
+
+def resting(cpu_trauma: dict[str, int]) -> tuple[BoxingEngine, CpuBrain]:
+    engine = engine_at(120, rounds=3, round_ticks=5, rest_ticks=40)
+    for name, value in cpu_trauma.items():
+        setattr(engine.fighter("cpu").trauma, name, value)
+    brain = always(CpuBrain("cpu", "human", CpuLevel.CHAMPION, 21))
+    while engine.phase is not MatchPhase.REST:
+        engine.step()
+    return engine, brain
+
+
+@pytest.mark.parametrize(
+    ("trauma", "instruction"),
+    [
+        ({"left_cut": 450}, ActionKind.CORNER_CUT),
+        ({"bleeding": 260}, ActionKind.CORNER_CUT),
+        ({"right_eye": 560}, ActionKind.CORNER_SWELLING),
+        ({"swelling": 480}, ActionKind.CORNER_SWELLING),
+        ({}, ActionKind.CORNER_BREATH),
+    ],
+)
+def test_its_corner_works_on_what_is_worst(trauma: dict[str, int], instruction: ActionKind) -> None:
+    engine, brain = resting(trauma)
+    command = brain.decide(engine)
+    assert command is not None
+    assert [action.kind for action in command.actions] == [instruction]
+
+
+def test_it_gives_one_instruction_a_rest_and_one_again_the_next_rest() -> None:
+    engine, brain = resting({})
+    sent: list[ActionKind] = []
+    rounds_seen = set()
+    while engine.result is None and engine.round_number <= 3:
+        command = brain.decide(engine)
+        if command is not None:
+            sent.extend(
+                action.kind for action in command.actions if engine.phase is MatchPhase.REST
+            )
+            if engine.phase is MatchPhase.REST:
+                rounds_seen.add(engine.round_number)
+            engine.submit_input("cpu", command)
+        engine.step()
+        if engine.round_number == 3 and engine.phase is MatchPhase.FIGHT:
+            break
+    assert len(rounds_seen) == 2
+    assert sent == [ActionKind.CORNER_BREATH, ActionKind.CORNER_BREATH]
+    assert engine.fighter("cpu").corner_choice is None or engine.phase is MatchPhase.FIGHT
+
+
+def test_a_corner_that_forgets_does_not_keep_asking_through_the_rest() -> None:
+    engine, brain = resting({})
+    rolls = iter([False])
+    brain._roll = lambda _percent: next(rolls, True)  # type: ignore[method-assign]
+    sent = []
+    for _ in range(10):
+        command = brain.decide(engine)
+        assert command is not None
+        sent.extend(command.actions)
+        engine.submit_input("cpu", command)
+        engine.step()
+    assert sent == []
+
+
+def test_a_forgetful_corner_sends_nothing() -> None:
+    engine, brain = resting({})
+    never(brain)
+    command = brain.decide(engine)
+    assert command is not None
+    assert command.actions == ()
+
+
+def test_it_cannot_read_a_punch_on_the_side_of_its_shut_eye() -> None:
+    def answers(left_eye: int) -> list[ActionKind]:
+        engine = engine_at(120)
+        engine.fighter("cpu").trauma.left_eye = left_eye
+        brain = always(CpuBrain("cpu", "human", CpuLevel.CHAMPION, 2))
+        brain._movement = lambda *_args: (0, 0)  # type: ignore[method-assign]
+        brain._attack = lambda *_args: None  # type: ignore[method-assign]
+        throw(engine, PunchAction(Hand.RIGHT, PunchClass.STRAIGHT, Target.HEAD, Power.POWER))
+        return kinds(run(engine, brain, 12))
+
+    assert ActionKind.SLIP_LEFT in answers(0)
+    assert not any(
+        kind in (ActionKind.SLIP_LEFT, ActionKind.SLIP_RIGHT, ActionKind.PULL)
+        for kind in answers(BLIND_SIDE_EYE_THRESHOLD)
+    )
+
+
+def test_it_works_the_side_of_the_opponents_shut_eye() -> None:
+    def hook_hands(right_eye: int) -> Counter[Hand]:
+        hands: Counter[Hand] = Counter()
+        for seed in range(40):
+            engine = engine_at(100, seed=seed)
+            engine.fighter("human").trauma.right_eye = right_eye
+            brain = CpuBrain("cpu", "human", CpuLevel.CHAMPION, seed)
+            brain._tick = engine.tick
+            action = brain._choose(engine.fighter("cpu"), engine.fighter("human"), 100, 0)
+            if action.punch_class in (PunchClass.HOOK, PunchClass.UPPERCUT):
+                hands[action.hand] += 1
+        return hands
+
+    shut = hook_hands(BLIND_SIDE_EYE_THRESHOLD)
+    open_ = hook_hands(0)
+    assert shut[Hand.LEFT] > shut[Hand.RIGHT]
+    assert shut[Hand.LEFT] > open_[Hand.LEFT]
+
+
+def test_it_keeps_power_back_from_a_guard_that_could_still_parry_it() -> None:
+    engine = engine_at(110)
+    brain = always(CpuBrain("cpu", "human", CpuLevel.CHAMPION, 41))
+    human = engine.fighter("human")
+    hook = PunchAction(Hand.LEFT, PunchClass.HOOK, Target.HEAD)
+    brain._tick = engine.tick
+    assert brain._shaped(hook, human, 100).power is Power.NORMAL
+    human.defense = DefensivePose.GUARD_HIGH
+    human.defense_started_tick = engine.tick - 30
+    assert brain._shaped(hook, human, 100).power is Power.POWER
+    human.defense_started_tick = engine.tick - 1
+    assert brain._shaped(hook, human, 100).power is Power.NORMAL
+    human.defense = DefensivePose.NONE
+    human.stunned_ticks = 10
+    assert brain._shaped(hook, human, 100).power is Power.POWER
+
+
+def test_with_its_body_broken_down_it_keeps_more_stamina_back() -> None:
+    engine = engine_at(110)
+    brain = CpuBrain("cpu", "human", CpuLevel.ROOKIE, 42)
+    cpu = engine.fighter("cpu")
+    fresh = brain._reserve(cpu)
+    cpu.trauma.body = BODY_COLLAPSE_TRAUMA
+    assert fresh < BODY_COLLAPSE_STAMINA < brain._reserve(cpu)
 
 
 def test_it_never_fouls() -> None:
