@@ -205,7 +205,7 @@ describe("knockout physics", () => {
 
   it("builds nothing while it steps or draws", () => {
     const source = readFileSync("src/render/ragdoll.ts", "utf8");
-    const hot = ["step", "carryHinges", "solveRigid", "solveRanges", "solveKnees", "solveTwist", "spinInertia", "solveElbows", "solveNeck", "solveFeet", "footNormal", "cone", "rotateAbout", "hinge", "satisfy", "hingeAxis", "solveArmsAgainstTorso", "closestOnSegment", "solveEnvironment", "applyFriction", "limitSpeed", "interpolate", "drive", "tiltHips", "prepareFrames", "segment", "frameFor", "blend", "elbowAxis", "kneeAxis"];
+    const hot = ["step", "carryHinges", "solveRigid", "solveRanges", "solveKnees", "solveTwist", "spinInertia", "solveElbows", "solveNeck", "solveFeet", "footNormal", "cone", "rotateAbout", "hinge", "satisfy", "hingeAxis", "solveArmsAgainstTorso", "closestOnSegment", "solveEnvironment", "applyFriction", "limitSpeed", "interpolate", "keepRest", "restore", "replayLosses", "runAhead", "drive", "tiltHips", "prepareFrames", "segment", "frameFor", "blend", "elbowAxis", "kneeAxis"];
     for (const name of hot) {
       const start = source.search(new RegExp(`\\n  (private )?(get )?${name}\\(`));
       expect(start, name).toBeGreaterThan(0);
@@ -477,6 +477,65 @@ describe("knockouts on the fighter", () => {
     graph.react("hit", "head", 1, "straight", "right", 420);
     frames(graph, { ...fighter, is_downed: true }, opponent, 400, now);
     expect(Float64Array.from(graph.fallBody!.body.position)).toEqual(live);
+  });
+
+  it("replays a knockout that loses its head in the replay the way the count showed it", () => {
+    // A knockout by the count loses the head only at the replay's impact. The replay used to fall with the severed
+    // head's weightless particles and ended 4-18 cm off at the pelvis and up to 1.3 m off at a glove or a toe.
+    for (const punchClass of ["straight", "hook", "uppercut"] as const) {
+      const { boxer, graph, fighter, opponent, time } = standing();
+      graph.react("hit", "head", 1, punchClass, "right", 120);
+      let now = frames(graph, { ...fighter, is_downed: true }, opponent, 400, time);
+      const live = Float64Array.from(graph.fallBody!.body.position);
+      graph.resetTransient(false);
+      graph.primeReplayFall();
+      now = frames(graph, fighter, opponent, 20, now);
+      graph.react("hit", "head", 1, punchClass, "right", 120);
+      boxer.setDecapitated(true);
+      frames(graph, { ...fighter, is_downed: true }, opponent, 400, now);
+      expect(Float64Array.from(graph.fallBody!.body.position), punchClass).toEqual(live);
+      graph.resetTransient(true);
+      expect(Float64Array.from(graph.fallBody!.body.position), punchClass).toEqual(live);
+    }
+  });
+
+  it("puts the body where the fall ends without running it when the replay cuts back to live", () => {
+    // settle() ran the rest of the fall in the frame of the cut to the close-up (up to 280 steps, about 20 ms on a
+    // desktop and several times that on a phone) and restoreSettled() ran all of it again.
+    const replay = (graph: BoxingGraph, fighter: FighterSnapshot, opponent: FighterSnapshot, from: number, count: number): number => {
+      let time = from;
+      for (let frame = 0; frame < count; frame += 1) {
+        time += 1 / 60;
+        graph.update({ ...fighter, is_downed: true }, opponent, 0.4 / 60, time, false, "full", time * 30);
+      }
+      return time;
+    };
+    for (const liveFrames of [400, 18]) {
+      // Counted out, the live fall has come to rest; a flash knockout's replay starts before it has.
+      const { graph, fighter, opponent, time } = standing();
+      graph.react("hit", "head", 1, "hook", "left", 120);
+      let now = frames(graph, { ...fighter, is_downed: true }, opponent, liveFrames, time);
+      graph.resetTransient(false);
+      graph.primeReplayFall();
+      now = frames(graph, fighter, opponent, 20, now);
+      graph.react("hit", "head", 1, "hook", "left", 120);
+      // The slow-motion replay of the punch and the first second of the fall.
+      replay(graph, fighter, opponent, now, liveFrames === 400 ? 15 : 160);
+      const body = graph.fallBody!.body;
+      let steps = 0;
+      const step = body.step.bind(body);
+      body.step = (impulses) => {
+        steps += 1;
+        step(impulses);
+      };
+      graph.resetTransient(true);
+      const settled = Float64Array.from(body.position);
+      graph.resetTransient(false);
+      graph.resetTransient(true);
+      expect(steps, `${liveFrames}`).toBe(0);
+      expect(body.asleep, `${liveFrames}`).toBe(true);
+      expect(Float64Array.from(body.position), `${liveFrames}`).toEqual(settled);
+    }
   });
 
   it("settles the recorded fall at once when the replay cuts back to live", () => {

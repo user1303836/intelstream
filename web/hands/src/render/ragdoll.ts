@@ -222,7 +222,17 @@ export interface ObstacleTrack {
   steps: number;
 }
 
-/** Everything needed to run a fall again: the start, the style, each blow at the step it landed, and where the opponent stood. */
+/** Where a fall came to rest: its positions, its previous positions and the step it slept at (-1 until it has). */
+export interface FallRest {
+  readonly position: Float64Array;
+  readonly previous: Float64Array;
+  steps: number;
+}
+
+/**
+ * Everything needed to run a fall again: the start, the style, each blow at the step it landed, where the opponent
+ * stood, what parts were lost from which step (as [step, mask] pairs), and where the fall came to rest.
+ */
 export interface FallRecord {
   readonly positions: Float64Array;
   readonly velocities: Float64Array;
@@ -230,6 +240,8 @@ export interface FallRecord {
   readonly impulses: ImpulseRecord[];
   readonly offsets: THREE.Quaternion[];
   readonly obstacles: ObstacleTrack;
+  readonly losses: number[];
+  readonly rest: FallRest;
 }
 
 const v = (a: Float64Array, i: number, out: THREE.Vector3): THREE.Vector3 => out.set(a[i * 3]!, a[i * 3 + 1]!, a[i * 3 + 2]!);
@@ -1024,6 +1036,22 @@ export class RagdollBody {
     while (!this.asleep && this.steps < limit) this.step(replay);
   }
 
+  /** Copies where the body is now into `out`, as it comes to rest. */
+  keepRest(out: FallRest): void {
+    out.position.set(this.position);
+    out.previous.set(this.previous);
+    out.steps = this.steps;
+  }
+
+  /** Puts the body where a fall came to rest, asleep. */
+  restore(rest: FallRest): void {
+    this.position.set(rest.position);
+    this.previous.set(rest.previous);
+    this.before.set(rest.position);
+    this.steps = rest.steps;
+    this.asleep = true;
+  }
+
   /** Writes positions drawn `alpha` of the way from the previous step to the latest. */
   interpolate(alpha: number, out: Float64Array): void {
     const before = this.before;
@@ -1072,6 +1100,13 @@ export class RagdollBody {
   }
 }
 
+/** A severed head or hand carries no weight; `lost` has a bit each for the head and the left and right hands. */
+function weigh(body: RagdollBody, lost: number): void {
+  body.setLimp(LOST_HEAD, (lost & 1) !== 0);
+  body.setLimp(LOST_LEFT_HAND, (lost & 2) !== 0);
+  body.setLimp(LOST_RIGHT_HAND, (lost & 4) !== 0);
+}
+
 /** Bones the fall drives, parents first. Clavicles, toes and fingers keep their last pose. */
 const DRIVEN: readonly CanonicalBone[] = [
   "hips", "spine", "chest", "upperChest", "neck", "head",
@@ -1092,6 +1127,10 @@ const LATE_BLOW_SECONDS = 0.35;
 /** A blow presented this soon before the fall is the one that caused it. */
 const EARLY_BLOW_SECONDS = 0.6;
 const MAX_STEPS_PER_UPDATE = 10;
+/** Steps a frame the fall a replay cut short is run on ahead of it, so it has come to rest by the time the replay ends. */
+const AHEAD_STEPS = 6;
+/** How long a fall is run on at most, from where it is, to show where it ends. */
+const RUN_ON_SECONDS = 6;
 
 export interface Blow {
   readonly target: Target;
@@ -1141,6 +1180,10 @@ export function blowImpulse(blow: Blow): BlowImpulse {
  */
 export class KnockoutRagdoll {
   readonly body = new RagdollBody();
+  /** The same fall run on ahead of a replay that cut the live one short, to find where it comes to rest. */
+  private readonly ahead = new RagdollBody();
+  private aheadOf: FallRecord | null = null;
+  private aheadBlows = 0;
   private ragdolling = false;
   private age = 0;
   private accumulator = 0;
@@ -1169,6 +1212,8 @@ export class KnockoutRagdoll {
   private readonly recordOffsets = DRIVEN.map(() => new THREE.Quaternion());
   private readonly recordImpulses: ImpulseRecord[] = [];
   private readonly recordObstacles: ObstacleTrack = { data: new Float64Array(TRACKED_STEPS * 3), steps: 0 };
+  private readonly recordLosses: number[] = [];
+  private readonly recordRest: FallRest = { position: new Float64Array(PARTICLES * 3), previous: new Float64Array(PARTICLES * 3), steps: -1 };
   private replaying: FallRecord | null = null;
   private primed = false;
   private pending: (ImpulseRecord & { readonly at: number }) | null = null;
@@ -1207,6 +1252,7 @@ export class KnockoutRagdoll {
     const rest = new Float64Array(PARTICLES * 3);
     this.read(rest);
     this.body.calibrate(rest);
+    this.ahead.calibrate(rest);
     this.spineLength = this.tiltJoint.setFromMatrixPosition(rig.bones.spine.matrixWorld).distanceTo(this.tiltChest.setFromMatrixPosition(rig.bones.chest.matrixWorld));
     for (const [bone, [quaternion, position]] of locals) {
       bone.quaternion.copy(quaternion);
@@ -1245,7 +1291,8 @@ export class KnockoutRagdoll {
     if (this.ragdolling) {
       if (this.age > LATE_BLOW_SECONDS) return;
       if (this.replaying !== null) {
-        // A replayed fall plays its recorded blows; one that never reached the live fall is added and plays at the next step.
+        // A replayed fall plays its recorded blows; one that never reached the live fall is added and plays at the next step
+        // (the fall run on ahead of the replay starts over with it).
         if (this.replaying.impulses.length === 0) this.replaying.impulses.push({ ...impulse, step: this.body.steps });
         return;
       }
@@ -1276,7 +1323,11 @@ export class KnockoutRagdoll {
       this.replaying = record;
       this.body.start(record.positions, record.velocities, record.style);
       this.body.trackObstacle(record.obstacles, true);
+      this.replayLosses(this.body, record, 0);
       for (const [index, offset] of record.offsets.entries()) this.offsets[index]!.copy(offset);
+      // A live fall the replay cut short has not come to rest: run it on ahead, a few steps a frame, to find where it does.
+      this.aheadOf = null;
+      if (record.rest.steps < 0) this.runAhead(record, 0);
     } else {
       this.replaying = null;
       if (this.samples === 0) this.read(this.sampleNow);
@@ -1307,6 +1358,10 @@ export class KnockoutRagdoll {
       this.recordPositions.set(this.sampleNow);
       this.recordVelocities.set(this.velocities);
       for (let index = 0; index < this.offsets.length; index += 1) this.recordOffsets[index]!.copy(this.offsets[index]!);
+      this.recordLosses.length = 0;
+      this.recordLosses.push(0, this.lost);
+      this.recordRest.steps = -1;
+      this.aheadOf = null;
       this.lastFall = {
         positions: this.recordPositions,
         velocities: this.recordVelocities,
@@ -1314,6 +1369,8 @@ export class KnockoutRagdoll {
         impulses,
         offsets: this.recordOffsets,
         obstacles,
+        losses: this.recordLosses,
+        rest: this.recordRest,
       };
     }
     this.pending = null;
@@ -1330,22 +1387,40 @@ export class KnockoutRagdoll {
     this.body.setObstacle(obstacle?.x ?? 0, obstacle?.z ?? 0, obstacle !== null);
     this.accumulator += Math.max(0, dt);
     let steps = 0;
+    const replaying = this.replaying;
     while (this.accumulator >= STEP_SECONDS && steps < MAX_STEPS_PER_UPDATE) {
-      this.body.step(this.replaying?.impulses);
+      if (replaying !== null) this.replayLosses(this.body, replaying, this.body.steps);
+      this.body.step(replaying?.impulses);
       this.accumulator -= STEP_SECONDS;
       steps += 1;
     }
     if (steps === MAX_STEPS_PER_UPDATE) this.accumulator = 0;
+    // The live fall keeps where it came to rest, which the replay's end goes back to.
+    const record = this.lastFall;
+    if (replaying === null && record !== null && record.rest.steps < 0 && this.body.asleep) this.body.keepRest(record.rest);
+    if (replaying !== null && this.aheadOf === replaying) this.runAhead(replaying, AHEAD_STEPS);
     this.age += dt;
     this.body.interpolate(this.body.asleep ? 1 : this.accumulator / STEP_SECONDS, this.drawn);
     this.drive(this.drawn);
     if (this.age < BLEND_IN_SECONDS) this.blend(this.fromLocal, this.fromHips, this.age / BLEND_IN_SECONDS);
   }
 
-  /** Runs the fall on to its end at once (after the replay cuts back to live). */
+  /**
+   * Puts the fall at its end (after the replay cuts back to live): where the live fall came to rest, which is what the
+   * count showed, or failing that where the fall run on ahead of the replay did; only a fall with neither is run on here.
+   */
   settle(): void {
     if (!this.ragdolling) return;
-    this.body.settle(6, this.replaying?.impulses);
+    const replaying = this.replaying;
+    const rest = replaying?.rest;
+    if (rest !== undefined && rest.steps >= 0) this.body.restore(rest);
+    else {
+      const limit = this.body.steps + Math.ceil(RUN_ON_SECONDS / STEP_SECONDS);
+      while (!this.body.asleep && this.body.steps < limit) {
+        if (replaying !== null) this.replayLosses(this.body, replaying, this.body.steps);
+        this.body.step(replaying?.impulses);
+      }
+    }
     this.accumulator = 0;
     this.age = Math.max(this.age, BLEND_IN_SECONDS);
     this.body.interpolate(1, this.drawn);
@@ -1451,14 +1526,50 @@ export class KnockoutRagdoll {
     return this.body.pelvisForward(this.point).y < -0.25;
   }
 
-  /** Lost parts carry no weight. */
+  /**
+   * Lost parts carry no weight. A live fall records the step each loss came at; a replay weighs the body as the live
+   * fall did, whatever has been lost since (a knockout by the count loses the head only in its replay).
+   */
   setLost(head: boolean, leftHand: boolean, rightHand: boolean): void {
     const lost = (head ? 1 : 0) | (leftHand ? 2 : 0) | (rightHand ? 4 : 0);
-    if (lost === this.lost) return;
+    if (this.replaying !== null || lost === this.lost) return;
     this.lost = lost;
-    this.body.setLimp(LOST_HEAD, head);
-    this.body.setLimp(LOST_LEFT_HAND, leftHand);
-    this.body.setLimp(LOST_RIGHT_HAND, rightHand);
+    weigh(this.body, lost);
+    if (this.ragdolling && this.lastFall !== null) this.lastFall.losses.push(this.body.steps, lost);
+  }
+
+  /** Weighs `body` as the record's losses have it from `step`. */
+  private replayLosses(body: RagdollBody, record: FallRecord, step: number): void {
+    const losses = record.losses;
+    for (let k = 0; k < losses.length; k += 2) {
+      if (losses[k] !== step) continue;
+      if (body === this.body) this.lost = losses[k + 1]!;
+      weigh(body, losses[k + 1]!);
+    }
+  }
+
+  /**
+   * Runs the replayed fall on ahead by up to `steps` (from its start with 0), as the replay runs it, and keeps where
+   * it comes to rest; it starts over if the replay gives the fall a blow the record lacked.
+   */
+  private runAhead(record: FallRecord, steps: number): void {
+    const ahead = this.ahead;
+    if (steps === 0 || this.aheadBlows !== record.impulses.length) {
+      ahead.start(record.positions, record.velocities, record.style);
+      ahead.trackObstacle(record.obstacles, true);
+      weigh(ahead, 0);
+      this.replayLosses(ahead, record, 0);
+      this.aheadOf = record;
+      this.aheadBlows = record.impulses.length;
+      if (steps === 0) return;
+    }
+    for (let k = 0; k < steps && !ahead.asleep; k += 1) {
+      this.replayLosses(ahead, record, ahead.steps);
+      ahead.step(record.impulses);
+    }
+    if (!ahead.asleep) return;
+    ahead.keepRest(record.rest);
+    this.aheadOf = null;
   }
 
   private captureLocals(out: readonly THREE.Quaternion[], hips: THREE.Vector3): void {
