@@ -179,17 +179,21 @@ function kneeBend(boxer: SkinnedBoxer, side: "L" | "R"): number | null {
 }
 
 describe("down and get-up poses", () => {
-  /** Knocks a fighter down with `punchClass`, lets him lie, then gets him up, sampling every frame. */
+  /**
+   * Knocks a fighter down with `punchClass`, fills his get-up meter in two good presses while he is down,
+   * then lets him up, sampling every frame.
+   */
   const knockdown = (punchClass: "hook" | "uppercut", stance: "orthodox" | "southpaw", sample: (boxer: SkinnedBoxer, frame: number) => void): void => {
     const { boxer, graph } = makeGraph();
-    const fighter = facingOpponent({ ...baseFighter("one"), stance });
+    const fighter = facingOpponent({ ...baseFighter("one"), stance, get_up_required: 60 });
     const opponent = opponentFor("two");
     run(graph, fighter, opponent, 20, undefined);
     graph.react("hit", "head", 1, punchClass, "left", 120);
     let tick = 10;
     for (let frame = 0; frame < 240; frame += 1) {
       tick += 0.5;
-      graph.update(frame < 90 ? { ...fighter, is_downed: true } : fighter, opponent, 1 / 60, 1 + frame / 60, false, "full", tick);
+      const meter = frame < 60 ? 0 : frame < 100 ? 30 : 60;
+      graph.update(frame < 140 ? { ...fighter, is_downed: true, get_up_meter: meter } : { ...fighter, get_up_meter: 60, stunned_ticks: 20 }, opponent, 1 / 60, 1 + frame / 60, false, "full", tick);
       sample(boxer, frame);
     }
   };
@@ -214,7 +218,7 @@ describe("down and get-up poses", () => {
       knockdown(punchClass, "orthodox", (boxer, frame) => {
         if (frame % 3 !== 0) return;
         lowest = Math.min(lowest, lowestVertex(boxer));
-        if (frame < 90) return;
+        if (frame < 60) return;
         // Up off the canvas (the hips are high) the gloves and then the trunks' knees must still reach it.
         if (bone(boxer, "hips").y > 0.42) gloves = Math.min(gloves, lowestVertex(boxer, "GlovesMat0"));
         if (bone(boxer, "head").y > 0.9) knees = Math.min(knees, lowestVertex(boxer, "PantsMat0"));
@@ -223,6 +227,67 @@ describe("down and get-up poses", () => {
       expect(gloves).toBeLessThan(0.03);
       expect(knees).toBeLessThan(0.03);
     }
+  });
+});
+
+describe("get-up", () => {
+  // The engine puts a fighter straight back in the fight when he beats the count: he can walk at once and
+  // act once a 20-tick (0.67 s) stun runs out.
+  const knockedDown = (): { boxer: SkinnedBoxer; step: (fighter: FighterSnapshot, frames: number) => number; standing: FighterSnapshot; downed: FighterSnapshot; guardZ: number } => {
+    const { boxer, graph } = makeGraph();
+    const opponent = opponentFor("two");
+    const head = new THREE.Vector3(0, 1.5, mapping.z(-150));
+    const standing = facingOpponent({ ...baseFighter("one"), get_up_required: 66 });
+    let tick = 0;
+    const step = (fighter: FighterSnapshot, frames: number): number => {
+      for (let frame = 0; frame < frames; frame += 1) {
+        tick += 0.5;
+        graph.update(fighter, opponent, 1 / 60, tick / 30, false, "full", tick, head);
+      }
+      return tick;
+    };
+    step(standing, 20);
+    const guardZ = bone(boxer, "gloveL").z;
+    graph.react("hit", "head", 1, "uppercut", "right", 120);
+    const downed = { ...standing, is_downed: true };
+    step(downed, 60);
+    return { boxer, step, standing, downed, guardZ };
+  };
+
+  it("rises with the get-up meter while down, then stands inside the stun and throws at full reach", () => {
+    const { boxer, step, standing, downed, guardZ } = knockedDown();
+    const lying = bone(boxer, "head").y;
+    step({ ...downed, get_up_meter: 22 }, 30);
+    step({ ...downed, get_up_meter: 44 }, 30);
+    expect(bone(boxer, "head").y).toBeGreaterThan(lying + 0.3);
+    const released = { ...standing, get_up_meter: 66, stunned_ticks: 20 };
+    step(released, 33);
+    expect(bone(boxer, "head").y).toBeGreaterThan(1.4);
+    const startTick = step(released, 9);
+    const timing = punchTiming("jab", "head", "normal");
+    const jab = {
+      ...standing,
+      action: "jab" as const, action_hand: "left" as const, action_target: "head" as const, action_power: "normal" as const, action_id: "after-get-up", action_key: "jab:left:head:normal",
+      action_start_tick: startTick, action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery,
+    };
+    let reach = -Infinity;
+    for (let frame = 0; frame < (timing.startup + timing.active) * 2; frame += 1) {
+      step(jab, 1);
+      reach = Math.max(reach, bone(boxer, "gloveL").z);
+    }
+    expect(reach).toBeGreaterThan(guardZ + 0.25);
+  });
+
+  it("finishes the get-up at once when he walks off", () => {
+    const { boxer, step, standing, downed } = knockedDown();
+    step({ ...downed, get_up_meter: 22 }, 30);
+    step({ ...downed, get_up_meter: 44 }, 30);
+    let walking = { ...standing, get_up_meter: 66, stunned_ticks: 20, velocity_y: 6 };
+    for (let frame = 0; frame < 15; frame += 1) {
+      walking = { ...walking, y: walking.y + 3 };
+      step(walking, 1);
+    }
+    expect(bone(boxer, "head").y).toBeGreaterThan(1.4);
   });
 });
 

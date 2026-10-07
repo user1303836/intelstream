@@ -302,7 +302,20 @@ const PUNCH_CONTACT_OFFSET = 0.06;
 /** Damage of the hardest hit the engine deals (a countered power uppercut in a combination, about 153). */
 const HARDEST_HIT = 150;
 const KNOCKDOWN_FALL_SECONDS = 0.75;
-const GETUP_SECONDS = 1.7;
+/**
+ * The get-up runs lying -> all fours (RISE_FOURS) -> one knee (RISE_KNEE) -> standing (1). While he is down it
+ * follows the get-up meter, as far as one knee; once the server lets him up he can walk at once and act after
+ * a 20-tick stun, so the rest takes at most GETUP_SECONDS, or GETUP_HURRIED_SECONDS once he moves or punches.
+ */
+const RISE_FOURS = 0.38;
+const RISE_KNEE = 0.72;
+const GETUP_SECONDS = 0.5;
+const GETUP_HURRIED_SECONDS = 0.2;
+/** How fast the get-up follows the meter while he is down, pushing up and sinking back. */
+const RISE_PUSH_RATE = 0.55;
+const RISE_SINK_RATE = 0.4;
+/** Rolling off the back onto all fours is a big movement, never hurried past this. */
+const RISE_ROLL_RATE = 0.7;
 
 const SIDE_FROM_HAND = (hand: Hand): "L" | "R" => (hand === "left" ? "L" : "R");
 
@@ -339,7 +352,9 @@ export class BoxingGraph {
   private hitstopScale = 1;
   private downState: "up" | "falling" | "down" | "rising" = "up";
   private fallAge = 0;
-  private riseAge = 0;
+  /** How far along the get-up he is (see RISE_KNEE), and where it stood when the server let him up. */
+  private riseProgress = 0;
+  private riseFrom = 0;
   private fallSide = 0;
   private fallProne = false;
   /** The fall played: the punch's own, or the nearest variant that keeps the body inside the ropes, moved in as far as it must. */
@@ -477,7 +492,7 @@ export class BoxingGraph {
     this.downState = downed ? "down" : "up";
     this.landSettled = false;
     this.fallAge = downed ? KNOCKDOWN_FALL_SECONDS : 0;
-    this.riseAge = 0;
+    this.riseProgress = 0;
     this.hitstop = 0;
     this.hitstopScale = 1;
     for (const spring of [this.headKick, this.torsoKick, this.rootKick, this.coverKick]) {
@@ -843,7 +858,7 @@ export class BoxingGraph {
     }
     this.guardKick = Math.max(0, this.guardKick - dt * 2.4);
 
-    this.updateDownState(fighter, dt);
+    this.updateDownState(fighter, dt, speed);
 
     const bounceTempo = (1.9 - this.tired * 0.7) * (1 - this.stunAmount * 0.6);
     this.bouncePhase += dt * bounceTempo * Math.PI * 2 * motionScale;
@@ -1468,27 +1483,36 @@ export class BoxingGraph {
     }
   }
 
-  private updateDownState(fighter: FighterSnapshot, dt: number): void {
+  private updateDownState(fighter: FighterSnapshot, dt: number, speed: number): void {
     if (fighter.is_downed) {
       if (this.downState === "up" || this.downState === "rising") {
         this.downState = "falling";
         this.fallAge = 0;
+        this.riseProgress = 0;
         this.landSettled = false;
       } else if (this.downState === "falling") {
         this.fallAge += dt;
         if (this.fallAge >= KNOCKDOWN_FALL_SECONDS) this.downState = "down";
+      } else {
+        // Each good press of the get-up prompt pushes him further up; a bad one lets him sink back.
+        const meter = fighter.get_up_required > 0 ? clamp(fighter.get_up_meter / fighter.get_up_required, 0, 1) : 0;
+        const target = meter * RISE_KNEE;
+        this.riseProgress += clamp(target - this.riseProgress, -RISE_SINK_RATE * dt, RISE_PUSH_RATE * dt);
       }
       return;
     }
     if (this.downState === "down" || this.downState === "falling") {
       this.downState = "rising";
-      this.riseAge = 0;
-    } else if (this.downState === "rising") {
-      this.riseAge += dt;
-      if (this.riseAge >= GETUP_SECONDS) {
-        this.downState = "up";
-        this.feetInitialized = false;
-      }
+      this.riseFrom = this.riseProgress;
+    }
+    if (this.downState !== "rising") return;
+    // The server already has him fighting: finish inside the stun, sooner if he walks or throws.
+    const hurried = speed > 0.3 || this.punchActive;
+    const rate = (1 - this.riseFrom) / (hurried ? GETUP_HURRIED_SECONDS : GETUP_SECONDS);
+    this.riseProgress = Math.min(1, this.riseProgress + (this.riseProgress < RISE_FOURS ? Math.min(rate, RISE_ROLL_RATE) : rate) * dt);
+    if (this.riseProgress >= 1) {
+      this.downState = "up";
+      this.feetInitialized = false;
     }
   }
 
@@ -1727,31 +1751,27 @@ export class BoxingGraph {
     if (!this.landSettled) this.chooseLanding(mirror);
     this.landSettled = this.downState !== "falling" || this.fallAge > KNOCKDOWN_FALL_SECONDS * 0.15;
     const pose = this.downResult;
-    if (this.downState === "rising") {
-      // Rising: lying -> all fours -> one knee -> stand.
-      const u = clamp(this.riseAge / GETUP_SECONDS, 0, 1);
+    if (this.downState !== "falling") {
+      // Down and getting up: lying -> all fours -> one knee -> stand, as far as the get-up has come.
+      const u = this.riseProgress;
       let stand = 0;
-      if (u < 0.38) {
-        const s = smoothstep(0, 0.38, u);
+      if (u < RISE_FOURS) {
+        const s = smoothstep(0, RISE_FOURS, u);
         const lying = this.placeLying(mirror);
         const fours = this.placeDown(this.downTo, ALL_FOURS, mirror);
         lerpDownPose(pose, lying, fours, s);
         // Face down, he pushes up on his gloves before the knees come under him: the hips rise first.
         if (this.landProne) pose.hips.y = THREE.MathUtils.lerp(lying.hips.y, fours.hips.y, easeOut(s, 3));
-      } else if (u < 0.72) {
-        lerpDownPose(pose, this.placeDown(this.downFrom, ALL_FOURS, mirror), this.placeDown(this.downTo, ONE_KNEE, mirror), smoothstep(0.38, 0.72, u));
+      } else if (u < RISE_KNEE) {
+        lerpDownPose(pose, this.placeDown(this.downFrom, ALL_FOURS, mirror), this.placeDown(this.downTo, ONE_KNEE, mirror), smoothstep(RISE_FOURS, RISE_KNEE, u));
       } else {
-        stand = smoothstep(0.72, 1, u);
+        stand = smoothstep(RISE_KNEE, 1, u);
         lerpDownPose(pose, this.placeDown(this.downFrom, ONE_KNEE, mirror), standing, stand);
       }
       this.writeDown(pose, mirror, leadHand, rearHand, lead, rear, 0, stand);
       return;
     }
     const lying = this.placeLying(mirror);
-    if (this.downState !== "falling") {
-      this.writeDown(lerpDownPose(pose, standing, lying, 1), mirror, leadHand, rearHand, lead, rear, 0, 0);
-      return;
-    }
     const u = clamp(this.fallAge / KNOCKDOWN_FALL_SECONDS, 0, 1);
     const t = easeIn(u, 2.1);
     const buckle = smoothstep(0, 0.35, u) * (1 - smoothstep(0.35, 0.8, u));
