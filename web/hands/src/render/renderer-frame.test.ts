@@ -1,10 +1,12 @@
 import * as THREE from "three";
+import { REST_CORNER_OFFSET } from "../manifest";
 import { fighter, snapshot } from "../test/fixtures";
 import type { EngineSnapshot, FighterSnapshot, FinalMessage } from "../types";
-import { CameraDirector, ceremonyShot, FIGHTER_CAM_FOV_SCALE, FighterCam } from "./camera";
+import { CameraDirector, ceremonyShot, cornerPoint, FIGHTER_CAM_FOV_SCALE, FighterCam } from "./camera";
 import { RoundStatsTracker } from "./hud";
 import { lookFor } from "./looks";
 import { FightRenderer, resultCardTop } from "./renderer";
+import { buildRing, disposeRing } from "./ring";
 import { RockedVision } from "./rocked";
 import { worldMapping } from "./world";
 
@@ -452,29 +454,65 @@ describe("around the fight", () => {
     expect(celebrate[1]!.mock.calls[0]![0]).toBeGreaterThanOrEqual(60);
   });
 
-  it("keeps both fighters in the wide shot of the rest on a phone held upright", () => {
-    const mapping = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 });
-    const corner = mapping.x(420);
-    const stub = prototypeOf({
-      portraitPull: THREE.MathUtils.clamp(1.2 / (390 / 844), 1, 2.2),
-      tmpA: new THREE.Vector3(-corner, 0, corner), tmpB: new THREE.Vector3(corner, 0, -corner),
-      cornerPosition: new THREE.Vector3(), cornerLookAt: new THREE.Vector3(),
-    });
-    const frame = method("restWideFrame").call(stub, { ...snapshot(), phase: "rest" }) as { position: THREE.Vector3; lookAt: THREE.Vector3 } | null;
-    expect(frame).not.toBeNull();
-    const camera = new THREE.PerspectiveCamera(36, 390 / 844, 0.1, 80);
-    camera.position.copy(frame!.position);
-    camera.lookAt(frame!.lookAt);
+  it("keeps both fighters in the rest's wide shot on a phone held upright, steady as they cross and clear of the corner", () => {
+    const mapping = worldMapping(SIMULATION);
+    const corner = mapping.x(REST_CORNER_OFFSET);
+    const pull = THREE.MathUtils.clamp(1.2 / (390 / 844), 1, 2.2);
+    const shotFor = (one: number, two: number, viewerId: string | null = "one", portraitPull = pull) => {
+      const stub = prototypeOf({
+        portraitPull, viewerId, mapping, cornerPosition: new THREE.Vector3(), cornerLookAt: new THREE.Vector3(), tmpCamera: new THREE.Vector3(),
+        tmpA: new THREE.Vector3(mapping.x(one), 0, 0), tmpB: new THREE.Vector3(mapping.x(two), 0, 0),
+      });
+      const shot = method("restWideFrame").call(stub, { ...snapshot(), phase: "rest", fighters: [fighter("one", one), fighter("two", two)] }) as { position: THREE.Vector3; lookAt: THREE.Vector3 } | null;
+      return shot === null ? null : { position: shot.position.clone(), lookAt: shot.lookAt.clone() };
+    };
+    // They walk past each other to their corners: the shot holds still (it used to swing 173 degrees round).
+    const passing = [-200, -60, -10, 10, 60, 200].map((x) => shotFor(x, -x)!);
+    for (const shot of passing) {
+      expect(shot.position.distanceTo(passing[0]!.position)).toBe(0);
+      expect(shot.lookAt.distanceTo(passing[0]!.lookAt)).toBe(0);
+    }
+    const { position, lookAt } = passing[0]!;
+    const camera = new THREE.PerspectiveCamera(36 * Math.min(1.3, Math.sqrt(pull)), 390 / 844, 0.1, 80);
+    camera.position.copy(position);
+    camera.lookAt(lookAt);
     camera.updateMatrixWorld(true);
-    for (const fighter of [stub.tmpA as THREE.Vector3, stub.tmpB as THREE.Vector3]) {
-      for (const height of [0.3, 1.3]) {
-        const point = new THREE.Vector3(fighter.x, height, fighter.z).project(camera);
-        expect(Math.abs(point.x)).toBeLessThan(0.85);
-        expect(Math.abs(point.y)).toBeLessThan(0.85);
+    // Both in their corners, seated or standing, are on the screen.
+    const stools = [cornerPoint(0, corner, 0, 0, new THREE.Vector3()), cornerPoint(1, corner, 0, 0, new THREE.Vector3())];
+    for (const stool of stools) {
+      for (const height of [0.5, 1.3, 1.65]) {
+        const shown = new THREE.Vector3(stool.x, height, stool.z).project(camera);
+        expect(Math.abs(shown.x)).toBeLessThan(0.85);
+        expect(Math.abs(shown.y)).toBeLessThan(0.85);
       }
     }
+    // Neither the near post and its pads nor the cornerman leaning over the ropes stands between the camera
+    // and the near fighter's head and chest: before, every line to him ran through the post and both pads.
+    const ring = buildRing();
+    ring.group.updateMatrixWorld(true);
+    const corners: THREE.Object3D[] = [];
+    ring.group.traverse((object) => {
+      if (object instanceof THREE.Mesh && (object.geometry.type === "CylinderGeometry" || (object.geometry.type === "BoxGeometry" && (object.geometry as THREE.BoxGeometry).parameters.height === 0.52))) corners.push(object);
+    });
+    const raycaster = new THREE.Raycaster();
+    const cornerman = new THREE.Vector3(-2.95, 0, 2.95);
+    for (const height of [1.3, 1.0]) {
+      const target = new THREE.Vector3(stools[0]!.x, height, stools[0]!.z);
+      raycaster.set(position, target.clone().sub(position).normalize());
+      raycaster.far = position.distanceTo(target) - 0.15;
+      expect(raycaster.intersectObjects(corners, false)).toEqual([]);
+      for (const at of [1.2, 1.6]) {
+        const leaning = new THREE.Vector3(cornerman.x, at, cornerman.z);
+        expect(new THREE.Line3(position, target).closestPointToPoint(leaning, true, new THREE.Vector3()).distanceTo(leaning)).toBeGreaterThan(0.5);
+      }
+    }
+    disposeRing(ring);
+    // The red corner's fighter gets the same shot from behind his own corner.
+    const red = shotFor(-60, 60, "two")!;
+    expect(red.position.x).toBeCloseTo(-position.x, 6);
+    expect(red.position.z).toBeCloseTo(-position.z, 6);
     // A landscape screen keeps the broadcast's own wide shot.
-    expect(method("restWideFrame").call(prototypeOf({ ...stub, portraitPull: 1 }), { ...snapshot(), phase: "rest" })).toBeNull();
+    expect(shotFor(-60, 60, "one", 1)).toBeNull();
   });
 
   it("has the referee lift the winner's arm once he has waved the fight off", () => {

@@ -154,10 +154,16 @@ const ROUND_CALLOUT_SECONDS = 1.8;
 const FINISH_CLOSE_UP_SECONDS = 1.7;
 /** The close-up waits this long at most for a body still falling to come to rest before it picks its side. */
 const CLOSE_UP_SETTLE_SECONDS = 1.2;
-/** On a screen narrower than this (as a pull), the rest's wide shot looks down the ring's diagonal, from this far behind the near fighter and this high. */
+/**
+ * On a screen narrower than this (as a pull), the rest's wide shot looks down the ring's diagonal from high
+ * over the near corner: this far back from its stool, swung this many degrees off the diagonal (clear of the
+ * post, its pads and the cornerman leaning over the ropes), this high, aimed this far toward the far stool.
+ */
 const REST_DIAGONAL_PULL = 1.6;
-const REST_DIAGONAL_BACK = 5;
-const REST_DIAGONAL_HEIGHT = 3.4;
+const REST_DIAGONAL_BACK = 3.5;
+const REST_DIAGONAL_SWING = 30;
+const REST_DIAGONAL_HEIGHT = 6.5;
+const REST_DIAGONAL_AIM = 0.4;
 /** After a stoppage the winner celebrates until the bout is gone, and the referee lifts his arm once the fight is waved off. */
 const WINNER_CELEBRATION_SECONDS = 600;
 const STOPPAGE_RAISE_DELAY_SECONDS = 2.8;
@@ -1435,19 +1441,18 @@ export class FightRenderer {
 
   /**
    * Between rounds the fighters sit in opposite corners, too far apart across a phone held upright for
-   * any shot from the side. The wide shot there looks down the diagonal from behind the blue corner,
-   * the near fighter low in the picture and the far one above him.
+   * any shot from the side. The wide shot there looks down the diagonal from high over the viewer's own
+   * corner (the blue one for a spectator), the near fighter low in the picture and the far one above him.
+   * It is set by the corners the fighters rest in, never by where they stand, so their walk across to
+   * them cannot swing it round the ring.
    */
   private restWideFrame(snapshot: EngineSnapshot | null): { position: THREE.Vector3; lookAt: THREE.Vector3; framed: boolean } | null {
     if (snapshot?.phase !== "rest" || this.portraitPull <= REST_DIAGONAL_PULL) return null;
-    const near = this.tmpA;
-    const far = this.tmpB;
-    const dx = near.x - far.x;
-    const dz = near.z - far.z;
-    const apart = Math.hypot(dx, dz);
-    if (apart < 1e-3) return null;
-    this.cornerPosition.set(near.x + (dx / apart) * REST_DIAGONAL_BACK, REST_DIAGONAL_HEIGHT, near.z + (dz / apart) * REST_DIAGONAL_BACK);
-    this.cornerLookAt.set((near.x + far.x) / 2, 0.75, (near.z + far.z) / 2);
+    const near = snapshot.fighters.findIndex((fighter) => fighter.player_id === this.viewerId) === 1 ? 1 : 0;
+    const corner = this.mapping.x(REST_CORNER_OFFSET);
+    cornerPoint(near, corner, -REST_DIAGONAL_BACK, REST_DIAGONAL_SWING, this.cornerPosition).setY(REST_DIAGONAL_HEIGHT);
+    cornerPoint(near, corner, 0, 0, this.cornerLookAt);
+    this.cornerLookAt.lerp(cornerPoint(near === 0 ? 1 : 0, corner, 0, 0, this.tmpCamera), REST_DIAGONAL_AIM).setY(0.9);
     return { position: this.cornerPosition, lookAt: this.cornerLookAt, framed: true };
   }
 
