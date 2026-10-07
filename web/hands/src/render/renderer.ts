@@ -125,6 +125,8 @@ const HEAD_CLEARANCE = 0.9;
 const BODY_KNOCKDOWN = "body";
 /** The referee keeps this far from any part of a fighter lying on the canvas. */
 const BODY_CLEARANCE = 0.55;
+/** How far the standing fighter's middle keeps from any part of a body on the canvas, so his feet are off it. */
+const STANDING_BODY_CLEARANCE = 0.5;
 /** How far from someone on their feet a close-up has to pass to see past them. */
 const STANDING_BLOCK_RADIUS = 0.5;
 /** Parts of a body lying on the canvas that a close-up of its head does not shoot across. */
@@ -2156,13 +2158,33 @@ export class FightRenderer {
     this.graphs?.[index]?.boxer.setLook(lookFor(playerId));
   }
 
-  /** The fighters as drawn: eased apart when the engine has them closer than two bodies can stand. */
+  /** The fighters as drawn: eased apart when the engine has them closer than two bodies can stand, and off a fighter lying on the canvas. */
   private standApart(fighters: readonly [FighterSnapshot, FighterSnapshot]): readonly [FighterSnapshot, FighterSnapshot] {
     const [a, b] = fighters;
     const tied = [a, b].some((fighter) => fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0 || fighter.is_downed);
     const apart = tied ? null : visualSeparation(a.x, a.y, b.x, b.y, DRAWN_MINIMUM_GAP, RING_HALF_WIDTH - FIGHTER_RADIUS, RING_HALF_HEIGHT - FIGHTER_RADIUS);
-    if (apart === null) return fighters;
-    return [Object.assign(this.drawnFighters[0], a, { x: apart.ax, y: apart.ay }), Object.assign(this.drawnFighters[1], b, { x: apart.bx, y: apart.by })];
+    const drawn: readonly [FighterSnapshot, FighterSnapshot] = apart === null ? fighters : [Object.assign(this.drawnFighters[0], a, { x: apart.ax, y: apart.ay }), Object.assign(this.drawnFighters[1], b, { x: apart.bx, y: apart.by })];
+    return this.replay === null ? this.clearOfTheFallen(drawn) : drawn;
+  }
+
+  /** Whoever is still on his feet stands off the body of a fighter lying where the fall took him, never in it. */
+  private clearOfTheFallen(fighters: readonly [FighterSnapshot, FighterSnapshot]): readonly [FighterSnapshot, FighterSnapshot] {
+    for (const lying of [0, 1] as const) {
+      const body = this.graphs?.[lying]?.fallBody ?? null;
+      const seat = lying === 0 ? 1 : 0;
+      const standing = fighters[seat];
+      if (body === null || standing.is_downed || (this.graphs?.[seat]?.fallBody ?? null) !== null) continue;
+      let x = this.mapping.x(standing.x);
+      let z = this.mapping.z(standing.y);
+      for (const point of [0, 1, 2, 3, 4] as const) {
+        body.bodyPoint(point, this.bodyPoint);
+        ({ x, z } = keepClear(x, z, this.bodyPoint.x, this.bodyPoint.z, STANDING_BODY_CLEARANCE));
+      }
+      if (x === this.mapping.x(standing.x) && z === this.mapping.z(standing.y)) continue;
+      const moved = Object.assign(this.drawnFighters[seat], standing, { x: x / this.mapping.x(1), y: z / this.mapping.z(1) });
+      return seat === 0 ? [moved, fighters[1]] : [fighters[0], moved];
+    }
+    return fighters;
   }
 
   private headHeightOf(index: number): number {

@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import { fighter } from "../test/fixtures";
+import type { FighterSnapshot } from "../types";
 import { BIG_SHOT, BLOOD_SHADES, HARD_SHOT, bloodDropsFor, bloodShade, buildChunkGeometry, buildDropletGeometry, buildWoundGeometry, closeCut, cutRim, dropletShape, teethFor } from "./gore";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
 import { HEAD_SITES, InjuryShading, NECK_CUT_HEIGHT } from "./injury";
@@ -574,6 +575,36 @@ describe("referee and a head on the canvas", () => {
     expect(keepClear(1.2, 0.4, 0, 0, 0.9)).toEqual({ x: 1.2, z: 0.4 });
     expect(keepClear(2, 1, 2, 1, 0.9).x).toBe(2);
     expect(keepClear(2, 1, 2, 1, 0.9).z).toBeCloseTo(0.1, 9);
+  });
+});
+
+describe("the winner beside the beaten fighter", () => {
+  const renderer = FightRenderer.prototype as unknown as {
+    standApart(this: unknown, fighters: readonly [FighterSnapshot, FighterSnapshot]): readonly [FighterSnapshot, FighterSnapshot];
+    clearOfTheFallen: unknown;
+  };
+  const lying = [new THREE.Vector3(0.3, 0.1, 0.2), new THREE.Vector3(0.1, 0.2, 0.25), new THREE.Vector3(-0.2, 0.15, 0.3), new THREE.Vector3(-0.5, 0.1, 0.2), new THREE.Vector3(-0.5, 0.1, 0.4)];
+  const rig = (replay: unknown) => ({
+    graphs: [{ fallBody: null }, { fallBody: { bodyPoint: (index: number, out: THREE.Vector3) => out.copy(lying[index]!) } }],
+    mapping: worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }), replay, bodyPoint: new THREE.Vector3(),
+    drawnFighters: [{ ...fighter("one") }, { ...fighter("two") }], clearOfTheFallen: renderer.clearOfTheFallen,
+  });
+
+  it("stands clear of the body where the fall left it, never inside it", () => {
+    const stub = rig(null);
+    const winner = { ...fighter("one"), x: 0, y: -40 };
+    const loser = { ...fighter("two"), x: 0, y: -40, is_downed: true };
+    const [drawn, beaten] = renderer.standApart.call(stub, [winner, loser]);
+    const at = new THREE.Vector3(stub.mapping.x(drawn.x), 0, stub.mapping.z(drawn.y));
+    for (const point of lying) expect(Math.hypot(at.x - point.x, at.z - point.z)).toBeGreaterThanOrEqual(0.5 - 1e-6);
+    expect(beaten).toBe(loser);
+    const far = { ...fighter("one"), x: 300, y: 200 };
+    expect(renderer.standApart.call(stub, [far, loser])[0]).toBe(far);
+  });
+
+  it("leaves the replay as it was recorded", () => {
+    const winner = { ...fighter("one"), x: 0, y: -40 };
+    expect(renderer.standApart.call(rig({}), [winner, { ...fighter("two"), x: 0, y: -40, is_downed: true }])[0]).toBe(winner);
   });
 });
 
