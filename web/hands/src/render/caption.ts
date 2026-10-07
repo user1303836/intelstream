@@ -1,6 +1,6 @@
 import type { MatchPhase } from "../types";
 import { BROADCAST_VOICES, type AnnouncerCard, type BroadcastLine, type Caption, type Speaker } from "./commentary";
-import { CALLOUT_BASELINE, CALLOUT_BELOW_BASELINE, fitFontSize, panelHeightFor, topPanelOffset } from "./hud";
+import { CALLOUT_BASELINE, CALLOUT_BELOW_BASELINE, COUNT_BELOW_HEADLINE, fitFontSize, headlineBaseline, panelHeightFor, topPanelOffset } from "./hud";
 
 /** What else is on the screen, so the caption keeps out of its way. */
 export interface CaptionScene {
@@ -44,6 +44,8 @@ const LOWER_THIRD = 110;
 const ABOVE_HINT = 168;
 /** The tallest caption, an announcer card, at full size. */
 const CAPTION_ROOM = 74;
+/** Below the knockdown count's 36 px figures (hud.ts), which stand this far under the headline. */
+const BELOW_COUNT = COUNT_BELOW_HEADLINE + 8;
 const REPLAY_TAG = { right: 220, wideTop: 64, compactTop: 120, height: 34 } as const;
 /** The HUD's centre panels are this wide at most (hud.ts centerPanel). */
 const PANEL_WIDTH = 320;
@@ -84,7 +86,7 @@ export function captionSlot(scene: CaptionScene): CaptionSlot | null {
   let top = result === null && compact ? COMPACT_TOP : TOP_CLEARANCE;
   if (result === null) {
     if (scene.phase === "rest" || scene.phase === "foul_recovery") top = Math.max(top, panelTop + panelHeight + 8);
-    else if (scene.phase === "knockdown") top = Math.max(top, height * 0.16 + 80);
+    else if (scene.phase === "knockdown") top = Math.max(top, headlineBaseline(height, compact) + BELOW_COUNT);
     if (scene.replay && width / 2 - maxWidth / 2 < REPLAY_TAG.right + 8) top = Math.max(top, (compact ? REPLAY_TAG.compactTop : REPLAY_TAG.wideTop) + REPLAY_TAG.height + 8);
     if (scene.callout === true && scene.phase === "fight") top = Math.max(top, height * CALLOUT_BASELINE + CALLOUT_BELOW_BASELINE + 8);
   }

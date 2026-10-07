@@ -2,7 +2,7 @@ import { mockHudContext } from "../test/fixtures";
 import type { MatchPhase } from "../types";
 import { cardMetrics, captionSlot, drawCaption, splitLine, type CaptionScene } from "./caption";
 import type { BroadcastLine, Caption } from "./commentary";
-import { panelHeightFor, topPanelOffset } from "./hud";
+import { COUNT_BELOW_HEADLINE, headlineBaseline, panelHeightFor, topPanelOffset } from "./hud";
 
 const scene = (width: number, height: number, phase: MatchPhase = "fight", extra: Partial<CaptionScene> = {}): CaptionScene => ({ width, height, phase, resultTop: null, touch: false, hint: false, viewerDown: false, replay: false, ...extra });
 const line = (text: string, extra: Partial<BroadcastLine> = {}): BroadcastLine => ({ speaker: "play", text, priority: 50, urgent: false, hold: 3, card: null, ...extra });
@@ -56,6 +56,19 @@ describe("caption placement", () => {
   it("gives way where nothing would stay clear of the fighters", () => {
     expect(captionSlot(scene(844, 390, "knockdown", { touch: true }))).toBeNull();
     expect(captionSlot(scene(390, 844, "knockdown", { touch: true, viewerDown: true }))).toBeNull();
+  });
+
+  it("keeps a knockdown caption under the count on a phone, or gives way", () => {
+    for (const [width, height] of [[320, 568], [360, 640], [375, 667], [360, 740], [375, 812], [390, 844], [412, 915]] as const) {
+      // The 36 px figures stand on this baseline (hud.ts), with nothing below it.
+      const count = headlineBaseline(height, true) + COUNT_BELOW_HEADLINE;
+      for (const touch of [false, true]) {
+        const slot = captionSlot(scene(width, height, "knockdown", { touch }));
+        const top = slot === null ? null : slot.anchor === "top" ? slot.y : slot.y - 74 * slot.scale;
+        expect(top === null || top >= count + 4, `${width}x${height}${touch ? " with the pads" : ""}: ${top} under ${count}`).toBe(true);
+      }
+    }
+    expect(captionSlot(scene(390, 844, "knockdown", { touch: true }))?.y).toBeGreaterThanOrEqual(headlineBaseline(844, true) + COUNT_BELOW_HEADLINE + 4);
   });
 
   it("keeps clear of the replay tag", () => {

@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { punchTiming, REST_CORNER_OFFSET, totalTicks } from "../manifest";
 import { buildArena } from "./arena";
 import { CameraDirector, ceremonyShot, cornerFrame, cornerPoint, cornerShot, cornerShotProgress, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE } from "./camera";
+import { captionSlot, drawCaption } from "./caption";
 import { bloodPatternFor, Effects3D } from "./effects";
 import { CLOCK_PORTRAIT_RADIUS, cardRows, decisionLabel, drawHud, finalRevealDelay as revealDelay, hudScale, plateDetails, REFEREE_REVEAL_DELAY_SECONDS, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, PLATE_PORTRAIT_RADIUS, RESULT_CARD_FOOTER, resultCard, resultCardLayout, RoundClock, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
 import { buildRing, disposeRing, nearRopeOpacityFor, ROPE_FLEX_GLSL, ROPE_GIVE_GLSL, ropePress } from "./ring";
@@ -889,17 +890,31 @@ describe("the broadcast HUD after the QA pass", () => {
     for (const detail of details) expect(ctx.measureText(detail).width).toBeLessThanOrEqual((390 - 56) / 2 - 24);
   });
 
-  it("keeps the knockdown headline below the top bar and the round card on every screen", () => {
-    for (const [width, height, top] of [[844, 390, 42], [390, 844, 112], [1280, 720, 42]] as const) {
+  it("keeps the knockdown headline below the top bar and the round card, and the commentary caption off the count, on every screen", () => {
+    const line = { speaker: "play" as const, text: "Down goes Two! What a right hand from One, and the referee starts the count!", priority: 95, urgent: true, hold: 3, card: null };
+    for (const [width, height, top] of [[844, 390, 42], [390, 844, 112], [1280, 720, 42], [320, 568, 112], [360, 640, 112], [375, 667, 112], [360, 740, 112], [375, 812, 112]] as const) {
       const ctx = mockHudContext([]);
       const ys: number[] = [];
+      let count = 0;
       let font = "";
       Object.defineProperty(ctx, "font", { get: () => font, set: (value: string) => { font = value; } });
       const fill = ctx.fillText.bind(ctx);
-      ctx.fillText = (text: string, x: number, y: number) => { if (text === "KNOCKDOWN" && font.includes("44px")) ys.push(y); fill(text, x, y); };
+      ctx.fillText = (text: string, x: number, y: number) => {
+        if (text === "KNOCKDOWN" && font.includes("44px")) ys.push(y);
+        if (text.startsWith("COUNT") && font.includes("36px")) count = y;
+        fill(text, x, y);
+      };
       drawHud(ctx, width, height, down(3, false), players, "one", null, 0, 30);
       expect(ys.length).toBeGreaterThan(0);
       for (const y of ys) expect(y - 36).toBeGreaterThanOrEqual(top);
+      // The caption is drawn after the HUD, over it: on a phone it starts under the count's figures or not at all.
+      for (const touch of [false, true]) {
+        const slot = captionSlot({ width, height, phase: "knockdown", resultTop: null, touch, hint: false, viewerDown: false, replay: false });
+        if (slot === null) continue;
+        const plates: number[] = [];
+        drawCaption(Object.assign(mockHudContext([]), { fillRect: (_x: number, y: number) => plates.push(y) }), { line, opacity: 1, entering: 0 }, slot, true);
+        expect(plates[0], `${width}x${height}${touch ? " with the pads" : ""}`).toBeGreaterThanOrEqual(count + 4);
+      }
     }
   });
 

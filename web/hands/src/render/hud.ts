@@ -413,7 +413,9 @@ export function finalRevealDelay(final: FinalMessage | null): number {
 }
 
 /** Below the top bar, or below the round card where a phone puts it under the top bar. */
-const headlineBaseline = (height: number, compact: boolean): number => Math.max(height * 0.16, (compact ? 112 : 56) + 40);
+export const headlineBaseline = (height: number, compact: boolean): number => Math.max(height * 0.16, (compact ? 112 : 56) + 40);
+/** How far below the headline the knockdown count's baseline sits. */
+export const COUNT_BELOW_HEADLINE = 64;
 /** Engine latency that is worth telling a player about on the broadcast screen. */
 export const LAG_WARNING_MS = 120;
 
@@ -554,9 +556,9 @@ export function drawHud(
         ctx.font = "900 36px Inter, system-ui, sans-serif";
         ctx.lineWidth = 5;
         ctx.strokeStyle = "rgba(0,0,0,0.75)";
-        ctx.strokeText(`COUNT ${count}`, width / 2, headline + 64);
+        ctx.strokeText(`COUNT ${count}`, width / 2, headline + COUNT_BELOW_HEADLINE);
         ctx.fillStyle = "#ffd77a";
-        ctx.fillText(`COUNT ${count}`, width / 2, headline + 64);
+        ctx.fillText(`COUNT ${count}`, width / 2, headline + COUNT_BELOW_HEADLINE);
         ctx.restore();
       }
     } else {
