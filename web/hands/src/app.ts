@@ -18,7 +18,7 @@ const CONTACT_FEEDBACK_KINDS = new Set(["hit", "counter_hit", "block", "perfect_
 // The room keeps the finished bout for its result hold (ten seconds by default); a rejoin inside
 // that window only replays the old final, so the rematch waits it out and retries if it still hits it.
 const CONTROL_HINT_KEYBOARD = "Move WASD · Jab F/J · Straight R/U · Hook G/H · Uppercut T/Y · Guard Q/E · Body Shift · Power Alt";
-const CONTROL_HINT_TOUCH = "Left side: drag to move · Right pads: L/R punches · Hold BODY, POWER or GUARD";
+const CONTROL_HINT_TOUCH = "Left side: drag to move · Right pads: L/R punches · Hold BODY, POWER or GUARD · Tap SLIP, WEAVE, PULL or CLINCH";
 const REMATCH_HOLD_MS = 11_000;
 /** How long the finish plays without the overlay while the result is still on its way. */
 const RESULT_WAIT_MS = 4_000;

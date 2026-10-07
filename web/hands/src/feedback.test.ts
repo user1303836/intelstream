@@ -210,6 +210,31 @@ describe("authoritative audio and haptics", () => {
     expect(playEffect).toHaveBeenCalledOnce();
   });
 
+  it("vibrates a phone that has no pad to rumble, only with Haptics on and never on a desktop", () => {
+    const vibrate = vi.fn((_duration: number) => true);
+    Object.defineProperty(navigator, "vibrate", { configurable: true, value: vibrate });
+    Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [] });
+    let coarse = true;
+    vi.mocked(window.matchMedia).mockImplementation((query: string) => ({ matches: coarse && query === "(pointer: coarse)", media: query, onchange: null, addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn() }));
+    try {
+      let haptics = true;
+      const feedback = new HapticFeedback(() => ({ ...settings, haptics }));
+      const hit = { event_id: 1, tick: 1, kind: "hit", actor_id: null, target_id: null, amount: 1, detail: "", blood: 0, direction: 0, action_id: null };
+      feedback.event(hit);
+      feedback.event({ ...hit, event_id: 2, kind: "bell" });
+      expect(vibrate).toHaveBeenCalledOnce();
+      expect(vibrate).toHaveBeenCalledWith(85);
+      haptics = false;
+      feedback.event({ ...hit, event_id: 3 });
+      haptics = true;
+      coarse = false;
+      feedback.event({ ...hit, event_id: 4 });
+      expect(vibrate).toHaveBeenCalledOnce();
+    } finally {
+      delete (navigator as { vibrate?: unknown }).vibrate;
+    }
+  });
+
   it("tolerates absent and throwing gamepad APIs", () => {
     const haptics = new HapticFeedback(() => settings);
     Object.defineProperty(navigator, "getGamepads", { configurable: true, value: undefined });
