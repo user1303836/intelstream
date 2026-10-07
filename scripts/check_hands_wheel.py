@@ -28,7 +28,8 @@ ABSOLUTE_LOCAL_OR_HANDS_ORIGIN = re.compile(
     re.IGNORECASE,
 )
 # These are the complete external URL literals carried by reviewed client code.
-# They are pinned SDK metadata or model attribution, not Hands runtime targets.
+# Apart from Discord's avatar host they are pinned SDK metadata or model attribution,
+# not Hands runtime targets.
 REVIEWED_EXTERNAL_URL_LITERALS = {
     "https://github.com/uuidjs/uuid#getrandomvalues-not-supported",
     "https://discord.com",
@@ -40,6 +41,8 @@ REVIEWED_EXTERNAL_URL_LITERALS = {
     "https://staging.discord.co",
     "http://localhost:3333",
     "https://pax.discord.com",
+    # Discord's image host, for the players' own avatars (image requests only).
+    "https://cdn.discordapp.com/avatars/",
     # Texel Boxer source and CC BY 4.0 license attribution shown in-app.
     "https://sketchfab.com/3d-models/boxer-84767168720948b38728ff78ee6f6090",
     "https://creativecommons.org/licenses/by/4.0/",
