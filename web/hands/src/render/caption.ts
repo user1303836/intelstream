@@ -95,8 +95,11 @@ export function drawCaption(ctx: CanvasRenderingContext2D, caption: Caption, slo
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.textBaseline = "alphabetic";
-  if (caption.line.card !== null) drawCard(ctx, caption.line.card, slot, slide);
-  else drawLine(ctx, caption.line, slot, slide);
+  // The dark plate is all but invisible over the arena while it fades, so the words fade faster than the plate
+  // and never float over the fighters as ghost text.
+  const textAlpha = alpha * alpha;
+  if (caption.line.card !== null) drawCard(ctx, caption.line.card, slot, slide, textAlpha);
+  else drawLine(ctx, caption.line, slot, slide, textAlpha);
   ctx.restore();
 }
 
@@ -126,7 +129,7 @@ export function splitLine(text: string, fits: (part: string) => boolean): [strin
   return space > 0 ? [text.slice(0, space), text.slice(space + 1)] : [text, ""];
 }
 
-function drawLine(ctx: CanvasRenderingContext2D, line: BroadcastLine, slot: CaptionSlot, slide: number): void {
+function drawLine(ctx: CanvasRenderingContext2D, line: BroadcastLine, slot: CaptionSlot, slide: number, textAlpha: number): void {
   const s = slot.scale;
   const padX = Math.round(14 * s);
   const tagSize = Math.round(10 * s);
@@ -152,6 +155,7 @@ function drawLine(ctx: CanvasRenderingContext2D, line: BroadcastLine, slot: Capt
   ctx.fillRect(left, top, width, height);
   ctx.fillStyle = accent;
   ctx.fillRect(left, top, 4, height);
+  ctx.globalAlpha = textAlpha;
   ctx.textAlign = "left";
   ctx.font = `800 ${tagSize}px ${FAMILY}`;
   ctx.fillText(tag, left + 4 + padX, top + head);
@@ -178,7 +182,7 @@ export function cardMetrics(scale: number, hasDetail: boolean, room: number | nu
   return { kicker, title: fitted, ...last, height: heightOf(last, fitted) };
 }
 
-function drawCard(ctx: CanvasRenderingContext2D, card: AnnouncerCard, slot: CaptionSlot, slide: number): void {
+function drawCard(ctx: CanvasRenderingContext2D, card: AnnouncerCard, slot: CaptionSlot, slide: number, textAlpha: number): void {
   const s = slot.scale;
   const pad = Math.round(18 * s);
   const inner = slot.maxWidth - pad * 2;
@@ -201,6 +205,7 @@ function drawCard(ctx: CanvasRenderingContext2D, card: AnnouncerCard, slot: Capt
   ctx.fillRect(left, top, width, height);
   ctx.fillStyle = accent;
   ctx.fillRect(left, top, width, 3);
+  ctx.globalAlpha = textAlpha;
   ctx.textAlign = "center";
   let baseline = top + (height - content) / 2 + metrics.pad + kickerSize;
   ctx.font = `800 ${kickerSize}px ${FAMILY}`;
