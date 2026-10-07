@@ -478,6 +478,29 @@ export function visualSeparation(
   };
 }
 
+const cardTops = new WeakMap<FinalMessage, { readonly width: number; readonly height: number; readonly top: number }>();
+
+/**
+ * The top of the result card on a screen this size. The caption and the announcement shot ask on every
+ * frame, and the card cannot change once the result is in, so it is laid out once per result and screen size.
+ */
+export function resultCardTop(
+  final: FinalMessage,
+  width: number,
+  height: number,
+  fighters: readonly [FighterSnapshot, FighterSnapshot],
+  players: Readonly<Record<string, PublicPlayer>>,
+  roundStats: Pick<RoundStatsTracker, "total">,
+  viewerId: string | null,
+): number {
+  const known = cardTops.get(final);
+  if (known !== undefined && known.width === width && known.height === height) return known.top;
+  const punches = fighters.map((fighter) => roundStats.total(fighter.player_id)) as [RoundPunchStats, RoundPunchStats];
+  const top = resultCardLayout(width, height, resultCard(final, fighters, players, punches), fighters.some((fighter) => fighter.player_id === viewerId)).y;
+  cardTops.set(final, { width, height, top });
+  return top;
+}
+
 /** A head vertex in world space as the GPU draws it: reshaped by the fighter's look, then posed. */
 function posedHeadVertex(boxer: SkinnedBoxer, vertex: number, out: THREE.Vector3): THREE.Vector3 {
   const mesh = boxer.headMesh;
@@ -1124,9 +1147,8 @@ export class FightRenderer {
     const latest = this.buffer.latest();
     if (ceremony === null || ceremony.arrivedAt === null || this.replay !== null || this.final === null || latest === null) return null;
     const { width, height } = this.hudViewport;
-    const punches = latest.fighters.map((fighter) => this.roundStats.total(fighter.player_id)) as [RoundPunchStats, RoundPunchStats];
-    const layout = resultCardLayout(width, height, resultCard(this.final, latest.fighters, this.players, punches), latest.fighters.some((fighter) => fighter.player_id === this.viewerId));
-    const shot = ceremonyShot(this.camera.aspect, this.camera.fov, (height - layout.y) / Math.max(1, height));
+    const top = resultCardTop(this.final, width, height, latest.fighters, this.players, this.roundStats, this.viewerId);
+    const shot = ceremonyShot(this.camera.aspect, this.camera.fov, (height - top) / Math.max(1, height));
     const drift = this.settings().reducedMotion ? 0 : Math.sin((seconds - ceremony.arrivedAt) * 0.35) * 0.06 * shot.distance;
     this.cornerPosition.set(drift, shot.height + 0.05 * shot.distance, shot.distance);
     this.cornerLookAt.set(0, shot.height, 0);
@@ -1727,6 +1749,7 @@ export class FightRenderer {
     const low = this.scaler.scale <= LOW_TIER_SCALE;
     this.bloomPass.enabled = !low;
     if (this.keyLight !== null) this.keyLight.castShadow = !low;
+    this.arena.setLowTier(low);
     const shadowSize = this.scaler.scale < 0.8 ? 1024 : 2048;
     const shadow = this.keyLight?.shadow;
     if (shadow !== undefined && shadow.mapSize.x !== shadowSize) {
@@ -2280,7 +2303,7 @@ export class FightRenderer {
     }
     if (caption === null || !settings.commentary) return;
     const viewer = snapshot.fighters.find((fighter) => fighter.player_id === this.viewerId);
-    const resultTop = final === null ? null : resultCardLayout(width, height, resultCard(final, snapshot.fighters, this.players, snapshot.fighters.map((fighter) => this.roundStats.total(fighter.player_id)) as [RoundPunchStats, RoundPunchStats]), viewer !== undefined).y;
+    const resultTop = final === null ? null : resultCardTop(final, width, height, snapshot.fighters, this.players, this.roundStats, this.viewerId);
     const slot = captionSlot({ width, height, phase: snapshot.phase, resultTop, touch: this.touchControls && viewer !== undefined, hint: snapshot.phase === "countdown" && viewer !== undefined, viewerDown: viewer?.is_downed === true, replay: this.replay !== null });
     if (slot !== null) drawCaption(ctx, caption, slot, settings.reducedMotion);
   }

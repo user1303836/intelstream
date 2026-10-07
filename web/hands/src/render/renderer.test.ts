@@ -3,7 +3,7 @@ import { fighter, mockHudContext, snapshot, type DrawnPicture } from "../test/fi
 import { Avatars } from "./avatars";
 import { RoundClock } from "./hud";
 import type { CombatEvent, EngineSnapshot, MatchResult } from "../types";
-import { arcadeInjuryFor, canStartPunch, CEREMONY_MARKS, ceremonyStep, contactParticipants, contactPresentationPlan, cornersAtWork, FightRenderer, ownViewPhase, isArcadeInjuryCandidate, knockdownFinisher, presentationTickFor, refereeSpacing, replayCameraSide, replayReattaches, visualSeparation } from "./renderer";
+import { arcadeInjuryFor, canStartPunch, CEREMONY_MARKS, ceremonyStep, contactParticipants, contactPresentationPlan, cornersAtWork, FightRenderer, ownViewPhase, isArcadeInjuryCandidate, knockdownFinisher, presentationTickFor, refereeSpacing, replayCameraSide, replayReattaches, visualSeparation, resultCardTop } from "./renderer";
 import { RockedVision } from "./rocked";
 import { worldMapping } from "./world";
 
@@ -628,5 +628,38 @@ describe("the player's own camera", () => {
     expect(ownViewPhase({ phase: "rest" })).toBe(false);
     expect(ownViewPhase({ phase: "complete" })).toBe(false);
     expect(ownViewPhase(null)).toBe(false);
+  });
+});
+
+describe("the result card's place on screen", () => {
+  it("is laid out once per result and screen size, though it is asked for every frame", () => {
+    const final = { version: 3 as const, type: "final" as const, match_id: "m", winner_id: "one", method: "decision" as const, round: 3, scorecards: [], ratings: {} };
+    const total = vi.fn(() => ({ thrown: 4, landed: 2, jabsThrown: 1, jabsLanded: 1 }));
+    const fighters = snapshot().fighters;
+    const first = resultCardTop(final, 1280, 720, fighters, {}, { total }, "one");
+    for (let frame = 0; frame < 60; frame += 1) expect(resultCardTop(final, 1280, 720, fighters, {}, { total }, "one")).toBe(first);
+    expect(total).toHaveBeenCalledTimes(2);
+    const phone = resultCardTop(final, 390, 844, fighters, {}, { total }, "one");
+    expect(total).toHaveBeenCalledTimes(4);
+    expect(phone).not.toBe(first);
+  });
+});
+
+describe("the low quality tier", () => {
+  const apply = (FightRenderer.prototype as unknown as { applyResolutionScale(this: unknown): void }).applyResolutionScale;
+  const rig = (scale: number) => ({
+    basePixelRatio: 2, scaler: { scale }, renderer: { setPixelRatio: vi.fn() }, composer: { setPixelRatio: vi.fn() },
+    bloomPass: { enabled: true }, keyLight: null, arena: { setLowTier: vi.fn() },
+  });
+
+  it("sheds the crowd's most expensive work along with the bloom, and gives it back", () => {
+    const struggling = rig(0.5);
+    apply.call(struggling);
+    expect(struggling.arena.setLowTier).toHaveBeenLastCalledWith(true);
+    expect(struggling.bloomPass.enabled).toBe(false);
+    const fine = rig(1);
+    apply.call(fine);
+    expect(fine.arena.setLowTier).toHaveBeenLastCalledWith(false);
+    expect(fine.bloomPass.enabled).toBe(true);
   });
 });

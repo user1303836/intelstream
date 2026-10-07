@@ -139,16 +139,58 @@ describe("crowd geometry", () => {
     expect(crowd.group.getObjectByName("stands")).toBeInstanceOf(THREE.Mesh);
     const arm = drawn[3]!;
     const after = new THREE.Matrix4();
+    // The first and the last spectator are in different halves of the crowd.
+    const watched = [0, total - 1];
     const seated = [new THREE.Matrix4(), new THREE.Matrix4()];
-    for (const [index, matrix] of seated.entries()) arm.getMatrixAt(index, matrix);
-    const moved = (): boolean[] => seated.map((matrix, index) => {
-      arm.getMatrixAt(index, after);
+    for (const [at, matrix] of seated.entries()) arm.getMatrixAt(watched[at]!, matrix);
+    const moved = (): boolean[] => seated.map((matrix, at) => {
+      arm.getMatrixAt(watched[at]!, after);
       return !after.equals(matrix);
     });
     crowd.update(2, 1);
     expect(moved().filter(Boolean)).toHaveLength(1);
     crowd.update(2, 1);
     expect(moved()).toEqual([true, true]);
+    crowd.dispose();
+  });
+});
+
+describe("crowd cost", () => {
+  const parts = (crowd: ReturnType<typeof buildCrowd>): THREE.InstancedMesh[] => crowd.group.children.filter((child): child is THREE.InstancedMesh => child instanceof THREE.InstancedMesh);
+
+  it("uploads only the half of the crowd that moved", () => {
+    const crowd = buildCrowd(seeded(3));
+    const [torsos, , , armsLeft] = parts(crowd);
+    const half = Math.ceil(total / 2);
+    const ranges = [0, 1].map((frame) => {
+      crowd.update(1 + frame / 50, 0.5);
+      expect(armsLeft!.instanceMatrix.updateRanges).toEqual(torsos!.instanceMatrix.updateRanges);
+      return torsos!.instanceMatrix.updateRanges.map(({ start, count }) => ({ start, count }));
+    });
+    expect(ranges.flat().sort((a, b) => a.start - b.start)).toEqual([{ start: 0, count: half * 16 }, { start: half * 16, count: (total - half) * 16 }]);
+    crowd.update(1.04, 0.5, true);
+    expect(torsos!.instanceMatrix.updateRanges).toEqual([]);
+    crowd.dispose();
+  });
+
+  it("at the low tier moves a quarter at a time and puts its arms out of sight", () => {
+    const crowd = buildCrowd(seeded(3));
+    const [torsos, , , armsLeft, armsRight] = parts(crowd);
+    crowd.setLowTier(true);
+    expect(armsLeft!.visible).toBe(false);
+    expect(armsRight!.visible).toBe(false);
+    const armsVersion = armsLeft!.instanceMatrix.version;
+    crowd.update(1, 0.5);
+    const [range] = torsos!.instanceMatrix.updateRanges;
+    expect(torsos!.instanceMatrix.updateRanges).toHaveLength(1);
+    expect(range!.count).toBeLessThanOrEqual(Math.ceil(total / 4) * 16);
+    expect(range!.start % (Math.ceil(total / 4) * 16)).toBe(0);
+    expect(armsLeft!.instanceMatrix.version).toBe(armsVersion);
+    crowd.setLowTier(false);
+    expect(armsLeft!.visible).toBe(true);
+    crowd.update(1.02, 0.5);
+    expect(armsLeft!.instanceMatrix.version).toBeGreaterThan(armsVersion);
+    expect(armsLeft!.instanceMatrix.updateRanges).toEqual([]);
     crowd.dispose();
   });
 });

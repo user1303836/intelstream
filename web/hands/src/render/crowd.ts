@@ -218,6 +218,8 @@ export interface BuiltCrowd {
   readonly group: THREE.Group;
   readonly spectators: readonly Spectator[];
   readonly update: (time: number, excitement: number, everyone?: boolean) => void;
+  /** At the low quality tier the crowd moves a quarter at a time and drops the arms, which are a third of its triangles. */
+  readonly setLowTier: (low: boolean) => void;
   readonly dispose: () => void;
 }
 
@@ -251,6 +253,7 @@ export function buildCrowd(rand: () => number, tiers: readonly CrowdTier[] = CRO
   const armsLeft = new THREE.InstancedMesh(geometries[3], cloth, total);
   const armsRight = new THREE.InstancedMesh(geometries[3], cloth, total);
   const meshes = [torsos, heads, hair, armsLeft, armsRight];
+  const bodies = [torsos, heads, hair];
   for (const mesh of meshes) {
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     mesh.frustumCulled = false;
@@ -289,12 +292,20 @@ export function buildCrowd(rand: () => number, tiers: readonly CrowdTier[] = CRO
     mesh.setMatrixAt(index, limb);
   };
   let pass = 0;
-  // Half the crowd moves on each call, which halves the work and cannot be seen.
+  let lowTier = false;
+  let refreshAll = false;
+  // Half the crowd moves on each call (a quarter at the low tier), which cannot be seen, and only the
+  // block that moved is uploaded.
   const update = (time: number, excitement: number, everyone = false): void => {
-    const step = everyone ? 1 : 2;
-    const first = everyone ? 0 : pass % 2;
+    const all = everyone || refreshAll;
+    refreshAll = false;
+    const parts = all ? 1 : lowTier ? 4 : 2;
+    const block = Math.ceil(total / parts);
+    const first = (pass % parts) * block;
+    const last = Math.min(total, first + block);
     pass += 1;
-    for (let index = first; index < total; index += step) {
+    const armed = !lowTier;
+    for (let index = first; index < last; index += 1) {
       const spectator = spectators[index]!;
       spectatorPose(spectator, time, excitement, pose);
       turn.setFromAxisAngle(up, spectator.yaw + pose.sway);
@@ -302,10 +313,25 @@ export function buildCrowd(rand: () => number, tiers: readonly CrowdTier[] = CRO
       torsos.setMatrixAt(index, body);
       heads.setMatrixAt(index, body);
       hair.setMatrixAt(index, body);
-      hang(armsLeft, index, 1, pose.armLeft);
-      hang(armsRight, index, -1, pose.armRight);
+      if (armed) {
+        hang(armsLeft, index, 1, pose.armLeft);
+        hang(armsRight, index, -1, pose.armRight);
+      }
     }
-    for (const mesh of meshes) mesh.instanceMatrix.needsUpdate = true;
+    for (const mesh of armed ? meshes : bodies) {
+      const matrices = mesh.instanceMatrix;
+      matrices.clearUpdateRanges();
+      if (!all) matrices.addUpdateRange(first * 16, (last - first) * 16);
+      matrices.needsUpdate = true;
+    }
+  };
+  const setLowTier = (low: boolean): void => {
+    if (low === lowTier) return;
+    lowTier = low;
+    armsLeft.visible = !low;
+    armsRight.visible = !low;
+    // Arms that were not moved while hidden catch up with everyone else at once.
+    if (!low) refreshAll = true;
   };
   update(0, 0, true);
 
@@ -315,5 +341,5 @@ export function buildCrowd(rand: () => number, tiers: readonly CrowdTier[] = CRO
     face.dispose();
     for (const mesh of meshes) mesh.dispose();
   };
-  return { group, spectators, update, dispose };
+  return { group, spectators, update, setLowTier, dispose };
 }

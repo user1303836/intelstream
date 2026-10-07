@@ -175,6 +175,11 @@ const cutFace = new THREE.Vector3();
  * in turn. The surface is written into `geometry`, measured from `centre`, and faces `outward`. The
  * texture runs along `across` when it is given, so a wound with a front and back turns with the body.
  */
+/** The normal at a corner of a cut's rim when the cut is shaded as one rounded surface, left in `cutFace`. */
+function roundedRimNormal(end: THREE.Vector3, outward: THREE.Vector3, reach: number): void {
+  cutFace.copy(end).addScaledVector(outward, -end.dot(outward)).multiplyScalar(CUT_ROUNDING / reach).add(outward).normalize();
+}
+
 export function closeCut(geometry: THREE.BufferGeometry, rim: ArrayLike<number>, centre: THREE.Vector3, outward: THREE.Vector3, rise = 0.01, across?: THREE.Vector3): void {
   const edges = Math.floor(rim.length / 6);
   let position = geometry.getAttribute("position") as THREE.BufferAttribute | undefined;
@@ -206,10 +211,10 @@ export function closeCut(geometry: THREE.BufferGeometry, rim: ArrayLike<number>,
     position.setXYZ(edge * 3 + 2, second.x, second.y, second.z);
     // Shaded as one rounded surface: the rim of a cut is ragged, and its own faces would glint like an umbrella.
     normal.setXYZ(edge * 3, outward.x, outward.y, outward.z);
-    for (const [corner, end] of [[1, first], [2, second]] as const) {
-      cutFace.copy(end).addScaledVector(outward, -end.dot(outward)).multiplyScalar(CUT_ROUNDING / reach).add(outward).normalize();
-      normal.setXYZ(edge * 3 + corner, cutFace.x, cutFace.y, cutFace.z);
-    }
+    roundedRimNormal(first, outward, reach);
+    normal.setXYZ(edge * 3 + 1, cutFace.x, cutFace.y, cutFace.z);
+    roundedRimNormal(second, outward, reach);
+    normal.setXYZ(edge * 3 + 2, cutFace.x, cutFace.y, cutFace.z);
     uv.setXY(edge * 3, 0.5, 0.5);
     uv.setXY(edge * 3 + 1, 0.5 + (0.5 * first.dot(cutAcross)) / reach, 0.5 + (0.5 * first.dot(cutAlong)) / reach);
     uv.setXY(edge * 3 + 2, 0.5 + (0.5 * second.dot(cutAcross)) / reach, 0.5 + (0.5 * second.dot(cutAlong)) / reach);
