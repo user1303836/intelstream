@@ -91,7 +91,10 @@ vInjuryPos = transformed;
   float impactDistance = distance(transformed, uInjuryImpact.xyz);
   float impactWeight = 1.0 - smoothstep(0.0, max(uInjuryImpact.w, 0.001), impactDistance);
   transformed += uInjuryImpactPush * (impactWeight * impactWeight);
-  float jawMask = (1.0 - smoothstep(uInjuryJawLevel - 2.5, uInjuryJawLevel + 1.5, transformed.y)) * smoothstep(-6.0, 0.0, transformed.z);
+  // Only the mandible: the mask fades out again under the chin, above the throat and the seam with the body.
+  float jawMask = (1.0 - smoothstep(uInjuryJawLevel - 2.5, uInjuryJawLevel + 1.5, transformed.y))
+    * smoothstep(uInjuryJawLevel - 6.0, uInjuryJawLevel - 4.0, transformed.y)
+    * smoothstep(-6.0, 0.0, transformed.z);
   transformed.x += uInjuryJaw * 1.7 * jawMask;
   transformed.y -= uInjuryJaw * 0.9 * jawMask;
   transformed.z -= uInjuryJaw * 0.4 * jawMask;
