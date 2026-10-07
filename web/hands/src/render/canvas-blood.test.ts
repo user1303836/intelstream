@@ -5,6 +5,90 @@ import { Effects3D } from "./effects";
 import { poolRadius } from "./renderer";
 import { CANVAS_TOP, RING_FIGHT_HALF } from "./world";
 
+interface Shape { x: number; y: number; rx: number; ry: number; turn: number }
+
+/**
+ * A 2D context that paints in software, alpha only, the shapes a blood stamp is drawn with: ellipses
+ * and circles, filled (non-zero, so the shapes of one path fill as their union) or stroked, over what
+ * is there or cutting it out.
+ */
+class PaintedAlpha {
+  readonly alpha: Float32Array;
+  globalAlpha = 1;
+  globalCompositeOperation = "source-over";
+  lineWidth = 1;
+  fillStyle: unknown = "";
+  strokeStyle: unknown = "";
+  private path: Shape[] = [];
+
+  constructor(readonly width: number, readonly height: number) {
+    this.alpha = new Float32Array(width * height);
+  }
+
+  static inside(shape: Shape, x: number, y: number, grow: number): boolean {
+    const dx = x - shape.x;
+    const dy = y - shape.y;
+    const u = dx * Math.cos(shape.turn) + dy * Math.sin(shape.turn);
+    const v = -dx * Math.sin(shape.turn) + dy * Math.cos(shape.turn);
+    const rx = shape.rx + grow;
+    const ry = shape.ry + grow;
+    return rx > 0 && ry > 0 && (u * u) / (rx * rx) + (v * v) / (ry * ry) <= 1;
+  }
+
+  clearRect(): void { this.alpha.fill(0); }
+  beginPath(): void { this.path = []; }
+  moveTo(): void {}
+  ellipse(x: number, y: number, rx: number, ry: number, turn: number): void { this.path.push({ x, y, rx, ry, turn }); }
+  arc(x: number, y: number, radius: number): void { this.path.push({ x, y, rx: radius, ry: radius, turn: 0 }); }
+  fill(): void { this.paint(0, (shape, x, y) => PaintedAlpha.inside(shape, x, y, 0)); }
+  stroke(): void {
+    const half = this.lineWidth / 2;
+    this.paint(half, (shape, x, y) => PaintedAlpha.inside(shape, x, y, half) && !PaintedAlpha.inside(shape, x, y, -half));
+  }
+  save(): void {}
+  restore(): void {}
+  translate(): void {}
+  rotate(): void {}
+  drawImage(): void {}
+  fillRect(): void {}
+  createRadialGradient(): { addColorStop(): void } { return { addColorStop: () => {} }; }
+
+  /** Four by four samples a pixel over the path's bounds, composited at the global alpha. */
+  private paint(grow: number, covers: (shape: Shape, x: number, y: number) => boolean): void {
+    const reach = (shape: Shape): number => Math.max(shape.rx, shape.ry) + grow + 1;
+    const left = Math.max(0, Math.floor(Math.min(...this.path.map((shape) => shape.x - reach(shape)))));
+    const right = Math.min(this.width, Math.ceil(Math.max(...this.path.map((shape) => shape.x + reach(shape)))));
+    const top = Math.max(0, Math.floor(Math.min(...this.path.map((shape) => shape.y - reach(shape)))));
+    const bottom = Math.min(this.height, Math.ceil(Math.max(...this.path.map((shape) => shape.y + reach(shape)))));
+    for (let y = top; y < bottom; y += 1) {
+      for (let x = left; x < right; x += 1) {
+        let hits = 0;
+        for (let sample = 0; sample < 16; sample += 1) {
+          const px = x + ((sample % 4) + 0.5) / 4;
+          const py = y + (Math.floor(sample / 4) + 0.5) / 4;
+          if (this.path.some((shape) => covers(shape, px, py))) hits += 1;
+        }
+        const paint = (hits / 16) * this.globalAlpha;
+        const index = y * this.width + x;
+        this.alpha[index] = this.globalCompositeOperation === "destination-out" ? this.alpha[index]! * (1 - paint) : this.alpha[index]! + paint * (1 - this.alpha[index]!);
+      }
+    }
+  }
+}
+
+/** Paints every canvas made inside `make` in software, and hands back what each one holds. */
+function paintedCanvases<T>(make: () => T): { made: T; painted: Map<HTMLCanvasElement, PaintedAlpha> } {
+  const painted = new Map<HTMLCanvasElement, PaintedAlpha>();
+  const getContext = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(function (this: HTMLCanvasElement) {
+    const context = painted.get(this) ?? new PaintedAlpha(this.width, this.height);
+    painted.set(this, context);
+    return context as unknown as CanvasRenderingContext2D;
+  });
+  const made = make();
+  getContext.mockRestore();
+  return { made, painted };
+}
+
 describe("blood on the canvas", () => {
   it("is painted over the whole canvas the fighters stand on, the ring's corners at the texture's", () => {
     const blood = new CanvasBlood(new THREE.Scene(), 512);
@@ -26,6 +110,37 @@ describe("blood on the canvas", () => {
       expect(recipe.rim).toBeGreaterThan(recipe.fill + 0.15);
     }
     expect(splatRecipe(7)).toEqual(splatRecipe(7));
+  });
+
+  it("is painted lighter in the middle than at the rim, however many of its lobes overlap there", () => {
+    const { made: blood, painted } = paintedCanvases(() => new CanvasBlood(new THREE.Scene(), 256));
+    const stamps = (blood as unknown as { stamps: HTMLCanvasElement[] }).stamps;
+    expect(stamps).toHaveLength(4);
+    for (const [index, stamp] of stamps.entries()) {
+      const recipe = splatRecipe(0x3a1f_00d1 + index * 977);
+      const alpha = painted.get(stamp)!.alpha;
+      const within = (x: number, y: number, grow: number): boolean => recipe.lobes.some((lobe) => PaintedAlpha.inside(lobe, x, y, grow));
+      let centre = 0;
+      let centreCount = 0;
+      let rim = 0;
+      let rimCount = 0;
+      for (let y = 0; y < stamp.height; y += 1) {
+        for (let x = 0; x < stamp.width; x += 1) {
+          const a = alpha[y * stamp.width + x]!;
+          if (Math.hypot(x + 0.5 - 64, y + 0.5 - 64) <= 6) {
+            centre += a;
+            centreCount += 1;
+          } else if (within(x + 0.5, y + 0.5, 1.75) && !within(x + 0.5, y + 0.5, -1.5)) {
+            rim += a;
+            rimCount += 1;
+          }
+        }
+      }
+      // Where four or five lobes lie over each other the middle is as light as anywhere inside the blot.
+      expect(centre / centreCount).toBeCloseTo(recipe.fill, 2);
+      expect(centre / centreCount).toBeLessThan(rim / rimCount - 0.15);
+    }
+    blood.dispose();
   });
 
   it("is matte, as blood soaked into canvas is, so the ring lights do not glaze it lavender", () => {

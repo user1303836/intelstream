@@ -47,20 +47,23 @@ function splatStamp(seed: number): HTMLCanvasElement {
       ctx.ellipse(lobe.x, lobe.y, lobe.rx, lobe.ry, lobe.turn, 0, Math.PI * 2);
       ctx.stroke();
     }
+    // The middle is the lobes' union, cleared and filled once: filled lobe by lobe, it darkened where
+    // they overlap, which is the middle, until it was as dark as the rim.
+    const middle = (): void => {
+      ctx.beginPath();
+      for (const lobe of recipe.lobes) {
+        const rx = Math.max(1, lobe.rx - 1.5);
+        ctx.moveTo(lobe.x + Math.cos(lobe.turn) * rx, lobe.y + Math.sin(lobe.turn) * rx);
+        ctx.ellipse(lobe.x, lobe.y, rx, Math.max(1, lobe.ry - 1.5), lobe.turn, 0, Math.PI * 2);
+      }
+      ctx.fill();
+    };
     ctx.globalCompositeOperation = "destination-out";
     ctx.globalAlpha = 1;
-    for (const lobe of recipe.lobes) {
-      ctx.beginPath();
-      ctx.ellipse(lobe.x, lobe.y, Math.max(1, lobe.rx - 1.5), Math.max(1, lobe.ry - 1.5), lobe.turn, 0, Math.PI * 2);
-      ctx.fill();
-    }
+    middle();
     ctx.globalCompositeOperation = "source-over";
     ctx.globalAlpha = recipe.fill;
-    for (const lobe of recipe.lobes) {
-      ctx.beginPath();
-      ctx.ellipse(lobe.x, lobe.y, Math.max(1, lobe.rx - 1.5), Math.max(1, lobe.ry - 1.5), lobe.turn, 0, Math.PI * 2);
-      ctx.fill();
-    }
+    middle();
     for (let i = 0; i < recipe.satellites; i += 1) {
       const angle = rand() * Math.PI * 2;
       const distance = 26 + rand() * 22;
