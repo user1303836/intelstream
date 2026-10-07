@@ -699,9 +699,11 @@ class HandsRoom:
                 slot.grace_remaining = self.config.reconnect_grace_seconds
                 slot.reconnect_deadline = self._clock() + self.config.reconnect_grace_seconds
                 # Nothing queued before the pause fires after it, including a frame either
-                # fighter had held back by the input budget.
+                # fighter had held back by the input budget, and nobody keeps walking or
+                # guarding on what he held when it began: inputs during the pause are dropped.
                 if self._engine is not None:
                     self._engine.clear_action_buffers()
+                    self._engine.clear_held_input()
                 for current in self._slots.values():
                     current.deferred_frame = None
                 if self._engine is None:

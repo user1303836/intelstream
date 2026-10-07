@@ -433,6 +433,10 @@ class BoxingEngine:
             fighter.pending_actions.clear()
             fighter.pending_action_expires_tick = 0
 
+    def clear_held_input(self) -> None:
+        for fighter in self._fighters.values():
+            fighter.held_input = InputCommand(0, 0)
+
     def submit_input(self, player_id: str, command: InputCommand) -> bool:
         fighter = self.fighter(player_id)
         if self.result is not None or self.phase is MatchPhase.COMPLETE:

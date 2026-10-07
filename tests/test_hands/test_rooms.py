@@ -21,6 +21,7 @@ from intelstream.hands.rooms import (
 )
 from intelstream.hands.types import (
     ActionKind,
+    DefensivePose,
     EngineSnapshot,
     Hand,
     InputCommand,
@@ -1821,6 +1822,54 @@ async def test_a_frame_held_back_by_the_input_budget_never_fires_after_a_pause(
     assert fighter.last_sequence == 5
     assert not fighter.pending_actions
     assert fighter.held_input.move_x == 0
+    sleep_release.set()
+    await manager.close()
+
+
+async def test_a_pause_returns_both_fighters_held_input_to_neutral(
+    repository: Repository,
+) -> None:
+    sleep_entered = asyncio.Event()
+    sleep_release = asyncio.Event()
+
+    async def controlled_sleep(_delay: float) -> None:
+        sleep_entered.set()
+        await sleep_release.wait()
+
+    manager = HandsRoomManager(
+        repository,
+        config=room_config(round_ticks=1000, reconnect_grace=30.0),
+        sleep=controlled_sleep,
+        match_id_factory=lambda: "match-held-input-pause",
+    )
+    one = await manager.join(player("one"), FakeSocket())
+    two = await manager.join(player("two"), FakeSocket())
+    await sleep_entered.wait()
+    engine = one.room.engine
+    assert engine is not None
+    await one.room.submit_frame(
+        "one",
+        one.connection,
+        encode_client_input(
+            InputCommand(
+                sequence=1,
+                client_tick=engine.tick,
+                move_x=1000,
+                defense=DefensivePose.GUARD_HIGH,
+            )
+        ),
+    )
+    await two.room.submit_frame(
+        "two",
+        two.connection,
+        encode_client_input(InputCommand(sequence=1, client_tick=engine.tick, move_y=-1000)),
+    )
+    assert engine.fighter("one").held_input.move_x == 1000
+
+    await manager.leave(two)
+    for player_id in ("one", "two"):
+        held = engine.fighter(player_id).held_input
+        assert (held.move_x, held.move_y, held.defense) == (0, 0, DefensivePose.NONE)
     sleep_release.set()
     await manager.close()
 
