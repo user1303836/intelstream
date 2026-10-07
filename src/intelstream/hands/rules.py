@@ -84,6 +84,9 @@ HEAD_TRAUMA_PER_DAMAGE_PERCENT: int = _MANIFEST["trauma"]["head_per_damage_perce
 BODY_TRAUMA_PER_DAMAGE_PERCENT: int = _MANIFEST["trauma"]["body_per_damage_percent"]
 EYE_TRAUMA_PER_DAMAGE_PERCENT: int = _MANIFEST["trauma"]["eye_per_damage_percent"]
 CUT_PER_DAMAGE_PERCENT: int = _MANIFEST["trauma"]["cut_per_damage_percent"]
+# A jab is a light punch: it seldom splits the skin and swells the face less than a hook.
+JAB_CUT_PERCENT: int = _MANIFEST["trauma"]["jab_cut_percent"]
+JAB_SWELLING_PERCENT: int = _MANIFEST["trauma"]["jab_swelling_percent"]
 SWELLING_PER_DAMAGE_PERCENT: int = _MANIFEST["trauma"]["swelling_per_damage_percent"]
 POISE_CEILING_PER_HEAD_PERCENT: int = _MANIFEST["trauma"]["poise_ceiling_per_head_percent"]
 POISE_CEILING_FLOOR: int = _MANIFEST["trauma"]["poise_ceiling_floor"]
