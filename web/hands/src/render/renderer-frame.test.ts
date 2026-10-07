@@ -798,4 +798,27 @@ describe("around the fight", () => {
     step({ ...standingEight, phase: "fight" }, 1);
     expect(referee.setRefereeCount).toHaveBeenLastCalledWith(false, 0);
   });
+
+  it("counts over the fighter where the fall took him, and where he walks back from once up", () => {
+    const knockdown = { knockdown: { event_id: 4, tick: 30, kind: "knockdown", actor_id: "one", target_id: "two", amount: 1, detail: "", blood: 0, direction: 1, action_id: null }, hit: null, finisher: null };
+    // The physics carried him 1.2 m from his place in the engine (x = 0.61).
+    const lying = [new THREE.Vector3(2.2, 0, 0), new THREE.Vector3(1.95, 0, 0), new THREE.Vector3(1.7, 0, 0), new THREE.Vector3(1.4, 0, 0.12), new THREE.Vector3(1.4, 0, -0.12)];
+    const body = { centre: (out: THREE.Vector3) => out.set(1.82, 0, 0), bodyPoint: (index: number, out: THREE.Vector3) => out.copy(lying[index]!) };
+    const down = officiating({ lastKnockdown: knockdown });
+    (down.stub.tmpA as THREE.Vector3).set(-2.2, 0, 2.2);
+    (down.stub.tmpB as THREE.Vector3).set(0.61, 0, 0);
+    (down.stub.graphs as Array<{ fallBody: unknown }>)[1]!.fallBody = body;
+    down.step({ ...snapshot(60), phase: "knockdown" as const, fighters: [fighter("one", -360), { ...fighter("two", 100), is_downed: true, get_up_count: 3 }] as const }, 180);
+    const over = down.stub.refereePosition as THREE.Vector3;
+    expect(Math.hypot(over.x - 1.82, over.z)).toBeLessThan(1.4);
+    for (const point of lying) expect(Math.hypot(over.x - point.x, over.z - point.z)).toBeGreaterThan(0.54);
+    // Up from where he lay and walking back: the referee looks him over there, not at his place in the engine.
+    const up = officiating({ lastKnockdown: knockdown });
+    (up.stub.tmpA as THREE.Vector3).set(-2.2, 0, 2.2);
+    (up.stub.tmpB as THREE.Vector3).set(0.61, 0, 0);
+    (up.stub.graphs as Array<Record<string, unknown>>)[1]!.currentRoot = { x: 1.7, z: 0.4 };
+    up.step({ ...snapshot(60), phase: "knockdown" as const, fighters: [fighter("one", -360), { ...fighter("two", 100), get_up_count: 6 }] as const }, 180);
+    const looking = up.stub.refereePosition as THREE.Vector3;
+    expect(Math.hypot(looking.x - 1.7, looking.z - 0.4)).toBeLessThan(1.4);
+  });
 });

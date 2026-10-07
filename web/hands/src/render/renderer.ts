@@ -2677,8 +2677,13 @@ export class FightRenderer {
       ?? null;
     const clinched = snapshot?.fighters.some((fighter) => fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0) ?? false;
     const breaking = counted === null && referee.breaking;
-    const focusX = counted !== null ? this.mapping.x(counted.x) : (this.tmpA.x + this.tmpB.x) / 2;
-    const focusZ = counted !== null ? this.mapping.z(counted.y) : (this.tmpA.z + this.tmpB.z) / 2;
+    // He counts over the fighter where he is: his body where the fall left it, or, once up (a fall the
+    // physics carried off is got up from where it lies), where he is drawn walking back to his place.
+    const countedGraph = counted === null ? undefined : this.graphs?.[snapshot?.fighters.indexOf(counted) ?? -1];
+    const fallen = countedGraph?.fallBody?.centre(this.bodyPoint) ?? null;
+    const risen = counted !== null && !counted.is_downed ? countedGraph?.currentRoot ?? null : null;
+    const focusX = counted === null ? (this.tmpA.x + this.tmpB.x) / 2 : fallen?.x ?? risen?.x ?? this.mapping.x(counted.x);
+    const focusZ = counted === null ? (this.tmpA.z + this.tmpB.z) / 2 : fallen?.z ?? risen?.z ?? this.mapping.z(counted.y);
     const away = this.refereeAway.set(this.refereePosition.x - focusX, 0, this.refereePosition.z - focusZ);
     if (away.lengthSq() < 0.01) away.set(0, 0, -1);
     away.normalize();
