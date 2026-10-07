@@ -83,19 +83,32 @@ describe("celebration", () => {
 });
 
 describe("fall direction", () => {
-  it("drops face down after a hook and onto the back after an uppercut", () => {
-    for (const [punchClass, faceDown] of [["hook", true], ["uppercut", false]] as const) {
-      const { boxer, graph } = makeGraph();
-      const fighter = facingOpponent(baseFighter("one"));
-      const opponent = opponentFor("two");
-      run(graph, fighter, opponent, 10, undefined);
-      graph.react("hit", "head", 1, punchClass, "left", 420);
-      run(graph, { ...fighter, is_downed: true }, opponent, 70, undefined, 5, 10 / 60);
-      const head = bone(boxer, "head");
-      const hips = bone(boxer, "hips");
-      expect(head.y).toBeLessThan(0.45);
-      expect(head.z > hips.z).toBe(faceDown);
+  // The engine's hardest hit does about 153 damage, and the knockdown event that follows the hit carries
+  // the knockdown count (1-3) as its amount, so the fall must not depend on the amount at all.
+  const fall = (punchClass: "hook" | "uppercut" | "straight", target: "head" | "body", hand: "left" | "right", damage: number): { head: THREE.Vector3; hips: THREE.Vector3 } => {
+    const { boxer, graph } = makeGraph();
+    const fighter = facingOpponent(baseFighter("one"));
+    const opponent = opponentFor("two");
+    run(graph, fighter, opponent, 10, undefined);
+    graph.react("hit", target, 1, punchClass, hand, damage);
+    graph.react("hit", target, 1, punchClass, hand, 1);
+    run(graph, { ...fighter, is_downed: true }, opponent, 70, undefined, 5, 10 / 60);
+    return { head: bone(boxer, "head"), hips: bone(boxer, "hips") };
+  };
+
+  it("drops face down after a hook or a body shot and onto the back after an uppercut, whatever the damage", () => {
+    for (const [punchClass, target, faceDown] of [["hook", "head", true], ["uppercut", "head", false], ["straight", "body", true]] as const) {
+      for (const damage of [40, 153]) {
+        const { head, hips } = fall(punchClass, target, "left", damage);
+        expect(head.y).toBeLessThan(0.45);
+        expect(head.z > hips.z).toBe(faceDown);
+      }
     }
+  });
+
+  it("falls away from the side the punch came from", () => {
+    expect(fall("hook", "head", "left", 90).head.x).toBeGreaterThan(fall("hook", "head", "right", 90).head.x + 0.2);
+    expect(fall("uppercut", "head", "left", 90).head.x).toBeGreaterThan(fall("uppercut", "head", "right", 90).head.x + 0.2);
   });
 });
 
@@ -125,6 +138,14 @@ describe("impact dent", () => {
     graph.react("hit", "body", 1, "straight", "right", 260);
     expect(boxer.bodyInjury.uniforms.uInjuryImpact.value.y).toBeCloseTo(96.5, 1);
     expect(boxer.bodyInjury.uniforms.uInjuryImpactPush.value.z).toBeLessThan(-1);
+  });
+
+  it("presses its deepest for the hardest hit the engine deals", () => {
+    const { boxer, graph } = makeGraph();
+    graph.react("hit", "head", 1, "straight", "right", 153);
+    expect(boxer.headInjury.impactDepth).toBeCloseTo(3.2, 1);
+    graph.react("hit", "head", 1, "straight", "right", 34);
+    expect(boxer.headInjury.impactDepth).toBeLessThan(1.8);
   });
 });
 

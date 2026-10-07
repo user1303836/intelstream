@@ -299,6 +299,8 @@ const springStep = (spring: Spring3, dt: number, stiffness: number, damping: num
 };
 
 const PUNCH_CONTACT_OFFSET = 0.06;
+/** Damage of the hardest hit the engine deals (a countered power uppercut in a combination, about 153). */
+const HARDEST_HIT = 150;
 const KNOCKDOWN_FALL_SECONDS = 0.75;
 const GETUP_SECONDS = 1.7;
 
@@ -597,10 +599,12 @@ export class BoxingGraph {
   /**
    * Contact-synchronised reaction. `punchClass`/`hand` describe the incoming
    * punch so the head snaps along the real impact line; `direction` is the
-   * legacy world-x sign used when the class is unknown.
+   * legacy world-x sign used when the class is unknown. `amount` is the hit's
+   * damage, which tops out at `HARDEST_HIT`.
    */
-  react(kind: ReactionKind, target: Target = "head", direction = 1, punchClass: PunchClass | null = null, hand: Hand | null = null, amount = 200): void {
-    const scale = clamp(0.55 + amount / 320, 0.55, 1.6) * (kind === "block" ? 0.35 : 1);
+  react(kind: ReactionKind, target: Target = "head", direction = 1, punchClass: PunchClass | null = null, hand: Hand | null = null, amount = 90): void {
+    const force = clamp(amount / HARDEST_HIT, 0, 1);
+    const scale = (0.55 + force * 1.05) * (kind === "block" ? 0.35 : 1);
     const lateral = hand === "left" ? 1 : hand === "right" ? -1 : direction >= 0 ? -1 : 1;
     if (target === "body") {
       this.torsoKick.velocity.x += 4.6 * scale;
@@ -633,16 +637,19 @@ export class BoxingGraph {
       this.rootKick.velocity.z -= 0.45 * scale;
       if (kind === "block") this.guardKick = Math.max(this.guardKick, 0.9 * scale);
     }
-    if (kind === "hit") this.dentSurface(target, lateral, punchClass, amount);
-    if (kind === "hit" && target === "head" && amount > 250) {
-      this.fallSide = lateral;
-      this.fallProne = punchClass === "hook";
+    if (kind === "hit") {
+      this.dentSurface(target, lateral, punchClass, force);
+      // A knockdown only gives the count, so every clean hit sets how the fighter would go down: a
+      // hook or a body shot pitches him forward onto his face, anything else onto his back, and
+      // either way he falls away from the side the punch came from, a hook twisting him furthest.
+      this.fallSide = punchClass === "hook" ? lateral : lateral * 0.5;
+      this.fallProne = punchClass === "hook" || target === "body";
     }
   }
 
   /** Transient compression of the struck surface at contact; the injury shading releases it. */
-  private dentSurface(target: Target, lateral: number, punchClass: PunchClass | null, amount: number): void {
-    const depth = THREE.MathUtils.clamp(1.1 + amount / 220, 1.1, 3.2);
+  private dentSurface(target: Target, lateral: number, punchClass: PunchClass | null, force: number): void {
+    const depth = 1.1 + force * 2.1;
     if (target === "body") {
       const site = punchClass === "hook" ? (lateral > 0 ? "rightRibs" : "leftRibs") : "solarPlexus";
       this.boxer.bodyInjury.impact(site, [punchClass === "hook" ? lateral * depth * 0.8 : 0, 0, -depth], 9);
@@ -1639,13 +1646,13 @@ export class BoxingGraph {
   ): void {
     const torso = this.torso;
     const side = this.fallSide === 0 ? 0 : this.fallSide;
-    // Lying-on-the-back pose (character space).
+    // Lying-on-the-back pose (character space); a turn of the hips swings the head the opposite way.
     const lying = {
       hips: vec(side * 0.22, 0.14, -0.4),
-      hipsYaw: side * 0.35,
+      hipsYaw: -side * 0.35,
       hipsPitch: -1.42,
-      hipsRoll: side * 0.25,
-      shouldersYaw: side * 0.2,
+      hipsRoll: -side * 0.25,
+      shouldersYaw: -side * 0.2,
       spinePitch: 0.1,
       headPitch: -0.5,
       leadHand: vec(0.52 * mirror, 0.1, -0.62),
