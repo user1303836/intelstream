@@ -2986,9 +2986,32 @@ def test_the_referee_sends_both_fighters_back_after_a_foul() -> None:
     assert (one.velocity_x, one.velocity_y, two.velocity_x, two.velocity_y) == (0, 0, 0, 0)
     while engine.phase is MatchPhase.FOUL_RECOVERY:
         engine.step()
+    # The two seconds were the fouled man's recovery: both box on clear-headed.
+    assert (one.stunned_ticks, two.stunned_ticks) == (0, 0)
     # A second foul straight after the restart is thrown from too far to land.
     events = engine.step({"one": command(2, action=FoulAction(Foul.HEADBUTT))}).events
     assert [event.kind for event in events if event.kind.startswith("foul")] == ["foul_miss"]
+
+
+def test_the_fouler_gets_no_free_shot_at_the_restart() -> None:
+    engine = make_engine(round_ticks=2000)
+    one, two = engine.fighter("one"), engine.fighter("two")
+    # Fouled in the middle of his own jab, which the referee's break ends.
+    engine.step({"two": command(1, action=punch(PunchClass.JAB, hand=Hand.LEFT))})
+    engine.step({"one": command(1, action=FoulAction(Foul.LOW_BLOW))})
+    assert engine.phase is MatchPhase.FOUL_RECOVERY
+    assert two.attack is None
+    engine.step({"two": command(2, defense=DefensivePose.GUARD_HIGH)})
+    while engine.phase is MatchPhase.FOUL_RECOVERY:
+        engine.step()
+    sequence = 2
+    # The fouler walks straight in and throws a power straight at the man he fouled.
+    while hypot(two.x - one.x, two.y - one.y) > 150:
+        engine.step({"one": command(sequence, move_x=1000)})
+        sequence += 1
+    engine.step({"one": command(sequence, action=punch(PunchClass.STRAIGHT, power=Power.POWER))})
+    assert advance_until(engine, {"hit", "block", "perfect_block", "whiff"}) == "block"
+    assert two.stunned_ticks == 0
 
 
 def _straight_from(stamina: int) -> tuple[BoxingEngine, int, list[CombatEvent]]:

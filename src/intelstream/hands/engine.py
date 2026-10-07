@@ -1292,6 +1292,8 @@ class BoxingEngine:
         opponent.stunned_ticks = 30
         opponent.stunned_at_tick = self.tick
         opponent.taunt_ticks = 0
+        # The referee stops the action: a punch the fouled man was throwing goes no further.
+        self._retain_action(opponent)
         self._emit("foul", fighter.player_id, opponent.player_id, detail=action.foul.value)
         if fighter.warnings == 2:
             fighter.deductions += 1
@@ -1320,6 +1322,12 @@ class BoxingEngine:
         if target is not None:
             target.stamina = min(target.maximum_stamina, target.stamina + 4)
         if self.phase_ticks_remaining <= 0:
+            for fighter in self._fighters.values():
+                # The two seconds were the fouled man's recovery: both box on clear-headed, so
+                # the fouler gets no free shot at a man with his guard still forced down.
+                if fighter.stunned_ticks > 0:
+                    self._clear_head(fighter)
+                fighter.evasion_ticks = 0
             self.phase = MatchPhase.FIGHT
             self.phase_ticks_remaining = max(1, self._paused_fight_ticks)
             self._foul_recovery_target = None
