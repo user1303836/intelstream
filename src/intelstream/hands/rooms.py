@@ -16,6 +16,7 @@ from intelstream.hands.cpu import PROFILES, CpuBrain, CpuLevel, cpu_player_id
 from intelstream.hands.engine import BoxingEngine, EngineConfig
 from intelstream.hands.protocol import (
     PROTOCOL_VERSION,
+    ClientEnvelope,
     ProtocolError,
     encode_snapshot,
     parse_client_input,
@@ -131,7 +132,7 @@ class PlayerSlot:
     last_sequence: int = -1
     input_budget: float | None = None
     input_budget_at: float = 0.0
-    deferred_frame: str | bytes | None = None
+    deferred_frame: str | bytes | ClientEnvelope | None = None
     frame_times: deque[float] = field(default_factory=deque)
     flood_started: float | None = None
     reconnect_deadline: float | None = None
@@ -664,6 +665,9 @@ class HandsRoom:
             slot = self._slots.get(player_id)
             if slot is None or slot.connection is not connection:
                 raise RoomError("connection_replaced")
+            # A request is a frame like any other, so a stream of them is a flood like any other.
+            if not self._account_frame(slot, self._clock()):
+                return False
             if self._closed or self._finished or self._engine is not None:
                 return False
             self._cpu = CpuOpponent(level)
@@ -671,7 +675,7 @@ class HandsRoom:
             return True
 
     async def submit_frame(
-        self, player_id: str, connection: PlayerConnection, frame: str | bytes
+        self, player_id: str, connection: PlayerConnection, frame: str | bytes | ClientEnvelope
     ) -> None:
         async with self._lock:
             spectator = self._spectators.get(player_id)
@@ -695,21 +699,9 @@ class HandsRoom:
             if engine is None:
                 raise RoomError("match_not_started")
             now = self._clock()
-            while slot.frame_times and slot.frame_times[0] <= now - 1.0:
-                slot.frame_times.popleft()
-            slot.frame_times.append(now)
-            limit = self.config.max_input_frames_per_second
-            if len(slot.frame_times) > limit:
-                if slot.flood_started is None:
-                    slot.flood_started = now
-                if (
-                    len(slot.frame_times) > FLOOD_HARD_LIMIT_FACTOR * limit
-                    or now - slot.flood_started >= FLOOD_GRACE_SECONDS
-                ):
-                    raise RoomError("rate_limited")
+            if not self._account_frame(slot, now):
                 slot.deferred_frame = frame
                 return
-            slot.flood_started = None
             if not self._spend_input_budget(slot, now):
                 # A stalled connection delivers its backlog in one burst. The frames past the
                 # budget are not applied, but the newest is kept and goes in as soon as there is
@@ -730,6 +722,28 @@ class HandsRoom:
             slot.last_sequence = command.sequence
             if not engine.submit_input(player_id, command):
                 raise RoomError("input_queue_full")
+
+    def _account_frame(self, slot: PlayerSlot, now: float) -> bool:
+        """Counts one frame from a fighter's connection.
+
+        Past the per-second limit the frame is not acted on; a flood that lasts, or one far past
+        the limit, ends the connection.
+        """
+        while slot.frame_times and slot.frame_times[0] <= now - 1.0:
+            slot.frame_times.popleft()
+        slot.frame_times.append(now)
+        limit = self.config.max_input_frames_per_second
+        if len(slot.frame_times) > limit:
+            if slot.flood_started is None:
+                slot.flood_started = now
+            if (
+                len(slot.frame_times) > FLOOD_HARD_LIMIT_FACTOR * limit
+                or now - slot.flood_started >= FLOOD_GRACE_SECONDS
+            ):
+                raise RoomError("rate_limited")
+            return False
+        slot.flood_started = None
+        return True
 
     @staticmethod
     def _forget_connection_input(slot: PlayerSlot) -> None:

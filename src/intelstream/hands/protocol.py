@@ -113,12 +113,11 @@ def _parse_action(raw: object) -> SemanticAction:
     return MovementAction(kind=kind, client_action_id=_client_action_id(action))
 
 
-def parse_client_input(
-    frame: str | bytes,
-    *,
-    last_sequence: int = -1,
-    server_tick: int = 0,
-) -> InputCommand:
+type ClientEnvelope = dict[str, object]
+
+
+def decode_client_frame(frame: str | bytes) -> ClientEnvelope:
+    """The JSON object of one client frame. A frame is decoded once and each message type is read from it."""
     encoded = frame.encode() if isinstance(frame, str) else frame
     if len(encoded) > MAX_FRAME_BYTES:
         raise ProtocolError("input frame is too large")
@@ -130,8 +129,20 @@ def parse_client_input(
         )
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ProtocolError("input frame is not valid JSON") from exc
+    return _object(raw, "envelope")
 
-    envelope = _object(raw, "envelope")
+
+def _client_envelope(frame: str | bytes | ClientEnvelope) -> ClientEnvelope:
+    return frame if isinstance(frame, dict) else decode_client_frame(frame)
+
+
+def parse_client_input(
+    frame: str | bytes | ClientEnvelope,
+    *,
+    last_sequence: int = -1,
+    server_tick: int = 0,
+) -> InputCommand:
+    envelope = _client_envelope(frame)
     _exact_fields(
         envelope,
         {"version", "type", "sequence", "client_tick", "move", "defense", "actions"},
@@ -181,19 +192,8 @@ def parse_client_input(
     )
 
 
-def parse_ticket_ack(frame: str | bytes) -> str | None:
-    encoded = frame.encode() if isinstance(frame, str) else frame
-    if len(encoded) > MAX_FRAME_BYTES:
-        raise ProtocolError("input frame is too large")
-    try:
-        raw = json.loads(
-            encoded,
-            parse_constant=_reject_constant,
-            object_pairs_hook=_unique_object,
-        )
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise ProtocolError("input frame is not valid JSON") from exc
-    envelope = _object(raw, "envelope")
+def parse_ticket_ack(frame: str | bytes | ClientEnvelope) -> str | None:
+    envelope = _client_envelope(frame)
     if envelope.get("type") != "ticket_ack":
         return None
     _exact_fields(envelope, {"version", "type", "refresh_id"}, "ticket acknowledgement")
@@ -209,20 +209,9 @@ def parse_ticket_ack(frame: str | bytes) -> str | None:
     return refresh_id
 
 
-def parse_cpu_request(frame: str | bytes) -> CpuLevel | None:
+def parse_cpu_request(frame: str | bytes | ClientEnvelope) -> CpuLevel | None:
     """The level of computer opponent asked for, or None when the frame is not that request."""
-    encoded = frame.encode() if isinstance(frame, str) else frame
-    if len(encoded) > MAX_FRAME_BYTES:
-        raise ProtocolError("input frame is too large")
-    try:
-        raw = json.loads(
-            encoded,
-            parse_constant=_reject_constant,
-            object_pairs_hook=_unique_object,
-        )
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise ProtocolError("input frame is not valid JSON") from exc
-    envelope = _object(raw, "envelope")
+    envelope = _client_envelope(frame)
     if envelope.get("type") != "cpu":
         return None
     _exact_fields(envelope, {"version", "type", "level"}, "computer opponent request")
