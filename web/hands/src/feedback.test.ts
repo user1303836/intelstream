@@ -515,7 +515,7 @@ describe("a punch the guard took", () => {
     const pushed = (events: CombatEvent[]): { hit: CombatEvent | null; finisher: string | null } => {
       const stub: Record<string, unknown> = {
         buffer: new SnapshotBuffer(64, 30), dedupe: new EventDeduplicator(), history: [], roundStats: new RoundStatsTracker(), referee: null, graphs: null,
-        acknowledgeActions: vi.fn(), mapping: worldMapping(SIMULATION), contactPoint: new THREE.Vector3(), pendingContacts: [], effects: { addEvent: vi.fn() },
+        acknowledgeActions: vi.fn(), movement: { observe: vi.fn() }, mapping: worldMapping(SIMULATION), contactPoint: new THREE.Vector3(), pendingContacts: [], effects: { addEvent: vi.fn() },
         manualClock: true, lastManualTime: 0, lastKnockdown: null, recordedHit: renderer.recordedHit, settings: () => ({ reducedMotion: false, blood: "full" }),
         commentary: { observe: vi.fn() }, simulation: SIMULATION, players: {}, frameSeconds: 0,
       };
