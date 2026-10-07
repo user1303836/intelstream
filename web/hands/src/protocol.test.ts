@@ -43,6 +43,21 @@ describe("strict protocol v3", () => {
     const fighterWithoutRole = { version: 3, type: "welcome", player_id: "one", seat: 1, rating: 1500, players: [publicPlayers[0]], server_tick: 0, next_sequence: 0 };
     expect(() => decodeServerFrame(JSON.stringify(fighterWithoutRole))).toThrow(ProtocolError);
   });
+  it("decodes the engine's punch counts in the final, for both fighters and nobody else", () => {
+    const final = { version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: "one", method: "decision", round: 3, scorecards: ["A", "B", "C"].map((judge) => ({ judge, player_one: [10], player_two: [9] })), ratings: { one: { before: 1500, after: 1516 }, two: { before: 1500, after: 1484 } } };
+    const punches = { one: { thrown: 40, landed: 12, jabs_thrown: 20, jabs_landed: 5 }, two: { thrown: 31, landed: 9, jabs_thrown: 11, jabs_landed: 4 } };
+    expect(decodeServerFrame(JSON.stringify({ ...final, punches }))).toEqual({ ...final, punches });
+    expect(decodeServerFrame(JSON.stringify(final))).toEqual(final);
+    for (const bad of [
+      { one: punches.one },
+      { one: punches.one, three: punches.two },
+      { ...punches, two: { ...punches.two, landed: 32 } },
+      { ...punches, two: { ...punches.two, jabs_thrown: 32 } },
+      { ...punches, two: { ...punches.two, jabs_landed: 10 } },
+      { ...punches, two: { ...punches.two, clean: 1 } },
+      { ...punches, two: { ...punches.two, thrown: -1 } },
+    ]) expect(() => decodeServerFrame(JSON.stringify({ ...final, punches: bad }))).toThrow(ProtocolError);
+  });
   it("lets a spectator arrive before the corners are filled, and a waiting room show both seats open", () => {
     const early = { version: PROTOCOL_VERSION, type: "welcome", role: "spectator", player_id: "viewer", players: [], server_tick: 0, reconnect_ticket: "spectator-ticket" };
     expect(decodeServerFrame(JSON.stringify(early))).toEqual(early);

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -10,8 +10,8 @@ import pytest
 from intelstream.database.repository import Repository
 from intelstream.hands import rooms as rooms_module
 from intelstream.hands.auth import AuthenticatedPlayer
-from intelstream.hands.cpu import CPU_STYLES, PROFILES, CpuLevel, cpu_style
-from intelstream.hands.engine import EngineConfig
+from intelstream.hands.cpu import CPU_STYLES, PROFILES, CpuBrain, CpuLevel, cpu_style
+from intelstream.hands.engine import BoxingEngine, EngineConfig, PunchCount
 from intelstream.hands.protocol import StyleChoice, encode_client_input
 from intelstream.hands.rooms import (
     CPU_RECORDS,
@@ -2865,6 +2865,70 @@ async def test_a_rated_bout_records_and_logs_both_fighters_styles(
         player_one_style="swarmer",
         player_two_style="slugger",
     )
+    await manager.close()
+
+
+def test_the_engine_counts_each_fighters_punches_as_the_events_show_them() -> None:
+    engine = BoxingEngine(
+        match_id="match-count",
+        activity_instance_id="instance-1",
+        guild_id="guild-1",
+        player_one_id="one",
+        player_two_id="two",
+        seed=29,
+        config=EngineConfig(rounds=1, round_ticks=2400, countdown_ticks=0),
+    )
+    brains = [
+        CpuBrain("one", "two", CpuLevel.CHAMPION, 3, FighterStyle.SWARMER),
+        CpuBrain("two", "one", CpuLevel.CONTENDER, 5, FighterStyle.BOXER),
+    ]
+    events: list[CombatEvent] = []
+    while engine.result is None and engine.tick < 2400:
+        for brain in brains:
+            command = brain.decide(engine)
+            if command is not None:
+                engine.submit_input(brain.player_id, command)
+        events.extend(engine.step().events)
+
+    def guarded(hit: CombatEvent) -> bool:
+        return any(
+            other.kind in {"block", "perfect_block"}
+            and other.tick == hit.tick
+            and other.action_id == hit.action_id
+            for other in events
+        )
+
+    blocked = 0
+    for fighter_id in ("one", "two"):
+        starts = [e for e in events if e.kind == "punch_start" and e.actor_id == fighter_id]
+        hits = [e for e in events if e.kind in {"hit", "counter_hit"} and e.actor_id == fighter_id]
+        clean = [hit for hit in hits if not guarded(hit)]
+        blocked += len(hits) - len(clean)
+        assert engine.fighter(fighter_id).punches == PunchCount(
+            thrown=len(starts),
+            landed=len(clean),
+            jabs_thrown=sum(e.detail.split(":")[1] == "jab" for e in starts),
+            jabs_landed=sum(hit.detail.split(":")[0] == "jab" for hit in clean),
+        )
+    # The bout had punches the guard took, which do not count as landed.
+    assert blocked > 0
+
+
+async def test_the_final_carries_the_engines_punch_counts_for_the_whole_bout(
+    repository: Repository,
+) -> None:
+    manager = HandsRoomManager(repository, config=room_config(round_ticks=90))
+    socket = FakeSocket()
+    one = await manager.join(player("one"), socket)
+    assert await one.room.request_cpu("one", one.connection, CpuLevel.CHAMPION)
+    engine = one.room.engine
+    assert engine is not None
+    await wait_until(lambda: "final" in message_types(socket), deadline_seconds=5)
+    final = payloads(socket, "final")[0]
+    assert set(final["punches"]) == {"one", "cpu:champion"}
+    for fighter_id, counted in final["punches"].items():
+        assert counted == asdict(engine.fighter(fighter_id).punches)
+    assert final["punches"]["cpu:champion"]["thrown"] > 0
     await manager.close()
 
 

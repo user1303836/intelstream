@@ -745,7 +745,9 @@ describe("round stats", () => {
     tracker.record(event("hit", "one"));
     tracker.record(event("punch_start", "two"));
     tracker.record(event("counter_hit", "two"));
-    tracker.record(event("block", "two"));
+    // A punch the guard took comes as a block and a hit of the same punch, never a lone block.
+    const guarded = [{ ...event("block", "one"), target_id: "two", action_id: "two@9" }, { ...event("hit", "two", "jab:head"), target_id: "one", action_id: "two@9" }];
+    for (const part of guarded) tracker.record(part, guarded);
     expect(tracker.get("one")).toMatchObject({ thrown: 2, landed: 1 });
     expect(tracker.get("two")).toMatchObject({ thrown: 1, landed: 1 });
     tracker.record(event("bell", "", "round_end"));
@@ -1271,6 +1273,17 @@ describe("result card", () => {
       { label: "JABS", values: ["1/4 (25%)", "0/0"], lead: 0 },
       { label: "POWER PUNCHES", values: ["5/5 (100%)", "0/0"], lead: 0 },
       { label: "RATING", values: ["1016 (+16)", "984 (−16)"], lead: null, news: [true, false] },
+    ]);
+  });
+
+  it("shows the engine's count for the whole bout when the result carries it, not what this client saw", () => {
+    const counted = { ...result("decision", "one"), punches: { one: { thrown: 120, landed: 41, jabs_thrown: 60, jabs_landed: 15 }, two: { thrown: 98, landed: 30, jabs_thrown: 50, jabs_landed: 12 } } };
+    // A spectator who arrived for the last round saw only a few of those punches.
+    const card = resultCard(counted, fighters(), players, [{ thrown: 9, landed: 2, jabsThrown: 4, jabsLanded: 1 }, none]);
+    expect(card.rows.slice(0, 3)).toEqual([
+      { label: "TOTAL PUNCHES", values: ["41/120 (34%)", "30/98 (31%)"], lead: 0 },
+      { label: "JABS", values: ["15/60 (25%)", "12/50 (24%)"], lead: 0 },
+      { label: "POWER PUNCHES", values: ["26/60 (43%)", "18/48 (38%)"], lead: 0 },
     ]);
   });
 

@@ -1,7 +1,7 @@
 import { EYE_SHUT_TRAUMA } from "../manifest";
 import { isDebut, recordLine } from "../record";
 import { styleTag } from "../styles";
-import type { CombatEvent, CornerChoice, EngineSnapshot, FighterSnapshot, FinalMessage, FinishMethod, PublicPlayer, RatingDelta, TraumaSnapshot } from "../types";
+import type { CombatEvent, CornerChoice, EngineSnapshot, FighterSnapshot, FinalMessage, FinishMethod, PublicPlayer, PunchTotals, RatingDelta, TraumaSnapshot } from "../types";
 import { monogram } from "./avatars";
 
 /** Hands out a player's picture once it has loaded. */
@@ -679,13 +679,18 @@ export function resultCard(
   }
   const scored: [number, number] = [fighters[1].knockdowns, fighters[0].knockdowns];
   if (scored[0] > 0 || scored[1] > 0) rows.push({ label: "KNOCKDOWNS", values: [String(scored[0]), String(scored[1])], lead: lead(scored[0], scored[1]) });
-  if (punches[0].thrown > 0 || punches[1].thrown > 0) {
+  // The engine's count for the whole bout when the result carries it; what this client saw can miss
+  // a reconnect or a late arrival.
+  const [blueCount, redCount] = fighters.map((fighter) => final.punches?.[fighter.player_id]);
+  const counted = (total: PunchTotals): RoundPunchStats => ({ thrown: total.thrown, landed: total.landed, jabsThrown: total.jabs_thrown, jabsLanded: total.jabs_landed });
+  const totals: readonly [RoundPunchStats, RoundPunchStats] = blueCount !== undefined && redCount !== undefined ? [counted(blueCount), counted(redCount)] : punches;
+  if (totals[0].thrown > 0 || totals[1].thrown > 0) {
     // CompuBox: landed of thrown and the share that landed, for all punches, the jabs and the power punches.
     // A client that joined mid-punch saw the hit but not the throw; never show more landed than thrown.
     const count = (landed: number, thrown: number): string => (thrown > 0 ? `${Math.min(landed, thrown)}/${thrown} (${Math.round((Math.min(landed, thrown) / thrown) * 100)}%)` : "0/0");
-    const power = punches.map((stats) => ({ landed: stats.landed - stats.jabsLanded, thrown: stats.thrown - stats.jabsThrown }));
-    rows.push({ label: "TOTAL PUNCHES", values: [count(punches[0].landed, punches[0].thrown), count(punches[1].landed, punches[1].thrown)], lead: lead(punches[0].landed, punches[1].landed) });
-    rows.push({ label: "JABS", values: [count(punches[0].jabsLanded, punches[0].jabsThrown), count(punches[1].jabsLanded, punches[1].jabsThrown)], lead: lead(punches[0].jabsLanded, punches[1].jabsLanded) });
+    const power = totals.map((stats) => ({ landed: stats.landed - stats.jabsLanded, thrown: stats.thrown - stats.jabsThrown }));
+    rows.push({ label: "TOTAL PUNCHES", values: [count(totals[0].landed, totals[0].thrown), count(totals[1].landed, totals[1].thrown)], lead: lead(totals[0].landed, totals[1].landed) });
+    rows.push({ label: "JABS", values: [count(totals[0].jabsLanded, totals[0].jabsThrown), count(totals[1].jabsLanded, totals[1].jabsThrown)], lead: lead(totals[0].jabsLanded, totals[1].jabsLanded) });
     rows.push({ label: "POWER PUNCHES", values: [count(power[0]!.landed, power[0]!.thrown), count(power[1]!.landed, power[1]!.thrown)], lead: lead(power[0]!.landed, power[1]!.landed) });
   }
   const ratings = fighters.map((fighter) => final.ratings[fighter.player_id]);

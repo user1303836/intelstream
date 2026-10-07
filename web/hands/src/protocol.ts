@@ -3,7 +3,7 @@ import {
   type BootstrapResponse, type CombatEvent, type CornerChoice, type CpuLevel, type DefensivePose, type EngineSnapshot,
   type FighterRecord, type FighterSnapshot, type FighterStyle, type FinalMessage, type FinishMethod, type Foul, type Hand,
   type HeldDefense, type JudgeCard, type MatchPhase, type MatchResult, type MovementKind,
-  type Power, type PublicPlayer, type PunchClass, type SemanticAction, type ServerMessage,
+  type Power, type PublicPlayer, type PunchClass, type PunchTotals, type SemanticAction, type ServerMessage,
   type Stance, type Target, type TokenResponse, type TraumaSnapshot,
 } from "./types";
 import { GET_UP_REQUIRED_MAX, GET_UP_REQUIRED_MIN } from "./manifest";
@@ -246,14 +246,26 @@ export function decodeServerFrame(frame: string | ArrayBuffer | Uint8Array): Ser
   if (type === "final") return decodeFinal(o, type);
   throw new ProtocolError("unsupported server message type");
 }
+function punchTotals(value: unknown, fighters: readonly string[]): Record<string, PunchTotals> {
+  const entries = Object.entries(object(value, "punches"));
+  if (entries.length !== 2 || entries.some(([id]) => !fighters.includes(id))) throw new ProtocolError("punches must count both fighters");
+  const totals = Object.create(null) as Record<string, PunchTotals>;
+  for (const [id, raw] of entries) {
+    const o = object(raw, "punch totals"); exact(o, ["thrown", "landed", "jabs_thrown", "jabs_landed"]);
+    const thrown = integer(o.thrown, "thrown"), landed = integer(o.landed, "landed", 0, thrown), jabsThrown = integer(o.jabs_thrown, "jabs_thrown", 0, thrown);
+    totals[id] = { thrown, landed, jabs_thrown: jabsThrown, jabs_landed: integer(o.jabs_landed, "jabs_landed", 0, Math.min(landed, jabsThrown)) };
+  }
+  return totals;
+}
 function decodeFinal(o: Obj, type: "final"): FinalMessage {
-  exact(o, ["version", "type", "match_id", "winner_id", "method", "round", "scorecards", "ratings"]);
+  exact(o, ["version", "type", "match_id", "winner_id", "method", "round", "scorecards", "ratings"], ["punches"]);
   const ratingsRaw = object(o.ratings, "ratings"), entries = Object.entries(ratingsRaw); if (entries.length !== 2) throw new ProtocolError("final requires two ratings");
   const ratings = Object.create(null) as Record<string, { before: number; after: number }>;
   for (const [id, raw] of entries) { string(id, "rating player id"); const r = object(raw, "rating"); exact(r, ["before", "after"]); ratings[id] = { before: integer(r.before, "before"), after: integer(r.after, "after") }; }
   const winner = nullableString(o.winner_id, "winner_id"); if (winner !== null && !Object.hasOwn(ratings, winner)) throw new ProtocolError("winner absent from ratings");
   const method = oneOf<FinishMethod>(o.method, methods, "finish method"); coherentFinish(winner, method);
-  return { version: 3, type, match_id: string(o.match_id, "match_id"), winner_id: winner, method, round: integer(o.round, "round", 1, 15), scorecards: scorecards(o.scorecards), ratings };
+  const punches = o.punches === undefined ? {} : { punches: punchTotals(o.punches, Object.keys(ratings)) };
+  return { version: 3, type, match_id: string(o.match_id, "match_id"), winner_id: winner, method, round: integer(o.round, "round", 1, 15), scorecards: scorecards(o.scorecards), ratings, ...punches };
 }
 
 export function encodeInput(sequence: number, clientTick: number, frame: { moveX: number; moveY: number; defense: HeldDefense; actions: readonly SemanticAction[] }): string {

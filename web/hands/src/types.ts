@@ -82,7 +82,9 @@ export interface PausedMessage { readonly version: 3; readonly type: "paused"; r
 export interface ResumedMessage { readonly version: 3; readonly type: "resumed"; readonly player_id: string }
 export interface SnapshotMessage { readonly version: 3; readonly type: "snapshot"; readonly payload: EngineSnapshot }
 export interface RatingDelta { readonly before: number; readonly after: number }
-export interface FinalMessage { readonly version: 3; readonly type: "final"; readonly match_id: string; readonly winner_id: string | null; readonly method: FinishMethod; readonly round: number; readonly scorecards: readonly JudgeCard[]; readonly ratings: Readonly<Record<string, RatingDelta>> }
+/** A fighter's punches over the whole bout as the engine counted them; landed means clean, not blocked. */
+export interface PunchTotals { readonly thrown: number; readonly landed: number; readonly jabs_thrown: number; readonly jabs_landed: number }
+export interface FinalMessage { readonly version: 3; readonly type: "final"; readonly match_id: string; readonly winner_id: string | null; readonly method: FinishMethod; readonly round: number; readonly scorecards: readonly JudgeCard[]; readonly ratings: Readonly<Record<string, RatingDelta>>; readonly punches?: Readonly<Record<string, PunchTotals>> }
 export interface ErrorMessage { readonly version: 3; readonly type: "error"; readonly code: string }
 export type ServerMessage = WelcomeMessage | TicketMessage | WaitingMessage | SelectMessage | ReadyMessage | PausedMessage | ResumedMessage | SnapshotMessage | FinalMessage | ErrorMessage;
 

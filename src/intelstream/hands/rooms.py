@@ -6,7 +6,7 @@ import json
 import secrets
 import time
 from collections import deque
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from typing import TYPE_CHECKING, Literal, Never, Protocol
 from uuid import uuid4
 
@@ -1478,6 +1478,8 @@ class HandsRoom:
             logger.warning("Hands final delivery timed out", instance_id=self.instance_id)
 
     def _final_message(self, match: HandsMatch | None, result: MatchResult) -> str:
+        engine = self._engine
+        assert engine is not None
         if match is None:
             ratings = {
                 player_id: {"before": rating, "after": rating}
@@ -1509,6 +1511,11 @@ class HandsRoom:
                 for card in result.scorecards
             ],
             ratings=ratings,
+            # The engine's own count over the whole bout: what a client saw can miss a reconnect
+            # or a late arrival, so the result card shows these.
+            punches={
+                player_id: asdict(engine.fighter(player_id).punches) for player_id in engine.players
+            },
         )
 
     def _unrated_ratings(self) -> dict[str, int]:
