@@ -365,6 +365,9 @@ export class BoxingGraph {
   private tauntWeight = 0;
   private lastSpeed = 0;
   private readonly stool: { group: THREE.Group; dispose: () => void };
+  /** Root position and yaw the stool was set down at, where it stays while the fighter rises off it. */
+  private readonly stoolRoot = new THREE.Vector3();
+  private stoolYaw = 0;
   private readonly enswell: { group: THREE.Group; dispose: () => void };
   private readonly treatTarget = new THREE.Vector3();
   private readonly treatScratch = new THREE.Vector3();
@@ -756,7 +759,17 @@ export class BoxingGraph {
     this.stillTime = speed < 0.03 ? this.stillTime + dt : 0;
     const wantSeated = this.resting && this.stillTime > 0.2 && this.downState === "up";
     this.seated = smooth(this.seated, wantSeated ? 1 : 0, wantSeated ? 2.2 : 4, dt);
-    this.stool.group.visible = this.resting && this.stillTime > 0.05 && this.downState === "up";
+    const onStool = this.resting && this.stillTime > 0.05 && this.downState === "up";
+    if (onStool) {
+      this.stoolRoot.set(this.rootX, 0, this.rootZ);
+      this.stoolYaw = this.yaw;
+    }
+    // The round can start with the fighter still seated: the stool stays where it stood until his hips are clear of it.
+    this.stool.group.visible = onStool || (this.seated > STOOL_CLEAR_SEATED && this.downState === "up");
+    this.stool.group.position.set(this.stoolRoot.x - this.rootX, 0, this.stoolRoot.z - this.rootZ)
+      .add(this.scratch.set(0, 0, 0.02).applyAxisAngle(worldUpVector, this.stoolYaw))
+      .applyAxisAngle(worldUpVector, -this.yaw);
+    this.stool.group.rotation.y = this.stoolYaw - this.yaw;
     this.celebrateTime = Math.max(0, this.celebrateTime - dt);
     this.celebration = smooth(this.celebration, this.celebrateTime > 0 && this.downState === "up" ? 1 : 0, 3.5, dt);
     this.waveTime = Math.max(0, this.waveTime - dt);
@@ -1819,6 +1832,8 @@ export class BoxingGraph {
 }
 
 const STOOL_SEAT_HEIGHT = 0.44;
+/** Seated weight below which a rising fighter's hips are about 0.2 m clear of the seat. */
+const STOOL_CLEAR_SEATED = 0.2;
 const TOUCH_GLOVES_START_TICKS = 48;
 const TOUCH_GLOVES_END_TICKS = 14;
 const seatedScratch = new THREE.Vector3();
