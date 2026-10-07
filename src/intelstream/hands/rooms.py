@@ -915,25 +915,31 @@ class HandsRoom:
                 if spectator.connection is not connection:
                     raise RoomError("connection_replaced")
                 raise RoomError("spectator_read_only")
-            if (
+            ended = (
                 self._closed
                 or self._finished
                 or self._persistence_task is not None
                 or (self._engine is not None and self._engine.result is not None)
-            ):
-                # Inputs already in flight when the bout ends arrive after the result on any
-                # real connection; dropping them keeps the final on the player's screen.
-                return
+            )
             slot = self._slots.get(player_id)
             if slot is None or slot.connection is not connection:
+                if ended:
+                    return
                 raise RoomError("connection_replaced")
+            now = self._clock()
+            if ended:
+                # Inputs already in flight when the bout ends arrive after the result on any
+                # real connection; dropping them keeps the final on the player's screen. Each one
+                # still draws on the connection's allowance, so a flood through the result hold
+                # is cut off like any other.
+                self._account_frame(slot, now)
+                return
             engine = self._engine
             if engine is None:
                 raise RoomError("match_not_started")
             paused = any(current.connection is None for current in self._slots.values())
             # A paused bout drops inputs; none is held back to fire once it resumes.
             held = None if paused else frame
-            now = self._clock()
             if not self._account_frame(slot, now):
                 slot.deferred_frame = held
                 return

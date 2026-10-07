@@ -2535,6 +2535,26 @@ async def test_a_flood_of_style_picks_is_throttled_with_the_fighters_inputs(
     await manager.close()
 
 
+async def test_a_flood_of_inputs_after_the_result_is_cut_off_through_the_hold(
+    repository: Repository,
+) -> None:
+    manager = HandsRoomManager(repository, config=room_config(result_hold=1.0))
+    socket = FakeSocket()
+    one = await manager.join(player("one"), socket)
+    assert await one.room.request_cpu("one", one.connection, CpuLevel.ROOKIE)
+    await wait_until(lambda: "final" in message_types(socket), deadline_seconds=5)
+    frame = encode_client_input(InputCommand(sequence=0, client_tick=0))
+    limit = 8
+    # Inputs in flight as the bout ends are dropped without a word.
+    for _ in range(limit):
+        await one.room.submit_frame("one", one.connection, frame)
+    # A stream of them through the result hold draws on the same allowance as any other.
+    with pytest.raises(RoomError, match="rate_limited"):
+        for _ in range(4 * limit):
+            await one.room.submit_frame("one", one.connection, frame)
+    await manager.close()
+
+
 async def test_a_rematch_picks_styles_afresh(repository: Repository) -> None:
     manager = HandsRoomManager(repository, config=room_config(round_ticks=30, style_select=5.0))
     first_socket = FakeSocket()
