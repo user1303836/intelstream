@@ -1,5 +1,5 @@
 import { punchStaminaCost } from "./manifest";
-import { attackTicksRemaining, canAffordPunch, constrainPrediction, fatigueFactor, MINIMUM_SEPARATION, movementLocked, predictMovement, predictedPunchTiming } from "./prediction";
+import { attackTicksRemaining, constrainPrediction, fatigueFactor, MINIMUM_SEPARATION, movementLocked, predictMovement, predictedPunchTiming } from "./prediction";
 import { fighter } from "./test/fixtures";
 import timingTable from "./test/punch-timing-table.json";
 import type { FighterSnapshot, PunchClass } from "./types";
@@ -88,8 +88,21 @@ describe("local movement prediction", () => {
     expect(punchStaminaCost("jab", "body", "normal")).toBe(46);
     expect(punchStaminaCost("jab", "head", "power")).toBe(65);
     expect(punchStaminaCost("jab", "body", "power")).toBe(71);
-    expect(canAffordPunch({ ...fresh, stamina: 42 }, jab)).toBe(true);
-    expect(canAffordPunch({ ...fresh, stamina: 41 }, jab)).toBe(false);
+  });
+
+  it("predicts the slow arm punch the engine throws for a fighter who cannot pay in full", () => {
+    const fresh = { ...fighter("one"), conditioning: 1000, stance: "orthodox" as const };
+    const jab = { class: "jab" as const, hand: "left" as const, target: "head" as const, power: "normal" as const };
+    expect(predictedPunchTiming({ ...fresh, stamina: 42 }, jab)).toMatchObject({ startup: 3, recovery: 7 });
+    expect(predictedPunchTiming({ ...fresh, stamina: 10 }, jab)).toMatchObject({ startup: 6, recovery: 12 });
+    expect(predictedPunchTiming({ ...fresh, conditioning: 640, stamina: 41 }, jab)).toMatchObject({ startup: 7, recovery: 13 });
+    expect(predictedPunchTiming({ ...fresh, conditioning: 640, stamina: 119 }, { ...jab, class: "hook", power: "power" })).toMatchObject({ startup: 14, recovery: 23 });
+    expect(predictedPunchTiming({ ...fresh, conditioning: 820, stamina: 0, trauma: { ...fresh.trauma, body: 350 } }, { class: "uppercut", hand: "right", target: "body", power: "normal" })).toMatchObject({ startup: 14, recovery: 21 });
+    // No combination discount for a tired punch, inside the window or out of it.
+    const afterJab = { ...fresh, conditioning: 108, stamina: 50, action: "jab" as const, action_start_tick: 100, action_startup_ticks: 3, action_active_ticks: 2, action_recovery_ticks: 7 };
+    const straight = { class: "straight" as const, hand: "right" as const, target: "head" as const, power: "power" as const };
+    expect(predictedPunchTiming(afterJab, straight, 110)).toMatchObject({ startup: 18, recovery: 30 });
+    expect(predictedPunchTiming(afterJab, straight, 125)).toMatchObject({ startup: 18, recovery: 30 });
   });
 
   it("predicts the startup and recovery the engine gives every punch, its own cost taken off the conditioning first", () => {

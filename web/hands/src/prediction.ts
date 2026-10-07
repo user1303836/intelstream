@@ -1,4 +1,4 @@
-import { comboChain, comboWindow, FIGHTER_RADIUS, punchStaminaCost, punchTiming, RING_CORNER_REACH, RING_HALF_HEIGHT, RING_HALF_WIDTH, STUNNED_SPEED_PERCENT, type PunchTiming } from "./manifest";
+import { comboChain, comboWindow, FIGHTER_RADIUS, punchStaminaCost, punchTiming, RING_CORNER_REACH, RING_HALF_HEIGHT, RING_HALF_WIDTH, STUNNED_SPEED_PERCENT, TIRED_RECOVERY_TICKS, TIRED_STARTUP_TICKS, type PunchTiming } from "./manifest";
 import type { FighterSnapshot, Hand, HeldDefense, Power, PunchClass, Target } from "./types";
 
 export interface HeldInput {
@@ -38,26 +38,24 @@ export function inComboWindow(fighter: FighterSnapshot, punch: PunchIntent, tick
 /**
  * The timing the engine will give this punch if it starts at `tick`: slower for a tired fighter, a
  * tick quicker for the lead-hand jab. The engine takes the punch's own cost off the conditioning
- * before it measures fatigue, at the combination discount inside the window.
+ * before it measures fatigue, at the combination discount inside the window. A fighter who cannot
+ * pay the full cost throws a tired arm punch on what stamina is left, slower still and never a
+ * combination.
  */
 export function predictedPunchTiming(fighter: FighterSnapshot, punch: PunchIntent, tick?: number): PunchTiming {
   const base = punchTiming(punch.class, punch.target, punch.power);
   const fullCost = punchStaminaCost(punch.class, punch.target, punch.power);
-  const cost = tick !== undefined && inComboWindow(fighter, punch, tick) ? Math.max(1, Math.floor((fullCost * 90) / 100)) : fullCost;
+  const tired = fighter.stamina < fullCost;
+  const cost = tired ? fighter.stamina : tick !== undefined && inComboWindow(fighter, punch, tick) ? Math.max(1, Math.floor((fullCost * 90) / 100)) : fullCost;
   const conditioning = Math.max(0, fighter.conditioning - Math.max(1, Math.floor(cost / 12)));
   const speed = fatigueFactor(conditioning, fighter.trauma.body);
   const lead = fighter.stance === "orthodox" ? "left" : "right";
   const quick = punch.class === "jab" && punch.hand === lead ? 1 : 0;
   return {
     ...base,
-    startup: Math.max(2, Math.floor((base.startup * 100) / speed) - quick),
-    recovery: Math.max(4, Math.floor((base.recovery * 100) / speed)),
+    startup: Math.max(2, Math.floor((base.startup * 100) / speed) - quick) + (tired ? TIRED_STARTUP_TICKS : 0),
+    recovery: Math.max(4, Math.floor((base.recovery * 100) / speed)) + (tired ? TIRED_RECOVERY_TICKS : 0),
   };
-}
-
-/** False when the fighter cannot pay the punch's full cost: the engine checks it before any combo discount. */
-export function canAffordPunch(fighter: FighterSnapshot, punch: PunchIntent): boolean {
-  return fighter.stamina >= punchStaminaCost(punch.class, punch.target, punch.power);
 }
 
 /**

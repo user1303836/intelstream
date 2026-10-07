@@ -43,13 +43,25 @@
     ]
   },
   "knockdown": {
-    "neutral_separation": 230,
-    "referee_walk_speed": 4,
+    "referee_walk_speed": 5,
+    "mandatory_count": 8,
+    "box_pause_ticks": 60,
     "get_up_stun_ticks": 20,
     "get_up_stamina": 500,
     "get_up_base": 34,
     "get_up_per_knockdown": 20,
     "get_up_trauma_divisor": 18
+  },
+  "countdown": {
+    "opening_ticks": 240
+  },
+  "tired": {
+    "startup_ticks": 3,
+    "recovery_ticks": 5,
+    "impact_percent": 40
+  },
+  "foul": {
+    "separation": 45
   },
   "hitstop_ms": {
     "hit": 78,
@@ -228,7 +240,7 @@
     "rocked_max_ticks": 36,
     "chain_max_ticks": 45,
     "immunity_ticks": 24,
-    "moving_speed_percent": 50
+    "moving_speed_percent": 75
   },
   "guard": {
     "block_poise_percent": 25,
@@ -249,7 +261,7 @@
     "poise_ceiling_floor": 220,
     "body_per_damage_percent": 100,
     "poise_regen_every_ticks": 2,
-    "poise_damage_percent": 120
+    "poise_damage_percent": 100
   },
   "hitbox": {
     "glove_radius": 0.11

@@ -10,7 +10,9 @@ import pytest
 
 from intelstream.hands.engine import (
     ACTION_BUFFER_TICKS,
+    COUNT_TICK_INTERVAL,
     MAX_PENDING_ACTIONS,
+    AttackState,
     BoxingEngine,
     EngineConfig,
     FighterState,
@@ -20,22 +22,30 @@ from intelstream.hands.rules import (
     BLIND_SIDE_EYE_THRESHOLD,
     BODY_COLLAPSE_DELAY_TICKS,
     BODY_WIND_PERCENT,
+    BOX_PAUSE_TICKS,
     CLINCH_HOLD_DISTANCE,
     CORNER_TREATMENTS,
     FIGHTER_RADIUS,
+    FOUL_SEPARATION,
+    GET_UP_STUN_TICKS,
     GUARD_BLOCK_MINIMUM,
-    KNOCKDOWN_NEUTRAL_SEPARATION,
+    MANDATORY_COUNT,
     MINIMUM_SEPARATION,
     PARRY_STAGGER_TICKS,
     PUNCH_RULES,
+    REFEREE_WALK_SPEED,
     REST_CORNER_OFFSET,
     RING_CORNER_REACH,
     RING_HALF_HEIGHT,
     RING_HALF_WIDTH,
     STUNNED_SPEED_PERCENT,
+    TIRED_IMPACT_PERCENT,
+    TIRED_RECOVERY_TICKS,
+    TIRED_STARTUP_TICKS,
 )
 from intelstream.hands.types import (
     ActionKind,
+    CombatEvent,
     CornerChoice,
     DefensivePose,
     FinishMethod,
@@ -492,7 +502,7 @@ def test_sliding_along_a_corner_pad_keeps_its_speed_and_is_the_same_both_ways() 
     ("winner_at", "downed_at"),
     [((367, 366), (300, 300)), ((333, 400), (265, 328)), ((-440, -293), (-370, -230))],
 )
-def test_cornered_winner_still_reaches_neutral_distance(
+def test_cornered_winner_still_reaches_a_neutral_corner(
     winner_at: tuple[int, int], downed_at: tuple[int, int]
 ) -> None:
     engine = make_engine(seed=100, round_ticks=5000)
@@ -503,14 +513,13 @@ def test_cornered_winner_still_reaches_neutral_distance(
     engine._knock_down(downed, winner)
     assert engine.phase is MatchPhase.KNOCKDOWN
 
-    for _ in range(150):
+    for _ in range(8 * COUNT_TICK_INTERVAL):
         engine.step()
         assert in_ring(winner)
         assert hypot(winner.x - downed.x, winner.y - downed.y) >= MINIMUM_SEPARATION - 8
-        if engine.phase is not MatchPhase.KNOCKDOWN:
-            break
 
-    assert hypot(winner.x - downed.x, winner.y - downed.y) >= KNOCKDOWN_NEUTRAL_SEPARATION
+    corners = [(-REST_CORNER_OFFSET, REST_CORNER_OFFSET), (REST_CORNER_OFFSET, -REST_CORNER_OFFSET)]
+    assert min(hypot(winner.x - x, winner.y - y) for x, y in corners) <= REFEREE_WALK_SPEED
     assert (winner.velocity_x, winner.velocity_y) == (0, 0)
 
 
@@ -751,6 +760,7 @@ def test_out_of_range_clinch_is_denied_and_still_costs_stamina() -> None:
 def test_fouls_warn_deduct_recover_and_disqualify() -> None:
     engine = make_engine(round_ticks=2000)
     for sequence, foul in enumerate((Foul.LOW_BLOW, Foul.HEADBUTT, Foul.LOW_BLOW), start=1):
+        engine.fighter("one").x, engine.fighter("two").x = -45, 45
         engine.step({"one": command(sequence, action=FoulAction(foul))})
         if sequence < 3:
             while engine.phase is MatchPhase.FOUL_RECOVERY:
@@ -906,7 +916,7 @@ def test_knockdown_seeded_get_up_and_repeated_knockdown_tko() -> None:
 
     sequence = 2
     used_window = -1
-    while engine.phase is MatchPhase.KNOCKDOWN and engine.tick < 240:
+    while engine.phase is MatchPhase.KNOCKDOWN and engine.tick < 400:
         snapshot = engine.snapshot()
         fighter = next(item for item in snapshot.fighters if item.player_id == "two")
         if (
@@ -927,7 +937,10 @@ def test_knockdown_seeded_get_up_and_repeated_knockdown_tko() -> None:
         else:
             engine.step()
     assert engine.phase is MatchPhase.FIGHT
-    assert any(event.kind == "get_up" for event in engine.events)
+    assert [event.kind for event in engine.events if event.kind in {"get_up", "box"}] == [
+        "get_up",
+        "box",
+    ]
 
     tko = make_engine(round_ticks=2000)
     tko.fighter("two").knockdowns = 2
@@ -1260,36 +1273,21 @@ def test_facing_vector_turns_toward_the_opponent_and_the_hit_test_follows() -> N
     assert payload["fighters"][1]["last_input_sequence"] == -1
 
 
-def test_knockdown_walks_the_standing_fighter_to_neutral_distance_without_teleport() -> None:
+def test_the_standing_fighter_walks_to_the_far_neutral_corner_without_teleporting() -> None:
     engine = make_engine(round_ticks=2000)
-    defender = engine.fighter("two")
-    attacker = engine.fighter("one")
-    defender.poise = 1
-    engine.step({"one": command(1, action=punch(PunchClass.UPPERCUT, power=Power.POWER))})
-    advance_until(engine, {"knockdown"})
-    downed_at = (defender.x, defender.y)
-    for _ in range(40):
+    one, two = engine.fighter("one"), engine.fighter("two")
+    _down_two(engine)
+    downed_at = (two.x, two.y)
+    neutral = [(-REST_CORNER_OFFSET, REST_CORNER_OFFSET), (REST_CORNER_OFFSET, -REST_CORNER_OFFSET)]
+    far = max(neutral, key=lambda corner: hypot(corner[0] - two.x, corner[1] - two.y))
+    while engine._knockdown_count_ticks < MANDATORY_COUNT * COUNT_TICK_INTERVAL:
+        before = (one.x, one.y)
         engine.step()
-    assert (defender.x, defender.y) == downed_at
-    assert hypot(attacker.x - defender.x, attacker.y - defender.y) >= 230
-    assert attacker.velocity_x == 0 and attacker.velocity_y == 0
-
-    sequence = 2
-    used_window = -1
-    while engine.phase is MatchPhase.KNOCKDOWN and engine.tick < 300:
-        fighter = next(item for item in engine.snapshot().fighters if item.player_id == "two")
-        if (
-            fighter.get_up_prompt is not None
-            and engine.tick >= fighter.get_up_window_start_tick
-            and fighter.get_up_window_end_tick != used_window
-        ):
-            engine.step({"two": command(sequence, action=MovementAction(fighter.get_up_prompt))})
-            used_window = fighter.get_up_window_end_tick
-            sequence += 1
-        else:
-            engine.step()
-    assert engine.phase is MatchPhase.FIGHT
-    assert (defender.x, defender.y) == downed_at
+        assert hypot(one.x - before[0], one.y - before[1]) <= REFEREE_WALK_SPEED + 1
+        assert hypot(one.x - two.x, one.y - two.y) >= MINIMUM_SEPARATION - 8
+        assert (two.x, two.y) == downed_at
+    assert hypot(one.x - far[0], one.y - far[1]) <= REFEREE_WALK_SPEED
+    assert (one.velocity_x, one.velocity_y) == (0, 0)
 
 
 def test_short_buffered_combo_only_rewards_authored_compatible_chain() -> None:
@@ -1583,6 +1581,7 @@ def test_completed_close_round_applies_live_foul_deduction() -> None:
     engine.step({"one": command(1, action=FoulAction(Foul.LOW_BLOW))})
     while engine.phase is MatchPhase.FOUL_RECOVERY:
         engine.step()
+    engine.fighter("one").x, engine.fighter("two").x = -45, 45
     engine.step({"one": command(2, action=FoulAction(Foul.HEADBUTT))})
     while engine.phase is MatchPhase.FOUL_RECOVERY:
         engine.step()
@@ -2557,3 +2556,200 @@ def test_two_body_collapses_on_one_tick_favour_neither_seat(
         fighter.body_collapse_action_id = "trade"
     knockdowns = [event for event in engine.step().events if event.kind == "knockdown"]
     assert [event.target_id for event in knockdowns] == [first_down]
+
+
+def _down_two(engine: BoxingEngine) -> None:
+    engine.fighter("two").poise = 1
+    engine.step({"one": command(1, action=punch(PunchClass.UPPERCUT, power=Power.POWER))})
+    advance_until(engine, {"knockdown"})
+    assert engine.phase is MatchPhase.KNOCKDOWN
+
+
+def _rise_at(engine: BoxingEngine, count: int) -> list[CombatEvent]:
+    """Let the referee reach `count`, then fill the get-up meter: two rises on the next tick."""
+    while engine._knockdown_count_ticks < count * COUNT_TICK_INTERVAL:
+        engine.step()
+    two = engine.fighter("two")
+    two.get_up_meter = engine._get_up_required(two)
+    return list(engine.step().events)
+
+
+def test_a_fighter_who_beats_the_count_takes_the_mandatory_eight_before_they_box() -> None:
+    engine = make_engine(round_ticks=2000)
+    _down_two(engine)
+    clock = engine._paused_fight_ticks
+    two = engine.fighter("two")
+    risen_at = (two.x, two.y)
+    events = _rise_at(engine, 2)
+    assert [event.amount for event in events if event.kind == "get_up"] == [2]
+
+    counts: list[int] = []
+    shown: list[int] = []
+    sequence = 1
+    box_tick = engine.tick - engine._knockdown_count_ticks + MANDATORY_COUNT * COUNT_TICK_INTERVAL
+    box_tick += BOX_PAUSE_TICKS
+    while engine.phase is MatchPhase.KNOCKDOWN:
+        view = next(item for item in engine.snapshot().fighters if item.player_id == "two")
+        assert not view.is_downed and view.get_up_prompt is None
+        assert engine.phase_ticks_remaining == box_tick - engine.tick
+        shown.append(view.get_up_count)
+        # Nothing he presses counts until the referee waves them on.
+        snapshot = engine.step({"two": command(sequence, action=punch(), move_x=1000)})
+        sequence += 1
+        counts += [event.amount for event in snapshot.events if event.kind == "count"]
+        assert (two.x, two.y) == risen_at
+    assert engine.tick == box_tick
+    assert counts == [3, 4, 5, 6, 7, 8]
+    assert shown == sorted(shown) and shown[0] == 2 and shown[-1] == MANDATORY_COUNT
+    assert [event.target_id for event in engine.events if event.kind == "box"] == ["two"]
+    assert engine.phase is MatchPhase.FIGHT
+    assert engine.phase_ticks_remaining == clock
+    assert two.stunned_ticks == GET_UP_STUN_TICKS
+    assert {view.get_up_count for view in engine.snapshot().fighters} == {MANDATORY_COUNT}
+
+
+def test_a_late_get_up_still_gets_the_referee_s_look_before_the_box() -> None:
+    engine = make_engine(round_ticks=2000)
+    _down_two(engine)
+    events = _rise_at(engine, 9)
+    assert [event.amount for event in events if event.kind == "get_up"] == [9]
+    for _ in range(BOX_PAUSE_TICKS - 1):
+        snapshot = engine.step()
+        assert engine.phase is MatchPhase.KNOCKDOWN and engine.result is None
+        assert not [event for event in snapshot.events if event.kind in {"count", "box"}]
+        assert {view.get_up_count for view in snapshot.fighters} == {9}
+    assert [event.kind for event in engine.step().events if event.kind == "box"] == ["box"]
+    assert engine.phase is MatchPhase.FIGHT
+    # The count the referee reached stays on the snapshot, inside what the client accepts.
+    for _ in range(3 * COUNT_TICK_INTERVAL):
+        assert {view.get_up_count for view in engine.step().fighters} == {9}
+
+
+def test_round_one_opens_with_the_introductions_and_later_rounds_with_the_bell() -> None:
+    opening = _manifest()["countdown"]["opening_ticks"]
+    assert opening >= 8 * COUNT_TICK_INTERVAL
+    config = dataclasses.replace(EngineConfig(), rounds=2, round_ticks=30, rest_ticks=10)
+    assert config.countdown_ticks == opening
+    engine = BoxingEngine(
+        match_id="intro",
+        activity_instance_id="instance-1",
+        guild_id="guild-1",
+        player_one_id="one",
+        player_two_id="two",
+        seed=3,
+        config=config,
+    )
+    phases = []
+    while engine.result is None:
+        phases.append(engine.phase)
+        engine.step()
+    assert phases[:opening] == [MatchPhase.COUNTDOWN] * opening
+    assert MatchPhase.COUNTDOWN not in phases[opening:]
+    assert [event.detail for event in engine.events if event.kind == "bell"] == [
+        "round_start",
+        "round_end",
+        "round_start",
+        "round_end",
+    ]
+
+
+def test_the_referee_sends_both_fighters_back_after_a_foul() -> None:
+    engine = make_engine(round_ticks=2000)
+    one, two = engine.fighter("one"), engine.fighter("two")
+    apart = hypot(two.x - one.x, two.y - one.y)
+    engine.step({"one": command(1, action=FoulAction(Foul.LOW_BLOW))})
+    assert engine.phase is MatchPhase.FOUL_RECOVERY
+    assert hypot(two.x - one.x, two.y - one.y) >= apart + 2 * FOUL_SEPARATION - 2
+    assert (one.velocity_x, one.velocity_y, two.velocity_x, two.velocity_y) == (0, 0, 0, 0)
+    while engine.phase is MatchPhase.FOUL_RECOVERY:
+        engine.step()
+    # A second foul straight after the restart is thrown from too far to land.
+    events = engine.step({"one": command(2, action=FoulAction(Foul.HEADBUTT))}).events
+    assert [event.kind for event in events if event.kind.startswith("foul")] == ["foul_miss"]
+
+
+def _straight_from(stamina: int) -> tuple[BoxingEngine, int, list[CombatEvent]]:
+    engine = make_engine(round_ticks=2000)
+    one = engine.fighter("one")
+    one.stamina = stamina
+    events = list(engine.step({"one": command(1, action=punch(PunchClass.STRAIGHT))}).events)
+    left = one.stamina
+    attack = one.attack
+    assert attack is not None
+    while not attack.resolved:
+        events.extend(engine.step().events)
+    return engine, left, events
+
+
+def test_a_fighter_out_of_breath_still_throws_a_slow_weak_arm_punch() -> None:
+    cost = PUNCH_RULES[(PunchClass.STRAIGHT, Target.HEAD, Power.NORMAL)].stamina_cost
+    fresh, fresh_left, fresh_events = _straight_from(cost)
+    tired, tired_left, tired_events = _straight_from(cost - 1)
+    assert "exhausted" not in [event.kind for event in fresh_events]
+    assert "exhausted" in [event.kind for event in tired_events]
+    # He pays with what breath he has left.
+    assert tired_left == fresh_left
+    fresh_attack, tired_attack = fresh.fighter("one").attack, tired.fighter("one").attack
+    assert fresh_attack is not None and tired_attack is not None
+    assert tired_attack.rule.startup == fresh_attack.rule.startup + TIRED_STARTUP_TICKS
+    assert tired_attack.rule.recovery == fresh_attack.rule.recovery + TIRED_RECOVERY_TICKS
+    assert tired_attack.rule.impact == fresh_attack.rule.impact * TIRED_IMPACT_PERCENT // 100
+    assert tired_attack.landed and fresh_attack.landed
+    fresh_two, tired_two = fresh.fighter("two"), tired.fighter("two")
+    assert 0 < tired_two.trauma.head < fresh_two.trauma.head
+    assert fresh_two.poise < tired_two.poise < 600
+
+
+def _hook_after_a_jab(stamina: int) -> tuple[AttackState, int]:
+    engine = make_engine(round_ticks=2000)
+    one = engine.fighter("one")
+    engine.step({"one": command(1, action=punch(PunchClass.JAB, hand=Hand.LEFT))})
+    jab = one.attack
+    assert jab is not None
+    while not jab.resolved:
+        engine.step()
+    assert jab.landed
+    one.stamina = stamina
+    hook = punch(PunchClass.HOOK, hand=Hand.LEFT)
+    engine.step({"one": command(2, action=hook)})
+    for _ in range(40):
+        if one.attack is not None and one.attack.action == hook:
+            return one.attack, one.attack.start_tick - jab.start_tick
+        engine.step()
+    raise AssertionError("the hook was never thrown")
+
+
+def test_a_tired_punch_is_no_combination() -> None:
+    fresh, fresh_gap = _hook_after_a_jab(1000)
+    tired, tired_gap = _hook_after_a_jab(10)
+    assert fresh.combo_bonus > 0 and tired.combo_bonus == 0
+    # It cannot cut the jab's recovery short either: it waits for the jab to finish.
+    assert tired_gap > fresh_gap
+
+
+def _counter_hook(stamina: int) -> list[str]:
+    engine = make_engine(seed=11, flash=True)
+    one, two = engine.fighter("one"), engine.fighter("two")
+    two.trauma.head = 300
+    one.counter_ticks = 30
+    one.stamina = stamina
+    kinds = [
+        event.kind
+        for event in engine.step(
+            {"one": command(1, action=punch(PunchClass.HOOK, power=Power.POWER))}
+        ).events
+    ]
+    attack = one.attack
+    assert attack is not None
+    # His breath back by the time it lands, so only the punch itself decides.
+    one.stamina = 1000
+    while not attack.resolved:
+        kinds.extend(event.kind for event in engine.step().events)
+    assert attack.landed
+    return kinds
+
+
+def test_a_tired_punch_never_carries_a_flash_knockout() -> None:
+    assert "flash_roll" in _counter_hook(1000)
+    tired = _counter_hook(10)
+    assert "exhausted" in tired and "flash_roll" not in tired

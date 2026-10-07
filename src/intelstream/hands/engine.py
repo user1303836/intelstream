@@ -19,6 +19,7 @@ from intelstream.hands.rules import (
     BODY_COLLAPSE_TRAUMA,
     BODY_TRAUMA_PER_DAMAGE_PERCENT,
     BODY_WIND_PERCENT,
+    BOX_PAUSE_TICKS,
     CLINCH_DRAW_SPEED,
     CLINCH_HOLD_DISTANCE,
     COMPATIBLE_COMBO_CHAINS,
@@ -33,6 +34,7 @@ from intelstream.hands.rules import (
     FLINCH_BASE_TICKS,
     FLINCH_DAMAGE_DIVISOR,
     FLINCH_MINIMUM_DAMAGE,
+    FOUL_SEPARATION,
     GET_UP_BASE,
     GET_UP_PER_KNOCKDOWN,
     GET_UP_STAMINA,
@@ -46,7 +48,7 @@ from intelstream.hands.rules import (
     GUARD_STAMINA_REGEN_PERCENT,
     HEAD_TRAUMA_PER_DAMAGE_PERCENT,
     JUDGE_PROFILES,
-    KNOCKDOWN_NEUTRAL_SEPARATION,
+    MANDATORY_COUNT,
     MAX_CONDITIONING,
     MAX_GUARD,
     MAX_POISE,
@@ -77,6 +79,9 @@ from intelstream.hands.rules import (
     STUNNED_SPEED_PERCENT,
     SWELLING_PER_DAMAGE_PERCENT,
     TICKS_PER_SECOND,
+    TIRED_IMPACT_PERCENT,
+    TIRED_RECOVERY_TICKS,
+    TIRED_STARTUP_TICKS,
     JudgeProfile,
     PunchRule,
     fatigue_factor,
@@ -112,25 +117,6 @@ EVASION_TICKS: Final = 10
 COUNTER_WINDOW_TICKS: Final = 18
 ROPE_OVERLAP_PASSES: Final = 8
 ROPE_OVERLAP_STEP: Final = 8
-NEUTRAL_WALK_MARGIN: Final = 6
-_COMPASS: Final = (
-    (1000, 0),
-    (924, 383),
-    (707, 707),
-    (383, 924),
-    (0, 1000),
-    (-383, 924),
-    (-707, 707),
-    (-924, 383),
-    (-1000, 0),
-    (-924, -383),
-    (-707, -707),
-    (-383, -924),
-    (0, -1000),
-    (383, -924),
-    (707, -707),
-    (924, -383),
-)
 CLINCH_STARTUP_TICKS: Final = 8
 CLINCH_TICKS: Final = 45
 FOUL_RECOVERY_TICKS: Final = 60
@@ -468,6 +454,9 @@ class BoxingEngine:
         self._knockdown_count_ticks = 0
         self._foul_recovery_target: str | None = None
         self._paused_fight_ticks = 0
+        self._neutral_corner: tuple[int, int] | None = None
+        self._box_tick: int | None = None
+        self._count_at_rise = 0
 
     @property
     def players(self) -> tuple[str, str]:
@@ -697,12 +686,12 @@ class BoxingEngine:
         return (
             isinstance(follow_up, PunchAction)
             and (attack.action.punch_class, follow_up.punch_class) in COMPATIBLE_COMBO_CHAINS
-            # `_start_punch` refuses a punch the fighter cannot pay for in full.
+            # A punch the fighter cannot pay for in full is a tired one, and no combination.
             and fighter.stamina
             >= PUNCH_RULES[(follow_up.punch_class, follow_up.target, follow_up.power)].stamina_cost
         )
 
-    def _start_punch(self, fighter: FighterState, action: PunchAction) -> bool:
+    def _start_punch(self, fighter: FighterState, action: PunchAction) -> None:
         base_rule = PUNCH_RULES[(action.punch_class, action.target, action.power)]
         cost = base_rule.stamina_cost
         lead_hand = "left" if fighter.stance is Stance.ORTHODOX else "right"
@@ -712,11 +701,13 @@ class BoxingEngine:
         rear_power_bonus = (
             8 if action.hand.value != lead_hand and action.punch_class is PunchClass.STRAIGHT else 0
         )
-        if fighter.stamina < cost:
-            self._emit("exhausted", fighter.player_id)
-            return False
+        # Arms too heavy for the punch still throw it: a slow, weak arm punch on what breath is left.
+        tired = fighter.stamina < cost
         combo_bonus = 0
-        if (
+        if tired:
+            self._emit("exhausted", fighter.player_id)
+            cost = fighter.stamina
+        elif (
             fighter.combo_ticks > 0
             and fighter.last_punch is not None
             and (fighter.last_punch.punch_class, action.punch_class) in COMPATIBLE_COMBO_CHAINS
@@ -728,17 +719,21 @@ class BoxingEngine:
         speed = fighter.fatigue
         startup = max(2, base_rule.startup * 100 // speed - hand_speed_bonus)
         recovery = max(4, base_rule.recovery * 100 // speed)
+        strength = TIRED_IMPACT_PERCENT if tired else 100
+        if tired:
+            startup += TIRED_STARTUP_TICKS
+            recovery += TIRED_RECOVERY_TICKS
         rule = PunchRule(
             startup=startup,
             active=base_rule.active,
             recovery=recovery,
             reach=base_rule.reach,
             lateral_arc=base_rule.lateral_arc,
-            impact=base_rule.impact + rear_power_bonus,
+            impact=(base_rule.impact + rear_power_bonus) * strength // 100,
             stamina_cost=base_rule.stamina_cost,
             whiff_cost=base_rule.whiff_cost,
-            guard_damage=base_rule.guard_damage,
-            poise_damage=base_rule.poise_damage,
+            guard_damage=base_rule.guard_damage * strength // 100,
+            poise_damage=base_rule.poise_damage * strength // 100,
             combo_window=base_rule.combo_window,
             startup_vulnerability=base_rule.startup_vulnerability,
             recovery_vulnerability=base_rule.recovery_vulnerability,
@@ -752,7 +747,6 @@ class BoxingEngine:
             detail=f"{action.hand.value}:{action.punch_class.value}:{action.target.value}",
             action_id=self._action_id(fighter, fighter.attack),
         )
-        return True
 
     @staticmethod
     def _action_key(action: PunchAction) -> str:
@@ -1209,6 +1203,15 @@ class BoxingEngine:
         elif fighter.warnings >= 3:
             self._complete(opponent.player_id, FinishMethod.DISQUALIFICATION)
             return
+        # The referee steps between them: each is sent back from the other for the recovery.
+        for mover in (fighter, opponent):
+            mover.x -= _symmetric_divide(mover.facing_x * FOUL_SEPARATION, FACING_SCALE)
+            mover.y -= _symmetric_divide(mover.facing_y * FOUL_SEPARATION, FACING_SCALE)
+            mover.velocity_x = mover.velocity_y = 0
+            mover.velocity_fixed_x = mover.velocity_fixed_y = 0
+        self._clamp_to_ring(fighter)
+        self._clamp_to_ring(opponent)
+        self._separate_fighters(fighter, opponent)
         self._paused_fight_ticks = self.phase_ticks_remaining
         self.phase = MatchPhase.FOUL_RECOVERY
         self.phase_ticks_remaining = FOUL_RECOVERY_TICKS
@@ -1597,6 +1600,9 @@ class BoxingEngine:
         defender.get_up_meter = 0
         self._downed_id = defender.player_id
         self._knockdown_count_ticks = 0
+        self._box_tick = None
+        self._count_at_rise = 0
+        self._neutral_corner = self._choose_neutral_corner(defender)
         self._paused_fight_ticks = self.phase_ticks_remaining
         self.phase = MatchPhase.KNOCKDOWN
         self.phase_ticks_remaining = 10 * COUNT_TICK_INTERVAL
@@ -1611,6 +1617,13 @@ class BoxingEngine:
         )
         if defender.knockdowns >= 3:
             self._complete(attacker.player_id, FinishMethod.TKO)
+
+    def _get_up_count(self) -> int:
+        """The referee's count: on past the rise to the mandatory eight, then held there."""
+        count = self._knockdown_count_ticks // COUNT_TICK_INTERVAL
+        if self._box_tick is None:
+            return count
+        return max(self._count_at_rise, min(count, MANDATORY_COUNT))
 
     def _get_up_required(self, fighter: FighterState) -> int:
         return (
@@ -1659,9 +1672,22 @@ class BoxingEngine:
         downed = self._fighters[self._downed_id]
         winner = self._other(self._downed_id)
         winner.pending_actions.clear()
-        self.phase_ticks_remaining -= 1
         self._knockdown_count_ticks += 1
         self._walk_to_neutral_corner(winner, downed)
+        count = self._knockdown_count_ticks // COUNT_TICK_INTERVAL
+        new_second = self._knockdown_count_ticks % COUNT_TICK_INTERVAL == 0
+        if self._box_tick is not None:
+            # Up, and taking the mandatory count: the referee counts on to eight, looks him over
+            # and only then tells them to box.
+            downed.pending_actions.clear()
+            if self.tick >= self._box_tick:
+                self._box(downed, winner)
+                return
+            self.phase_ticks_remaining = self._box_tick - self.tick
+            if new_second and self._count_at_rise < count <= MANDATORY_COUNT:
+                self._emit("count", target_id=downed.player_id, amount=count)
+            return
+        self.phase_ticks_remaining -= 1
         while downed.pending_actions:
             action = downed.pending_actions.pop(0)
             if isinstance(action, MovementAction):
@@ -1669,39 +1695,86 @@ class BoxingEngine:
         if self.tick > downed.get_up_window_end_tick:
             self._schedule_get_up_prompt(downed)
         required = self._get_up_required(downed)
-        count = self._knockdown_count_ticks // COUNT_TICK_INTERVAL
         if downed.get_up_meter >= required and count >= 1:
             downed.poise = min(poise_ceiling(downed.trauma.head), MAX_POISE // 2)
             downed.stamina = max(downed.stamina, min(downed.maximum_stamina, GET_UP_STAMINA))
-            downed.stunned_ticks = GET_UP_STUN_TICKS
-            downed.stun_chain_ticks = 0
-            self._separate_fighters(downed, winner)
-            self.phase = MatchPhase.FIGHT
-            self.phase_ticks_remaining = max(1, self._paused_fight_ticks)
-            self._downed_id = None
             downed.get_up_prompt = None
+            eight = self.tick + MANDATORY_COUNT * COUNT_TICK_INTERVAL - self._knockdown_count_ticks
+            self._box_tick = max(eight, self.tick) + BOX_PAUSE_TICKS
+            self._count_at_rise = count
+            self.phase_ticks_remaining = self._box_tick - self.tick
             self._emit("get_up", downed.player_id, amount=count)
         elif self.phase_ticks_remaining <= 0:
             self._complete(winner.player_id, FinishMethod.KO)
-        elif self._knockdown_count_ticks % COUNT_TICK_INTERVAL == 0:
+        elif new_second:
             self._emit("count", target_id=downed.player_id, amount=count)
 
+    def _box(self, risen: FighterState, standing: FighterState) -> None:
+        """The referee waves them on after the count: the bout resumes where the clock stopped."""
+        risen.stunned_ticks = GET_UP_STUN_TICKS
+        risen.stun_chain_ticks = 0
+        self._separate_fighters(risen, standing)
+        self.phase = MatchPhase.FIGHT
+        self.phase_ticks_remaining = max(1, self._paused_fight_ticks)
+        self._downed_id = None
+        # The count stops where the referee left it rather than running on past ten.
+        self._knockdown_count_ticks = self._get_up_count() * COUNT_TICK_INTERVAL
+        self._box_tick = None
+        self._count_at_rise = 0
+        self._neutral_corner = None
+        self._emit("box", target_id=risen.player_id)
+
+    @staticmethod
+    def _choose_neutral_corner(downed: FighterState) -> tuple[int, int]:
+        """The neutral corner the referee sends the standing fighter to: of the two corners that are
+        neither fighter's rest corner, the one farther from the man on the canvas."""
+        return max(
+            ((-REST_CORNER_OFFSET, REST_CORNER_OFFSET), (REST_CORNER_OFFSET, -REST_CORNER_OFFSET)),
+            key=lambda corner: (corner[0] - downed.x) ** 2 + (corner[1] - downed.y) ** 2,
+        )
+
+    @staticmethod
+    def _passes_clear(walker: FighterState, target: tuple[int, int], downed: FighterState) -> bool:
+        """Whether the straight walk from `walker` to `target` keeps clear of the downed fighter."""
+        path_x, path_y = target[0] - walker.x, target[1] - walker.y
+        length_squared = path_x * path_x + path_y * path_y
+        along = (downed.x - walker.x) * path_x + (downed.y - walker.y) * path_y
+        if length_squared == 0 or along <= 0:
+            return True
+        along = min(along, length_squared)
+        nearest_x = walker.x + _symmetric_divide(path_x * along, length_squared)
+        nearest_y = walker.y + _symmetric_divide(path_y * along, length_squared)
+        gap = (nearest_x - downed.x) ** 2 + (nearest_y - downed.y) ** 2
+        return gap >= MINIMUM_SEPARATION * MINIMUM_SEPARATION
+
     def _walk_to_neutral_corner(self, winner: FighterState, downed: FighterState) -> None:
-        dx = winner.x - downed.x
-        dy = winner.y - downed.y
+        if self._neutral_corner is None:
+            self._neutral_corner = self._choose_neutral_corner(downed)
+        target_x, target_y = self._neutral_corner
+        dx = target_x - winner.x
+        dy = target_y - winner.y
         distance = isqrt(dx * dx + dy * dy)
-        if distance >= KNOCKDOWN_NEUTRAL_SEPARATION:
+        if distance <= REFEREE_WALK_SPEED:
             winner.velocity_x = winner.velocity_y = 0
             winner.velocity_fixed_x = winner.velocity_fixed_y = 0
             winner.position_remainder_x = winner.position_remainder_y = 0
             self._update_facing(winner, downed)
             return
-        if distance == 0:
-            step_x, step_y = winner.facing_x, winner.facing_y
-        else:
+        if self._passes_clear(winner, self._neutral_corner, downed):
             step_x = _symmetric_divide(dx * FACING_SCALE, distance)
             step_y = _symmetric_divide(dy * FACING_SCALE, distance)
-        step_x, step_y = self._neutral_walk_step(winner, downed, step_x, step_y)
+        else:
+            # He is in the way: walk round him on the corner's side, easing out if too close.
+            away_x, away_y = winner.x - downed.x, winner.y - downed.y
+            gap = max(1, isqrt(away_x * away_x + away_y * away_y))
+            round_x, round_y = -away_y, away_x
+            if round_x * dx + round_y * dy < 0:
+                round_x, round_y = away_y, -away_x
+            if gap < MINIMUM_SEPARATION:
+                round_x, round_y = round_x + away_x, round_y + away_y
+            length = max(1, isqrt(round_x * round_x + round_y * round_y))
+            step_x = _symmetric_divide(round_x * FACING_SCALE, length)
+            step_y = _symmetric_divide(round_y * FACING_SCALE, length)
         winner.velocity_fixed_x = step_x * REFEREE_WALK_SPEED
         winner.velocity_fixed_y = step_y * REFEREE_WALK_SPEED
         winner.velocity_x = _rounded_fixed_velocity(winner.velocity_fixed_x)
@@ -1716,65 +1789,6 @@ class BoxingEngine:
         winner.y += delta_y
         self._clamp_to_ring(winner)
         self._update_facing(winner, downed)
-
-    @staticmethod
-    def _neutral_walk_step(
-        winner: FighterState, downed: FighterState, step_x: int, step_y: int
-    ) -> tuple[int, int]:
-        """Direction for the walk to neutral distance.
-
-        Straight away from the downed fighter while the spot that leads to is inside the ropes.
-        A winner with his back to the ropes or a corner walks to the nearest open spot at that
-        distance instead, by a line that does not take him over the man on the canvas.
-        """
-        radius = KNOCKDOWN_NEUTRAL_SEPARATION + NEUTRAL_WALK_MARGIN
-
-        def spot(direction_x: int, direction_y: int) -> tuple[int, int]:
-            return (
-                downed.x + _symmetric_divide(direction_x * radius, FACING_SCALE),
-                downed.y + _symmetric_divide(direction_y * radius, FACING_SCALE),
-            )
-
-        def is_open(point: tuple[int, int]) -> bool:
-            x, y, _, _, _ = _ring_point(point[0], point[1])
-            return (x, y) == point
-
-        def clears_downed(point: tuple[int, int]) -> bool:
-            path_x, path_y = point[0] - winner.x, point[1] - winner.y
-            length_squared = path_x * path_x + path_y * path_y
-            if length_squared == 0:
-                return True
-            along = (downed.x - winner.x) * path_x + (downed.y - winner.y) * path_y
-            along = min(max(along, 0), length_squared)
-            nearest_x = winner.x + _symmetric_divide(path_x * along, length_squared)
-            nearest_y = winner.y + _symmetric_divide(path_y * along, length_squared)
-            gap = (nearest_x - downed.x) ** 2 + (nearest_y - downed.y) ** 2
-            return gap >= (MINIMUM_SEPARATION - NEUTRAL_WALK_MARGIN) ** 2
-
-        if is_open(spot(step_x, step_y)):
-            return step_x, step_y
-        chosen: tuple[int, int] | None = None
-        nearest = 0
-        for clear_path in (True, False):
-            for direction_x, direction_y in _COMPASS:
-                point = spot(direction_x, direction_y)
-                if not is_open(point) or (clear_path and not clears_downed(point)):
-                    continue
-                gap = (point[0] - winner.x) ** 2 + (point[1] - winner.y) ** 2
-                if chosen is None or gap < nearest:
-                    chosen, nearest = point, gap
-            if chosen is not None:
-                break
-        if chosen is None:
-            return step_x, step_y
-        path_x, path_y = chosen[0] - winner.x, chosen[1] - winner.y
-        length = isqrt(path_x * path_x + path_y * path_y)
-        if length == 0:
-            return 0, 0
-        return (
-            _symmetric_divide(path_x * FACING_SCALE, length),
-            _symmetric_divide(path_y * FACING_SCALE, length),
-        )
 
     def _finish_round(self) -> None:
         one = self._fighters[self._player_ids[0]]
@@ -2106,7 +2120,7 @@ class BoxingEngine:
             warnings=fighter.warnings,
             deductions=fighter.deductions,
             stunned_ticks=fighter.stunned_ticks,
-            is_downed=fighter.player_id == self._downed_id,
+            is_downed=fighter.player_id == self._downed_id and self._box_tick is None,
             action=action_class,
             action_hand=action_hand,
             action_target=action_target,
@@ -2127,7 +2141,7 @@ class BoxingEngine:
             get_up_prompt=fighter.get_up_prompt,
             get_up_meter=fighter.get_up_meter,
             get_up_required=self._get_up_required(fighter),
-            get_up_count=self._knockdown_count_ticks // COUNT_TICK_INTERVAL,
+            get_up_count=self._get_up_count(),
             get_up_window_start_tick=fighter.get_up_window_start_tick,
             get_up_window_end_tick=fighter.get_up_window_end_tick,
             last_input_sequence=fighter.last_sequence,
@@ -2227,6 +2241,9 @@ class BoxingEngine:
                 "round_cards": self._round_cards,
                 "downed_id": self._downed_id,
                 "knockdown_count_ticks": self._knockdown_count_ticks,
+                "neutral_corner": self._neutral_corner,
+                "box_tick": self._box_tick,
+                "count_at_rise": self._count_at_rise,
                 "foul_recovery_target": self._foul_recovery_target,
                 "paused_fight_ticks": self._paused_fight_ticks,
                 "event_id": self._event_id,
