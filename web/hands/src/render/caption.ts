@@ -1,6 +1,6 @@
 import type { MatchPhase } from "../types";
 import { BROADCAST_VOICES, type AnnouncerCard, type BroadcastLine, type Caption, type Speaker } from "./commentary";
-import { fitFontSize, panelHeightFor, topPanelOffset } from "./hud";
+import { CALLOUT_BASELINE, CALLOUT_BELOW_BASELINE, fitFontSize, panelHeightFor, topPanelOffset } from "./hud";
 
 /** What else is on the screen, so the caption keeps out of its way. */
 export interface CaptionScene {
@@ -16,6 +16,10 @@ export interface CaptionScene {
   /** The viewer is down and has the get-up panel to watch. */
   readonly viewerDown: boolean;
   readonly replay: boolean;
+  /** Where the fighter's own corner panel starts, measured down the screen, while it is up between rounds. */
+  readonly cornerPanelTop?: number | null;
+  /** A big callout ("ROUND 2", "PARRIED") is on screen. */
+  readonly callout?: boolean;
 }
 
 export interface CaptionSlot {
@@ -71,7 +75,10 @@ export function captionSlot(scene: CaptionScene): CaptionSlot | null {
     return { x: width / 2, y: panelTop, maxWidth, anchor: "top", scale, cover: { width: Math.min(PANEL_WIDTH, width - 24), height: panelHeight } };
   }
   if (result === null && !scene.touch && !short) {
-    return { x: width / 2, y: height - (scene.hint ? ABOVE_HINT : LOWER_THIRD), maxWidth, anchor: "bottom", scale, cover: null };
+    const lowerThird = height - (scene.hint ? ABOVE_HINT : LOWER_THIRD);
+    const bottom = scene.cornerPanelTop === undefined || scene.cornerPanelTop === null ? lowerThird : Math.min(lowerThird, scene.cornerPanelTop - 8);
+    // Above the corner panel when there is room for it there, otherwise up at the top with the panels.
+    if (bottom - CAPTION_ROOM * scale >= height * 0.45) return { x: width / 2, y: bottom, maxWidth, anchor: "bottom", scale, cover: null };
   }
   if (result === null && scene.viewerDown) return null;
   let top = result === null && compact ? COMPACT_TOP : TOP_CLEARANCE;
@@ -79,6 +86,7 @@ export function captionSlot(scene: CaptionScene): CaptionSlot | null {
     if (scene.phase === "rest" || scene.phase === "foul_recovery") top = Math.max(top, panelTop + panelHeight + 8);
     else if (scene.phase === "knockdown") top = Math.max(top, height * 0.16 + 80);
     if (scene.replay && width / 2 - maxWidth / 2 < REPLAY_TAG.right + 8) top = Math.max(top, (compact ? REPLAY_TAG.compactTop : REPLAY_TAG.wideTop) + REPLAY_TAG.height + 8);
+    if (scene.callout === true && scene.phase === "fight") top = Math.max(top, height * CALLOUT_BASELINE + CALLOUT_BELOW_BASELINE + 8);
   }
   const limit = result !== null ? result - 8 : height * (short ? 0.46 : 0.5);
   if (top + CAPTION_ROOM * scale > limit) return null;

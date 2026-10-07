@@ -228,6 +228,10 @@ function roundCard(ctx: CanvasRenderingContext2D, centerX: number, y: number, cl
 
 const PANEL_HEIGHT = 78;
 const SHORT_PANEL_HEIGHT = 50;
+/** The big callouts ("ROUND 2", "PARRIED"): 46 px type on a baseline this far down the screen. */
+export const CALLOUT_BASELINE = 0.22;
+export const CALLOUT_BELOW_BASELINE = 14;
+
 export const panelHeightFor = (height: number): number => (height < 480 ? SHORT_PANEL_HEIGHT : PANEL_HEIGHT);
 
 /** Offset that parks a centre panel under the top bar, or under the round card on narrow screens, clear of the fighters. */
@@ -454,9 +458,9 @@ export function drawHud(
     ctx.font = "900 46px Inter, system-ui, sans-serif";
     ctx.lineWidth = 6;
     ctx.strokeStyle = "rgba(0,0,0,0.75)";
-    ctx.strokeText(roundCallout, width / 2, height * 0.22);
+    ctx.strokeText(roundCallout, width / 2, height * CALLOUT_BASELINE);
     ctx.fillStyle = "#f6d57a";
-    ctx.fillText(roundCallout, width / 2, height * 0.22);
+    ctx.fillText(roundCallout, width / 2, height * CALLOUT_BASELINE);
     ctx.restore();
   }
   if (snapshot.phase === "countdown") {

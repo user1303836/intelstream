@@ -405,6 +405,7 @@ export class HandsApp {
           : labels[this.state.stage];
     this.setText(this.liveFightStatus, liveStatus);
     this.corner.update(this.state.snapshot, this.state.playerId, this.state.role === "fighter" && this.state.stage === "rest");
+    this.renderer?.setCornerPanelTop(this.corner.top());
     this.retry.hidden = this.state.stage !== "fatal";
     if (this.state.stage !== "complete") this.rematchButton.hidden = true;
     this.cpuPicker.hidden = spectating || this.state.stage !== "waiting" || this.cpuLevel !== null;

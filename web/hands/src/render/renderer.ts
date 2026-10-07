@@ -898,6 +898,7 @@ export class FightRenderer {
   private readonly tmpB = new THREE.Vector3();
   /** Where a contact's effects go, and the mouth teeth and a gum shield fly from; kept apart from the fighters' places above. */
   private readonly contactPoint = new THREE.Vector3();
+  private cornerPanelTop: number | null = null;
   private readonly mouthPoint = new THREE.Vector3();
   private readonly tmpHead = new THREE.Vector3();
   private readonly tmpHeadQuaternion = new THREE.Quaternion();
@@ -1034,6 +1035,11 @@ export class FightRenderer {
 
   labFrame(virtualSeconds: number, render = true): void {
     this.draw(virtualSeconds * 1000, true, render);
+  }
+
+  /** Where the fighter's corner panel starts down the screen while it is up, so the captions keep above it. */
+  setCornerPanelTop(top: number | null): void {
+    this.cornerPanelTop = top;
   }
 
   /** The way the player's own camera faces along the canvas while it is in use, so the controls can turn with it. */
@@ -2353,7 +2359,8 @@ export class FightRenderer {
     if (caption === null || !settings.commentary) return;
     const viewer = snapshot.fighters.find((fighter) => fighter.player_id === this.viewerId);
     const resultTop = final === null ? null : resultCardTop(final, width, height, snapshot.fighters, this.players, this.roundStats, this.viewerId);
-    const slot = captionSlot({ width, height, phase: snapshot.phase, resultTop, touch: this.touchControls && viewer !== undefined, hint: snapshot.phase === "countdown" && viewer !== undefined, viewerDown: viewer?.is_downed === true, replay: this.replay !== null });
+    const callout = this.frameSeconds < this.roundCalloutUntil || (this.eventCallout !== null && this.frameSeconds < this.eventCallout.until);
+    const slot = captionSlot({ width, height, phase: snapshot.phase, resultTop, touch: this.touchControls && viewer !== undefined, hint: snapshot.phase === "countdown" && viewer !== undefined, viewerDown: viewer?.is_downed === true, replay: this.replay !== null, cornerPanelTop: this.cornerPanelTop, callout });
     if (slot !== null) drawCaption(ctx, caption, slot, settings.reducedMotion);
   }
 

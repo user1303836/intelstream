@@ -552,6 +552,9 @@ describe("the broadcast caption", () => {
       roundStats: { total: () => ({ thrown: 0, landed: 0 }) },
       touchControls: false,
       replay: null,
+      roundCalloutUntil: 0,
+      eventCallout: null,
+      cornerPanelTop: null,
       settings: () => ({ commentary: true, reducedMotion: false }),
       ...overrides,
     };

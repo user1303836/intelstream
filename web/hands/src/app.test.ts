@@ -51,6 +51,7 @@ vi.mock("./render/renderer", () => ({
     setBloodLevel(): void {}
     setReducedMotion(): void {}
     viewForward(): { x: number; z: number } | null { return mocks.viewForward; }
+    setCornerPanelTop(): void {}
     resyncClock(): void { mocks.rendererResyncs += 1; }
     push(snapshot: EngineSnapshot): void { this.pushes.push(snapshot.tick); }
     destroy(): void { mocks.rendererDestroy(); }
