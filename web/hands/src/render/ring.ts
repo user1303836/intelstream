@@ -188,7 +188,8 @@ export function buildRing(): BuiltRing {
 
   const steelMat = new THREE.MeshStandardMaterial({ color: "#9aa7b5", roughness: 0.35, metalness: 0.75 });
   materials.push(steelMat);
-  const cornerColors = [CORNER_COLORS.blue, CORNER_COLORS.neutral, CORNER_COLORS.red, CORNER_COLORS.neutral];
+  // Front right, back right, back left, front left: the blue corner is where seat one rests, the red where seat two does.
+  const cornerColors = [CORNER_COLORS.neutral, CORNER_COLORS.red, CORNER_COLORS.neutral, CORNER_COLORS.blue];
   const postGeo = new THREE.CylinderGeometry(0.055, 0.055, 1.55, 12);
   geometries.push(postGeo);
   const padGeo = new THREE.BoxGeometry(0.34, 0.52, 0.13);

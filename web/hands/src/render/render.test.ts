@@ -1,12 +1,12 @@
 import * as THREE from "three";
-import { punchTiming, totalTicks } from "../manifest";
+import { punchTiming, REST_CORNER_OFFSET, totalTicks } from "../manifest";
 import { buildArena } from "./arena";
 import { CameraDirector, ceremonyShot, cornerFrame, cornerPoint, cornerShot, cornerShotProgress, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE } from "./camera";
 import { bloodPatternFor, Effects3D } from "./effects";
 import { CLOCK_PORTRAIT_RADIUS, decisionLabel, drawHud, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, PLATE_PORTRAIT_RADIUS, RESULT_CARD_FOOTER, resultCard, resultCardLayout, RoundClock, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
 import { buildRing, disposeRing, nearRopeOpacityFor, ROPE_FLEX_GLSL, ROPE_GIVE_GLSL, ropePress } from "./ring";
 import { resizeHighDpi } from "./viewport";
-import { PALETTES, ROPE_LINE, worldMapping } from "./world";
+import { CORNER_COLORS, PALETTES, ROPE_LINE, worldMapping } from "./world";
 import { fighter, mockHudContext, publicPlayers, snapshot, type DrawnPicture } from "../test/fixtures";
 
 const mapping = worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 });
@@ -54,6 +54,32 @@ describe("scene construction", () => {
     expect(ring.textures.length).toBeGreaterThanOrEqual(1);
     expect(ring.group.getObjectByName("ring")).toBeTruthy();
     expect(ring.geometries.some((geometry) => geometry.type === "PlaneGeometry")).toBe(true);
+  });
+
+  it("pads the corner each fighter rests in with his colour, and the other two white", () => {
+    const ring = buildRing();
+    ring.group.updateMatrixWorld(true);
+    const padsIn = (color: number): THREE.Vector3[] => {
+      const found: THREE.Vector3[] = [];
+      ring.group.traverse((object) => {
+        if (!(object instanceof THREE.Mesh) || !(object.geometry instanceof THREE.BoxGeometry) || object.geometry.parameters.height !== 0.52) return;
+        if ((object.material as THREE.MeshStandardMaterial).color.equals(new THREE.Color(color))) found.push(object.getWorldPosition(new THREE.Vector3()));
+      });
+      return found;
+    };
+    // The engine walks seat one (blue) to (-offset, -offset) for the rest and seat two (red) to (offset, offset).
+    for (const [color, sign] of [[CORNER_COLORS.blue, -1], [CORNER_COLORS.red, 1]] as const) {
+      const pads = padsIn(color);
+      expect(pads).toHaveLength(2);
+      for (const pad of pads) {
+        expect(Math.sign(pad.x)).toBe(Math.sign(mapping.x(sign * REST_CORNER_OFFSET)));
+        expect(Math.sign(pad.z)).toBe(Math.sign(mapping.z(sign * REST_CORNER_OFFSET)));
+      }
+    }
+    const neutral = padsIn(CORNER_COLORS.neutral);
+    expect(neutral).toHaveLength(4);
+    for (const pad of neutral) expect(Math.sign(pad.x)).toBe(Math.sign(pad.z));
+    disposeRing(ring);
   });
 
   it("builds and animates the arena crowd deterministically", () => {
