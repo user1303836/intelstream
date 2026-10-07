@@ -149,13 +149,14 @@ interface StyleStiffness {
 
 /**
  * How the body holds for a moment after the blow before going limp: locked knees and a stiff
- * spine topple like a tree, legs that give at once drop in a heap, half-locked legs sag to the seat.
+ * spine topple like a tree, legs that give at once drop in a heap, half-locked legs sag to the seat, and a body
+ * shot doubles him over on knees that bend under him into a kneel before he pitches onto his face.
  */
 const STIFFNESS: Readonly<Record<FallStyle, StyleStiffness>> = {
   timber: { knee: 0.12, spine: 0.2, seconds: 0.55 },
   crumple: { knee: KNEE_MAX_FLEX, spine: 1, seconds: 0 },
   sag: { knee: 0.55, spine: 0.6, seconds: 0.3 },
-  fold: { knee: KNEE_MAX_FLEX, spine: 1, seconds: 0 },
+  fold: { knee: 0.9, spine: 1, seconds: 0.5 },
 };
 
 const ELBOW_MAX_FLEX = 2.5;

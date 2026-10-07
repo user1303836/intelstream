@@ -178,6 +178,22 @@ describe("knockout physics", () => {
     expect(Math.abs(blowImpulse({ target: "head", punchClass: "straight", hand: "right", lateral: -1, amount: 5000 }).z)).toBeLessThan(3.5);
   });
 
+  it("doubles him over a body shot onto his knees, where a crumple drops him in a heap", () => {
+    // fold had crumple's stiffness, so a body shot that dropped him played the same fall as any other.
+    const knees = (style: "fold" | "crumple"): number => {
+      const { body, start } = bodyFromStance();
+      body.start(start, new Float64Array(PARTICLES * 3), style);
+      const shot = blowImpulse({ target: "body", punchClass: "hook", hand: "left", lateral: 1, amount: 120 });
+      // The fighter faces -z: his left is -x, the puncher is toward -z.
+      body.impulse({ step: 0, x: -shot.x, y: shot.y, z: -shot.z, driveX: -shot.driveX, driveY: shot.driveY, driveZ: -shot.driveZ, target: "body", twist: 0 });
+      for (let step = 0; step < 36; step += 1) body.step();
+      return Math.max(body.position[P.kneeL * 3 + 1]!, body.position[P.kneeR * 3 + 1]!);
+    };
+    // A third of a second in, the folded fighter is down on one knee with the other still up under him, while the
+    // crumpled one's legs have gone from under him.
+    expect(knees("fold")).toBeGreaterThan(knees("crumple") + 0.12);
+  });
+
   it("chooses how he goes down from the blow", () => {
     expect(fallStyleFor("hook", "body", 200, 1)).toBe("fold");
     expect(fallStyleFor("straight", "head", 60, 1)).toBe("sag");
