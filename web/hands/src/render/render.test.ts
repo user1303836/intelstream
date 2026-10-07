@@ -713,6 +713,59 @@ describe("compact scoreboard labels", () => {
   });
 });
 
+describe("compact scoreboard mini bars", () => {
+  /** Records filled rectangles and where each text lands, measuring text at 0.6 em per character. */
+  function layoutContext(): { ctx: CanvasRenderingContext2D; rects: { x: number; y: number; w: number; h: number }[]; texts: { text: string; left: number; right: number; y: number }[] } {
+    const rects: { x: number; y: number; w: number; h: number }[] = [];
+    const texts: { text: string; left: number; right: number; y: number }[] = [];
+    let size = 10;
+    let align: CanvasTextAlign = "left";
+    const width = (text: string): number => text.length * size * 0.6;
+    const ctx = Object.assign(mockHudContext([]), {
+      fillRect: (x: number, y: number, w: number, h: number) => rects.push({ x, y, w, h }),
+      fillText: (text: string, x: number, y: number) => {
+        const left = align === "right" ? x - width(text) : align === "center" ? x - width(text) / 2 : x;
+        texts.push({ text, left, right: left + width(text), y });
+      },
+      measureText: (text: string) => ({ width: width(text) }),
+    });
+    Object.defineProperty(ctx, "font", { set: (font: string) => { size = Number(/(\d+)px/.exec(font)?.[1] ?? 10); } });
+    Object.defineProperty(ctx, "textAlign", { set: (value: CanvasTextAlign) => { align = value; } });
+    return { ctx, rects, texts };
+  }
+
+  it("fit side by side inside their plates on a 320 px phone", () => {
+    const { ctx, rects, texts } = layoutContext();
+    const width = 320;
+    const height = 640;
+    drawHud(ctx, width, height, snapshot(), Object.fromEntries(publicPlayers.map((p) => [p.id, p])), "one", null, 0, 30);
+    const miniY = height - 84 - 12;
+    // Each bar first fills its frame, a pixel larger than the bar all round.
+    const bars = rects.filter((rect) => rect.y === miniY - 1 && rect.h === 11).sort((a, b) => a.x - b.x);
+    const labels = texts.filter((text) => text.y === miniY - 4).sort((a, b) => a.left - b.left);
+    expect(bars).toHaveLength(4);
+    expect(labels.map((label) => label.text.split(" ")[0])).toEqual(["GUARD", "POISE", "GUARD", "POISE"]);
+    const plateWidth = (width - 56) / 2;
+    const plates = [[24, 24 + plateWidth], [width - 24 - plateWidth, width - 24]] as const;
+    for (const [index, bar] of bars.entries()) {
+      const [left, right] = plates[index < 2 ? 0 : 1];
+      expect(bar.x + 1).toBeGreaterThanOrEqual(left);
+      expect(bar.x + bar.w - 1).toBeLessThanOrEqual(right);
+    }
+    for (let index = 1; index < 4; index += 1) {
+      expect(bars[index]!.x).toBeGreaterThanOrEqual(bars[index - 1]!.x + bars[index - 1]!.w);
+      expect(labels[index]!.left).toBeGreaterThanOrEqual(labels[index - 1]!.right);
+    }
+  });
+
+  it("keep their broadcast size and place on a desktop", () => {
+    const { ctx, rects } = layoutContext();
+    drawHud(ctx, 1280, 720, snapshot(), Object.fromEntries(publicPlayers.map((p) => [p.id, p])), "one", null, 0, 30);
+    const bars = rects.filter((rect) => rect.y === 720 - 84 - 12 - 1 && rect.h === 11).sort((a, b) => a.x - b.x);
+    expect(bars.map((bar) => [bar.x + 1, bar.w - 2])).toEqual([[44, 64], [120, 64], [1280 - 24 - 148, 64], [1280 - 24 - 72, 64]]);
+  });
+});
+
 describe("result panel text", () => {
   it("keeps a long winner name whole on a narrow screen instead of cutting the verdict", () => {
     const texts: string[] = [];

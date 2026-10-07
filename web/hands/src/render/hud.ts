@@ -300,8 +300,10 @@ export function drawHud(
     ];
     fighterPlate(ctx, x, plateY, plateWidth, player?.name ?? "Fighter", detail, bars.slice(0, 2), mirror, index === 0 ? "#3d6fb8" : "#b02a20");
     const miniY = plateY - 12;
-    broadcastBar(ctx, mirror ? x + plateWidth - 148 : x + 20, miniY, 64, bars[2]!, mirror);
-    broadcastBar(ctx, mirror ? x + plateWidth - 72 : x + 96, miniY, 64, bars[3]!, mirror);
+    // Guard and poise ride above the plate, as wide as the plate's own bars once the plate is narrow.
+    const miniWidth = Math.min(64, (plateWidth - 52) / 2);
+    broadcastBar(ctx, mirror ? x + plateWidth - 20 - 2 * miniWidth : x + 20, miniY, miniWidth, bars[2]!, mirror);
+    broadcastBar(ctx, mirror ? x + plateWidth - 8 - miniWidth : x + 32 + miniWidth, miniY, miniWidth, bars[3]!, mirror);
   });
 
   const seconds = Math.floor((clockTicks ?? snapshot.phase_ticks_remaining) / tickRate);
