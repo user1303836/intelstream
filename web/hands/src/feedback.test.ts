@@ -103,6 +103,10 @@ describe("authoritative audio and haptics", () => {
     expect(MockAudioContext.bufferStarts).toBe(before + 2);
     feedback.roundClock("fight", 2, 250, 30);
     expect(MockAudioContext.bufferStarts).toBe(before + 4);
+    // The next bout starts at round one again.
+    feedback.reset();
+    feedback.roundClock("fight", 1, 299, 30);
+    expect(MockAudioContext.bufferStarts).toBe(before + 6);
     feedback.destroy();
   });
 
@@ -356,6 +360,30 @@ describe("rocked", () => {
     expect(beatsOver(1, 1000)).toBe(5);
     expect(beatsOver(0.3, 2000)).toBe(3);
     expect(beatsOver(0.1, 3000)).toBe(0);
+    feedback.destroy();
+  });
+
+  it("beats again in a rematch, whose clock starts over at zero", async () => {
+    const feedback = new AudioFeedback(() => settings);
+    await feedback.unlock();
+    const beatsOver = (from: number): number => {
+      const before = MockAudioContext.oscillatorStarts;
+      for (let tick = from; tick < from + 60; tick += 1) feedback.rocked(1, tick);
+      return (MockAudioContext.oscillatorStarts - before) / 2;
+    };
+    expect(beatsOver(15_000)).toBe(5);
+    expect(beatsOver(400)).toBe(5);
+    feedback.destroy();
+  });
+
+  it("opens the arena up again when the bout ends, even without a last snapshot", async () => {
+    const feedback = new AudioFeedback(() => settings);
+    await feedback.unlock();
+    const muffle = MockAudioContext.filters.find((filter) => filter.type === "lowpass" && (filter.frequency as unknown as { value: number }).value === 20_000)!;
+    const target = muffle.frequency.setTargetAtTime as unknown as ReturnType<typeof vi.fn>;
+    feedback.rocked(1, 100);
+    feedback.result({ version: 3, type: "final", match_id: "m", winner_id: "two", method: "forfeit", round: 1, scorecards: [], ratings: {} });
+    expect(target.mock.lastCall![0]).toBeCloseTo(20_000);
     feedback.destroy();
   });
 });

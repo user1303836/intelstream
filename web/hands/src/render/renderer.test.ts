@@ -552,6 +552,9 @@ describe("the broadcast caption", () => {
       roundStats: { total: () => ({ thrown: 0, landed: 0 }) },
       touchControls: false,
       replay: null,
+      roundCalloutUntil: 0,
+      eventCallout: null,
+      cornerPanelTop: null,
       settings: () => ({ commentary: true, reducedMotion: false }),
       ...overrides,
     };
@@ -587,7 +590,7 @@ describe("the broadcast caption", () => {
 
 describe("hurt vision in the broadcast finish", () => {
   const update = (FightRenderer.prototype as unknown as { updateRocked(this: unknown, latest: EngineSnapshot | null, dt: number, reducedMotion: boolean): void }).updateRocked;
-  const rig = (viewerId: string | null, replay: unknown = null) => ({ viewerId, replay, rocked: new RockedVision(), finishPass: { uniforms: { uRocked: { value: 0 } } } });
+  const rig = (viewerId: string | null, replay: unknown = null) => ({ viewerId, replay, final: null as unknown, rocked: new RockedVision(), finishPass: { uniforms: { uRocked: { value: 0 } } } });
   const rocked = (): EngineSnapshot => ({ ...snapshot(), fighters: [{ ...fighter("one", -100), stunned_ticks: 60 }, { ...fighter("two", 100), stunned_ticks: 60 }] });
 
   it("blurs the picture for the fighter who is rocked", () => {
@@ -606,6 +609,14 @@ describe("hurt vision in the broadcast finish", () => {
     }
     expect(spectator.finishPass.uniforms.uRocked.value).toBe(0);
     expect(other.finishPass.uniforms.uRocked.value).toBe(0);
+  });
+
+  it("clears once the bout is over, even when it ended without a last snapshot", () => {
+    const self = rig("one");
+    for (let frame = 0; frame < 20; frame += 1) update.call(self, rocked(), 1 / 60, false);
+    self.final = { version: 3, type: "final", match_id: "m", winner_id: "two", method: "forfeit", round: 1, scorecards: [], ratings: {} };
+    for (let frame = 0; frame < 300; frame += 1) update.call(self, rocked(), 1 / 60, false);
+    expect(self.finishPass.uniforms.uRocked.value).toBeLessThan(0.02);
   });
 
   it("is off with reduced motion and during the knockout replay", () => {
@@ -704,17 +715,19 @@ describe("the low quality tier", () => {
   const apply = (FightRenderer.prototype as unknown as { applyResolutionScale(this: unknown): void }).applyResolutionScale;
   const rig = (scale: number) => ({
     basePixelRatio: 2, scaler: { scale }, renderer: { setPixelRatio: vi.fn() }, composer: { setPixelRatio: vi.fn() },
-    bloomPass: { enabled: true }, keyLight: null, arena: { setLowTier: vi.fn() },
+    bloomPass: { enabled: true }, keyLight: null, arena: { setLowTier: vi.fn() }, effects: { setLowTier: vi.fn() },
   });
 
   it("sheds the crowd's most expensive work along with the bloom, and gives it back", () => {
     const struggling = rig(0.5);
     apply.call(struggling);
     expect(struggling.arena.setLowTier).toHaveBeenLastCalledWith(true);
+    expect(struggling.effects.setLowTier).toHaveBeenLastCalledWith(true);
     expect(struggling.bloomPass.enabled).toBe(false);
     const fine = rig(1);
     apply.call(fine);
     expect(fine.arena.setLowTier).toHaveBeenLastCalledWith(false);
+    expect(fine.effects.setLowTier).toHaveBeenLastCalledWith(false);
     expect(fine.bloomPass.enabled).toBe(true);
   });
 });

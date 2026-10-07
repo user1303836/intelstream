@@ -893,8 +893,13 @@ export class FightRenderer {
   private resultAnnounced = false;
   private captionText = "";
   private readonly rocked = new RockedVision();
+  /** The two fighters' places on the canvas for this frame: written by the frame setup only, read by the cameras, the follow spot and the officials. */
   private readonly tmpA = new THREE.Vector3();
   private readonly tmpB = new THREE.Vector3();
+  /** Where a contact's effects go, and the mouth teeth and a gum shield fly from; kept apart from the fighters' places above. */
+  private readonly contactPoint = new THREE.Vector3();
+  private cornerPanelTop: number | null = null;
+  private readonly mouthPoint = new THREE.Vector3();
   private readonly tmpHead = new THREE.Vector3();
   private readonly tmpHeadQuaternion = new THREE.Quaternion();
   private readonly tmpStump = new THREE.Vector3();
@@ -932,6 +937,7 @@ export class FightRenderer {
     this.arena = buildArena();
     this.scene.add(this.arena.group);
     this.effects = new Effects3D(this.scene, coarsePointer() ? 1024 : 2048);
+    this.effects.useUploader(this.renderer);
 
     this.blobTexture = blobShadowTexture();
     const blobGeometry = new THREE.PlaneGeometry(1, 1);
@@ -1032,6 +1038,11 @@ export class FightRenderer {
     this.draw(virtualSeconds * 1000, true, render);
   }
 
+  /** Where the fighter's corner panel starts down the screen while it is up, so the captions keep above it. */
+  setCornerPanelTop(top: number | null): void {
+    this.cornerPanelTop = top;
+  }
+
   /** The way the player's own camera faces along the canvas while it is in use, so the controls can turn with it. */
   viewForward(): { readonly x: number; readonly z: number } | null {
     if (!this.ownViewActive) return null;
@@ -1084,7 +1095,12 @@ export class FightRenderer {
       this.startReplay(plan);
       return;
     }
-    if (finisher !== null) this.applyArcadeInjury(finisher.index, finisher.injury, finisher.event);
+    if (finisher !== null) {
+      // A finisher whose punch the clock has not shown yet goes with that punch, never ahead of it.
+      const waiting = this.pendingContacts.find((contact) => contact.event.event_id === finisher.event.event_id);
+      if (waiting !== undefined) waiting.injury ??= finisher.injury;
+      else this.applyArcadeInjury(finisher.index, finisher.injury, finisher.event);
+    }
     this.presentFinish(final);
   }
 
@@ -1265,7 +1281,17 @@ export class FightRenderer {
         this.restoreInjury(index);
       }
     }
+    // The replay shows the punch that ended the bout. A contact still waiting for the live clock is not
+    // shown live as well; the injury it carried lands at the replay's impact instead.
+    for (const pending of this.pendingContacts.splice(0)) {
+      const index = pending.recipientIndex;
+      if (pending.injury !== null && (index === 0 || index === 1) && this.replayInjuries[index] === null && this.arcadeInjuries[index] === null) {
+        this.replayInjuries[index] = { injury: pending.injury, event: pending.event };
+      }
+    }
     const victim = plan.snapshots[0]?.fighters.findIndex((fighter) => fighter.player_id === plan.impact.target_id) ?? -1;
+    // The replay's punch knocks the gum shield out again, so it is back in his mouth for the lead-up.
+    if (victim >= 0 && plan.impact.detail.endsWith(":head")) this.effects.returnMouthpiece(victim);
     // The impact is the body punch itself, so the knockdown it caused says whether he went to one knee.
     const kneels = this.lastKnockdown?.knockdown.detail === BODY_KNOCKDOWN;
     for (const [index, graph] of (this.graphs ?? []).entries()) {
@@ -1296,8 +1322,8 @@ export class FightRenderer {
     const { recipientIndex, puncherIndex } = contactParticipants(event, snapshot);
     const recipient = snapshot.fighters[recipientIndex];
     if (recipient === undefined) return;
-    this.tmpA.set(this.mapping.x(recipient.x), 0, this.mapping.z(recipient.y));
-    this.effects.addEvent(event, this.tmpA, this.settings().reducedMotion);
+    this.contactPoint.set(this.mapping.x(recipient.x), 0, this.mapping.z(recipient.y));
+    this.effects.addEvent(event, this.contactPoint, this.settings().reducedMotion);
     const puncher = puncherIndex >= 0 ? snapshot.fighters[puncherIndex] : undefined;
     const keyParts = puncher?.action_key?.split(":") ?? [];
     const punchClass = (keyParts[0] ?? null) as PunchClass | null;
@@ -1617,7 +1643,7 @@ export class FightRenderer {
         ?? snapshot.fighters[targetIndex]
         ?? snapshot.fighters[actorIndex]
         ?? snapshot.fighters[0];
-      this.tmpA.set(this.mapping.x(recipient.x), 0, this.mapping.z(recipient.y));
+      this.contactPoint.set(this.mapping.x(recipient.x), 0, this.mapping.z(recipient.y));
       if (CONTACT_KINDS.has(event.kind)) {
         const puncher = puncherIndex >= 0 ? snapshot.fighters[puncherIndex]! : null;
         this.pendingContacts.push({
@@ -1630,7 +1656,7 @@ export class FightRenderer {
           injury: arcadeInjuryFor(event, snapshot.fighters[recipientIndex], snapshot.result, puncher ?? undefined),
         });
       } else if (event.kind === "bleed") {
-        this.effects.addEvent(event, this.tmpA, this.settings().reducedMotion);
+        this.effects.addEvent(event, this.contactPoint, this.settings().reducedMotion);
       }
     }
   }
@@ -1649,8 +1675,8 @@ export class FightRenderer {
       const target = this.buffer.latest()?.fighters[recipientIndex];
       this.presentFightEvent(event, recipientIndex, puncherIndex);
       if (presentImpact && target !== undefined) {
-        this.tmpA.set(this.mapping.x(target.x), 0, this.mapping.z(target.y));
-        this.effects.addEvent(presentationEvent, this.tmpA, this.settings().reducedMotion);
+        this.contactPoint.set(this.mapping.x(target.x), 0, this.mapping.z(target.y));
+        this.effects.addEvent(presentationEvent, this.contactPoint, this.settings().reducedMotion);
       }
       const currentSettings = this.settings();
       if (pending.presentImpact || UNIMPACTFUL_KINDS.has(event.kind)) this.arena.excite(CROWD_EXCITEMENT[event.kind] ?? 0);
@@ -1680,8 +1706,8 @@ export class FightRenderer {
       if (teeth > 0 && !currentSettings.reducedMotion && currentSettings.blood !== "off") {
         const pose = this.headWorldPose(recipientIndex);
         if (pose !== null) {
-          this.tmpB.set(0, -0.07, 0.1).applyQuaternion(pose.quaternion).add(pose.position);
-          this.effects.spawnTeeth(this.tmpB, presentationEvent.direction, teeth, event.event_id);
+          this.mouthPoint.set(0, -0.07, 0.1).applyQuaternion(pose.quaternion).add(pose.position);
+          this.effects.spawnTeeth(this.mouthPoint, presentationEvent.direction, teeth, event.event_id);
         }
       }
       if (
@@ -1744,8 +1770,8 @@ export class FightRenderer {
   private knockOutMouthpiece(index: number, direction: number, eventId: number, again: boolean): void {
     const pose = this.headWorldPose(index);
     if (pose === null) return;
-    this.tmpB.set(0, -0.075, 0.1).applyQuaternion(pose.quaternion).add(pose.position);
-    this.effects.ejectMouthpiece(index, this.tmpB, pose.quaternion, direction, eventId, this.gearColor(index), again);
+    this.mouthPoint.set(0, -0.075, 0.1).applyQuaternion(pose.quaternion).add(pose.position);
+    this.effects.ejectMouthpiece(index, this.mouthPoint, pose.quaternion, direction, eventId, this.gearColor(index), again);
   }
 
   /** True once the result panel is on screen, after any knockout replay and close-up. */
@@ -1779,6 +1805,7 @@ export class FightRenderer {
     this.bloomPass.enabled = !low;
     if (this.keyLight !== null) this.keyLight.castShadow = !low;
     this.arena.setLowTier(low);
+    this.effects.setLowTier(low);
     const shadowSize = this.scaler.scale < 0.8 ? 1024 : 2048;
     const shadow = this.keyLight?.shadow;
     if (shadow !== undefined && shadow.mapSize.x !== shadowSize) {
@@ -2312,7 +2339,7 @@ export class FightRenderer {
   /** Hurt vision while the viewer's own fighter is rocked; never for a spectator, in a replay or with reduced motion. */
   private updateRocked(latest: EngineSnapshot | null, dt: number, reducedMotion: boolean): void {
     const viewer = latest?.fighters.find((fighter) => fighter.player_id === this.viewerId);
-    const target = latest === null || this.replay !== null || reducedMotion ? 0 : rockedLevel(viewer, latest.phase);
+    const target = latest === null || this.replay !== null || this.final !== null || reducedMotion ? 0 : rockedLevel(viewer, latest.phase);
     const level = this.rocked.update(target, dt);
     this.finishPass.uniforms.uRocked!.value = reducedMotion ? 0 : level;
   }
@@ -2334,7 +2361,8 @@ export class FightRenderer {
     if (caption === null || !settings.commentary) return;
     const viewer = snapshot.fighters.find((fighter) => fighter.player_id === this.viewerId);
     const resultTop = final === null ? null : resultCardTop(final, width, height, snapshot.fighters, this.players, this.roundStats, this.viewerId);
-    const slot = captionSlot({ width, height, phase: snapshot.phase, resultTop, touch: this.touchControls && viewer !== undefined, hint: snapshot.phase === "countdown" && viewer !== undefined, viewerDown: viewer?.is_downed === true, replay: this.replay !== null });
+    const callout = this.frameSeconds < this.roundCalloutUntil || (this.eventCallout !== null && this.frameSeconds < this.eventCallout.until);
+    const slot = captionSlot({ width, height, phase: snapshot.phase, resultTop, touch: this.touchControls && viewer !== undefined, hint: snapshot.phase === "countdown" && viewer !== undefined, viewerDown: viewer?.is_downed === true, replay: this.replay !== null, cornerPanelTop: this.cornerPanelTop, callout });
     if (slot !== null) drawCaption(ctx, caption, slot, settings.reducedMotion);
   }
 

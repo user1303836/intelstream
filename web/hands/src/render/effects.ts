@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import type { BloodLevel } from "../settings";
 import type { CombatEvent, Hand } from "../types";
-import { CanvasBlood } from "./canvas-blood";
+import { CanvasBlood, type RegionUploader } from "./canvas-blood";
 import { wearCornerColour } from "./gear";
 import { HARD_SHOT, bloodDropsFor, bloodShade, buildChunkGeometry, buildDropletGeometry, buildShardGeometry, buildWoundGeometry, closeCut, dropletShape, eyeTexture, jawWoundTexture, woundTexture, wristWoundTexture } from "./gore";
 import { LookShading, SCANNED_LOOK, type FighterLook } from "./looks";
@@ -491,6 +491,15 @@ export class Effects3D {
     return this.canvasBlood.stains;
   }
 
+  /** Sends only the newly painted part of the canvas blood to the GPU from now on. */
+  useUploader(uploader: RegionUploader): void {
+    this.canvasBlood.useUploader(uploader);
+  }
+
+  setLowTier(low: boolean): void {
+    this.canvasBlood.setLowTier(low);
+  }
+
   get liveGibs(): number {
     return this.gibs.filter((gib) => gib.alive).length;
   }
@@ -725,6 +734,16 @@ export class Effects3D {
     }
     nerve.position.copy(eye.socket);
     nerve.scale.set(1, Math.max(0.001, length - EYE_RADIUS * 0.8), 1);
+  }
+
+  /** Puts one fighter's gum shield back in his mouth, for a replay that knocks it out again. */
+  returnMouthpiece(fighterIndex: number): void {
+    const index = Math.trunc(fighterIndex);
+    const shield = this.shields[index];
+    if (shield === undefined) return;
+    Object.assign(shield, idleShield());
+    this.shieldMeshes[index]!.visible = false;
+    this.lastShieldEvent[index] = null;
   }
 
   /** The corner puts the gum shield back in between rounds. */

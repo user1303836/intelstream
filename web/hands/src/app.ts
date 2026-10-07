@@ -133,6 +133,7 @@ export class HandsApp {
     this.renderer?.destroy();
     this.renderer = null;
     this.voice.cancel();
+    this.audio.reset();
     this.abort.abort();
     this.abort = new AbortController();
     this.state = initialState;
@@ -404,6 +405,7 @@ export class HandsApp {
           : labels[this.state.stage];
     this.setText(this.liveFightStatus, liveStatus);
     this.corner.update(this.state.snapshot, this.state.playerId, this.state.role === "fighter" && this.state.stage === "rest");
+    this.renderer?.setCornerPanelTop(this.corner.top());
     this.retry.hidden = this.state.stage !== "fatal";
     if (this.state.stage !== "complete") this.rematchButton.hidden = true;
     this.cpuPicker.hidden = spectating || this.state.stage !== "waiting" || this.cpuLevel !== null;
@@ -494,6 +496,7 @@ export class HandsApp {
     this.root.querySelector<HTMLInputElement>("[data-volume]")!.addEventListener("input", (event) => {
       this.settings.update({ volume: Number((event.target as HTMLInputElement).value) });
       this.audio.setVolume();
+      this.voice.settingsChanged();
     });
     this.root.querySelector<HTMLInputElement>("[data-haptics]")!.addEventListener("change", (event) => {
       this.settings.update({ haptics: (event.target as HTMLInputElement).checked });

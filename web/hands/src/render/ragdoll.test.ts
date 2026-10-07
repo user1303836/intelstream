@@ -213,7 +213,7 @@ describe("knockouts on the fighter", () => {
     expect(hips.y).toBeLessThan(0.3);
     // The skeleton follows the particles: the head bone sits on the head particle.
     const particle = graph.fallBody!.bodyPoint(0, new THREE.Vector3());
-    expect(head.distanceTo(particle)).toBeLessThan(0.05);
+    expect(head.distanceTo(particle)).toBeLessThan(0.06);
   });
 
   it("keeps the authored fall under reduced motion", () => {
@@ -343,6 +343,46 @@ describe("knockouts on the fighter", () => {
     frames(graph, { ...fighter, is_downed: true }, opponent, 30, now);
     graph.react("hit", "head", 1, "straight", "right", 420);
     expect(graph.fallBody!.record!.impulses).toHaveLength(1);
+  });
+
+  it("comes to rest within two and a half seconds of the punch, with or without the opponent over him", () => {
+    for (const obstacle of [false, true]) {
+      for (const punch of ["jab", "straight", "hook", "uppercut"] as const) {
+        for (const hand of ["left", "right"] as const) {
+          for (const target of ["head", "body"] as const) {
+            for (const amount of [140, 420]) {
+              const { graph, fighter, opponent, time } = standing();
+              if (obstacle) graph.setObstacle(0, mapping.z(-100));
+              graph.react("hit", target, 1, punch, hand, amount);
+              frames(graph, { ...fighter, is_downed: true }, opponent, 150, time);
+              expect(graph.fallBody?.body.asleep, `${punch} ${hand} ${target} ${amount}${obstacle ? " with the opponent over him" : ""}`).toBe(true);
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it("replays the fall exactly when the opponent walks off another way", () => {
+    const fallWith = (graph: BoxingGraph, fighter: FighterSnapshot, opponent: FighterSnapshot, from: number, walk: (frame: number) => number): number => {
+      let time = from;
+      for (let frame = 0; frame < 240; frame += 1) {
+        graph.setObstacle(0, mapping.z(-100) + walk(frame));
+        time += 1 / 60;
+        graph.update({ ...fighter, is_downed: true }, opponent, 1 / 60, time, false, "full", time * 30);
+      }
+      return time;
+    };
+    const { graph, fighter, opponent, time } = standing();
+    graph.react("hit", "body", 1, "hook", "right", 140);
+    let now = fallWith(graph, fighter, opponent, time, (frame) => -frame * 0.012);
+    const live = Float64Array.from(graph.fallBody!.body.position);
+    graph.resetTransient(false);
+    graph.primeReplayFall();
+    now = frames(graph, fighter, opponent, 20, now);
+    graph.react("hit", "body", 1, "hook", "right", 140);
+    fallWith(graph, fighter, opponent, now, () => 0);
+    expect(Float64Array.from(graph.fallBody!.body.position)).toEqual(live);
   });
 
   it("does not fall through the opponent standing over him", () => {

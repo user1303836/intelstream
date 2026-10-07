@@ -105,17 +105,36 @@ describe("the corner between rounds", () => {
     expect(CORNER_PAD_BUTTONS).toEqual({ 2: "corner_cut", 3: "corner_swelling", 1: "corner_breath" });
   });
 
+  it("tells the caption where its top edge is while it is up", () => {
+    const { panel: corner } = panel(() => true);
+    expect(corner.top()).toBeNull();
+    corner.update(resting(), "one", true);
+    corner.element.getBoundingClientRect = () => ({ top: 520, height: 130 }) as DOMRect;
+    corner.element.parentElement!.getBoundingClientRect = () => ({ top: 20, height: 720 }) as DOMRect;
+    expect(corner.top()).toBe(500);
+    corner.update(resting(), "one", false);
+    expect(corner.top()).toBeNull();
+    corner.destroy();
+  });
+
   it("takes the controller's face buttons", () => {
     const frames: FrameRequestCallback[] = [];
     vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => { frames.push(callback); return frames.length; });
     vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
-    const pressedButton = Number(Object.entries(CORNER_PAD_BUTTONS).find(([, kind]) => kind === "corner_swelling")![0]);
-    const pad = { connected: true, mapping: "standard", buttons: Array.from({ length: 16 }, (_unused, index) => ({ pressed: index === pressedButton })) } as unknown as Gamepad;
+    const button = (kind: CornerKind): number => Number(Object.entries(CORNER_PAD_BUTTONS).find(([, candidate]) => candidate === kind)![0]);
+    const held = new Set<number>();
+    const pad = { connected: true, mapping: "standard", get buttons() { return Array.from({ length: 16 }, (_unused, index) => ({ pressed: held.has(index) })); } } as unknown as Gamepad;
     Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [pad] });
     const picks: CornerKind[] = [];
     const { panel: corner } = panel((kind) => { picks.push(kind); return true; });
+    // A punch button still held from the last exchange as the bell rings is not a pick.
+    held.add(button("corner_cut"));
     corner.update(resting(), "one", true);
     frames.shift()!(0);
+    expect(picks).toEqual([]);
+    held.delete(button("corner_cut"));
+    frames.shift()!(0);
+    held.add(button("corner_swelling"));
     frames.shift()!(0);
     expect(picks).toEqual(["corner_swelling"]);
     corner.destroy();

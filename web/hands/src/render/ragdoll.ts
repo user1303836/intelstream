@@ -100,6 +100,17 @@ const OBSTACLE_RADIUS = 0.24;
 const OBSTACLE_HEIGHT = 1.75;
 const SLEEP_SPEED = 0.012;
 const SLEEP_SECONDS = 1;
+/** Once the torso has come to rest, a limb held off the canvas by a joint limit is damped out instead of swinging on. */
+const LANDED_SPEED = 0.35;
+const LANDED_SECONDS = 0.15;
+/** A body still sliding this long into the fall (draped on the ropes or the opponent) settles all the same. */
+const LANDED_BY_SECONDS = 1.1;
+const SETTLE_DAMPING = 0.975;
+const SETTLE_RAMP_SECONDS = 0.4;
+/** A landed body is put to sleep this long after it landed, whatever is still twitching. */
+const SETTLE_SECONDS = 1.2;
+/** Steps of the opponent's place kept with a recorded fall (ten seconds). */
+const TRACKED_STEPS = 1200;
 const MAX_START_SPEED = 3;
 const MAX_SPEED = 7;
 /** Below this speed a part loses a further share of its speed each step (the body at rest settles instead of creeping). */
@@ -177,13 +188,20 @@ export interface ImpulseRecord {
   style?: FallStyle;
 }
 
-/** Everything needed to run a fall again: the start, the style, and each blow at the step it landed. */
+/** Where the opponent stood at each step of a fall: [active, x, z] per step, and how many steps are written. */
+export interface ObstacleTrack {
+  readonly data: Float64Array;
+  steps: number;
+}
+
+/** Everything needed to run a fall again: the start, the style, each blow at the step it landed, and where the opponent stood. */
 export interface FallRecord {
   readonly positions: Float64Array;
   readonly velocities: Float64Array;
   readonly style: FallStyle;
   readonly impulses: ImpulseRecord[];
   readonly offsets: THREE.Quaternion[];
+  readonly obstacles: ObstacleTrack;
 }
 
 const v = (a: Float64Array, i: number, out: THREE.Vector3): THREE.Vector3 => out.set(a[i * 3]!, a[i * 3 + 1]!, a[i * 3 + 2]!);
@@ -234,10 +252,25 @@ export class RagdollBody {
   private style: FallStyle = "crumple";
   steps = 0;
   private stillSeconds = 0;
+  private torsoStillSeconds = 0;
+  private fallSeconds = 0;
+  /** Seconds since the torso came to rest, or -1 while it is still falling. */
+  private landedSeconds = -1;
   asleep = false;
   private obstacleActive = false;
   private obstacleX = 0;
   private obstacleZ = 0;
+  private obstacleTrack: ObstacleTrack | null = null;
+  private obstacleTrackLive = false;
+
+  /**
+   * A live fall writes where the opponent stood into `track` at every step; a replayed one reads each
+   * step's place back from it, so the replay falls exactly as the live fall did whatever the opponent does now.
+   */
+  trackObstacle(track: ObstacleTrack | null, replay: boolean): void {
+    this.obstacleTrack = track;
+    this.obstacleTrackLive = track !== null && !replay;
+  }
   private readonly a = new THREE.Vector3();
   private readonly b = new THREE.Vector3();
   private readonly c = new THREE.Vector3();
@@ -290,6 +323,9 @@ export class RagdollBody {
     this.style = style;
     this.steps = 0;
     this.stillSeconds = 0;
+    this.torsoStillSeconds = 0;
+    this.fallSeconds = 0;
+    this.landedSeconds = -1;
     this.asleep = false;
     this.upperFrame(this.position);
     this.pelvisFrame(this.position);
@@ -445,15 +481,30 @@ export class RagdollBody {
         this.stillSeconds = 0;
       }
     }
+    const track = this.obstacleTrack;
+    if (track !== null && this.obstacleTrackLive) {
+      if (this.steps < TRACKED_STEPS) {
+        track.data[this.steps * 3] = this.obstacleActive ? 1 : 0;
+        track.data[this.steps * 3 + 1] = this.obstacleX;
+        track.data[this.steps * 3 + 2] = this.obstacleZ;
+        track.steps = this.steps + 1;
+      }
+    } else if (track !== null && track.steps > 0) {
+      const k = Math.min(this.steps, track.steps - 1) * 3;
+      this.obstacleActive = track.data[k] === 1;
+      this.obstacleX = track.data[k + 1]!;
+      this.obstacleZ = track.data[k + 2]!;
+    }
     const h = STEP_SECONDS;
     const position = this.position;
     const previous = this.previous;
+    const damping = this.landedSeconds < 0 ? AIR_DAMPING : AIR_DAMPING + (SETTLE_DAMPING - AIR_DAMPING) * Math.min(1, this.landedSeconds / SETTLE_RAMP_SECONDS);
     this.before.set(position);
     for (let i = 0; i < PARTICLES; i += 1) {
       for (let k = 0; k < 3; k += 1) {
         const index = i * 3 + k;
         const current = position[index]!;
-        const velocity = (current - previous[index]!) * AIR_DAMPING;
+        const velocity = (current - previous[index]!) * damping;
         previous[index] = current;
         position[index] = current + velocity - (k === 1 ? GRAVITY * h * h : 0);
       }
@@ -473,14 +524,23 @@ export class RagdollBody {
     this.limitSpeed();
     this.steps += 1;
     let fastest = 0;
+    let torsoFastest = 0;
     for (let i = 0; i < PARTICLES; i += 1) {
       const dx = position[i * 3]! - previous[i * 3]!;
       const dy = position[i * 3 + 1]! - previous[i * 3 + 1]!;
       const dz = position[i * 3 + 2]! - previous[i * 3 + 2]!;
-      fastest = Math.max(fastest, Math.sqrt(dx * dx + dy * dy + dz * dz) / h);
+      const speed = Math.sqrt(dx * dx + dy * dy + dz * dz) / h;
+      fastest = Math.max(fastest, speed);
+      if (TORSO_SET.has(i)) torsoFastest = Math.max(torsoFastest, speed);
     }
     this.stillSeconds = fastest < SLEEP_SPEED ? this.stillSeconds + h : 0;
-    if (this.stillSeconds >= SLEEP_SECONDS) this.asleep = true;
+    this.fallSeconds += h;
+    if (this.landedSeconds >= 0) this.landedSeconds += h;
+    else {
+      this.torsoStillSeconds = torsoFastest < LANDED_SPEED ? this.torsoStillSeconds + h : 0;
+      if (this.torsoStillSeconds >= LANDED_SECONDS || this.fallSeconds >= LANDED_BY_SECONDS) this.landedSeconds = 0;
+    }
+    if (this.stillSeconds >= SLEEP_SECONDS || this.landedSeconds >= SETTLE_SECONDS) this.asleep = true;
   }
 
   private solveRigid(): void {
@@ -1051,6 +1111,7 @@ export class KnockoutRagdoll {
     if (record !== null) {
       this.replaying = record;
       this.body.start(record.positions, record.velocities, record.style);
+      this.body.trackObstacle(record.obstacles, true);
       for (const [index, offset] of record.offsets.entries()) this.offsets[index]!.copy(offset);
     } else {
       this.replaying = null;
@@ -1065,12 +1126,15 @@ export class KnockoutRagdoll {
       this.computeOffsets();
       const impulses: ImpulseRecord[] = [];
       if (blow !== null) impulses.push(this.body.impulse({ step: 0, x: blow.x, y: blow.y, z: blow.z, driveX: blow.driveX, driveY: blow.driveY, driveZ: blow.driveZ, target: blow.target, twist: blow.twist }));
+      const obstacles: ObstacleTrack = { data: new Float64Array(TRACKED_STEPS * 3), steps: 0 };
+      this.body.trackObstacle(obstacles, false);
       this.lastFall = {
         positions: Float64Array.from(this.sampleNow),
         velocities: Float64Array.from(this.velocities),
         style: this.body.fallStyle,
         impulses,
         offsets: this.offsets.map((offset) => offset.clone()),
+        obstacles,
       };
     }
     this.pending = null;

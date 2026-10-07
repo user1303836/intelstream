@@ -51,6 +51,7 @@ vi.mock("./render/renderer", () => ({
     setBloodLevel(): void {}
     setReducedMotion(): void {}
     viewForward(): { x: number; z: number } | null { return mocks.viewForward; }
+    setCornerPanelTop(): void {}
     resyncClock(): void { mocks.rendererResyncs += 1; }
     push(snapshot: EngineSnapshot): void { this.pushes.push(snapshot.tick); }
     destroy(): void { mocks.rendererDestroy(); }
@@ -631,6 +632,19 @@ describe("the broadcast", () => {
     expect(spoken).toEqual(["In the blue corner... One!"]);
     voice.checked = false;
     voice.dispatchEvent(new Event("change"));
+    expect(cancel).toHaveBeenCalled();
+    app.destroy();
+  });
+
+  it("stops the announcer mid-line when the player turns the volume down to nothing", async () => {
+    const cancel = vi.fn();
+    Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { speak: () => undefined, cancel, getVoices: () => [] } });
+    Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: class { onend = null; onerror = null; constructor(readonly text: string) {} } });
+    const { root, app } = await launch();
+    mocks.renderers.at(-1)!.onAnnouncement!(["In the blue corner... One!"]);
+    const volume = root.querySelector<HTMLInputElement>("[data-volume]")!;
+    volume.value = "0";
+    volume.dispatchEvent(new Event("input"));
     expect(cancel).toHaveBeenCalled();
     app.destroy();
   });

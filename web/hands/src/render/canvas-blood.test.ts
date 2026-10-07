@@ -47,6 +47,90 @@ describe("blood on the canvas", () => {
     blood.dispose();
   });
 
+  it("sends only the part painted since the last upload once the renderer can take a region", () => {
+    const blood = new CanvasBlood(new THREE.Scene(), 1024);
+    const texture = (blood.mesh.material as THREE.MeshStandardMaterial).map!;
+    const sent: { source: THREE.Texture; destination: THREE.Texture; min: THREE.Vector2; max: THREE.Vector2; at: THREE.Vector2 }[] = [];
+    const uploader = {
+      initTexture: vi.fn(),
+      copyTextureToTexture: vi.fn((source: THREE.Texture, destination: THREE.Texture, region: THREE.Box2, at: THREE.Vector2) => {
+        sent.push({ source, destination, min: region.min.clone(), max: region.max.clone(), at: at.clone() });
+      }),
+    };
+    blood.useUploader(uploader);
+    expect(uploader.initTexture).toHaveBeenCalledExactlyOnceWith(texture);
+    const version = texture.version;
+    blood.stain(0, 0, 0.2, 0.2, 0, 0.8, 0x6e0d13);
+    blood.update(1);
+    expect(sent).toHaveLength(1);
+    const [first] = sent;
+    expect(first!.destination).toBe(texture);
+    expect(first!.source).not.toBe(texture);
+    expect(first!.source.image).toBe(texture.image);
+    expect(first!.at).toEqual(first!.min);
+    const centre = blood.pixel(0, 0);
+    expect(first!.min.x).toBeLessThan(centre.x);
+    expect(first!.min.y).toBeLessThan(centre.y);
+    expect(first!.max.x).toBeGreaterThan(centre.x);
+    expect(first!.max.y).toBeGreaterThan(centre.y);
+    expect((first!.max.x - first!.min.x) * (first!.max.y - first!.min.y)).toBeLessThan(1024 * 1024 * 0.01);
+    expect(texture.version).toBe(version);
+
+    blood.stain(RING_FIGHT_HALF - 0.01, -RING_FIGHT_HALF + 0.01, 0.3, 0.3, 1, 0.8, 0x6e0d13);
+    blood.update(1);
+    const [, edge] = sent;
+    expect(edge!.min.x).toBeGreaterThan(centre.x);
+    expect(edge!.max.y).toBeLessThan(centre.y);
+    expect(edge!.max.x).toBe(1024);
+    expect(edge!.min.y).toBe(0);
+    expect(Number.isInteger(edge!.min.x) && Number.isInteger(edge!.max.y)).toBe(true);
+
+    blood.update(1);
+    expect(sent).toHaveLength(2);
+    blood.clear();
+    expect(texture.version).toBe(version + 1);
+    blood.pool(-1, 1, 0.3, 0.9, 2);
+    blood.update(1);
+    expect(sent).toHaveLength(3);
+    expect(sent[2]!.max.x).toBeLessThan(centre.x);
+    expect(sent[2]!.min.y).toBeGreaterThan(centre.y);
+    blood.dispose();
+  });
+
+  it("sends half as often on a struggling client, and as often again once it recovers", () => {
+    const blood = new CanvasBlood(new THREE.Scene(), 256);
+    const texture = (blood.mesh.material as THREE.MeshStandardMaterial).map!;
+    blood.setLowTier(true);
+    const version = texture.version;
+    blood.stain(0, 0, 0.2, 0.2, 0, 0.8, 0x6e0d13);
+    blood.update(CANVAS_BLOOD_UPLOAD_INTERVAL * 1.5);
+    expect(texture.version).toBe(version);
+    blood.update(CANVAS_BLOOD_UPLOAD_INTERVAL * 0.6);
+    expect(texture.version).toBe(version + 1);
+    blood.setLowTier(false);
+    blood.stain(0, 0, 0.2, 0.2, 0, 0.8, 0x6e0d13);
+    blood.update(CANVAS_BLOOD_UPLOAD_INTERVAL * 1.05);
+    expect(texture.version).toBe(version + 2);
+    blood.dispose();
+  });
+
+  it("lies over the ring the same way round as it is painted", () => {
+    const blood = new CanvasBlood(new THREE.Scene(), 512);
+    const texture = (blood.mesh.material as THREE.MeshStandardMaterial).map!;
+    expect(texture.flipY).toBe(false);
+    blood.mesh.updateMatrixWorld(true);
+    const position = blood.mesh.geometry.getAttribute("position");
+    const uv = blood.mesh.geometry.getAttribute("uv");
+    const corner = new THREE.Vector3();
+    for (let index = 0; index < position.count; index += 1) {
+      corner.fromBufferAttribute(position, index).applyMatrix4(blood.mesh.matrixWorld);
+      const painted = blood.pixel(corner.x, corner.z);
+      expect(uv.getX(index)).toBeCloseTo(painted.x / 512, 6);
+      expect(uv.getY(index)).toBeCloseTo(painted.y / 512, 6);
+    }
+    blood.dispose();
+  });
+
   it("is hidden until blood lands and when the canvas is cleaned, and leaves nothing behind", () => {
     const scene = new THREE.Scene();
     const blood = new CanvasBlood(scene);

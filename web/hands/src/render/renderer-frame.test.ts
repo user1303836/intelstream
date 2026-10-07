@@ -127,6 +127,46 @@ const fighting = (one: Partial<FighterSnapshot> = {}, two: Partial<FighterSnapsh
 };
 
 describe("a rendered frame", () => {
+  it("keeps the cameras on the fighters on the frame a heavy punch lands", () => {
+    const fireContacts = (FightRenderer.prototype as unknown as { fireContacts: unknown }).fireContacts;
+    const opponentHead = new THREE.Vector3(0.67, 1.6, 0);
+    const moved = (camera: Settings["camera"]): { quiet: number; contact: number } => {
+      const state = fighting({ x: -110 }, { x: 110 });
+      const effects = { drip: vi.fn(), stopDrip: vi.fn(), pool: vi.fn(), update: vi.fn(), shakeAmount: 0, setViewDistance: vi.fn(), addEvent: vi.fn(), spawnTeeth: vi.fn(), ejectMouthpiece: vi.fn() };
+      const harness = frame(state, {
+        fireContacts,
+        effects,
+        pendingContacts: [],
+        contactPoint: new THREE.Vector3(),
+        mouthPoint: new THREE.Vector3(),
+        presentFightEvent: vi.fn(),
+        applyArcadeInjury: vi.fn(),
+        headWorldPose: () => ({ position: opponentHead, quaternion: new THREE.Quaternion() }),
+        gearColor: () => 0xffffff,
+        flashKnockout: null,
+        onContact: null,
+      });
+      harness.settings.camera = camera;
+      for (const graph of harness.graphs) Object.assign(graph, { react: vi.fn(), landedHit: vi.fn() });
+      harness.run(240);
+      const before = harness.camera.position.clone();
+      harness.run(1);
+      const quiet = harness.camera.position.distanceTo(before);
+      const settled = harness.camera.position.clone();
+      const counter = { event_id: 7, tick: 40, kind: "counter_hit", actor_id: "one", target_id: "two", amount: 130, detail: "straight:head", blood: 40, direction: 1, action_id: "p1" };
+      (harness.renderer.pendingContacts as unknown[]).push({ event: counter, presentationEvent: counter, presentImpact: true, contactTick: 0, recipientIndex: 1, puncherIndex: 0, injury: null });
+      harness.run(1);
+      expect(effects.spawnTeeth).toHaveBeenCalled();
+      expect(effects.ejectMouthpiece).toHaveBeenCalled();
+      return { quiet, contact: harness.camera.position.distanceTo(settled) };
+    };
+    for (const camera of ["fighter", "broadcast"] as const) {
+      const { quiet, contact } = moved(camera);
+      expect(quiet).toBeLessThan(0.002);
+      expect(contact).toBeLessThan(0.002);
+    }
+  });
+
   it("dresses each fighter in the look of the player in that seat", () => {
     const { run, graphs } = frame(fighting());
     run(3);
@@ -265,11 +305,25 @@ describe("around the fight", () => {
     const stub = prototypeOf({
       frameSeconds: 5, buffer: { latest: () => snapshot() }, commentary: { finish: vi.fn() }, endCeremony: vi.fn(), players: {}, history: [], simulation: SIMULATION,
       graphs: null, settings: () => ({ reducedMotion: false, blood: "full" }), arcadeInjuries: [null, null],
-      lastKnockdown: { knockdown: combat("knockdown", { event_id: 8, amount: 1 }), hit, finisher: "decapitation" }, applyArcadeInjury, presentFinish,
+      lastKnockdown: { knockdown: combat("knockdown", { event_id: 8, amount: 1 }), hit, finisher: "decapitation" }, applyArcadeInjury, presentFinish, pendingContacts: [],
     });
     method("setFinal").call(stub, { version: 3, type: "final", match_id: "m", winner_id: "one", method: "ko", round: 2, scorecards: [], ratings: {} });
     expect(applyArcadeInjury).toHaveBeenCalledWith(1, "decapitation", hit);
     expect(presentFinish).toHaveBeenCalledOnce();
+  });
+
+  it("leaves a finishing injury to its punch while the clock has not shown that punch yet", () => {
+    const hit = combat("counter_hit", { event_id: 7, detail: "right:uppercut:head", amount: 140 });
+    const applyArcadeInjury = vi.fn(() => true);
+    const waiting = { event: hit, presentationEvent: hit, presentImpact: true, contactTick: 160, recipientIndex: 1, puncherIndex: 0, injury: null as string | null };
+    const stub = prototypeOf({
+      frameSeconds: 5, buffer: { latest: () => snapshot() }, commentary: { finish: vi.fn() }, endCeremony: vi.fn(), players: {}, history: [], simulation: SIMULATION,
+      graphs: null, settings: () => ({ reducedMotion: false, blood: "full" }), arcadeInjuries: [null, null],
+      lastKnockdown: { knockdown: combat("knockdown", { event_id: 8, amount: 3 }), hit, finisher: "decapitation" }, applyArcadeInjury, presentFinish: vi.fn(), pendingContacts: [waiting],
+    });
+    method("setFinal").call(stub, { version: 3, type: "final", match_id: "m", winner_id: "one", method: "tko", round: 2, scorecards: [], ratings: {} });
+    expect(applyArcadeInjury).not.toHaveBeenCalled();
+    expect(waiting.injury).toBe("decapitation");
   });
 
   it("knocks the gum shield out with a big counter to the head", () => {
@@ -277,7 +331,7 @@ describe("around the fight", () => {
     const event = combat("counter_hit", { event_id: 9, detail: "hook:head", amount: 120 });
     const stub = prototypeOf({
       pendingContacts: [{ event, presentationEvent: event, presentImpact: true, contactTick: 40, recipientIndex: 1, puncherIndex: 0, injury: null }],
-      buffer: { latest: () => snapshot() }, presentFightEvent: vi.fn(), mapping: worldMapping(SIMULATION), tmpA: new THREE.Vector3(), tmpB: new THREE.Vector3(),
+      buffer: { latest: () => snapshot() }, presentFightEvent: vi.fn(), mapping: worldMapping(SIMULATION), contactPoint: new THREE.Vector3(), mouthPoint: new THREE.Vector3(),
       effects: { addEvent: vi.fn(), spawnTeeth: vi.fn() }, settings: () => ({ reducedMotion: false, blood: "full" }), arena: { excite: vi.fn() }, viewerId: null,
       arcadeInjuries: [null, null], graphs: null, headWorldPose: () => null, knockOutMouthpiece, onContact: null, viewerHitFlash: 0,
     });

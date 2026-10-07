@@ -40,6 +40,14 @@ export function cornerPreview(fighter: FighterSnapshot): Readonly<Record<CornerC
 }
 
 /** The fighter's instructions to the corner between rounds: three buttons, the number keys and the face buttons. */
+function standardPad(): Gamepad | null {
+  try {
+    return [...(navigator.getGamepads?.() ?? [])].find((item): item is Gamepad => item !== null && item.connected && item.mapping === "standard") ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export class CornerPanel {
   readonly element: HTMLElement;
   private readonly buttons = new Map<CornerKind, HTMLButtonElement>();
@@ -50,6 +58,10 @@ export class CornerPanel {
   private pending: { readonly kind: CornerKind; readonly at: number } | null = null;
   private padFrame = 0;
   private readonly padPrevious = new Set<number>();
+  private measuredTop: number | null = null;
+  private readonly resize = (): void => {
+    this.measuredTop = null;
+  };
 
   private readonly keydown = (event: KeyboardEvent): void => {
     const kind = CORNER_KEYS[event.code];
@@ -91,6 +103,7 @@ export class CornerPanel {
     parent.append(section);
     this.element = section;
     window.addEventListener("keydown", this.keydown);
+    window.addEventListener("resize", this.resize);
   }
 
   /** Shows the panel to a fighter during the rest and reflects the corner's work from the latest snapshot. */
@@ -133,19 +146,30 @@ export class CornerPanel {
     if (visible === this.visible) return;
     this.visible = visible;
     this.element.hidden = !visible;
+    this.measuredTop = null;
     this.padPrevious.clear();
-    if (visible) this.padFrame = requestAnimationFrame(() => this.pollPad());
-    else cancelAnimationFrame(this.padFrame);
+    if (visible) {
+      // A button already held when the panel opens (a punch thrown at the bell) is not a pick.
+      const pad = standardPad();
+      for (const index of Object.keys(CORNER_PAD_BUTTONS)) if (pad?.buttons[Number(index)]?.pressed === true) this.padPrevious.add(Number(index));
+      this.padFrame = requestAnimationFrame(() => this.pollPad());
+    } else cancelAnimationFrame(this.padFrame);
+  }
+
+  /** How far down the activity the panel's top edge is while it is up, so a caption can keep above it; null while hidden. */
+  top(): number | null {
+    if (!this.visible) return null;
+    if (this.measuredTop === null) {
+      const rect = this.element.getBoundingClientRect();
+      if (rect.height <= 0) return null;
+      this.measuredTop = rect.top - (this.element.parentElement?.getBoundingClientRect().top ?? 0);
+    }
+    return this.measuredTop;
   }
 
   private pollPad(): void {
     if (!this.visible) return;
-    let pad: Gamepad | null = null;
-    try {
-      pad = [...(navigator.getGamepads?.() ?? [])].find((item): item is Gamepad => item !== null && item.connected && item.mapping === "standard") ?? null;
-    } catch {
-      pad = null;
-    }
+    const pad = standardPad();
     if (pad !== null) {
       for (const [index, kind] of Object.entries(CORNER_PAD_BUTTONS)) {
         const button = Number(index);
@@ -161,6 +185,7 @@ export class CornerPanel {
   destroy(): void {
     this.setVisible(false);
     window.removeEventListener("keydown", this.keydown);
+    window.removeEventListener("resize", this.resize);
     this.element.remove();
   }
 }

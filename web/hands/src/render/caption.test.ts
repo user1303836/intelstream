@@ -15,6 +15,28 @@ describe("caption placement", () => {
     expect(captionSlot(scene(1280, 720, "knockdown", { viewerDown: true }))).toMatchObject({ anchor: "bottom" });
   });
 
+  it("keeps above the fighter's corner panel between rounds", () => {
+    // The panel's top edge as the browser lays it out at 1280x720: 124 px off the bottom, about 130 px tall.
+    const slot = captionSlot(scene(1280, 720, "rest", { cornerPanelTop: 466 }));
+    expect(slot).toMatchObject({ anchor: "bottom" });
+    expect(slot!.y).toBeLessThanOrEqual(466 - 8);
+    expect(captionSlot(scene(1280, 720, "rest", { cornerPanelTop: null }))).toMatchObject({ anchor: "bottom", y: 720 - 110 });
+    // A panel reaching too far up for a line above it sends the caption up under the rest panel instead.
+    const high = captionSlot(scene(1280, 720, "rest", { cornerPanelTop: 340 }));
+    expect(high === null || (high.anchor === "top" && high.y + 74 <= 340)).toBe(true);
+  });
+
+  it("keeps below a big callout on phones", () => {
+    for (const [width, height] of [[390, 844], [844, 390]] as const) {
+      const quiet = captionSlot(scene(width, height, "fight", { touch: true }))!;
+      const slot = captionSlot(scene(width, height, "fight", { touch: true, callout: true }));
+      // The callout is 46 px type on a baseline 22% down the screen.
+      const calloutBottom = height * 0.22 + 14;
+      expect(slot === null || (slot.anchor === "top" && slot.y >= calloutBottom)).toBe(true);
+      expect(quiet.y).toBeLessThan(calloutBottom);
+    }
+  });
+
   it("moves to the top on phones, under the round clock in portrait and clear of the touch pads", () => {
     expect(captionSlot(scene(390, 844, "fight", { touch: true }))).toMatchObject({ anchor: "top", y: 136, maxWidth: 366, scale: 0.85 });
     expect(captionSlot(scene(844, 390, "fight", { touch: true }))).toMatchObject({ anchor: "top", y: 54, scale: 0.78, maxWidth: 844 - 432 });

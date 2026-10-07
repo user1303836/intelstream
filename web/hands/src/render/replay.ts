@@ -26,7 +26,13 @@ export function planKnockoutReplay(
 ): ReplayPlan | null {
   const wantedFrom = impact.tick - REPLAY_BEFORE_TICKS;
   const wantedTo = impact.tick + REPLAY_AFTER_TICKS;
-  const snapshots = history.filter((snapshot) => snapshot.tick >= wantedFrom - 1 && snapshot.tick <= wantedTo + 1);
+  const recorded = history.filter((snapshot) => snapshot.tick >= wantedFrom - 1 && snapshot.tick <= wantedTo + 1);
+  const ended = recorded.at(-1);
+  // A bout that ends on the punch itself (a flash knockout, a third knockdown) stops the recording at the
+  // impact, because the server stops; the replay holds that final picture while the fall plays out.
+  const snapshots = ended !== undefined && ended.result !== null && ended.tick < wantedTo
+    ? [...recorded, ...Array.from({ length: wantedTo - ended.tick }, (_, step) => ({ ...ended, tick: ended.tick + step + 1, events: [] }))]
+    : recorded;
   const first = snapshots[0];
   const last = snapshots.at(-1);
   if (first === undefined || last === undefined || snapshots.length < 8) return null;

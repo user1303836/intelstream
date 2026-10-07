@@ -28,7 +28,7 @@ function pushStub(graphs: [FakeGraph, FakeGraph]): Record<string, unknown> {
     referee: null,
     graphs,
     mapping: worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }),
-    tmpA: new THREE.Vector3(),
+    contactPoint: new THREE.Vector3(),
     pendingContacts: [] as unknown[],
     effects: { addEvent: vi.fn() },
     manualClock: true,
@@ -109,6 +109,7 @@ describe("fight mechanics on screen", () => {
         simulation: { tick_rate: 30 }, frameSeconds: 0, final: null, graphs,
         commentary: { replay: vi.fn() }, arcadeInjuries: [null, null], arcadeInjuryEvents: [null, null], replayInjuries: [null, null],
         lastKnockdown: { knockdown: combat("knockdown", { event_id: 9, tick: 40, detail, amount: 1, action_id: "liver" }), hit, finisher: null },
+        pendingContacts: [], effects: { returnMouthpiece: vi.fn() },
       };
       startReplay.call(stub, { snapshots: [snapshot(20), snapshot(40)], impact: hit, durationSeconds: 3 });
       return graphs;
@@ -148,5 +149,50 @@ describe("the cutman's work", () => {
     expect(cutmanWork(treated("cut", {})).lift).toBeGreaterThan(cutmanWork(treated("swelling", {})).lift);
     expect(cutmanWork(treated(null, { right_eye: 300 }))).toMatchObject({ side: -1, prop: "enswell" });
     expect(cutmanWork(undefined)).toMatchObject({ prop: "enswell" });
+  });
+});
+
+describe("a bout that ends on the punch itself", () => {
+  const setFinal = (FightRenderer.prototype as unknown as { setFinal(this: unknown, final: unknown): void }).setFinal;
+  const result = (method: "tko" | "flash_ko") => ({ match_id: "m", activity_instance_id: "i", guild_id: "g", player_one_id: "one", player_two_id: "two", winner_id: "one", finish_method: method, round_number: 2, tick: 160, scorecards: [], player_one_knockdowns: 0, player_two_knockdowns: 3, player_one_damage: 900, player_two_damage: 300 });
+
+  /** The room's own sequence: a snapshot every tick, and none after the one that carries the result. */
+  const fightTo = (method: "tko" | "flash_ko") => {
+    const graphs = fakeGraphs().map((graph) => ({ ...graph, awaitVerdict: vi.fn(), knockOut: vi.fn() })) as unknown as [FakeGraph, FakeGraph];
+    const spies = { presentFinish: vi.fn(), applyArcadeInjury: vi.fn(), returnMouthpiece: vi.fn() };
+    const stub = Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, pushStub(graphs), {
+      commentary: { observe: vi.fn(), finish: vi.fn(), replay: vi.fn() },
+      effects: { addEvent: vi.fn(), returnMouthpiece: spies.returnMouthpiece },
+      endCeremony: vi.fn(), presentFinish: spies.presentFinish, applyArcadeInjury: spies.applyArcadeInjury, restoreInjury: vi.fn(),
+      arcadeInjuries: [null, null], arcadeInjuryEvents: [null, null], replayInjuries: [null, null],
+      flashKnockout: null, replay: null, ceremony: null, finalRevealAt: 0, ovationUntil: 0,
+    });
+    for (let tick = 100; tick < 160; tick += 1) methods.push.call(stub, { ...snapshot(tick), fighters: [fighter("one", -60), fighter("two", 60)] });
+    const punch = combat("counter_hit", { event_id: 900, tick: 160, detail: "uppercut:head", amount: 140, action_id: "upper" });
+    const events = method === "tko" ? [punch, combat("knockdown", { event_id: 901, tick: 160, amount: 3 }), combat("result", { event_id: 902, tick: 160, target_id: null, detail: "tko" })] : [punch, combat("result", { event_id: 902, tick: 160, target_id: null, detail: "flash_ko" })];
+    const downed = { ...fighter("two", 60), is_downed: method === "tko" };
+    methods.push.call(stub, { ...snapshot(160), phase: "complete", fighters: [{ ...fighter("one", -60), action: "uppercut", action_key: "uppercut:right:head:power", action_contact_tick: 160 }, downed], events, result: result(method) });
+    // The final follows at once, while the render clock is still a few ticks behind the punch.
+    setFinal.call(stub, { version: 3, type: "final", match_id: "m", winner_id: "one", method, round: 2, scorecards: [], ratings: {} });
+    return { stub, ...spies };
+  };
+
+  it("still gets its slow-motion replay, holding the last picture for the fall", () => {
+    for (const method of ["tko", "flash_ko"] as const) {
+      const { stub, presentFinish } = fightTo(method);
+      const replay = stub.replay as { plan: { toTick: number; impact: CombatEvent } } | null;
+      expect(replay).not.toBeNull();
+      expect(replay!.plan.impact.event_id).toBe(900);
+      expect(replay!.plan.toTick).toBeGreaterThan(160);
+      expect(presentFinish).not.toHaveBeenCalled();
+    }
+  });
+
+  it("does the finisher at the replay's impact, not before the punch is shown", () => {
+    const { stub, applyArcadeInjury, returnMouthpiece } = fightTo("tko");
+    expect(applyArcadeInjury).not.toHaveBeenCalled();
+    expect(stub.pendingContacts).toEqual([]);
+    expect((stub.replayInjuries as unknown[])[1]).not.toBeNull();
+    expect(returnMouthpiece).toHaveBeenCalledWith(1);
   });
 });

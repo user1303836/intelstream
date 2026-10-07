@@ -82,6 +82,7 @@ export class AudioFeedback {
   private muffle: BiquadFilterNode | null = null;
   private rockedLevel = 0;
   private lastRockedBeat = -300;
+  private lastTick = -1;
 
   private readonly unlockListener = (): void => {
     void this.unlock().catch(() => undefined);
@@ -252,6 +253,32 @@ export class AudioFeedback {
     }
   }
 
+  /**
+   * A new bout starts its clock at zero again: the heartbeats, the breathing and the clapper start over,
+   * and the world is no longer muffled.
+   */
+  reset(): void {
+    this.lastBreathTick = -300;
+    this.lastHeartbeatTick = -300;
+    this.lastRockedBeat = -300;
+    this.clapperRound = 0;
+    this.lastTick = -1;
+    this.openMuffle();
+  }
+
+  private openMuffle(): void {
+    if (this.rockedLevel === 0) return;
+    this.rockedLevel = 0;
+    const context = this.context;
+    if (context !== null && this.muffle !== null) this.muffle.frequency.setTargetAtTime(MUFFLE_OPEN, context.currentTime, 0.9);
+  }
+
+  /** A tick earlier than the last one heard is a new bout's clock: the old bout's timers would silence it. */
+  private follow(tick: number): void {
+    if (tick < this.lastTick) this.reset();
+    this.lastTick = tick;
+  }
+
   /** The ten-second clapper: two wood-block cracks once per round when ten seconds remain. */
   roundClock(phase: string, roundNumber: number, ticksRemaining: number, tickRate: number): void {
     if (phase !== "fight" || ticksRemaining > 10 * tickRate || this.clapperRound === roundNumber) return;
@@ -294,6 +321,7 @@ export class AudioFeedback {
 
   /** The player's own fighter is rocked: the world goes muffled and the heartbeat pounds, slowing as the head clears. */
   rocked(level: number, tick: number): void {
+    this.follow(tick);
     const context = this.context;
     const muffle = this.muffle;
     if (!this.unlocked || context === null || muffle === null) return;
@@ -311,6 +339,7 @@ export class AudioFeedback {
   }
 
   snapshot(tick: number, stamina: number, maximumStamina: number, trauma: number): void {
+    this.follow(tick);
     if (!this.unlocked) return;
     const fatigue = 1 - stamina / Math.max(1, maximumStamina);
     if (fatigue > 0.55 && tick - this.lastBreathTick >= 75) {
@@ -324,6 +353,8 @@ export class AudioFeedback {
   }
 
   result(final: FinalMessage): void {
+    // The bout is over, however it ended (a forfeit sends no last snapshot to clear it).
+    this.openMuffle();
     if (!this.unlocked) return;
     this.crowdSwell(1);
     this.tone({ from: final.winner_id === null ? 280 : 520, duration: 0.45, type: "triangle", gain: 0.18 });
