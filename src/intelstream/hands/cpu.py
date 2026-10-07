@@ -266,6 +266,7 @@ def styled_profile(profile: CpuProfile, style: FighterStyle) -> CpuProfile:
         return replace(
             profile,
             outside_distance=profile.outside_distance + 10,
+            footwork_percent=_percent(profile.footwork_percent + 10),
             jab_bias=profile.jab_bias + 25,
             aggression_percent=_percent(profile.aggression_percent - 6),
             power_percent=_percent(profile.power_percent - 10),

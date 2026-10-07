@@ -1116,6 +1116,7 @@ def test_each_style_boxes_its_own_way(level: CpuLevel) -> None:
     boxer = styled_profile(base, FighterStyle.BOXER)
     assert boxer.outside_distance > base.outside_distance
     assert boxer.jab_bias > base.jab_bias
+    assert boxer.footwork_percent > base.footwork_percent
     slugger = styled_profile(base, FighterStyle.SLUGGER)
     assert slugger.power_percent > base.power_percent
     assert slugger.footwork_percent < base.footwork_percent
