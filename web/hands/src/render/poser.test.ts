@@ -149,6 +149,65 @@ describe("impact dent", () => {
   });
 });
 
+/** How far a knee bends along the pelvis' forward axis (1: straight ahead of it), or null when the leg is nearly straight. */
+function kneeBend(boxer: SkinnedBoxer, side: "L" | "R"): number | null {
+  const hip = bone(boxer, side === "L" ? "hipL" : "hipR");
+  const ankle = bone(boxer, side === "L" ? "ankleL" : "ankleR");
+  const bend = bone(boxer, side === "L" ? "kneeL" : "kneeR").sub(hip);
+  const along = ankle.sub(hip).normalize();
+  bend.addScaledVector(along, -bend.dot(along));
+  if (bend.length() < 0.02) return null;
+  return bend.normalize().dot(new THREE.Vector3(0, 0, 1).applyQuaternion(worldQuaternion(boxer.rig.bones.hips, new THREE.Quaternion())));
+}
+
+describe("down and get-up poses", () => {
+  /** Knocks a fighter down with `punchClass`, lets him lie, then gets him up, sampling every frame. */
+  const knockdown = (punchClass: "hook" | "uppercut", stance: "orthodox" | "southpaw", sample: (boxer: SkinnedBoxer, frame: number) => void): void => {
+    const { boxer, graph } = makeGraph();
+    const fighter = facingOpponent({ ...baseFighter("one"), stance });
+    const opponent = opponentFor("two");
+    run(graph, fighter, opponent, 20, undefined);
+    graph.react("hit", "head", 1, punchClass, "left", 120);
+    let tick = 10;
+    for (let frame = 0; frame < 240; frame += 1) {
+      tick += 0.5;
+      graph.update(frame < 90 ? { ...fighter, is_downed: true } : fighter, opponent, 1 / 60, 1 + frame / 60, false, "full", tick);
+      sample(boxer, frame);
+    }
+  };
+
+  it("bends the knees the way the pelvis faces, on the back, face down, on all fours and on one knee", () => {
+    for (const punchClass of ["hook", "uppercut"] as const) {
+      for (const stance of ["orthodox", "southpaw"] as const) {
+        let worst = Infinity;
+        knockdown(punchClass, stance, (boxer) => {
+          for (const side of ["L", "R"] as const) worst = Math.min(worst, kneeBend(boxer, side) ?? Infinity);
+        });
+        expect(worst).toBeGreaterThan(0.3);
+      }
+    }
+  });
+
+  it("keeps the shoes out of the canvas and puts the gloves and knees on it to get up", () => {
+    for (const punchClass of ["hook", "uppercut"] as const) {
+      let lowest = Infinity;
+      let gloves = Infinity;
+      let knees = Infinity;
+      knockdown(punchClass, "orthodox", (boxer, frame) => {
+        if (frame % 3 !== 0) return;
+        lowest = Math.min(lowest, lowestVertex(boxer));
+        if (frame < 90) return;
+        // Up off the canvas (the hips are high) the gloves and then the trunks' knees must still reach it.
+        if (bone(boxer, "hips").y > 0.42) gloves = Math.min(gloves, lowestVertex(boxer, "GlovesMat0"));
+        if (bone(boxer, "head").y > 0.9) knees = Math.min(knees, lowestVertex(boxer, "PantsMat0"));
+      });
+      expect(lowest).toBeGreaterThan(-0.02);
+      expect(gloves).toBeLessThan(0.03);
+      expect(knees).toBeLessThan(0.03);
+    }
+  });
+});
+
 describe("body shots", () => {
   // Two fighters in lockstep, one hit and one not (or hit differently), so the idle sway cancels out.
   const pair = (react: (graph: BoxingGraph) => void, other: (graph: BoxingGraph) => void, sample: (boxer: SkinnedBoxer) => number[]): number[][] => {

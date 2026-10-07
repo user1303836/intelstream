@@ -1711,77 +1711,113 @@ export class BoxingGraph {
     standing.rearHand.copy(rearHand.position);
     standing.leadFoot.copy(lead.position);
     standing.rearFoot.copy(rear.position);
+    standing.leadHeel = lead.heel;
+    standing.rearHeel = rear.heel;
     const pose = this.downResult;
     if (this.downState === "rising") {
       // Rising: lying -> all fours -> one knee -> stand.
       const u = clamp(this.riseAge / GETUP_SECONDS, 0, 1);
-      if (u < 0.38) lerpDownPose(pose, this.placeLying(mirror), placeDownPose(this.downTo, ALL_FOURS, null, mirror, 0), smoothstep(0, 0.38, u));
-      else if (u < 0.72) lerpDownPose(pose, placeDownPose(this.downFrom, ALL_FOURS, null, mirror, 0), placeDownPose(this.downTo, ONE_KNEE, null, mirror, 0), smoothstep(0.38, 0.72, u));
-      else lerpDownPose(pose, placeDownPose(this.downFrom, ONE_KNEE, null, mirror, 0), standing, smoothstep(0.72, 1, u));
-      this.writeDown(pose, leadHand, rearHand, lead, rear, 0);
+      let stand = 0;
+      if (u < 0.38) {
+        const s = smoothstep(0, 0.38, u);
+        const lying = this.placeLying(mirror);
+        const fours = this.placeDown(this.downTo, ALL_FOURS, mirror);
+        lerpDownPose(pose, lying, fours, s);
+        // Face down, he pushes up on his gloves before the knees come under him: the hips rise first.
+        if (this.fallProne) pose.hips.y = THREE.MathUtils.lerp(lying.hips.y, fours.hips.y, easeOut(s, 3));
+      } else if (u < 0.72) {
+        lerpDownPose(pose, this.placeDown(this.downFrom, ALL_FOURS, mirror), this.placeDown(this.downTo, ONE_KNEE, mirror), smoothstep(0.38, 0.72, u));
+      } else {
+        stand = smoothstep(0.72, 1, u);
+        lerpDownPose(pose, this.placeDown(this.downFrom, ONE_KNEE, mirror), standing, stand);
+      }
+      this.writeDown(pose, mirror, leadHand, rearHand, lead, rear, 0, stand);
       return;
     }
-    let t = 1;
-    let headLag = 0;
-    if (this.downState === "falling") {
-      const u = clamp(this.fallAge / KNOCKDOWN_FALL_SECONDS, 0, 1);
-      t = easeIn(u, 2.1);
-      headLag = Math.sin(u * Math.PI) * 0.12;
-      const buckle = smoothstep(0, 0.35, u) * (1 - smoothstep(0.35, 0.8, u));
-      standing.hips.y -= buckle * 0.12;
+    const lying = this.placeLying(mirror);
+    if (this.downState !== "falling") {
+      this.writeDown(lerpDownPose(pose, standing, lying, 1), mirror, leadHand, rearHand, lead, rear, 0, 0);
+      return;
     }
-    lerpDownPose(pose, standing, this.placeLying(mirror), t);
-    if (this.downState === "falling") {
-      const flail = Math.sin(clamp(this.fallAge / KNOCKDOWN_FALL_SECONDS, 0, 1) * Math.PI) * 0.35;
+    const u = clamp(this.fallAge / KNOCKDOWN_FALL_SECONDS, 0, 1);
+    const t = easeIn(u, 2.1);
+    const buckle = smoothstep(0, 0.35, u) * (1 - smoothstep(0.35, 0.8, u));
+    standing.hips.y -= buckle * 0.12;
+    lerpDownPose(pose, standing, lying, t);
+    // The feet slide out from under him while he is still high, so his knees never fold through the canvas.
+    const feet = smoothstep(0.3, 0.9, u);
+    pose.leadFoot.lerpVectors(standing.leadFoot, lying.leadFoot, feet);
+    pose.rearFoot.lerpVectors(standing.rearFoot, lying.rearFoot, feet);
+    pose.leadHeel = THREE.MathUtils.lerp(standing.leadHeel, lying.leadHeel, feet);
+    pose.rearHeel = THREE.MathUtils.lerp(standing.rearHeel, lying.rearHeel, feet);
+    if (this.fallProne) {
+      // Pitching forward, the gloves reach out ahead of him to break the fall.
+      const reach = easeOut(u, 2.5);
+      pose.leadHand.lerpVectors(standing.leadHand, lying.leadHand, reach);
+      pose.rearHand.lerpVectors(standing.rearHand, lying.rearHand, reach);
+    } else {
+      const flail = Math.sin(u * Math.PI) * 0.35;
       pose.leadHand.y += flail;
       pose.rearHand.y += flail * 0.8;
     }
-    this.writeDown(pose, leadHand, rearHand, lead, rear, headLag);
+    this.writeDown(pose, mirror, leadHand, rearHand, lead, rear, Math.sin(u * Math.PI) * 0.12, 1 - t);
   }
 
   /** The pose the fighter ends up in on the canvas: face down or on his back, twisted by the fall side. */
   private placeLying(mirror: number): DownPose {
+    const ankle = this.boxer.rig.metrics.ankleHeight;
     return this.fallProne
-      ? placeDownPose(this.downFrom, PRONE, PRONE_TWIST, mirror, this.fallSide)
-      : placeDownPose(this.downFrom, LYING, LYING_TWIST, mirror, this.fallSide);
+      ? placeDownPose(this.downFrom, PRONE, PRONE_TWIST, mirror, this.fallSide, ankle)
+      : placeDownPose(this.downFrom, LYING, LYING_TWIST, mirror, this.fallSide, ankle);
   }
 
+  private placeDown(out: DownPose, base: DownPose, mirror: number): DownPose {
+    return placeDownPose(out, base, null, mirror, 0, this.boxer.rig.metrics.ankleHeight);
+  }
+
+  /**
+   * Writes a down or rising pose over the targets. `stand` is the share of the live standing pose in
+   * it: what the standing layers set (the guard's arm and knee directions, reactions) fades out on the
+   * way down and back in on the way up.
+   */
   private writeDown(
     state: DownPose,
+    mirror: number,
     leadHand: { position: THREE.Vector3; knuckles: THREE.Vector3; palm: THREE.Vector3; pole: THREE.Vector3 },
     rearHand: { position: THREE.Vector3; knuckles: THREE.Vector3; palm: THREE.Vector3; pole: THREE.Vector3 },
     lead: { position: THREE.Vector3; toe: THREE.Vector3; heel: number; pole: THREE.Vector3 },
     rear: { position: THREE.Vector3; toe: THREE.Vector3; heel: number; pole: THREE.Vector3 },
     headLag: number,
+    stand: number,
   ): void {
     const torso = this.torso;
+    const down = 1 - stand;
     torso.hips.copy(state.hips);
     torso.hipsYaw = state.hipsYaw;
     torso.hipsPitch = state.hipsPitch;
     torso.hipsRoll = state.hipsRoll;
     torso.shouldersYaw = state.shouldersYaw;
     torso.spinePitch = state.spinePitch;
-    torso.spineRoll = 0;
+    torso.spineRoll *= stand;
     torso.headPitch = state.headPitch;
-    torso.headYaw = 0;
-    torso.headRoll = 0;
-    torso.headOffset.set(0, 0, -headLag);
+    torso.headYaw *= stand;
+    torso.headRoll *= stand;
+    torso.headOffset.multiplyScalar(stand);
+    torso.headOffset.z -= headLag;
     leadHand.position.copy(state.leadHand);
     rearHand.position.copy(state.rearHand);
-    leadHand.pole.set(0.4, 0.9, 0.2);
-    rearHand.pole.set(-0.4, 0.9, 0.2);
-    leadHand.knuckles.set(0.6, 0.2, -0.75).normalize();
-    rearHand.knuckles.set(-0.6, 0.2, -0.75).normalize();
-    leadHand.palm.set(0, 1, 0.2).normalize();
-    rearHand.palm.set(0, 1, 0.2).normalize();
+    turnDownArm(leadHand, mirror, state.palmsDown, down);
+    turnDownArm(rearHand, -mirror, state.palmsDown, down);
     lead.position.copy(state.leadFoot);
     rear.position.copy(state.rearFoot);
-    lead.pole.set(0, 1, 0.35).normalize();
-    rear.pole.set(0, 1, 0.35).normalize();
-    lead.toe.set(0.2, 0, 1).normalize();
-    rear.toe.set(-0.2, 0, 1).normalize();
-    lead.heel = 0;
-    rear.heel = 0;
+    lead.toe.lerp(downScratch.set(0.2 * mirror, 0, 1).normalize(), down).normalize();
+    rear.toe.lerp(downScratch.set(-0.2 * mirror, 0, 1).normalize(), down).normalize();
+    lead.heel = state.leadHeel;
+    rear.heel = state.rearHeel;
+    // Knees bend the way the pelvis faces, whether that is the sky, the canvas or the opponent.
+    const forward = downScratch.set(0, 0, 1).applyEuler(downEuler.set(state.hipsPitch, state.hipsYaw, state.hipsRoll, "YXZ"));
+    lead.pole.lerp(forward, down);
+    rear.pole.lerp(forward, down);
   }
 
   private applyDislocation(): void {
@@ -1817,8 +1853,33 @@ interface DownPose {
   headPitch: number;
   readonly leadHand: THREE.Vector3;
   readonly rearHand: THREE.Vector3;
+  /** Ankle positions; the tables give the sole's height above the canvas instead. */
   readonly leadFoot: THREE.Vector3;
   readonly rearFoot: THREE.Vector3;
+  /** Heel lift: a foot pitched onto its toes, as on the canvas behind a kneeling or prone fighter. */
+  leadHeel: number;
+  rearHeel: number;
+  /** 0 with the arms thrown out palm-up, 1 with the gloves pressed palm-down on the canvas. */
+  palmsDown: number;
+}
+
+const downScratch = new THREE.Vector3();
+const downEuler = new THREE.Euler();
+/** Arm directions on the canvas for an orthodox fighter's lead arm, thrown out palm-up or pressing palm-down. */
+const PALM_UP = { pole: vec(0.4, 0.9, 0.2), knuckles: vec(0.6, 0.2, -0.75).normalize(), palm: vec(0, 1, 0.2).normalize() };
+const PALM_DOWN = { pole: vec(0.6, 0.2, -0.7), knuckles: vec(0.25, -0.1, 1).normalize(), palm: vec(0, -1, 0.1).normalize() };
+
+/** Turns an arm from its standing directions toward the down ones; `sideX` mirrors x for the stance and the arm. */
+function turnDownArm(hand: { knuckles: THREE.Vector3; palm: THREE.Vector3; pole: THREE.Vector3 }, sideX: number, palmsDown: number, down: number): void {
+  downScratch.lerpVectors(PALM_UP.pole, PALM_DOWN.pole, palmsDown);
+  downScratch.x *= sideX;
+  hand.pole.lerp(downScratch, down);
+  downScratch.lerpVectors(PALM_UP.knuckles, PALM_DOWN.knuckles, palmsDown);
+  downScratch.x *= sideX;
+  hand.knuckles.lerp(downScratch.normalize(), down).normalize();
+  downScratch.lerpVectors(PALM_UP.palm, PALM_DOWN.palm, palmsDown);
+  downScratch.x *= sideX;
+  hand.palm.lerp(downScratch.normalize(), down).normalize();
 }
 
 function downPose(pose: Partial<DownPose> = {}): DownPose {
@@ -1834,36 +1895,39 @@ function downPose(pose: Partial<DownPose> = {}): DownPose {
     rearHand: new THREE.Vector3(),
     leadFoot: new THREE.Vector3(),
     rearFoot: new THREE.Vector3(),
+    leadHeel: 0,
+    rearHeel: 0,
+    palmsDown: 0,
     ...pose,
   };
 }
 
 // The authored poses are for an orthodox fighter; a twist table is added per unit of fall side.
-/** Lying on the back; turning the hips swings the head the opposite way. */
+/** Lying on the back with the knees up; turning the hips swings the head the opposite way. */
 const LYING = downPose({
   hips: vec(0, 0.14, -0.4), hipsPitch: -1.42, spinePitch: 0.1, headPitch: -0.5,
-  leadHand: vec(0.52, 0.1, -0.62), rearHand: vec(-0.5, 0.1, -0.7), leadFoot: vec(0.17, 0.08, 0.16), rearFoot: vec(-0.16, 0.09, -0.02),
+  leadHand: vec(0.52, 0.1, -0.62), rearHand: vec(-0.5, 0.1, -0.7), leadFoot: vec(0.17, 0, 0.16), rearFoot: vec(-0.16, 0, -0.02),
 });
 const LYING_TWIST = downPose({ hips: vec(0.22, 0, 0), hipsYaw: -0.35, hipsRoll: -0.25, shouldersYaw: -0.2, leadFoot: vec(0.05, 0, 0), rearFoot: vec(0.05, 0, 0) });
-/** Face down after a hook or a body shot: the fighter pitches forward over the front foot. */
+/** Face down after a hook or a body shot, on the toes: the fighter pitches forward over the front foot. */
 const PRONE = downPose({
-  hips: vec(0, 0.13, 0.32), hipsPitch: 1.5, spinePitch: 0.05, headPitch: 0.2,
-  leadHand: vec(0.34, 0.06, 0.78), rearHand: vec(-0.3, 0.06, 0.62), leadFoot: vec(0.16, 0.06, -0.5), rearFoot: vec(-0.15, 0.07, -0.55),
+  hips: vec(0, 0.25, 0.32), hipsPitch: 1.5, spinePitch: 0.05, headPitch: 0.2, palmsDown: 1,
+  leadHand: vec(0.34, 0.12, 0.78), rearHand: vec(-0.3, 0.12, 0.62), leadFoot: vec(0.16, 0, -0.82), rearFoot: vec(-0.15, 0, -0.86), leadHeel: 1.3, rearHeel: 1.3,
 });
 const PRONE_TWIST = downPose({ hips: vec(0.12, 0, 0), hipsYaw: 0.3, hipsRoll: 0.15, shouldersYaw: 0.15, leadFoot: vec(0.04, 0, 0), rearFoot: vec(0.04, 0, 0) });
-/** The get-up's first stage, on all fours. */
+/** The get-up's first stage, on the gloves and knees with the toes tucked under. */
 const ALL_FOURS = downPose({
-  hips: vec(0.08, 0.52, -0.18), hipsYaw: STANCE.bladeYaw * 0.4, hipsPitch: 1.0, shouldersYaw: STANCE.bladeYaw * 0.35, spinePitch: 0.15, headPitch: -0.5,
-  leadHand: vec(0.26, 0.02, 0.18), rearHand: vec(-0.24, 0.02, 0.1), leadFoot: vec(0.17, 0.05, -0.55), rearFoot: vec(-0.16, 0.05, -0.6),
+  hips: vec(0.05, 0.52, -0.2), hipsYaw: STANCE.bladeYaw * 0.15, hipsPitch: 1.38, shouldersYaw: STANCE.bladeYaw * 0.15, spinePitch: 0.35, headPitch: 1.0, palmsDown: 1,
+  leadHand: vec(0.2, 0.115, 0.36), rearHand: vec(-0.2, 0.115, 0.32), leadFoot: vec(0.15, 0, -0.74), rearFoot: vec(-0.14, 0, -0.78), leadHeel: 1.25, rearHeel: 1.25,
 });
-/** The get-up's second stage, on one knee with the lead foot planted. */
+/** The get-up's second stage, on the rear knee with the lead foot planted and a glove on the knee. */
 const ONE_KNEE = downPose({
-  hips: vec(0.03, 0.66, -0.06), hipsYaw: STANCE.bladeYaw * 0.7, hipsPitch: 0.5, shouldersYaw: STANCE.bladeYaw * 0.6, spinePitch: 0.25, headPitch: -0.15,
-  leadHand: vec(0.2, 0.75, 0.3), rearHand: vec(-0.25, 0.55, 0.05), leadFoot: vec(0.14, 0, 0.3), rearFoot: vec(-0.14, 0.06, -0.5),
+  hips: vec(0, 0.47, -0.05), hipsYaw: STANCE.bladeYaw * 0.12, hipsPitch: 0.2, shouldersYaw: STANCE.bladeYaw * 0.4, spinePitch: 0.3, headPitch: 0.2, palmsDown: 1,
+  leadHand: vec(0.15, 0.68, 0.32), rearHand: vec(-0.26, 0.42, 0.02), leadFoot: vec(0.15, 0, 0.36), rearFoot: vec(-0.13, 0, -0.7), rearHeel: 1.2,
 });
 
-/** Writes `base` mirrored for the stance, plus `twist` per unit of `side`, into `out`. */
-function placeDownPose(out: DownPose, base: DownPose, twist: DownPose | null, mirror: number, side: number): DownPose {
+/** Writes `base` mirrored for the stance, plus `twist` per unit of `side`, into `out`, with the feet raised by `ankle`. */
+function placeDownPose(out: DownPose, base: DownPose, twist: DownPose | null, mirror: number, side: number, ankle: number): DownPose {
   out.hips.set(base.hips.x * mirror, base.hips.y, base.hips.z);
   out.hipsYaw = base.hipsYaw * mirror;
   out.hipsPitch = base.hipsPitch;
@@ -1873,8 +1937,11 @@ function placeDownPose(out: DownPose, base: DownPose, twist: DownPose | null, mi
   out.headPitch = base.headPitch;
   mirrorX(base.leadHand, mirror, out.leadHand);
   mirrorX(base.rearHand, mirror, out.rearHand);
-  mirrorX(base.leadFoot, mirror, out.leadFoot);
-  mirrorX(base.rearFoot, mirror, out.rearFoot);
+  mirrorX(base.leadFoot, mirror, out.leadFoot).y += ankle;
+  mirrorX(base.rearFoot, mirror, out.rearFoot).y += ankle;
+  out.leadHeel = base.leadHeel;
+  out.rearHeel = base.rearHeel;
+  out.palmsDown = base.palmsDown;
   if (twist === null || side === 0) return out;
   out.hips.addScaledVector(twist.hips, side);
   out.hipsYaw += twist.hipsYaw * side;
@@ -1904,6 +1971,9 @@ function lerpDownPose(out: DownPose, a: DownPose, b: DownPose, t: number): DownP
   out.rearHand.copy(a.rearHand).lerp(b.rearHand, t);
   out.leadFoot.copy(a.leadFoot).lerp(b.leadFoot, t);
   out.rearFoot.copy(a.rearFoot).lerp(b.rearFoot, t);
+  out.leadHeel = lerp(a.leadHeel, b.leadHeel, t);
+  out.rearHeel = lerp(a.rearHeel, b.rearHeel, t);
+  out.palmsDown = lerp(a.palmsDown, b.palmsDown, t);
   return out;
 }
 

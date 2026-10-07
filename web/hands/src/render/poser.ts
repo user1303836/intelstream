@@ -194,23 +194,20 @@ export class PoseSolver {
     const lengths = side === "L" ? rig.metrics.legL : rig.metrics.legR;
     this.toWorld(foot.position, scratch);
     this.dirToWorld(foot.toe, scratchC).normalize();
+    // Foot: +Y runs from the ankle down to the toe base, pitched by the heel lift.
+    const footLength = rig.metrics.footLength;
+    scratchD.copy(scratchC).multiplyScalar(footLength).addScaledVector(worldUp, -rig.metrics.ankleHeight).normalize();
     if (foot.heel !== 0) {
-      // Pivot on the ball of the foot: the toe stays planted while the ankle rises and drifts forward.
-      const pivot = rig.metrics.footLength * 0.72;
-      scratch.addScaledVector(worldUp, Math.sin(foot.heel) * pivot).addScaledVector(scratchC, (1 - Math.cos(foot.heel)) * pivot);
+      // Pivot on the ball of the foot: the toe base stays where the flat foot puts it while the ankle rises
+      // and drifts forward around it.
+      scratch.addScaledVector(scratchD, footLength);
+      scratchQ.setFromAxisAngle(scratchB.crossVectors(scratchC, worldUp).normalize(), -foot.heel);
+      scratchD.applyQuaternion(scratchQ);
+      scratch.addScaledVector(scratchD, -footLength);
     }
     this.dirToWorld(foot.pole, scratchB);
     rig.solveLimb(hip, knee, lengths, scratch, scratchB, "x", -1, 0.02);
     ankle.updateWorldMatrix(false, false);
-    // Foot: +Y runs from the ankle down to the toe base, pitched by the heel lift.
-    this.dirToWorld(foot.toe, scratchC).normalize();
-    const drop = rig.metrics.ankleHeight;
-    scratchD.copy(scratchC).multiplyScalar(rig.metrics.footLength).addScaledVector(worldUp, -drop);
-    scratchD.normalize();
-    if (foot.heel !== 0) {
-      scratchQ.setFromAxisAngle(scratchB.crossVectors(scratchC, worldUp).normalize(), -foot.heel);
-      scratchD.applyQuaternion(scratchQ);
-    }
     rig.setWorldFrame(ankle, scratchD, worldUp, "z");
     toe.updateWorldMatrix(false, false);
     // The toes bend at the ball, so they stay flat on the canvas however far the heel is raised.
