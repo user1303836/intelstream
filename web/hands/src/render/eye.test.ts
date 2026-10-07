@@ -15,11 +15,12 @@ const hit = (detail: string, eventId: number): CombatEvent => ({ event_id: event
 const puncher = (hand: string) => ({ ...fighter("one"), action_key: `hook:${hand}:head:normal` });
 
 describe("an eye forced out", () => {
-  it("is what a finishing hook earns, on the side it lands; other punches keep their finishers", () => {
+  it("is what a hard finishing hook earns, on the side it lands; other punches keep their finishers", () => {
     expect(arcadeInjuryFor(hit("hook:head", 1), downed, ko, puncher("left"))).toBe("eye_right");
     expect(arcadeInjuryFor(hit("hook:head", 3), downed, ko, puncher("right"))).toBe("eye_left");
-    expect(arcadeInjuryFor(hit("hook:head", 2), downed, ko, puncher("left"))).toBe("decapitation");
-    expect(arcadeInjuryFor(hit("straight:head", 1), downed, ko, puncher("left"))).toBe("jaw_dislocation");
+    expect(arcadeInjuryFor(hit("hook:head", 2), downed, ko, puncher("left"))).toBe("eye_right");
+    expect(arcadeInjuryFor({ ...hit("hook:head", 2), amount: 50 }, downed, ko, puncher("left"))).toBe("jaw_dislocation");
+    expect(arcadeInjuryFor(hit("straight:head", 1), downed, ko, puncher("left"))).toBe("decapitation");
     expect(["eye_left", "eye_right"]).toContain(arcadeInjuryFor(hit("hook:head", 5), downed, ko));
     expect(replayReattaches("eye_left")).toBe(true);
     expect(replayReattaches("eye_right")).toBe(true);

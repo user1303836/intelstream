@@ -2,7 +2,7 @@ import { INJURY_SOUNDS } from "./assets/injury-sounds";
 import type { ArcadeInjury } from "./render/renderer";
 
 /** Finishers without a voice of their own borrow the nearest one. */
-const BORROWED_VOICE: Partial<Readonly<Record<ArcadeInjury, ArcadeInjury>>> = { head_burst: "decapitation", eye_left: "jaw_dislocation", eye_right: "jaw_dislocation" };
+const BORROWED_VOICE: Partial<Readonly<Record<ArcadeInjury, ArcadeInjury>>> = { head_burst: "decapitation", eye_left: "jaw_dislocation", eye_right: "jaw_dislocation", ribs_left: "shoulder_left", ribs_right: "shoulder_right" };
 import type { Settings } from "./settings";
 import type { CombatEvent, FinalMessage, PunchClass } from "./types";
 

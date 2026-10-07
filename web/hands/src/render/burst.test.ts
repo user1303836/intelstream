@@ -3,22 +3,95 @@ import { describe, expect, it } from "vitest";
 import { fighter } from "../test/fixtures";
 import type { CombatEvent, MatchResult } from "../types";
 import { Effects3D } from "./effects";
-import { BIG_SHOT, closeCut } from "./gore";
+import { BIG_SHOT, HARD_SHOT, closeCut } from "./gore";
 import { SkinnedBoxer, loadBoxerGlb } from "./graph";
-import { BURST_CUT_HEIGHT, HEAD_SITES, InjuryShading, NECK_CUT_HEIGHT } from "./injury";
-import { aboveBurstCut, arcadeInjuryFor, measureBurstStump, replayReattaches } from "./renderer";
+import { BODY_SITES, BODY_SWELL_CORE, BURST_CUT_HEIGHT, HEAD_SITES, InjuryShading, NECK_CUT_HEIGHT, applyBodyTrauma } from "./injury";
+import { aboveBurstCut, arcadeInjuryFor, caveInRibs, measureBurstStump, replayReattaches } from "./renderer";
 
 const gltf = await loadBoxerGlb();
 const hit = (kind: string, amount: number, detail = "uppercut:head", eventId = 2): CombatEvent => ({ event_id: eventId, tick: 10, kind, actor_id: "one", target_id: "two", amount, detail, blood: 30, direction: 1, action_id: null });
 const ending = (finish_method: MatchResult["finish_method"]) => ({ finish_method, winner_id: "one" });
 const downed = { ...fighter("two"), is_downed: true };
 
+describe("the finisher a knockout punch earns", () => {
+  const puncher = (hand: "left" | "right") => ({ ...fighter("one"), action_key: `straight:${hand}:head:normal` });
+  // [punch and target, kind, damage, the puncher's hand] and the finisher, by punch, place and weight alone.
+  const table: readonly (readonly [string, string, number, "left" | "right", string])[] = [
+    ["jab:head", "hit", 34, "left", "jaw_dislocation"],
+    ["jab:head", "hit", HARD_SHOT + 30, "left", "jaw_dislocation"],
+    ["straight:head", "hit", 79, "right", "jaw_dislocation"],
+    ["straight:head", "hit", 80, "right", "decapitation"],
+    ["uppercut:head", "hit", HARD_SHOT - 1, "right", "jaw_dislocation"],
+    ["uppercut:head", "hit", HARD_SHOT, "right", "decapitation"],
+    ["hook:head", "hit", HARD_SHOT - 1, "left", "jaw_dislocation"],
+    ["hook:head", "hit", HARD_SHOT, "left", "eye_right"],
+    ["hook:head", "hit", HARD_SHOT + 40, "right", "eye_left"],
+    ["straight:head", "hit", 140, "right", "decapitation"],
+    ["straight:head", "counter_hit", BIG_SHOT, "right", "head_burst"],
+    ["jab:body", "hit", 50, "left", "ribs_right"],
+    ["straight:body", "hit", 140, "right", "ribs_left"],
+    ["uppercut:body", "counter_hit", 120, "left", "ribs_right"],
+    ["hook:body", "hit", HARD_SHOT - 1, "left", "ribs_right"],
+    ["hook:body", "hit", HARD_SHOT, "left", "shoulder_right"],
+    ["hook:body", "hit", BIG_SHOT, "right", "dismember_left"],
+  ];
+
+  it("is chosen by the punch, where it landed and how hard, whatever the event's id", () => {
+    for (const [detail, kind, amount, hand, injury] of table) {
+      for (const eventId of [1, 2, 3, 4, 17, 40]) {
+        expect(arcadeInjuryFor(hit(kind, amount, detail, eventId), downed, ending("ko"), puncher(hand)), `${detail} ${kind} ${amount} ${hand} #${eventId}`).toBe(injury);
+      }
+    }
+  });
+
+  it("never takes a man's head off with a jab, nor a hand with a punch up the middle of his body", () => {
+    for (let amount = 1; amount <= 160; amount += 1) {
+      expect(arcadeInjuryFor(hit("hit", amount, "jab:head", amount), downed, ending("ko"), puncher("left"))).toBe("jaw_dislocation");
+      for (const detail of ["jab:body", "straight:body", "uppercut:body"]) expect(arcadeInjuryFor(hit("counter_hit", amount, detail, amount), downed, ending("tko"), puncher("right"))).toBe("ribs_left");
+    }
+  });
+
+  it("bursts the head of a flash knockout whatever the punch, and lands on his right without the puncher's hand", () => {
+    expect(arcadeInjuryFor(hit("hit", 40, "jab:head"), fighter("two"), ending("flash_ko"))).toBe("head_burst");
+    expect(arcadeInjuryFor(hit("hit", 90, "hook:head"), downed, ending("ko"))).toBe("eye_right");
+    expect(arcadeInjuryFor(hit("hit", 60, "straight:body"), downed, ending("ko"))).toBe("ribs_right");
+  });
+});
+
+describe("ribs caved in by a body shot", () => {
+  it("dent deep into the side the punch landed on, black with bruising and running with blood", () => {
+    for (const side of ["left", "right"] as const) {
+      const shading = new InjuryShading(null, BODY_SITES, { core: BODY_SWELL_CORE, wash: true });
+      // The engine's trauma is painted first each frame; the caved-in ribs go over it.
+      applyBodyTrauma(shading, fighter("two").trauma, "full");
+      caveInRibs(shading, side);
+      const site = BODY_SITES.find((candidate) => candidate.name === `${side}Ribs`)!;
+      const impact = shading.uniforms.uInjuryImpact.value;
+      expect([impact.x, impact.y, impact.z]).toEqual([...site.position]);
+      const push = shading.uniforms.uInjuryImpactPush.value;
+      // Into the body, toward the spine from the side it is on, deeper than any punch's own dent (3.2 cm).
+      expect(Math.sign(push.x)).toBe(-Math.sign(site.position[0]));
+      expect(shading.impactDepth).toBeGreaterThan(5);
+      const ribs = shading.level(`${side}Ribs`);
+      expect(ribs.bruise).toBeCloseTo(1.2, 6);
+      expect(ribs.swell).toBe(0);
+      expect(ribs.blood).toBeCloseTo(1.4, 6);
+      // A punch's dent springs back; these are set again every frame and stay in.
+      shading.update(0.5);
+      expect(shading.impactDepth).toBeLessThan(0.1);
+      caveInRibs(shading, side);
+      expect(shading.impactDepth).toBeGreaterThan(5);
+    }
+    expect(replayReattaches("ribs_left")).toBe(true);
+  });
+});
+
 describe("a head that bursts", () => {
   it("is what a flash knockout or a big counter to the head earns; other finishers stay as they were", () => {
     expect(arcadeInjuryFor(hit("counter_hit", BIG_SHOT), downed, ending("ko"))).toBe("head_burst");
     expect(arcadeInjuryFor(hit("hit", 60, "hook:head"), fighter("two"), ending("flash_ko"))).toBe("head_burst");
     expect(arcadeInjuryFor(hit("counter_hit", BIG_SHOT - 1, "uppercut:head", 2), downed, ending("ko"))).toBe("decapitation");
-    expect(arcadeInjuryFor(hit("hit", 140, "uppercut:head", 3), downed, ending("tko"))).toBe("jaw_dislocation");
+    expect(arcadeInjuryFor(hit("hit", 140, "uppercut:head", 3), downed, ending("tko"))).toBe("decapitation");
     expect(arcadeInjuryFor(hit("counter_hit", 140, "hook:body", 2), downed, ending("ko"))).not.toBe("head_burst");
     expect(replayReattaches("head_burst")).toBe(true);
   });

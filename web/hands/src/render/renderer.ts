@@ -18,8 +18,8 @@ import { CommentaryDirector, type CrowdCue } from "./commentary";
 import { Effects3D, type BakedPart, type SprayDirection } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, releaseFighterGpu, type ArcadeDislocation, type CutmanProp } from "./graph";
 import { drawHud, finalRevealDelay, hudScale, resultCard, resultCardLayout, RoundStatsTracker, STOPPAGE_METHODS, RoundClock, type RoundPunchStats } from "./hud";
-import { BURST_CUT_HEIGHT, EYE_LIDS, NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE } from "./injury";
-import { BIG_SHOT, closeCut, cutRim, teethFor } from "./gore";
+import { BURST_CUT_HEIGHT, EYE_LIDS, NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE, type InjuryShading } from "./injury";
+import { BIG_SHOT, HARD_SHOT, closeCut, cutRim, teethFor } from "./gore";
 import { mouthpieceFlies } from "./mouthpiece";
 import { OFFICIAL_LOOKS, lookFor, lookShape, type FighterLook } from "./looks";
 import { BLUE_CORNER_OUTFIT, CUTMAN_OUTFIT, RED_CORNER_OUTFIT, REFEREE_OUTFIT } from "./outfit";
@@ -37,7 +37,9 @@ export type ArcadeInjury =
   | "dismember_right"
   | "jaw_dislocation"
   | "shoulder_left"
-  | "shoulder_right";
+  | "shoulder_right"
+  | "ribs_left"
+  | "ribs_right";
 
 /** Phases the player's own over-the-shoulder camera is used in; counts, rests and the finish go to the broadcast. */
 export function ownViewPhase(snapshot: Pick<EngineSnapshot, "phase"> | null): boolean {
@@ -368,6 +370,17 @@ export function presentationTickFor(snapshot: EngineSnapshot): number {
   return snapshot.result === null ? snapshot.tick - 1 : snapshot.tick;
 }
 
+/** A straight this hard to the head takes it off: most land for 30 to 80. */
+const DECAPITATING_STRAIGHT = 80;
+const PUNCH_CLASSES: readonly string[] = ["jab", "straight", "hook", "uppercut"];
+
+/**
+ * The finisher the punch that ends the bout earns, by where it landed, what it was and how hard it was:
+ * - to the head, a flash knockout or a big counter bursts it, a hard uppercut or straight takes it off, a
+ *   hard hook forces out the eye on the side it lands, and anything lighter dislocates the jaw;
+ * - to the body, a hook comes round through the elbow covering the ribs, so a big one takes the forearm
+ *   off and a hard one puts the shoulder out; otherwise the ribs it lands on cave in.
+ */
 export function arcadeInjuryFor(
   event: CombatEvent,
   target: FighterSnapshot | undefined,
@@ -375,22 +388,20 @@ export function arcadeInjuryFor(
   puncher?: FighterSnapshot,
 ): ArcadeInjury | null {
   if (!isArcadeInjuryCandidate(event, target, result)) return null;
-  const selection = Math.abs(event.event_id);
+  const key = puncher?.action_key?.split(":");
+  const punch = event.detail.split(":").find((part) => PUNCH_CLASSES.includes(part)) ?? key?.[0];
+  // A left hand lands on his right side; without the puncher's hand, on the side an orthodox lead lands on.
+  const struck = key?.[1] === "right" ? "left" : "right";
+  const amount = event.amount;
   if (event.detail.endsWith(":head")) {
-    // A flash knockout or a big counter bursts the head.
-    if (result?.finish_method === "flash_ko" || (event.kind === "counter_hit" && event.amount >= BIG_SHOT)) return "head_burst";
-    const key = puncher?.action_key?.split(":");
-    const punch = event.detail.split(":").find((part) => ["jab", "straight", "hook", "uppercut"].includes(part)) ?? key?.[0];
-    if (punch === "hook" && selection % 2 === 1) {
-      // A hook drives the eye on the side it lands out of its socket.
-      const struck = key?.[1] === "left" ? "right" : key?.[1] === "right" ? "left" : Math.floor(selection / 2) % 2 === 0 ? "left" : "right";
-      return `eye_${struck}`;
-    }
-    return selection % 2 === 0 ? "decapitation" : "jaw_dislocation";
+    if (result?.finish_method === "flash_ko" || (event.kind === "counter_hit" && amount >= BIG_SHOT)) return "head_burst";
+    if ((punch === "uppercut" && amount >= HARD_SHOT) || (punch === "straight" && amount >= DECAPITATING_STRAIGHT)) return "decapitation";
+    if (punch === "hook" && amount >= HARD_SHOT) return `eye_${struck}`;
+    return "jaw_dislocation";
   }
-  const hand = puncher?.action_key?.split(":")[1];
-  const recipientSide = hand === "left" ? "right" : hand === "right" ? "left" : Math.floor(selection / 2) % 2 === 0 ? "left" : "right";
-  return selection % 2 === 0 ? `dismember_${recipientSide}` : `shoulder_${recipientSide}`;
+  if (punch === "hook" && amount >= BIG_SHOT) return `dismember_${struck}`;
+  if (punch === "hook" && amount >= HARD_SHOT) return `shoulder_${struck}`;
+  return `ribs_${struck}`;
 }
 import { buildRing, disposeRing, nearRopeOpacityFor, type BuiltRing } from "./ring";
 import { resizeHighDpi } from "./viewport";
@@ -781,9 +792,26 @@ export function poolRadius(count: number, severity: number): number {
   return Math.min(0.42, 0.05 + 0.045 * Math.sqrt(Math.max(0, count)) * Math.min(1.6, Math.max(0, severity)));
 }
 
+/** How deep (bind-space centimetres) and how wide a torso finisher caves the ribs in: twice the deepest dent a punch leaves. */
+const RIBS_DENT = 6;
+const RIBS_DENT_RADIUS = 11;
+/** The burst of blood from caved-in ribs is thrown at rib height, while the chest is still this high off the canvas. */
+const RIBS_BURST_CHEST_HEIGHT = 0.9;
+const RIBS_BURST_EVENT_OFFSET = 7;
+
+/**
+ * Ribs a torso finisher caved in on the fighter's `side`: a deep dent, black with bruising and running
+ * with blood. Set every frame over what the engine's trauma paints, which would let the dent spring back.
+ */
+export function caveInRibs(shading: InjuryShading, side: "left" | "right"): void {
+  const site = side === "left" ? "leftRibs" : "rightRibs";
+  shading.impact(site, [side === "left" ? -RIBS_DENT : RIBS_DENT, -RIBS_DENT * 0.15, -RIBS_DENT * 0.25], RIBS_DENT_RADIUS);
+  shading.set(site, { bruise: 1.2, swell: 0, blood: 1.4 });
+}
+
 /** Whether the knockout replay puts this injury back so it can happen again on screen. */
 export function replayReattaches(injury: ArcadeInjury): boolean {
-  return injury === "decapitation" || injury === "head_burst" || injury === "eye_left" || injury === "eye_right" || injury === "dismember_left" || injury === "dismember_right";
+  return injury !== "jaw_dislocation" && injury !== "shoulder_left" && injury !== "shoulder_right";
 }
 
 const eyeVertices = new WeakMap<THREE.BufferGeometry, readonly [number, number]>();
@@ -1691,6 +1719,19 @@ export class FightRenderer {
         this.effects.anchorHandStump(index, side, pose.position, pose.quaternion);
         applied = true;
       }
+    } else if (injury === "ribs_left" || injury === "ribs_right") {
+      // The ribs cave in under the punch (held every frame in draw, see caveInRibs) and blood bursts from the
+      // side, from rib height while he is still up; on the canvas the wound and the pool tell it.
+      const graph = this.graphs?.[index];
+      const fighter = this.buffer.latest()?.fighters[index];
+      if (graph !== undefined && fighter !== undefined) {
+        if (graph.boxer.rig.bones.upperChest.getWorldPosition(this.tmpPart).y > RIBS_BURST_CHEST_HEIGHT) {
+          this.placeContact(index, fighter);
+          const burst: CombatEvent = { ...event, event_id: event.event_id + RIBS_BURST_EVENT_OFFSET, kind: "counter_hit", detail: "hook:body", amount: Math.max(event.amount, BIG_SHOT), blood: 100 };
+          this.effects.addEvent(burst, this.contactPoint, false, spray);
+        }
+        applied = true;
+      }
     }
     if (!applied) return false;
     this.arcadeInjuries[index] = injury;
@@ -2226,6 +2267,9 @@ export class FightRenderer {
           const side = injury === "dismember_left" ? "left" : "right";
           const pose = this.handWorldPose(index, side);
           if (pose !== null) this.effects.anchorHandStump(index, side, pose.position, pose.quaternion);
+        } else if (injury === "ribs_left" || injury === "ribs_right") {
+          const body = this.graphs?.[index]?.boxer.bodyInjury;
+          if (body !== undefined) caveInRibs(body, injury === "ribs_left" ? "left" : "right");
         }
       }
       const ax = this.mapping.x(a.x);

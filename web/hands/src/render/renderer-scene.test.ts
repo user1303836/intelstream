@@ -4,6 +4,7 @@ import type { EngineSnapshot, FighterSnapshot } from "../types";
 import { CameraDirector, FighterCam } from "./camera";
 import { cameraOnPlatform } from "./crowd";
 import { RoundStatsTracker } from "./hud";
+import { BODY_SITES, BODY_SWELL_CORE, InjuryShading, applyBodyTrauma } from "./injury";
 import { FightRenderer } from "./renderer";
 import { worldMapping } from "./world";
 
@@ -143,6 +144,61 @@ describe("blood from a fighter held on the ropes", () => {
     const [, at] = addEvent.mock.calls[0]! as [unknown, THREE.Vector3];
     expect(at.x).toBeCloseTo(2.33, 6);
     expect(at.z).toBeCloseTo(0.05, 6);
+  });
+});
+
+describe("ribs caved in by the knockout punch", () => {
+  const punch = { event_id: 31, tick: 40, kind: "hit", actor_id: "one", target_id: "two", amount: 72, detail: "straight:body", blood: 20, direction: 1, action_id: null };
+  const apply = (chestHeight: number) => {
+    const chest = new THREE.Object3D();
+    chest.position.y = chestHeight;
+    chest.updateMatrixWorld(true);
+    const addEvent = vi.fn();
+    const onArcadeInjury = vi.fn();
+    const stub = Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, {
+      graphs: [{ currentRoot: { x: -0.6, z: 0 } }, { currentRoot: { x: 0.62, z: 0.1 }, boxer: { rig: { bones: { upperChest: chest } } } }],
+      buffer: { latest: () => snapshot() }, mapping: worldMapping(SIMULATION), contactPoint: new THREE.Vector3(), tmpPart: new THREE.Vector3(),
+      effects: { addEvent }, arcadeInjuries: [null, null], arcadeInjuryEvents: [null, null], observedInjuryDown: [false, false],
+      syncInjuryPresentation: vi.fn(), onArcadeInjury,
+    });
+    const applied = (FightRenderer.prototype as unknown as { applyArcadeInjury(this: unknown, index: number, injury: string, event: unknown, spray?: unknown): boolean }).applyArcadeInjury.call(stub, 1, "ribs_left", punch, { x: 1, z: 0 });
+    return { applied, addEvent, onArcadeInjury, stub };
+  };
+
+  it("burst blood from his side as the punch lands, and are kept for the rest of the bout", () => {
+    const { applied, addEvent, onArcadeInjury, stub } = apply(1.3);
+    expect(applied).toBe(true);
+    expect((stub.arcadeInjuries as unknown[])[1]).toBe("ribs_left");
+    expect(onArcadeInjury).toHaveBeenCalledWith("ribs_left", punch);
+    const [burst, at, reducedMotion, spray] = addEvent.mock.calls[0]! as [{ kind: string; detail: string; amount: number; blood: number; event_id: number }, THREE.Vector3, boolean, unknown];
+    // A body burst as big as any blow throws, from where he is drawn, along the punch.
+    expect(burst).toMatchObject({ kind: "counter_hit", detail: "hook:body", blood: 100 });
+    expect(burst.amount).toBeGreaterThanOrEqual(95);
+    expect(burst.event_id).not.toBe(punch.event_id);
+    expect([at.x, at.z]).toEqual([0.62, 0.1]);
+    expect(reducedMotion).toBe(false);
+    expect(spray).toEqual({ x: 1, z: 0 });
+  });
+
+  it("throw no blood from rib height over a man already lying on the canvas", () => {
+    const { applied, addEvent } = apply(0.25);
+    expect(applied).toBe(true);
+    expect(addEvent).not.toHaveBeenCalled();
+  });
+
+  it("stay caved in every frame over the engine's own bruising", () => {
+    const bodyInjury = new InjuryShading(null, BODY_SITES, { core: BODY_SWELL_CORE, wash: true });
+    const { run, graphs } = frame(fighting({}, { is_downed: true }, { phase: "knockdown" }), { arcadeInjuries: [null, "ribs_left"] });
+    (graphs[1]!.boxer as Record<string, unknown>).bodyInjury = bodyInjury;
+    // The graph's own update springs a punch's dent back and paints the engine's trauma.
+    graphs[1]!.update.mockImplementation(() => {
+      bodyInjury.update(1 / 60);
+      applyBodyTrauma(bodyInjury, fighter("two").trauma, "full");
+    });
+    run(30);
+    expect(bodyInjury.impactDepth).toBeGreaterThan(5);
+    expect(bodyInjury.level("leftRibs").blood).toBeCloseTo(1.4, 6);
+    expect(bodyInjury.level("rightRibs").blood).toBe(0);
   });
 });
 
