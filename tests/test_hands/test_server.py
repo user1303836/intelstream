@@ -435,17 +435,21 @@ async def test_authenticated_room_admission_is_not_part_of_first_frame_timeout(
     auth = FakeAuth()
     auth.tickets["valid"] = AuthenticatedPlayer("one", GUILD, "room", "One", None)
     rooms = DelayedRejectionRooms()
+    # Well above Windows' 15.6 ms timer resolution, which let a 10 ms timeout expire before the
+    # authentication frame was read.
+    auth_timeout = 0.25
     server, _auth, base = await start_server(
         repository,
         auth=auth,
-        auth_timeout=0.01,
+        auth_timeout=auth_timeout,
         rooms=rooms,
     )
     async with aiohttp.ClientSession() as client:
         socket = await client.ws_connect(f"{base}/api/hands/ws", headers={"Origin": ORIGIN})
         await socket.send_json({"version": 3, "type": "authenticate", "ticket": "valid"})
-        await rooms.entered.wait()
-        await asyncio.sleep(0.03)
+        async with asyncio.timeout(2):
+            await rooms.entered.wait()
+        await asyncio.sleep(2 * auth_timeout)
         rooms.release.set()
         error = json.loads((await socket.receive(timeout=1)).data)
         assert error["code"] == "room_full"
