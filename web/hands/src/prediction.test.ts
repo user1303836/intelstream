@@ -144,7 +144,7 @@ describe("local movement prediction", () => {
     const balanced = predictMovement({ ...fighter("one"), conditioning: 1000 }, held, 20);
     const swarmer = predictMovement({ ...fighter("one"), conditioning: 1000, style: "swarmer" }, held, 20);
     const slugger = predictMovement({ ...fighter("one"), conditioning: 1000, style: "slugger" }, held, 20);
-    expect(swarmer.dx / balanced.dx).toBeCloseTo(1.1, 2);
+    expect(swarmer.dx / balanced.dx).toBeCloseTo(styleTiming("swarmer").moveSpeedPercent / 100, 2);
     expect(slugger.dx / balanced.dx).toBeCloseTo(0.96, 2);
   });
 

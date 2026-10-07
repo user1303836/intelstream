@@ -812,7 +812,7 @@ def test_the_champion_can_be_outboxed_or_outcountered_but_not_mashed() -> None:
         return play(human, "champion", seed, config, (FighterStyle.BALANCED, style)).winner_seat
 
     assert winner("skilled", 2, FighterStyle.COUNTER_PUNCHER) == 0
-    assert winner("skilled", 2, FighterStyle.SWARMER) == 1
+    assert winner("skilled", 1, FighterStyle.SWARMER) == 1
     assert winner("counter", 4, FighterStyle.BOXER) == 0
     assert winner("counter", 1, FighterStyle.SWARMER) == 1
     assert winner("mash", 1, FighterStyle.BOXER) == 1

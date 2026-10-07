@@ -250,7 +250,7 @@
       "move_speed_percent": 96
     },
     "swarmer": {
-      "move_speed_percent": 110,
+      "move_speed_percent": 105,
       "startup_ticks": {
         "hook": -1,
         "uppercut": -1

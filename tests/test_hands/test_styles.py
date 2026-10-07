@@ -282,7 +282,7 @@ def test_a_swarmer_is_quicker_on_the_feet_and_a_slugger_slower() -> None:
         return engine.fighter("one").x - start
 
     balanced = travelled(BALANCED)
-    assert travelled(SWARMER) > balanced * 105 // 100
+    assert balanced * 104 // 100 <= travelled(SWARMER) <= balanced * 106 // 100
     assert travelled(SLUGGER) < balanced * 98 // 100
     assert travelled(BOXER) == balanced
 
