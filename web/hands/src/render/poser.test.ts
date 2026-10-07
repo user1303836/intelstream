@@ -1032,3 +1032,93 @@ describe("per-frame allocations", () => {
     expect(constructions(() => run(graph, fighter, opponent, 10, undefined, 100, 3.5))).toBe(0);
   });
 });
+
+describe("transition sweep", () => {
+  // Hook and uppercut join once a punch's first frame no longer jumps the glove (applyPunch, prediction fixes).
+  const PUNCHES = ["jab", "straight"] as const;
+  // 9 m/s: a straight's glove peaks near 7 m/s, while the snaps this guards against moved bones 0.5 m in a frame.
+  const MAX_STEP = 0.15;
+
+  it("moves every bone smoothly, keeps the skin above the canvas and bends the knees forward from idle through punches, falls, get-ups, the corner stool and a taunt", () => {
+    const { boxer, graph } = makeGraph();
+    const opponent = opponentFor("two");
+    const head = new THREE.Vector3(0, 1.5, mapping.z(-150));
+    const idle = facingOpponent({ ...baseFighter("one"), get_up_required: 66 });
+    const downed = { ...idle, is_downed: true };
+    const released = { ...idle, get_up_meter: 66, stunned_ticks: 20 };
+    const bones = Object.entries(boxer.rig.bones);
+    const previous = bones.map(() => new THREE.Vector3());
+    const position = new THREE.Vector3();
+    const vertex = new THREE.Vector3();
+    const meshes: THREE.SkinnedMesh[] = [];
+    boxer.root.traverse((object) => {
+      if (object instanceof THREE.SkinnedMesh) meshes.push(object);
+    });
+    let tick = 0;
+    let frames = 0;
+    let jump = { distance: 0, at: "" };
+    let lowest = { height: Infinity, at: "" };
+    let knee = { along: Infinity, at: "" };
+    const step = (label: string, fighter: FighterSnapshot | ((frame: number) => FighterSnapshot), count: number): void => {
+      for (let frame = 0; frame < count; frame += 1) {
+        tick += 0.5;
+        graph.update(typeof fighter === "function" ? fighter(frame) : fighter, opponent, 1 / 60, tick / 30, false, "full", tick, head);
+        boxer.root.updateMatrixWorld(true);
+        for (const [index, [name, joint]] of bones.entries()) {
+          const distance = frames === 0 ? 0 : worldPosition(joint, position).distanceTo(previous[index]!);
+          if (distance > jump.distance) jump = { distance, at: `${label} frame ${frame} ${name}` };
+          worldPosition(joint, previous[index]!);
+        }
+        if (frames % 3 === 0) {
+          for (const mesh of meshes) {
+            const count = mesh.geometry.getAttribute("position").count;
+            for (let index = 0; index < count; index += 2) {
+              const height = mesh.getVertexPosition(index, vertex).applyMatrix4(mesh.matrixWorld).y;
+              if (height < lowest.height) lowest = { height, at: `${label} frame ${frame} ${mesh.name}` };
+            }
+          }
+        }
+        for (const side of ["L", "R"] as const) {
+          const along = kneeBend(boxer, side);
+          if (along !== null && along < knee.along) knee = { along, at: `${label} frame ${frame} knee${side}` };
+        }
+        frames += 1;
+      }
+    };
+    const punch = (punchClass: (typeof PUNCHES)[number], hand: "left" | "right"): FighterSnapshot => {
+      const timing = punchTiming(punchClass, "head", "normal");
+      return {
+        ...idle,
+        action: punchClass, action_hand: hand, action_target: "head", action_power: "normal", action_id: `${punchClass}-${tick}`, action_key: `${punchClass}:${hand}:head:normal`,
+        action_start_tick: tick + 0.5, action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery,
+      };
+    };
+    const getUp = (label: string): void => {
+      step(`${label} get-up meter`, (frame) => ({ ...downed, get_up_meter: frame < 30 ? 22 : 44 }), 60);
+      step(`${label} get-up`, released, 45);
+    };
+
+    step("idle", idle, 30);
+    for (const punchClass of PUNCHES) step(punchClass, punch(punchClass, punchClass === "jab" ? "left" : "right"), 40);
+    graph.react("hit", "head", 1, "hook", "left", 140);
+    step("fall face down", downed, 70);
+    getUp("first");
+    step("stand", idle, 30);
+    graph.react("hit", "head", 1, "uppercut", "right", 120);
+    step("fall on the back", downed, 70);
+    step("get-up meter", (frame) => ({ ...downed, get_up_meter: frame < 30 ? 22 : 44 }), 60);
+    step("get-up", released, 8);
+    step("knocked down rising", downed, 70);
+    getUp("second");
+    step("fight on", idle, 30);
+    graph.setResting(true);
+    step("rest", idle, 150);
+    graph.setResting(false);
+    step("round starts", idle, 90);
+    step("taunt", (frame) => ({ ...idle, taunt_ticks: Math.max(0, 60 - frame) }), 70);
+
+    expect(jump.distance, jump.at).toBeLessThan(MAX_STEP);
+    expect(lowest.height, lowest.at).toBeGreaterThan(-0.02);
+    expect(knee.along, knee.at).toBeGreaterThan(0.25);
+  });
+});
