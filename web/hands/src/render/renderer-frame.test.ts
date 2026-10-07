@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { REST_CORNER_OFFSET, RING_CORNER_REACH } from "../manifest";
 import { fighter, snapshot } from "../test/fixtures";
-import type { EngineSnapshot, FighterSnapshot, FinalMessage } from "../types";
+import { PROTOCOL_VERSION, type EngineSnapshot, type FighterSnapshot, type FinalMessage } from "../types";
 import { CameraDirector, ceremonyShot, cornerPoint, FIGHTER_CAM_FOV_SCALE, FighterCam } from "./camera";
 import { RoundStatsTracker } from "./hud";
 import { lookFor } from "./looks";
@@ -332,7 +332,7 @@ describe("a rendered frame", () => {
 
   it("shows the winner and the referee lifting his arm after a knockout, not the count's shot of the body", () => {
     const scale = 3.05 / 500;
-    const final: FinalMessage = { version: 3, type: "final", match_id: "m", winner_id: "one", method: "ko", round: 2, scorecards: [], ratings: {} };
+    const final: FinalMessage = { version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: "one", method: "ko", round: 2, scorecards: [], ratings: {} };
     const result = { match_id: "m", activity_instance_id: "i", guild_id: "g", player_one_id: "one", player_two_id: "two", winner_id: "one", finish_method: "ko" as const, round_number: 2, tick: 400, scorecards: [], player_one_knockdowns: 0, player_two_knockdowns: 1, player_one_damage: 1, player_two_damage: 1 };
     const lying = [new THREE.Vector3(1.8, 0, 0), new THREE.Vector3(1.4, 0, 0), new THREE.Vector3(1.05, 0, 0), new THREE.Vector3(0.7, 0, 0.12), new THREE.Vector3(0.7, 0, -0.12)];
     const screens = [{ width: 1280, height: 720, canvas: { clientWidth: 1280, clientHeight: 720 } }, { width: 390, height: 844, canvas: { clientWidth: 390, clientHeight: 844 } }];
@@ -441,6 +441,53 @@ describe("around the fight", () => {
     method("fireContacts").call(stub, 50);
     // It flies the way the punch travelled, from fighter one toward fighter two.
     expect(knockOutMouthpiece).toHaveBeenCalledWith(1, { x: 1, z: 0 }, 9, false);
+  });
+
+  it("waves a stoppage off and lets the winner celebrate only once the punch that ended it is on screen", () => {
+    // A third knockdown on tick 30 ends the bout; with reduced motion there is no replay to wait for.
+    const result = { match_id: "m", activity_instance_id: "i", guild_id: "g", player_one_id: "one", player_two_id: "two", winner_id: "one", finish_method: "tko" as const, round_number: 1, tick: 30, scorecards: [], player_one_knockdowns: 0, player_two_knockdowns: 3, player_one_damage: 0, player_two_damage: 900 };
+    const ended = { ...snapshot(30), phase: "complete" as const, fighters: [fighter("one", -60), { ...fighter("two", 60), is_downed: true, knockdowns: 3 }] as const, result };
+    const finish = (frameSeconds: number) => {
+      const waveOff = vi.fn();
+      const celebrate = vi.fn();
+      const stub = prototypeOf({
+        frameSeconds, buffer: { latest: () => ended }, commentary: { finish: vi.fn() }, endCeremony: vi.fn(), players: {}, history: [ended], simulation: SIMULATION,
+        graphs: [{ celebrate }, { celebrate: vi.fn() }], settings: () => ({ reducedMotion: true, blood: "full" }), arcadeInjuries: [null, null], pendingContacts: [],
+        lastKnockdown: null, referee: { waveOff }, headCacheValid: [false, false], stoppageWinner: -1,
+      });
+      method("setFinal").call(stub, { version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: "one", method: "tko", round: 1, scorecards: [], ratings: {} });
+      return { stub, waveOff, celebrate };
+    };
+    const { stub, waveOff, celebrate } = finish(5);
+    // The final arrives while the screen is still two ticks short of the punch.
+    method("presentFinishWhenShown").call(stub, 28);
+    expect(waveOff).not.toHaveBeenCalled();
+    expect(celebrate).not.toHaveBeenCalled();
+    // The frame that shows the punch (contacts are presented first, in the same frame) calls the finish.
+    method("presentFinishWhenShown").call(stub, 30);
+    expect(waveOff).toHaveBeenCalledOnce();
+    expect(celebrate).toHaveBeenCalledOnce();
+    expect(stub.stoppageWinner).toBe(0);
+    // Should the clock never get there, it waits half a second at most.
+    const stuck = finish(5);
+    (stuck.stub as { frameSeconds: number }).frameSeconds = 5.6;
+    method("presentFinishWhenShown").call(stuck.stub, 25);
+    expect(stuck.waveOff).toHaveBeenCalledOnce();
+  });
+
+  it("shows a result once, however many times it arrives", () => {
+    const standing = { ...snapshot(400), phase: "complete" as const };
+    const stub = prototypeOf({
+      frameSeconds: 5, buffer: { latest: () => standing }, commentary: { finish: vi.fn() }, endCeremony: vi.fn(), players: {}, history: [], simulation: SIMULATION, final: null,
+    });
+    const decision = { version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: "one", method: "decision", round: 3, scorecards: [], ratings: {} } as const;
+    method("setFinal").call(stub, decision);
+    const ceremony = stub.ceremony;
+    (stub as { frameSeconds: number }).frameSeconds = 8;
+    method("setFinal").call(stub, { ...decision });
+    expect(stub.ceremony).toBe(ceremony);
+    expect(stub.ovationUntil).toBe(5 + 16);
+    expect((stub.commentary as { finish: ReturnType<typeof vi.fn> }).finish).toHaveBeenCalledOnce();
   });
 
   it("has the winner celebrate when the bout is over", () => {

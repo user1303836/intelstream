@@ -1285,6 +1285,8 @@ export class FightRenderer {
 
   /** A stoppage's result panel waits for the slow-motion fall; decisions show at once. */
   setFinal(final: FinalMessage | null): void {
+    // The result already being shown, again, would start its walk to the marks or its replay over.
+    if (final !== null && final.match_id === this.final?.match_id) return;
     this.final = final;
     this.stoppageWinner = -1;
     this.stoppageRaiseAt = Number.POSITIVE_INFINITY;
