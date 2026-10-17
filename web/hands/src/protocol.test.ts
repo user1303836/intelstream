@@ -131,6 +131,12 @@ describe(`strict protocol v${PROTOCOL_VERSION}`, () => {
     const exhausted = { ...base.fighters[0], maximum_stamina: 330, stamina: 331 };
     expect(() => decodeServerFrame(JSON.stringify({ version: PROTOCOL_VERSION, type: "snapshot", payload: { ...base, fighters: [exhausted, base.fighters[1]] } }))).toThrow(ProtocolError);
   });
+  it("decodes a broken guard, and nothing but true or false for it", () => {
+    const base = snapshot();
+    const broken = { ...base.fighters[0], guard: 0, guard_broken: true };
+    expect(decodeServerFrame(JSON.stringify({ version: PROTOCOL_VERSION, type: "snapshot", payload: { ...base, fighters: [broken, base.fighters[1]] } }))).toMatchObject({ payload: { fighters: [{ guard_broken: true }, { guard_broken: false }] } });
+    expect(() => decodeServerFrame(JSON.stringify({ version: PROTOCOL_VERSION, type: "snapshot", payload: { ...base, fighters: [{ ...broken, guard_broken: 1 }, base.fighters[1]] } }))).toThrow(ProtocolError);
+  });
   it("rejects out-of-authority event and fighter bounds", () => {
     const base = snapshot();
     const badEvent = { version: PROTOCOL_VERSION, type: "snapshot", payload: { ...base, events: [{ event_id: 1, tick: 1, kind: "x".repeat(33), actor_id: null, target_id: null, amount: 10_001, detail: "", blood: 101, direction: 2 }] } };

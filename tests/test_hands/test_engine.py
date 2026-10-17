@@ -33,6 +33,7 @@ from intelstream.hands.rules import (
     CORNER_TREATMENTS,
     COUNT_TICK_INTERVAL,
     CUT_OPENS_EYE,
+    EVASION_STAMINA,
     FIGHTER_RADIUS,
     FLINCH_MINIMUM_DAMAGE,
     FOUL_SEPARATION,
@@ -3470,6 +3471,27 @@ def test_a_press_in_the_last_moments_of_a_stun_fires_as_it_wears_off() -> None:
     assert first_punch_after(ACTION_BUFFER_TICKS + 6) is None
 
 
+def test_a_winded_fighter_cannot_slip_out_of_a_punchs_recovery() -> None:
+    def punch_over_at(stamina: int) -> tuple[int, int]:
+        engine = make_engine(round_ticks=2000)
+        one = engine.fighter("one")
+        one.x, engine.fighter("two").x = -300, 300
+        engine.step({"one": command(1, action=punch(PunchClass.HOOK, power=Power.POWER))})
+        attack = one.attack
+        assert attack is not None
+        engine.step({"one": command(2, action=MovementAction(ActionKind.SLIP_LEFT))})
+        while one.attack is attack:
+            one.stamina = stamina
+            engine.step()
+        return engine.tick - attack.start_tick, attack.total_ticks
+
+    hook = PUNCH_RULES[(PunchClass.HOOK, Target.HEAD, Power.POWER)]
+    assert punch_over_at(EVASION_STAMINA + 40)[0] == hook.startup + hook.active
+    # One who cannot pay for the slip sees the punch out.
+    over, total = punch_over_at(EVASION_STAMINA - 1)
+    assert over == total
+
+
 def test_a_cut_opens_once_the_eye_has_swollen_past_the_mark() -> None:
     def cut_after_a_straight(eye: int) -> int:
         engine = make_engine(round_ticks=2000)
@@ -3480,3 +3502,34 @@ def test_a_cut_opens_once_the_eye_has_swollen_past_the_mark() -> None:
 
     assert cut_after_a_straight(0) == 0
     assert cut_after_a_straight(CUT_OPENS_EYE + 1) > 0
+
+
+@pytest.mark.parametrize(("rounds", "rest_ticks"), [(3, 10), (3, 0), (1, 10)])
+def test_a_stoppage_ends_the_bout_on_the_spot_with_no_bell_card_or_rest(
+    rounds: int, rest_ticks: int
+) -> None:
+    def finished(engine: BoxingEngine) -> None:
+        assert engine.result is not None
+        assert engine.phase is MatchPhase.COMPLETE
+        final = [event.kind for event in engine.events if event.tick == engine.tick]
+        assert final[-1] == "result"
+        assert "bell" not in final
+        assert all(not cards[0] for cards in engine._round_cards.values())
+        assert engine.snapshot().phase is MatchPhase.COMPLETE
+
+    tko = make_engine(rounds=rounds, rest_ticks=rest_ticks, round_ticks=2000)
+    tko.fighter("two").knockdowns = 2
+    tko.fighter("two").poise = 1
+    tko.step({"one": command(1, action=punch(PunchClass.UPPERCUT, power=Power.POWER))})
+    advance_until(tko, {"result"}, limit=30)
+    assert tko.result is not None and tko.result.finish_method is FinishMethod.TKO
+    finished(tko)
+
+    dq = make_engine(rounds=rounds, rest_ticks=rest_ticks, round_ticks=2000)
+    for sequence, foul in enumerate((Foul.LOW_BLOW, Foul.HEADBUTT, Foul.LOW_BLOW), start=1):
+        dq.fighter("one").x, dq.fighter("two").x = -45, 45
+        dq.step({"one": command(sequence, action=FoulAction(foul))})
+        while dq.result is None and dq.phase is MatchPhase.FOUL_RECOVERY:
+            dq.step()
+    assert dq.result is not None and dq.result.finish_method is FinishMethod.DISQUALIFICATION
+    finished(dq)

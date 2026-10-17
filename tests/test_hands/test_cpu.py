@@ -248,6 +248,30 @@ def test_a_body_hook_it_cannot_duck_is_met_with_a_perfect_low_block() -> None:
     assert "perfect_block" in events
 
 
+def test_a_broken_guard_stays_down_even_for_a_body_hook_it_would_block() -> None:
+    """A broken guard stops nothing until it has come back, and it only comes back lowered, so
+    the computer that would meet a body hook with a low block lets this one land."""
+    engine = engine_at(100)
+    brain = always(CpuBrain("cpu", "human", CpuLevel.CHAMPION, 4))
+    brain._movement = lambda *_args: (0, 0)  # type: ignore[method-assign]
+    brain._attack = lambda *_args: None  # type: ignore[method-assign]
+    brain._hold_guard = False
+    brain._guard_window_until = 1_000_000
+    cpu = engine.fighter("cpu")
+    cpu.guard, cpu.guard_broken = 0, True
+    throw(engine, PunchAction(Hand.RIGHT, PunchClass.HOOK, Target.BODY, Power.POWER))
+    events: list[str] = []
+    for _ in range(20):
+        command = brain.decide(engine)
+        assert command is not None
+        assert command.defense is DefensivePose.NONE
+        engine.submit_input("cpu", command)
+        events.extend(event.kind for event in engine.step().events)
+        if "hit" in events:
+            break
+    assert "hit" in events and cpu.guard_broken
+
+
 def body_hook_outcome(
     style: FighterStyle, *, puncher_conditioning: int = 1000, perfect_roll: bool = False
 ) -> str:

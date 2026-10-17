@@ -41,10 +41,12 @@ from intelstream.hands.rules import (
     poise_ceiling,
 )
 from intelstream.hands.types import (
+    ActionKind,
     CombatEvent,
     DefensivePose,
     Hand,
     MatchPhase,
+    MovementAction,
     Power,
     PunchAction,
     PunchClass,
@@ -477,3 +479,61 @@ def test_getting_up_leaves_enough_stamina_to_stand_and_is_harder_for_a_battered_
         engine.step()
     assert downed.stamina >= min(downed.maximum_stamina, GET_UP_STAMINA)
     assert downed.stamina > BODY_COLLAPSE_STAMINA
+
+
+def test_a_guard_held_into_a_clinch_is_left_as_it_was_through_the_hold() -> None:
+    """Tied up, a fighter cannot change his pose, so the guard he had up neither wears down nor
+    breaks in the hold, and nothing from it carries out past the break."""
+    engine = make_engine(round_ticks=2000)
+    one, two = engine.fighter("one"), engine.fighter("two")
+    two.guard = GUARD_BLOCK_MINIMUM + 70
+    engine.step(
+        {
+            "one": command(1, action=MovementAction(ActionKind.CLINCH)),
+            "two": command(1, defense=DefensivePose.GUARD_HIGH),
+        }
+    )
+    while not one.clinch_ticks:
+        engine.step()
+    held = two.guard
+    engine.step({"two": command(2)})
+    while one.clinch_ticks:
+        snapshot = engine.step()
+        assert "guard_break" not in kinds(list(snapshot.events))
+        if one.clinch_ticks:
+            assert two.guard == held
+    assert not two.guard_broken and two.stunned_ticks == 0
+
+
+def test_a_parry_wins_the_exchange_even_when_it_wears_the_guard_thin() -> None:
+    """A perfect block of a power hook by a guard too thin to take its wear staggers the puncher
+    and leaves the parrier free to answer; held on past the counter window, the guard gives out."""
+    engine = make_engine(round_ticks=2000)
+    one, two = engine.fighter("one"), engine.fighter("two")
+    two.guard = GUARD_BLOCK_MINIMUM + 20
+    engine.step(
+        {"one": command(1, action=punch(PunchClass.HOOK, hand=Hand.LEFT, power=Power.POWER))}
+    )
+    attack = one.attack
+    assert attack is not None
+    contact = attack.start_tick + attack.rule.startup
+    while engine.tick < contact - 2:
+        engine.step()
+    engine.step({"two": command(1, defense=DefensivePose.GUARD_HIGH)})
+    events: list[CombatEvent] = []
+    while engine.tick < contact:
+        events.extend(engine.step().events)
+    assert "perfect_block" in kinds(events) and "parry" in kinds(events)
+    assert "guard_break" not in kinds(events)
+    assert two.guard < GUARD_BLOCK_MINIMUM
+    assert two.stunned_ticks == 0 and not two.guard_broken
+    assert one.stunned_ticks > 0
+    window = two.counter_ticks
+    assert window > 0
+    broke = None
+    for _ in range(window + 20):
+        snapshot = engine.step()
+        if "guard_break" in kinds(list(snapshot.events)):
+            broke = engine.tick - contact
+            break
+    assert broke == window

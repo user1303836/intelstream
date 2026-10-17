@@ -766,6 +766,8 @@ class BoxingEngine:
             self._recover_resources(fighter)
             fighter.performance.control += self._ring_control(fighter, opponent)
             self._advance_bleeding(fighter)
+            if self.result is not None:
+                return
         self._advance_referee_bleeding()
 
         if self.phase_ticks_remaining <= 0:
@@ -1143,7 +1145,8 @@ class BoxingEngine:
                 )
             defender.guard = max(0, defender.guard - guard_damage)
             defender.performance.blocked_hits += 1
-            if defender.guard < GUARD_BLOCK_MINIMUM:
+            # A parry wins the exchange: it wears the guard down but never breaks it.
+            if defender.guard < GUARD_BLOCK_MINIMUM and not perfect:
                 self._break_guard(defender, attacker, self._action_id(attacker, attack))
         else:
             attacker.performance.clean_hits += 1
@@ -1582,6 +1585,9 @@ class BoxingEngine:
         self.phase_ticks_remaining = REFEREE_DOWN_TICKS
 
     def _advance_referee_down(self) -> None:
+        # Nobody boxes while it plays again: a press made meanwhile is dropped, not kept for the resume.
+        for fighter in self._fighters.values():
+            fighter.pending_actions.clear()
         self.phase_ticks_remaining -= 1
         if self.phase_ticks_remaining <= 0:
             self.phase = MatchPhase.FIGHT
@@ -1619,8 +1625,12 @@ class BoxingEngine:
             referee.x += dx
             referee.y += dy
             referee.velocity_x, referee.velocity_y = dx, dy
+        stopped = False
         for fighter in (one, two):
-            self._keep_referee_clear(fighter)
+            stopped = self._keep_referee_clear(fighter) or stopped
+        # Stopped short by a referee who cannot give way, a fighter is not left inside the other man.
+        if stopped and not (one.clinch_ticks or two.clinch_ticks):
+            self._separate_fighters(one, two)
         referee.x, referee.y = _ring_point(referee.x, referee.y)[:2]
         focus_x, focus_y = self._referee_focus(one, two)
         look_x, look_y = focus_x - referee.x, focus_y - referee.y
@@ -1661,14 +1671,14 @@ class BoxingEngine:
             mid_y + _symmetric_divide(across_y * standoff, across),
         )
 
-    def _keep_referee_clear(self, fighter: FighterState) -> None:
+    def _keep_referee_clear(self, fighter: FighterState) -> bool:
         """A fighter walking into the referee shoves him aside; pinned on the ropes, he stops the
-        fighter instead."""
+        fighter instead, and says so."""
         referee = self._referee
         minimum = FIGHTER_RADIUS + REFEREE_RADIUS
         dx, dy = referee.x - fighter.x, referee.y - fighter.y
         if dx * dx + dy * dy >= minimum * minimum:
-            return
+            return False
         distance = isqrt(dx * dx + dy * dy)
         if distance == 0:
             dx, dy, distance = 0, 1, 1
@@ -1679,12 +1689,13 @@ class BoxingEngine:
         )[:2]
         dx, dy = referee.x - fighter.x, referee.y - fighter.y
         if dx * dx + dy * dy >= minimum * minimum:
-            return
+            return False
         distance = max(1, isqrt(dx * dx + dy * dy))
         push = minimum - distance
         fighter.x -= _away_divide(dx * push, distance)
         fighter.y -= _away_divide(dy * push, distance)
         self._clamp_to_ring(fighter)
+        return True
 
     def _advance_clinch(self, one: FighterState, two: FighterState) -> None:
         one.attack = None
@@ -1976,9 +1987,17 @@ class BoxingEngine:
         if guarding:
             regen = regen * GUARD_STAMINA_REGEN_PERCENT // 100
         fighter.stamina = min(fighter.maximum_stamina, fighter.stamina + regen)
-        if guarding:
+        if fighter.clinch_ticks > 0:
+            # Tied up in a hold, where his pose is not his to change, his guard is left as it was.
+            pass
+        elif guarding:
             fighter.guard = max(0, fighter.guard - GUARD_HELD_DRAIN)
-            if fighter.guard < GUARD_BLOCK_MINIMUM and not fighter.guard_broken:
+            # A parry earns its counter window: the guard it wore thin is not broken before that runs out.
+            if (
+                fighter.guard < GUARD_BLOCK_MINIMUM
+                and not fighter.guard_broken
+                and not fighter.counter_ticks
+            ):
                 self._break_guard(fighter, self._other(fighter.player_id), None)
         else:
             fighter.guard = min(MAX_GUARD, fighter.guard + max(1, fighter.fatigue // 25))

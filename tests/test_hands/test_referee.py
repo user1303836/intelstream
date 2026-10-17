@@ -10,10 +10,12 @@ from intelstream.hands.engine import REFEREE_ID, BoxingEngine
 from intelstream.hands.protocol import encode_snapshot
 from intelstream.hands.rules import (
     FIGHTER_RADIUS,
+    MINIMUM_SEPARATION,
     REFEREE_COUNT_STANDOFF,
     REFEREE_DOWN_TICKS,
     REFEREE_HEALTH,
     REFEREE_RADIUS,
+    REFEREE_STAGGER_BASE_TICKS,
     REFEREE_STANDOFF,
     TICKS_PER_SECOND,
 )
@@ -184,11 +186,19 @@ def test_enough_punches_put_the_referee_down_for_good_and_stop_the_bout_for_the_
     settle(engine, 30)
     assert (referee.x, referee.y) == stopped
     assert not engine.snapshot().referee.alive
+    assert engine.phase is MatchPhase.FIGHT
     hits = len([event for event in engine.events if event.kind == "referee_hit"])
     put_referee_in_front_of_one(engine)
     engine.step({"one": command(500, action=punch(PunchClass.STRAIGHT, hand=Hand.RIGHT))})
-    settle(engine, 12)
+    assert advance_until(engine, {"hit", "counter_hit", "block", "perfect_block", "whiff"}) in {
+        "hit",
+        "counter_hit",
+        "block",
+        "perfect_block",
+        "whiff",
+    }
     assert len([event for event in engine.events if event.kind == "referee_hit"]) == hits
+    assert [event.kind for event in engine.events].count("referee_down") == 1
 
 
 def test_a_bleeding_referee_loses_health_every_second_and_can_bleed_out() -> None:
@@ -259,3 +269,94 @@ def test_a_body_shot_on_the_referee_marks_the_body_and_not_the_face() -> None:
     trauma = engine._referee.trauma
     assert trauma.body > 0
     assert (trauma.head, trauma.left_cut, trauma.right_cut) == (0, 0, 0)
+
+
+def test_a_punch_out_of_the_other_mans_reach_still_finds_the_referee_in_the_way() -> None:
+    engine = make_engine(round_ticks=2000)
+    engine.fighter("one").x, engine.fighter("two").x = -200, 250
+    put_referee_in_front_of_one(engine)
+    engine.step({"one": command(1, action=punch(PunchClass.STRAIGHT, hand=Hand.RIGHT))})
+    assert advance_until(engine, {"referee_hit", "hit", "whiff"}) == "referee_hit"
+
+
+def test_a_punch_staggers_the_referee_where_he_stands() -> None:
+    engine = make_engine(round_ticks=2000)
+    put_referee_in_front_of_one(engine)
+    referee = engine._referee
+    # Only just long enough reeling from something else to be in the way when it lands.
+    referee.stunned_ticks = 7
+    engine.step({"one": command(1, action=punch(PunchClass.STRAIGHT, hand=Hand.RIGHT))})
+    advance_until(engine, {"referee_hit"})
+    assert referee.stunned_ticks >= REFEREE_STAGGER_BASE_TICKS
+
+
+def test_his_death_stops_both_fighters_where_they_stand() -> None:
+    engine = make_engine(round_ticks=2000)
+    one = engine.fighter("one")
+    one.x, engine.fighter("two").x = -300, 300
+    for sequence in range(1, 12):
+        engine.step({"one": command(sequence, move_x=1000)})
+    assert one.velocity_x > 0
+    engine._referee_goes_down("two", None)
+    assert engine.phase is MatchPhase.REFEREE_DOWN
+    for fighter in (one, engine.fighter("two")):
+        assert (fighter.velocity_x, fighter.velocity_y) == (0, 0)
+        assert (fighter.velocity_fixed_x, fighter.velocity_fixed_y) == (0, 0)
+
+
+def test_dying_while_a_man_is_counted_lets_the_count_go_on() -> None:
+    engine = make_engine(round_ticks=2000)
+    engine.fighter("two").poise = 1
+    engine.step({"one": command(1, action=punch(PunchClass.HOOK, power=Power.POWER))})
+    advance_until(engine, {"knockdown"}, limit=30)
+    remaining = engine.phase_ticks_remaining
+    engine._referee_goes_down("one", None)
+    assert not engine._referee.alive
+    assert engine.phase is MatchPhase.KNOCKDOWN
+    assert engine.phase_ticks_remaining == remaining
+    assert [event.kind for event in engine.events].count("referee_down") == 1
+
+
+def test_presses_made_while_his_death_plays_again_are_dropped() -> None:
+    engine = make_engine(round_ticks=2000)
+    put_referee_in_front_of_one(engine)
+    engine._referee.health = 30
+    engine.step(
+        {"one": command(1, action=punch(PunchClass.HOOK, hand=Hand.RIGHT, power=Power.POWER))}
+    )
+    advance_until(engine, {"referee_down"}, limit=30)
+    while engine.phase_ticks_remaining > 3:
+        engine.step()
+    engine.step({"two": command(1, action=punch(PunchClass.JAB, hand=Hand.LEFT))})
+    while engine.phase is MatchPhase.REFEREE_DOWN:
+        engine.step()
+    starts = []
+    for _ in range(12):
+        starts.extend(event for event in engine.step().events if event.kind == "punch_start")
+    assert starts == []
+
+
+def test_a_pinned_referee_does_not_squeeze_one_fighter_into_the_other() -> None:
+    engine = make_engine(round_ticks=2000)
+    one, two = engine.fighter("one"), engine.fighter("two")
+    referee = engine._referee
+    referee.x, referee.y, referee.stunned_ticks = 462, 0, 300
+    one.x, one.y = 380, 0
+    two.x, two.y = 300, 0
+    for sequence in range(1, 41):
+        engine.step({"one": command(sequence, move_x=1000), "two": command(sequence, move_x=1000)})
+        assert hypot(two.x - one.x, two.y - one.y) >= MINIMUM_SEPARATION
+        assert (
+            hypot(referee.x - one.x, referee.y - one.y)
+            >= (FIGHTER_RADIUS + REFEREE_RADIUS) * 3 // 4
+        )
+
+
+def test_he_keeps_to_the_middle_of_the_ring_between_rounds() -> None:
+    engine = make_engine(round_ticks=30, rest_ticks=300)
+    referee = engine._referee
+    while engine.phase is not MatchPhase.REST:
+        engine.step()
+    for _ in range(150):
+        engine.step()
+    assert hypot(referee.x, referee.y) <= 2
