@@ -151,4 +151,26 @@ describe("touch controls", () => {
     expect(touch.frame()).toMatchObject({ moveX: 0, moveY: 0, defense: "none" });
     touch.destroy();
   });
+
+  it("says when the stick moves or a guard is held or let go, so the server hears of it before the next periodic frame", () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const touch = new TouchInput(container, new SharedActionIntent(4));
+    const changed = vi.fn();
+    touch.onHeldChange(changed);
+    const zone = container.querySelector<HTMLElement>("[data-stick]")!;
+    zone.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 400, right: 400, bottom: 400, x: 0, y: 0, toJSON: () => undefined });
+    pointer("pointerdown", zone, { pointerId: 5, clientX: 100, clientY: 200 });
+    pointer("pointermove", zone, { pointerId: 5, clientX: 156, clientY: 200 });
+    pointer("pointerup", zone, { pointerId: 5 });
+    expect(changed).toHaveBeenCalledTimes(3);
+    const guard = container.querySelector<HTMLButtonElement>("[data-guard='guard_high']")!;
+    const power = container.querySelector<HTMLButtonElement>("[data-mod='power']")!;
+    pointer("pointerdown", guard, { pointerId: 6 });
+    pointer("pointerdown", power, { pointerId: 7 });
+    pointer("pointerup", power, { pointerId: 7 });
+    pointer("pointerup", guard, { pointerId: 6 });
+    expect(changed).toHaveBeenCalledTimes(5);
+    touch.destroy();
+  });
 });

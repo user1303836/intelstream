@@ -133,9 +133,75 @@ describe("controls that turn with the camera", () => {
     window.dispatchEvent(key("keydown", "KeyW"));
     expect(input.held()).toMatchObject({ moveX: 1000, moveY: 0 });
     expect(input.frame()).toMatchObject({ moveX: 1000, moveY: 0 });
+    window.dispatchEvent(key("keyup", "KeyW"));
     forward.mockReturnValue(null as unknown as { x: number; z: number });
+    window.dispatchEvent(key("keydown", "KeyW"));
     expect(input.held()).toMatchObject({ moveX: 0, moveY: 1000 });
     window.dispatchEvent(key("keyup", "KeyW"));
+    input.destroy();
+  });
+
+  it("keeps the way a held direction walks across a change of camera until the keys change, and turns with the player's own camera meanwhile", () => {
+    const input = new InputController();
+    let forward: { x: number; z: number } | null = { x: 1, z: 0 };
+    input.setViewForward(() => forward);
+    window.dispatchEvent(key("keydown", "KeyW"));
+    expect(input.held()).toMatchObject({ moveX: 1000, moveY: 0 });
+    forward = { x: 0, z: 1 };
+    expect(input.held()).toMatchObject({ moveX: 0, moveY: -1000 });
+    // K, or a shot that takes the frame: W goes on walking the way it did.
+    forward = null;
+    expect(input.held()).toMatchObject({ moveX: 0, moveY: -1000 });
+    window.dispatchEvent(key("keydown", "KeyD"));
+    expect(input.held()).toMatchObject({ moveX: 707, moveY: 707 });
+    // Pressed under the broadcast, the move keeps its meaning when the player's own camera comes back.
+    forward = { x: 1, z: 0 };
+    expect(input.held()).toMatchObject({ moveX: 707, moveY: 707 });
+    window.dispatchEvent(key("keyup", "KeyD"));
+    expect(input.held()).toMatchObject({ moveX: 1000, moveY: 0 });
+    window.dispatchEvent(key("keyup", "KeyW"));
+    input.destroy();
+  });
+});
+
+describe("telling the server of held input as it changes", () => {
+  it("speaks up for a new direction, a stop or a guard, not for a key's repeat or a punch", () => {
+    Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [] });
+    const input = new InputController();
+    const changed = vi.fn();
+    input.onHeldChange(changed);
+    window.dispatchEvent(key("keydown", "KeyD"));
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyD", repeat: true, cancelable: true }));
+    window.dispatchEvent(key("keydown", "KeyF"));
+    expect(changed).toHaveBeenCalledTimes(1);
+    window.dispatchEvent(key("keydown", "KeyW"));
+    window.dispatchEvent(key("keydown", "KeyQ"));
+    window.dispatchEvent(key("keyup", "KeyW"));
+    window.dispatchEvent(key("keyup", "KeyD"));
+    expect(changed).toHaveBeenCalledTimes(5);
+    input.destroy();
+  });
+
+  it("speaks up for a stick that turns or presses well past where it was, not for every twitch of the thumb", () => {
+    const axes = [0, 0, 0, 0];
+    let held: number[] = [];
+    Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [{ ...pad(held), axes: [...axes] }] });
+    const input = new InputController();
+    const changed = vi.fn();
+    input.onHeldChange(changed);
+    const at = (x: number, y: number): void => { axes[0] = x; axes[1] = y; poll(input); };
+    at(0.9, 0);
+    expect(changed).toHaveBeenCalledTimes(1);
+    at(0.92, -0.05);
+    at(0.9, 0.04);
+    expect(changed).toHaveBeenCalledTimes(1);
+    at(0.6, -0.6);
+    expect(changed).toHaveBeenCalledTimes(2);
+    held = [4];
+    poll(input);
+    expect(changed).toHaveBeenCalledTimes(3);
+    at(0, 0);
+    expect(changed).toHaveBeenCalledTimes(4);
     input.destroy();
   });
 });

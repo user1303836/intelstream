@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => {
     renderers: [] as Array<{ onAnnouncement?: ((lines: readonly string[]) => void) | null; onCrowdCue?: ((cue: "chant") => void) | null; onRocked?: ((level: number, tick: number) => void) | null }>,
     input: null as (() => { moveX: number; moveY: number }) | null,
     viewForward: null as { x: number; z: number } | null,
+    heldSends: 0,
   };
 });
 vi.mock("./discord", () => ({
@@ -43,6 +44,7 @@ vi.mock("./network", () => ({
     start(): void {}
     setActive(active: boolean): void { mocks.networkSetActive(active); }
     notifyAction(): void {}
+    notifyHeld(): void { mocks.heldSends += 1; }
     sendCornerChoice(kind: string): boolean { mocks.cornerPicks.push(kind); return true; }
     chooseStyle(style: string, ready: boolean): boolean { mocks.styleChoices.push(`${style}:${ready}`); return true; }
     requestCpu(level: string): boolean { mocks.cpuRequests.push(level); return mocks.cpuAccepted; }
@@ -150,9 +152,14 @@ describe("browser lifecycle and accessible overlays", () => {
     send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 0, next_sequence: 0, reconnect_ticket: "rotated" });
     send({ version: PROTOCOL_VERSION, type: "ready", players: [...players] });
     send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(10) });
+    const sends = mocks.heldSends;
     window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyW", bubbles: true, cancelable: true }));
+    expect(mocks.heldSends).toBe(sends + 1);
     expect(mocks.input!()).toMatchObject({ moveX: 0, moveY: 1000 });
+    window.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyW", bubbles: true, cancelable: true }));
+    expect(mocks.heldSends).toBe(sends + 2);
     mocks.viewForward = { x: 1, z: 0 };
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyW", bubbles: true, cancelable: true }));
     expect(mocks.input!()).toMatchObject({ moveX: 1000, moveY: 0 });
     window.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyW", bubbles: true, cancelable: true }));
     mocks.viewForward = null;

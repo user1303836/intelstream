@@ -285,6 +285,7 @@ export class HandsApp {
         this.renderer?.predictAction?.(action);
         this.network?.notifyAction();
       });
+      this.input.onHeldChange(() => this.network?.notifyHeld());
       const ticket = session.takeTicket();
       if (ticket === null) throw new Error("ticket_unavailable");
       const network = new NetworkController(ticket, () => this.input.frame(), {
