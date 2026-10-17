@@ -2086,7 +2086,9 @@ export class FightRenderer {
     // The server turns a punch or an evasion down outside the fight phase and while the fighter cannot act.
     const fighter = latest.fighters[index]!;
     if (latest.phase !== "fight" || !canStartPunch(fighter)) return;
-    const leadTicks = ((this.inputLatencyMs ?? 60) / 1000) * this.simulation.tick_rate + this.buffer.interpolationDelayTicks;
+    // A snapshot answering the press is a round trip away; the render clock trails the press by that and its own delay.
+    const answerTicks = ((this.inputLatencyMs ?? 60) / 1000) * this.simulation.tick_rate;
+    const leadTicks = answerTicks + this.buffer.interpolationDelayTicks;
     if (isEvasion(action.kind)) {
       // Behind a punch the server holds it, so it is shown at once only when the fighter is free.
       const busy = this.graphs?.[index]?.ownPunchActive === true || attackTicksRemaining(fighter, latest.tick) > 0 || fighter.queued_actions > 0;
@@ -2097,7 +2099,7 @@ export class FightRenderer {
     }
     // A fighter who cannot pay for it in full still throws it, as a slow arm punch (see predictedPunchTiming).
     if (action.kind !== "punch") return;
-    this.graphs?.[index]?.predict(action, performance.now() / 1000, this.simulation.tick_rate, leadTicks, predictedPunchTiming(fighter, action, latest.tick + 1));
+    this.graphs?.[index]?.predict(action, performance.now() / 1000, this.simulation.tick_rate, leadTicks, predictedPunchTiming(fighter, action, latest.tick + 1), answerTicks);
   }
 
   /**
