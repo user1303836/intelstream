@@ -600,6 +600,8 @@ export class BoxingGraph {
   private shownOpponent: FighterSnapshot | null = null;
   /** Own punches already played or cut short here; the server's copy of them is not played again. */
   private readonly retiredOwnIds: string[] = [];
+  /** The viewer's own presses whose glove reached the target here on the press's time, newest last. */
+  private readonly pressesLanded: string[] = [];
   private anticipatedId: string | null = null;
   private hitstop = 0;
   private hitstopScale = 1;
@@ -1092,6 +1094,11 @@ export class BoxingGraph {
   /** The instance id of the viewer's own press while it plays on the press's time, else null. */
   get ownPressId(): string | null {
     return this.punchActive && this.ownPress ? this.ownActionId : null;
+  }
+
+  /** Whether the viewer's own press with this instance id reached the target on screen on the press's time. */
+  pressLanded(actionId: string | null): boolean {
+    return actionId !== null && this.pressesLanded.includes(actionId);
   }
 
   /** The class of the punch being played, and whether it is a power punch. */
@@ -2111,6 +2118,10 @@ export class BoxingGraph {
       const repay = this.hitstop > 0 ? 0 : Math.min(this.hitstopLag, simDt * 30 * HITSTOP_REPAY_RATE);
       this.hitstopLag -= repay;
       this.punchAgeTicks += simDt * 30 * (cut ? OWN_PUNCH_CUT_RATE : this.ownPunchRate()) + repay;
+      if (this.ownPress && this.ownActionId !== null && !this.ownCut && this.punchAgeTicks >= this.punchTiming.startup && this.pressesLanded.at(-1) !== this.ownActionId) {
+        this.pressesLanded.push(this.ownActionId);
+        if (this.pressesLanded.length > 6) this.pressesLanded.shift();
+      }
       if (this.punchAgeTicks >= this.punchTotalTicks) {
         this.retirePunch();
         ended = true;

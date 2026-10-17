@@ -313,6 +313,28 @@ describe("a contact's power", () => {
   });
 });
 
+describe("the player's own punch's contact", () => {
+  const contactTick = (options: { viewer?: string; landed?: boolean; knockdown?: boolean } = {}): number => {
+    const graphs = fakeGraphs().map((graph, seat) => Object.assign(graph, { pressLanded: (id: string | null) => seat === 0 && id === "c1" && options.landed !== false })) as unknown as [FakeGraph, FakeGraph];
+    const stub: Record<string, unknown> = { ...pushStub(graphs), viewerId: options.viewer ?? "one" };
+    const base = snapshot(30);
+    const thrown = { ...base.fighters[0], action: "jab" as const, action_id: "c1", action_power: "normal" as const, action_key: "jab:left:head:normal", action_contact_tick: 30 };
+    const events = [combat("hit", { event_id: 4, tick: 30, amount: 40, detail: "jab:head", action_id: "c1" }), ...(options.knockdown === true ? [combat("knockdown", { event_id: 5, tick: 30, amount: 1 })] : [])];
+    methods.push.call(stub, { ...base, fighters: [thrown, base.fighters[1]], events });
+    return (stub.pendingContacts as { contactTick: number }[])[0]!.contactTick;
+  };
+
+  it("is shown as soon as it arrives, the glove having reached the opponent on screen already", () => {
+    expect(contactTick()).toBe(Number.NEGATIVE_INFINITY);
+  });
+
+  it("keeps to the delayed clock for the opponent's view, a press that never reached the target here, and a knockdown", () => {
+    expect(contactTick({ viewer: "two" })).toBe(30);
+    expect(contactTick({ landed: false })).toBe(30);
+    expect(contactTick({ knockdown: true })).toBe(30);
+  });
+});
+
 describe("the player's own slip, weave or pull behind his punch", () => {
   const predictAction = (FightRenderer.prototype as unknown as { predictAction(this: unknown, action: SemanticAction): void }).predictAction;
   const stub = (graph: object, latest: EngineSnapshot = snapshot(40)) => ({

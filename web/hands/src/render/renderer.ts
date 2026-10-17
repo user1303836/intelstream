@@ -294,6 +294,8 @@ const CROWD_EXCITEMENT: Readonly<Record<string, number>> = { hit: 0.18, counter_
 const CONTACT_KINDS = new Set(["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown", "parry", "body_collapse", "eye_shut"]);
 /** Events that change how a fighter moves or what the broadcast says, but carry no impact of their own. */
 const UNIMPACTFUL_KINDS = new Set(["parry", "body_collapse", "eye_shut"]);
+/** The contacts of the player's own punch shown as soon as they arrive (see push). */
+const OWN_EARLY_CONTACTS = new Set(["hit", "counter_hit", "block", "perfect_block"]);
 const BOX_CALLOUT_SECONDS = 1.2;
 /** The camera's kick from each landed power punch, in metres, and the most it builds to. */
 const POWER_SHAKE = 0.05;
@@ -2184,6 +2186,11 @@ export class FightRenderer {
       this.movement.observe(event, this.viewerId);
     }
     this.commentary.observe(snapshot, accepted, this.players, this.simulation.tick_rate, this.frameSeconds);
+    // The player's own punch, thrown on the press's time, has already reached the opponent on screen when the server's word
+    // of its contact arrives: that contact is shown at once, not when the delayed clock reaches it. Knockdowns and the end
+    // of the bout keep to the clock, with the replay and the finish that hang on them.
+    const viewerSeat = snapshot.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
+    const settled = snapshot.result === null && !accepted.some((event) => event.kind === "knockdown");
     for (const { event, presentationEvent, presentImpact, reactAmount } of contactPresentationPlan(accepted, snapshot)) {
       const targetIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.target_id);
       const actorIndex = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.actor_id);
@@ -2200,7 +2207,9 @@ export class FightRenderer {
           presentationEvent,
           presentImpact,
           reactAmount,
-          contactTick: puncher?.action_contact_tick ?? event.tick,
+          contactTick: settled && puncherIndex === viewerSeat && OWN_EARLY_CONTACTS.has(event.kind) && this.graphs?.[puncherIndex]?.pressLanded(event.action_id) === true
+            ? Number.NEGATIVE_INFINITY
+            : puncher?.action_contact_tick ?? event.tick,
           recipientIndex,
           puncherIndex,
           injury: arcadeInjuryFor(event, snapshot.fighters[recipientIndex], snapshot.result, puncher ?? undefined),

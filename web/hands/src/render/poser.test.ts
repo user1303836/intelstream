@@ -874,6 +874,26 @@ describe("own punch prediction", () => {
     expect(state(graph).ownActionId).toBeNull();
   });
 
+  it("knows which of the player's own presses reached the target on screen, and not one pulled back or played on the server's clock", () => {
+    const { graph } = makeGraph();
+    const idle = facingOpponent(baseFighter("one"));
+    const timing = punchTiming("jab", "head", "normal");
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    graph.predict(jab, 0, 30, 6);
+    let tick = run(graph, idle, opponentFor("two"), 2 * timing.startup - 2, undefined, 100);
+    expect(graph.pressLanded("own-1")).toBe(false);
+    tick = run(graph, idle, opponentFor("two"), 2, undefined, tick);
+    expect(graph.pressLanded("own-1")).toBe(true);
+    // Pulled back before contact: the server turned it down.
+    graph.predict({ ...jab, id: "own-2", class: "uppercut", power: "power" }, tick / 30 + 1, 30, 6);
+    graph.acknowledge({ ...idle, stunned_ticks: 10 }, true);
+    tick = run(graph, idle, opponentFor("two"), 40, undefined, tick);
+    expect(graph.pressLanded("own-2")).toBe(false);
+    run(graph, serverPunch(idle, "theirs-1", "jab", tick), opponentFor("two"), 20, undefined, tick);
+    expect(graph.pressLanded("theirs-1")).toBe(false);
+    expect(graph.pressLanded(null)).toBe(false);
+  });
+
   it("forgets the punch when the fighter is reset for the replay", () => {
     const { graph } = makeGraph();
     const idle = facingOpponent(baseFighter("one"));
