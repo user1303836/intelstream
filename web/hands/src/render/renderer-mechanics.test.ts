@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { EventDeduplicator, SnapshotBuffer } from "../interpolation";
 import { EvasionPrediction, MovementPrediction } from "../prediction";
 import { fighter, snapshot } from "../test/fixtures";
-import { PROTOCOL_VERSION, type CombatEvent, type EngineSnapshot } from "../types";
+import { PROTOCOL_VERSION, type CombatEvent, type EngineSnapshot, type SemanticAction } from "../types";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
 import { RoundStatsTracker } from "./hud";
 import { bodySideStruck, contactPresentationPlan, cutmanWork, FightRenderer, isDelayedBodyKnockdown } from "./renderer";
@@ -295,6 +295,87 @@ describe("the knockout replay's fall", () => {
     expect(Math.hypot(start.x - root.x, start.z - root.z)).toBeLessThan(0.35);
     expect(Math.hypot(rest.x - root.x, rest.z - root.z)).toBeLessThan(1.1);
   }, 30_000);
+});
+
+describe("a contact's power", () => {
+  it("is taken from the punch the snapshot shows the puncher throwing, matched by its instance", () => {
+    const pending = (power: "power" | "normal", actionId: string): boolean => {
+      const stub = pushStub(fakeGraphs());
+      const base = snapshot(30);
+      const thrown = { ...base.fighters[0], action: "straight" as const, action_id: "p1", action_power: power, action_key: `straight:right:head:${power}`, action_contact_tick: 30 };
+      methods.push.call(stub, { ...base, fighters: [thrown, base.fighters[1]], events: [combat("hit", { event_id: 4, tick: 30, amount: 90, detail: "straight:head", action_id: actionId })] });
+      return (stub.pendingContacts as { power: boolean }[])[0]!.power;
+    };
+    expect(pending("power", "p1")).toBe(true);
+    expect(pending("normal", "p1")).toBe(false);
+    // A contact belonging to some other punch than the one the puncher now throws is not taken for a power punch.
+    expect(pending("power", "p0")).toBe(false);
+  });
+});
+
+describe("the player's own punch's contact", () => {
+  const contactTick = (options: { viewer?: string; landed?: boolean; knockdown?: boolean } = {}): number => {
+    const graphs = fakeGraphs().map((graph, seat) => Object.assign(graph, { pressLanded: (id: string | null) => seat === 0 && id === "c1" && options.landed !== false })) as unknown as [FakeGraph, FakeGraph];
+    const stub: Record<string, unknown> = { ...pushStub(graphs), viewerId: options.viewer ?? "one" };
+    const base = snapshot(30);
+    const thrown = { ...base.fighters[0], action: "jab" as const, action_id: "c1", action_power: "normal" as const, action_key: "jab:left:head:normal", action_contact_tick: 30 };
+    const events = [combat("hit", { event_id: 4, tick: 30, amount: 40, detail: "jab:head", action_id: "c1" }), ...(options.knockdown === true ? [combat("knockdown", { event_id: 5, tick: 30, amount: 1 })] : [])];
+    methods.push.call(stub, { ...base, fighters: [thrown, base.fighters[1]], events });
+    return (stub.pendingContacts as { contactTick: number }[])[0]!.contactTick;
+  };
+
+  it("is shown as soon as it arrives, the glove having reached the opponent on screen already", () => {
+    expect(contactTick()).toBe(Number.NEGATIVE_INFINITY);
+  });
+
+  it("keeps to the delayed clock for the opponent's view, a press that never reached the target here, and a knockdown", () => {
+    expect(contactTick({ viewer: "two" })).toBe(30);
+    expect(contactTick({ landed: false })).toBe(30);
+    expect(contactTick({ knockdown: true })).toBe(30);
+  });
+});
+
+describe("the player's own slip, weave or pull behind his punch", () => {
+  const predictAction = (FightRenderer.prototype as unknown as { predictAction(this: unknown, action: SemanticAction): void }).predictAction;
+  const stub = (graph: object, latest: EngineSnapshot = snapshot(40)) => ({
+    buffer: { latest: () => latest, interpolationDelayTicks: 2 }, viewerId: "one", replay: null, inputLatencyMs: 100,
+    simulation: { tick_rate: 30 }, manualClock: true, lastManualTime: 1000, graphs: [graph, {}], evasion: new EvasionPrediction(),
+  });
+  const ownPunch = (ticksToRecovery: number) => ({ ownPunchActive: true, ownTicksToRecovery: ticksToRecovery, cutOwnRecovery: vi.fn(), predict: vi.fn() });
+
+  it("shows at once behind a punch that has landed or missed, cutting the punch's recovery short for it", () => {
+    const graph = ownPunch(0);
+    const renderer = stub(graph);
+    predictAction.call(renderer, { kind: "slip_left", id: "c3" });
+    expect(renderer.evasion.pose(1000)).toBe("slip_left");
+    expect(graph.cutOwnRecovery).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts once the punch has landed or missed when pressed before, as the server holds it until then", () => {
+    const renderer = stub(ownPunch(3));
+    predictAction.call(renderer, { kind: "weave", id: "c4" });
+    expect(renderer.evasion.pose(1000 + 2.9 * (1000 / 30))).toBeNull();
+    expect(renderer.evasion.pose(1000 + 3 * (1000 / 30))).toBe("weave");
+    // A punch pressed meanwhile takes its place in the server's buffer.
+    predictAction.call(renderer, { kind: "punch", id: "c5", hand: "left", class: "jab", target: "head", power: "normal" });
+    expect(renderer.evasion.pose(1000 + 3 * (1000 / 30))).toBeNull();
+  });
+
+  it("leaves it to the server behind a punch it never predicted or anything else the server holds", () => {
+    const free = { ownPunchActive: false, predict: vi.fn() };
+    const base = snapshot(40);
+    const punching: EngineSnapshot = { ...base, fighters: [{ ...base.fighters[0], action: "hook", action_start_tick: 38, action_startup_ticks: 5, action_active_ticks: 2, action_recovery_ticks: 7 }, base.fighters[1]] };
+    const behindPunch = stub(free, punching);
+    predictAction.call(behindPunch, { kind: "pull", id: "c6" });
+    expect(behindPunch.evasion.pose(1000)).toBeNull();
+    const queued: EngineSnapshot = { ...base, fighters: [{ ...base.fighters[0], queued_actions: 1 }, base.fighters[1]] };
+    const behindPress = stub(free, queued);
+    predictAction.call(behindPress, { kind: "pull", id: "c7" });
+    expect(behindPress.evasion.pose(1000)).toBeNull();
+    const open = stub(free);
+    predictAction.call(open, { kind: "pull", id: "c8" });
+    expect(open.evasion.pose(1000)).toBe("pull");
+  });
 });
 
 describe("the player's own fighter folding over a body shot", () => {

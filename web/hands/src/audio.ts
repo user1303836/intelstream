@@ -149,15 +149,13 @@ export class AudioFeedback {
     if (this.master !== null) this.master.gain.value = Math.min(0.8, Math.max(0, this.settings().volume));
   }
 
-  event(event: CombatEvent): void {
+  /** An event as the screen shows it; `power` when a power punch made it (its start, or its contact). */
+  event(event: CombatEvent, power = false): void {
     if (!this.unlocked) return;
     switch (event.kind) {
-      case "punch_start": {
-        const punchClass = (event.detail.split(":")[1] ?? "jab") as PunchClass;
-        const spec = WHOOSH[punchClass] ?? WHOOSH.jab;
-        this.noise({ duration: spec.duration, frequency: spec.from, sweepTo: spec.to, gain: 0.1, type: "bandpass", q: 1.2 });
+      case "punch_start":
+        this.whoosh((event.detail.split(":")[1] ?? "jab") as PunchClass, power);
         break;
-      }
       case "whiff":
         this.noise({ duration: 0.11, frequency: 850, sweepTo: 320, gain: 0.07, type: "bandpass", q: 1.1 });
         break;
@@ -166,8 +164,8 @@ export class AudioFeedback {
         const body = event.detail.endsWith("body");
         const weight = Math.min(1, event.amount / 260);
         const loud = Math.min(0.36, 0.14 + weight * 0.2) * (event.kind === "counter_hit" ? 1.25 : 1);
-        this.impact(loud, body, weight);
-        if (event.kind === "counter_hit" || weight > 0.7) this.crowdSwell(0.35 + weight * 0.4);
+        this.impact(loud, body, weight, power);
+        if (event.kind === "counter_hit" || weight > 0.7 || power) this.crowdSwell(0.35 + weight * 0.4);
         if ((event.kind === "counter_hit" && event.amount >= 50) || event.amount >= 90) this.ooh(Math.min(1, event.amount / 160));
         break;
       }
@@ -188,6 +186,8 @@ export class AudioFeedback {
         this.noise({ duration: 0.045, frequency: 1200, sweepTo: 600, gain: 0.14, type: "bandpass", q: 1.1 });
         this.noise({ duration: 0.09, frequency: 260, gain: 0.08 });
         this.tone({ from: 160, to: 110, duration: 0.06, type: "triangle", gain: 0.05 });
+        // A power punch the guard took still lands with weight: a heavy thump under the leather.
+        if (power) this.tone({ from: 96, to: 44, duration: 0.2, type: "sine", gain: 0.2 });
         break;
       case "perfect_block":
         this.noise({ duration: 0.05, frequency: 1800, sweepTo: 900, gain: 0.16, type: "bandpass", q: 1.6 });
@@ -427,12 +427,35 @@ export class AudioFeedback {
     return buffers;
   }
 
-  /** Layered punch impact: sub thump, glove thud, and a short leather snap scaled by weight. */
-  private impact(loud: number, body: boolean, weight: number): void {
-    this.tone({ from: body ? 86 : 118, to: body ? 34 : 44, duration: 0.14 + weight * 0.06, type: "sine", gain: loud });
-    this.noise({ duration: 0.05 + weight * 0.03, frequency: body ? 240 : 420, sweepTo: body ? 120 : 200, gain: loud * 0.8, type: "bandpass", q: 0.8 });
-    this.noise({ duration: 0.028, frequency: body ? 1500 : 2600, sweepTo: body ? 700 : 1400, gain: loud * (body ? 0.35 : 0.6), type: "bandpass", q: 1.3 });
-    this.noise({ duration: 0.18 + weight * 0.1, frequency: body ? 150 : 210, gain: loud * 0.45 });
+  /**
+   * A punch cutting the air. A power punch goes lower, longer and louder, with a heavy rush and a low drop under it, so
+   * it is heard coming apart from any other.
+   */
+  whoosh(punchClass: PunchClass, power: boolean): void {
+    if (!this.unlocked) return;
+    const spec = WHOOSH[punchClass] ?? WHOOSH.jab;
+    if (!power) {
+      this.noise({ duration: spec.duration, frequency: spec.from, sweepTo: spec.to, gain: 0.1, type: "bandpass", q: 1.2 });
+      return;
+    }
+    this.noise({ duration: spec.duration * 1.8, frequency: spec.from * 0.55, sweepTo: spec.to * 0.7, gain: 0.18, type: "bandpass", q: 0.9 });
+    this.noise({ duration: spec.duration * 1.5, frequency: 150, sweepTo: 340, gain: 0.13, delay: 0.02 });
+    this.tone({ from: 92, to: 46, duration: 0.24, type: "sine", gain: 0.12 });
+  }
+
+  /**
+   * Layered punch impact: sub thump, glove thud, and a short leather snap scaled by weight. A power punch lands harder
+   * still: louder, with a deep boom after it and a sharper crack on top.
+   */
+  private impact(loud: number, body: boolean, weight: number, power = false): void {
+    const level = loud * (power ? 1.35 : 1);
+    this.tone({ from: body ? 86 : 118, to: body ? 34 : 44, duration: 0.14 + weight * 0.06, type: "sine", gain: level });
+    this.noise({ duration: 0.05 + weight * 0.03, frequency: body ? 240 : 420, sweepTo: body ? 120 : 200, gain: level * 0.8, type: "bandpass", q: 0.8 });
+    this.noise({ duration: 0.028, frequency: body ? 1500 : 2600, sweepTo: body ? 700 : 1400, gain: level * (body ? 0.35 : 0.6), type: "bandpass", q: 1.3 });
+    this.noise({ duration: 0.18 + weight * 0.1, frequency: body ? 150 : 210, gain: level * 0.45 });
+    if (!power) return;
+    this.tone({ from: body ? 62 : 76, to: 27, duration: 0.42, type: "sine", gain: 0.3, delay: 0.015 });
+    this.noise({ duration: 0.04, frequency: 3400, sweepTo: 1800, gain: 0.26, type: "bandpass", q: 1.6 });
   }
 
   /** Full crowd eruption with a slow decay, used for knockdowns and finishes. */

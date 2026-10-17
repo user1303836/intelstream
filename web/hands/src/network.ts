@@ -40,6 +40,12 @@ const MIN_EDGE_SEND_GAP_MS = 8;
 const MAX_SENDS_PER_SECOND = 50;
 /** Edge sends have a budget of their own on top of the 30 a second flush, together under MAX_SENDS_PER_SECOND. */
 const MAX_EDGE_SENDS_PER_SECOND = 20;
+/**
+ * Changes of held movement or guard go out at once too, on a smaller budget of their own, and only while the last
+ * second's sends leave the presses this much of MAX_SENDS_PER_SECOND.
+ */
+const MAX_HELD_SENDS_PER_SECOND = 10;
+const SENDS_KEPT_FOR_PRESSES = 10;
 /** Bytes still waiting in the socket above which the connection is stalled; frames queued behind it would all land at once. */
 const BACKLOG_BYTES = 2048;
 
@@ -90,6 +96,8 @@ export class NetworkController {
   private lastInputSentAt = -Infinity;
   private readonly sendTimes: number[] = [];
   private readonly edgeSendTimes: number[] = [];
+  private readonly heldSendTimes: number[] = [];
+  private heldTimer: number | null = null;
 
   constructor(
     ticket: string,
@@ -140,6 +148,21 @@ export class NetworkController {
     // Past the budget the press stays queued and leaves with the next periodic flush.
     if (this.withinLastSecond(this.edgeSendTimes) >= MAX_EDGE_SENDS_PER_SECOND) return;
     if (this.flushInput()) this.edgeSendTimes.push(this.lastInputSentAt);
+  }
+
+  /** Sends a change of held movement or guard at once instead of waiting for the periodic flush. */
+  notifyHeld(): void {
+    // A change right behind another edge send waits out the same gap, then goes, rather than waiting for the flush.
+    const wait = MIN_EDGE_SEND_GAP_MS - (this.now() - Math.max(this.edgeSendTimes.at(-1) ?? -Infinity, this.heldSendTimes.at(-1) ?? -Infinity));
+    if (wait > 0) {
+      this.heldTimer ??= window.setTimeout(() => {
+        this.heldTimer = null;
+        this.notifyHeld();
+      }, wait);
+      return;
+    }
+    if (this.withinLastSecond(this.heldSendTimes) >= MAX_HELD_SENDS_PER_SECOND || this.sendsInLastSecond() >= MAX_SENDS_PER_SECOND - SENDS_KEPT_FOR_PRESSES) return;
+    if (this.flushInput()) this.heldSendTimes.push(this.lastInputSentAt);
   }
 
   private sendsInLastSecond(): number {
@@ -487,6 +510,10 @@ export class NetworkController {
     if (this.inputTimer !== null) {
       clearInterval(this.inputTimer);
       this.inputTimer = null;
+    }
+    if (this.heldTimer !== null) {
+      clearTimeout(this.heldTimer);
+      this.heldTimer = null;
     }
     if (this.listenersBound) {
       window.removeEventListener("blur", this.onInputLoss);

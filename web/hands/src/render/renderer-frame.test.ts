@@ -92,6 +92,7 @@ function frame(state: EngineSnapshot, overrides: Record<string, unknown> = {}) {
     downedPoolAccumulators: [0, 0],
     downedPoolCounts: [0, 0],
     effects: { drip: vi.fn(), stopDrip: vi.fn(), pool: vi.fn(), update: vi.fn(), shakeAmount: 0, setViewDistance: vi.fn(), gushing: () => false },
+    powerShake: 0,
     updateIdleFighters: vi.fn(),
     updateTrails: vi.fn(),
     updateReferee: vi.fn(),
@@ -188,6 +189,25 @@ describe("a rendered frame", () => {
       expect(quiet).toBeLessThan(0.002);
       expect(contact).toBeLessThan(0.002);
     }
+  });
+
+  it("tells of the player's own punch the frame it starts on screen, once, whatever the other fighter throws", () => {
+    const heard: [string, boolean, string][] = [];
+    const harness = frame(fighting(), { onOwnPunch: (punchClass: string, power: boolean, id: string) => heard.push([punchClass, power, id]), soundedPress: null });
+    const [own, other] = harness.graphs as unknown as Record<string, unknown>[];
+    Object.assign(own!, { ownPressId: null, punchKind: { punchClass: "straight", power: true } });
+    Object.assign(other!, { ownPressId: "theirs", punchKind: { punchClass: "jab", power: false } });
+    harness.run(2);
+    expect(heard).toEqual([]);
+    own!.ownPressId = "c4";
+    harness.run(3);
+    expect(heard).toEqual([["straight", true, "c4"]]);
+    own!.ownPressId = null;
+    harness.run(1);
+    own!.ownPressId = "c5";
+    own!.punchKind = { punchClass: "jab", power: false };
+    harness.run(1);
+    expect(heard).toEqual([["straight", true, "c4"], ["jab", false, "c5"]]);
   });
 
   it("dresses each fighter in the look of the player in that seat", () => {

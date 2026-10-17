@@ -734,6 +734,89 @@ describe("edge-triggered action sends", () => {
   });
 });
 
+describe("held input sent as it changes", () => {
+  const start = (getInput: () => { moveX: number; moveY: number; defense: "none" | "guard_high"; actions: { kind: "punch"; hand: "left"; class: "jab"; target: "head"; power: "normal"; id: string }[] }, clock: { now: number }) => {
+    const socket = new FakeSocket();
+    const controller = new NetworkController("ticket", getInput, callbacks(), () => socket, () => clock.now);
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message(ready);
+    controller.setActive(true);
+    return { socket, controller };
+  };
+
+  it("sends a new direction or guard at once, without holding up a press that follows it, and one right behind another send once the gap is up", () => {
+    vi.useFakeTimers();
+    const clock = { now: 1000 };
+    let held = { moveX: 0, moveY: 0, defense: "none" as "none" | "guard_high" };
+    const queued: string[] = [];
+    const { socket, controller } = start(() => ({ ...held, actions: queued.splice(0, 4).map((id) => ({ kind: "punch" as const, hand: "left" as const, class: "jab" as const, target: "head" as const, power: "normal" as const, id })) }), clock);
+    const sent = (): { move: { x: number }; defense: string; actions: { id: string }[] }[] => socket.sent.slice(1).map((frame) => JSON.parse(frame));
+    held = { ...held, moveX: 1000 };
+    controller.notifyHeld();
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]!.move.x).toBe(1000);
+    clock.now += 2;
+    queued.push("p1");
+    controller.notifyAction();
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]!.actions.map((action) => action.id)).toEqual(["p1"]);
+    clock.now += 2;
+    held = { ...held, defense: "guard_high" };
+    controller.notifyHeld();
+    controller.notifyHeld();
+    expect(sent()).toHaveLength(2);
+    clock.now += 6;
+    vi.advanceTimersByTime(6);
+    expect(sent()).toHaveLength(3);
+    expect(sent()[2]!.defense).toBe("guard_high");
+    controller.dispose();
+    vi.useRealTimers();
+  });
+
+  it("keeps to a budget of its own that leaves the presses their room under the server's limit", () => {
+    vi.useFakeTimers();
+    const clock = { now: 1000 };
+    const queued: string[] = [];
+    const { socket, controller } = start(() => ({ moveX: clock.now % 2 === 0 ? 1000 : -1000, moveY: 0, defense: "none" as const, actions: queued.splice(0, 4).map((id) => ({ kind: "punch" as const, hand: "left" as const, class: "jab" as const, target: "head" as const, power: "normal" as const, id })) }), clock);
+    const times: number[] = [];
+    const carried = (id: string): boolean => socket.sent.some((frame) => (JSON.parse(frame).actions ?? []).some((action: { id?: string }) => action.id === id));
+    for (let millisecond = 0; millisecond < 3000; millisecond += 1) {
+      clock.now += 1;
+      const before = socket.sent.length;
+      vi.advanceTimersByTime(1);
+      controller.notifyHeld();
+      for (let index = before; index < socket.sent.length; index += 1) times.push(clock.now);
+      if (millisecond % 250 === 0) {
+        queued.push(`p${millisecond}`);
+        const sending = socket.sent.length;
+        controller.notifyAction();
+        expect(socket.sent.length, `press at ${millisecond} ms`).toBe(sending + 1);
+        expect(carried(`p${millisecond}`)).toBe(true);
+      }
+    }
+    for (const at of times) expect(times.filter((time) => time >= at && time < at + 1000).length).toBeLessThanOrEqual(50);
+    expect(times.filter((time) => time >= 3000 && time < 4000).length).toBeLessThanOrEqual(30 + 10 + 4);
+    controller.dispose();
+    vi.useRealTimers();
+  });
+
+  it("sends nothing after it is disposed, even a change that was waiting out the gap", () => {
+    vi.useFakeTimers();
+    const clock = { now: 1000 };
+    const { socket, controller } = start(() => ({ moveX: 1000, moveY: 0, defense: "none" as const, actions: [] }), clock);
+    controller.notifyHeld();
+    const count = socket.sent.length;
+    clock.now += 2;
+    controller.notifyHeld();
+    controller.dispose();
+    vi.advanceTimersByTime(50);
+    expect(socket.sent.length).toBe(count);
+    vi.useRealTimers();
+  });
+});
+
 describe("corner instructions between rounds", () => {
   it("sends the instruction on its own only during the rest, on the input sequence", () => {
     vi.useFakeTimers();

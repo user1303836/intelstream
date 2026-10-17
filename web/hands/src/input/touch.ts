@@ -51,6 +51,7 @@ export class TouchInput {
   private knockdown = false;
   private enabled = true;
   private readonly heldPointers = new Map<number, string>();
+  private heldListener: (() => void) | null = null;
 
   constructor(container: HTMLElement, private readonly sharedActions: SharedActionIntent) {
     this.root = document.createElement("div");
@@ -103,6 +104,7 @@ export class TouchInput {
       this.moveY = 0;
       this.stickKnob.style.transform = "translate(-50%, -50%)";
       this.stickBase.classList.remove("active");
+      this.heldListener?.();
     };
     zone.addEventListener("pointerup", release);
     zone.addEventListener("pointercancel", release);
@@ -159,7 +161,20 @@ export class TouchInput {
     const keys = [...this.heldPointers.values()];
     this.body = keys.includes("body");
     this.power = keys.includes("power");
-    this.guard = keys.findLast((key): key is HeldDefense => key === "guard_high" || key === "guard_low") ?? "none";
+    const guard = keys.findLast((key): key is HeldDefense => key === "guard_high" || key === "guard_low") ?? "none";
+    const changed = guard !== this.guard;
+    this.guard = guard;
+    if (changed) this.heldListener?.();
+  }
+
+  /** The POWER pad is held: the next punch is a power punch. */
+  get powerHeld(): boolean {
+    return this.enabled && this.power;
+  }
+
+  /** Called when the stick moves or a guard is held or let go. */
+  onHeldChange(listener: (() => void) | null): void {
+    this.heldListener = listener;
   }
 
   private updateStick(clientX: number, clientY: number): void {
@@ -178,6 +193,7 @@ export class TouchInput {
     const unitY = length > 0 ? dy / Math.max(length, 1e-6) : 0;
     this.moveX = Math.round(unitX * scaled * 1000) || 0;
     this.moveY = Math.round(-unitY * scaled * 1000) || 0;
+    this.heldListener?.();
   }
 
   setKnockdown(value: boolean): void {

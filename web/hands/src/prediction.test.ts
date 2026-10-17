@@ -1,8 +1,8 @@
-import { cancelsRecovery, MAX_SPEED, punchStaminaCost, punchTiming, recoveryCancelAge, styledStaminaCost, styleTiming } from "./manifest";
+import { cancelsRecovery, MAX_SPEED, punchStaminaCost, punchTiming, RECOVERY_SPEED_PERCENT, recoveryCancelAge, styledStaminaCost, styleTiming } from "./manifest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { SnapshotBuffer } from "./interpolation";
-import { attackTicksRemaining, constrainPrediction, EVASION_STAMINA, EVASION_TICKS, EvasionPrediction, fatigueFactor, MINIMUM_SEPARATION, MovementPrediction, movementLocked, parryRootedUntil, predictedDefense, predictMovement, predictedPunchTiming, type FootworkHolds, type HeldInput } from "./prediction";
+import { attackTicksRemaining, constrainPrediction, EVASION_STAMINA, EVASION_TICKS, EvasionPrediction, evasionStartedAt, fatigueFactor, MINIMUM_SEPARATION, MovementPrediction, movementLocked, parryRootedUntil, predictedDefense, predictMovement, predictedPunchTiming, type FootworkHolds, type HeldInput } from "./prediction";
 import { decodeServerFrame, ProtocolError } from "./protocol";
 import { fighter, snapshot } from "./test/fixtures";
 import movementTraces from "./test/movement-traces.json";
@@ -86,6 +86,38 @@ describe("local movement prediction", () => {
     expect(movementLocked({ ...still, queued_actions: 1 }, 130)).toBe(true);
   });
 
+  it("walks the player's fighter out of his own punch's recovery at its share from the input history, a share the server's copy of the punch does not take again", () => {
+    const still = { ...fighter("one"), conditioning: 1000 };
+    const held = { moveX: 1000, moveY: 0, defense: "none" as const };
+    const recovering = { ...still, action: "hook" as const, action_start_tick: 90, action_startup_ticks: 7, action_active_ticks: 3, action_recovery_ticks: 30 };
+    const walk = (fighterShown: FighterSnapshot, footwork: number): number => {
+      const prediction = new MovementPrediction();
+      for (let at = 0; at <= 1000; at += 100) prediction.update(fighterShown, held, footwork, at, 4, 100, 1, 30);
+      return prediction.update(fighterShown, held, footwork, 1100, 4, 100, 1, 30).dx;
+    };
+    const share = predictMovement(recovering, held, 4, 100).dx;
+    expect(share).toBeLessThan(predictMovement(still, held, 4).dx * 0.7);
+    expect(walk(still, RECOVERY_SPEED_PERCENT / 100)).toBeCloseTo(share, 6);
+    expect(walk(recovering, RECOVERY_SPEED_PERCENT / 100)).toBeCloseTo(share, 6);
+    expect(walk(still, 1)).toBeCloseTo(predictMovement(still, held, 4).dx, 6);
+    // Held by his own punch or evasion, the input sent meanwhile does not walk him.
+    expect(walk(still, 0)).toBeCloseTo(0, 9);
+  });
+
+  it("frees the feet the tick his slip, weave or pull runs out once it knows when it started, and holds them throughout until it does", () => {
+    const held = { moveX: 1000, moveY: 0, defense: "none" as const };
+    const slipping = { ...fighter("one"), conditioning: 1000, defense: "slip_left" as const };
+    const free = predictMovement({ ...slipping, defense: "none" }, held, 2);
+    // Started on 95, it holds the feet through 101: of the four ticks after 99, the last two are his.
+    expect(predictMovement(slipping, held, 4, 99, { evasionFrom: 95 })).toEqual(free);
+    expect(predictMovement(slipping, held, 4, 99)).toEqual({ dx: 0, dy: 0 });
+    expect(predictMovement({ ...slipping, style: "swarmer" }, held, 4, 99, { evasionFrom: 95 }).dx).toBeLessThan(free.dx);
+    const start = { event_id: 3, tick: 95, kind: "defense", actor_id: "one", target_id: null, amount: 0, detail: "slip_left", blood: 0, direction: 0, action_id: null };
+    expect(evasionStartedAt(start, "one", undefined)).toBe(95);
+    expect(evasionStartedAt(start, "two", undefined)).toBeUndefined();
+    expect(evasionStartedAt({ ...start, detail: "guard_high" }, "one", 80)).toBe(80);
+  });
+
   it("lets a stunned fighter stumble though the punch the stun cut short is still presented", () => {
     const held = { moveX: -1000, moveY: 0, defense: "none" as const };
     const still = { ...fighter("one"), conditioning: 1000, stunned_ticks: 20 };
@@ -99,9 +131,9 @@ describe("local movement prediction", () => {
     expect(predictMovement(after, held, 4, 203)).toEqual({ dx: 0, dy: 0 });
     expect(predictMovement(after, held, 4, 203, { cutActionId: "c1" })).toEqual(predictMovement({ ...after, action: null, action_id: null }, held, 4, 203));
     const prediction = new MovementPrediction();
-    prediction.update(hook, held, false, 0, 4, 200, 1, 30);
-    expect(prediction.update(after, held, false, 1000, 4, 203, 1, 30).dx).toBeLessThan(-10);
-    expect(new MovementPrediction().update(after, held, false, 1000, 4, 203, 1, 30)).toEqual({ dx: 0, dy: 0 });
+    prediction.update(hook, held, 1, 0, 4, 200, 1, 30);
+    expect(prediction.update(after, held, 1, 1000, 4, 203, 1, 30).dx).toBeLessThan(-10);
+    expect(new MovementPrediction().update(after, held, 1, 1000, 4, 203, 1, 30)).toEqual({ dx: 0, dy: 0 });
   });
 
   it("holds the player's own fighter still for a parry's stagger once it hears of the parry, then walks him off", () => {
@@ -110,12 +142,12 @@ describe("local movement prediction", () => {
     const parry = { event_id: 1, tick: 98, kind: "parry", actor_id: "two", target_id: "one", amount: 20, detail: "", blood: 0, direction: 0, action_id: "c4" };
     const prediction = new MovementPrediction();
     prediction.observe({ ...parry, target_id: "two" }, "one");
-    expect(prediction.update(parried, held, false, 0, 4, 100, 1, 30).dx).toBeLessThan(-5);
+    expect(prediction.update(parried, held, 1, 0, 4, 100, 1, 30).dx).toBeLessThan(-5);
     const rooted = new MovementPrediction();
     rooted.observe(parry, "one");
-    expect(rooted.update(parried, held, false, 0, 4, 100, 1, 30)).toEqual({ dx: 0, dy: 0 });
+    expect(rooted.update(parried, held, 1, 0, 4, 100, 1, 30)).toEqual({ dx: 0, dy: 0 });
     // With two ticks of the stagger left the engine roots him for one more: three of the four ticks ahead are his.
-    const leaving = rooted.update({ ...parried, stunned_ticks: 2 }, held, false, 1000, 4, 116, 1, 30);
+    const leaving = rooted.update({ ...parried, stunned_ticks: 2 }, held, 1, 1000, 4, 116, 1, 30);
     expect(leaving.dx).toBeCloseTo(predictMovement({ ...parried, stunned_ticks: 0 }, held, 3).dx, 5);
   });
 
@@ -262,19 +294,24 @@ describe("footwork predicted against what the engine did", () => {
   interface TraceRecord { readonly tick: number; readonly fighter: unknown; readonly events: unknown[]; readonly held: HeldInput }
   const LOOKAHEAD = 4;
 
-  /** Each tick's snapshot as the client decodes it, with what it has learnt so far of parries and cut punches. */
-  function replay(records: readonly TraceRecord[]): { fighter: FighterSnapshot; holds: FootworkHolds; held: HeldInput; struck: boolean }[] {
+  /** Each tick's snapshot as the client decodes it, with what it has learnt so far of parries, evasions and cut punches. */
+  function replay(records: readonly TraceRecord[]): { fighter: FighterSnapshot; holds: FootworkHolds; held: HeldInput; struck: boolean; evaded: boolean }[] {
     let rootedUntil = 0;
     let cutActionId: string | null = null;
+    let evasionFrom: number | undefined;
     return records.map((record) => {
       const payload = { ...snapshot(record.tick), fighters: [record.fighter, fighter("two", 400)], events: record.events };
       const message = decodeServerFrame(JSON.stringify({ version: PROTOCOL_VERSION, type: "snapshot", payload }));
       if (message.type !== "snapshot") throw new Error(message.type);
       const one = message.payload.fighters[0];
-      for (const event of message.payload.events) rootedUntil = parryRootedUntil(event, "one", rootedUntil);
+      for (const event of message.payload.events) {
+        rootedUntil = parryRootedUntil(event, "one", rootedUntil);
+        evasionFrom = evasionStartedAt(event, "one", evasionFrom);
+      }
       if (one.stunned_ticks > 0 && one.action_id !== null) cutActionId = one.action_id;
       const struck = message.payload.events.some((event) => event.target_id === "one" && ["hit", "counter_hit", "parry"].includes(event.kind));
-      return { fighter: one, holds: { rootedUntil, cutActionId }, held: record.held, struck };
+      const evaded = message.payload.events.some((event) => event.kind === "defense" && event.actor_id === "one");
+      return { fighter: one, holds: { rootedUntil, cutActionId, evasionFrom }, held: record.held, struck, evaded };
     });
   }
 
@@ -282,9 +319,10 @@ describe("footwork predicted against what the engine did", () => {
     it(`${name}: every tick's ${LOOKAHEAD}-tick step is the engine's to within 2 units`, () => {
       const decoded = replay(records);
       const misses: string[] = [];
-      // A punch landing on him inside the look-ahead is news no snapshot before it carries.
+      // A punch landing on him inside the look-ahead is news no snapshot before it carries; a slip he presses then is
+      // a press, which the client's input history knows of and a held direction does not.
       for (let index = 0; index + LOOKAHEAD < decoded.length; index += 1) {
-        if (decoded.slice(index + 1, index + 1 + LOOKAHEAD).some((later) => later.struck)) continue;
+        if (decoded.slice(index + 1, index + 1 + LOOKAHEAD).some((later) => later.struck || later.evaded)) continue;
         const { fighter: now, holds, held } = decoded[index]!;
         const later = decoded[index + LOOKAHEAD]!.fighter;
         const step = predictMovement(now, held, LOOKAHEAD, records[index]!.tick, holds);
@@ -358,7 +396,7 @@ describe("walking behind a round trip", () => {
       const shown = buffer.sample(buffer.renderTick(t))!;
       const self = shown.fighters[0];
       const lead = ((latency ?? rtt) / 1000) * 30 + buffer.interpolationDelayTicks;
-      const offset = constrainPrediction(self, prediction.update(self, heldAt(t), false, t, lead, shown.tick, 1 / 60, 30), shown.fighters[1]);
+      const offset = constrainPrediction(self, prediction.update(self, heldAt(t), 1, t, lead, shown.tick, 1 / 60, 30), shown.fighters[1]);
       drawn.push({ t, drawn: self.x + offset.dx, server: x });
     }
     return drawn;
@@ -393,23 +431,46 @@ describe("the player's own defence", () => {
     expect(predictedDefense({ ...open, stunned_ticks: 12 }, guarding, "weave")).toBe("none");
     expect(predictedDefense({ ...open, taunt_ticks: 30 }, guarding, null)).toBe("none");
     expect(predictedDefense({ ...open, clinch_ticks: 30, defense: "guard_low" }, guarding, null)).toBe("guard_low");
-    // An evasion the server is playing stands; one just pressed shows at once.
+    // An evasion the server is playing stands, unless it is the player's own one already played; one just pressed shows at once.
     expect(predictedDefense({ ...open, defense: "slip_left" }, guarding, null)).toBe("slip_left");
+    expect(predictedDefense({ ...open, defense: "slip_left" }, guarding, null, true)).toBe("guard_high");
     expect(predictedDefense(open, guarding, "weave")).toBe("weave");
   });
 
-  it("plays a slip from the press until the server's copy has played on screen, and keeps the feet still while the server does", () => {
+  it("plays a slip from the press for as long as the server plays it, holding the feet as long, and does not play the server's copy again a lead later", () => {
     const evasion = new EvasionPrediction();
     const tick = 1000 / 30;
     evasion.press("slip_left", "c7", 1000, 6, 30);
     expect(evasion.pose(1000)).toBe("slip_left");
-    expect(evasion.holdsFeet(1000 + (EVASION_TICKS - 1) * tick, 30)).toBe(true);
-    expect(evasion.holdsFeet(1000 + EVASION_TICKS * tick, 30)).toBe(false);
+    for (const at of [1000, 1000 + (EVASION_TICKS - 1) * tick]) {
+      expect(evasion.pose(at)).toBe("slip_left");
+      expect(evasion.holdsFeet(at)).toBe(true);
+    }
+    expect(evasion.pose(1000 + EVASION_TICKS * tick)).toBeNull();
+    expect(evasion.holdsFeet(1000 + EVASION_TICKS * tick)).toBe(false);
     // The server starts it and plays it out; the frame that carried it is long acknowledged by then.
     evasion.acknowledge({ ...open, defense: "slip_left", last_input_sequence: 30 }, true, (id) => (id === "c7" ? 30 : null));
     evasion.acknowledge({ ...open, last_input_sequence: 34 }, true, (id) => (id === "c7" ? 30 : null));
-    expect(evasion.pose(1000 + (6 + EVASION_TICKS - 1) * tick)).toBe("slip_left");
-    expect(evasion.pose(1000 + (6 + EVASION_TICKS) * tick)).toBeNull();
+    expect(evasion.hidesServerEvasion(1000 + (6 + EVASION_TICKS - 1) * tick)).toBe(true);
+    expect(evasion.hidesServerEvasion(1000 + (6 + EVASION_TICKS) * tick)).toBe(false);
+  });
+
+  it("starts a slip pressed behind the player's own punch once the punch has landed or missed, and drops one a punch press replaces before then", () => {
+    const tick = 1000 / 30;
+    const behind = new EvasionPrediction();
+    behind.press("slip_right", "c4", 0, 6, 30, EVASION_TICKS, 3 * tick);
+    expect(behind.pose(2 * tick)).toBeNull();
+    expect(behind.holdsFeet(2 * tick)).toBe(false);
+    expect(behind.pose(3 * tick)).toBe("slip_right");
+    expect(behind.holdsFeet((3 + EVASION_TICKS - 1) * tick)).toBe(true);
+    expect(behind.holdsFeet((3 + EVASION_TICKS) * tick)).toBe(false);
+    behind.drop(4 * tick);
+    expect(behind.pose(5 * tick)).toBe("slip_right");
+    const replaced = new EvasionPrediction();
+    replaced.press("slip_right", "c5", 0, 6, 30, EVASION_TICKS, 3 * tick);
+    replaced.drop(2 * tick);
+    expect(replaced.pose(4 * tick)).toBeNull();
+    expect(replaced.hidesServerEvasion(4 * tick)).toBe(false);
   });
 
   it("holds a style's longer evasion as long as the engine plays it", () => {
@@ -419,10 +480,11 @@ describe("the player's own defence", () => {
     expect(styleTiming("balanced").evasionTicks).toBe(0);
     const evasion = new EvasionPrediction();
     evasion.press("weave", "c3", 0, 6, 30, ticks);
-    expect(evasion.holdsFeet((ticks - 1) * tick, 30)).toBe(true);
-    expect(evasion.holdsFeet(ticks * tick, 30)).toBe(false);
-    expect(evasion.pose((6 + ticks - 1) * tick)).toBe("weave");
-    expect(evasion.pose((6 + ticks) * tick)).toBeNull();
+    expect(evasion.holdsFeet((ticks - 1) * tick)).toBe(true);
+    expect(evasion.holdsFeet(ticks * tick)).toBe(false);
+    expect(evasion.pose((ticks - 1) * tick)).toBe("weave");
+    expect(evasion.pose(ticks * tick)).toBeNull();
+    expect(evasion.hidesServerEvasion((6 + ticks - 1) * tick)).toBe(true);
   });
 
   it("drops a slip the server turned down or a stun cut short", () => {

@@ -75,7 +75,8 @@
   },
   "hitstop_ms": {
     "hit": 78,
-    "block": 45
+    "block": 45,
+    "power": 140
   },
   "fatigue_scaling": {
     "startup_formula": "max(2, startup * 100 // fatigue - lead_jab_bonus)",

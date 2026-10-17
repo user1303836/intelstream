@@ -15,7 +15,7 @@ export const ACTION_KEYS: Readonly<Record<string, SemanticAction>> = {
 export const ACTIVE_CODES = new Set([...Object.keys(PUNCH_KEYS), ...Object.keys(ACTION_KEYS), "KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE", "ShiftLeft", "ShiftRight", "AltLeft", "AltRight"]);
 export const CONTROL_HELP = [
   "Move: W up · S down · A left · D right", "High / low guard: Q / E", "Left/right jab: F / J", "Left/right straight: R / U",
-  "Left/right hook: G / H", "Left/right uppercut: T / Y", "Body: Shift · Power: Alt",
+  "Left/right hook: G / H", "Left/right uppercut: T / Y", "Body: Shift · Power: hold Alt (Option ⌥ on a Mac) with the punch, slower to throw and far heavier",
   "Slip: Z / X · Weave: C · Pull: V", "Clinch: B · Stance: N · Taunt: M · Fouls (on purpose): Shift+1 low blow / Shift+2 headbutt", "Get-up rhythm: ← / →",
   "Camera: K cycles broadcast, close and over the shoulder (behind your fighter, W walks at the opponent and A / D circle him).",
   "Style pick before the bout: arrow keys choose · Enter settles · 1–5 settle on that card at once.",
@@ -31,7 +31,7 @@ export const CONTROL_HELP = [
   "Touch: drag the left side to move · tap a punch pad's left or right half for that hand · hold BODY, POWER, GUARD or LOW · tap ◀ SLIP, SLIP ▶, WEAVE, PULL or CLINCH.",
 ] as const;
 
-const CONTROL_HINT_KEYBOARD = "Move WASD · Jab F/J · Straight R/U · Hook G/H · Uppercut T/Y · Guard Q/E · Body Shift · Power Alt";
+const CONTROL_HINT_KEYBOARD = "Move WASD · Jab F/J · Straight R/U · Hook G/H · Uppercut T/Y · Guard Q/E · Body Shift · Power Alt/Option ⌥";
 const CONTROL_HINT_TOUCH = "Drag on the left to move · Tap the pads to punch, L or R hand · Hold BODY, POWER or GUARD · Tap SLIP, WEAVE, PULL or CLINCH";
 /** A phone held upright has only a narrow column beside the pads for the hint: the essentials, which the pads' own labels fill in. */
 const CONTROL_HINT_TOUCH_SHORT = "Drag left to move · Tap pads to punch · Hold GUARD";

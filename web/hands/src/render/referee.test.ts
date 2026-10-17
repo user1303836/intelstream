@@ -179,9 +179,20 @@ describe("the renderer's referee", () => {
     expect(addEvent.mock.calls[0]![0]).toMatchObject({ kind: "hit", blood: 30 });
     // The blood comes off his head.
     expect((addEvent.mock.calls[0]![1] as THREE.Vector3).y).toBeCloseTo(1.6);
-    expect(landedHit).toHaveBeenCalledWith(false);
-    expect(onContact).toHaveBeenCalledWith(hit);
+    expect(landedHit).toHaveBeenCalledWith(false, false);
+    expect(onContact).toHaveBeenCalledWith(hit, false);
     expect(renderer.pendingRefereeEvents).toEqual([]);
+  });
+
+  it("lands a power punch on him as one, held longest and heard as one", () => {
+    const { renderer, landedHit, onContact } = moments();
+    const hit = event("referee_hit", 40);
+    // The snapshot the punch arrived in has the puncher throwing it as a power punch.
+    renderer.history = [{ ...snapshot(40), fighters: [{ ...fighter("one"), action_id: hit.action_id, action_power: "power" }, fighter("two")] }];
+    (renderer.pendingRefereeEvents as CombatEvent[]).push(hit);
+    fire(renderer, 40);
+    expect(landedHit).toHaveBeenCalledWith(false, true);
+    expect(onContact).toHaveBeenCalledWith(hit, true);
   });
 
   it("knocks him out cold on his fall, says so, and replays it once it has played live", () => {
