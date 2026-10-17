@@ -1516,8 +1516,9 @@ export class BoxingGraph {
       this.yaw = targetYaw;
       this.yawInitialized = true;
     }
-    // On the canvas and getting up he turns with his whole body on the ground, so more slowly.
-    const turnRate = this.punchActive ? 3 : this.downState === "up" ? 9 : 4;
+    // On the canvas and getting up he turns with his whole body on the ground, so more slowly. The engine holds his facing
+    // through a punch's startup and active ticks and turns him again as it recovers, while he can walk.
+    const turnRate = this.punchActive && this.punchAgeTicks < this.punchTiming.startup + this.punchTiming.active ? 3 : this.downState === "up" ? 9 : 4;
     this.yaw = smoothAngle(this.yaw, targetYaw, turnRate, dt);
     boxer.root.position.set(this.rootX, 0, this.rootZ);
     boxer.root.rotation.set(0, this.yaw, 0);

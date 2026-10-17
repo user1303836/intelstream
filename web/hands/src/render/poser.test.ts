@@ -642,6 +642,25 @@ describe("power punches", () => {
   });
 });
 
+describe("turning while punching", () => {
+  it("holds the facing through a punch's startup and active ticks and turns at the usual rate as it recovers, as the engine does", () => {
+    const yawAfter = (fraction: number): number => {
+      const { graph } = makeGraph();
+      const idle = facingOpponent(baseFighter("one"));
+      const timing = punchTiming("straight", "head", "normal");
+      run(graph, idle, opponentFor("two"), 10, undefined);
+      const start = 100;
+      const age = fraction * (timing.startup + timing.active + timing.recovery);
+      const punch: FighterSnapshot = { ...idle, action: "straight", action_hand: "right", action_target: "head", action_power: "normal", action_id: "p", action_key: "straight:right:head:normal", action_start_tick: start - age, action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery };
+      // Turned a quarter round; six frames to follow.
+      const turned = { ...punch, facing_x: 1000, facing_y: 0 };
+      for (let frame = 0; frame < 6; frame += 1) graph.update(turned, opponentFor("two"), 1 / 60, 1 + frame / 60, false, "full", start + frame / 2, undefined);
+      return Math.abs((graph as unknown as { yaw: number }).yaw);
+    };
+    expect(yawAfter(0.7)).toBeGreaterThan(yawAfter(0.1) * 1.5);
+  });
+});
+
 describe("defensive snap", () => {
   it("raises the guard and goes into a slip nine tenths of the way in four frames, and finishes a weave's dip and rise inside the engine's evasion", () => {
     const weights = (graph: BoxingGraph): { guardHigh: number; slip: number } => graph as unknown as { guardHigh: number; slip: number };
