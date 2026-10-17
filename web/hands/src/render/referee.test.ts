@@ -182,7 +182,7 @@ describe("the renderer's referee", () => {
     expect(addEvent.mock.calls[0]![0]).toMatchObject({ kind: "hit", blood: 30 });
     // The blood comes off his head.
     expect((addEvent.mock.calls[0]![1] as THREE.Vector3).y).toBeCloseTo(1.6);
-    expect(landedHit).toHaveBeenCalledWith(false, false);
+    expect(landedHit).toHaveBeenCalledWith(hit.action_id, false, false);
     expect(onContact).toHaveBeenCalledWith(hit, false);
     expect(renderer.pendingRefereeEvents).toEqual([]);
   });
@@ -194,7 +194,7 @@ describe("the renderer's referee", () => {
     renderer.history = [{ ...snapshot(40), fighters: [{ ...fighter("one"), action_id: hit.action_id, action_power: "power" }, fighter("two")] }];
     (renderer.pendingRefereeEvents as CombatEvent[]).push(hit);
     fire(renderer, 40);
-    expect(landedHit).toHaveBeenCalledWith(false, true);
+    expect(landedHit).toHaveBeenCalledWith(hit.action_id, false, true);
     expect(onContact).toHaveBeenCalledWith(hit, true);
   });
 

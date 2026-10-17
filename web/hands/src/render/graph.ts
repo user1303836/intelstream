@@ -1309,11 +1309,15 @@ export class BoxingGraph {
     if (head !== null) this.refereeHead.copy(head);
   }
 
-  /** The punch met the opponent: it freezes at the target for a moment, a power punch that landed longest. */
-  landedHit(blocked: boolean, power = false): void {
-    // The freeze holds the glove at the target. The player's own punch, thrown on the press's time, is on its way back by the
-    // time the server's word of the contact is shown, and a freeze then would only stall it there.
-    if (!this.punchActive || this.punchAgeTicks >= this.punchTiming.startup + this.punchTiming.active + 1) return;
+  /**
+   * The punch with this instance id met the opponent: it freezes at the target for a moment, a power punch that landed
+   * longest. Only that punch freezes, and only while its glove is at the target: the player's own punch, thrown on the
+   * press's time, is on its way back by the time the server's word of the contact is shown, or a combination has already
+   * let the next punch go.
+   */
+  landedHit(actionId: string | null, blocked: boolean, power = false): void {
+    if (!this.punchActive || actionId === null || actionId !== (this.actionId ?? this.ownActionId)) return;
+    if (this.punchAgeTicks >= this.punchTiming.startup + this.punchTiming.active + 1) return;
     this.hitstop = Math.max(this.hitstop, (blocked ? HITSTOP_MS.block : power ? HITSTOP_MS.power : HITSTOP_MS.hit) / 1000);
   }
 

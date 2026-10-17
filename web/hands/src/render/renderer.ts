@@ -1954,7 +1954,7 @@ export class FightRenderer {
     const mouth = spurt === null ? null : this.refereeMouth();
     if (spurt !== null && mouth !== null) this.effects.gush(REFEREE_GUSH, mouth.position, mouth.axis, spurt.seconds, spurt.rate, event.event_id);
     const power = this.refereePunchPower(event);
-    if (puncherIndex >= 0) this.graphs?.[puncherIndex]?.landedHit(false, power);
+    if (puncherIndex >= 0) this.graphs?.[puncherIndex]?.landedHit(event.action_id, false, power);
     this.onContact?.(event, power);
   }
 
@@ -2045,7 +2045,7 @@ export class FightRenderer {
       this.graphs?.[recipientIndex]?.windedFor((record.knockdown.tick - event.tick) / this.simulation.tick_rate + 0.15, bodySideStruck(puncher?.action_key ?? null));
     }
     if (recipient.player_id === this.flashKnockout?.loserId) this.graphs?.[recipientIndex]?.knockOut();
-    if (puncherIndex >= 0) this.graphs?.[puncherIndex]?.landedHit(false);
+    if (puncherIndex >= 0) this.graphs?.[puncherIndex]?.landedHit(event.action_id, false);
     // The punch that floored him knocks the gum shield out again, in slow motion.
     if (event.detail.endsWith(":head") && !this.settings().reducedMotion) this.knockOutMouthpiece(recipientIndex, spray ?? event.direction, event.event_id + REPLAY_EVENT_ID_OFFSET, true);
     this.onContact?.(event, keyParts[3] === "power");
@@ -2515,7 +2515,7 @@ export class FightRenderer {
         && puncherIndex >= 0
         && ["hit", "counter_hit", "block", "perfect_block", "guard_break"].includes(event.kind)
       ) {
-        graphs?.[puncherIndex]?.landedHit(event.kind === "block" || event.kind === "perfect_block", pending.power);
+        graphs?.[puncherIndex]?.landedHit(event.action_id, event.kind === "block" || event.kind === "perfect_block", pending.power);
       }
       // The hit that leaked through a block is heard and felt as the block it came with, not as a landed punch.
       if (pending.presentImpact || !isHit(event)) this.onContact?.(event, pending.power === true);

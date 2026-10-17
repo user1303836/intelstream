@@ -626,7 +626,7 @@ describe("power punches", () => {
         graph.update(punch, opponentFor("two"), 1 / 60, tick / 30, false, "full", tick, undefined);
         const age = (graph as unknown as { punchAgeTicks: number; punchActive: boolean }).punchAgeTicks;
         if (!(graph as unknown as { punchActive: boolean }).punchActive) { endsAt = Math.min(endsAt, tick); continue; }
-        if (tick === start + timing.startup) graph.landedHit(false, power === "power");
+        if (tick === start + timing.startup) graph.landedHit("p", false, power === "power");
         if (tick > start + timing.startup && age - previous < 0.2) held += 1;
         if (tick > start) worstStep = Math.max(worstStep, age - previous);
         previous = age;
@@ -846,9 +846,26 @@ describe("own punch prediction", () => {
       run(graph, idle, opponentFor("two"), 10, undefined);
       graph.predict(jab, 0, 30, 6);
       run(graph, idle, opponentFor("two"), frames, undefined, 100);
-      graph.landedHit(false);
+      graph.landedHit("own-1", false);
       expect(hitstop(graph) > 0).toBe(frozen);
     }
+  });
+
+  it("freezes the punch a contact belongs to, never the next one a combination let go before the word of it was shown", () => {
+    const hitstop = (graph: BoxingGraph): number => (graph as unknown as { hitstop: number }).hitstop;
+    const timing = punchTiming("jab", "head", "normal");
+    const { graph } = makeGraph();
+    const idle = facingOpponent(baseFighter("one"));
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    graph.predict(jab, 0, 30, 6);
+    graph.predict({ ...jab, id: "own-2", class: "straight", hand: "right" }, 1 / 60, 30, 6);
+    run(graph, idle, opponentFor("two"), 2 * (timing.startup + timing.active + timing.recovery) + 1, undefined, 100);
+    expect(state(graph).ownActionId).toBe("own-2");
+    // The jab's contact, shown on arrival a round trip after its glove got there, finds the straight in its wind-up.
+    graph.landedHit("own-1", false, true);
+    expect(hitstop(graph)).toBe(0);
+    graph.landedHit("own-2", false);
+    expect(hitstop(graph)).toBeGreaterThan(0);
   });
 
   it("tells the footwork its own punch allows on the press's time: none to the end of its active ticks, the recovery's share, then all", () => {
