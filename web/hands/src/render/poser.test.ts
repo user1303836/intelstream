@@ -578,6 +578,70 @@ describe("a spent guard", () => {
   });
 });
 
+describe("power punches", () => {
+  const thrown = (power: "power" | "normal", fraction: number): { hips: number; shoulders: number; glove: number; heat: number } => {
+    const { boxer, graph } = makeGraph();
+    const idle = facingOpponent(baseFighter("one"));
+    const timing = punchTiming("straight", "head", power);
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    const start = 100;
+    const punch: FighterSnapshot = { ...idle, action: "straight", action_hand: "right", action_target: "head", action_power: power, action_id: `straight-${power}`, action_key: `straight:right:head:${power}`, action_start_tick: start, action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery };
+    graph.update(punch, opponentFor("two"), 1 / 60, 1, false, "full", start + fraction * timing.startup, undefined);
+    const left = bone(boxer, "shoulderL");
+    const right = bone(boxer, "shoulderR");
+    return { hips: bone(boxer, "hips").y, shoulders: Math.atan2(right.z - left.z, right.x - left.x), glove: bone(boxer, "gloveR").z - boxer.root.position.z, heat: graph.powerHeat("right") };
+  };
+
+  it("load up through most of their startup: he sinks, turns away from the punch and cocks the glove back, which a normal punch never does", () => {
+    const normal = thrown("normal", 0.45);
+    const power = thrown("power", 0.45);
+    expect(normal.hips - power.hips).toBeGreaterThan(0.05);
+    expect(Math.abs(power.shoulders - normal.shoulders)).toBeGreaterThan(0.25);
+    expect(normal.glove - power.glove).toBeGreaterThan(0.08);
+    // Both end on the target.
+    expect(Math.abs(thrown("power", 1).glove - thrown("normal", 1).glove)).toBeLessThan(0.08);
+  });
+
+  it("heat the throwing glove through the load, full at the target, and leave every other glove cold", () => {
+    expect(thrown("normal", 0.5).heat).toBe(0);
+    expect(thrown("power", 0.1).heat).toBeGreaterThan(0);
+    expect(thrown("power", 0.1).heat).toBeLessThan(thrown("power", 0.5).heat);
+    expect(thrown("power", 1).heat).toBe(1);
+    const { graph } = makeGraph();
+    expect(graph.powerHeat("left")).toBe(0);
+  });
+
+  it("hold a landed power punch at the target longest, then make up the time without a jump and end with the server's copy", () => {
+    const run = (power: "power" | "normal"): { held: number; worstStep: number; endsAt: number } => {
+      const { graph } = makeGraph();
+      const idle = facingOpponent(baseFighter("one"));
+      const timing = punchTiming("straight", "head", power);
+      const start = 100;
+      const punch: FighterSnapshot = { ...idle, action: "straight", action_hand: "right", action_target: "head", action_power: power, action_id: "p", action_key: `straight:right:head:${power}`, action_start_tick: start, action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery };
+      let held = 0;
+      let worstStep = 0;
+      let endsAt = Infinity;
+      let previous = 0;
+      for (let tick = start; tick < start + 40; tick += 0.5) {
+        graph.update(punch, opponentFor("two"), 1 / 60, tick / 30, false, "full", tick, undefined);
+        const age = (graph as unknown as { punchAgeTicks: number; punchActive: boolean }).punchAgeTicks;
+        if (!(graph as unknown as { punchActive: boolean }).punchActive) { endsAt = Math.min(endsAt, tick); continue; }
+        if (tick === start + timing.startup) graph.landedHit(false, power === "power");
+        if (tick > start + timing.startup && age - previous < 0.2) held += 1;
+        if (tick > start) worstStep = Math.max(worstStep, age - previous);
+        previous = age;
+      }
+      return { held, worstStep, endsAt: endsAt - start };
+    };
+    const normal = run("normal");
+    const power = run("power");
+    expect(power.held).toBeGreaterThan(normal.held + 2);
+    expect(power.worstStep).toBeLessThan(1.4);
+    const timing = punchTiming("straight", "head", "power");
+    expect(Math.abs(power.endsAt - (timing.startup + timing.active + timing.recovery))).toBeLessThanOrEqual(1);
+  });
+});
+
 describe("defensive snap", () => {
   it("raises the guard and goes into a slip nine tenths of the way in four frames, and finishes a weave's dip and rise inside the engine's evasion", () => {
     const weights = (graph: BoxingGraph): { guardHigh: number; slip: number } => graph as unknown as { guardHigh: number; slip: number };

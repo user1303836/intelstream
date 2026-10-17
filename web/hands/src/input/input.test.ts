@@ -164,6 +164,38 @@ describe("controls that turn with the camera", () => {
   });
 });
 
+describe("the power modifier held", () => {
+  it("is held while Alt or Option, the right trigger or the POWER pad is, and never while input is off", () => {
+    let triggers: number[] = [];
+    Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [pad(triggers)] });
+    Element.prototype.setPointerCapture = () => undefined;
+    const input = new InputController();
+    const container = document.createElement("div");
+    input.attachTouch(container, true);
+    expect(input.powerHeld).toBe(false);
+    window.dispatchEvent(key("keydown", "AltLeft"));
+    expect(input.powerHeld).toBe(true);
+    window.dispatchEvent(key("keyup", "AltLeft"));
+    expect(input.powerHeld).toBe(false);
+    triggers = [7];
+    poll(input);
+    expect(input.powerHeld).toBe(true);
+    triggers = [];
+    poll(input);
+    expect(input.powerHeld).toBe(false);
+    const power = container.querySelector<HTMLButtonElement>("[data-mod='power']")!;
+    const touch = (type: string): void => { const event = new MouseEvent(type, { bubbles: true, cancelable: true }); Object.defineProperty(event, "pointerId", { value: 4 }); power.dispatchEvent(event); };
+    touch("pointerdown");
+    expect(input.powerHeld).toBe(true);
+    input.setActive(false, true);
+    expect(input.powerHeld).toBe(false);
+    input.setActive(true);
+    touch("pointerup");
+    expect(input.powerHeld).toBe(false);
+    input.destroy();
+  });
+});
+
 describe("telling the server of held input as it changes", () => {
   it("speaks up for a new direction, a stop or a guard, not for a key's repeat or a punch", () => {
     Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [] });

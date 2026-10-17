@@ -16,10 +16,12 @@ const patterns: Readonly<Record<string, readonly [number, number, number]>> = {
 export class HapticFeedback {
   constructor(private readonly settings: () => Settings) {}
 
-  event(event: CombatEvent): void {
+  /** Rumbles for a contact; one a power punch made rumbles longer and harder. */
+  event(event: CombatEvent, power = false): void {
     if (!this.settings().haptics) return;
-    const pattern = patterns[event.kind];
-    if (pattern === undefined) return;
+    const known = patterns[event.kind];
+    if (known === undefined) return;
+    const pattern = power ? [known[0] * 1.6, known[1] + 0.2, known[2] + 0.15] as const : known;
     const actuator = this.padActuator();
     if (actuator === null) {
       this.vibrate(pattern[0]);

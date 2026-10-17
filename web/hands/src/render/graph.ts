@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { GLTFLoader, type GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
-import { EVASION_TICKS, GLOVE_HITBOX_RADIUS, GUARD_BLOCK_MINIMUM, HURTBOXES, RECOVERY_SPEED_PERCENT, TICK_RATE, cancelsRecovery, punchTiming, recoveryCancelAge, totalTicks, type PunchTiming } from "../manifest";
+import { EVASION_TICKS, GLOVE_HITBOX_RADIUS, GUARD_BLOCK_MINIMUM, HITSTOP_MS, HURTBOXES, RECOVERY_SPEED_PERCENT, TICK_RATE, cancelsRecovery, punchTiming, recoveryCancelAge, totalTicks, type PunchTiming } from "../manifest";
 import type { BloodLevel } from "../settings";
 import type { CombatEvent, FighterSnapshot, Hand, Power, PunchAction, PunchClass, SemanticAction, Target } from "../types";
 import { FIGHTER_GLB_GZIP_BASE64 } from "../assets/fighter-glb";
@@ -603,6 +603,8 @@ export class BoxingGraph {
   private anticipatedId: string | null = null;
   private hitstop = 0;
   private hitstopScale = 1;
+  /** Ticks of the punch a hit's freeze held back, made up once the freeze is over instead of jumped. */
+  private hitstopLag = 0;
   private downState: "up" | "falling" | "down" | "rising" = "up";
   private fallAge = 0;
   /** How far along the get-up he is (see RISE_KNEE), and where it stood when the server let him up. */
@@ -910,6 +912,7 @@ export class BoxingGraph {
     this.riseProgress = 0;
     this.hitstop = 0;
     this.hitstopScale = 1;
+    this.hitstopLag = 0;
     for (const spring of [this.headKick, this.torsoKick, this.rootKick, this.coverKick]) {
       spring.value.set(0, 0, 0);
       spring.velocity.set(0, 0, 0);
@@ -1084,6 +1087,16 @@ export class BoxingGraph {
   /** True while the viewer's own punch, started on the key press, is playing. */
   get ownPunchActive(): boolean {
     return this.punchActive && this.ownActionId !== null;
+  }
+
+  /** The instance id of the viewer's own press while it plays on the press's time, else null. */
+  get ownPressId(): string | null {
+    return this.punchActive && this.ownPress ? this.ownActionId : null;
+  }
+
+  /** The class of the punch being played, and whether it is a power punch. */
+  get punchKind(): { readonly punchClass: PunchClass; readonly power: boolean } {
+    return { punchClass: this.punchClass, power: this.punchPower === "power" };
   }
 
   /**
@@ -1271,13 +1284,28 @@ export class BoxingGraph {
     this.ownRefused = false;
     this.ownCut = false;
     this.recoveryCut = false;
+    this.hitstopLag = 0;
   }
 
-  landedHit(blocked: boolean): void {
+  /** The punch met the opponent: it freezes at the target for a moment, a power punch that landed longest. */
+  landedHit(blocked: boolean, power = false): void {
     // The freeze holds the glove at the target. The player's own punch, thrown on the press's time, is on its way back by the
     // time the server's word of the contact is shown, and a freeze then would only stall it there.
     if (!this.punchActive || this.punchAgeTicks >= this.punchTiming.startup + this.punchTiming.active + 1) return;
-    this.hitstop = Math.max(this.hitstop, blocked ? 0.045 : 0.078);
+    this.hitstop = Math.max(this.hitstop, (blocked ? HITSTOP_MS.block : power ? HITSTOP_MS.power : HITSTOP_MS.hit) / 1000);
+  }
+
+  /**
+   * How hot the glove throwing a power punch glows, 0 to 1: building through the load, full at the target, cooling as it
+   * comes back. Any other glove, or a punch that is not a power punch, is cold.
+   */
+  powerHeat(hand: Hand): number {
+    if (!this.punchActive || this.punchPower !== "power" || this.punchHand !== hand || this.ownPulled) return 0;
+    const { startup, active, recovery } = this.punchTiming;
+    const age = this.punchAgeTicks;
+    if (age < startup) return smoothstep(0, POWER_LOAD * 0.6, age / Math.max(1, startup));
+    if (age < startup + active) return 1;
+    return 1 - smoothstep(0, 0.6, (age - startup - active) / Math.max(1, recovery));
   }
 
   setArcadeDislocation(dislocation: ArcadeDislocation | null): void {
@@ -1490,6 +1518,7 @@ export class BoxingGraph {
     this.hitstop = Math.max(0, this.hitstop - dt);
     this.hitstopScale = this.hitstop > 0 ? 0.12 : 1;
     const simDt = dt * this.hitstopScale;
+    if (this.punchActive && this.hitstop > 0) this.hitstopLag += (dt - simDt) * 30;
 
     this.syncAction(fighter, opponent, sampledTick, simDt);
     if (!this.debugHoldImpact) {
@@ -2053,9 +2082,10 @@ export class BoxingGraph {
       const authoritativeAge = Math.max(0, sampledTick - fighter.action_start_tick);
       if (this.ownActionId === this.actionId) {
         this.ownAuthoritativeAge = authoritativeAge;
-        if (!this.ownPulled && authoritativeAge - this.punchAgeTicks > 1.5) this.punchAgeTicks = authoritativeAge;
-      } else if (Math.abs(this.punchAgeTicks - authoritativeAge) > 1.5) {
+        if (!this.ownPulled && authoritativeAge - this.punchAgeTicks - this.hitstopLag > 1.5) this.punchAgeTicks = authoritativeAge;
+      } else if (Math.abs(this.punchAgeTicks + this.hitstopLag - authoritativeAge) > 1.5) {
         this.punchAgeTicks = authoritativeAge;
+        this.hitstopLag = 0;
       }
     }
     if (this.punchActive && this.ownActionId !== null && this.ownAuthoritativeAge === null && !this.ownPulled && !this.ownCut) {
@@ -2077,7 +2107,10 @@ export class BoxingGraph {
       const recovery = this.punchTiming.startup + this.punchTiming.active;
       if (this.ownCut && this.punchAgeTicks < recovery) this.punchAgeTicks = recovery;
       const cut = this.ownCut || (this.recoveryCut && this.punchAgeTicks >= recovery);
-      this.punchAgeTicks += simDt * 30 * (cut ? OWN_PUNCH_CUT_RATE : this.ownPunchRate());
+      // After a freeze the punch makes up what it held back, quickly but without a jump.
+      const repay = this.hitstop > 0 ? 0 : Math.min(this.hitstopLag, simDt * 30 * HITSTOP_REPAY_RATE);
+      this.hitstopLag -= repay;
+      this.punchAgeTicks += simDt * 30 * (cut ? OWN_PUNCH_CUT_RATE : this.ownPunchRate()) + repay;
       if (this.punchAgeTicks >= this.punchTotalTicks) {
         this.retirePunch();
         ended = true;
@@ -2153,18 +2186,22 @@ export class BoxingGraph {
     // the hand over the windup, its turn and the elbow over twice that.
     let windupIn = 1;
     let onset = 1;
+    // A power punch loads up first, through most of its longer startup: he sinks, turns his shoulders and hips away from
+    // the punch and cocks the glove back, then unwinds into it.
+    let load = 0;
     if (age < startup) {
       phase = "startup";
       const u = age / startup;
-      const windupEnd = this.punchClass === "hook" ? 0.3 : this.punchClass === "uppercut" ? 0.45 : 0.18;
+      const windupEnd = power === 1 ? POWER_LOAD : this.punchClass === "hook" ? 0.3 : this.punchClass === "uppercut" ? 0.45 : 0.18;
       windup = smoothstep(0, windupEnd, u) * (1 - smoothstep(windupEnd, Math.min(1, windupEnd + 0.4), u));
-      extend = u <= windupEnd ? 0 : easeIn((u - windupEnd) / (1 - windupEnd), 1.65);
+      extend = u <= windupEnd ? 0 : easeIn((u - windupEnd) / (1 - windupEnd), power === 1 ? POWER_SNAP : 1.65);
       windupIn = smoothstep(0, windupEnd, u);
       onset = smoothstep(0, Math.min(1, windupEnd * 2), u);
+      load = power * smoothstep(0, POWER_LOAD * 0.8, u) * (1 - smoothstep(POWER_LOAD, Math.min(1, POWER_LOAD + 0.3), u));
     } else if (age < startup + active) {
       phase = "active";
       windup = 0;
-      extend = 1 + 0.06 * Math.sin(((age - startup) / active) * Math.PI);
+      extend = 1 + (0.06 + 0.05 * power) * Math.sin(((age - startup) / active) * Math.PI);
     } else {
       phase = "recovery";
       windup = 0;
@@ -2219,13 +2256,15 @@ export class BoxingGraph {
         break;
     }
     const rotation = this.punchClass === "hook" ? smoothstep(0.15, 1, e) : e;
-    torso.shouldersYaw = blade * 0.88 + yawTravel * mirror * rotation;
-    torso.hipsYaw = blade + hipsTravel * mirror * rotation;
-    torso.hips.z += hipsForward * e;
+    // The load turns him the other way from the punch's own turn.
+    const away = -Math.sign(yawTravel) * mirror * load;
+    torso.shouldersYaw = blade * 0.88 + yawTravel * mirror * rotation + POWER_LOAD_YAW * away;
+    torso.hipsYaw = blade + hipsTravel * mirror * rotation + POWER_LOAD_HIPS_YAW * away;
+    torso.hips.z += hipsForward * e - 0.04 * load;
     torso.hips.x += (isLead ? 0.02 : 0.05) * mirror * e;
-    torso.hips.y -= body * 0.1 * e + dip * windup + dip * 0.3 * e;
-    torso.spinePitch += 0.06 * e + body * 0.25 * e + dip * 1.4 * windup;
-    torso.headPitch += 0.05 * e + body * 0.12 * e;
+    torso.hips.y -= body * 0.1 * e + dip * windup + dip * 0.3 * e + POWER_LOAD_DIP * load;
+    torso.spinePitch += 0.06 * e + body * 0.25 * e + dip * 1.4 * windup + 0.14 * load;
+    torso.headPitch += 0.05 * e + body * 0.12 * e + 0.1 * load;
     torso.headOffset.z += 0.02 * e;
     torso.headYaw += -yawTravel * mirror * rotation * 0.35;
 
@@ -2284,6 +2323,10 @@ export class BoxingGraph {
         windupOffset.set(0, -0.01, -0.05 - 0.04 * power);
         break;
     }
+    // Loading a power punch, the glove draws further back and drops, wider still for a hook.
+    windupOffset.x += (this.punchClass === "hook" ? 0.08 : 0) * side * mirror * power;
+    windupOffset.y -= 0.05 * power;
+    windupOffset.z -= 0.12 * power;
     // A hook or uppercut keeps part of its windup until it travels, once the windup has eased in.
     const start = this.punchStart.copy(guard).addScaledVector(windupOffset, Math.max(windup, this.punchClass === "hook" || this.punchClass === "uppercut" ? (1 - travel) * 0.6 * windupIn : 0));
     if (this.punchClass === "hook") {
@@ -3647,6 +3690,15 @@ const OWN_PUNCH_GRACE_TICKS = 3;
 const OWN_PUNCH_PULL_RATE = 1.5;
 /** A punch taken back after contact goes straight back to the guard at this many times its own pace. */
 const OWN_PUNCH_CUT_RATE = 2.5;
+/** How much faster than its own pace a punch makes up what a hit's freeze held back. */
+const HITSTOP_REPAY_RATE = 1.5;
+/** Share of a power punch's startup spent loading up before it unwinds, and how sharply the glove then snaps out. */
+const POWER_LOAD = 0.55;
+const POWER_SNAP = 2.1;
+/** How far a power punch's load turns the shoulders and hips away from the punch (radians) and sinks him (metres). */
+const POWER_LOAD_YAW = 0.42;
+const POWER_LOAD_HIPS_YAW = 0.22;
+const POWER_LOAD_DIP = 0.08;
 /** An opponent's punch seen early is held back unless its wind-up can play at this share of its speed or faster. */
 const MIN_ANTICIPATION_RATE = 0.5;
 /** Presses closer together than this usually reach the server before the same step, where the newer one replaces the older. */

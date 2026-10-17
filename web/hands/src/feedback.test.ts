@@ -316,6 +316,54 @@ describe("authoritative audio and haptics", () => {
   });
 });
 
+describe("a power punch heard", () => {
+  const event = (kind: string, detail: string, amount = 0): Parameters<AudioFeedback["event"]>[0] => ({ event_id: 1, tick: 1, kind, actor_id: "one", target_id: "two", amount, detail, blood: 0, direction: 0, action_id: "p1" });
+  const sounded = async (play: (feedback: AudioFeedback) => void): Promise<{ tones: number; noises: number; lowest: number; longest: number }> => {
+    MockAudioContext.filters = [];
+    MockAudioContext.oscillatorStarts = 0;
+    vi.stubGlobal("AudioContext", MockAudioContext);
+    const feedback = new AudioFeedback(() => settings);
+    await feedback.unlock();
+    const tones = MockAudioContext.oscillatorStarts;
+    const filters = MockAudioContext.filters.length;
+    const stops: number[] = [];
+    const created = MockAudioContext.last!.createBufferSource.bind(MockAudioContext.last!);
+    MockAudioContext.last!.createBufferSource = () => {
+      const source = created();
+      const stop = source.stop as unknown as ReturnType<typeof vi.fn>;
+      stop.mockImplementation((when: number) => { stops.push(when); });
+      return source;
+    };
+    play(feedback);
+    const frequencies = MockAudioContext.filters.slice(filters).map((filter) => (filter.frequency.setValueAtTime as unknown as ReturnType<typeof vi.fn>).mock.calls[0]![0] as number);
+    feedback.destroy();
+    return { tones: MockAudioContext.oscillatorStarts - tones, noises: frequencies.length, lowest: Math.min(...frequencies), longest: Math.max(...stops) };
+  };
+
+  it("whooshes lower and longer than any other punch of its class, with a low drop under it", async () => {
+    const normal = await sounded((feedback) => feedback.event(event("punch_start", "right:straight:head")));
+    const power = await sounded((feedback) => feedback.event(event("punch_start", "right:straight:head"), true));
+    expect(normal.tones).toBe(0);
+    expect(power.tones).toBe(1);
+    expect(power.noises).toBeGreaterThan(normal.noises);
+    expect(power.lowest).toBeLessThan(normal.lowest * 0.6);
+    expect(power.longest).toBeGreaterThan(normal.longest * 1.5);
+    const own = await sounded((feedback) => feedback.whoosh("straight", true));
+    expect(own).toEqual(power);
+  });
+
+  it("lands with a deep boom after the thud and a sharp crack on top, and thumps the guard that takes it", async () => {
+    const normal = await sounded((feedback) => feedback.event(event("hit", "straight:head", 120)));
+    const power = await sounded((feedback) => feedback.event(event("hit", "straight:head", 120), true));
+    expect(power.tones).toBe(normal.tones + 1);
+    // The crack, and the crowd rising to it.
+    expect(power.noises).toBe(normal.noises + 2);
+    const block = await sounded((feedback) => feedback.event(event("block", "", 40)));
+    const powerBlock = await sounded((feedback) => feedback.event(event("block", "", 40), true));
+    expect(powerBlock.tones).toBe(block.tones + 1);
+  });
+});
+
 describe("the crowd", () => {
   const formants = (): number => MockAudioContext.filters.filter((filter) => (filter.Q as unknown as { value: number }).value === 5).length;
   const crowdEvent = (kind: string, amount = 0, detail = ""): Parameters<AudioFeedback["event"]>[0] => ({ event_id: 1, tick: 1, kind, actor_id: "one", target_id: "two", amount, detail, blood: 0, direction: 0, action_id: null });

@@ -43,6 +43,8 @@ export class InputController {
   setActive(active: boolean, touchShown = active): void { this.keyboard.setEnabled(active); this.gamepad.setEnabled(active); this.touch?.setEnabled(active, touchShown); }
   setKnockdown(value: boolean): void { this.gamepad.setKnockdown(value); this.touch?.setKnockdown(value); }
   onAction(listener: ((action: SemanticAction) => void) | null): void { this.actions.setListener(listener); }
+  /** A power modifier is held on any device (Alt or Option, the POWER pad, the right trigger): the next punch is a power punch. */
+  get powerHeld(): boolean { return this.keyboard.powerHeld || this.gamepad.powerHeld || this.touch?.powerHeld === true; }
   /** Called when the held movement or guard changes enough to be worth sending before the next periodic frame. */
   onHeldChange(listener: (() => void) | null): void { this.heldListener = listener; }
   private heldListener: (() => void) | null = null;

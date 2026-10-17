@@ -26,6 +26,7 @@ import { BLUE_CORNER_OUTFIT, CUTMAN_OUTFIT, RED_CORNER_OUTFIT, REFEREE_OUTFIT } 
 import { ResolutionScaler } from "./quality";
 import { RockedVision, rockedLevel } from "./rocked";
 import { planKnockoutReplay, replayTick, type ReplayPlan } from "./replay";
+import { GloveGlow, ImpactFlash, glowTexture } from "./power";
 import { GloveTrail } from "./trails";
 
 export type ArcadeInjury =
@@ -294,6 +295,9 @@ const CONTACT_KINDS = new Set(["hit", "counter_hit", "block", "perfect_block", "
 /** Events that change how a fighter moves or what the broadcast says, but carry no impact of their own. */
 const UNIMPACTFUL_KINDS = new Set(["parry", "body_collapse", "eye_shut"]);
 const BOX_CALLOUT_SECONDS = 1.2;
+/** The camera's kick from each landed power punch, in metres, and the most it builds to. */
+const POWER_SHAKE = 0.05;
+const POWER_SHAKE_LIMIT = 0.08;
 const EVENT_CALLOUTS: Readonly<Record<string, { readonly text: string; readonly seconds: number }>> = {
   parry: { text: "PARRIED", seconds: 1 },
   eye_shut: { text: "EYE SWOLLEN SHUT", seconds: 1.6 },
@@ -1016,6 +1020,13 @@ export class FightRenderer {
   private referee: BoxingGraph | null = null;
   private cornermen: [BoxingGraph, BoxingGraph] | null = null;
   private trails: GloveTrail[] = [];
+  /** A power punch's heat on each glove (seat by seat, left then right) and its flash where it lands on each fighter. */
+  private glows: GloveGlow[] = [];
+  private impactFlashes: ImpactFlash[] = [];
+  private glowMap: THREE.CanvasTexture | null = null;
+  private readonly powerHitPoint = new THREE.Vector3();
+  /** The camera's extra kick from a landed power punch, on top of the effects' shake. */
+  private powerShake = 0;
   private readonly trailGlove = new THREE.Vector3();
   private readonly cornermanPosition = new THREE.Vector3();
   private readonly cornermanVelocity = new THREE.Vector3();
@@ -1037,6 +1048,8 @@ export class FightRenderer {
   private readonly mapping: WorldMapping;
   private readonly buffer: SnapshotBuffer;
   private readonly localInput: (() => HeldInput | null) | null;
+  /** Whether the player holds a power modifier, for the HUD to say his next punch is a power punch. */
+  private readonly powerHeld: (() => boolean) | null;
   /** Sequence of the input frame that carried a press, once it has gone out; null before then. */
   private readonly inputSequenceOf: ((actionId: string) => number | null) | null;
   private readonly movement = new MovementPrediction();
@@ -1157,8 +1170,17 @@ export class FightRenderer {
     recipientIndex: number;
     puncherIndex: number;
     injury: ArcadeInjury | null;
+    /** Thrown as a power punch. */
+    power: boolean;
   }> = [];
-  onContact: ((event: CombatEvent) => void) | null = null;
+  /** A contact as it is shown, and whether a power punch made it. */
+  onContact: ((event: CombatEvent, power: boolean) => void) | null = null;
+  /**
+   * The player's own punch starting on screen, on the press's time: its whoosh belongs to this moment, not to the
+   * server's word of it a round trip later.
+   */
+  onOwnPunch: ((punchClass: PunchClass, power: boolean, actionId: string) => void) | null = null;
+  private soundedPress: string | null = null;
   onArcadeInjury: ((injury: ArcadeInjury, event: CombatEvent) => void) | null = null;
   /** The ring announcer's lines for a voice to read. */
   onAnnouncement: ((lines: readonly string[]) => void) | null = null;
@@ -1190,10 +1212,11 @@ export class FightRenderer {
     private readonly canvas: HTMLCanvasElement,
     private readonly simulation: SimulationInfo = DEFAULT_SIM,
     private readonly settings: () => Settings,
-    options: { manualClock?: boolean; localInput?: () => HeldInput | null; inputSequenceOf?: (actionId: string) => number | null } = {},
+    options: { manualClock?: boolean; localInput?: () => HeldInput | null; inputSequenceOf?: (actionId: string) => number | null; powerHeld?: () => boolean } = {},
   ) {
     this.manualClock = options.manualClock === true;
     this.localInput = options.localInput ?? null;
+    this.powerHeld = options.powerHeld ?? null;
     this.inputSequenceOf = options.inputSequenceOf ?? null;
     this.buffer = new SnapshotBuffer(8, simulation.tick_rate);
     this.mapping = worldMapping(simulation);
@@ -1272,11 +1295,15 @@ export class FightRenderer {
         blueCutman.root.visible = false;
         redCutman.root.visible = false;
         this.trails = [0x1d4ed8, 0xb91c1c].flatMap((gear) => [0, 1].map(() => new GloveTrail(new THREE.Color(gear).lerp(new THREE.Color(0xffffff), 0.55))));
+        const glowMap = glowTexture();
+        this.glowMap = glowMap;
+        this.glows = [0, 1, 2, 3].map(() => new GloveGlow(glowMap));
+        this.impactFlashes = [0, 1].map(() => new ImpactFlash(glowMap));
         // Compile the skinned materials, and the effects that start hidden (glove trails, blood on the
-        // canvas, severed parts), off the critical path (parallel shader compile where available) so
-        // neither the first frame with fighters nor the first bloody hit stalls the page.
+        // canvas, severed parts, a power punch's glow and flash), off the critical path (parallel shader
+        // compile where available) so neither the first frame with fighters nor the first bloody hit stalls the page.
         const staging = new THREE.Group();
-        staging.add(first.root, second.root, official.root, blueCorner.root, redCorner.root, blueCutman.root, redCutman.root, ...this.trails.map((trail) => trail.mesh), ...this.effects.compileStandIns());
+        staging.add(first.root, second.root, official.root, blueCorner.root, redCorner.root, blueCutman.root, redCutman.root, ...this.trails.map((trail) => trail.mesh), ...this.effects.compileStandIns(), this.glows[0]!.standIn(), ...this.impactFlashes[0]!.standIns());
         // A finisher opens a head, which a shader of its own draws, and another its shadow: the first
         // fighter's head is opened for the warm-up and closed again before it is drawn.
         const opened = first.headInjury.open;
@@ -1289,6 +1316,8 @@ export class FightRenderer {
         if (this.destroyed) return;
         this.scene.add(first.root, second.root, official.root, blueCorner.root, redCorner.root, blueCutman.root, redCutman.root);
         for (const trail of this.trails) this.scene.add(trail.mesh);
+        for (const glow of this.glows) this.scene.add(glow.mesh);
+        for (const flash of this.impactFlashes) this.scene.add(flash.group);
         this.compileShadowsOf(staging);
         first.headInjury.setOpen(opened);
       })
@@ -1794,7 +1823,7 @@ export class FightRenderer {
     if (puncherIndex >= 0) this.graphs?.[puncherIndex]?.landedHit(false);
     // The punch that floored him knocks the gum shield out again, in slow motion.
     if (event.detail.endsWith(":head") && !this.settings().reducedMotion) this.knockOutMouthpiece(recipientIndex, spray ?? event.direction, event.event_id + REPLAY_EVENT_ID_OFFSET, true);
-    this.onContact?.(event);
+    this.onContact?.(event, keyParts[3] === "power");
     this.reapplyReplayInjuries(spray);
     // What came with the punch and was held for this moment (see startReplay) is shown with it.
     for (const pending of this.pendingContacts) {
@@ -2175,6 +2204,7 @@ export class FightRenderer {
           recipientIndex,
           puncherIndex,
           injury: arcadeInjuryFor(event, snapshot.fighters[recipientIndex], snapshot.result, puncher ?? undefined),
+          power: puncher !== null && puncher.action_id === event.action_id && puncher.action_power === "power",
         });
       } else if (event.kind === "bleed") {
         this.effects.addEvent(event, this.contactPoint, this.settings().reducedMotion);
@@ -2202,6 +2232,7 @@ export class FightRenderer {
         this.effects.addEvent(presentationEvent, this.contactPoint, this.settings().reducedMotion, spray);
       }
       const currentSettings = this.settings();
+      if (pending.power && presentImpact && isHit(event) && target !== undefined && !currentSettings.reducedMotion) this.presentPowerHit(recipientIndex, presentationEvent);
       if (pending.presentImpact || UNIMPACTFUL_KINDS.has(event.kind)) this.arena.excite(CROWD_EXCITEMENT[event.kind] ?? 0);
       if (
         presentImpact
@@ -2255,10 +2286,10 @@ export class FightRenderer {
         && puncherIndex >= 0
         && ["hit", "counter_hit", "block", "perfect_block", "guard_break"].includes(event.kind)
       ) {
-        graphs?.[puncherIndex]?.landedHit(event.kind === "block" || event.kind === "perfect_block");
+        graphs?.[puncherIndex]?.landedHit(event.kind === "block" || event.kind === "perfect_block", pending.power);
       }
       // The hit that leaked through a block is heard and felt as the block it came with, not as a landed punch.
-      if (pending.presentImpact || !isHit(event)) this.onContact?.(event);
+      if (pending.presentImpact || !isHit(event)) this.onContact?.(event, pending.power === true);
     }
   }
 
@@ -2493,6 +2524,13 @@ export class FightRenderer {
         graphs[1].setObstacle(graphs[0].boxer.root.position.x, graphs[0].boxer.root.position.z);
         graphs[0].update(a, b, actorDt, seconds, current.reducedMotion, current.blood, sampledTick, headB);
         graphs[1].update(b, a, actorDt, seconds, current.reducedMotion, current.blood, sampledTick, headA);
+        const own = graphs[snapshot.fighters.findIndex((fighter) => fighter.player_id === this.viewerId)];
+        const press = own?.ownPressId ?? null;
+        if (own !== undefined && press !== null && press !== this.soundedPress) {
+          this.soundedPress = press;
+          const { punchClass, power } = own.punchKind;
+          this.onOwnPunch?.(punchClass, power, press);
+        }
         for (const [index, graph] of graphs.entries()) {
           const headBone = graph.boxer.bone("head");
           if (headBone !== null) {
@@ -2568,14 +2606,14 @@ export class FightRenderer {
       { x: this.tmpB.x, z: this.tmpB.z },
       separation,
       knockdown,
-      this.effects.shakeAmount,
+      this.effects.shakeAmount + this.powerShake,
       current.reducedMotion,
       current.camera === "close",
       downedAt,
     );
     const viewerIndex = snapshot === null ? -1 : snapshot.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
     const ownView = current.camera === "fighter" && viewerIndex >= 0 && ownViewPhase(snapshot)
-      ? this.fighterCam.update(dt, seconds, viewerIndex === 0 ? this.tmpA : this.tmpB, viewerIndex === 0 ? this.tmpB : this.tmpA, this.effects.shakeAmount, current.reducedMotion, this.camera.aspect)
+      ? this.fighterCam.update(dt, seconds, viewerIndex === 0 ? this.tmpA : this.tmpB, viewerIndex === 0 ? this.tmpB : this.tmpA, this.effects.shakeAmount + this.powerShake, current.reducedMotion, this.camera.aspect)
       : null;
     if (ownView === null) this.fighterCam.reset();
     const replaying = this.replay;
@@ -2955,14 +2993,30 @@ export class FightRenderer {
     for (const [index, graph] of graphs.entries()) {
       for (const [gloveIndex, bone] of (["gloveL", "gloveR"] as const).entries()) {
         const trail = this.trails[index * 2 + gloveIndex]!;
+        const glow = this.glows[index * 2 + gloveIndex];
         if (!graph.boxer.root.visible) {
           trail.reset();
+          glow?.reset();
           continue;
         }
         graph.boxer.rig.bones[bone].getWorldPosition(this.trailGlove);
-        trail.update(this.trailGlove, dt, this.camera.position, !reducedMotion && this.replay === null && !graph.isDown);
+        // A power punch shows its heat on the glove that throws it, to both fighters, from the load on.
+        const heat = graph.powerHeat(gloveIndex === 0 ? "left" : "right");
+        trail.update(this.trailGlove, dt, this.camera.position, !reducedMotion && this.replay === null && !graph.isDown, heat);
+        glow?.update(this.trailGlove, heat, dt, reducedMotion, this.camera);
       }
     }
+    for (const flash of this.impactFlashes) flash.update(dt, this.camera);
+    this.powerShake *= Math.pow(0.02, dt);
+  }
+
+  /** A power punch that landed: a white-hot flash where it lands and a kick of the camera. */
+  private presentPowerHit(recipientIndex: number, event: CombatEvent): void {
+    const head = !event.detail.endsWith(":body") && this.headCacheValid[recipientIndex] === true ? this.headCache[recipientIndex] : undefined;
+    if (head !== undefined) this.powerHitPoint.copy(head);
+    else this.powerHitPoint.set(this.contactPoint.x, event.detail.endsWith(":body") ? 1.05 : 1.55, this.contactPoint.z);
+    this.impactFlashes[recipientIndex]?.fire(this.powerHitPoint);
+    this.powerShake = Math.min(POWER_SHAKE_LIMIT, this.powerShake + POWER_SHAKE);
   }
 
   /** Cornermen stand on the apron outside their fighter's corner and lean in during the rest. */
@@ -3052,7 +3106,7 @@ export class FightRenderer {
       ctx.fillStyle = vignette;
       ctx.fillRect(0, 0, viewport.width, viewport.height);
     }
-    drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.frameSeconds >= this.finalRevealAt ? this.final : null, this.reconnectMs, this.simulation.tick_rate, this.roundStats, this.replay !== null ? "KNOCKOUT REPLAY" : null, this.lagWarned ? this.inputLatencyMs : null, this.frameSeconds < this.roundCalloutUntil ? `ROUND ${this.roundCalloutRound}` : this.eventCallout !== null && this.frameSeconds < this.eventCallout.until ? this.eventCallout.text : null, this.roundClock.ticks(snapshot), (player) => this.avatars.get(player), this.lastKnockdown?.knockdown.target_id ?? null, this.touchControls && snapshot.fighters.some((fighter) => fighter.player_id === this.viewerId));
+    drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.frameSeconds >= this.finalRevealAt ? this.final : null, this.reconnectMs, this.simulation.tick_rate, this.roundStats, this.replay !== null ? "KNOCKOUT REPLAY" : null, this.lagWarned ? this.inputLatencyMs : null, this.frameSeconds < this.roundCalloutUntil ? `ROUND ${this.roundCalloutRound}` : this.eventCallout !== null && this.frameSeconds < this.eventCallout.until ? this.eventCallout.text : null, this.roundClock.ticks(snapshot), (player) => this.avatars.get(player), this.lastKnockdown?.knockdown.target_id ?? null, this.touchControls && snapshot.fighters.some((fighter) => fighter.player_id === this.viewerId), this.powerHeld?.() === true);
     this.drawCaption(ctx, viewport.width, viewport.height, snapshot);
   }
 
@@ -3135,6 +3189,18 @@ export class FightRenderer {
       trail.dispose();
     }
     this.trails = [];
+    for (const glow of this.glows) {
+      this.scene.remove(glow.mesh);
+      glow.dispose();
+    }
+    this.glows = [];
+    for (const flash of this.impactFlashes) {
+      this.scene.remove(flash.group);
+      flash.dispose();
+    }
+    this.impactFlashes = [];
+    this.glowMap?.dispose();
+    this.glowMap = null;
     if (this.cornermen !== null) {
       for (const graph of this.cornermen) {
         this.scene.remove(graph.boxer.root);

@@ -1,5 +1,5 @@
 import { EYE_SHUT_TRAUMA } from "../manifest";
-import { cornerWorkLine, drawHud, shutEyeTag } from "./hud";
+import { cornerWorkLine, drawHud, POWER_TAG, shutEyeTag } from "./hud";
 import { fighter, mockHudContext, publicPlayers, snapshot } from "../test/fixtures";
 
 const players = Object.fromEntries(publicPlayers.map((player) => [player.id, player]));
@@ -40,5 +40,20 @@ describe("the corners between rounds", () => {
     const resting = { ...base, phase: "rest" as const, phase_ticks_remaining: 300, fighters: [{ ...base.fighters[0], corner_choice: "swelling" as const }, base.fighters[1]] as const };
     drawHud(mockHudContext(texts), 1280, 720, resting, players, "two", null, 0);
     expect(texts).toContain("Blue: icing the swelling");
+  });
+});
+
+describe("a power punch armed", () => {
+  it("is shown on the player's own plate while he holds the power modifier in the fight, and to nobody else", () => {
+    const shown = (viewerId: string, powerHeld: boolean, phase: "fight" | "countdown" | "rest" = "fight"): number => {
+      const texts: string[] = [];
+      drawHud(mockHudContext(texts), 1280, 720, { ...snapshot(), phase }, players, viewerId, null, 0, 30, null, null, null, null, null, null, null, false, powerHeld);
+      return texts.filter((text) => text === POWER_TAG).length;
+    };
+    expect(shown("one", true)).toBe(1);
+    expect(shown("one", true, "countdown")).toBe(1);
+    expect(shown("one", false)).toBe(0);
+    expect(shown("one", true, "rest")).toBe(0);
+    expect(shown("spectator", true)).toBe(0);
   });
 });

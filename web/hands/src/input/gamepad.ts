@@ -27,6 +27,7 @@ export class GamepadInput {
   private defense: HeldDefense = "none";
   private knockdown = false;
   private enabled = true;
+  private trigger = false;
   private heldListener: (() => void) | null = null;
 
   private readonly disconnect = (event: GamepadEvent): void => {
@@ -78,7 +79,8 @@ export class GamepadInput {
     this.defense = defense;
     if (changed) this.heldListener?.();
 
-    const gesture = this.gesture.update(pad.axes[2] ?? 0, pad.axes[3] ?? 0, pressed(pad, 6), pressed(pad, 7));
+    this.trigger = pressed(pad, 7);
+    const gesture = this.gesture.update(pad.axes[2] ?? 0, pad.axes[3] ?? 0, pressed(pad, 6), this.trigger);
     if (gesture !== null) this.push(gesture);
 
     const faceEdge = FACE_CLASSES.some((_class, index) => pressed(pad, index) && !this.previous.has(index));
@@ -131,6 +133,11 @@ export class GamepadInput {
     this.knockdown = value;
   }
 
+  /** The right trigger is held: the next punch is a power punch. */
+  get powerHeld(): boolean {
+    return this.enabled && this.trigger;
+  }
+
   setEnabled(value: boolean): void {
     this.enabled = value;
     if (!value) this.reset();
@@ -145,6 +152,7 @@ export class GamepadInput {
     this.currentId = null;
     this.moveX = this.moveY = 0;
     this.defense = "none";
+    this.trigger = false;
     this.queue.length = 0;
     this.sharedActions?.clearSource("gamepad");
     this.previous.clear();

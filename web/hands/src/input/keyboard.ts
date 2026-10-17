@@ -55,6 +55,8 @@ export class KeyboardInput {
   // The key's own flags count too: a modifier pressed before the page had focus is held all the same.
   private hasShift(event: KeyboardEvent): boolean { return event.shiftKey || this.held.has("ShiftLeft") || this.held.has("ShiftRight"); }
   private hasAlt(event: KeyboardEvent): boolean { return event.altKey || this.held.has("AltLeft") || this.held.has("AltRight"); }
+  /** Alt (Option on a Mac) is held: the next punch is a power punch. */
+  get powerHeld(): boolean { return this.enabled && (this.held.has("AltLeft") || this.held.has("AltRight")); }
   private push(action: SemanticAction): void { if (this.sharedActions === undefined) pushActionIntent(this.queue, action, this.maximumQueue); else this.sharedActions.push("keyboard", action); }
   private clearActions(): void { this.queue.length = 0; this.sharedActions?.clear(); }
   /** Off drops queued presses but keeps the held keys; the frame stays neutral until input is on again. */

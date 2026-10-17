@@ -167,6 +167,11 @@ export class TouchInput {
     if (changed) this.heldListener?.();
   }
 
+  /** The POWER pad is held: the next punch is a power punch. */
+  get powerHeld(): boolean {
+    return this.enabled && this.power;
+  }
+
   /** Called when the stick moves or a guard is held or let go. */
   onHeldChange(listener: (() => void) | null): void {
     this.heldListener = listener;

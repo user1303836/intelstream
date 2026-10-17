@@ -297,6 +297,22 @@ describe("the knockout replay's fall", () => {
   }, 30_000);
 });
 
+describe("a contact's power", () => {
+  it("is taken from the punch the snapshot shows the puncher throwing, matched by its instance", () => {
+    const pending = (power: "power" | "normal", actionId: string): boolean => {
+      const stub = pushStub(fakeGraphs());
+      const base = snapshot(30);
+      const thrown = { ...base.fighters[0], action: "straight" as const, action_id: "p1", action_power: power, action_key: `straight:right:head:${power}`, action_contact_tick: 30 };
+      methods.push.call(stub, { ...base, fighters: [thrown, base.fighters[1]], events: [combat("hit", { event_id: 4, tick: 30, amount: 90, detail: "straight:head", action_id: actionId })] });
+      return (stub.pendingContacts as { power: boolean }[])[0]!.power;
+    };
+    expect(pending("power", "p1")).toBe(true);
+    expect(pending("normal", "p1")).toBe(false);
+    // A contact belonging to some other punch than the one the puncher now throws is not taken for a power punch.
+    expect(pending("power", "p0")).toBe(false);
+  });
+});
+
 describe("the player's own slip, weave or pull behind his punch", () => {
   const predictAction = (FightRenderer.prototype as unknown as { predictAction(this: unknown, action: SemanticAction): void }).predictAction;
   const stub = (graph: object, latest: EngineSnapshot = snapshot(40)) => ({

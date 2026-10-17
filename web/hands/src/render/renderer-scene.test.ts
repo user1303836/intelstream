@@ -82,6 +82,7 @@ function frame(state: EngineSnapshot, overrides: Record<string, unknown> = {}) {
     downedPoolAccumulators: [0, 0],
     downedPoolCounts: [0, 0],
     effects: { drip: vi.fn(), stopDrip: vi.fn(), pool: vi.fn(), update: vi.fn(), shakeAmount: 0, setViewDistance: vi.fn() },
+    powerShake: 0,
     updateIdleFighters: vi.fn(),
     updateTrails: vi.fn(),
     updateReferee: vi.fn(),
@@ -152,6 +153,49 @@ describe("blood from a fighter held on the ropes", () => {
     const [, at] = addEvent.mock.calls[0]! as [unknown, THREE.Vector3];
     expect(at.x).toBeCloseTo(2.33, 6);
     expect(at.z).toBeCloseTo(0.05, 6);
+  });
+});
+
+describe("a landed power punch", () => {
+  const event = { event_id: 9, tick: 40, kind: "hit", actor_id: "one", target_id: "two", amount: 140, detail: "straight:head", blood: 30, direction: 1, action_id: "p1" };
+  const fire = (power: boolean, reducedMotion = false) => {
+    const flashes = [{ fire: vi.fn() }, { fire: vi.fn() }];
+    const landedHit = vi.fn();
+    const heard: [string, boolean][] = [];
+    const head = new THREE.Vector3(0.6, 1.52, 0.1);
+    const stub = Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, {
+      pendingContacts: [{ event, presentationEvent: event, presentImpact: true, reactAmount: 140, contactTick: 40, recipientIndex: 1, puncherIndex: 0, injury: null, power }],
+      buffer: { latest: () => snapshot() }, presentFightEvent: vi.fn(), mapping: worldMapping(SIMULATION), contactPoint: new THREE.Vector3(), mouthPoint: new THREE.Vector3(),
+      effects: { addEvent: vi.fn(), spawnTeeth: vi.fn() }, settings: () => ({ reducedMotion, blood: "full" }), arena: { excite: vi.fn() }, viewerId: null,
+      arcadeInjuries: [null, null], graphs: [{ currentRoot: { x: -0.6, z: 0 }, landedHit }, { currentRoot: { x: 0.6, z: 0.1 }, react: vi.fn() }], headWorldPose: () => null, knockOutMouthpiece: vi.fn(),
+      onContact: (shown: { kind: string }, wasPower: boolean) => heard.push([shown.kind, wasPower]), viewerHitFlash: 0,
+      impactFlashes: flashes, powerShake: 0, powerHitPoint: new THREE.Vector3(), headCache: [new THREE.Vector3(), head], headCacheValid: [true, true],
+    });
+    (FightRenderer.prototype as unknown as { fireContacts(this: unknown, tick: number): void }).fireContacts.call(stub, 50);
+    return { flashes, landedHit, heard, shake: stub.powerShake as number, head };
+  };
+
+  it("flashes on the head it lands on, kicks the camera, holds the glove there longest and is heard as one", () => {
+    const power = fire(true);
+    expect(power.flashes[1]!.fire).toHaveBeenCalledTimes(1);
+    expect((power.flashes[1]!.fire.mock.calls[0]![0] as THREE.Vector3).toArray()).toEqual(power.head.toArray());
+    expect(power.flashes[0]!.fire).not.toHaveBeenCalled();
+    expect(power.shake).toBeGreaterThan(0);
+    expect(power.landedHit).toHaveBeenCalledWith(false, true);
+    expect(power.heard).toEqual([["hit", true]]);
+    const normal = fire(false);
+    expect(normal.flashes[1]!.fire).not.toHaveBeenCalled();
+    expect(normal.shake).toBe(0);
+    expect(normal.landedHit).toHaveBeenCalledWith(false, false);
+    expect(normal.heard).toEqual([["hit", false]]);
+  });
+
+  it("neither flashes nor shakes with motion reduced, and still sounds and holds as one", () => {
+    const calm = fire(true, true);
+    expect(calm.flashes[1]!.fire).not.toHaveBeenCalled();
+    expect(calm.shake).toBe(0);
+    expect(calm.landedHit).toHaveBeenCalledWith(false, true);
+    expect(calm.heard).toEqual([["hit", true]]);
   });
 });
 

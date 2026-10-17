@@ -8,6 +8,8 @@ import { monogram } from "./avatars";
 export type PictureSource = (player: PublicPlayer) => CanvasImageSource | null;
 
 export const HUD_MAX_GUARD = 700;
+/** What the player's own plate says while he holds the power modifier. */
+export const POWER_TAG = "POWER ARMED";
 export const HUD_MAX_POISE = 600;
 export const HUD_MAX_CONDITIONING = 1000;
 export const scoreTotal = (scores: readonly number[]): number => scores.reduce((sum, score) => sum + score, 0);
@@ -135,6 +137,26 @@ const CORNER_WORK: Readonly<Record<CornerChoice, string>> = {
 export function cornerWorkLine(fighters: readonly FighterSnapshot[]): string | null {
   const told = fighters.flatMap((fighter, seat) => (fighter.corner_choice === null ? [] : [`${seat === 0 ? "Blue" : "Red"}: ${CORNER_WORK[fighter.corner_choice]}`]));
   return told.length === 0 ? null : told.join("  ·  ");
+}
+
+/** The player's own plate says his next punch is a power punch while he holds the power modifier. */
+function powerTag(ctx: CanvasRenderingContext2D, x: number, y: number, mirror: boolean): void {
+  ctx.save();
+  ctx.font = "900 12px Inter, system-ui, sans-serif";
+  const width = ctx.measureText(POWER_TAG).width + 16;
+  const left = mirror ? x - width : x;
+  ctx.shadowColor = "rgba(255,120,30,0.9)";
+  ctx.shadowBlur = 12;
+  const fill = ctx.createLinearGradient(0, y, 0, y + 18);
+  fill.addColorStop(0, "#ffd36b");
+  fill.addColorStop(1, "#ff6a1a");
+  ctx.fillStyle = fill;
+  ctx.fillRect(left, y, width, 18);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = "#2a0c00";
+  ctx.textAlign = "left";
+  ctx.fillText(POWER_TAG, left + 8, y + 13);
+  ctx.restore();
 }
 
 function warningTag(ctx: CanvasRenderingContext2D, x: number, y: number, text: string, mirror: boolean): void {
@@ -562,6 +584,8 @@ export function drawHud(
   countTarget: string | null = null,
   /** The touch pads are up over the right of the screen. */
   touch = false,
+  /** The viewer holds the power modifier: his next punch is a power punch. */
+  powerHeld = false,
 ): void {
   ctx.save();
   const scale = hudScale(width, height);
@@ -604,6 +628,7 @@ export function drawHud(
     broadcastBar(ctx, mirror ? x + plateWidth - 8 - miniWidth : x + 32 + miniWidth, miniY, miniWidth, bars[3]!, mirror);
     const eyeTag = shutEyeTag(fighter.trauma);
     if (eyeTag !== null) warningTag(ctx, mirror ? x + plateWidth - 20 : x + 20, miniY - 34, eyeTag, mirror);
+    if (powerHeld && fighter.player_id === viewerId && (snapshot.phase === "fight" || snapshot.phase === "countdown")) powerTag(ctx, mirror ? x + plateWidth - 20 : x + 20, miniY - (eyeTag === null ? 38 : 60), mirror);
   });
 
   const seconds = Math.floor((clockTicks ?? snapshot.phase_ticks_remaining) / tickRate);
