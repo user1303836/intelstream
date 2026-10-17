@@ -1,5 +1,6 @@
 import * as THREE from "three";
-import { fighter as baseFighter, snapshot as baseSnapshot } from "../test/fixtures";
+import { COUNT_TICKS } from "../manifest";
+import { fighter as baseFighter, referee as baseReferee, snapshot as baseSnapshot } from "../test/fixtures";
 import type { EngineSnapshot, FighterSnapshot } from "../types";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
 import { FightRenderer, refereeSpacing } from "./renderer";
@@ -44,7 +45,7 @@ const closest = (from: readonly THREE.Vector3[], to: readonly THREE.Vector3[]): 
 describe("referee clinch break", () => {
   const updateReferee = (FightRenderer.prototype as unknown as { updateReferee: (dt: number, time: number, snapshot: EngineSnapshot | null, sampledTick: number) => void }).updateReferee;
 
-  it.each([["behind the fighters", -Math.PI / 2], ["almost in line with them", -0.3], ["in front of them", 0.9]])("steps in from %s and puts a palm on each fighter's chest", (_from, angle) => {
+  it.each([["behind the fighters", 62], ["in front of them", -62]])("breaks them from %s, where the engine stands him, with a palm on each fighter's chest", (_from, side) => {
     const referee = official();
     const graph = new BoxingGraph(referee, mapping, { referee: true });
     const blue = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
@@ -55,7 +56,8 @@ describe("referee clinch break", () => {
     // stoppage, body or severed head on the canvas to keep him elsewhere.
     const renderer = {
       referee: graph, mapping, tmpA: new THREE.Vector3(), tmpB: new THREE.Vector3(),
-      refereePosition: new THREE.Vector3(Math.cos(angle) * 2, 0, Math.sin(angle) * 2), refereeAway: new THREE.Vector3(), refereeVelocity: new THREE.Vector3(), refereeYaw: 0,
+      refereePosition: new THREE.Vector3(0, 0, -mapping.z(side) * 3), refereeAway: new THREE.Vector3(), refereeVelocity: new THREE.Vector3(), refereeYaw: 0,
+      pendingRefereeEvents: [], settings: () => ({ reducedMotion: false, blood: "full" }),
       replay: null, ceremony: null, stoppageWinner: -1, stoppageRaiseAt: Number.POSITIVE_INFINITY, frameSeconds: 0, blobShadows: [], graphs: null,
       effects: { severedHeadPosition: () => false }, closeUpTarget: new THREE.Vector3(), bodyPoint: new THREE.Vector3(),
     };
@@ -66,7 +68,9 @@ describe("referee clinch break", () => {
       renderer.tmpB.set(mapping.x(two.x), 0, mapping.z(two.y));
       blueGraph.update(one, two, 1 / 60, tick / 30, false, "full", tick);
       redGraph.update(two, one, 1 / 60, tick / 30, false, "full", tick);
-      updateReferee.call(renderer, 1 / 60, tick / 30, { ...baseSnapshot(Math.ceil(tick)), fighters: [one, two] }, tick);
+      // Beside the clinch, as far off the line as the engine's body for him allows, facing it.
+      const official = { ...baseReferee(0, side), facing_x: 0, facing_y: side > 0 ? -1000 : 1000 };
+      updateReferee.call(renderer, 1 / 60, tick / 30, { ...baseSnapshot(Math.ceil(tick)), fighters: [one, two], referee: official }, tick);
     };
     // Tied up at the hold distance, then the engine's break pushes them apart and the referee_break event arrives.
     const heldBlue: FighterSnapshot = { ...baseFighter("one"), x: -30, y: 0, facing_x: 1000, facing_y: 0, clinch_ticks: 30 };
@@ -104,8 +108,8 @@ describe("referee count", () => {
     const graph = new BoxingGraph(referee, mapping, { referee: true });
     const self: FighterSnapshot = { ...baseFighter("referee"), x: 0, y: 160, facing_x: 0, facing_y: -1000 };
     const focus: FighterSnapshot = { ...baseFighter("focus"), x: 0, y: -140 };
-    // Knocked down on tick 308: the engine counts a number every 30 ticks after that, and the numbers
-    // change a quarter of a second past each whole second of the clock (where a free-running beat sits high).
+    // Knocked down on tick 308: the engine counts a number every COUNT_TICKS after that, and the numbers
+    // change off the beat of the clock's whole seconds (where a free-running beat sits high).
     const knockdownTick = 308;
     const heights: number[] = [];
     const changes: number[] = [];
@@ -115,7 +119,7 @@ describe("referee count", () => {
       renderTick += 0.5;
       const presentedTick = Math.ceil(renderTick);
       const counting = presentedTick >= knockdownTick;
-      const count = counting ? Math.floor((presentedTick - knockdownTick) / 30) : 0;
+      const count = counting ? Math.floor((presentedTick - knockdownTick) / COUNT_TICKS) : 0;
       if (counting && count !== shown) {
         if (shown >= 0) changes.push(frame);
         shown = count;

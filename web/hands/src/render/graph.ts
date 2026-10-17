@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { GLTFLoader, type GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
-import { GLOVE_HITBOX_RADIUS, GUARD_BLOCK_MINIMUM, HURTBOXES, cancelsRecovery, punchTiming, recoveryCancelAge, totalTicks, type PunchTiming } from "../manifest";
+import { COUNT_TICKS, GLOVE_HITBOX_RADIUS, GUARD_BLOCK_MINIMUM, HURTBOXES, cancelsRecovery, punchTiming, recoveryCancelAge, totalTicks, type PunchTiming } from "../manifest";
 import type { BloodLevel } from "../settings";
 import type { CombatEvent, FighterSnapshot, Hand, Power, PunchAction, PunchClass, SemanticAction, Target } from "../types";
 import { FIGHTER_GLB_GZIP_BASE64 } from "../assets/fighter-glb";
@@ -145,8 +145,9 @@ export function pressOntoCanvas(material: THREE.Material): void {
 }
 
 export function applyFighterSkin(target: THREE.Object3D, palette: BoxerPaletteColors): AppliedFighterMaterials {
-  // An official never takes damage or sweats: plain materials, injury state that shades nothing, and no shadow.
+  // An official never sweats: plain materials and no shadow, and unless he can be hurt, injury state that shades nothing.
   const official = palette.outfit !== undefined;
+  const wounded = !official || palette.wounds === true;
   const skin: THREE.MeshStandardMaterial[] = [];
   const owned: THREE.Material[] = [];
   const bySource = new Map<string, THREE.MeshStandardMaterial>();
@@ -176,8 +177,8 @@ export function applyFighterSkin(target: THREE.Object3D, palette: BoxerPaletteCo
       bySource.set(sourceName, material);
       owned.push(material);
       if (isSkin) skin.push(material);
-      if (sourceName === "MHeadMat0") headInjury = new InjuryShading(official ? null : material, HEAD_SITES, { core: HEAD_SWELL_CORE, lids: EYE_LIDS });
-      if (sourceName === "MBodyMat0") bodyInjury = new InjuryShading(official ? null : material, BODY_SITES, { core: BODY_SWELL_CORE, wash: true });
+      if (sourceName === "MHeadMat0") headInjury = new InjuryShading(wounded ? material : null, HEAD_SITES, { core: HEAD_SWELL_CORE, lids: EYE_LIDS });
+      if (sourceName === "MBodyMat0") bodyInjury = new InjuryShading(wounded ? material : null, BODY_SITES, { core: BODY_SWELL_CORE, wash: true });
       const part = OUTFIT_PARTS[sourceName];
       if (outfit !== undefined && part !== undefined) applyOutfitShading(material, part, outfit);
       else if (sourceName === "PantsMat0") trunksBlood = wearCornerColour(material, false, "trunks");
@@ -205,6 +206,8 @@ export interface BoxerPaletteColors {
    * no injury shading, no sweat and no shadow (see applyFighterSkin).
    */
   readonly outfit?: OfficialOutfit;
+  /** An official who can be punched: his face and body shade their injuries like a fighter's. */
+  readonly wounds?: boolean;
 }
 
 const OUTFIT_PARTS: Readonly<Record<string, OutfitPart>> = { MHeadMat0: "head", MBodyMat0: "body", ShoesMat0: "shoes", PantsMat0: "pants" };
@@ -797,7 +800,7 @@ export class BoxingGraph {
   private refereeCounting = false;
   /** Render tick the referee's count last changed on; the counting arm is timed from it. */
   private countChangedTick: number | null = null;
-  /** Knockout physics; officials have none. */
+  /** Knockout physics; officials have none, except a referee who can be knocked out. */
   private readonly ragdoll: KnockoutRagdoll | null;
   /** Knocked out on his feet (a flash knockout): down although the engine never counts him. */
   private forcedDown = false;
@@ -810,7 +813,7 @@ export class BoxingGraph {
   /** Seconds since the knockout physics handed the body to the get-up, which blends in from where it left it. */
   private riseBlendAge = 0;
 
-  constructor(boxer: SkinnedBoxer, private readonly mapping: WorldMapping, options: { referee?: boolean } = {}) {
+  constructor(boxer: SkinnedBoxer, private readonly mapping: WorldMapping, options: { referee?: boolean; knockout?: boolean } = {}) {
     this.boxer = boxer;
     this.referee = options.referee === true;
     this.solver = new PoseSolver(boxer.rig);
@@ -822,7 +825,7 @@ export class BoxingGraph {
     boxer.rig.bones.gloveL.add(this.enswell.group);
     this.bottle = buildBottle();
     boxer.rig.bones.gloveL.add(this.bottle.group);
-    this.ragdoll = this.referee ? null : new KnockoutRagdoll(boxer.rig, boxer.root);
+    this.ragdoll = this.referee && options.knockout !== true ? null : new KnockoutRagdoll(boxer.rig, boxer.root);
   }
 
   /** The knockout replay runs the recorded fall again rather than a new one. */
@@ -1692,34 +1695,8 @@ export class BoxingGraph {
       torso.hipsRoll -= toRopes.x * ROPE_LEAN_ROLL * this.ropeLean;
     }
 
-    // Reactions.
-    torso.headOffset.add(this.headKick.value);
-    torso.headPitch += -this.headKick.value.z * 2.4 + this.headKick.value.y * 1.6;
-    torso.headYaw += this.headKick.value.x * 2.2;
-    torso.headRoll += -this.headKick.value.x * 0.9;
-    torso.spinePitch += this.torsoKick.value.x;
-    torso.spineRoll += this.torsoKick.value.z * 0.5;
-    torso.hips.x += this.rootKick.value.x;
-    torso.hips.z += this.rootKick.value.z;
-    torso.hips.y -= Math.max(0, this.torsoKick.value.x) * 0.08;
-    if (this.torsoKick.value.x > 0.05) {
-      leadHand.position.y -= this.torsoKick.value.x * 0.25;
-      rearHand.position.y -= this.torsoKick.value.x * 0.2;
-      leadHand.position.z -= this.torsoKick.value.x * 0.1;
-    }
-    // A body uppercut lifts the fighter onto his toes.
-    const lift = Math.max(0, this.rootKick.value.y);
-    torso.hips.y += lift;
-    lead.heel += lift * 6;
-    rear.heel += lift * 6;
-    const cover = this.coverKick.value.x;
-    if (Math.abs(cover) > 0.002) {
-      const near = cover > 0 ? this.hand.R : this.hand.L;
-      near.position.y -= Math.abs(cover) * 0.9;
-      near.position.x += cover * 0.2;
-      near.position.z -= Math.abs(cover) * 0.25;
-      near.pole.y -= Math.abs(cover) * 3;
-    }
+    // Reactions; the referee's go on top of his own posture, which would otherwise set them aside.
+    if (!this.referee) this.applyReactions(leadHand, rearHand, lead, rear);
 
     // Punch.
     if (this.punchActive) {
@@ -1730,7 +1707,10 @@ export class BoxingGraph {
       else shrugRear = shrug;
     }
 
-    if (this.referee) this.applyRefereePose(mirror, leadHand, rearHand, lead, rear, headRest, time, sampledTick);
+    if (this.referee) {
+      this.applyRefereePose(mirror, leadHand, rearHand, lead, rear, headRest, time, sampledTick, fighter.stunned_ticks);
+      this.applyReactions(leadHand, rearHand, lead, rear);
+    }
 
     // Special states.
     if (this.clinchWeight > 0.001) this.applyClinchPose(this.clinchWeight, time, mirror, fighter, opponent, leadHand, rearHand, headRest);
@@ -2281,6 +2261,38 @@ export class BoxingGraph {
     return e;
   }
 
+  /** The spring kicks a punch left in the body: the head snapped back, the trunk bent round it, the feet knocked off line. */
+  private applyReactions(leadHand: HandTarget, rearHand: HandTarget, lead: { heel: number }, rear: { heel: number }): void {
+    const torso = this.torso;
+    torso.headOffset.add(this.headKick.value);
+    torso.headPitch += -this.headKick.value.z * 2.4 + this.headKick.value.y * 1.6;
+    torso.headYaw += this.headKick.value.x * 2.2;
+    torso.headRoll += -this.headKick.value.x * 0.9;
+    torso.spinePitch += this.torsoKick.value.x;
+    torso.spineRoll += this.torsoKick.value.z * 0.5;
+    torso.hips.x += this.rootKick.value.x;
+    torso.hips.z += this.rootKick.value.z;
+    torso.hips.y -= Math.max(0, this.torsoKick.value.x) * 0.08;
+    if (this.torsoKick.value.x > 0.05) {
+      leadHand.position.y -= this.torsoKick.value.x * 0.25;
+      rearHand.position.y -= this.torsoKick.value.x * 0.2;
+      leadHand.position.z -= this.torsoKick.value.x * 0.1;
+    }
+    // A body uppercut lifts the fighter onto his toes.
+    const lift = Math.max(0, this.rootKick.value.y);
+    torso.hips.y += lift;
+    lead.heel += lift * 6;
+    rear.heel += lift * 6;
+    const cover = this.coverKick.value.x;
+    if (Math.abs(cover) > 0.002) {
+      const near = cover > 0 ? this.hand.R : this.hand.L;
+      near.position.y -= Math.abs(cover) * 0.9;
+      near.position.x += cover * 0.2;
+      near.position.z -= Math.abs(cover) * 0.25;
+      near.pole.y -= Math.abs(cover) * 3;
+    }
+  }
+
   /** Square, hands-low official's posture with a raised counting arm during knockdowns. */
   private applyRefereePose(
     mirror: number,
@@ -2291,6 +2303,7 @@ export class BoxingGraph {
     headRest: THREE.Vector3,
     time: number,
     sampledTick: number,
+    reeling = 0,
   ): void {
     const torso = this.torso;
     torso.hipsYaw = 0;
@@ -2327,6 +2340,20 @@ export class BoxingGraph {
       torso.spinePitch += 0.12;
       torso.headPitch += 0.18;
       leadHand.position.set(0.24 * mirror, 0.95, 0.08);
+    }
+    if (reeling > 0) {
+      // Punched, he staggers where he stands: knees going, head lolling, hands out for balance.
+      const reel = Math.min(1, reeling / 12);
+      const wobble = Math.sin(time * 9.5);
+      torso.hips.y -= 0.09 * reel;
+      torso.hips.x += wobble * 0.05 * reel;
+      torso.spineRoll += wobble * 0.18 * reel;
+      torso.headRoll -= wobble * 0.35 * reel;
+      torso.headPitch += 0.25 * reel;
+      leadHand.position.x += 0.18 * mirror * reel;
+      rearHand.position.x -= 0.18 * mirror * reel;
+      leadHand.position.y -= 0.1 * reel;
+      rearHand.position.y -= 0.1 * reel;
     }
   }
 
@@ -3183,7 +3210,6 @@ const STOOL_SEAT_HEIGHT = 0.44;
 /** Seated weight below which a rising fighter's hips are about 0.2 m clear of the seat. */
 const STOOL_CLEAR_SEATED = 0.2;
 /** The engine counts a knockdown one number a second; the counting arm starts down this far into each second. */
-const COUNT_TICKS = 30;
 const COUNT_DROP_START = 0.75;
 /** Where the referee's palms press to break a clinch: on each fighter's chest, this far toward the other from his centre, at sternum height. */
 const BREAK_CHEST_DEPTH = 0.26;

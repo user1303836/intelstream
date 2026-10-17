@@ -5,7 +5,7 @@ import { TouchInput, coarsePointer } from "./input/touch";
 import { FightRenderer } from "./render/renderer";
 import { CAMERA_MODES } from "./settings";
 import { FIGHTER_STYLES } from "./protocol";
-import { PROTOCOL_VERSION, type CombatEvent, type EngineSnapshot, type FighterSnapshot, type FighterStyle, type PublicPlayer } from "./types";
+import { PROTOCOL_VERSION, type CombatEvent, type EngineSnapshot, type FighterSnapshot, type FighterStyle, type PublicPlayer, type RefereeSnapshot } from "./types";
 
 type Draft = { -readonly [K in keyof FighterSnapshot]: FighterSnapshot[K] };
 
@@ -253,11 +253,37 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
       }
       events.length = 0;
     }
+    // `referee=down`: the referee wanders into the line between them and takes a hook, reels, then a power uppercut
+    // puts him down for good and the bout stops for the replay of his fall.
+    let official: RefereeSnapshot = { x: 0, y: 140, facing_x: 0, facing_y: -1000, velocity_x: 0, velocity_y: 0, stunned_ticks: 0, alive: true, trauma: { head: 0, body: 0, left_eye: 0, right_eye: 0, left_cut: 0, right_cut: 0, swelling: 0, bleeding: 0 } };
+    let refereeDownFor = 0;
+    if (search.get("referee") === "down") {
+      events.length = 0;
+      const blows = [{ at: 1.2, punch: "hook" as const, hand: "left" as const, power: "normal" as const, amount: 96, cut: 260 }, { at: 2.8, punch: "uppercut" as const, hand: "right" as const, power: "power" as const, amount: 160, cut: 520 }];
+      for (const [fighter, x, sign] of [[one, -130, 1], [two, 150, -1]] as const) {
+        Object.assign(fighter, { x, y: 0, velocity_x: 0, velocity_y: 0, facing: sign, facing_x: sign * 1000, facing_y: 0, action: null, taunt_ticks: 0, stunned_ticks: 0, clinch_ticks: 0, is_downed: false, defense: "none" });
+      }
+      official = { ...official, x: -55, y: 8, facing_x: 0, facing_y: 1000 };
+      for (const [index, blow] of blows.entries()) {
+        const start = blow.at - 0.2;
+        if (t >= start && t < blow.at + 0.35) {
+          Object.assign(one, { action: blow.punch, action_hand: blow.hand, action_target: "head", action_power: blow.power, action_id: `ref-${index}`, action_key: `${blow.punch}:${blow.hand}:head:${blow.power}`, action_start_tick: Math.round(start * 30), action_startup_ticks: 6, action_active_ticks: 2, action_recovery_ticks: 8 });
+        }
+        if (t >= blow.at && t < blow.at + 0.25) {
+          events.push({ event_id: 900_000 + index * 2, tick: Math.round(blow.at * 30), kind: "referee_hit", actor_id: one.player_id, target_id: "referee", amount: blow.amount, detail: `${blow.punch}:head`, blood: 60, direction: 1, action_id: `ref-${index}` });
+          if (index === blows.length - 1) events.push({ event_id: 900_001 + index * 2, tick: Math.round(blow.at * 30), kind: "referee_down", actor_id: one.player_id, target_id: "referee", amount: 0, detail: "", blood: 0, direction: 0, action_id: `ref-${index}` });
+        }
+        if (t >= blow.at) official = { ...official, trauma: { ...official.trauma, head: official.trauma.head + blow.amount, right_eye: official.trauma.right_eye + 200, right_cut: blow.cut, bleeding: blow.cut / 2, swelling: official.trauma.swelling + 150 } };
+      }
+      if (t >= blows[0]!.at && t < blows[0]!.at + 0.8) official = { ...official, stunned_ticks: 10 };
+      if (t >= blows[1]!.at) official = { ...official, alive: false };
+      refereeDownFor = t >= blows[1]!.at ? Math.max(0, blows[1]!.at + 5 - t) : 0;
+    }
     const flashOver = flash && t >= 2.5;
     const snapshot: EngineSnapshot = {
-      tick, phase: decided || flashOver ? "complete" : introducing ? "countdown" : forcedRest ? "rest" : "fight", round_number: search.get("intro") === "1" ? 1 : 3, phase_ticks_remaining: decided ? 0 : introducing ? Math.max(0, 90 - tick) : forcedRest ? Math.max(0, 450 - tick) : Math.max(0, 5400 - tick),
+      tick, phase: decided || flashOver ? "complete" : introducing ? "countdown" : forcedRest ? "rest" : refereeDownFor > 0 ? "referee_down" : "fight", round_number: search.get("intro") === "1" ? 1 : 3, phase_ticks_remaining: decided ? 0 : introducing ? Math.max(0, 90 - tick) : forcedRest ? Math.max(0, 450 - tick) : Math.max(0, 5400 - tick),
       fighters: [{ ...one }, { ...two }],
-      referee: { x: 0, y: 140, facing_x: 0, facing_y: -1000, velocity_x: 0, velocity_y: 0, stunned_ticks: 0, alive: true, trauma: { head: 0, body: 0, left_eye: 0, right_eye: 0, left_cut: 0, right_cut: 0, swelling: 0, bleeding: 0 } },
+      referee: official,
       events,
       result: flashOver ? {
         match_id: "fixture", activity_instance_id: "fixture", guild_id: "fixture", player_one_id: one.player_id, player_two_id: two.player_id, winner_id: one.player_id,

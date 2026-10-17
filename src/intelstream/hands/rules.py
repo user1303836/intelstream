@@ -49,6 +49,8 @@ EVASION_STAMINA: int = _MANIFEST["evasion"]["stamina"]
 RECOVERY_CANCEL_PERCENT: int = _MANIFEST["combos"]["recovery_cancel_percent"]
 REFEREE_WALK_SPEED: int = _MANIFEST["knockdown"]["referee_walk_speed"]
 MANDATORY_COUNT: int = _MANIFEST["knockdown"]["mandatory_count"]
+# The referee counts quicker than the clock: two thirds of a second a number.
+COUNT_TICK_INTERVAL: int = _MANIFEST["knockdown"]["count_ticks"]
 BOX_PAUSE_TICKS: int = _MANIFEST["knockdown"]["box_pause_ticks"]
 TIRED_STARTUP_TICKS: int = _MANIFEST["tired"]["startup_ticks"]
 TIRED_RECOVERY_TICKS: int = _MANIFEST["tired"]["recovery_ticks"]

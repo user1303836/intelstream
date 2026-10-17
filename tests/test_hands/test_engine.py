@@ -14,7 +14,6 @@ import pytest
 
 from intelstream.hands import rules
 from intelstream.hands.engine import (
-    COUNT_TICK_INTERVAL,
     MAX_PENDING_ACTIONS,
     PERFECT_BLOCK_TICKS,
     TAUNT_TICKS,
@@ -32,6 +31,7 @@ from intelstream.hands.rules import (
     BOX_PAUSE_TICKS,
     CLINCH_HOLD_DISTANCE,
     CORNER_TREATMENTS,
+    COUNT_TICK_INTERVAL,
     CUT_OPENS_EYE,
     FIGHTER_RADIUS,
     FLINCH_MINIMUM_DAMAGE,

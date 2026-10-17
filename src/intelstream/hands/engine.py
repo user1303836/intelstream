@@ -26,6 +26,7 @@ from intelstream.hands.rules import (
     CLINCH_HOLD_DISTANCE,
     COMPATIBLE_COMBO_CHAINS,
     CORNER_TREATMENTS,
+    COUNT_TICK_INTERVAL,
     COUNTDOWN_TICKS,
     CUT_OPENS_EYE,
     CUT_PER_DAMAGE_PERCENT,
@@ -153,8 +154,6 @@ ROPE_OVERLAP_STEP: Final = 8
 CLINCH_STARTUP_TICKS: Final = 6
 CLINCH_TICKS: Final = 24
 FOUL_RECOVERY_TICKS: Final = 30
-# The referee counts quicker than the clock: two thirds of a second a number.
-COUNT_TICK_INTERVAL: Final = 20
 MAX_PENDING_ACTIONS: Final = 1
 GET_UP_WINDOW_START_OFFSET: Final = 3
 GET_UP_WINDOW_END_OFFSET: Final = 13

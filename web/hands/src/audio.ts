@@ -171,6 +171,19 @@ export class AudioFeedback {
         if ((event.kind === "counter_hit" && event.amount >= 50) || event.amount >= 90) this.ooh(Math.min(1, event.amount / 160));
         break;
       }
+      case "referee_hit": {
+        // A punch on the referee: the same thud, and a crowd that cannot believe it.
+        const weight = Math.min(1, event.amount / 260);
+        this.impact(Math.min(0.36, 0.16 + weight * 0.2), event.detail.endsWith("body"), weight);
+        this.ooh(0.7 + weight * 0.3);
+        this.crowdSwell(0.5 + weight * 0.3);
+        break;
+      }
+      case "referee_down":
+        this.impact(0.36, false, 1);
+        this.crowdRoar(1);
+        this.ooh(1);
+        break;
       case "block":
         this.noise({ duration: 0.045, frequency: 1200, sweepTo: 600, gain: 0.14, type: "bandpass", q: 1.1 });
         this.noise({ duration: 0.09, frequency: 260, gain: 0.08 });

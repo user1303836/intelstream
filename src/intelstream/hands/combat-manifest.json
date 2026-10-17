@@ -53,6 +53,7 @@
   },
   "knockdown": {
     "referee_walk_speed": 9,
+    "count_ticks": 20,
     "mandatory_count": 5,
     "box_pause_ticks": 20,
     "get_up_stun_ticks": 12,

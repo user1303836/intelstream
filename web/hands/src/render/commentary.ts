@@ -103,6 +103,9 @@ const LINES = {
   clinch: ["{a} ties {b} up.", "{a} grabs hold.", "They're tied up in the clinch."],
   holdingOn: ["{a} is hurt and holding on!", "{a} grabs on for dear life!", "Smart from {a}, holding on to clear the head."],
   refBreak: ["The referee breaks them.", "The referee steps in to separate them.", "Break! The referee pulls them apart."],
+  refHit: ["{a} just tagged the referee!", "Oh no, {a} has caught the referee!", "That one landed on the referee!"],
+  refDown: ["The referee is down! {a} has knocked out the referee!", "Oh my goodness, the referee is out cold!", "{a} has flattened the official! Absolute chaos!"],
+  noRef: ["Nobody left to break them up!", "No referee to part them, so they just let go."],
   taunt: ["{a} drops the hands and invites {b} in!", "Showboating from {a}! The crowd loves it.", "{a} is taunting {b} now!", "{a} sticks the chin out. Come and get it!"],
   lowBlow: ["Low blow from {a}! The referee steps in.", "That's below the belt! {b} is doubled over.", "{a} goes low, and the referee calls time."],
   headbutt: ["Headbutt from {a}! The referee calls time.", "{a} leads with the head! That's a foul."],
@@ -144,23 +147,23 @@ const COUNTDOWN_ONLY: ReadonlySet<MatchPhase> = new Set<MatchPhase>(["countdown"
 /** The bell is called as it rings, or straight after the line on screen, or not at all: seconds late reads as a mistake. */
 const BELL_FRESH_SECONDS = 3.2;
 
-const URGENT: ReadonlySet<LineKey> = new Set<LineKey>(["knockdown", "knockdownAgain", "knockdownCounter", "knockdownBody", "bodyCollapse", "upLate", "upEarly", "hurt", "hurtBadly", "lowBlow", "headbutt", "deduction", "ko", "flashKo", "tko", "disqualified", "forfeit", "replay", "savedByBell", "finalBell", "roundEnd", "roundStart"]);
+const URGENT: ReadonlySet<LineKey> = new Set<LineKey>(["knockdown", "knockdownAgain", "knockdownCounter", "knockdownBody", "bodyCollapse", "upLate", "upEarly", "hurt", "hurtBadly", "lowBlow", "headbutt", "deduction", "ko", "flashKo", "tko", "disqualified", "forfeit", "replay", "refDown", "savedByBell", "finalBell", "roundEnd", "roundStart"]);
 
 /** Knockdowns over hurt fighters over big counters over cuts over combinations over colour. */
 const PRIORITY: Readonly<Record<LineKey, number>> = {
-  ko: 98, flashKo: 98, tko: 98, disqualified: 98, forfeit: 98,
+  ko: 98, flashKo: 98, tko: 98, disqualified: 98, forfeit: 98, refDown: 97, refHit: 72,
   knockdown: 95, knockdownAgain: 95, knockdownCounter: 95, knockdownBody: 95, bodyCollapse: 86, upLate: 90, upEarly: 90, replay: 88,
   deduction: 84, lowBlow: 82, headbutt: 82, hurt: 80, box: 78, hurtBadly: 80, holdingOn: 76, savedByBell: 74, finalBell: 72, struggle: 70,
   guardBreak: 65, eyeShut: 62, counter: 60, parried: 58, bigShot: 55, roundEnd: 52, cut: 50, cutWorse: 50, summary: 50, cutGushing: 48, eyeSwelling: 48,
   cornerCut: 47, cornerSwelling: 47, cornerBreath: 47, blindSide: 42,
   roundFor: 46, roundBig: 46, roundClose: 46, pullingAway: 46, unanswered: 45, finishCall: 44, warning: 42,
   combo: 40, payoff: 40, takeover: 38, body: 35, jab: 30, tiring: 30, roundStart: 28, taunt: 25, parry: 22, evade: 20, clinch: 20,
-  whiff: 18, refBreak: 12, southpaw: 10, orthodox: 10, resume: 10,
+  whiff: 18, refBreak: 12, noRef: 12, southpaw: 10, orthodox: 10, resume: 10,
 };
 
 const SPEAKER: Readonly<Partial<Record<LineKey, Speaker>>> = {
   finishCall: "colour", payoff: "colour", tiring: "colour", takeover: "colour", holdingOn: "colour", taunt: "colour", parry: "colour", evade: "colour",
-  warning: "colour", blindSide: "colour", cornerCut: "colour", cornerSwelling: "colour", cornerBreath: "colour", roundFor: "colour", roundBig: "colour", roundClose: "colour", pullingAway: "colour", cutGushing: "colour", jab: "colour",
+  warning: "colour", blindSide: "colour", cornerCut: "colour", cornerSwelling: "colour", cornerBreath: "colour", roundFor: "colour", roundBig: "colour", roundClose: "colour", pullingAway: "colour", cutGushing: "colour", noRef: "colour", jab: "colour",
 };
 
 /** Seconds before the same kind of line about the same fighter may come again. */
@@ -617,6 +620,15 @@ export class CommentaryDirector {
       }
       case "referee_break":
         this.say("refBreak", event.event_id, now, names, null, REACTION_SECONDS, undefined, "referee");
+        return;
+      case "referee_hit":
+        this.say("refHit", event.event_id, now, names, moment, REACTION_SECONDS, undefined, actor);
+        return;
+      case "referee_down":
+        this.say("refDown", event.event_id, now, names, moment);
+        return;
+      case "clinch_break":
+        this.say("noRef", event.event_id, now, names, null, REACTION_SECONDS);
         return;
       case "taunt":
         this.say("taunt", event.event_id, now, { a: names.a, b: this.nameOf(this.otherId(actor)) }, moment, REACTION_SECONDS, undefined, actor);

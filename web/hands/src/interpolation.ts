@@ -1,4 +1,4 @@
-import type { CombatEvent, EngineSnapshot, FighterSnapshot } from "./types";
+import type { CombatEvent, EngineSnapshot, FighterSnapshot, RefereeSnapshot } from "./types";
 
 const mix = (a: number, b: number, t: number): number => a + (b - a) * t;
 const presentationFighter = (a: FighterSnapshot, b: FighterSnapshot, t: number): FighterSnapshot => ({
@@ -8,6 +8,11 @@ const presentationFighter = (a: FighterSnapshot, b: FighterSnapshot, t: number):
   velocity_x: mix(a.velocity_x, b.velocity_x, t), velocity_y: mix(a.velocity_y, b.velocity_y, t),
   stamina: mix(a.stamina, b.stamina, t), maximum_stamina: mix(a.maximum_stamina, b.maximum_stamina, t),
   conditioning: mix(a.conditioning, b.conditioning, t), guard: mix(a.guard, b.guard, t), poise: mix(a.poise, b.poise, t),
+});
+const presentationReferee = (a: RefereeSnapshot, b: RefereeSnapshot, t: number): RefereeSnapshot => ({
+  ...b,
+  x: mix(a.x, b.x, t), y: mix(a.y, b.y, t), facing_x: mix(a.facing_x, b.facing_x, t), facing_y: mix(a.facing_y, b.facing_y, t),
+  velocity_x: mix(a.velocity_x, b.velocity_x, t), velocity_y: mix(a.velocity_y, b.velocity_y, t),
 });
 
 const MIN_DELAY_TICKS = 1.5;
@@ -116,7 +121,7 @@ export class SnapshotBuffer {
     const a = this.snapshots[nextIndex - 1]!, b = this.snapshots[nextIndex]!;
     if (a.phase !== b.phase || a.fighters.some((fighter, index) => fighter.knockdowns !== b.fighters[index]?.knockdowns)) return b;
     const t = Math.max(0, Math.min(1, (tick - a.tick) / Math.max(1, b.tick - a.tick)));
-    return { ...b, fighters: [presentationFighter(a.fighters[0], b.fighters[0], t), presentationFighter(a.fighters[1], b.fighters[1], t)] };
+    return { ...b, fighters: [presentationFighter(a.fighters[0], b.fighters[0], t), presentationFighter(a.fighters[1], b.fighters[1], t)], referee: presentationReferee(a.referee, b.referee, t) };
   }
   clear(): void { this.snapshots.length = 0; this.offsetTicks = null; }
 }

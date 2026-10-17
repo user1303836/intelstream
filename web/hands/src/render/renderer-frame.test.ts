@@ -125,6 +125,8 @@ function frame(state: EngineSnapshot, overrides: Record<string, unknown> = {}) {
     pixelRatioCap: 2,
     basePixelRatio: 2,
     pendingFinish: null,
+    pendingRefereeEvents: [],
+    refereeReplayAt: null,
     ...overrides,
   });
   const draw = (FightRenderer.prototype as unknown as { draw(this: unknown, time: number, manual: boolean, render: boolean): void }).draw;
@@ -574,7 +576,7 @@ describe("around the fight", () => {
     };
     const stub = prototypeOf({
       referee: { waveOff: vi.fn(), raise, setRefereeCount: vi.fn(), aimBreak: vi.fn(), update: vi.fn(), boxer: { root: new THREE.Object3D() } }, blobShadows: [], buffer: { latest: () => snapshot() }, headCacheValid: [false, false],
-      settings: () => ({ reducedMotion: false }), frameSeconds: 0, finishCloseUpIndex: -1,
+      settings: () => ({ reducedMotion: false, blood: "full" }), frameSeconds: 0, finishCloseUpIndex: -1,
       graphs: [{ celebrate: vi.fn(), fallBody: null }, { celebrate: vi.fn(), fallBody: null, boxer: { rig: { bones: { gloveL: glove(1.2), gloveR: glove(0.8) } } } }],
       mapping: worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }),
       tmpA: new THREE.Vector3(-1.4, 0, -0.6), tmpB: new THREE.Vector3(1, 0, 0.3), refereePosition: new THREE.Vector3(-0.8, 0, -1.4),
@@ -752,7 +754,7 @@ describe("around the fight", () => {
       referee, blobShadows: [], replay: null, ceremony: null, mapping: worldMapping(SIMULATION), frameSeconds: 0, stoppageWinner: -1, stoppageRaiseAt: Number.POSITIVE_INFINITY, stoppageSpot: null,
       graphs: [{ fallBody: null, boxer: { rig: { bones: { gloveL: glove(-0.35), gloveR: glove(-0.65) } } } }, { fallBody: null }],
       tmpA: new THREE.Vector3(), tmpB: new THREE.Vector3(), refereePosition: new THREE.Vector3(0.4, 0, -2.1), refereeVelocity: new THREE.Vector3(), refereeAway: new THREE.Vector3(),
-      refereeYaw: 0, effects: { severedHeadPosition: () => false }, closeUpTarget: new THREE.Vector3(), bodyPoint: new THREE.Vector3(),
+      refereeYaw: 0, effects: { severedHeadPosition: () => false }, closeUpTarget: new THREE.Vector3(), bodyPoint: new THREE.Vector3(), settings: () => ({ reducedMotion: false, blood: "full" }),
       stoppageWrist: new THREE.Vector3(), stoppageOtherWrist: new THREE.Vector3(), lastKnockdown: null,
       ...fields,
     });

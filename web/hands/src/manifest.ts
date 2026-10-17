@@ -107,6 +107,8 @@ export function comboWindow(punchClass: PunchClass): number {
 export const ROCKED_BASE_TICKS = manifestJson.stun.rocked_base_ticks;
 export const ROCKED_MAX_TICKS = manifestJson.stun.rocked_max_ticks;
 const knockdownRules = manifestJson.knockdown;
+/** Ticks between the numbers of the referee's count. */
+export const COUNT_TICKS = knockdownRules.count_ticks;
 /** The engine caps head trauma here and stops a bout at the third knockdown. */
 const HEAD_TRAUMA_LIMIT = 1400;
 const KNOCKDOWN_LIMIT = 3;
