@@ -802,6 +802,31 @@ describe("held input sent as it changes", () => {
     vi.useRealTimers();
   });
 
+  it("keeps the presses their room under a mash as fast as the edge budget allows while the direction changes as fast as its own", () => {
+    vi.useFakeTimers();
+    const clock = { now: 1000 };
+    const queued: string[] = [];
+    const { socket, controller } = start(() => ({ moveX: clock.now % 2 === 0 ? 1000 : -1000, moveY: 0, defense: "none" as const, actions: queued.splice(0, 4).map((id) => ({ kind: "punch" as const, hand: "left" as const, class: "jab" as const, target: "head" as const, power: "normal" as const, id })) }), clock);
+    const times: number[] = [];
+    for (let millisecond = 0; millisecond < 4000; millisecond += 1) {
+      clock.now += 1;
+      const before = socket.sent.length;
+      vi.advanceTimersByTime(1);
+      controller.notifyHeld();
+      if (millisecond % 50 === 0) {
+        queued.push(`p${millisecond}`);
+        const sending = socket.sent.length;
+        controller.notifyAction();
+        // Once the window holds a full second of sends, the held changes have left every press its room.
+        if (millisecond >= 1000) expect(socket.sent.length, `press at ${millisecond} ms`).toBe(sending + 1);
+      }
+      for (let index = before; index < socket.sent.length; index += 1) times.push(clock.now);
+    }
+    for (const at of times) expect(times.filter((time) => time >= at && time < at + 1000).length).toBeLessThanOrEqual(50);
+    controller.dispose();
+    vi.useRealTimers();
+  });
+
   it("sends nothing after it is disposed, even a change that was waiting out the gap", () => {
     vi.useFakeTimers();
     const clock = { now: 1000 };
