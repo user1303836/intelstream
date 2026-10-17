@@ -144,7 +144,8 @@ describe("swelling", () => {
   it("bleeds from the nose after a couple of clean head shots and from the brow as soon as it is cut", () => {
     const shading = new InjuryShading(new THREE.MeshStandardMaterial(), HEAD_SITES);
     applyHeadTrauma(shading, trauma({ head: 110 }), "full");
-    expect(shading.level("nose").blood).toBeGreaterThan(0.15);
+    // Half as much again as the wound itself at full blood.
+    expect(shading.level("nose").blood).toBeCloseTo((50 / 300) * 1.5, 6);
     expect(shading.level("leftBrow").blood).toBe(0);
     const cut = trauma({ head: 110, left_cut: 40, bleeding: 20 });
     applyHeadTrauma(shading, cut, "full");

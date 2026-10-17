@@ -521,6 +521,8 @@ describe("an arterial fountain", () => {
     }
     const fast = early.filter((spawn) => spawn.velocity.length() >= 5.5);
     expect(fast.length).toBeGreaterThan(early.length * 0.3);
+    // The top of a beat throws it hard enough to rain three metres up.
+    expect(early.some((spawn) => spawn.velocity.length() > 7.5)).toBe(true);
     // Weaker as the pressure falls.
     const late = spawns.filter((spawn) => spawn.time > 13);
     const mean = (list: Spawn[]): number => list.reduce((sum, spawn) => sum + spawn.velocity.length(), 0) / Math.max(1, list.length);

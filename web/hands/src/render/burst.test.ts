@@ -258,6 +258,21 @@ describe("a head that bursts", () => {
     effects.dispose();
   });
 
+  it("stains the canvas where flesh lands, but not where an eyeball or a tooth bounces", () => {
+    const landed = (kind: string): number => {
+      const effects = new Effects3D(new THREE.Scene(), 256);
+      let seed = 1;
+      (effects as unknown as { spawnGib(x: number, y: number, z: number, vx: number, vy: number, vz: number, rand: () => number, kind: string): void }).spawnGib(0, 0.1, 0, 0, -1, 0, () => ((seed = (seed * 16_807) % 2_147_483_647) / 2_147_483_647), kind);
+      for (let frame = 0; frame < 120; frame += 1) effects.update(1 / 60);
+      const stains = effects.canvasStains;
+      effects.dispose();
+      return stains;
+    };
+    expect(landed("flesh")).toBe(1);
+    expect(landed("eye")).toBe(0);
+    expect(landed("tooth")).toBe(0);
+  });
+
   it("draws teeth white and brain grey, not in the colour of flesh", () => {
     const effects = new Effects3D(new THREE.Scene(), 256);
     effects.spawnTeeth(new THREE.Vector3(0, 1.5, 0), 1, 1, 3);

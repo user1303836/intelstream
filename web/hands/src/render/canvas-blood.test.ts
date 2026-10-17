@@ -419,6 +419,21 @@ describe("blood on the canvas", () => {
     expect(scene.children).toHaveLength(0);
   });
 
+  it("soaks a splash in darker at full blood than reduced blood paints it", () => {
+    const opacity = (level: "full" | "reduced"): number => {
+      const stain = vi.spyOn(CanvasBlood.prototype, "stain");
+      const effects = new Effects3D(new THREE.Scene(), 256);
+      effects.setBloodLevel(level);
+      effects.splatter(0, 0, 1, () => 0.5, 4, 0.5);
+      const painted = stain.mock.calls[0]![5];
+      stain.mockRestore();
+      effects.dispose();
+      return painted;
+    };
+    expect(opacity("full")).toBeCloseTo(0.8, 6);
+    expect(opacity("reduced")).toBeCloseTo(0.3, 6);
+  });
+
   it("pools under a fighter on the canvas, smaller with reduced blood and never with blood off", () => {
     const pooled = (level: "full" | "reduced" | "off"): number => {
       const effects = new Effects3D(new THREE.Scene(), 256);
