@@ -54,13 +54,13 @@ describe("referee clinch break", () => {
     const redGraph = new BoxingGraph(red, mapping);
     // The renderer's referee state, driven through its own placement code: live, with no replay, ceremony,
     // stoppage, body or severed head on the canvas to keep him elsewhere.
-    const renderer = {
+    const renderer = Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, {
       referee: graph, mapping, tmpA: new THREE.Vector3(), tmpB: new THREE.Vector3(),
       refereePosition: new THREE.Vector3(0, 0, -mapping.z(side) * 3), refereeAway: new THREE.Vector3(), refereeVelocity: new THREE.Vector3(), refereeYaw: 0,
       pendingRefereeEvents: [], settings: () => ({ reducedMotion: false, blood: "full" }),
       replay: null, ceremony: null, stoppageWinner: -1, stoppageRaiseAt: Number.POSITIVE_INFINITY, frameSeconds: 0, blobShadows: [], graphs: null,
-      effects: { severedHeadPosition: () => false }, closeUpTarget: new THREE.Vector3(), bodyPoint: new THREE.Vector3(),
-    };
+      effects: { severedHeadPosition: () => false, gushing: () => false }, closeUpTarget: new THREE.Vector3(), bodyPoint: new THREE.Vector3(),
+    });
     let tick = 0;
     const step = (one: FighterSnapshot, two: FighterSnapshot): void => {
       tick += 0.5;

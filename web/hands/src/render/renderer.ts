@@ -15,7 +15,7 @@ import { CameraDirector, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE, FIGHTER_CAM_
 import { Avatars } from "./avatars";
 import { captionSlot, drawCaption } from "./caption";
 import { CommentaryDirector, type CrowdCue } from "./commentary";
-import { DESKTOP_GORE, Effects3D, PHONE_GORE, type BakedPart, type SprayDirection } from "./effects";
+import { DESKTOP_GORE, Effects3D, PHONE_GORE, REFEREE_GUSH, type BakedPart, type SprayDirection } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, releaseFighterGpu, type ArcadeDislocation, type CutmanProp } from "./graph";
 import { drawHud, finalRevealDelay, hudScale, lagWarning, resultCard, resultCardLayout, RoundStatsTracker, STOPPAGE_METHODS, RoundClock, wasBlocked, type RoundPunchStats } from "./hud";
 import { BURST_CUT_HEIGHT, EYE_LIDS, NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE, type InjuryShading } from "./injury";
@@ -1103,6 +1103,9 @@ export class FightRenderer {
   private readonly pendingRefereeEvents: CombatEvent[] = [];
   /** When the replay of the referee's fall starts, once it has played live. */
   private refereeReplayAt: { readonly at: number; readonly impact: CombatEvent } | null = null;
+  /** Spills into the pool under the dead referee due and made so far. */
+  private refereePoolAccumulator = 0;
+  private refereePoolCount = 0;
   private readonly effects: Effects3D;
   private readonly director = new CameraDirector();
   private readonly fighterCam = new FighterCam();
@@ -1802,6 +1805,7 @@ export class FightRenderer {
     if (plan.impact.kind === "referee_down") {
       // He is back on his feet for the lead-up and goes down again at its impact; the fighters only box on.
       this.referee?.resetTransient(false);
+      this.effects.stopGush(REFEREE_GUSH);
       return;
     }
     for (const index of [0, 1] as const) {
@@ -1898,7 +1902,12 @@ export class FightRenderer {
     referee.react("hit", target === "body" ? "body" : "head", event.direction, punchClass, hand, falls ? Math.max(event.amount, 140) : event.amount);
     referee.boxer.rig.bones.head.getWorldPosition(this.refereeHead);
     const spray = puncher === undefined ? undefined : sprayDirection(puncher, { ...puncher, x: snapshot.referee.x, y: snapshot.referee.y }, this.mapping);
-    this.effects.addEvent({ ...event, kind: falls ? "knockdown" : "hit" }, this.refereeHead, this.settings().reducedMotion, spray);
+    const reducedMotion = this.settings().reducedMotion;
+    this.effects.addEvent({ ...event, kind: falls ? "knockdown" : "hit" }, this.refereeHead, reducedMotion, spray);
+    // A solid punch makes his face spurt as it does a fighter's; the one that kills him pours instead (fireRefereeFall).
+    const spurt = falls || reducedMotion ? null : punchGush({ ...event, kind: "hit" });
+    const mouth = spurt === null ? null : this.refereeMouth();
+    if (spurt !== null && mouth !== null) this.effects.gush(REFEREE_GUSH, mouth.position, mouth.axis, spurt.seconds, spurt.rate, event.event_id);
     if (puncherIndex >= 0) this.graphs?.[puncherIndex]?.landedHit(false);
     this.onContact?.(event);
   }
@@ -1914,6 +1923,9 @@ export class FightRenderer {
       referee.boxer.rig.bones.head.getWorldPosition(this.refereeHead);
       this.effects.addEvent({ ...event, kind: "knockdown", amount: 160, blood: 80 }, this.refereeHead, this.settings().reducedMotion);
     }
+    // He pours blood from his nose and mouth as he goes down, and it follows him to the canvas.
+    const mouth = this.settings().reducedMotion ? null : this.refereeMouth();
+    if (mouth !== null) this.effects.gush(REFEREE_GUSH, mouth.position, mouth.axis, KNOCKDOWN_GUSH_SECONDS, KNOCKDOWN_GUSH_RATE, event.event_id);
     referee.knockOut();
     if (replayed) this.onContact?.(event);
   }
@@ -2518,6 +2530,16 @@ export class FightRenderer {
     if (site === "ribs_left" || site === "ribs_right") return { position: this.woundPoint.copy(chest).addScaledVector(out, RIBS_REACH).addScaledVector(up, -RIBS_DROP), axis: out };
     (left ? bones.shoulderL : bones.shoulderR).getWorldPosition(this.woundPoint);
     return { position: this.woundPoint, axis: out.addScaledVector(up, 0.5).normalize() };
+  }
+
+  /** The referee's mouth as he is posed, and the way blood pours out of it, as a fighter's (headWorldPose, tornWound). */
+  private refereeMouth(): { position: THREE.Vector3; axis: THREE.Vector3 } | null {
+    const head = this.referee?.boxer.rig.bones.head;
+    if (head === undefined) return null;
+    head.getWorldPosition(this.tmpHead);
+    head.getWorldQuaternion(this.tmpHeadQuaternion);
+    this.tmpHead.add(this.tmpStumpOffset.copy(HEAD_PIVOT_OFFSET).applyQuaternion(this.tmpHeadQuaternion));
+    return { position: this.woundPoint.copy(MOUTH).applyQuaternion(this.tmpHeadQuaternion).add(this.tmpHead), axis: this.woundAxis.copy(OUT_OF_THE_MOUTH).applyQuaternion(this.tmpHeadQuaternion) };
   }
 
   /** The gum shield flies out of the mouth along the punch, from the head as it is posed. */
@@ -3206,6 +3228,34 @@ export class FightRenderer {
     // He bleeds at the blood level the player chose, and falls the way reduced motion asks.
     const settings = this.settings();
     referee.update(state.self, state.focus, dt, time, settings.reducedMotion, settings.blood, sampledTick);
+    if (this.effects.gushing(REFEREE_GUSH)) {
+      const mouth = this.refereeMouth();
+      if (mouth !== null) this.effects.anchorGush(REFEREE_GUSH, mouth.position, mouth.axis);
+    }
+    this.poolUnderReferee(official?.alive === false, outCold, dt, settings.blood);
+  }
+
+  /**
+   * Dead on the canvas, the referee bleeds out as a finisher's open wound does, into a pool that spreads from
+   * under his head until it is as wide as one; a new bout, with him on his feet, starts the next one afresh.
+   */
+  private poolUnderReferee(dead: boolean, outCold: boolean, dt: number, blood: BloodLevel): void {
+    if (!dead) {
+      this.refereePoolAccumulator = 0;
+      this.refereePoolCount = 0;
+    }
+    if (!outCold || blood === "off" || this.referee === null) return;
+    this.refereePoolAccumulator += dt * POOL_RATE * OPEN_WOUND_POOL_RATE;
+    const head = this.referee.boxer.rig.bones.head.getWorldPosition(this.refereeHead);
+    while (this.refereePoolAccumulator >= 1) {
+      this.refereePoolAccumulator -= 1;
+      const count = this.refereePoolCount;
+      const spread = poolRadius(count, OPEN_WOUND_SEVERITY, OPEN_WOUND_POOL_REACH);
+      if (spread >= OPEN_WOUND_POOL_REACH) return;
+      this.refereePoolCount = count + 1;
+      const angle = count * 2.399_963;
+      this.effects.pool(head.x + Math.sin(angle) * spread * 0.25, head.z + Math.cos(angle) * spread * 0.25, spread, count + REFEREE_GUSH * 7);
+    }
   }
 
   private updateTrails(dt: number, reducedMotion: boolean): void {

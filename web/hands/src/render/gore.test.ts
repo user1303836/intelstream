@@ -932,13 +932,13 @@ describe("referee and a head on the canvas", () => {
     const head = new THREE.Vector3();
     effects.severedHeadPosition(1, head);
     const updated: unknown[] = [];
-    const stub = {
+    const stub = Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, {
       referee: { setRefereeCount: () => {}, aimBreak: () => {}, update: (...frame: unknown[]) => updated.push(frame), boxer: { root: new THREE.Object3D() } }, blobShadows: [],
       mapping: worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }),
       tmpA: new THREE.Vector3(head.x - 0.4, 0, head.z + 2.2), tmpB: new THREE.Vector3(head.x + 0.4, 0, head.z + 2.2),
       refereePosition: new THREE.Vector3(head.x + 0.1, 0, head.z - 0.2), refereeVelocity: new THREE.Vector3(), refereeAway: new THREE.Vector3(), refereeYaw: 0,
       effects, closeUpTarget: new THREE.Vector3(), replay: null, ceremony: null, settings: () => ({ reducedMotion: false, blood: "full" }),
-    };
+    });
     const step = (FightRenderer.prototype as unknown as { updateReferee: (dt: number, time: number, snapshot: unknown, tick: number) => void }).updateReferee;
     for (let frame = 0; frame < 180; frame += 1) {
       step.call(stub, 1 / 60, frame / 60, null, frame / 2);
@@ -951,14 +951,14 @@ describe("referee and a head on the canvas", () => {
   it("is left out of the knockout replay's close shot, and back for the live picture", () => {
     const root = new THREE.Object3D();
     const shadow = new THREE.Object3D();
-    const stub = {
+    const stub = Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, {
       referee: { setRefereeCount: () => {}, aimBreak: () => {}, update: () => {}, boxer: { root } }, blobShadows: [new THREE.Object3D(), new THREE.Object3D(), shadow],
       mapping: worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }),
       tmpA: new THREE.Vector3(-0.5, 0, 0), tmpB: new THREE.Vector3(0.5, 0, 0),
       refereePosition: new THREE.Vector3(0, 0, -1.5), refereeVelocity: new THREE.Vector3(), refereeAway: new THREE.Vector3(), refereeYaw: 0,
-      effects: { severedHeadPosition: () => false }, closeUpTarget: new THREE.Vector3(), replay: { plan: { impact: { kind: "knockdown" } } } as unknown, ceremony: null,
+      effects: { severedHeadPosition: () => false, gushing: () => false }, closeUpTarget: new THREE.Vector3(), replay: { plan: { impact: { kind: "knockdown" } } } as unknown, ceremony: null,
       pendingRefereeEvents: [], settings: () => ({ reducedMotion: false, blood: "full" }),
-    };
+    });
     const step = (FightRenderer.prototype as unknown as { updateReferee: (dt: number, time: number, snapshot: unknown, tick: number) => void }).updateReferee;
     step.call(stub, 1 / 60, 0, null, 0);
     expect(root.visible).toBe(false);

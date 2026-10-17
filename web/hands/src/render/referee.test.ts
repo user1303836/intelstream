@@ -2,10 +2,11 @@ import * as THREE from "three";
 import { fighter, referee as engineReferee, snapshot } from "../test/fixtures";
 import type { CombatEvent, EngineSnapshot } from "../types";
 import { CommentaryDirector } from "./commentary";
+import { Effects3D, REFEREE_GUSH } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
 import { OFFICIAL_LOOKS } from "./looks";
 import { BLUE_CORNER_OUTFIT, REFEREE_OUTFIT } from "./outfit";
-import { FightRenderer, REFEREE_ID } from "./renderer";
+import { FightRenderer, REFEREE_ID, punchGush } from "./renderer";
 import { worldPosition } from "./rig";
 import { worldMapping } from "./world";
 
@@ -65,12 +66,13 @@ describe("the renderer's referee", () => {
   const updateReferee = (FightRenderer.prototype as unknown as { updateReferee: (dt: number, time: number, snapshot: EngineSnapshot | null, tick: number) => void }).updateReferee;
   const placement = (): Stub => {
     const graph = new BoxingGraph(referee(), mapping, { referee: true, knockout: true });
-    return {
+    return Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, {
       referee: graph, mapping, tmpA: new THREE.Vector3(-0.6, 0, 0), tmpB: new THREE.Vector3(0.6, 0, 0),
       refereePosition: new THREE.Vector3(0, 0, -2), refereeAway: new THREE.Vector3(), refereeVelocity: new THREE.Vector3(), refereeYaw: 0,
       replay: null, ceremony: null, stoppageWinner: -1, stoppageRaiseAt: Number.POSITIVE_INFINITY, frameSeconds: 0, blobShadows: [], graphs: null,
-      effects: { severedHeadPosition: () => false }, closeUpTarget: new THREE.Vector3(), bodyPoint: new THREE.Vector3(), pendingRefereeEvents: [], settings: () => ({ reducedMotion: false, blood: "full" }),
-    };
+      effects: { severedHeadPosition: () => false, gushing: () => false, pool: vi.fn() }, closeUpTarget: new THREE.Vector3(), bodyPoint: new THREE.Vector3(), pendingRefereeEvents: [], settings: () => ({ reducedMotion: false, blood: "full" }),
+      refereeHead: new THREE.Vector3(), refereePoolAccumulator: 0, refereePoolCount: 0,
+    });
   };
   const at = (state: EngineSnapshot, stub: Stub, frames: number): void => {
     for (let frame = 0; frame < frames; frame += 1) updateReferee.call(stub, 1 / 60, frame / 60, state, state.tick);
@@ -96,8 +98,58 @@ describe("the renderer's referee", () => {
     expect(fallen.refereePosition.distanceTo(where)).toBeLessThan(1e-9);
   });
 
-  const moments = (): { renderer: Record<string, unknown>; react: ReturnType<typeof vi.fn>; knockOut: ReturnType<typeof vi.fn>; addEvent: ReturnType<typeof vi.fn>; onContact: ReturnType<typeof vi.fn>; landedHit: ReturnType<typeof vi.fn> } => {
+  it("keeps his pouring mouth on him as he moves, and leaves it alone when nothing pours", () => {
+    const stub = placement();
+    const anchorGush = vi.fn();
+    stub.effects = { severedHeadPosition: () => false, gushing: (index: number) => index === REFEREE_GUSH, anchorGush, pool: vi.fn() };
+    Object.assign(stub, { tmpHead: new THREE.Vector3(), tmpHeadQuaternion: new THREE.Quaternion(), tmpStumpOffset: new THREE.Vector3(), woundPoint: new THREE.Vector3(), woundAxis: new THREE.Vector3() });
+    at({ ...snapshot(40), referee: engineReferee(30, 62) }, stub, 30);
+    expect(anchorGush).toHaveBeenCalledTimes(30);
+    const [index, position] = anchorGush.mock.calls.at(-1)! as [number, THREE.Vector3];
+    expect(index).toBe(REFEREE_GUSH);
+    const head = (stub.referee as BoxingGraph).boxer.rig.bones.head.getWorldPosition(new THREE.Vector3());
+    expect(position.distanceTo(head)).toBeLessThan(0.3);
+    stub.effects = { ...(stub.effects as object), gushing: () => false };
+    anchorGush.mockClear();
+    at({ ...snapshot(40), referee: engineReferee(30, 62) }, stub, 5);
+    expect(anchorGush).not.toHaveBeenCalled();
+  });
+
+  it("bleeds out dead into a pool under his head, which spreads as wide as an open wound's and stops, and starts afresh in a new bout", () => {
+    const stub = placement();
+    const pool = (stub.effects as { pool: ReturnType<typeof vi.fn> }).pool;
+    at({ ...snapshot(40), referee: engineReferee(30, 62) }, stub, 30);
+    expect(pool).not.toHaveBeenCalled();
+    const dead = { ...snapshot(80), referee: { ...engineReferee(30, 62), alive: false } };
+    at(dead, stub, 60 * 30);
+    const radii = pool.mock.calls.map((call) => call[2] as number);
+    expect(radii.length).toBeGreaterThan(100);
+    for (let index = 1; index < radii.length; index += 1) expect(radii[index]!).toBeGreaterThanOrEqual(radii[index - 1]!);
+    expect(radii.at(-1)!).toBeGreaterThan(1.5);
+    const head = (stub.referee as BoxingGraph).boxer.rig.bones.head.getWorldPosition(new THREE.Vector3());
+    const last = pool.mock.calls.at(-1)! as number[];
+    expect(Math.hypot(last[0]! - head.x, last[1]! - head.z)).toBeLessThan(0.6);
+    // As wide as it goes, it stops spilling.
+    const spilled = pool.mock.calls.length;
+    at(dead, stub, 60 * 10);
+    expect(pool.mock.calls.length).toBe(spilled);
+    // On his feet in a new bout and dead again: a new pool from nothing.
+    at({ ...snapshot(200), referee: engineReferee(30, 62) }, stub, 5);
+    pool.mockClear();
+    at({ ...snapshot(260), referee: { ...engineReferee(30, 62), alive: false } }, stub, 60);
+    expect(pool.mock.calls[0]![2] as number).toBeLessThan(radii.at(-1)! / 4);
+
+    // Not with blood off, nor while his death is replayed.
+    for (const change of [{ settings: () => ({ reducedMotion: false, blood: "off" }) }, { replay: { plan: { impact: { kind: "referee_down" } } } }]) {
+      const quiet = Object.assign(placement(), change);
+      at(dead, quiet, 120);
+      expect((quiet.effects as { pool: ReturnType<typeof vi.fn> }).pool).not.toHaveBeenCalled();
+    }
+  });
+
+  const moments = (): { renderer: Record<string, unknown>; react: ReturnType<typeof vi.fn>; knockOut: ReturnType<typeof vi.fn>; addEvent: ReturnType<typeof vi.fn>; gush: ReturnType<typeof vi.fn>; onContact: ReturnType<typeof vi.fn>; landedHit: ReturnType<typeof vi.fn> } => {
     const react = vi.fn();
+    const gush = vi.fn();
     const knockOut = vi.fn();
     const addEvent = vi.fn();
     const onContact = vi.fn();
@@ -107,10 +159,11 @@ describe("the renderer's referee", () => {
     const live = { ...snapshot(60), referee: engineReferee(0, 62) };
     const renderer = Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, {
       pendingRefereeEvents: [] as CombatEvent[], refereeReplayAt: null, eventCallout: null, frameSeconds: 10, history: [] as EngineSnapshot[],
-      buffer: { latest: () => live }, referee: { react, knockOut, boxer: { rig: { bones: { head } } } }, effects: { addEvent },
+      buffer: { latest: () => live }, referee: { react, knockOut, boxer: { rig: { bones: { head } } } }, effects: { addEvent, gush },
       settings: () => ({ reducedMotion: false, blood: "full" }), mapping, graphs: [{ landedHit }, { landedHit: vi.fn() }], onContact, refereeHead: new THREE.Vector3(),
+      tmpHead: new THREE.Vector3(), tmpHeadQuaternion: new THREE.Quaternion(), tmpStumpOffset: new THREE.Vector3(), woundPoint: new THREE.Vector3(), woundAxis: new THREE.Vector3(),
     });
-    return { renderer, react, knockOut, addEvent, onContact, landedHit };
+    return { renderer, react, knockOut, addEvent, gush, onContact, landedHit };
   };
   const fire = (renderer: Record<string, unknown>, tick: number): void => (FightRenderer.prototype as unknown as { fireRefereeEvents: (tick: number) => void }).fireRefereeEvents.call(renderer, tick);
 
@@ -141,6 +194,60 @@ describe("the renderer's referee", () => {
     expect(renderer.eventCallout).toMatchObject({ text: "THE REFEREE IS DEAD!" });
     expect(renderer.refereeReplayAt).toMatchObject({ impact: down });
     expect((renderer.refereeReplayAt as { at: number }).at).toBeGreaterThan(10);
+  });
+
+  it("spurts from his face when a solid punch lands on him, as a fighter's does, but not from a light one or with reduced motion", () => {
+    const solid = moments();
+    (solid.renderer.pendingRefereeEvents as CombatEvent[]).push(event("referee_hit", 40, { amount: 90 }));
+    fire(solid.renderer, 40);
+    const expected = punchGush({ kind: "hit", amount: 90, blood: 30, detail: "hook:head" })!;
+    expect(solid.gush).toHaveBeenCalledWith(REFEREE_GUSH, expect.any(THREE.Vector3), expect.any(THREE.Vector3), expected.seconds, expected.rate, 40);
+    // From his mouth, at his head.
+    expect((solid.gush.mock.calls[0]![1] as THREE.Vector3).distanceTo(new THREE.Vector3(0.1, 1.6, -0.4))).toBeLessThan(0.3);
+
+    const light = moments();
+    (light.renderer.pendingRefereeEvents as CombatEvent[]).push(event("referee_hit", 40, { amount: 20 }));
+    fire(light.renderer, 40);
+    expect(light.gush).not.toHaveBeenCalled();
+
+    const calm = moments();
+    calm.renderer.settings = () => ({ reducedMotion: true, blood: "full" });
+    (calm.renderer.pendingRefereeEvents as CombatEvent[]).push(event("referee_hit", 40, { amount: 90 }));
+    fire(calm.renderer, 40);
+    expect(calm.gush).not.toHaveBeenCalled();
+  });
+
+  it("pours blood from his mouth as he dies, longer than any spurt, and pours it again when his death is replayed", () => {
+    const { renderer, gush } = moments();
+    const down = event("referee_down", 50, { amount: 0, blood: 0, detail: "" });
+    (renderer.pendingRefereeEvents as CombatEvent[]).push(down);
+    fire(renderer, 50);
+    expect(gush).toHaveBeenCalledWith(REFEREE_GUSH, expect.any(THREE.Vector3), expect.any(THREE.Vector3), expect.any(Number), expect.any(Number), 50);
+    expect(gush.mock.calls[0]![3] as number).toBeGreaterThan(punchGush({ kind: "hit", amount: 200, blood: 50, detail: "hook:head" })!.seconds);
+
+    // The replay stands him up with his live gush stopped, so its fall starts it again.
+    const effects = new Effects3D(new THREE.Scene());
+    effects.gush(REFEREE_GUSH, new THREE.Vector3(0, 1.5, 0), new THREE.Vector3(0, -0.3, 1), 3, 300, 50);
+    const replaying = Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, { simulation: { tick_rate: 30 }, frameSeconds: 0, commentary: { replay: vi.fn() }, referee: { resetTransient: vi.fn() }, effects });
+    (FightRenderer.prototype as unknown as { startReplay(this: unknown, plan: unknown): void }).startReplay.call(replaying, { snapshots: [snapshot(40)], impact: down, durationSeconds: 3 });
+    expect(effects.gushing(REFEREE_GUSH)).toBe(false);
+    effects.gush(REFEREE_GUSH, new THREE.Vector3(0, 1.5, 0), new THREE.Vector3(0, -0.3, 1), 3, 300, 50);
+    expect(effects.gushing(REFEREE_GUSH)).toBe(true);
+    effects.dispose();
+  });
+
+  it("keeps a gush of his own after the fighters', which clearing the ring stops", () => {
+    for (const clear of ["clearDynamic", "clearArcadeGore"] as const) {
+      const effects = new Effects3D(new THREE.Scene());
+      effects.gush(REFEREE_GUSH, new THREE.Vector3(0, 1.5, 0), new THREE.Vector3(0, -0.3, 1), 3, 300, 7);
+      expect(effects.gushing(REFEREE_GUSH)).toBe(true);
+      expect(effects.gushing(0) || effects.gushing(1)).toBe(false);
+      effects.gush(REFEREE_GUSH + 1, new THREE.Vector3(0, 1.5, 0), new THREE.Vector3(0, -0.3, 1), 3, 300, 8);
+      expect(effects.gushing(REFEREE_GUSH + 1)).toBe(false);
+      effects[clear]();
+      expect(effects.gushing(REFEREE_GUSH)).toBe(false);
+      effects.dispose();
+    }
   });
 
   it("drips his blood from his head while he bleeds", () => {

@@ -32,6 +32,8 @@ const EYEBALL_SCALE = 1.8;
 /** Drops a second a severed head or glove trails from its cut while it flies. */
 const SEVERED_TRAIL_RATE = 180;
 const MAX_HEADS = 2;
+/** The referee's gush, kept after the two fighters'. */
+export const REFEREE_GUSH = MAX_HEADS;
 const MAX_HANDS = 4;
 const GIBS_PER_DECAPITATION = 60;
 const GIBS_PER_HAND = 40;
@@ -516,7 +518,7 @@ export class Effects3D {
     { position: new THREE.Vector3(), active: false, rate: 0, accumulator: 0 },
     { position: new THREE.Vector3(), active: false, rate: 0, accumulator: 0 },
   ];
-  private readonly gushes: Gush[] = Array.from({ length: MAX_HEADS }, () => ({ active: false, eventId: null, life: 0, seconds: 1, rate: 0, accumulator: 0, position: new THREE.Vector3(), axis: new THREE.Vector3(0, 1, 0) }));
+  private readonly gushes: Gush[] = Array.from({ length: REFEREE_GUSH + 1 }, () => ({ active: false, eventId: null, life: 0, seconds: 1, rate: 0, accumulator: 0, position: new THREE.Vector3(), axis: new THREE.Vector3(0, 1, 0) }));
   private simulationRemainder = 0;
   private ambientSeed = 0x5f37_59df;
   private shake = 0;
@@ -1922,7 +1924,7 @@ export class Effects3D {
    * gush takes the place of the one before, and the same event never starts one twice. Only with full blood.
    */
   gush(fighterIndex: number, position: THREE.Vector3, axis: THREE.Vector3, seconds: number, rate: number, eventId: number): void {
-    if (this.bloodLevel !== "full" || fighterIndex < 0 || fighterIndex >= MAX_HEADS) return;
+    if (this.bloodLevel !== "full" || fighterIndex < 0 || fighterIndex >= this.gushes.length) return;
     const gush = this.gushes[Math.trunc(fighterIndex)]!;
     const safeEventId = Number.isSafeInteger(eventId) ? eventId : 0;
     if (gush.active && gush.eventId === safeEventId) return;
@@ -1947,7 +1949,7 @@ export class Effects3D {
     return this.gushes[Math.trunc(fighterIndex)]?.active === true;
   }
 
-  private stopGush(fighterIndex: number): void {
+  stopGush(fighterIndex: number): void {
     const gush = this.gushes[fighterIndex];
     if (gush === undefined) return;
     gush.active = false;
@@ -2484,6 +2486,7 @@ export class Effects3D {
     this.clearGibs();
     this.clearMouthpieces();
     for (let index = 0; index < MAX_HEADS; index += 1) this.restoreFighter(index);
+    this.stopGush(REFEREE_GUSH);
     this.shake = 0;
     this.stopDrip(0);
     this.stopDrip(1);
@@ -2497,6 +2500,7 @@ export class Effects3D {
     this.lens.clear();
     this.clearGibs();
     for (let index = 0; index < MAX_HEADS; index += 1) this.restoreFighter(index);
+    this.stopGush(REFEREE_GUSH);
     this.clearDecals();
     this.stopDrip(0);
     this.stopDrip(1);
