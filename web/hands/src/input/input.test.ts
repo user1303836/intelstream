@@ -1,5 +1,6 @@
 import { SharedActionIntent } from "./action-buffer";
 import { InputController, viewRelativeMove } from "./input";
+import type { InputFrame } from "../types";
 
 const button = (pressed = false): GamepadButton => ({ pressed, touched: pressed, value: pressed ? 1 : 0 });
 function pad(buttons: number[] = []): Gamepad {
@@ -37,7 +38,7 @@ describe("combined input intent", () => {
     input.destroy();
   });
 
-  it("guard on either device clears older cross-device intent but permits a newer punch", () => {
+  it("a guard on either device leaves the press made before it on the other to go out with it, and permits a newer punch", () => {
     let current = pad();
     Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [current] });
     const input = new InputController();
@@ -45,7 +46,7 @@ describe("combined input intent", () => {
     window.dispatchEvent(key("keydown", "KeyF"));
     window.dispatchEvent(key("keyup", "KeyF"));
     current = pad([4]); poll(input);
-    expect(input.frame()).toMatchObject({ defense: "guard_high", actions: [] });
+    expect(input.frame()).toMatchObject({ defense: "guard_high", actions: [{ kind: "punch", hand: "left", class: "jab", target: "head", power: "normal" }] });
 
     window.dispatchEvent(key("keydown", "KeyF"));
     window.dispatchEvent(key("keyup", "KeyF"));
@@ -57,7 +58,7 @@ describe("combined input intent", () => {
     current = pad(); poll(input);
     current = pad([2]); poll(input);
     window.dispatchEvent(key("keydown", "KeyQ"));
-    expect(input.frame()).toMatchObject({ defense: "guard_high", actions: [] });
+    expect(input.frame()).toMatchObject({ defense: "guard_high", actions: [{ kind: "punch", hand: "right", class: "hook", target: "head", power: "normal" }] });
     input.destroy();
   });
 });
@@ -133,9 +134,140 @@ describe("controls that turn with the camera", () => {
     window.dispatchEvent(key("keydown", "KeyW"));
     expect(input.held()).toMatchObject({ moveX: 1000, moveY: 0 });
     expect(input.frame()).toMatchObject({ moveX: 1000, moveY: 0 });
+    window.dispatchEvent(key("keyup", "KeyW"));
     forward.mockReturnValue(null as unknown as { x: number; z: number });
+    window.dispatchEvent(key("keydown", "KeyW"));
     expect(input.held()).toMatchObject({ moveX: 0, moveY: 1000 });
     window.dispatchEvent(key("keyup", "KeyW"));
+    input.destroy();
+  });
+
+  it("keeps the way a held direction walks across a change of camera until the keys change, and turns with the player's own camera meanwhile", () => {
+    const input = new InputController();
+    let forward: { x: number; z: number } | null = { x: 1, z: 0 };
+    input.setViewForward(() => forward);
+    window.dispatchEvent(key("keydown", "KeyW"));
+    expect(input.held()).toMatchObject({ moveX: 1000, moveY: 0 });
+    forward = { x: 0, z: 1 };
+    expect(input.held()).toMatchObject({ moveX: 0, moveY: -1000 });
+    // K, or a shot that takes the frame: W goes on walking the way it did.
+    forward = null;
+    expect(input.held()).toMatchObject({ moveX: 0, moveY: -1000 });
+    window.dispatchEvent(key("keydown", "KeyD"));
+    expect(input.held()).toMatchObject({ moveX: 707, moveY: 707 });
+    // Pressed under the broadcast, the move keeps its meaning when the player's own camera comes back.
+    forward = { x: 1, z: 0 };
+    expect(input.held()).toMatchObject({ moveX: 707, moveY: 707 });
+    window.dispatchEvent(key("keyup", "KeyD"));
+    expect(input.held()).toMatchObject({ moveX: 1000, moveY: 0 });
+    window.dispatchEvent(key("keyup", "KeyW"));
+    input.destroy();
+  });
+});
+
+describe("the power modifier held", () => {
+  it("is held while Alt or Option, the right trigger or the POWER pad is, and never while input is off", () => {
+    let triggers: number[] = [];
+    Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [pad(triggers)] });
+    Element.prototype.setPointerCapture = () => undefined;
+    const input = new InputController();
+    const container = document.createElement("div");
+    input.attachTouch(container, true);
+    expect(input.powerHeld).toBe(false);
+    window.dispatchEvent(key("keydown", "AltLeft"));
+    expect(input.powerHeld).toBe(true);
+    // Held through a pause or the rest, it shows again once input is back on, never while it is off.
+    input.setActive(false, true);
+    expect(input.powerHeld).toBe(false);
+    input.setActive(true);
+    expect(input.powerHeld).toBe(true);
+    window.dispatchEvent(key("keyup", "AltLeft"));
+    expect(input.powerHeld).toBe(false);
+    triggers = [7];
+    poll(input);
+    expect(input.powerHeld).toBe(true);
+    triggers = [];
+    poll(input);
+    expect(input.powerHeld).toBe(false);
+    const power = container.querySelector<HTMLButtonElement>("[data-mod='power']")!;
+    const touch = (type: string): void => { const event = new MouseEvent(type, { bubbles: true, cancelable: true }); Object.defineProperty(event, "pointerId", { value: 4 }); power.dispatchEvent(event); };
+    touch("pointerdown");
+    expect(input.powerHeld).toBe(true);
+    input.setActive(false, true);
+    expect(input.powerHeld).toBe(false);
+    input.setActive(true);
+    touch("pointerup");
+    expect(input.powerHeld).toBe(false);
+    input.destroy();
+  });
+});
+
+describe("telling the server of held input as it changes", () => {
+  it("speaks up for a new direction, a stop or a guard, not for a key's repeat or a punch", () => {
+    Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [] });
+    const input = new InputController();
+    const changed = vi.fn();
+    input.onHeldChange(changed);
+    window.dispatchEvent(key("keydown", "KeyD"));
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyD", repeat: true, cancelable: true }));
+    window.dispatchEvent(key("keydown", "KeyF"));
+    expect(changed).toHaveBeenCalledTimes(1);
+    window.dispatchEvent(key("keydown", "KeyW"));
+    window.dispatchEvent(key("keydown", "KeyQ"));
+    window.dispatchEvent(key("keyup", "KeyW"));
+    window.dispatchEvent(key("keyup", "KeyD"));
+    expect(changed).toHaveBeenCalledTimes(5);
+    input.destroy();
+  });
+
+  it("sends a press still waiting to go out with the guard frame, from the keyboard, a pad or the touch controls", () => {
+    // A press inside the edge gap or past a send budget waits for the next frame, and the app sends one at once on a held
+    // change (network.notifyHeld flushes input.frame()). The renderer already plays the press, and the server decides.
+    let current = pad();
+    Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [current] });
+    Element.prototype.setPointerCapture = () => undefined;
+    const sentOnGuard = (press: (input: InputController, container: HTMLElement) => void, guard: (input: InputController, container: HTMLElement) => void): InputFrame[] => {
+      const input = new InputController();
+      const container = document.createElement("div");
+      input.attachTouch(container, true);
+      const sent: InputFrame[] = [];
+      press(input, container);
+      input.onHeldChange(() => sent.push(input.frame()));
+      guard(input, container);
+      input.destroy();
+      return sent;
+    };
+    const tap = (target: Element): void => { const event = new MouseEvent("pointerdown", { bubbles: true, cancelable: true }); Object.defineProperty(event, "pointerId", { value: 3 }); target.dispatchEvent(event); };
+    const keyboard = sentOnGuard(() => { window.dispatchEvent(key("keydown", "KeyF")); window.dispatchEvent(key("keyup", "KeyF")); }, () => window.dispatchEvent(key("keydown", "KeyQ")));
+    window.dispatchEvent(key("keyup", "KeyQ"));
+    expect(keyboard[0]).toEqual({ moveX: 0, moveY: 0, defense: "guard_high", actions: [{ kind: "punch", hand: "left", class: "jab", target: "head", power: "normal", id: "c1" }] });
+    const gamepad = sentOnGuard((input) => { current = pad([0]); poll(input); }, (input) => { current = pad([4]); poll(input); });
+    current = pad();
+    expect(gamepad[0]).toEqual({ moveX: 0, moveY: 0, defense: "guard_high", actions: [{ kind: "punch", hand: "right", class: "jab", target: "head", power: "normal", id: "c1" }] });
+    const touch = sentOnGuard((_input, container) => tap(container.querySelector("[data-move='slip_left']")!), (_input, container) => tap(container.querySelector("[data-guard='guard_high']")!));
+    expect(touch[0]).toEqual({ moveX: 0, moveY: 0, defense: "guard_high", actions: [{ kind: "slip_left", id: "c1" }] });
+  });
+
+  it("speaks up for a stick that turns or presses well past where it was, not for every twitch of the thumb", () => {
+    const axes = [0, 0, 0, 0];
+    let held: number[] = [];
+    Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [{ ...pad(held), axes: [...axes] }] });
+    const input = new InputController();
+    const changed = vi.fn();
+    input.onHeldChange(changed);
+    const at = (x: number, y: number): void => { axes[0] = x; axes[1] = y; poll(input); };
+    at(0.9, 0);
+    expect(changed).toHaveBeenCalledTimes(1);
+    at(0.92, -0.05);
+    at(0.9, 0.04);
+    expect(changed).toHaveBeenCalledTimes(1);
+    at(0.6, -0.6);
+    expect(changed).toHaveBeenCalledTimes(2);
+    held = [4];
+    poll(input);
+    expect(changed).toHaveBeenCalledTimes(3);
+    at(0, 0);
+    expect(changed).toHaveBeenCalledTimes(4);
     input.destroy();
   });
 });

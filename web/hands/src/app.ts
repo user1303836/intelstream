@@ -19,7 +19,7 @@ import { CAMERA_MODES, SettingsStore, type BloodLevel } from "./settings";
 import { initialState, reduceState, type GameState } from "./state";
 import type { CpuLevel, EngineSnapshot, PublicPlayer, ServerMessage } from "./types";
 
-const CONTACT_FEEDBACK_KINDS = new Set(["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown", "parry", "body_collapse", "eye_shut"]);
+const CONTACT_FEEDBACK_KINDS = new Set(["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown", "parry", "body_collapse", "eye_shut", "referee_hit", "referee_down"]);
 // The room keeps the finished bout for its result hold (ten seconds by default); a rejoin inside
 // that window only replays the old final, so the rematch waits it out and retries if it still hits it.
 const REMATCH_HOLD_MS = 11_000;
@@ -46,6 +46,8 @@ export class HandsApp {
   private readonly haptics = new HapticFeedback(() => this.settings.current);
   private readonly voice = new AnnouncerVoice(() => this.settings.current);
   private readonly feedbackEvents = new EventDeduplicator();
+  /** The player's own punches already heard as they started on screen. */
+  private readonly soundedPunches: string[] = [];
   private renderer: FightRenderer | null = null;
   private network: NetworkController | null = null;
   private session: DiscordSession | null = null;
@@ -285,6 +287,7 @@ export class HandsApp {
         this.renderer?.predictAction?.(action);
         this.network?.notifyAction();
       });
+      this.input.onHeldChange(() => this.network?.notifyHeld());
       const ticket = session.takeTicket();
       if (ticket === null) throw new Error("ticket_unavailable");
       const network = new NetworkController(ticket, () => this.input.frame(), {
@@ -321,10 +324,17 @@ export class HandsApp {
     const renderer = new FightRenderer(this.canvas, this.session.bootstrap.simulation, () => this.settings.current, {
       localInput: () => this.input.held(),
       inputSequenceOf: (actionId) => this.network?.sequenceOf(actionId) ?? null,
+      powerHeld: () => this.input.powerHeld,
     });
-    renderer.onContact = (event) => {
-      this.audio.event(event);
-      this.haptics.event(event);
+    renderer.onContact = (event, power) => {
+      this.audio.event(event, power);
+      this.haptics.event(event, power);
+    };
+    // The player's own punch is heard as it starts on screen; the server's word of it, a round trip later, is not heard again.
+    renderer.onOwnPunch = (punchClass, power, actionId) => {
+      this.audio.whoosh(punchClass, power);
+      this.soundedPunches.push(actionId);
+      if (this.soundedPunches.length > 8) this.soundedPunches.shift();
     };
     renderer.onArcadeInjury = (injury) => this.audio.injury(injury);
     renderer.onAnnouncement = (lines) => this.voice.speak(lines);
@@ -393,7 +403,10 @@ export class HandsApp {
     this.audio.tension(crowdTension(snapshot));
     for (const event of this.feedbackEvents.accept(snapshot.events)) {
       if (CONTACT_FEEDBACK_KINDS.has(event.kind)) continue;
-      this.audio.event(event);
+      if (event.kind === "punch_start" && event.action_id !== null && this.soundedPunches.includes(event.action_id)) continue;
+      // A punch's start says nothing of its power; the snapshot shows the fighter throwing it.
+      const thrower = event.kind === "punch_start" ? snapshot.fighters.find((fighter) => fighter.player_id === event.actor_id && fighter.action_id === event.action_id) : undefined;
+      this.audio.event(event, thrower?.action_power === "power");
       this.haptics.event(event);
     }
   }
@@ -423,6 +436,7 @@ export class HandsApp {
       fight: `Round ${this.state.snapshot?.round_number ?? 1} in progress.`,
       knockdown: `Knockdown count ${this.state.snapshot?.fighters.find((fighter) => fighter.player_id === this.state.playerId)?.get_up_count ?? 0}.`,
       foul_recovery: "Foul recovery in progress.",
+      referee_down: "The referee is down. The bout goes on without him.",
       rest: "Between-round rest.",
       paused: `Connection paused. ${Math.ceil(this.state.reconnectMs / 1000)} seconds remain.`,
       complete: this.cpuBout ? "Bout complete. Scorecards are displayed. Bouts against the computer are unrated." : "Bout complete. Scorecards and rating changes are displayed.",
@@ -432,7 +446,7 @@ export class HandsApp {
     this.setText(this.status, spectating ? `Spectating — ${labels[this.state.stage]}` : labels[this.state.stage]);
     // The result card says how the bout ended; the button sits in the card's footer.
     const resulted = this.state.stage === "complete" && this.state.final !== null;
-    this.status.hidden = resulted || ["select", "countdown", "fight", "knockdown", "foul_recovery", "rest"].includes(this.state.stage);
+    this.status.hidden = resulted || ["select", "countdown", "fight", "knockdown", "foul_recovery", "referee_down", "rest"].includes(this.state.stage);
     this.overlay.toggleAttribute("data-raised", this.state.snapshot !== null);
     this.overlay.toggleAttribute("data-result", resulted);
     // The engine's last snapshot arrives before the result does; the finish plays without the overlay.
@@ -479,7 +493,7 @@ export class HandsApp {
     if (showHint) this.setText(this.hint, controlHint(coarsePointer(), window.innerWidth));
     // Once the pads are up for the countdown, the touch hint moves to the empty stick side so it covers no pad.
     this.overlay.toggleAttribute("data-touch-hint", showHint && this.state.stage === "countdown" && coarsePointer());
-    const active = !spectating && ["countdown", "fight", "knockdown", "foul_recovery"].includes(this.state.stage);
+    const active = !spectating && ["countdown", "fight", "knockdown", "foul_recovery", "referee_down"].includes(this.state.stage);
     // Between rounds and through pauses the touch controls stay up, inert, so a thumb already in place counts at the bell.
     const resting = !spectating && this.state.snapshot !== null && (this.state.stage === "rest" || this.state.stage === "paused");
     this.input.setActive(active, active || resting);

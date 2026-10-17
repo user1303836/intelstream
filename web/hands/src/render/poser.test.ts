@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { FIGHTER_RADIUS, RING_HALF_WIDTH, punchTiming } from "../manifest";
+import { EVASION_TICKS, FIGHTER_RADIUS, RING_HALF_WIDTH, punchTiming, recoveryCancelAge } from "../manifest";
 import { fighter as baseFighter } from "../test/fixtures";
 import type { FighterSnapshot } from "../types";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, remapPunchAge } from "./graph";
@@ -578,6 +578,114 @@ describe("a spent guard", () => {
   });
 });
 
+describe("power punches", () => {
+  const thrown = (power: "power" | "normal", fraction: number): { hips: number; shoulders: number; glove: number; heat: number } => {
+    const { boxer, graph } = makeGraph();
+    const idle = facingOpponent(baseFighter("one"));
+    const timing = punchTiming("straight", "head", power);
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    const start = 100;
+    const punch: FighterSnapshot = { ...idle, action: "straight", action_hand: "right", action_target: "head", action_power: power, action_id: `straight-${power}`, action_key: `straight:right:head:${power}`, action_start_tick: start, action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery };
+    graph.update(punch, opponentFor("two"), 1 / 60, 1, false, "full", start + fraction * timing.startup, undefined);
+    const left = bone(boxer, "shoulderL");
+    const right = bone(boxer, "shoulderR");
+    return { hips: bone(boxer, "hips").y, shoulders: Math.atan2(right.z - left.z, right.x - left.x), glove: bone(boxer, "gloveR").z - boxer.root.position.z, heat: graph.powerHeat("right") };
+  };
+
+  it("load up through most of their startup: he sinks, turns away from the punch and cocks the glove back, which a normal punch never does", () => {
+    const normal = thrown("normal", 0.45);
+    const power = thrown("power", 0.45);
+    expect(normal.hips - power.hips).toBeGreaterThan(0.05);
+    expect(Math.abs(power.shoulders - normal.shoulders)).toBeGreaterThan(0.25);
+    expect(normal.glove - power.glove).toBeGreaterThan(0.08);
+    // Both end on the target.
+    expect(Math.abs(thrown("power", 1).glove - thrown("normal", 1).glove)).toBeLessThan(0.08);
+  });
+
+  it("heat the throwing glove through the load, full at the target, and leave every other glove cold", () => {
+    expect(thrown("normal", 0.5).heat).toBe(0);
+    expect(thrown("power", 0.1).heat).toBeGreaterThan(0);
+    expect(thrown("power", 0.1).heat).toBeLessThan(thrown("power", 0.5).heat);
+    expect(thrown("power", 1).heat).toBe(1);
+    const { graph } = makeGraph();
+    expect(graph.powerHeat("left")).toBe(0);
+  });
+
+  it("hold a landed power punch at the target longest, then make up the time without a jump and end with the server's copy", () => {
+    const run = (power: "power" | "normal"): { held: number; worstStep: number; endsAt: number } => {
+      const { graph } = makeGraph();
+      const idle = facingOpponent(baseFighter("one"));
+      const timing = punchTiming("straight", "head", power);
+      const start = 100;
+      const punch: FighterSnapshot = { ...idle, action: "straight", action_hand: "right", action_target: "head", action_power: power, action_id: "p", action_key: `straight:right:head:${power}`, action_start_tick: start, action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery };
+      let held = 0;
+      let worstStep = 0;
+      let endsAt = Infinity;
+      let previous = 0;
+      for (let tick = start; tick < start + 40; tick += 0.5) {
+        graph.update(punch, opponentFor("two"), 1 / 60, tick / 30, false, "full", tick, undefined);
+        const age = (graph as unknown as { punchAgeTicks: number; punchActive: boolean }).punchAgeTicks;
+        if (!(graph as unknown as { punchActive: boolean }).punchActive) { endsAt = Math.min(endsAt, tick); continue; }
+        if (tick === start + timing.startup) graph.landedHit("p", false, power === "power");
+        if (tick > start + timing.startup && age - previous < 0.2) held += 1;
+        if (tick > start) worstStep = Math.max(worstStep, age - previous);
+        previous = age;
+      }
+      return { held, worstStep, endsAt: endsAt - start };
+    };
+    const normal = run("normal");
+    const power = run("power");
+    expect(power.held).toBeGreaterThan(normal.held + 2);
+    expect(power.worstStep).toBeLessThan(1.4);
+    const timing = punchTiming("straight", "head", "power");
+    expect(Math.abs(power.endsAt - (timing.startup + timing.active + timing.recovery))).toBeLessThanOrEqual(1);
+  });
+});
+
+describe("turning while punching", () => {
+  it("holds the facing through a punch's startup and active ticks and turns at the usual rate as it recovers, as the engine does", () => {
+    const yawAfter = (fraction: number): number => {
+      const { graph } = makeGraph();
+      const idle = facingOpponent(baseFighter("one"));
+      const timing = punchTiming("straight", "head", "normal");
+      run(graph, idle, opponentFor("two"), 10, undefined);
+      const start = 100;
+      const age = fraction * (timing.startup + timing.active + timing.recovery);
+      const punch: FighterSnapshot = { ...idle, action: "straight", action_hand: "right", action_target: "head", action_power: "normal", action_id: "p", action_key: "straight:right:head:normal", action_start_tick: start - age, action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery };
+      // Turned a quarter round; six frames to follow.
+      const turned = { ...punch, facing_x: 1000, facing_y: 0 };
+      for (let frame = 0; frame < 6; frame += 1) graph.update(turned, opponentFor("two"), 1 / 60, 1 + frame / 60, false, "full", start + frame / 2, undefined);
+      return Math.abs((graph as unknown as { yaw: number }).yaw);
+    };
+    expect(yawAfter(0.7)).toBeGreaterThan(yawAfter(0.1) * 1.5);
+  });
+});
+
+describe("defensive snap", () => {
+  it("raises the guard and goes into a slip nine tenths of the way in four frames, and finishes a weave's dip and rise inside the engine's evasion", () => {
+    const weights = (graph: BoxingGraph): { guardHigh: number; slip: number } => graph as unknown as { guardHigh: number; slip: number };
+    const idle = facingOpponent(baseFighter("one"));
+    for (const [defense, read] of [["guard_high", (graph: BoxingGraph) => weights(graph).guardHigh], ["slip_left", (graph: BoxingGraph) => weights(graph).slip]] as const) {
+      const { graph } = makeGraph();
+      run(graph, idle, opponentFor("two"), 10, undefined);
+      run(graph, { ...idle, defense }, opponentFor("two"), 4, undefined, 10, 10 / 60);
+      expect(read(graph), defense).toBeGreaterThan(0.9);
+    }
+    const { boxer, graph } = makeGraph();
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    const heights: number[] = [];
+    for (let frame = 0; frame < 2 * EVASION_TICKS; frame += 1) {
+      run(graph, { ...idle, defense: "weave" }, opponentFor("two"), 1, undefined, 10 + frame / 2, (20 + frame) / 60);
+      heights.push(bone(boxer, "head").y);
+    }
+    // Lowest halfway through, and coming back up before the engine's evasion is over.
+    const lowest = heights.indexOf(Math.min(...heights));
+    expect(lowest).toBeGreaterThan(EVASION_TICKS / 2);
+    expect(lowest).toBeLessThan(1.5 * EVASION_TICKS);
+    expect(heights.at(-1)! - heights[lowest]!).toBeGreaterThan(0.04);
+  });
+});
+
 describe("cutman", () => {
   it("crouches before the seated fighter, presses the enswell on the eye, and stands back up when done", () => {
     const { boxer, graph } = makeGraph();
@@ -600,33 +708,31 @@ describe("own punch prediction", () => {
   const age = (graph: BoxingGraph): number => (graph as unknown as { punchAgeTicks: number }).punchAgeTicks;
   const active = (graph: BoxingGraph): boolean => (graph as unknown as { punchActive: boolean }).punchActive;
 
-  it("starts on the key press, never jumps back when the server confirms late, and lands on the server's contact tick", () => {
+  it("starts on the key press and keeps the server's pace, landing a lead ahead of the server's copy on screen, which it never jumps back for", () => {
     const { graph } = makeGraph();
     const idle = facingOpponent(baseFighter("one"));
-    const timing = punchTiming("jab", "head", "normal");
+    const timing = punchTiming("straight", "head", "normal");
     run(graph, idle, opponentFor("two"), 10, undefined);
-    graph.predict(jab, 0, 30, 6);
+    graph.predict({ ...jab, class: "straight", hand: "right" }, 0, 30, 6);
     expect(active(graph)).toBe(true);
     const ages: number[] = [];
     let tick = 100;
+    let contactAt: number | null = null;
     const step = (fighter: FighterSnapshot): void => {
       tick += 0.5;
       graph.update(fighter, opponentFor("two"), 1 / 60, tick / 30, false, "full", tick, undefined);
       if (active(graph)) ages.push(age(graph));
+      if (contactAt === null && age(graph) >= timing.startup) contactAt = tick;
     };
     for (let frame = 0; frame < 12; frame += 1) step(idle);
-    expect(age(graph)).toBeGreaterThan(1.5);
-    expect(age(graph)).toBeLessThan(timing.startup);
-    const startTick = tick;
-    const confirmed = { ...idle, action: "jab" as const, action_hand: "left" as const, action_target: "head" as const, action_power: "normal" as const, action_id: "own-1", action_key: "jab:left:head:normal", action_start_tick: startTick, action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery };
-    let contactAt: number | null = null;
-    for (let frame = 0; frame < 40 && active(graph); frame += 1) {
-      step(confirmed);
-      if (contactAt === null && age(graph) >= timing.startup) contactAt = tick;
-    }
-    for (let index = 1; index < ages.length; index += 1) expect(ages[index]!).toBeGreaterThanOrEqual(ages[index - 1]!);
-    expect(contactAt).not.toBeNull();
-    expect(Math.abs(contactAt! - (startTick + timing.startup))).toBeLessThanOrEqual(1);
+    expect(age(graph)).toBeCloseTo(6, 5);
+    // The server's copy reaches the render clock six ticks after the press.
+    const confirmed = { ...idle, action: "straight" as const, action_hand: "right" as const, action_target: "head" as const, action_power: "normal" as const, action_id: "own-1", action_key: "straight:right:head:normal", action_start_tick: tick, action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery };
+    for (let frame = 0; frame < 40 && active(graph); frame += 1) step(confirmed);
+    for (let index = 1; index < ages.length; index += 1) expect(ages[index]! - ages[index - 1]!).toBeCloseTo(0.5, 5);
+    expect(contactAt).toBe(100 + timing.startup);
+    // Over on the frame it reaches its full length, after neither a stretch nor a jump.
+    expect(ages.length).toBe(2 * (timing.startup + timing.active + timing.recovery) - 1);
   });
 
   const state = (graph: BoxingGraph): { punchClass: string; ownActionId: string | null; actionId: string | null } =>
@@ -663,8 +769,9 @@ describe("own punch prediction", () => {
     const hook = serverPunch(idle, "theirs-hook", "hook", tick);
     const step = (fighter: FighterSnapshot): void => { tick += 0.5; graph.update(fighter, opponentFor("two"), 1 / 60, tick / 30, false, "full", tick, undefined); };
     graph.acknowledge(hook, true, [{ event_id: 1, tick: 307, kind: "hit", actor_id: "one", target_id: "two", amount: 30, detail: "hook:head", blood: 0, direction: 1, action_id: "theirs-hook" }]);
-    // The engine lets a chained follow-up cut a landed hook's recovery short from 7 + 3 + 12 / 2 ticks.
-    while (age(graph) < 16) step(hook);
+    // The engine lets a chained follow-up cut a landed hook's recovery short from its cancel age.
+    const cancelAge = recoveryCancelAge(punchTiming("hook", "head", "normal"));
+    while (age(graph) < cancelAge) step(hook);
     expect(state(graph).punchClass).toBe("hook");
     graph.predict({ ...jab, id: "own-3", class: "uppercut" }, 0, 30, 3);
     expect(state(graph).punchClass).toBe("uppercut");
@@ -692,20 +799,22 @@ describe("own punch prediction", () => {
   it("brings the glove back the way it went when the server never starts the punch", () => {
     const { graph } = makeGraph();
     const idle = facingOpponent(baseFighter("one"));
-    const timing = punchTiming("hook", "head", "normal");
+    // A power uppercut winds up long enough for the server's silence to tell before it would land.
+    const timing = punchTiming("uppercut", "head", "power");
     run(graph, idle, opponentFor("two"), 10, undefined);
-    graph.predict({ ...jab, id: "own-hook", class: "hook" }, 0, 30, 2);
+    graph.predict({ ...jab, id: "own-hook", class: "uppercut", power: "power" }, 0, 30, 2);
     let tick = 600;
     const step = (fighter: FighterSnapshot): void => { tick += 0.5; graph.update(fighter, opponentFor("two"), 1 / 60, tick / 30, false, "full", tick, undefined); };
     const ages: number[] = [];
     let frames = 0;
     while (active(graph) && frames < 200) { step(idle); frames += 1; if (active(graph)) ages.push(age(graph)); }
     expect(active(graph)).toBe(false);
-    expect(frames / 2).toBeLessThan(timing.startup + timing.active + timing.recovery - 4);
+    // Pulled back within a few ticks of the punch's own length.
+    expect(frames / 2).toBeLessThan(timing.startup + timing.active + timing.recovery + 4);
     const peak = ages.indexOf(Math.max(...ages));
     expect(Math.max(...ages)).toBeLessThan(timing.startup);
     for (let index = peak + 1; index < ages.length; index += 1) expect(ages[index]!).toBeLessThan(ages[index - 1]!);
-    step(serverPunch(idle, "own-hook", "hook", tick));
+    step(serverPunch(idle, "own-hook", "uppercut", tick));
     expect(active(graph)).toBe(true);
   });
 
@@ -726,6 +835,142 @@ describe("own punch prediction", () => {
     step(serverPunch(idle, "own-1", "jab", tick, 1.5));
     const slower = Math.round(from.startup * 1.5);
     expect(age(graph) / slower).toBeGreaterThanOrEqual(progress - 0.01);
+  });
+
+  it("freezes on a landed punch only while the glove is at the target, not one the server's word reaches on its way back", () => {
+    const hitstop = (graph: BoxingGraph): number => (graph as unknown as { hitstop: number }).hitstop;
+    const timing = punchTiming("jab", "head", "normal");
+    for (const [frames, frozen] of [[2 * timing.startup, true], [2 * (timing.startup + timing.active + 1), false]] as const) {
+      const { graph } = makeGraph();
+      const idle = facingOpponent(baseFighter("one"));
+      run(graph, idle, opponentFor("two"), 10, undefined);
+      graph.predict(jab, 0, 30, 6);
+      run(graph, idle, opponentFor("two"), frames, undefined, 100);
+      graph.landedHit("own-1", false);
+      expect(hitstop(graph) > 0).toBe(frozen);
+    }
+  });
+
+  it("freezes the punch a contact belongs to, never the next one a combination let go before the word of it was shown", () => {
+    const hitstop = (graph: BoxingGraph): number => (graph as unknown as { hitstop: number }).hitstop;
+    const timing = punchTiming("jab", "head", "normal");
+    const { graph } = makeGraph();
+    const idle = facingOpponent(baseFighter("one"));
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    graph.predict(jab, 0, 30, 6);
+    graph.predict({ ...jab, id: "own-2", class: "straight", hand: "right" }, 1 / 60, 30, 6);
+    run(graph, idle, opponentFor("two"), 2 * (timing.startup + timing.active + timing.recovery) + 1, undefined, 100);
+    expect(state(graph).ownActionId).toBe("own-2");
+    // The jab's contact, shown on arrival a round trip after its glove got there, finds the straight in its wind-up.
+    graph.landedHit("own-1", false, true);
+    expect(hitstop(graph)).toBe(0);
+    graph.landedHit("own-2", false);
+    expect(hitstop(graph)).toBeGreaterThan(0);
+  });
+
+  it("never freezes on a contact that names no punch, as a guard broken by holding it up too long does", () => {
+    const hitstop = (graph: BoxingGraph): number => (graph as unknown as { hitstop: number }).hitstop;
+    const timing = punchTiming("hook", "head", "normal");
+    const { graph } = makeGraph();
+    const idle = facingOpponent(baseFighter("one"));
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    // His hook is at the target when the other man's held guard gives out: the engine names him and no punch.
+    const hook = serverPunch(idle, "theirs-1", "hook", 100);
+    run(graph, hook, opponentFor("two"), 2 * timing.startup + 1, undefined, 100);
+    graph.landedHit(null, false);
+    expect(hitstop(graph)).toBe(0);
+    graph.landedHit("theirs-1", false);
+    expect(hitstop(graph)).toBeGreaterThan(0);
+  });
+
+  it("tells the footwork its own punch allows on the press's time: none to the end of its active ticks, the recovery's share, then all", () => {
+    const { graph } = makeGraph();
+    const idle = facingOpponent(baseFighter("one"));
+    const timing = punchTiming("straight", "head", "normal");
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    graph.predict({ ...jab, class: "straight", hand: "right" }, 0, 30, 6);
+    const shares: number[] = [];
+    let tick = 100;
+    for (let frame = 0; frame < 2 * (timing.startup + timing.active + timing.recovery) + 2; frame += 1) {
+      shares.push(graph.ownFootwork);
+      tick = run(graph, idle, opponentFor("two"), 1, undefined, tick, tick / 30);
+    }
+    const recovery = 2 * (timing.startup + timing.active);
+    expect(shares.slice(0, recovery)).toEqual(Array.from({ length: recovery }, () => 0));
+    expect(shares.slice(recovery, 2 * (timing.startup + timing.active + timing.recovery))).toEqual(Array.from({ length: 2 * timing.recovery }, () => 0.6));
+    expect(shares.at(-1)).toBe(1);
+  });
+
+  it("goes straight back to the guard with the feet free once a slip pressed during it cuts the recovery short, and drops the press it held", () => {
+    const { graph } = makeGraph();
+    const idle = facingOpponent(baseFighter("one"));
+    const timing = punchTiming("straight", "head", "normal");
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    graph.predict({ ...jab, class: "straight", hand: "right" }, 0, 30, 6);
+    let tick = run(graph, idle, opponentFor("two"), 4, undefined, 100);
+    graph.predict({ ...jab, id: "own-hook", class: "hook" }, tick / 30, 30, 6);
+    expect(graph.ownTicksToRecovery).toBeCloseTo(timing.startup + timing.active - 2, 5);
+    graph.cutOwnRecovery();
+    // Still held through the active ticks: the server holds the slip until the straight has landed or missed.
+    expect(graph.ownFootwork).toBe(0);
+    let frames = 4;
+    while (active(graph) && frames < 200) {
+      tick = run(graph, idle, opponentFor("two"), 1, undefined, tick, tick / 30);
+      frames += 1;
+      if (active(graph) && age(graph) >= timing.startup + timing.active) expect(graph.ownFootwork).toBe(1);
+      expect(state(graph).ownActionId).not.toBe("own-hook");
+    }
+    expect(frames / 2).toBeLessThan(timing.startup + timing.active + timing.recovery / 2);
+    tick = run(graph, idle, opponentFor("two"), 20, undefined, tick, tick / 30);
+    expect(state(graph).ownActionId).toBeNull();
+  });
+
+  it("recovers in full when the slip pressed to cut its recovery short is replaced or turned down before it starts", () => {
+    const timing = punchTiming("hook", "head", "normal");
+    const play = (slip: boolean): { shares: number[]; followUpFrame: number } => {
+      const { graph } = makeGraph();
+      const idle = facingOpponent(baseFighter("one"));
+      run(graph, idle, opponentFor("two"), 10, undefined);
+      graph.predict({ ...jab, class: "hook" }, 0, 30, 6);
+      // The server's word that it started the hook, so the give-up timer leaves it alone.
+      graph.acknowledge({ ...idle, action: "hook", action_hand: "left", action_target: "head", action_power: "normal", action_id: "own-1", action_key: "hook:left:head:normal", action_start_tick: 102, action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery }, true);
+      let tick = run(graph, idle, opponentFor("two"), 2, undefined, 100);
+      if (slip) graph.cutOwnRecovery();
+      tick = run(graph, idle, opponentFor("two"), 2, undefined, tick, tick / 30);
+      if (slip) graph.keepOwnRecovery();
+      graph.predict({ ...jab, id: "own-2", hand: "right" }, tick / 30, 30, 6);
+      const shares: number[] = [];
+      let frame = 4;
+      for (; state(graph).ownActionId === "own-1" && frame < 200; frame += 1) {
+        shares.push(graph.ownFootwork);
+        tick = run(graph, idle, opponentFor("two"), 1, undefined, tick, tick / 30);
+      }
+      return { shares, followUpFrame: frame };
+    };
+    const unslipped = play(false);
+    expect(unslipped.shares).toContain(0.6);
+    expect(unslipped.followUpFrame).toBeGreaterThanOrEqual(2 * (timing.startup + timing.active + timing.recovery));
+    expect(play(true)).toEqual(unslipped);
+  });
+
+  it("knows which of the player's own presses reached the target on screen, and not one pulled back or played on the server's clock", () => {
+    const { graph } = makeGraph();
+    const idle = facingOpponent(baseFighter("one"));
+    const timing = punchTiming("jab", "head", "normal");
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    graph.predict(jab, 0, 30, 6);
+    let tick = run(graph, idle, opponentFor("two"), 2 * timing.startup - 2, undefined, 100);
+    expect(graph.pressLanded("own-1")).toBe(false);
+    tick = run(graph, idle, opponentFor("two"), 2, undefined, tick);
+    expect(graph.pressLanded("own-1")).toBe(true);
+    // Pulled back before contact: the server turned it down.
+    graph.predict({ ...jab, id: "own-2", class: "uppercut", power: "power" }, tick / 30 + 1, 30, 6);
+    graph.acknowledge({ ...idle, stunned_ticks: 10 }, true);
+    tick = run(graph, idle, opponentFor("two"), 40, undefined, tick);
+    expect(graph.pressLanded("own-2")).toBe(false);
+    run(graph, serverPunch(idle, "theirs-1", "jab", tick), opponentFor("two"), 20, undefined, tick);
+    expect(graph.pressLanded("theirs-1")).toBe(false);
+    expect(graph.pressLanded(null)).toBe(false);
   });
 
   it("forgets the punch when the fighter is reset for the replay", () => {
@@ -856,7 +1101,8 @@ describe("own punch prediction", () => {
     }
     for (let index = 1; index < ages.length; index += 1) expect(ages[index]!).toBeGreaterThanOrEqual(ages[index - 1]!);
     expect(starts).toBe(0);
-    expect(Math.abs(contactAt! - (startTick + timing.startup))).toBeLessThanOrEqual(1);
+    // On the press's own time, three ticks ahead of the server's copy.
+    expect(Math.abs(contactAt! - (100 + timing.startup))).toBeLessThanOrEqual(0.5);
   });
 
   const followUp = (startTick: number, lead: number): { startedAt: number; progress: number; starts: number } => {
@@ -901,10 +1147,11 @@ describe("own punch prediction", () => {
   });
 
   it("leaves a follow-up to the server's clock when the punch in flight is not yet half way", () => {
-    // The server cancels the jab's recovery into a hook, and the news of it is five ticks ahead of the screen.
-    const soon = followUp(208, 5);
-    expect(soon.startedAt).toBeGreaterThanOrEqual(207);
-    expect(soon.startedAt).toBeLessThanOrEqual(208.5);
+    // The hook starts before the jab is half way through its nine ticks, and the news of it is three ticks
+    // ahead of the screen.
+    const soon = followUp(205, 3);
+    expect(soon.startedAt).toBeGreaterThanOrEqual(204);
+    expect(soon.startedAt).toBeLessThanOrEqual(205.5);
     expect(soon.starts).toBe(1);
   });
 
@@ -1655,9 +1902,9 @@ describe("per-frame allocations", () => {
 
 describe("transition sweep", () => {
   const PUNCHES = ["jab", "straight", "hook", "uppercut"] as const;
-  // 9.6 m/s: a straight's glove peaks near 7 m/s and a hook's elbow from the crowded guard of fighters this close
-  // near 9.2 m/s, while the snaps this guards against moved bones 0.5 m in a frame.
-  const MAX_STEP = 0.16;
+  // 14.4 m/s: with the quicker punches a hook's elbow from the crowded guard of fighters this close peaks near
+  // 12 m/s, while the snaps this guards against moved bones 0.5 m in a frame.
+  const MAX_STEP = 0.24;
 
   it("moves every bone smoothly, keeps the skin above the canvas and bends the knees forward from idle through punches, falls, get-ups, the corner stool and a taunt", () => {
     const { boxer, graph } = makeGraph();

@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { GLTFLoader, type GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
-import { GLOVE_HITBOX_RADIUS, GUARD_BLOCK_MINIMUM, HURTBOXES, cancelsRecovery, punchTiming, recoveryCancelAge, totalTicks, type PunchTiming } from "../manifest";
+import { COUNT_TICKS, EVASION_TICKS, GLOVE_HITBOX_RADIUS, GUARD_BLOCK_MINIMUM, HITSTOP_MS, HURTBOXES, RECOVERY_SPEED_PERCENT, TICK_RATE, cancelsRecovery, punchTiming, recoveryCancelAge, totalTicks, type PunchTiming } from "../manifest";
 import type { BloodLevel } from "../settings";
 import type { CombatEvent, FighterSnapshot, Hand, Power, PunchAction, PunchClass, SemanticAction, Target } from "../types";
 import { FIGHTER_GLB_GZIP_BASE64 } from "../assets/fighter-glb";
@@ -145,8 +145,9 @@ export function pressOntoCanvas(material: THREE.Material): void {
 }
 
 export function applyFighterSkin(target: THREE.Object3D, palette: BoxerPaletteColors): AppliedFighterMaterials {
-  // An official never takes damage or sweats: plain materials, injury state that shades nothing, and no shadow.
+  // An official never sweats: plain materials and no shadow, and unless he can be hurt, injury state that shades nothing.
   const official = palette.outfit !== undefined;
+  const wounded = !official || palette.wounds === true;
   const skin: THREE.MeshStandardMaterial[] = [];
   const owned: THREE.Material[] = [];
   const bySource = new Map<string, THREE.MeshStandardMaterial>();
@@ -176,8 +177,8 @@ export function applyFighterSkin(target: THREE.Object3D, palette: BoxerPaletteCo
       bySource.set(sourceName, material);
       owned.push(material);
       if (isSkin) skin.push(material);
-      if (sourceName === "MHeadMat0") headInjury = new InjuryShading(official ? null : material, HEAD_SITES, { core: HEAD_SWELL_CORE, lids: EYE_LIDS });
-      if (sourceName === "MBodyMat0") bodyInjury = new InjuryShading(official ? null : material, BODY_SITES, { core: BODY_SWELL_CORE, wash: true });
+      if (sourceName === "MHeadMat0") headInjury = new InjuryShading(wounded ? material : null, HEAD_SITES, { core: HEAD_SWELL_CORE, lids: EYE_LIDS });
+      if (sourceName === "MBodyMat0") bodyInjury = new InjuryShading(wounded ? material : null, BODY_SITES, { core: BODY_SWELL_CORE, wash: true });
       const part = OUTFIT_PARTS[sourceName];
       if (outfit !== undefined && part !== undefined) applyOutfitShading(material, part, outfit);
       else if (sourceName === "PantsMat0") trunksBlood = wearCornerColour(material, false, "trunks");
@@ -205,6 +206,8 @@ export interface BoxerPaletteColors {
    * no injury shading, no sweat and no shadow (see applyFighterSkin).
    */
   readonly outfit?: OfficialOutfit;
+  /** An official who can be punched: his face and body shade their injuries like a fighter's. */
+  readonly wounds?: boolean;
 }
 
 const OUTFIT_PARTS: Readonly<Record<string, OutfitPart>> = { MHeadMat0: "head", MBodyMat0: "body", ShoesMat0: "shoes", PantsMat0: "pants" };
@@ -447,6 +450,8 @@ interface OwnPress {
   readonly action: PunchAction & { readonly id: string };
   readonly timing: PunchTiming;
   readonly leadTicks: number;
+  /** Ticks until a snapshot answering the press is due. */
+  readonly answerTicks: number;
   readonly pressedAt: number;
   /** The input frame that carried it, once known. */
   sequence: number | null;
@@ -566,7 +571,9 @@ export class BoxingGraph {
   private completedActionId: string | null = null;
   /** Id of the viewer's own punch while its animation is the one started on the key press. */
   private ownActionId: string | null = null;
-  /** Ticks the key press led the server's presentation, absorbed by stretching the punch's startup. */
+  /** The early punch is the viewer's own press, played at the server's pace, rather than an opponent's punch seen early. */
+  private ownPress = false;
+  /** Ticks an opponent's punch seen early leads the server's presentation, absorbed by stretching its startup. */
   private ownLeadTicks = 0;
   private ownAuthoritativeAge: number | null = null;
   /** Real ticks the own punch has waited for the server, and how long that is expected to take. */
@@ -582,6 +589,10 @@ export class BoxingGraph {
   private ownPressedAt = 0;
   /** The server refused the punch or cut it off before contact, so the pull-back is final. */
   private ownRefused = false;
+  /** The own punch had reached its contact without the server's word, which then refused it or never came: it goes back at once. */
+  private ownCut = false;
+  /** A slip, weave or pull pressed during the own punch cuts its recovery short once it has landed or missed. */
+  private recoveryCut = false;
   /** A press made during a punch: the server holds it until that punch lets it go, and so does the graph. */
   private ownQueued: OwnPress | null = null;
   /** This fighter's newest punch the server reported meeting the opponent, and whether it was parried. */
@@ -592,9 +603,13 @@ export class BoxingGraph {
   private shownOpponent: FighterSnapshot | null = null;
   /** Own punches already played or cut short here; the server's copy of them is not played again. */
   private readonly retiredOwnIds: string[] = [];
+  /** The viewer's own presses whose glove reached the target here on the press's time, newest last. */
+  private readonly pressesLanded: string[] = [];
   private anticipatedId: string | null = null;
   private hitstop = 0;
   private hitstopScale = 1;
+  /** Ticks of the punch a hit's freeze held back, made up once the freeze is over instead of jumped. */
+  private hitstopLag = 0;
   private downState: "up" | "falling" | "down" | "rising" = "up";
   private fallAge = 0;
   /** How far along the get-up he is (see RISE_KNEE), and where it stood when the server let him up. */
@@ -646,6 +661,11 @@ export class BoxingGraph {
   /** How far the punch's aim has moved from that head onto the live one: only once the punch is known to have met him. */
   private followHead = 0;
   private aimActionId: string | null = null;
+  /** This fighter's newest punch the server reported finding the referee in the way, his head as drawn, and how far the aim has moved onto it. */
+  private refereeContactId: string | null = null;
+  private readonly refereeHead = new THREE.Vector3();
+  private hasRefereeHead = false;
+  private followReferee = 0;
   private readonly headKick: Spring3 = { value: new THREE.Vector3(), velocity: new THREE.Vector3() };
   private readonly torsoKick: Spring3 = { value: new THREE.Vector3(), velocity: new THREE.Vector3() };
   private readonly rootKick: Spring3 = { value: new THREE.Vector3(), velocity: new THREE.Vector3() };
@@ -797,7 +817,7 @@ export class BoxingGraph {
   private refereeCounting = false;
   /** Render tick the referee's count last changed on; the counting arm is timed from it. */
   private countChangedTick: number | null = null;
-  /** Knockout physics; officials have none. */
+  /** Knockout physics; officials have none, except a referee who can be knocked out. */
   private readonly ragdoll: KnockoutRagdoll | null;
   /** Knocked out on his feet (a flash knockout): down although the engine never counts him. */
   private forcedDown = false;
@@ -810,7 +830,7 @@ export class BoxingGraph {
   /** Seconds since the knockout physics handed the body to the get-up, which blends in from where it left it. */
   private riseBlendAge = 0;
 
-  constructor(boxer: SkinnedBoxer, private readonly mapping: WorldMapping, options: { referee?: boolean } = {}) {
+  constructor(boxer: SkinnedBoxer, private readonly mapping: WorldMapping, options: { referee?: boolean; knockout?: boolean } = {}) {
     this.boxer = boxer;
     this.referee = options.referee === true;
     this.solver = new PoseSolver(boxer.rig);
@@ -822,7 +842,7 @@ export class BoxingGraph {
     boxer.rig.bones.gloveL.add(this.enswell.group);
     this.bottle = buildBottle();
     boxer.rig.bones.gloveL.add(this.bottle.group);
-    this.ragdoll = this.referee ? null : new KnockoutRagdoll(boxer.rig, boxer.root);
+    this.ragdoll = this.referee && options.knockout !== true ? null : new KnockoutRagdoll(boxer.rig, boxer.root);
   }
 
   /** The knockout replay runs the recorded fall again rather than a new one. */
@@ -902,6 +922,7 @@ export class BoxingGraph {
     this.riseProgress = 0;
     this.hitstop = 0;
     this.hitstopScale = 1;
+    this.hitstopLag = 0;
     for (const spring of [this.headKick, this.torsoKick, this.rootKick, this.coverKick]) {
       spring.value.set(0, 0, 0);
       spring.velocity.set(0, 0, 0);
@@ -1023,17 +1044,19 @@ export class BoxingGraph {
   }
 
   /**
-   * Starts the viewer's own punch on the key press. `leadTicks` estimates how far ahead of the
-   * server's presentation that is (input latency plus the interpolation delay); the startup is
-   * stretched by it so the glove arrives when the hit is shown. A press made during a punch waits, as
-   * it does on the server, until that punch lets it go.
+   * Starts the viewer's own punch on the key press, at the speed the server will throw it: the press starts the punch
+   * there the moment it arrives, so the glove travels on the press's own time, a one-way trip ahead of the server. A
+   * press made during a punch waits, as it does on the server, until that punch lets it go. `leadTicks` is how far the
+   * render clock trails that time (input latency plus the interpolation delay), for a punch played on the server's
+   * timeline; `answerTicks` is how soon a snapshot answering the press is due.
    */
-  predict(action: SemanticAction, timeSeconds: number, tickRate: number, leadTicks = 0, expected?: PunchTiming): void {
+  predict(action: SemanticAction, timeSeconds: number, tickRate: number, leadTicks = 0, expected?: PunchTiming, answerTicks = leadTicks): void {
     if (action.kind !== "punch" || action.id === undefined) return;
     const press: OwnPress = {
       action: { ...action, id: action.id },
       timing: expected ?? punchTiming(action.class, action.target, action.power),
       leadTicks,
+      answerTicks,
       pressedAt: timeSeconds,
       sequence: null,
       started: false,
@@ -1051,20 +1074,74 @@ export class BoxingGraph {
       // Behind a punch the server holds the press until a combination cuts the recovery short or the
       // punch ends. A press it already holds is replaced only if it is still held when this one
       // arrives; otherwise it has started by then, and this one waits behind it and plays when shown.
-      if (this.ownQueued !== null && this.followUpStartAge(this.ownQueued) - this.punchAgeTicks <= leadTicks) return;
-      if (this.punchAgeTicks < this.followUpStartAge(press)) {
+      const age = this.punchAgeTicks + this.serverLag(leadTicks);
+      if (this.ownQueued !== null && this.followUpStartAge(this.ownQueued) <= age) return;
+      if (age < this.followUpStartAge(press)) {
         this.ownQueued = press;
         return;
       }
     }
     this.ownQueued = null;
     this.retirePunch();
-    this.startOwnPunch(press, leadTicks);
+    this.startOwnPunch(press);
+  }
+
+  /**
+   * How far the punch being played trails the moment a press made now reaches the server: nothing for the viewer's own
+   * press, which plays on that time, `leadTicks` for a punch played on the server's timeline, behind on the render clock.
+   */
+  private serverLag(leadTicks: number): number {
+    return this.ownPress && this.ownActionId !== null ? 0 : leadTicks;
   }
 
   /** True while the viewer's own punch, started on the key press, is playing. */
   get ownPunchActive(): boolean {
     return this.punchActive && this.ownActionId !== null;
+  }
+
+  /** The instance id of the viewer's own press while it plays on the press's time, else null. */
+  get ownPressId(): string | null {
+    return this.punchActive && this.ownPress ? this.ownActionId : null;
+  }
+
+  /** Whether the viewer's own press with this instance id reached the target on screen on the press's time. */
+  pressLanded(actionId: string | null): boolean {
+    return actionId !== null && this.pressesLanded.includes(actionId);
+  }
+
+  /** The class of the punch being played, and whether it is a power punch. */
+  get punchKind(): { readonly punchClass: PunchClass; readonly power: boolean } {
+    return { punchClass: this.punchClass, power: this.punchPower === "power" };
+  }
+
+  /**
+   * The share of his footwork the server gives the player's fighter, for input sent now, while his own punch plays on the
+   * press's time: none through its startup and active ticks, the recovery's share while it recovers, all of it once an
+   * evasion has cut the recovery short or the server is known not to have thrown it.
+   */
+  get ownFootwork(): number {
+    if (!this.punchActive || this.ownActionId === null || !this.ownPress || this.ownPulled || this.ownCut) return 1;
+    if (this.punchAgeTicks < this.punchTiming.startup + this.punchTiming.active) return 0;
+    return this.recoveryCut ? 1 : RECOVERY_SPEED_PERCENT / 100;
+  }
+
+  /** Ticks until the player's own punch has landed or missed, when the server lets an evasion cut its recovery short. */
+  get ownTicksToRecovery(): number {
+    return Math.max(0, this.punchTiming.startup + this.punchTiming.active - this.punchAgeTicks);
+  }
+
+  /**
+   * A slip, weave or pull was pressed during the player's own punch: from the end of its active ticks the server ends the
+   * punch for it, so the glove goes straight back to the guard, and the press it held for later is gone, replaced.
+   */
+  cutOwnRecovery(): void {
+    if (this.ownPunchActive) this.recoveryCut = true;
+    this.ownQueued = null;
+  }
+
+  /** The slip, weave or pull pressed to cut the player's own punch's recovery short was replaced or turned down before it started. */
+  keepOwnRecovery(): void {
+    this.recoveryCut = false;
   }
 
   /**
@@ -1078,6 +1155,7 @@ export class BoxingGraph {
    */
   acknowledge(server: FighterSnapshot, fighting: boolean, contacts: readonly CombatEvent[] = [], sequenceOf: ((actionId: string) => number | null) | null = null): void {
     for (const event of contacts) {
+      if (event.kind === "referee_hit" && event.action_id !== null) this.refereeContactId = event.action_id;
       if (event.action_id === null || !CONNECTING_CONTACTS.has(event.kind)) continue;
       if (event.action_id !== this.contactId) {
         this.contactId = event.action_id;
@@ -1103,7 +1181,7 @@ export class BoxingGraph {
       this.ownActionId = null;
       this.ownQueued = null;
       this.retirePunch();
-      this.startOwnPunch(held, Math.max(0, held.leadTicks - held.waited));
+      this.startOwnPunch(held);
       return;
     }
     const refused = started
@@ -1112,8 +1190,16 @@ export class BoxingGraph {
         && (cutOff || (this.ownSequence !== null && server.last_input_sequence >= this.ownSequence && server.queued_actions === 0));
     if (!refused) return;
     this.ownRefused = true;
-    // Before contact the glove comes back the way it went; after it the punch simply finishes.
+    this.takeBack();
+  }
+
+  /**
+   * The early punch goes back: before contact the way it went; after it, the viewer's own press straight back to the
+   * guard at once, as the server never threw it or cut it off; an opponent's punch seen early simply finishes.
+   */
+  private takeBack(): void {
     if (this.punchAgeTicks < this.punchTiming.startup) this.ownPulled = true;
+    else if (this.ownPress) this.ownCut = true;
   }
 
   /**
@@ -1141,10 +1227,11 @@ export class BoxingGraph {
     this.startEarly(id, fighter.action, hand, target, power, timing, leadTicks, leadTicks);
   }
 
-  /** Plays the viewer's own press from its first frame, its startup stretched by `leadTicks`. */
-  private startOwnPunch(press: OwnPress, leadTicks: number): void {
+  /** Plays the viewer's own press from its first frame, at the server's pace, waiting the press's answer time for word of it. */
+  private startOwnPunch(press: OwnPress): void {
     const { action, timing } = press;
-    this.startEarly(action.id, action.class, action.hand, action.target, action.power, timing, leadTicks, Math.max(0, leadTicks));
+    this.startEarly(action.id, action.class, action.hand, action.target, action.power, timing, 0, Math.max(0, press.answerTicks));
+    this.ownPress = true;
     this.ownSequence = press.sequence;
     this.ownStarted = press.started;
     this.ownPressedAt = press.pressedAt;
@@ -1169,7 +1256,7 @@ export class BoxingGraph {
   /**
    * Age of the punch being played at which the server starts `press`, held behind it: the cancel age
    * when a combination may cut the recovery short (the engine's rule, with the fighters as shown),
-   * otherwise the tick after the punch ends.
+   * otherwise the tick the punch ends.
    */
   private followUpStartAge(press: OwnPress): number {
     const fighter = this.shownFighter;
@@ -1179,22 +1266,22 @@ export class BoxingGraph {
     if (fighter !== null && opponent !== null && cancelsRecovery(this.punchClass, landed, press.action, fighter.stamina, opponent.stunned_ticks > 0, fighter.style)) {
       return recoveryCancelAge(this.punchTiming);
     }
-    return this.punchTotalTicks + 1;
+    return this.punchTotalTicks;
   }
 
   /**
    * Starts the held press when the server would: at the cancel age when a combination cuts the
-   * recovery short, the tick after the punch ends otherwise, and at once if the punch in front of it
-   * was refused. Its startup is stretched by whatever lead the wait has not used up.
+   * recovery short, the tick the punch ends otherwise, and at once if the punch in front of it was
+   * refused. Its startup is stretched by whatever lead the wait has not used up.
    */
-  private releaseQueuedPress(simDt: number, ended: boolean): void {
+  private releaseQueuedPress(simDt: number): void {
     const press = this.ownQueued;
     if (press === null) return;
     press.waited += simDt * 30;
-    if (this.punchActive && !this.ownPulled && this.punchAgeTicks < this.followUpStartAge(press)) return;
+    if (this.punchActive && !this.ownPulled && this.punchAgeTicks + this.serverLag(press.leadTicks) < this.followUpStartAge(press)) return;
     this.ownQueued = null;
     this.retirePunch();
-    this.startOwnPunch(press, Math.max(ended ? 1 : 0, press.leadTicks - press.waited));
+    this.startOwnPunch(press);
   }
 
   /** Marks the punch being played as done so neither copy of it is started again. */
@@ -1207,6 +1294,7 @@ export class BoxingGraph {
     this.actionId = null;
     this.punchActive = false;
     this.ownActionId = null;
+    this.ownPress = false;
     this.ownLeadTicks = 0;
     this.ownAuthoritativeAge = null;
     this.ownWaitedTicks = 0;
@@ -1215,10 +1303,40 @@ export class BoxingGraph {
     this.ownSequence = null;
     this.ownStarted = false;
     this.ownRefused = false;
+    this.ownCut = false;
+    this.recoveryCut = false;
+    this.hitstopLag = 0;
   }
 
-  landedHit(blocked: boolean): void {
-    this.hitstop = Math.max(this.hitstop, blocked ? 0.045 : 0.078);
+  /** The referee's head as drawn, which a punch the server says found him lands on; null with no referee in the ring. */
+  setRefereeHead(head: THREE.Vector3 | null): void {
+    this.hasRefereeHead = head !== null;
+    if (head !== null) this.refereeHead.copy(head);
+  }
+
+  /**
+   * The punch with this instance id met the opponent: it freezes at the target for a moment, a power punch that landed
+   * longest. Only that punch freezes, and only while its glove is at the target: the player's own punch, thrown on the
+   * press's time, is on its way back by the time the server's word of the contact is shown, or a combination has already
+   * let the next punch go.
+   */
+  landedHit(actionId: string | null, blocked: boolean, power = false): void {
+    if (!this.punchActive || actionId === null || actionId !== (this.actionId ?? this.ownActionId)) return;
+    if (this.punchAgeTicks >= this.punchTiming.startup + this.punchTiming.active + 1) return;
+    this.hitstop = Math.max(this.hitstop, (blocked ? HITSTOP_MS.block : power ? HITSTOP_MS.power : HITSTOP_MS.hit) / 1000);
+  }
+
+  /**
+   * How hot the glove throwing a power punch glows, 0 to 1: building through the load, full at the target, cooling as it
+   * comes back. Any other glove, or a punch that is not a power punch, is cold.
+   */
+  powerHeat(hand: Hand): number {
+    if (!this.punchActive || this.punchPower !== "power" || this.punchHand !== hand || this.ownPulled) return 0;
+    const { startup, active, recovery } = this.punchTiming;
+    const age = this.punchAgeTicks;
+    if (age < startup) return smoothstep(0, POWER_LOAD * 0.6, age / Math.max(1, startup));
+    if (age < startup + active) return 1;
+    return 1 - smoothstep(0, 0.6, (age - startup - active) / Math.max(1, recovery));
   }
 
   setArcadeDislocation(dislocation: ArcadeDislocation | null): void {
@@ -1422,8 +1540,9 @@ export class BoxingGraph {
       this.yaw = targetYaw;
       this.yawInitialized = true;
     }
-    // On the canvas and getting up he turns with his whole body on the ground, so more slowly.
-    const turnRate = this.punchActive ? 3 : this.downState === "up" ? 9 : 4;
+    // On the canvas and getting up he turns with his whole body on the ground, so more slowly. The engine holds his facing
+    // through a punch's startup and active ticks and turns him again as it recovers, while he can walk.
+    const turnRate = this.punchActive && this.punchAgeTicks < this.punchTiming.startup + this.punchTiming.active ? 3 : this.downState === "up" ? 9 : 4;
     this.yaw = smoothAngle(this.yaw, targetYaw, turnRate, dt);
     boxer.root.position.set(this.rootX, 0, this.rootZ);
     boxer.root.rotation.set(0, this.yaw, 0);
@@ -1431,6 +1550,7 @@ export class BoxingGraph {
     this.hitstop = Math.max(0, this.hitstop - dt);
     this.hitstopScale = this.hitstop > 0 ? 0.12 : 1;
     const simDt = dt * this.hitstopScale;
+    if (this.punchActive && this.hitstop > 0) this.hitstopLag += (dt - simDt) * 30;
 
     this.syncAction(fighter, opponent, sampledTick, simDt);
     if (!this.debugHoldImpact) {
@@ -1483,15 +1603,15 @@ export class BoxingGraph {
     this.tired = smooth(this.tired, clamp((0.55 - stamina) / 0.5, 0, 1), 2, dt);
     this.stunAmount = smooth(this.stunAmount, Math.min(1, fighter.stunned_ticks / 24), 8, dt);
     const defending = fighter.defense;
-    this.guardHigh = smooth(this.guardHigh, defending === "guard_high" ? 1 : 0, 14, dt);
-    this.guardLow = smooth(this.guardLow, defending === "guard_low" ? 1 : 0, 14, dt);
+    this.guardHigh = smooth(this.guardHigh, defending === "guard_high" ? 1 : 0, DEFENCE_RATE, dt);
+    this.guardLow = smooth(this.guardLow, defending === "guard_low" ? 1 : 0, DEFENCE_RATE, dt);
     this.guardSpent = smooth(this.guardSpent, fighter.guard < GUARD_BLOCK_MINIMUM ? 1 : 0, 10, dt);
     const slipTarget = defending === "slip_left" ? 1 : defending === "slip_right" ? -1 : 0;
-    this.slip = smooth(this.slip, slipTarget, 16, dt);
+    this.slip = smooth(this.slip, slipTarget, DEFENCE_RATE, dt);
     const weaving = defending === "weave";
     this.weaveTime = weaving ? this.weaveTime + dt : 0;
-    this.weave = smooth(this.weave, weaving ? 1 : 0, 14, dt);
-    this.pull = smooth(this.pull, defending === "pull" ? 1 : 0, 14, dt);
+    this.weave = smooth(this.weave, weaving ? 1 : 0, DEFENCE_RATE, dt);
+    this.pull = smooth(this.pull, defending === "pull" ? 1 : 0, DEFENCE_RATE, dt);
     this.clinchWeight = smooth(this.clinchWeight, fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0 ? 1 : 0, 10, dt);
     this.foulWeight = smooth(this.foulWeight, fighter.is_foul_recovery_target ? 1 : 0, 8, dt);
     this.tauntWeight = smooth(this.tauntWeight, fighter.taunt_ticks > 0 ? 1 : 0, 10, dt);
@@ -1631,7 +1751,7 @@ export class BoxingGraph {
     }
     if (this.weave > 0.001) {
       const w = this.weave;
-      const phase = clamp(this.weaveTime / 0.42, 0, 1);
+      const phase = clamp(this.weaveTime / WEAVE_SECONDS, 0, 1);
       const arc = Math.sin(phase * Math.PI);
       torso.hips.y -= w * 0.2;
       torso.spinePitch += w * 0.42;
@@ -1692,34 +1812,8 @@ export class BoxingGraph {
       torso.hipsRoll -= toRopes.x * ROPE_LEAN_ROLL * this.ropeLean;
     }
 
-    // Reactions.
-    torso.headOffset.add(this.headKick.value);
-    torso.headPitch += -this.headKick.value.z * 2.4 + this.headKick.value.y * 1.6;
-    torso.headYaw += this.headKick.value.x * 2.2;
-    torso.headRoll += -this.headKick.value.x * 0.9;
-    torso.spinePitch += this.torsoKick.value.x;
-    torso.spineRoll += this.torsoKick.value.z * 0.5;
-    torso.hips.x += this.rootKick.value.x;
-    torso.hips.z += this.rootKick.value.z;
-    torso.hips.y -= Math.max(0, this.torsoKick.value.x) * 0.08;
-    if (this.torsoKick.value.x > 0.05) {
-      leadHand.position.y -= this.torsoKick.value.x * 0.25;
-      rearHand.position.y -= this.torsoKick.value.x * 0.2;
-      leadHand.position.z -= this.torsoKick.value.x * 0.1;
-    }
-    // A body uppercut lifts the fighter onto his toes.
-    const lift = Math.max(0, this.rootKick.value.y);
-    torso.hips.y += lift;
-    lead.heel += lift * 6;
-    rear.heel += lift * 6;
-    const cover = this.coverKick.value.x;
-    if (Math.abs(cover) > 0.002) {
-      const near = cover > 0 ? this.hand.R : this.hand.L;
-      near.position.y -= Math.abs(cover) * 0.9;
-      near.position.x += cover * 0.2;
-      near.position.z -= Math.abs(cover) * 0.25;
-      near.pole.y -= Math.abs(cover) * 3;
-    }
+    // Reactions; the referee's go on top of his own posture, which would otherwise set them aside.
+    if (!this.referee) this.applyReactions(leadHand, rearHand, lead, rear);
 
     // Punch.
     if (this.punchActive) {
@@ -1730,7 +1824,10 @@ export class BoxingGraph {
       else shrugRear = shrug;
     }
 
-    if (this.referee) this.applyRefereePose(mirror, leadHand, rearHand, lead, rear, headRest, time, sampledTick);
+    if (this.referee) {
+      this.applyRefereePose(mirror, leadHand, rearHand, lead, rear, headRest, time, sampledTick, fighter.stunned_ticks);
+      this.applyReactions(leadHand, rearHand, lead, rear);
+    }
 
     // Special states.
     if (this.clinchWeight > 0.001) this.applyClinchPose(this.clinchWeight, time, mirror, fighter, opponent, leadHand, rearHand, headRest);
@@ -1807,8 +1904,8 @@ export class BoxingGraph {
 
     const opponentBlood = Math.min(
       1,
-      (opponent.trauma.bleeding + opponent.trauma.left_cut + opponent.trauma.right_cut) / 620
-        * (blood === "off" ? 0 : blood === "reduced" ? 0.3 : 1.5),
+      (opponent.trauma.bleeding + opponent.trauma.left_cut + opponent.trauma.right_cut + opponent.trauma.head / 4) / 300
+        * (blood === "off" ? 0 : blood === "reduced" ? 0.15 : 1.5),
     );
     boxer.setGloveBlood(opponentBlood);
     boxer.setTrunksBlood(trunksBloodFor(fighter.trauma, blood));
@@ -1937,7 +2034,8 @@ export class BoxingGraph {
       // The server let the held press go sooner than expected: it plays on the server's timeline.
       this.ownQueued = null;
       this.retirePunch();
-      this.startOwnPunch(queued, 0);
+      this.startOwnPunch(queued);
+      this.ownPress = false;
     }
     if (
       fighter.action_id !== null
@@ -1970,11 +2068,13 @@ export class BoxingGraph {
           // A punch the server cut off keeps coming back; one that was only late resumes.
           if (!this.ownRefused) {
             this.ownPulled = false;
+            this.ownCut = false;
             if (authoritativeAge - this.punchAgeTicks > 1) this.punchAgeTicks = authoritativeAge;
           }
         } else {
           this.punchAgeTicks = authoritativeAge;
           this.ownActionId = null;
+          this.ownPress = false;
           this.ownLeadTicks = 0;
           this.ownAuthoritativeAge = null;
         }
@@ -1991,16 +2091,17 @@ export class BoxingGraph {
       const authoritativeAge = Math.max(0, sampledTick - fighter.action_start_tick);
       if (this.ownActionId === this.actionId) {
         this.ownAuthoritativeAge = authoritativeAge;
-        if (!this.ownPulled && authoritativeAge - this.punchAgeTicks > 1.5) this.punchAgeTicks = authoritativeAge;
-      } else if (Math.abs(this.punchAgeTicks - authoritativeAge) > 1.5) {
+        if (!this.ownPulled && authoritativeAge - this.punchAgeTicks - this.hitstopLag > 1.5) this.punchAgeTicks = authoritativeAge;
+      } else if (Math.abs(this.punchAgeTicks + this.hitstopLag - authoritativeAge) > 1.5) {
         this.punchAgeTicks = authoritativeAge;
+        this.hitstopLag = 0;
       }
     }
-    if (this.punchActive && this.ownActionId !== null && this.ownAuthoritativeAge === null && !this.ownPulled) {
-      // No word from the server well past when it was due: it turned the punch down. Before
-      // contact the glove comes back; after it the punch simply finishes.
+    if (this.punchActive && this.ownActionId !== null && this.ownAuthoritativeAge === null && !this.ownPulled && !this.ownCut) {
+      // No word from the server well past when it was due: it turned the punch down, or has yet to get it. The viewer's
+      // own press is only judged until the server is seen to start it; an opponent's punch seen early, before contact.
       this.ownWaitedTicks += simDt * 30;
-      if (this.ownWaitedTicks > this.ownExpectedTicks * 1.5 + OWN_PUNCH_GRACE_TICKS && this.punchAgeTicks < this.punchTiming.startup) this.ownPulled = true;
+      if (this.ownWaitedTicks > this.ownExpectedTicks * 1.5 + OWN_PUNCH_GRACE_TICKS && (this.ownPress ? !this.ownStarted : this.punchAgeTicks < this.punchTiming.startup)) this.takeBack();
     }
     let ended = false;
     if (this.punchActive && this.ownPulled) {
@@ -2012,7 +2113,17 @@ export class BoxingGraph {
         this.retirePunch();
       }
     } else if (this.punchActive) {
-      this.punchAgeTicks += simDt * 30 * this.ownPunchRate();
+      const recovery = this.punchTiming.startup + this.punchTiming.active;
+      if (this.ownCut && this.punchAgeTicks < recovery) this.punchAgeTicks = recovery;
+      const cut = this.ownCut || (this.recoveryCut && this.punchAgeTicks >= recovery);
+      // After a freeze the punch makes up what it held back, quickly but without a jump.
+      const repay = this.hitstop > 0 ? 0 : Math.min(this.hitstopLag, simDt * 30 * HITSTOP_REPAY_RATE);
+      this.hitstopLag -= repay;
+      this.punchAgeTicks += simDt * 30 * (cut ? OWN_PUNCH_CUT_RATE : this.ownPunchRate()) + repay;
+      if (this.ownPress && this.ownActionId !== null && !this.ownCut && this.punchAgeTicks >= this.punchTiming.startup && this.pressesLanded.at(-1) !== this.ownActionId) {
+        this.pressesLanded.push(this.ownActionId);
+        if (this.pressesLanded.length > 6) this.pressesLanded.shift();
+      }
       if (this.punchAgeTicks >= this.punchTotalTicks) {
         this.retirePunch();
         ended = true;
@@ -2022,7 +2133,7 @@ export class BoxingGraph {
       if (this.punchActive) this.retirePunch();
       this.ownQueued = null;
     }
-    this.releaseQueuedPress(simDt, ended);
+    this.releaseQueuedPress(simDt);
     // A punch the server says met the opponent, hit or block, follows his head wherever it went.
     const aimed = this.actionId ?? this.ownActionId;
     if (aimed !== this.aimActionId) {
@@ -2030,6 +2141,8 @@ export class BoxingGraph {
       this.followHead = 0;
     }
     this.followHead = smooth(this.followHead, aimed !== null && aimed === this.contactId ? 1 : 0, FOLLOW_HEAD_RATE, simDt);
+    // And one that found the referee in the way lands on him.
+    this.followReferee = smooth(this.followReferee, aimed !== null && aimed === this.refereeContactId ? 1 : 0, FOLLOW_HEAD_RATE, simDt);
   }
 
   /** Takes the opponent's head as drawn and keeps where it would be without his slip, weave or pull. */
@@ -2043,12 +2156,12 @@ export class BoxingGraph {
   }
 
   /**
-   * Playback rate of the viewer's own punch. Until the server's version is on screen the startup is
-   * stretched by the estimated lead; once it is, the rate aims the glove at the server's contact
-   * tick, and any lead left after contact is worked off in a slower recovery.
+   * Playback rate of a punch started early. The viewer's own press keeps the server's pace. An opponent's punch seen
+   * early has its startup stretched by its lead until the server's version is on screen; once it is, the rate aims the
+   * glove at the server's contact tick, and any lead left after contact is worked off in a slower recovery.
    */
   private ownPunchRate(): number {
-    if (this.ownActionId === null) return 1;
+    if (this.ownActionId === null || this.ownPress) return 1;
     const startup = this.punchTiming.startup;
     const authoritative = this.ownAuthoritativeAge;
     if (authoritative === null) return this.punchAgeTicks < startup ? startup / (startup + this.ownLeadTicks) : 1;
@@ -2088,18 +2201,22 @@ export class BoxingGraph {
     // the hand over the windup, its turn and the elbow over twice that.
     let windupIn = 1;
     let onset = 1;
+    // A power punch loads up first, through most of its longer startup: he sinks, turns his shoulders and hips away from
+    // the punch and cocks the glove back, then unwinds into it.
+    let load = 0;
     if (age < startup) {
       phase = "startup";
       const u = age / startup;
-      const windupEnd = this.punchClass === "hook" ? 0.3 : this.punchClass === "uppercut" ? 0.45 : 0.18;
+      const windupEnd = power === 1 ? POWER_LOAD : this.punchClass === "hook" ? 0.3 : this.punchClass === "uppercut" ? 0.45 : 0.18;
       windup = smoothstep(0, windupEnd, u) * (1 - smoothstep(windupEnd, Math.min(1, windupEnd + 0.4), u));
-      extend = u <= windupEnd ? 0 : easeIn((u - windupEnd) / (1 - windupEnd), 1.65);
+      extend = u <= windupEnd ? 0 : easeIn((u - windupEnd) / (1 - windupEnd), power === 1 ? POWER_SNAP : 1.65);
       windupIn = smoothstep(0, windupEnd, u);
       onset = smoothstep(0, Math.min(1, windupEnd * 2), u);
+      load = power * smoothstep(0, POWER_LOAD * 0.8, u) * (1 - smoothstep(POWER_LOAD, Math.min(1, POWER_LOAD + 0.3), u));
     } else if (age < startup + active) {
       phase = "active";
       windup = 0;
-      extend = 1 + 0.06 * Math.sin(((age - startup) / active) * Math.PI);
+      extend = 1 + (0.06 + 0.05 * power) * Math.sin(((age - startup) / active) * Math.PI);
     } else {
       phase = "recovery";
       windup = 0;
@@ -2154,13 +2271,15 @@ export class BoxingGraph {
         break;
     }
     const rotation = this.punchClass === "hook" ? smoothstep(0.15, 1, e) : e;
-    torso.shouldersYaw = blade * 0.88 + yawTravel * mirror * rotation;
-    torso.hipsYaw = blade + hipsTravel * mirror * rotation;
-    torso.hips.z += hipsForward * e;
+    // The load turns him the other way from the punch's own turn.
+    const away = -Math.sign(yawTravel) * mirror * load;
+    torso.shouldersYaw = blade * 0.88 + yawTravel * mirror * rotation + POWER_LOAD_YAW * away;
+    torso.hipsYaw = blade + hipsTravel * mirror * rotation + POWER_LOAD_HIPS_YAW * away;
+    torso.hips.z += hipsForward * e - 0.04 * load;
     torso.hips.x += (isLead ? 0.02 : 0.05) * mirror * e;
-    torso.hips.y -= body * 0.1 * e + dip * windup + dip * 0.3 * e;
-    torso.spinePitch += 0.06 * e + body * 0.25 * e + dip * 1.4 * windup;
-    torso.headPitch += 0.05 * e + body * 0.12 * e;
+    torso.hips.y -= body * 0.1 * e + dip * windup + dip * 0.3 * e + POWER_LOAD_DIP * load;
+    torso.spinePitch += 0.06 * e + body * 0.25 * e + dip * 1.4 * windup + 0.14 * load;
+    torso.headPitch += 0.05 * e + body * 0.12 * e + 0.1 * load;
     torso.headOffset.z += 0.02 * e;
     torso.headYaw += -yawTravel * mirror * rotation * 0.35;
 
@@ -2169,7 +2288,9 @@ export class BoxingGraph {
     const rootPosition = this.scratchB.set(this.rootX ?? 0, 0, this.rootZ);
     if (this.hasLiveHead) {
       // An evading head is aimed at where it was, so a slip or weave that worked shows the glove go by.
-      target.copy(this.guardOpponentHead).lerp(this.liveOpponentHead, this.followHead).sub(rootPosition).applyQuaternion(this.scratchQ.setFromAxisAngle(worldUpVector, -this.yaw));
+      target.copy(this.guardOpponentHead).lerp(this.liveOpponentHead, this.followHead);
+      if (this.hasRefereeHead) target.lerp(this.refereeHead, this.followReferee);
+      target.sub(rootPosition).applyQuaternion(this.scratchQ.setFromAxisAngle(worldUpVector, -this.yaw));
       if (body === 1) target.y -= 0.42;
       else target.y -= 0.04;
     } else {
@@ -2219,6 +2340,10 @@ export class BoxingGraph {
         windupOffset.set(0, -0.01, -0.05 - 0.04 * power);
         break;
     }
+    // Loading a power punch, the glove draws further back and drops, wider still for a hook.
+    windupOffset.x += (this.punchClass === "hook" ? 0.08 : 0) * side * mirror * power;
+    windupOffset.y -= 0.05 * power;
+    windupOffset.z -= 0.12 * power;
     // A hook or uppercut keeps part of its windup until it travels, once the windup has eased in.
     const start = this.punchStart.copy(guard).addScaledVector(windupOffset, Math.max(windup, this.punchClass === "hook" || this.punchClass === "uppercut" ? (1 - travel) * 0.6 * windupIn : 0));
     if (this.punchClass === "hook") {
@@ -2281,6 +2406,38 @@ export class BoxingGraph {
     return e;
   }
 
+  /** The spring kicks a punch left in the body: the head snapped back, the trunk bent round it, the feet knocked off line. */
+  private applyReactions(leadHand: HandTarget, rearHand: HandTarget, lead: { heel: number }, rear: { heel: number }): void {
+    const torso = this.torso;
+    torso.headOffset.add(this.headKick.value);
+    torso.headPitch += -this.headKick.value.z * 2.4 + this.headKick.value.y * 1.6;
+    torso.headYaw += this.headKick.value.x * 2.2;
+    torso.headRoll += -this.headKick.value.x * 0.9;
+    torso.spinePitch += this.torsoKick.value.x;
+    torso.spineRoll += this.torsoKick.value.z * 0.5;
+    torso.hips.x += this.rootKick.value.x;
+    torso.hips.z += this.rootKick.value.z;
+    torso.hips.y -= Math.max(0, this.torsoKick.value.x) * 0.08;
+    if (this.torsoKick.value.x > 0.05) {
+      leadHand.position.y -= this.torsoKick.value.x * 0.25;
+      rearHand.position.y -= this.torsoKick.value.x * 0.2;
+      leadHand.position.z -= this.torsoKick.value.x * 0.1;
+    }
+    // A body uppercut lifts the fighter onto his toes.
+    const lift = Math.max(0, this.rootKick.value.y);
+    torso.hips.y += lift;
+    lead.heel += lift * 6;
+    rear.heel += lift * 6;
+    const cover = this.coverKick.value.x;
+    if (Math.abs(cover) > 0.002) {
+      const near = cover > 0 ? this.hand.R : this.hand.L;
+      near.position.y -= Math.abs(cover) * 0.9;
+      near.position.x += cover * 0.2;
+      near.position.z -= Math.abs(cover) * 0.25;
+      near.pole.y -= Math.abs(cover) * 3;
+    }
+  }
+
   /** Square, hands-low official's posture with a raised counting arm during knockdowns. */
   private applyRefereePose(
     mirror: number,
@@ -2291,6 +2448,7 @@ export class BoxingGraph {
     headRest: THREE.Vector3,
     time: number,
     sampledTick: number,
+    reeling = 0,
   ): void {
     const torso = this.torso;
     torso.hipsYaw = 0;
@@ -2327,6 +2485,20 @@ export class BoxingGraph {
       torso.spinePitch += 0.12;
       torso.headPitch += 0.18;
       leadHand.position.set(0.24 * mirror, 0.95, 0.08);
+    }
+    if (reeling > 0) {
+      // Punched, he staggers where he stands: knees going, head lolling, hands out for balance.
+      const reel = Math.min(1, reeling / 12);
+      const wobble = Math.sin(time * 9.5);
+      torso.hips.y -= 0.09 * reel;
+      torso.hips.x += wobble * 0.05 * reel;
+      torso.spineRoll += wobble * 0.18 * reel;
+      torso.headRoll -= wobble * 0.35 * reel;
+      torso.headPitch += 0.25 * reel;
+      leadHand.position.x += 0.18 * mirror * reel;
+      rearHand.position.x -= 0.18 * mirror * reel;
+      leadHand.position.y -= 0.1 * reel;
+      rearHand.position.y -= 0.1 * reel;
     }
   }
 
@@ -3183,7 +3355,6 @@ const STOOL_SEAT_HEIGHT = 0.44;
 /** Seated weight below which a rising fighter's hips are about 0.2 m clear of the seat. */
 const STOOL_CLEAR_SEATED = 0.2;
 /** The engine counts a knockdown one number a second; the counting arm starts down this far into each second. */
-const COUNT_TICKS = 30;
 const COUNT_DROP_START = 0.75;
 /** Where the referee's palms press to break a clinch: on each fighter's chest, this far toward the other from his centre, at sternum height. */
 const BREAK_CHEST_DEPTH = 0.26;
@@ -3576,19 +3747,34 @@ function buildStool(): { group: THREE.Group; dispose: () => void } {
 }
 
 const worldUpVector = new THREE.Vector3(0, 1, 0);
-/** Most ticks of latency a predicted punch absorbs by stretching its startup; beyond this the hit is shown late instead. */
+/** Most ticks of latency an opponent's punch seen early absorbs by stretching its startup. */
 const MAX_OWN_LEAD_TICKS = 6;
-const OWN_PUNCH_GRACE_TICKS = 5;
+const OWN_PUNCH_GRACE_TICKS = 3;
 const OWN_PUNCH_PULL_RATE = 1.5;
+/** A punch taken back after contact goes straight back to the guard at this many times its own pace. */
+const OWN_PUNCH_CUT_RATE = 2.5;
+/** How much faster than its own pace a punch makes up what a hit's freeze held back. */
+const HITSTOP_REPAY_RATE = 1.5;
+/** Share of a power punch's startup spent loading up before it unwinds, and how sharply the glove then snaps out. */
+const POWER_LOAD = 0.55;
+const POWER_SNAP = 2.1;
+/** How far a power punch's load turns the shoulders and hips away from the punch (radians) and sinks him (metres). */
+const POWER_LOAD_YAW = 0.42;
+const POWER_LOAD_HIPS_YAW = 0.22;
+const POWER_LOAD_DIP = 0.08;
 /** An opponent's punch seen early is held back unless its wind-up can play at this share of its speed or faster. */
 const MIN_ANTICIPATION_RATE = 0.5;
 /** Presses closer together than this usually reach the server before the same step, where the newer one replaces the older. */
 const SAME_STEP_TICKS = 0.5;
 /** Contact events in which a punch met the opponent: a hit or a block, a parry included. */
-const CONNECTING_CONTACTS: ReadonlySet<string> = new Set(["hit", "counter_hit", "block", "perfect_block"]);
+const CONNECTING_CONTACTS: ReadonlySet<string> = new Set(["hit", "counter_hit", "block", "perfect_block", "referee_hit"]);
 const EVASION_POSES: ReadonlySet<string> = new Set(["slip_left", "slip_right", "weave", "pull"]);
-/** Seconds after an evasion ends for the head to settle back (the slip, weave and pull ease at 14-16 a second). */
-const HEAD_SETTLE_SECONDS = 0.25;
+/** Rate the guards, slips, weaves and pulls ease in and out at: nine tenths of the way in under a sixteenth of a second. */
+const DEFENCE_RATE = 40;
+/** A weave's dip and roll from one side to the other runs as long as the engine's evasion. */
+const WEAVE_SECONDS = EVASION_TICKS / TICK_RATE;
+/** Seconds after an evasion ends for the head to settle back (see DEFENCE_RATE). */
+const HEAD_SETTLE_SECONDS = 0.12;
 /** Rate at which a punch known to connect turns its aim onto the head where it actually is. */
 const FOLLOW_HEAD_RATE = 30;
 /** How far the elbow's pull swings out while it turns from the guard's to the punch's. */

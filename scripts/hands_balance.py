@@ -36,7 +36,7 @@ from typing import ClassVar, Protocol
 
 from intelstream.hands.cpu import CpuBrain, CpuLevel, cpu_style
 from intelstream.hands.engine import AttackState, BoxingEngine, EngineConfig, FighterState
-from intelstream.hands.rules import TICKS_PER_SECOND
+from intelstream.hands.rules import GUARD_REARM, TICKS_PER_SECOND
 from intelstream.hands.types import (
     ActionKind,
     DefensivePose,
@@ -214,7 +214,8 @@ class SkilledHuman:
             self._next_jab = tick + 24 + (tick * 7919 + self._start) % 18
             jab = PunchAction(Hand.LEFT, PunchClass.JAB, Target.HEAD)
             return InputCommand(self._sequence, tick, move[0], move[1], actions=(jab,))
-        rest_arms = distance > 175
+        # Out of range, or with a guard worn too thin to hold up, the arms rest so it comes back.
+        rest_arms = distance > 175 or me.guard_broken or me.guard < GUARD_REARM
         defense = DefensivePose.NONE if rest_arms else DefensivePose.GUARD_HIGH
         return InputCommand(self._sequence, tick, move[0], move[1], defense)
 
@@ -285,7 +286,9 @@ class ScriptedHuman:
         wanted = self.WANTED_DISTANCE[self.kind]
         toward = (round(dx / distance * 1000), round(dy / distance * 1000))
         move = toward if distance > wanted else (0, 0)
-        guarded = self.kind in ("turtle", "brawler", "counter")
+        # The turtle holds his guard whatever it costs; the others let a worn one come back.
+        tiring = self.kind != "turtle" and (me.guard_broken or me.guard < GUARD_REARM)
+        guarded = self.kind in ("turtle", "brawler", "counter") and not tiring
         defense = DefensivePose.GUARD_HIGH if guarded else DefensivePose.NONE
         roll = (tick * 2654435761 + self._sequence + self._start) % 1000
         free = me.attack is None and not me.pending_actions

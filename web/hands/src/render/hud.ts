@@ -1,4 +1,4 @@
-import { EYE_SHUT_TRAUMA, GUARD_BLOCK_MINIMUM } from "../manifest";
+import { EYE_SHUT_TRAUMA, GUARD_BLOCK_MINIMUM, GUARD_REARM } from "../manifest";
 import { isDebut, recordLine } from "../record";
 import { styleTag } from "../styles";
 import type { CombatEvent, CornerChoice, EngineSnapshot, FighterSnapshot, FinalMessage, FinishMethod, PublicPlayer, PunchTotals, RatingDelta, TraumaSnapshot } from "../types";
@@ -8,6 +8,8 @@ import { monogram } from "./avatars";
 export type PictureSource = (player: PublicPlayer) => CanvasImageSource | null;
 
 export const HUD_MAX_GUARD = 700;
+/** What the player's own plate says while he holds the power modifier. */
+export const POWER_TAG = "POWER ARMED";
 export const HUD_MAX_POISE = 600;
 export const HUD_MAX_CONDITIONING = 1000;
 export const scoreTotal = (scores: readonly number[]): number => scores.reduce((sum, score) => sum + score, 0);
@@ -135,6 +137,26 @@ const CORNER_WORK: Readonly<Record<CornerChoice, string>> = {
 export function cornerWorkLine(fighters: readonly FighterSnapshot[]): string | null {
   const told = fighters.flatMap((fighter, seat) => (fighter.corner_choice === null ? [] : [`${seat === 0 ? "Blue" : "Red"}: ${CORNER_WORK[fighter.corner_choice]}`]));
   return told.length === 0 ? null : told.join("  ·  ");
+}
+
+/** The player's own plate says his next punch is a power punch while he holds the power modifier. */
+function powerTag(ctx: CanvasRenderingContext2D, x: number, y: number, mirror: boolean): void {
+  ctx.save();
+  ctx.font = "900 12px Inter, system-ui, sans-serif";
+  const width = ctx.measureText(POWER_TAG).width + 16;
+  const left = mirror ? x - width : x;
+  ctx.shadowColor = "rgba(255,120,30,0.9)";
+  ctx.shadowBlur = 12;
+  const fill = ctx.createLinearGradient(0, y, 0, y + 18);
+  fill.addColorStop(0, "#ffd36b");
+  fill.addColorStop(1, "#ff6a1a");
+  ctx.fillStyle = fill;
+  ctx.fillRect(left, y, width, 18);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = "#2a0c00";
+  ctx.textAlign = "left";
+  ctx.fillText(POWER_TAG, left + 8, y + 13);
+  ctx.restore();
 }
 
 function warningTag(ctx: CanvasRenderingContext2D, x: number, y: number, text: string, mirror: boolean): void {
@@ -423,7 +445,7 @@ export class RoundClock {
     }
     if (snapshot.phase === "fight") this.fightTicks = snapshot.phase_ticks_remaining;
     // A stoppage freezes the clock where the bout ended, as the broadcast does.
-    const held = snapshot.phase === "knockdown" || snapshot.phase === "foul_recovery" || snapshot.phase === "complete";
+    const held = snapshot.phase === "knockdown" || snapshot.phase === "foul_recovery" || snapshot.phase === "referee_down" || snapshot.phase === "complete";
     return held && this.fightTicks !== null ? this.fightTicks : snapshot.phase_ticks_remaining;
   }
 }
@@ -519,14 +541,14 @@ export function decisionLabel(final: FinalMessage): string {
 
 export const STOPPAGE_METHODS: ReadonlySet<string> = new Set(["ko", "flash_ko", "tko"]);
 export const FINAL_REVEAL_DELAY_SECONDS = 3.6;
-/** A disqualification or a doctor's stoppage is the referee's call: a moment for it before the result. */
+/** A disqualification is the referee's call: a moment for it before the result. */
 export const REFEREE_REVEAL_DELAY_SECONDS = 2.4;
 
 /** Seconds to hold the result panel back so a stoppage's slow-motion fall stays visible. */
 export function finalRevealDelay(final: FinalMessage | null): number {
   if (final === null) return 0;
   if (STOPPAGE_METHODS.has(final.method)) return FINAL_REVEAL_DELAY_SECONDS;
-  return final.method === "disqualification" || final.method === "doctor_stoppage" ? REFEREE_REVEAL_DELAY_SECONDS : 0;
+  return final.method === "disqualification" ? REFEREE_REVEAL_DELAY_SECONDS : 0;
 }
 
 /** Below the top bar, or below the round card where a phone puts it under the top bar. */
@@ -562,6 +584,8 @@ export function drawHud(
   countTarget: string | null = null,
   /** The touch pads are up over the right of the screen. */
   touch = false,
+  /** The viewer holds the power modifier: his next punch is a power punch. */
+  powerHeld = false,
 ): void {
   ctx.save();
   const scale = hudScale(width, height);
@@ -587,8 +611,9 @@ export function drawHud(
     const bars: BarSpec[] = [
       { label: `${compact ? "STA" : "STAMINA"} ${Math.round(fighter.stamina)}`, value: fighter.stamina, maximum: fighter.maximum_stamina, from: "#ffe08a", to: "#d9a53a" },
       { label: `${compact ? "HP" : "HEALTH"} ${Math.round(fighter.conditioning)}`, value: fighter.conditioning, maximum: HUD_MAX_CONDITIONING, from: "#ff8a7a", to: "#b02a20" },
-      // Under the mark a guard stops nothing: a block that takes it there breaks it (guard_break).
-      { label: "GUARD", value: fighter.guard, maximum: HUD_MAX_GUARD, from: "#9ec7ff", to: "#3d6fb8", spentBelow: GUARD_BLOCK_MINIMUM },
+      // Under the mark a guard stops nothing: a block that takes it there breaks it (guard_break), and a broken
+      // guard stops nothing until it is back past the rearm mark.
+      { label: fighter.guard_broken ? "GUARD BROKEN" : "GUARD", value: fighter.guard, maximum: HUD_MAX_GUARD, from: "#9ec7ff", to: "#3d6fb8", spentBelow: fighter.guard_broken ? GUARD_REARM : GUARD_BLOCK_MINIMUM },
       { label: `POISE ${Math.round(fighter.poise)}`, value: fighter.poise, maximum: HUD_MAX_POISE, from: "#e8c890", to: "#8a6a34" },
     ];
     const accent = index === 0 ? "#3d6fb8" : "#b02a20";
@@ -603,6 +628,7 @@ export function drawHud(
     broadcastBar(ctx, mirror ? x + plateWidth - 8 - miniWidth : x + 32 + miniWidth, miniY, miniWidth, bars[3]!, mirror);
     const eyeTag = shutEyeTag(fighter.trauma);
     if (eyeTag !== null) warningTag(ctx, mirror ? x + plateWidth - 20 : x + 20, miniY - 34, eyeTag, mirror);
+    if (powerHeld && fighter.player_id === viewerId && (snapshot.phase === "fight" || snapshot.phase === "countdown")) powerTag(ctx, mirror ? x + plateWidth - 20 : x + 20, miniY - (eyeTag === null ? 38 : 60), mirror);
   });
 
   const seconds = Math.floor((clockTicks ?? snapshot.phase_ticks_remaining) / tickRate);
@@ -785,7 +811,6 @@ const METHOD_HEADLINES: Readonly<Partial<Record<FinishMethod, string>>> = {
   ko: "KNOCKOUT",
   flash_ko: "FLASH KNOCKOUT",
   tko: "TECHNICAL KNOCKOUT",
-  doctor_stoppage: "DOCTOR STOPPAGE",
   disqualification: "DISQUALIFICATION",
   forfeit: "FORFEIT",
 };

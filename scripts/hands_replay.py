@@ -107,8 +107,6 @@ def lab_engine(seed: int) -> BoxingEngine:
             rest_ticks=REST_TICKS,
             countdown_ticks=0,
             flash_ko_enabled=False,
-            doctor_cut_threshold=700,
-            doctor_swelling_threshold=820,
         ),
         styles=STYLES,
     )

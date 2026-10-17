@@ -27,6 +27,8 @@ export class GamepadInput {
   private defense: HeldDefense = "none";
   private knockdown = false;
   private enabled = true;
+  private trigger = false;
+  private heldListener: (() => void) | null = null;
 
   private readonly disconnect = (event: GamepadEvent): void => {
     if (event.gamepad.id === this.currentId) this.reset();
@@ -37,14 +39,14 @@ export class GamepadInput {
     this.raf = requestAnimationFrame(() => this.poll());
   }
 
+  /** Called when the stick or a guard shoulder changes. */
+  onHeldChange(listener: (() => void) | null): void {
+    this.heldListener = listener;
+  }
+
   private push(action: SemanticAction): void {
     if (this.sharedActions === undefined) pushActionIntent(this.queue, action, this.maximumQueue);
     else this.sharedActions.push("gamepad", action);
-  }
-
-  private clearActions(): void {
-    this.queue.length = 0;
-    this.sharedActions?.clear();
   }
 
   private poll(): void {
@@ -62,13 +64,17 @@ export class GamepadInput {
     if (this.currentId !== null && this.currentId !== pad.id) this.reset();
     this.currentId = pad.id;
     const move = radialDeadzone(pad.axes[0] ?? 0, pad.axes[1] ?? 0);
-    this.moveX = Math.round(move.x * 1000);
-    this.moveY = Math.round(-move.y * 1000);
+    const moveX = Math.round(move.x * 1000);
+    const moveY = Math.round(-move.y * 1000);
     const defense = pressed(pad, 4) ? "guard_high" : pressed(pad, 5) ? "guard_low" : "none";
-    if (defense !== "none" && defense !== this.defense) this.clearActions();
+    const changed = moveX !== this.moveX || moveY !== this.moveY || defense !== this.defense;
+    this.moveX = moveX;
+    this.moveY = moveY;
     this.defense = defense;
+    if (changed) this.heldListener?.();
 
-    const gesture = this.gesture.update(pad.axes[2] ?? 0, pad.axes[3] ?? 0, pressed(pad, 6), pressed(pad, 7));
+    this.trigger = pressed(pad, 7);
+    const gesture = this.gesture.update(pad.axes[2] ?? 0, pad.axes[3] ?? 0, pressed(pad, 6), this.trigger);
     if (gesture !== null) this.push(gesture);
 
     const faceEdge = FACE_CLASSES.some((_class, index) => pressed(pad, index) && !this.previous.has(index));
@@ -121,6 +127,11 @@ export class GamepadInput {
     this.knockdown = value;
   }
 
+  /** The right trigger is held: the next punch is a power punch. */
+  get powerHeld(): boolean {
+    return this.enabled && this.trigger;
+  }
+
   setEnabled(value: boolean): void {
     this.enabled = value;
     if (!value) this.reset();
@@ -135,6 +146,7 @@ export class GamepadInput {
     this.currentId = null;
     this.moveX = this.moveY = 0;
     this.defense = "none";
+    this.trigger = false;
     this.queue.length = 0;
     this.sharedActions?.clearSource("gamepad");
     this.previous.clear();

@@ -4,9 +4,9 @@ import {
   type FighterRecord, type FighterSnapshot, type FighterStyle, type FinalMessage, type FinishMethod, type Foul, type Hand,
   type HeldDefense, type JudgeCard, type MatchPhase, type MatchResult, type MovementKind,
   type Power, type PublicPlayer, type PunchClass, type PunchTotals, type SemanticAction, type ServerMessage,
-  type Stance, type Target, type TokenResponse, type TraumaSnapshot,
+  type RefereeSnapshot, type Stance, type Target, type TokenResponse, type TraumaSnapshot,
 } from "./types";
-import { GET_UP_REQUIRED_MAX, GET_UP_REQUIRED_MIN } from "./manifest";
+import { GET_UP_REQUIRED_MAX, GET_UP_REQUIRED_MIN, MAX_SPEED } from "./manifest";
 
 export class ProtocolError extends Error { override name = "ProtocolError" }
 const MAX_INT = 2_147_483_647;
@@ -92,8 +92,8 @@ const heldDefenses = ["none", "guard_high", "guard_low"] as const;
 const movementKinds = ["slip_left", "slip_right", "weave", "pull", "clinch", "switch_stance", "get_up_left", "get_up_right", "taunt", "corner_cut", "corner_swelling", "corner_breath"] as const;
 const cornerChoices = ["cut", "swelling", "breath", "balanced"] as const;
 const fouls = ["low_blow", "headbutt"] as const;
-const phases = ["countdown", "fight", "knockdown", "foul_recovery", "rest", "complete"] as const;
-const methods = ["ko", "flash_ko", "tko", "doctor_stoppage", "disqualification", "decision", "draw", "forfeit"] as const;
+const phases = ["countdown", "fight", "knockdown", "foul_recovery", "referee_down", "rest", "complete"] as const;
+const methods = ["ko", "flash_ko", "tko", "disqualification", "decision", "draw", "forfeit"] as const;
 
 function fighterRecord(value: unknown): FighterRecord {
   const o = object(value, "record"); exact(o, ["wins", "losses", "draws", "knockouts"]);
@@ -123,7 +123,7 @@ function trauma(value: unknown): TraumaSnapshot {
   };
 }
 /** The engine reports a fighter's velocity within his walking speed. */
-const MAX_REPORTED_SPEED = 7;
+const MAX_REPORTED_SPEED = MAX_SPEED;
 /** The velocity only seeds the movement prediction, so one past the walking speed is clamped rather than ending the bout for everyone in the room. */
 function velocity(value: unknown, name: string): number {
   return Math.max(-MAX_REPORTED_SPEED, Math.min(MAX_REPORTED_SPEED, integer(value, name, -MAX_INT, MAX_INT)));
@@ -132,7 +132,7 @@ function fighter(value: unknown): FighterSnapshot {
   const o = object(value, "fighter");
   exact(o, [
     "player_id", "x", "y", "facing", "facing_x", "facing_y", "velocity_x", "velocity_y", "stance", "style", "defense",
-    "stamina", "maximum_stamina", "conditioning", "guard", "poise", "trauma", "knockdowns",
+    "stamina", "maximum_stamina", "conditioning", "guard", "guard_broken", "poise", "trauma", "knockdowns",
     "warnings", "deductions", "stunned_ticks", "is_downed", "action", "action_hand",
     "action_target", "action_power", "action_id", "action_key", "action_start_tick",
     "action_startup_ticks", "action_active_ticks", "action_recovery_ticks", "action_contact_tick",
@@ -164,7 +164,7 @@ function fighter(value: unknown): FighterSnapshot {
     facing, facing_x: facingX, facing_y: facingY, velocity_x: velocity(o.velocity_x, "velocity_x"), velocity_y: velocity(o.velocity_y, "velocity_y"),
     stance: oneOf<Stance>(o.stance, stances, "stance"), style: oneOf<FighterStyle>(o.style, FIGHTER_STYLES, "style"), defense: oneOf<DefensivePose>(o.defense, defenses, "defense"),
     stamina, maximum_stamina: maximumStamina,
-    conditioning: integer(o.conditioning, "conditioning", 0, 1000), guard: integer(o.guard, "guard", 0, 700), poise: integer(o.poise, "poise", 0, 600),
+    conditioning: integer(o.conditioning, "conditioning", 0, 1000), guard: integer(o.guard, "guard", 0, 700), guard_broken: bool(o.guard_broken, "guard_broken"), poise: integer(o.poise, "poise", 0, 600),
     trauma: trauma(o.trauma), knockdowns: integer(o.knockdowns, "knockdowns", 0, 3), warnings: integer(o.warnings, "warnings", 0, 3), deductions: integer(o.deductions, "deductions", 0, 1),
     stunned_ticks: integer(o.stunned_ticks, "stunned_ticks", 0, 90), is_downed: bool(o.is_downed, "is_downed"),
     action, action_hand: actionHand, action_target: actionTarget, action_power: actionPower,
@@ -208,11 +208,21 @@ function result(value: unknown): MatchResult {
   const method = oneOf<FinishMethod>(o.finish_method, methods, "finish method"); coherentFinish(winner, method);
   return { match_id: string(o.match_id, "match_id"), activity_instance_id: string(o.activity_instance_id, "activity_instance_id"), guild_id: string(o.guild_id, "guild_id"), player_one_id: p1, player_two_id: p2, winner_id: winner, finish_method: method, round_number: integer(o.round_number, "round", 1, 15), tick: integer(o.tick, "tick"), scorecards: scorecards(o.scorecards), player_one_knockdowns: integer(o.player_one_knockdowns, "knockdowns", 0, 3), player_two_knockdowns: integer(o.player_two_knockdowns, "knockdowns", 0, 3), player_one_damage: integer(o.player_one_damage, "damage"), player_two_damage: integer(o.player_two_damage, "damage") };
 }
+function referee(value: unknown): RefereeSnapshot {
+  const o = object(value, "referee"); exact(o, ["x", "y", "facing_x", "facing_y", "velocity_x", "velocity_y", "stunned_ticks", "alive", "trauma"]);
+  return {
+    x: integer(o.x, "referee.x", -462, 462), y: integer(o.y, "referee.y", -462, 462),
+    facing_x: integer(o.facing_x, "referee.facing_x", -1000, 1000), facing_y: integer(o.facing_y, "referee.facing_y", -1000, 1000),
+    velocity_x: velocity(o.velocity_x, "referee.velocity_x"), velocity_y: velocity(o.velocity_y, "referee.velocity_y"),
+    stunned_ticks: integer(o.stunned_ticks, "referee.stunned_ticks", 0, 90), alive: bool(o.alive, "referee.alive"), trauma: trauma(o.trauma),
+  };
+}
+
 function snapshot(value: unknown): EngineSnapshot {
-  const o = object(value, "snapshot"); exact(o, ["tick", "phase", "round_number", "phase_ticks_remaining", "fighters", "events", "result", "checksum"]);
+  const o = object(value, "snapshot"); exact(o, ["tick", "phase", "round_number", "phase_ticks_remaining", "fighters", "referee", "events", "result", "checksum"]);
   const fs = array(o.fighters, "fighters", 2).map(fighter); if (fs.length !== 2 || fs[0]?.player_id === fs[1]?.player_id) throw new ProtocolError("snapshot requires two distinct fighters");
   const checksum = string(o.checksum, "checksum", 64); if (!/^[a-f0-9]{64}$/u.test(checksum)) throw new ProtocolError("invalid checksum");
-  return { tick: integer(o.tick, "tick"), phase: oneOf<MatchPhase>(o.phase, phases, "phase"), round_number: integer(o.round_number, "round", 1, 15), phase_ticks_remaining: integer(o.phase_ticks_remaining, "phase ticks"), fighters: [fs[0]!, fs[1]!], events: array(o.events, "events", 256).map(event), result: o.result === null ? null : result(o.result), checksum };
+  return { tick: integer(o.tick, "tick"), phase: oneOf<MatchPhase>(o.phase, phases, "phase"), round_number: integer(o.round_number, "round", 1, 15), phase_ticks_remaining: integer(o.phase_ticks_remaining, "phase ticks"), fighters: [fs[0]!, fs[1]!], referee: referee(o.referee), events: array(o.events, "events", 256).map(event), result: o.result === null ? null : result(o.result), checksum };
 }
 
 export function decodeServerFrame(frame: string | ArrayBuffer | Uint8Array): ServerMessage {

@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 4 as const;
+export const PROTOCOL_VERSION = 5 as const;
 export const MAX_SERVER_FRAME_BYTES = 65_536;
 
 export type Hand = "left" | "right";
@@ -15,8 +15,8 @@ export type MovementKind = "slip_left" | "slip_right" | "weave" | "pull" | "clin
 export type CornerChoice = "cut" | "swelling" | "breath" | "balanced";
 export type ActionKind = "punch" | MovementKind | "foul";
 export type Foul = "low_blow" | "headbutt";
-export type MatchPhase = "countdown" | "fight" | "knockdown" | "foul_recovery" | "rest" | "complete";
-export type FinishMethod = "ko" | "flash_ko" | "tko" | "doctor_stoppage" | "disqualification" | "decision" | "draw" | "forfeit";
+export type MatchPhase = "countdown" | "fight" | "knockdown" | "foul_recovery" | "referee_down" | "rest" | "complete";
+export type FinishMethod = "ko" | "flash_ko" | "tko" | "disqualification" | "decision" | "draw" | "forfeit";
 export type ConnectionRole = "fighter" | "spectator";
 
 export interface PunchAction { readonly kind: "punch"; readonly hand: Hand; readonly class: PunchClass; readonly target: Target; readonly power: Power; readonly id?: string }
@@ -34,7 +34,7 @@ export interface FighterSnapshot {
   readonly player_id: string; readonly x: number; readonly y: number; readonly facing: number;
   readonly facing_x: number; readonly facing_y: number;
   readonly velocity_x: number; readonly velocity_y: number; readonly stance: Stance; readonly style: FighterStyle; readonly defense: DefensivePose;
-  readonly stamina: number; readonly maximum_stamina: number; readonly conditioning: number; readonly guard: number;
+  readonly stamina: number; readonly maximum_stamina: number; readonly conditioning: number; readonly guard: number; readonly guard_broken: boolean;
   readonly poise: number; readonly trauma: TraumaSnapshot; readonly knockdowns: number; readonly warnings: number;
   readonly deductions: number; readonly stunned_ticks: number; readonly is_downed: boolean;
   readonly action: PunchClass | null; readonly action_hand: Hand | null; readonly action_target: Target | null;
@@ -64,7 +64,9 @@ export interface MatchResult {
   readonly scorecards: readonly JudgeCard[]; readonly player_one_knockdowns: number; readonly player_two_knockdowns: number;
   readonly player_one_damage: number; readonly player_two_damage: number;
 }
-export interface EngineSnapshot { readonly tick: number; readonly phase: MatchPhase; readonly round_number: number; readonly phase_ticks_remaining: number; readonly fighters: readonly [FighterSnapshot, FighterSnapshot]; readonly events: readonly CombatEvent[]; readonly result: MatchResult | null; readonly checksum: string }
+/** The referee as the engine has him: where he stands, whether he is reeling from a punch, his injuries, and whether he is still standing at all. */
+export interface RefereeSnapshot { readonly x: number; readonly y: number; readonly facing_x: number; readonly facing_y: number; readonly velocity_x: number; readonly velocity_y: number; readonly stunned_ticks: number; readonly alive: boolean; readonly trauma: TraumaSnapshot }
+export interface EngineSnapshot { readonly tick: number; readonly phase: MatchPhase; readonly round_number: number; readonly phase_ticks_remaining: number; readonly fighters: readonly [FighterSnapshot, FighterSnapshot]; readonly referee: RefereeSnapshot; readonly events: readonly CombatEvent[]; readonly result: MatchResult | null; readonly checksum: string }
 
 interface WelcomeBase { readonly version: typeof PROTOCOL_VERSION; readonly type: "welcome"; readonly player_id: string; readonly players: readonly PublicPlayer[]; readonly server_tick: number; readonly reconnect_ticket?: string }
 export interface FighterWelcomeMessage extends WelcomeBase { readonly role: "fighter"; readonly seat: 1 | 2; readonly rating: number; readonly next_sequence: number }

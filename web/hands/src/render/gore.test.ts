@@ -2,11 +2,11 @@ import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import { fighter } from "../test/fixtures";
 import type { CombatEvent, FighterSnapshot } from "../types";
-import { BIG_SHOT, BLOOD_SHADES, HARD_SHOT, ROCKING_COUNTER, bloodDropsFor, bloodShade, buildChunkGeometry, buildDropletGeometry, buildWoundGeometry, closeCut, cutRim, dropletShape, teethFor } from "./gore";
+import { BIG_SHOT, BLOOD_SHADES, HARD_SHOT, MISTING_SHOT, MOST_DROPS, ROCKING_COUNTER, TEARING_SHOT, bloodDropsFor, bloodShade, buildChunkGeometry, buildDropletGeometry, buildWoundGeometry, closeCut, cutRim, dropletShape, teethFor } from "./gore";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
 import { HEAD_SITES, InjuryShading, NECK_CUT_HEIGHT, applyHeadTrauma } from "./injury";
 import { SCANNED_LOOK, lookShape } from "./looks";
-import { Effects3D, confineToRopes } from "./effects";
+import { DESKTOP_GORE, Effects3D, PHONE_GORE, confineToRopes } from "./effects";
 import { FightRenderer, aboveNeckCut, bakeSeveredHead, bakeSkinnedPart, closeUpAngle, keepClear } from "./renderer";
 import { CANVAS_TOP, ROPE_LINE, worldMapping } from "./world";
 
@@ -463,15 +463,17 @@ describe("neck cut", () => {
 
 describe("an arterial fountain", () => {
   type Spawn = { time: number; velocity: THREE.Vector3; at: THREE.Vector3 };
-  /** Every drop a stump throws, and when: from the cut until `seconds` later. */
+  /** Every drop a stump throws, and when: from the cut until `seconds` later. The part it was cut from is held still, so its own trail adds none. */
   const pump = (effects: Effects3D, seconds: number): Spawn[] => {
     const spawns: Spawn[] = [];
     let time = 0;
     const spawn = vi.spyOn(effects as unknown as { spawnDroplet(...args: number[]): void }, "spawnDroplet").mockImplementation((x, y, z, vx, vy, vz) => {
       spawns.push({ time, velocity: new THREE.Vector3(vx, vy, vz), at: new THREE.Vector3(x, y, z) });
     });
+    const parts = vi.spyOn(effects as unknown as { updateDetachedParts(...args: unknown[]): void }, "updateDetachedParts").mockImplementation(() => undefined);
     for (; time < seconds; time += 1 / 60) effects.update(1 / 60);
     spawn.mockRestore();
+    parts.mockRestore();
     return spawns;
   };
   // A neck lying on the canvas, its wound facing along +x.
@@ -485,11 +487,11 @@ describe("an arterial fountain", () => {
   it("pumps with the heart for seconds, in spurts that weaken as he bleeds out", () => {
     const effects = new Effects3D(new THREE.Scene());
     severed(effects);
-    const spawns = pump(effects, 9);
+    const spawns = pump(effects, 17);
     const between = (from: number, to: number): Spawn[] => spawns.filter((spawn) => spawn.time >= from && spawn.time < to);
-    expect(between(5, 6.5).length).toBeGreaterThan(5);
-    expect(between(6.6, 9)).toHaveLength(0);
-    expect(between(0, 1).length).toBeGreaterThan(between(4, 5).length * 1.5);
+    expect(between(11, 14).length).toBeGreaterThan(5);
+    expect(between(14.1, 17)).toHaveLength(0);
+    expect(between(0, 1).length).toBeGreaterThan(between(11.5, 12.5).length * 1.5);
     // Spurts at the heart's rate: tenths of a second at the top of a beat throw far more than those between beats.
     const tenths = Array.from({ length: 24 }, (_, tenth) => between(tenth / 10, (tenth + 1) / 10).length);
     expect(Math.max(...tenths)).toBeGreaterThanOrEqual(Math.max(4, 4 * Math.min(...tenths)));
@@ -498,24 +500,31 @@ describe("an arterial fountain", () => {
     // 1.7 beats a second: four beats in 2.4 s.
     expect(peaks).toBeGreaterThanOrEqual(3);
     expect(peaks).toBeLessThanOrEqual(5);
-    // Its heaviest spurts throw only so many drops, for the phones.
-    expect(spawns.length).toBeLessThan(260);
+    // Grotesque: about 1,250 drops over its fourteen seconds on a desktop, and half as many on a phone.
+    expect(spawns.length).toBeGreaterThan(1000);
+    expect(spawns.length).toBeLessThan(1500);
+    const phone = new Effects3D(new THREE.Scene(), 256, PHONE_GORE);
+    severed(phone);
+    expect(pump(phone, 17).length).toBeLessThanOrEqual(Math.ceil(spawns.length / 2) + 5);
+    phone.dispose();
     effects.dispose();
   });
 
-  it("throws the blood at arterial speed along the wound's axis, not straight up", () => {
+  it("throws the blood in a geyser along the wound's axis, not straight up", () => {
     const effects = new Effects3D(new THREE.Scene());
     severed(effects);
-    const spawns = pump(effects, 6.5);
+    const spawns = pump(effects, 14);
     const early = spawns.filter((spawn) => spawn.time < 1.5);
     for (const spawn of spawns) {
-      expect(THREE.MathUtils.radToDeg(spawn.velocity.angleTo(along))).toBeLessThan(25);
-      expect(spawn.velocity.length()).toBeLessThanOrEqual(6 + 1e-9);
+      expect(THREE.MathUtils.radToDeg(spawn.velocity.angleTo(along))).toBeLessThan(27);
+      expect(spawn.velocity.length()).toBeLessThanOrEqual(8.5 + 1e-9);
     }
-    const fast = early.filter((spawn) => spawn.velocity.length() >= 4);
+    const fast = early.filter((spawn) => spawn.velocity.length() >= 5.5);
     expect(fast.length).toBeGreaterThan(early.length * 0.3);
+    // The top of a beat throws it hard enough to rain three metres up.
+    expect(early.some((spawn) => spawn.velocity.length() > 7.5)).toBe(true);
     // Weaker as the pressure falls.
-    const late = spawns.filter((spawn) => spawn.time > 5.5);
+    const late = spawns.filter((spawn) => spawn.time > 13);
     const mean = (list: Spawn[]): number => list.reduce((sum, spawn) => sum + spawn.velocity.length(), 0) / Math.max(1, list.length);
     expect(mean(late)).toBeLessThan(mean(early) * 0.8);
     effects.dispose();
@@ -538,7 +547,7 @@ describe("an arterial fountain", () => {
     effects.anchorStump(0, centre, turn, rim);
     const spawns = pump(effects, 1);
     expect(spawns.length).toBeGreaterThan(10);
-    for (const spawn of spawns) expect(THREE.MathUtils.radToDeg(spawn.velocity.angleTo(outward))).toBeLessThan(25);
+    for (const spawn of spawns) expect(THREE.MathUtils.radToDeg(spawn.velocity.angleTo(outward))).toBeLessThan(27);
     effects.dispose();
   });
 
@@ -548,13 +557,88 @@ describe("an arterial fountain", () => {
     effects.anchorHandStump(0, "left", new THREE.Vector3(0.3, 0.2, 0), lying);
     const spawns = pump(effects, 6);
     expect(spawns.filter((spawn) => spawn.time > 3).length).toBeGreaterThan(5);
-    for (const spawn of spawns) expect(THREE.MathUtils.radToDeg(spawn.velocity.angleTo(along))).toBeLessThan(25);
+    for (const spawn of spawns) expect(THREE.MathUtils.radToDeg(spawn.velocity.angleTo(along))).toBeLessThan(27);
     const reduced = new Effects3D(new THREE.Scene());
     severed(reduced);
     reduced.setBloodLevel("reduced");
     expect(pump(reduced, 3)).toHaveLength(0);
     effects.dispose();
     reduced.dispose();
+  });
+});
+
+describe("a wound that gushes", () => {
+  type Spawn = { time: number; velocity: THREE.Vector3; at: THREE.Vector3 };
+  const pour = (effects: Effects3D, seconds: number, each?: (time: number) => void): Spawn[] => {
+    const spawns: Spawn[] = [];
+    let time = 0;
+    const spawn = vi.spyOn(effects as unknown as { spawnDroplet(...args: number[]): void }, "spawnDroplet").mockImplementation((x, y, z, vx, vy, vz) => {
+      spawns.push({ time, velocity: new THREE.Vector3(vx, vy, vz), at: new THREE.Vector3(x, y, z) });
+    });
+    for (; time < seconds; time += 1 / 60) {
+      each?.(time);
+      effects.update(1 / 60);
+    }
+    spawn.mockRestore();
+    return spawns;
+  };
+  const mouth = new THREE.Vector3(0.3, 1.45, 0.1);
+  const out = new THREE.Vector3(0, -0.35, 1).normalize();
+
+  it("stops pouring from the mouth once the head comes off or bursts", () => {
+    for (const finish of ["decapitate", "burst"] as const) {
+      const effects = new Effects3D(new THREE.Scene());
+      effects.gush(1, mouth, out, 3, 300, 12);
+      expect(effects.gushing(1)).toBe(true);
+      if (finish === "decapitate") effects.decapitate(1, new THREE.Vector3(0.3, 1.55, 0.1), new THREE.Quaternion(), 1, 13);
+      else effects.burstHead(1, new THREE.Vector3(0.3, 1.6, 0.1), 1, 14);
+      expect(effects.gushing(1)).toBe(false);
+      effects.dispose();
+    }
+  });
+
+  it("pours out of the wound with every beat, slower and wider than an artery, easing off to nothing", () => {
+    const effects = new Effects3D(new THREE.Scene());
+    effects.gush(1, mouth, out, 2, 160, 12);
+    expect(effects.gushing(1)).toBe(true);
+    expect(effects.gushing(0)).toBe(false);
+    const spawns = pour(effects, 3);
+    const between = (from: number, to: number): number => spawns.filter((spawn) => spawn.time >= from && spawn.time < to).length;
+    expect(spawns.length).toBeGreaterThan(60);
+    expect(between(0, 1)).toBeGreaterThan(between(1, 2) * 1.5);
+    expect(between(2.05, 3)).toBe(0);
+    expect(effects.gushing(1)).toBe(false);
+    for (const spawn of spawns) {
+      expect(THREE.MathUtils.radToDeg(spawn.velocity.angleTo(out))).toBeLessThan(33);
+      expect(spawn.velocity.length()).toBeLessThan(3.3);
+      expect(spawn.at.distanceTo(mouth)).toBeLessThan(0.03);
+    }
+    effects.dispose();
+  });
+
+  it("follows the wound as the fighter moves, and stops when he is put back together or the blood is turned down", () => {
+    const effects = new Effects3D(new THREE.Scene());
+    effects.gush(0, mouth, out, 3, 160, 4);
+    const moved = new THREE.Vector3(-0.5, 0.3, 0.6);
+    const spawns = pour(effects, 0.6, () => effects.anchorGush(0, moved, new THREE.Vector3(1, 0, 0)));
+    expect(spawns.length).toBeGreaterThan(10);
+    for (const spawn of spawns) {
+      expect(spawn.at.distanceTo(moved)).toBeLessThan(0.03);
+      expect(spawn.velocity.x).toBeGreaterThan(0);
+    }
+    // The same blow never starts it again, and a new one takes its place.
+    effects.gush(0, mouth, out, 3, 160, 4);
+    expect(pour(effects, 0.1).every((spawn) => spawn.at.distanceTo(moved) < 0.03)).toBe(true);
+    effects.gush(0, mouth, out, 3, 160, 5);
+    expect(pour(effects, 0.3).every((spawn) => spawn.at.distanceTo(mouth) < 0.03)).toBe(true);
+    effects.restoreFighter(0);
+    expect(effects.gushing(0)).toBe(false);
+    effects.gush(0, mouth, out, 3, 160, 6);
+    effects.setBloodLevel("reduced");
+    expect(pour(effects, 0.5)).toHaveLength(0);
+    effects.gush(1, mouth, out, 3, 160, 7);
+    expect(effects.gushing(1)).toBe(false);
+    effects.dispose();
   });
 });
 
@@ -686,7 +770,7 @@ describe("blood in the air", () => {
     const effects = new Effects3D(new THREE.Scene());
     effects.addEvent(hit, new THREE.Vector3(0, 1.5, 0), false);
     const slots = bloodSlots(effects);
-    expect(slots.length).toBe(140);
+    expect(slots.length).toBe(MOST_DROPS);
     const origin = slots.map((slot) => dropAt(effects, slot));
     for (let frame = 0; frame < 9; frame += 1) effects.update(1 / 60);
     const matrix = new THREE.Matrix4();
@@ -711,7 +795,7 @@ describe("blood in the air", () => {
       expect(size(slots[lead + 2]!)).toBeLessThan(size(slots[lead + 1]!));
       strands += 1;
     }
-    expect(strands).toBe(28);
+    expect(strands).toBe(MOST_DROPS / 5);
     const free = dropAt(effects, slots[3]!).sub(dropAt(effects, slots[0]!));
     const trailing = dropAt(effects, slots[1]!).sub(dropAt(effects, slots[0]!));
     expect(free.clone().cross(trailing).length()).toBeGreaterThan(1e-4);
@@ -759,6 +843,35 @@ describe("blood in the air", () => {
 });
 
 describe("severed head", () => {
+  it("trails a stream of blood from its neck while it flies, and none once it lies still or with reduced blood", () => {
+    type Spawn = { time: number; at: THREE.Vector3 };
+    const fly = (level: "full" | "reduced", seconds: number): { spawns: Spawn[]; effects: Effects3D } => {
+      const effects = new Effects3D(new THREE.Scene());
+      effects.setBloodLevel(level);
+      effects.decapitate(0, new THREE.Vector3(0, 1.55, 0), new THREE.Quaternion(), 1, 13);
+      const spawns: Spawn[] = [];
+      let time = 0;
+      const spawn = vi.spyOn(effects as unknown as { spawnDroplet(...args: number[]): void }, "spawnDroplet").mockImplementation((x, y, z) => spawns.push({ time, at: new THREE.Vector3(x, y, z) }));
+      const fountains = vi.spyOn(effects as unknown as { updateStumpFountains(dt: number): void }, "updateStumpFountains").mockImplementation(() => undefined);
+      for (; time < seconds; time += 1 / 60) effects.update(1 / 60);
+      spawn.mockRestore();
+      fountains.mockRestore();
+      return { spawns, effects };
+    };
+    const { spawns, effects } = fly("full", 6);
+    const head = new THREE.Vector3();
+    effects.severedHeadPosition(0, head);
+    const flying = spawns.filter((spawn) => spawn.time < 0.5);
+    expect(flying.length).toBeGreaterThan(60);
+    // The trail follows the head: it leaves farther from the neck as the head flies on.
+    expect(flying.at(-1)!.at.x).toBeGreaterThan(flying[0]!.at.x + 0.4);
+    expect(spawns.filter((spawn) => spawn.time > 5)).toHaveLength(0);
+    effects.dispose();
+    const reduced = fly("reduced", 1);
+    expect(reduced.spawns).toHaveLength(0);
+    reduced.effects.dispose();
+  });
+
   it("stays inside the ropes however hard it is launched", () => {
     const effects = new Effects3D(new THREE.Scene());
     effects.decapitate(0, new THREE.Vector3(2.2, 1.5, -2.2), new THREE.Quaternion(), 1, 9);
@@ -831,17 +944,20 @@ describe("referee and a head on the canvas", () => {
     const head = new THREE.Vector3();
     effects.severedHeadPosition(1, head);
     const updated: unknown[] = [];
-    const stub = {
+    const stub = Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, {
       referee: { setRefereeCount: () => {}, aimBreak: () => {}, update: (...frame: unknown[]) => updated.push(frame), boxer: { root: new THREE.Object3D() } }, blobShadows: [],
       mapping: worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }),
       tmpA: new THREE.Vector3(head.x - 0.4, 0, head.z + 2.2), tmpB: new THREE.Vector3(head.x + 0.4, 0, head.z + 2.2),
       refereePosition: new THREE.Vector3(head.x + 0.1, 0, head.z - 0.2), refereeVelocity: new THREE.Vector3(), refereeAway: new THREE.Vector3(), refereeYaw: 0,
-      effects, closeUpTarget: new THREE.Vector3(), replay: null, ceremony: null,
-    };
+      effects, closeUpTarget: new THREE.Vector3(), replay: null, ceremony: null, settings: () => ({ reducedMotion: false, blood: "full" }),
+    });
     const step = (FightRenderer.prototype as unknown as { updateReferee: (dt: number, time: number, snapshot: unknown, tick: number) => void }).updateReferee;
+    // A head landing beside him has him step briskly away, never jump, and keep clear of it from then on.
     for (let frame = 0; frame < 180; frame += 1) {
+      const before = stub.refereePosition.clone();
       step.call(stub, 1 / 60, frame / 60, null, frame / 2);
-      expect(Math.hypot(stub.refereePosition.x - head.x, stub.refereePosition.z - head.z)).toBeGreaterThanOrEqual(0.9 - 1e-6);
+      expect(before.distanceTo(stub.refereePosition)).toBeLessThanOrEqual(2.5 / 60 + 1e-6);
+      if (frame >= 30) expect(Math.hypot(stub.refereePosition.x - head.x, stub.refereePosition.z - head.z)).toBeGreaterThanOrEqual(0.9 - 1e-6);
     }
     expect(updated).toHaveLength(180);
     effects.dispose();
@@ -850,13 +966,14 @@ describe("referee and a head on the canvas", () => {
   it("is left out of the knockout replay's close shot, and back for the live picture", () => {
     const root = new THREE.Object3D();
     const shadow = new THREE.Object3D();
-    const stub = {
+    const stub = Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, {
       referee: { setRefereeCount: () => {}, aimBreak: () => {}, update: () => {}, boxer: { root } }, blobShadows: [new THREE.Object3D(), new THREE.Object3D(), shadow],
       mapping: worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }),
       tmpA: new THREE.Vector3(-0.5, 0, 0), tmpB: new THREE.Vector3(0.5, 0, 0),
       refereePosition: new THREE.Vector3(0, 0, -1.5), refereeVelocity: new THREE.Vector3(), refereeAway: new THREE.Vector3(), refereeYaw: 0,
-      effects: { severedHeadPosition: () => false }, closeUpTarget: new THREE.Vector3(), replay: {} as unknown, ceremony: null,
-    };
+      effects: { severedHeadPosition: () => false, gushing: () => false }, closeUpTarget: new THREE.Vector3(), replay: { plan: { impact: { kind: "knockdown" } } } as unknown, ceremony: null,
+      pendingRefereeEvents: [], settings: () => ({ reducedMotion: false, blood: "full" }),
+    });
     const step = (FightRenderer.prototype as unknown as { updateReferee: (dt: number, time: number, snapshot: unknown, tick: number) => void }).updateReferee;
     step.call(stub, 1 / 60, 0, null, 0);
     expect(root.visible).toBe(false);
@@ -1000,43 +1117,87 @@ describe("severed head close-up", () => {
 
 describe("gore from a real punch", () => {
   // Engine damage: a landed jab is about 30, a straight 50 to 80, a power counter up to about 150.
-  it("knocks teeth out with the punch that floors a man and with big counters, never with an ordinary shot", () => {
-    expect(teethFor("knockdown", 1, true)).toBe(2);
-    expect(teethFor("counter_hit", BIG_SHOT, true)).toBe(1);
-    expect(teethFor("counter_hit", 130, true)).toBe(2);
-    expect(teethFor("counter_hit", BIG_SHOT - 1, true)).toBe(0);
-    expect(teethFor("hit", 80, true)).toBe(0);
-    expect(teethFor("hit", 118, true)).toBe(1);
+  it("knocks teeth out with the punch that floors a man and with any solid punch to the head, more the harder it lands", () => {
+    expect(teethFor("knockdown", 1, true)).toBe(5);
+    expect(teethFor("counter_hit", 39, true)).toBe(0);
+    expect(teethFor("counter_hit", 40, true)).toBe(1);
+    expect(teethFor("counter_hit", 60, true)).toBe(2);
+    expect(teethFor("counter_hit", 90, true)).toBe(3);
+    expect(teethFor("counter_hit", 130, true)).toBe(5);
+    expect(teethFor("hit", 49, true)).toBe(0);
+    expect(teethFor("hit", 50, true)).toBe(1);
+    expect(teethFor("hit", 80, true)).toBe(2);
+    expect(teethFor("hit", 110, true)).toBe(3);
+    expect(teethFor("hit", 140, true)).toBe(4);
     expect(teethFor("counter_hit", 140, false)).toBe(0);
     expect(teethFor("knockdown", 1, false)).toBe(0);
     expect(teethFor("block", 140, true)).toBe(0);
   });
 
-  it("throws more blood from an open wound and from a harder punch, up to a limit", () => {
-    expect(bloodDropsFor(8, 30)).toBeLessThan(15);
-    expect(bloodDropsFor(25, 110)).toBeGreaterThan(bloodDropsFor(25, 50) + 25);
-    expect(bloodDropsFor(60, 60)).toBeGreaterThan(bloodDropsFor(20, 60) + 50);
-    expect(bloodDropsFor(100, 500)).toBe(140);
+  it("knocks one tooth out with reduced blood, and only from the blows that take three or more", () => {
+    const knocked = (level: "full" | "reduced", count: number): number => {
+      const effects = new Effects3D(new THREE.Scene(), 256);
+      effects.setBloodLevel(level);
+      effects.spawnTeeth(new THREE.Vector3(0, 1.5, 0), 1, count, 3);
+      const teeth = effects.debrisCount("tooth");
+      effects.dispose();
+      return teeth;
+    };
+    expect([1, 2, 3, 8, 20].map((count) => knocked("full", count))).toEqual([1, 2, 3, 8, 12]);
+    expect([1, 2, 3, 8].map((count) => knocked("reduced", count))).toEqual([0, 0, 1, 1]);
+  });
+
+  it("throws dozens of drops off a clean face, more from a harder punch and far more from an open wound, up to a limit", () => {
+    // A clean jab carries the engine's blood of 11.
+    expect(bloodDropsFor(11, 34)).toBeGreaterThan(45);
+    expect(bloodDropsFor(25, 110)).toBeGreaterThan(bloodDropsFor(25, 50) + 50);
+    expect(bloodDropsFor(60, 60)).toBeGreaterThan(bloodDropsFor(20, 60) + 100);
+    expect(bloodDropsFor(100, 500)).toBe(MOST_DROPS);
     expect(bloodDropsFor(0, 0)).toBe(0);
   });
 
-  it("puts a mist in the air from a hard shot, which an ordinary one does not", () => {
+  it("sprays an uncut face visibly with every clean punch, blood far more than sweat, and half as much on a phone", () => {
+    const thrown = (amount: number, detail: string, budget = DESKTOP_GORE): { blood: number; sweat: number } => {
+      const effects = new Effects3D(new THREE.Scene(), 256, budget);
+      effects.addEvent(punchOn("hit", amount, 0, detail), origin, false);
+      const counts = { blood: effects.liveBloodParticles, sweat: effects.liveParticles - effects.liveBloodParticles };
+      effects.dispose();
+      return counts;
+    };
+    const jab = thrown(34, "jab:head");
+    const straight = thrown(52, "straight:head");
+    const hook = thrown(64, "hook:head");
+    expect(jab.blood).toBeGreaterThan(45);
+    expect(straight.blood).toBeGreaterThan(jab.blood + 25);
+    expect(hook.blood).toBeGreaterThan(straight.blood + 15);
+    for (const punch of [jab, straight, hook]) expect(punch.blood).toBeGreaterThan(punch.sweat * 5);
+    expect(thrown(64, "hook:head", PHONE_GORE).blood).toBe(Math.round(hook.blood / 2));
+    // A client struggling to keep its frame rate throws half again.
+    const struggling = new Effects3D(new THREE.Scene(), 256);
+    struggling.setLowTier(true);
+    struggling.addEvent(punchOn("hit", 64, 0, "hook:head"), origin, false);
+    expect(struggling.liveBloodParticles).toBe(Math.round(hook.blood / 2));
+    struggling.dispose();
+  });
+
+  it("puts a mist in the air from a punch that lands hard, which a light one on a clean face does not", () => {
     const origin = new THREE.Vector3();
     const mist = (kind: string, amount: number): number => {
       const effects = new Effects3D(new THREE.Scene());
-      effects.addEvent({ event_id: 3, tick: 1, kind, actor_id: "one", target_id: "two", amount, detail: "straight:head", blood: 20, direction: 1, action_id: null }, origin, false);
+      // A clean face: all of the punch's blood is its weight's.
+      effects.addEvent({ event_id: 3, tick: 1, kind, actor_id: "one", target_id: "two", amount, detail: "straight:head", blood: Math.floor(amount / 3), direction: 1, action_id: null }, origin, false);
       const live = effects.liveMist;
       effects.dispose();
       return live;
     };
-    expect(mist("hit", HARD_SHOT)).toBeGreaterThan(0);
-    expect(mist("hit", HARD_SHOT - 1)).toBe(0);
+    expect(mist("hit", MISTING_SHOT)).toBeGreaterThan(0);
+    expect(mist("hit", MISTING_SHOT - 1)).toBe(0);
     expect(mist("counter_hit", 40)).toBeGreaterThan(0);
   });
 
-  // The engine's blood is the cut's bleeding over eight plus the damage over four.
+  // The engine's blood is the cut's bleeding over five plus the damage over three.
   const punchOn = (kind: string, amount: number, bleeding: number, detail = "straight:head"): CombatEvent => ({
-    event_id: 7, tick: 1, kind, actor_id: "one", target_id: "two", amount, detail, blood: Math.floor(bleeding / 8) + Math.floor(amount / 4), direction: 1, action_id: null,
+    event_id: 7, tick: 1, kind, actor_id: "one", target_id: "two", amount, detail, blood: Math.min(100, Math.floor(bleeding / 5) + Math.floor(amount / 3)), direction: 1, action_id: null,
   });
   const origin = new THREE.Vector3();
   const after = <T,>(event: CombatEvent, read: (effects: Effects3D) => T): T => {
@@ -1052,13 +1213,77 @@ describe("gore from a real punch", () => {
     return effects.canvasStains;
   };
 
-  it("splashes the canvas from an open cut and a knockdown, not from every punch that draws a little blood", () => {
+  it("splashes the canvas from a hard punch on any face, more from an open cut and most from a knockdown, but not from a jab on a clean one", () => {
     const splash = (event: CombatEvent): number => after(event, (effects) => effects.canvasStains);
     expect(splash(punchOn("hit", 34, 0, "jab:head"))).toBe(0);
-    expect(splash(punchOn("hit", 110, 0))).toBe(0);
-    expect(splash(punchOn("hit", 64, 130, "hook:head"))).toBe(4);
-    expect(splash(punchOn("counter_hit", 64, 320, "hook:head"))).toBe(8);
-    expect(splash({ ...punchOn("knockdown", 1, 0), blood: 18 })).toBe(12);
+    expect(splash(punchOn("hit", 110, 0))).toBe(8);
+    expect(splash(punchOn("hit", 64, 130, "hook:head"))).toBe(12);
+    expect(splash(punchOn("counter_hit", 64, 320, "hook:head"))).toBe(24);
+    expect(splash({ ...punchOn("knockdown", 1, 0), blood: 18 })).toBe(30);
+    // Reduced blood splashes only from a cut, a quarter as many, as it always did.
+    const reduced = new Effects3D(new THREE.Scene(), 256);
+    reduced.setBloodLevel("reduced");
+    reduced.addEvent(punchOn("hit", 110, 0), origin, false);
+    expect(reduced.canvasStains).toBe(0);
+    reduced.addEvent(punchOn("hit", 64, 130, "hook:head"), origin, false);
+    expect(reduced.canvasStains).toBe(2);
+    reduced.dispose();
+  });
+
+  it("stains the canvas under most of the fine spray at full blood, where reduced blood lets most of it soak in unseen", () => {
+    const stained = (level: "full" | "reduced"): number => {
+      const effects = new Effects3D(new THREE.Scene(), 256);
+      effects.setBloodLevel(level);
+      const drops = effects as unknown as { spawnDroplet(x: number, y: number, z: number, vx: number, vy: number, vz: number, color: { r: number; g: number; b: number }, life: number, blood: boolean, radius?: number): void };
+      for (let drop = 0; drop < 200; drop += 1) drops.spawnDroplet((drop % 20) * 0.1 - 1, 0.3, Math.floor(drop / 20) * 0.1 - 0.5, 0, -2, 0, bloodShade(0.5), 2, true, 0.004);
+      const count = landed(effects);
+      effects.dispose();
+      return count;
+    };
+    expect(stained("full")).toBeGreaterThan(100);
+    expect(stained("reduced")).toBeLessThan(40);
+  });
+
+  it("throws an explosion of blood as a man goes down, over what his punch threw", () => {
+    const thrown = after({ ...punchOn("knockdown", 1, 0), blood: 18 }, (effects) => effects.liveBloodParticles);
+    expect(thrown).toBe(bloodDropsFor(18, 0) + 250);
+  });
+
+  it("draws the blood in gobs at full blood, bigger than reduced blood draws the same drop and bigger than sweat", () => {
+    const drawn = (level: "full" | "reduced", blood: boolean): number => {
+      const effects = new Effects3D(new THREE.Scene(), 256);
+      effects.setBloodLevel(level);
+      (effects as unknown as { spawnDroplet(x: number, y: number, z: number, vx: number, vy: number, vz: number, color: { r: number; g: number; b: number }, life: number, blood: boolean, radius: number): void }).spawnDroplet(0, 1, 0, 0, 0, 0, bloodShade(0), 1, blood, 0.01);
+      const matrix = new THREE.Matrix4();
+      effects.dropletMesh.getMatrixAt(0, matrix);
+      const size = new THREE.Vector3().setFromMatrixScale(matrix).x;
+      effects.dispose();
+      return size;
+    };
+    expect(drawn("full", true) / drawn("reduced", true)).toBeCloseTo(1.35, 6);
+    expect(drawn("full", false)).toBeCloseTo(drawn("reduced", false), 9);
+  });
+
+  it("throws the blood from where the punch landed on him, or from a standing man's head over the spot under him", () => {
+    const start = (at: THREE.Vector3): number => {
+      const effects = new Effects3D(new THREE.Scene(), 256);
+      effects.addEvent(punchOn("hit", 90, 100), at, false);
+      const positions = effects.dropletBuffers.position;
+      let lowest = Infinity;
+      for (let index = 0; index < effects.liveParticles; index += 1) lowest = Math.min(lowest, positions.getY(index));
+      effects.dispose();
+      return lowest;
+    };
+    expect(start(new THREE.Vector3(0.3, 0.22, 0.4))).toBeLessThan(0.3);
+    expect(start(new THREE.Vector3(0.3, 0, 0.4))).toBeGreaterThan(1.4);
+  });
+
+  it("shakes the camera harder the harder the punch, and hardest when a man goes down", () => {
+    const shaken = (event: CombatEvent): number => after(event, (effects) => effects.shakeAmount);
+    expect(shaken(punchOn("hit", 140, 0))).toBeGreaterThan(0.09);
+    expect(shaken(punchOn("hit", 140, 0))).toBeGreaterThan(shaken(punchOn("hit", 60, 0)) * 2);
+    expect(shaken({ ...punchOn("knockdown", 1, 0), blood: 20 })).toBeGreaterThan(0.1);
+    expect(shaken(punchOn("hit", 500, 0))).toBeLessThanOrEqual(0.14);
   });
 
   it("throws less blood from a punch the guard took than from a clean jab, however hard it hit the guard", () => {
@@ -1079,25 +1304,33 @@ describe("gore from a real punch", () => {
     const effects = new Effects3D(new THREE.Scene(), 256);
     effects.addEvent(beat, origin, false);
     expect(effects.liveParticles).toBe(effects.liveBloodParticles);
-    expect(effects.liveBloodParticles).toBeGreaterThan(0);
-    expect(effects.liveBloodParticles).toBeLessThanOrEqual(5);
+    expect(effects.liveBloodParticles).toBeGreaterThan(3);
+    expect(effects.liveBloodParticles).toBeLessThanOrEqual(12);
     expect(effects.canvasStains).toBe(0);
     expect(effects.shakeAmount).toBe(0);
-    expect(landed(effects)).toBeLessThanOrEqual(5);
+    expect(landed(effects)).toBeLessThanOrEqual(12);
     effects.dispose();
   });
 
-  it("tears flesh from an open cut with a punch that rocks him, and from any face with a big counter", () => {
+  it("tears flesh from any cut with a punch that rocks him, and from any face with a solid punch", () => {
     const torn = (event: CombatEvent): number => after(event, (effects) => effects.liveGibs);
-    expect(torn(punchOn("hit", HARD_SHOT, 130))).toBeGreaterThan(0);
-    expect(torn(punchOn("counter_hit", ROCKING_COUNTER, 130))).toBeGreaterThan(0);
-    expect(torn(punchOn("hit", HARD_SHOT - 1, 130))).toBe(0);
+    // Any face loses flesh to a punch of TEARING_SHOT.
+    expect(torn(punchOn("hit", TEARING_SHOT, 0))).toBeGreaterThan(0);
+    expect(torn(punchOn("hit", TEARING_SHOT - 1, 0))).toBe(0);
+    // A counter that rocks him tears it from a cut that has only just opened, but not from an unmarked face.
+    expect(torn(punchOn("counter_hit", ROCKING_COUNTER, 10))).toBeGreaterThan(0);
+    expect(torn(punchOn("counter_hit", ROCKING_COUNTER, 0))).toBe(0);
     expect(torn(punchOn("counter_hit", ROCKING_COUNTER - 1, 130))).toBe(0);
-    // A cut that has barely opened, and an unmarked face, keep their flesh but for a big counter.
-    expect(torn(punchOn("hit", 110, 40))).toBe(0);
     expect(torn(punchOn("counter_hit", BIG_SHOT, 0))).toBeGreaterThan(0);
     expect(torn(punchOn("hit", 120, 300, "hook:body"))).toBe(0);
     expect(torn(punchOn("counter_hit", 140, 300))).toBeGreaterThan(torn(punchOn("counter_hit", 60, 300)));
+    expect(torn(punchOn("counter_hit", 140, 300))).toBe(20);
+    // Reduced blood tears nothing.
+    const reduced = new Effects3D(new THREE.Scene(), 256);
+    reduced.setBloodLevel("reduced");
+    reduced.addEvent(punchOn("counter_hit", 140, 300), origin, false);
+    expect(reduced.liveGibs).toBe(0);
+    reduced.dispose();
   });
 
   it("keeps a knockdown, teeth and gum shield included, to one reduced spray of blood with reduced blood", () => {
@@ -1124,9 +1357,9 @@ describe("gore from a real punch", () => {
 
   it("throws a thicker mist off a punch the worse the cut it lands on", () => {
     const mist = (event: CombatEvent): number => after(event, (effects) => effects.liveMist);
-    expect(mist(punchOn("hit", 75, 0))).toBe(10);
+    expect(mist(punchOn("hit", 75, 0))).toBe(18);
     expect(mist(punchOn("hit", 75, 300))).toBeGreaterThan(mist(punchOn("hit", 75, 80)));
-    expect(mist(punchOn("hit", 75, 600))).toBe(18);
+    expect(mist(punchOn("hit", 75, 600))).toBe(36);
     // A face cut badly enough mists at every punch, a jab included.
     expect(mist(punchOn("hit", 34, 0, "jab:head"))).toBe(0);
     expect(mist(punchOn("hit", 34, 160, "jab:head"))).toBeGreaterThan(0);

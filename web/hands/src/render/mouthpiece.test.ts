@@ -2,7 +2,6 @@ import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import { snapshot } from "../test/fixtures";
 import { Effects3D } from "./effects";
-import { BIG_SHOT } from "./gore";
 import { buildMouthpieceGeometry, idleShield, mouthpieceFlies, stepShield } from "./mouthpiece";
 import { FightRenderer } from "./renderer";
 import { CANVAS_TOP, ROPE_LINE } from "./world";
@@ -29,13 +28,14 @@ describe("gum shield", () => {
     geometry.dispose();
   });
 
-  it("flies from the punch that floors a man and from big counters and huge shots to the head", () => {
+  it("flies from the punch that floors a man and from clean counters and solid shots to the head", () => {
     expect(mouthpieceFlies("knockdown", 1, true)).toBe(true);
     expect(mouthpieceFlies("knockdown", 1, false)).toBe(false);
-    expect(mouthpieceFlies("counter_hit", BIG_SHOT, true)).toBe(true);
-    expect(mouthpieceFlies("counter_hit", BIG_SHOT - 1, true)).toBe(false);
-    expect(mouthpieceFlies("hit", 110, true)).toBe(true);
-    expect(mouthpieceFlies("hit", 109, true)).toBe(false);
+    // A jab countered clean (34 damage, 28% more is 43) keeps it in; a straight countered (66) or a hook landed clean (64) does not.
+    expect(mouthpieceFlies("counter_hit", 50, true)).toBe(true);
+    expect(mouthpieceFlies("counter_hit", 49, true)).toBe(false);
+    expect(mouthpieceFlies("hit", 65, true)).toBe(true);
+    expect(mouthpieceFlies("hit", 64, true)).toBe(false);
     expect(mouthpieceFlies("counter_hit", 150, false)).toBe(false);
     expect(mouthpieceFlies("block", 150, true)).toBe(false);
   });
@@ -143,6 +143,7 @@ describe("gum shield", () => {
       lastKnockdown: { knockdown: { ...hit, kind: "knockdown", amount: 1, detail: "" }, hit, finisher: null },
       contactPoint: new THREE.Vector3(), tmpA: new THREE.Vector3(-1, 0, 0), tmpB: new THREE.Vector3(1, 0, 0), pendingContacts: [],
       mapping: { x: (value: number) => value / 100, z: (value: number) => value / 100 },
+      contactOn: () => new THREE.Vector3(),
       effects: { addEvent: () => undefined },
       settings: () => ({ reducedMotion: false }),
       graphs: null,

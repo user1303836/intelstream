@@ -1,6 +1,6 @@
 import type { ConnectionRole, EngineSnapshot, FinalMessage, PublicPlayer, SelectMessage, ServerMessage, SimulationInfo, TokenPlayer } from "./types";
 
-export type AppStage = "bootstrapping" | "authorizing" | "connecting" | "waiting" | "select" | "countdown" | "fight" | "knockdown" | "foul_recovery" | "rest" | "paused" | "complete" | "fatal";
+export type AppStage = "bootstrapping" | "authorizing" | "connecting" | "waiting" | "select" | "countdown" | "fight" | "knockdown" | "foul_recovery" | "referee_down" | "rest" | "paused" | "complete" | "fatal";
 export interface GameState {
   readonly stage: AppStage;
   readonly player: TokenPlayer | null;

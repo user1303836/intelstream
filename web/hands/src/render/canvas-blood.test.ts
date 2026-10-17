@@ -6,7 +6,7 @@ import { CANVAS_BLOOD_UPLOAD_INTERVAL, CanvasBlood, splatRecipe } from "./canvas
 import { Effects3D } from "./effects";
 import { teethFor } from "./gore";
 import { mouthpieceFlies } from "./mouthpiece";
-import { poolRadius } from "./renderer";
+import { POOL_RATE, poolRadius } from "./renderer";
 import { CANVAS_TOP, RING_FIGHT_HALF, worldMapping } from "./world";
 
 interface Shape { x: number; y: number; rx: number; ry: number; turn: number }
@@ -152,9 +152,9 @@ function playBout(): { stains: PaintedStain[]; roundEnds: number[]; pools: THREE
         spills[index] = 0;
         effects.drip(head.set(self.x, 1.56, self.z), self.severity, false, index);
       } else if (self.severity > 0.2 && self.down) {
-        // Two spills a second from under his head, which lies away from the man who put him down.
+        // Spills from under his head, which lies away from the man who put him down.
         effects.stopDrip(index);
-        pooled[index]! += 2 / 60;
+        pooled[index]! += POOL_RATE / 60;
         const other = fighter(tick, 1 - index);
         const apart = Math.hypot(self.x - other.x, self.z - other.z) || 1;
         while (pooled[index]! >= 1) {
@@ -284,6 +284,25 @@ describe("blood on the canvas", () => {
   it("is matte, as blood soaked into canvas is, so the ring lights do not glaze it lavender", () => {
     const blood = new CanvasBlood(new THREE.Scene(), 256);
     expect((blood.mesh.material as THREE.MeshStandardMaterial).roughness).toBeGreaterThanOrEqual(0.75);
+    blood.dispose();
+  });
+
+  it("paints each stain in one draw, from stamps tinted once for each colour", () => {
+    // The test canvas hands every canvas the same recording context.
+    const shared = document.createElement("canvas").getContext("2d") as unknown as { drawImage: ReturnType<typeof vi.fn>; fillRect: ReturnType<typeof vi.fn> };
+    const blood = new CanvasBlood(new THREE.Scene(), 256);
+    const draws = (): number => shared.drawImage.mock.calls.length;
+    const fills = (): number => shared.fillRect.mock.calls.length;
+    blood.stain(0, 0, 0.2, 0.2, 0, 0.8, 0x6e0d13);
+    const [drawn, filled] = [draws(), fills()];
+    blood.stain(0.2, 0, 0.2, 0.2, 0, 0.8, 0x6e0d13, 1);
+    blood.stain(0.4, 0, 0.2, 0.2, 0, 0.8, 0x6e0d13, 2);
+    expect(draws() - drawn).toBe(2);
+    expect(fills() - filled).toBe(0);
+    // A new colour tints its four stamps once.
+    blood.stain(0, 0.2, 0.2, 0.2, 0, 0.8, 0x4c070b);
+    expect(draws() - drawn).toBe(2 + 4 + 1);
+    expect(fills() - filled).toBe(4);
     blood.dispose();
   });
 
@@ -419,6 +438,21 @@ describe("blood on the canvas", () => {
     expect(scene.children).toHaveLength(0);
   });
 
+  it("soaks a splash in darker at full blood than reduced blood paints it", () => {
+    const opacity = (level: "full" | "reduced"): number => {
+      const stain = vi.spyOn(CanvasBlood.prototype, "stain");
+      const effects = new Effects3D(new THREE.Scene(), 256);
+      effects.setBloodLevel(level);
+      effects.splatter(0, 0, 1, () => 0.5, 4, 0.5);
+      const painted = stain.mock.calls[0]![5];
+      stain.mockRestore();
+      effects.dispose();
+      return painted;
+    };
+    expect(opacity("full")).toBeCloseTo(0.8, 6);
+    expect(opacity("reduced")).toBeCloseTo(0.3, 6);
+  });
+
   it("pools under a fighter on the canvas, smaller with reduced blood and never with blood off", () => {
     const pooled = (level: "full" | "reduced" | "off"): number => {
       const effects = new Effects3D(new THREE.Scene(), 256);
@@ -431,9 +465,22 @@ describe("blood on the canvas", () => {
     expect(pooled("full")).toBe(1);
     expect(pooled("reduced")).toBe(1);
     expect(pooled("off")).toBe(0);
+    // Reduced blood pools a fifth as wide.
+    const radius = (level: "full" | "reduced"): number => {
+      const spill = vi.spyOn(CanvasBlood.prototype, "pool");
+      const effects = new Effects3D(new THREE.Scene(), 256);
+      effects.setBloodLevel(level);
+      effects.pool(0.5, 0.5, 0.3, 1);
+      const spread = spill.mock.calls[0]![2];
+      spill.mockRestore();
+      effects.dispose();
+      return spread;
+    };
+    expect(radius("full")).toBeCloseTo(0.3, 9);
+    expect(radius("reduced")).toBeCloseTo(0.06, 9);
   });
 
-  it("gets bloodier round by round through a real bout, where it once painted the ring solid in the first", () => {
+  it("is soaked through a real bout, bloodier round by round, where it once painted the ring solid in the first", () => {
     const { made: blood, painted } = paintedCanvases(() => new CanvasBlood(new THREE.Scene(), 256));
     const stamps = (blood as unknown as { stamps: HTMLCanvasElement[] }).stamps.map((stamp) => painted.get(stamp)!.alpha);
     blood.dispose();
@@ -458,22 +505,27 @@ describe("blood on the canvas", () => {
       expect(darkest).toBeGreaterThan(0.9);
     }
     const [one, two, three] = after as [{ stained: number; soaked: number }, { stained: number; soaked: number }, { stained: number; soaked: number }];
-    // A cut opens 21 s into round 1: by the bell a couple of square metres of the 37 show blood, and
-    // little but the knockdown's pool is soaked through, where the old pacing painted 4,176 stains.
-    expect(roundEnds[0]).toBeLessThan(1500);
-    expect(one.stained).toBeLessThan(4);
-    expect(one.soaked).toBeLessThan(0.5);
+    // Grotesque on purpose: every solid punch splashes a clean face's blood and the cut that opens 21 s into
+    // round 1 throws far more, so by the bell about 15 m² of the 37 show blood and 9 m² are soaked through,
+    // and the bout ends with three quarters of the canvas bloody and more than half soaked. The ceilings
+    // catch a runaway that would paint the ring solid in a round; the floors keep it from going tame.
+    expect(roundEnds[0]).toBeLessThan(10_000);
+    expect(one.stained).toBeGreaterThan(10);
+    expect(one.stained).toBeLessThan(20);
+    expect(one.soaked).toBeGreaterThan(5);
+    expect(one.soaked).toBeLessThan(13);
     // Every round leaves more, the worst of the cut in round 2 most of all.
-    expect(two.stained).toBeGreaterThan(one.stained * 2);
-    expect(three.stained).toBeGreaterThan(one.stained * 3);
-    expect(three.soaked).toBeGreaterThan(one.soaked * 3);
+    expect(two.stained).toBeGreaterThan(one.stained * 1.5);
+    expect(three.stained).toBeGreaterThan(two.stained);
+    expect(three.soaked).toBeGreaterThan(one.soaked * 2);
+    expect(three.stained).toBeLessThan(33);
   }, 60_000);
 
-  it("spreads fast at first and then slower, wider the worse the fighter bleeds, to under half a metre", () => {
-    expect(poolRadius(0, 1)).toBeCloseTo(0.05, 5);
+  it("spreads fast at first and then slower, wider the worse the fighter bleeds, to 1.1 m", () => {
+    expect(poolRadius(0, 1)).toBeCloseTo(0.06, 5);
     expect(poolRadius(4, 1) - poolRadius(0, 1)).toBeGreaterThan(poolRadius(16, 1) - poolRadius(12, 1));
     expect(poolRadius(16, 1.4)).toBeGreaterThan(poolRadius(16, 0.5));
-    expect(poolRadius(20, 1)).toBeGreaterThan(0.2);
-    expect(poolRadius(10_000, 10)).toBe(0.42);
+    expect(poolRadius(20, 1)).toBeGreaterThan(0.4);
+    expect(poolRadius(10_000, 10)).toBe(1.1);
   });
 });

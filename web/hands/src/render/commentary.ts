@@ -1,4 +1,4 @@
-import { DOCTOR_CUT, DOCTOR_SWELLING, ROCKED_MAX_TICKS } from "../manifest";
+import { ROCKED_MAX_TICKS } from "../manifest";
 import { isDebut, recordCard } from "../record";
 import { styleTag, styleTitle } from "../styles";
 import type { CombatEvent, EngineSnapshot, FighterRecord, FighterSnapshot, FighterStyle, FinalMessage, MatchPhase, PublicPlayer } from "../types";
@@ -60,10 +60,8 @@ const COMBO_GAP_TICKS = 42;
 const JAB_WINDOW_SECONDS = 8;
 const TAKEOVER_WINDOW_SECONDS = 15;
 const EVASION_WINDOW_SECONDS = 10;
-/** A cut is called as it opens, worse at 60% of the cut the doctor stops a bout on, and near his limit at 80%. */
-const CUT_MARKS = [60, Math.round(DOCTOR_CUT * 0.6), Math.round(DOCTOR_CUT * 0.8)] as const;
-/** At the bell the doctor looks at a cut or a swelling this near his stoppage. */
-const DOCTOR_LOOK = { cut: Math.round(DOCTOR_CUT * 0.7), swelling: Math.round(DOCTOR_SWELLING * 0.75) } as const;
+/** A cut is called as it opens, again as it gets worse, and once more when it is gushing. */
+const CUT_MARKS = [60, 480, 640] as const;
 /** Below the engine's shut eye (manifest blind_side.eye_threshold, 700), so the swelling is noticed first. */
 const EYE_SWELLING = 500;
 const TIRED_RATIO = 0.2;
@@ -85,7 +83,7 @@ const LINES = {
   bigShot: ["Big {punch} from {a}!", "{a} lands a thudding {punch}!", "That {punch} landed flush!", "Huge {punch}! {b} felt that one."],
   cut: ["{b} is cut over the {side} eye.", "There's blood now. A cut over {b}'s {side} eye.", "That's opened a cut over the {side} eye of {b}."],
   cutWorse: ["That cut over {b}'s {side} eye is getting worse.", "The blood is pouring from that {side} eye now.", "{b} is bleeding badly from the {side} eye."],
-  cutDoctor: ["The doctor will be watching that cut very closely.", "If that cut gets any worse, the doctor could stop this."],
+  cutGushing: ["That cut is gushing now! {b} is covered in it.", "{b}'s face is a crimson mask, and nobody is stopping this!"],
   eyeSwelling: ["{b}'s {side} eye is swelling badly.", "{b} is having trouble seeing out of that {side} eye."],
   eyeShut: ["{b}'s {side} eye has closed completely!", "That {side} eye is shut! {b} can't see them coming from that side.", "{b} is fighting with one eye now."],
   blindSide: ["{a} is working the blind side.", "{b} never saw that one. Nothing is getting through that {side} eye.", "Smart from {a}, punching where {b} can't see."],
@@ -105,6 +103,10 @@ const LINES = {
   clinch: ["{a} ties {b} up.", "{a} grabs hold.", "They're tied up in the clinch."],
   holdingOn: ["{a} is hurt and holding on!", "{a} grabs on for dear life!", "Smart from {a}, holding on to clear the head."],
   refBreak: ["The referee breaks them.", "The referee steps in to separate them.", "Break! The referee pulls them apart."],
+  refHit: ["{a} just tagged the referee!", "Oh no, {a} has caught the referee!", "That one landed on the referee!"],
+  refDown: ["The referee is down! {a} has killed the referee!", "Oh my goodness, the referee isn't moving! I think he's dead!", "{a} has flattened the official for good! Absolute chaos!"],
+  refBledOut: ["The referee has collapsed! He's bled out right there in the ring!", "The referee goes down! He's lost too much blood!"],
+  noRef: ["Nobody left to break them up!", "No referee to part them, so they just let go."],
   taunt: ["{a} drops the hands and invites {b} in!", "Showboating from {a}! The crowd loves it.", "{a} is taunting {b} now!", "{a} sticks the chin out. Come and get it!"],
   lowBlow: ["Low blow from {a}! The referee steps in.", "That's below the belt! {b} is doubled over.", "{a} goes low, and the referee calls time."],
   headbutt: ["Headbutt from {a}! The referee calls time.", "{a} leads with the head! That's a foul."],
@@ -126,11 +128,9 @@ const LINES = {
   roundBig: ["The knockdown makes that a big round for {a}.", "{a} wins that round big with the knockdown."],
   roundClose: ["Close round. That one could go either way.", "Tough round to score.", "Nothing between them in that round."],
   pullingAway: ["{a} is pulling away on the cards.", "{b} needs something big. {a} is building a lead."],
-  doctor: ["The ringside doctor is taking a close look at {b}.", "The doctor is in {b}'s corner checking that cut."],
   ko: ["It's all over! {a} wins by knockout!", "{b} can't beat the count! {a} wins it!", "That's it! {a} has knocked out {b}!"],
   flashKo: ["Lights out! {b} is out cold!", "One punch, and it's over! {a} wins!", "Good night! {a} ends it with one shot!"],
   tko: ["Three knockdowns, and it's over! {a} wins!", "The referee waves it off! {a} wins by stoppage!"],
-  doctorStop: ["The doctor has seen enough! It's stopped on the cut!", "The doctor stops it! {b} can't continue!"],
   disqualified: ["{b} is disqualified!", "That's it! {b} has been thrown out!"],
   forfeit: ["{b} has left the ring. {a} wins by forfeit."],
   replay: ["Here it is again.", "Let's see that one more time.", "Watch {a} set it up..."],
@@ -138,7 +138,7 @@ const LINES = {
 
 type LineKey = keyof typeof LINES;
 
-const RESULT_LINES: Readonly<Partial<Record<string, LineKey>>> = { ko: "ko", flash_ko: "flashKo", tko: "tko", doctor_stoppage: "doctorStop", disqualification: "disqualified", forfeit: "forfeit" };
+const RESULT_LINES: Readonly<Partial<Record<string, LineKey>>> = { ko: "ko", flash_ko: "flashKo", tko: "tko", disqualification: "disqualified", forfeit: "forfeit" };
 
 /** Lines about a moment that ends with its phase: "can he beat the count?" means nothing once he is up. */
 const PHASES: Readonly<Partial<Record<LineKey, ReadonlySet<MatchPhase>>>> = { struggle: new Set<MatchPhase>(["knockdown"]) };
@@ -148,23 +148,26 @@ const COUNTDOWN_ONLY: ReadonlySet<MatchPhase> = new Set<MatchPhase>(["countdown"
 /** The bell is called as it rings, or straight after the line on screen, or not at all: seconds late reads as a mistake. */
 const BELL_FRESH_SECONDS = 3.2;
 
-const URGENT: ReadonlySet<LineKey> = new Set<LineKey>(["knockdown", "knockdownAgain", "knockdownCounter", "knockdownBody", "bodyCollapse", "upLate", "upEarly", "hurt", "hurtBadly", "lowBlow", "headbutt", "deduction", "ko", "flashKo", "tko", "doctorStop", "disqualified", "forfeit", "replay", "savedByBell", "finalBell", "roundEnd", "roundStart"]);
+const URGENT: ReadonlySet<LineKey> = new Set<LineKey>(["knockdown", "knockdownAgain", "knockdownCounter", "knockdownBody", "bodyCollapse", "upLate", "upEarly", "hurt", "hurtBadly", "lowBlow", "headbutt", "deduction", "ko", "flashKo", "tko", "disqualified", "forfeit", "replay", "refDown", "refBledOut", "savedByBell", "finalBell", "roundEnd", "roundStart"]);
+
+/** Calls that have the referee act, which a dead one cannot: each also has a phrasing without him. */
+const REFEREE_ACTS: ReadonlySet<LineKey> = new Set<LineKey>(["lowBlow", "headbutt", "warning", "deduction", "box", "tko"]);
 
 /** Knockdowns over hurt fighters over big counters over cuts over combinations over colour. */
 const PRIORITY: Readonly<Record<LineKey, number>> = {
-  ko: 98, flashKo: 98, tko: 98, doctorStop: 98, disqualified: 98, forfeit: 98,
+  ko: 98, flashKo: 98, tko: 98, disqualified: 98, forfeit: 98, refDown: 97, refBledOut: 97, refHit: 72,
   knockdown: 95, knockdownAgain: 95, knockdownCounter: 95, knockdownBody: 95, bodyCollapse: 86, upLate: 90, upEarly: 90, replay: 88,
   deduction: 84, lowBlow: 82, headbutt: 82, hurt: 80, box: 78, hurtBadly: 80, holdingOn: 76, savedByBell: 74, finalBell: 72, struggle: 70,
-  guardBreak: 65, eyeShut: 62, counter: 60, parried: 58, bigShot: 55, roundEnd: 52, cut: 50, cutWorse: 50, summary: 50, cutDoctor: 48, doctor: 48, eyeSwelling: 48,
+  guardBreak: 65, eyeShut: 62, counter: 60, parried: 58, bigShot: 55, roundEnd: 52, cut: 50, cutWorse: 50, summary: 50, cutGushing: 48, eyeSwelling: 48,
   cornerCut: 47, cornerSwelling: 47, cornerBreath: 47, blindSide: 42,
   roundFor: 46, roundBig: 46, roundClose: 46, pullingAway: 46, unanswered: 45, finishCall: 44, warning: 42,
   combo: 40, payoff: 40, takeover: 38, body: 35, jab: 30, tiring: 30, roundStart: 28, taunt: 25, parry: 22, evade: 20, clinch: 20,
-  whiff: 18, refBreak: 12, southpaw: 10, orthodox: 10, resume: 10,
+  whiff: 18, refBreak: 12, noRef: 12, southpaw: 10, orthodox: 10, resume: 10,
 };
 
 const SPEAKER: Readonly<Partial<Record<LineKey, Speaker>>> = {
   finishCall: "colour", payoff: "colour", tiring: "colour", takeover: "colour", holdingOn: "colour", taunt: "colour", parry: "colour", evade: "colour",
-  warning: "colour", blindSide: "colour", cornerCut: "colour", cornerSwelling: "colour", cornerBreath: "colour", roundFor: "colour", roundBig: "colour", roundClose: "colour", pullingAway: "colour", doctor: "colour", cutDoctor: "colour", jab: "colour",
+  warning: "colour", blindSide: "colour", cornerCut: "colour", cornerSwelling: "colour", cornerBreath: "colour", roundFor: "colour", roundBig: "colour", roundClose: "colour", pullingAway: "colour", cutGushing: "colour", noRef: "colour", jab: "colour",
 };
 
 /** Seconds before the same kind of line about the same fighter may come again. */
@@ -359,6 +362,7 @@ export class CommentaryDirector {
   private fightRemaining = 0;
   private struggleCalled = -1;
   private lastKnockdown: { actor: string | null; target: string | null; tick: number } | null = null;
+  private refereeDead = false;
   private final: FinalMessage | null = null;
   private verdictGiven = false;
   private resultCalled = false;
@@ -370,6 +374,7 @@ export class CommentaryDirector {
   observe(snapshot: EngineSnapshot, events: readonly CombatEvent[], players: Readonly<Record<string, PublicPlayer>>, tickRate: number, now: number): void {
     this.players = players;
     this.fighters = snapshot.fighters;
+    this.refereeDead = snapshot.referee?.alive === false;
     this.tickRate = tickRate;
     this.trackClock(snapshot);
     if (!this.introduced) {
@@ -436,19 +441,20 @@ export class CommentaryDirector {
     this.verdictGiven = true;
     if (final.winner_id === null) return;
     const name = this.nameOf(final.winner_id);
-    const how = ({ ko: "knockout", flash_ko: "knockout", tko: "technical knockout", doctor_stoppage: "doctor stoppage", disqualification: "disqualification", forfeit: "forfeit" } as Partial<Record<string, string>>)[final.method] ?? final.method.replaceAll("_", " ");
+    const how = ({ ko: "knockout", flash_ko: "knockout", tko: "technical knockout", disqualification: "disqualification", forfeit: "forfeit" } as Partial<Record<string, string>>)[final.method] ?? final.method.replaceAll("_", " ");
     const clock = this.stoppageClock(final.round);
-    const stopped = final.method === "ko" || final.method === "flash_ko" || final.method === "tko" || final.method === "doctor_stoppage";
+    const stopped = final.method === "ko" || final.method === "flash_ko" || final.method === "tko";
     const kicker = stopped && clock !== null ? `STOPPED AT ${clock} OF ROUND ${final.round}` : `ROUND ${final.round}`;
     const text = stopped && clock !== null ? `${name} wins by ${how} at ${clock} of round ${final.round}.` : `${name} wins by ${how} in round ${final.round}.`;
     this.enqueue(this.announcement(text, { kicker, title: name.toUpperCase(), detail: `WINS BY ${how.toUpperCase()}`, corner: this.seatOf(final.winner_id) }, ANNOUNCER_HOLD_SECONDS, 100), now, "verdict", 30);
-    const opening = stopped && clock !== null ? `The referee stops the contest at ${clock} of round ${numberWord(final.round)}. ` : "";
+    const stoppedBy = this.refereeDead ? "With the referee dead on the canvas, it is over" : "The referee stops the contest";
+    const opening = stopped && clock !== null ? `${stoppedBy} at ${clock} of round ${numberWord(final.round)}. ` : "";
     this.hooks.speak?.([`${opening}Your winner, by ${how}... ${name}!`]);
   }
 
-  /** The knockout replay has started. */
-  replay(now: number): void {
-    const knockdown = this.lastKnockdown;
+  /** A replay has started: of the referee's fall, whose punch it was; of a knockout, the knockdown's. */
+  replay(now: number, impact: Pick<CombatEvent, "kind" | "actor_id" | "tick"> | null = null): void {
+    const knockdown = impact?.kind === "referee_down" ? { actor: impact.actor_id, target: null, tick: impact.tick } : this.lastKnockdown;
     this.say("replay", knockdown?.tick ?? 0, now, { a: this.nameOf(knockdown?.actor ?? null), b: this.nameOf(knockdown?.target ?? null) }, "replay", 0.6, 6);
   }
 
@@ -622,6 +628,16 @@ export class CommentaryDirector {
       case "referee_break":
         this.say("refBreak", event.event_id, now, names, null, REACTION_SECONDS, undefined, "referee");
         return;
+      case "referee_hit":
+        this.say("refHit", event.event_id, now, names, moment, REACTION_SECONDS, undefined, actor);
+        return;
+      case "referee_down":
+        // No punch put him down when he bleeds to death.
+        this.say(event.action_id === null ? "refBledOut" : "refDown", event.event_id, now, names, moment);
+        return;
+      case "clinch_break":
+        this.say("noRef", event.event_id, now, names, null, REACTION_SECONDS);
+        return;
       case "taunt":
         this.say("taunt", event.event_id, now, { a: names.a, b: this.nameOf(this.otherId(actor)) }, moment, REACTION_SECONDS, undefined, actor);
         return;
@@ -728,8 +744,6 @@ export class CommentaryDirector {
     const margin = winner === null || loser === null ? 0 : this.notesFor(winner.id).rounds - this.notesFor(loser.id).rounds;
     const opinion: LineKey = winner === null ? "roundClose" : one.tally.knockdowns !== two.tally.knockdowns ? "roundBig" : round >= 2 && margin >= 2 ? "pullingAway" : "roundFor";
     this.sayAt(opinion, event.event_id, now + 6.4, { a: this.nameOf(winner?.id ?? null), b: this.nameOf(loser?.id ?? null) }, 5);
-    const cut = snapshot.fighters.find((fighter) => Math.max(fighter.trauma.left_cut, fighter.trauma.right_cut) >= DOCTOR_LOOK.cut || fighter.trauma.swelling >= DOCTOR_LOOK.swelling);
-    if (cut !== undefined) this.sayAt("doctor", event.event_id, now + 10, { b: this.nameOf(cut.player_id) }, 4);
   }
 
   private resulted(event: CombatEvent, now: number): void {
@@ -751,7 +765,7 @@ export class CommentaryDirector {
         const mark = notes.cutMarks[eye];
         if (mark < CUT_MARKS.length && cut >= CUT_MARKS[mark]!) {
           notes.cutMarks[eye] = CUT_MARKS.filter((threshold) => cut >= threshold).length;
-          this.say(mark === 0 ? "cut" : mark === 1 ? "cutWorse" : "cutDoctor", snapshot.tick + eye, now, { ...name, side }, null);
+          this.say(mark === 0 ? "cut" : mark === 1 ? "cutWorse" : "cutGushing", snapshot.tick + eye, now, { ...name, side }, null);
         }
         const swelling = eye === 0 ? fighter.trauma.left_eye : fighter.trauma.right_eye;
         if (!notes.eyeSwelling[eye] && !notes.eyeShut[eye] && swelling >= EYE_SWELLING) {
@@ -800,7 +814,8 @@ export class CommentaryDirector {
 
   /** A different phrasing each time, chosen from the event so every viewer hears the same call. */
   private choose(key: LineKey, seed: number): string {
-    const options: readonly string[] = LINES[key];
+    const lines: readonly string[] = LINES[key];
+    const options = this.refereeDead && REFEREE_ACTS.has(key) ? lines.filter((line) => !/referee/iu.test(line)) : lines;
     let index = mix(seed, key.length * 31 + key.charCodeAt(0)) % options.length;
     if (options.length > 1 && this.lastChoice.get(key) === index) index = (index + 1) % options.length;
     this.lastChoice.set(key, index);

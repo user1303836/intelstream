@@ -30,21 +30,27 @@ export function buildChunkGeometry(): THREE.BufferGeometry {
  */
 export const HARD_SHOT = 70;
 export const BIG_SHOT = 95;
+/** At full blood a punch this hard mists the blood it throws, and one this hard tears flesh from any face. */
+export const MISTING_SHOT = 35;
+export const TEARING_SHOT = 60;
 /** A counter this heavy rocks a man, as the engine reckons it, as a hard shot does. */
 export const ROCKING_COUNTER = manifestJson.stun.rocked_counter_damage;
 
-/** Teeth a blow to the head knocks out: two more as the punch floors a man, one or two by a big counter or a huge shot, none otherwise. */
+/** Teeth a blow to the head knocks out: five more as the punch floors a man, and up to five by any solid punch, more the harder it lands. */
 export function teethFor(kind: string, amount: number, head: boolean): number {
   if (!head) return 0;
-  if (kind === "knockdown") return 2;
-  if (kind === "counter_hit" && amount >= BIG_SHOT) return amount >= 120 ? 2 : 1;
-  if (kind === "hit" && amount >= 115) return 1;
+  if (kind === "knockdown") return 5;
+  if (kind === "counter_hit") return amount >= 120 ? 5 : amount >= 90 ? 3 : amount >= 60 ? 2 : amount >= 40 ? 1 : 0;
+  if (kind === "hit") return amount >= 130 ? 4 : amount >= 100 ? 3 : amount >= 75 ? 2 : amount >= 50 ? 1 : 0;
   return 0;
 }
 
-/** Drops of blood a blow throws at full blood: more from an open wound, and more from a harder punch. */
+/** The most drops of blood one blow throws. */
+export const MOST_DROPS = 800;
+
+/** Drops of blood a blow throws at full blood: plenty off any face it lands on clean, more the harder it lands, and far more from an open wound. */
 export function bloodDropsFor(blood: number, amount: number): number {
-  return Math.min(140, Math.round(Math.max(0, blood) * 1.4 + Math.max(0, amount - 50) * 0.5));
+  return Math.min(MOST_DROPS, Math.round(Math.max(0, blood) * 4.5 + Math.max(0, amount) * 2.8));
 }
 
 const DROPLET_TAIL = 1.1;

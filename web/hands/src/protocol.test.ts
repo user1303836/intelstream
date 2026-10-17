@@ -106,7 +106,6 @@ describe(`strict protocol v${PROTOCOL_VERSION}`, () => {
   it("allows the most get-up presses the engine can ask for: three knockdowns on a head beaten to the cap", () => {
     expect(GET_UP_REQUIRED_MIN).toBe(manifestJson.knockdown.get_up_base);
     expect(GET_UP_REQUIRED_MAX).toBe(manifestJson.knockdown.get_up_base + 3 * manifestJson.knockdown.get_up_per_knockdown + Math.floor(1400 / manifestJson.knockdown.get_up_trauma_divisor));
-    expect(GET_UP_REQUIRED_MAX).toBeGreaterThanOrEqual(171);
   });
   it("accepts exact fighter-domain boundaries and the private get-up sentinel", () => {
     const base = snapshot();
@@ -131,6 +130,12 @@ describe(`strict protocol v${PROTOCOL_VERSION}`, () => {
     const base = snapshot();
     const exhausted = { ...base.fighters[0], maximum_stamina: 330, stamina: 331 };
     expect(() => decodeServerFrame(JSON.stringify({ version: PROTOCOL_VERSION, type: "snapshot", payload: { ...base, fighters: [exhausted, base.fighters[1]] } }))).toThrow(ProtocolError);
+  });
+  it("decodes a broken guard, and nothing but true or false for it", () => {
+    const base = snapshot();
+    const broken = { ...base.fighters[0], guard: 0, guard_broken: true };
+    expect(decodeServerFrame(JSON.stringify({ version: PROTOCOL_VERSION, type: "snapshot", payload: { ...base, fighters: [broken, base.fighters[1]] } }))).toMatchObject({ payload: { fighters: [{ guard_broken: true }, { guard_broken: false }] } });
+    expect(() => decodeServerFrame(JSON.stringify({ version: PROTOCOL_VERSION, type: "snapshot", payload: { ...base, fighters: [{ ...broken, guard_broken: 1 }, base.fighters[1]] } }))).toThrow(ProtocolError);
   });
   it("rejects out-of-authority event and fighter bounds", () => {
     const base = snapshot();

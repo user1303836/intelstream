@@ -1,6 +1,6 @@
 import type { NetworkCallbacks } from "./network";
-import { PROTOCOL_VERSION, type EngineSnapshot, type ServerMessage } from "./types";
-import { fighter } from "./test/fixtures";
+import { PROTOCOL_VERSION, type CombatEvent, type EngineSnapshot, type PunchClass, type ServerMessage } from "./types";
+import { fighter, referee } from "./test/fixtures";
 
 const mocks = vi.hoisted(() => {
   const sessionDestroy = vi.fn();
@@ -26,9 +26,10 @@ const mocks = vi.hoisted(() => {
     styleChoices: [] as string[],
     cpuRequests: [] as string[],
     cpuAccepted: true,
-    renderers: [] as Array<{ onAnnouncement?: ((lines: readonly string[]) => void) | null; onCrowdCue?: ((cue: "chant") => void) | null; onRocked?: ((level: number, tick: number) => void) | null }>,
+    renderers: [] as Array<{ onAnnouncement?: ((lines: readonly string[]) => void) | null; onCrowdCue?: ((cue: "chant") => void) | null; onRocked?: ((level: number, tick: number) => void) | null; onContact?: ((event: CombatEvent, power: boolean) => void) | null; onOwnPunch?: ((punchClass: PunchClass, power: boolean, actionId: string) => void) | null }>,
     input: null as (() => { moveX: number; moveY: number }) | null,
     viewForward: null as { x: number; z: number } | null,
+    heldSends: 0,
   };
 });
 vi.mock("./discord", () => ({
@@ -43,6 +44,7 @@ vi.mock("./network", () => ({
     start(): void {}
     setActive(active: boolean): void { mocks.networkSetActive(active); }
     notifyAction(): void {}
+    notifyHeld(): void { mocks.heldSends += 1; }
     sendCornerChoice(kind: string): boolean { mocks.cornerPicks.push(kind); return true; }
     chooseStyle(style: string, ready: boolean): boolean { mocks.styleChoices.push(`${style}:${ready}`); return true; }
     requestCpu(level: string): boolean { mocks.cpuRequests.push(level); return mocks.cpuAccepted; }
@@ -98,6 +100,7 @@ const makeSnapshot = (tick: number, phase: EngineSnapshot["phase"] = "fight"): E
   round_number: 1,
   phase_ticks_remaining: 1_205,
   fighters: [fighter("one", -100), fighter("two", 100)],
+  referee: referee(),
   events: [],
   result: null,
   checksum: "a".repeat(64),
@@ -150,9 +153,14 @@ describe("browser lifecycle and accessible overlays", () => {
     send({ version: PROTOCOL_VERSION, type: "welcome", role: "fighter", player_id: "one", seat: 1, rating: 1500, players: [...players], server_tick: 0, next_sequence: 0, reconnect_ticket: "rotated" });
     send({ version: PROTOCOL_VERSION, type: "ready", players: [...players] });
     send({ version: PROTOCOL_VERSION, type: "snapshot", payload: makeSnapshot(10) });
+    const sends = mocks.heldSends;
     window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyW", bubbles: true, cancelable: true }));
+    expect(mocks.heldSends).toBe(sends + 1);
     expect(mocks.input!()).toMatchObject({ moveX: 0, moveY: 1000 });
+    window.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyW", bubbles: true, cancelable: true }));
+    expect(mocks.heldSends).toBe(sends + 2);
     mocks.viewForward = { x: 1, z: 0 };
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyW", bubbles: true, cancelable: true }));
     expect(mocks.input!()).toMatchObject({ moveX: 1000, moveY: 0 });
     window.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyW", bubbles: true, cancelable: true }));
     mocks.viewForward = null;
@@ -1058,6 +1066,41 @@ describe("the broadcast", () => {
     send({ version: PROTOCOL_VERSION, type: "snapshot", payload: { ...hit, fighters: [{ ...hit.fighters[0], stunned_ticks: 45 }, hit.fighters[1]] } });
     expect(rocked).not.toHaveBeenCalled();
     watcher.destroy();
+  });
+
+  it("hears a power punch's start and contact as a power punch's, and the player's own punch as it starts on screen, once", async () => {
+    const heard = vi.spyOn(AudioFeedback.prototype, "event");
+    const whoosh = vi.spyOn(AudioFeedback.prototype, "whoosh");
+    const { app } = await launch();
+    send({ version: PROTOCOL_VERSION, type: "ready", players: [...players] });
+    const start = (id: string): CombatEvent => ({ event_id: id === "c1" ? 7 : 8, tick: 40, kind: "punch_start", actor_id: id === "c1" ? "one" : "two", target_id: null, amount: 0, detail: "right:straight:head", blood: 0, direction: 0, action_id: id });
+    const renderer = mocks.renderers.at(-1)!;
+    renderer.onOwnPunch!("straight", true, "c1");
+    expect(whoosh).toHaveBeenCalledWith("straight", true);
+    const thrown = makeSnapshot(40);
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: { ...thrown, fighters: [{ ...thrown.fighters[0], action: "straight", action_id: "c1", action_power: "power" }, { ...thrown.fighters[1], action: "straight", action_id: "t1", action_power: "power" }], events: [start("c1"), start("t1")] } });
+    const starts = heard.mock.calls.filter(([event]) => event.kind === "punch_start");
+    expect(starts.map(([event, power]) => [event.action_id, power])).toEqual([["t1", true]]);
+    renderer.onContact!({ ...start("t1"), kind: "hit", detail: "straight:head", amount: 120 }, true);
+    expect(heard).toHaveBeenLastCalledWith(expect.objectContaining({ kind: "hit" }), true);
+    app.destroy();
+  });
+
+  it("keeps a fighter's controls live through the referee's five seconds, and hears a punch on him and his death once, as shown", async () => {
+    const heard = vi.spyOn(AudioFeedback.prototype, "event");
+    const { app } = await launch();
+    send({ version: PROTOCOL_VERSION, type: "ready", players: [...players] });
+    const hit: CombatEvent = { event_id: 9, tick: 40, kind: "referee_hit", actor_id: "one", target_id: "referee", amount: 60, detail: "hook:head", blood: 20, direction: 1, action_id: "one@32" };
+    const down: CombatEvent = { ...hit, event_id: 10, kind: "referee_down", amount: 0, detail: "", blood: 0 };
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: { ...makeSnapshot(40, "referee_down"), events: [hit, down] } });
+    expect(mocks.networkSetActive).toHaveBeenLastCalledWith(true);
+    const refereeSounds = (): string[] => heard.mock.calls.filter(([event]) => event.kind.startsWith("referee")).map(([event]) => event.kind);
+    expect(refereeSounds()).toEqual([]);
+    const renderer = mocks.renderers.at(-1)!;
+    renderer.onContact!(hit, false);
+    renderer.onContact!(down, false);
+    expect(refereeSounds()).toEqual(["referee_hit", "referee_down"]);
+    app.destroy();
   });
 
   it("lets the crowd follow the fight", async () => {

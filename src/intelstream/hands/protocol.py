@@ -23,7 +23,7 @@ from intelstream.hands.types import (
     Target,
 )
 
-PROTOCOL_VERSION = 4
+PROTOCOL_VERSION = 5
 MAX_FRAME_BYTES = 4096
 MAX_ACTIONS_PER_INPUT = 4
 MAX_SERVER_FRAME_BYTES = 65_536

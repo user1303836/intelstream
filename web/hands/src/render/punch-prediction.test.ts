@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { recoveryCancelAge, totalTicks } from "../manifest";
 import { predictedPunchTiming } from "../prediction";
 import { fighter as baseFighter } from "../test/fixtures";
 import type { FighterSnapshot, PunchAction, PunchClass } from "../types";
@@ -43,31 +44,83 @@ function stepper(graph: BoxingGraph, from: number): (shown: FighterSnapshot) => 
 
 describe("own punch the server refuses", () => {
   for (const [punchClass, hand] of [["jab", "left"], ["straight", "right"]] as const) {
-    for (const lead of [2.6, 3.8, 8.6]) {
-      it(`pulls a ${punchClass} back before contact once the frame that carried it is acknowledged, at a lead of ${lead} ticks`, () => {
+    for (const answer of [1.6, 2.8, 6.6]) {
+      it(`plays a ${punchClass} at the server's pace and takes it back once the frame that carried it is acknowledged unstarted, ${answer} ticks on: the way it went before contact, straight back after it`, () => {
         const graph = makeGraph();
         const { sent, sequenceOf } = frames();
         const action = press("own-1", punchClass, hand);
         const timing = predictedPunchTiming(idle, action);
-        graph.predict(action, 0, 30, lead, timing);
+        graph.predict(action, 0, 30, answer + INTERPOLATION_TICKS, timing, answer);
         sent.set("own-1", 41);
         const step = stepper(graph, 100);
-        const ackFrame = Math.round((lead - INTERPOLATION_TICKS) * 2);
+        const ackFrame = Math.round(answer * 2);
         const ages: number[] = [];
-        for (let frame = 0; state(graph).punchActive && frame < 120; frame += 1) {
+        let frame = 0;
+        for (; state(graph).punchActive && frame < 120; frame += 1) {
           // The server took the frame but never started the punch: no action, nothing queued.
           graph.acknowledge({ ...idle, last_input_sequence: frame >= ackFrame ? 41 : 40 }, true, [], sequenceOf);
           step(idle);
           if (state(graph).punchActive) ages.push(state(graph).punchAgeTicks);
         }
         expect(state(graph).punchActive).toBe(false);
-        expect(Math.max(...ages)).toBeLessThan(timing.startup);
-        const peak = ages.indexOf(Math.max(...ages));
-        expect(peak).toBeLessThanOrEqual(ackFrame + 1);
-        for (let index = peak + 1; index < ages.length; index += 1) expect(ages[index]!).toBeLessThan(ages[index - 1]!);
+        for (let index = 0; index < ackFrame; index += 1) expect(ages[index]).toBeCloseTo((index + 1) / 2, 5);
+        if (ackFrame / 2 < timing.startup) {
+          const peak = ages.indexOf(Math.max(...ages));
+          expect(Math.max(...ages)).toBeLessThan(timing.startup);
+          expect(peak).toBeLessThanOrEqual(ackFrame + 1);
+          for (let index = peak + 1; index < ages.length; index += 1) expect(ages[index]!).toBeLessThan(ages[index - 1]!);
+        } else {
+          // Whatever it had left at the target is skipped, and it is back in the guard well inside its own length.
+          expect(ages[ackFrame]!).toBeGreaterThan(timing.startup + timing.active);
+          expect(frame / 2).toBeLessThan(answer + timing.recovery / 2 + 1);
+        }
       });
     }
   }
+
+  it("lets a power punch's glove go cold as it is taken back, not glow all the way back to the guard", () => {
+    const graph = makeGraph();
+    const { sent, sequenceOf } = frames();
+    const power = { ...press("own-1", "straight", "right"), power: "power" as const };
+    graph.predict(power, 0, 30, 2.8 + INTERPOLATION_TICKS, predictedPunchTiming(idle, power), 2.8);
+    sent.set("own-1", 41);
+    const step = stepper(graph, 100);
+    for (let frame = 0; frame < 6; frame += 1) {
+      graph.acknowledge({ ...idle, last_input_sequence: 40 }, true, [], sequenceOf);
+      step(idle);
+    }
+    expect(graph.powerHeat("right")).toBeGreaterThan(0);
+    graph.acknowledge({ ...idle, last_input_sequence: 41 }, true, [], sequenceOf);
+    step(idle);
+    expect(state(graph).punchActive).toBe(true);
+    expect(graph.powerHeat("right")).toBe(0);
+  });
+
+  it("gives up on a press the server says nothing of well past when its answer was due, and shows it after all if the server throws it late", () => {
+    const pulled = makeGraph();
+    const power = { ...press("own-1", "straight", "right"), power: "power" as const };
+    const powerTiming = predictedPunchTiming(idle, power);
+    pulled.predict(power, 0, 30, 2 + INTERPOLATION_TICKS, powerTiming, 2);
+    const step = stepper(pulled, 100);
+    const ages: number[] = [];
+    let tick = 100;
+    while (state(pulled).punchActive && ages.length < 120) { tick = step(idle); if (state(pulled).punchActive) ages.push(state(pulled).punchAgeTicks); }
+    // Its answer was due in two ticks; three and a half more, and the long power wind-up never reaches the target.
+    expect(Math.max(...ages)).toBeLessThan(powerTiming.startup);
+    expect(Math.max(...ages)).toBeGreaterThan(5);
+    step(serverPunch({ ...idle, last_input_sequence: 41 }, "own-1", power, tick));
+    expect(state(pulled).punchActive).toBe(true);
+    // A straight is past its contact by then: it goes straight back to the guard instead of playing out.
+    const cut = makeGraph();
+    const straight = press("own-2", "straight", "right");
+    const straightTiming = predictedPunchTiming(idle, straight);
+    cut.predict(straight, 0, 30, 2 + INTERPOLATION_TICKS, straightTiming, 2);
+    const next = stepper(cut, 100);
+    let frames = 0;
+    while (state(cut).punchActive && frames < 120) { next(idle); frames += 1; }
+    expect(frames / 2).toBeLessThan(6 + straightTiming.recovery / 2.5 + 1);
+    expect(frames / 2).toBeLessThan(totalTicks(straightTiming) - 2);
+  });
 
   it("keeps a punch the server has queued behind another, then lets it play once started", () => {
     const graph = makeGraph();
@@ -240,97 +293,119 @@ describe("follow-up pressed during a punch", () => {
   const hookTiming = predictedPunchTiming(idle, hook);
   const T0 = 300;
   const thrown = serverPunch(idle, "s1", straight, T0);
-  const contact = (kind: string, actionId = "s1") => ({ event_id: 7, tick: T0 + 6, kind, actor_id: kind.includes("block") ? "two" : "one", target_id: kind.includes("block") ? "one" : "two", amount: 30, detail: "straight:head", blood: 0, direction: 1, action_id: actionId });
+  const contact = (kind: string, actionId = "s1") => ({ event_id: 7, tick: T0 + straightTiming.startup, kind, actor_id: kind.includes("block") ? "two" : "one", target_id: kind.includes("block") ? "one" : "two", amount: 30, detail: "straight:head", blood: 0, direction: 1, action_id: actionId });
 
   /**
-   * Plays a straight from T0 and presses a hook at `pressAge` with a lead of 4 ticks; the snapshots
-   * on screen show the server's hook from `serverStart`. Returns the tick at which the graph first
-   * plays the hook and the tick at which it reaches contact.
+   * The straight is the player's own press at T0, played on the press's own time; its server copy shows on the render
+   * clock `lead` ticks later. The hook is pressed `pressAge` ticks into the straight, and the snapshots on screen show
+   * the server's hook from `serverStart`. With `onServerClock` the straight was not predicted and plays on the render
+   * clock from T0 instead, `lead` ticks behind the press's time. Returns the tick at which the graph first plays the hook
+   * and the tick at which it reaches contact, and the graph as it is then.
    */
-  function followUp(serverStart: number, options: { contacts?: ReturnType<typeof contact>[]; stunnedUntil?: number; pressAge?: number } = {}): { start: number; contact: number } {
+  function followUp(serverStart: number, options: { contacts?: ReturnType<typeof contact>[]; stunnedUntil?: number; pressAge?: number; lead?: number; onServerClock?: boolean } = {}): { start: number; contact: number; graph: BoxingGraph } {
     const graph = makeGraph();
-    const pressAge = options.pressAge ?? 10;
+    const pressAge = options.pressAge ?? 7;
+    const lead = options.lead ?? 4;
     const served = serverPunch(idle, "own-hook", hook, serverStart);
+    const shown = options.onServerClock === true ? thrown : serverPunch(idle, "s1", straight, T0 + lead);
     let tick = T0 - 0.5;
     let start = NaN;
     let reached = NaN;
-    graph.acknowledge(thrown, true, options.contacts ?? []);
+    if (options.onServerClock !== true) graph.predict(straight, T0 / 30, 30, lead, straightTiming);
+    graph.acknowledge(shown, true, options.contacts ?? []);
     for (let frame = 0; frame < 120 && Number.isNaN(reached); frame += 1) {
       tick += 0.5;
       const opposite = { ...opponent, stunned_ticks: tick < (options.stunnedUntil ?? -Infinity) ? 20 : 0 };
-      graph.update(tick < serverStart ? thrown : served, opposite, 1 / 60, tick / 30, false, "full", tick, head);
-      if (tick === T0 + pressAge) graph.predict(hook, tick / 30, 30, 4, hookTiming);
+      graph.update(tick >= serverStart ? served : tick >= shown.action_start_tick ? shown : idle, opposite, 1 / 60, tick / 30, false, "full", tick, head);
+      if (tick === T0 + pressAge) graph.predict(hook, tick / 30, 30, lead, hookTiming);
       if (state(graph).ownActionId !== "own-hook") continue;
       if (Number.isNaN(start)) start = tick;
       if (state(graph).punchAgeTicks >= hookTiming.startup) reached = tick;
     }
-    return { start, contact: reached };
+    return { start, contact: reached, graph };
   }
   const near = (actual: number, expected: number): void => expect(Math.abs(actual - expected)).toBeLessThanOrEqual(1);
 
-  it("waits for a whiffed straight to end and starts the hook the tick after, as the engine does", () => {
-    expect(straightTiming).toMatchObject({ startup: 6, active: 2, recovery: 10 });
-    // Pressed at 56% of the straight, the engine starts the hook at T0 + 19 and lands it 7 ticks later.
-    const { start, contact: reached } = followUp(T0 + 19);
-    expect(start).toBeGreaterThanOrEqual(T0 + 17.5);
-    near(reached, T0 + 19 + hookTiming.startup);
+  // The straight runs 12 ticks and a chained follow-up may cut its recovery short from age 9. A press p ticks into the
+  // straight on the press's own time reaches the server p ticks into the server's copy.
+  const ends = T0 + totalTicks(straightTiming);
+  const cancels = T0 + recoveryCancelAge(straightTiming);
+
+  it("waits for a whiffed straight to end and starts the hook on the tick it ends, as the engine does", () => {
+    expect(straightTiming).toMatchObject({ startup: 4, active: 2, recovery: 6 });
+    // Pressed at 58% of the straight, the engine starts the hook as it ends and lands it at the hook's startup.
+    const { start, contact: reached } = followUp(ends + 4);
+    expect(start).toBeGreaterThanOrEqual(ends - 0.5);
+    near(reached, ends + hookTiming.startup);
   });
 
-  it("cuts a landed straight's recovery short at its cancel age, or when the press arrives after it", () => {
-    // Cancel age 6 + 2 + 5: pressed at age 8 the hook reaches the server before it and starts there.
-    near(followUp(T0 + 13, { contacts: [contact("hit")], pressAge: 8 }).contact, T0 + 13 + hookTiming.startup);
-    // Pressed at age 10 with a lead of 4 it reaches the server at T0 + 14 and starts at once.
-    near(followUp(T0 + 14, { contacts: [contact("hit")], pressAge: 10 }).contact, T0 + 14 + hookTiming.startup);
-    // An ordinary block lets the combination through too.
-    near(followUp(T0 + 13, { contacts: [contact("block"), contact("hit")], pressAge: 8 }).contact, T0 + 13 + hookTiming.startup);
+  it("cuts a landed straight's recovery short at its cancel age, or at once when the press comes after it", () => {
+    near(followUp(cancels + 4, { contacts: [contact("hit")], pressAge: 4 }).contact, cancels + hookTiming.startup);
+    near(followUp(T0 + 14, { contacts: [contact("hit")], pressAge: 10 }).contact, T0 + 10 + hookTiming.startup);
+    // An ordinary block lets the combination through too, and so does a punch that found the referee in the way.
+    near(followUp(cancels + 4, { contacts: [contact("block"), contact("hit")], pressAge: 4 }).contact, cancels + hookTiming.startup);
+    near(followUp(cancels + 4, { contacts: [contact("referee_hit")], pressAge: 4 }).contact, cancels + hookTiming.startup);
   });
 
   it("does not cut the recovery short for a parried straight or a contact that belongs to another punch", () => {
     for (const contacts of [[contact("perfect_block"), contact("hit")], [contact("hit", "s0")]]) {
-      const { start, contact: reached } = followUp(T0 + 19, { contacts, pressAge: 8 });
-      expect(start).toBeGreaterThanOrEqual(T0 + 17.5);
-      near(reached, T0 + 19 + hookTiming.startup);
+      const { start, contact: reached } = followUp(ends + 4, { contacts, pressAge: 4 });
+      expect(start).toBeGreaterThanOrEqual(ends - 0.5);
+      near(reached, ends + hookTiming.startup);
     }
   });
 
   it("holds the follow-up while the defender is stunned and cuts in once he is not", () => {
-    const { start, contact: reached } = followUp(T0 + 15, { contacts: [contact("hit")], pressAge: 8, stunnedUntil: T0 + 15 });
-    expect(start).toBeGreaterThanOrEqual(T0 + 15);
-    near(reached, T0 + 15 + hookTiming.startup);
-    const held = followUp(T0 + 19, { contacts: [contact("hit")], pressAge: 8, stunnedUntil: T0 + 40 });
-    expect(held.start).toBeGreaterThanOrEqual(T0 + 17.5);
-    near(held.contact, T0 + 19 + hookTiming.startup);
+    const { start, contact: reached } = followUp(T0 + 15, { contacts: [contact("hit")], pressAge: 4, stunnedUntil: T0 + 11 });
+    expect(start).toBeGreaterThanOrEqual(T0 + 11);
+    near(reached, T0 + 11 + hookTiming.startup);
+    const held = followUp(ends + 4, { contacts: [contact("hit")], pressAge: 4, stunnedUntil: T0 + 40 });
+    expect(held.start).toBeGreaterThanOrEqual(ends - 0.5);
+    near(held.contact, ends + hookTiming.startup);
   });
 
-  it("plays the held press from the server's timeline when the server starts it sooner than expected", () => {
-    // No contact reached the client, so the graph expects the hook after the straight; the server cut in at T0 + 14.
-    const { start, contact: reached } = followUp(T0 + 14, { pressAge: 10 });
-    expect(start).toBe(T0 + 14);
-    near(reached, T0 + 14 + hookTiming.startup);
+  it("plays the held press from the server's timeline when the server starts it before it is let go here", () => {
+    // No contact reached the client, so it holds the hook to the straight's end; the server cut in at the cancel age
+    // and, two ticks behind, its hook is on screen first.
+    const { start, contact: reached, graph } = followUp(cancels + 2, { pressAge: 6, lead: 2 });
+    expect(start).toBe(cancels + 2);
+    near(reached, cancels + 2 + hookTiming.startup);
+    // On the server's timeline it is no press played on the press's time: its contact keeps to the delayed clock.
+    expect(graph.ownPressId).toBeNull();
+    expect(graph.pressLanded("own-hook")).toBe(false);
+  });
+
+  it("lets a follow-up go behind a punch on the server's timeline as early as the press's own time allows", () => {
+    // The straight on the render clock trails the press's time by the lead: a whiffed straight lets the hook go a lead
+    // early on screen, when the server does on the press's time.
+    const { start, contact: reached } = followUp(ends, { onServerClock: true });
+    expect(start).toBeGreaterThanOrEqual(ends - 4 - 0.5);
+    expect(start).toBeLessThan(ends);
+    near(reached, ends - 4 + hookTiming.startup);
   });
 
   it("keeps only the newest held press while the punch in front still holds it, and forgets one the server drops", () => {
     const graph = makeGraph();
     const step = stepper(graph, T0 - 0.5);
     let tick = T0;
-    while (tick < T0 + 8) tick = step(thrown);
+    while (tick < ends - 7) tick = step(thrown);
     graph.predict(hook, tick / 30, 30, 4, hookTiming);
     const uppercut = press("own-upper", "uppercut", "right");
     graph.predict(uppercut, tick / 30 + 0.1, 30, 4, predictedPunchTiming(idle, uppercut));
-    while (tick < T0 + 16) tick = step(thrown);
+    while (tick < ends - 3) tick = step(thrown);
     // Three ticks from the end, a press arrives after the held one has started: it is not predicted.
     graph.predict(press("own-late", "jab", "left"), tick / 30, 30, 4, predictedPunchTiming(idle, press("own-late", "jab", "left")));
-    while (tick < T0 + 19.5) tick = step(thrown);
+    while (tick < ends + 0.5) tick = step(thrown);
     expect(state(graph).ownActionId).toBe("own-upper");
     expect(state(graph).punchClass).toBe("uppercut");
     const dropped = makeGraph();
     const next = stepper(dropped, T0 - 0.5);
     tick = T0;
-    while (tick < T0 + 8) tick = next(thrown);
+    while (tick < ends - 7) tick = next(thrown);
     dropped.predict(hook, tick / 30, 30, 4, hookTiming);
     // The server got the frame and holds nothing: a guard raised in the same tick cleared it.
     dropped.acknowledge({ ...thrown, last_input_sequence: 51, queued_actions: 0 }, true, [], (actionId) => (actionId === "own-hook" ? 51 : null));
-    while (tick < T0 + 24) tick = next(thrown);
+    while (tick < ends + 4) tick = next(thrown);
     expect(state(dropped).ownActionId).toBeNull();
     expect(state(dropped).punchClass).toBe("straight");
   });

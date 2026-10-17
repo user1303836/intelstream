@@ -6,7 +6,7 @@ import { Effects3D } from "./effects";
 import { BIG_SHOT, HARD_SHOT, closeCut } from "./gore";
 import { SkinnedBoxer, loadBoxerGlb } from "./graph";
 import { BURST_CUT_HEIGHT, HEAD_SITES, InjuryShading, NECK_CUT_HEIGHT, BODY_SITES, BODY_SWELL_CORE, applyBodyTrauma } from "./injury";
-import { aboveBurstCut, arcadeInjuryFor, measureBurstStump, replayReattaches, caveInRibs } from "./renderer";
+import { aboveBurstCut, arcadeInjuryFor, measureBurstStump, caveInRibs } from "./renderer";
 import { CANVAS_TOP } from "./world";
 
 const gltf = await loadBoxerGlb();
@@ -19,21 +19,23 @@ describe("the finisher a knockout punch earns", () => {
   // [punch and target, kind, damage, the puncher's hand] and the finisher, by punch, place and weight alone.
   const table: readonly (readonly [string, string, number, "left" | "right", string])[] = [
     ["jab:head", "hit", 34, "left", "jaw_dislocation"],
-    ["jab:head", "hit", HARD_SHOT + 30, "left", "jaw_dislocation"],
-    ["straight:head", "hit", 79, "right", "jaw_dislocation"],
-    ["straight:head", "hit", 80, "right", "decapitation"],
-    ["uppercut:head", "hit", HARD_SHOT - 1, "right", "jaw_dislocation"],
-    ["uppercut:head", "hit", HARD_SHOT, "right", "decapitation"],
-    ["hook:head", "hit", HARD_SHOT - 1, "left", "jaw_dislocation"],
-    ["hook:head", "hit", HARD_SHOT, "left", "eye_right"],
+    ["jab:head", "hit", 40, "left", "eye_right"],
+    ["jab:head", "hit", HARD_SHOT + 30, "right", "eye_left"],
+    ["straight:head", "hit", 49, "right", "jaw_dislocation"],
+    ["straight:head", "hit", 50, "right", "decapitation"],
+    ["uppercut:head", "hit", 39, "right", "jaw_dislocation"],
+    ["uppercut:head", "hit", 40, "right", "decapitation"],
+    ["hook:head", "hit", 39, "left", "jaw_dislocation"],
+    ["hook:head", "hit", 40, "left", "eye_right"],
     ["hook:head", "hit", HARD_SHOT + 40, "right", "eye_left"],
     ["straight:head", "hit", 140, "right", "decapitation"],
-    ["straight:head", "counter_hit", BIG_SHOT, "right", "head_burst"],
+    ["hook:head", "counter_hit", HARD_SHOT - 1, "left", "eye_right"],
+    ["straight:head", "counter_hit", HARD_SHOT, "right", "head_burst"],
     ["jab:body", "hit", 50, "left", "ribs_right"],
     ["straight:body", "hit", 140, "right", "ribs_left"],
     ["uppercut:body", "counter_hit", 120, "left", "ribs_right"],
-    ["hook:body", "hit", HARD_SHOT - 1, "left", "ribs_right"],
-    ["hook:body", "hit", HARD_SHOT, "left", "shoulder_right"],
+    ["hook:body", "hit", 49, "left", "shoulder_right"],
+    ["hook:body", "hit", 50, "left", "dismember_right"],
     ["hook:body", "hit", BIG_SHOT, "right", "dismember_left"],
   ];
 
@@ -45,9 +47,12 @@ describe("the finisher a knockout punch earns", () => {
     }
   });
 
-  it("never takes a man's head off with a jab, nor a hand with a punch up the middle of his body", () => {
-    for (let amount = 1; amount <= 160; amount += 1) {
-      expect(arcadeInjuryFor(hit("hit", amount, "jab:head", amount), downed, ending("ko"), puncher("left"))).toBe("jaw_dislocation");
+  it("takes the head off with any straight or uppercut that ends it, the eye with a jab, and never a hand with a punch up the middle of his body", () => {
+    // A tired fighter's punches land at two fifths of their weight: a straight of 52 for 20.
+    for (let amount = 20; amount <= 160; amount += 1) {
+      expect(arcadeInjuryFor(hit("hit", amount, "jab:head", amount), downed, ending("ko"), puncher("left"))).toBe(amount >= 40 ? "eye_right" : "jaw_dislocation");
+      expect(arcadeInjuryFor(hit("hit", amount, "uppercut:head", amount), downed, ending("ko"), puncher("left"))).toBe(amount >= 40 ? "decapitation" : "jaw_dislocation");
+      expect(arcadeInjuryFor(hit("hit", amount, "straight:head", amount), downed, ending("ko"), puncher("left"))).toBe(amount >= 50 ? "decapitation" : "jaw_dislocation");
       for (const detail of ["jab:body", "straight:body", "uppercut:body"]) expect(arcadeInjuryFor(hit("counter_hit", amount, detail, amount), downed, ending("tko"), puncher("right"))).toBe("ribs_left");
     }
   });
@@ -83,18 +88,16 @@ describe("ribs caved in by a body shot", () => {
       caveInRibs(shading, side);
       expect(shading.impactDepth).toBeGreaterThan(5);
     }
-    expect(replayReattaches("ribs_left")).toBe(true);
   });
 });
 
 describe("a head that bursts", () => {
-  it("is what a flash knockout or a big counter to the head earns; other finishers stay as they were", () => {
-    expect(arcadeInjuryFor(hit("counter_hit", BIG_SHOT), downed, ending("ko"))).toBe("head_burst");
+  it("is what a flash knockout or a hard counter to the head earns; other finishers stay as they were", () => {
+    expect(arcadeInjuryFor(hit("counter_hit", HARD_SHOT), downed, ending("ko"))).toBe("head_burst");
     expect(arcadeInjuryFor(hit("hit", 60, "hook:head"), fighter("two"), ending("flash_ko"))).toBe("head_burst");
-    expect(arcadeInjuryFor(hit("counter_hit", BIG_SHOT - 1, "uppercut:head", 2), downed, ending("ko"))).toBe("decapitation");
+    expect(arcadeInjuryFor(hit("counter_hit", HARD_SHOT - 1, "uppercut:head", 2), downed, ending("ko"))).toBe("decapitation");
     expect(arcadeInjuryFor(hit("hit", 140, "uppercut:head", 3), downed, ending("tko"))).toBe("decapitation");
     expect(arcadeInjuryFor(hit("counter_hit", 140, "hook:body", 2), downed, ending("ko"))).not.toBe("head_burst");
-    expect(replayReattaches("head_burst")).toBe(true);
   });
 
   it("takes everything above the mouth and leaves the chin, the jaw and the collar", () => {
@@ -166,12 +169,15 @@ describe("a head that bursts", () => {
     const full = burst("full");
     expect(full.headBurst(1)).toBe(true);
     expect(full.headBurst(0)).toBe(false);
-    expect(full.debrisCount("shard")).toBe(18);
-    expect(full.debrisCount("brain")).toBe(14);
-    expect(full.debrisCount("tooth")).toBe(5);
-    expect(full.liveBloodParticles).toBeGreaterThan(150);
+    expect(full.debrisCount("shard")).toBe(36);
+    expect(full.debrisCount("brain")).toBe(40);
+    expect(full.debrisCount("tooth")).toBe(16);
+    expect(full.debrisCount("eye")).toBe(2);
+    expect(full.liveBloodParticles).toBeGreaterThan(1100);
+    // At once it shakes the camera as hard as the hardest punch can.
+    expect(full.shakeAmount).toBeGreaterThanOrEqual(0.14);
     full.burstHead(1, new THREE.Vector3(0.4, 1.6, 0), -1, 21);
-    expect(full.debrisCount("shard")).toBe(18);
+    expect(full.debrisCount("shard")).toBe(36);
     full.restoreFighter(1);
     expect(full.headBurst(1)).toBe(false);
     full.dispose();
@@ -181,23 +187,26 @@ describe("a head that bursts", () => {
     reduced.dispose();
   });
 
-  it("leaves skull, brain, teeth and flesh lying where they land for the rest of the bout", () => {
+  it("leaves skull, brain, teeth, eyeballs and flesh lying where they land for the rest of the bout", () => {
     const scene = new THREE.Scene();
     const effects = new Effects3D(scene, 256);
     effects.burstHead(0, new THREE.Vector3(0, 1.6, 0), 1, 5);
     effects.decapitate(1, new THREE.Vector3(1, 1.6, 0), new THREE.Quaternion(), -1, 6);
     // Half a minute on, through the replay and the result card, all of it is still there.
     for (let frame = 0; frame < 60 * 30; frame += 1) effects.update(1 / 60);
-    expect(effects.debrisCount("shard")).toBe(18);
-    expect(effects.debrisCount("brain")).toBe(14);
-    expect(effects.debrisCount("tooth")).toBe(5);
-    expect(effects.debrisCount("flesh")).toBe(24);
+    expect(effects.debrisCount("shard")).toBe(36);
+    expect(effects.debrisCount("brain")).toBe(40);
+    expect(effects.debrisCount("tooth")).toBe(16);
+    expect(effects.debrisCount("eye")).toBe(2);
+    expect(effects.debrisCount("flesh")).toBe(60);
     const matrix = new THREE.Matrix4();
     const at = new THREE.Vector3();
+    const eyeballs = (effects as unknown as { eyeballMesh: THREE.InstancedMesh }).eyeballMesh;
     for (const mesh of scene.children.filter((child): child is THREE.InstancedMesh => child instanceof THREE.InstancedMesh && child !== effects.dropletMesh)) {
       for (let index = 0; index < mesh.count; index += 1) {
         mesh.getMatrixAt(index, matrix);
-        if (at.setFromMatrixPosition(matrix).y > -10) expect(at.y).toBeCloseTo(CANVAS_TOP + 0.015, 6);
+        // An eyeball rests on its own radius, drawn bigger than the eye it was.
+        if (at.setFromMatrixPosition(matrix).y > -10) expect(at.y).toBeCloseTo(CANVAS_TOP + (mesh === eyeballs ? 0.012 * 1.8 : 0.015), 6);
       }
       // Lying still, it is not sent to the graphics card again.
       const version = mesh.instanceMatrix.version;
@@ -208,7 +217,8 @@ describe("a head that bursts", () => {
     effects.restoreFighter(0);
     expect(effects.debrisCount("shard")).toBe(0);
     expect(effects.debrisCount("brain")).toBe(0);
-    expect(effects.debrisCount("flesh")).toBe(24);
+    expect(effects.debrisCount("eye")).toBe(0);
+    expect(effects.debrisCount("flesh")).toBe(60);
     effects.clearDynamic();
     expect(effects.debrisCount("flesh")).toBe(0);
     effects.dispose();
@@ -248,6 +258,21 @@ describe("a head that bursts", () => {
     effects.dispose();
   });
 
+  it("stains the canvas where flesh lands, but not where an eyeball or a tooth bounces", () => {
+    const landed = (kind: string): number => {
+      const effects = new Effects3D(new THREE.Scene(), 256);
+      let seed = 1;
+      (effects as unknown as { spawnGib(x: number, y: number, z: number, vx: number, vy: number, vz: number, rand: () => number, kind: string): void }).spawnGib(0, 0.1, 0, 0, -1, 0, () => ((seed = (seed * 16_807) % 2_147_483_647) / 2_147_483_647), kind);
+      for (let frame = 0; frame < 120; frame += 1) effects.update(1 / 60);
+      const stains = effects.canvasStains;
+      effects.dispose();
+      return stains;
+    };
+    expect(landed("flesh")).toBe(1);
+    expect(landed("eye")).toBe(0);
+    expect(landed("tooth")).toBe(0);
+  });
+
   it("draws teeth white and brain grey, not in the colour of flesh", () => {
     const effects = new Effects3D(new THREE.Scene(), 256);
     effects.spawnTeeth(new THREE.Vector3(0, 1.5, 0), 1, 1, 3);
@@ -258,6 +283,47 @@ describe("a head that bursts", () => {
     expect(color.g).toBeGreaterThan(0.75);
     expect((mesh.material as THREE.MeshStandardMaterial).color.getHex()).toBe(0xffffff);
     effects.dispose();
+  });
+});
+
+describe("a fighter torn open by a finisher", () => {
+  it("bursts blood, flesh and teeth out of the wound and along the punch, splashes the canvas, and leaves it pouring", () => {
+    const effects = new Effects3D(new THREE.Scene(), 256);
+    const wound = new THREE.Vector3(0.4, 1.45, 0.1);
+    effects.tearOpen(1, wound, new THREE.Vector3(0, -0.3, 1), { x: 1, z: 0 }, 40, 8);
+    expect(effects.liveBloodParticles).toBeGreaterThan(250);
+    expect(effects.debrisCount("flesh")).toBeGreaterThanOrEqual(12);
+    expect(effects.debrisCount("tooth")).toBe(8);
+    expect(effects.liveMist).toBeGreaterThan(10);
+    expect(effects.canvasStains).toBeGreaterThan(15);
+    expect(effects.gushing(1)).toBe(true);
+    // The blood leaves out of the wound and along the punch, toward +z and +x.
+    for (let frame = 0; frame < 15; frame += 1) effects.update(1 / 60);
+    const positions = effects.dropletBuffers.position;
+    let x = 0;
+    let z = 0;
+    let count = 0;
+    for (let index = 0; index < positions.count; index += 1) {
+      if (positions.getY(index) < -10) continue;
+      x += positions.getX(index) - wound.x;
+      z += positions.getZ(index) - wound.z;
+      count += 1;
+    }
+    expect(z / count).toBeGreaterThan(0.15);
+    expect(x / count).toBeGreaterThan(0.1);
+    // A replay that puts him back together takes up what it threw and stops the pouring.
+    effects.restoreFighter(1);
+    expect(effects.debrisCount("flesh")).toBe(0);
+    expect(effects.debrisCount("tooth")).toBe(0);
+    expect(effects.gushing(1)).toBe(false);
+    effects.dispose();
+    const reduced = new Effects3D(new THREE.Scene(), 256);
+    reduced.setBloodLevel("reduced");
+    reduced.tearOpen(0, wound, new THREE.Vector3(0, 0, 1), 1, 41, 8);
+    expect(reduced.liveBloodParticles).toBe(0);
+    expect(reduced.liveGibs).toBe(0);
+    expect(reduced.gushing(0)).toBe(false);
+    reduced.dispose();
   });
 });
 

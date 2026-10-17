@@ -1,12 +1,13 @@
 import manifest from "../../../../src/intelstream/hands/combat-manifest.json";
 import { ROCKED_BASE_TICKS, ROCKED_MAX_TICKS } from "../manifest";
 import { FIGHTER_STYLES } from "../protocol";
-import { fighter } from "../test/fixtures";
+import { fighter, referee } from "../test/fixtures";
 import { PROTOCOL_VERSION, type CombatEvent, type EngineSnapshot, type FighterSnapshot, type FinalMessage, type MatchPhase, type PublicPlayer } from "../types";
 import { CommentaryDirector, crowdTension, fillLine, holdFor, introductionScript, punchName, recordSpoken, spokenNumber, spokenSeconds, type CommentaryHooks } from "./commentary";
 
 /** The opening countdown the room gives the introductions, in ticks. */
-const OPENING_TICKS = manifest.countdown.opening_ticks;
+// A countdown with time to introduce both corners. The engine's own opening is too short for any of it, and the cards carry the introductions.
+const OPENING_TICKS = 240;
 
 const players: Record<string, PublicPlayer> = {
   one: { id: "one", name: "Azure Vector", avatar: null, rating: 1512, connected: true },
@@ -23,6 +24,7 @@ const state = (tick: number, phase: MatchPhase = "fight", edits: [Partial<Fighte
   round_number: 1,
   phase_ticks_remaining: 3000,
   fighters: [{ ...fighter("one", -100), ...edits[0] }, { ...fighter("two", 100), ...edits[1] }],
+  referee: referee(),
   events: [],
   result: null,
   checksum: "a".repeat(64),
@@ -226,8 +228,10 @@ describe("the ring announcer", () => {
     // The computer is introduced from its own corner, from the first snapshot of the countdown a player sees.
     const contender = { name: "Marcus 'Hammer' Reed", record: { wins: 19, losses: 5, draws: 1, knockouts: 12 }, style: "swarmer" } as const;
     expect(introductionScript([{ name: "Azure Vector", record: records[1], style: "boxer" }, contender], (OPENING_TICKS - 1) / 30)).toEqual(["In the blue corner, Azure Vector!", "And in the red corner, Marcus 'Hammer' Reed!"]);
-    // A late arrival with too little countdown left hears nothing rather than half a name.
+    // A late arrival with too little countdown left hears nothing rather than half a name, and so does everyone in the
+    // engine's quick opening countdown.
     expect(introductionScript([{ name: "Azure Vector", record: undefined, style: undefined }, { name: "Crimson Geometry", record: undefined, style: undefined }], 3)).toEqual([]);
+    expect(introductionScript([{ name: "Azure Vector", record: undefined, style: undefined }, { name: "Crimson Geometry", record: undefined, style: undefined }], manifest.countdown.opening_ticks / 30)).toEqual([]);
   });
 
   it("estimates the announcer's voice on the slow side", () => {
@@ -284,6 +288,41 @@ describe("the ring announcer", () => {
     director.finish(decision(null, [[[10, 10, 10], [9, 10, 10]], [[10, 10, 10], [10, 10, 10]], [[9, 10, 10], [10, 10, 9]]]), players, true, 0);
     director.verdict(1);
     expect(director.current(1.9)?.line.card).toMatchObject({ kicker: "AFTER THREE ROUNDS", title: "MAJORITY DRAW", corner: null });
+  });
+
+  it("announces a stoppage after the referee died without him stopping it", () => {
+    const speak = vi.fn();
+    const director = new CommentaryDirector({ speak });
+    const dead = { referee: { ...referee(), alive: false } };
+    feed(director, state(1, "countdown", [{}, {}], { phase_ticks_remaining: 90, ...dead }), [], 0);
+    feed(director, state(91, "fight", [{}, {}], { phase_ticks_remaining: 3599, ...dead }), [], 3);
+    feed(director, state(1350, "fight", [{}, {}], { phase_ticks_remaining: 2340, ...dead }), [], 45);
+    feed(director, state(1351, "knockdown", [{}, { is_downed: true }], { phase_ticks_remaining: 300, ...dead }), [event("knockdown", 1351, { actor_id: "one", target_id: "two", amount: 1 })], 46);
+    feed(director, state(1651, "complete", [{}, { is_downed: true }], { phase_ticks_remaining: 0, ...dead }), [event("result", 1651, { actor_id: "one", detail: "ko" })], 56);
+    director.finish({ version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: "one", method: "ko", round: 1, scorecards: [], ratings: {} }, players, false, 56.2);
+    director.resultShown(70);
+    expect(speak.mock.calls.at(-1)![0]).toEqual(["With the referee dead on the canvas, it is over at 0:42 of round one. Your winner, by knockout... Azure Vector!"]);
+  });
+
+  it("never has a dead referee step in, warn, take a point, wave them on or wave it off", () => {
+    const dead = { referee: { ...referee(), alive: false } };
+    const calls: [string, Partial<CombatEvent>, [Partial<FighterSnapshot>, Partial<FighterSnapshot>]][] = [
+      ["foul", { actor_id: "one", target_id: "two", detail: "low_blow" }, [{ warnings: 1 }, {}]],
+      ["foul", { actor_id: "one", target_id: "two", detail: "headbutt" }, [{ warnings: 1 }, {}]],
+      ["deduction", { actor_id: "one", target_id: "two" }, [{ deductions: 1 }, {}]],
+      ["box", { target_id: "two" }, [{}, {}]],
+      ["result", { actor_id: "one", detail: "tko" }, [{}, {}]],
+    ];
+    const heard: string[] = [];
+    for (const [kind, fields, edits] of calls) {
+      for (let seed = 0; seed < 8; seed += 1) {
+        const director = new CommentaryDirector();
+        feed(director, state(200, "fight", edits, dead), [event(kind, 200, { ...fields, event_id: 1000 + seed })], 10);
+        heard.push(...watch(director, 10, 18));
+      }
+    }
+    expect(heard.length).toBeGreaterThan(20);
+    expect(heard.filter((text) => /referee/iu.test(text))).toEqual([]);
   });
 
   it("announces a stoppage with the time it came in the round", () => {
@@ -452,34 +491,25 @@ describe("reading the fight", () => {
     expect(cue).toHaveBeenCalledWith("chant");
   });
 
-  it("notices a cut opening and getting worse on the doctor's scale", async () => {
-    const { DOCTOR_CUT } = await import("../manifest");
+  it("notices a cut opening, getting worse and gushing", () => {
     const director = new CommentaryDirector();
     const cut = (left_cut: number): Partial<FighterSnapshot> => ({ trauma: { ...fighter("two").trauma, left_cut } });
     const worse = (text: string): boolean => /worse|pouring|badly/u.test(text);
     feed(director, state(100, "fight", [{}, cut(30)]), [], 0);
     feed(director, state(130, "fight", [{}, cut(70)]), [], 1);
     expect(watch(director, 1, 5).some((text) => /Crimson Geometry/u.test(text) && /left eye/u.test(text))).toBe(true);
-    // Worse at 60% of the cut the doctor stops a bout on: the old 420 mark, 60% of a 700 doctor, never moved with him.
-    feed(director, state(900, "fight", [{}, cut(Math.round(DOCTOR_CUT * 0.6) - 1)]), [], 20);
+    feed(director, state(900, "fight", [{}, cut(479)]), [], 20);
     expect(watch(director, 20, 25).some(worse)).toBe(false);
-    feed(director, state(930, "fight", [{}, cut(Math.round(DOCTOR_CUT * 0.6))]), [], 30);
+    feed(director, state(930, "fight", [{}, cut(480)]), [], 30);
     expect(watch(director, 30, 35).some(worse)).toBe(true);
-    feed(director, state(960, "fight", [{}, cut(Math.round(DOCTOR_CUT * 0.8))]), [], 40);
-    expect(watch(director, 40, 45).some((text) => /doctor/u.test(text))).toBe(true);
+    feed(director, state(960, "fight", [{}, cut(640)]), [], 40);
+    expect(watch(director, 40, 45).some((text) => /gushing|crimson mask/u.test(text))).toBe(true);
   });
 
-  it("has the doctor look at a cut or a swelling near his stoppage at the bell", async () => {
-    const { DOCTOR_CUT, DOCTOR_SWELLING } = await import("../manifest");
-    const doctorLooks = (trauma: Partial<FighterSnapshot["trauma"]>): boolean => {
-      const director = new CommentaryDirector();
-      feed(director, state(3600, "rest", [{}, { trauma: { ...fighter("two").trauma, ...trauma } }]), [event("bell", 3600, { detail: "round_end" })], 0);
-      return watch(director, 0, 20).some((text) => /doctor/u.test(text) && /Crimson Geometry/u.test(text));
-    };
-    expect(doctorLooks({ left_cut: Math.round(DOCTOR_CUT * 0.7) })).toBe(true);
-    expect(doctorLooks({ left_cut: Math.round(DOCTOR_CUT * 0.7) - 1 })).toBe(false);
-    expect(doctorLooks({ swelling: Math.round(DOCTOR_SWELLING * 0.75) })).toBe(true);
-    expect(doctorLooks({ swelling: Math.round(DOCTOR_SWELLING * 0.75) - 1 })).toBe(false);
+  it("never brings a doctor to a cut or a swelling at the bell", () => {
+    const director = new CommentaryDirector();
+    feed(director, state(3600, "rest", [{}, { trauma: { ...fighter("two").trauma, left_cut: 1000, swelling: 1000 } }]), [event("bell", 3600, { detail: "round_end" })], 0);
+    expect(watch(director, 0, 20).some((text) => /doctor/u.test(text))).toBe(false);
   });
 
   it("does not call a big shot that the guard took", () => {

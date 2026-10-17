@@ -734,6 +734,222 @@ describe("edge-triggered action sends", () => {
   });
 });
 
+describe("held input sent as it changes", () => {
+  const start = (getInput: () => { moveX: number; moveY: number; defense: "none" | "guard_high"; actions: { kind: "punch"; hand: "left"; class: "jab"; target: "head"; power: "normal"; id: string }[] }, clock: { now: number }) => {
+    const socket = new FakeSocket();
+    const controller = new NetworkController("ticket", getInput, callbacks(), () => socket, () => clock.now);
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message(ready);
+    controller.setActive(true);
+    return { socket, controller };
+  };
+
+  it("sends a new direction or guard at once, without holding up a press that follows it, and one right behind another send once the gap is up", () => {
+    vi.useFakeTimers();
+    const clock = { now: 1000 };
+    let held = { moveX: 0, moveY: 0, defense: "none" as "none" | "guard_high" };
+    const queued: string[] = [];
+    const { socket, controller } = start(() => ({ ...held, actions: queued.splice(0, 4).map((id) => ({ kind: "punch" as const, hand: "left" as const, class: "jab" as const, target: "head" as const, power: "normal" as const, id })) }), clock);
+    const sent = (): { move: { x: number }; defense: string; actions: { id: string }[] }[] => socket.sent.slice(1).map((frame) => JSON.parse(frame));
+    held = { ...held, moveX: 1000 };
+    controller.notifyHeld();
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]!.move.x).toBe(1000);
+    clock.now += 2;
+    queued.push("p1");
+    controller.notifyAction();
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]!.actions.map((action) => action.id)).toEqual(["p1"]);
+    clock.now += 2;
+    held = { ...held, defense: "guard_high" };
+    controller.notifyHeld();
+    controller.notifyHeld();
+    expect(sent()).toHaveLength(2);
+    clock.now += 6;
+    vi.advanceTimersByTime(6);
+    expect(sent()).toHaveLength(3);
+    expect(sent()[2]!.defense).toBe("guard_high");
+    controller.dispose();
+    vi.useRealTimers();
+  });
+
+  it("keeps to a budget of its own that leaves the presses their room under the server's limit", () => {
+    vi.useFakeTimers();
+    const clock = { now: 1000 };
+    const queued: string[] = [];
+    const { socket, controller } = start(() => ({ moveX: clock.now % 2 === 0 ? 1000 : -1000, moveY: 0, defense: "none" as const, actions: queued.splice(0, 4).map((id) => ({ kind: "punch" as const, hand: "left" as const, class: "jab" as const, target: "head" as const, power: "normal" as const, id })) }), clock);
+    const times: number[] = [];
+    const carried = (id: string): boolean => socket.sent.some((frame) => (JSON.parse(frame).actions ?? []).some((action: { id?: string }) => action.id === id));
+    for (let millisecond = 0; millisecond < 3000; millisecond += 1) {
+      clock.now += 1;
+      const before = socket.sent.length;
+      vi.advanceTimersByTime(1);
+      controller.notifyHeld();
+      for (let index = before; index < socket.sent.length; index += 1) times.push(clock.now);
+      if (millisecond % 250 === 0) {
+        queued.push(`p${millisecond}`);
+        const sending = socket.sent.length;
+        controller.notifyAction();
+        expect(socket.sent.length, `press at ${millisecond} ms`).toBe(sending + 1);
+        expect(carried(`p${millisecond}`)).toBe(true);
+      }
+    }
+    for (const at of times) expect(times.filter((time) => time >= at && time < at + 1000).length).toBeLessThanOrEqual(50);
+    expect(times.filter((time) => time >= 3000 && time < 4000).length).toBeLessThanOrEqual(30 + 10 + 4);
+    controller.dispose();
+    vi.useRealTimers();
+  });
+
+  it("keeps the presses their room under a mash as fast as the edge budget allows while the direction changes as fast as its own", () => {
+    vi.useFakeTimers();
+    const clock = { now: 1000 };
+    const queued: string[] = [];
+    const { socket, controller } = start(() => ({ moveX: clock.now % 2 === 0 ? 1000 : -1000, moveY: 0, defense: "none" as const, actions: queued.splice(0, 4).map((id) => ({ kind: "punch" as const, hand: "left" as const, class: "jab" as const, target: "head" as const, power: "normal" as const, id })) }), clock);
+    const times: number[] = [];
+    for (let millisecond = 0; millisecond < 4000; millisecond += 1) {
+      clock.now += 1;
+      const before = socket.sent.length;
+      vi.advanceTimersByTime(1);
+      controller.notifyHeld();
+      if (millisecond % 50 === 0) {
+        queued.push(`p${millisecond}`);
+        const sending = socket.sent.length;
+        controller.notifyAction();
+        // Once the window holds a full second of sends, the held changes have left every press its room.
+        if (millisecond >= 1000) expect(socket.sent.length, `press at ${millisecond} ms`).toBe(sending + 1);
+      }
+      for (let index = before; index < socket.sent.length; index += 1) times.push(clock.now);
+    }
+    for (const at of times) expect(times.filter((time) => time >= at && time < at + 1000).length).toBeLessThanOrEqual(50);
+    controller.dispose();
+    vi.useRealTimers();
+  });
+
+  /** Input stays off until the bell, as it does through the countdown, so the bout's first second starts with no sends in it. */
+  const fromTheBell = (getInput: Parameters<typeof start>[0], clock: { now: number }) => {
+    const started = start(getInput, clock);
+    started.controller.setActive(false);
+    clock.now += 3000;
+    vi.advanceTimersByTime(3000);
+    started.controller.setActive(true);
+    return started;
+  };
+  const jabs = (ids: string[]) => ids.splice(0, 4).map((id) => ({ kind: "punch" as const, hand: "left" as const, class: "jab" as const, target: "head" as const, power: "normal" as const, id }));
+
+  it("leaves every press its room from the bell while the direction changes and the presses come as fast as their budgets allow", () => {
+    vi.useFakeTimers();
+    const clock = { now: 1000 };
+    const queued: string[] = [];
+    let moveX = 1000;
+    const { socket, controller } = fromTheBell(() => ({ moveX, moveY: 0, defense: "none" as const, actions: jabs(queued) }), clock);
+    const pressedAt = new Map<string, number>();
+    const waits: number[] = [];
+    const times: number[] = [];
+    let seen = socket.sent.length;
+    const collect = (): void => {
+      for (; seen < socket.sent.length; seen += 1) {
+        times.push(clock.now);
+        for (const action of JSON.parse(socket.sent[seen]!).actions ?? []) if (pressedAt.has(action.id)) waits.push(clock.now - pressedAt.get(action.id)!);
+      }
+    };
+    for (let millisecond = 0; millisecond < 3000; millisecond += 1) {
+      clock.now += 1;
+      vi.advanceTimersByTime(1);
+      collect();
+      if (millisecond % 100 === 0) {
+        moveX = -moveX;
+        controller.notifyHeld();
+        collect();
+      }
+      if (millisecond % 50 === 0) {
+        pressedAt.set(`p${millisecond}`, clock.now);
+        queued.push(`p${millisecond}`);
+        controller.notifyAction();
+        collect();
+      }
+    }
+    expect(waits).toHaveLength(60);
+    expect(Math.max(...waits)).toBeLessThanOrEqual(33);
+    // Never over 50 in a second, so the server's budget of 60 a second holds none back and its flood limit is far off.
+    for (const at of times) expect(times.filter((time) => time >= at && time < at + 1000).length).toBeLessThanOrEqual(50);
+    controller.dispose();
+    vi.useRealTimers();
+  });
+
+  it("never leaves a tick to the presses while a press waits for it, held back by the gap or by the edge budget", () => {
+    for (const heldBackBy of ["gap", "budget"] as const) {
+      vi.useFakeTimers();
+      const clock = { now: 1000 };
+      const queued: string[] = [];
+      let moveX = 1000;
+      const { socket, controller } = fromTheBell(() => ({ moveX, moveY: 0, defense: "none" as const, actions: jabs(queued) }), clock);
+      const times: number[] = [];
+      let carriedAt: number | null = null;
+      let seen = socket.sent.length;
+      const collect = (): void => {
+        for (; seen < socket.sent.length; seen += 1) {
+          times.push(clock.now);
+          if ((JSON.parse(socket.sent[seen]!).actions ?? []).some((action: { id?: string }) => action.id === "waiting")) carriedAt ??= clock.now;
+        }
+      };
+      const step = (): void => {
+        clock.now += 1;
+        vi.advanceTimersByTime(1);
+        collect();
+      };
+      const press = (id: string): boolean => {
+        const before = socket.sent.length;
+        queued.push(id);
+        controller.notifyAction();
+        collect();
+        return socket.sent.length > before;
+      };
+      // The flush ticks every 33 ms from the first tick after the bell.
+      while (times.length === 0) step();
+      const tick = clock.now;
+      // Direction changes and presses take the last second's sends past the room kept for presses; the last press goes
+      // just after a tick, so the next tick follows it within the flush period.
+      const last = tick + 33 * 25 + 1;
+      const presses = heldBackBy === "budget" ? 20 : 10;
+      for (let index = 0; index < presses; index += 1) {
+        while (clock.now < last - 40 * (presses - 1 - index)) {
+          step();
+          if (clock.now < tick + 500 && (clock.now - tick) % 100 === 1) {
+            moveX = -moveX;
+            controller.notifyHeld();
+            collect();
+          }
+        }
+        expect(press(`p${index}`), `${heldBackBy}: press ${index}`).toBe(true);
+      }
+      while (clock.now < last + (heldBackBy === "gap" ? 2 : 10)) step();
+      expect(press("waiting"), heldBackBy).toBe(false);
+      while (carriedAt === null && clock.now < last + 100) step();
+      // The next tick carries it, though the last press went within the flush period and the reserve is in use.
+      expect(carriedAt, heldBackBy).toBe(last + 32);
+      expect(times.filter((time) => time > last + 32 - 1000 && time < last + 32).length, heldBackBy).toBeGreaterThanOrEqual(40);
+      controller.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("sends nothing after it is disposed, even a change that was waiting out the gap", () => {
+    vi.useFakeTimers();
+    const clock = { now: 1000 };
+    const { socket, controller } = start(() => ({ moveX: 1000, moveY: 0, defense: "none" as const, actions: [] }), clock);
+    controller.notifyHeld();
+    const count = socket.sent.length;
+    clock.now += 2;
+    controller.notifyHeld();
+    controller.dispose();
+    vi.advanceTimersByTime(50);
+    expect(socket.sent.length).toBe(count);
+    vi.useRealTimers();
+  });
+});
+
 describe("corner instructions between rounds", () => {
   it("sends the instruction on its own only during the rest, on the input sequence", () => {
     vi.useFakeTimers();
@@ -758,6 +974,21 @@ describe("corner instructions between rounds", () => {
 
     socket.message(final);
     expect(controller.sendCornerChoice("corner_cut")).toBe(false);
+    controller.dispose();
+  });
+
+  it("keeps sending held input through the referee's five seconds, as it does through a count", () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket();
+    const controller = new NetworkController("ticket", () => ({ moveX: 1000, moveY: 0, defense: "none" as const, actions: [] }), callbacks(), () => socket);
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message(ready);
+    socket.message({ version: PROTOCOL_VERSION, type: "snapshot", payload: { ...snapshot(11), phase: "referee_down", phase_ticks_remaining: 150 } });
+    const before = socket.sent.length;
+    vi.advanceTimersByTime(200);
+    expect(socket.sent.length).toBeGreaterThan(before);
     controller.dispose();
   });
 

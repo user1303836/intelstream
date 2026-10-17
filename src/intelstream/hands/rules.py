@@ -20,8 +20,8 @@ RING_HALF_WIDTH = 500
 RING_HALF_HEIGHT = 500
 FIGHTER_RADIUS = 38
 MINIMUM_SEPARATION = FIGHTER_RADIUS * 2
-ROUND_TICKS = 120 * TICKS_PER_SECOND
-REST_TICKS = 15 * TICKS_PER_SECOND
+ROUND_TICKS = 60 * TICKS_PER_SECOND
+REST_TICKS = 6 * TICKS_PER_SECOND
 COUNTDOWN_TICKS: int = _MANIFEST["countdown"]["opening_ticks"]
 DEFAULT_ROUNDS = 3
 MAX_STAMINA = 1000
@@ -37,9 +37,20 @@ _FACING_TURN_RADIANS = math.radians(FACING_TURN_DEGREES_PER_SECOND / TICKS_PER_S
 # The most a fighter turns in a tick, as the cosine and sine of the angle in millionths.
 FACING_TURN_COS: int = round(math.cos(_FACING_TURN_RADIANS) * 1_000_000)
 FACING_TURN_SIN: int = round(math.sin(_FACING_TURN_RADIANS) * 1_000_000)
+ACTION_BUFFER_TICKS: int = _MANIFEST["action_buffer_ticks"]
+# A fresh fighter's walking speed in units a tick, and the fastest velocity a snapshot reports.
+MAX_SPEED: int = _MANIFEST["movement"]["max_speed"]
+# The share of the way from his velocity to the one his input asks for that a fighter covers in a tick.
+MOVE_BLEND_PERCENT: int = _MANIFEST["movement"]["blend_percent"]
+# His footspeed while a punch recovers: he steps out behind it instead of standing rooted.
+RECOVERY_SPEED_PERCENT: int = _MANIFEST["movement"]["recovery_speed_percent"]
+EVASION_TICKS: int = _MANIFEST["evasion"]["ticks"]
+EVASION_STAMINA: int = _MANIFEST["evasion"]["stamina"]
 RECOVERY_CANCEL_PERCENT: int = _MANIFEST["combos"]["recovery_cancel_percent"]
 REFEREE_WALK_SPEED: int = _MANIFEST["knockdown"]["referee_walk_speed"]
 MANDATORY_COUNT: int = _MANIFEST["knockdown"]["mandatory_count"]
+# The referee counts quicker than the clock: two thirds of a second a number.
+COUNT_TICK_INTERVAL: int = _MANIFEST["knockdown"]["count_ticks"]
 BOX_PAUSE_TICKS: int = _MANIFEST["knockdown"]["box_pause_ticks"]
 TIRED_STARTUP_TICKS: int = _MANIFEST["tired"]["startup_ticks"]
 TIRED_RECOVERY_TICKS: int = _MANIFEST["tired"]["recovery_ticks"]
@@ -49,13 +60,25 @@ RING_CORNER_REACH: int = _MANIFEST["corners"]["reach"]
 REST_CORNER_OFFSET: int = _MANIFEST["rest"]["corner_offset"]
 CLINCH_HOLD_DISTANCE: int = _MANIFEST["clinch"]["hold_distance"]
 CLINCH_DRAW_SPEED: int = _MANIFEST["clinch"]["draw_speed"]
+_REFEREE = _MANIFEST["referee"]
+REFEREE_RADIUS: int = _REFEREE["radius"]
+# How much beating the referee takes before he goes down for good. Nobody is shown it.
+REFEREE_HEALTH: int = _REFEREE["health"]
+REFEREE_SPEED: int = _REFEREE["walk_speed"]
+# How far to the side of the fighters he keeps, close enough that a wild punch can find him, and how
+# far from a man on the canvas he counts.
+REFEREE_STANDOFF: int = _REFEREE["standoff"]
+REFEREE_COUNT_STANDOFF: int = _REFEREE["count_standoff"]
+REFEREE_STAGGER_BASE_TICKS: int = _REFEREE["stagger_base_ticks"]
+REFEREE_STAGGER_DAMAGE_DIVISOR: int = _REFEREE["stagger_damage_divisor"]
+REFEREE_STAGGER_MAX_TICKS: int = _REFEREE["stagger_max_ticks"]
+# The bout stops this long when he goes down, for the replay.
+REFEREE_DOWN_TICKS: int = _REFEREE["down_ticks"]
+# A bleeding referee loses his bleeding over this in health every second.
+REFEREE_BLEED_HEALTH_DIVISOR: int = _REFEREE["bleed_health_divisor"]
 REST_WALK_SPEED: int = _MANIFEST["rest"]["walk_speed"]
 BLIND_SIDE_EYE_THRESHOLD: int = _MANIFEST["blind_side"]["eye_threshold"]
 BLIND_SIDE_IMPACT_PERCENT: int = _MANIFEST["blind_side"]["impact_percent"]
-# The ringside doctor stops a bout on a cut or a swelling this bad, unless a bout's config says
-# otherwise. The client reads the same values to call a cut by how near it is to his limit.
-DOCTOR_CUT_THRESHOLD: int = _MANIFEST["doctor"]["cut"]
-DOCTOR_SWELLING_THRESHOLD: int = _MANIFEST["doctor"]["swelling"]
 PARRY_STAGGER_TICKS: int = _MANIFEST["parry"]["stagger_ticks"]
 BODY_WIND_PERCENT: int = _MANIFEST["body"]["wind_percent"]
 BODY_COLLAPSE_TRAUMA: int = _MANIFEST["body"]["collapse_body_trauma"]
@@ -87,7 +110,11 @@ GUARD_BLOCK_MINIMUM: int = _MANIFEST["guard"]["block_minimum"]
 # A raised guard only perfect-blocks once the guard has been let down for this many ticks: a guard
 # flicked down and straight back up blocks, but keeps no parry window open.
 PERFECT_BLOCK_REARM_TICKS: int = _MANIFEST["guard"]["perfect_rearm_ticks"]
-GUARD_HELD_REGEN_EVERY_TICKS: int = _MANIFEST["guard"]["held_regen_every_ticks"]
+# A held guard tires the arms: it wears down every tick it is up and only comes back once lowered.
+GUARD_HELD_DRAIN: int = _MANIFEST["guard"]["held_drain"]
+GUARD_BREAK_STUN_TICKS: int = _MANIFEST["guard"]["break_stun_ticks"]
+# A broken guard stops nothing until it has come back this far.
+GUARD_REARM: int = _MANIFEST["guard"]["rearm"]
 GUARD_DAMAGE_PERCENT: int = _MANIFEST["guard"]["damage_percent"]
 GUARD_STAMINA_REGEN_PERCENT: int = _MANIFEST["guard"]["stamina_regen_percent"]
 BODY_COLLAPSE_COOLDOWN_TICKS: int = _MANIFEST["body"]["collapse_cooldown_ticks"]
@@ -99,6 +126,10 @@ HEAD_TRAUMA_PER_DAMAGE_PERCENT: int = _MANIFEST["trauma"]["head_per_damage_perce
 BODY_TRAUMA_PER_DAMAGE_PERCENT: int = _MANIFEST["trauma"]["body_per_damage_percent"]
 EYE_TRAUMA_PER_DAMAGE_PERCENT: int = _MANIFEST["trauma"]["eye_per_damage_percent"]
 CUT_PER_DAMAGE_PERCENT: int = _MANIFEST["trauma"]["cut_per_damage_percent"]
+# The skin over an eye splits once the eye has swollen this far.
+CUT_OPENS_EYE: int = _MANIFEST["trauma"]["cut_opens_eye"]
+# Every clean head shot opens the bleeding by the fighter's cuts over this.
+BLEEDING_CUT_DIVISOR: int = _MANIFEST["trauma"]["bleeding_cut_divisor"]
 # A jab is a light punch: it seldom splits the skin and swells the face less than a hook.
 JAB_CUT_PERCENT: int = _MANIFEST["trauma"]["jab_cut_percent"]
 JAB_SWELLING_PERCENT: int = _MANIFEST["trauma"]["jab_swelling_percent"]
@@ -132,6 +163,8 @@ def _manifest_check() -> None:
         raise RuntimeError("combat-manifest.json facing.turn_degrees_per_second is out of range")
     if REST_CORNER_OFFSET * 2 > RING_CORNER_REACH:
         raise RuntimeError("combat-manifest.json rest.corner_offset is past the corner pads")
+    if not 0 < MOVE_BLEND_PERCENT <= 100 or not 0 <= RECOVERY_SPEED_PERCENT <= 100:
+        raise RuntimeError("combat-manifest.json movement percentages are out of range")
 
 
 _manifest_check()
@@ -306,9 +339,9 @@ JUDGE_PROFILES: tuple[JudgeProfile, ...] = (
 
 
 def fatigue_max_stamina(conditioning: int, body_trauma: int) -> int:
-    conditioning_penalty = (MAX_CONDITIONING - conditioning) * 45 // 100
-    body_penalty = min(280, body_trauma // 3)
-    return max(330, MAX_STAMINA - conditioning_penalty - body_penalty)
+    conditioning_penalty = (MAX_CONDITIONING - conditioning) * 30 // 100
+    body_penalty = min(200, body_trauma // 4)
+    return max(450, MAX_STAMINA - conditioning_penalty - body_penalty)
 
 
 def poise_ceiling(head_trauma: int) -> int:
@@ -317,4 +350,4 @@ def poise_ceiling(head_trauma: int) -> int:
 
 
 def fatigue_factor(conditioning: int, body_trauma: int) -> int:
-    return max(48, 100 - (MAX_CONDITIONING - conditioning) // 18 - body_trauma // 35)
+    return max(65, 100 - (MAX_CONDITIONING - conditioning) // 30 - body_trauma // 50)

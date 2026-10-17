@@ -1,13 +1,19 @@
 import * as THREE from "three";
+import { POWER_HEAT_COLOR } from "./power";
 
 const SAMPLES = 10;
 const WIDTH = 0.055;
 const MIN_SPEED = 3.2;
+/** At full heat a power punch's trail is this much wider and shows from this share of the speed a punch's needs. */
+const HOT_WIDTH = 1.4;
+const HOT_SPEED = 0.45;
 
 /**
  * Additive ribbon behind a fast-moving glove. Positions are sampled every
  * frame; the ribbon only shows while the glove moves faster than a punch
- * threshold and fades toward its tail.
+ * threshold and fades toward its tail. A glove throwing a power punch,
+ * `heat` above 0, leaves a wider, brighter ribbon in the colour of its heat,
+ * from a slower speed.
  */
 export class GloveTrail {
   readonly mesh: THREE.Mesh;
@@ -20,7 +26,9 @@ export class GloveTrail {
   private readonly tangent = new THREE.Vector3();
   private readonly side = new THREE.Vector3();
   private readonly toCamera = new THREE.Vector3();
+  private readonly shade = new THREE.Color();
   private strength = 0;
+  private heat = 0;
 
   constructor(private readonly color: THREE.Color) {
     this.geometry = new THREE.BufferGeometry();
@@ -40,12 +48,15 @@ export class GloveTrail {
   }
 
   /** Feeds the glove's world position for this frame. */
-  update(glove: THREE.Vector3, dt: number, cameraPosition: THREE.Vector3, enabled: boolean): void {
+  update(glove: THREE.Vector3, dt: number, cameraPosition: THREE.Vector3, enabled: boolean, heat = 0): void {
     if (dt <= 0) return;
     const speed = this.hasLast ? glove.distanceTo(this.last) / dt : 0;
     this.last.copy(glove);
     this.hasLast = true;
-    const target = enabled && speed > MIN_SPEED ? Math.min(1, (speed - MIN_SPEED) / 4) : 0;
+    // The heat holds while the ribbon it lit fades out behind the glove.
+    this.heat = heat > this.heat ? heat : this.heat + (heat - this.heat) * Math.min(1, dt * 6);
+    const minimum = MIN_SPEED * (1 - (1 - HOT_SPEED) * this.heat);
+    const target = enabled && speed > minimum ? Math.min(1, (speed - minimum) / 4 + this.heat * 0.4) : 0;
     this.strength += (target - this.strength) * Math.min(1, dt * 18);
     const sample = this.history.length >= SAMPLES ? this.history.shift()! : new THREE.Vector3();
     sample.copy(glove);
@@ -55,6 +66,8 @@ export class GloveTrail {
       return;
     }
     const count = this.history.length;
+    const shade = this.shade.copy(this.color).lerp(POWER_HEAT_COLOR, this.heat);
+    const widest = WIDTH * (1 + HOT_WIDTH * this.heat);
     for (let i = 0; i < SAMPLES; i += 1) {
       const point = this.history[Math.max(0, count - SAMPLES + i)]!;
       const next = this.history[Math.min(count - 1, Math.max(1, count - SAMPLES + i + 1))]!;
@@ -64,7 +77,7 @@ export class GloveTrail {
       this.toCamera.subVectors(cameraPosition, point);
       this.side.crossVectors(this.tangent, this.toCamera).normalize();
       const age = i / (SAMPLES - 1);
-      const width = WIDTH * (0.35 + 0.65 * age);
+      const width = widest * (0.35 + 0.65 * age);
       const alpha = this.strength * age * age;
       const offset = i * 6;
       this.positions[offset] = point.x - this.side.x * width;
@@ -75,9 +88,9 @@ export class GloveTrail {
       this.positions[offset + 5] = point.z + this.side.z * width;
       for (let corner = 0; corner < 2; corner += 1) {
         const c = (i * 2 + corner) * 4;
-        this.colors[c] = this.color.r;
-        this.colors[c + 1] = this.color.g;
-        this.colors[c + 2] = this.color.b;
+        this.colors[c] = shade.r;
+        this.colors[c + 1] = shade.g;
+        this.colors[c + 2] = shade.b;
         this.colors[c + 3] = alpha;
       }
     }
@@ -94,6 +107,7 @@ export class GloveTrail {
     this.history.length = 0;
     this.hasLast = false;
     this.strength = 0;
+    this.heat = 0;
     this.mesh.visible = false;
   }
 

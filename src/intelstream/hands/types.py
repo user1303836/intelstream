@@ -83,6 +83,7 @@ class MatchPhase(StrEnum):
     FIGHT = "fight"
     KNOCKDOWN = "knockdown"
     FOUL_RECOVERY = "foul_recovery"
+    REFEREE_DOWN = "referee_down"
     REST = "rest"
     COMPLETE = "complete"
 
@@ -91,6 +92,7 @@ class FinishMethod(StrEnum):
     KO = "ko"
     FLASH_KO = "flash_ko"
     TKO = "tko"
+    # The engine no longer stops a bout on a cut; bouts recorded before that keep this method.
     DOCTOR_STOPPAGE = "doctor_stoppage"
     DISQUALIFICATION = "disqualification"
     DECISION = "decision"
@@ -151,6 +153,19 @@ class TraumaSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class RefereeSnapshot:
+    x: int
+    y: int
+    facing_x: int
+    facing_y: int
+    velocity_x: int
+    velocity_y: int
+    stunned_ticks: int
+    alive: bool
+    trauma: TraumaSnapshot
+
+
+@dataclass(frozen=True, slots=True)
 class FighterSnapshot:
     player_id: str
     x: int
@@ -167,6 +182,7 @@ class FighterSnapshot:
     maximum_stamina: int
     conditioning: int
     guard: int
+    guard_broken: bool
     poise: int
     trauma: TraumaSnapshot
     knockdowns: int
@@ -254,6 +270,7 @@ class EngineSnapshot:
     round_number: int
     phase_ticks_remaining: int
     fighters: tuple[FighterSnapshot, FighterSnapshot]
+    referee: RefereeSnapshot
     events: tuple[CombatEvent, ...]
     result: MatchResult | None
     checksum: str

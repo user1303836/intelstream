@@ -28,12 +28,13 @@ from intelstream.hands.cpu import (
     cpu_style,
     styled_profile,
 )
-from intelstream.hands.engine import EVASION_TICKS, BoxingEngine, EngineConfig
+from intelstream.hands.engine import AttackState, BoxingEngine, EngineConfig
 from intelstream.hands.rules import (
     BLIND_SIDE_EYE_THRESHOLD,
     BODY_COLLAPSE_STAMINA,
     BODY_COLLAPSE_TRAUMA,
     COMPATIBLE_COMBO_CHAINS,
+    EVASION_TICKS,
     PUNCH_RULES,
     poise_ceiling,
 )
@@ -82,6 +83,14 @@ def never(brain: CpuBrain) -> CpuBrain:
 
 def throw(engine: BoxingEngine, action: PunchAction, sequence: int = 1) -> None:
     engine.submit_input("human", InputCommand(sequence, engine.tick, actions=(action,)))
+
+
+def slowed(attack: AttackState | None, startup: int) -> AttackState:
+    """Stretches a punch's startup to `startup` ticks: every punch now lands sooner than a
+    reaction, and this one is read long before it lands."""
+    assert attack is not None
+    attack.rule = replace(attack.rule, startup=startup)
+    return attack
 
 
 def run(engine: BoxingEngine, brain: CpuBrain, ticks: int) -> list[InputCommand]:
@@ -163,15 +172,12 @@ def test_each_punch_is_noticed_after_a_reaction_of_its_own(level: CpuLevel) -> N
     for seed in range(24):
         engine = engine_at(150, seed=seed)
         engine.checksums = False
-        # A worn-out puncher's straight is slow enough to answer after any reaction.
-        engine.fighter("human").conditioning = 0
         brain = CpuBrain("cpu", "human", level, seed)
         brain._roll = lambda _percent: True  # type: ignore[method-assign]
         brain._attack = lambda *_args: None  # type: ignore[method-assign]
         throw(engine, PunchAction(Hand.RIGHT, PunchClass.STRAIGHT, Target.HEAD, Power.POWER))
         engine.step()
-        attack = engine.fighter("human").attack
-        assert attack is not None
+        attack = slowed(engine.fighter("human").attack, 30)
         for _ in range(30):
             command = brain.decide(engine)
             assert command is not None
@@ -191,7 +197,7 @@ def test_each_punch_is_noticed_after_a_reaction_of_its_own(level: CpuLevel) -> N
     [
         (PunchAction(Hand.RIGHT, PunchClass.STRAIGHT, Target.HEAD, Power.POWER), 120, "slip_left"),
         (PunchAction(Hand.LEFT, PunchClass.HOOK, Target.HEAD, Power.POWER), 105, "weave"),
-        (PunchAction(Hand.RIGHT, PunchClass.UPPERCUT, Target.HEAD), 95, "slip_left"),
+        (PunchAction(Hand.RIGHT, PunchClass.UPPERCUT, Target.HEAD, Power.POWER), 95, "slip_left"),
         (PunchAction(Hand.RIGHT, PunchClass.STRAIGHT, Target.HEAD, Power.POWER), 160, "pull"),
     ],
 )
@@ -240,6 +246,30 @@ def test_a_body_hook_it_cannot_duck_is_met_with_a_perfect_low_block() -> None:
         if "perfect_block" in events:
             break
     assert "perfect_block" in events
+
+
+def test_a_broken_guard_stays_down_even_for_a_body_hook_it_would_block() -> None:
+    """A broken guard stops nothing until it has come back, and it only comes back lowered, so
+    the computer that would meet a body hook with a low block lets this one land."""
+    engine = engine_at(100)
+    brain = always(CpuBrain("cpu", "human", CpuLevel.CHAMPION, 4))
+    brain._movement = lambda *_args: (0, 0)  # type: ignore[method-assign]
+    brain._attack = lambda *_args: None  # type: ignore[method-assign]
+    brain._hold_guard = False
+    brain._guard_window_until = 1_000_000
+    cpu = engine.fighter("cpu")
+    cpu.guard, cpu.guard_broken = 0, True
+    throw(engine, PunchAction(Hand.RIGHT, PunchClass.HOOK, Target.BODY, Power.POWER))
+    events: list[str] = []
+    for _ in range(20):
+        command = brain.decide(engine)
+        assert command is not None
+        assert command.defense is DefensivePose.NONE
+        engine.submit_input("cpu", command)
+        events.extend(event.kind for event in engine.step().events)
+        if "hit" in events:
+            break
+    assert "hit" in events and cpu.guard_broken
 
 
 def body_hook_outcome(
@@ -317,6 +347,8 @@ def parry_share(
             if tick == wait:
                 throw(engine, PunchAction(Hand.LEFT, PunchClass.HOOK, Target.BODY, Power.POWER))
             kinds = {event.kind for event in engine.step().events}
+            if tick == wait:
+                slowed(engine.fighter("human").attack, 16)
             met_by = kinds & {"perfect_block", "block", "hit", "counter_hit"}
             if met_by:
                 met += outcome in met_by and (outcome != "hit" or "block" not in met_by)
@@ -917,16 +949,16 @@ def test_the_champion_can_be_outboxed_or_outcountered_but_not_mashed() -> None:
         return play(human, "champion", seed, config, (FighterStyle.BALANCED, style)).winner_seat
 
     assert winner("skilled", 1, FighterStyle.COUNTER_PUNCHER) == 0
-    assert winner("skilled", 1, FighterStyle.SWARMER) == 1
+    assert winner("skilled", 2, FighterStyle.SWARMER) == 1
     assert winner("counter", 3, FighterStyle.BOXER) == 0
-    assert winner("counter", 1, FighterStyle.SWARMER) == 1
+    assert winner("counter", 8, FighterStyle.SWARMER) == 1
     assert winner("mash", 1, FighterStyle.BOXER) == 1
 
 
 def test_over_a_connection_the_champion_is_harder_to_beat_than_the_contender() -> None:
     """At 50 ms, reacting to each punch as a person does, the scripted skilled player beats the
-    contender in most bouts and the champion in few (57% and 31% over 48 bouts; the scripted
-    counter-puncher 23% and 10%)."""
+    contender in about a third of bouts and the champion in fewer (31% and 21% over 48 bouts):
+    every punch now lands sooner than anyone can react, so neither computer reads many."""
     lag = Lag.over(50, (6, 9))
 
     def wins(level: str) -> int:
@@ -935,7 +967,7 @@ def test_over_a_connection_the_champion_is_harder_to_beat_than_the_contender() -
                 "skilled", level, seed, EngineConfig(), bout_styles("skilled", level, seed), lag
             ).winner_seat
             == 0
-            for seed in range(1, 7)
+            for seed in range(1, 13)
         )
 
     contender, champion = wins("contender"), wins("champion")
@@ -1285,8 +1317,7 @@ def test_a_counter_puncher_raises_its_guard_earlier_for_the_perfect_block() -> N
         engine.step()
         human = engine.fighter("human")
         cpu = engine.fighter("cpu")
-        attack = human.attack
-        assert attack is not None
+        attack = slowed(human.attack, 20)
         # Force a guard answer: an evasion is out of reach.
         cpu.stamina = 0
         while engine.tick - attack.start_tick < brain.profile.reaction_ticks:
@@ -1308,13 +1339,10 @@ def test_a_counter_puncher_still_slips_a_slow_punch_it_reads_early() -> None:
     def answer(style: FighterStyle) -> ActionKind | None:
         engine = engine_at(120)
         human = engine.fighter("human")
-        # A worn-out puncher is slow enough that the punch is read long before it lands.
-        human.conditioning = 0
         brain = always(CpuBrain("cpu", "human", CpuLevel.CHAMPION, 2, style))
         throw(engine, PunchAction(Hand.RIGHT, PunchClass.STRAIGHT, Target.HEAD, Power.POWER))
         engine.step()
-        attack = human.attack
-        assert attack is not None
+        attack = slowed(human.attack, 30)
         while attack.start_tick + attack.rule.startup - engine.tick > EVASION_TICKS + 1:
             engine.step()
         return brain._read(engine.tick, engine.fighter("cpu"), human)

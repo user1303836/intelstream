@@ -10,7 +10,8 @@ change that the client does not follow fails on one side or the other:
   conditioning and body trauma near the fatigue steps;
 - style-timing-table.json: the same, with the stamina price, for every other style;
 - movement-traces.json: what the engine sent, tick by tick, while a fighter holding a direction
-  was parried, flinched mid-punch or finished a punch.
+  was parried, flinched mid-punch, finished a punch, pressed a punch during another's recovery or late in
+  a flinch, slipped, or slipped out of a punch's recovery.
 
     uv run python scripts/hands_parity_fixtures.py          # rewrite the files
     uv run python scripts/hands_parity_fixtures.py --check  # fail if they are out of date
@@ -27,10 +28,12 @@ from intelstream.hands.engine import BoxingEngine, EngineConfig
 from intelstream.hands.protocol import encode_snapshot
 from intelstream.hands.rules import PUNCH_RULES, STYLE_RULES, style_punch_rule
 from intelstream.hands.types import (
+    ActionKind,
     DefensivePose,
     FighterStyle,
     Hand,
     InputCommand,
+    MovementAction,
     Power,
     PunchAction,
     PunchClass,
@@ -50,7 +53,7 @@ STYLE_CONDITIONING = (0, 260, 553, 820, 1000)
 BODY_TRAUMA = (0, 900)
 
 
-def _engine(styles: tuple[FighterStyle, FighterStyle], gap: int) -> BoxingEngine:
+def _engine(styles: tuple[FighterStyle, FighterStyle], gap: int, centre: int = 0) -> BoxingEngine:
     engine = BoxingEngine(
         match_id="parity",
         activity_instance_id="parity",
@@ -61,8 +64,8 @@ def _engine(styles: tuple[FighterStyle, FighterStyle], gap: int) -> BoxingEngine
         config=EngineConfig(countdown_ticks=0, flash_ko_enabled=False),
         styles=styles,
     )
-    engine.fighter("one").x = -(gap // 2)
-    engine.fighter("two").x = gap - gap // 2
+    engine.fighter("one").x = centre - gap // 2
+    engine.fighter("two").x = centre + gap - gap // 2
     return engine
 
 
@@ -135,8 +138,10 @@ def _trace(
 
 def movement_traces() -> dict[str, list[dict[str, Any]]]:
     back = InputCommand(0, 0, -1000, 0)
+    # Off to the side he backs away from, so 45 ticks of footwork never reach the ropes.
+    centre = 200
     straight = PunchAction(Hand.RIGHT, PunchClass.STRAIGHT, Target.HEAD, Power.POWER)
-    parried = _engine((FighterStyle.BALANCED, FighterStyle.BALANCED), 130)
+    parried = _engine((FighterStyle.BALANCED, FighterStyle.BALANCED), 130, centre)
     contact = 1 + PUNCH_RULES[(PunchClass.STRAIGHT, Target.HEAD, Power.POWER)].startup
 
     def parry(tick: int) -> dict[str, InputCommand]:
@@ -149,7 +154,7 @@ def movement_traces() -> dict[str, list[dict[str, Any]]]:
 
     hook = PunchAction(Hand.LEFT, PunchClass.HOOK, Target.HEAD, Power.NORMAL)
     jab = PunchAction(Hand.LEFT, PunchClass.JAB, Target.HEAD, Power.NORMAL)
-    flinched = _engine((FighterStyle.BALANCED, FighterStyle.BALANCED), 100)
+    flinched = _engine((FighterStyle.BALANCED, FighterStyle.BALANCED), 100, centre)
 
     def counter(tick: int) -> dict[str, InputCommand]:
         # His hook is still winding up when the other man's quicker jab lands on it.
@@ -160,17 +165,75 @@ def movement_traces() -> dict[str, list[dict[str, Any]]]:
             "two": InputCommand(tick, tick, actions=(jab,)),
         }
 
-    finished = _engine((FighterStyle.BALANCED, FighterStyle.BALANCED), 300)
+    flinched_pressing = _engine((FighterStyle.BALANCED, FighterStyle.BALANCED), 100, centre)
+
+    def press_late_in_flinch(tick: int) -> dict[str, InputCommand]:
+        # The jab he presses near the end of the flinch waits for it to wear off.
+        if tick == 5:
+            return {"one": InputCommand(tick, tick, back.move_x, back.move_y, actions=(jab,))}
+        return counter(tick)
+
+    finished = _engine((FighterStyle.BALANCED, FighterStyle.BALANCED), 300, centre)
 
     def alone(tick: int) -> dict[str, InputCommand]:
         if tick != 1:
             return {}
         return {"one": InputCommand(tick, tick, back.move_x, back.move_y, actions=(jab,))}
 
+    slip = MovementAction(ActionKind.SLIP_LEFT)
+    slipped = _engine((FighterStyle.BALANCED, FighterStyle.BALANCED), 300, centre)
+
+    def slip_away(tick: int) -> dict[str, InputCommand]:
+        if tick != 1:
+            return {}
+        return {"one": InputCommand(tick, tick, back.move_x, back.move_y, actions=(slip,))}
+
+    cut = _engine((FighterStyle.BALANCED, FighterStyle.BALANCED), 300, centre)
+    missed = PunchAction(Hand.RIGHT, PunchClass.STRAIGHT, Target.HEAD, Power.NORMAL)
+
+    def slip_out(tick: int) -> dict[str, InputCommand]:
+        # The straight misses, he walks out of its recovery, and the slip cuts the rest of it short.
+        action = {1: missed, 9: slip}.get(tick)
+        if action is None:
+            return {}
+        return {"one": InputCommand(tick, tick, back.move_x, back.move_y, actions=(action,))}
+
+    waited = _engine((FighterStyle.BALANCED, FighterStyle.BALANCED), 300, centre)
+
+    def press_during_recovery(tick: int) -> dict[str, InputCommand]:
+        # A hook and a jab are no combination: the jab waits in the buffer for the hook to end while
+        # he walks out of its recovery.
+        action = {1: hook, 8: jab}.get(tick)
+        if action is None:
+            return {}
+        return {"one": InputCommand(tick, tick, back.move_x, back.move_y, actions=(action,))}
+
+    long_cut = _engine((FighterStyle.BALANCED, FighterStyle.BALANCED), 300, centre)
+    uppercut = PunchAction(Hand.RIGHT, PunchClass.UPPERCUT, Target.HEAD, Power.POWER)
+
+    def slip_out_early(tick: int) -> dict[str, InputCommand]:
+        # The slip cuts a long recovery short as soon as the uppercut has missed; the snapshots go on
+        # presenting the uppercut past the end of the slip.
+        action = {1: uppercut, 12: slip}.get(tick)
+        if action is None:
+            return {}
+        return {"one": InputCommand(tick, tick, back.move_x, back.move_y, actions=(action,))}
+
     return {
         "parried while holding back": _trace(parried, back, parry),
         "flinched mid-hook while holding back": _trace(flinched, back, counter),
+        "a jab pressed late in a flinch while holding back": _trace(
+            flinched_pressing, back, press_late_in_flinch
+        ),
         "a jab thrown holding back": _trace(finished, back, alone),
+        "a jab pressed during a hook's recovery while holding back": _trace(
+            waited, back, press_during_recovery
+        ),
+        "a slip thrown holding back": _trace(slipped, back, slip_away),
+        "slipped out of a straight's recovery while holding back": _trace(cut, back, slip_out),
+        "slipped out of a power uppercut's recovery while holding back": _trace(
+            long_cut, back, slip_out_early
+        ),
     }
 
 

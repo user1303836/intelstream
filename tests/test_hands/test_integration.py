@@ -103,8 +103,6 @@ async def test_real_auth_spectator_reconnect_and_authoritative_elo(tmp_path) -> 
                 rest_ticks=0,
                 countdown_ticks=2,
                 flash_ko_enabled=False,
-                doctor_cut_threshold=5000,
-                doctor_swelling_threshold=5000,
             ),
         ),
         match_id_factory=lambda: "integration-match",

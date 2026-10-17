@@ -139,7 +139,8 @@ describe("punches at an evading head", () => {
     // A left jab is slipped to the defender's right: the glove goes where it would have met him and misses.
     const slipped = throwAt("jab", "slip_right", 150, false);
     expect(slipped.glove.distanceTo(cleanJab.glove)).toBeLessThan(0.02);
-    expect(slipped.glove.distanceTo(slipped.head)).toBeGreaterThan(cleanReach + 0.08);
+    // The quick jab lands before the slip is all the way over, so the miss is a little narrower than the slip.
+    expect(slipped.glove.distanceTo(slipped.head)).toBeGreaterThan(cleanReach + 0.06);
     // Slipping left does not get away from it: the server reports the hit and the glove follows the head.
     const caught = throwAt("jab", "slip_left", 150, true);
     expect(Math.abs(caught.glove.distanceTo(caught.head) - cleanReach)).toBeLessThan(0.05);
@@ -148,6 +149,61 @@ describe("punches at an evading head", () => {
     const weaved = throwAt("hook", "weave", 110, false);
     expect(weaved.glove.distanceTo(cleanHook.glove)).toBeLessThan(0.02);
     expect(weaved.glove.distanceTo(weaved.head)).toBeGreaterThan(cleanHook.glove.distanceTo(cleanHook.head));
+  });
+});
+
+describe("punches that find the referee", () => {
+  /**
+   * Throws a left straight at a defender 150 away with `referee` (his head, or none in the ring), the two graphs
+   * handing each other their heads a frame late as the renderer does. `verdict` is when the server's word that
+   * the punch found the referee comes in: before it is thrown (his replay), two ticks before contact, or never.
+   * Returns the glove and the defender's head at the contact tick.
+   */
+  function throwPast(verdict: "known" | "late" | "never", referee: THREE.Vector3 | null): { glove: THREE.Vector3; head: THREE.Vector3 } {
+    const attacker = new BoxingGraph(new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 }), mapping);
+    const defender = new BoxingGraph(new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0xb91c1c }), mapping);
+    const attackerIdle = facingOpponent(baseFighter("one"));
+    const defenderIdle = opponentAt(150);
+    const timing = punchTiming("straight", "head", "normal");
+    const start = 100;
+    const punch: FighterSnapshot = {
+      ...attackerIdle, action: "straight", action_hand: "left", action_target: "head", action_power: "normal", action_id: "p1", action_key: "straight:left:head:normal",
+      action_start_tick: start, action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery,
+    };
+    const found = { event_id: 3, tick: start + timing.startup, kind: "referee_hit", actor_id: "one", target_id: "referee", amount: 60, detail: "straight:head", blood: 20, direction: 1, action_id: "p1" };
+    if (verdict === "known") attacker.acknowledge(attackerIdle, true, [found]);
+    const attackerHead = new THREE.Vector3();
+    const defenderHead = new THREE.Vector3();
+    const glove = new THREE.Vector3();
+    for (let tick = start - 10; tick <= start + timing.startup; tick += 0.5) {
+      const shownAttacker = tick >= start ? punch : attackerIdle;
+      if (verdict === "late" && tick === start + timing.startup - 2) attacker.acknowledge(punch, true, [found]);
+      attacker.setRefereeHead(referee);
+      attacker.update(shownAttacker, defenderIdle, 1 / 60, tick / 30, false, "full", tick, tick > start - 10 ? defenderHead : undefined);
+      defender.update(defenderIdle, shownAttacker, 1 / 60, tick / 30, false, "full", tick, tick > start - 10 ? attackerHead : undefined);
+      attacker.boxer.root.updateMatrixWorld(true);
+      defender.boxer.root.updateMatrixWorld(true);
+      worldPosition(attacker.boxer.rig.bones.head, attackerHead);
+      worldPosition(defender.boxer.rig.bones.head, defenderHead);
+      worldPosition(attacker.boxer.rig.bones.gloveL, glove);
+    }
+    return { glove, head: defenderHead };
+  }
+
+  it("lands on his head, thrown at him from the start when that is already known and turned onto him when the verdict comes in mid-flight", () => {
+    const referee = new THREE.Vector3(0.22, 1.55, mapping.z(-75));
+    const past = throwPast("never", referee);
+    const known = throwPast("known", referee);
+    const late = throwPast("late", referee);
+    // A clean punch stops this far short of the middle of the head it lands on; without the verdict it goes past him.
+    const standOff = past.glove.distanceTo(past.head);
+    expect(past.glove.distanceTo(referee)).toBeGreaterThan(standOff + 0.08);
+    // With it the glove lands on the referee's head as on any head, well short of the defender's.
+    expect(Math.abs(known.glove.distanceTo(referee) - standOff)).toBeLessThan(0.03);
+    expect(known.glove.distanceTo(known.head)).toBeGreaterThan(standOff + 0.2);
+    expect(Math.abs(late.glove.distanceTo(referee) - standOff)).toBeLessThan(0.03);
+    // With no referee in the ring the verdict changes nothing.
+    expect(throwPast("known", null).glove.distanceTo(past.glove)).toBeLessThan(0.02);
   });
 });
 
@@ -179,10 +235,10 @@ describe("punch onset", () => {
           }));
           if (tick >= 100) moves.push(step);
         }
-        expect(moves[0], `${hand} ${punchClass} first frame`).toBeLessThan(0.05);
+        expect(moves[0], `${hand} ${punchClass} first frame`).toBeLessThan(0.09);
         // No faster than the punches themselves move near contact, and building up rather than starting there. (From
-        // the tucked guard of fighters this close a hook's windup peaks near 9.5 m/s.)
-        expect(Math.max(...moves), `${hand} ${punchClass} windup`).toBeLessThan(0.16);
+        // the tucked guard of fighters this close the quick hook's windup peaks near 12 m/s.)
+        expect(Math.max(...moves), `${hand} ${punchClass} windup`).toBeLessThan(0.24);
         expect(moves[0]!, `${hand} ${punchClass} eases in`).toBeLessThan(Math.max(...moves));
       }
     }

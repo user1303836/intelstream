@@ -6,6 +6,7 @@ import { CameraDirector, ceremonyShot, cornerPoint, FIGHTER_CAM_FOV_SCALE, Fight
 import { RoundStatsTracker } from "./hud";
 import { lookFor } from "./looks";
 import { FightRenderer, resultCardTop } from "./renderer";
+import { SnapshotBuffer } from "../interpolation";
 import { buildRing, disposeRing } from "./ring";
 import { RockedVision } from "./rocked";
 import { worldMapping } from "./world";
@@ -26,8 +27,10 @@ function graph() {
     setResting: vi.fn(),
     setCountdown: vi.fn(),
     setObstacle: vi.fn(),
+    setRefereeHead: vi.fn(),
     stayDown: vi.fn(),
     update: vi.fn(),
+    resetTransient: vi.fn(),
     fallBody: null,
     stoolVisible: false,
   };
@@ -90,7 +93,8 @@ function frame(state: EngineSnapshot, overrides: Record<string, unknown> = {}) {
     tmpCamera: new THREE.Vector3(),
     downedPoolAccumulators: [0, 0],
     downedPoolCounts: [0, 0],
-    effects: { drip: vi.fn(), stopDrip: vi.fn(), pool: vi.fn(), update: vi.fn(), shakeAmount: 0, setViewDistance: vi.fn() },
+    effects: { drip: vi.fn(), stopDrip: vi.fn(), pool: vi.fn(), update: vi.fn(), shakeAmount: 0, setViewDistance: vi.fn(), gushing: () => false },
+    powerShake: 0,
     updateIdleFighters: vi.fn(),
     updateTrails: vi.fn(),
     updateReferee: vi.fn(),
@@ -125,6 +129,9 @@ function frame(state: EngineSnapshot, overrides: Record<string, unknown> = {}) {
     pixelRatioCap: 2,
     basePixelRatio: 2,
     pendingFinish: null,
+    pendingRefereeEvents: [],
+    refereeHead: new THREE.Vector3(),
+    refereeReplayAt: null,
     ...overrides,
   });
   const draw = (FightRenderer.prototype as unknown as { draw(this: unknown, time: number, manual: boolean, render: boolean): void }).draw;
@@ -149,7 +156,7 @@ describe("a rendered frame", () => {
     const opponentHead = new THREE.Vector3(0.67, 1.6, 0);
     const moved = (camera: Settings["camera"]): { quiet: number; contact: number } => {
       const state = fighting({ x: -110 }, { x: 110 });
-      const effects = { drip: vi.fn(), stopDrip: vi.fn(), pool: vi.fn(), update: vi.fn(), shakeAmount: 0, setViewDistance: vi.fn(), addEvent: vi.fn(), spawnTeeth: vi.fn(), ejectMouthpiece: vi.fn() };
+      const effects = { drip: vi.fn(), stopDrip: vi.fn(), pool: vi.fn(), update: vi.fn(), shakeAmount: 0, setViewDistance: vi.fn(), addEvent: vi.fn(), spawnTeeth: vi.fn(), ejectMouthpiece: vi.fn(), gush: vi.fn(), gushing: () => false };
       const harness = frame(state, {
         fireContacts,
         effects,
@@ -159,6 +166,8 @@ describe("a rendered frame", () => {
         presentFightEvent: vi.fn(),
         applyArcadeInjury: vi.fn(),
         headWorldPose: () => ({ position: opponentHead, quaternion: new THREE.Quaternion() }),
+        woundPoint: new THREE.Vector3(),
+        woundAxis: new THREE.Vector3(),
         gearColor: () => 0xffffff,
         flashKnockout: null,
         onContact: null,
@@ -182,6 +191,25 @@ describe("a rendered frame", () => {
       expect(quiet).toBeLessThan(0.002);
       expect(contact).toBeLessThan(0.002);
     }
+  });
+
+  it("tells of the player's own punch the frame it starts on screen, once, whatever the other fighter throws", () => {
+    const heard: [string, boolean, string][] = [];
+    const harness = frame(fighting(), { onOwnPunch: (punchClass: string, power: boolean, id: string) => heard.push([punchClass, power, id]), soundedPress: null });
+    const [own, other] = harness.graphs as unknown as Record<string, unknown>[];
+    Object.assign(own!, { ownPressId: null, punchKind: { punchClass: "straight", power: true } });
+    Object.assign(other!, { ownPressId: "theirs", punchKind: { punchClass: "jab", power: false } });
+    harness.run(2);
+    expect(heard).toEqual([]);
+    own!.ownPressId = "c4";
+    harness.run(3);
+    expect(heard).toEqual([["straight", true, "c4"]]);
+    own!.ownPressId = null;
+    harness.run(1);
+    own!.ownPressId = "c5";
+    own!.punchKind = { punchClass: "jab", power: false };
+    harness.run(1);
+    expect(heard).toEqual([["straight", true, "c4"], ["jab", false, "c5"]]);
   });
 
   it("dresses each fighter in the look of the player in that seat", () => {
@@ -362,6 +390,32 @@ describe("a rendered frame", () => {
     }
   });
 
+  it("hands both fighters the referee's head as drawn, for a punch that finds him to land on, before they are posed", () => {
+    const head = new THREE.Object3D();
+    head.position.set(0.3, 1.62, -0.8);
+    const { renderer, run } = frame(fighting(), { referee: { setRefereeCount: vi.fn(), aimBreak: vi.fn(), update: vi.fn(), boxer: { root: new THREE.Object3D(), rig: { bones: { head } } } } });
+    run();
+    for (const shown of renderer.graphs as ReturnType<typeof graph>[]) {
+      const [aim] = shown.setRefereeHead.mock.calls.at(-1)! as [THREE.Vector3];
+      expect(aim.toArray()).toEqual([0.3, 1.62, -0.8]);
+      expect(shown.setRefereeHead.mock.invocationCallOrder.at(-1)!).toBeLessThan(shown.update.mock.invocationCallOrder.at(-1)!);
+    }
+  });
+
+  it("ends the replay of the referee's fall the moment the bout resumes, never playing it over the fight", () => {
+    const replayAfter = (phase: EngineSnapshot["phase"]): unknown => {
+      const buffer = new SnapshotBuffer(8, 30);
+      for (let tick = 20; tick <= 26; tick += 1) buffer.push(fighting({}, {}, { tick }));
+      const plan = { impact: { kind: "referee_down", tick: 40 }, durationSeconds: 10, fromTick: 20, toTick: 60, speed: 0.5, snapshots: [] };
+      const referee = { boxer: { root: new THREE.Object3D(), rig: { bones: { head: new THREE.Object3D() } } }, fallBody: null, isDown: false, setRefereeCount: vi.fn(), aimBreak: vi.fn(), update: vi.fn(), resetTransient: vi.fn() };
+      const { renderer, run } = frame(fighting({}, {}, { phase }), { referee, replayCameraPosition: new THREE.Vector3(), replayLookAt: new THREE.Vector3(), replay: { plan, buffer, startedAt: 1, impactFired: false, side: null } });
+      run();
+      return renderer.replay;
+    };
+    expect(replayAfter("fight")).toBeNull();
+    expect(replayAfter("referee_down")).not.toBeNull();
+  });
+
   it("spreads a pool of blood under a bleeding fighter who is down", () => {
     const bleeding = { ...fighter("two").trauma, bleeding: 500, left_cut: 300 };
     const { renderer, run } = frame(fighting({}, { is_downed: true, trauma: bleeding }, { phase: "knockdown" }));
@@ -373,7 +427,7 @@ describe("a rendered frame", () => {
     const final: FinalMessage = { version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: "one", method: "decision", round: 3, scorecards: [], ratings: {} };
     const state = fighting({}, {}, { phase: "complete" });
     const ceremony = { winnerSeat: 0, positions: [{ x: -102, y: -16 }, { x: 102, y: -16 }], marks: [0, 1], refereeArrived: true, arrivedAt: 0.5, announced: true };
-    const { renderer, run, camera } = frame(state, { ceremony, final, settings: () => ({ reducedMotion: true, blood: "full", camera: "broadcast" }), referee: { raise: vi.fn() }, ceremonyWrists: [new THREE.Vector3(), new THREE.Vector3()], commentary: { verdict: vi.fn() } });
+    const { renderer, run, camera } = frame(state, { ceremony, final, settings: () => ({ reducedMotion: true, blood: "full", camera: "broadcast" }), referee: { raise: vi.fn(), boxer: { rig: { bones: { head: new THREE.Object3D() } } } }, ceremonyWrists: [new THREE.Vector3(), new THREE.Vector3()], commentary: { verdict: vi.fn() } });
     run();
     const top = resultCardTop(final, 1280, 720, state.fighters, {}, new RoundStatsTracker(), "one");
     const shot = ceremonyShot(16 / 9, 36, (720 - top) / 720);
@@ -395,7 +449,7 @@ describe("around the fight", () => {
       hudCanvas: { getBoundingClientRect: () => ({ width: 1280, height: 720 }), width: 0, height: 0, getContext: () => mockHudContext([]) },
       hudViewport: { width: 0, height: 0 }, viewerHitFlash: 0, settings: () => ({ reducedMotion: false }), players: {}, viewerId: "one", final: null,
       frameSeconds: 0, finalRevealAt: 0, reconnectMs: 0, simulation: SIMULATION, roundStats: new RoundStatsTracker(), replay: null, inputLatencyMs: null,
-      roundCalloutUntil: 0, roundCalloutRound: 0, eventCallout: null, roundClock: { ticks: () => null }, avatars: { get: () => null }, drawCaption,
+      roundCalloutUntil: 0, roundCalloutRound: 0, eventCallout: null, roundClock: { ticks: () => null }, avatars: { get: () => null }, drawCaption, effects: { drawLens: vi.fn() },
     });
     method("drawHudOverlay").call(stub, snapshot());
     expect(drawCaption).toHaveBeenCalledOnce();
@@ -427,6 +481,57 @@ describe("around the fight", () => {
     method("setFinal").call(stub, { version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: "one", method: "tko", round: 2, scorecards: [], ratings: {} });
     expect(applyArcadeInjury).not.toHaveBeenCalled();
     expect(waiting.injury).toBe("decapitation");
+  });
+
+  it("spurts blood from the face of a man a solid punch lands on, but not with reduced motion", () => {
+    const gush = vi.fn();
+    const hook = combat("hit", { event_id: 14, detail: "hook:head", amount: 80, blood: 50 });
+    const head = { position: new THREE.Vector3(0.6, 1.5, 0.1), quaternion: new THREE.Quaternion() };
+    const pending = () => [{ event: hook, presentationEvent: hook, presentImpact: true, reactAmount: hook.amount, contactTick: 40, recipientIndex: 1, puncherIndex: 0, injury: null }];
+    const stub = prototypeOf({
+      pendingContacts: pending(),
+      buffer: { latest: () => snapshot() }, presentFightEvent: vi.fn(), mapping: worldMapping(SIMULATION), contactPoint: new THREE.Vector3(), mouthPoint: new THREE.Vector3(), woundPoint: new THREE.Vector3(), woundAxis: new THREE.Vector3(), tmpA: new THREE.Vector3(), tmpB: new THREE.Vector3(),
+      effects: { addEvent: vi.fn(), spawnTeeth: vi.fn(), gush }, settings: () => ({ reducedMotion: false, blood: "full" }), arena: { excite: vi.fn() }, viewerId: null,
+      arcadeInjuries: [null, null], graphs: null, headWorldPose: () => ({ position: head.position.clone(), quaternion: head.quaternion }), knockOutMouthpiece: vi.fn(), onContact: null, viewerHitFlash: 0,
+    });
+    method("fireContacts").call(stub, 50);
+    expect(gush).toHaveBeenCalledOnce();
+    const [index, at, , seconds, rate, eventId] = gush.mock.calls[0]! as [number, THREE.Vector3, THREE.Vector3, number, number, number];
+    expect([index, eventId]).toEqual([1, 14]);
+    expect(at.distanceTo(new THREE.Vector3(0.6, 1.43, 0.2))).toBeLessThan(1e-6);
+    expect(seconds).toBeCloseTo(1.6, 6);
+    expect(rate).toBeCloseTo(370, 6);
+    stub.pendingContacts = pending();
+    stub.settings = () => ({ reducedMotion: true, blood: "full" });
+    method("fireContacts").call(stub, 50);
+    expect(gush).toHaveBeenCalledOnce();
+  });
+
+  it("pours blood from the mouth of a man going down, from his head as it is posed", () => {
+    const gush = vi.fn();
+    const knockdown = combat("knockdown", { event_id: 12, detail: "hook:head", amount: 1, blood: 30 });
+    const head = { position: new THREE.Vector3(0.6, 1.5, 0.1), quaternion: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2) };
+    const stub = prototypeOf({
+      pendingContacts: [{ event: knockdown, presentationEvent: knockdown, presentImpact: true, reactAmount: null, contactTick: 40, recipientIndex: 1, puncherIndex: 0, injury: null }],
+      buffer: { latest: () => snapshot() }, presentFightEvent: vi.fn(), mapping: worldMapping(SIMULATION), contactPoint: new THREE.Vector3(), mouthPoint: new THREE.Vector3(), woundPoint: new THREE.Vector3(), woundAxis: new THREE.Vector3(), tmpA: new THREE.Vector3(), tmpB: new THREE.Vector3(),
+      effects: { addEvent: vi.fn(), spawnTeeth: vi.fn(), gush }, settings: () => ({ reducedMotion: false, blood: "full" }), arena: { excite: vi.fn() }, viewerId: null,
+      arcadeInjuries: [null, null], graphs: null, headWorldPose: () => ({ position: head.position.clone(), quaternion: head.quaternion }), knockOutMouthpiece: vi.fn(), onContact: null, viewerHitFlash: 0,
+    });
+    method("fireContacts").call(stub, 50);
+    expect(gush).toHaveBeenCalledOnce();
+    const [index, at, axis, seconds, rate, eventId] = gush.mock.calls[0]! as [number, THREE.Vector3, THREE.Vector3, number, number, number];
+    expect([index, eventId]).toEqual([1, 12]);
+    // The face points along +x: the mouth is ten centimetres in front of the skull and seven below it.
+    expect(at.x).toBeCloseTo(0.7, 6);
+    expect(at.y).toBeCloseTo(1.43, 6);
+    expect(axis.x).toBeGreaterThan(0.9);
+    expect(seconds).toBeGreaterThan(1);
+    expect(rate).toBeGreaterThan(100);
+    // None with reduced motion.
+    stub.pendingContacts = [{ event: knockdown, presentationEvent: knockdown, presentImpact: true, reactAmount: null, contactTick: 40, recipientIndex: 1, puncherIndex: 0, injury: null }];
+    stub.settings = () => ({ reducedMotion: true, blood: "full" });
+    method("fireContacts").call(stub, 50);
+    expect(gush).toHaveBeenCalledOnce();
   });
 
   it("knocks the gum shield out with a big counter to the head", () => {
@@ -574,11 +679,11 @@ describe("around the fight", () => {
     };
     const stub = prototypeOf({
       referee: { waveOff: vi.fn(), raise, setRefereeCount: vi.fn(), aimBreak: vi.fn(), update: vi.fn(), boxer: { root: new THREE.Object3D() } }, blobShadows: [], buffer: { latest: () => snapshot() }, headCacheValid: [false, false],
-      settings: () => ({ reducedMotion: false }), frameSeconds: 0, finishCloseUpIndex: -1,
+      settings: () => ({ reducedMotion: false, blood: "full" }), frameSeconds: 0, finishCloseUpIndex: -1,
       graphs: [{ celebrate: vi.fn(), fallBody: null }, { celebrate: vi.fn(), fallBody: null, boxer: { rig: { bones: { gloveL: glove(1.2), gloveR: glove(0.8) } } } }],
       mapping: worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }),
       tmpA: new THREE.Vector3(-1.4, 0, -0.6), tmpB: new THREE.Vector3(1, 0, 0.3), refereePosition: new THREE.Vector3(-0.8, 0, -1.4),
-      refereeVelocity: new THREE.Vector3(), refereeAway: new THREE.Vector3(), refereeYaw: 0, effects: { severedHeadPosition: () => false },
+      refereeVelocity: new THREE.Vector3(), refereeAway: new THREE.Vector3(), refereeYaw: 0, effects: { severedHeadPosition: () => false, gushing: () => false },
       closeUpTarget: new THREE.Vector3(), replay: null, ceremony: null, stoppageWrist: new THREE.Vector3(), stoppageOtherWrist: new THREE.Vector3(),
     });
     method("presentFinish").call(stub, { version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: "two", method: "ko", round: 2, scorecards: [], ratings: {} });
@@ -752,7 +857,7 @@ describe("around the fight", () => {
       referee, blobShadows: [], replay: null, ceremony: null, mapping: worldMapping(SIMULATION), frameSeconds: 0, stoppageWinner: -1, stoppageRaiseAt: Number.POSITIVE_INFINITY, stoppageSpot: null,
       graphs: [{ fallBody: null, boxer: { rig: { bones: { gloveL: glove(-0.35), gloveR: glove(-0.65) } } } }, { fallBody: null }],
       tmpA: new THREE.Vector3(), tmpB: new THREE.Vector3(), refereePosition: new THREE.Vector3(0.4, 0, -2.1), refereeVelocity: new THREE.Vector3(), refereeAway: new THREE.Vector3(),
-      refereeYaw: 0, effects: { severedHeadPosition: () => false }, closeUpTarget: new THREE.Vector3(), bodyPoint: new THREE.Vector3(),
+      refereeYaw: 0, effects: { severedHeadPosition: () => false, gushing: () => false }, closeUpTarget: new THREE.Vector3(), bodyPoint: new THREE.Vector3(), settings: () => ({ reducedMotion: false, blood: "full" }),
       stoppageWrist: new THREE.Vector3(), stoppageOtherWrist: new THREE.Vector3(), lastKnockdown: null,
       ...fields,
     });

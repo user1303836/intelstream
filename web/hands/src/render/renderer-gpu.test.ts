@@ -3,7 +3,7 @@ import type { Settings } from "../settings";
 import { fighter, snapshot } from "../test/fixtures";
 import { PROTOCOL_VERSION, type CombatEvent, type FighterSnapshot, type FinalMessage, type MatchResult } from "../types";
 import { attachFakeWebGl, type FakeWebGl } from "../test/webgl";
-import type { Effects3D } from "./effects";
+import { DESKTOP_GORE, PHONE_GORE, type Effects3D } from "./effects";
 import type { BoxingGraph } from "./graph";
 import { FightRenderer } from "./renderer";
 
@@ -97,6 +97,18 @@ describe("quality tiers on the graphics card", () => {
     expect(key.shadow.intensity).toBe(1);
     expect(key.shadow.map).not.toBeNull();
     expect(key.shadow.map?.width).toBe(1024);
+  });
+});
+
+describe("a phone's gore", () => {
+  it("keeps half of what a desktop keeps in flight", async () => {
+    const desktop = await mount();
+    const matchMedia = window.matchMedia;
+    Object.defineProperty(window, "matchMedia", { configurable: true, value: (query: string) => ({ matches: query === "(pointer: coarse)", media: query }) });
+    const phone = await mount().finally(() => Object.defineProperty(window, "matchMedia", { configurable: true, value: matchMedia }));
+    expect(desktop.internals.effects.dropletMesh.instanceMatrix.count).toBe(DESKTOP_GORE.droplets);
+    expect(phone.internals.effects.dropletMesh.instanceMatrix.count).toBe(PHONE_GORE.droplets);
+    expect(PHONE_GORE.droplets * 2).toBe(DESKTOP_GORE.droplets);
   });
 });
 

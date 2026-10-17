@@ -19,10 +19,14 @@ from intelstream.hands.rules import (
     GET_UP_STAMINA,
     GET_UP_TRAUMA_DIVISOR,
     GUARD_BLOCK_MINIMUM,
+    GUARD_BREAK_STUN_TICKS,
     GUARD_DAMAGE_PERCENT,
+    GUARD_HELD_DRAIN,
+    GUARD_REARM,
     HEAD_TRAUMA_PER_DAMAGE_PERCENT,
     JAB_CUT_PERCENT,
     JAB_SWELLING_PERCENT,
+    MAX_GUARD,
     MAX_POISE,
     POISE_CEILING_FLOOR,
     POISE_DAMAGE_PERCENT,
@@ -37,11 +41,12 @@ from intelstream.hands.rules import (
     poise_ceiling,
 )
 from intelstream.hands.types import (
+    ActionKind,
     CombatEvent,
     DefensivePose,
-    FinishMethod,
     Hand,
     MatchPhase,
+    MovementAction,
     Power,
     PunchAction,
     PunchClass,
@@ -252,24 +257,31 @@ def test_a_block_that_wears_the_guard_too_thin_to_stop_a_punch_breaks_it() -> No
     assert two.defense is DefensivePose.GUARD_HIGH
     assert "hit" in kinds(events)
     assert "block" not in kinds(events) and "guard_break" not in kinds(events)
-    # Once it has come back past the minimum, it blocks again.
-    while two.guard < GUARD_BLOCK_MINIMUM:
-        engine.step()
+    assert two.guard_broken
+    # It only comes back lowered, and blocks again once it is back past the rearm mark.
+    sequence = 50
+    while two.guard < GUARD_REARM:
+        sequence += 1
+        engine.step({"two": command(sequence, defense=DefensivePose.NONE)})
+    assert not two.guard_broken
     events = land(engine, punch(PunchClass.JAB, hand=Hand.LEFT), defense=DefensivePose.GUARD_HIGH)
-    assert "block" in kinds(events)
+    assert {"block", "perfect_block"} & set(kinds(events))
 
 
 def test_a_blocked_punch_wears_the_guard_by_its_share() -> None:
     engine = make_engine()
     settled_guard(engine, DefensivePose.GUARD_HIGH)
     before = engine.fighter("two").guard
+    since = engine.tick
     land(engine, punch(PunchClass.STRAIGHT), defense=DefensivePose.GUARD_HIGH)
     rule = PUNCH_RULES[(PunchClass.STRAIGHT, Target.HEAD, Power.NORMAL)]
-    worn = rule.guard_damage * GUARD_DAMAGE_PERCENT // 100
+    worn = rule.guard_damage * GUARD_DAMAGE_PERCENT // 100 + GUARD_HELD_DRAIN * (
+        engine.tick - since
+    )
     assert before - engine.fighter("two").guard in range(worn - 3, worn + 1)
 
 
-def test_a_held_guard_comes_back_but_slower_than_a_rested_one() -> None:
+def test_a_held_guard_wears_down_while_a_lowered_one_comes_back() -> None:
     held = make_engine()
     held.fighter("two").guard = 300
     held.step({"two": command(1, defense=DefensivePose.GUARD_HIGH)})
@@ -278,7 +290,35 @@ def test_a_held_guard_comes_back_but_slower_than_a_rested_one() -> None:
     for _ in range(24):
         held.step()
         rested.step()
-    assert 300 < held.fighter("two").guard < rested.fighter("two").guard
+    assert held.fighter("two").guard == 300 - GUARD_HELD_DRAIN * 25
+    assert rested.fighter("two").guard > 300
+
+
+def test_a_guard_held_up_until_it_gives_out_breaks_and_stops_nothing() -> None:
+    """Nobody holds a guard up forever: it gives out as a break, with the break's stun, and stays
+    broken while it is held."""
+    engine = make_engine(round_ticks=2000)
+    two = engine.fighter("two")
+    engine.step({"two": command(1, defense=DefensivePose.GUARD_HIGH)})
+    broke_at = None
+    for _ in range(MAX_GUARD // GUARD_HELD_DRAIN + 10):
+        snapshot = engine.step()
+        breaks = [event for event in snapshot.events if event.kind == "guard_break"]
+        if breaks:
+            assert [(event.actor_id, event.target_id, event.detail) for event in breaks] == [
+                ("one", "two", "held")
+            ]
+            broke_at = engine.tick
+            break
+    assert broke_at is not None
+    # From a full guard, a little over seven seconds of holding it.
+    assert broke_at == (MAX_GUARD - GUARD_BLOCK_MINIMUM) // GUARD_HELD_DRAIN + 1
+    assert two.guard_broken and two.stunned_ticks == GUARD_BREAK_STUN_TICKS
+    assert snapshot.fighters[1].guard_broken
+    while two.stunned_ticks:
+        engine.step()
+    events = land(engine, punch(PunchClass.JAB, hand=Hand.LEFT), defense=DefensivePose.GUARD_HIGH)
+    assert "hit" in kinds(events) and "block" not in kinds(events)
 
 
 def test_a_beating_lowers_the_poise_a_fighter_comes_back_to() -> None:
@@ -348,12 +388,8 @@ def test_a_jab_seldom_splits_the_skin_and_swells_the_face_less() -> None:
     assert trauma.swelling == swelling < damage * SWELLING_PER_DAMAGE_PERCENT // 100
 
 
-def test_by_default_the_doctor_lets_a_bad_cut_and_a_swollen_face_box_on() -> None:
-    defaults = EngineConfig()
-    engine = make_engine(
-        doctor_cut_threshold=defaults.doctor_cut_threshold,
-        doctor_swelling_threshold=defaults.doctor_swelling_threshold,
-    )
+def test_a_bad_cut_and_a_swollen_face_box_on() -> None:
+    engine = make_engine()
     trauma = engine.fighter("two").trauma
     trauma.left_eye, trauma.left_cut, trauma.swelling = 500, 740, 850
     land(engine, punch(PunchClass.STRAIGHT))
@@ -365,9 +401,9 @@ def test_by_default_the_doctor_lets_a_bad_cut_and_a_swollen_face_box_on() -> Non
 def test_a_one_sided_three_rounder_leaves_a_visible_cut(
     seed: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Three rounds of a skilled player outboxing the rookie mark the loser's face, short of the
-    doctor: a brow cut the client draws in full (220), an eye past where it starts to close (330)
-    and swollen shut at least once. Marking slowed so far once that faces stayed clean."""
+    """Three rounds of a skilled player outboxing the rookie mark the loser's face: a brow cut the
+    client draws in full (220), an eye past where it starts to close (330) and swollen shut at
+    least once. Marking slowed so far once that faces stayed clean."""
     # Nothing here reads a checksum, and hashing every tick is most of what a bout costs.
     monkeypatch.setattr(BoxingEngine, "_checksum", lambda _engine, _fighters: "")
     styles = bout_styles("skilled", "rookie", seed)
@@ -398,7 +434,6 @@ def test_a_one_sided_three_rounder_leaves_a_visible_cut(
         eyes_shut += sum(event.kind == "eye_shut" for event in snapshot.events)
 
     assert engine.result.winner_id == "one"
-    assert engine.result.finish_method is not FinishMethod.DOCTOR_STOPPAGE
     assert worst_cut >= 220
     assert worst_eye >= 330
     assert eyes_shut >= 1
@@ -444,3 +479,106 @@ def test_getting_up_leaves_enough_stamina_to_stand_and_is_harder_for_a_battered_
         engine.step()
     assert downed.stamina >= min(downed.maximum_stamina, GET_UP_STAMINA)
     assert downed.stamina > BODY_COLLAPSE_STAMINA
+
+
+def test_a_guard_held_into_a_clinch_is_left_as_it_was_through_the_hold() -> None:
+    """Tied up, a fighter cannot change his pose, so the guard he had up neither wears down nor
+    breaks in the hold, and nothing from it carries out past the break."""
+    engine = make_engine(round_ticks=2000)
+    one, two = engine.fighter("one"), engine.fighter("two")
+    two.guard = GUARD_BLOCK_MINIMUM + 70
+    engine.step(
+        {
+            "one": command(1, action=MovementAction(ActionKind.CLINCH)),
+            "two": command(1, defense=DefensivePose.GUARD_HIGH),
+        }
+    )
+    while not one.clinch_ticks:
+        engine.step()
+    held = two.guard
+    engine.step({"two": command(2)})
+    while one.clinch_ticks:
+        snapshot = engine.step()
+        assert "guard_break" not in kinds(list(snapshot.events))
+        if one.clinch_ticks:
+            assert two.guard == held
+    assert not two.guard_broken and two.stunned_ticks == 0
+
+
+def test_a_parry_wins_the_exchange_even_when_it_wears_the_guard_thin() -> None:
+    """A perfect block of a power hook by a guard too thin to take its wear staggers the puncher
+    and leaves the parrier free to answer; held on past the counter window, the guard gives out."""
+    engine = make_engine(round_ticks=2000)
+    one, two = engine.fighter("one"), engine.fighter("two")
+    two.guard = GUARD_BLOCK_MINIMUM + 20
+    engine.step(
+        {"one": command(1, action=punch(PunchClass.HOOK, hand=Hand.LEFT, power=Power.POWER))}
+    )
+    attack = one.attack
+    assert attack is not None
+    contact = attack.start_tick + attack.rule.startup
+    while engine.tick < contact - 2:
+        engine.step()
+    engine.step({"two": command(1, defense=DefensivePose.GUARD_HIGH)})
+    events: list[CombatEvent] = []
+    while engine.tick < contact:
+        events.extend(engine.step().events)
+    assert "perfect_block" in kinds(events) and "parry" in kinds(events)
+    assert "guard_break" not in kinds(events)
+    assert two.guard < GUARD_BLOCK_MINIMUM
+    assert two.stunned_ticks == 0 and not two.guard_broken
+    assert one.stunned_ticks > 0
+    window = two.counter_ticks
+    assert window > 0
+    broke = None
+    for _ in range(window + 20):
+        snapshot = engine.step()
+        if "guard_break" in kinds(list(snapshot.events)):
+            broke = engine.tick - contact
+            break
+    assert broke == window
+
+
+def test_a_lowered_guard_still_comes_back_through_a_clinch() -> None:
+    engine = make_engine(round_ticks=2000)
+    one, two = engine.fighter("one"), engine.fighter("two")
+    two.guard = GUARD_BLOCK_MINIMUM + 10
+    engine.step({"one": command(1, action=MovementAction(ActionKind.CLINCH))})
+    while not one.clinch_ticks:
+        engine.step()
+    before = two.guard
+    while one.clinch_ticks > 1:
+        engine.step()
+    assert two.guard > before + 20
+
+
+def test_a_slip_buys_a_worn_guard_no_time_only_a_parry_does() -> None:
+    """A slip opens a counter window too, but a worn guard raised after it gives out as soon as it
+    would have without the slip."""
+
+    def held_until_broken(slipped: bool) -> int:
+        engine = make_engine(round_ticks=2000)
+        two = engine.fighter("two")
+        if slipped:
+            engine.step(
+                {
+                    "one": command(1, action=punch(PunchClass.JAB, hand=Hand.LEFT)),
+                    "two": command(1, action=MovementAction(ActionKind.SLIP_RIGHT)),
+                }
+            )
+            for _ in range(20):
+                if "evade" in kinds(list(engine.step().events)):
+                    break
+            assert two.counter_ticks > 0
+            while two.evasion_ticks:
+                engine.step()
+        two.guard = GUARD_BLOCK_MINIMUM + 2
+        start = engine.tick
+        events = list(engine.step({"two": command(5, defense=DefensivePose.GUARD_HIGH)}).events)
+        for _ in range(30):
+            if "guard_break" in kinds(events):
+                return engine.tick - start
+            events = list(engine.step().events)
+        raise AssertionError("the guard never broke")
+
+    assert held_until_broken(slipped=True) == held_until_broken(slipped=False)

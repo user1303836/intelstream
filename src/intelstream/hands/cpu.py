@@ -17,7 +17,6 @@ from enum import StrEnum
 from math import atan2, cos, hypot, radians, sin
 
 from intelstream.hands.engine import (
-    EVASION_TICKS,
     PERFECT_BLOCK_TICKS,
     BoxingEngine,
     FighterState,
@@ -27,10 +26,14 @@ from intelstream.hands.rules import (
     BODY_COLLAPSE_STAMINA,
     BODY_COLLAPSE_TRAUMA,
     COMPATIBLE_COMBO_CHAINS,
+    EVASION_STAMINA,
+    EVASION_TICKS,
     FACING_SCALE,
     FACING_TURN_DEGREES_PER_SECOND,
     FIGHTER_RADIUS,
     GUARD_BLOCK_MINIMUM,
+    GUARD_REARM,
+    MAX_GUARD,
     PERFECT_BLOCK_REARM_TICKS,
     PUNCH_RULES,
     RING_CORNER_REACH,
@@ -60,7 +63,6 @@ from intelstream.hands.types import (
 
 CPU_ID_PREFIX = "cpu:"
 MOVE_SCALE = 1000
-EVASION_STAMINA = 25
 CLINCH_RANGE = 115
 CLINCH_STAMINA = 45
 THREAT_RANGE = 190
@@ -70,6 +72,8 @@ HURT_POISE = 160
 # A battered head lowers the poise a fighter can get back, so "nearly out of it" is a share of that.
 HURT_CEILING_PERCENT = 70
 OPPONENT_HURT_POISE = 200
+# A guard rested after wearing thin is held up again once it is back this far.
+GUARD_RESTED = MAX_GUARD * 3 // 4
 CORNER_CUT_AT = 400
 CORNER_BLEEDING_AT = 200
 CORNER_EYE_AT = 500
@@ -152,18 +156,18 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         read_percent=15,
         perfect_percent=0,
         guard_percent=15,
-        aggression_percent=14,
-        attack_interval=34,
+        aggression_percent=24,
+        attack_interval=20,
         combo_length=2,
         combo_percent=0,
         reach_margin=-8,
         leads_target=False,
-        stamina_reserve=60,
+        stamina_reserve=40,
         footwork_percent=25,
         outside_distance=130,
         jab_bias=60,
         counter_percent=0,
-        power_percent=0,
+        power_percent=12,
         body_percent=25,
         finish_percent=0,
         admire_ticks=60,
@@ -190,7 +194,7 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         combo_percent=70,
         reach_margin=4,
         leads_target=True,
-        stamina_reserve=180,
+        stamina_reserve=110,
         footwork_percent=70,
         outside_distance=160,
         jab_bias=10,
@@ -215,19 +219,19 @@ PROFILES: dict[CpuLevel, CpuProfile] = {
         reaction_spread=3,
         read_percent=80,
         perfect_percent=80,
-        guard_percent=80,
+        guard_percent=90,
         aggression_percent=60,
-        attack_interval=7,
+        attack_interval=12,
         combo_length=4,
         combo_percent=80,
         reach_margin=10,
         leads_target=True,
-        stamina_reserve=260,
+        stamina_reserve=110,
         footwork_percent=85,
         outside_distance=156,
         jab_bias=0,
         counter_percent=80,
-        power_percent=35,
+        power_percent=55,
         body_percent=43,
         finish_percent=30,
         admire_ticks=0,
@@ -396,6 +400,7 @@ class CpuBrain:
         self._guard_from = 0
         self._guard_until = -1
         self._hold_guard = False
+        self._resting_guard = False
         self._guard_window_until = 0
         self._next_attack_tick = 0
         self._combo_left = 0
@@ -685,9 +690,20 @@ class CpuBrain:
         ]
 
     def _defense(self, tick: int, me: FighterState, distance: float, hurt: bool) -> DefensivePose:
+        # A guard worn thin rests until most of it is back, rather than going up again as soon
+        # as it can stop a punch and wearing straight back down.
+        if me.guard_broken or me.guard < GUARD_REARM:
+            self._resting_guard = True
+        elif me.guard >= GUARD_RESTED:
+            self._resting_guard = False
+        if me.guard_broken:
+            # It stops nothing until it has come back, and it only comes back lowered.
+            self._hold_guard = False
+            return DefensivePose.NONE
         if self._guard_from <= tick < self._guard_until:
             return self._guard_pose
-        if tick < self._guard_until:
+        if tick < self._guard_until or self._resting_guard:
+            # Resting it: it is only raised for a punch it has seen coming.
             return DefensivePose.NONE
         if distance > THREAT_RANGE:
             self._hold_guard = False
