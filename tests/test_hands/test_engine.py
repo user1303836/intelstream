@@ -1268,6 +1268,37 @@ def test_action_buffer_coalesces_spam_and_new_intent_replaces_or_cancels_stale()
     assert fighter.held_input.defense is DefensivePose.GUARD_HIGH
 
 
+def test_a_punch_and_then_cover_in_the_same_tick_throws_the_punch() -> None:
+    """A guard raised in a frame of its own just after a press, before the engine has stepped, does
+    not cancel the press: the fighter was free to throw it, and throws it with the guard up after."""
+    engine = make_engine(round_ticks=2000)
+    one = engine.fighter("one")
+    jab = punch(PunchClass.JAB, hand=Hand.LEFT)
+    assert engine.submit_input("one", command(1, action=jab))
+    assert engine.submit_input("one", command(2, defense=DefensivePose.GUARD_HIGH))
+    assert one.pending_actions == [jab]
+    engine.step()
+    assert one.attack is not None and one.attack.action == jab
+    assert one.held_input.defense is DefensivePose.GUARD_HIGH
+
+    # A press left waiting from an earlier tick is still cancelled by the guard, as is one held
+    # behind a stun.
+    stale = make_engine(round_ticks=2000)
+    stunned = stale.fighter("one")
+    stunned.stunned_ticks = 4
+    assert stale.submit_input("one", command(1, action=jab))
+    assert stale.submit_input("one", command(2, defense=DefensivePose.GUARD_HIGH))
+    assert stunned.pending_actions == []
+    late = make_engine(round_ticks=2000)
+    waiting = late.fighter("one")
+    waiting.stunned_ticks = 2
+    assert late.submit_input("one", command(1, action=jab))
+    late.step()
+    waiting.stunned_ticks = 0
+    assert late.submit_input("one", command(2, defense=DefensivePose.GUARD_HIGH))
+    assert waiting.pending_actions == []
+
+
 def test_held_guard_heartbeat_preserves_a_new_guarded_follow_up() -> None:
     engine = make_engine(round_ticks=2000)
     engine.step(

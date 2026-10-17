@@ -686,8 +686,22 @@ class BoxingEngine:
             fighter.pending_actions[:] = recent_actions[-MAX_PENDING_ACTIONS:]
             fighter.pending_action_expires_tick = self.tick + ACTION_BUFFER_TICKS
         elif guard_started:
-            fighter.pending_actions.clear()
-            fighter.pending_action_expires_tick = 0
+            # Raising a guard cancels a press still waiting behind a punch, a stun, a taunt or a hold, or one
+            # left from an earlier tick. One made since the last tick by a fighter free to throw it has not
+            # had a tick to start, and is thrown: a punch and then cover.
+            pressed_this_tick = (
+                fighter.pending_action_expires_tick == self.tick + ACTION_BUFFER_TICKS
+            )
+            free = (
+                fighter.attack is None
+                and fighter.stunned_ticks == 0
+                and fighter.taunt_ticks == 0
+                and fighter.clinch_startup_ticks == 0
+                and fighter.clinch_ticks == 0
+            )
+            if not (pressed_this_tick and free):
+                fighter.pending_actions.clear()
+                fighter.pending_action_expires_tick = 0
         return True
 
     def step(self, inputs: dict[str, InputCommand] | None = None) -> EngineSnapshot:
