@@ -230,6 +230,19 @@ describe("authoritative audio and haptics", () => {
     feedback.destroy();
   });
 
+  it("tears with a wet crack and the spurts of blood that follow it under every finisher's voice", async () => {
+    const feedback = new AudioFeedback(() => settings);
+    await feedback.unlock();
+    const before = MockAudioContext.playedBuffers.length;
+    feedback.injury("shoulder_left");
+    const played = MockAudioContext.playedBuffers.slice(before) as unknown as Array<{ decodeIndex?: number }>;
+    // Five bursts of noise, the last three a beat apart, and then the voice.
+    expect(played).toHaveLength(6);
+    expect(played.slice(0, 5).every((buffer) => buffer.decodeIndex === undefined)).toBe(true);
+    expect(played[5]!.decodeIndex).toBe(4);
+    feedback.destroy();
+  });
+
   it("gives a finisher without a voice of its own the nearest one", async () => {
     const feedback = new AudioFeedback(() => settings);
     await feedback.unlock();
@@ -245,18 +258,25 @@ describe("authoritative audio and haptics", () => {
     MockAudioContext.failDecode = true;
     const feedback = new AudioFeedback(() => ({ ...settings, blood, reducedMotion }));
     await expect(feedback.unlock()).resolves.toBeUndefined();
-    const started = MockAudioContext.bufferStarts;
+    const voices = (): number => MockAudioContext.playedBuffers.filter((buffer) => buffer !== null && "decodeIndex" in buffer).length;
+    const started = voices();
+    const sounds = MockAudioContext.bufferStarts;
     feedback.injury("decapitation");
-    expect(MockAudioContext.bufferStarts).toBe(started);
+    expect(voices()).toBe(started);
+    // The tearing under the voice still plays without it.
+    expect(MockAudioContext.bufferStarts).toBeGreaterThan(sounds);
     feedback.injury("dismember_left");
-    expect(MockAudioContext.bufferStarts).toBe(started + 1);
+    expect(voices()).toBe(started + 1);
+    const heard = MockAudioContext.bufferStarts;
     blood = "off";
     feedback.injury("dismember_right");
-    expect(MockAudioContext.bufferStarts).toBe(started + 1);
+    blood = "reduced";
+    feedback.injury("dismember_right");
     blood = "full";
     reducedMotion = true;
     feedback.injury("jaw_dislocation");
-    expect(MockAudioContext.bufferStarts).toBe(started + 1);
+    expect(voices()).toBe(started + 1);
+    expect(MockAudioContext.bufferStarts).toBe(heard);
     feedback.destroy();
   });
 

@@ -388,14 +388,25 @@ export class AudioFeedback {
     const master = this.master;
     const buffer = this.injuryBuffers.get(BORROWED_VOICE[injury] ?? injury);
     const current = this.settings();
-    if (!this.unlocked || context === null || master === null || buffer === undefined) return;
+    if (!this.unlocked || context === null || master === null) return;
     if (current.blood !== "full" || current.reducedMotion) return;
+    this.tearing();
+    if (buffer === undefined) return;
     const source = context.createBufferSource();
     const gain = context.createGain();
     source.buffer = buffer;
-    gain.gain.value = 0.16;
+    gain.gain.value = 0.2;
     source.connect(gain).connect(master);
     source.start();
+  }
+
+  /** Under a finisher's voice: bone and flesh giving way in a wet crack, then blood spurting onto the canvas with each beat of the heart. */
+  private tearing(): void {
+    this.noise({ duration: 0.09, frequency: 2600, sweepTo: 700, gain: 0.22, type: "bandpass", q: 1.6 });
+    this.noise({ duration: 0.4, frequency: 900, sweepTo: 150, gain: 0.28, type: "lowpass", q: 6, offset: 0.35 });
+    for (const [beat, delay] of [0.3, 0.9, 1.5].entries()) {
+      this.noise({ duration: 0.2, frequency: 480 - beat * 60, sweepTo: 170, gain: 0.13 - beat * 0.03, type: "bandpass", q: 4, delay, offset: 0.2 + delay });
+    }
   }
 
   private async decodeInjuryBuffers(context: AudioContext): Promise<ReadonlyMap<ArcadeInjury, AudioBuffer>> {

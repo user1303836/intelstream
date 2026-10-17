@@ -268,19 +268,20 @@ const FRAGMENT_BODY = /* glsl */ `
     float drop = origin.y - injuryPos.y;
     if (drop < -0.6 || injuryPos.z < origin.z - 3.2) continue;
     float flow = smoothstep(0.0, 0.3, blood);
-    float well = (1.0 - smoothstep(0.0, 0.3 + blood * 0.4, distance(injuryPos.xy, origin.xy))) * flow;
+    float well = (1.0 - smoothstep(0.0, 0.4 + blood * 0.6, distance(injuryPos.xy, origin.xy))) * flow;
     float w = well;
-    // Two rivulets of their own lengths run from each wound, wandering, thinning, with a bead at each tip.
-    for (int k = 0; k < 2; k++) {
+    // Up to three rivulets of their own lengths run from each wound, wandering, thinning, with a bead at each tip.
+    for (int k = 0; k < 3; k++) {
       float fk = float(k);
-      if (fk > 0.5 && blood < 0.45) break;
+      if (fk > 0.5 && blood < 0.3) break;
+      if (fk > 1.5 && blood < 0.7) break;
       float seed = fract(sin(float(i) * 12.9898 + fk * 78.233) * 43758.5453);
-      float reach = (2.0 + blood * 9.0) * (fk < 0.5 ? 1.0 : 0.55 + 0.3 * seed);
-      float start = (fk < 0.5 ? -0.3 : 0.4) * (0.6 + 0.6 * seed) * radius * 0.35;
+      float reach = (4.0 + blood * 18.0) * (fk < 0.5 ? 1.0 : 0.55 + 0.3 * seed);
+      float start = (fk < 0.5 ? -0.3 : fk < 1.5 ? 0.4 : 0.05) * (0.6 + 0.6 * seed) * radius * 0.35;
       float t = clamp(drop / reach, 0.0, 1.0);
       float wander = (0.35 * sin(injuryPos.y * 1.3 + float(i) * 1.7 + fk * 2.1) + 0.15 * sin(injuryPos.y * 3.7 + fk)) * t;
       float dx = abs(injuryPos.x - origin.x - start - wander);
-      float width = (0.26 - 0.12 * t) * (0.7 + 0.45 * min(1.0, blood));
+      float width = (0.32 - 0.12 * t) * (0.8 + 0.9 * min(1.4, blood));
       float run = (1.0 - smoothstep(width * 0.55, width, dx)) * step(drop, reach) * smoothstep(-0.4, 0.1, drop);
       float tipY = origin.y - reach;
       vec2 tip = vec2(origin.x + start + 0.35 * sin(tipY * 1.3 + float(i) * 1.7 + fk * 2.1) + 0.15 * sin(tipY * 3.7 + fk), tipY);
@@ -296,7 +297,7 @@ const FRAGMENT_BODY = /* glsl */ `
       float t = clamp(drop / (radius * 3.2 + blood * 10.0), 0.0, 1.0);
       float across = abs(injuryPos.x - origin.x + 0.9 * sin(injuryPos.y * 0.45 + float(i)));
       float wash = (1.0 - smoothstep(radius * (0.5 + 0.4 * t), radius * (1.0 + 0.7 * t), across)) * (1.0 - t * t) * smoothstep(-0.6, 0.6, drop) * flow;
-      diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.95, 0.26, 0.26) + vec3(0.07, 0.0, 0.0), wash * min(1.0, blood) * 0.7);
+      diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.95, 0.26, 0.26) + vec3(0.07, 0.0, 0.0), wash * min(1.0, blood) * 0.9);
       w = max(w, wash * 0.5);
     }
     injuryWet = max(injuryWet, w);
@@ -515,20 +516,20 @@ export class InjuryShading {
     if (rightLid!.y > -500) rightLid!.w = THREE.MathUtils.clamp(right, 0, 1) || 0;
   }
 
-  /** Hollows a socket whose eye has been forced out: `side` is the fighter's own. */
-  setEyeOut(side: "left" | "right" | null): void {
+  /** Hollows a socket whose eye has been forced out, or both: `side` is the fighter's own. */
+  setEyeOut(side: "left" | "right" | "both" | null): void {
     const lids = this.uniforms.uInjuryLid.value;
-    const left = side === "left" && lids[0]!.y > -500;
-    const right = side === "right" && lids[1]!.y > -500;
+    const left = (side === "left" || side === "both") && lids[0]!.y > -500;
+    const right = (side === "right" || side === "both") && lids[1]!.y > -500;
     this.uniforms.uInjuryEyeOut.value.set(left ? 1 : 0, right ? 1 : 0);
     // The empty socket runs with blood down the cheek.
     if (this.index.has("leftEye")) this.set("leftEye", { blood: left ? 1.3 : 0 });
     if (this.index.has("rightEye")) this.set("rightEye", { blood: right ? 1.3 : 0 });
   }
 
-  get eyeOut(): "left" | "right" | null {
+  get eyeOut(): "left" | "right" | "both" | null {
     const out = this.uniforms.uInjuryEyeOut.value;
-    return out.x > 0 ? "left" : out.y > 0 ? "right" : null;
+    return out.x > 0 && out.y > 0 ? "both" : out.x > 0 ? "left" : out.y > 0 ? "right" : null;
   }
 
   get eyesShut(): readonly [number, number] {
@@ -558,7 +559,8 @@ export class InjuryShading {
   }
 }
 
-const bloodScale = (blood: BloodLevel): number => (blood === "off" ? 0 : blood === "reduced" ? 0.35 : 1);
+/** How much of a wound's blood shows on the skin and the gear: half as much again at full blood, a fifth with reduced. */
+const bloodScale = (blood: BloodLevel): number => (blood === "off" ? 0 : blood === "reduced" ? 0.2 : 1.5);
 
 /** Eye damage at which an eye is swollen fully shut, whatever the rest of the face: the engine's blind side starts there too. */
 export { EYE_SHUT_TRAUMA };
@@ -577,10 +579,11 @@ export function eyeShut(eyeTrauma: number, swelling: number): number {
  */
 export const EYE_SWELL = 2;
 export const CHEEK_SWELL = 1.8;
-/** A cheek cut is wide open by this much cut damage. */
-const CHEEK_CUT_OPEN = 750;
-/** Swelling at which the forehead splits: a face battered for a round or two, where 520 was all but out of reach. */
-const FOREHEAD_SPLITS = 380;
+/** A cheek starts to split at this much cut damage and is wide open by the next. */
+const CHEEK_CUT_STARTS = 150;
+const CHEEK_CUT_OPEN = 500;
+/** Swelling at which the forehead splits: a face battered for a round, where 520 was all but out of reach. */
+const FOREHEAD_SPLITS = 240;
 
 /** Maps authoritative trauma onto head injury sites. */
 export function applyHeadTrauma(shading: InjuryShading, trauma: TraumaSnapshot, blood: BloodLevel): void {
@@ -592,28 +595,30 @@ export function applyHeadTrauma(shading: InjuryShading, trauma: TraumaSnapshot, 
   shading.set("leftEye", { bruise: eye(trauma.left_eye), swell: swell(trauma.left_eye) });
   shading.set("rightEye", { bruise: eye(trauma.right_eye), swell: swell(trauma.right_eye) });
   shading.setEyesShut(eyeShut(trauma.left_eye, trauma.swelling), eyeShut(trauma.right_eye, trauma.swelling));
-  const browCut = (cut: number): number => Math.min(1, cut / 220);
-  const browBlood = (cut: number): number => Math.min(1.4, (cut / 260 + trauma.bleeding / 520) * bleed);
+  // The face bleeds from the first cut, and runs with blood long before the fight is lost.
+  const browCut = (cut: number): number => Math.min(1, cut / 120);
+  const browBlood = (cut: number): number => Math.min(1.4, (cut / 120 + trauma.bleeding / 240) * bleed);
   shading.set("leftBrow", { bruise: Math.min(1, trauma.left_eye / 700), swell: Math.min(1.2, trauma.left_eye / 900) * graphic, cut: browCut(trauma.left_cut), blood: browBlood(trauma.left_cut) });
   shading.set("rightBrow", { bruise: Math.min(1, trauma.right_eye / 700), swell: Math.min(1.2, trauma.right_eye / 900) * graphic, cut: browCut(trauma.right_cut), blood: browBlood(trauma.right_cut) });
   const cheek = Math.min(1, trauma.head / 950 + trauma.swelling / 1100);
   const cheekSwell = Math.min(CHEEK_SWELL, trauma.swelling / 520) * graphic;
-  const cheekCut = (cut: number): number => Math.min(1, Math.max(0, cut - 350) / (CHEEK_CUT_OPEN - 350));
-  shading.set("leftCheek", { bruise: cheek * 0.9, swell: cheekSwell, cut: cheekCut(trauma.left_cut), blood: Math.min(1, Math.max(0, trauma.left_cut - 350) / 400) * bleed });
-  shading.set("rightCheek", { bruise: cheek * 0.85, swell: cheekSwell, cut: cheekCut(trauma.right_cut), blood: Math.min(1, Math.max(0, trauma.right_cut - 350) / 400) * bleed });
-  shading.set("nose", { bruise: Math.min(1, trauma.head / 800), swell: Math.min(0.8, trauma.head / 1400) * graphic, blood: Math.min(1.4, (Math.max(0, trauma.head - 160) / 520 + trauma.bleeding / 420) * bleed) });
-  shading.set("mouth", { bruise: Math.min(0.8, trauma.head / 1100), cut: Math.min(1, Math.max(0, trauma.head - 420) / 700), blood: Math.min(1.2, (Math.max(0, trauma.head - 280) / 650 + trauma.bleeding / 500) * bleed) });
+  const cheekCut = (cut: number): number => Math.min(1, Math.max(0, cut - CHEEK_CUT_STARTS) / (CHEEK_CUT_OPEN - CHEEK_CUT_STARTS));
+  const cheekBlood = (cut: number): number => Math.min(1.2, Math.max(0, cut - CHEEK_CUT_STARTS + 30) / 240) * bleed;
+  shading.set("leftCheek", { bruise: cheek * 0.9, swell: cheekSwell, cut: cheekCut(trauma.left_cut), blood: cheekBlood(trauma.left_cut) });
+  shading.set("rightCheek", { bruise: cheek * 0.85, swell: cheekSwell, cut: cheekCut(trauma.right_cut), blood: cheekBlood(trauma.right_cut) });
+  shading.set("nose", { bruise: Math.min(1, trauma.head / 800), swell: Math.min(0.8, trauma.head / 1400) * graphic, blood: Math.min(1.4, (Math.max(0, trauma.head - 60) / 300 + trauma.bleeding / 220) * bleed) });
+  shading.set("mouth", { bruise: Math.min(0.8, trauma.head / 1100), cut: Math.min(1, Math.max(0, trauma.head - 250) / 500), blood: Math.min(1.3, (Math.max(0, trauma.head - 120) / 360 + trauma.bleeding / 260) * bleed) });
   shading.set("chin", { bruise: Math.min(0.7, trauma.head / 1300) });
   const noseSide = trauma.left_eye >= trauma.right_eye ? -1 : 1;
   shading.setNoseShift(noseSide * Math.min(1.1, Math.max(0, trauma.head - 520) / 450) * graphic);
   shading.set("leftJaw", { bruise: Math.min(0.9, trauma.left_eye / 900 + trauma.head / 1600) });
   shading.set("rightJaw", { bruise: Math.min(0.9, trauma.right_eye / 900 + trauma.head / 1600) });
-  shading.set("forehead", { bruise: Math.min(0.6, trauma.swelling / 1200), cut: Math.min(1, Math.max(0, trauma.swelling - FOREHEAD_SPLITS) / 400), blood: Math.min(1.2, Math.max(0, trauma.swelling - FOREHEAD_SPLITS) / 360) * bleed });
+  shading.set("forehead", { bruise: Math.min(0.6, trauma.swelling / 1200), cut: Math.min(1, Math.max(0, trauma.swelling - FOREHEAD_SPLITS) / 300), blood: Math.min(1.2, Math.max(0, trauma.swelling - FOREHEAD_SPLITS) / 220) * bleed });
 }
 
 /** How far a fighter's own blood has run down into the front of the trunks, 0 to 1. */
 export function trunksBloodFor(trauma: TraumaSnapshot, blood: BloodLevel): number {
-  return Math.min(1, (Math.max(0, trauma.bleeding - 40) / 420 + Math.max(0, trauma.left_cut + trauma.right_cut - 150) / 1300) * bloodScale(blood));
+  return Math.min(1, (Math.max(0, trauma.bleeding - 10) / 220 + Math.max(0, trauma.left_cut + trauma.right_cut - 60) / 650) * bloodScale(blood));
 }
 
 /** Maps authoritative trauma onto torso injury sites. Head bleeding smears down the neck and chest. */
@@ -625,8 +630,8 @@ export function applyBodyTrauma(shading: InjuryShading, trauma: TraumaSnapshot, 
   shading.set("solarPlexus", { bruise: Math.min(1, trauma.body / 800) });
   shading.set("leftPec", { bruise: Math.min(0.8, trauma.body / 1100) });
   shading.set("rightPec", { bruise: Math.min(0.8, trauma.body / 1150) });
-  const smear = Math.min(1.4, (trauma.bleeding / 380 + (trauma.left_cut + trauma.right_cut) / 900) * bleed);
+  const smear = Math.min(1.4, (trauma.bleeding / 200 + (trauma.left_cut + trauma.right_cut) / 450) * bleed);
   shading.set("neckSmear", { blood: smear });
-  shading.set("leftShoulderSmear", { blood: Math.min(1, trauma.left_cut / 600) * bleed });
-  shading.set("rightShoulderSmear", { blood: Math.min(1, trauma.right_cut / 600) * bleed });
+  shading.set("leftShoulderSmear", { blood: Math.min(1.2, trauma.left_cut / 300) * bleed });
+  shading.set("rightShoulderSmear", { blood: Math.min(1.2, trauma.right_cut / 300) * bleed });
 }

@@ -15,11 +15,11 @@ import { CameraDirector, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE, FIGHTER_CAM_
 import { Avatars } from "./avatars";
 import { captionSlot, drawCaption } from "./caption";
 import { CommentaryDirector, type CrowdCue } from "./commentary";
-import { Effects3D, type BakedPart, type SprayDirection } from "./effects";
+import { DESKTOP_GORE, Effects3D, PHONE_GORE, type BakedPart, type SprayDirection } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, releaseFighterGpu, type ArcadeDislocation, type CutmanProp } from "./graph";
 import { drawHud, finalRevealDelay, hudScale, lagWarning, resultCard, resultCardLayout, RoundStatsTracker, STOPPAGE_METHODS, RoundClock, wasBlocked, type RoundPunchStats } from "./hud";
 import { BURST_CUT_HEIGHT, EYE_LIDS, NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE, type InjuryShading } from "./injury";
-import { BIG_SHOT, closeCut, cutRim, teethFor, HARD_SHOT } from "./gore";
+import { closeCut, cutRim, teethFor, HARD_SHOT } from "./gore";
 import { mouthpieceFlies } from "./mouthpiece";
 import { OFFICIAL_LOOKS, lookFor, lookShape, type FighterLook } from "./looks";
 import { BLUE_CORNER_OUTFIT, CUTMAN_OUTFIT, RED_CORNER_OUTFIT, REFEREE_OUTFIT } from "./outfit";
@@ -407,16 +407,23 @@ export function presentationTickFor(snapshot: EngineSnapshot): number {
   return snapshot.result === null ? snapshot.tick - 1 : snapshot.tick;
 }
 
-/** A straight this hard to the head takes it off: most land for 30 to 80. */
-const DECAPITATING_STRAIGHT = 80;
+/**
+ * Most punches land for 30 to 80. A straight this hard to the head takes it off, and an uppercut this hard;
+ * a hook or a jab this hard forces an eye out; a body hook this hard takes the hand covering the ribs off.
+ */
+const DECAPITATING_STRAIGHT = 50;
+const DECAPITATING_UPPERCUT = 40;
+const GOUGING_PUNCH = 40;
+const DISMEMBERING_HOOK = 50;
 const PUNCH_CLASSES: readonly string[] = ["jab", "straight", "hook", "uppercut"];
 
 /**
- * The finisher the punch that ends the bout earns, by where it landed, what it was and how hard it was:
- * - to the head, a flash knockout or a big counter bursts it, a hard uppercut or straight takes it off, a
- *   hard hook forces out the eye on the side it lands, and anything lighter dislocates the jaw;
- * - to the body, a hook comes round through the elbow covering the ribs, so a big one takes the forearm
- *   off and a hard one puts the shoulder out; otherwise the ribs it lands on cave in.
+ * The finisher the punch that ends the bout earns, by where it landed, what it was and how hard it was. Every
+ * one of them is gory:
+ * - to the head, a flash knockout or a hard counter bursts it, an uppercut or a straight takes it off, a hook
+ *   or a jab forces out the eye on the side it lands, and anything lighter breaks the jaw open;
+ * - to the body, a hook comes round through the elbow covering the ribs, so a hard one takes the forearm off
+ *   and a light one tears the shoulder open; otherwise the ribs it lands on cave in and burst.
  */
 export function arcadeInjuryFor(
   event: CombatEvent,
@@ -431,13 +438,12 @@ export function arcadeInjuryFor(
   const struck = key?.[1] === "right" ? "left" : "right";
   const amount = event.amount;
   if (event.detail.endsWith(":head")) {
-    if (result?.finish_method === "flash_ko" || (event.kind === "counter_hit" && amount >= BIG_SHOT)) return "head_burst";
-    if ((punch === "uppercut" && amount >= HARD_SHOT) || (punch === "straight" && amount >= DECAPITATING_STRAIGHT)) return "decapitation";
-    if (punch === "hook" && amount >= HARD_SHOT) return `eye_${struck}`;
+    if (result?.finish_method === "flash_ko" || (event.kind === "counter_hit" && amount >= HARD_SHOT)) return "head_burst";
+    if ((punch === "uppercut" && amount >= DECAPITATING_UPPERCUT) || (punch === "straight" && amount >= DECAPITATING_STRAIGHT)) return "decapitation";
+    if ((punch === "hook" || punch === "jab") && amount >= GOUGING_PUNCH) return `eye_${struck}`;
     return "jaw_dislocation";
   }
-  if (punch === "hook" && amount >= BIG_SHOT) return `dismember_${struck}`;
-  if (punch === "hook" && amount >= HARD_SHOT) return `shoulder_${struck}`;
+  if (punch === "hook") return amount >= DISMEMBERING_HOOK ? `dismember_${struck}` : `shoulder_${struck}`;
   return `ribs_${struck}`;
 }
 import { buildRing, disposeRing, nearRopeOpacityFor, type BuiltRing } from "./ring";
@@ -874,6 +880,36 @@ export function replayCameraSide(midX: number, midZ: number, nx: number, nz: num
   return room(preferred) >= distance * 0.8 || room(preferred) >= room(-preferred) ? preferred : (-preferred as 1 | -1);
 }
 
+/**
+ * How hard a landed blow flashes the screen red: the viewer's own fighter hit, by how hard, and floored, all
+ * the way; any big clean punch and any knockdown, more faintly, as a gory broadcast would, with blood on.
+ */
+export function hitFlash(event: Pick<CombatEvent, "kind" | "amount">, own: boolean, blood: BloodLevel): number {
+  if (own) return event.kind === "knockdown" ? 1 : Math.min(1, 0.35 + event.amount / 400);
+  const gore = blood === "full" ? 1 : blood === "reduced" ? 0.4 : 0;
+  return gore * (event.kind === "knockdown" ? 0.85 : event.amount >= 50 ? Math.min(0.75, (event.amount - 30) / 140) : 0);
+}
+
+/**
+ * How long and how hard blood spurts from the nose and mouth of a man a clean punch lands on: from a punch of
+ * 50 to the head or 70 to the body, longer and harder the harder it lands and the worse he is cut.
+ */
+export function punchGush(event: Pick<CombatEvent, "kind" | "amount" | "blood" | "detail">): { seconds: number; rate: number } | null {
+  if (event.kind !== "hit" && event.kind !== "counter_hit") return null;
+  if (event.amount < (event.detail.endsWith(":body") ? 70 : 50)) return null;
+  const blood = Math.min(100, Math.max(0, event.blood));
+  return { seconds: 0.6 + blood / 50, rate: 150 + event.amount * 1.5 + blood * 2 };
+}
+
+/**
+ * How dark the red hurt vignette is for the worst head and body damage in the ring: from the first damage
+ * that counts at full blood, and from heavier damage, half as dark at most, otherwise.
+ */
+export function hurtVignette(trauma: number, blood: BloodLevel): number {
+  if (blood === "full") return trauma > 100 ? Math.min(0.65, trauma / 1800) : 0;
+  return trauma > 350 ? Math.min(0.3, trauma / 4600) : 0;
+}
+
 /** Whether the server would start a punch for this fighter now. */
 export function canStartPunch(fighter: FighterSnapshot): boolean {
   return !fighter.is_downed
@@ -893,25 +929,39 @@ export function knockdownFinisher(hit: CombatEvent | null, snapshot: EngineSnaps
 }
 
 const POOL_SEVERITY = 0.2;
-const POOL_RATE = 2;
-const POOL_REACH = 0.42;
+/** Spills a second into the pool under a downed fighter, and how far it spreads at most, in metres. */
+export const POOL_RATE = 5;
+const POOL_REACH = 1.1;
 /**
- * A finisher's open wound bleeds out whatever the engine says of his cuts: as badly as the worst cut does
- * (the pool's ceiling), three times as fast, and spreading out to 0.8 m from it, which takes about 18 s.
+ * Every finisher leaves an open wound that bleeds out whatever the engine says of his cuts: as badly as the
+ * worst cut does (the pool's ceiling), more than twice as fast, and spreading out to 2 m from it, which takes about 20 s.
  */
-const OPEN_WOUNDS: ReadonlySet<ArcadeInjury> = new Set(["decapitation", "head_burst", "eye_left", "eye_right", "dismember_left", "dismember_right", "ribs_left", "ribs_right"]);
 const OPEN_WOUND_SEVERITY = 1.6;
-const OPEN_WOUND_POOL_RATE = 3;
-const OPEN_WOUND_POOL_REACH = 0.8;
+const OPEN_WOUND_POOL_RATE = 2.4;
+const OPEN_WOUND_POOL_REACH = 2;
 /** Under the chin, from the middle of the skull, in the head's frame. */
 const UNDER_THE_CHIN = new THREE.Vector3(0, -0.1, 0.08);
+/** The mouth, from the middle of the skull, and the way blood pours out of it, in the head's frame. */
+const MOUTH = new THREE.Vector3(0, -0.07, 0.1);
+const OUT_OF_THE_MOUTH = new THREE.Vector3(0, -0.35, 1);
+/** A man going down pours blood from his nose and mouth for this long, this many drops a second at first. */
+const KNOCKDOWN_GUSH_SECONDS = 3;
+const KNOCKDOWN_GUSH_RATE = 320;
+/** Teeth a broken jaw spills. */
+const JAW_TEETH = 8;
+/** How far toward the puncher from the middle of the skull, and from the chest bone, a punch lands on the face and the chest. */
+const HEAD_CONTACT_REACH = 0.08;
+const CHEST_CONTACT_REACH = 0.12;
+/** Where a fighter pours blood from a wound he carries: his mouth (a knockdown or a broken jaw), a shoulder or the ribs on one side. */
+type WoundSite = "mouth" | "shoulder_left" | "shoulder_right" | "ribs_left" | "ribs_right";
+const woundSite = (injury: ArcadeInjury | null): WoundSite => (injury === "shoulder_left" || injury === "shoulder_right" || injury === "ribs_left" || injury === "ribs_right" ? injury : "mouth");
 
 /**
  * How far the pool under a downed fighter has spread after `count` spills, in metres: fast at first, then slower,
  * wider the worse he bleeds, up to `reach`.
  */
 export function poolRadius(count: number, severity: number, reach = POOL_REACH): number {
-  return Math.min(reach, 0.05 + 0.045 * Math.sqrt(Math.max(0, count)) * Math.min(1.6, Math.max(0, severity)));
+  return Math.min(reach, 0.06 + 0.08 * Math.sqrt(Math.max(0, count)) * Math.min(1.6, Math.max(0, severity)));
 }
 
 /**
@@ -925,9 +975,9 @@ export function fighterDown(fighter: FighterSnapshot, graph: { readonly isDown: 
 /** How deep (bind-space centimetres) and how wide a torso finisher caves the ribs in: twice the deepest dent a punch leaves. */
 const RIBS_DENT = 6;
 const RIBS_DENT_RADIUS = 11;
-/** The burst of blood from caved-in ribs is thrown at rib height, while the chest is still this high off the canvas. */
-const RIBS_BURST_CHEST_HEIGHT = 0.9;
-const RIBS_BURST_EVENT_OFFSET = 7;
+/** Caved-in ribs burst open this far out to the side of the chest bone and this far below it, in metres. */
+const RIBS_REACH = 0.13;
+const RIBS_DROP = 0.06;
 
 /**
  * Ribs a torso finisher caved in on the fighter's `side`: a deep dent, black with bruising and running
@@ -939,9 +989,20 @@ export function caveInRibs(shading: InjuryShading, side: "left" | "right"): void
   shading.set(site, { bruise: 1.2, swell: 0, blood: 1.4 });
 }
 
-/** Whether the knockout replay puts this injury back so it can happen again on screen. */
-export function replayReattaches(injury: ArcadeInjury): boolean {
-  return injury !== "jaw_dislocation" && injury !== "shoulder_left" && injury !== "shoulder_right";
+/**
+ * A jaw a finisher broke loose: the mouth split and pouring blood down the chin, the neck and the chest. Set
+ * every frame over what the engine's trauma paints.
+ */
+export function breakJaw(head: InjuryShading, body: InjuryShading): void {
+  head.set("mouth", { cut: 1, blood: 1.4 });
+  head.set("chin", { bruise: 1.2 });
+  body.set("neckSmear", { blood: 1.4 });
+}
+
+/** A shoulder a finisher tore open, running with blood down the chest. Set every frame over what the engine's trauma paints. */
+export function tearShoulder(body: InjuryShading, side: "left" | "right"): void {
+  body.set(side === "left" ? "leftShoulderSmear" : "rightShoulderSmear", { blood: 1.4 });
+  body.set(side === "left" ? "leftPec" : "rightPec", { bruise: 1.1 });
 }
 
 const eyeVertices = new WeakMap<THREE.BufferGeometry, readonly [number, number]>();
@@ -1199,6 +1260,9 @@ export class FightRenderer {
   private readonly tmpStumpAcross = new THREE.Vector3();
   private readonly tmpPart = new THREE.Vector3();
   private readonly tmpPartQuaternion = new THREE.Quaternion();
+  /** Where a wound a fighter carries is and the way it faces, from tornWound. */
+  private readonly woundPoint = new THREE.Vector3();
+  private readonly woundAxis = new THREE.Vector3();
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -1229,8 +1293,9 @@ export class FightRenderer {
     this.scene.add(this.ring.group);
     this.arena = buildArena();
     this.scene.add(this.arena.group);
-    this.effects = new Effects3D(this.scene, coarsePointer() ? 1024 : 2048);
+    this.effects = new Effects3D(this.scene, coarsePointer() ? 1024 : 2048, coarsePointer() ? PHONE_GORE : DESKTOP_GORE);
     this.effects.useUploader(this.renderer);
+    this.effects.setCamera(this.camera);
 
     this.blobTexture = blobShadowTexture();
     const blobGeometry = new THREE.PlaneGeometry(1, 1);
@@ -1742,7 +1807,7 @@ export class FightRenderer {
     for (const index of [0, 1] as const) {
       const injury = this.arcadeInjuries[index];
       const event = this.arcadeInjuryEvents[index];
-      if (injury !== null && event !== null && replayReattaches(injury)) {
+      if (injury !== null && event !== null) {
         this.replayInjuries[index] = { injury, event };
         this.restoreInjury(index);
       }
@@ -1898,8 +1963,8 @@ export class FightRenderer {
     const { recipientIndex, puncherIndex } = contactParticipants(event, snapshot);
     const recipient = snapshot.fighters[recipientIndex];
     if (recipient === undefined) return;
-    drawnPlace(this.graphs?.[recipientIndex], recipient, this.mapping, this.contactPoint);
     const spray = sprayDirection(snapshot.fighters[puncherIndex], recipient, this.mapping);
+    this.contactOn(recipientIndex, recipient, event.detail.endsWith(":body"), spray, event.direction);
     this.effects.addEvent(event, this.contactPoint, this.settings().reducedMotion, spray);
     const puncher = puncherIndex >= 0 ? snapshot.fighters[puncherIndex] : undefined;
     const keyParts = puncher?.action_key?.split(":") ?? [];
@@ -2010,7 +2075,8 @@ export class FightRenderer {
       const graph = graphs[index]!;
       if (injury === "head_burst") graph.boxer.setHeadBurst(true);
       else graph.boxer.setDecapitated(injury === "decapitation");
-      graph.boxer.headInjury.setEyeOut(injury === "eye_left" ? "left" : injury === "eye_right" ? "right" : null);
+      // One eye hangs on its nerve and the other pops clean out, so both sockets are empty.
+      graph.boxer.headInjury.setEyeOut(injury === "eye_left" || injury === "eye_right" ? "both" : null);
       graph.boxer.setHandDismembered("left", injury === "dismember_left");
       graph.boxer.setHandDismembered("right", injury === "dismember_right");
       const dislocation: ArcadeDislocation | null = injury === "jaw_dislocation"
@@ -2023,12 +2089,11 @@ export class FightRenderer {
   }
 
   /**
-   * Severs the head or a hand from the fighter's current pose, flying the way the punch travelled, or
-   * sets a dislocation, and records it.
+   * Severs the head or a hand from the fighter's current pose, flying the way the punch travelled, bursts the
+   * head or forces an eye out, or tears him open where the punch landed, and records it.
    */
   private applyArcadeInjury(index: number, injury: ArcadeInjury, event: CombatEvent, spray?: SprayDirection): boolean {
-    let applied = this.graphs !== null
-      && (injury === "jaw_dislocation" || injury === "shoulder_left" || injury === "shoulder_right");
+    let applied = false;
     if (injury === "decapitation") {
       const pose = this.headWorldPose(index);
       if (pose !== null) {
@@ -2080,17 +2145,12 @@ export class FightRenderer {
         this.effects.anchorHandStump(index, side, pose.position, pose.quaternion);
         applied = true;
       }
-    } else if (injury === "ribs_left" || injury === "ribs_right") {
-      // The ribs cave in under the punch (held every frame in draw, see caveInRibs) and blood bursts from the
-      // side, from rib height while he is still up; on the canvas the wound and the pool tell it.
-      const graph = this.graphs?.[index];
-      const fighter = this.buffer.latest()?.fighters[index];
-      if (graph !== undefined && fighter !== undefined) {
-        if (graph.boxer.rig.bones.upperChest.getWorldPosition(this.tmpPart).y > RIBS_BURST_CHEST_HEIGHT) {
-          drawnPlace(graph, fighter, this.mapping, this.contactPoint);
-          const burst: CombatEvent = { ...event, event_id: event.event_id + RIBS_BURST_EVENT_OFFSET, kind: "counter_hit", detail: "hook:body", amount: Math.max(event.amount, BIG_SHOT), blood: 100 };
-          this.effects.addEvent(burst, this.contactPoint, false, spray);
-        }
+    } else if (injury === "jaw_dislocation" || injury === "shoulder_left" || injury === "shoulder_right" || injury === "ribs_left" || injury === "ribs_right") {
+      // Torn open where the punch landed: the jaw broken loose, a shoulder put out, or the ribs caved in (each
+      // held every frame in draw, see breakJaw, tearShoulder and caveInRibs), pouring blood as he lies there.
+      const wound = this.tornWound(index, woundSite(injury));
+      if (wound !== null) {
+        this.effects.tearOpen(index, wound.position, wound.axis, spray ?? event.direction, event.event_id, injury === "jaw_dislocation" ? JAW_TEETH : 0);
         applied = true;
       }
     }
@@ -2312,19 +2372,14 @@ export class FightRenderer {
       const spray = sprayDirection(this.buffer.latest()?.fighters[puncherIndex], target, this.mapping);
       this.presentFightEvent(event, recipientIndex, puncherIndex);
       if (presentImpact && target !== undefined) {
-        drawnPlace(this.graphs?.[recipientIndex], target, this.mapping, this.contactPoint);
+        this.contactOn(recipientIndex, target, presentationEvent.detail.endsWith(":body"), spray, presentationEvent.direction);
         this.effects.addEvent(presentationEvent, this.contactPoint, this.settings().reducedMotion, spray);
       }
       const currentSettings = this.settings();
       if (pending.presentImpact || UNIMPACTFUL_KINDS.has(event.kind)) this.arena.excite(CROWD_EXCITEMENT[event.kind] ?? 0);
-      if (
-        presentImpact
-        && recipientIndex >= 0
-        && this.viewerId !== null
-        && this.buffer.latest()?.fighters[recipientIndex]?.player_id === this.viewerId
-        && ["hit", "counter_hit", "knockdown"].includes(event.kind)
-      ) {
-        this.viewerHitFlash = Math.max(this.viewerHitFlash, Math.min(1, 0.35 + event.amount / 400));
+      if (presentImpact && recipientIndex >= 0 && ["hit", "counter_hit", "knockdown"].includes(event.kind)) {
+        const own = this.viewerId !== null && this.buffer.latest()?.fighters[recipientIndex]?.player_id === this.viewerId;
+        this.viewerHitFlash = Math.max(this.viewerHitFlash, hitFlash(event, own, currentSettings.blood));
       }
       if (
         injury !== null
@@ -2339,6 +2394,10 @@ export class FightRenderer {
       if (presentImpact && recipientIndex >= 0 && !currentSettings.reducedMotion && mouthpieceFlies(event.kind, event.amount, presentationEvent.detail.endsWith(":head"))) {
         this.knockOutMouthpiece(recipientIndex, spray ?? presentationEvent.direction, event.event_id, false);
       }
+      // A clean punch makes his face spurt blood, and a man going down pours it from his nose and mouth as he falls.
+      const spurt = presentImpact && !currentSettings.reducedMotion ? punchGush(event) : null;
+      if (spurt !== null && recipientIndex >= 0) this.gushFromMouth(recipientIndex, event.event_id, spurt.seconds, spurt.rate);
+      if (pending.presentImpact && recipientIndex >= 0 && event.kind === "knockdown" && !currentSettings.reducedMotion) this.gushFromMouth(recipientIndex, event.event_id, KNOCKDOWN_GUSH_SECONDS, KNOCKDOWN_GUSH_RATE);
       const teeth = presentImpact && recipientIndex >= 0 ? teethFor(event.kind, event.amount, presentationEvent.detail.endsWith(":head")) : 0;
       if (teeth > 0 && !currentSettings.reducedMotion && currentSettings.blood !== "off") {
         const pose = this.headWorldPose(recipientIndex);
@@ -2410,6 +2469,55 @@ export class FightRenderer {
   private enterRest(seconds: number): void {
     this.restStartedAt = seconds;
     this.effects.clearMouthpieces();
+  }
+
+  /**
+   * Where a punch lands on the fighter as he is drawn, into contactPoint: the side of his face or chest that
+   * faced the puncher, which stands off the spot under him as he leans, slips or lies on the canvas. Without
+   * his skeleton, the spot under him.
+   */
+  private contactOn(index: number, fighter: FighterSnapshot, body: boolean, spray: SprayDirection | undefined, direction: number): THREE.Vector3 {
+    const head = body ? null : this.headWorldPose(index);
+    const chest = body ? this.graphs?.[index]?.boxer.rig.bones.upperChest : undefined;
+    const part = head?.position ?? chest?.getWorldPosition(this.contactPoint) ?? null;
+    if (part === null) return drawnPlace(this.graphs?.[index], fighter, this.mapping, this.contactPoint);
+    const toward = spray ?? { x: direction < 0 ? -1 : 1, z: 0 };
+    const reach = body ? CHEST_CONTACT_REACH : HEAD_CONTACT_REACH;
+    return this.contactPoint.set(part.x - toward.x * reach, part.y, part.z - toward.z * reach);
+  }
+
+  /** Blood pours from the fighter's nose and mouth, from his head as it is posed, and follows him as he goes down. */
+  private gushFromMouth(index: number, eventId: number, seconds: number, rate: number): void {
+    const wound = this.tornWound(index, "mouth");
+    if (wound !== null) this.effects.gush(index, wound.position, wound.axis, seconds, rate, eventId);
+  }
+
+  /** Keeps a pouring wound on the fighter as he moves: the one his finisher opened, or his mouth. */
+  private anchorGush(index: number): void {
+    if (!this.effects.gushing(index)) return;
+    const wound = this.tornWound(index, woundSite(this.arcadeInjuries[index] ?? null));
+    if (wound !== null) this.effects.anchorGush(index, wound.position, wound.axis);
+  }
+
+  /** Where a wound a fighter carries is, on him as he is posed, and the way it faces. */
+  private tornWound(index: number, site: WoundSite): { position: THREE.Vector3; axis: THREE.Vector3 } | null {
+    if (site === "mouth") {
+      const pose = this.headWorldPose(index);
+      if (pose === null) return null;
+      return { position: this.woundPoint.copy(MOUTH).applyQuaternion(pose.quaternion).add(pose.position), axis: this.woundAxis.copy(OUT_OF_THE_MOUTH).applyQuaternion(pose.quaternion) };
+    }
+    const boxer = this.graphs?.[index]?.boxer;
+    if (boxer === undefined) return null;
+    boxer.root.updateMatrixWorld(true);
+    const bones = boxer.rig.bones;
+    const left = site === "shoulder_left" || site === "ribs_left";
+    // Out to his own side, from shoulder to shoulder, and up his back, from the hips to the chest.
+    const out = bones.shoulderL.getWorldPosition(this.woundAxis).sub(bones.shoulderR.getWorldPosition(this.tmpStumpOffset)).normalize().multiplyScalar(left ? 1 : -1);
+    const chest = bones.upperChest.getWorldPosition(this.tmpStump);
+    const up = this.tmpStumpOffset.copy(chest).sub(bones.hips.getWorldPosition(this.tmpStumpAcross)).normalize();
+    if (site === "ribs_left" || site === "ribs_right") return { position: this.woundPoint.copy(chest).addScaledVector(out, RIBS_REACH).addScaledVector(up, -RIBS_DROP), axis: out };
+    (left ? bones.shoulderL : bones.shoulderR).getWorldPosition(this.woundPoint);
+    return { position: this.woundPoint, axis: out.addScaledVector(up, 0.5).normalize() };
   }
 
   /** The gum shield flies out of the mouth along the punch, from the head as it is posed. */
@@ -2646,7 +2754,14 @@ export class FightRenderer {
         } else if (injury === "ribs_left" || injury === "ribs_right") {
           const body = this.graphs?.[index]?.boxer.bodyInjury;
           if (body !== undefined) caveInRibs(body, injury === "ribs_left" ? "left" : "right");
+        } else if (injury === "jaw_dislocation") {
+          const boxer = this.graphs?.[index]?.boxer;
+          if (boxer !== undefined) breakJaw(boxer.headInjury, boxer.bodyInjury);
+        } else if (injury === "shoulder_left" || injury === "shoulder_right") {
+          const body = this.graphs?.[index]?.boxer.bodyInjury;
+          if (body !== undefined) tearShoulder(body, injury === "shoulder_left" ? "left" : "right");
         }
+        this.anchorGush(index);
       }
       const ax = this.mapping.x(a.x);
       const az = this.mapping.z(a.y);
@@ -2894,7 +3009,7 @@ export class FightRenderer {
     for (const [index, fighter] of fighters.entries()) {
       const down = fighterDown(fighter, this.graphs?.[index], this.flashKnockout?.loserId);
       const wound = this.arcadeInjuries[index] ?? null;
-      const open = wound !== null && OPEN_WOUNDS.has(wound);
+      const open = wound !== null;
       const engine = (fighter.trauma.bleeding + fighter.trauma.left_cut + fighter.trauma.right_cut) / 380;
       const severity = open ? Math.max(engine, OPEN_WOUND_SEVERITY) : engine;
       if (severity > 0.05 && !down) {
@@ -2931,11 +3046,16 @@ export class FightRenderer {
     return this.tmpHead.set(anchor.x, this.headHeightOf(index), anchor.z);
   }
 
-  /** Where a downed fighter's blood pools from: a severed hand's wrist, otherwise his head or what is left of his neck. */
+  /** Where a downed fighter's blood pools from: a severed hand's wrist, a torn shoulder or ribs, otherwise his head or what is left of his neck. */
   private poolSource(index: number, wound: ArcadeInjury | null): { readonly x: number; readonly z: number } {
     if (wound === "dismember_left" || wound === "dismember_right") {
       const wrist = this.handWorldPose(index, wound === "dismember_left" ? "left" : "right");
       if (wrist !== null) return wrist.position;
+    }
+    const site = woundSite(wound);
+    if (site !== "mouth") {
+      const torn = this.tornWound(index, site);
+      if (torn !== null) return torn.position;
     }
     return this.headCacheValid[index] ? this.headCache[index]! : index === 0 ? this.tmpA : this.tmpB;
   }
@@ -3176,21 +3296,23 @@ export class FightRenderer {
     this.hudViewport.height = viewport.height;
     ctx.clearRect(0, 0, viewport.width, viewport.height);
     if (snapshot === null) return;
-    if (this.viewerHitFlash > 0.01 && !this.settings().reducedMotion) {
+    const settings = this.settings();
+    if (this.viewerHitFlash > 0.01 && !settings.reducedMotion) {
       const flash = ctx.createRadialGradient(viewport.width / 2, viewport.height / 2, viewport.width * 0.12, viewport.width / 2, viewport.height / 2, viewport.width * 0.7);
       flash.addColorStop(0, `rgba(255,235,225,${(this.viewerHitFlash * 0.18).toFixed(3)})`);
       flash.addColorStop(1, `rgba(140,0,10,${(this.viewerHitFlash * 0.55).toFixed(3)})`);
       ctx.fillStyle = flash;
       ctx.fillRect(0, 0, viewport.width, viewport.height);
     }
-    const hurt = Math.max(...snapshot.fighters.map((fighter) => fighter.trauma.head + fighter.trauma.body));
-    if (hurt > 350) {
+    const hurt = hurtVignette(Math.max(...snapshot.fighters.map((fighter) => fighter.trauma.head + fighter.trauma.body)), settings.blood);
+    if (hurt > 0) {
       const vignette = ctx.createRadialGradient(viewport.width / 2, viewport.height / 2, viewport.width * 0.2, viewport.width / 2, viewport.height / 2, viewport.width * 0.72);
       vignette.addColorStop(0, "rgba(90,0,8,0)");
-      vignette.addColorStop(1, `rgba(75,0,8,${Math.min(0.3, hurt / 4600)})`);
+      vignette.addColorStop(1, `rgba(75,0,8,${hurt.toFixed(3)})`);
       ctx.fillStyle = vignette;
       ctx.fillRect(0, 0, viewport.width, viewport.height);
     }
+    if (!settings.reducedMotion) this.effects.drawLens(ctx, viewport.width, viewport.height);
     drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.frameSeconds >= this.finalRevealAt ? this.final : null, this.reconnectMs, this.simulation.tick_rate, this.roundStats, this.replay !== null ? (this.replay.plan.impact.kind === "referee_down" ? "REFEREE DOWN" : "KNOCKOUT REPLAY") : null, this.lagWarned ? this.inputLatencyMs : null, this.frameSeconds < this.roundCalloutUntil ? `ROUND ${this.roundCalloutRound}` : this.eventCallout !== null && this.frameSeconds < this.eventCallout.until ? this.eventCallout.text : null, this.roundClock.ticks(snapshot), (player) => this.avatars.get(player), this.lastKnockdown?.knockdown.target_id ?? null, this.touchControls && snapshot.fighters.some((fighter) => fighter.player_id === this.viewerId));
     this.drawCaption(ctx, viewport.width, viewport.height, snapshot);
   }
