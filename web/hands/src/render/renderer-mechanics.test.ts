@@ -480,6 +480,23 @@ describe("the player's own fighter folding over a body shot", () => {
     expect(predict.call(viewer, held, 1 / 30, 1033).fighters[1].x).toBeGreaterThan(held.fighters[1].x);
   });
 
+  it("walks at the share of his footwork his own punch leaves him, as the server will move him for the input sent meanwhile", () => {
+    const walked = (ownFootwork: number): number => {
+      const viewer = {
+        localInput: () => ({ moveX: 1000, moveY: 0, defense: "none" as const }), viewerId: "two", graphs: [{}, { ownFootwork, ownPunchActive: true }], buffer: { interpolationDelayTicks: 2 },
+        movement: new MovementPrediction(), evasion: new EvasionPrediction(), simulation: { tick_rate: 30 }, inputLatencyMs: null, ownCollapseUntil: 0,
+      };
+      const held: EngineSnapshot = { ...snapshot(35), phase: "fight" };
+      let shown = held;
+      for (let frame = 0; frame < 8; frame += 1) shown = predict.call(viewer, held, 1 / 30, 1000 + (frame * 1000) / 30);
+      return shown.fighters[1].x - held.fighters[1].x;
+    };
+    const free = walked(1);
+    expect(free).toBeGreaterThan(10);
+    expect(walked(0.6) / free).toBeCloseTo(0.6, 1);
+    expect(walked(0)).toBe(0);
+  });
+
   it("is not set by a body shot folding the opponent", () => {
     const stub = { ...pushStub(fakeGraphs()), viewerId: "one", ownCollapseUntil: 0 };
     methods.push.call(stub, { ...snapshot(30), events: [combat("body_collapse", { event_id: 6, tick: 30, actor_id: "one", target_id: "two", amount: 10 })] });

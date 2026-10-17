@@ -78,6 +78,24 @@ describe("own punch the server refuses", () => {
     }
   }
 
+  it("lets a power punch's glove go cold as it is taken back, not glow all the way back to the guard", () => {
+    const graph = makeGraph();
+    const { sent, sequenceOf } = frames();
+    const power = { ...press("own-1", "straight", "right"), power: "power" as const };
+    graph.predict(power, 0, 30, 2.8 + INTERPOLATION_TICKS, predictedPunchTiming(idle, power), 2.8);
+    sent.set("own-1", 41);
+    const step = stepper(graph, 100);
+    for (let frame = 0; frame < 6; frame += 1) {
+      graph.acknowledge({ ...idle, last_input_sequence: 40 }, true, [], sequenceOf);
+      step(idle);
+    }
+    expect(graph.powerHeat("right")).toBeGreaterThan(0);
+    graph.acknowledge({ ...idle, last_input_sequence: 41 }, true, [], sequenceOf);
+    step(idle);
+    expect(state(graph).punchActive).toBe(true);
+    expect(graph.powerHeat("right")).toBe(0);
+  });
+
   it("gives up on a press the server says nothing of well past when its answer was due, and shows it after all if the server throws it late", () => {
     const pulled = makeGraph();
     const power = { ...press("own-1", "straight", "right"), power: "power" as const };
@@ -282,9 +300,9 @@ describe("follow-up pressed during a punch", () => {
    * clock `lead` ticks later. The hook is pressed `pressAge` ticks into the straight, and the snapshots on screen show
    * the server's hook from `serverStart`. With `onServerClock` the straight was not predicted and plays on the render
    * clock from T0 instead, `lead` ticks behind the press's time. Returns the tick at which the graph first plays the hook
-   * and the tick at which it reaches contact.
+   * and the tick at which it reaches contact, and the graph as it is then.
    */
-  function followUp(serverStart: number, options: { contacts?: ReturnType<typeof contact>[]; stunnedUntil?: number; pressAge?: number; lead?: number; onServerClock?: boolean } = {}): { start: number; contact: number } {
+  function followUp(serverStart: number, options: { contacts?: ReturnType<typeof contact>[]; stunnedUntil?: number; pressAge?: number; lead?: number; onServerClock?: boolean } = {}): { start: number; contact: number; graph: BoxingGraph } {
     const graph = makeGraph();
     const pressAge = options.pressAge ?? 7;
     const lead = options.lead ?? 4;
@@ -304,7 +322,7 @@ describe("follow-up pressed during a punch", () => {
       if (Number.isNaN(start)) start = tick;
       if (state(graph).punchAgeTicks >= hookTiming.startup) reached = tick;
     }
-    return { start, contact: reached };
+    return { start, contact: reached, graph };
   }
   const near = (actual: number, expected: number): void => expect(Math.abs(actual - expected)).toBeLessThanOrEqual(1);
 
@@ -349,9 +367,12 @@ describe("follow-up pressed during a punch", () => {
   it("plays the held press from the server's timeline when the server starts it before it is let go here", () => {
     // No contact reached the client, so it holds the hook to the straight's end; the server cut in at the cancel age
     // and, two ticks behind, its hook is on screen first.
-    const { start, contact: reached } = followUp(cancels + 2, { pressAge: 6, lead: 2 });
+    const { start, contact: reached, graph } = followUp(cancels + 2, { pressAge: 6, lead: 2 });
     expect(start).toBe(cancels + 2);
     near(reached, cancels + 2 + hookTiming.startup);
+    // On the server's timeline it is no press played on the press's time: its contact keeps to the delayed clock.
+    expect(graph.ownPressId).toBeNull();
+    expect(graph.pressLanded("own-hook")).toBe(false);
   });
 
   it("lets a follow-up go behind a punch on the server's timeline as early as the press's own time allows", () => {
