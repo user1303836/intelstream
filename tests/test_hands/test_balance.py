@@ -537,3 +537,48 @@ def test_a_parry_wins_the_exchange_even_when_it_wears_the_guard_thin() -> None:
             broke = engine.tick - contact
             break
     assert broke == window
+
+
+def test_a_lowered_guard_still_comes_back_through_a_clinch() -> None:
+    engine = make_engine(round_ticks=2000)
+    one, two = engine.fighter("one"), engine.fighter("two")
+    two.guard = GUARD_BLOCK_MINIMUM + 10
+    engine.step({"one": command(1, action=MovementAction(ActionKind.CLINCH))})
+    while not one.clinch_ticks:
+        engine.step()
+    before = two.guard
+    while one.clinch_ticks > 1:
+        engine.step()
+    assert two.guard > before + 20
+
+
+def test_a_slip_buys_a_worn_guard_no_time_only_a_parry_does() -> None:
+    """A slip opens a counter window too, but a worn guard raised after it gives out as soon as it
+    would have without the slip."""
+
+    def held_until_broken(slipped: bool) -> int:
+        engine = make_engine(round_ticks=2000)
+        two = engine.fighter("two")
+        if slipped:
+            engine.step(
+                {
+                    "one": command(1, action=punch(PunchClass.JAB, hand=Hand.LEFT)),
+                    "two": command(1, action=MovementAction(ActionKind.SLIP_RIGHT)),
+                }
+            )
+            for _ in range(20):
+                if "evade" in kinds(list(engine.step().events)):
+                    break
+            assert two.counter_ticks > 0
+            while two.evasion_ticks:
+                engine.step()
+        two.guard = GUARD_BLOCK_MINIMUM + 2
+        start = engine.tick
+        events = list(engine.step({"two": command(5, defense=DefensivePose.GUARD_HIGH)}).events)
+        for _ in range(30):
+            if "guard_break" in kinds(events):
+                return engine.tick - start
+            events = list(engine.step().events)
+        raise AssertionError("the guard never broke")
+
+    assert held_until_broken(slipped=True) == held_until_broken(slipped=False)

@@ -316,6 +316,8 @@ class FighterState:
     stun_immune_until_tick: int = -1
     rocked_immune_until_tick: int = -1
     counter_ticks: int = 0
+    # The counter window a parry opened, through which the guard it wore thin is not broken by holding it.
+    parried_until_tick: int = -1
     clinch_startup_ticks: int = 0
     clinch_ticks: int = 0
     taunt_ticks: int = 0
@@ -776,12 +778,13 @@ class BoxingEngine:
                 self._move_fighter(two, one)
                 self._separate_fighters(one, two)
 
+        # A stoppage ends the bout on this tick: nothing after it, not the bell, the rest or anyone's upkeep.
+        if self.result is not None:
+            return
         for fighter, opponent in ((one, two), (two, one)):
             self._recover_resources(fighter)
             fighter.performance.control += self._ring_control(fighter, opponent)
             self._advance_bleeding(fighter)
-            if self.result is not None:
-                return
         self._advance_referee_bleeding()
 
         if self.phase_ticks_remaining <= 0:
@@ -1126,6 +1129,7 @@ class BoxingEngine:
                 defender.counter_ticks = (
                     COUNTER_WINDOW_TICKS + defender.style_rule.counter_window_ticks
                 )
+                defender.parried_until_tick = self.tick + defender.counter_ticks
                 self._emit(
                     "perfect_block",
                     defender.player_id,
@@ -2001,8 +2005,9 @@ class BoxingEngine:
         if guarding:
             regen = regen * GUARD_STAMINA_REGEN_PERCENT // 100
         fighter.stamina = min(fighter.maximum_stamina, fighter.stamina + regen)
-        if fighter.clinch_ticks > 0:
-            # Tied up in a hold, where his pose is not his to change, his guard is left as it was.
+        if fighter.clinch_ticks > 0 and guarding:
+            # Tied up in a hold, where his pose is not his to change, a guard he had up neither wears down
+            # nor breaks; one he had lowered still comes back.
             pass
         elif guarding:
             fighter.guard = max(0, fighter.guard - GUARD_HELD_DRAIN)
@@ -2010,7 +2015,7 @@ class BoxingEngine:
             if (
                 fighter.guard < GUARD_BLOCK_MINIMUM
                 and not fighter.guard_broken
-                and not fighter.counter_ticks
+                and self.tick >= fighter.parried_until_tick
             ):
                 self._break_guard(fighter, self._other(fighter.player_id), None)
         else:
@@ -2452,6 +2457,7 @@ class BoxingEngine:
             fighter.taunt_ticks = 0
             fighter.evasion_ticks = 0
             fighter.counter_ticks = 0
+            fighter.parried_until_tick = -1
             fighter.combo_ticks = 0
             fighter.last_action_until_tick = -1
         self.phase = MatchPhase.FIGHT
@@ -2746,6 +2752,7 @@ class BoxingEngine:
                         fighter.stun_chain_ticks,
                         fighter.stun_immune_until_tick,
                         fighter.rocked_immune_until_tick,
+                        fighter.parried_until_tick,
                     ],
                     "attack": fighter.attack,
                     "last_punch": fighter.last_punch,

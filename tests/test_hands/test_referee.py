@@ -360,3 +360,14 @@ def test_he_keeps_to_the_middle_of_the_ring_between_rounds() -> None:
     for _ in range(150):
         engine.step()
     assert hypot(referee.x, referee.y) <= 2
+
+
+def test_a_hold_pressed_against_a_pinned_referee_is_not_pushed_apart() -> None:
+    engine = make_engine(round_ticks=2000)
+    one, two = engine.fighter("one"), engine.fighter("two")
+    referee = engine._referee
+    referee.x, referee.y, referee.stunned_ticks = 462, 0, 300
+    one.x, one.y, two.x, two.y = 400, 0, 340, 0
+    one.clinch_ticks = two.clinch_ticks = 20
+    engine.step()
+    assert hypot(two.x - one.x, two.y - one.y) < MINIMUM_SEPARATION

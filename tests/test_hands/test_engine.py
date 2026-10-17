@@ -56,6 +56,7 @@ from intelstream.hands.rules import (
     STUN_CHAIN_MAX_TICKS,
     STUN_IMMUNITY_TICKS,
     STUNNED_SPEED_PERCENT,
+    TICKS_PER_SECOND,
     TIRED_IMPACT_PERCENT,
     TIRED_RECOVERY_TICKS,
     TIRED_STARTUP_TICKS,
@@ -1297,6 +1298,16 @@ def test_a_punch_and_then_cover_in_the_same_tick_throws_the_punch() -> None:
     waiting.stunned_ticks = 0
     assert late.submit_input("one", command(2, defense=DefensivePose.GUARD_HIGH))
     assert waiting.pending_actions == []
+
+
+@pytest.mark.parametrize("busy", ["taunt_ticks", "clinch_startup_ticks", "clinch_ticks"])
+def test_a_guard_cancels_a_press_made_while_taunting_or_tied_up(busy: str) -> None:
+    engine = make_engine(round_ticks=2000)
+    one = engine.fighter("one")
+    setattr(one, busy, 10)
+    assert engine.submit_input("one", command(1, action=punch(PunchClass.JAB, hand=Hand.LEFT)))
+    assert engine.submit_input("one", command(2, defense=DefensivePose.GUARD_HIGH))
+    assert one.pending_actions == []
 
 
 def test_held_guard_heartbeat_preserves_a_new_guarded_follow_up() -> None:
@@ -3555,6 +3566,24 @@ def test_a_stoppage_ends_the_bout_on_the_spot_with_no_bell_card_or_rest(
     advance_until(tko, {"result"}, limit=30)
     assert tko.result is not None and tko.result.finish_method is FinishMethod.TKO
     finished(tko)
+
+    # Ended on a tick when both men and the referee would bleed: nobody bleeds after the result.
+    for wait in range(TICKS_PER_SECOND):
+        bleeding = make_engine(rounds=rounds, rest_ticks=rest_ticks, round_ticks=2000)
+        bleeding.fighter("one").trauma.bleeding = 600
+        bleeding.fighter("two").trauma.bleeding = 600
+        bleeding.fighter("two").knockdowns = 2
+        bleeding._referee.trauma.bleeding = 600
+        for _ in range(wait):
+            bleeding.step()
+        bleeding.fighter("two").poise = 1
+        bleeding.step({"one": command(1, action=punch(PunchClass.UPPERCUT, power=Power.POWER))})
+        advance_until(bleeding, {"result"}, limit=30)
+        if bleeding.tick % TICKS_PER_SECOND == 0:
+            finished(bleeding)
+            break
+    else:
+        raise AssertionError("no wait put the stoppage on a bleeding tick")
 
     dq = make_engine(rounds=rounds, rest_ticks=rest_ticks, round_ticks=2000)
     for sequence, foul in enumerate((Foul.LOW_BLOW, Foul.HEADBUTT, Foul.LOW_BLOW), start=1):
