@@ -1,4 +1,4 @@
-import { EYE_SHUT_TRAUMA, GUARD_BLOCK_MINIMUM } from "../manifest";
+import { EYE_SHUT_TRAUMA, GUARD_BLOCK_MINIMUM, GUARD_REARM } from "../manifest";
 import { isDebut, recordLine } from "../record";
 import { styleTag } from "../styles";
 import type { CombatEvent, CornerChoice, EngineSnapshot, FighterSnapshot, FinalMessage, FinishMethod, PublicPlayer, PunchTotals, RatingDelta, TraumaSnapshot } from "../types";
@@ -587,8 +587,9 @@ export function drawHud(
     const bars: BarSpec[] = [
       { label: `${compact ? "STA" : "STAMINA"} ${Math.round(fighter.stamina)}`, value: fighter.stamina, maximum: fighter.maximum_stamina, from: "#ffe08a", to: "#d9a53a" },
       { label: `${compact ? "HP" : "HEALTH"} ${Math.round(fighter.conditioning)}`, value: fighter.conditioning, maximum: HUD_MAX_CONDITIONING, from: "#ff8a7a", to: "#b02a20" },
-      // Under the mark a guard stops nothing: a block that takes it there breaks it (guard_break).
-      { label: "GUARD", value: fighter.guard, maximum: HUD_MAX_GUARD, from: "#9ec7ff", to: "#3d6fb8", spentBelow: GUARD_BLOCK_MINIMUM },
+      // Under the mark a guard stops nothing: a block that takes it there breaks it (guard_break), and a broken
+      // guard stops nothing until it is back past the rearm mark.
+      { label: fighter.guard_broken ? "GUARD BROKEN" : "GUARD", value: fighter.guard, maximum: HUD_MAX_GUARD, from: "#9ec7ff", to: "#3d6fb8", spentBelow: fighter.guard_broken ? GUARD_REARM : GUARD_BLOCK_MINIMUM },
       { label: `POISE ${Math.round(fighter.poise)}`, value: fighter.poise, maximum: HUD_MAX_POISE, from: "#e8c890", to: "#8a6a34" },
     ];
     const accent = index === 0 ? "#3d6fb8" : "#b02a20";

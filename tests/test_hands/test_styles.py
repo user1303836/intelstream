@@ -5,9 +5,15 @@ from math import isqrt
 
 import pytest
 
-from intelstream.hands.engine import BoxingEngine, EngineConfig
+from intelstream.hands.engine import CONDITIONING_FIXED_SCALE, BoxingEngine, EngineConfig
 from intelstream.hands.protocol import encode_snapshot
-from intelstream.hands.rules import PUNCH_RULES, STYLE_RULES, StyleRule, style_punch_rule
+from intelstream.hands.rules import (
+    MAX_SPEED,
+    PUNCH_RULES,
+    STYLE_RULES,
+    StyleRule,
+    style_punch_rule,
+)
 from intelstream.hands.types import (
     ActionKind,
     CombatEvent,
@@ -196,10 +202,14 @@ def test_a_miss_costs_a_slugger_more_and_tires_a_swarmer_less() -> None:
         fighter = engine.fighter("one")
         engine.step({"one": command(1, action=punch(PunchClass.HOOK, power=Power.POWER))})
         for _ in range(60):
-            conditioning = fighter.conditioning
+            # In thousandths of a point, as the engine counts it: a point is only a few misses.
+            before = (
+                fighter.conditioning * CONDITIONING_FIXED_SCALE - fighter.conditioning_remainder
+            )
             for event in engine.step().events:
                 if event.kind == "whiff":
-                    return event.amount, conditioning - fighter.conditioning
+                    after = fighter.conditioning * CONDITIONING_FIXED_SCALE
+                    return event.amount, before - (after - fighter.conditioning_remainder)
         raise AssertionError("the hook never missed")
 
     base_whiff = PUNCH_RULES[(PunchClass.HOOK, Target.HEAD, Power.POWER)].whiff_cost
@@ -228,9 +238,9 @@ def _conditioning_spent(style: FighterStyle, jabs: int, *, stamina: int, gap: in
 def test_a_swarmer_keeps_its_whole_conditioning_saving_however_little_each_punch_costs() -> None:
     saving = STYLE_RULES[SWARMER].conditioning_loss_percent
     assert saving < 100
-    # Sixty whiffed jabs: three points to throw each and two for the miss, for a balanced fighter.
+    # Sixty whiffed jabs: a point to throw each and two for the miss, for a balanced fighter.
     balanced = _conditioning_spent(BALANCED, 60, stamina=1000, gap=400)
-    assert balanced == 60 * (3 + 2)
+    assert balanced == 60 * (1 + 2)
     assert (
         abs(_conditioning_spent(SWARMER, 60, stamina=1000, gap=400) - balanced * saving // 100) <= 1
     )
@@ -328,18 +338,18 @@ def test_a_quick_fighter_still_reports_a_velocity_clients_accept() -> None:
     for sequence in range(1, 31):
         snapshot = engine.step({"one": command(sequence, move_x=1000)})
         fighter = snapshot.fighters[0]
-        assert -7 <= fighter.velocity_x <= 7
-        assert -7 <= fighter.velocity_y <= 7
+        assert -MAX_SPEED <= fighter.velocity_x <= MAX_SPEED
+        assert -MAX_SPEED <= fighter.velocity_y <= MAX_SPEED
 
 
 def test_a_quick_fighter_pushed_onto_a_corner_pad_still_reports_a_velocity_clients_accept() -> None:
-    # The pad keeps the speed along it, which for a fresh swarmer is 7.7 units a tick.
+    # The pad keeps the speed along it, which for a fresh swarmer is 10.3 units a tick.
     pad = styled_engine(SWARMER, SWARMER).fighter("one")
     pad.x, pad.y = 400, 340
-    pad.velocity_fixed_x, pad.velocity_fixed_y = -7700, 0
+    pad.velocity_fixed_x, pad.velocity_fixed_y = -10300, 0
     BoxingEngine._clamp_to_ring(pad)
-    assert (pad.velocity_x, pad.velocity_y) == (-7, 0)
-    assert pad.velocity_fixed_x == -7700
+    assert (pad.velocity_x, pad.velocity_y) == (-MAX_SPEED, 0)
+    assert pad.velocity_fixed_x == -10300
 
     # Walking out of a corner while the other swarmer walks him back onto the pad.
     engine = styled_engine(SWARMER, SWARMER)
@@ -358,7 +368,7 @@ def test_a_quick_fighter_pushed_onto_a_corner_pad_still_reports_a_velocity_clien
             }
         )
         velocities.update((f.velocity_x, f.velocity_y) for f in snapshot.fighters)
-    assert max(max(abs(x), abs(y)) for x, y in velocities) == 7
+    assert max(max(abs(x), abs(y)) for x, y in velocities) == MAX_SPEED
 
     # Random scrambles in every corner, both fighters fresh swarmers.
     rng = random.Random(4205227423)
@@ -380,8 +390,8 @@ def test_a_quick_fighter_pushed_onto_a_corner_pad_still_reports_a_velocity_clien
                 }
             )
             for fighter in snapshot.fighters:
-                assert -7 <= fighter.velocity_x <= 7
-                assert -7 <= fighter.velocity_y <= 7
+                assert -MAX_SPEED <= fighter.velocity_x <= MAX_SPEED
+                assert -MAX_SPEED <= fighter.velocity_y <= MAX_SPEED
 
 
 def test_a_counter_puncher_makes_a_miss_cost_more() -> None:
@@ -425,18 +435,23 @@ def test_a_counter_puncher_has_longer_to_counter_after_a_parry() -> None:
 
 
 def test_a_counter_puncher_has_a_wider_perfect_block() -> None:
+    # A power hook to the body winds up long enough for every lead tried to raise the guard after
+    # it starts.
+    hook = punch(PunchClass.HOOK, target=Target.BODY, power=Power.POWER)
+    startup = PUNCH_RULES[(PunchClass.HOOK, Target.BODY, Power.POWER)].startup
+
     def blocked(style: FighterStyle, lead: int) -> str:
         engine = styled_engine(BALANCED, style)
-        engine.step({"one": command(1, action=punch(PunchClass.STRAIGHT, power=Power.POWER))})
+        engine.step({"one": command(1, action=hook)})
         attack = engine.fighter("one").attack
         assert attack is not None
         while attack.age < attack.rule.startup - lead:
             engine.step()
-        engine.step({"two": command(1, defense=DefensivePose.GUARD_HIGH)})
+        engine.step({"two": command(1, defense=DefensivePose.GUARD_LOW)})
         return first_event(engine, {"block", "perfect_block", "hit"}).kind
 
     def earliest_perfect(style: FighterStyle) -> int:
-        return max(lead for lead in range(2, 12) if blocked(style, lead) == "perfect_block")
+        return max(lead for lead in range(2, startup) if blocked(style, lead) == "perfect_block")
 
     assert earliest_perfect(COUNTER) == earliest_perfect(BALANCED) + 1
 

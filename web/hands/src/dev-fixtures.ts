@@ -18,7 +18,7 @@ const fixtureStyle = (id: string): FighterStyle => {
 const base = (id: string): Draft => ({
   player_id: id, x: 0, y: 0, facing: id === "fixture-one" ? 1 : -1, facing_x: id === "fixture-one" ? 1000 : -1000, facing_y: 0, velocity_x: 0, velocity_y: 0,
   stance: id === "fixture-one" ? "orthodox" : "southpaw", style: fixtureStyle(id), defense: "guard_high",
-  stamina: 760, maximum_stamina: 1000, conditioning: 820, guard: 670, poise: 520,
+  stamina: 760, maximum_stamina: 1000, conditioning: 820, guard: 670, guard_broken: false, poise: 520,
   trauma: id === "fixture-two"
     ? { head: 420, body: 640, left_eye: 430, right_eye: 210, left_cut: 330, right_cut: 170, swelling: 280, bleeding: 380 }
     : { head: 150, body: 260, left_eye: 120, right_eye: 60, left_cut: 90, right_cut: 20, swelling: 100, bleeding: 70 },

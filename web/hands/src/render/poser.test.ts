@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { FIGHTER_RADIUS, RING_HALF_WIDTH, punchTiming } from "../manifest";
+import { FIGHTER_RADIUS, RING_HALF_WIDTH, punchTiming, recoveryCancelAge } from "../manifest";
 import { fighter as baseFighter } from "../test/fixtures";
 import type { FighterSnapshot } from "../types";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, remapPunchAge } from "./graph";
@@ -663,8 +663,9 @@ describe("own punch prediction", () => {
     const hook = serverPunch(idle, "theirs-hook", "hook", tick);
     const step = (fighter: FighterSnapshot): void => { tick += 0.5; graph.update(fighter, opponentFor("two"), 1 / 60, tick / 30, false, "full", tick, undefined); };
     graph.acknowledge(hook, true, [{ event_id: 1, tick: 307, kind: "hit", actor_id: "one", target_id: "two", amount: 30, detail: "hook:head", blood: 0, direction: 1, action_id: "theirs-hook" }]);
-    // The engine lets a chained follow-up cut a landed hook's recovery short from 7 + 3 + 12 / 2 ticks.
-    while (age(graph) < 16) step(hook);
+    // The engine lets a chained follow-up cut a landed hook's recovery short from its cancel age.
+    const cancelAge = recoveryCancelAge(punchTiming("hook", "head", "normal"));
+    while (age(graph) < cancelAge) step(hook);
     expect(state(graph).punchClass).toBe("hook");
     graph.predict({ ...jab, id: "own-3", class: "uppercut" }, 0, 30, 3);
     expect(state(graph).punchClass).toBe("uppercut");
@@ -692,20 +693,22 @@ describe("own punch prediction", () => {
   it("brings the glove back the way it went when the server never starts the punch", () => {
     const { graph } = makeGraph();
     const idle = facingOpponent(baseFighter("one"));
-    const timing = punchTiming("hook", "head", "normal");
+    // A power uppercut winds up long enough for the server's silence to tell before it would land.
+    const timing = punchTiming("uppercut", "head", "power");
     run(graph, idle, opponentFor("two"), 10, undefined);
-    graph.predict({ ...jab, id: "own-hook", class: "hook" }, 0, 30, 2);
+    graph.predict({ ...jab, id: "own-hook", class: "uppercut", power: "power" }, 0, 30, 2);
     let tick = 600;
     const step = (fighter: FighterSnapshot): void => { tick += 0.5; graph.update(fighter, opponentFor("two"), 1 / 60, tick / 30, false, "full", tick, undefined); };
     const ages: number[] = [];
     let frames = 0;
     while (active(graph) && frames < 200) { step(idle); frames += 1; if (active(graph)) ages.push(age(graph)); }
     expect(active(graph)).toBe(false);
-    expect(frames / 2).toBeLessThan(timing.startup + timing.active + timing.recovery - 4);
+    // Pulled back within a few ticks of the punch's own length.
+    expect(frames / 2).toBeLessThan(timing.startup + timing.active + timing.recovery + 4);
     const peak = ages.indexOf(Math.max(...ages));
     expect(Math.max(...ages)).toBeLessThan(timing.startup);
     for (let index = peak + 1; index < ages.length; index += 1) expect(ages[index]!).toBeLessThan(ages[index - 1]!);
-    step(serverPunch(idle, "own-hook", "hook", tick));
+    step(serverPunch(idle, "own-hook", "uppercut", tick));
     expect(active(graph)).toBe(true);
   });
 
@@ -901,10 +904,11 @@ describe("own punch prediction", () => {
   });
 
   it("leaves a follow-up to the server's clock when the punch in flight is not yet half way", () => {
-    // The server cancels the jab's recovery into a hook, and the news of it is five ticks ahead of the screen.
-    const soon = followUp(208, 5);
-    expect(soon.startedAt).toBeGreaterThanOrEqual(207);
-    expect(soon.startedAt).toBeLessThanOrEqual(208.5);
+    // The hook starts before the jab is half way through its nine ticks, and the news of it is three ticks
+    // ahead of the screen.
+    const soon = followUp(205, 3);
+    expect(soon.startedAt).toBeGreaterThanOrEqual(204);
+    expect(soon.startedAt).toBeLessThanOrEqual(205.5);
     expect(soon.starts).toBe(1);
   });
 
@@ -1655,9 +1659,9 @@ describe("per-frame allocations", () => {
 
 describe("transition sweep", () => {
   const PUNCHES = ["jab", "straight", "hook", "uppercut"] as const;
-  // 9.6 m/s: a straight's glove peaks near 7 m/s and a hook's elbow from the crowded guard of fighters this close
-  // near 9.2 m/s, while the snaps this guards against moved bones 0.5 m in a frame.
-  const MAX_STEP = 0.16;
+  // 14.4 m/s: with the quicker punches a hook's elbow from the crowded guard of fighters this close peaks near
+  // 12 m/s, while the snaps this guards against moved bones 0.5 m in a frame.
+  const MAX_STEP = 0.24;
 
   it("moves every bone smoothly, keeps the skin above the canvas and bends the knees forward from idle through punches, falls, get-ups, the corner stool and a taunt", () => {
     const { boxer, graph } = makeGraph();

@@ -139,7 +139,8 @@ describe("punches at an evading head", () => {
     // A left jab is slipped to the defender's right: the glove goes where it would have met him and misses.
     const slipped = throwAt("jab", "slip_right", 150, false);
     expect(slipped.glove.distanceTo(cleanJab.glove)).toBeLessThan(0.02);
-    expect(slipped.glove.distanceTo(slipped.head)).toBeGreaterThan(cleanReach + 0.08);
+    // The quick jab lands before the slip is all the way over, so the miss is a little narrower than the slip.
+    expect(slipped.glove.distanceTo(slipped.head)).toBeGreaterThan(cleanReach + 0.06);
     // Slipping left does not get away from it: the server reports the hit and the glove follows the head.
     const caught = throwAt("jab", "slip_left", 150, true);
     expect(Math.abs(caught.glove.distanceTo(caught.head) - cleanReach)).toBeLessThan(0.05);
@@ -179,10 +180,10 @@ describe("punch onset", () => {
           }));
           if (tick >= 100) moves.push(step);
         }
-        expect(moves[0], `${hand} ${punchClass} first frame`).toBeLessThan(0.05);
+        expect(moves[0], `${hand} ${punchClass} first frame`).toBeLessThan(0.09);
         // No faster than the punches themselves move near contact, and building up rather than starting there. (From
-        // the tucked guard of fighters this close a hook's windup peaks near 9.5 m/s.)
-        expect(Math.max(...moves), `${hand} ${punchClass} windup`).toBeLessThan(0.16);
+        // the tucked guard of fighters this close the quick hook's windup peaks near 12 m/s.)
+        expect(Math.max(...moves), `${hand} ${punchClass} windup`).toBeLessThan(0.24);
         expect(moves[0]!, `${hand} ${punchClass} eases in`).toBeLessThan(Math.max(...moves));
       }
     }

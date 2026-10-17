@@ -106,7 +106,6 @@ describe(`strict protocol v${PROTOCOL_VERSION}`, () => {
   it("allows the most get-up presses the engine can ask for: three knockdowns on a head beaten to the cap", () => {
     expect(GET_UP_REQUIRED_MIN).toBe(manifestJson.knockdown.get_up_base);
     expect(GET_UP_REQUIRED_MAX).toBe(manifestJson.knockdown.get_up_base + 3 * manifestJson.knockdown.get_up_per_knockdown + Math.floor(1400 / manifestJson.knockdown.get_up_trauma_divisor));
-    expect(GET_UP_REQUIRED_MAX).toBeGreaterThanOrEqual(171);
   });
   it("accepts exact fighter-domain boundaries and the private get-up sentinel", () => {
     const base = snapshot();

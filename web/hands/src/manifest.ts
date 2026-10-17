@@ -49,6 +49,18 @@ export const FIGHTER_RADIUS = manifestJson.ring.fighter_radius;
 export const EYE_SHUT_TRAUMA = manifestJson.blind_side.eye_threshold;
 /** A guard worn below this stops nothing: a block that takes it under breaks it, until it recovers past it. */
 export const GUARD_BLOCK_MINIMUM = manifestJson.guard.block_minimum;
+/** A broken guard stops nothing until it has come back this far. */
+export const GUARD_REARM = manifestJson.guard.rearm;
+/** A fresh fighter's walking speed in engine units a tick. */
+export const MAX_SPEED = manifestJson.movement.max_speed;
+/** The share of the way from his velocity to the one his input asks for that a fighter covers in a tick. */
+export const MOVE_BLEND_PERCENT = manifestJson.movement.blend_percent;
+/** His footspeed while a punch recovers, as a share of his speed. */
+export const RECOVERY_SPEED_PERCENT = manifestJson.movement.recovery_speed_percent;
+/** Ticks a slip, weave or pull lasts on the server, before a style's own. */
+export const EVASION_TICKS = manifestJson.evasion.ticks;
+/** Stamina the server asks of a slip, weave or pull before it starts one. */
+export const EVASION_STAMINA = manifestJson.evasion.stamina;
 export const CORNER_TREATMENTS = manifestJson.corner;
 export const RING_CORNER_REACH = manifestJson.corners.reach;
 /** Percent of a punch's recovery that must pass before a chained follow-up may cut the rest of it short. */

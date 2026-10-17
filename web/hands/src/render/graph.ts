@@ -1169,7 +1169,7 @@ export class BoxingGraph {
   /**
    * Age of the punch being played at which the server starts `press`, held behind it: the cancel age
    * when a combination may cut the recovery short (the engine's rule, with the fighters as shown),
-   * otherwise the tick after the punch ends.
+   * otherwise the tick the punch ends.
    */
   private followUpStartAge(press: OwnPress): number {
     const fighter = this.shownFighter;
@@ -1179,22 +1179,22 @@ export class BoxingGraph {
     if (fighter !== null && opponent !== null && cancelsRecovery(this.punchClass, landed, press.action, fighter.stamina, opponent.stunned_ticks > 0, fighter.style)) {
       return recoveryCancelAge(this.punchTiming);
     }
-    return this.punchTotalTicks + 1;
+    return this.punchTotalTicks;
   }
 
   /**
    * Starts the held press when the server would: at the cancel age when a combination cuts the
-   * recovery short, the tick after the punch ends otherwise, and at once if the punch in front of it
-   * was refused. Its startup is stretched by whatever lead the wait has not used up.
+   * recovery short, the tick the punch ends otherwise, and at once if the punch in front of it was
+   * refused. Its startup is stretched by whatever lead the wait has not used up.
    */
-  private releaseQueuedPress(simDt: number, ended: boolean): void {
+  private releaseQueuedPress(simDt: number): void {
     const press = this.ownQueued;
     if (press === null) return;
     press.waited += simDt * 30;
     if (this.punchActive && !this.ownPulled && this.punchAgeTicks < this.followUpStartAge(press)) return;
     this.ownQueued = null;
     this.retirePunch();
-    this.startOwnPunch(press, Math.max(ended ? 1 : 0, press.leadTicks - press.waited));
+    this.startOwnPunch(press, Math.max(0, press.leadTicks - press.waited));
   }
 
   /** Marks the punch being played as done so neither copy of it is started again. */
@@ -2022,7 +2022,7 @@ export class BoxingGraph {
       if (this.punchActive) this.retirePunch();
       this.ownQueued = null;
     }
-    this.releaseQueuedPress(simDt, ended);
+    this.releaseQueuedPress(simDt);
     // A punch the server says met the opponent, hit or block, follows his head wherever it went.
     const aimed = this.actionId ?? this.ownActionId;
     if (aimed !== this.aimActionId) {

@@ -1,4 +1,4 @@
-import { cancelsRecovery, punchStaminaCost, punchTiming, recoveryCancelAge, styledStaminaCost, styleTiming } from "./manifest";
+import { cancelsRecovery, MAX_SPEED, punchStaminaCost, punchTiming, recoveryCancelAge, styledStaminaCost, styleTiming } from "./manifest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { SnapshotBuffer } from "./interpolation";
@@ -13,19 +13,20 @@ import { PROTOCOL_VERSION, type EngineSnapshot, type FighterSnapshot, type Fight
 describe("local movement prediction", () => {
   it("mirrors the authoritative fatigue factor", () => {
     expect(fatigueFactor(1000, 0)).toBe(100);
-    expect(fatigueFactor(0, 0)).toBe(48);
-    expect(fatigueFactor(820, 350)).toBe(100 - 10 - 10);
+    expect(fatigueFactor(0, 0)).toBe(67);
+    expect(fatigueFactor(820, 350)).toBe(100 - 6 - 7);
   });
   it("accelerates toward the held direction and never exceeds the speed cap", () => {
     const still = { ...fighter("one"), conditioning: 1000 };
     const one = predictMovement(still, { moveX: 1000, moveY: 0, defense: "none" }, 1);
     const four = predictMovement(still, { moveX: 1000, moveY: 0, defense: "none" }, 4);
-    expect(one.dx).toBeCloseTo(3.5, 5);
+    // Three quarters of the way to the walking speed on the first tick.
+    expect(one.dx).toBeCloseTo(MAX_SPEED * 0.75, 5);
     expect(one.dy).toBe(0);
     expect(four.dx).toBeGreaterThan(one.dx);
-    expect(four.dx).toBeLessThanOrEqual(7 * 4);
+    expect(four.dx).toBeLessThanOrEqual(MAX_SPEED * 4);
     const diagonal = predictMovement(still, { moveX: 1000, moveY: 1000, defense: "none" }, 4);
-    expect(Math.hypot(diagonal.dx, diagonal.dy)).toBeLessThanOrEqual(7 * 4 + 1e-9);
+    expect(Math.hypot(diagonal.dx, diagonal.dy)).toBeLessThanOrEqual(MAX_SPEED * 4 + 1e-9);
     expect(diagonal.dx).toBeCloseTo(diagonal.dy, 9);
   });
   it("slows while guarding and stops entirely while punching, slipping, or down", () => {
@@ -59,7 +60,7 @@ describe("local movement prediction", () => {
     const guardDropped = predictMovement(stunned, { ...held, defense: "guard_high" }, 6);
     expect(guardDropped.dx).toBeCloseTo(stumbling.dx, 9);
   });
-  it("frees the fighter when the punch ends even though the snapshot still presents it", () => {
+  it("holds the fighter through a punch's active ticks, walks him slower while it recovers, and frees him when it ends though the snapshot still presents it", () => {
     const still = { ...fighter("one"), conditioning: 1000 };
     const hook = { ...still, action: "hook" as const, action_start_tick: 100, action_startup_ticks: 7, action_active_ticks: 3, action_recovery_ticks: 12 };
     const held = { moveX: 1000, moveY: 0, defense: "none" as const };
@@ -68,12 +69,16 @@ describe("local movement prediction", () => {
     expect(attackTicksRemaining(hook, 130)).toBe(0);
     expect(movementLocked(hook, 110)).toBe(true);
     expect(movementLocked(hook, 122)).toBe(false);
-    expect(predictMovement(hook, held, 4, 110)).toEqual({ dx: 0, dy: 0 });
+    // Recovery starts on tick 110: the four ticks after 105 are all startup and active.
+    expect(predictMovement(hook, held, 4, 105)).toEqual({ dx: 0, dy: 0 });
+    const recovering = predictMovement(hook, held, 4, 110);
+    expect(recovering.dx).toBeGreaterThan(0);
+    expect(recovering.dx).toBeLessThan(predictMovement(still, held, 4).dx * 0.7);
     expect(predictMovement(hook, held, 4, 130)).toEqual(predictMovement(still, held, 4));
-    // The engine frees him on the tick the punch ends, 122: three of the four ticks after 120.
+    // The engine frees him on the tick the punch ends, 122: three of the four ticks after 120 at full speed.
     const leaving = predictMovement(hook, held, 4, 120);
-    expect(leaving.dx).toBeGreaterThan(0);
-    expect(leaving.dx).toBeCloseTo(predictMovement(still, held, 3).dx);
+    expect(leaving.dx).toBeGreaterThan(recovering.dx);
+    expect(leaving.dx).toBeLessThan(predictMovement(still, held, 4).dx);
     const stumbling = predictMovement({ ...hook, stunned_ticks: 5 }, held, 4, 130);
     expect(stumbling.dx).toBeGreaterThan(0);
     expect(stumbling.dx).toBeLessThan(predictMovement(still, held, 4).dx);
@@ -89,13 +94,14 @@ describe("local movement prediction", () => {
     expect(stumble.dx).toBeLessThan(-10);
     expect(predictMovement(hook, held, 4, 200)).toEqual(stumble);
     // Once the stun is over, the punch it cut no longer holds him, for a player who saw him stunned in it.
+    // (The four ticks after 203 are the cut punch's startup and active ticks as the snapshot presents it.)
     const after = { ...hook, stunned_ticks: 0 };
-    expect(predictMovement(after, held, 4, 205)).toEqual({ dx: 0, dy: 0 });
-    expect(predictMovement(after, held, 4, 205, { cutActionId: "c1" })).toEqual(predictMovement({ ...after, action: null, action_id: null }, held, 4, 205));
+    expect(predictMovement(after, held, 4, 203)).toEqual({ dx: 0, dy: 0 });
+    expect(predictMovement(after, held, 4, 203, { cutActionId: "c1" })).toEqual(predictMovement({ ...after, action: null, action_id: null }, held, 4, 203));
     const prediction = new MovementPrediction();
     prediction.update(hook, held, false, 0, 4, 200, 1, 30);
-    expect(prediction.update(after, held, false, 1000, 4, 205, 1, 30).dx).toBeLessThan(-10);
-    expect(new MovementPrediction().update(after, held, false, 1000, 4, 205, 1, 30)).toEqual({ dx: 0, dy: 0 });
+    expect(prediction.update(after, held, false, 1000, 4, 203, 1, 30).dx).toBeLessThan(-10);
+    expect(new MovementPrediction().update(after, held, false, 1000, 4, 203, 1, 30)).toEqual({ dx: 0, dy: 0 });
   });
 
   it("holds the player's own fighter still for a parry's stagger once it hears of the parry, then walks him off", () => {
@@ -116,32 +122,32 @@ describe("local movement prediction", () => {
   it("predicts the timing and cost the engine will use", () => {
     const fresh = { ...fighter("one"), conditioning: 1000, stance: "orthodox" as const };
     const jab = { class: "jab" as const, hand: "left" as const, target: "head" as const, power: "normal" as const };
-    expect(predictedPunchTiming(fresh, jab)).toMatchObject({ startup: 3, active: 2, recovery: 7 });
-    expect(predictedPunchTiming(fresh, { ...jab, hand: "right" })).toMatchObject({ startup: 4, recovery: 7 });
-    expect(predictedPunchTiming({ ...fresh, stance: "southpaw" }, { ...jab, hand: "right" })).toMatchObject({ startup: 3 });
-    const tired = { ...fresh, conditioning: 640 };
-    expect(fatigueFactor(tired.conditioning, 0)).toBe(80);
-    expect(predictedPunchTiming(tired, jab)).toMatchObject({ startup: 4, recovery: 8 });
-    expect(predictedPunchTiming(tired, { ...jab, class: "hook", power: "power" })).toMatchObject({ startup: 11, active: 4, recovery: 18 });
-    expect(punchStaminaCost("jab", "head", "normal")).toBe(42);
-    expect(punchStaminaCost("jab", "body", "normal")).toBe(46);
-    expect(punchStaminaCost("jab", "head", "power")).toBe(65);
-    expect(punchStaminaCost("jab", "body", "power")).toBe(71);
+    expect(predictedPunchTiming(fresh, jab)).toMatchObject({ startup: 2, active: 2, recovery: 4 });
+    expect(predictedPunchTiming(fresh, { ...jab, hand: "right" })).toMatchObject({ startup: 3, recovery: 4 });
+    expect(predictedPunchTiming({ ...fresh, stance: "southpaw" }, { ...jab, hand: "right" })).toMatchObject({ startup: 2 });
+    const tired = { ...fresh, conditioning: 0 };
+    expect(fatigueFactor(tired.conditioning, 0)).toBe(67);
+    expect(predictedPunchTiming(tired, jab)).toMatchObject({ startup: 3, recovery: 5 });
+    expect(predictedPunchTiming(tired, { ...jab, class: "hook", power: "power" })).toMatchObject({ startup: 11, active: 3, recovery: 14 });
+    expect(punchStaminaCost("jab", "head", "normal")).toBe(25);
+    expect(punchStaminaCost("jab", "body", "normal")).toBe(27);
+    expect(punchStaminaCost("jab", "head", "power")).toBe(35);
+    expect(punchStaminaCost("jab", "body", "power")).toBe(37);
   });
 
   it("predicts the slow arm punch the engine throws for a fighter who cannot pay in full", () => {
     const fresh = { ...fighter("one"), conditioning: 1000, stance: "orthodox" as const };
     const jab = { class: "jab" as const, hand: "left" as const, target: "head" as const, power: "normal" as const };
-    expect(predictedPunchTiming({ ...fresh, stamina: 42 }, jab)).toMatchObject({ startup: 3, recovery: 7 });
-    expect(predictedPunchTiming({ ...fresh, stamina: 10 }, jab)).toMatchObject({ startup: 6, recovery: 12 });
-    expect(predictedPunchTiming({ ...fresh, conditioning: 640, stamina: 41 }, jab)).toMatchObject({ startup: 7, recovery: 13 });
-    expect(predictedPunchTiming({ ...fresh, conditioning: 640, stamina: 119 }, { ...jab, class: "hook", power: "power" })).toMatchObject({ startup: 14, recovery: 23 });
-    expect(predictedPunchTiming({ ...fresh, conditioning: 820, stamina: 0, trauma: { ...fresh.trauma, body: 350 } }, { class: "uppercut", hand: "right", target: "body", power: "normal" })).toMatchObject({ startup: 14, recovery: 21 });
+    expect(predictedPunchTiming({ ...fresh, stamina: 25 }, jab)).toMatchObject({ startup: 2, recovery: 4 });
+    expect(predictedPunchTiming({ ...fresh, stamina: 10 }, jab)).toMatchObject({ startup: 3, recovery: 6 });
+    expect(predictedPunchTiming({ ...fresh, conditioning: 0, stamina: 24 }, jab)).toMatchObject({ startup: 4, recovery: 7 });
+    expect(predictedPunchTiming({ ...fresh, conditioning: 0, stamina: 64 }, { ...jab, class: "hook", power: "power" })).toMatchObject({ startup: 12, recovery: 16 });
+    expect(predictedPunchTiming({ ...fresh, conditioning: 820, stamina: 0, trauma: { ...fresh.trauma, body: 350 } }, { class: "uppercut", hand: "right", target: "body", power: "normal" })).toMatchObject({ startup: 7, recovery: 11 });
     // No combination discount for a tired punch, inside the window or out of it.
     const afterJab = { ...fresh, conditioning: 108, stamina: 50, action: "jab" as const, action_start_tick: 100, action_startup_ticks: 3, action_active_ticks: 2, action_recovery_ticks: 7 };
     const straight = { class: "straight" as const, hand: "right" as const, target: "head" as const, power: "power" as const };
-    expect(predictedPunchTiming(afterJab, straight, 110)).toMatchObject({ startup: 18, recovery: 30 });
-    expect(predictedPunchTiming(afterJab, straight, 125)).toMatchObject({ startup: 18, recovery: 30 });
+    expect(predictedPunchTiming(afterJab, straight, 110)).toMatchObject({ startup: 10, recovery: 14 });
+    expect(predictedPunchTiming(afterJab, straight, 125)).toMatchObject({ startup: 10, recovery: 14 });
   });
 
   it("predicts the startup and recovery the engine gives every punch, its own cost taken off the conditioning first", () => {
@@ -184,11 +190,12 @@ describe("local movement prediction", () => {
   });
 
   it("charges a punch thrown inside the combination window at the engine's discount", () => {
-    const afterJab = { ...fighter("one"), stance: "orthodox" as const, conditioning: 108, action: "jab" as const, action_start_tick: 100, action_startup_ticks: 3, action_active_ticks: 2, action_recovery_ticks: 7 };
-    const straight = { class: "straight" as const, hand: "right" as const, target: "head" as const, power: "power" as const };
-    expect(predictedPunchTiming(afterJab, straight, 110)).toMatchObject({ startup: 15, recovery: 25 });
-    expect(predictedPunchTiming(afterJab, straight, 125)).toMatchObject({ startup: 16, recovery: 26 });
-    expect(predictedPunchTiming(afterJab, { ...straight, class: "uppercut" }, 110)).toEqual(predictedPunchTiming(afterJab, { ...straight, class: "uppercut" }, 125));
+    // The discount spares a point of conditioning, which on the edge of a fatigue step is a tick of startup.
+    const afterJab = { ...fighter("one"), stance: "orthodox" as const, conditioning: 163, action: "jab" as const, action_start_tick: 100, action_startup_ticks: 3, action_active_ticks: 2, action_recovery_ticks: 7 };
+    const hook = { class: "hook" as const, hand: "left" as const, target: "head" as const, power: "power" as const };
+    expect(predictedPunchTiming(afterJab, hook, 110)).toMatchObject({ startup: 10, recovery: 13 });
+    expect(predictedPunchTiming(afterJab, hook, 125)).toMatchObject({ startup: 11, recovery: 13 });
+    expect(predictedPunchTiming(afterJab, { ...hook, class: "uppercut", hand: "right" }, 110)).toEqual(predictedPunchTiming(afterJab, { ...hook, class: "uppercut", hand: "right" }, 125));
   });
 
   it("keeps the predicted fighter inside the ropes and corner pads and clear of the opponent", () => {
@@ -213,7 +220,8 @@ describe("local movement prediction", () => {
   it("carries existing velocity forward when the stick is released", () => {
     const moving = { ...fighter("one"), conditioning: 1000, velocity_x: 6 };
     const coast = predictMovement(moving, { moveX: 0, moveY: 0, defense: "none" }, 3);
-    expect(coast.dx).toBeCloseTo(3 + 1.5 + 0.75, 5);
+    // A quarter of the velocity is kept each tick.
+    expect(coast.dx).toBeCloseTo(1.5 + 0.375 + 0.09375, 5);
   });
 
   it("takes a velocity past the walking speed clamped to it rather than ending the bout, and seeds the step from that", () => {
@@ -223,17 +231,17 @@ describe("local movement prediction", () => {
       if (message.type !== "snapshot") throw new Error(message.type);
       return message.payload.fighters[0];
     };
-    // A fresh swarmer pushed back onto a corner pad keeps 7.7 units a tick along it.
-    const swarmer = decode({ ...base.fighters[0], style: "swarmer", conditioning: 1000, velocity_x: 8, velocity_y: -9 });
-    expect([swarmer.velocity_x, swarmer.velocity_y]).toEqual([7, -7]);
+    // A fresh swarmer pushed back onto a corner pad keeps 10.3 units a tick along it.
+    const swarmer = decode({ ...base.fighters[0], style: "swarmer", conditioning: 1000, velocity_x: 11, velocity_y: -12 });
+    expect([swarmer.velocity_x, swarmer.velocity_y]).toEqual([MAX_SPEED, -MAX_SPEED]);
     const coast = predictMovement(swarmer, { moveX: 0, moveY: 0, defense: "none" }, 1);
-    expect(Math.hypot(coast.dx, coast.dy)).toBeLessThanOrEqual(7 * 1.1);
+    expect(Math.hypot(coast.dx, coast.dy)).toBeLessThanOrEqual(MAX_SPEED * 1.1);
     expect(() => decode({ ...base.fighters[0], velocity_x: 7.5 })).toThrow(ProtocolError);
   });
 
   it("mirrors the engine's recovery cancel: a landed, chained, affordable follow-up on a defender who is not stunned", () => {
-    expect(recoveryCancelAge(punchTiming("straight", "head", "normal"))).toBe(6 + 2 + 5);
-    expect(recoveryCancelAge(punchTiming("hook", "head", "normal"))).toBe(7 + 3 + 6);
+    expect(recoveryCancelAge(punchTiming("straight", "head", "normal"))).toBe(4 + 2 + 3);
+    expect(recoveryCancelAge(punchTiming("hook", "head", "normal"))).toBe(5 + 2 + 3);
     expect(recoveryCancelAge({ startup: 4, active: 2, recovery: 9 })).toBe(4 + 2 + 4);
     const hook = { class: "hook" as const, target: "head" as const, power: "normal" as const };
     expect(cancelsRecovery("straight", true, hook, 900, false)).toBe(true);
@@ -361,13 +369,13 @@ describe("walking behind a round trip", () => {
       it(`sets off on the press and stops on the release at ${rtt} ms round trip (flush ${phase} ms off the tick)`, () => {
         const frames = walk(rtt, phase);
         const at = (ms: number): number => frames.find((frame) => frame.t >= ms)!.drawn;
-        // Walking speed is 7 units a tick, 210 a second.
+        // Walking speed is MAX_SPEED units a tick, thirty times that a second.
         expect(at(PRESS_MS + 150) - at(PRESS_MS)).toBeGreaterThan(20);
         const stallEnd = PRESS_MS + rtt + 100;
-        expect(((at(stallEnd) - at(PRESS_MS + 150)) / (stallEnd - PRESS_MS - 150)) * 1000).toBeGreaterThan(0.75 * 210);
+        expect(((at(stallEnd) - at(PRESS_MS + 150)) / (stallEnd - PRESS_MS - 150)) * 1000).toBeGreaterThan(0.75 * MAX_SPEED * 30);
         const afterRelease = frames.filter((frame) => frame.t >= RELEASE_MS).map((frame) => frame.drawn);
         expect(Math.max(...afterRelease) - at(RELEASE_MS)).toBeLessThan(8);
-        for (let index = 1; index < frames.length; index += 1) expect(frames[index - 1]!.drawn - frames[index]!.drawn).toBeLessThan(2.5);
+        for (let index = 1; index < frames.length; index += 1) expect(frames[index - 1]!.drawn - frames[index]!.drawn).toBeLessThan(MAX_SPEED * 0.36);
         expect(Math.abs(frames.at(-1)!.drawn - frames.at(-1)!.server)).toBeLessThan(0.5);
       });
     }
@@ -442,11 +450,14 @@ describe("the player's own defence", () => {
     expect(bell.pose(20)).toBeNull();
   });
 
-  it("matches the engine's evasion length and stamina gate", () => {
+  it("matches the engine's evasion length and stamina gate, both read from the manifest they share", () => {
     // Tests run from the client's package root, two levels below the repository's.
     const engine = readFileSync(resolve(process.cwd(), "../../src/intelstream/hands/engine.py"), "utf8");
-    expect(engine).toContain(`EVASION_TICKS: Final = ${EVASION_TICKS}`);
-    expect(engine).toContain(`if fighter.stamina < ${EVASION_STAMINA}:`);
+    const rules = readFileSync(resolve(process.cwd(), "../../src/intelstream/hands/rules.py"), "utf8");
+    expect(rules).toContain('EVASION_TICKS: int = _MANIFEST["evasion"]["ticks"]');
+    expect(rules).toContain('EVASION_STAMINA: int = _MANIFEST["evasion"]["stamina"]');
+    expect(engine).toContain("if fighter.stamina < EVASION_STAMINA:");
     expect(engine).toContain("fighter.evasion_ticks = EVASION_TICKS + fighter.style_rule.evasion_ticks");
+    expect([EVASION_TICKS, EVASION_STAMINA]).toEqual([7, 15]);
   });
 });

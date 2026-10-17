@@ -10,7 +10,7 @@ describe("hurt vision", () => {
     expect(rockedLevel({ ...fighter("one"), stunned_ticks: 90 }, "fight")).toBe(1);
     expect(rockedLevel({ ...fighter("one"), stunned_ticks: ROCKED_BASE_TICKS }, "fight")).toBeCloseTo(ROCKED_BASE_TICKS / ROCKED_MAX_TICKS);
     expect(rockedLevel({ ...fighter("one"), poise: 75 }, "fight")).toBeCloseTo(0.3);
-    expect(rockedLevel({ ...fighter("one"), poise: 75, stunned_ticks: 30 }, "fight")).toBeCloseTo(30 / ROCKED_MAX_TICKS);
+    expect(rockedLevel({ ...fighter("one"), poise: 75, stunned_ticks: ROCKED_MAX_TICKS - 2 }, "fight")).toBeCloseTo((ROCKED_MAX_TICKS - 2) / ROCKED_MAX_TICKS);
   });
 
   it("leaves a flinch from an ordinary clean shot alone", () => {

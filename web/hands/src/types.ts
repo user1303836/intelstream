@@ -34,7 +34,7 @@ export interface FighterSnapshot {
   readonly player_id: string; readonly x: number; readonly y: number; readonly facing: number;
   readonly facing_x: number; readonly facing_y: number;
   readonly velocity_x: number; readonly velocity_y: number; readonly stance: Stance; readonly style: FighterStyle; readonly defense: DefensivePose;
-  readonly stamina: number; readonly maximum_stamina: number; readonly conditioning: number; readonly guard: number;
+  readonly stamina: number; readonly maximum_stamina: number; readonly conditioning: number; readonly guard: number; readonly guard_broken: boolean;
   readonly poise: number; readonly trauma: TraumaSnapshot; readonly knockdowns: number; readonly warnings: number;
   readonly deductions: number; readonly stunned_ticks: number; readonly is_downed: boolean;
   readonly action: PunchClass | null; readonly action_hand: Hand | null; readonly action_target: Target | null;

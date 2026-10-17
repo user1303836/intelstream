@@ -50,7 +50,7 @@ STYLE_CONDITIONING = (0, 260, 553, 820, 1000)
 BODY_TRAUMA = (0, 900)
 
 
-def _engine(styles: tuple[FighterStyle, FighterStyle], gap: int) -> BoxingEngine:
+def _engine(styles: tuple[FighterStyle, FighterStyle], gap: int, centre: int = 0) -> BoxingEngine:
     engine = BoxingEngine(
         match_id="parity",
         activity_instance_id="parity",
@@ -61,8 +61,8 @@ def _engine(styles: tuple[FighterStyle, FighterStyle], gap: int) -> BoxingEngine
         config=EngineConfig(countdown_ticks=0, flash_ko_enabled=False),
         styles=styles,
     )
-    engine.fighter("one").x = -(gap // 2)
-    engine.fighter("two").x = gap - gap // 2
+    engine.fighter("one").x = centre - gap // 2
+    engine.fighter("two").x = centre + gap - gap // 2
     return engine
 
 
@@ -135,8 +135,10 @@ def _trace(
 
 def movement_traces() -> dict[str, list[dict[str, Any]]]:
     back = InputCommand(0, 0, -1000, 0)
+    # Off to the side he backs away from, so 45 ticks of footwork never reach the ropes.
+    centre = 200
     straight = PunchAction(Hand.RIGHT, PunchClass.STRAIGHT, Target.HEAD, Power.POWER)
-    parried = _engine((FighterStyle.BALANCED, FighterStyle.BALANCED), 130)
+    parried = _engine((FighterStyle.BALANCED, FighterStyle.BALANCED), 130, centre)
     contact = 1 + PUNCH_RULES[(PunchClass.STRAIGHT, Target.HEAD, Power.POWER)].startup
 
     def parry(tick: int) -> dict[str, InputCommand]:
@@ -149,7 +151,7 @@ def movement_traces() -> dict[str, list[dict[str, Any]]]:
 
     hook = PunchAction(Hand.LEFT, PunchClass.HOOK, Target.HEAD, Power.NORMAL)
     jab = PunchAction(Hand.LEFT, PunchClass.JAB, Target.HEAD, Power.NORMAL)
-    flinched = _engine((FighterStyle.BALANCED, FighterStyle.BALANCED), 100)
+    flinched = _engine((FighterStyle.BALANCED, FighterStyle.BALANCED), 100, centre)
 
     def counter(tick: int) -> dict[str, InputCommand]:
         # His hook is still winding up when the other man's quicker jab lands on it.
@@ -160,7 +162,7 @@ def movement_traces() -> dict[str, list[dict[str, Any]]]:
             "two": InputCommand(tick, tick, actions=(jab,)),
         }
 
-    finished = _engine((FighterStyle.BALANCED, FighterStyle.BALANCED), 300)
+    finished = _engine((FighterStyle.BALANCED, FighterStyle.BALANCED), 300, centre)
 
     def alone(tick: int) -> dict[str, InputCommand]:
         if tick != 1:

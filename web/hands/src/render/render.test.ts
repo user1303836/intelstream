@@ -1449,6 +1449,24 @@ describe("the guard bar", () => {
       expect(drawn(width, height, [GUARD_BLOCK_MINIMUM, 650]).strokes.filter((style) => style === red)).toHaveLength(0);
     }
   });
+
+  it("says a guard is broken and keeps it spent until it is back past the rearm mark", async () => {
+    const { GUARD_REARM } = await import("../manifest");
+    const players = Object.fromEntries(publicPlayers.map((player) => [player.id, player]));
+    const labels: string[] = [];
+    let stroked = 0;
+    const ctx = Object.assign(mockHudContext([]), { fillText: (text: string) => labels.push(text), stroke: () => { stroked += 1; } });
+    const broken = { ...fighter("one", -100), guard: GUARD_REARM - 1, guard_broken: true };
+    drawHud(ctx, 1280, 720, { ...snapshot(), fighters: [broken, fighter("two", 100)] as const }, players, "one", null, 0, 30);
+    expect(labels).toContain("GUARD BROKEN");
+    const spent = stroked;
+    labels.length = 0;
+    stroked = 0;
+    drawHud(ctx, 1280, 720, { ...snapshot(), fighters: [{ ...broken, guard_broken: false }, fighter("two", 100)] as const }, players, "one", null, 0, 30);
+    expect(labels).not.toContain("GUARD BROKEN");
+    // The same guard, no longer broken, is past the block line and draws no spent hatching.
+    expect(stroked).toBeLessThan(spent);
+  });
 });
 
 describe("the line under a fighter's name", () => {

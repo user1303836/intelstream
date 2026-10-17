@@ -6,7 +6,8 @@ import { PROTOCOL_VERSION, type CombatEvent, type EngineSnapshot, type FighterSn
 import { CommentaryDirector, crowdTension, fillLine, holdFor, introductionScript, punchName, recordSpoken, spokenNumber, spokenSeconds, type CommentaryHooks } from "./commentary";
 
 /** The opening countdown the room gives the introductions, in ticks. */
-const OPENING_TICKS = manifest.countdown.opening_ticks;
+// A countdown with time to introduce both corners. The engine's own opening is too short for any of it, and the cards carry the introductions.
+const OPENING_TICKS = 240;
 
 const players: Record<string, PublicPlayer> = {
   one: { id: "one", name: "Azure Vector", avatar: null, rating: 1512, connected: true },
@@ -226,8 +227,10 @@ describe("the ring announcer", () => {
     // The computer is introduced from its own corner, from the first snapshot of the countdown a player sees.
     const contender = { name: "Marcus 'Hammer' Reed", record: { wins: 19, losses: 5, draws: 1, knockouts: 12 }, style: "swarmer" } as const;
     expect(introductionScript([{ name: "Azure Vector", record: records[1], style: "boxer" }, contender], (OPENING_TICKS - 1) / 30)).toEqual(["In the blue corner, Azure Vector!", "And in the red corner, Marcus 'Hammer' Reed!"]);
-    // A late arrival with too little countdown left hears nothing rather than half a name.
+    // A late arrival with too little countdown left hears nothing rather than half a name, and so does everyone in the
+    // engine's quick opening countdown.
     expect(introductionScript([{ name: "Azure Vector", record: undefined, style: undefined }, { name: "Crimson Geometry", record: undefined, style: undefined }], 3)).toEqual([]);
+    expect(introductionScript([{ name: "Azure Vector", record: undefined, style: undefined }, { name: "Crimson Geometry", record: undefined, style: undefined }], manifest.countdown.opening_ticks / 30)).toEqual([]);
   });
 
   it("estimates the announcer's voice on the slow side", () => {

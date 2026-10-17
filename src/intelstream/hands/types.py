@@ -168,6 +168,7 @@ class FighterSnapshot:
     maximum_stamina: int
     conditioning: int
     guard: int
+    guard_broken: bool
     poise: int
     trauma: TraumaSnapshot
     knockdowns: int

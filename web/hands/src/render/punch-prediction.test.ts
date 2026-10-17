@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { recoveryCancelAge, totalTicks } from "../manifest";
 import { predictedPunchTiming } from "../prediction";
 import { fighter as baseFighter } from "../test/fixtures";
 import type { FighterSnapshot, PunchAction, PunchClass } from "../types";
@@ -240,7 +241,7 @@ describe("follow-up pressed during a punch", () => {
   const hookTiming = predictedPunchTiming(idle, hook);
   const T0 = 300;
   const thrown = serverPunch(idle, "s1", straight, T0);
-  const contact = (kind: string, actionId = "s1") => ({ event_id: 7, tick: T0 + 6, kind, actor_id: kind.includes("block") ? "two" : "one", target_id: kind.includes("block") ? "one" : "two", amount: 30, detail: "straight:head", blood: 0, direction: 1, action_id: actionId });
+  const contact = (kind: string, actionId = "s1") => ({ event_id: 7, tick: T0 + straightTiming.startup, kind, actor_id: kind.includes("block") ? "two" : "one", target_id: kind.includes("block") ? "one" : "two", amount: 30, detail: "straight:head", blood: 0, direction: 1, action_id: actionId });
 
   /**
    * Plays a straight from T0 and presses a hook at `pressAge` with a lead of 4 ticks; the snapshots
@@ -249,7 +250,7 @@ describe("follow-up pressed during a punch", () => {
    */
   function followUp(serverStart: number, options: { contacts?: ReturnType<typeof contact>[]; stunnedUntil?: number; pressAge?: number } = {}): { start: number; contact: number } {
     const graph = makeGraph();
-    const pressAge = options.pressAge ?? 10;
+    const pressAge = options.pressAge ?? 7;
     const served = serverPunch(idle, "own-hook", hook, serverStart);
     let tick = T0 - 0.5;
     let start = NaN;
@@ -268,69 +269,74 @@ describe("follow-up pressed during a punch", () => {
   }
   const near = (actual: number, expected: number): void => expect(Math.abs(actual - expected)).toBeLessThanOrEqual(1);
 
-  it("waits for a whiffed straight to end and starts the hook the tick after, as the engine does", () => {
-    expect(straightTiming).toMatchObject({ startup: 6, active: 2, recovery: 10 });
-    // Pressed at 56% of the straight, the engine starts the hook at T0 + 19 and lands it 7 ticks later.
-    const { start, contact: reached } = followUp(T0 + 19);
-    expect(start).toBeGreaterThanOrEqual(T0 + 17.5);
-    near(reached, T0 + 19 + hookTiming.startup);
+  // The straight runs 12 ticks and a chained follow-up may cut its recovery short from age 9. A press
+  // at age p with the lead of 4 reaches the server at T0 + p + 4.
+  const ends = T0 + totalTicks(straightTiming);
+  const cancels = T0 + recoveryCancelAge(straightTiming);
+
+  it("waits for a whiffed straight to end and starts the hook on the tick it ends, as the engine does", () => {
+    expect(straightTiming).toMatchObject({ startup: 4, active: 2, recovery: 6 });
+    // Pressed at 58% of the straight, the engine starts the hook as it ends and lands it at the hook's startup.
+    const { start, contact: reached } = followUp(ends);
+    expect(start).toBeGreaterThanOrEqual(ends - 1.5);
+    near(reached, ends + hookTiming.startup);
   });
 
   it("cuts a landed straight's recovery short at its cancel age, or when the press arrives after it", () => {
-    // Cancel age 6 + 2 + 5: pressed at age 8 the hook reaches the server before it and starts there.
-    near(followUp(T0 + 13, { contacts: [contact("hit")], pressAge: 8 }).contact, T0 + 13 + hookTiming.startup);
-    // Pressed at age 10 with a lead of 4 it reaches the server at T0 + 14 and starts at once.
-    near(followUp(T0 + 14, { contacts: [contact("hit")], pressAge: 10 }).contact, T0 + 14 + hookTiming.startup);
+    // Pressed at age 4 the hook reaches the server before the cancel age and starts there.
+    near(followUp(cancels, { contacts: [contact("hit")], pressAge: 4 }).contact, cancels + hookTiming.startup);
+    // Pressed at age 6 with a lead of 4 it reaches the server after the cancel age and starts at once.
+    near(followUp(T0 + 10, { contacts: [contact("hit")], pressAge: 6 }).contact, T0 + 10 + hookTiming.startup);
     // An ordinary block lets the combination through too.
-    near(followUp(T0 + 13, { contacts: [contact("block"), contact("hit")], pressAge: 8 }).contact, T0 + 13 + hookTiming.startup);
+    near(followUp(cancels, { contacts: [contact("block"), contact("hit")], pressAge: 4 }).contact, cancels + hookTiming.startup);
   });
 
   it("does not cut the recovery short for a parried straight or a contact that belongs to another punch", () => {
     for (const contacts of [[contact("perfect_block"), contact("hit")], [contact("hit", "s0")]]) {
-      const { start, contact: reached } = followUp(T0 + 19, { contacts, pressAge: 8 });
-      expect(start).toBeGreaterThanOrEqual(T0 + 17.5);
-      near(reached, T0 + 19 + hookTiming.startup);
+      const { start, contact: reached } = followUp(ends, { contacts, pressAge: 4 });
+      expect(start).toBeGreaterThanOrEqual(ends - 1.5);
+      near(reached, ends + hookTiming.startup);
     }
   });
 
   it("holds the follow-up while the defender is stunned and cuts in once he is not", () => {
-    const { start, contact: reached } = followUp(T0 + 15, { contacts: [contact("hit")], pressAge: 8, stunnedUntil: T0 + 15 });
-    expect(start).toBeGreaterThanOrEqual(T0 + 15);
-    near(reached, T0 + 15 + hookTiming.startup);
-    const held = followUp(T0 + 19, { contacts: [contact("hit")], pressAge: 8, stunnedUntil: T0 + 40 });
-    expect(held.start).toBeGreaterThanOrEqual(T0 + 17.5);
-    near(held.contact, T0 + 19 + hookTiming.startup);
+    const { start, contact: reached } = followUp(T0 + 11, { contacts: [contact("hit")], pressAge: 4, stunnedUntil: T0 + 11 });
+    expect(start).toBeGreaterThanOrEqual(T0 + 11);
+    near(reached, T0 + 11 + hookTiming.startup);
+    const held = followUp(ends, { contacts: [contact("hit")], pressAge: 4, stunnedUntil: T0 + 40 });
+    expect(held.start).toBeGreaterThanOrEqual(ends - 1.5);
+    near(held.contact, ends + hookTiming.startup);
   });
 
   it("plays the held press from the server's timeline when the server starts it sooner than expected", () => {
-    // No contact reached the client, so the graph expects the hook after the straight; the server cut in at T0 + 14.
-    const { start, contact: reached } = followUp(T0 + 14, { pressAge: 10 });
-    expect(start).toBe(T0 + 14);
-    near(reached, T0 + 14 + hookTiming.startup);
+    // No contact reached the client, so the graph expects the hook as the straight ends; the server cut in at T0 + 10.
+    const { start, contact: reached } = followUp(T0 + 10, { pressAge: 6 });
+    expect(start).toBe(T0 + 10);
+    near(reached, T0 + 10 + hookTiming.startup);
   });
 
   it("keeps only the newest held press while the punch in front still holds it, and forgets one the server drops", () => {
     const graph = makeGraph();
     const step = stepper(graph, T0 - 0.5);
     let tick = T0;
-    while (tick < T0 + 8) tick = step(thrown);
+    while (tick < ends - 7) tick = step(thrown);
     graph.predict(hook, tick / 30, 30, 4, hookTiming);
     const uppercut = press("own-upper", "uppercut", "right");
     graph.predict(uppercut, tick / 30 + 0.1, 30, 4, predictedPunchTiming(idle, uppercut));
-    while (tick < T0 + 16) tick = step(thrown);
+    while (tick < ends - 3) tick = step(thrown);
     // Three ticks from the end, a press arrives after the held one has started: it is not predicted.
     graph.predict(press("own-late", "jab", "left"), tick / 30, 30, 4, predictedPunchTiming(idle, press("own-late", "jab", "left")));
-    while (tick < T0 + 19.5) tick = step(thrown);
+    while (tick < ends + 0.5) tick = step(thrown);
     expect(state(graph).ownActionId).toBe("own-upper");
     expect(state(graph).punchClass).toBe("uppercut");
     const dropped = makeGraph();
     const next = stepper(dropped, T0 - 0.5);
     tick = T0;
-    while (tick < T0 + 8) tick = next(thrown);
+    while (tick < ends - 7) tick = next(thrown);
     dropped.predict(hook, tick / 30, 30, 4, hookTiming);
     // The server got the frame and holds nothing: a guard raised in the same tick cleared it.
     dropped.acknowledge({ ...thrown, last_input_sequence: 51, queued_actions: 0 }, true, [], (actionId) => (actionId === "own-hook" ? 51 : null));
-    while (tick < T0 + 24) tick = next(thrown);
+    while (tick < ends + 4) tick = next(thrown);
     expect(state(dropped).ownActionId).toBeNull();
     expect(state(dropped).punchClass).toBe("straight");
   });

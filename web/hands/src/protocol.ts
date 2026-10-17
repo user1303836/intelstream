@@ -6,7 +6,7 @@ import {
   type Power, type PublicPlayer, type PunchClass, type PunchTotals, type SemanticAction, type ServerMessage,
   type Stance, type Target, type TokenResponse, type TraumaSnapshot,
 } from "./types";
-import { GET_UP_REQUIRED_MAX, GET_UP_REQUIRED_MIN } from "./manifest";
+import { GET_UP_REQUIRED_MAX, GET_UP_REQUIRED_MIN, MAX_SPEED } from "./manifest";
 
 export class ProtocolError extends Error { override name = "ProtocolError" }
 const MAX_INT = 2_147_483_647;
@@ -123,7 +123,7 @@ function trauma(value: unknown): TraumaSnapshot {
   };
 }
 /** The engine reports a fighter's velocity within his walking speed. */
-const MAX_REPORTED_SPEED = 7;
+const MAX_REPORTED_SPEED = MAX_SPEED;
 /** The velocity only seeds the movement prediction, so one past the walking speed is clamped rather than ending the bout for everyone in the room. */
 function velocity(value: unknown, name: string): number {
   return Math.max(-MAX_REPORTED_SPEED, Math.min(MAX_REPORTED_SPEED, integer(value, name, -MAX_INT, MAX_INT)));
@@ -132,7 +132,7 @@ function fighter(value: unknown): FighterSnapshot {
   const o = object(value, "fighter");
   exact(o, [
     "player_id", "x", "y", "facing", "facing_x", "facing_y", "velocity_x", "velocity_y", "stance", "style", "defense",
-    "stamina", "maximum_stamina", "conditioning", "guard", "poise", "trauma", "knockdowns",
+    "stamina", "maximum_stamina", "conditioning", "guard", "guard_broken", "poise", "trauma", "knockdowns",
     "warnings", "deductions", "stunned_ticks", "is_downed", "action", "action_hand",
     "action_target", "action_power", "action_id", "action_key", "action_start_tick",
     "action_startup_ticks", "action_active_ticks", "action_recovery_ticks", "action_contact_tick",
@@ -164,7 +164,7 @@ function fighter(value: unknown): FighterSnapshot {
     facing, facing_x: facingX, facing_y: facingY, velocity_x: velocity(o.velocity_x, "velocity_x"), velocity_y: velocity(o.velocity_y, "velocity_y"),
     stance: oneOf<Stance>(o.stance, stances, "stance"), style: oneOf<FighterStyle>(o.style, FIGHTER_STYLES, "style"), defense: oneOf<DefensivePose>(o.defense, defenses, "defense"),
     stamina, maximum_stamina: maximumStamina,
-    conditioning: integer(o.conditioning, "conditioning", 0, 1000), guard: integer(o.guard, "guard", 0, 700), poise: integer(o.poise, "poise", 0, 600),
+    conditioning: integer(o.conditioning, "conditioning", 0, 1000), guard: integer(o.guard, "guard", 0, 700), guard_broken: bool(o.guard_broken, "guard_broken"), poise: integer(o.poise, "poise", 0, 600),
     trauma: trauma(o.trauma), knockdowns: integer(o.knockdowns, "knockdowns", 0, 3), warnings: integer(o.warnings, "warnings", 0, 3), deductions: integer(o.deductions, "deductions", 0, 1),
     stunned_ticks: integer(o.stunned_ticks, "stunned_ticks", 0, 90), is_downed: bool(o.is_downed, "is_downed"),
     action, action_hand: actionHand, action_target: actionTarget, action_power: actionPower,

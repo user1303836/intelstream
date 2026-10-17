@@ -9,6 +9,8 @@ from math import isqrt
 from typing import Final
 
 from intelstream.hands.rules import (
+    ACTION_BUFFER_TICKS,
+    BLEEDING_CUT_DIVISOR,
     BLIND_SIDE_EYE_THRESHOLD,
     BLIND_SIDE_IMPACT_PERCENT,
     BLOCK_POISE_PERCENT,
@@ -25,8 +27,11 @@ from intelstream.hands.rules import (
     COMPATIBLE_COMBO_CHAINS,
     CORNER_TREATMENTS,
     COUNTDOWN_TICKS,
+    CUT_OPENS_EYE,
     CUT_PER_DAMAGE_PERCENT,
     DEFAULT_ROUNDS,
+    EVASION_STAMINA,
+    EVASION_TICKS,
     EYE_TRAUMA_PER_DAMAGE_PERCENT,
     FACING_SCALE,
     FACING_TURN_COS,
@@ -42,10 +47,12 @@ from intelstream.hands.rules import (
     GET_UP_STUN_TICKS,
     GET_UP_TRAUMA_DIVISOR,
     GUARD_BLOCK_MINIMUM,
+    GUARD_BREAK_STUN_TICKS,
     GUARD_DAMAGE_PERCENT,
-    GUARD_HELD_REGEN_EVERY_TICKS,
+    GUARD_HELD_DRAIN,
     GUARD_LEAK_BASE_PERCENT,
     GUARD_LEAK_MINIMUM_PERCENT,
+    GUARD_REARM,
     GUARD_STAMINA_REGEN_PERCENT,
     HEAD_TRAUMA_PER_DAMAGE_PERCENT,
     JAB_CUT_PERCENT,
@@ -55,8 +62,10 @@ from intelstream.hands.rules import (
     MAX_CONDITIONING,
     MAX_GUARD,
     MAX_POISE,
+    MAX_SPEED,
     MAX_STAMINA,
     MINIMUM_SEPARATION,
+    MOVE_BLEND_PERCENT,
     PARRY_STAGGER_TICKS,
     PERFECT_BLOCK_POISE_PERCENT,
     PERFECT_BLOCK_REARM_TICKS,
@@ -64,6 +73,7 @@ from intelstream.hands.rules import (
     POISE_REGEN_EVERY_TICKS,
     PUNCH_RULES,
     RECOVERY_CANCEL_PERCENT,
+    RECOVERY_SPEED_PERCENT,
     REFEREE_WALK_SPEED,
     REST_CORNER_OFFSET,
     REST_TICKS,
@@ -122,25 +132,28 @@ from intelstream.hands.types import (
 )
 
 PERFECT_BLOCK_TICKS: Final = 4
-EVASION_TICKS: Final = 10
-COUNTER_WINDOW_TICKS: Final = 18
+COUNTER_WINDOW_TICKS: Final = 15
 ROPE_OVERLAP_PASSES: Final = 8
 ROPE_OVERLAP_STEP: Final = 8
-CLINCH_STARTUP_TICKS: Final = 8
-CLINCH_TICKS: Final = 45
-FOUL_RECOVERY_TICKS: Final = 60
-COUNT_TICK_INTERVAL: Final = TICKS_PER_SECOND
+CLINCH_STARTUP_TICKS: Final = 6
+CLINCH_TICKS: Final = 24
+FOUL_RECOVERY_TICKS: Final = 30
+# The referee counts quicker than the clock: two thirds of a second a number.
+COUNT_TICK_INTERVAL: Final = 20
 MAX_PENDING_ACTIONS: Final = 1
-ACTION_BUFFER_TICKS: Final = 6
 GET_UP_WINDOW_START_OFFSET: Final = 3
 GET_UP_WINDOW_END_OFFSET: Final = 13
-TAUNT_TICKS: Final = 60
+TAUNT_TICKS: Final = 40
 MOVEMENT_FIXED_SCALE: Final = 1000
 # Conditioning a punch costs is worked out in thousandths of a point, so a style's saving survives
 # the rounding of per-punch losses of only a few points.
 CONDITIONING_FIXED_SCALE: Final = 1000
-# A fresh fighter's walking speed in units a tick, and the fastest velocity a snapshot reports.
-MAX_SPEED: Final = 7
+EVASION_POSES: Final = {
+    ActionKind.SLIP_LEFT: DefensivePose.SLIP_LEFT,
+    ActionKind.SLIP_RIGHT: DefensivePose.SLIP_RIGHT,
+    ActionKind.WEAVE: DefensivePose.WEAVE,
+    ActionKind.PULL: DefensivePose.PULL,
+}
 CORNER_INSTRUCTIONS: Final = {
     ActionKind.CORNER_CUT: CornerChoice.CUT,
     ActionKind.CORNER_SWELLING: CornerChoice.SWELLING,
@@ -185,6 +198,8 @@ class AttackState:
     combo_bonus: int = 0
     start_tick: int = 0
     contact_tick: int = 0
+    tired: bool = False
+    """Thrown on what breath was left: a slow arm punch that can never knock a man out cold."""
 
     @property
     def total_ticks(self) -> int:
@@ -254,6 +269,8 @@ class FighterState:
     conditioning_remainder: int = 0
     """Thousandths of a point of conditioning spent on punches and not yet taken off."""
     guard: int = MAX_GUARD
+    guard_broken: bool = False
+    """Broken by a block or by holding it up too long: it stops nothing until it has come back."""
     poise: int = MAX_POISE
     trauma: Trauma = field(default_factory=Trauma)
     defense: DefensivePose = DefensivePose.NONE
@@ -421,7 +438,9 @@ def _normalize_move_vector(move_x: int, move_y: int) -> tuple[int, int]:
 
 
 def _blend_velocity(current: int, desired: int) -> int:
-    return _symmetric_divide(current + desired, 2)
+    return _symmetric_divide(
+        current * (100 - MOVE_BLEND_PERCENT) + desired * MOVE_BLEND_PERCENT, 100
+    )
 
 
 def _rounded_fixed_velocity(velocity: int) -> int:
@@ -749,7 +768,10 @@ class BoxingEngine:
             # frozen through the evasion's leftover ticks.
             fighter.evasion_ticks = 0
             fighter.clinch_startup_ticks = 0
-            fighter.pending_actions.clear()
+            if self.tick > fighter.pending_action_expires_tick:
+                # A press in the last moments of a stun waits for it to wear off, as any press
+                # buffered behind a punch does; an older one is gone.
+                fighter.pending_actions.clear()
             if not imminent_trade:
                 self._retain_action(fighter)
                 return
@@ -785,11 +807,15 @@ class BoxingEngine:
                 attack.resolved = True
                 attack.contact_tick = self.tick
                 self._resolve_punch(fighter, opponent, attack)
-            if fighter.stunned_ticks > 0 or attack.age >= attack.total_ticks:
+            if fighter.stunned_ticks > 0:
                 self._retain_action(fighter)
                 return
-            if not self._can_cancel_recovery(fighter, opponent, attack):
+            if attack.age < attack.total_ticks and not self._can_cancel_recovery(
+                fighter, opponent, attack
+            ):
                 return
+            # The punch is over, or what he pressed next cuts its recovery short: the next action
+            # starts on this tick.
             self._retain_action(fighter)
 
         if fighter.taunt_ticks > 0:
@@ -822,13 +848,24 @@ class BoxingEngine:
     def _can_cancel_recovery(
         fighter: FighterState, opponent: FighterState, attack: AttackState
     ) -> bool:
-        if not attack.landed or attack.age < attack.cancel_age or not fighter.pending_actions:
+        if not fighter.pending_actions:
+            return False
+        follow_up = fighter.pending_actions[0]
+        if (
+            isinstance(follow_up, MovementAction)
+            and follow_up.kind in EVASION_POSES
+            and attack.age >= attack.rule.startup + attack.rule.active
+            and fighter.stamina >= EVASION_STAMINA
+        ):
+            # A slip, weave or pull gets him out of the way behind any punch once it has landed
+            # or missed.
+            return True
+        if not attack.landed or attack.age < attack.cancel_age:
             return False
         if opponent.stunned_ticks > 0:
             # A stunned man is already open. Cutting the recovery short would only chain stun
             # into stun before he has a tick to answer.
             return False
-        follow_up = fighter.pending_actions[0]
         return (
             isinstance(follow_up, PunchAction)
             and (attack.action.punch_class, follow_up.punch_class) in COMPATIBLE_COMBO_CHAINS
@@ -867,7 +904,7 @@ class BoxingEngine:
             combo_bonus = 10
             cost = max(1, cost * 90 // 100)
         fighter.stamina -= cost
-        self._spend_conditioning(fighter, max(1, cost // 12))
+        self._spend_conditioning(fighter, max(1, cost // 20))
         speed = fighter.fatigue
         startup = max(
             2,
@@ -876,7 +913,7 @@ class BoxingEngine:
             + style.startup_ticks.get(action.punch_class, 0),
         )
         recovery = max(
-            4,
+            3,
             base_rule.recovery * 100 // speed + style.recovery_ticks.get(action.punch_class, 0),
         )
         strength = TIRED_IMPACT_PERCENT if tired else 100
@@ -900,7 +937,9 @@ class BoxingEngine:
             startup_vulnerability=base_rule.startup_vulnerability,
             recovery_vulnerability=base_rule.recovery_vulnerability,
         )
-        fighter.attack = AttackState(action, rule, combo_bonus=combo_bonus, start_tick=self.tick)
+        fighter.attack = AttackState(
+            action, rule, combo_bonus=combo_bonus, start_tick=self.tick, tired=tired
+        )
         fighter.last_punch = action
         fighter.combo_ticks = rule.startup + rule.active + rule.recovery + rule.combo_window
         self._emit(
@@ -1002,7 +1041,7 @@ class BoxingEngine:
             action.target is Target.HEAD and defender.defense is DefensivePose.GUARD_HIGH
         ) or (action.target is Target.BODY and defender.defense is DefensivePose.GUARD_LOW)
         # Arms too tired to hold a real guard stop nothing, and cannot be broken again.
-        blocked = guarding and defender.guard >= GUARD_BLOCK_MINIMUM
+        blocked = guarding and not defender.guard_broken and defender.guard >= GUARD_BLOCK_MINIMUM
         perfect = (
             blocked
             and not blind
@@ -1065,16 +1104,7 @@ class BoxingEngine:
             defender.guard = max(0, defender.guard - guard_damage)
             defender.performance.blocked_hits += 1
             if defender.guard < GUARD_BLOCK_MINIMUM:
-                # Worn too thin to stop the next one: the guard is broken, and he is told so.
-                defender.stunned_ticks = max(defender.stunned_ticks, 8)
-                defender.stunned_at_tick = self.tick
-                defender.taunt_ticks = 0
-                self._emit(
-                    "guard_break",
-                    attacker.player_id,
-                    defender.player_id,
-                    action_id=self._action_id(attacker, attack),
-                )
+                self._break_guard(defender, attacker, self._action_id(attacker, attack))
         else:
             attacker.performance.clean_hits += 1
             attacker.punches.add(action.punch_class, landed=True)
@@ -1105,7 +1135,7 @@ class BoxingEngine:
         if defender.clinch_startup_ticks > 0:
             defender.clinch_startup_ticks = 0
             self._emit("clinch_interrupted", attacker.player_id, defender.player_id)
-        blood = min(100, defender.trauma.bleeding // 8 + damage // 4)
+        blood = min(100, defender.trauma.bleeding // 5 + damage // 3)
         self._emit(
             "counter_hit" if counter else "hit",
             attacker.player_id,
@@ -1127,7 +1157,7 @@ class BoxingEngine:
         if shut_eye is not None:
             self._emit("eye_shut", attacker.player_id, defender.player_id, detail=shut_eye)
 
-        if self._qualifies_for_flash(attacker, defender, action, rule, counter, blocked):
+        if self._qualifies_for_flash(attacker, defender, attack, counter, blocked):
             chance = self._flash_chance(attacker, defender, damage)
             roll = self._rng.randrange(10_000)
             self._emit(
@@ -1245,11 +1275,11 @@ class BoxingEngine:
             cut = cut * JAB_CUT_PERCENT // 100
         if action.hand.value == "left":
             defender.trauma.right_eye = min(1000, defender.trauma.right_eye + eye_damage)
-            if defender.trauma.right_eye > 260:
+            if defender.trauma.right_eye > CUT_OPENS_EYE:
                 defender.trauma.right_cut = min(1000, defender.trauma.right_cut + cut)
         else:
             defender.trauma.left_eye = min(1000, defender.trauma.left_eye + eye_damage)
-            if defender.trauma.left_eye > 260:
+            if defender.trauma.left_eye > CUT_OPENS_EYE:
                 defender.trauma.left_cut = min(1000, defender.trauma.left_cut + cut)
         swelling = damage * SWELLING_PER_DAMAGE_PERCENT // 100
         if action.punch_class is PunchClass.JAB:
@@ -1258,7 +1288,8 @@ class BoxingEngine:
         defender.trauma.bleeding = min(
             1000,
             defender.trauma.bleeding
-            + (defender.trauma.left_cut + defender.trauma.right_cut + 49) // 50,
+            + (defender.trauma.left_cut + defender.trauma.right_cut + BLEEDING_CUT_DIVISOR - 1)
+            // BLEEDING_CUT_DIVISOR,
         )
         eyes_after = (defender.trauma.left_eye, defender.trauma.right_eye)
         for side, before, after in zip(("left", "right"), eyes_before, eyes_after, strict=True):
@@ -1320,18 +1351,12 @@ class BoxingEngine:
     def _resolve_movement_action(
         self, fighter: FighterState, opponent: FighterState, action: MovementAction
     ) -> bool:
-        pose_by_action = {
-            ActionKind.SLIP_LEFT: DefensivePose.SLIP_LEFT,
-            ActionKind.SLIP_RIGHT: DefensivePose.SLIP_RIGHT,
-            ActionKind.WEAVE: DefensivePose.WEAVE,
-            ActionKind.PULL: DefensivePose.PULL,
-        }
-        if action.kind in pose_by_action:
-            if fighter.stamina < 25:
+        if action.kind in EVASION_POSES:
+            if fighter.stamina < EVASION_STAMINA:
                 return False
-            fighter.stamina -= 25
+            fighter.stamina -= EVASION_STAMINA
             fighter.conditioning = max(0, fighter.conditioning - 1)
-            fighter.defense = pose_by_action[action.kind]
+            fighter.defense = EVASION_POSES[action.kind]
             fighter.defense_started_tick = self.tick
             fighter.evasion_ticks = EVASION_TICKS + fighter.style_rule.evasion_ticks
             self._emit("defense", fighter.player_id, detail=fighter.defense.value)
@@ -1498,8 +1523,12 @@ class BoxingEngine:
             speed = max(2, speed * STUNNED_SPEED_PERCENT // 100)
         # In thousandths of a unit, so a style's few percent of footspeed survive the rounding.
         fixed_speed = speed * MOVEMENT_FIXED_SCALE * fighter.style_rule.move_speed_percent // 100
+        attack = fighter.attack
+        recovering = attack is not None and attack.age >= attack.rule.startup + attack.rule.active
+        if recovering:
+            fixed_speed = fixed_speed * RECOVERY_SPEED_PERCENT // 100
         if (
-            fighter.attack is not None
+            (attack is not None and not recovering)
             or fighter.evasion_ticks > 0
             or fighter.clinch_startup_ticks > 0
             or fighter.taunt_ticks > 0
@@ -1718,19 +1747,38 @@ class BoxingEngine:
             or fighter.stunned_ticks > 0
             or fighter.taunt_ticks > 0
         )
-        base = 1 if active else max(1, fighter.fatigue // 25)
+        base = 2 if active else max(1, fighter.fatigue // 20)
         regen = max(1, base * 3 // 4) if fighter.movement_load else base
-        if fighter.defense in (DefensivePose.GUARD_HIGH, DefensivePose.GUARD_LOW):
+        guarding = fighter.defense in (DefensivePose.GUARD_HIGH, DefensivePose.GUARD_LOW)
+        if guarding:
             regen = regen * GUARD_STAMINA_REGEN_PERCENT // 100
         fighter.stamina = min(fighter.maximum_stamina, fighter.stamina + regen)
-        guard_regen = max(1, fighter.fatigue // 30)
-        if not active and fighter.defense is DefensivePose.NONE and self.tick % 2 == 0:
-            fighter.guard = min(MAX_GUARD, fighter.guard + guard_regen)
-        elif not active and self.tick % GUARD_HELD_REGEN_EVERY_TICKS == 0:
-            # A held guard still comes back, slowly, between the punches it takes.
-            fighter.guard = min(MAX_GUARD, fighter.guard + guard_regen)
+        if guarding:
+            fighter.guard = max(0, fighter.guard - GUARD_HELD_DRAIN)
+            if fighter.guard < GUARD_BLOCK_MINIMUM and not fighter.guard_broken:
+                self._break_guard(fighter, self._other(fighter.player_id), None)
+        else:
+            fighter.guard = min(MAX_GUARD, fighter.guard + max(1, fighter.fatigue // 25))
+        if fighter.guard_broken and fighter.guard >= GUARD_REARM:
+            fighter.guard_broken = False
         recovering = not active and self.tick % POISE_REGEN_EVERY_TICKS == 0
         fighter.poise = min(poise_ceiling(fighter.trauma.head), fighter.poise + int(recovering))
+
+    def _break_guard(
+        self, fighter: FighterState, opponent: FighterState, action_id: str | None
+    ) -> None:
+        """Worn too thin to stop the next one: the guard is broken, and he is told so."""
+        fighter.guard_broken = True
+        fighter.stunned_ticks = max(fighter.stunned_ticks, GUARD_BREAK_STUN_TICKS)
+        fighter.stunned_at_tick = self.tick
+        fighter.taunt_ticks = 0
+        self._emit(
+            "guard_break",
+            opponent.player_id,
+            fighter.player_id,
+            detail="" if action_id is not None else "held",
+            action_id=action_id,
+        )
 
     @staticmethod
     def _ring_control(fighter: FighterState, opponent: FighterState) -> int:
@@ -1756,17 +1804,18 @@ class BoxingEngine:
         self,
         attacker: FighterState,
         defender: FighterState,
-        action: PunchAction,
-        rule: PunchRule,
+        attack: AttackState,
         counter: bool,
         blocked: bool,
     ) -> bool:
+        action = attack.action
         return (
             self.config.flash_ko_enabled
+            and not attack.tired
             and action.target is Target.HEAD
             and action.power is Power.POWER
             and action.punch_class is not PunchClass.JAB
-            and rule.impact >= 50
+            and attack.rule.impact >= 50
             and counter
             and not blocked
             and attacker.stamina >= 100
@@ -2329,6 +2378,7 @@ class BoxingEngine:
             maximum_stamina=fighter.maximum_stamina,
             conditioning=fighter.conditioning,
             guard=fighter.guard,
+            guard_broken=fighter.guard_broken,
             poise=fighter.poise,
             trauma=TraumaSnapshot(
                 head=trauma.head,
@@ -2394,6 +2444,7 @@ class BoxingEngine:
                         fighter.conditioning,
                         fighter.conditioning_remainder,
                         fighter.guard,
+                        fighter.guard_broken,
                         fighter.poise,
                     ],
                     "trauma": fighter.trauma,
