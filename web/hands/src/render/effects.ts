@@ -29,6 +29,8 @@ const BRAIN_PER_BURST = 40;
 const TEETH_PER_BURST = 16;
 /** A loose eyeball is drawn this much bigger than the eye it came from, so it reads bouncing across the canvas. */
 const EYEBALL_SCALE = 1.8;
+/** Drops a second a severed head or glove trails from its cut while it flies. */
+const SEVERED_TRAIL_RATE = 180;
 const MAX_HEADS = 2;
 const MAX_HANDS = 4;
 const GIBS_PER_DECAPITATION = 60;
@@ -175,6 +177,8 @@ interface SeveredHead {
   /** How far the part reaches to either side of its pivot, along its own side-to-side axis. */
   sideLow: number;
   sideHigh: number;
+  /** Drops of blood owed to the trail it leaves from its cut while it flies. */
+  trail: number;
 }
 
 interface Stump {
@@ -482,6 +486,7 @@ export class Effects3D {
   private dropletCloseness = 1;
   private readonly stumpOutward = new THREE.Vector3();
   private readonly tornAxis = new THREE.Vector3();
+  private readonly trailPoint = new THREE.Vector3();
   private readonly stumps: Stump[] = [];
   private readonly handStumps: Stump[] = [];
   private readonly lastDecapitationEvent = [null, null] as Array<number | null>;
@@ -617,7 +622,7 @@ export class Effects3D {
       const cap = new THREE.Mesh(this.stumpGeometry, this.stumpMaterial);
       cap.visible = false;
       headMesh.add(cap);
-      this.heads.push({ mesh: headMesh, defaultGeometry: this.headGeometry, defaultScale: headMesh.scale.clone(), cap, defaultCap: this.stumpGeometry, look: headLook, injury: headInjury, blood: null, baked: null, bakedFlesh: null, radius: HEAD_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false, settle: -1, settleFrom: new THREE.Quaternion(), settleTo: new THREE.Quaternion(), settleFromY: 0, settleToY: 0, sideLow: -HEAD_RADIUS, sideHigh: HEAD_RADIUS });
+      this.heads.push({ mesh: headMesh, defaultGeometry: this.headGeometry, defaultScale: headMesh.scale.clone(), cap, defaultCap: this.stumpGeometry, look: headLook, injury: headInjury, blood: null, baked: null, bakedFlesh: null, radius: HEAD_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false, settle: -1, settleFrom: new THREE.Quaternion(), settleTo: new THREE.Quaternion(), settleFromY: 0, settleToY: 0, sideLow: -HEAD_RADIUS, sideHigh: HEAD_RADIUS, trail: 0 });
 
       const stumpMesh = new THREE.Mesh(this.stumpGeometry, this.stumpMaterial);
       stumpMesh.visible = false;
@@ -677,7 +682,7 @@ export class Effects3D {
       cap.position.y = 0.02;
       cap.visible = false;
       handMesh.add(cap);
-      this.hands.push({ mesh: handMesh, defaultGeometry: this.handGeometry, defaultScale: handMesh.scale.clone(), cap, defaultCap: this.wristStumpGeometry, look: null, injury: null, blood, baked: null, bakedFlesh: null, radius: HAND_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false, settle: -1, settleFrom: new THREE.Quaternion(), settleTo: new THREE.Quaternion(), settleFromY: 0, settleToY: 0, sideLow: -HAND_RADIUS, sideHigh: HAND_RADIUS });
+      this.hands.push({ mesh: handMesh, defaultGeometry: this.handGeometry, defaultScale: handMesh.scale.clone(), cap, defaultCap: this.wristStumpGeometry, look: null, injury: null, blood, baked: null, bakedFlesh: null, radius: HAND_RADIUS, active: false, moving: false, eventId: null, vx: 0, vy: 0, vz: 0, vrx: 0, vry: 0, vrz: 0, bounces: 0, stained: false, settle: -1, settleFrom: new THREE.Quaternion(), settleTo: new THREE.Quaternion(), settleFromY: 0, settleToY: 0, sideLow: -HAND_RADIUS, sideHigh: HAND_RADIUS, trail: 0 });
 
       const stumpMesh = new THREE.Mesh(this.wristStumpGeometry, this.wristMaterial);
       stumpMesh.visible = false;
@@ -1546,6 +1551,7 @@ export class Effects3D {
     head.vry = (rand() - 0.5) * 12;
     head.vrz = (rand() - 0.5) * 12;
     head.bounces = 0;
+    head.trail = 0;
     head.stained = false;
     head.settle = -1;
     head.mesh.position.set(finite(position.x), finite(position.y, 1.55), finite(position.z));
@@ -1708,6 +1714,7 @@ export class Effects3D {
     hand.vry = (rand() - 0.5) * 16;
     hand.vrz = (rand() - 0.5) * 16;
     hand.bounces = 0;
+    hand.trail = 0;
     hand.stained = false;
     hand.mesh.position.set(finite(position.x), finite(position.y, 1.25), finite(position.z));
     copyFiniteQuaternion(hand.mesh.quaternion, quaternion);
@@ -2214,6 +2221,25 @@ export class Effects3D {
       part.mesh.rotation.x += part.vrx * dt;
       part.mesh.rotation.y += part.vry * dt;
       part.mesh.rotation.z += part.vrz * dt;
+      // Flying free, it trails a stream of blood from its cut.
+      if (this.bloodLevel === "full") {
+        part.trail += dt * this.forDevice(SEVERED_TRAIL_RATE);
+        if (part.trail >= 1) this.trailPoint.copy(part.cap.position).multiply(part.mesh.scale).applyQuaternion(part.mesh.quaternion).add(part.mesh.position);
+        while (part.trail >= 1) {
+          part.trail -= 1;
+          this.spawnDroplet(
+            this.trailPoint.x + (this.ambientRandom() - 0.5) * 0.03,
+            this.trailPoint.y + (this.ambientRandom() - 0.5) * 0.03,
+            this.trailPoint.z + (this.ambientRandom() - 0.5) * 0.03,
+            part.vx * 0.35 + (this.ambientRandom() - 0.5) * 0.9,
+            part.vy * 0.35 + (this.ambientRandom() - 0.5) * 0.9,
+            part.vz * 0.35 + (this.ambientRandom() - 0.5) * 0.9,
+            bloodShade(this.ambientRandom()),
+            0.9,
+            true,
+          );
+        }
+      }
       // The ropes keep a severed part in the ring, where the cameras can reach it.
       const limit = ROPE_LINE - part.radius - SEVERED_PART_MARGIN;
       const x = confineToRopes(part.mesh.position.x, part.vx, fromX, limit);

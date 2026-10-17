@@ -463,15 +463,17 @@ describe("neck cut", () => {
 
 describe("an arterial fountain", () => {
   type Spawn = { time: number; velocity: THREE.Vector3; at: THREE.Vector3 };
-  /** Every drop a stump throws, and when: from the cut until `seconds` later. */
+  /** Every drop a stump throws, and when: from the cut until `seconds` later. The part it was cut from is held still, so its own trail adds none. */
   const pump = (effects: Effects3D, seconds: number): Spawn[] => {
     const spawns: Spawn[] = [];
     let time = 0;
     const spawn = vi.spyOn(effects as unknown as { spawnDroplet(...args: number[]): void }, "spawnDroplet").mockImplementation((x, y, z, vx, vy, vz) => {
       spawns.push({ time, velocity: new THREE.Vector3(vx, vy, vz), at: new THREE.Vector3(x, y, z) });
     });
+    const parts = vi.spyOn(effects as unknown as { updateDetachedParts(...args: unknown[]): void }, "updateDetachedParts").mockImplementation(() => undefined);
     for (; time < seconds; time += 1 / 60) effects.update(1 / 60);
     spawn.mockRestore();
+    parts.mockRestore();
     return spawns;
   };
   // A neck lying on the canvas, its wound facing along +x.
@@ -827,6 +829,35 @@ describe("blood in the air", () => {
 });
 
 describe("severed head", () => {
+  it("trails a stream of blood from its neck while it flies, and none once it lies still or with reduced blood", () => {
+    type Spawn = { time: number; at: THREE.Vector3 };
+    const fly = (level: "full" | "reduced", seconds: number): { spawns: Spawn[]; effects: Effects3D } => {
+      const effects = new Effects3D(new THREE.Scene());
+      effects.setBloodLevel(level);
+      effects.decapitate(0, new THREE.Vector3(0, 1.55, 0), new THREE.Quaternion(), 1, 13);
+      const spawns: Spawn[] = [];
+      let time = 0;
+      const spawn = vi.spyOn(effects as unknown as { spawnDroplet(...args: number[]): void }, "spawnDroplet").mockImplementation((x, y, z) => spawns.push({ time, at: new THREE.Vector3(x, y, z) }));
+      const fountains = vi.spyOn(effects as unknown as { updateStumpFountains(dt: number): void }, "updateStumpFountains").mockImplementation(() => undefined);
+      for (; time < seconds; time += 1 / 60) effects.update(1 / 60);
+      spawn.mockRestore();
+      fountains.mockRestore();
+      return { spawns, effects };
+    };
+    const { spawns, effects } = fly("full", 6);
+    const head = new THREE.Vector3();
+    effects.severedHeadPosition(0, head);
+    const flying = spawns.filter((spawn) => spawn.time < 0.5);
+    expect(flying.length).toBeGreaterThan(60);
+    // The trail follows the head: it leaves farther from the neck as the head flies on.
+    expect(flying.at(-1)!.at.x).toBeGreaterThan(flying[0]!.at.x + 0.4);
+    expect(spawns.filter((spawn) => spawn.time > 5)).toHaveLength(0);
+    effects.dispose();
+    const reduced = fly("reduced", 1);
+    expect(reduced.spawns).toHaveLength(0);
+    reduced.effects.dispose();
+  });
+
   it("stays inside the ropes however hard it is launched", () => {
     const effects = new Effects3D(new THREE.Scene());
     effects.decapitate(0, new THREE.Vector3(2.2, 1.5, -2.2), new THREE.Quaternion(), 1, 9);
