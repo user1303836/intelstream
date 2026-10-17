@@ -21,13 +21,18 @@ export interface GoreBudget {
 }
 export const DESKTOP_GORE: GoreBudget = { droplets: 2400, mist: 240, gibs: 192, shards: 48 };
 export const PHONE_GORE: GoreBudget = { droplets: 1200, mist: 120, gibs: 96, shards: 24 };
-const SHARDS_PER_BURST = 18;
-const BRAIN_PER_BURST = 14;
-const TEETH_PER_BURST = 5;
+const SHARDS_PER_BURST = 24;
+const BRAIN_PER_BURST = 24;
+const TEETH_PER_BURST = 10;
 const MAX_HEADS = 2;
 const MAX_HANDS = 4;
-const GIBS_PER_DECAPITATION = 24;
-const GIBS_PER_HAND = 16;
+const GIBS_PER_DECAPITATION = 36;
+const GIBS_PER_HAND = 26;
+/** Drops of blood each finisher throws as it lands, on a desktop. */
+const DROPS_PER_DECAPITATION = 360;
+const DROPS_PER_BURST = 480;
+const DROPS_PER_HAND = 260;
+const DROPS_PER_EYE = 160;
 const HEAD_RADIUS = 0.12;
 const HEAD_SETTLE_SECONDS = 0.35;
 const SEVERED_PART_MARGIN = 0.04;
@@ -176,20 +181,25 @@ interface Stump {
  * How long the artery of each stump pumps: a severed neck, the neck a burst head leaves and a wrist. Over the
  * last FOUNTAIN_FADE_SECONDS the pressure falls away.
  */
-export const NECK_FOUNTAIN_SECONDS = 6.5;
-const BURST_FOUNTAIN_SECONDS = 7.5;
-const WRIST_FOUNTAIN_SECONDS = 5;
-const FOUNTAIN_FADE_SECONDS = 4;
+export const NECK_FOUNTAIN_SECONDS = 9;
+const BURST_FOUNTAIN_SECONDS = 10;
+const WRIST_FOUNTAIN_SECONDS = 8;
+const FOUNTAIN_FADE_SECONDS = 5;
 /** Beats a second of a heart going flat out, and how much of each beat (a share of it) the spurt lasts. */
 const HEART_RATE = 1.7;
 const SPURT_WIDTH = 0.14;
 /** Drops a second at the top of a beat at full pressure, and the share of that still running between beats. */
-const FOUNTAIN_PEAK_RATE = 110;
+const FOUNTAIN_PEAK_RATE = 200;
 const FOUNTAIN_BETWEEN_BEATS = 0.12;
 /** Arterial blood leaves at 4 to 6 m/s at the top of a beat, within this angle (radians) of the wound's axis. */
 const FOUNTAIN_SPEED_LOW = 4;
 const FOUNTAIN_SPEED_HIGH = 6;
 const FOUNTAIN_CONE = 0.35;
+/** A wound a finisher tears open throws this much as it opens, and then pours this long, this many drops a second at first. */
+const TORN_DROPS = 300;
+const TORN_CHUNKS = 14;
+const TORN_GUSH_SECONDS = 6;
+const TORN_GUSH_RATE = 220;
 /** A wound that gushes rather than spurts: a softer beat, more of it between beats, slower and wider than an artery. */
 const GUSH_PULSE_WIDTH = 0.22;
 const GUSH_BETWEEN_BEATS = 0.3;
@@ -263,6 +273,9 @@ const SHIELD_WHITE = new THREE.Color(0xf4f7fb);
 const EYE_RADIUS = 0.012;
 /** How far an eye forced out hangs below its socket on the nerve. */
 export const EYE_NERVE_LENGTH = 0.055;
+/** The empty socket pours this many drops a second, for this long. */
+const EYE_BLEEDING_RATE = 45;
+const EYE_BLEEDING_SECONDS = 6;
 const EYE_DAMPING = 0.985;
 /** Half the width and height of the head about the middle of the skull, plus the eye, for a hanging eye. */
 const SKULL_RADII = new THREE.Vector2(0.085 + EYE_RADIUS, 0.12 + EYE_RADIUS);
@@ -452,6 +465,7 @@ export class Effects3D {
   private readonly settleUp = new THREE.Vector3();
   private dropletCloseness = 1;
   private readonly stumpOutward = new THREE.Vector3();
+  private readonly tornAxis = new THREE.Vector3();
   private readonly stumps: Stump[] = [];
   private readonly handStumps: Stump[] = [];
   private readonly lastDecapitationEvent = [null, null] as Array<number | null>;
@@ -847,16 +861,21 @@ export class Effects3D {
     this.eyeDirection.x += launch.x * 0.5;
     this.eyeDirection.z += launch.z * 0.5;
     eye.previous.copy(eye.position).addScaledVector(this.eyeDirection, -SIMULATION_STEP);
-    eye.bleeding = 2;
+    eye.bleeding = EYE_BLEEDING_SECONDS;
     eye.accumulator = 0;
     this.eyeMeshes[index]!.visible = true;
     this.nerveMeshes[index]!.visible = true;
     const rand = seeded(safeEventId * 52_711 + index * 3571 + 13);
-    for (let drop = 0; drop < 36; drop += 1) {
+    for (let drop = 0; drop < this.forDevice(DROPS_PER_EYE); drop += 1) {
       const angle = rand() * Math.PI * 2;
-      this.spawnDroplet(eye.socket.x, eye.socket.y, eye.socket.z, forward.x * (0.8 + rand()) + Math.sin(angle) * 0.6, 0.4 + rand() * 1.2, forward.z * (0.8 + rand()) + Math.cos(angle) * 0.6, bloodShade(rand()), 0.6 + rand() * 0.6, true);
+      this.spawnDroplet(eye.socket.x, eye.socket.y, eye.socket.z, forward.x * (0.8 + rand() * 1.6) + Math.sin(angle) * 0.7, 0.4 + rand() * 1.6, forward.z * (0.8 + rand() * 1.6) + Math.cos(angle) * 0.7, bloodShade(rand()), 0.6 + rand() * 0.8, true);
     }
-    for (let puff = 0; puff < 4; puff += 1) this.spawnMist(eye.socket.x + (rand() - 0.5) * 0.1, eye.socket.y + (rand() - 0.5) * 0.08, eye.socket.z + (rand() - 0.5) * 0.1, 0.7 + rand() * 0.6, 0.5 + rand() * 0.4);
+    for (let puff = 0; puff < 14; puff += 1) this.spawnMist(eye.socket.x + (rand() - 0.5) * 0.16, eye.socket.y + (rand() - 0.5) * 0.12, eye.socket.z + (rand() - 0.5) * 0.16, 0.8 + rand() * 0.8, 0.55 + rand() * 0.5);
+    for (let chunk = 0; chunk < 5; chunk += 1) {
+      const angle = rand() * Math.PI * 2;
+      this.spawnGib(eye.socket.x, eye.socket.y, eye.socket.z, forward.x * (0.6 + rand() * 1.2) + Math.sin(angle) * 0.5, 0.6 + rand() * 1.2, forward.z * (0.6 + rand() * 1.2) + Math.cos(angle) * 0.5, rand, "flesh", index);
+    }
+    this.splatter(eye.socket.x + forward.x * 0.3, eye.socket.z + forward.z * 0.3, 1.2, rand, 10);
     this.writeEye(index);
   }
 
@@ -909,10 +928,12 @@ export class Effects3D {
       if (eye.position.y < CANVAS_TOP + EYE_RADIUS) eye.position.y = CANVAS_TOP + EYE_RADIUS;
       if (this.bloodLevel === "full" && eye.bleeding > 0) {
         eye.bleeding = Math.max(0, eye.bleeding - step);
-        eye.accumulator += step * 14;
+        eye.accumulator += step * this.forDevice(EYE_BLEEDING_RATE);
         while (eye.accumulator >= 1) {
           eye.accumulator -= 1;
-          this.spawnDroplet(eye.socket.x, eye.socket.y - 0.005, eye.socket.z, (this.ambientRandom() - 0.5) * 0.2, -0.2 - this.ambientRandom() * 0.3, (this.ambientRandom() - 0.5) * 0.2, bloodShade(this.ambientRandom()), 0.9, true);
+          // It pours out of the socket and down the face.
+          const pour = 0.15 + this.ambientRandom() * 0.5;
+          this.spawnDroplet(eye.socket.x, eye.socket.y - 0.005, eye.socket.z, eye.facing.x * pour + (this.ambientRandom() - 0.5) * 0.2, -0.15 - this.ambientRandom() * 0.4, eye.facing.z * pour + (this.ambientRandom() - 0.5) * 0.2, bloodShade(this.ambientRandom()), 0.9, true);
         }
       }
       this.writeEye(index);
@@ -1476,7 +1497,7 @@ export class Effects3D {
         index,
       );
     }
-    for (let i = 0; i < 120; i += 1) {
+    for (let i = 0; i < this.forDevice(DROPS_PER_DECAPITATION); i += 1) {
       const angle = rand() * Math.PI * 2;
       const speed = 1 + rand() * 2.6;
       const shade = rand();
@@ -1493,10 +1514,10 @@ export class Effects3D {
         true,
       );
     }
-    for (let i = 0; i < 14; i += 1) {
-      this.spawnMist(head.mesh.position.x + (rand() - 0.5) * 0.35, head.mesh.position.y + (rand() - 0.5) * 0.25, head.mesh.position.z + (rand() - 0.5) * 0.35, 1 + rand() * 1.4, 0.65 + rand() * 0.55);
+    for (let i = 0; i < 28; i += 1) {
+      this.spawnMist(head.mesh.position.x + (rand() - 0.5) * 0.45, head.mesh.position.y + (rand() - 0.5) * 0.3, head.mesh.position.z + (rand() - 0.5) * 0.45, 1 + rand() * 1.6, 0.7 + rand() * 0.7);
     }
-    this.splatter(head.mesh.position.x, head.mesh.position.z, 1.5, rand, 18);
+    this.splatter(head.mesh.position.x, head.mesh.position.z, 2, rand, 30);
   }
 
   /**
@@ -1537,7 +1558,7 @@ export class Effects3D {
     scatter(SHARDS_PER_BURST, "shard", 2.2, 2.4, 1);
     scatter(BRAIN_PER_BURST, "brain", 1.2, 1.8, 0.8);
     scatter(TEETH_PER_BURST, "tooth", 1, 1.4, 0.6);
-    for (let drop = 0; drop < 180; drop += 1) {
+    for (let drop = 0; drop < this.forDevice(DROPS_PER_BURST); drop += 1) {
       const around = rand() * Math.PI * 2;
       const up = rand() * 1.3 - 0.3;
       const flat = Math.sqrt(Math.max(0, 1 - Math.min(1, up * up)));
@@ -1555,10 +1576,10 @@ export class Effects3D {
         0.004 + rand() ** 2 * 0.014,
       );
     }
-    for (let puff = 0; puff < 24; puff += 1) {
-      this.spawnMist(x + (rand() - 0.5) * 0.5, y + (rand() - 0.3) * 0.4, z + (rand() - 0.5) * 0.5, 1.2 + rand() * 1.6, 0.8 + rand() * 0.7);
+    for (let puff = 0; puff < 40; puff += 1) {
+      this.spawnMist(x + (rand() - 0.5) * 0.6, y + (rand() - 0.3) * 0.5, z + (rand() - 0.5) * 0.6, 1.2 + rand() * 1.8, 0.8 + rand() * 0.8);
     }
-    this.splatter(x + launch.x * 0.3, z + launch.z * 0.3, 2.2, rand, 18);
+    this.splatter(x + launch.x * 0.3, z + launch.z * 0.3, 2.8, rand, 32);
     this.shake = Math.min(0.16, this.shake + 0.1);
     stump.mesh.material = this.jawMaterial;
     stump.active = true;
@@ -1632,7 +1653,7 @@ export class Effects3D {
         Math.trunc(fighterIndex),
       );
     }
-    for (let drop = 0; drop < 80; drop += 1) {
+    for (let drop = 0; drop < this.forDevice(DROPS_PER_HAND); drop += 1) {
       const angle = rand() * Math.PI * 2;
       const speed = 0.8 + rand() * 2.1;
       this.sprayDroplet(
@@ -1648,16 +1669,62 @@ export class Effects3D {
         true,
       );
     }
-    for (let puff = 0; puff < 8; puff += 1) {
+    for (let puff = 0; puff < 18; puff += 1) {
       this.spawnMist(
-        hand.mesh.position.x + (rand() - 0.5) * 0.24,
-        hand.mesh.position.y + (rand() - 0.5) * 0.18,
-        hand.mesh.position.z + (rand() - 0.5) * 0.24,
-        0.7 + rand(),
-        0.5 + rand() * 0.45,
+        hand.mesh.position.x + (rand() - 0.5) * 0.3,
+        hand.mesh.position.y + (rand() - 0.5) * 0.22,
+        hand.mesh.position.z + (rand() - 0.5) * 0.3,
+        0.8 + rand() * 1.2,
+        0.55 + rand() * 0.55,
       );
     }
-    this.splatter(hand.mesh.position.x, hand.mesh.position.z, 1.1, rand);
+    this.splatter(hand.mesh.position.x, hand.mesh.position.z, 1.6, rand, 24);
+  }
+
+  /**
+   * A finisher tears a fighter open at `position`, the wound facing `axis`: blood, flesh and mist burst out of
+   * it and along the punch with `teeth` knocked out among them, splash the canvas below, and the wound pours
+   * for seconds after (see `anchorGush`). What it throws goes if a replay puts him back together. Only with full blood.
+   */
+  tearOpen(fighterIndex: number, position: THREE.Vector3, axis: THREE.Vector3, direction: number | SprayDirection, eventId: number, teeth = 0): void {
+    if (this.bloodLevel !== "full" || fighterIndex < 0 || fighterIndex >= MAX_HEADS) return;
+    const index = Math.trunc(fighterIndex);
+    const safeEventId = Number.isSafeInteger(eventId) ? eventId : 0;
+    const rand = seeded(safeEventId * 69_061 + index * 2741 + 29);
+    const launch = unitSpray(direction);
+    const out = this.tornAxis.copy(axis);
+    if (!(out.lengthSq() > 1e-8) || !Number.isFinite(out.lengthSq())) out.set(0, 1, 0);
+    out.normalize();
+    const x = finite(position.x);
+    const y = finite(position.y, 1.2);
+    const z = finite(position.z);
+    for (let drop = 0; drop < this.forDevice(TORN_DROPS); drop += 1) {
+      const pace = 1 + rand() * 2.6;
+      const along = 0.3 + rand() * 1.4;
+      this.spawnDroplet(
+        x + (rand() - 0.5) * 0.06,
+        y + (rand() - 0.5) * 0.06,
+        z + (rand() - 0.5) * 0.06,
+        out.x * pace + launch.x * along + (rand() - 0.5) * 1.4,
+        out.y * pace + 0.4 + rand() * 1.2,
+        out.z * pace + launch.z * along + (rand() - 0.5) * 1.4,
+        bloodShade(rand()),
+        0.7 + rand() * 0.9,
+        true,
+        0.004 + rand() ** 2 * 0.012,
+      );
+    }
+    const scatter = (count: number, kind: DebrisKind): void => {
+      for (let piece = 0; piece < count; piece += 1) {
+        const pace = 0.6 + rand() * 1.8;
+        this.spawnGib(x, y, z, out.x * pace + launch.x * rand() * 1.4 + (rand() - 0.5) * 0.8, out.y * pace + 0.6 + rand() * 1.2, out.z * pace + launch.z * rand() * 1.4 + (rand() - 0.5) * 0.8, rand, kind, index);
+      }
+    };
+    scatter(TORN_CHUNKS, "flesh");
+    scatter(teeth, "tooth");
+    for (let puff = 0; puff < 16; puff += 1) this.spawnMist(x + (rand() - 0.5) * 0.3, y + (rand() - 0.5) * 0.24, z + (rand() - 0.5) * 0.3, 0.9 + rand() * 1.3, 0.6 + rand() * 0.6);
+    this.splatter(x + out.x * 0.25 + launch.x * 0.3, z + out.z * 0.25 + launch.z * 0.3, 1.6, rand, 20);
+    this.gush(index, position, out, TORN_GUSH_SECONDS, TORN_GUSH_RATE, safeEventId);
   }
 
   anchorHandStump(
@@ -2128,7 +2195,7 @@ export class Effects3D {
       const pressure = Math.min(1, stump.fountainLife / FOUNTAIN_FADE_SECONDS);
       const beat = (stump.fountainLife * HEART_RATE) % 1;
       const spurt = Math.exp(-(((beat - 0.5) / SPURT_WIDTH) ** 2));
-      stump.accumulator += dt * FOUNTAIN_PEAK_RATE * pressure * (FOUNTAIN_BETWEEN_BEATS + (1 - FOUNTAIN_BETWEEN_BEATS) * spurt);
+      stump.accumulator += dt * this.forDevice(FOUNTAIN_PEAK_RATE) * pressure * (FOUNTAIN_BETWEEN_BEATS + (1 - FOUNTAIN_BETWEEN_BEATS) * spurt);
       if (stump.accumulator < 1) continue;
       const axis = stumpAxis(stump, fountainAxis);
       fountainSide.set(Math.abs(axis.y) < 0.9 ? 0 : 1, Math.abs(axis.y) < 0.9 ? 1 : 0, 0).cross(axis).normalize();

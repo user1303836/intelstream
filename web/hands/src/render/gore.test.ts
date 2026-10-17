@@ -485,11 +485,11 @@ describe("an arterial fountain", () => {
   it("pumps with the heart for seconds, in spurts that weaken as he bleeds out", () => {
     const effects = new Effects3D(new THREE.Scene());
     severed(effects);
-    const spawns = pump(effects, 9);
+    const spawns = pump(effects, 12);
     const between = (from: number, to: number): Spawn[] => spawns.filter((spawn) => spawn.time >= from && spawn.time < to);
-    expect(between(5, 6.5).length).toBeGreaterThan(5);
-    expect(between(6.6, 9)).toHaveLength(0);
-    expect(between(0, 1).length).toBeGreaterThan(between(4, 5).length * 1.5);
+    expect(between(7, 9).length).toBeGreaterThan(5);
+    expect(between(9.1, 12)).toHaveLength(0);
+    expect(between(0, 1).length).toBeGreaterThan(between(6, 7).length * 1.5);
     // Spurts at the heart's rate: tenths of a second at the top of a beat throw far more than those between beats.
     const tenths = Array.from({ length: 24 }, (_, tenth) => between(tenth / 10, (tenth + 1) / 10).length);
     expect(Math.max(...tenths)).toBeGreaterThanOrEqual(Math.max(4, 4 * Math.min(...tenths)));
@@ -498,15 +498,20 @@ describe("an arterial fountain", () => {
     // 1.7 beats a second: four beats in 2.4 s.
     expect(peaks).toBeGreaterThanOrEqual(3);
     expect(peaks).toBeLessThanOrEqual(5);
-    // Its heaviest spurts throw only so many drops, for the phones.
-    expect(spawns.length).toBeLessThan(260);
+    // Mega gore: about 440 drops over its nine seconds on a desktop, and half as many on a phone.
+    expect(spawns.length).toBeGreaterThan(350);
+    expect(spawns.length).toBeLessThan(520);
+    const phone = new Effects3D(new THREE.Scene(), 256, PHONE_GORE);
+    severed(phone);
+    expect(pump(phone, 12).length).toBeLessThanOrEqual(Math.ceil(spawns.length / 2) + 5);
+    phone.dispose();
     effects.dispose();
   });
 
   it("throws the blood at arterial speed along the wound's axis, not straight up", () => {
     const effects = new Effects3D(new THREE.Scene());
     severed(effects);
-    const spawns = pump(effects, 6.5);
+    const spawns = pump(effects, 9);
     const early = spawns.filter((spawn) => spawn.time < 1.5);
     for (const spawn of spawns) {
       expect(THREE.MathUtils.radToDeg(spawn.velocity.angleTo(along))).toBeLessThan(25);
@@ -515,7 +520,7 @@ describe("an arterial fountain", () => {
     const fast = early.filter((spawn) => spawn.velocity.length() >= 4);
     expect(fast.length).toBeGreaterThan(early.length * 0.3);
     // Weaker as the pressure falls.
-    const late = spawns.filter((spawn) => spawn.time > 5.5);
+    const late = spawns.filter((spawn) => spawn.time > 8);
     const mean = (list: Spawn[]): number => list.reduce((sum, spawn) => sum + spawn.velocity.length(), 0) / Math.max(1, list.length);
     expect(mean(late)).toBeLessThan(mean(early) * 0.8);
     effects.dispose();

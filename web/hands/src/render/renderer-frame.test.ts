@@ -435,7 +435,7 @@ describe("around the fight", () => {
     const head = { position: new THREE.Vector3(0.6, 1.5, 0.1), quaternion: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2) };
     const stub = prototypeOf({
       pendingContacts: [{ event: knockdown, presentationEvent: knockdown, presentImpact: true, reactAmount: null, contactTick: 40, recipientIndex: 1, puncherIndex: 0, injury: null }],
-      buffer: { latest: () => snapshot() }, presentFightEvent: vi.fn(), mapping: worldMapping(SIMULATION), contactPoint: new THREE.Vector3(), mouthPoint: new THREE.Vector3(), tmpPart: new THREE.Vector3(), tmpA: new THREE.Vector3(), tmpB: new THREE.Vector3(),
+      buffer: { latest: () => snapshot() }, presentFightEvent: vi.fn(), mapping: worldMapping(SIMULATION), contactPoint: new THREE.Vector3(), mouthPoint: new THREE.Vector3(), woundPoint: new THREE.Vector3(), woundAxis: new THREE.Vector3(), tmpA: new THREE.Vector3(), tmpB: new THREE.Vector3(),
       effects: { addEvent: vi.fn(), spawnTeeth: vi.fn(), gush }, settings: () => ({ reducedMotion: false, blood: "full" }), arena: { excite: vi.fn() }, viewerId: null,
       arcadeInjuries: [null, null], graphs: null, headWorldPose: () => ({ position: head.position.clone(), quaternion: head.quaternion }), knockOutMouthpiece: vi.fn(), onContact: null, viewerHitFlash: 0,
     });

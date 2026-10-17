@@ -5,7 +5,7 @@ import type { CombatEvent } from "../types";
 import { EYE_NERVE_LENGTH, Effects3D } from "./effects";
 import { SkinnedBoxer, loadBoxerGlb } from "./graph";
 import { BODY_SITES, EYE_LIDS, HEAD_SITES, InjuryShading } from "./injury";
-import { FightRenderer, arcadeInjuryFor, eyeSocket, replayReattaches } from "./renderer";
+import { FightRenderer, arcadeInjuryFor, eyeSocket } from "./renderer";
 import { CANVAS_TOP } from "./world";
 
 const gltf = await loadBoxerGlb();
@@ -15,15 +15,14 @@ const hit = (detail: string, eventId: number): CombatEvent => ({ event_id: event
 const puncher = (hand: string) => ({ ...fighter("one"), action_key: `hook:${hand}:head:normal` });
 
 describe("an eye forced out", () => {
-  it("is what a hard finishing hook earns, on the side it lands; other punches keep their finishers", () => {
+  it("is what a finishing hook or jab earns, on the side it lands; other punches keep their finishers", () => {
     expect(arcadeInjuryFor(hit("hook:head", 1), downed, ko, puncher("left"))).toBe("eye_right");
     expect(arcadeInjuryFor(hit("hook:head", 3), downed, ko, puncher("right"))).toBe("eye_left");
     expect(arcadeInjuryFor(hit("hook:head", 2), downed, ko, puncher("left"))).toBe("eye_right");
-    expect(arcadeInjuryFor({ ...hit("hook:head", 2), amount: 50 }, downed, ko, puncher("left"))).toBe("jaw_dislocation");
+    expect(arcadeInjuryFor({ ...hit("jab:head", 2), amount: 45 }, downed, ko, puncher("left"))).toBe("eye_right");
+    expect(arcadeInjuryFor({ ...hit("hook:head", 2), amount: 39 }, downed, ko, puncher("left"))).toBe("jaw_dislocation");
     expect(arcadeInjuryFor(hit("straight:head", 1), downed, ko, puncher("left"))).toBe("decapitation");
     expect(["eye_left", "eye_right"]).toContain(arcadeInjuryFor(hit("hook:head", 5), downed, ko));
-    expect(replayReattaches("eye_left")).toBe(true);
-    expect(replayReattaches("eye_right")).toBe(true);
   });
 
   it("leaves a hollow, bleeding socket where the face has an eye, and nothing on the body", () => {
@@ -101,6 +100,23 @@ describe("an eye forced out", () => {
     reduced.gougeEye(0, socket, forward, 1, 32);
     expect(reduced.eyeOut(0)).toBe(false);
     reduced.dispose();
+  });
+
+  it("bursts out of the socket in a spray of blood and flesh, and the socket pours for seconds after", () => {
+    const effects = new Effects3D(new THREE.Scene(), 256);
+    const socket = new THREE.Vector3(0.2, 1.6, 0.1);
+    effects.gougeEye(0, socket, new THREE.Vector3(0, 0, 1), 1, 50);
+    expect(effects.liveBloodParticles).toBeGreaterThan(120);
+    expect(effects.debrisCount("flesh")).toBeGreaterThanOrEqual(5);
+    expect(effects.liveMist).toBeGreaterThan(10);
+    expect(effects.canvasStains).toBeGreaterThan(5);
+    const poured = vi.spyOn(effects as unknown as { spawnDroplet(...args: number[]): void }, "spawnDroplet");
+    for (let frame = 0; frame < 60 * 5; frame += 1) effects.update(1 / 60);
+    expect(poured.mock.calls.length).toBeGreaterThan(150);
+    poured.mockClear();
+    for (let frame = 0; frame < 60 * 2; frame += 1) effects.update(1 / 60);
+    expect(poured.mock.calls.length).toBeLessThan(60);
+    effects.dispose();
   });
 
   it("is shot close in the finish, aimed at the eye from the side it hangs on", () => {

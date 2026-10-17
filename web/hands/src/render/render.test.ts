@@ -252,7 +252,7 @@ describe("effects", () => {
     effects.decapitate(0, origin, new THREE.Quaternion(), 1, 10);
     const sweat = effects.liveParticles - effects.liveBloodParticles;
     expect(sweat).toBeGreaterThan(0);
-    expect(effects.liveGibs).toBe(36);
+    expect(effects.liveGibs).toBe(48);
     expect(effects.activeHeads).toBe(1);
     expect(effects.activeStumps).toBe(1);
     expect(effects.canvasStains).toBeGreaterThan(0);
@@ -287,15 +287,15 @@ describe("effects", () => {
     ) as THREE.Mesh<THREE.SphereGeometry, THREE.MeshStandardMaterial>;
     expect(visibleHead.material.color.getHex()).toBe(0xb0703f);
     expect(effects.activeStumps).toBe(1);
-    expect(effects.liveGibs).toBe(24);
-    expect(effects.liveBloodParticles).toBe(120);
+    expect(effects.liveGibs).toBe(36);
+    expect(effects.liveBloodParticles).toBe(360);
     expect(scene.children).toHaveLength(childCount);
 
     effects.decapitate(0, position, quaternion, 1, 42);
     expect(effects.activeHeads).toBe(1);
     expect(effects.activeStumps).toBe(1);
-    expect(effects.liveGibs).toBe(24);
-    expect(effects.liveBloodParticles).toBe(120);
+    expect(effects.liveGibs).toBe(36);
+    expect(effects.liveBloodParticles).toBe(360);
 
     effects.decapitate(1, position, quaternion, -1, 43, 0x6e4128);
     expect(effects.activeHeads).toBe(2);
@@ -304,7 +304,7 @@ describe("effects", () => {
       .map((child) => ((child as THREE.Mesh).material as THREE.MeshStandardMaterial).color.getHex());
     expect(visibleHeadColors).toEqual([0xb0703f, 0x6e4128]);
     expect(effects.activeStumps).toBe(2);
-    expect(effects.liveGibs).toBe(48);
+    expect(effects.liveGibs).toBe(72);
     expect(scene.children).toHaveLength(childCount);
 
     effects.restoreFighter(0);
@@ -336,17 +336,17 @@ describe("effects", () => {
     effects.dismemberHand(0, "left", position, quaternion, 1, 60, 0x1d4ed8);
     expect(effects.activeHands).toBe(1);
     expect(effects.activeStumps).toBe(1);
-    expect(effects.liveGibs).toBe(16);
-    expect(effects.liveBloodParticles).toBe(80);
+    expect(effects.liveGibs).toBe(26);
+    expect(effects.liveBloodParticles).toBe(260);
     expect(scene.children).toHaveLength(childCount);
 
     effects.dismemberHand(0, "left", position, quaternion, 1, 60, 0x1d4ed8);
     expect(effects.activeHands).toBe(1);
-    expect(effects.liveGibs).toBe(16);
+    expect(effects.liveGibs).toBe(26);
     effects.dismemberHand(0, "right", position, quaternion, -1, 61, 0x1d4ed8);
     expect(effects.activeHands).toBe(2);
     expect(effects.activeStumps).toBe(2);
-    expect(effects.liveGibs).toBe(32);
+    expect(effects.liveGibs).toBe(52);
     effects.anchorHandStump(0, "left", new THREE.Vector3(0.1, 1.2, 0), quaternion);
 
     effects.restoreFighter(0);
@@ -374,7 +374,7 @@ describe("effects", () => {
 
     for (let i = 0; i < 360; i += 1) effects.update(1 / 60);
     // The flesh lies where it fell for the rest of the bout; the blood in the air has all come down.
-    expect(effects.liveGibs).toBe(24);
+    expect(effects.liveGibs).toBe(36);
     expect(effects.liveBloodParticles).toBe(0);
     expect(effects.liveMist).toBe(0);
     expect(effects.activeHeads).toBe(1);

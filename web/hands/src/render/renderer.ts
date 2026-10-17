@@ -19,7 +19,7 @@ import { DESKTOP_GORE, Effects3D, PHONE_GORE, type BakedPart, type SprayDirectio
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, releaseFighterGpu, type ArcadeDislocation, type CutmanProp } from "./graph";
 import { drawHud, finalRevealDelay, hudScale, lagWarning, resultCard, resultCardLayout, RoundStatsTracker, STOPPAGE_METHODS, RoundClock, wasBlocked, type RoundPunchStats } from "./hud";
 import { BURST_CUT_HEIGHT, EYE_LIDS, NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE, type InjuryShading } from "./injury";
-import { BIG_SHOT, closeCut, cutRim, teethFor, HARD_SHOT } from "./gore";
+import { closeCut, cutRim, teethFor, HARD_SHOT } from "./gore";
 import { mouthpieceFlies } from "./mouthpiece";
 import { OFFICIAL_LOOKS, lookFor, lookShape, type FighterLook } from "./looks";
 import { BLUE_CORNER_OUTFIT, CUTMAN_OUTFIT, RED_CORNER_OUTFIT, REFEREE_OUTFIT } from "./outfit";
@@ -398,16 +398,23 @@ export function presentationTickFor(snapshot: EngineSnapshot): number {
   return snapshot.result === null ? snapshot.tick - 1 : snapshot.tick;
 }
 
-/** A straight this hard to the head takes it off: most land for 30 to 80. */
-const DECAPITATING_STRAIGHT = 80;
+/**
+ * Most punches land for 30 to 80. A straight this hard to the head takes it off, and an uppercut this hard;
+ * a hook or a jab this hard forces an eye out; a body hook this hard takes the hand covering the ribs off.
+ */
+const DECAPITATING_STRAIGHT = 50;
+const DECAPITATING_UPPERCUT = 40;
+const GOUGING_PUNCH = 40;
+const DISMEMBERING_HOOK = 50;
 const PUNCH_CLASSES: readonly string[] = ["jab", "straight", "hook", "uppercut"];
 
 /**
- * The finisher the punch that ends the bout earns, by where it landed, what it was and how hard it was:
- * - to the head, a flash knockout or a big counter bursts it, a hard uppercut or straight takes it off, a
- *   hard hook forces out the eye on the side it lands, and anything lighter dislocates the jaw;
- * - to the body, a hook comes round through the elbow covering the ribs, so a big one takes the forearm
- *   off and a hard one puts the shoulder out; otherwise the ribs it lands on cave in.
+ * The finisher the punch that ends the bout earns, by where it landed, what it was and how hard it was. Every
+ * one of them is gory:
+ * - to the head, a flash knockout or a hard counter bursts it, an uppercut or a straight takes it off, a hook
+ *   or a jab forces out the eye on the side it lands, and anything lighter breaks the jaw open;
+ * - to the body, a hook comes round through the elbow covering the ribs, so a hard one takes the forearm off
+ *   and a light one tears the shoulder open; otherwise the ribs it lands on cave in and burst.
  */
 export function arcadeInjuryFor(
   event: CombatEvent,
@@ -422,13 +429,12 @@ export function arcadeInjuryFor(
   const struck = key?.[1] === "right" ? "left" : "right";
   const amount = event.amount;
   if (event.detail.endsWith(":head")) {
-    if (result?.finish_method === "flash_ko" || (event.kind === "counter_hit" && amount >= BIG_SHOT)) return "head_burst";
-    if ((punch === "uppercut" && amount >= HARD_SHOT) || (punch === "straight" && amount >= DECAPITATING_STRAIGHT)) return "decapitation";
-    if (punch === "hook" && amount >= HARD_SHOT) return `eye_${struck}`;
+    if (result?.finish_method === "flash_ko" || (event.kind === "counter_hit" && amount >= HARD_SHOT)) return "head_burst";
+    if ((punch === "uppercut" && amount >= DECAPITATING_UPPERCUT) || (punch === "straight" && amount >= DECAPITATING_STRAIGHT)) return "decapitation";
+    if ((punch === "hook" || punch === "jab") && amount >= GOUGING_PUNCH) return `eye_${struck}`;
     return "jaw_dislocation";
   }
-  if (punch === "hook" && amount >= BIG_SHOT) return `dismember_${struck}`;
-  if (punch === "hook" && amount >= HARD_SHOT) return `shoulder_${struck}`;
+  if (punch === "hook") return amount >= DISMEMBERING_HOOK ? `dismember_${struck}` : `shoulder_${struck}`;
   return `ribs_${struck}`;
 }
 import { buildRing, disposeRing, nearRopeOpacityFor, type BuiltRing } from "./ring";
@@ -888,10 +894,9 @@ const POOL_SEVERITY = 0.2;
 export const POOL_RATE = 3;
 const POOL_REACH = 0.7;
 /**
- * A finisher's open wound bleeds out whatever the engine says of his cuts: as badly as the worst cut does
- * (the pool's ceiling), three times as fast, and spreading out to 1.3 m from it, which takes about 18 s.
+ * Every finisher leaves an open wound that bleeds out whatever the engine says of his cuts: as badly as the
+ * worst cut does (the pool's ceiling), three times as fast, and spreading out to 1.3 m from it, which takes about 18 s.
  */
-const OPEN_WOUNDS: ReadonlySet<ArcadeInjury> = new Set(["decapitation", "head_burst", "eye_left", "eye_right", "dismember_left", "dismember_right", "ribs_left", "ribs_right"]);
 const OPEN_WOUND_SEVERITY = 1.6;
 const OPEN_WOUND_POOL_RATE = 3;
 const OPEN_WOUND_POOL_REACH = 1.3;
@@ -903,6 +908,11 @@ const OUT_OF_THE_MOUTH = new THREE.Vector3(0, -0.35, 1);
 /** A man going down pours blood from his nose and mouth for this long, this many drops a second at first. */
 const KNOCKDOWN_GUSH_SECONDS = 1.6;
 const KNOCKDOWN_GUSH_RATE = 160;
+/** Teeth a broken jaw spills. */
+const JAW_TEETH = 8;
+/** Where a fighter pours blood from a wound he carries: his mouth (a knockdown or a broken jaw), a shoulder or the ribs on one side. */
+type WoundSite = "mouth" | "shoulder_left" | "shoulder_right" | "ribs_left" | "ribs_right";
+const woundSite = (injury: ArcadeInjury | null): WoundSite => (injury === "shoulder_left" || injury === "shoulder_right" || injury === "ribs_left" || injury === "ribs_right" ? injury : "mouth");
 
 /**
  * How far the pool under a downed fighter has spread after `count` spills, in metres: fast at first, then slower,
@@ -923,9 +933,9 @@ export function fighterDown(fighter: FighterSnapshot, graph: { readonly isDown: 
 /** How deep (bind-space centimetres) and how wide a torso finisher caves the ribs in: twice the deepest dent a punch leaves. */
 const RIBS_DENT = 6;
 const RIBS_DENT_RADIUS = 11;
-/** The burst of blood from caved-in ribs is thrown at rib height, while the chest is still this high off the canvas. */
-const RIBS_BURST_CHEST_HEIGHT = 0.9;
-const RIBS_BURST_EVENT_OFFSET = 7;
+/** Caved-in ribs burst open this far out to the side of the chest bone and this far below it, in metres. */
+const RIBS_REACH = 0.13;
+const RIBS_DROP = 0.06;
 
 /**
  * Ribs a torso finisher caved in on the fighter's `side`: a deep dent, black with bruising and running
@@ -937,9 +947,20 @@ export function caveInRibs(shading: InjuryShading, side: "left" | "right"): void
   shading.set(site, { bruise: 1.2, swell: 0, blood: 1.4 });
 }
 
-/** Whether the knockout replay puts this injury back so it can happen again on screen. */
-export function replayReattaches(injury: ArcadeInjury): boolean {
-  return injury !== "jaw_dislocation" && injury !== "shoulder_left" && injury !== "shoulder_right";
+/**
+ * A jaw a finisher broke loose: the mouth split and pouring blood down the chin, the neck and the chest. Set
+ * every frame over what the engine's trauma paints.
+ */
+export function breakJaw(head: InjuryShading, body: InjuryShading): void {
+  head.set("mouth", { cut: 1, blood: 1.4 });
+  head.set("chin", { bruise: 1.2 });
+  body.set("neckSmear", { blood: 1.4 });
+}
+
+/** A shoulder a finisher tore open, running with blood down the chest. Set every frame over what the engine's trauma paints. */
+export function tearShoulder(body: InjuryShading, side: "left" | "right"): void {
+  body.set(side === "left" ? "leftShoulderSmear" : "rightShoulderSmear", { blood: 1.4 });
+  body.set(side === "left" ? "leftPec" : "rightPec", { bruise: 1.1 });
 }
 
 const eyeVertices = new WeakMap<THREE.BufferGeometry, readonly [number, number]>();
@@ -1192,6 +1213,9 @@ export class FightRenderer {
   private readonly tmpStumpAcross = new THREE.Vector3();
   private readonly tmpPart = new THREE.Vector3();
   private readonly tmpPartQuaternion = new THREE.Quaternion();
+  /** Where a wound a fighter carries is and the way it faces, from tornWound. */
+  private readonly woundPoint = new THREE.Vector3();
+  private readonly woundAxis = new THREE.Vector3();
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -1730,7 +1754,7 @@ export class FightRenderer {
     for (const index of [0, 1] as const) {
       const injury = this.arcadeInjuries[index];
       const event = this.arcadeInjuryEvents[index];
-      if (injury !== null && event !== null && replayReattaches(injury)) {
+      if (injury !== null && event !== null) {
         this.replayInjuries[index] = { injury, event };
         this.restoreInjury(index);
       }
@@ -1909,12 +1933,11 @@ export class FightRenderer {
   }
 
   /**
-   * Severs the head or a hand from the fighter's current pose, flying the way the punch travelled, or
-   * sets a dislocation, and records it.
+   * Severs the head or a hand from the fighter's current pose, flying the way the punch travelled, bursts the
+   * head or forces an eye out, or tears him open where the punch landed, and records it.
    */
   private applyArcadeInjury(index: number, injury: ArcadeInjury, event: CombatEvent, spray?: SprayDirection): boolean {
-    let applied = this.graphs !== null
-      && (injury === "jaw_dislocation" || injury === "shoulder_left" || injury === "shoulder_right");
+    let applied = false;
     if (injury === "decapitation") {
       const pose = this.headWorldPose(index);
       if (pose !== null) {
@@ -1966,17 +1989,12 @@ export class FightRenderer {
         this.effects.anchorHandStump(index, side, pose.position, pose.quaternion);
         applied = true;
       }
-    } else if (injury === "ribs_left" || injury === "ribs_right") {
-      // The ribs cave in under the punch (held every frame in draw, see caveInRibs) and blood bursts from the
-      // side, from rib height while he is still up; on the canvas the wound and the pool tell it.
-      const graph = this.graphs?.[index];
-      const fighter = this.buffer.latest()?.fighters[index];
-      if (graph !== undefined && fighter !== undefined) {
-        if (graph.boxer.rig.bones.upperChest.getWorldPosition(this.tmpPart).y > RIBS_BURST_CHEST_HEIGHT) {
-          drawnPlace(graph, fighter, this.mapping, this.contactPoint);
-          const burst: CombatEvent = { ...event, event_id: event.event_id + RIBS_BURST_EVENT_OFFSET, kind: "counter_hit", detail: "hook:body", amount: Math.max(event.amount, BIG_SHOT), blood: 100 };
-          this.effects.addEvent(burst, this.contactPoint, false, spray);
-        }
+    } else if (injury === "jaw_dislocation" || injury === "shoulder_left" || injury === "shoulder_right" || injury === "ribs_left" || injury === "ribs_right") {
+      // Torn open where the punch landed: the jaw broken loose, a shoulder put out, or the ribs caved in (each
+      // held every frame in draw, see breakJaw, tearShoulder and caveInRibs), pouring blood as he lies there.
+      const wound = this.tornWound(index, woundSite(injury));
+      if (wound !== null) {
+        this.effects.tearOpen(index, wound.position, wound.axis, spray ?? event.direction, event.event_id, injury === "jaw_dislocation" ? JAW_TEETH : 0);
         applied = true;
       }
     }
@@ -2293,19 +2311,36 @@ export class FightRenderer {
 
   /** Blood pours from the fighter's nose and mouth, from his head as it is posed, and follows him as he goes down. */
   private gushFromMouth(index: number, eventId: number, seconds: number, rate: number): void {
-    const pose = this.headWorldPose(index);
-    if (pose === null) return;
-    this.mouthPoint.copy(MOUTH).applyQuaternion(pose.quaternion).add(pose.position);
-    this.effects.gush(index, this.mouthPoint, this.tmpPart.copy(OUT_OF_THE_MOUTH).applyQuaternion(pose.quaternion), seconds, rate, eventId);
+    const wound = this.tornWound(index, "mouth");
+    if (wound !== null) this.effects.gush(index, wound.position, wound.axis, seconds, rate, eventId);
   }
 
-  /** Keeps a pouring wound on the fighter as he moves. */
+  /** Keeps a pouring wound on the fighter as he moves: the one his finisher opened, or his mouth. */
   private anchorGush(index: number): void {
     if (!this.effects.gushing(index)) return;
-    const pose = this.headWorldPose(index);
-    if (pose === null) return;
-    this.mouthPoint.copy(MOUTH).applyQuaternion(pose.quaternion).add(pose.position);
-    this.effects.anchorGush(index, this.mouthPoint, this.tmpPart.copy(OUT_OF_THE_MOUTH).applyQuaternion(pose.quaternion));
+    const wound = this.tornWound(index, woundSite(this.arcadeInjuries[index] ?? null));
+    if (wound !== null) this.effects.anchorGush(index, wound.position, wound.axis);
+  }
+
+  /** Where a wound a fighter carries is, on him as he is posed, and the way it faces. */
+  private tornWound(index: number, site: WoundSite): { position: THREE.Vector3; axis: THREE.Vector3 } | null {
+    if (site === "mouth") {
+      const pose = this.headWorldPose(index);
+      if (pose === null) return null;
+      return { position: this.woundPoint.copy(MOUTH).applyQuaternion(pose.quaternion).add(pose.position), axis: this.woundAxis.copy(OUT_OF_THE_MOUTH).applyQuaternion(pose.quaternion) };
+    }
+    const boxer = this.graphs?.[index]?.boxer;
+    if (boxer === undefined) return null;
+    boxer.root.updateMatrixWorld(true);
+    const bones = boxer.rig.bones;
+    const left = site === "shoulder_left" || site === "ribs_left";
+    // Out to his own side, from shoulder to shoulder, and up his back, from the hips to the chest.
+    const out = bones.shoulderL.getWorldPosition(this.woundAxis).sub(bones.shoulderR.getWorldPosition(this.tmpStumpOffset)).normalize().multiplyScalar(left ? 1 : -1);
+    const chest = bones.upperChest.getWorldPosition(this.tmpStump);
+    const up = this.tmpStumpOffset.copy(chest).sub(bones.hips.getWorldPosition(this.tmpStumpAcross)).normalize();
+    if (site === "ribs_left" || site === "ribs_right") return { position: this.woundPoint.copy(chest).addScaledVector(out, RIBS_REACH).addScaledVector(up, -RIBS_DROP), axis: out };
+    (left ? bones.shoulderL : bones.shoulderR).getWorldPosition(this.woundPoint);
+    return { position: this.woundPoint, axis: out.addScaledVector(up, 0.5).normalize() };
   }
 
   /** The gum shield flies out of the mouth along the punch, from the head as it is posed. */
@@ -2542,6 +2577,12 @@ export class FightRenderer {
         } else if (injury === "ribs_left" || injury === "ribs_right") {
           const body = this.graphs?.[index]?.boxer.bodyInjury;
           if (body !== undefined) caveInRibs(body, injury === "ribs_left" ? "left" : "right");
+        } else if (injury === "jaw_dislocation") {
+          const boxer = this.graphs?.[index]?.boxer;
+          if (boxer !== undefined) breakJaw(boxer.headInjury, boxer.bodyInjury);
+        } else if (injury === "shoulder_left" || injury === "shoulder_right") {
+          const body = this.graphs?.[index]?.boxer.bodyInjury;
+          if (body !== undefined) tearShoulder(body, injury === "shoulder_left" ? "left" : "right");
         }
         this.anchorGush(index);
       }
@@ -2791,7 +2832,7 @@ export class FightRenderer {
     for (const [index, fighter] of fighters.entries()) {
       const down = fighterDown(fighter, this.graphs?.[index], this.flashKnockout?.loserId);
       const wound = this.arcadeInjuries[index] ?? null;
-      const open = wound !== null && OPEN_WOUNDS.has(wound);
+      const open = wound !== null;
       const engine = (fighter.trauma.bleeding + fighter.trauma.left_cut + fighter.trauma.right_cut) / 380;
       const severity = open ? Math.max(engine, OPEN_WOUND_SEVERITY) : engine;
       if (severity > 0.05 && !down) {
@@ -2828,11 +2869,16 @@ export class FightRenderer {
     return this.tmpHead.set(anchor.x, this.headHeightOf(index), anchor.z);
   }
 
-  /** Where a downed fighter's blood pools from: a severed hand's wrist, otherwise his head or what is left of his neck. */
+  /** Where a downed fighter's blood pools from: a severed hand's wrist, a torn shoulder or ribs, otherwise his head or what is left of his neck. */
   private poolSource(index: number, wound: ArcadeInjury | null): { readonly x: number; readonly z: number } {
     if (wound === "dismember_left" || wound === "dismember_right") {
       const wrist = this.handWorldPose(index, wound === "dismember_left" ? "left" : "right");
       if (wrist !== null) return wrist.position;
+    }
+    const site = woundSite(wound);
+    if (site !== "mouth") {
+      const torn = this.tornWound(index, site);
+      if (torn !== null) return torn.position;
     }
     return this.headCacheValid[index] ? this.headCache[index]! : index === 0 ? this.tmpA : this.tmpB;
   }

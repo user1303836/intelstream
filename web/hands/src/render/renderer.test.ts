@@ -4,7 +4,7 @@ import { Avatars } from "./avatars";
 import { RoundClock } from "./hud";
 import { PROTOCOL_VERSION, type CombatEvent, type EngineSnapshot, type MatchResult } from "../types";
 import { releaseSharedGpu, disposeSkeletons } from "./graph";
-import { arcadeInjuryFor, canStartPunch, compileForComposer, CEREMONY_MARKS, ceremonyStep, contactParticipants, contactPresentationPlan, disposeComposer, cornersAtWork, FightRenderer, ownViewPhase, isArcadeInjuryCandidate, knockdownFinisher, presentationTickFor, refereeSpacing, replayCameraSide, replayReattaches, sprayDirection, visualSeparation, resultCardTop } from "./renderer";
+import { arcadeInjuryFor, canStartPunch, compileForComposer, CEREMONY_MARKS, ceremonyStep, contactParticipants, contactPresentationPlan, disposeComposer, cornersAtWork, FightRenderer, ownViewPhase, isArcadeInjuryCandidate, knockdownFinisher, presentationTickFor, refereeSpacing, replayCameraSide, sprayDirection, visualSeparation, resultCardTop } from "./renderer";
 import { RockedVision } from "./rocked";
 import { worldMapping } from "./world";
 
@@ -128,9 +128,9 @@ describe("arcade injury candidate routing", () => {
     expect(arcadeInjuryFor({ ...event("hit", "hook:head"), event_id: 1 }, downed, tko, leftPunch)).toBe("eye_right");
     expect(arcadeInjuryFor({ ...event("hit", "uppercut:head"), event_id: 1 }, downed, tko, leftPunch)).toBe("decapitation");
     expect(arcadeInjuryFor({ ...event("hit", "hook:body"), event_id: 0 }, downed, tko, leftPunch)).toBe("dismember_right");
-    expect(arcadeInjuryFor({ ...event("hit", "hook:body"), event_id: 1, amount: 80 }, downed, tko, leftPunch)).toBe("shoulder_right");
+    expect(arcadeInjuryFor({ ...event("hit", "hook:body"), event_id: 1, amount: 45 }, downed, tko, leftPunch)).toBe("shoulder_right");
     expect(arcadeInjuryFor({ ...event("hit", "hook:body"), event_id: 0 }, downed, tko, rightPunch)).toBe("dismember_left");
-    expect(arcadeInjuryFor({ ...event("hit", "hook:body"), event_id: 1, amount: 80 }, downed, tko, rightPunch)).toBe("shoulder_left");
+    expect(arcadeInjuryFor({ ...event("hit", "hook:body"), event_id: 1, amount: 45 }, downed, tko, rightPunch)).toBe("shoulder_left");
     expect(arcadeInjuryFor({ ...event("hit", "straight:body"), event_id: 1 }, downed, tko, rightPunch)).toBe("ribs_left");
   });
 
@@ -193,15 +193,20 @@ describe("referee spacing", () => {
 });
 
 describe("knockout replay injuries", () => {
-  it("reattaches severed parts and caved-in ribs for the replay but leaves dislocations in place", () => {
-    expect(replayReattaches("decapitation")).toBe(true);
-    expect(replayReattaches("dismember_left")).toBe(true);
-    expect(replayReattaches("dismember_right")).toBe(true);
-    expect(replayReattaches("ribs_left")).toBe(true);
-    expect(replayReattaches("ribs_right")).toBe(true);
-    expect(replayReattaches("jaw_dislocation")).toBe(false);
-    expect(replayReattaches("shoulder_left")).toBe(false);
-    expect(replayReattaches("shoulder_right")).toBe(false);
+  it("puts every finisher back for the replay to do again at its impact, the broken jaw and the torn shoulder too", () => {
+    const startReplay = (FightRenderer.prototype as unknown as { startReplay(this: unknown, plan: unknown): void }).startReplay;
+    const impact = { ...event("counter_hit", "hook:head"), event_id: 30, tick: 400 };
+    for (const injury of ["decapitation", "head_burst", "eye_left", "dismember_right", "jaw_dislocation", "shoulder_left", "ribs_right"]) {
+      const restoreInjury = vi.fn();
+      const stub = {
+        simulation: { tick_rate: 30 }, frameSeconds: 0, final: null, graphs: null, commentary: { replay: vi.fn() }, restoreInjury,
+        arcadeInjuries: [null, injury], arcadeInjuryEvents: [null, impact], replayInjuries: [null, null], pendingContacts: [], effects: { returnMouthpiece: vi.fn() },
+        lastKnockdown: { knockdown: { ...impact, event_id: 31, kind: "knockdown" }, hit: impact, finisher: null }, liveFallTicks: [null, null],
+      };
+      startReplay.call(stub, { snapshots: [snapshot(380), snapshot(400)], impact, durationSeconds: 3 });
+      expect(stub.replayInjuries[1], injury).toEqual({ injury, event: impact });
+      expect(restoreInjury).toHaveBeenCalledWith(1);
+    }
   });
 });
 
