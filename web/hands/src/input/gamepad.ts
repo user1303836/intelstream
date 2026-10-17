@@ -49,11 +49,6 @@ export class GamepadInput {
     else this.sharedActions.push("gamepad", action);
   }
 
-  private clearActions(): void {
-    this.queue.length = 0;
-    this.sharedActions?.clear();
-  }
-
   private poll(): void {
     if (!this.enabled) {
       this.reset();
@@ -72,7 +67,6 @@ export class GamepadInput {
     const moveX = Math.round(move.x * 1000);
     const moveY = Math.round(-move.y * 1000);
     const defense = pressed(pad, 4) ? "guard_high" : pressed(pad, 5) ? "guard_low" : "none";
-    if (defense !== "none" && defense !== this.defense) this.clearActions();
     const changed = moveX !== this.moveX || moveY !== this.moveY || defense !== this.defense;
     this.moveX = moveX;
     this.moveY = moveY;

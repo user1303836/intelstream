@@ -38,7 +38,7 @@ describe("combined input intent", () => {
     input.destroy();
   });
 
-  it("guard on either device clears older cross-device intent but permits a newer punch", () => {
+  it("a guard on either device leaves the press made before it on the other to go out with it, and permits a newer punch", () => {
     let current = pad();
     Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [current] });
     const input = new InputController();
@@ -46,7 +46,7 @@ describe("combined input intent", () => {
     window.dispatchEvent(key("keydown", "KeyF"));
     window.dispatchEvent(key("keyup", "KeyF"));
     current = pad([4]); poll(input);
-    expect(input.frame()).toMatchObject({ defense: "guard_high", actions: [] });
+    expect(input.frame()).toMatchObject({ defense: "guard_high", actions: [{ kind: "punch", hand: "left", class: "jab", target: "head", power: "normal" }] });
 
     window.dispatchEvent(key("keydown", "KeyF"));
     window.dispatchEvent(key("keyup", "KeyF"));
@@ -58,7 +58,7 @@ describe("combined input intent", () => {
     current = pad(); poll(input);
     current = pad([2]); poll(input);
     window.dispatchEvent(key("keydown", "KeyQ"));
-    expect(input.frame()).toMatchObject({ defense: "guard_high", actions: [] });
+    expect(input.frame()).toMatchObject({ defense: "guard_high", actions: [{ kind: "punch", hand: "right", class: "hook", target: "head", power: "normal" }] });
     input.destroy();
   });
 });
@@ -215,20 +215,32 @@ describe("telling the server of held input as it changes", () => {
     input.destroy();
   });
 
-  it("cancels a press still waiting to go out when the guard goes up, rather than sending it with the guard", () => {
-    Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [] });
-    const input = new InputController();
-    // The app sends at once on a held change (network.notifyHeld flushes input.frame()).
-    const sent: InputFrame[] = [];
-    input.onHeldChange(() => sent.push(input.frame()));
-    // A jab inside the edge gap or past the edge budget waits for the next frame to go out.
-    window.dispatchEvent(key("keydown", "KeyF"));
-    window.dispatchEvent(key("keyup", "KeyF"));
-    window.dispatchEvent(key("keydown", "KeyQ"));
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({ defense: "guard_high", actions: [] });
+  it("sends a press still waiting to go out with the guard frame, from the keyboard, a pad or the touch controls", () => {
+    // A press inside the edge gap or past a send budget waits for the next frame, and the app sends one at once on a held
+    // change (network.notifyHeld flushes input.frame()). The renderer already plays the press, and the server decides.
+    let current = pad();
+    Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [current] });
+    Element.prototype.setPointerCapture = () => undefined;
+    const sentOnGuard = (press: (input: InputController, container: HTMLElement) => void, guard: (input: InputController, container: HTMLElement) => void): InputFrame[] => {
+      const input = new InputController();
+      const container = document.createElement("div");
+      input.attachTouch(container, true);
+      const sent: InputFrame[] = [];
+      press(input, container);
+      input.onHeldChange(() => sent.push(input.frame()));
+      guard(input, container);
+      input.destroy();
+      return sent;
+    };
+    const tap = (target: Element): void => { const event = new MouseEvent("pointerdown", { bubbles: true, cancelable: true }); Object.defineProperty(event, "pointerId", { value: 3 }); target.dispatchEvent(event); };
+    const keyboard = sentOnGuard(() => { window.dispatchEvent(key("keydown", "KeyF")); window.dispatchEvent(key("keyup", "KeyF")); }, () => window.dispatchEvent(key("keydown", "KeyQ")));
     window.dispatchEvent(key("keyup", "KeyQ"));
-    input.destroy();
+    expect(keyboard[0]).toEqual({ moveX: 0, moveY: 0, defense: "guard_high", actions: [{ kind: "punch", hand: "left", class: "jab", target: "head", power: "normal", id: "c1" }] });
+    const gamepad = sentOnGuard((input) => { current = pad([0]); poll(input); }, (input) => { current = pad([4]); poll(input); });
+    current = pad();
+    expect(gamepad[0]).toEqual({ moveX: 0, moveY: 0, defense: "guard_high", actions: [{ kind: "punch", hand: "right", class: "jab", target: "head", power: "normal", id: "c1" }] });
+    const touch = sentOnGuard((_input, container) => tap(container.querySelector("[data-move='slip_left']")!), (_input, container) => tap(container.querySelector("[data-guard='guard_high']")!));
+    expect(touch[0]).toEqual({ moveX: 0, moveY: 0, defense: "guard_high", actions: [{ kind: "slip_left", id: "c1" }] });
   });
 
   it("speaks up for a stick that turns or presses well past where it was, not for every twitch of the thumb", () => {
