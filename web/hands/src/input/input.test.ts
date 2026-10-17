@@ -176,6 +176,11 @@ describe("the power modifier held", () => {
     expect(input.powerHeld).toBe(false);
     window.dispatchEvent(key("keydown", "AltLeft"));
     expect(input.powerHeld).toBe(true);
+    // Held through a pause or the rest, it shows again once input is back on, never while it is off.
+    input.setActive(false, true);
+    expect(input.powerHeld).toBe(false);
+    input.setActive(true);
+    expect(input.powerHeld).toBe(true);
     window.dispatchEvent(key("keyup", "AltLeft"));
     expect(input.powerHeld).toBe(false);
     triggers = [7];
