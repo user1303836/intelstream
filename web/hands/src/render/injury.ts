@@ -276,12 +276,12 @@ const FRAGMENT_BODY = /* glsl */ `
       if (fk > 0.5 && blood < 0.3) break;
       if (fk > 1.5 && blood < 0.7) break;
       float seed = fract(sin(float(i) * 12.9898 + fk * 78.233) * 43758.5453);
-      float reach = (3.0 + blood * 15.0) * (fk < 0.5 ? 1.0 : 0.55 + 0.3 * seed);
+      float reach = (4.0 + blood * 18.0) * (fk < 0.5 ? 1.0 : 0.55 + 0.3 * seed);
       float start = (fk < 0.5 ? -0.3 : fk < 1.5 ? 0.4 : 0.05) * (0.6 + 0.6 * seed) * radius * 0.35;
       float t = clamp(drop / reach, 0.0, 1.0);
       float wander = (0.35 * sin(injuryPos.y * 1.3 + float(i) * 1.7 + fk * 2.1) + 0.15 * sin(injuryPos.y * 3.7 + fk)) * t;
       float dx = abs(injuryPos.x - origin.x - start - wander);
-      float width = (0.28 - 0.12 * t) * (0.75 + 0.6 * min(1.4, blood));
+      float width = (0.32 - 0.12 * t) * (0.8 + 0.9 * min(1.4, blood));
       float run = (1.0 - smoothstep(width * 0.55, width, dx)) * step(drop, reach) * smoothstep(-0.4, 0.1, drop);
       float tipY = origin.y - reach;
       vec2 tip = vec2(origin.x + start + 0.35 * sin(tipY * 1.3 + float(i) * 1.7 + fk * 2.1) + 0.15 * sin(tipY * 3.7 + fk), tipY);
@@ -297,7 +297,7 @@ const FRAGMENT_BODY = /* glsl */ `
       float t = clamp(drop / (radius * 3.2 + blood * 10.0), 0.0, 1.0);
       float across = abs(injuryPos.x - origin.x + 0.9 * sin(injuryPos.y * 0.45 + float(i)));
       float wash = (1.0 - smoothstep(radius * (0.5 + 0.4 * t), radius * (1.0 + 0.7 * t), across)) * (1.0 - t * t) * smoothstep(-0.6, 0.6, drop) * flow;
-      diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.95, 0.26, 0.26) + vec3(0.07, 0.0, 0.0), wash * min(1.0, blood) * 0.7);
+      diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.95, 0.26, 0.26) + vec3(0.07, 0.0, 0.0), wash * min(1.0, blood) * 0.9);
       w = max(w, wash * 0.5);
     }
     injuryWet = max(injuryWet, w);
@@ -559,8 +559,8 @@ export class InjuryShading {
   }
 }
 
-/** How much of a wound's blood shows on the skin and the gear: all of it at full blood, a fifth with reduced. */
-const bloodScale = (blood: BloodLevel): number => (blood === "off" ? 0 : blood === "reduced" ? 0.2 : 1);
+/** How much of a wound's blood shows on the skin and the gear: half as much again at full blood, a fifth with reduced. */
+const bloodScale = (blood: BloodLevel): number => (blood === "off" ? 0 : blood === "reduced" ? 0.2 : 1.5);
 
 /** Eye damage at which an eye is swollen fully shut, whatever the rest of the face: the engine's blind side starts there too. */
 export { EYE_SHUT_TRAUMA };

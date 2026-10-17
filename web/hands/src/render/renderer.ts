@@ -878,7 +878,7 @@ export function replayCameraSide(midX: number, midZ: number, nx: number, nz: num
 export function hitFlash(event: Pick<CombatEvent, "kind" | "amount">, own: boolean, blood: BloodLevel): number {
   if (own) return event.kind === "knockdown" ? 1 : Math.min(1, 0.35 + event.amount / 400);
   const gore = blood === "full" ? 1 : blood === "reduced" ? 0.4 : 0;
-  return gore * (event.kind === "knockdown" ? 0.6 : event.amount >= 60 ? Math.min(0.55, (event.amount - 40) / 180) : 0);
+  return gore * (event.kind === "knockdown" ? 0.85 : event.amount >= 50 ? Math.min(0.75, (event.amount - 30) / 140) : 0);
 }
 
 /**
@@ -897,7 +897,7 @@ export function punchGush(event: Pick<CombatEvent, "kind" | "amount" | "blood" |
  * that counts at full blood, and from heavier damage, half as dark at most, otherwise.
  */
 export function hurtVignette(trauma: number, blood: BloodLevel): number {
-  if (blood === "full") return trauma > 150 ? Math.min(0.55, trauma / 2400) : 0;
+  if (blood === "full") return trauma > 100 ? Math.min(0.65, trauma / 1800) : 0;
   return trauma > 350 ? Math.min(0.3, trauma / 4600) : 0;
 }
 

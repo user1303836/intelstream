@@ -189,11 +189,12 @@ describe("screen gore", () => {
   it("flashes red hardest when the viewer's own fighter is hit or floored, and for any big clean punch with blood on", () => {
     expect(hitFlash(blow("hit", 60), true, "off")).toBeCloseTo(0.5, 6);
     expect(hitFlash(blow("knockdown", 2), true, "full")).toBe(1);
-    expect(hitFlash(blow("counter_hit", 140), false, "full")).toBeCloseTo(0.55, 6);
-    expect(hitFlash(blow("hit", 100), false, "full")).toBeGreaterThan(0.3);
+    expect(hitFlash(blow("counter_hit", 140), false, "full")).toBeCloseTo(0.75, 6);
+    expect(hitFlash(blow("hit", 100), false, "full")).toBeCloseTo(0.5, 6);
     expect(hitFlash(blow("hit", 100), false, "full")).toBeLessThan(hitFlash(blow("hit", 100), true, "full"));
-    expect(hitFlash(blow("knockdown", 1), false, "full")).toBeCloseTo(0.6, 6);
-    expect(hitFlash(blow("hit", 59), false, "full")).toBe(0);
+    expect(hitFlash(blow("knockdown", 1), false, "full")).toBeCloseTo(0.85, 6);
+    expect(hitFlash(blow("hit", 50), false, "full")).toBeGreaterThan(0.1);
+    expect(hitFlash(blow("hit", 49), false, "full")).toBe(0);
     expect(hitFlash(blow("hit", 140), false, "reduced")).toBeLessThan(hitFlash(blow("hit", 140), false, "full") * 0.5);
     expect(hitFlash(blow("hit", 140), false, "off")).toBe(0);
   });
@@ -214,10 +215,10 @@ describe("screen gore", () => {
   });
 
   it("darkens the hurt vignette from the first damage at full blood, as it always did otherwise", () => {
-    expect(hurtVignette(150, "full")).toBe(0);
-    expect(hurtVignette(300, "full")).toBeGreaterThan(0.1);
-    expect(hurtVignette(2000, "full")).toBeGreaterThan(0.3);
-    expect(hurtVignette(5000, "full")).toBe(0.55);
+    expect(hurtVignette(100, "full")).toBe(0);
+    expect(hurtVignette(300, "full")).toBeGreaterThan(0.15);
+    expect(hurtVignette(2000, "full")).toBeGreaterThan(0.5);
+    expect(hurtVignette(5000, "full")).toBe(0.65);
     expect(hurtVignette(300, "reduced")).toBe(0);
     expect(hurtVignette(5000, "off")).toBe(0.3);
   });
@@ -237,7 +238,7 @@ describe("screen gore", () => {
       roundCalloutUntil: 0, roundCalloutRound: 0, eventCallout: null, roundClock: { ticks: () => null }, avatars: { get: () => null }, drawCaption: vi.fn(),
     });
     (FightRenderer.prototype as unknown as { fireContacts(this: unknown, tick: number): void }).fireContacts.call(stub, 50);
-    expect(stub.viewerHitFlash).toBeCloseTo(0.5, 6);
+    expect(stub.viewerHitFlash).toBeCloseTo(100 / 140, 6);
     const overlay = (FightRenderer.prototype as unknown as { drawHudOverlay(this: unknown, frame: unknown): void }).drawHudOverlay;
     overlay.call(stub, snapshot());
     expect(drawLens).toHaveBeenCalledWith(expect.anything(), 1280, 720);

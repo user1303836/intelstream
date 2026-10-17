@@ -77,8 +77,8 @@ const SIMULATION_STEP = 1 / 60;
 /** A full pool finds this many of its oldest drops at once to give up for new ones. */
 const STEAL_BATCH = 64;
 /** Blood reaches the camera's lens from a blow in the picture this far away or nearer, in metres, and soaks it from this near. */
-const LENS_REACH = 7;
-const LENS_NEAR = 2.5;
+const LENS_REACH = 12;
+const LENS_NEAR = 3.5;
 
 interface Droplet {
   alive: boolean;
@@ -927,7 +927,7 @@ export class Effects3D {
     // The other eye pops clean out and bounces away across the canvas.
     this.spawnGib(eye.socket.x, eye.socket.y, eye.socket.z, forward.x * 2.2 + launch.x * 0.8, 1.6 + rand(), forward.z * 2.2 + launch.z * 0.8, rand, "eye", index);
     this.splatter(eye.socket.x + forward.x * 0.3, eye.socket.z + forward.z * 0.3, 1.8, rand, 24);
-    this.splashLens(eye.socket.x, eye.socket.y, eye.socket.z, 1, safeEventId);
+    this.splashLens(eye.socket.x, eye.socket.y, eye.socket.z, 1.5, safeEventId);
     this.shake = Math.min(0.22, this.shake + 0.06);
     this.writeEye(index);
   }
@@ -1328,7 +1328,7 @@ export class Effects3D {
     if (!beat) this.shake = Math.min(0.14, this.shake + (blocked ? 0.008 : Math.max(0.012, event.amount / 1500)));
     if (knockdown) this.shake = Math.min(0.2, this.shake + 0.09);
     // A punch that lands hard throws its blood at a camera near enough to it, and a man going down does.
-    const thrown = knockdown ? 0.8 : landed ? THREE.MathUtils.clamp((event.amount - 50) / 70, 0, 1) * (0.5 + Math.min(100, event.blood) / 200) : 0;
+    const thrown = knockdown ? 1.2 : landed ? THREE.MathUtils.clamp((event.amount - 40) / 60, 0, 1) * (0.6 + Math.min(100, event.blood) / 150) : 0;
     if (!reducedMotion && !beat && event.blood > 0) this.splashLens(origin.x, origin.y, origin.z, thrown, event.event_id);
 
     for (let i = 0; i < sweatCount; i += 1) {
@@ -1600,7 +1600,7 @@ export class Effects3D {
       this.spawnMist(head.mesh.position.x + (rand() - 0.5) * 0.55, head.mesh.position.y + (rand() - 0.5) * 0.36, head.mesh.position.z + (rand() - 0.5) * 0.55, 1 + rand() * 1.8, 0.7 + rand() * 0.8);
     }
     this.splatter(head.mesh.position.x, head.mesh.position.z, 2.6, rand, 50);
-    this.splashLens(head.mesh.position.x, head.mesh.position.y, head.mesh.position.z, 1.6, safeEventId);
+    this.splashLens(head.mesh.position.x, head.mesh.position.y, head.mesh.position.z, 2.4, safeEventId);
     this.shake = Math.min(0.22, this.shake + 0.12);
   }
 
@@ -1665,7 +1665,7 @@ export class Effects3D {
       this.spawnMist(x + (rand() - 0.5) * 0.7, y + (rand() - 0.3) * 0.6, z + (rand() - 0.5) * 0.7, 1.2 + rand() * 2, 0.8 + rand() * 0.9);
     }
     this.splatter(x + launch.x * 0.3, z + launch.z * 0.3, 3.4, rand, 60);
-    this.splashLens(x, y, z, 2, safeEventId);
+    this.splashLens(x, y, z, 3, safeEventId);
     this.shake = Math.min(0.22, this.shake + 0.14);
     stump.mesh.material = this.jawMaterial;
     stump.active = true;
@@ -1765,7 +1765,7 @@ export class Effects3D {
       );
     }
     this.splatter(hand.mesh.position.x, hand.mesh.position.z, 2.2, rand, 40);
-    this.splashLens(hand.mesh.position.x, hand.mesh.position.y, hand.mesh.position.z, 1.2, safeEventId);
+    this.splashLens(hand.mesh.position.x, hand.mesh.position.y, hand.mesh.position.z, 1.8, safeEventId);
     this.shake = Math.min(0.22, this.shake + 0.08);
   }
 
@@ -1812,7 +1812,7 @@ export class Effects3D {
     scatter(teeth, "tooth");
     for (let puff = 0; puff < 28; puff += 1) this.spawnMist(x + (rand() - 0.5) * 0.36, y + (rand() - 0.5) * 0.28, z + (rand() - 0.5) * 0.36, 0.9 + rand() * 1.5, 0.6 + rand() * 0.7);
     this.splatter(x + out.x * 0.25 + launch.x * 0.3, z + out.z * 0.25 + launch.z * 0.3, 2.2, rand, 36);
-    this.splashLens(x, y, z, 1.2, safeEventId);
+    this.splashLens(x, y, z, 1.8, safeEventId);
     this.shake = Math.min(0.22, this.shake + 0.08);
     this.gush(index, position, out, TORN_GUSH_SECONDS, TORN_GUSH_RATE, safeEventId);
   }
@@ -1898,7 +1898,7 @@ export class Effects3D {
     }
     const emitter = this.dripEmitters[index];
     emitter.position.set(finite(headWorld.x), finite(headWorld.y, 1.5), finite(headWorld.z));
-    emitter.rate = this.bloodLevel === "reduced" ? Math.min(3, severity * 3) : Math.min(36, severity * 24);
+    emitter.rate = this.bloodLevel === "reduced" ? Math.min(3, severity * 3) : Math.min(60, severity * 40);
     emitter.active = true;
   }
 

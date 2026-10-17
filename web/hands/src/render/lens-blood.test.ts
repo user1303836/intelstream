@@ -34,25 +34,25 @@ describe("blood on the lens", () => {
     const light = new LensBlood();
     light.splash(0.7, 0.4, 0.2, 3);
     const soaked = new LensBlood();
-    soaked.splash(0.7, 0.4, 2, 3);
+    soaked.splash(0.7, 0.4, 3, 3);
     expect(light.count).toBeGreaterThanOrEqual(1);
     expect(light.count).toBeLessThanOrEqual(3);
-    expect(soaked.count).toBe(16);
+    expect(soaked.count).toBe(24);
     const draw = (lens: LensBlood) => {
       const record = recording();
       lens.draw(record.ctx, 1000, 500);
       return record;
     };
     const big = draw(soaked);
-    expect(big.drawn).toHaveLength(16);
-    const near = big.drawn.filter((drop) => Math.hypot(drop.x - 700, drop.y - 200) < 450);
-    expect(near.length).toBeGreaterThan(10);
+    expect(big.drawn).toHaveLength(24);
+    const near = big.drawn.filter((drop) => Math.hypot(drop.x - 700, drop.y - 200) < 500);
+    expect(near.length).toBeGreaterThan(14);
     expect(Math.max(...big.drawn.map((drop) => drop.size))).toBeGreaterThan(Math.max(...draw(light).drawn.map((drop) => drop.size)));
     // Drawn within the screen's own transform (the HUD's pixel ratio), which it never resets.
     expect(big.resets).toBe(0);
   });
 
-  it("runs the big drops down the glass and fades every drop away within four seconds", () => {
+  it("runs the big drops down the glass and fades every drop away within five seconds", () => {
     const lens = new LensBlood();
     lens.splash(0.5, 0.3, 2, 8);
     const heights = (): number[] => {
@@ -65,7 +65,7 @@ describe("blood on the lens", () => {
     const after = heights();
     expect(after.some((y, index) => y > before[index]! + 5)).toBe(true);
     expect(after.every((y, index) => y >= before[index]! - 1e-9)).toBe(true);
-    for (let step = 0; step < 31; step += 1) lens.update(0.1);
+    for (let step = 0; step < 41; step += 1) lens.update(0.1);
     expect(lens.count).toBe(0);
   });
 
@@ -101,12 +101,13 @@ describe("blood thrown at the camera", () => {
     return drops;
   };
 
-  it("lands on the lens from a hard punch in the picture near the camera, and soaks it from a nearer one", () => {
-    expect(thrown(punch(120), camera(3))).toBeGreaterThan(4);
-    expect(thrown(punch(120), camera(3))).toBeGreaterThan(thrown(punch(120), camera(5.5)));
-    expect(thrown(punch(120), camera(9))).toBe(0);
+  it("lands on the lens from a solid punch in the picture, even from the broadcast camera, and soaks it from a nearer one", () => {
+    expect(thrown(punch(120), camera(3))).toBeGreaterThan(8);
+    expect(thrown(punch(120), camera(3))).toBeGreaterThan(thrown(punch(120), camera(8)));
+    expect(thrown(punch(120), camera(8))).toBeGreaterThan(2);
+    expect(thrown(punch(120), camera(13))).toBe(0);
     // Nothing from a light punch, from behind the camera, from off the screen, or without a camera.
-    expect(thrown(punch(45), camera(3))).toBe(0);
+    expect(thrown(punch(39), camera(3))).toBe(0);
     expect(thrown(punch(120), camera(-3), new THREE.Vector3(0, 0, -6))).toBe(0);
     expect(thrown(punch(120), camera(3), new THREE.Vector3(6, 0, 0))).toBe(0);
     expect(thrown(punch(120), null)).toBe(0);
@@ -125,10 +126,10 @@ describe("blood thrown at the camera", () => {
     const effects = new Effects3D(new THREE.Scene(), 256);
     effects.setCamera(camera(3));
     effects.burstHead(1, new THREE.Vector3(0, 1.6, 0), 1, 9);
-    expect(effects.lensDrops).toBe(16);
+    expect(effects.lensDrops).toBe(24);
     const draw = vi.fn();
     effects.drawLens({ save: vi.fn(), restore: vi.fn(), translate: vi.fn(), rotate: vi.fn(), fillRect: vi.fn(), drawImage: draw } as unknown as CanvasRenderingContext2D, 1280, 720);
-    expect(draw).toHaveBeenCalledTimes(16);
+    expect(draw).toHaveBeenCalledTimes(24);
     effects.clearDynamic();
     expect(effects.lensDrops).toBe(0);
     effects.decapitate(0, new THREE.Vector3(0.2, 1.55, 0), new THREE.Quaternion(), 1, 10);

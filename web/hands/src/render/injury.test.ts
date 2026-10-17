@@ -209,7 +209,7 @@ describe("blood running from a wound", () => {
     expect(head.fragmentShader).toContain("for (int k = 0; k < 3; k++)");
     expect(head.fragmentShader).toContain("if (fk > 0.5 && blood < 0.3) break;");
     expect(head.fragmentShader).toContain("if (fk > 1.5 && blood < 0.7) break;");
-    expect(head.fragmentShader).toContain("float reach = (3.0 + blood * 15.0)");
+    expect(head.fragmentShader).toContain("float reach = (4.0 + blood * 18.0)");
   });
 
   it("is washed broad across the body by sweat, and only the body", () => {

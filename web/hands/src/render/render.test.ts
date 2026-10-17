@@ -214,7 +214,7 @@ describe("effects", () => {
       effects.drip(right, 1, false, 1);
       effects.update(1 / 60);
     }
-    expect(effects.liveBloodParticles).toBe(4);
+    expect(effects.liveBloodParticles).toBe(6);
     const positions = effects.dropletBuffers.position;
     const liveX = Array.from({ length: positions.count }, (_unused, index) => positions.getX(index))
       .filter((_x, index) => positions.getY(index) > -10);

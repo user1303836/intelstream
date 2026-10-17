@@ -1,10 +1,10 @@
 /** Drops the lens holds at most: past that the oldest is wiped off to make room. */
-export const MOST_LENS_DROPS = 48;
+export const MOST_LENS_DROPS = 96;
 const SPRITE_SIZE = 96;
 const SPRITE_COUNT = 4;
 /** Seconds a drop stays on the lens, and the last share of them it takes to fade. */
-const LENS_SECONDS_LOW = 2.2;
-const LENS_SECONDS_HIGH = 4;
+const LENS_SECONDS_LOW = 2.5;
+const LENS_SECONDS_HIGH = 5;
 const LENS_FADE = 0.45;
 /** A drop this big (a share of the screen's height) or bigger runs down the lens before it fades. */
 const RUNNING_DROP = 0.032;
@@ -96,17 +96,17 @@ export class LensBlood {
 
   /**
    * Spatters the lens round (x, y), as shares of the screen across and down, `strength` from a few small
-   * drops (0.2) to a soaking (2) with a big gob or two running down the glass.
+   * drops (0.2) to a soaking (3) with a big gob or two running down the glass.
    */
   splash(x: number, y: number, strength: number, seed: number): void {
     if (!(strength > 0.05) || !Number.isFinite(x) || !Number.isFinite(y)) return;
     const rand = seeded((Number.isSafeInteger(seed) ? seed : 0) * 40_503 + 11);
-    const count = Math.min(16, Math.max(1, Math.round(strength * 9)));
-    const size = 0.7 + 0.3 * Math.min(2, strength);
+    const count = Math.min(24, Math.max(1, Math.round(strength * 12)));
+    const size = 0.7 + 0.3 * Math.min(3, strength);
     for (let drop = 0; drop < count; drop += 1) {
       // Most land round where the blow is on the screen, a few anywhere on the glass.
       const anywhere = rand() < 0.2;
-      const spread = 0.12 + 0.12 * Math.min(2, strength);
+      const spread = 0.12 + 0.12 * Math.min(3, strength);
       const radius = (0.01 + rand() ** 2 * 0.04) * size * (drop === 0 && strength >= 1.5 ? 1.8 : 1);
       const maxLife = LENS_SECONDS_LOW + rand() * (LENS_SECONDS_HIGH - LENS_SECONDS_LOW);
       this.drops.push({
