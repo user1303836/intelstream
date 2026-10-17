@@ -141,7 +141,6 @@ export class TouchInput {
         event.preventDefault();
         mod.setPointerCapture(event.pointerId);
         this.heldPointers.set(event.pointerId, key);
-        if (key === "guard_high" || key === "guard_low") this.sharedActions.clear();
         this.syncHeld();
         mod.classList.add("pressed");
       };

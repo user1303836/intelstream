@@ -868,6 +868,21 @@ describe("own punch prediction", () => {
     expect(hitstop(graph)).toBeGreaterThan(0);
   });
 
+  it("never freezes on a contact that names no punch, as a guard broken by holding it up too long does", () => {
+    const hitstop = (graph: BoxingGraph): number => (graph as unknown as { hitstop: number }).hitstop;
+    const timing = punchTiming("hook", "head", "normal");
+    const { graph } = makeGraph();
+    const idle = facingOpponent(baseFighter("one"));
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    // His hook is at the target when the other man's held guard gives out: the engine names him and no punch.
+    const hook = serverPunch(idle, "theirs-1", "hook", 100);
+    run(graph, hook, opponentFor("two"), 2 * timing.startup + 1, undefined, 100);
+    graph.landedHit(null, false);
+    expect(hitstop(graph)).toBe(0);
+    graph.landedHit("theirs-1", false);
+    expect(hitstop(graph)).toBeGreaterThan(0);
+  });
+
   it("tells the footwork its own punch allows on the press's time: none to the end of its active ticks, the recovery's share, then all", () => {
     const { graph } = makeGraph();
     const idle = facingOpponent(baseFighter("one"));

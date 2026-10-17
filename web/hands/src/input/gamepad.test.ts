@@ -65,14 +65,14 @@ describe("gamepad semantic parity", () => {
     input.destroy();
   });
 
-  it("guard start cancels stale intent while a later guarded punch remains responsive", () => {
+  it("leaves a press made before the guard to go out with it, and still throws a later guarded punch", () => {
     let current = pad([0]);
     Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [current] });
     const input = new GamepadInput();
     poll(input);
     current = pad(); poll(input);
     current = pad([4]); poll(input);
-    expect(input.frame()).toMatchObject({ defense: "guard_high", actions: [] });
+    expect(input.frame()).toMatchObject({ defense: "guard_high", actions: [{ kind: "punch", hand: "right", class: "jab", target: "head", power: "normal" }] });
     current = pad([4, 0]); poll(input);
     expect(input.frame().actions).toEqual([{ kind: "punch", hand: "right", class: "jab", target: "head", power: "normal" }]);
     input.destroy();

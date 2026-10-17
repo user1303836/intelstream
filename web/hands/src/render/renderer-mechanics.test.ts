@@ -168,7 +168,8 @@ describe("a bout that ends on the punch itself", () => {
   const result = (method: "tko" | "flash_ko") => ({ match_id: "m", activity_instance_id: "i", guild_id: "g", player_one_id: "one", player_two_id: "two", winner_id: "one", finish_method: method, round_number: 2, tick: 160, scorecards: [], player_one_knockdowns: 0, player_two_knockdowns: 3, player_one_damage: 900, player_two_damage: 300 });
 
   /** The room's own sequence: a snapshot every tick, and none after the one that carries the result. */
-  const fightTo = (method: "tko" | "flash_ko") => {
+  /** `throughGuard`: the knockout punch met the guard, which the engine reports as the block and then the hit that leaked through. */
+  const fightTo = (method: "tko" | "flash_ko", throughGuard = false) => {
     const graphs = fakeGraphs().map((graph) => ({ ...graph, awaitVerdict: vi.fn(), knockOut: vi.fn() })) as unknown as [FakeGraph, FakeGraph];
     const spies = { presentFinish: vi.fn(), applyArcadeInjury: vi.fn(), returnMouthpiece: vi.fn() };
     const stub = Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, pushStub(graphs), {
@@ -179,8 +180,9 @@ describe("a bout that ends on the punch itself", () => {
       flashKnockout: null, replay: null, ceremony: null, finalRevealAt: 0, ovationUntil: 0,
     });
     for (let tick = 100; tick < 160; tick += 1) methods.push.call(stub, { ...snapshot(tick), fighters: [fighter("one", -60), fighter("two", 60)] });
-    const punch = combat("counter_hit", { event_id: 900, tick: 160, detail: "uppercut:head", amount: 140, action_id: "upper" });
-    const events = method === "tko" ? [punch, combat("knockdown", { event_id: 901, tick: 160, amount: 3 }), combat("result", { event_id: 902, tick: 160, target_id: null, detail: "tko" })] : [punch, combat("result", { event_id: 902, tick: 160, target_id: null, detail: "flash_ko" })];
+    const punch = combat(throughGuard ? "hit" : "counter_hit", { event_id: 900, tick: 160, detail: "uppercut:head", amount: 140, action_id: "upper" });
+    const guarded = throughGuard ? [combat("block", { event_id: 899, tick: 160, actor_id: "two", target_id: "one", amount: 194, action_id: "upper" })] : [];
+    const events = method === "tko" ? [...guarded, punch, combat("knockdown", { event_id: 901, tick: 160, amount: 3 }), combat("result", { event_id: 902, tick: 160, target_id: null, detail: "tko" })] : [punch, combat("result", { event_id: 902, tick: 160, target_id: null, detail: "flash_ko" })];
     const downed = { ...fighter("two", 60), is_downed: method === "tko" };
     methods.push.call(stub, { ...snapshot(160), phase: "complete", fighters: [{ ...fighter("one", -60), action: "uppercut", action_key: "uppercut:right:head:power", action_contact_tick: 160 }, downed], events, result: result(method) });
     // The final follows at once, while the render clock is still a few ticks behind the punch.
@@ -242,38 +244,43 @@ describe("a bout that ends on the punch itself", () => {
     expect(stub.pendingContacts).toEqual([]);
   });
 
+  /** Fights to a stoppage with the knockout punch thrown as `power`, and fires the replay's impact. */
+  const replayImpact = (power: "power" | "normal", reducedMotion: boolean, throughGuard = false) => {
+    const { stub } = fightTo("tko", throughGuard);
+    const landedHit = vi.fn();
+    const flashes = [{ fire: vi.fn() }, { fire: vi.fn() }];
+    const powers: boolean[] = [];
+    Object.assign(stub, {
+      onContact: (_event: CombatEvent, isPower: boolean) => powers.push(isPower), arena: { excite: vi.fn() }, viewerId: "two", viewerHitFlash: 0,
+      knockOutMouthpiece: vi.fn(), headWorldPose: () => null, mouthPoint: new THREE.Vector3(), reapplyReplayInjuries: vi.fn(),
+      tmpA: new THREE.Vector3(-0.6, 0, 0), tmpB: new THREE.Vector3(0.6, 0, 0), settings: () => ({ reducedMotion, blood: "full" }),
+      impactFlashes: flashes, headCache: [], headCacheValid: [false, false], powerHitPoint: new THREE.Vector3(), powerShake: 0,
+    });
+    for (const [index, graph] of (stub.graphs as unknown as Record<string, unknown>[]).entries()) Object.assign(graph, { react: vi.fn(), landedHit: index === 0 ? landedHit : vi.fn(), currentRoot: { x: index === 0 ? -0.6 : 0.6, z: 0 } });
+    const shown = (stub.replay as unknown as { plan: { snapshots: EngineSnapshot[] } }).plan.snapshots.find((one) => one.tick === 160)!;
+    const fireReplayImpact = (FightRenderer.prototype as unknown as { fireReplayImpact(this: unknown, snapshot: EngineSnapshot): void }).fireReplayImpact;
+    fireReplayImpact.call(stub, { ...shown, fighters: [{ ...shown.fighters[0], action_id: "upper", action_key: `uppercut:right:head:${power}` }, shown.fighters[1]] });
+    return { landedHit, flashed: flashes[1]!.fire.mock.calls.length, shake: stub.powerShake as number, powers };
+  };
+
   it("lands a power punch at the replay's impact as it did live, held longest with its flash and kick, the flash and kick left out with reduced motion", () => {
-    const impactAt = (power: "power" | "normal", reducedMotion: boolean, unhit = false) => {
-      const { stub } = fightTo("tko");
-      const landedHit = vi.fn();
-      const flashes = [{ fire: vi.fn() }, { fire: vi.fn() }];
-      const powers: boolean[] = [];
-      Object.assign(stub, {
-        onContact: (_event: CombatEvent, isPower: boolean) => powers.push(isPower), arena: { excite: vi.fn() }, viewerId: "two", viewerHitFlash: 0,
-        knockOutMouthpiece: vi.fn(), headWorldPose: () => null, mouthPoint: new THREE.Vector3(), reapplyReplayInjuries: vi.fn(),
-        tmpA: new THREE.Vector3(-0.6, 0, 0), tmpB: new THREE.Vector3(0.6, 0, 0), settings: () => ({ reducedMotion, blood: "full" }),
-        impactFlashes: flashes, headCache: [], headCacheValid: [false, false], powerHitPoint: new THREE.Vector3(), powerShake: 0,
-      });
-      if (unhit) stub.lastKnockdown = { ...(stub.lastKnockdown as object), hit: null };
-      for (const [index, graph] of (stub.graphs as unknown as Record<string, unknown>[]).entries()) Object.assign(graph, { react: vi.fn(), landedHit: index === 0 ? landedHit : vi.fn(), currentRoot: { x: index === 0 ? -0.6 : 0.6, z: 0 } });
-      const shown = (stub.replay as unknown as { plan: { snapshots: EngineSnapshot[] } }).plan.snapshots.find((one) => one.tick === 160)!;
-      const fireReplayImpact = (FightRenderer.prototype as unknown as { fireReplayImpact(this: unknown, snapshot: EngineSnapshot): void }).fireReplayImpact;
-      fireReplayImpact.call(stub, { ...shown, fighters: [{ ...shown.fighters[0], action_id: "upper", action_key: `uppercut:right:head:${power}` }, shown.fighters[1]] });
-      return { landedHit, flashed: flashes[1]!.fire.mock.calls.length, shake: stub.powerShake as number, powers };
-    };
-    const power = impactAt("power", false);
+    const power = replayImpact("power", false);
     expect(power.landedHit).toHaveBeenCalledWith("upper", false, true);
     expect(power.flashed).toBe(1);
     expect(power.shake).toBeGreaterThan(0);
     expect(power.powers).toEqual([true]);
-    const calm = impactAt("power", true);
+    const calm = replayImpact("power", true);
     expect(calm.landedHit).toHaveBeenCalledWith("upper", false, true);
     expect([calm.flashed, calm.shake]).toEqual([0, 0]);
-    const normal = impactAt("normal", false);
+    const normal = replayImpact("normal", false);
     expect(normal.landedHit).toHaveBeenCalledWith("upper", false, false);
     expect([normal.flashed, normal.shake]).toEqual([0, 0]);
-    // A knockdown the guard took the punch of has no hit, and names no punch: the one he is throwing freezes.
-    expect(impactAt("normal", false, true).landedHit).toHaveBeenCalledWith("upper", false, false);
+  });
+
+  it("replays a knockdown through the guard as the block it was live: a block's freeze, and a power punch without its flash and kick", () => {
+    const guarded = replayImpact("power", false, true);
+    expect(guarded.landedHit).toHaveBeenCalledWith("upper", true, true);
+    expect([guarded.flashed, guarded.shake]).toEqual([0, 0]);
   });
 
   it("kicks the replay's shot for a power punch as it does the live camera, and not with reduced motion", () => {
