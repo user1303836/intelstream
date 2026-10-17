@@ -1,5 +1,4 @@
 import * as THREE from "three";
-import { BIG_SHOT } from "./gore";
 
 /** Half the width of the arch across the back teeth, and how far the front of it reaches forward of them. */
 const ARCH_HALF_WIDTH = 0.026;
@@ -70,12 +69,12 @@ export function buildMouthpieceGeometry(): THREE.BufferGeometry {
   return geometry;
 }
 
-/** Whether a blow knocks the gum shield out: the punch that floors a man, a big counter or a huge shot, to the head. */
+/** Whether a blow knocks the gum shield out: the punch that floors a man, a clean counter or a hard shot, to the head. */
 export function mouthpieceFlies(kind: string, amount: number, head: boolean): boolean {
   if (!head) return false;
   if (kind === "knockdown") return true;
-  if (kind === "counter_hit") return amount >= BIG_SHOT;
-  return kind === "hit" && amount >= 110;
+  if (kind === "counter_hit") return amount >= 65;
+  return kind === "hit" && amount >= 80;
 }
 
 const GRAVITY = 9.81;

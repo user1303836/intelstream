@@ -81,7 +81,7 @@ function frame(state: EngineSnapshot, overrides: Record<string, unknown> = {}) {
     tmpCamera: new THREE.Vector3(),
     downedPoolAccumulators: [0, 0],
     downedPoolCounts: [0, 0],
-    effects: { drip: vi.fn(), stopDrip: vi.fn(), pool: vi.fn(), update: vi.fn(), shakeAmount: 0, setViewDistance: vi.fn() },
+    effects: { drip: vi.fn(), stopDrip: vi.fn(), pool: vi.fn(), update: vi.fn(), shakeAmount: 0, setViewDistance: vi.fn(), gushing: () => false },
     updateIdleFighters: vi.fn(),
     updateTrails: vi.fn(),
     updateReferee: vi.fn(),
@@ -223,6 +223,27 @@ describe("blood on the canvas", () => {
     run(300);
     expect(drips(renderer)).toHaveLength(0);
     expect(pools(renderer).length).toBeGreaterThan(0);
+  });
+
+  it("keeps the blood pouring from his mouth there as his head moves", () => {
+    const root = new THREE.Object3D();
+    const head = new THREE.Bone();
+    root.add(head);
+    head.position.set(0.4, 0.3, -0.2);
+    head.rotation.x = -1.2;
+    const anchorGush = vi.fn();
+    const { run, graphs } = frame(fighting({}, { is_downed: true }, { phase: "knockdown" }), {
+      tmpHeadQuaternion: new THREE.Quaternion(), tmpStumpOffset: new THREE.Vector3(), tmpPart: new THREE.Vector3(), mouthPoint: new THREE.Vector3(),
+      effects: { drip: vi.fn(), stopDrip: vi.fn(), pool: vi.fn(), update: vi.fn(), shakeAmount: 0, setViewDistance: vi.fn(), gushing: (index: number) => index === 1, anchorGush },
+    });
+    Object.assign(graphs[1]!.boxer, { root, bone: (name: string) => (name === "head" ? head : null) });
+    run(2);
+    const [index, at] = anchorGush.mock.calls.at(-1)! as [number, THREE.Vector3];
+    expect(index).toBe(1);
+    root.updateMatrixWorld(true);
+    const skull = new THREE.Vector3(0, 0.12, 0.02).applyQuaternion(head.quaternion).add(head.getWorldPosition(new THREE.Vector3()));
+    expect(at.distanceTo(skull.add(new THREE.Vector3(0, -0.07, 0.1).applyQuaternion(head.quaternion)))).toBeLessThan(1e-6);
+    expect(anchorGush.mock.calls.every((call) => call[0] === 1)).toBe(true);
   });
 
   it("drips from under the chin of the head as it is drawn: seated on his stool, not at standing height over his spot", () => {

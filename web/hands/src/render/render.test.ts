@@ -176,8 +176,8 @@ describe("effects", () => {
     const full = new Effects3D(new THREE.Scene());
     full.addEvent(severeHit(1), origin, false);
     expect(full.liveBloodParticles).toBe(360);
-    expect(full.liveMist).toBe(16);
-    expect(full.liveGibs).toBe(8);
+    expect(full.liveMist).toBe(26);
+    expect(full.liveGibs).toBe(12);
     expect(full.canvasStains).toBe(14);
     full.dispose();
 
@@ -252,7 +252,7 @@ describe("effects", () => {
     effects.decapitate(0, origin, new THREE.Quaternion(), 1, 10);
     const sweat = effects.liveParticles - effects.liveBloodParticles;
     expect(sweat).toBeGreaterThan(0);
-    expect(effects.liveGibs).toBe(32);
+    expect(effects.liveGibs).toBe(36);
     expect(effects.activeHeads).toBe(1);
     expect(effects.activeStumps).toBe(1);
     expect(effects.canvasStains).toBeGreaterThan(0);

@@ -897,6 +897,12 @@ const OPEN_WOUND_POOL_RATE = 3;
 const OPEN_WOUND_POOL_REACH = 1.3;
 /** Under the chin, from the middle of the skull, in the head's frame. */
 const UNDER_THE_CHIN = new THREE.Vector3(0, -0.1, 0.08);
+/** The mouth, from the middle of the skull, and the way blood pours out of it, in the head's frame. */
+const MOUTH = new THREE.Vector3(0, -0.07, 0.1);
+const OUT_OF_THE_MOUTH = new THREE.Vector3(0, -0.35, 1);
+/** A man going down pours blood from his nose and mouth for this long, this many drops a second at first. */
+const KNOCKDOWN_GUSH_SECONDS = 1.6;
+const KNOCKDOWN_GUSH_RATE = 160;
 
 /**
  * How far the pool under a downed fighter has spread after `count` spills, in metres: fast at first, then slower,
@@ -2218,6 +2224,7 @@ export class FightRenderer {
       if (presentImpact && recipientIndex >= 0 && !currentSettings.reducedMotion && mouthpieceFlies(event.kind, event.amount, presentationEvent.detail.endsWith(":head"))) {
         this.knockOutMouthpiece(recipientIndex, spray ?? presentationEvent.direction, event.event_id, false);
       }
+      if (pending.presentImpact && recipientIndex >= 0 && event.kind === "knockdown" && !currentSettings.reducedMotion) this.gushFromMouth(recipientIndex, event.event_id, KNOCKDOWN_GUSH_SECONDS, KNOCKDOWN_GUSH_RATE);
       const teeth = presentImpact && recipientIndex >= 0 ? teethFor(event.kind, event.amount, presentationEvent.detail.endsWith(":head")) : 0;
       if (teeth > 0 && !currentSettings.reducedMotion && currentSettings.blood !== "off") {
         const pose = this.headWorldPose(recipientIndex);
@@ -2282,6 +2289,23 @@ export class FightRenderer {
   private enterRest(seconds: number): void {
     this.restStartedAt = seconds;
     this.effects.clearMouthpieces();
+  }
+
+  /** Blood pours from the fighter's nose and mouth, from his head as it is posed, and follows him as he goes down. */
+  private gushFromMouth(index: number, eventId: number, seconds: number, rate: number): void {
+    const pose = this.headWorldPose(index);
+    if (pose === null) return;
+    this.mouthPoint.copy(MOUTH).applyQuaternion(pose.quaternion).add(pose.position);
+    this.effects.gush(index, this.mouthPoint, this.tmpPart.copy(OUT_OF_THE_MOUTH).applyQuaternion(pose.quaternion), seconds, rate, eventId);
+  }
+
+  /** Keeps a pouring wound on the fighter as he moves. */
+  private anchorGush(index: number): void {
+    if (!this.effects.gushing(index)) return;
+    const pose = this.headWorldPose(index);
+    if (pose === null) return;
+    this.mouthPoint.copy(MOUTH).applyQuaternion(pose.quaternion).add(pose.position);
+    this.effects.anchorGush(index, this.mouthPoint, this.tmpPart.copy(OUT_OF_THE_MOUTH).applyQuaternion(pose.quaternion));
   }
 
   /** The gum shield flies out of the mouth along the punch, from the head as it is posed. */
@@ -2519,6 +2543,7 @@ export class FightRenderer {
           const body = this.graphs?.[index]?.boxer.bodyInjury;
           if (body !== undefined) caveInRibs(body, injury === "ribs_left" ? "left" : "right");
         }
+        this.anchorGush(index);
       }
       const ax = this.mapping.x(a.x);
       const az = this.mapping.z(a.y);

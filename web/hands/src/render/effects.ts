@@ -3,7 +3,7 @@ import type { BloodLevel } from "../settings";
 import type { CombatEvent, Hand } from "../types";
 import { CanvasBlood, type RegionUploader } from "./canvas-blood";
 import { wearCornerColour } from "./gear";
-import { BIG_SHOT, HARD_SHOT, ROCKING_COUNTER, bloodDropsFor, bloodShade, buildChunkGeometry, buildDropletGeometry, buildShardGeometry, buildWoundGeometry, closeCut, dropletShape, eyeTexture, jawWoundTexture, woundTexture, wristWoundTexture } from "./gore";
+import { HARD_SHOT, MISTING_SHOT, ROCKING_COUNTER, TEARING_SHOT, bloodDropsFor, bloodShade, buildChunkGeometry, buildDropletGeometry, buildShardGeometry, buildWoundGeometry, closeCut, dropletShape, eyeTexture, jawWoundTexture, woundTexture, wristWoundTexture } from "./gore";
 import { EYE_LIDS, HEAD_SITES, HEAD_SWELL_CORE, InjuryShading } from "./injury";
 import { LookShading, SCANNED_LOOK, lookShape, type FighterLook } from "./looks";
 import { SHIELD_RADIUS, buildMouthpieceGeometry, idleShield, stepShield, type ShieldState } from "./mouthpiece";
@@ -190,6 +190,12 @@ const FOUNTAIN_BETWEEN_BEATS = 0.12;
 const FOUNTAIN_SPEED_LOW = 4;
 const FOUNTAIN_SPEED_HIGH = 6;
 const FOUNTAIN_CONE = 0.35;
+/** A wound that gushes rather than spurts: a softer beat, more of it between beats, slower and wider than an artery. */
+const GUSH_PULSE_WIDTH = 0.22;
+const GUSH_BETWEEN_BEATS = 0.3;
+const GUSH_SPEED_LOW = 0.8;
+const GUSH_SPEED_HIGH = 2.2;
+const GUSH_CONE = 0.55;
 const fountainAxis = new THREE.Vector3();
 const fountainSide = new THREE.Vector3();
 const fountainUp = new THREE.Vector3();
@@ -228,6 +234,21 @@ interface DripEmitter {
   active: boolean;
   rate: number;
   accumulator: number;
+}
+
+/** Blood pouring from a wound a fighter carries: his nose and mouth as he goes down, or a finisher's open wound. */
+interface Gush {
+  active: boolean;
+  eventId: number | null;
+  /** Seconds left, out of `seconds`: it pours hardest at first and eases off to nothing. */
+  life: number;
+  seconds: number;
+  /** Drops a second at the top of a beat at first. */
+  rate: number;
+  accumulator: number;
+  readonly position: THREE.Vector3;
+  /** The way the wound faces, which the blood pours out along. */
+  readonly axis: THREE.Vector3;
 }
 
 const seeded = (seed: number): (() => number) => () => {
@@ -460,6 +481,7 @@ export class Effects3D {
     { position: new THREE.Vector3(), active: false, rate: 0, accumulator: 0 },
     { position: new THREE.Vector3(), active: false, rate: 0, accumulator: 0 },
   ];
+  private readonly gushes: Gush[] = Array.from({ length: MAX_HEADS }, () => ({ active: false, eventId: null, life: 0, seconds: 1, rate: 0, accumulator: 0, position: new THREE.Vector3(), axis: new THREE.Vector3(0, 1, 0) }));
   private simulationRemainder = 0;
   private ambientSeed = 0x5f37_59df;
   private shake = 0;
@@ -1173,6 +1195,8 @@ export class Effects3D {
     if (!IMPACT_KINDS.has(event.kind)) return;
     const rand = seeded(event.event_id * 7919 + 17);
     const blocked = event.kind === "block" || event.kind === "perfect_block";
+    const knockdown = event.kind === "knockdown";
+    const full = this.bloodLevel === "full";
     const pattern = bloodPatternFor(event);
     const launch = unitSpray(spray ?? event.direction);
     // Sweat and chunks are pushed along the punch as hard as the event's sign says (a block may carry none).
@@ -1183,7 +1207,7 @@ export class Effects3D {
     const beat = event.kind === "bleed";
     const sweatCount = reducedMotion || beat
       ? 0
-      : this.bloodLevel === "full"
+      : full
         ? Math.round((blocked ? 4 : 6) + Math.min(6, Math.max(0, event.amount) / 40))
         : Math.round((blocked ? 6 : 16) + Math.min(20, Math.max(0, event.amount) / 20));
     const strand = { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, life: 0, radius: 0, color: bloodShade(0) };
@@ -1202,7 +1226,7 @@ export class Effects3D {
           // The guard takes the punch, and half the blood it would have thrown.
           : this.forDevice(blocked ? Math.round(bloodDropsFor(event.blood, 0) / 2) : bloodDropsFor(event.blood, landed ? event.amount : 0));
     if (!beat) this.shake = Math.min(0.09, this.shake + (blocked ? 0.008 : Math.max(0.012, event.amount / 2600)));
-    if (event.kind === "knockdown") this.shake = Math.min(0.14, this.shake + 0.06);
+    if (knockdown) this.shake = Math.min(0.14, this.shake + 0.06);
 
     for (let i = 0; i < sweatCount; i += 1) {
       const angle = rand() * Math.PI * 2;
@@ -1282,30 +1306,33 @@ export class Effects3D {
       strand.radius = 0.008 + rand() * 0.008;
       this.spawnDroplet(x, y, z, vx, vy, vz, color, life, true, strand.radius);
     }
-    const misty = (event.kind === "hit" && event.amount >= HARD_SHOT) || event.kind === "knockdown" || event.kind === "counter_hit" || wound >= OPEN_WOUND * 2;
+    // At full blood a punch that lands hard mists the blood it throws, and so does any punch on an open cut.
+    // The worse the cut, the thicker the mist off every punch, so the blood in the air grows round by round.
+    const misty = full
+      ? knockdown || event.kind === "counter_hit" || (landed && (event.amount >= MISTING_SHOT || wound >= OPEN_WOUND))
+      : (event.kind === "hit" && event.amount >= HARD_SHOT) || knockdown || event.kind === "counter_hit" || wound >= OPEN_WOUND * 2;
     if (!reducedMotion && event.blood > 0 && this.bloodLevel !== "off" && misty) {
-      // The worse the cut, the thicker the mist off every punch, so the blood in the air grows round by round.
-      const puffs = this.bloodLevel === "reduced" ? (event.kind === "knockdown" ? 3 : 2) : (event.kind === "knockdown" ? 14 : 10 + Math.min(8, Math.floor(wound / 4)));
-      const scale = this.bloodLevel === "reduced" ? 0.35 : 1;
+      const puffs = full
+        ? this.forDevice(knockdown ? 24 : 10 + Math.min(16, Math.floor(wound / 3) + Math.floor(Math.max(0, event.amount - MISTING_SHOT) / 10)))
+        : (knockdown ? 3 : 2);
+      const scale = full ? 1 : 0.35;
       for (let i = 0; i < puffs; i += 1) {
         this.spawnMist(origin.x + (rand() - 0.5) * 0.34, origin.y + (rand() - 0.5) * 0.26, origin.z + (rand() - 0.5) * 0.34, (0.9 + rand() * 1.2) * scale, 0.55 + rand() * 0.55);
       }
     }
     // The canvas is splashed by what an open wound throws and by a man going down, and at full blood by any
     // punch that lands hard, cut or not; the drops that land paint the rest.
-    const full = this.bloodLevel === "full";
     const hard = full && landed ? Math.max(0, Math.round((event.amount - 40) / 14)) : 0;
-    const stamps = event.kind === "knockdown" ? (full ? 18 : 12) : Math.min(full ? 14 : 8, Math.round(wound / (full ? 3 : 4)) + hard);
+    const stamps = knockdown ? (full ? 18 : 12) : Math.min(full ? 14 : 8, Math.round(wound / (full ? 3 : 4)) + hard);
     if (stamps > 0 && this.bloodLevel !== "off") {
-      const knockdown = event.kind === "knockdown";
       const spread = knockdown ? 1 + Math.min(2, event.blood / 55) : 0.8 + Math.min(1.2, wound / 30);
       this.splatter(origin.x + (rand() - 0.5) * 0.6, origin.z + (rand() - 0.5) * 0.6, full ? spread * 1.3 : spread, rand, stamps, knockdown ? KNOCKDOWN_STAIN : SPLASH_STAIN);
     }
-    // A punch that rocks him tears flesh from an open cut, and a big counter tears it from any face.
+    // A punch that rocks him tears flesh from a cut that has barely opened, and a hard one from any face.
     const rocking = event.amount >= HARD_SHOT || (event.kind === "counter_hit" && event.amount >= ROCKING_COUNTER);
-    const tearing = landed && ((rocking && wound >= OPEN_WOUND) || (event.kind === "counter_hit" && event.amount >= BIG_SHOT));
-    if (this.bloodLevel === "full" && !reducedMotion && tearing && !event.detail.endsWith(":body")) {
-      const chunks = Math.min(8, Math.max(2, Math.round((event.amount - 30) / 10)));
+    const tearing = landed && (event.amount >= TEARING_SHOT || (rocking && wound >= OPEN_WOUND / 2));
+    if (full && !reducedMotion && tearing && !event.detail.endsWith(":body")) {
+      const chunks = Math.min(12, Math.max(2, Math.round((event.amount - 20) / 8)));
       for (let index = 0; index < chunks; index += 1) {
         const angle = rand() * Math.PI * 2;
         const speed = 0.5 + rand() * 1.8;
@@ -1684,6 +1711,7 @@ export class Effects3D {
     stump.mesh.material = this.stumpMaterial;
     // What his finisher threw goes with it, to be thrown again if a replay brings the finisher back.
     this.clearGibs(index);
+    this.stopGush(index);
     const eye = this.eyes[index]!;
     eye.active = false;
     eye.bleeding = 0;
@@ -1724,6 +1752,85 @@ export class Effects3D {
     emitter.accumulator = 0;
   }
 
+  /**
+   * Blood pours from a fighter's wound at `position` along `axis` with every beat of his heart, `rate` drops
+   * a second at first and easing off over `seconds`; `anchorGush` keeps it on him as he moves. A new wound's
+   * gush takes the place of the one before, and the same event never starts one twice. Only with full blood.
+   */
+  gush(fighterIndex: number, position: THREE.Vector3, axis: THREE.Vector3, seconds: number, rate: number, eventId: number): void {
+    if (this.bloodLevel !== "full" || fighterIndex < 0 || fighterIndex >= MAX_HEADS) return;
+    const gush = this.gushes[Math.trunc(fighterIndex)]!;
+    const safeEventId = Number.isSafeInteger(eventId) ? eventId : 0;
+    if (gush.active && gush.eventId === safeEventId) return;
+    gush.active = true;
+    gush.eventId = safeEventId;
+    gush.seconds = Math.max(0.1, finite(seconds, 1));
+    gush.life = gush.seconds;
+    gush.rate = Math.max(0, finite(rate));
+    gush.accumulator = 0;
+    this.anchorGush(fighterIndex, position, axis);
+  }
+
+  anchorGush(fighterIndex: number, position: THREE.Vector3, axis: THREE.Vector3): void {
+    const gush = this.gushes[Math.trunc(fighterIndex)];
+    if (gush === undefined || !gush.active) return;
+    gush.position.set(finite(position.x), finite(position.y, 1.4), finite(position.z));
+    if (axis.lengthSq() > 1e-8 && Number.isFinite(axis.lengthSq())) gush.axis.copy(axis).normalize();
+  }
+
+  /** Whether a fighter's wound is still pouring. */
+  gushing(fighterIndex: number): boolean {
+    return this.gushes[Math.trunc(fighterIndex)]?.active === true;
+  }
+
+  private stopGush(fighterIndex: number): void {
+    const gush = this.gushes[fighterIndex];
+    if (gush === undefined) return;
+    gush.active = false;
+    gush.eventId = null;
+  }
+
+  private updateGushes(step: number): void {
+    for (const gush of this.gushes) {
+      if (!gush.active) continue;
+      gush.life -= step;
+      if (gush.life <= 0 || this.bloodLevel !== "full") {
+        gush.active = false;
+        continue;
+      }
+      const pressure = gush.life / gush.seconds;
+      const beat = ((gush.seconds - gush.life) * HEART_RATE) % 1;
+      const pulse = Math.exp(-(((beat - 0.5) / GUSH_PULSE_WIDTH) ** 2));
+      gush.accumulator += step * this.forDevice(gush.rate) * pressure * (GUSH_BETWEEN_BEATS + (1 - GUSH_BETWEEN_BEATS) * pulse);
+      if (gush.accumulator < 1) continue;
+      fountainSide.set(Math.abs(gush.axis.y) < 0.9 ? 0 : 1, Math.abs(gush.axis.y) < 0.9 ? 1 : 0, 0).cross(gush.axis).normalize();
+      fountainUp.crossVectors(gush.axis, fountainSide);
+      while (gush.accumulator >= 1) {
+        gush.accumulator -= 1;
+        // A stream out of the wound, wider and slower than an artery's, that gravity soon turns down.
+        const tilt = Math.sqrt(this.ambientRandom()) * GUSH_CONE;
+        const around = this.ambientRandom() * Math.PI * 2;
+        const speed = (GUSH_SPEED_LOW + this.ambientRandom() * (GUSH_SPEED_HIGH - GUSH_SPEED_LOW)) * (0.5 + 0.5 * pressure) * (0.7 + 0.3 * pulse);
+        fountainVelocity.copy(gush.axis).multiplyScalar(Math.cos(tilt))
+          .addScaledVector(fountainSide, Math.sin(tilt) * Math.cos(around))
+          .addScaledVector(fountainUp, Math.sin(tilt) * Math.sin(around))
+          .multiplyScalar(speed);
+        this.spawnDroplet(
+          gush.position.x + (this.ambientRandom() - 0.5) * 0.03,
+          gush.position.y + (this.ambientRandom() - 0.5) * 0.02,
+          gush.position.z + (this.ambientRandom() - 0.5) * 0.03,
+          fountainVelocity.x,
+          fountainVelocity.y,
+          fountainVelocity.z,
+          bloodShade(this.ambientRandom()),
+          1.2,
+          true,
+          0.004 + this.ambientRandom() ** 2 * 0.01,
+        );
+      }
+    }
+  }
+
   private updateDripEmitters(step: number): void {
     for (const emitter of this.dripEmitters) {
       if (!emitter.active) continue;
@@ -1750,7 +1857,7 @@ export class Effects3D {
     if (this.bloodLevel === "off") return;
     const rand = seeded((Number.isSafeInteger(eventId) ? eventId : 0) * 7331 + 91);
     const launch = unitSpray(direction);
-    const teeth = Math.min(4, Math.max(1, Math.round(count * (this.bloodLevel === "reduced" ? 0.5 : 1))));
+    const teeth = Math.min(8, Math.max(1, Math.round(count * (this.bloodLevel === "reduced" ? 0.5 : 1))));
     for (let i = 0; i < teeth; i += 1) {
       const angle = rand() * Math.PI * 2;
       this.sprayGib(
@@ -2066,6 +2173,7 @@ export class Effects3D {
   private simulate(step: number): void {
     this.shake *= Math.pow(0.02, step);
     this.updateDripEmitters(step);
+    this.updateGushes(step);
     this.updateStumpFountains(step);
     this.updateDetachedParts(this.heads, step);
     this.updateDetachedParts(this.hands, step);

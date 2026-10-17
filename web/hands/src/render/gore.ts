@@ -30,15 +30,18 @@ export function buildChunkGeometry(): THREE.BufferGeometry {
  */
 export const HARD_SHOT = 70;
 export const BIG_SHOT = 95;
+/** At full blood a punch this hard mists the blood it throws, and one this hard tears flesh from any face. */
+export const MISTING_SHOT = 45;
+export const TEARING_SHOT = 85;
 /** A counter this heavy rocks a man, as the engine reckons it, as a hard shot does. */
 export const ROCKING_COUNTER = manifestJson.stun.rocked_counter_damage;
 
-/** Teeth a blow to the head knocks out: two more as the punch floors a man, one or two by a big counter or a huge shot, none otherwise. */
+/** Teeth a blow to the head knocks out: three more as the punch floors a man, and one to three by a counter or a hard shot, more the harder it lands. */
 export function teethFor(kind: string, amount: number, head: boolean): number {
   if (!head) return 0;
-  if (kind === "knockdown") return 2;
-  if (kind === "counter_hit" && amount >= BIG_SHOT) return amount >= 120 ? 2 : 1;
-  if (kind === "hit" && amount >= 115) return 1;
+  if (kind === "knockdown") return 3;
+  if (kind === "counter_hit") return amount >= 120 ? 3 : amount >= 90 ? 2 : amount >= 60 ? 1 : 0;
+  if (kind === "hit") return amount >= 130 ? 3 : amount >= 100 ? 2 : amount >= 75 ? 1 : 0;
   return 0;
 }
 

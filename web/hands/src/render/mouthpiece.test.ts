@@ -2,7 +2,6 @@ import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import { snapshot } from "../test/fixtures";
 import { Effects3D } from "./effects";
-import { BIG_SHOT } from "./gore";
 import { buildMouthpieceGeometry, idleShield, mouthpieceFlies, stepShield } from "./mouthpiece";
 import { FightRenderer } from "./renderer";
 import { CANVAS_TOP, ROPE_LINE } from "./world";
@@ -29,13 +28,14 @@ describe("gum shield", () => {
     geometry.dispose();
   });
 
-  it("flies from the punch that floors a man and from big counters and huge shots to the head", () => {
+  it("flies from the punch that floors a man and from clean counters and hard shots to the head", () => {
     expect(mouthpieceFlies("knockdown", 1, true)).toBe(true);
     expect(mouthpieceFlies("knockdown", 1, false)).toBe(false);
-    expect(mouthpieceFlies("counter_hit", BIG_SHOT, true)).toBe(true);
-    expect(mouthpieceFlies("counter_hit", BIG_SHOT - 1, true)).toBe(false);
-    expect(mouthpieceFlies("hit", 110, true)).toBe(true);
-    expect(mouthpieceFlies("hit", 109, true)).toBe(false);
+    // A straight countered clean (52 damage, 28% more) or a power straight (79) knocks it out.
+    expect(mouthpieceFlies("counter_hit", 66, true)).toBe(true);
+    expect(mouthpieceFlies("counter_hit", 64, true)).toBe(false);
+    expect(mouthpieceFlies("hit", 80, true)).toBe(true);
+    expect(mouthpieceFlies("hit", 79, true)).toBe(false);
     expect(mouthpieceFlies("counter_hit", 150, false)).toBe(false);
     expect(mouthpieceFlies("block", 150, true)).toBe(false);
   });
