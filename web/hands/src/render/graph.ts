@@ -1807,8 +1807,8 @@ export class BoxingGraph {
 
     const opponentBlood = Math.min(
       1,
-      (opponent.trauma.bleeding + opponent.trauma.left_cut + opponent.trauma.right_cut) / 620
-        * (blood === "off" ? 0 : blood === "reduced" ? 0.3 : 1.5),
+      (opponent.trauma.bleeding + opponent.trauma.left_cut + opponent.trauma.right_cut + opponent.trauma.head / 4) / 300
+        * (blood === "off" ? 0 : blood === "reduced" ? 0.15 : 1.5),
     );
     boxer.setGloveBlood(opponentBlood);
     boxer.setTrunksBlood(trunksBloodFor(fighter.trauma, blood));

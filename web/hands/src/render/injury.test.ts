@@ -136,9 +136,26 @@ describe("swelling", () => {
     expect(shading.level("leftCheek").cut).toBe(1);
     expect(shading.level("forehead").cut).toBeGreaterThan(0.15);
     expect(shading.level("forehead").blood).toBeGreaterThan(0.15);
-    applyHeadTrauma(shading, trauma({ left_cut: 300, swelling: 360 }), "full");
+    applyHeadTrauma(shading, trauma({ left_cut: 140, swelling: 230 }), "full");
     expect(shading.level("leftCheek").cut).toBe(0);
     expect(shading.level("forehead").cut).toBe(0);
+  });
+
+  it("bleeds from the nose after a couple of clean head shots and from the brow as soon as it is cut", () => {
+    const shading = new InjuryShading(new THREE.MeshStandardMaterial(), HEAD_SITES);
+    applyHeadTrauma(shading, trauma({ head: 110 }), "full");
+    expect(shading.level("nose").blood).toBeGreaterThan(0.15);
+    expect(shading.level("leftBrow").blood).toBe(0);
+    const cut = trauma({ head: 110, left_cut: 40, bleeding: 20 });
+    applyHeadTrauma(shading, cut, "full");
+    expect(shading.level("leftBrow").blood).toBeGreaterThan(0.4);
+    expect(shading.level("leftBrow").cut).toBeGreaterThan(0.3);
+    // A face cut wide open runs with blood from every wound.
+    applyHeadTrauma(shading, trauma({ head: 700, left_cut: 400, right_cut: 350, swelling: 500, bleeding: 400 }), "full");
+    for (const site of ["leftBrow", "rightBrow", "nose", "mouth", "leftCheek", "rightCheek", "forehead"]) expect(shading.level(site).blood, site).toBeGreaterThan(0.8);
+    // Reduced blood shows a fifth of it.
+    applyHeadTrauma(shading, cut, "reduced");
+    expect(shading.level("leftBrow").blood).toBeLessThan(0.1);
   });
 });
 
@@ -187,9 +204,12 @@ describe("an eye swelling shut", () => {
 });
 
 describe("blood running from a wound", () => {
-  it("splits into a second rivulet only once it runs freely", () => {
+  it("splits into a second rivulet once it runs freely and a third once it pours, each running most of the face", () => {
     const head = compile(new InjuryShading(new THREE.MeshStandardMaterial(), HEAD_SITES).material!);
-    expect(head.fragmentShader).toContain("if (fk > 0.5 && blood < 0.45) break;");
+    expect(head.fragmentShader).toContain("for (int k = 0; k < 3; k++)");
+    expect(head.fragmentShader).toContain("if (fk > 0.5 && blood < 0.3) break;");
+    expect(head.fragmentShader).toContain("if (fk > 1.5 && blood < 0.7) break;");
+    expect(head.fragmentShader).toContain("float reach = (3.0 + blood * 15.0)");
   });
 
   it("is washed broad across the body by sweat, and only the body", () => {
@@ -226,7 +246,8 @@ describe("a cut with blood off", () => {
 
 describe("blood in the trunks", () => {
   it("runs in from a fighter's own bleeding, lighter with reduced blood and never with blood off", () => {
-    expect(trunksBloodFor(trauma({ bleeding: 30, left_cut: 60 }), "full")).toBe(0);
+    expect(trunksBloodFor(trauma({ bleeding: 8, left_cut: 40 }), "full")).toBe(0);
+    expect(trunksBloodFor(trauma({ bleeding: 60, left_cut: 120 }), "full")).toBeGreaterThan(0.3);
     const bleeding = trauma({ bleeding: 300, left_cut: 300, right_cut: 150 });
     expect(trunksBloodFor(bleeding, "full")).toBeGreaterThan(0.6);
     expect(trunksBloodFor(bleeding, "reduced")).toBeLessThan(trunksBloodFor(bleeding, "full") * 0.5);

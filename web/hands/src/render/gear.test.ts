@@ -64,6 +64,15 @@ describe("blood on the gloves", () => {
     graph.dispose();
   });
 
+  it("soaks them from the first punches that bloody the opponent's face", () => {
+    const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0x1d4ed8 });
+    const graph = new BoxingGraph(boxer, mapping);
+    const early = { ...bleeding("two"), trauma: { head: 200, body: 0, left_eye: 0, right_eye: 0, left_cut: 40, right_cut: 0, swelling: 0, bleeding: 20 } };
+    graph.update(fighter(), early, 1 / 60, 0, false, "full", 1, undefined);
+    expect(boxer.gloveBloodLevel).toBeGreaterThan(0.5);
+    graph.dispose();
+  });
+
   it("is lighter with reduced blood and absent with blood off", () => {
     const boxer = new SkinnedBoxer(gltf, { skin: 0xb0703f, gear: 0xb91c1c });
     const graph = new BoxingGraph(boxer, mapping);
