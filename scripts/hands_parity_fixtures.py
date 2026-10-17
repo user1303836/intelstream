@@ -10,7 +10,8 @@ change that the client does not follow fails on one side or the other:
   conditioning and body trauma near the fatigue steps;
 - style-timing-table.json: the same, with the stamina price, for every other style;
 - movement-traces.json: what the engine sent, tick by tick, while a fighter holding a direction
-  was parried, flinched mid-punch, finished a punch, slipped, or slipped out of a punch's recovery.
+  was parried, flinched mid-punch, finished a punch, pressed a punch during another's recovery or late in
+  a flinch, slipped, or slipped out of a punch's recovery.
 
     uv run python scripts/hands_parity_fixtures.py          # rewrite the files
     uv run python scripts/hands_parity_fixtures.py --check  # fail if they are out of date
@@ -164,6 +165,14 @@ def movement_traces() -> dict[str, list[dict[str, Any]]]:
             "two": InputCommand(tick, tick, actions=(jab,)),
         }
 
+    flinched_pressing = _engine((FighterStyle.BALANCED, FighterStyle.BALANCED), 100, centre)
+
+    def press_late_in_flinch(tick: int) -> dict[str, InputCommand]:
+        # The jab he presses near the end of the flinch waits for it to wear off.
+        if tick == 5:
+            return {"one": InputCommand(tick, tick, back.move_x, back.move_y, actions=(jab,))}
+        return counter(tick)
+
     finished = _engine((FighterStyle.BALANCED, FighterStyle.BALANCED), 300, centre)
 
     def alone(tick: int) -> dict[str, InputCommand]:
@@ -189,12 +198,42 @@ def movement_traces() -> dict[str, list[dict[str, Any]]]:
             return {}
         return {"one": InputCommand(tick, tick, back.move_x, back.move_y, actions=(action,))}
 
+    waited = _engine((FighterStyle.BALANCED, FighterStyle.BALANCED), 300, centre)
+
+    def press_during_recovery(tick: int) -> dict[str, InputCommand]:
+        # A hook and a jab are no combination: the jab waits in the buffer for the hook to end while
+        # he walks out of its recovery.
+        action = {1: hook, 8: jab}.get(tick)
+        if action is None:
+            return {}
+        return {"one": InputCommand(tick, tick, back.move_x, back.move_y, actions=(action,))}
+
+    long_cut = _engine((FighterStyle.BALANCED, FighterStyle.BALANCED), 300, centre)
+    uppercut = PunchAction(Hand.RIGHT, PunchClass.UPPERCUT, Target.HEAD, Power.POWER)
+
+    def slip_out_early(tick: int) -> dict[str, InputCommand]:
+        # The slip cuts a long recovery short as soon as the uppercut has missed; the snapshots go on
+        # presenting the uppercut past the end of the slip.
+        action = {1: uppercut, 12: slip}.get(tick)
+        if action is None:
+            return {}
+        return {"one": InputCommand(tick, tick, back.move_x, back.move_y, actions=(action,))}
+
     return {
         "parried while holding back": _trace(parried, back, parry),
         "flinched mid-hook while holding back": _trace(flinched, back, counter),
+        "a jab pressed late in a flinch while holding back": _trace(
+            flinched_pressing, back, press_late_in_flinch
+        ),
         "a jab thrown holding back": _trace(finished, back, alone),
+        "a jab pressed during a hook's recovery while holding back": _trace(
+            waited, back, press_during_recovery
+        ),
         "a slip thrown holding back": _trace(slipped, back, slip_away),
         "slipped out of a straight's recovery while holding back": _trace(cut, back, slip_out),
+        "slipped out of a power uppercut's recovery while holding back": _trace(
+            long_cut, back, slip_out_early
+        ),
     }
 
 

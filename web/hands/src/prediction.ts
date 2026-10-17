@@ -74,14 +74,14 @@ export function attackTicksRemaining(fighter: FighterSnapshot, tick: number): nu
 
 export function movementLocked(fighter: FighterSnapshot, tick?: number): boolean {
   return (tick === undefined ? fighter.action !== null : attackTicksRemaining(fighter, tick) > 0)
-    || stateLocked(fighter)
+    || fighter.queued_actions > 0
+    || heldInPlace(fighter)
     || isEvasion(fighter.defense);
 }
 
-function stateLocked(fighter: FighterSnapshot): boolean {
-  // A queued punch starts the tick the current one ends, so the fighter is never free in between.
-  return fighter.queued_actions > 0
-    || fighter.is_downed
+/** What holds a fighter's feet for as long as a snapshot shows it: down, a clinch, a taunt or a foul's recovery. */
+function heldInPlace(fighter: FighterSnapshot): boolean {
+  return fighter.is_downed
     || fighter.clinch_ticks > 0
     || fighter.clinch_startup_ticks > 0
     || fighter.taunt_ticks > 0
@@ -143,9 +143,16 @@ export interface FootworkHolds {
   readonly evasionFrom?: number | undefined;
 }
 
-/** Whether a stun has cut the punch the snapshot presents short: it holds nothing, nor slows him. */
+/**
+ * Whether the punch the snapshot presents was cut short, though snapshots go on presenting it with its own timing: by a
+ * stun, or by a slip, weave or pull that started once it had landed or missed. It holds nothing then, nor slows him.
+ */
 function punchCut(fighter: FighterSnapshot, holds: FootworkHolds): boolean {
-  return fighter.stunned_ticks > 0 || (fighter.action_id !== null && fighter.action_id === holds.cutActionId);
+  if (fighter.stunned_ticks > 0 || (fighter.action_id !== null && fighter.action_id === holds.cutActionId)) return true;
+  const from = holds.evasionFrom;
+  if (from === undefined || fighter.action === null) return false;
+  const recovery = fighter.action_start_tick + fighter.action_startup_ticks + fighter.action_active_ticks;
+  return from >= recovery && from < recovery + fighter.action_recovery_ticks;
 }
 
 /** Whether the fighter's punch is in its recovery on engine tick `at`, when the engine lets him walk at a share of his speed. */
@@ -182,19 +189,37 @@ function evasionSteps(fighter: FighterSnapshot, tick: number | undefined, holds:
 }
 
 /**
+ * Steps of the replay from snapshot `tick` before a press the server holds starts and holds the feet again: it waits for
+ * the punch the snapshot presents to end, or for a stun to wear off (it fires the tick after), and starts at once
+ * otherwise. Infinity with nothing held. A combination cutting a landed punch's recovery short starts sooner, which the
+ * input history knows of for the player's own presses.
+ */
+function queuedSteps(fighter: FighterSnapshot, tick: number | undefined, holds: FootworkHolds): number {
+  if (fighter.queued_actions === 0) return Infinity;
+  if (tick === undefined) return 0;
+  if (fighter.action !== null && !punchCut(fighter, holds)) {
+    const ending = fighter.action_start_tick + fighter.action_startup_ticks + fighter.action_active_ticks + fighter.action_recovery_ticks - tick - 1;
+    if (ending > 0) return ending;
+  }
+  return Math.max(0, fighter.stunned_ticks);
+}
+
+/**
  * Mirrors the authoritative movement integrator (velocity blends toward
  * the held direction each tick, capped at the fatigue-scaled speed) so the
  * viewer's own fighter can be shown `ticks` ahead of the delayed snapshot,
  * walking toward `intent(step)` on each tick. With the snapshot `tick`, a
  * punch, an evasion or a parry's stagger only holds the fighter for the
  * ticks it has left (see `heldSteps`), so stepping out of it is predicted as
- * soon as it ends, at the punch's share of his speed while it recovers.
+ * soon as it ends, at the punch's share of his speed while it recovers, until
+ * a press the server holds starts (see `queuedSteps`).
  */
 export function replayMovement(fighter: FighterSnapshot, intent: (step: number) => MovementIntent, ticks: number, tick?: number, holds: FootworkHolds = {}): PredictedOffset {
   const evading = evasionSteps(fighter, tick, holds);
-  if (ticks <= 0 || stateLocked(fighter) || evading === null) return { dx: 0, dy: 0 };
+  if (ticks <= 0 || heldInPlace(fighter) || evading === null) return { dx: 0, dy: 0 };
   const committed = Math.max(evading, tick === undefined ? (fighter.action !== null ? Infinity : 0) : heldSteps(fighter, tick, holds));
-  if (committed >= ticks) return { dx: 0, dy: 0 };
+  // Held from the first step, he still carries what is left of his velocity for a tick or two, as the engine blends it away.
+  const queued = queuedSteps(fighter, tick, holds);
   const cut = punchCut(fighter, holds);
   // The snapshot's own punch and the one the input history knows of are the same punch: their shares do not multiply.
   const share = (step: number, want: MovementIntent): number => Math.min(want.share ?? 1, tick !== undefined && !cut && recovering(fighter, tick + 1 + step) ? RECOVERY_SPEED_PERCENT / 100 : 1);
@@ -205,7 +230,7 @@ export function replayMovement(fighter: FighterSnapshot, intent: (step: number) 
   const whole = Math.floor(ticks);
   const fraction = ticks - whole;
   for (let step = 0; step < whole; step += 1) {
-    const free = step >= committed;
+    const free = step >= committed && step < queued;
     const want = intent(step);
     const slowed = share(step, want);
     vx = blend(vx, free ? want.x * slowed : 0);
@@ -219,7 +244,7 @@ export function replayMovement(fighter: FighterSnapshot, intent: (step: number) 
     dy += vy;
   }
   if (fraction > 0) {
-    const free = whole >= committed;
+    const free = whole >= committed && whole < queued;
     const want = intent(whole);
     const slowed = share(whole, want);
     dx += blend(vx, free ? want.x * slowed : 0) * fraction;
