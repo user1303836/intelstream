@@ -2742,6 +2742,10 @@ export class FightRenderer {
         // A fighter going down falls against his standing opponent, not through him.
         graphs[0].setObstacle(graphs[1].boxer.root.position.x, graphs[1].boxer.root.position.z);
         graphs[1].setObstacle(graphs[0].boxer.root.position.x, graphs[0].boxer.root.position.z);
+        // A punch that found the referee lands on his head as last drawn: he is posed after the fighters.
+        const refereeHead = this.referee?.boxer.rig.bones.head.getWorldPosition(this.refereeHead) ?? null;
+        graphs[0].setRefereeHead(refereeHead);
+        graphs[1].setRefereeHead(refereeHead);
         graphs[0].update(a, b, actorDt, seconds, current.reducedMotion, current.blood, sampledTick, headB);
         graphs[1].update(b, a, actorDt, seconds, current.reducedMotion, current.blood, sampledTick, headA);
         for (const [index, graph] of graphs.entries()) {

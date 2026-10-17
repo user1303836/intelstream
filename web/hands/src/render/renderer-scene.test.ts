@@ -26,6 +26,7 @@ function graph() {
     setResting: vi.fn(),
     setCountdown: vi.fn(),
     setObstacle: vi.fn(),
+    setRefereeHead: vi.fn(),
     stayDown: vi.fn(),
     update: vi.fn(),
     fallBody: null,

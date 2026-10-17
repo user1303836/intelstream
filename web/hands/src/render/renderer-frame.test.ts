@@ -26,6 +26,7 @@ function graph() {
     setResting: vi.fn(),
     setCountdown: vi.fn(),
     setObstacle: vi.fn(),
+    setRefereeHead: vi.fn(),
     stayDown: vi.fn(),
     update: vi.fn(),
     fallBody: null,
@@ -126,6 +127,7 @@ function frame(state: EngineSnapshot, overrides: Record<string, unknown> = {}) {
     basePixelRatio: 2,
     pendingFinish: null,
     pendingRefereeEvents: [],
+    refereeHead: new THREE.Vector3(),
     refereeReplayAt: null,
     ...overrides,
   });
@@ -366,6 +368,18 @@ describe("a rendered frame", () => {
     }
   });
 
+  it("hands both fighters the referee's head as drawn, for a punch that finds him to land on, before they are posed", () => {
+    const head = new THREE.Object3D();
+    head.position.set(0.3, 1.62, -0.8);
+    const { renderer, run } = frame(fighting(), { referee: { setRefereeCount: vi.fn(), aimBreak: vi.fn(), update: vi.fn(), boxer: { root: new THREE.Object3D(), rig: { bones: { head } } } } });
+    run();
+    for (const shown of renderer.graphs as ReturnType<typeof graph>[]) {
+      const [aim] = shown.setRefereeHead.mock.calls.at(-1)! as [THREE.Vector3];
+      expect(aim.toArray()).toEqual([0.3, 1.62, -0.8]);
+      expect(shown.setRefereeHead.mock.invocationCallOrder.at(-1)!).toBeLessThan(shown.update.mock.invocationCallOrder.at(-1)!);
+    }
+  });
+
   it("spreads a pool of blood under a bleeding fighter who is down", () => {
     const bleeding = { ...fighter("two").trauma, bleeding: 500, left_cut: 300 };
     const { renderer, run } = frame(fighting({}, { is_downed: true, trauma: bleeding }, { phase: "knockdown" }));
@@ -377,7 +391,7 @@ describe("a rendered frame", () => {
     const final: FinalMessage = { version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: "one", method: "decision", round: 3, scorecards: [], ratings: {} };
     const state = fighting({}, {}, { phase: "complete" });
     const ceremony = { winnerSeat: 0, positions: [{ x: -102, y: -16 }, { x: 102, y: -16 }], marks: [0, 1], refereeArrived: true, arrivedAt: 0.5, announced: true };
-    const { renderer, run, camera } = frame(state, { ceremony, final, settings: () => ({ reducedMotion: true, blood: "full", camera: "broadcast" }), referee: { raise: vi.fn() }, ceremonyWrists: [new THREE.Vector3(), new THREE.Vector3()], commentary: { verdict: vi.fn() } });
+    const { renderer, run, camera } = frame(state, { ceremony, final, settings: () => ({ reducedMotion: true, blood: "full", camera: "broadcast" }), referee: { raise: vi.fn(), boxer: { rig: { bones: { head: new THREE.Object3D() } } } }, ceremonyWrists: [new THREE.Vector3(), new THREE.Vector3()], commentary: { verdict: vi.fn() } });
     run();
     const top = resultCardTop(final, 1280, 720, state.fighters, {}, new RoundStatsTracker(), "one");
     const shot = ceremonyShot(16 / 9, 36, (720 - top) / 720);

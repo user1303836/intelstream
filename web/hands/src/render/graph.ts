@@ -649,6 +649,11 @@ export class BoxingGraph {
   /** How far the punch's aim has moved from that head onto the live one: only once the punch is known to have met him. */
   private followHead = 0;
   private aimActionId: string | null = null;
+  /** This fighter's newest punch the server reported finding the referee in the way, his head as drawn, and how far the aim has moved onto it. */
+  private refereeContactId: string | null = null;
+  private readonly refereeHead = new THREE.Vector3();
+  private hasRefereeHead = false;
+  private followReferee = 0;
   private readonly headKick: Spring3 = { value: new THREE.Vector3(), velocity: new THREE.Vector3() };
   private readonly torsoKick: Spring3 = { value: new THREE.Vector3(), velocity: new THREE.Vector3() };
   private readonly rootKick: Spring3 = { value: new THREE.Vector3(), velocity: new THREE.Vector3() };
@@ -1081,6 +1086,7 @@ export class BoxingGraph {
    */
   acknowledge(server: FighterSnapshot, fighting: boolean, contacts: readonly CombatEvent[] = [], sequenceOf: ((actionId: string) => number | null) | null = null): void {
     for (const event of contacts) {
+      if (event.kind === "referee_hit" && event.action_id !== null) this.refereeContactId = event.action_id;
       if (event.action_id === null || !CONNECTING_CONTACTS.has(event.kind)) continue;
       if (event.action_id !== this.contactId) {
         this.contactId = event.action_id;
@@ -1218,6 +1224,12 @@ export class BoxingGraph {
     this.ownSequence = null;
     this.ownStarted = false;
     this.ownRefused = false;
+  }
+
+  /** The referee's head as drawn, which a punch the server says found him lands on; null with no referee in the ring. */
+  setRefereeHead(head: THREE.Vector3 | null): void {
+    this.hasRefereeHead = head !== null;
+    if (head !== null) this.refereeHead.copy(head);
   }
 
   landedHit(blocked: boolean): void {
@@ -2010,6 +2022,8 @@ export class BoxingGraph {
       this.followHead = 0;
     }
     this.followHead = smooth(this.followHead, aimed !== null && aimed === this.contactId ? 1 : 0, FOLLOW_HEAD_RATE, simDt);
+    // And one that found the referee in the way lands on him.
+    this.followReferee = smooth(this.followReferee, aimed !== null && aimed === this.refereeContactId ? 1 : 0, FOLLOW_HEAD_RATE, simDt);
   }
 
   /** Takes the opponent's head as drawn and keeps where it would be without his slip, weave or pull. */
@@ -2149,7 +2163,9 @@ export class BoxingGraph {
     const rootPosition = this.scratchB.set(this.rootX ?? 0, 0, this.rootZ);
     if (this.hasLiveHead) {
       // An evading head is aimed at where it was, so a slip or weave that worked shows the glove go by.
-      target.copy(this.guardOpponentHead).lerp(this.liveOpponentHead, this.followHead).sub(rootPosition).applyQuaternion(this.scratchQ.setFromAxisAngle(worldUpVector, -this.yaw));
+      target.copy(this.guardOpponentHead).lerp(this.liveOpponentHead, this.followHead);
+      if (this.hasRefereeHead) target.lerp(this.refereeHead, this.followReferee);
+      target.sub(rootPosition).applyQuaternion(this.scratchQ.setFromAxisAngle(worldUpVector, -this.yaw));
       if (body === 1) target.y -= 0.42;
       else target.y -= 0.04;
     } else {
