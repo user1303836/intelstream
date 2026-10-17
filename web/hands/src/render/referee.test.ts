@@ -376,10 +376,10 @@ describe("the referee's death on screen, from the punch to the next bout", () =>
   };
   const down = (tick: number) => ({ event_id: 1, tick, kind: "referee_down", actor_id: "one", target_id: REFEREE_ID, amount: 0, detail: "", blood: 0, direction: 0, action_id: "x" });
 
-  it("replays his fall inside the engine's pause, with room for the playback delay", () => {
+  it("replays his fall inside the engine's pause, with half a second to spare for the playback delay and a stalled frame", () => {
     const history = Array.from({ length: 120 }, (_, index) => ({ ...snapshot(40 + index) }));
     const plan = planKnockoutReplay(history, down(100), 30, REFEREE_REPLAY.speed, REFEREE_REPLAY.before, REFEREE_REPLAY.after)!;
-    expect(REFEREE_REPLAY_DELAY_SECONDS + plan.durationSeconds).toBeLessThanOrEqual(150 / 30 - 6 / 30);
+    expect(REFEREE_REPLAY_DELAY_SECONDS + plan.durationSeconds).toBeLessThanOrEqual(150 / 30 - 0.5);
   });
 
   it("starts the replay only while the bout still waits for it", () => {
@@ -395,6 +395,8 @@ describe("the referee's death on screen, from the punch to the next bout", () =>
       return startReplay;
     };
     expect(attempt({ ...snapshot(124), phase: "referee_down", phase_ticks_remaining: 126 })).toHaveBeenCalledOnce();
+    // A frame stall that leaves less of the pause than the whole replay costs only its closing hold.
+    expect(attempt({ ...snapshot(150), phase: "referee_down", phase_ticks_remaining: 100 })).toHaveBeenCalledOnce();
     // Long resumed (a hidden tab, a reconnect), or too little of the pause left: no replay over the fight.
     expect(attempt({ ...snapshot(239), phase: "fight" })).not.toHaveBeenCalled();
     expect(attempt({ ...snapshot(230), phase: "referee_down", phase_ticks_remaining: 20 })).not.toHaveBeenCalled();
@@ -441,6 +443,36 @@ describe("the referee's death on screen, from the punch to the next bout", () =>
     expect(graph.boxer.rig.bones.head.getWorldPosition(new THREE.Vector3()).y).toBeLessThan(0.6);
     expect(stub.refereePosition.x).toBeCloseTo(mapping.x(30), 2);
     expect(stub.refereePosition.z).toBeCloseTo(mapping.z(62), 2);
+  });
+
+  it("follows the recording exactly in his replay, cutting to wherever it has him, and lies still once the punch has landed", () => {
+    const stub = placed();
+    run(stub, { ...snapshot(80), referee: engineReferee(0, 62) }, 30);
+    // The replay cuts to a moment the recording has him well away from where he lay.
+    stub.replay = { plan: { impact: { kind: "referee_down" } }, impactFired: false };
+    run(stub, { ...snapshot(60), referee: engineReferee(-250, -200) }, 1);
+    expect(stub.refereePosition.x).toBeCloseTo(mapping.x(-250), 2);
+    expect(stub.refereePosition.z).toBeCloseTo(mapping.z(-200), 2);
+    // Once the punch has landed he goes where the fall takes him, not where the recording drifts, and his pool spreads.
+    (stub.replay as { impactFired: boolean }).impactFired = true;
+    const lying = stub.refereePosition.clone();
+    const pool = (stub.effects as { pool: ReturnType<typeof vi.fn> }).pool;
+    run(stub, { ...snapshot(70), phase: "referee_down", referee: { ...engineReferee(150, 100), alive: false } }, 60);
+    expect(stub.refereePosition.distanceTo(lying)).toBeLessThan(1e-9);
+    expect(pool).toHaveBeenCalled();
+  });
+
+  it("is laid down where the engine has him after a reconnect that missed his fall", () => {
+    const graph = new BoxingGraph(referee(), mapping, { referee: true, knockout: true });
+    const stub = placed(graph);
+    run(stub, { ...snapshot(80), referee: engineReferee(0, 62) }, 30);
+    expect(graph.isDown).toBe(false);
+    run(stub, { ...snapshot(400), referee: { ...engineReferee(-120, -80), alive: false } }, 1);
+    expect(graph.isDown).toBe(true);
+    expect(stub.refereePosition.x).toBeCloseTo(mapping.x(-120), 2);
+    expect(stub.refereePosition.z).toBeCloseTo(mapping.z(-80), 2);
+    graph.boxer.root.updateMatrixWorld(true);
+    expect(graph.boxer.rig.bones.head.getWorldPosition(new THREE.Vector3()).y).toBeLessThan(0.6);
   });
 
   it("keeps his pool through the replay of his death rather than starting another", () => {

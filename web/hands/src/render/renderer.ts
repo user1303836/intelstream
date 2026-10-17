@@ -25,7 +25,7 @@ import { OFFICIAL_LOOKS, lookFor, lookShape, type FighterLook } from "./looks";
 import { BLUE_CORNER_OUTFIT, CUTMAN_OUTFIT, RED_CORNER_OUTFIT, REFEREE_OUTFIT } from "./outfit";
 import { ResolutionScaler } from "./quality";
 import { RockedVision, rockedLevel } from "./rocked";
-import { planKnockoutReplay, REFEREE_REPLAY, replayTick, type ReplayPlan } from "./replay";
+import { planKnockoutReplay, REFEREE_REPLAY, REPLAY_TAIL_SECONDS, replayTick, type ReplayPlan } from "./replay";
 import { GloveGlow, ImpactFlash, glowTexture } from "./power";
 import { GloveTrail } from "./trails";
 
@@ -2537,9 +2537,10 @@ export class FightRenderer {
     if (refereeReplay !== null && this.replay === null && this.frameSeconds >= refereeReplay.at) {
       this.refereeReplayAt = null;
       const plan = planKnockoutReplay(this.history, refereeReplay.impact, this.simulation.tick_rate, REFEREE_REPLAY.speed, REFEREE_REPLAY.before, REFEREE_REPLAY.after);
-      // It plays while the bout waits for it, and only then: never over the fight once it has resumed (a hidden tab, a reconnect).
+      // It plays while the bout waits for it, and only then: never over the fight once it has resumed (a hidden tab, a
+      // reconnect). Its closing hold may be cut short by the resume, so a stalled frame or two does not cost the replay.
       const live = this.buffer.latest();
-      const waiting = plan !== null && live !== null && live.phase === "referee_down" && live.phase_ticks_remaining / this.simulation.tick_rate >= plan.durationSeconds;
+      const waiting = plan !== null && live !== null && live.phase === "referee_down" && live.phase_ticks_remaining / this.simulation.tick_rate >= plan.durationSeconds - REPLAY_TAIL_SECONDS;
       if (plan !== null && waiting && !this.settings().reducedMotion) this.startReplay(plan);
     }
   }
@@ -3281,8 +3282,9 @@ export class FightRenderer {
       this.refereePosition.z = step.y;
       ceremony.refereeArrived = step.arrived;
     } else if (engine !== null) {
-      // A quick step to wherever the engine has him, which he then keeps to.
-      const rate = 1 - Math.exp(-REFEREE_FOLLOW_RATE * dt);
+      // A quick step to wherever the engine has him, which he then keeps to; his replay has him exactly where the
+      // recording does, from its first frame.
+      const rate = hisReplay !== null ? 1 : 1 - Math.exp(-REFEREE_FOLLOW_RATE * dt);
       this.refereePosition.x += (this.mapping.x(engine.x) - this.refereePosition.x) * rate;
       this.refereePosition.z += (this.mapping.z(engine.y) - this.refereePosition.z) * rate;
     } else {

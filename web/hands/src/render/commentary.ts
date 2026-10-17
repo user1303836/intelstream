@@ -150,6 +150,9 @@ const BELL_FRESH_SECONDS = 3.2;
 
 const URGENT: ReadonlySet<LineKey> = new Set<LineKey>(["knockdown", "knockdownAgain", "knockdownCounter", "knockdownBody", "bodyCollapse", "upLate", "upEarly", "hurt", "hurtBadly", "lowBlow", "headbutt", "deduction", "ko", "flashKo", "tko", "disqualified", "forfeit", "replay", "refDown", "refBledOut", "savedByBell", "finalBell", "roundEnd", "roundStart"]);
 
+/** Calls that have the referee act, which a dead one cannot: each also has a phrasing without him. */
+const REFEREE_ACTS: ReadonlySet<LineKey> = new Set<LineKey>(["lowBlow", "headbutt", "warning", "deduction", "box", "tko"]);
+
 /** Knockdowns over hurt fighters over big counters over cuts over combinations over colour. */
 const PRIORITY: Readonly<Record<LineKey, number>> = {
   ko: 98, flashKo: 98, tko: 98, disqualified: 98, forfeit: 98, refDown: 97, refBledOut: 97, refHit: 72,
@@ -359,6 +362,7 @@ export class CommentaryDirector {
   private fightRemaining = 0;
   private struggleCalled = -1;
   private lastKnockdown: { actor: string | null; target: string | null; tick: number } | null = null;
+  private refereeDead = false;
   private final: FinalMessage | null = null;
   private verdictGiven = false;
   private resultCalled = false;
@@ -370,6 +374,7 @@ export class CommentaryDirector {
   observe(snapshot: EngineSnapshot, events: readonly CombatEvent[], players: Readonly<Record<string, PublicPlayer>>, tickRate: number, now: number): void {
     this.players = players;
     this.fighters = snapshot.fighters;
+    this.refereeDead = snapshot.referee?.alive === false;
     this.tickRate = tickRate;
     this.trackClock(snapshot);
     if (!this.introduced) {
@@ -442,7 +447,8 @@ export class CommentaryDirector {
     const kicker = stopped && clock !== null ? `STOPPED AT ${clock} OF ROUND ${final.round}` : `ROUND ${final.round}`;
     const text = stopped && clock !== null ? `${name} wins by ${how} at ${clock} of round ${final.round}.` : `${name} wins by ${how} in round ${final.round}.`;
     this.enqueue(this.announcement(text, { kicker, title: name.toUpperCase(), detail: `WINS BY ${how.toUpperCase()}`, corner: this.seatOf(final.winner_id) }, ANNOUNCER_HOLD_SECONDS, 100), now, "verdict", 30);
-    const opening = stopped && clock !== null ? `The referee stops the contest at ${clock} of round ${numberWord(final.round)}. ` : "";
+    const stoppedBy = this.refereeDead ? "With the referee dead on the canvas, it is over" : "The referee stops the contest";
+    const opening = stopped && clock !== null ? `${stoppedBy} at ${clock} of round ${numberWord(final.round)}. ` : "";
     this.hooks.speak?.([`${opening}Your winner, by ${how}... ${name}!`]);
   }
 
@@ -808,7 +814,8 @@ export class CommentaryDirector {
 
   /** A different phrasing each time, chosen from the event so every viewer hears the same call. */
   private choose(key: LineKey, seed: number): string {
-    const options: readonly string[] = LINES[key];
+    const lines: readonly string[] = LINES[key];
+    const options = this.refereeDead && REFEREE_ACTS.has(key) ? lines.filter((line) => !/referee/iu.test(line)) : lines;
     let index = mix(seed, key.length * 31 + key.charCodeAt(0)) % options.length;
     if (options.length > 1 && this.lastChoice.get(key) === index) index = (index + 1) % options.length;
     this.lastChoice.set(key, index);

@@ -290,6 +290,41 @@ describe("the ring announcer", () => {
     expect(director.current(1.9)?.line.card).toMatchObject({ kicker: "AFTER THREE ROUNDS", title: "MAJORITY DRAW", corner: null });
   });
 
+  it("announces a stoppage after the referee died without him stopping it", () => {
+    const speak = vi.fn();
+    const director = new CommentaryDirector({ speak });
+    const dead = { referee: { ...referee(), alive: false } };
+    feed(director, state(1, "countdown", [{}, {}], { phase_ticks_remaining: 90, ...dead }), [], 0);
+    feed(director, state(91, "fight", [{}, {}], { phase_ticks_remaining: 3599, ...dead }), [], 3);
+    feed(director, state(1350, "fight", [{}, {}], { phase_ticks_remaining: 2340, ...dead }), [], 45);
+    feed(director, state(1351, "knockdown", [{}, { is_downed: true }], { phase_ticks_remaining: 300, ...dead }), [event("knockdown", 1351, { actor_id: "one", target_id: "two", amount: 1 })], 46);
+    feed(director, state(1651, "complete", [{}, { is_downed: true }], { phase_ticks_remaining: 0, ...dead }), [event("result", 1651, { actor_id: "one", detail: "ko" })], 56);
+    director.finish({ version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: "one", method: "ko", round: 1, scorecards: [], ratings: {} }, players, false, 56.2);
+    director.resultShown(70);
+    expect(speak.mock.calls.at(-1)![0]).toEqual(["With the referee dead on the canvas, it is over at 0:42 of round one. Your winner, by knockout... Azure Vector!"]);
+  });
+
+  it("never has a dead referee step in, warn, take a point, wave them on or wave it off", () => {
+    const dead = { referee: { ...referee(), alive: false } };
+    const calls: [string, Partial<CombatEvent>, [Partial<FighterSnapshot>, Partial<FighterSnapshot>]][] = [
+      ["foul", { actor_id: "one", target_id: "two", detail: "low_blow" }, [{ warnings: 1 }, {}]],
+      ["foul", { actor_id: "one", target_id: "two", detail: "headbutt" }, [{ warnings: 1 }, {}]],
+      ["deduction", { actor_id: "one", target_id: "two" }, [{ deductions: 1 }, {}]],
+      ["box", { target_id: "two" }, [{}, {}]],
+      ["result", { actor_id: "one", detail: "tko" }, [{}, {}]],
+    ];
+    const heard: string[] = [];
+    for (const [kind, fields, edits] of calls) {
+      for (let seed = 0; seed < 8; seed += 1) {
+        const director = new CommentaryDirector();
+        feed(director, state(200, "fight", edits, dead), [event(kind, 200, { ...fields, event_id: 1000 + seed })], 10);
+        heard.push(...watch(director, 10, 18));
+      }
+    }
+    expect(heard.length).toBeGreaterThan(20);
+    expect(heard.filter((text) => /referee/iu.test(text))).toEqual([]);
+  });
+
   it("announces a stoppage with the time it came in the round", () => {
     const speak = vi.fn();
     const director = new CommentaryDirector({ speak });
