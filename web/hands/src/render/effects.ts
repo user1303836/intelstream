@@ -12,28 +12,32 @@ import { CANVAS_TOP, RING_FIGHT_HALF, ROPE_LINE } from "./world";
 
 /**
  * How much gore a device keeps in flight at once: drops of blood, sweat and spit, puffs of mist, flesh,
- * teeth and brain, and pieces of skull. A phone keeps half of what a desktop does and throws half the blood.
+ * teeth and brain, pieces of skull and loose eyeballs. A phone keeps half of what a desktop does and throws
+ * half the blood.
  */
 export interface GoreBudget {
   readonly droplets: number;
   readonly mist: number;
   readonly gibs: number;
   readonly shards: number;
+  readonly eyeballs: number;
 }
-export const DESKTOP_GORE: GoreBudget = { droplets: 4096, mist: 320, gibs: 320, shards: 72 };
-export const PHONE_GORE: GoreBudget = { droplets: 2048, mist: 160, gibs: 160, shards: 36 };
-const SHARDS_PER_BURST = 24;
-const BRAIN_PER_BURST = 24;
-const TEETH_PER_BURST = 10;
+export const DESKTOP_GORE: GoreBudget = { droplets: 4096, mist: 320, gibs: 320, shards: 72, eyeballs: 8 };
+export const PHONE_GORE: GoreBudget = { droplets: 2048, mist: 160, gibs: 160, shards: 36, eyeballs: 4 };
+const SHARDS_PER_BURST = 36;
+const BRAIN_PER_BURST = 40;
+const TEETH_PER_BURST = 16;
+/** A loose eyeball is drawn this much bigger than the eye it came from, so it reads bouncing across the canvas. */
+const EYEBALL_SCALE = 1.8;
 const MAX_HEADS = 2;
 const MAX_HANDS = 4;
-const GIBS_PER_DECAPITATION = 36;
-const GIBS_PER_HAND = 26;
+const GIBS_PER_DECAPITATION = 60;
+const GIBS_PER_HAND = 40;
 /** Drops of blood each finisher throws as it lands, on a desktop. */
-const DROPS_PER_DECAPITATION = 360;
-const DROPS_PER_BURST = 480;
-const DROPS_PER_HAND = 260;
-const DROPS_PER_EYE = 160;
+const DROPS_PER_DECAPITATION = 900;
+const DROPS_PER_BURST = 1200;
+const DROPS_PER_HAND = 600;
+const DROPS_PER_EYE = 400;
 const HEAD_RADIUS = 0.12;
 const HEAD_SETTLE_SECONDS = 0.35;
 const SEVERED_PART_MARGIN = 0.04;
@@ -136,8 +140,8 @@ interface Gib {
  * Flesh, teeth, brain and skull lie where they land for the rest of the bout, as the blood under them
  * does. Once a pool is all but full the oldest piece on the canvas shrinks away to make room.
  */
-type DebrisKind = "flesh" | "tooth" | "brain" | "shard";
-const DEBRIS_BOUNCES: Readonly<Record<DebrisKind, number>> = { flesh: 1, tooth: 3, brain: 1, shard: 2 };
+type DebrisKind = "flesh" | "tooth" | "brain" | "shard" | "eye";
+const DEBRIS_BOUNCES: Readonly<Record<DebrisKind, number>> = { flesh: 1, tooth: 3, brain: 1, shard: 2, eye: 4 };
 const DEBRIS_FADE_SECONDS = 0.3;
 
 interface SeveredHead {
@@ -188,30 +192,30 @@ interface Stump {
  * How long the artery of each stump pumps: a severed neck, the neck a burst head leaves and a wrist. Over the
  * last FOUNTAIN_FADE_SECONDS the pressure falls away.
  */
-export const NECK_FOUNTAIN_SECONDS = 9;
-const BURST_FOUNTAIN_SECONDS = 10;
-const WRIST_FOUNTAIN_SECONDS = 8;
-const FOUNTAIN_FADE_SECONDS = 5;
+export const NECK_FOUNTAIN_SECONDS = 14;
+const BURST_FOUNTAIN_SECONDS = 16;
+const WRIST_FOUNTAIN_SECONDS = 12;
+const FOUNTAIN_FADE_SECONDS = 6;
 /** Beats a second of a heart going flat out, and how much of each beat (a share of it) the spurt lasts. */
 const HEART_RATE = 1.7;
 const SPURT_WIDTH = 0.14;
 /** Drops a second at the top of a beat at full pressure, and the share of that still running between beats. */
-const FOUNTAIN_PEAK_RATE = 200;
+const FOUNTAIN_PEAK_RATE = 340;
 const FOUNTAIN_BETWEEN_BEATS = 0.12;
-/** Arterial blood leaves at 4 to 6 m/s at the top of a beat, within this angle (radians) of the wound's axis. */
-const FOUNTAIN_SPEED_LOW = 4;
-const FOUNTAIN_SPEED_HIGH = 6;
-const FOUNTAIN_CONE = 0.35;
+/** The blood leaves at 5.5 to 8.5 m/s at the top of a beat, within this angle (radians) of the wound's axis: a cartoon geyser three metres high. */
+const FOUNTAIN_SPEED_LOW = 5.5;
+const FOUNTAIN_SPEED_HIGH = 8.5;
+const FOUNTAIN_CONE = 0.45;
 /** A wound a finisher tears open throws this much as it opens, and then pours this long, this many drops a second at first. */
-const TORN_DROPS = 300;
-const TORN_CHUNKS = 14;
-const TORN_GUSH_SECONDS = 6;
-const TORN_GUSH_RATE = 220;
+const TORN_DROPS = 700;
+const TORN_CHUNKS = 24;
+const TORN_GUSH_SECONDS = 10;
+const TORN_GUSH_RATE = 360;
 /** A wound that gushes rather than spurts: a softer beat, more of it between beats, slower and wider than an artery. */
 const GUSH_PULSE_WIDTH = 0.22;
 const GUSH_BETWEEN_BEATS = 0.3;
-const GUSH_SPEED_LOW = 0.8;
-const GUSH_SPEED_HIGH = 2.2;
+const GUSH_SPEED_LOW = 1.2;
+const GUSH_SPEED_HIGH = 3.2;
 const GUSH_CONE = 0.55;
 const fountainAxis = new THREE.Vector3();
 const fountainSide = new THREE.Vector3();
@@ -281,8 +285,8 @@ const EYE_RADIUS = 0.012;
 /** How far an eye forced out hangs below its socket on the nerve. */
 export const EYE_NERVE_LENGTH = 0.055;
 /** The empty socket pours this many drops a second, for this long. */
-const EYE_BLEEDING_RATE = 45;
-const EYE_BLEEDING_SECONDS = 6;
+const EYE_BLEEDING_RATE = 90;
+const EYE_BLEEDING_SECONDS = 10;
 const EYE_DAMPING = 0.985;
 /** Half the width and height of the head about the middle of the skull, plus the eye, for a hanging eye. */
 const SKULL_RADII = new THREE.Vector2(0.085 + EYE_RADIUS, 0.12 + EYE_RADIUS);
@@ -444,6 +448,9 @@ export class Effects3D {
   private readonly shardMesh: THREE.InstancedMesh;
   private readonly shards: Gib[] = [];
   private shardIndex = 0;
+  private readonly eyeballMesh: THREE.InstancedMesh;
+  private readonly eyeballs: Gib[] = [];
+  private eyeballIndex = 0;
   private readonly gibColor = new THREE.Color();
   private readonly gibs: Gib[] = [];
   private gibIndex = 0;
@@ -634,6 +641,18 @@ export class Effects3D {
       this.nerveMeshes.push(nerve);
       this.eyes.push({ active: false, eventId: null, position: new THREE.Vector3(), previous: new THREE.Vector3(), socket: new THREE.Vector3(), facing: new THREE.Vector3(0, 0, 1), skull: new THREE.Vector3(), skullTurn: new THREE.Quaternion(), hasSkull: false, bleeding: 0, accumulator: 0 });
     }
+    // Loose eyeballs, drawn white with the eye's own texture; their colours are set from the start, so the first one compiles nothing.
+    this.eyeballMesh = new THREE.InstancedMesh(this.eyeGeometry, this.eyeMaterial, budget.eyeballs);
+    this.eyeballMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.eyeballMesh.frustumCulled = false;
+    scene.add(this.eyeballMesh);
+    for (let i = 0; i < budget.eyeballs; i += 1) {
+      const eyeball = idleGib();
+      this.eyeballs.push(eyeball);
+      this.eyeballMesh.setColorAt(i, this.gibColor.setHex(0xffffff));
+      this.writeDebrisMatrix(this.eyeballMesh, i, eyeball);
+    }
+    this.eyeballMesh.instanceMatrix.needsUpdate = true;
     this.shieldGeometry = buildMouthpieceGeometry();
     for (let index = 0; index < MAX_HEADS; index += 1) {
       const material = new THREE.MeshStandardMaterial({ color: 0xe8eef5, roughness: 0.22, metalness: 0, side: THREE.DoubleSide });
@@ -771,9 +790,9 @@ export class Effects3D {
     return this.shards.filter((shard) => shard.alive).length;
   }
 
-  /** How many teeth, pieces of brain and pieces of skull are out, by kind. */
+  /** How many teeth, pieces of brain, pieces of skull and eyeballs are out, by kind. */
   debrisCount(kind: DebrisKind): number {
-    return [...this.gibs, ...this.shards].filter((gib) => gib.alive && gib.kind === kind).length;
+    return [...this.gibs, ...this.shards, ...this.eyeballs].filter((gib) => gib.alive && gib.kind === kind).length;
   }
 
   get activeHeads(): number {
@@ -900,12 +919,14 @@ export class Effects3D {
       const angle = rand() * Math.PI * 2;
       this.spawnDroplet(eye.socket.x, eye.socket.y, eye.socket.z, forward.x * (0.8 + rand() * 1.6) + Math.sin(angle) * 0.7, 0.4 + rand() * 1.6, forward.z * (0.8 + rand() * 1.6) + Math.cos(angle) * 0.7, bloodShade(rand()), 0.6 + rand() * 0.8, true);
     }
-    for (let puff = 0; puff < 14; puff += 1) this.spawnMist(eye.socket.x + (rand() - 0.5) * 0.16, eye.socket.y + (rand() - 0.5) * 0.12, eye.socket.z + (rand() - 0.5) * 0.16, 0.8 + rand() * 0.8, 0.55 + rand() * 0.5);
-    for (let chunk = 0; chunk < 5; chunk += 1) {
+    for (let puff = 0; puff < 24; puff += 1) this.spawnMist(eye.socket.x + (rand() - 0.5) * 0.2, eye.socket.y + (rand() - 0.5) * 0.14, eye.socket.z + (rand() - 0.5) * 0.2, 0.8 + rand(), 0.55 + rand() * 0.55);
+    for (let chunk = 0; chunk < 10; chunk += 1) {
       const angle = rand() * Math.PI * 2;
       this.spawnGib(eye.socket.x, eye.socket.y, eye.socket.z, forward.x * (0.6 + rand() * 1.2) + Math.sin(angle) * 0.5, 0.6 + rand() * 1.2, forward.z * (0.6 + rand() * 1.2) + Math.cos(angle) * 0.5, rand, "flesh", index);
     }
-    this.splatter(eye.socket.x + forward.x * 0.3, eye.socket.z + forward.z * 0.3, 1.2, rand, 10);
+    // The other eye pops clean out and bounces away across the canvas.
+    this.spawnGib(eye.socket.x, eye.socket.y, eye.socket.z, forward.x * 2.2 + launch.x * 0.8, 1.6 + rand(), forward.z * 2.2 + launch.z * 0.8, rand, "eye", index);
+    this.splatter(eye.socket.x + forward.x * 0.3, eye.socket.z + forward.z * 0.3, 1.8, rand, 24);
     this.splashLens(eye.socket.x, eye.socket.y, eye.socket.z, 1, safeEventId);
     this.shake = Math.min(0.22, this.shake + 0.06);
     this.writeEye(index);
@@ -1575,10 +1596,10 @@ export class Effects3D {
         true,
       );
     }
-    for (let i = 0; i < 28; i += 1) {
-      this.spawnMist(head.mesh.position.x + (rand() - 0.5) * 0.45, head.mesh.position.y + (rand() - 0.5) * 0.3, head.mesh.position.z + (rand() - 0.5) * 0.45, 1 + rand() * 1.6, 0.7 + rand() * 0.7);
+    for (let i = 0; i < 48; i += 1) {
+      this.spawnMist(head.mesh.position.x + (rand() - 0.5) * 0.55, head.mesh.position.y + (rand() - 0.5) * 0.36, head.mesh.position.z + (rand() - 0.5) * 0.55, 1 + rand() * 1.8, 0.7 + rand() * 0.8);
     }
-    this.splatter(head.mesh.position.x, head.mesh.position.z, 2, rand, 30);
+    this.splatter(head.mesh.position.x, head.mesh.position.z, 2.6, rand, 50);
     this.splashLens(head.mesh.position.x, head.mesh.position.y, head.mesh.position.z, 1.6, safeEventId);
     this.shake = Math.min(0.22, this.shake + 0.12);
   }
@@ -1621,6 +1642,7 @@ export class Effects3D {
     scatter(SHARDS_PER_BURST, "shard", 2.2, 2.4, 1);
     scatter(BRAIN_PER_BURST, "brain", 1.2, 1.8, 0.8);
     scatter(TEETH_PER_BURST, "tooth", 1, 1.4, 0.6);
+    scatter(2, "eye", 1.4, 1.2, 1.2);
     for (let drop = 0; drop < this.forDevice(DROPS_PER_BURST); drop += 1) {
       const around = rand() * Math.PI * 2;
       const up = rand() * 1.3 - 0.3;
@@ -1639,10 +1661,10 @@ export class Effects3D {
         0.004 + rand() ** 2 * 0.014,
       );
     }
-    for (let puff = 0; puff < 40; puff += 1) {
-      this.spawnMist(x + (rand() - 0.5) * 0.6, y + (rand() - 0.3) * 0.5, z + (rand() - 0.5) * 0.6, 1.2 + rand() * 1.8, 0.8 + rand() * 0.8);
+    for (let puff = 0; puff < 64; puff += 1) {
+      this.spawnMist(x + (rand() - 0.5) * 0.7, y + (rand() - 0.3) * 0.6, z + (rand() - 0.5) * 0.7, 1.2 + rand() * 2, 0.8 + rand() * 0.9);
     }
-    this.splatter(x + launch.x * 0.3, z + launch.z * 0.3, 2.8, rand, 32);
+    this.splatter(x + launch.x * 0.3, z + launch.z * 0.3, 3.4, rand, 60);
     this.splashLens(x, y, z, 2, safeEventId);
     this.shake = Math.min(0.22, this.shake + 0.14);
     stump.mesh.material = this.jawMaterial;
@@ -1733,16 +1755,16 @@ export class Effects3D {
         true,
       );
     }
-    for (let puff = 0; puff < 18; puff += 1) {
+    for (let puff = 0; puff < 30; puff += 1) {
       this.spawnMist(
-        hand.mesh.position.x + (rand() - 0.5) * 0.3,
-        hand.mesh.position.y + (rand() - 0.5) * 0.22,
-        hand.mesh.position.z + (rand() - 0.5) * 0.3,
-        0.8 + rand() * 1.2,
-        0.55 + rand() * 0.55,
+        hand.mesh.position.x + (rand() - 0.5) * 0.36,
+        hand.mesh.position.y + (rand() - 0.5) * 0.26,
+        hand.mesh.position.z + (rand() - 0.5) * 0.36,
+        0.8 + rand() * 1.4,
+        0.55 + rand() * 0.6,
       );
     }
-    this.splatter(hand.mesh.position.x, hand.mesh.position.z, 1.6, rand, 24);
+    this.splatter(hand.mesh.position.x, hand.mesh.position.z, 2.2, rand, 40);
     this.splashLens(hand.mesh.position.x, hand.mesh.position.y, hand.mesh.position.z, 1.2, safeEventId);
     this.shake = Math.min(0.22, this.shake + 0.08);
   }
@@ -1788,8 +1810,8 @@ export class Effects3D {
     };
     scatter(TORN_CHUNKS, "flesh");
     scatter(teeth, "tooth");
-    for (let puff = 0; puff < 16; puff += 1) this.spawnMist(x + (rand() - 0.5) * 0.3, y + (rand() - 0.5) * 0.24, z + (rand() - 0.5) * 0.3, 0.9 + rand() * 1.3, 0.6 + rand() * 0.6);
-    this.splatter(x + out.x * 0.25 + launch.x * 0.3, z + out.z * 0.25 + launch.z * 0.3, 1.6, rand, 20);
+    for (let puff = 0; puff < 28; puff += 1) this.spawnMist(x + (rand() - 0.5) * 0.36, y + (rand() - 0.5) * 0.28, z + (rand() - 0.5) * 0.36, 0.9 + rand() * 1.5, 0.6 + rand() * 0.7);
+    this.splatter(x + out.x * 0.25 + launch.x * 0.3, z + out.z * 0.25 + launch.z * 0.3, 2.2, rand, 36);
     this.splashLens(x, y, z, 1.2, safeEventId);
     this.shake = Math.min(0.22, this.shake + 0.08);
     this.gush(index, position, out, TORN_GUSH_SECONDS, TORN_GUSH_RATE, safeEventId);
@@ -2019,9 +2041,10 @@ export class Effects3D {
 
   private spawnGib(x: number, y: number, z: number, vx: number, vy: number, vz: number, rand: () => number, kind: DebrisKind = "flesh", owner = -1): void {
     const shard = kind === "shard";
-    const pool = shard ? this.shards : this.gibs;
-    const mesh = shard ? this.shardMesh : this.gibMesh;
-    const index = this.debrisSlot(pool, shard);
+    const eye = kind === "eye";
+    const pool = shard ? this.shards : eye ? this.eyeballs : this.gibs;
+    const mesh = shard ? this.shardMesh : eye ? this.eyeballMesh : this.gibMesh;
+    const index = this.debrisSlot(pool);
     const gib = pool[index]!;
     gib.alive = true;
     gib.kind = kind;
@@ -2031,6 +2054,7 @@ export class Effects3D {
     gib.fading = -1;
     const shade = 0.55 + rand() * 0.45;
     if (kind === "tooth") this.gibColor.setHex(0xf3ead6);
+    else if (eye) this.gibColor.setHex(0xffffff);
     else if (kind === "brain") this.gibColor.setHex(rand() < 0.3 ? 0x8a3a3c : 0xb7918e).multiplyScalar(0.8 + shade * 0.25);
     else if (shard) this.gibColor.setScalar(0.85 + shade * 0.15);
     else {
@@ -2051,8 +2075,8 @@ export class Effects3D {
     gib.vrx = (rand() - 0.5) * 18;
     gib.vry = (rand() - 0.5) * 18;
     gib.vrz = (rand() - 0.5) * 18;
-    gib.scale = kind === "tooth" ? 0.22 + rand() * 0.12 : shard ? 0.6 + rand() * 0.6 : kind === "brain" ? 0.45 + rand() * 0.55 : 0.3 + rand() * 0.6;
-    gib.stretch = kind === "tooth" ? 1 : 0.7 + rand() * 0.9;
+    gib.scale = kind === "tooth" ? 0.22 + rand() * 0.12 : shard ? 0.6 + rand() * 0.6 : eye ? EYEBALL_SCALE : kind === "brain" ? 0.45 + rand() * 0.55 : 0.3 + rand() * 0.6;
+    gib.stretch = kind === "tooth" || eye ? 1 : 0.7 + rand() * 0.9;
     gib.bounces = 0;
     gib.stained = false;
     this.writeDebrisMatrix(mesh, index, gib);
@@ -2061,8 +2085,8 @@ export class Effects3D {
   }
 
   /** A free place in a pool, looking from the next in turn; with none free, the oldest piece's. */
-  private debrisSlot(pool: readonly Gib[], shard: boolean): number {
-    const start = shard ? this.shardIndex : this.gibIndex;
+  private debrisSlot(pool: readonly Gib[]): number {
+    const start = pool === this.shards ? this.shardIndex : pool === this.eyeballs ? this.eyeballIndex : this.gibIndex;
     let slot = start % pool.length;
     for (let step = 0; step < pool.length; step += 1) {
       const index = (start + step) % pool.length;
@@ -2072,7 +2096,8 @@ export class Effects3D {
       }
       if (pool[index]!.born < pool[slot]!.born) slot = index;
     }
-    if (shard) this.shardIndex = slot + 1;
+    if (pool === this.shards) this.shardIndex = slot + 1;
+    else if (pool === this.eyeballs) this.eyeballIndex = slot + 1;
     else this.gibIndex = slot + 1;
     return slot;
   }
@@ -2129,9 +2154,11 @@ export class Effects3D {
       gib.ry += gib.vry * dt;
       gib.rz += gib.vrz * dt;
       this.confineGib(gib);
-      if (gib.y <= CANVAS_TOP + 0.015) {
-        gib.y = CANVAS_TOP + 0.015;
-        if (!gib.stained && this.bloodLevel === "full" && gib.kind !== "tooth") {
+      // An eyeball rolls on the canvas on its own radius; anything else lies flat on it.
+      const floor = CANVAS_TOP + (gib.kind === "eye" ? EYE_RADIUS * EYEBALL_SCALE : 0.015);
+      if (gib.y <= floor) {
+        gib.y = floor;
+        if (!gib.stained && this.bloodLevel === "full" && gib.kind !== "tooth" && gib.kind !== "eye") {
           gib.stained = true;
           this.placeDecal(gib.x, gib.z, 0.24 + gib.scale * 0.16, 0.14 + gib.scale * 0.1, gib.rz, 0.55, 0x620a10);
         }
@@ -2321,6 +2348,7 @@ export class Effects3D {
     this.updateEyes(step);
     this.updateDebris(this.gibs, this.gibMesh, step);
     this.updateDebris(this.shards, this.shardMesh, step);
+    this.updateDebris(this.eyeballs, this.eyeballMesh, step);
 
     const live = this.liveDroplets;
     let retired = false;
@@ -2411,7 +2439,7 @@ export class Effects3D {
 
   /** Clears the debris on the canvas, or only what `owner`'s finisher threw. */
   private clearGibs(owner?: number): void {
-    for (const [pool, mesh] of [[this.gibs, this.gibMesh], [this.shards, this.shardMesh]] as const) {
+    for (const [pool, mesh] of [[this.gibs, this.gibMesh], [this.shards, this.shardMesh], [this.eyeballs, this.eyeballMesh]] as const) {
       let changed = false;
       for (const [index, gib] of pool.entries()) {
         if (!gib.alive || (owner !== undefined && gib.owner !== owner)) continue;
@@ -2458,6 +2486,7 @@ export class Effects3D {
     this.scene.remove(this.mistPoints);
     this.scene.remove(this.gibMesh);
     this.scene.remove(this.shardMesh);
+    this.scene.remove(this.eyeballMesh);
     this.dropletMesh.dispose();
     this.dropletGeometry.dispose();
     this.dropletMaterial.dispose();
@@ -2474,6 +2503,7 @@ export class Effects3D {
     this.gibGeometry.dispose();
     this.gibMaterial.dispose();
     this.shardMesh.dispose();
+    this.eyeballMesh.dispose();
     this.shardGeometry.dispose();
     this.shardMaterial.dispose();
     this.jawMaterial.dispose();

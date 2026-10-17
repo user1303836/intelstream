@@ -1954,7 +1954,8 @@ export class FightRenderer {
       const graph = graphs[index]!;
       if (injury === "head_burst") graph.boxer.setHeadBurst(true);
       else graph.boxer.setDecapitated(injury === "decapitation");
-      graph.boxer.headInjury.setEyeOut(injury === "eye_left" ? "left" : injury === "eye_right" ? "right" : null);
+      // One eye hangs on its nerve and the other pops clean out, so both sockets are empty.
+      graph.boxer.headInjury.setEyeOut(injury === "eye_left" || injury === "eye_right" ? "both" : null);
       graph.boxer.setHandDismembered("left", injury === "dismember_left");
       graph.boxer.setHandDismembered("right", injury === "dismember_right");
       const dislocation: ArcadeDislocation | null = injury === "jaw_dislocation"

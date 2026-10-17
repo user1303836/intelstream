@@ -516,20 +516,20 @@ export class InjuryShading {
     if (rightLid!.y > -500) rightLid!.w = THREE.MathUtils.clamp(right, 0, 1) || 0;
   }
 
-  /** Hollows a socket whose eye has been forced out: `side` is the fighter's own. */
-  setEyeOut(side: "left" | "right" | null): void {
+  /** Hollows a socket whose eye has been forced out, or both: `side` is the fighter's own. */
+  setEyeOut(side: "left" | "right" | "both" | null): void {
     const lids = this.uniforms.uInjuryLid.value;
-    const left = side === "left" && lids[0]!.y > -500;
-    const right = side === "right" && lids[1]!.y > -500;
+    const left = (side === "left" || side === "both") && lids[0]!.y > -500;
+    const right = (side === "right" || side === "both") && lids[1]!.y > -500;
     this.uniforms.uInjuryEyeOut.value.set(left ? 1 : 0, right ? 1 : 0);
     // The empty socket runs with blood down the cheek.
     if (this.index.has("leftEye")) this.set("leftEye", { blood: left ? 1.3 : 0 });
     if (this.index.has("rightEye")) this.set("rightEye", { blood: right ? 1.3 : 0 });
   }
 
-  get eyeOut(): "left" | "right" | null {
+  get eyeOut(): "left" | "right" | "both" | null {
     const out = this.uniforms.uInjuryEyeOut.value;
-    return out.x > 0 ? "left" : out.y > 0 ? "right" : null;
+    return out.x > 0 && out.y > 0 ? "both" : out.x > 0 ? "left" : out.y > 0 ? "right" : null;
   }
 
   get eyesShut(): readonly [number, number] {

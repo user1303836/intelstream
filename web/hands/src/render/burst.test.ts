@@ -169,14 +169,15 @@ describe("a head that bursts", () => {
     const full = burst("full");
     expect(full.headBurst(1)).toBe(true);
     expect(full.headBurst(0)).toBe(false);
-    expect(full.debrisCount("shard")).toBe(24);
-    expect(full.debrisCount("brain")).toBe(24);
-    expect(full.debrisCount("tooth")).toBe(10);
-    expect(full.liveBloodParticles).toBeGreaterThan(450);
+    expect(full.debrisCount("shard")).toBe(36);
+    expect(full.debrisCount("brain")).toBe(40);
+    expect(full.debrisCount("tooth")).toBe(16);
+    expect(full.debrisCount("eye")).toBe(2);
+    expect(full.liveBloodParticles).toBeGreaterThan(1100);
     // At once it shakes the camera as hard as the hardest punch can.
     expect(full.shakeAmount).toBeGreaterThanOrEqual(0.14);
     full.burstHead(1, new THREE.Vector3(0.4, 1.6, 0), -1, 21);
-    expect(full.debrisCount("shard")).toBe(24);
+    expect(full.debrisCount("shard")).toBe(36);
     full.restoreFighter(1);
     expect(full.headBurst(1)).toBe(false);
     full.dispose();
@@ -186,23 +187,26 @@ describe("a head that bursts", () => {
     reduced.dispose();
   });
 
-  it("leaves skull, brain, teeth and flesh lying where they land for the rest of the bout", () => {
+  it("leaves skull, brain, teeth, eyeballs and flesh lying where they land for the rest of the bout", () => {
     const scene = new THREE.Scene();
     const effects = new Effects3D(scene, 256);
     effects.burstHead(0, new THREE.Vector3(0, 1.6, 0), 1, 5);
     effects.decapitate(1, new THREE.Vector3(1, 1.6, 0), new THREE.Quaternion(), -1, 6);
     // Half a minute on, through the replay and the result card, all of it is still there.
     for (let frame = 0; frame < 60 * 30; frame += 1) effects.update(1 / 60);
-    expect(effects.debrisCount("shard")).toBe(24);
-    expect(effects.debrisCount("brain")).toBe(24);
-    expect(effects.debrisCount("tooth")).toBe(10);
-    expect(effects.debrisCount("flesh")).toBe(36);
+    expect(effects.debrisCount("shard")).toBe(36);
+    expect(effects.debrisCount("brain")).toBe(40);
+    expect(effects.debrisCount("tooth")).toBe(16);
+    expect(effects.debrisCount("eye")).toBe(2);
+    expect(effects.debrisCount("flesh")).toBe(60);
     const matrix = new THREE.Matrix4();
     const at = new THREE.Vector3();
+    const eyeballs = (effects as unknown as { eyeballMesh: THREE.InstancedMesh }).eyeballMesh;
     for (const mesh of scene.children.filter((child): child is THREE.InstancedMesh => child instanceof THREE.InstancedMesh && child !== effects.dropletMesh)) {
       for (let index = 0; index < mesh.count; index += 1) {
         mesh.getMatrixAt(index, matrix);
-        if (at.setFromMatrixPosition(matrix).y > -10) expect(at.y).toBeCloseTo(CANVAS_TOP + 0.015, 6);
+        // An eyeball rests on its own radius, drawn bigger than the eye it was.
+        if (at.setFromMatrixPosition(matrix).y > -10) expect(at.y).toBeCloseTo(CANVAS_TOP + (mesh === eyeballs ? 0.012 * 1.8 : 0.015), 6);
       }
       // Lying still, it is not sent to the graphics card again.
       const version = mesh.instanceMatrix.version;
@@ -213,7 +217,8 @@ describe("a head that bursts", () => {
     effects.restoreFighter(0);
     expect(effects.debrisCount("shard")).toBe(0);
     expect(effects.debrisCount("brain")).toBe(0);
-    expect(effects.debrisCount("flesh")).toBe(36);
+    expect(effects.debrisCount("eye")).toBe(0);
+    expect(effects.debrisCount("flesh")).toBe(60);
     effects.clearDynamic();
     expect(effects.debrisCount("flesh")).toBe(0);
     effects.dispose();
