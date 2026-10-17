@@ -173,6 +173,8 @@ describe("a head that bursts", () => {
     expect(full.debrisCount("brain")).toBe(24);
     expect(full.debrisCount("tooth")).toBe(10);
     expect(full.liveBloodParticles).toBeGreaterThan(450);
+    // At once it shakes the camera as hard as the hardest punch can.
+    expect(full.shakeAmount).toBeGreaterThanOrEqual(0.14);
     full.burstHead(1, new THREE.Vector3(0.4, 1.6, 0), -1, 21);
     expect(full.debrisCount("shard")).toBe(24);
     full.restoreFighter(1);

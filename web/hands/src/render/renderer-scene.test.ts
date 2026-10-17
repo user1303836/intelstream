@@ -315,6 +315,19 @@ describe("blood on the canvas", () => {
     expect(anchorGush.mock.calls.every((call) => call[0] === 1)).toBe(true);
   });
 
+  it("keeps a torn shoulder pouring from the shoulder, not from his mouth", () => {
+    const anchorGush = vi.fn();
+    const { run, graphs } = frame(fighting({}, { is_downed: true }, { phase: "knockdown" }), {
+      arcadeInjuries: [null, "shoulder_right"],
+      effects: { drip: vi.fn(), stopDrip: vi.fn(), pool: vi.fn(), update: vi.fn(), shakeAmount: 0, setViewDistance: vi.fn(), gushing: (index: number) => index === 1, anchorGush },
+    });
+    graphs[1]!.boxer.rig.bones.shoulderR.position.set(-0.7, 0.25, 0.3);
+    run(2);
+    const [index, at] = anchorGush.mock.calls.at(-1)! as [number, THREE.Vector3];
+    expect(index).toBe(1);
+    expect(at.toArray()).toEqual([-0.7, 0.25, 0.3]);
+  });
+
   it("drips from under the chin of the head as it is drawn: seated on his stool, not at standing height over his spot", () => {
     const root = new THREE.Object3D();
     const head = new THREE.Bone();
