@@ -150,11 +150,19 @@ export class LensBlood {
       const y = (drop.y + drop.ran) * height;
       ctx.globalAlpha = drop.alpha * fade;
       if (drop.ran > 0) {
-        // The trail a running drop leaves on the glass.
-        ctx.globalAlpha = drop.alpha * fade * 0.55;
-        ctx.fillStyle = "rgb(88,0,6)";
-        ctx.fillRect(x - radius * 0.22, drop.y * height, radius * 0.44, drop.ran * height);
-        ctx.globalAlpha = drop.alpha * fade;
+        // The trail a running drop leaves on the glass, thinning and fading back up to where it landed.
+        const top = drop.y * height;
+        const trail = ctx.createLinearGradient(0, top, 0, y);
+        trail.addColorStop(0, "rgba(88,0,6,0)");
+        trail.addColorStop(1, "rgba(88,0,6,0.6)");
+        ctx.fillStyle = trail;
+        ctx.beginPath();
+        ctx.moveTo(x - radius * 0.06, top);
+        ctx.lineTo(x + radius * 0.06, top);
+        ctx.lineTo(x + radius * 0.28, y);
+        ctx.lineTo(x - radius * 0.28, y);
+        ctx.closePath();
+        ctx.fill();
       }
       ctx.save();
       ctx.translate(x, y);

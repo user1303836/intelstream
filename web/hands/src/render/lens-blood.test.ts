@@ -18,7 +18,12 @@ function recording(): { ctx: CanvasRenderingContext2D; drawn: { x: number; y: nu
     translate: (x: number, y: number) => { at = { x: at.x + x, y: at.y + y }; },
     rotate: () => {},
     setTransform: () => { record.resets += 1; },
-    fillRect: () => {},
+    createLinearGradient: () => ({ addColorStop: () => {} }),
+    beginPath: () => {},
+    moveTo: () => {},
+    lineTo: () => {},
+    closePath: () => {},
+    fill: () => {},
     drawImage(this: { globalAlpha: number }, _image: unknown, x: number, _y: number, width: number) { drawn.push({ x: at.x, y: at.y, size: width, alpha: this.globalAlpha }); },
   } as unknown as CanvasRenderingContext2D;
   return record;
