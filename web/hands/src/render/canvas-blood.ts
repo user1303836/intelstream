@@ -115,8 +115,12 @@ export class CanvasBlood {
   private readonly material: THREE.MeshStandardMaterial;
   private readonly geometry: THREE.PlaneGeometry;
   private readonly stamps: HTMLCanvasElement[] = [];
-  private readonly scratch: HTMLCanvasElement;
-  private readonly scratchContext: CanvasRenderingContext2D | null;
+  /**
+   * The stamps already tinted in each colour blood is painted in, made the first time a colour is used, so a
+   * stain is one draw: tinting a scratch copy for every stain flushed it to the graphics card each time, which
+   * at thousands of stains a second cost more than the rest of the gore.
+   */
+  private readonly tinted = new Map<number, HTMLCanvasElement[]>();
   private readonly pixelsPerMetre: number;
   private dirty = false;
   private sinceUpload = 0;
@@ -129,10 +133,6 @@ export class CanvasBlood {
     this.canvas.height = size;
     this.context = this.canvas.getContext("2d");
     this.context?.clearRect(0, 0, size, size);
-    this.scratch = document.createElement("canvas");
-    this.scratch.width = STAMP_SIZE;
-    this.scratch.height = STAMP_SIZE;
-    this.scratchContext = this.scratch.getContext("2d");
     for (let index = 0; index < STAMP_COUNT; index += 1) this.stamps.push(splatStamp(0x3a1f_00d1 + index * 977));
     this.pixelsPerMetre = size / (RING_FIGHT_HALF * 2);
     this.texture = new THREE.CanvasTexture(this.canvas);
@@ -190,17 +190,11 @@ export class CanvasBlood {
   stain(x: number, z: number, width: number, depth: number, rotation: number, opacity: number, color: number, stamp = this.painted): void {
     if (!Number.isFinite(x) || !Number.isFinite(z) || Math.abs(x) > RING_FIGHT_HALF || Math.abs(z) > RING_FIGHT_HALF) return;
     const ctx = this.context;
-    const tint = this.scratchContext;
     this.painted += 1;
     this.dirty = true;
     this.mesh.visible = true;
-    if (ctx === null || tint === null) return;
-    tint.globalCompositeOperation = "copy";
-    tint.drawImage(this.stamps[Math.abs(Math.trunc(stamp)) % STAMP_COUNT]!, 0, 0);
-    tint.globalCompositeOperation = "source-in";
-    tint.fillStyle = css(color);
-    tint.fillRect(0, 0, STAMP_SIZE, STAMP_SIZE);
-    tint.globalCompositeOperation = "source-over";
+    if (ctx === null) return;
+    const image = this.tintedStamp(color, stamp);
     const at = this.pixel(x, z);
     const w = Math.max(1, width * this.pixelsPerMetre);
     const h = Math.max(1, depth * this.pixelsPerMetre);
@@ -209,8 +203,29 @@ export class CanvasBlood {
     ctx.globalAlpha = THREE.MathUtils.clamp(opacity, 0, 1);
     ctx.translate(at.x, at.y);
     ctx.rotate(Number.isFinite(rotation) ? rotation : 0);
-    ctx.drawImage(this.scratch, -w / 2, -h / 2, w, h);
+    ctx.drawImage(image, -w / 2, -h / 2, w, h);
     ctx.restore();
+  }
+
+  private tintedStamp(color: number, stamp: number): HTMLCanvasElement {
+    let stamps = this.tinted.get(color);
+    if (stamps === undefined) {
+      stamps = this.stamps.map((source) => {
+        const canvas = document.createElement("canvas");
+        canvas.width = STAMP_SIZE;
+        canvas.height = STAMP_SIZE;
+        const tint = canvas.getContext("2d");
+        if (tint !== null) {
+          tint.drawImage(source, 0, 0);
+          tint.globalCompositeOperation = "source-in";
+          tint.fillStyle = css(color);
+          tint.fillRect(0, 0, STAMP_SIZE, STAMP_SIZE);
+        }
+        return canvas;
+      });
+      this.tinted.set(color, stamps);
+    }
+    return stamps[Math.abs(Math.trunc(stamp)) % STAMP_COUNT]!;
   }
 
   /** A pool spreading from under a fighter: a ragged edge round a dark, thick middle, `radius` metres across. */

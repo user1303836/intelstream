@@ -287,6 +287,25 @@ describe("blood on the canvas", () => {
     blood.dispose();
   });
 
+  it("paints each stain in one draw, from stamps tinted once for each colour", () => {
+    // The test canvas hands every canvas the same recording context.
+    const shared = document.createElement("canvas").getContext("2d") as unknown as { drawImage: ReturnType<typeof vi.fn>; fillRect: ReturnType<typeof vi.fn> };
+    const blood = new CanvasBlood(new THREE.Scene(), 256);
+    const draws = (): number => shared.drawImage.mock.calls.length;
+    const fills = (): number => shared.fillRect.mock.calls.length;
+    blood.stain(0, 0, 0.2, 0.2, 0, 0.8, 0x6e0d13);
+    const [drawn, filled] = [draws(), fills()];
+    blood.stain(0.2, 0, 0.2, 0.2, 0, 0.8, 0x6e0d13, 1);
+    blood.stain(0.4, 0, 0.2, 0.2, 0, 0.8, 0x6e0d13, 2);
+    expect(draws() - drawn).toBe(2);
+    expect(fills() - filled).toBe(0);
+    // A new colour tints its four stamps once.
+    blood.stain(0, 0.2, 0.2, 0.2, 0, 0.8, 0x4c070b);
+    expect(draws() - drawn).toBe(2 + 4 + 1);
+    expect(fills() - filled).toBe(4);
+    blood.dispose();
+  });
+
   it("keeps every stain for the bout, where the old decals recycled after 48", () => {
     const blood = new CanvasBlood(new THREE.Scene());
     for (let index = 0; index < 500; index += 1) blood.stain((index % 50) * 0.1 - 2.5, 0.3, 0.1, 0.08, index, 0.6, 0x6e0d13);
