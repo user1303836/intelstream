@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { GLTFLoader, type GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
-import { GLOVE_HITBOX_RADIUS, GUARD_BLOCK_MINIMUM, HURTBOXES, RECOVERY_SPEED_PERCENT, cancelsRecovery, punchTiming, recoveryCancelAge, totalTicks, type PunchTiming } from "../manifest";
+import { EVASION_TICKS, GLOVE_HITBOX_RADIUS, GUARD_BLOCK_MINIMUM, HURTBOXES, RECOVERY_SPEED_PERCENT, TICK_RATE, cancelsRecovery, punchTiming, recoveryCancelAge, totalTicks, type PunchTiming } from "../manifest";
 import type { BloodLevel } from "../settings";
 import type { CombatEvent, FighterSnapshot, Hand, Power, PunchAction, PunchClass, SemanticAction, Target } from "../types";
 import { FIGHTER_GLB_GZIP_BASE64 } from "../assets/fighter-glb";
@@ -1542,15 +1542,15 @@ export class BoxingGraph {
     this.tired = smooth(this.tired, clamp((0.55 - stamina) / 0.5, 0, 1), 2, dt);
     this.stunAmount = smooth(this.stunAmount, Math.min(1, fighter.stunned_ticks / 24), 8, dt);
     const defending = fighter.defense;
-    this.guardHigh = smooth(this.guardHigh, defending === "guard_high" ? 1 : 0, 14, dt);
-    this.guardLow = smooth(this.guardLow, defending === "guard_low" ? 1 : 0, 14, dt);
+    this.guardHigh = smooth(this.guardHigh, defending === "guard_high" ? 1 : 0, DEFENCE_RATE, dt);
+    this.guardLow = smooth(this.guardLow, defending === "guard_low" ? 1 : 0, DEFENCE_RATE, dt);
     this.guardSpent = smooth(this.guardSpent, fighter.guard < GUARD_BLOCK_MINIMUM ? 1 : 0, 10, dt);
     const slipTarget = defending === "slip_left" ? 1 : defending === "slip_right" ? -1 : 0;
-    this.slip = smooth(this.slip, slipTarget, 16, dt);
+    this.slip = smooth(this.slip, slipTarget, DEFENCE_RATE, dt);
     const weaving = defending === "weave";
     this.weaveTime = weaving ? this.weaveTime + dt : 0;
-    this.weave = smooth(this.weave, weaving ? 1 : 0, 14, dt);
-    this.pull = smooth(this.pull, defending === "pull" ? 1 : 0, 14, dt);
+    this.weave = smooth(this.weave, weaving ? 1 : 0, DEFENCE_RATE, dt);
+    this.pull = smooth(this.pull, defending === "pull" ? 1 : 0, DEFENCE_RATE, dt);
     this.clinchWeight = smooth(this.clinchWeight, fighter.clinch_ticks > 0 || fighter.clinch_startup_ticks > 0 ? 1 : 0, 10, dt);
     this.foulWeight = smooth(this.foulWeight, fighter.is_foul_recovery_target ? 1 : 0, 8, dt);
     this.tauntWeight = smooth(this.tauntWeight, fighter.taunt_ticks > 0 ? 1 : 0, 10, dt);
@@ -1690,7 +1690,7 @@ export class BoxingGraph {
     }
     if (this.weave > 0.001) {
       const w = this.weave;
-      const phase = clamp(this.weaveTime / 0.42, 0, 1);
+      const phase = clamp(this.weaveTime / WEAVE_SECONDS, 0, 1);
       const arc = Math.sin(phase * Math.PI);
       torso.hips.y -= w * 0.2;
       torso.spinePitch += w * 0.42;
@@ -3654,8 +3654,12 @@ const SAME_STEP_TICKS = 0.5;
 /** Contact events in which a punch met the opponent: a hit or a block, a parry included. */
 const CONNECTING_CONTACTS: ReadonlySet<string> = new Set(["hit", "counter_hit", "block", "perfect_block"]);
 const EVASION_POSES: ReadonlySet<string> = new Set(["slip_left", "slip_right", "weave", "pull"]);
-/** Seconds after an evasion ends for the head to settle back (the slip, weave and pull ease at 14-16 a second). */
-const HEAD_SETTLE_SECONDS = 0.25;
+/** Rate the guards, slips, weaves and pulls ease in and out at: nine tenths of the way in under a sixteenth of a second. */
+const DEFENCE_RATE = 40;
+/** A weave's dip and roll from one side to the other runs as long as the engine's evasion. */
+const WEAVE_SECONDS = EVASION_TICKS / TICK_RATE;
+/** Seconds after an evasion ends for the head to settle back (see DEFENCE_RATE). */
+const HEAD_SETTLE_SECONDS = 0.12;
 /** Rate at which a punch known to connect turns its aim onto the head where it actually is. */
 const FOLLOW_HEAD_RATE = 30;
 /** How far the elbow's pull swings out while it turns from the guard's to the punch's. */

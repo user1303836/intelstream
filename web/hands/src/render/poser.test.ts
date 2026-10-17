@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { FIGHTER_RADIUS, RING_HALF_WIDTH, punchTiming, recoveryCancelAge } from "../manifest";
+import { EVASION_TICKS, FIGHTER_RADIUS, RING_HALF_WIDTH, punchTiming, recoveryCancelAge } from "../manifest";
 import { fighter as baseFighter } from "../test/fixtures";
 import type { FighterSnapshot } from "../types";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, remapPunchAge } from "./graph";
@@ -575,6 +575,31 @@ describe("a spent guard", () => {
     expect(Math.max(opening.left.y, opening.right.y)).toBeLessThan(gloves(80, "guard_high").head.y - 0.15);
     // At the line itself the guard still stops punches, and stays up.
     expect(gloves(GUARD_BLOCK_MINIMUM, "guard_high").left.y).toBeCloseTo(gloves(80, "guard_high").left.y, 3);
+  });
+});
+
+describe("defensive snap", () => {
+  it("raises the guard and goes into a slip nine tenths of the way in four frames, and finishes a weave's dip and rise inside the engine's evasion", () => {
+    const weights = (graph: BoxingGraph): { guardHigh: number; slip: number } => graph as unknown as { guardHigh: number; slip: number };
+    const idle = facingOpponent(baseFighter("one"));
+    for (const [defense, read] of [["guard_high", (graph: BoxingGraph) => weights(graph).guardHigh], ["slip_left", (graph: BoxingGraph) => weights(graph).slip]] as const) {
+      const { graph } = makeGraph();
+      run(graph, idle, opponentFor("two"), 10, undefined);
+      run(graph, { ...idle, defense }, opponentFor("two"), 4, undefined, 10, 10 / 60);
+      expect(read(graph), defense).toBeGreaterThan(0.9);
+    }
+    const { boxer, graph } = makeGraph();
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    const heights: number[] = [];
+    for (let frame = 0; frame < 2 * EVASION_TICKS; frame += 1) {
+      run(graph, { ...idle, defense: "weave" }, opponentFor("two"), 1, undefined, 10 + frame / 2, (20 + frame) / 60);
+      heights.push(bone(boxer, "head").y);
+    }
+    // Lowest halfway through, and coming back up before the engine's evasion is over.
+    const lowest = heights.indexOf(Math.min(...heights));
+    expect(lowest).toBeGreaterThan(EVASION_TICKS / 2);
+    expect(lowest).toBeLessThan(1.5 * EVASION_TICKS);
+    expect(heights.at(-1)! - heights[lowest]!).toBeGreaterThan(0.04);
   });
 });
 
