@@ -104,7 +104,8 @@ const LINES = {
   holdingOn: ["{a} is hurt and holding on!", "{a} grabs on for dear life!", "Smart from {a}, holding on to clear the head."],
   refBreak: ["The referee breaks them.", "The referee steps in to separate them.", "Break! The referee pulls them apart."],
   refHit: ["{a} just tagged the referee!", "Oh no, {a} has caught the referee!", "That one landed on the referee!"],
-  refDown: ["The referee is down! {a} has knocked out the referee!", "Oh my goodness, the referee is out cold!", "{a} has flattened the official! Absolute chaos!"],
+  refDown: ["The referee is down! {a} has killed the referee!", "Oh my goodness, the referee isn't moving! I think he's dead!", "{a} has flattened the official for good! Absolute chaos!"],
+  refBledOut: ["The referee has collapsed! He's bled out right there in the ring!", "The referee goes down! He's lost too much blood!"],
   noRef: ["Nobody left to break them up!", "No referee to part them, so they just let go."],
   taunt: ["{a} drops the hands and invites {b} in!", "Showboating from {a}! The crowd loves it.", "{a} is taunting {b} now!", "{a} sticks the chin out. Come and get it!"],
   lowBlow: ["Low blow from {a}! The referee steps in.", "That's below the belt! {b} is doubled over.", "{a} goes low, and the referee calls time."],
@@ -147,11 +148,11 @@ const COUNTDOWN_ONLY: ReadonlySet<MatchPhase> = new Set<MatchPhase>(["countdown"
 /** The bell is called as it rings, or straight after the line on screen, or not at all: seconds late reads as a mistake. */
 const BELL_FRESH_SECONDS = 3.2;
 
-const URGENT: ReadonlySet<LineKey> = new Set<LineKey>(["knockdown", "knockdownAgain", "knockdownCounter", "knockdownBody", "bodyCollapse", "upLate", "upEarly", "hurt", "hurtBadly", "lowBlow", "headbutt", "deduction", "ko", "flashKo", "tko", "disqualified", "forfeit", "replay", "refDown", "savedByBell", "finalBell", "roundEnd", "roundStart"]);
+const URGENT: ReadonlySet<LineKey> = new Set<LineKey>(["knockdown", "knockdownAgain", "knockdownCounter", "knockdownBody", "bodyCollapse", "upLate", "upEarly", "hurt", "hurtBadly", "lowBlow", "headbutt", "deduction", "ko", "flashKo", "tko", "disqualified", "forfeit", "replay", "refDown", "refBledOut", "savedByBell", "finalBell", "roundEnd", "roundStart"]);
 
 /** Knockdowns over hurt fighters over big counters over cuts over combinations over colour. */
 const PRIORITY: Readonly<Record<LineKey, number>> = {
-  ko: 98, flashKo: 98, tko: 98, disqualified: 98, forfeit: 98, refDown: 97, refHit: 72,
+  ko: 98, flashKo: 98, tko: 98, disqualified: 98, forfeit: 98, refDown: 97, refBledOut: 97, refHit: 72,
   knockdown: 95, knockdownAgain: 95, knockdownCounter: 95, knockdownBody: 95, bodyCollapse: 86, upLate: 90, upEarly: 90, replay: 88,
   deduction: 84, lowBlow: 82, headbutt: 82, hurt: 80, box: 78, hurtBadly: 80, holdingOn: 76, savedByBell: 74, finalBell: 72, struggle: 70,
   guardBreak: 65, eyeShut: 62, counter: 60, parried: 58, bigShot: 55, roundEnd: 52, cut: 50, cutWorse: 50, summary: 50, cutGushing: 48, eyeSwelling: 48,
@@ -625,7 +626,8 @@ export class CommentaryDirector {
         this.say("refHit", event.event_id, now, names, moment, REACTION_SECONDS, undefined, actor);
         return;
       case "referee_down":
-        this.say("refDown", event.event_id, now, names, moment);
+        // No punch put him down when he bleeds to death.
+        this.say(event.action_id === null ? "refBledOut" : "refDown", event.event_id, now, names, moment);
         return;
       case "clinch_break":
         this.say("noRef", event.event_id, now, names, null, REACTION_SECONDS);

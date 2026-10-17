@@ -138,7 +138,7 @@ describe("the renderer's referee", () => {
     fire(renderer, 50);
     expect(knockOut).toHaveBeenCalledTimes(1);
     expect(addEvent.mock.calls[0]![0]).toMatchObject({ kind: "knockdown" });
-    expect(renderer.eventCallout).toMatchObject({ text: "THE REFEREE IS DOWN!" });
+    expect(renderer.eventCallout).toMatchObject({ text: "THE REFEREE IS DEAD!" });
     expect(renderer.refereeReplayAt).toMatchObject({ impact: down });
     expect((renderer.refereeReplayAt as { at: number }).at).toBeGreaterThan(10);
   });
@@ -166,9 +166,14 @@ describe("the commentary on the referee", () => {
     return lines;
   };
 
-  it("calls a punch on the referee, and calls his fall above everything", () => {
+  it("calls a punch on the referee, and calls his death above everything", () => {
     expect(said([event("referee_hit", 40)]).some((text) => /referee/u.test(text))).toBe(true);
-    expect(said([event("referee_down", 40)])[0]).toMatch(/referee|official/u);
+    expect(said([event("referee_down", 40)])[0]).toMatch(/killed|dead|for good/u);
+  });
+
+  it("says the referee bled out when no punch put him down", () => {
+    expect(said([event("referee_down", 40, { action_id: null, amount: 0, detail: "" })])[0]).toMatch(/bled out|blood/u);
+    expect(said([event("referee_down", 40)])[0]).not.toMatch(/bled out|blood/u);
   });
 
   it("notices nobody is left to break a clinch", () => {

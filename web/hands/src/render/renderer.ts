@@ -1811,7 +1811,7 @@ export class FightRenderer {
       const live = this.buffer.latest();
       if (event.kind === "referee_down") {
         if (live !== null) this.fireRefereeFall(event, live);
-        this.eventCallout = { text: "THE REFEREE IS DOWN!", until: this.frameSeconds + REFEREE_DOWN_CALLOUT_SECONDS };
+        this.eventCallout = { text: "THE REFEREE IS DEAD!", until: this.frameSeconds + REFEREE_DOWN_CALLOUT_SECONDS };
         this.refereeReplayAt = { at: this.frameSeconds + REFEREE_REPLAY_DELAY_SECONDS, impact: event };
       } else if (event.kind === "referee_hit") {
         if (live !== null) this.punchReferee(event, live, false);
