@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { GLTFLoader, type GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
-import { GLOVE_HITBOX_RADIUS, GUARD_BLOCK_MINIMUM, HURTBOXES, cancelsRecovery, punchTiming, recoveryCancelAge, totalTicks, type PunchTiming } from "../manifest";
+import { GLOVE_HITBOX_RADIUS, GUARD_BLOCK_MINIMUM, HURTBOXES, RECOVERY_SPEED_PERCENT, cancelsRecovery, punchTiming, recoveryCancelAge, totalTicks, type PunchTiming } from "../manifest";
 import type { BloodLevel } from "../settings";
 import type { CombatEvent, FighterSnapshot, Hand, Power, PunchAction, PunchClass, SemanticAction, Target } from "../types";
 import { FIGHTER_GLB_GZIP_BASE64 } from "../assets/fighter-glb";
@@ -588,6 +588,8 @@ export class BoxingGraph {
   private ownRefused = false;
   /** The own punch had reached its contact without the server's word, which then refused it or never came: it goes back at once. */
   private ownCut = false;
+  /** A slip, weave or pull pressed during the own punch cuts its recovery short once it has landed or missed. */
+  private recoveryCut = false;
   /** A press made during a punch: the server holds it until that punch lets it go, and so does the graph. */
   private ownQueued: OwnPress | null = null;
   /** This fighter's newest punch the server reported meeting the opponent, and whether it was parried. */
@@ -1085,6 +1087,31 @@ export class BoxingGraph {
   }
 
   /**
+   * The share of his footwork the server gives the player's fighter, for input sent now, while his own punch plays on the
+   * press's time: none through its startup and active ticks, the recovery's share while it recovers, all of it once an
+   * evasion has cut the recovery short or the server is known not to have thrown it.
+   */
+  get ownFootwork(): number {
+    if (!this.punchActive || this.ownActionId === null || !this.ownPress || this.ownPulled || this.ownCut) return 1;
+    if (this.punchAgeTicks < this.punchTiming.startup + this.punchTiming.active) return 0;
+    return this.recoveryCut ? 1 : RECOVERY_SPEED_PERCENT / 100;
+  }
+
+  /** Ticks until the player's own punch has landed or missed, when the server lets an evasion cut its recovery short. */
+  get ownTicksToRecovery(): number {
+    return Math.max(0, this.punchTiming.startup + this.punchTiming.active - this.punchAgeTicks);
+  }
+
+  /**
+   * A slip, weave or pull was pressed during the player's own punch: from the end of its active ticks the server ends the
+   * punch for it, so the glove goes straight back to the guard, and the press it held for later is gone, replaced.
+   */
+  cutOwnRecovery(): void {
+    if (this.ownPunchActive) this.recoveryCut = true;
+    this.ownQueued = null;
+  }
+
+  /**
    * Squares the viewer's own punches with the newest snapshot, which is ahead of the one on screen by
    * the interpolation delay. `sequenceOf` gives the input frame that carried a press once it has gone
    * out. Once the snapshot has that frame, the punch has started on the server or never will: a guard
@@ -1243,6 +1270,7 @@ export class BoxingGraph {
     this.ownStarted = false;
     this.ownRefused = false;
     this.ownCut = false;
+    this.recoveryCut = false;
   }
 
   landedHit(blocked: boolean): void {
@@ -2048,7 +2076,8 @@ export class BoxingGraph {
     } else if (this.punchActive) {
       const recovery = this.punchTiming.startup + this.punchTiming.active;
       if (this.ownCut && this.punchAgeTicks < recovery) this.punchAgeTicks = recovery;
-      this.punchAgeTicks += simDt * 30 * (this.ownCut ? OWN_PUNCH_CUT_RATE : this.ownPunchRate());
+      const cut = this.ownCut || (this.recoveryCut && this.punchAgeTicks >= recovery);
+      this.punchAgeTicks += simDt * 30 * (cut ? OWN_PUNCH_CUT_RATE : this.ownPunchRate());
       if (this.punchAgeTicks >= this.punchTotalTicks) {
         this.retirePunch();
         ended = true;

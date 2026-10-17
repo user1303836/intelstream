@@ -10,7 +10,7 @@ change that the client does not follow fails on one side or the other:
   conditioning and body trauma near the fatigue steps;
 - style-timing-table.json: the same, with the stamina price, for every other style;
 - movement-traces.json: what the engine sent, tick by tick, while a fighter holding a direction
-  was parried, flinched mid-punch or finished a punch.
+  was parried, flinched mid-punch, finished a punch, slipped, or slipped out of a punch's recovery.
 
     uv run python scripts/hands_parity_fixtures.py          # rewrite the files
     uv run python scripts/hands_parity_fixtures.py --check  # fail if they are out of date
@@ -27,10 +27,12 @@ from intelstream.hands.engine import BoxingEngine, EngineConfig
 from intelstream.hands.protocol import encode_snapshot
 from intelstream.hands.rules import PUNCH_RULES, STYLE_RULES, style_punch_rule
 from intelstream.hands.types import (
+    ActionKind,
     DefensivePose,
     FighterStyle,
     Hand,
     InputCommand,
+    MovementAction,
     Power,
     PunchAction,
     PunchClass,
@@ -169,10 +171,30 @@ def movement_traces() -> dict[str, list[dict[str, Any]]]:
             return {}
         return {"one": InputCommand(tick, tick, back.move_x, back.move_y, actions=(jab,))}
 
+    slip = MovementAction(ActionKind.SLIP_LEFT)
+    slipped = _engine((FighterStyle.BALANCED, FighterStyle.BALANCED), 300, centre)
+
+    def slip_away(tick: int) -> dict[str, InputCommand]:
+        if tick != 1:
+            return {}
+        return {"one": InputCommand(tick, tick, back.move_x, back.move_y, actions=(slip,))}
+
+    cut = _engine((FighterStyle.BALANCED, FighterStyle.BALANCED), 300, centre)
+    missed = PunchAction(Hand.RIGHT, PunchClass.STRAIGHT, Target.HEAD, Power.NORMAL)
+
+    def slip_out(tick: int) -> dict[str, InputCommand]:
+        # The straight misses, he walks out of its recovery, and the slip cuts the rest of it short.
+        action = {1: missed, 9: slip}.get(tick)
+        if action is None:
+            return {}
+        return {"one": InputCommand(tick, tick, back.move_x, back.move_y, actions=(action,))}
+
     return {
         "parried while holding back": _trace(parried, back, parry),
         "flinched mid-hook while holding back": _trace(flinched, back, counter),
         "a jab thrown holding back": _trace(finished, back, alone),
+        "a slip thrown holding back": _trace(slipped, back, slip_away),
+        "slipped out of a straight's recovery while holding back": _trace(cut, back, slip_out),
     }
 
 

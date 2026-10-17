@@ -743,6 +743,48 @@ describe("own punch prediction", () => {
     }
   });
 
+  it("tells the footwork its own punch allows on the press's time: none to the end of its active ticks, the recovery's share, then all", () => {
+    const { graph } = makeGraph();
+    const idle = facingOpponent(baseFighter("one"));
+    const timing = punchTiming("straight", "head", "normal");
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    graph.predict({ ...jab, class: "straight", hand: "right" }, 0, 30, 6);
+    const shares: number[] = [];
+    let tick = 100;
+    for (let frame = 0; frame < 2 * (timing.startup + timing.active + timing.recovery) + 2; frame += 1) {
+      shares.push(graph.ownFootwork);
+      tick = run(graph, idle, opponentFor("two"), 1, undefined, tick, tick / 30);
+    }
+    const recovery = 2 * (timing.startup + timing.active);
+    expect(shares.slice(0, recovery)).toEqual(Array.from({ length: recovery }, () => 0));
+    expect(shares.slice(recovery, 2 * (timing.startup + timing.active + timing.recovery))).toEqual(Array.from({ length: 2 * timing.recovery }, () => 0.6));
+    expect(shares.at(-1)).toBe(1);
+  });
+
+  it("goes straight back to the guard with the feet free once a slip pressed during it cuts the recovery short, and drops the press it held", () => {
+    const { graph } = makeGraph();
+    const idle = facingOpponent(baseFighter("one"));
+    const timing = punchTiming("straight", "head", "normal");
+    run(graph, idle, opponentFor("two"), 10, undefined);
+    graph.predict({ ...jab, class: "straight", hand: "right" }, 0, 30, 6);
+    let tick = run(graph, idle, opponentFor("two"), 4, undefined, 100);
+    graph.predict({ ...jab, id: "own-hook", class: "hook" }, tick / 30, 30, 6);
+    expect(graph.ownTicksToRecovery).toBeCloseTo(timing.startup + timing.active - 2, 5);
+    graph.cutOwnRecovery();
+    // Still held through the active ticks: the server holds the slip until the straight has landed or missed.
+    expect(graph.ownFootwork).toBe(0);
+    let frames = 4;
+    while (active(graph) && frames < 200) {
+      tick = run(graph, idle, opponentFor("two"), 1, undefined, tick, tick / 30);
+      frames += 1;
+      if (active(graph) && age(graph) >= timing.startup + timing.active) expect(graph.ownFootwork).toBe(1);
+      expect(state(graph).ownActionId).not.toBe("own-hook");
+    }
+    expect(frames / 2).toBeLessThan(timing.startup + timing.active + timing.recovery / 2);
+    tick = run(graph, idle, opponentFor("two"), 20, undefined, tick, tick / 30);
+    expect(state(graph).ownActionId).toBeNull();
+  });
+
   it("forgets the punch when the fighter is reset for the replay", () => {
     const { graph } = makeGraph();
     const idle = facingOpponent(baseFighter("one"));

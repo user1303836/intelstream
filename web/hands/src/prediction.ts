@@ -74,7 +74,8 @@ export function attackTicksRemaining(fighter: FighterSnapshot, tick: number): nu
 
 export function movementLocked(fighter: FighterSnapshot, tick?: number): boolean {
   return (tick === undefined ? fighter.action !== null : attackTicksRemaining(fighter, tick) > 0)
-    || stateLocked(fighter);
+    || stateLocked(fighter)
+    || isEvasion(fighter.defense);
 }
 
 function stateLocked(fighter: FighterSnapshot): boolean {
@@ -84,8 +85,7 @@ function stateLocked(fighter: FighterSnapshot): boolean {
     || fighter.clinch_ticks > 0
     || fighter.clinch_startup_ticks > 0
     || fighter.taunt_ticks > 0
-    || fighter.is_foul_recovery_target
-    || ["slip_left", "slip_right", "weave", "pull"].includes(fighter.defense);
+    || fighter.is_foul_recovery_target;
 }
 
 /** What the engine walks toward for a held input: the velocity it blends toward each tick, and its speed cap. */
@@ -93,6 +93,8 @@ export interface MovementIntent {
   readonly x: number;
   readonly y: number;
   readonly speed: number;
+  /** The share of it the player's own punch, recovering when the input reaches the server, allows (1 when none). */
+  readonly share?: number;
 }
 
 /**
@@ -101,7 +103,7 @@ export interface MovementIntent {
  * stun down before the footwork of each tick, and a stunned fighter's guard is down: he stumbles at a
  * share of his plain speed while the stun has ticks left after that.
  */
-export function movementIntent(fighter: FighterSnapshot, held: HeldInput, out: { x: number; y: number; speed: number } = { x: 0, y: 0, speed: 0 }, step = 0): MovementIntent {
+export function movementIntent(fighter: FighterSnapshot, held: HeldInput, out: { x: number; y: number; speed: number; share?: number } = { x: 0, y: 0, speed: 0 }, step = 0): MovementIntent {
   const base = Math.max(2, Math.floor((MAX_SPEED * fatigueFactor(fighter.conditioning, fighter.trauma.body)) / 100));
   const stunned = fighter.stunned_ticks - step;
   let speed = base;
@@ -126,12 +128,19 @@ export function parryRootedUntil(event: CombatEvent, playerId: string | null, cu
   return event.kind === "parry" && event.target_id === playerId ? Math.max(current, event.tick + event.amount) : current;
 }
 
+/** The tick the newest slip, weave or pull of `playerId` started on, given an event from the engine and the tick known so far. */
+export function evasionStartedAt(event: CombatEvent, playerId: string | null, current: number | undefined): number | undefined {
+  return event.kind === "defense" && event.actor_id === playerId && isEvasion(event.detail as DefensivePose) ? Math.max(current ?? event.tick, event.tick) : current;
+}
+
 /** What holds a fighter's feet that a snapshot does not show: `MovementPrediction` keeps track of it. */
 export interface FootworkHolds {
   /** The tick a parry roots him until (`parryRootedUntil`). */
   readonly rootedUntil?: number;
   /** A punch he was seen stunned in: the stun cut it short, though snapshots go on presenting it. */
   readonly cutActionId?: string | null;
+  /** The tick his newest slip, weave or pull started on (`evasionStartedAt`). */
+  readonly evasionFrom?: number | undefined;
 }
 
 /** Whether a stun has cut the punch the snapshot presents short: it holds nothing, nor slows him. */
@@ -161,20 +170,34 @@ function heldSteps(fighter: FighterSnapshot, tick: number, holds: FootworkHolds)
 }
 
 /**
+ * Steps of the replay from snapshot `tick` that the slip, weave or pull the snapshot shows holds the fighter's feet:
+ * the engine frees them on the tick its evasion ticks run out. Null when when it started is not known, as it then holds
+ * them for the whole replay.
+ */
+function evasionSteps(fighter: FighterSnapshot, tick: number | undefined, holds: FootworkHolds): number | null {
+  if (!isEvasion(fighter.defense)) return 0;
+  const from = holds.evasionFrom;
+  if (tick === undefined || from === undefined || from > tick) return null;
+  return Math.max(0, from + EVASION_TICKS + styleTiming(fighter.style).evasionTicks - tick - 1);
+}
+
+/**
  * Mirrors the authoritative movement integrator (velocity blends toward
  * the held direction each tick, capped at the fatigue-scaled speed) so the
  * viewer's own fighter can be shown `ticks` ahead of the delayed snapshot,
  * walking toward `intent(step)` on each tick. With the snapshot `tick`, a
- * punch or a parry's stagger only holds the fighter for the ticks it has
- * left (see `heldSteps`), so stepping out of it is predicted as soon as it
- * ends, at the punch's share of his speed while it recovers.
+ * punch, an evasion or a parry's stagger only holds the fighter for the
+ * ticks it has left (see `heldSteps`), so stepping out of it is predicted as
+ * soon as it ends, at the punch's share of his speed while it recovers.
  */
 export function replayMovement(fighter: FighterSnapshot, intent: (step: number) => MovementIntent, ticks: number, tick?: number, holds: FootworkHolds = {}): PredictedOffset {
-  if (ticks <= 0 || stateLocked(fighter)) return { dx: 0, dy: 0 };
-  const committed = tick === undefined ? (fighter.action !== null ? Infinity : 0) : heldSteps(fighter, tick, holds);
+  const evading = evasionSteps(fighter, tick, holds);
+  if (ticks <= 0 || stateLocked(fighter) || evading === null) return { dx: 0, dy: 0 };
+  const committed = Math.max(evading, tick === undefined ? (fighter.action !== null ? Infinity : 0) : heldSteps(fighter, tick, holds));
   if (committed >= ticks) return { dx: 0, dy: 0 };
   const cut = punchCut(fighter, holds);
-  const share = (step: number): number => (tick !== undefined && !cut && recovering(fighter, tick + 1 + step) ? RECOVERY_SPEED_PERCENT / 100 : 1);
+  // The snapshot's own punch and the one the input history knows of are the same punch: their shares do not multiply.
+  const share = (step: number, want: MovementIntent): number => Math.min(want.share ?? 1, tick !== undefined && !cut && recovering(fighter, tick + 1 + step) ? RECOVERY_SPEED_PERCENT / 100 : 1);
   let vx = fighter.velocity_x;
   let vy = fighter.velocity_y;
   let dx = 0;
@@ -184,7 +207,7 @@ export function replayMovement(fighter: FighterSnapshot, intent: (step: number) 
   for (let step = 0; step < whole; step += 1) {
     const free = step >= committed;
     const want = intent(step);
-    const slowed = share(step);
+    const slowed = share(step, want);
     vx = blend(vx, free ? want.x * slowed : 0);
     vy = blend(vy, free ? want.y * slowed : 0);
     const length = Math.hypot(vx, vy);
@@ -198,7 +221,7 @@ export function replayMovement(fighter: FighterSnapshot, intent: (step: number) 
   if (fraction > 0) {
     const free = whole >= committed;
     const want = intent(whole);
-    const slowed = share(whole);
+    const slowed = share(whole, want);
     dx += blend(vx, free ? want.x * slowed : 0) * fraction;
     dy += blend(vy, free ? want.y * slowed : 0) * fraction;
   }
@@ -229,25 +252,27 @@ const HORIZON_EASE_RATE = 4;
  * press and stops on the release instead of stepping, stalling and overshooting.
  */
 export class MovementPrediction {
-  private readonly history: { readonly at: number; readonly held: HeldInput }[] = [];
+  private readonly history: { readonly at: number; readonly held: HeldInput; readonly share: number }[] = [];
   private readonly offset = { dx: 0, dy: 0 };
-  private readonly mean = { x: 0, y: 0, speed: 0 };
+  private readonly mean = { x: 0, y: 0, speed: 0, share: 1 };
   private readonly sample = { x: 0, y: 0, speed: 0 };
   private horizon: number | null = null;
-  private readonly holds: { rootedUntil: number; cutActionId: string | null } = { rootedUntil: 0, cutActionId: null };
+  private readonly holds: { rootedUntil: number; cutActionId: string | null; evasionFrom: number | undefined } = { rootedUntil: 0, cutActionId: null, evasionFrom: undefined };
 
-  /** Takes note of an event from the engine for the fighter `playerId` (see `parryRootedUntil`). */
+  /** Takes note of an event from the engine for the fighter `playerId` (see `parryRootedUntil` and `evasionStartedAt`). */
   observe(event: CombatEvent, playerId: string | null): void {
     this.holds.rootedUntil = parryRootedUntil(event, playerId, this.holds.rootedUntil);
+    this.holds.evasionFrom = evasionStartedAt(event, playerId, this.holds.evasionFrom);
   }
 
   /**
-   * The offset to draw `fighter`, as shown, by this frame. `held` is the input held now; with
-   * `holdFeet` (the viewer's own punch playing) the server will not walk him for it. `fighter` is
-   * null outside the fight, where the offset eases away.
+   * The offset to draw `fighter`, as shown, by this frame. `held` is the input held now and `footwork`
+   * the share of it the server will walk him for when it arrives: 0 while the viewer's own punch or
+   * evasion holds his feet there, the recovery's share while his own punch recovers, 1 otherwise.
+   * `fighter` is null outside the fight, where the offset eases away.
    */
-  update(fighter: FighterSnapshot | null, held: HeldInput, holdFeet: boolean, nowMs: number, horizonTicks: number, tick: number, dt: number, tickRate: number): PredictedOffset {
-    this.history.push({ at: nowMs, held: holdFeet ? { ...held, moveX: 0, moveY: 0 } : held });
+  update(fighter: FighterSnapshot | null, held: HeldInput, footwork: number, nowMs: number, horizonTicks: number, tick: number, dt: number, tickRate: number): PredictedOffset {
+    this.history.push({ at: nowMs, held: footwork <= 0 ? { ...held, moveX: 0, moveY: 0 } : held, share: footwork <= 0 ? 1 : footwork });
     while (this.history.length > 2 && this.history[1]!.at < nowMs - HELD_HISTORY_MS) this.history.shift();
     this.horizon = this.horizon === null ? horizonTicks : this.horizon + (horizonTicks - this.horizon) * (1 - Math.exp(-HORIZON_EASE_RATE * dt));
     let target: PredictedOffset = { dx: 0, dy: 0 };
@@ -279,6 +304,7 @@ export class MovementPrediction {
     mean.x = 0;
     mean.y = 0;
     mean.speed = 0;
+    mean.share = 0;
     for (let index = 0; index < this.history.length; index += 1) {
       const start = index === 0 ? from : Math.max(from, this.history[index]!.at);
       const end = Math.min(to, this.history[index + 1]?.at ?? Infinity);
@@ -288,6 +314,7 @@ export class MovementPrediction {
       mean.x += intent.x * weight;
       mean.y += intent.y * weight;
       mean.speed += intent.speed * weight;
+      mean.share += this.history[index]!.share * weight;
     }
     return mean;
   }
@@ -350,37 +377,43 @@ export function isEvasion(kind: MovementKind | "punch" | "foul" | DefensivePose)
  * The defence the viewer's own fighter is shown in during the fight: the guard held now, ahead of the
  * snapshot like his feet, or the slip, weave or pull just pressed. The server's own defence stands
  * while it overrides the held guard: none while stunned or taunting, unchanged in a clinch, and an
- * evasion it is playing.
+ * evasion it is playing, unless it is one the viewer pressed and has already seen through
+ * (`hideServerEvasion`): the delayed snapshot shows it a round trip after his own did.
  */
-export function predictedDefense(server: FighterSnapshot, held: HeldInput, evasion: EvasionKind | null): DefensivePose {
+export function predictedDefense(server: FighterSnapshot, held: HeldInput, evasion: EvasionKind | null, hideServerEvasion = false): DefensivePose {
   if (server.stunned_ticks > 0 || server.taunt_ticks > 0 || server.clinch_ticks > 0) return server.defense;
   if (evasion !== null) return evasion;
-  if (isEvasion(server.defense)) return server.defense;
+  if (isEvasion(server.defense) && !hideServerEvasion) return server.defense;
   return held.defense;
 }
 
 /**
- * A slip, weave or pull the viewer pressed, shown on the press the way his punches are. It lasts the
- * lead plus its own ticks, so it ends as the server's copy does on screen, unless the server turns it
- * down: once a snapshot has the frame that carried it, the fighter is evading or never will for it, and
- * a stun, a clinch or the end of the fight phase clears it.
+ * A slip, weave or pull the viewer pressed, shown on the press the way his punches are: for as long as
+ * the server plays it, from when the server starts it on the press's own time (at once, or once the
+ * punch it cuts short has landed or missed). The server's copy of it reaches the screen a lead later
+ * and is not played again. The server can turn it down: once a snapshot has the frame that carried it,
+ * the fighter is evading or never will for it, and a stun, a clinch or the end of the fight phase
+ * clears it.
  */
 export class EvasionPrediction {
   private kind: EvasionKind | null = null;
   private id = "";
-  private pressedAt = 0;
+  private startsAt = 0;
+  private endsAt = 0;
   private until = 0;
-  private ticks = EVASION_TICKS;
   private sequence: number | null = null;
   private started = false;
 
-  /** `evasionTicks` is how long the server plays it: EVASION_TICKS plus the fighter's style's own. */
-  press(kind: EvasionKind, id: string, nowMs: number, leadTicks: number, tickRate: number, evasionTicks = EVASION_TICKS): void {
+  /**
+   * `evasionTicks` is how long the server plays it: EVASION_TICKS plus the fighter's style's own. `startMs` is when it
+   * starts on the press's time, later than the press behind a punch still to land or miss.
+   */
+  press(kind: EvasionKind, id: string, nowMs: number, leadTicks: number, tickRate: number, evasionTicks = EVASION_TICKS, startMs = nowMs): void {
     this.kind = kind;
     this.id = id;
-    this.pressedAt = nowMs;
-    this.ticks = evasionTicks;
-    this.until = nowMs + ((Math.max(0, leadTicks) + evasionTicks) * 1000) / tickRate;
+    this.startsAt = startMs;
+    this.endsAt = startMs + (evasionTicks * 1000) / tickRate;
+    this.until = this.endsAt + (Math.max(0, leadTicks) * 1000) / tickRate;
     this.sequence = null;
     this.started = false;
   }
@@ -398,11 +431,21 @@ export class EvasionPrediction {
   /** The evasion to show at `nowMs`, or null. */
   pose(nowMs: number): EvasionKind | null {
     if (this.kind !== null && nowMs >= this.until) this.kind = null;
-    return this.kind;
+    return this.kind !== null && nowMs >= this.startsAt && nowMs < this.endsAt ? this.kind : null;
+  }
+
+  /** True while the evasion the delayed snapshot shows is this one, already played here. */
+  hidesServerEvasion(nowMs: number): boolean {
+    return this.kind !== null && nowMs >= this.startsAt && nowMs < this.until;
   }
 
   /** True while the server, evading, keeps the fighter's feet still for inputs sent now. */
-  holdsFeet(nowMs: number, tickRate: number): boolean {
-    return this.kind !== null && nowMs < this.pressedAt + (this.ticks * 1000) / tickRate;
+  holdsFeet(nowMs: number): boolean {
+    return this.kind !== null && nowMs >= this.startsAt && nowMs < this.endsAt;
+  }
+
+  /** A newer press takes its place in the server's buffer, unless it has started there by now (on the press's time). */
+  drop(nowMs: number): void {
+    if (nowMs < this.startsAt) this.kind = null;
   }
 }

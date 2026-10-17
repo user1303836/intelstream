@@ -2089,17 +2089,23 @@ export class FightRenderer {
     // A snapshot answering the press is a round trip away; the render clock trails the press by that and its own delay.
     const answerTicks = ((this.inputLatencyMs ?? 60) / 1000) * this.simulation.tick_rate;
     const leadTicks = answerTicks + this.buffer.interpolationDelayTicks;
+    const now = this.manualClock ? this.lastManualTime : performance.now();
+    const graph = this.graphs?.[index];
     if (isEvasion(action.kind)) {
-      // Behind a punch the server holds it, so it is shown at once only when the fighter is free.
-      const busy = this.graphs?.[index]?.ownPunchActive === true || attackTicksRemaining(fighter, latest.tick) > 0 || fighter.queued_actions > 0;
-      if (!busy && action.id !== undefined && fighter.stamina >= EVASION_STAMINA) {
-        this.evasion.press(action.kind, action.id, this.manualClock ? this.lastManualTime : performance.now(), leadTicks, this.simulation.tick_rate, EVASION_TICKS + styleTiming(fighter.style).evasionTicks);
-      }
+      // Behind the player's own punch the server holds it until the punch has landed or missed, then cuts the recovery
+      // short for it; behind a punch it plays that was never predicted, or anything else it holds, it is left to the server.
+      const own = graph?.ownPunchActive === true;
+      if (action.id === undefined || fighter.stamina < EVASION_STAMINA || fighter.queued_actions > 0 || (!own && attackTicksRemaining(fighter, latest.tick) > 0)) return;
+      const wait = own ? graph.ownTicksToRecovery : 0;
+      if (own) graph.cutOwnRecovery();
+      this.evasion.press(action.kind, action.id, now, leadTicks, this.simulation.tick_rate, EVASION_TICKS + styleTiming(fighter.style).evasionTicks, now + (wait * 1000) / this.simulation.tick_rate);
       return;
     }
     // A fighter who cannot pay for it in full still throws it, as a slow arm punch (see predictedPunchTiming).
     if (action.kind !== "punch") return;
-    this.graphs?.[index]?.predict(action, performance.now() / 1000, this.simulation.tick_rate, leadTicks, predictedPunchTiming(fighter, action, latest.tick + 1), answerTicks);
+    // It takes the place of a slip, weave or pull the server still holds behind a punch.
+    this.evasion.drop(now);
+    graph?.predict(action, performance.now() / 1000, this.simulation.tick_rate, leadTicks, predictedPunchTiming(fighter, action, latest.tick + 1), answerTicks);
   }
 
   /**
@@ -2616,20 +2622,20 @@ export class FightRenderer {
     const index = snapshot.fighters.findIndex((fighter) => fighter.player_id === this.viewerId);
     const held = this.localInput() ?? { moveX: 0, moveY: 0, defense: "none" };
     // Shown as far ahead of the snapshot on screen as an input pressed now takes to show up in it: the
-    // round trip plus the interpolation delay. The player's own punch starts here before the server
-    // has it, and holds the feet from then on. A body shot that is putting the player's own fighter down
-    // freezes him until he drops.
+    // round trip plus the interpolation delay. The player's own punch and evasions play on that time
+    // from the press, and hold or slow the feet as the server will for the input sent meanwhile. A body
+    // shot that is putting the player's own fighter down freezes him until he drops.
     const leadTicks = ((this.inputLatencyMs ?? 60) / 1000) * this.simulation.tick_rate + this.buffer.interpolationDelayTicks;
     const collapsing = this.ownCollapseUntil > snapshot.tick;
     const fighting = index >= 0 && snapshot.phase === "fight" && !collapsing ? snapshot.fighters[index]! : null;
-    const holdFeet = this.graphs?.[index]?.ownPunchActive === true || this.evasion.holdsFeet(timeMs, this.simulation.tick_rate);
-    const local = this.movement.update(fighting, held, holdFeet, timeMs, leadTicks, snapshot.tick, dt, this.simulation.tick_rate);
+    const footwork = this.evasion.holdsFeet(timeMs) ? 0 : this.graphs?.[index]?.ownFootwork ?? 1;
+    const local = this.movement.update(fighting, held, footwork, timeMs, leadTicks, snapshot.tick, dt, this.simulation.tick_rate);
     // The guard is the most latency-sensitive thing the player controls: it is shown as held, and a
     // slip, weave or pull on the press, wherever the server is not overriding it.
     const evading = this.evasion.pose(timeMs);
     if (index < 0) return snapshot;
     const viewer = snapshot.fighters[index]!;
-    const defense = fighting !== null ? predictedDefense(fighting, held, evading) : viewer.defense;
+    const defense = fighting !== null ? predictedDefense(fighting, held, evading, this.evasion.hidesServerEvasion(timeMs)) : viewer.defense;
     if (Math.abs(local.dx) < 0.01 && Math.abs(local.dy) < 0.01 && defense === viewer.defense) return snapshot;
     const offset = constrainPrediction(viewer, local, snapshot.fighters[index === 0 ? 1 : 0] ?? null);
     const predicted = { ...viewer, x: viewer.x + offset.dx, y: viewer.y + offset.dy, defense };
