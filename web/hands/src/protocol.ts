@@ -93,7 +93,7 @@ const movementKinds = ["slip_left", "slip_right", "weave", "pull", "clinch", "sw
 const cornerChoices = ["cut", "swelling", "breath", "balanced"] as const;
 const fouls = ["low_blow", "headbutt"] as const;
 const phases = ["countdown", "fight", "knockdown", "foul_recovery", "rest", "complete"] as const;
-const methods = ["ko", "flash_ko", "tko", "doctor_stoppage", "disqualification", "decision", "draw", "forfeit"] as const;
+const methods = ["ko", "flash_ko", "tko", "disqualification", "decision", "draw", "forfeit"] as const;
 
 function fighterRecord(value: unknown): FighterRecord {
   const o = object(value, "record"); exact(o, ["wins", "losses", "draws", "knockouts"]);

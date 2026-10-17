@@ -91,6 +91,7 @@ class FinishMethod(StrEnum):
     KO = "ko"
     FLASH_KO = "flash_ko"
     TKO = "tko"
+    # The engine no longer stops a bout on a cut; bouts recorded before that keep this method.
     DOCTOR_STOPPAGE = "doctor_stoppage"
     DISQUALIFICATION = "disqualification"
     DECISION = "decision"

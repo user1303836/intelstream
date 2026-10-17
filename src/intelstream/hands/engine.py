@@ -27,8 +27,6 @@ from intelstream.hands.rules import (
     COUNTDOWN_TICKS,
     CUT_PER_DAMAGE_PERCENT,
     DEFAULT_ROUNDS,
-    DOCTOR_CUT_THRESHOLD,
-    DOCTOR_SWELLING_THRESHOLD,
     EYE_TRAUMA_PER_DAMAGE_PERCENT,
     FACING_SCALE,
     FACING_TURN_COS,
@@ -156,8 +154,6 @@ class EngineConfig:
     round_ticks: int = ROUND_TICKS
     rest_ticks: int = REST_TICKS
     countdown_ticks: int = COUNTDOWN_TICKS
-    doctor_cut_threshold: int = DOCTOR_CUT_THRESHOLD
-    doctor_swelling_threshold: int = DOCTOR_SWELLING_THRESHOLD
     flash_ko_enabled: bool = True
 
     def __post_init__(self) -> None:
@@ -165,8 +161,6 @@ class EngineConfig:
             raise ValueError("rounds must be between 1 and 15")
         if self.round_ticks < 1 or self.rest_ticks < 0 or self.countdown_ticks < 0:
             raise ValueError("phase durations must be non-negative and rounds must have time")
-        if self.doctor_cut_threshold < 1 or self.doctor_swelling_threshold < 1:
-            raise ValueError("doctor stoppage thresholds must be positive")
 
 
 @dataclass(slots=True)
@@ -719,8 +713,6 @@ class BoxingEngine:
             self._recover_resources(fighter)
             fighter.performance.control += self._ring_control(fighter, opponent)
             self._advance_bleeding(fighter)
-            if self.result is not None:
-                return
 
         if self.phase_ticks_remaining <= 0:
             self._finish_round()
@@ -1149,9 +1141,6 @@ class BoxingEngine:
                 self._complete(attacker.player_id, FinishMethod.FLASH_KO)
                 return
 
-        if self._needs_doctor_stoppage(defender):
-            self._complete(attacker.player_id, FinishMethod.DOCTOR_STOPPAGE)
-            return
         clean_head = action.target is Target.HEAD and not blocked
         if defender.poise <= 0:
             if action.target is Target.BODY:
@@ -1762,16 +1751,6 @@ class BoxingEngine:
         fighter.conditioning = max(0, fighter.conditioning - fighter.trauma.bleeding // 250)
         fighter.stamina = min(fighter.stamina, fighter.maximum_stamina)
         self._emit("bleed", fighter.player_id, amount=fighter.trauma.bleeding // 10, blood=25)
-        opponent = self._other(fighter.player_id)
-        if self._needs_doctor_stoppage(fighter):
-            self._complete(opponent.player_id, FinishMethod.DOCTOR_STOPPAGE)
-
-    def _needs_doctor_stoppage(self, fighter: FighterState) -> bool:
-        return (
-            max(fighter.trauma.left_cut, fighter.trauma.right_cut)
-            >= self.config.doctor_cut_threshold
-            or fighter.trauma.swelling >= self.config.doctor_swelling_threshold
-        )
 
     def _qualifies_for_flash(
         self,

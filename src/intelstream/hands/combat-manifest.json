@@ -217,10 +217,6 @@
     "eye_threshold": 700,
     "impact_percent": 120
   },
-  "doctor": {
-    "cut": 800,
-    "swelling": 900
-  },
   "parry": {
     "stagger_ticks": 20
   },

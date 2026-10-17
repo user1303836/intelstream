@@ -86,8 +86,6 @@ def make_engine(
     rounds: int = 3,
     rest_ticks: int = 10,
     flash: bool = False,
-    doctor_cut_threshold: int = 700,
-    doctor_swelling_threshold: int = 820,
 ) -> BoxingEngine:
     engine = BoxingEngine(
         match_id=f"match-{seed}",
@@ -102,8 +100,6 @@ def make_engine(
             rest_ticks=rest_ticks,
             countdown_ticks=0,
             flash_ko_enabled=flash,
-            doctor_cut_threshold=doctor_cut_threshold,
-            doctor_swelling_threshold=doctor_swelling_threshold,
         ),
     )
     engine.fighter("one").x = -45
@@ -1007,8 +1003,8 @@ def test_fatigue_reduces_hand_speed_foot_speed_guard_recovery_and_power() -> Non
     assert fresh_guard.fighter("one").guard > tired_guard.fighter("one").guard
 
 
-def test_localized_trauma_cut_bleeding_and_doctor_stoppage() -> None:
-    engine = make_engine(doctor_cut_threshold=20)
+def test_localized_trauma_cuts_and_bleeds_and_no_cut_or_swelling_stops_the_bout() -> None:
+    engine = make_engine(round_ticks=2000)
     engine.fighter("two").trauma.right_eye = 300
     engine.step(
         {
@@ -1023,15 +1019,19 @@ def test_localized_trauma_cut_bleeding_and_doctor_stoppage() -> None:
             )
         }
     )
-    advance_until(engine, {"result"}, limit=50)
+    advance_until(engine, {"hit"}, limit=50)
 
     defender = engine.fighter("two")
     assert defender.trauma.head > 0
     assert defender.trauma.right_eye > 300
-    assert defender.trauma.right_cut >= 20
+    assert defender.trauma.right_cut > 0
     assert defender.trauma.bleeding > 0
-    assert engine.result is not None
-    assert engine.result.finish_method is FinishMethod.DOCTOR_STOPPAGE
+    # Well past the cut and the swelling at which a ringside doctor once stopped it.
+    defender.trauma.right_cut = defender.trauma.swelling = defender.trauma.bleeding = 1000
+    for _ in range(90):
+        engine.step()
+    assert engine.result is None
+    assert any(event.kind == "bleed" for event in engine.events)
 
 
 def test_knockdown_seeded_get_up_and_repeated_knockdown_tko() -> None:
@@ -1182,8 +1182,6 @@ def test_natural_effective_aggressor_gets_credit_and_wins_one_round_decision() -
         round_ticks=180,
         rounds=1,
         rest_ticks=0,
-        doctor_cut_threshold=5000,
-        doctor_swelling_threshold=5000,
     )
     sequence = 0
     while engine.result is None:
@@ -1756,18 +1754,12 @@ def test_sustained_movement_is_free_but_punches_still_spend_resources() -> None:
 
 
 def test_swelling_bleeding_same_tick_trades_and_snapshot_payloads_follow_behavior() -> None:
-    swelling = make_engine(
-        round_ticks=2000,
-        doctor_cut_threshold=5000,
-        doctor_swelling_threshold=20,
-    )
+    swelling = make_engine(round_ticks=2000)
     swelling.step({"one": command(1, action=punch(PunchClass.HOOK, power=Power.POWER))})
-    advance_until(swelling, {"result"}, limit=30)
-    assert swelling.result is not None
-    assert swelling.result.finish_method is FinishMethod.DOCTOR_STOPPAGE
-    assert swelling.fighter("two").trauma.swelling >= 20
+    advance_until(swelling, {"hit"}, limit=30)
+    assert swelling.fighter("two").trauma.swelling > 0
 
-    bleeding = make_engine(round_ticks=2000, doctor_cut_threshold=5000)
+    bleeding = make_engine(round_ticks=2000)
     bleeding.fighter("two").trauma.bleeding = 300
     before_head = bleeding.fighter("two").trauma.head
     for _ in range(30):
@@ -3045,7 +3037,7 @@ def test_a_bout_ended_on_the_punch_leaves_no_poise_below_zero() -> None:
 
 
 def test_bleeding_never_leaves_more_stamina_than_the_fighter_can_hold() -> None:
-    engine = make_engine(seed=3, doctor_cut_threshold=10_000, doctor_swelling_threshold=10_000)
+    engine = make_engine(seed=3)
     engine.fighter("one").x, engine.fighter("two").x = -300, 300
     engine.fighter("two").trauma.bleeding = 1000
     engine.fighter("two").conditioning = 900

@@ -1107,10 +1107,9 @@ describe("the broadcast HUD after the QA pass", () => {
     expect(texts).not.toContain("COMPLETE");
   });
 
-  it("gives the referee a moment before a disqualification or a doctor's stoppage is shown", () => {
+  it("gives the referee a moment before a disqualification is shown", () => {
     const final = (method: string) => ({ version: PROTOCOL_VERSION, type: "final" as const, match_id: "m", winner_id: "one", method: method as "decision", round: 1, scorecards: [], ratings: {} });
     expect(revealDelay(final("disqualification"))).toBe(REFEREE_REVEAL_DELAY_SECONDS);
-    expect(revealDelay(final("doctor_stoppage"))).toBe(REFEREE_REVEAL_DELAY_SECONDS);
     expect(revealDelay(final("decision"))).toBe(0);
   });
 

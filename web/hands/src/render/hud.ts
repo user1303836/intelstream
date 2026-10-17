@@ -519,14 +519,14 @@ export function decisionLabel(final: FinalMessage): string {
 
 export const STOPPAGE_METHODS: ReadonlySet<string> = new Set(["ko", "flash_ko", "tko"]);
 export const FINAL_REVEAL_DELAY_SECONDS = 3.6;
-/** A disqualification or a doctor's stoppage is the referee's call: a moment for it before the result. */
+/** A disqualification is the referee's call: a moment for it before the result. */
 export const REFEREE_REVEAL_DELAY_SECONDS = 2.4;
 
 /** Seconds to hold the result panel back so a stoppage's slow-motion fall stays visible. */
 export function finalRevealDelay(final: FinalMessage | null): number {
   if (final === null) return 0;
   if (STOPPAGE_METHODS.has(final.method)) return FINAL_REVEAL_DELAY_SECONDS;
-  return final.method === "disqualification" || final.method === "doctor_stoppage" ? REFEREE_REVEAL_DELAY_SECONDS : 0;
+  return final.method === "disqualification" ? REFEREE_REVEAL_DELAY_SECONDS : 0;
 }
 
 /** Below the top bar, or below the round card where a phone puts it under the top bar. */
@@ -785,7 +785,6 @@ const METHOD_HEADLINES: Readonly<Partial<Record<FinishMethod, string>>> = {
   ko: "KNOCKOUT",
   flash_ko: "FLASH KNOCKOUT",
   tko: "TECHNICAL KNOCKOUT",
-  doctor_stoppage: "DOCTOR STOPPAGE",
   disqualification: "DISQUALIFICATION",
   forfeit: "FORFEIT",
 };

@@ -577,7 +577,7 @@ export function eyeShut(eyeTrauma: number, swelling: number): number {
  */
 export const EYE_SWELL = 2;
 export const CHEEK_SWELL = 1.8;
-/** A cheek cut is wide open by this much cut damage, short of the 800 at which the doctor stops the bout. */
+/** A cheek cut is wide open by this much cut damage. */
 const CHEEK_CUT_OPEN = 750;
 /** Swelling at which the forehead splits: a face battered for a round or two, where 520 was all but out of reach. */
 const FOREHEAD_SPLITS = 380;

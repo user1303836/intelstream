@@ -16,7 +16,7 @@ export type CornerChoice = "cut" | "swelling" | "breath" | "balanced";
 export type ActionKind = "punch" | MovementKind | "foul";
 export type Foul = "low_blow" | "headbutt";
 export type MatchPhase = "countdown" | "fight" | "knockdown" | "foul_recovery" | "rest" | "complete";
-export type FinishMethod = "ko" | "flash_ko" | "tko" | "doctor_stoppage" | "disqualification" | "decision" | "draw" | "forfeit";
+export type FinishMethod = "ko" | "flash_ko" | "tko" | "disqualification" | "decision" | "draw" | "forfeit";
 export type ConnectionRole = "fighter" | "spectator";
 
 export interface PunchAction { readonly kind: "punch"; readonly hand: Hand; readonly class: PunchClass; readonly target: Target; readonly power: Power; readonly id?: string }

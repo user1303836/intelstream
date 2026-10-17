@@ -130,9 +130,8 @@ describe("swelling", () => {
     boxer.dispose();
   });
 
-  it("opens a cheek cut wide before the doctor stops the bout, and splits a forehead swollen for a round or two", () => {
+  it("opens a cheek cut wide on a bad cut, and splits a forehead swollen for a round or two", () => {
     const shading = new InjuryShading(new THREE.MeshStandardMaterial(), HEAD_SITES);
-    // The doctor stops a bout at a cut of 800.
     applyHeadTrauma(shading, trauma({ left_cut: 760, swelling: 450 }), "full");
     expect(shading.level("leftCheek").cut).toBe(1);
     expect(shading.level("forehead").cut).toBeGreaterThan(0.15);

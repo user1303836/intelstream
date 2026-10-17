@@ -39,7 +39,6 @@ from intelstream.hands.rules import (
 from intelstream.hands.types import (
     CombatEvent,
     DefensivePose,
-    FinishMethod,
     Hand,
     MatchPhase,
     Power,
@@ -348,12 +347,8 @@ def test_a_jab_seldom_splits_the_skin_and_swells_the_face_less() -> None:
     assert trauma.swelling == swelling < damage * SWELLING_PER_DAMAGE_PERCENT // 100
 
 
-def test_by_default_the_doctor_lets_a_bad_cut_and_a_swollen_face_box_on() -> None:
-    defaults = EngineConfig()
-    engine = make_engine(
-        doctor_cut_threshold=defaults.doctor_cut_threshold,
-        doctor_swelling_threshold=defaults.doctor_swelling_threshold,
-    )
+def test_a_bad_cut_and_a_swollen_face_box_on() -> None:
+    engine = make_engine()
     trauma = engine.fighter("two").trauma
     trauma.left_eye, trauma.left_cut, trauma.swelling = 500, 740, 850
     land(engine, punch(PunchClass.STRAIGHT))
@@ -365,9 +360,9 @@ def test_by_default_the_doctor_lets_a_bad_cut_and_a_swollen_face_box_on() -> Non
 def test_a_one_sided_three_rounder_leaves_a_visible_cut(
     seed: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Three rounds of a skilled player outboxing the rookie mark the loser's face, short of the
-    doctor: a brow cut the client draws in full (220), an eye past where it starts to close (330)
-    and swollen shut at least once. Marking slowed so far once that faces stayed clean."""
+    """Three rounds of a skilled player outboxing the rookie mark the loser's face: a brow cut the
+    client draws in full (220), an eye past where it starts to close (330) and swollen shut at
+    least once. Marking slowed so far once that faces stayed clean."""
     # Nothing here reads a checksum, and hashing every tick is most of what a bout costs.
     monkeypatch.setattr(BoxingEngine, "_checksum", lambda _engine, _fighters: "")
     styles = bout_styles("skilled", "rookie", seed)
@@ -398,7 +393,6 @@ def test_a_one_sided_three_rounder_leaves_a_visible_cut(
         eyes_shut += sum(event.kind == "eye_shut" for event in snapshot.events)
 
     assert engine.result.winner_id == "one"
-    assert engine.result.finish_method is not FinishMethod.DOCTOR_STOPPAGE
     assert worst_cut >= 220
     assert worst_eye >= 330
     assert eyes_shut >= 1
