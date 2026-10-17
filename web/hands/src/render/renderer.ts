@@ -1234,7 +1234,7 @@ export class FightRenderer {
   private readonly tmpCamera = new THREE.Vector3();
   private readonly roundStats = new RoundStatsTracker();
   private readonly history: EngineSnapshot[] = [];
-  private lastKnockdown: { readonly knockdown: CombatEvent; readonly hit: CombatEvent | null; readonly finisher: ArcadeInjury | null } | null = null;
+  private lastKnockdown: { readonly knockdown: CombatEvent; readonly hit: CombatEvent | null; readonly blocked: boolean; readonly finisher: ArcadeInjury | null } | null = null;
   /** A flash knockout ends the bout without a knockdown: the punch that did it and the fighter it put down. */
   private flashKnockout: { readonly hitEventId: number; readonly loserId: string } | null = null;
   private readonly bodyPoint = new THREE.Vector3();
@@ -2046,11 +2046,10 @@ export class FightRenderer {
       this.graphs?.[recipientIndex]?.windedFor((record.knockdown.tick - event.tick) / this.simulation.tick_rate + 0.15, bodySideStruck(puncher?.action_key ?? null));
     }
     if (recipient.player_id === this.flashKnockout?.loserId) this.graphs?.[recipientIndex]?.knockOut();
-    // A knockdown with no hit of its own (the guard took the punch) names no punch: it is the one he is throwing.
-    if (puncherIndex >= 0) this.graphs?.[puncherIndex]?.landedHit(event.action_id ?? puncher?.action_id ?? null, false, power);
+    if (puncherIndex >= 0) this.graphs?.[puncherIndex]?.landedHit(event.action_id, record.blocked, power);
     // The punch that floored him knocks the gum shield out again, in slow motion.
     if (event.detail.endsWith(":head") && !this.settings().reducedMotion) this.knockOutMouthpiece(recipientIndex, spray ?? event.direction, event.event_id + REPLAY_EVENT_ID_OFFSET, true);
-    if (power && !this.settings().reducedMotion) this.presentPowerHit(recipientIndex, event);
+    if (power && !record.blocked && !this.settings().reducedMotion) this.presentPowerHit(recipientIndex, event);
     this.onContact?.(event, power);
     this.reapplyReplayInjuries(spray);
     // What came with the punch and was held for this moment (see startReplay) is shown with it.
@@ -2398,7 +2397,8 @@ export class FightRenderer {
           ?? (event.detail === "body" ? this.recordedHit(event) : null);
         // A punch the guard took can still floor a fighter with no poise left. The replay shows it as it was,
         // but it earns no finisher.
-        this.lastKnockdown = { knockdown: event, hit, finisher: hit !== null && wasBlocked(hit, snapshot.events) ? null : knockdownFinisher(hit, snapshot) };
+        const blocked = hit !== null && wasBlocked(hit, snapshot.events);
+        this.lastKnockdown = { knockdown: event, hit, blocked, finisher: blocked ? null : knockdownFinisher(hit, snapshot) };
         const downed = snapshot.fighters.findIndex((fighter) => fighter.player_id === event.target_id);
         this.graphs?.[downed]?.fallToKnee(event.detail === BODY_KNOCKDOWN);
       }
@@ -2408,7 +2408,7 @@ export class FightRenderer {
           this.flashKnockout = { hitEventId: hit.event_id, loserId: hit.target_id };
           // The replay shows the knockout punch and the fall as it would a knockdown.
           // Its injury, if any, is done live by the punch itself, so nothing is left for the replay to apply.
-          this.lastKnockdown = { knockdown: { ...hit, kind: "knockdown" }, hit, finisher: null };
+          this.lastKnockdown = { knockdown: { ...hit, kind: "knockdown" }, hit, blocked: false, finisher: null };
         }
       }
       if (event.kind === "referee_break") this.referee?.breakClinch();
