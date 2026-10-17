@@ -103,7 +103,7 @@ export interface MovementIntent {
  * stun down before the footwork of each tick, and a stunned fighter's guard is down: he stumbles at a
  * share of his plain speed while the stun has ticks left after that.
  */
-export function movementIntent(fighter: FighterSnapshot, held: HeldInput, out: { x: number; y: number; speed: number; share?: number } = { x: 0, y: 0, speed: 0 }, step = 0): MovementIntent {
+export function movementIntent(fighter: FighterSnapshot, held: HeldInput, out: { x: number; y: number; speed: number } = { x: 0, y: 0, speed: 0 }, step = 0): MovementIntent {
   const base = Math.max(2, Math.floor((MAX_SPEED * fatigueFactor(fighter.conditioning, fighter.trauma.body)) / 100));
   const stunned = fighter.stunned_ticks - step;
   let speed = base;
@@ -171,8 +171,8 @@ function heldSteps(fighter: FighterSnapshot, tick: number, holds: FootworkHolds)
 
 /**
  * Steps of the replay from snapshot `tick` that the slip, weave or pull the snapshot shows holds the fighter's feet:
- * the engine frees them on the tick its evasion ticks run out. Null when when it started is not known, as it then holds
- * them for the whole replay.
+ * the engine frees them on the tick its evasion ticks run out. Null while its start is not known, when it holds them
+ * for the whole replay.
  */
 function evasionSteps(fighter: FighterSnapshot, tick: number | undefined, holds: FootworkHolds): number | null {
   if (!isEvasion(fighter.defense)) return 0;
