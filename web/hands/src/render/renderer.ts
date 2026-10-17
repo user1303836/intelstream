@@ -15,7 +15,7 @@ import { CameraDirector, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE, FIGHTER_CAM_
 import { Avatars } from "./avatars";
 import { captionSlot, drawCaption } from "./caption";
 import { CommentaryDirector, type CrowdCue } from "./commentary";
-import { Effects3D, type BakedPart, type SprayDirection } from "./effects";
+import { DESKTOP_GORE, Effects3D, PHONE_GORE, type BakedPart, type SprayDirection } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb, releaseFighterGpu, type ArcadeDislocation, type CutmanProp } from "./graph";
 import { drawHud, finalRevealDelay, hudScale, lagWarning, resultCard, resultCardLayout, RoundStatsTracker, STOPPAGE_METHODS, RoundClock, wasBlocked, type RoundPunchStats } from "./hud";
 import { BURST_CUT_HEIGHT, EYE_LIDS, NECK_CUT_DEPTH, NECK_CUT_HEIGHT, NECK_CUT_SLOPE, type InjuryShading } from "./injury";
@@ -884,16 +884,17 @@ export function knockdownFinisher(hit: CombatEvent | null, snapshot: EngineSnaps
 }
 
 const POOL_SEVERITY = 0.2;
-const POOL_RATE = 2;
-const POOL_REACH = 0.42;
+/** Spills a second into the pool under a downed fighter, which spreads to this many metres at most. */
+export const POOL_RATE = 3;
+const POOL_REACH = 0.7;
 /**
  * A finisher's open wound bleeds out whatever the engine says of his cuts: as badly as the worst cut does
- * (the pool's ceiling), three times as fast, and spreading out to 0.8 m from it, which takes about 18 s.
+ * (the pool's ceiling), three times as fast, and spreading out to 1.3 m from it, which takes about 18 s.
  */
 const OPEN_WOUNDS: ReadonlySet<ArcadeInjury> = new Set(["decapitation", "head_burst", "eye_left", "eye_right", "dismember_left", "dismember_right", "ribs_left", "ribs_right"]);
 const OPEN_WOUND_SEVERITY = 1.6;
 const OPEN_WOUND_POOL_RATE = 3;
-const OPEN_WOUND_POOL_REACH = 0.8;
+const OPEN_WOUND_POOL_REACH = 1.3;
 /** Under the chin, from the middle of the skull, in the head's frame. */
 const UNDER_THE_CHIN = new THREE.Vector3(0, -0.1, 0.08);
 
@@ -902,7 +903,7 @@ const UNDER_THE_CHIN = new THREE.Vector3(0, -0.1, 0.08);
  * wider the worse he bleeds, up to `reach`.
  */
 export function poolRadius(count: number, severity: number, reach = POOL_REACH): number {
-  return Math.min(reach, 0.05 + 0.045 * Math.sqrt(Math.max(0, count)) * Math.min(1.6, Math.max(0, severity)));
+  return Math.min(reach, 0.06 + 0.06 * Math.sqrt(Math.max(0, count)) * Math.min(1.6, Math.max(0, severity)));
 }
 
 /**
@@ -1215,7 +1216,7 @@ export class FightRenderer {
     this.scene.add(this.ring.group);
     this.arena = buildArena();
     this.scene.add(this.arena.group);
-    this.effects = new Effects3D(this.scene, coarsePointer() ? 1024 : 2048);
+    this.effects = new Effects3D(this.scene, coarsePointer() ? 1024 : 2048, coarsePointer() ? PHONE_GORE : DESKTOP_GORE);
     this.effects.useUploader(this.renderer);
 
     this.blobTexture = blobShadowTexture();

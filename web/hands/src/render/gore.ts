@@ -42,9 +42,12 @@ export function teethFor(kind: string, amount: number, head: boolean): number {
   return 0;
 }
 
-/** Drops of blood a blow throws at full blood: more from an open wound, and more from a harder punch. */
+/** The most drops of blood one blow throws. */
+export const MOST_DROPS = 360;
+
+/** Drops of blood a blow throws at full blood: plenty off any face it lands on clean, more the harder it lands, and far more from an open wound. */
 export function bloodDropsFor(blood: number, amount: number): number {
-  return Math.min(140, Math.round(Math.max(0, blood) * 1.4 + Math.max(0, amount - 50) * 0.5));
+  return Math.min(MOST_DROPS, Math.round(Math.max(0, blood) * 2.6 + Math.max(0, amount) * 0.9));
 }
 
 const DROPLET_TAIL = 1.1;

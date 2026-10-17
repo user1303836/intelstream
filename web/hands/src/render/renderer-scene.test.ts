@@ -253,9 +253,9 @@ describe("blood on the canvas", () => {
     const calls = pools(renderer);
     expect(calls.length).toBeGreaterThan(50);
     const widest = Math.max(...calls.map((call) => call[2]!));
-    expect(widest).toBeGreaterThan(0.55);
-    expect(widest).toBeLessThanOrEqual(0.8);
-    for (const [x, z] of calls) expect(Math.hypot(x! - 0.6, z! + 0.2)).toBeLessThan(0.25);
+    expect(widest).toBeGreaterThan(0.9);
+    expect(widest).toBeLessThanOrEqual(1.3);
+    for (const [x, z] of calls) expect(Math.hypot(x! - 0.6, z! + 0.2)).toBeLessThan(0.35);
   });
 
   it("leaves a dislocation, which opens no wound, to the engine's cuts", () => {

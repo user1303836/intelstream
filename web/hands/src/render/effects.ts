@@ -9,10 +9,18 @@ import { LookShading, SCANNED_LOOK, lookShape, type FighterLook } from "./looks"
 import { SHIELD_RADIUS, buildMouthpieceGeometry, idleShield, stepShield, type ShieldState } from "./mouthpiece";
 import { CANVAS_TOP, RING_FIGHT_HALF, ROPE_LINE } from "./world";
 
-const MAX_DROPLETS = 900;
-const MAX_MIST = 90;
-const MAX_GIBS = 96;
-const MAX_SHARDS = 24;
+/**
+ * How much gore a device keeps in flight at once: drops of blood, sweat and spit, puffs of mist, flesh,
+ * teeth and brain, and pieces of skull. A phone keeps half of what a desktop does and throws half the blood.
+ */
+export interface GoreBudget {
+  readonly droplets: number;
+  readonly mist: number;
+  readonly gibs: number;
+  readonly shards: number;
+}
+export const DESKTOP_GORE: GoreBudget = { droplets: 2400, mist: 240, gibs: 192, shards: 48 };
+export const PHONE_GORE: GoreBudget = { droplets: 1200, mist: 120, gibs: 96, shards: 24 };
 const SHARDS_PER_BURST = 18;
 const BRAIN_PER_BURST = 14;
 const TEETH_PER_BURST = 5;
@@ -40,10 +48,16 @@ const DROP_STAIN = 0.7;
 const SPLASH_STAIN = 0.45;
 const KNOCKDOWN_STAIN = 0.6;
 const FINISHER_STAIN = 0.9;
-/** A cut's share of a punch's blood (the engine's bleeding over eight) once it is open: bleeding of about 60. */
+/** At full blood every stain soaks in this much darker and larger, so the canvas is soaked by the end. */
+const SOAK = 1.25;
+/** A cut's share of a punch's blood (the engine's bleeding over five) once it is open: bleeding of about 40. */
 const OPEN_WOUND = 8;
-/** A drop the size of a gob of blood (this radius, in metres) always stains where it lands; fine spray does one time in four. */
+/**
+ * A drop the size of a gob of blood (this radius, in metres) always stains where it lands; at full blood
+ * fine spray does six times in ten, and with reduced blood one time in four of the drops that stain at all.
+ */
 const GOB = 0.015;
+const FINE_SPRAY_STAINS = 0.6;
 /** The neck is close to round where it is cut. */
 export const NECK_WOUND_RADIUS = 0.068;
 const HAND_RADIUS = 0.085;
@@ -365,7 +379,6 @@ export class Effects3D {
   private readonly dropletScale = new THREE.Vector3();
   private readonly dropletVelocity = new THREE.Vector3();
   private readonly dropletColor = new THREE.Color();
-  private dropletIndex = 0;
   /** Live droplets fill the front of the pool, and only they are drawn and uploaded. */
   private liveDroplets = 0;
 
@@ -453,21 +466,21 @@ export class Effects3D {
   private bloodLevel: BloodLevel = "full";
 
   /** `bloodCanvasSize` is the resolution blood on the canvas is painted at, in pixels across the ring. */
-  constructor(private readonly scene: THREE.Scene, bloodCanvasSize = 1024) {
-    this.dropletPositions = new Float32Array(MAX_DROPLETS * 3);
-    this.dropletColors = new Float32Array(MAX_DROPLETS * 3);
+  constructor(private readonly scene: THREE.Scene, bloodCanvasSize = 1024, private readonly budget: GoreBudget = DESKTOP_GORE) {
+    this.dropletPositions = new Float32Array(budget.droplets * 3);
+    this.dropletColors = new Float32Array(budget.droplets * 3);
     this.dropletBuffers = {
       position: new THREE.BufferAttribute(this.dropletPositions, 3),
       color: new THREE.BufferAttribute(this.dropletColors, 3),
     };
     this.dropletGeometry = buildDropletGeometry();
     this.dropletMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.3, metalness: 0.02 });
-    this.dropletMesh = new THREE.InstancedMesh(this.dropletGeometry, this.dropletMaterial, MAX_DROPLETS);
+    this.dropletMesh = new THREE.InstancedMesh(this.dropletGeometry, this.dropletMaterial, budget.droplets);
     this.dropletMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.dropletMesh.frustumCulled = false;
     this.dropletMesh.castShadow = false;
     scene.add(this.dropletMesh);
-    for (let i = 0; i < MAX_DROPLETS; i += 1) {
+    for (let i = 0; i < budget.droplets; i += 1) {
       this.droplets.push({ alive: false, blood: false, x: 0, y: -50, z: 0, vx: 0, vy: 0, vz: 0, life: 0, maxLife: 1, r: 1, g: 1, b: 1, radius: 0.012 });
       this.dropletPositions[i * 3 + 1] = -50;
       this.dropletMesh.setColorAt(i, this.dropletColor.setRGB(0.5, 0.02, 0.04));
@@ -477,8 +490,8 @@ export class Effects3D {
     this.dropletMesh.instanceMatrix.needsUpdate = true;
     this.dropletMesh.count = 0;
 
-    this.mistPositions = new Float32Array(MAX_MIST * 3);
-    this.mistColors = new Float32Array(MAX_MIST * 4).fill(1);
+    this.mistPositions = new Float32Array(budget.mist * 3);
+    this.mistColors = new Float32Array(budget.mist * 4).fill(1);
     this.mistGeometry = new THREE.BufferGeometry();
     this.mistGeometry.setAttribute("position", new THREE.BufferAttribute(this.mistPositions, 3));
     this.mistGeometry.setAttribute("color", new THREE.BufferAttribute(this.mistColors, 4));
@@ -487,7 +500,7 @@ export class Effects3D {
     this.mistPoints = new THREE.Points(this.mistGeometry, this.mistMaterial);
     this.mistPoints.frustumCulled = false;
     scene.add(this.mistPoints);
-    for (let i = 0; i < MAX_MIST; i += 1) {
+    for (let i = 0; i < budget.mist; i += 1) {
       this.mists.push({ alive: false, x: 0, y: -50, z: 0, life: 0, maxLife: 1, scale: 1 });
       this.mistPositions[i * 3 + 1] = -50;
     }
@@ -497,11 +510,11 @@ export class Effects3D {
     this.gibGeometry = buildChunkGeometry();
     // Each piece carries its whole colour, so teeth are white and brain is grey beside the flesh.
     this.gibMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.34, metalness: 0 });
-    this.gibMesh = new THREE.InstancedMesh(this.gibGeometry, this.gibMaterial, MAX_GIBS);
+    this.gibMesh = new THREE.InstancedMesh(this.gibGeometry, this.gibMaterial, budget.gibs);
     this.gibMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.gibMesh.frustumCulled = false;
     scene.add(this.gibMesh);
-    for (let i = 0; i < MAX_GIBS; i += 1) {
+    for (let i = 0; i < budget.gibs; i += 1) {
       const gib = idleGib();
       this.gibs.push(gib);
       this.gibMesh.setColorAt(i, this.gibColor.setHex(0x5c0a10));
@@ -510,12 +523,12 @@ export class Effects3D {
     this.gibMesh.instanceMatrix.needsUpdate = true;
     this.shardGeometry = buildShardGeometry();
     this.shardMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5, metalness: 0, vertexColors: true, side: THREE.DoubleSide });
-    this.shardMesh = new THREE.InstancedMesh(this.shardGeometry, this.shardMaterial, MAX_SHARDS);
+    this.shardMesh = new THREE.InstancedMesh(this.shardGeometry, this.shardMaterial, budget.shards);
     this.shardMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.shardMesh.frustumCulled = false;
     this.shardMesh.castShadow = true;
     scene.add(this.shardMesh);
-    for (let i = 0; i < MAX_SHARDS; i += 1) {
+    for (let i = 0; i < budget.shards; i += 1) {
       const shard = idleGib();
       this.shards.push(shard);
       this.shardMesh.setColorAt(i, this.gibColor.setHex(0xffffff));
@@ -977,8 +990,8 @@ export class Effects3D {
   }
 
   private spawnDroplet(x: number, y: number, z: number, vx: number, vy: number, vz: number, color: { r: number; g: number; b: number }, life: number, blood: boolean, radius = blood ? 0.0035 + this.ambientRandom() ** 3 * 0.0125 : 0.0025 + this.ambientRandom() ** 2 * 0.004): void {
-    // A new droplet joins the live ones at the front; a full pool reuses its slots in turn.
-    const index = this.liveDroplets < MAX_DROPLETS ? this.liveDroplets++ : this.dropletIndex++ % MAX_DROPLETS;
+    // A new droplet joins the live ones at the front; a full pool gives up the drop that has flown longest.
+    const index = this.liveDroplets < this.budget.droplets ? this.liveDroplets++ : this.oldestDroplet();
     const droplet = this.droplets[index]!;
     droplet.alive = true;
     droplet.blood = blood;
@@ -1003,6 +1016,25 @@ export class Effects3D {
     this.dropletMesh.setColorAt(index, this.dropletColor.setRGB(droplet.r, droplet.g, droplet.b));
     this.writeDropletMatrix(index, droplet);
     this.uploadDroplets(index, index + 1, true);
+  }
+
+  /** The live droplet that has flown longest: about to land, where one just thrown has all its flight ahead of it. */
+  private oldestDroplet(): number {
+    let oldest = 0;
+    let flown = -1;
+    for (let index = 0; index < this.liveDroplets; index += 1) {
+      const droplet = this.droplets[index]!;
+      if (droplet.maxLife - droplet.life > flown) {
+        flown = droplet.maxLife - droplet.life;
+        oldest = index;
+      }
+    }
+    return oldest;
+  }
+
+  /** As many drops as a desktop throws, thinned for the device's budget. */
+  private forDevice(count: number): number {
+    return Math.round((count * this.budget.droplets) / DESKTOP_GORE.droplets);
   }
 
   /** Draws only the live droplets and uploads the instances from `from` up to `to`. */
@@ -1064,7 +1096,7 @@ export class Effects3D {
   }
 
   private spawnMist(x: number, y: number, z: number, scale: number, life: number): void {
-    const index = this.mistIndex % MAX_MIST;
+    const index = this.mistIndex % this.budget.mist;
     this.mistIndex += 1;
     const mist = this.mists[index]!;
     mist.alive = true;
@@ -1102,14 +1134,15 @@ export class Effects3D {
 
   /**
    * Blood thrown onto the canvas round `x`, `z`: `stamps` blots of about `opacity` each (a quarter as
-   * many, smaller and fainter, with reduced blood). One splash is a stain the canvas shows through, and
-   * where splashes land on each other it darkens, so the canvas gets bloodier as the bout goes on.
+   * many, smaller and fainter, with reduced blood, and larger and darker with full). One splash is a stain
+   * the canvas shows through, and where splashes land on each other it darkens, so the canvas gets bloodier
+   * as the bout goes on.
    */
   splatter(x: number, z: number, scale: number, rand: () => number = () => this.ambientRandom(), stamps = 12, opacity = FINISHER_STAIN): void {
     if (this.bloodLevel === "off") return;
     const reduced = this.bloodLevel === "reduced";
     const drops = reduced ? Math.ceil(stamps / 4) : stamps;
-    const modeScale = reduced ? 0.35 : 1;
+    const modeScale = reduced ? 0.35 : SOAK;
     for (let i = 0; i < drops; i += 1) {
       const angle = rand() * Math.PI * 2;
       const radius = rand() * (reduced ? 0.22 : 0.48) * scale;
@@ -1119,7 +1152,7 @@ export class Effects3D {
         (0.35 + rand() * 0.9) * scale * modeScale,
         (0.2 + rand() * 0.65) * scale * modeScale,
         rand() * Math.PI,
-        opacity * (0.75 + rand() * 0.5) * (reduced ? 0.6 : 1),
+        opacity * (0.75 + rand() * 0.5) * (reduced ? 0.6 : SOAK),
         i === 0 ? 0x4c070b : 0x6e0d13,
       );
     }
@@ -1145,24 +1178,29 @@ export class Effects3D {
     // Sweat and chunks are pushed along the punch as hard as the event's sign says (a block may carry none).
     const push = spray === undefined ? Math.abs(finite(event.direction)) : 1;
     const origin = { x: finite(targetWorld.x), y: event.detail.endsWith(":body") ? 1.05 : 1.58, z: finite(targetWorld.z) };
-    // A cut's beat throws no sweat and shakes nothing: no punch landed.
+    // A cut's beat throws no sweat and shakes nothing: no punch landed. At full blood it is the blood that
+    // flies off a punch, with a little sweat.
     const beat = event.kind === "bleed";
-    const sweatCount = reducedMotion || beat ? 0 : Math.round((blocked ? 6 : 16) + Math.min(20, Math.max(0, event.amount) / 20));
+    const sweatCount = reducedMotion || beat
+      ? 0
+      : this.bloodLevel === "full"
+        ? Math.round((blocked ? 4 : 6) + Math.min(6, Math.max(0, event.amount) / 40))
+        : Math.round((blocked ? 6 : 16) + Math.min(20, Math.max(0, event.amount) / 20));
     const strand = { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, life: 0, radius: 0, color: bloodShade(0) };
-    // The engine's blood is the cut's bleeding over eight plus the damage over four: the first part is
+    // The engine's blood is the cut's bleeding over five plus the damage over three: the first part is
     // what an open wound throws. A block's amount is the guard's damage and a knockdown's its count,
     // neither the weight of the punch.
     const landed = event.kind === "hit" || event.kind === "counter_hit";
-    const wound = landed ? Math.max(0, event.blood - Math.floor(Math.max(0, event.amount) / 4)) : 0;
+    const wound = landed ? Math.max(0, event.blood - Math.floor(Math.max(0, event.amount) / 3)) : 0;
     const bloodCount = reducedMotion || event.blood <= 0 || this.bloodLevel === "off"
       ? 0
       : beat
         // The drip from the face carries the bleeding, and the beat adds a few drops.
-        ? (this.bloodLevel === "reduced" ? 1 : Math.min(5, 2 + Math.floor(Math.max(0, event.amount) / 12)))
+        ? (this.bloodLevel === "reduced" ? 1 : Math.min(12, 3 + Math.floor(Math.max(0, event.amount) / 8)))
         : this.bloodLevel === "reduced"
           ? Math.min(24, Math.round(event.blood * (blocked ? 0.12 : 0.24)))
           // The guard takes the punch, and half the blood it would have thrown.
-          : blocked ? Math.round(bloodDropsFor(event.blood, 0) / 2) : bloodDropsFor(event.blood, landed ? event.amount : 0);
+          : this.forDevice(blocked ? Math.round(bloodDropsFor(event.blood, 0) / 2) : bloodDropsFor(event.blood, landed ? event.amount : 0));
     if (!beat) this.shake = Math.min(0.09, this.shake + (blocked ? 0.008 : Math.max(0.012, event.amount / 2600)));
     if (event.kind === "knockdown") this.shake = Math.min(0.14, this.shake + 0.06);
 
@@ -1253,12 +1291,15 @@ export class Effects3D {
         this.spawnMist(origin.x + (rand() - 0.5) * 0.34, origin.y + (rand() - 0.5) * 0.26, origin.z + (rand() - 0.5) * 0.34, (0.9 + rand() * 1.2) * scale, 0.55 + rand() * 0.55);
       }
     }
-    // The canvas is splashed by what an open wound throws and by a man going down, not by every punch
-    // that draws a little blood: the drops that land paint the rest.
-    const stamps = event.kind === "knockdown" ? 12 : Math.min(8, Math.round(wound / 4));
+    // The canvas is splashed by what an open wound throws and by a man going down, and at full blood by any
+    // punch that lands hard, cut or not; the drops that land paint the rest.
+    const full = this.bloodLevel === "full";
+    const hard = full && landed ? Math.max(0, Math.round((event.amount - 40) / 14)) : 0;
+    const stamps = event.kind === "knockdown" ? (full ? 18 : 12) : Math.min(full ? 14 : 8, Math.round(wound / (full ? 3 : 4)) + hard);
     if (stamps > 0 && this.bloodLevel !== "off") {
       const knockdown = event.kind === "knockdown";
-      this.splatter(origin.x + (rand() - 0.5) * 0.6, origin.z + (rand() - 0.5) * 0.6, knockdown ? 1 + Math.min(2, event.blood / 55) : 0.8 + Math.min(1.2, wound / 30), rand, stamps, knockdown ? KNOCKDOWN_STAIN : SPLASH_STAIN);
+      const spread = knockdown ? 1 + Math.min(2, event.blood / 55) : 0.8 + Math.min(1.2, wound / 30);
+      this.splatter(origin.x + (rand() - 0.5) * 0.6, origin.z + (rand() - 0.5) * 0.6, full ? spread * 1.3 : spread, rand, stamps, knockdown ? KNOCKDOWN_STAIN : SPLASH_STAIN);
     }
     // A punch that rocks him tears flesh from an open cut, and a big counter tears it from any face.
     const rocking = event.amount >= HARD_SHOT || (event.kind === "counter_hit" && event.amount >= ROCKING_COUNTER);
@@ -1672,7 +1713,7 @@ export class Effects3D {
     }
     const emitter = this.dripEmitters[index];
     emitter.position.set(finite(headWorld.x), finite(headWorld.y, 1.5), finite(headWorld.z));
-    emitter.rate = this.bloodLevel === "reduced" ? Math.min(3, severity * 3) : Math.min(18, severity * 14);
+    emitter.rate = this.bloodLevel === "reduced" ? Math.min(3, severity * 3) : Math.min(36, severity * 24);
     emitter.active = true;
   }
 
@@ -2039,12 +2080,13 @@ export class Effects3D {
       const droplet = this.droplets[i]!;
       droplet.life -= step;
       if (droplet.life <= 0 || droplet.y < CANVAS_TOP) {
-        // A drop leaves a spot the size of the drop: fine spray soaks in unseen, a gob of blood splashes.
-        const lands = THREE.MathUtils.clamp(droplet.radius / GOB, 0.25, 1) * (this.bloodLevel === "full" ? 1 : 0.4);
+        // A drop leaves a spot the size of the drop: a gob of blood always splashes, fine spray mostly does.
+        const full = this.bloodLevel === "full";
+        const lands = full ? THREE.MathUtils.clamp(droplet.radius / GOB, FINE_SPRAY_STAINS, 1) : THREE.MathUtils.clamp(droplet.radius / GOB, 0.25, 1) * 0.4;
         if (droplet.y < CANVAS_TOP && droplet.blood && this.bloodLevel !== "off" && this.ambientRandom() < lands) {
-          const scale = this.bloodLevel === "full" ? 1 : 0.6;
+          const scale = full ? SOAK : 0.6;
           const size = droplet.radius * (40 + this.ambientRandom() * 20) * scale;
-          this.placeDecal(droplet.x, droplet.z, size, size * (0.55 + this.ambientRandom() * 0.35), this.ambientRandom() * Math.PI, this.bloodLevel === "full" ? DROP_STAIN : DROP_STAIN * 0.6, 0x6e0d13);
+          this.placeDecal(droplet.x, droplet.z, size, size * (0.55 + this.ambientRandom() * 0.35), this.ambientRandom() * Math.PI, DROP_STAIN * (full ? SOAK : 0.6), 0x6e0d13);
         }
         // The last live droplet takes this slot and is stepped next.
         this.retireDroplet(i);

@@ -6,7 +6,7 @@ import { CANVAS_BLOOD_UPLOAD_INTERVAL, CanvasBlood, splatRecipe } from "./canvas
 import { Effects3D } from "./effects";
 import { teethFor } from "./gore";
 import { mouthpieceFlies } from "./mouthpiece";
-import { poolRadius } from "./renderer";
+import { POOL_RATE, poolRadius } from "./renderer";
 import { CANVAS_TOP, RING_FIGHT_HALF, worldMapping } from "./world";
 
 interface Shape { x: number; y: number; rx: number; ry: number; turn: number }
@@ -152,9 +152,9 @@ function playBout(): { stains: PaintedStain[]; roundEnds: number[]; pools: THREE
         spills[index] = 0;
         effects.drip(head.set(self.x, 1.56, self.z), self.severity, false, index);
       } else if (self.severity > 0.2 && self.down) {
-        // Two spills a second from under his head, which lies away from the man who put him down.
+        // Spills from under his head, which lies away from the man who put him down.
         effects.stopDrip(index);
-        pooled[index]! += 2 / 60;
+        pooled[index]! += POOL_RATE / 60;
         const other = fighter(tick, 1 - index);
         const apart = Math.hypot(self.x - other.x, self.z - other.z) || 1;
         while (pooled[index]! >= 1) {
@@ -433,7 +433,7 @@ describe("blood on the canvas", () => {
     expect(pooled("off")).toBe(0);
   });
 
-  it("gets bloodier round by round through a real bout, where it once painted the ring solid in the first", () => {
+  it("is soaked through a real bout, bloodier round by round, where it once painted the ring solid in the first", () => {
     const { made: blood, painted } = paintedCanvases(() => new CanvasBlood(new THREE.Scene(), 256));
     const stamps = (blood as unknown as { stamps: HTMLCanvasElement[] }).stamps.map((stamp) => painted.get(stamp)!.alpha);
     blood.dispose();
@@ -458,22 +458,27 @@ describe("blood on the canvas", () => {
       expect(darkest).toBeGreaterThan(0.9);
     }
     const [one, two, three] = after as [{ stained: number; soaked: number }, { stained: number; soaked: number }, { stained: number; soaked: number }];
-    // A cut opens 21 s into round 1: by the bell a couple of square metres of the 37 show blood, and
-    // little but the knockdown's pool is soaked through, where the old pacing painted 4,176 stains.
-    expect(roundEnds[0]).toBeLessThan(1500);
-    expect(one.stained).toBeLessThan(4);
-    expect(one.soaked).toBeLessThan(0.5);
+    // Hard punches splash a clean face's blood and the cut that opens 21 s into round 1 throws plenty more:
+    // by the bell about 6 m² of the 37 show blood and 2 m² are soaked through, the knockdown's pool among
+    // them, and the bout ends with half the canvas bloody. The ceilings are well past that, to catch a
+    // runaway painting the ring solid in a round; the floors keep the canvas from going back to a few spots.
+    expect(roundEnds[0]).toBeLessThan(4000);
+    expect(one.stained).toBeGreaterThan(4);
+    expect(one.stained).toBeLessThan(9);
+    expect(one.soaked).toBeGreaterThan(1);
+    expect(one.soaked).toBeLessThan(3.5);
     // Every round leaves more, the worst of the cut in round 2 most of all.
     expect(two.stained).toBeGreaterThan(one.stained * 2);
-    expect(three.stained).toBeGreaterThan(one.stained * 3);
+    expect(three.stained).toBeGreaterThan(two.stained);
     expect(three.soaked).toBeGreaterThan(one.soaked * 3);
+    expect(three.stained).toBeLessThan(26);
   }, 60_000);
 
-  it("spreads fast at first and then slower, wider the worse the fighter bleeds, to under half a metre", () => {
-    expect(poolRadius(0, 1)).toBeCloseTo(0.05, 5);
+  it("spreads fast at first and then slower, wider the worse the fighter bleeds, to 0.7 m", () => {
+    expect(poolRadius(0, 1)).toBeCloseTo(0.06, 5);
     expect(poolRadius(4, 1) - poolRadius(0, 1)).toBeGreaterThan(poolRadius(16, 1) - poolRadius(12, 1));
     expect(poolRadius(16, 1.4)).toBeGreaterThan(poolRadius(16, 0.5));
-    expect(poolRadius(20, 1)).toBeGreaterThan(0.2);
-    expect(poolRadius(10_000, 10)).toBe(0.42);
+    expect(poolRadius(20, 1)).toBeGreaterThan(0.3);
+    expect(poolRadius(10_000, 10)).toBe(0.7);
   });
 });

@@ -4,7 +4,7 @@ import { FIGHTER_RADIUS, punchTiming, REST_CORNER_OFFSET, RING_HALF_WIDTH, total
 import { buildArena } from "./arena";
 import { CameraDirector, ceremonyShot, cornerFrame, cornerPoint, cornerShot, cornerShotProgress, CUTMAN_WORK_DEGREES, CUTMAN_WORK_DISTANCE } from "./camera";
 import { captionSlot, drawCaption } from "./caption";
-import { bloodPatternFor, Effects3D, NECK_FOUNTAIN_SECONDS } from "./effects";
+import { bloodPatternFor, DESKTOP_GORE, Effects3D, NECK_FOUNTAIN_SECONDS } from "./effects";
 import { CLOCK_PORTRAIT_RADIUS, cardRows, decisionLabel, drawHud, finalRevealDelay as revealDelay, hudScale, lagWarning, plateDetails, REFEREE_REVEAL_DELAY_SECONDS, FINAL_REVEAL_DELAY_SECONDS, finalRevealDelay, fitFontSize, HUD_MAX_GUARD, HUD_MAX_POISE, PLATE_PORTRAIT_RADIUS, RESULT_CARD_FOOTER, resultCard, resultCardLayout, RoundClock, RoundStatsTracker, scoreTotal, topPanelOffset } from "./hud";
 import { FightRenderer } from "./renderer";
 import { buildRing, disposeRing, nearRopeOpacityFor, ROPE_FLEX_GLSL, ROPE_GIVE_GLSL, ropePress, ROPE_BACK, ROPE_MAX_GIVE, ropeExcess } from "./ring";
@@ -175,10 +175,10 @@ describe("effects", () => {
 
     const full = new Effects3D(new THREE.Scene());
     full.addEvent(severeHit(1), origin, false);
-    expect(full.liveBloodParticles).toBe(140);
-    expect(full.liveMist).toBe(18);
+    expect(full.liveBloodParticles).toBe(360);
+    expect(full.liveMist).toBe(16);
     expect(full.liveGibs).toBe(8);
-    expect(full.canvasStains).toBe(8);
+    expect(full.canvasStains).toBe(14);
     full.dispose();
 
     const reduced = new Effects3D(new THREE.Scene());
@@ -214,7 +214,7 @@ describe("effects", () => {
       effects.drip(right, 1, false, 1);
       effects.update(1 / 60);
     }
-    expect(effects.liveBloodParticles).toBe(2);
+    expect(effects.liveBloodParticles).toBe(4);
     const positions = effects.dropletBuffers.position;
     const liveX = Array.from({ length: positions.count }, (_unused, index) => positions.getX(index))
       .filter((_x, index) => positions.getY(index) > -10);
@@ -454,7 +454,7 @@ describe("effects", () => {
     expect(live).toBe(effects.liveParticles);
     expect(matrices.updateRanges).toEqual([{ start: 0, count: live * 16 }]);
     const positions = effects.dropletBuffers.position;
-    for (let index = 0; index < 900; index += 1) expect(positions.getY(index) > -10).toBe(index < live);
+    for (let index = 0; index < DESKTOP_GORE.droplets; index += 1) expect(positions.getY(index) > -10).toBe(index < live);
     // Once the blood has landed nothing is drawn or uploaded.
     for (let frame = 0; frame < 180; frame += 1) effects.update(1 / 60);
     expect(effects.liveParticles).toBe(0);
@@ -465,8 +465,33 @@ describe("effects", () => {
     expect(matrices.version).toBe(version);
     // A full pool keeps reusing its slots.
     for (let eventId = 0; eventId < 12; eventId += 1) effects.addEvent(severeHit(100 + eventId), new THREE.Vector3(), false);
-    expect(mesh.count).toBe(900);
-    expect(effects.liveParticles).toBe(900);
+    expect(mesh.count).toBe(DESKTOP_GORE.droplets);
+    expect(effects.liveParticles).toBe(DESKTOP_GORE.droplets);
+    effects.dispose();
+  });
+
+  it("gives up the drop that has flown longest when the pool is full, never one just thrown", () => {
+    const effects = new Effects3D(new THREE.Scene(), 256, { ...DESKTOP_GORE, droplets: 8 });
+    const spawn = (x: number, life: number): void => (effects as unknown as { spawnDroplet(x: number, y: number, z: number, vx: number, vy: number, vz: number, color: { r: number; g: number; b: number }, life: number, blood: boolean): void }).spawnDroplet(x, 10, 0, 0, 0, 0, { r: 0.3, g: 0.01, b: 0.01 }, life, true);
+    const flying = (): number[] => {
+      const positions = effects.dropletBuffers.position;
+      return Array.from({ length: positions.count }, (_, index) => index).filter((index) => positions.getY(index) > -10).map((index) => positions.getX(index)).sort((a, b) => a - b);
+    };
+    const run = (seconds: number): void => {
+      for (let elapsed = 0; elapsed < seconds - 1e-9; elapsed += 1 / 60) effects.update(1 / 60);
+    };
+    // A short-lived drop leaves the first slot, which the young drop at the back moves into, ahead of three old ones.
+    spawn(-1, 0.4);
+    for (const x of [1, 2, 3]) spawn(x, 5);
+    run(0.2);
+    spawn(10, 5);
+    run(0.25);
+    for (const x of [11, 12, 13, 14]) spawn(x, 5);
+    expect(flying()).toEqual([1, 2, 3, 10, 11, 12, 13, 14]);
+    spawn(20, 5);
+    expect(flying()).toEqual([2, 3, 10, 11, 12, 13, 14, 20]);
+    for (const x of [21, 22]) spawn(x, 5);
+    expect(flying()).toEqual([10, 11, 12, 13, 14, 20, 21, 22]);
     effects.dispose();
   });
 
@@ -553,11 +578,11 @@ describe("effects", () => {
       effects.restoreFighter(fighterIndex);
       effects.decapitate(fighterIndex, position, quaternion, fighterIndex === 0 ? 1 : -1, 2000 + eventId);
     }
-    expect(effects.liveParticles).toBeLessThanOrEqual(900);
-    expect(effects.liveBloodParticles).toBeLessThanOrEqual(900);
-    expect(effects.liveMist).toBeLessThanOrEqual(90);
+    expect(effects.liveParticles).toBeLessThanOrEqual(DESKTOP_GORE.droplets);
+    expect(effects.liveBloodParticles).toBeLessThanOrEqual(DESKTOP_GORE.droplets);
+    expect(effects.liveMist).toBeLessThanOrEqual(DESKTOP_GORE.mist);
     expect(scene.children.length).toBe(children);
-    expect(effects.liveGibs).toBe(96);
+    expect(effects.liveGibs).toBe(DESKTOP_GORE.gibs);
     expect(effects.activeHeads).toBeLessThanOrEqual(2);
     expect(effects.activeStumps).toBeLessThanOrEqual(2);
 
