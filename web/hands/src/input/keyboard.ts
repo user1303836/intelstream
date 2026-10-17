@@ -14,9 +14,11 @@ export class KeyboardInput {
     if (!ACTIVE_CODES.has(event.code)) return;
     // Keys stay tracked while input is off (the rest, a pause), so one held through the bell counts from the first frame.
     if (!this.enabled) { this.hold(event.code, event.repeat); return; }
+    event.preventDefault();
+    // A guard cancels a press still waiting to go out, before the guard itself is sent (see onHeldChange).
+    if (!event.repeat && (event.code === "KeyQ" || event.code === "KeyE")) this.clearActions();
     // A repeat takes the hold of a key pressed before the page had focus, never the press.
-    event.preventDefault(); this.hold(event.code, event.repeat); if (event.repeat) return;
-    if (event.code === "KeyQ" || event.code === "KeyE") this.clearActions();
+    this.hold(event.code, event.repeat); if (event.repeat) return;
     const punch = PUNCH_KEYS[event.code];
     if (punch !== undefined) this.push({ kind: "punch", hand: punch[0], class: punch[1], target: this.hasShift(event) ? "body" : "head", power: this.hasAlt(event) ? "power" : "normal" });
     // A foul needs Shift held, so a number pressed for the corner as the bell goes cannot become one.
