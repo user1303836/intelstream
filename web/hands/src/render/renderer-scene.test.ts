@@ -164,6 +164,41 @@ describe("blood from a fighter held on the ropes", () => {
   });
 });
 
+describe("blood from the punch that lands", () => {
+  const fire = (detail: string, overrides: Record<string, unknown>) => {
+    const event = { event_id: 9, tick: 40, kind: "hit", actor_id: "one", target_id: "two", amount: 80, detail, blood: 30, direction: 1, action_id: null };
+    const engine = { ...snapshot(), fighters: [fighter("one", -60), fighter("two", 60)] as [FighterSnapshot, FighterSnapshot] };
+    const addEvent = vi.fn();
+    const stub = Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, {
+      pendingContacts: [{ event, presentationEvent: event, presentImpact: true, reactAmount: null, contactTick: 40, recipientIndex: 1, puncherIndex: 0, injury: null }],
+      buffer: { latest: () => engine }, presentFightEvent: vi.fn(), mapping: worldMapping(SIMULATION), contactPoint: new THREE.Vector3(), mouthPoint: new THREE.Vector3(),
+      effects: { addEvent, spawnTeeth: vi.fn() }, settings: () => ({ reducedMotion: false, blood: "full" }), arena: { excite: vi.fn() }, viewerId: null,
+      arcadeInjuries: [null, null], headWorldPose: () => null, knockOutMouthpiece: vi.fn(), onContact: null, viewerHitFlash: 0,
+      ...overrides,
+    });
+    (FightRenderer.prototype as unknown as { fireContacts(this: unknown, tick: number): void }).fireContacts.call(stub, 50);
+    return (addEvent.mock.calls[0]! as [unknown, THREE.Vector3])[1].clone();
+  };
+
+  it("leaves the face where it is drawn, on the side that faced the punch, ducked low or lying on the canvas", () => {
+    // Fighter one at -x punches fighter two at +x; two's skull is drawn low and off his spot, slipping the punch.
+    const at = fire("straight:head", { graphs: [{ currentRoot: { x: -0.4, z: 0 }, landedHit: vi.fn() }, { currentRoot: { x: 0.4, z: 0 }, react: vi.fn() }], headWorldPose: (index: number) => (index === 1 ? { position: new THREE.Vector3(0.55, 1.22, 0.18), quaternion: new THREE.Quaternion() } : null) });
+    expect(at.x).toBeCloseTo(0.47, 6);
+    expect(at.y).toBeCloseTo(1.22, 6);
+    expect(at.z).toBeCloseTo(0.18, 6);
+  });
+
+  it("leaves the chest where it is drawn for a body shot", () => {
+    const chest = new THREE.Object3D();
+    chest.position.set(0.5, 1.1, -0.1);
+    chest.updateMatrixWorld(true);
+    const at = fire("hook:body", { graphs: [{ currentRoot: { x: -0.4, z: 0 }, landedHit: vi.fn() }, { currentRoot: { x: 0.4, z: 0 }, react: vi.fn(), boxer: { rig: { bones: { upperChest: chest } } } }] });
+    expect(at.x).toBeCloseTo(0.38, 6);
+    expect(at.y).toBeCloseTo(1.1, 6);
+    expect(at.z).toBeCloseTo(-0.1, 6);
+  });
+});
+
 describe("a fighter torn open by the knockout punch", () => {
   const punch = { event_id: 31, tick: 40, kind: "hit", actor_id: "one", target_id: "two", amount: 72, detail: "straight:body", blood: 20, direction: 1, action_id: null };
   /** Fighter two's body standing at (0.6, 0) facing +z, his own left toward +x; `lying` lays him on his back. */

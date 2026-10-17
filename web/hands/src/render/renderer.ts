@@ -929,6 +929,9 @@ const KNOCKDOWN_GUSH_SECONDS = 1.6;
 const KNOCKDOWN_GUSH_RATE = 160;
 /** Teeth a broken jaw spills. */
 const JAW_TEETH = 8;
+/** How far toward the puncher from the middle of the skull, and from the chest bone, a punch lands on the face and the chest. */
+const HEAD_CONTACT_REACH = 0.08;
+const CHEST_CONTACT_REACH = 0.12;
 /** Where a fighter pours blood from a wound he carries: his mouth (a knockdown or a broken jaw), a shoulder or the ribs on one side. */
 type WoundSite = "mouth" | "shoulder_left" | "shoulder_right" | "ribs_left" | "ribs_right";
 const woundSite = (injury: ArcadeInjury | null): WoundSite => (injury === "shoulder_left" || injury === "shoulder_right" || injury === "ribs_left" || injury === "ribs_right" ? injury : "mouth");
@@ -1830,8 +1833,8 @@ export class FightRenderer {
     const { recipientIndex, puncherIndex } = contactParticipants(event, snapshot);
     const recipient = snapshot.fighters[recipientIndex];
     if (recipient === undefined) return;
-    drawnPlace(this.graphs?.[recipientIndex], recipient, this.mapping, this.contactPoint);
     const spray = sprayDirection(snapshot.fighters[puncherIndex], recipient, this.mapping);
+    this.contactOn(recipientIndex, recipient, event.detail.endsWith(":body"), spray, event.direction);
     this.effects.addEvent(event, this.contactPoint, this.settings().reducedMotion, spray);
     const puncher = puncherIndex >= 0 ? snapshot.fighters[puncherIndex] : undefined;
     const keyParts = puncher?.action_key?.split(":") ?? [];
@@ -2235,7 +2238,7 @@ export class FightRenderer {
       const spray = sprayDirection(this.buffer.latest()?.fighters[puncherIndex], target, this.mapping);
       this.presentFightEvent(event, recipientIndex, puncherIndex);
       if (presentImpact && target !== undefined) {
-        drawnPlace(this.graphs?.[recipientIndex], target, this.mapping, this.contactPoint);
+        this.contactOn(recipientIndex, target, presentationEvent.detail.endsWith(":body"), spray, presentationEvent.direction);
         this.effects.addEvent(presentationEvent, this.contactPoint, this.settings().reducedMotion, spray);
       }
       const currentSettings = this.settings();
@@ -2322,6 +2325,21 @@ export class FightRenderer {
   private enterRest(seconds: number): void {
     this.restStartedAt = seconds;
     this.effects.clearMouthpieces();
+  }
+
+  /**
+   * Where a punch lands on the fighter as he is drawn, into contactPoint: the side of his face or chest that
+   * faced the puncher, which stands off the spot under him as he leans, slips or lies on the canvas. Without
+   * his skeleton, the spot under him.
+   */
+  private contactOn(index: number, fighter: FighterSnapshot, body: boolean, spray: SprayDirection | undefined, direction: number): THREE.Vector3 {
+    const head = body ? null : this.headWorldPose(index);
+    const chest = body ? this.graphs?.[index]?.boxer.rig.bones.upperChest : undefined;
+    const part = head?.position ?? chest?.getWorldPosition(this.contactPoint) ?? null;
+    if (part === null) return drawnPlace(this.graphs?.[index], fighter, this.mapping, this.contactPoint);
+    const toward = spray ?? { x: direction < 0 ? -1 : 1, z: 0 };
+    const reach = body ? CHEST_CONTACT_REACH : HEAD_CONTACT_REACH;
+    return this.contactPoint.set(part.x - toward.x * reach, part.y, part.z - toward.z * reach);
   }
 
   /** Blood pours from the fighter's nose and mouth, from his head as it is posed, and follows him as he goes down. */

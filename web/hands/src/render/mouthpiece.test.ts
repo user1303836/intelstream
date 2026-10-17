@@ -143,6 +143,7 @@ describe("gum shield", () => {
       lastKnockdown: { knockdown: { ...hit, kind: "knockdown", amount: 1, detail: "" }, hit, finisher: null },
       contactPoint: new THREE.Vector3(), tmpA: new THREE.Vector3(-1, 0, 0), tmpB: new THREE.Vector3(1, 0, 0), pendingContacts: [],
       mapping: { x: (value: number) => value / 100, z: (value: number) => value / 100 },
+      contactOn: () => new THREE.Vector3(),
       effects: { addEvent: () => undefined },
       settings: () => ({ reducedMotion: false }),
       graphs: null,

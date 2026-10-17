@@ -1173,6 +1173,28 @@ describe("gore from a real punch", () => {
     expect(stained("reduced")).toBeLessThan(40);
   });
 
+  it("throws the blood from where the punch landed on him, or from a standing man's head over the spot under him", () => {
+    const start = (at: THREE.Vector3): number => {
+      const effects = new Effects3D(new THREE.Scene(), 256);
+      effects.addEvent(punchOn("hit", 90, 100), at, false);
+      const positions = effects.dropletBuffers.position;
+      let lowest = Infinity;
+      for (let index = 0; index < effects.liveParticles; index += 1) lowest = Math.min(lowest, positions.getY(index));
+      effects.dispose();
+      return lowest;
+    };
+    expect(start(new THREE.Vector3(0.3, 0.22, 0.4))).toBeLessThan(0.3);
+    expect(start(new THREE.Vector3(0.3, 0, 0.4))).toBeGreaterThan(1.4);
+  });
+
+  it("shakes the camera harder the harder the punch, and hardest when a man goes down", () => {
+    const shaken = (event: CombatEvent): number => after(event, (effects) => effects.shakeAmount);
+    expect(shaken(punchOn("hit", 140, 0))).toBeGreaterThan(0.09);
+    expect(shaken(punchOn("hit", 140, 0))).toBeGreaterThan(shaken(punchOn("hit", 60, 0)) * 2);
+    expect(shaken({ ...punchOn("knockdown", 1, 0), blood: 20 })).toBeGreaterThan(0.1);
+    expect(shaken(punchOn("hit", 500, 0))).toBeLessThanOrEqual(0.14);
+  });
+
   it("throws less blood from a punch the guard took than from a clean jab, however hard it hit the guard", () => {
     // A block carries the guard's damage as its amount and the blood that leaked through it.
     const jab = punchOn("hit", 34, 0, "jab:head");

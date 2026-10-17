@@ -1248,8 +1248,9 @@ export class Effects3D {
   }
 
   /**
-   * Blood, sweat and chunks for a contact. `spray` is the way the punch travelled (from puncher to
-   * recipient); without it the event's world-x sign stands in.
+   * Blood, sweat and chunks for a contact. `targetWorld` is where the punch landed on him, or a spot on the
+   * canvas under him, from which it leaves at a standing man's head or chest height. `spray` is the way the
+   * punch travelled (from puncher to recipient); without it the event's world-x sign stands in.
    */
   addEvent(event: CombatEvent, targetWorld: THREE.Vector3, reducedMotion: boolean, spray?: SprayDirection): void {
     if (!IMPACT_KINDS.has(event.kind)) return;
@@ -1261,7 +1262,7 @@ export class Effects3D {
     const launch = unitSpray(spray ?? event.direction);
     // Sweat and chunks are pushed along the punch as hard as the event's sign says (a block may carry none).
     const push = spray === undefined ? Math.abs(finite(event.direction)) : 1;
-    const origin = { x: finite(targetWorld.x), y: event.detail.endsWith(":body") ? 1.05 : 1.58, z: finite(targetWorld.z) };
+    const origin = { x: finite(targetWorld.x), y: targetWorld.y > CANVAS_TOP ? finite(targetWorld.y) : event.detail.endsWith(":body") ? 1.05 : 1.58, z: finite(targetWorld.z) };
     // A cut's beat throws no sweat and shakes nothing: no punch landed. At full blood it is the blood that
     // flies off a punch, with a little sweat.
     const beat = event.kind === "bleed";
