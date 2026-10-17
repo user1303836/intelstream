@@ -9,20 +9,26 @@ const MODIFIER_CODES = new Set(["ShiftLeft", "ShiftRight", "AltLeft", "AltRight"
 export class KeyboardInput {
   private readonly held = new Set<string>(); private readonly queue: SemanticAction[] = [];
   private enabled = true;
+  /** Option as the newest key event says it is, which knows of one pressed before the page had focus. */
+  private altFlag = false;
   private heldListener: (() => void) | null = null;
   private readonly keydown = (event: KeyboardEvent): void => {
+    this.altFlag = event.altKey;
     if (!ACTIVE_CODES.has(event.code)) return;
     // Keys stay tracked while input is off (the rest, a pause), so one held through the bell counts from the first frame.
     if (!this.enabled) { this.hold(event.code, event.repeat); return; }
+    event.preventDefault();
+    // A guard cancels a press still waiting to go out, before the guard itself is sent (see onHeldChange).
+    if (!event.repeat && (event.code === "KeyQ" || event.code === "KeyE")) this.clearActions();
     // A repeat takes the hold of a key pressed before the page had focus, never the press.
-    event.preventDefault(); this.hold(event.code, event.repeat); if (event.repeat) return;
-    if (event.code === "KeyQ" || event.code === "KeyE") this.clearActions();
+    this.hold(event.code, event.repeat); if (event.repeat) return;
     const punch = PUNCH_KEYS[event.code];
-    if (punch !== undefined) this.push({ kind: "punch", hand: punch[0], class: punch[1], target: this.hasShift(event) ? "body" : "head", power: this.hasAlt(event) ? "power" : "normal" });
+    if (punch !== undefined) this.push({ kind: "punch", hand: punch[0], class: punch[1], target: this.hasShift(event) ? "body" : "head", power: this.alt ? "power" : "normal" });
     // A foul needs Shift held, so a number pressed for the corner as the bell goes cannot become one.
     else { const action = ACTION_KEYS[event.code]; if (action !== undefined && (action.kind !== "foul" || this.hasShift(event))) this.push(action); }
   };
   private readonly keyup = (event: KeyboardEvent): void => {
+    this.altFlag = event.altKey;
     // macOS delivers no keyup for a key let go while Command is held (Chrome since 149 makes one up; Discord's Electron does
     // not), so once Command is up only the modifiers, whose releases always arrive, can be trusted to still be down.
     if (event.code === "MetaLeft" || event.code === "MetaRight") { this.letGo((code) => !MODIFIER_CODES.has(code)); return; }
@@ -54,9 +60,9 @@ export class KeyboardInput {
   }
   // The key's own flags count too: a modifier pressed before the page had focus is held all the same.
   private hasShift(event: KeyboardEvent): boolean { return event.shiftKey || this.held.has("ShiftLeft") || this.held.has("ShiftRight"); }
-  private hasAlt(event: KeyboardEvent): boolean { return event.altKey || this.held.has("AltLeft") || this.held.has("AltRight"); }
+  private get alt(): boolean { return this.altFlag || this.held.has("AltLeft") || this.held.has("AltRight"); }
   /** Alt (Option on a Mac) is held: the next punch is a power punch. */
-  get powerHeld(): boolean { return this.enabled && (this.held.has("AltLeft") || this.held.has("AltRight")); }
+  get powerHeld(): boolean { return this.enabled && this.alt; }
   private push(action: SemanticAction): void { if (this.sharedActions === undefined) pushActionIntent(this.queue, action, this.maximumQueue); else this.sharedActions.push("keyboard", action); }
   private clearActions(): void { this.queue.length = 0; this.sharedActions?.clear(); }
   /** Off drops queued presses but keeps the held keys; the frame stays neutral until input is on again. */
@@ -70,6 +76,6 @@ export class KeyboardInput {
     const defense: HeldDefense = guard > 0 ? "guard_high" : guard < 0 ? "guard_low" : "none";
     return { moveX: x, moveY: y, defense, actions: this.sharedActions === undefined ? this.queue.splice(0, maxActions) : [] };
   }
-  reset(): void { this.letGo(() => true); this.queue.length = 0; this.sharedActions?.clearSource("keyboard"); }
+  reset(): void { this.letGo(() => true); this.altFlag = false; this.queue.length = 0; this.sharedActions?.clearSource("keyboard"); }
   destroy(): void { this.reset(); this.target.removeEventListener("keydown", this.keydown); this.target.removeEventListener("keyup", this.keyup); this.target.removeEventListener("blur", this.blur); document.removeEventListener("visibilitychange", this.visibility); }
 }

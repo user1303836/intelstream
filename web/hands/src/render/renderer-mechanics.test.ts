@@ -216,6 +216,7 @@ describe("a bout that ends on the punch itself", () => {
     Object.assign(stub, {
       onContact: (event: CombatEvent) => heard.push(event.kind), arena: { excite }, viewerId: "two", viewerHitFlash: 0,
       knockOutMouthpiece: vi.fn(), headWorldPose: () => null, mouthPoint: new THREE.Vector3(), reapplyReplayInjuries: vi.fn(),
+      impactFlashes: [{ fire: vi.fn() }, { fire: vi.fn() }], headCache: [], headCacheValid: [false, false], powerHitPoint: new THREE.Vector3(), powerShake: 0,
       // Where the frame draws them, eased apart: fighter two 0.6 m out, his engine place 0.37 m.
       tmpA: new THREE.Vector3(-0.6, 0, 0), tmpB: new THREE.Vector3(0.6, 0, 0),
       effects: { addEvent: (_event: CombatEvent, at: THREE.Vector3) => splashed.push(at.clone()), returnMouthpiece: vi.fn(), stopGush: vi.fn() },
@@ -239,6 +240,57 @@ describe("a bout that ends on the punch itself", () => {
     expect(excite).toHaveBeenCalledWith(1);
     expect(stub.viewerHitFlash).toBeGreaterThan(0);
     expect(stub.pendingContacts).toEqual([]);
+  });
+
+  it("lands a power punch at the replay's impact as it did live, held longest with its flash and kick, the flash and kick left out with reduced motion", () => {
+    const impactAt = (power: "power" | "normal", reducedMotion: boolean, unhit = false) => {
+      const { stub } = fightTo("tko");
+      const landedHit = vi.fn();
+      const flashes = [{ fire: vi.fn() }, { fire: vi.fn() }];
+      const powers: boolean[] = [];
+      Object.assign(stub, {
+        onContact: (_event: CombatEvent, isPower: boolean) => powers.push(isPower), arena: { excite: vi.fn() }, viewerId: "two", viewerHitFlash: 0,
+        knockOutMouthpiece: vi.fn(), headWorldPose: () => null, mouthPoint: new THREE.Vector3(), reapplyReplayInjuries: vi.fn(),
+        tmpA: new THREE.Vector3(-0.6, 0, 0), tmpB: new THREE.Vector3(0.6, 0, 0), settings: () => ({ reducedMotion, blood: "full" }),
+        impactFlashes: flashes, headCache: [], headCacheValid: [false, false], powerHitPoint: new THREE.Vector3(), powerShake: 0,
+      });
+      if (unhit) stub.lastKnockdown = { ...(stub.lastKnockdown as object), hit: null };
+      for (const [index, graph] of (stub.graphs as unknown as Record<string, unknown>[]).entries()) Object.assign(graph, { react: vi.fn(), landedHit: index === 0 ? landedHit : vi.fn(), currentRoot: { x: index === 0 ? -0.6 : 0.6, z: 0 } });
+      const shown = (stub.replay as unknown as { plan: { snapshots: EngineSnapshot[] } }).plan.snapshots.find((one) => one.tick === 160)!;
+      const fireReplayImpact = (FightRenderer.prototype as unknown as { fireReplayImpact(this: unknown, snapshot: EngineSnapshot): void }).fireReplayImpact;
+      fireReplayImpact.call(stub, { ...shown, fighters: [{ ...shown.fighters[0], action_id: "upper", action_key: `uppercut:right:head:${power}` }, shown.fighters[1]] });
+      return { landedHit, flashed: flashes[1]!.fire.mock.calls.length, shake: stub.powerShake as number, powers };
+    };
+    const power = impactAt("power", false);
+    expect(power.landedHit).toHaveBeenCalledWith("upper", false, true);
+    expect(power.flashed).toBe(1);
+    expect(power.shake).toBeGreaterThan(0);
+    expect(power.powers).toEqual([true]);
+    const calm = impactAt("power", true);
+    expect(calm.landedHit).toHaveBeenCalledWith("upper", false, true);
+    expect([calm.flashed, calm.shake]).toEqual([0, 0]);
+    const normal = impactAt("normal", false);
+    expect(normal.landedHit).toHaveBeenCalledWith("upper", false, false);
+    expect([normal.flashed, normal.shake]).toEqual([0, 0]);
+    // A knockdown the guard took the punch of has no hit, and names no punch: the one he is throwing freezes.
+    expect(impactAt("normal", false, true).landedHit).toHaveBeenCalledWith("upper", false, false);
+  });
+
+  it("kicks the replay's shot for a power punch as it does the live camera, and not with reduced motion", () => {
+    const replayFrame = (FightRenderer.prototype as unknown as { replayFrame(this: unknown, snapshot: EngineSnapshot, elapsed: number): { position: THREE.Vector3; lookAt: THREE.Vector3 } }).replayFrame;
+    const shot = (powerShake: number, reducedMotion: boolean): number[] => {
+      const stub = {
+        mapping: worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }), referee: null, headCache: [], headCacheValid: [false, false],
+        replay: { plan: { impact: combat("counter_hit", { tick: 160 }) }, impactFired: true, side: null }, replayFollowAt: 0, replayFollow: 0, portraitPull: 1,
+        replayCameraPosition: new THREE.Vector3(), replayLookAt: new THREE.Vector3(), settings: () => ({ reducedMotion }), powerShake,
+      };
+      const frame = replayFrame.call(stub, { ...snapshot(160), fighters: [fighter("one", -60), fighter("two", 60)] }, 1.2);
+      return [...frame.position.toArray(), ...frame.lookAt.toArray()];
+    };
+    const still = shot(0, false);
+    const kicked = shot(0.08, false);
+    expect(Math.hypot(kicked[0]! - still[0]!, kicked[1]! - still[1]!)).toBeGreaterThan(0.02);
+    expect(shot(0.08, true)).toEqual(still);
   });
 });
 
@@ -348,7 +400,7 @@ describe("the player's own slip, weave or pull behind his punch", () => {
     buffer: { latest: () => latest, interpolationDelayTicks: 2 }, viewerId: "one", replay: null, inputLatencyMs: 100,
     simulation: { tick_rate: 30 }, manualClock: true, lastManualTime: 1000, graphs: [graph, {}], evasion: new EvasionPrediction(),
   });
-  const ownPunch = (ticksToRecovery: number) => ({ ownPunchActive: true, ownTicksToRecovery: ticksToRecovery, cutOwnRecovery: vi.fn(), predict: vi.fn() });
+  const ownPunch = (ticksToRecovery: number) => ({ ownPunchActive: true, ownTicksToRecovery: ticksToRecovery, cutOwnRecovery: vi.fn(), keepOwnRecovery: vi.fn(), predict: vi.fn(), acknowledge: vi.fn() });
 
   it("shows at once behind a punch that has landed or missed, cutting the punch's recovery short for it", () => {
     const graph = ownPunch(0);
@@ -366,6 +418,31 @@ describe("the player's own slip, weave or pull behind his punch", () => {
     // A punch pressed meanwhile takes its place in the server's buffer.
     predictAction.call(renderer, { kind: "punch", id: "c5", hand: "left", class: "jab", target: "head", power: "normal" });
     expect(renderer.evasion.pose(1000 + 3 * (1000 / 30))).toBeNull();
+  });
+
+  it("leaves the punch's recovery alone once a punch press takes its place before it starts, or the server turns it down", () => {
+    const acknowledgeActions = (FightRenderer.prototype as unknown as { acknowledgeActions(this: unknown, snapshot: EngineSnapshot, events: readonly CombatEvent[]): void }).acknowledgeActions;
+    const punch: SemanticAction = { kind: "punch", id: "c5", hand: "left", class: "jab", target: "head", power: "normal" };
+    const replaced = ownPunch(3);
+    const beforeStart = stub(replaced);
+    predictAction.call(beforeStart, { kind: "weave", id: "c4" });
+    predictAction.call(beforeStart, punch);
+    expect(replaced.keepOwnRecovery).toHaveBeenCalledTimes(1);
+    // Once it has started there, on the press's time, the punch waits behind it and the recovery stays cut.
+    const behind = ownPunch(0);
+    const afterStart = stub(behind);
+    predictAction.call(afterStart, { kind: "weave", id: "c4" });
+    predictAction.call(afterStart, punch);
+    expect(behind.keepOwnRecovery).not.toHaveBeenCalled();
+    // Turned down: the frame that carried it is acknowledged with nothing started or waiting.
+    const turnedDown = ownPunch(3);
+    const refused = { ...stub(turnedDown), graphs: [turnedDown, { acknowledge: vi.fn() }], inputSequenceOf: (id: string) => (id === "c4" ? 41 : null) };
+    predictAction.call(refused, { kind: "weave", id: "c4" });
+    const base = snapshot(42);
+    acknowledgeActions.call(refused, { ...base, fighters: [{ ...base.fighters[0], last_input_sequence: 41, queued_actions: 1 }, base.fighters[1]] }, []);
+    expect(turnedDown.keepOwnRecovery).not.toHaveBeenCalled();
+    acknowledgeActions.call(refused, { ...base, fighters: [{ ...base.fighters[0], last_input_sequence: 41 }, base.fighters[1]] }, []);
+    expect(turnedDown.keepOwnRecovery).toHaveBeenCalledTimes(1);
   });
 
   it("leaves it to the server behind a punch it never predicted or anything else the server holds", () => {
@@ -401,6 +478,23 @@ describe("the player's own fighter folding over a body shot", () => {
     expect(predict.call(viewer, held, 1 / 30, 1000).fighters[1].x).toBe(held.fighters[1].x);
     viewer.ownCollapseUntil = 0;
     expect(predict.call(viewer, held, 1 / 30, 1033).fighters[1].x).toBeGreaterThan(held.fighters[1].x);
+  });
+
+  it("walks at the share of his footwork his own punch leaves him, as the server will move him for the input sent meanwhile", () => {
+    const walked = (ownFootwork: number): number => {
+      const viewer = {
+        localInput: () => ({ moveX: 1000, moveY: 0, defense: "none" as const }), viewerId: "two", graphs: [{}, { ownFootwork, ownPunchActive: true }], buffer: { interpolationDelayTicks: 2 },
+        movement: new MovementPrediction(), evasion: new EvasionPrediction(), simulation: { tick_rate: 30 }, inputLatencyMs: null, ownCollapseUntil: 0,
+      };
+      const held: EngineSnapshot = { ...snapshot(35), phase: "fight" };
+      let shown = held;
+      for (let frame = 0; frame < 8; frame += 1) shown = predict.call(viewer, held, 1 / 30, 1000 + (frame * 1000) / 30);
+      return shown.fighters[1].x - held.fighters[1].x;
+    };
+    const free = walked(1);
+    expect(free).toBeGreaterThan(10);
+    expect(walked(0.6) / free).toBeCloseTo(0.6, 1);
+    expect(walked(0)).toBe(0);
   });
 
   it("is not set by a body shot folding the opponent", () => {

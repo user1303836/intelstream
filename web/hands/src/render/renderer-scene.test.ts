@@ -227,12 +227,12 @@ describe("a landed power punch", () => {
     expect((power.flashes[1]!.fire.mock.calls[0]![0] as THREE.Vector3).toArray()).toEqual(power.head.toArray());
     expect(power.flashes[0]!.fire).not.toHaveBeenCalled();
     expect(power.shake).toBeGreaterThan(0);
-    expect(power.landedHit).toHaveBeenCalledWith(false, true);
+    expect(power.landedHit).toHaveBeenCalledWith("p1", false, true);
     expect(power.heard).toEqual([["hit", true]]);
     const normal = fire(false);
     expect(normal.flashes[1]!.fire).not.toHaveBeenCalled();
     expect(normal.shake).toBe(0);
-    expect(normal.landedHit).toHaveBeenCalledWith(false, false);
+    expect(normal.landedHit).toHaveBeenCalledWith("p1", false, false);
     expect(normal.heard).toEqual([["hit", false]]);
   });
 
@@ -240,7 +240,7 @@ describe("a landed power punch", () => {
     const calm = fire(true, true);
     expect(calm.flashes[1]!.fire).not.toHaveBeenCalled();
     expect(calm.shake).toBe(0);
-    expect(calm.landedHit).toHaveBeenCalledWith(false, true);
+    expect(calm.landedHit).toHaveBeenCalledWith("p1", false, true);
     expect(calm.heard).toEqual([["hit", true]]);
   });
 });

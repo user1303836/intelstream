@@ -1,5 +1,6 @@
 import { SharedActionIntent } from "./action-buffer";
 import { InputController, viewRelativeMove } from "./input";
+import type { InputFrame } from "../types";
 
 const button = (pressed = false): GamepadButton => ({ pressed, touched: pressed, value: pressed ? 1 : 0 });
 function pad(buttons: number[] = []): Gamepad {
@@ -211,6 +212,22 @@ describe("telling the server of held input as it changes", () => {
     window.dispatchEvent(key("keyup", "KeyW"));
     window.dispatchEvent(key("keyup", "KeyD"));
     expect(changed).toHaveBeenCalledTimes(5);
+    input.destroy();
+  });
+
+  it("cancels a press still waiting to go out when the guard goes up, rather than sending it with the guard", () => {
+    Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [] });
+    const input = new InputController();
+    // The app sends at once on a held change (network.notifyHeld flushes input.frame()).
+    const sent: InputFrame[] = [];
+    input.onHeldChange(() => sent.push(input.frame()));
+    // A jab inside the edge gap or past the edge budget waits for the next frame to go out.
+    window.dispatchEvent(key("keydown", "KeyF"));
+    window.dispatchEvent(key("keyup", "KeyF"));
+    window.dispatchEvent(key("keydown", "KeyQ"));
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ defense: "guard_high", actions: [] });
+    window.dispatchEvent(key("keyup", "KeyQ"));
     input.destroy();
   });
 

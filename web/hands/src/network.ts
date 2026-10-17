@@ -98,6 +98,8 @@ export class NetworkController {
   private readonly edgeSendTimes: number[] = [];
   private readonly heldSendTimes: number[] = [];
   private heldTimer: number | null = null;
+  /** A press has been made that no frame has carried yet. */
+  private pressWaiting = false;
 
   constructor(
     ticket: string,
@@ -113,7 +115,7 @@ export class NetworkController {
     if (this.disposed || this.listenersBound) return;
     this.bindInputListeners();
     this.connect();
-    if (!this.disposed && !this.terminal) this.inputTimer = window.setInterval(() => this.flushInput(), INPUT_FLUSH_MS);
+    if (!this.disposed && !this.terminal) this.inputTimer = window.setInterval(() => this.periodicFlush(), INPUT_FLUSH_MS);
   }
 
   private bindInputListeners(): void {
@@ -142,6 +144,7 @@ export class NetworkController {
 
   /** Sends the pending input frame on the action edge instead of waiting for the periodic flush. */
   notifyAction(): void {
+    this.pressWaiting = true;
     // The gap merges presses that land together. It counts edge sends only: measured from the
     // periodic flush too, a press in the 8 ms after each flush waited a whole flush period.
     if (this.now() - (this.edgeSendTimes.at(-1) ?? -Infinity) < MIN_EDGE_SEND_GAP_MS) return;
@@ -163,6 +166,16 @@ export class NetworkController {
     }
     if (this.withinLastSecond(this.heldSendTimes) >= MAX_HELD_SENDS_PER_SECOND || this.sendsInLastSecond() >= MAX_SENDS_PER_SECOND - SENDS_KEPT_FOR_PRESSES) return;
     if (this.flushInput()) this.heldSendTimes.push(this.lastInputSentAt);
+  }
+
+  /**
+   * The 30 a second flush. While the room kept for presses is in use, a tick right behind an edge or held send, whose
+   * input the server already has, is left to the presses, unless one is waiting for it.
+   */
+  private periodicFlush(): void {
+    const recent = this.now() - Math.max(this.edgeSendTimes.at(-1) ?? -Infinity, this.heldSendTimes.at(-1) ?? -Infinity) < INPUT_FLUSH_MS;
+    if (recent && !this.pressWaiting && this.sendsInLastSecond() >= MAX_SENDS_PER_SECOND - SENDS_KEPT_FOR_PRESSES) return;
+    this.flushInput();
   }
 
   private sendsInLastSecond(): number {
@@ -289,7 +302,7 @@ export class NetworkController {
       else this.stopInputLifecycle();
       if (seated) {
         if (!this.listenersBound) this.bindInputListeners();
-        this.inputTimer ??= window.setInterval(() => this.flushInput(), INPUT_FLUSH_MS);
+        this.inputTimer ??= window.setInterval(() => this.periodicFlush(), INPUT_FLUSH_MS);
       }
       this.attempts = 0;
       this.clearTransportReconnect(true);
@@ -454,7 +467,9 @@ export class NetworkController {
     // While the connection is stalled the input stays here, current, instead of joining a queue
     // of stale frames; presses wait in the input buffer and leave with the next frame that goes.
     if ((this.socket?.bufferedAmount ?? 0) > BACKLOG_BYTES) return false;
-    return this.sendInput(this.getInput());
+    if (!this.sendInput(this.getInput())) return false;
+    this.pressWaiting = false;
+    return true;
   }
 
   private startOpponentPause(graceMs: number): void {
