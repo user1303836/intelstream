@@ -395,7 +395,7 @@ describe("around the fight", () => {
       hudCanvas: { getBoundingClientRect: () => ({ width: 1280, height: 720 }), width: 0, height: 0, getContext: () => mockHudContext([]) },
       hudViewport: { width: 0, height: 0 }, viewerHitFlash: 0, settings: () => ({ reducedMotion: false }), players: {}, viewerId: "one", final: null,
       frameSeconds: 0, finalRevealAt: 0, reconnectMs: 0, simulation: SIMULATION, roundStats: new RoundStatsTracker(), replay: null, inputLatencyMs: null,
-      roundCalloutUntil: 0, roundCalloutRound: 0, eventCallout: null, roundClock: { ticks: () => null }, avatars: { get: () => null }, drawCaption,
+      roundCalloutUntil: 0, roundCalloutRound: 0, eventCallout: null, roundClock: { ticks: () => null }, avatars: { get: () => null }, drawCaption, effects: { drawLens: vi.fn() },
     });
     method("drawHudOverlay").call(stub, snapshot());
     expect(drawCaption).toHaveBeenCalledOnce();

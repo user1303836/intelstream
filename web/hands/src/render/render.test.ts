@@ -994,7 +994,7 @@ describe("round stats", () => {
       hudCanvas: { getBoundingClientRect: () => ({ width: 1280, height: 720 }), width: 0, height: 0, getContext: () => ctx },
       hudViewport: { width: 0, height: 0 }, viewerHitFlash: 0, settings: () => ({ reducedMotion: false }), players, viewerId: "one", final: null,
       frameSeconds: 0, finalRevealAt: 0, reconnectMs: 0, simulation: { tick_rate: 30 }, roundStats: new RoundStatsTracker(), replay: null,
-      roundCalloutUntil: 0, roundCalloutRound: 0, eventCallout: null, roundClock: { ticks: () => null }, avatars: { get: () => null }, drawCaption: () => undefined,
+      roundCalloutUntil: 0, roundCalloutRound: 0, eventCallout: null, roundClock: { ticks: () => null }, avatars: { get: () => null }, drawCaption: () => undefined, effects: { drawLens: () => undefined },
     }) as unknown as { setInputLatency(milliseconds: number | null): void; drawHudOverlay(snapshot: EngineSnapshot): void };
     const shownAt = (latency: number): string | undefined => {
       texts.length = 0;

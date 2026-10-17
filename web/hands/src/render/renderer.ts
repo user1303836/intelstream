@@ -871,6 +871,25 @@ export function replayCameraSide(midX: number, midZ: number, nx: number, nz: num
   return room(preferred) >= distance * 0.8 || room(preferred) >= room(-preferred) ? preferred : (-preferred as 1 | -1);
 }
 
+/**
+ * How hard a landed blow flashes the screen red: the viewer's own fighter hit, by how hard, and floored, all
+ * the way; any big clean punch and any knockdown, more faintly, as a gory broadcast would, with blood on.
+ */
+export function hitFlash(event: Pick<CombatEvent, "kind" | "amount">, own: boolean, blood: BloodLevel): number {
+  if (own) return event.kind === "knockdown" ? 1 : Math.min(1, 0.35 + event.amount / 400);
+  const gore = blood === "full" ? 1 : blood === "reduced" ? 0.4 : 0;
+  return gore * (event.kind === "knockdown" ? 0.6 : event.amount >= 60 ? Math.min(0.55, (event.amount - 40) / 180) : 0);
+}
+
+/**
+ * How dark the red hurt vignette is for the worst head and body damage in the ring: from the first damage
+ * that counts at full blood, and from heavier damage, half as dark at most, otherwise.
+ */
+export function hurtVignette(trauma: number, blood: BloodLevel): number {
+  if (blood === "full") return trauma > 150 ? Math.min(0.55, trauma / 2400) : 0;
+  return trauma > 350 ? Math.min(0.3, trauma / 4600) : 0;
+}
+
 /** Whether the server would start a punch for this fighter now. */
 export function canStartPunch(fighter: FighterSnapshot): boolean {
   return !fighter.is_downed
@@ -1248,6 +1267,7 @@ export class FightRenderer {
     this.scene.add(this.arena.group);
     this.effects = new Effects3D(this.scene, coarsePointer() ? 1024 : 2048, coarsePointer() ? PHONE_GORE : DESKTOP_GORE);
     this.effects.useUploader(this.renderer);
+    this.effects.setCamera(this.camera);
 
     this.blobTexture = blobShadowTexture();
     const blobGeometry = new THREE.PlaneGeometry(1, 1);
@@ -2220,14 +2240,9 @@ export class FightRenderer {
       }
       const currentSettings = this.settings();
       if (pending.presentImpact || UNIMPACTFUL_KINDS.has(event.kind)) this.arena.excite(CROWD_EXCITEMENT[event.kind] ?? 0);
-      if (
-        presentImpact
-        && recipientIndex >= 0
-        && this.viewerId !== null
-        && this.buffer.latest()?.fighters[recipientIndex]?.player_id === this.viewerId
-        && ["hit", "counter_hit", "knockdown"].includes(event.kind)
-      ) {
-        this.viewerHitFlash = Math.max(this.viewerHitFlash, Math.min(1, 0.35 + event.amount / 400));
+      if (presentImpact && recipientIndex >= 0 && ["hit", "counter_hit", "knockdown"].includes(event.kind)) {
+        const own = this.viewerId !== null && this.buffer.latest()?.fighters[recipientIndex]?.player_id === this.viewerId;
+        this.viewerHitFlash = Math.max(this.viewerHitFlash, hitFlash(event, own, currentSettings.blood));
       }
       if (
         injury !== null
@@ -3101,21 +3116,23 @@ export class FightRenderer {
     this.hudViewport.height = viewport.height;
     ctx.clearRect(0, 0, viewport.width, viewport.height);
     if (snapshot === null) return;
-    if (this.viewerHitFlash > 0.01 && !this.settings().reducedMotion) {
+    const settings = this.settings();
+    if (this.viewerHitFlash > 0.01 && !settings.reducedMotion) {
       const flash = ctx.createRadialGradient(viewport.width / 2, viewport.height / 2, viewport.width * 0.12, viewport.width / 2, viewport.height / 2, viewport.width * 0.7);
       flash.addColorStop(0, `rgba(255,235,225,${(this.viewerHitFlash * 0.18).toFixed(3)})`);
       flash.addColorStop(1, `rgba(140,0,10,${(this.viewerHitFlash * 0.55).toFixed(3)})`);
       ctx.fillStyle = flash;
       ctx.fillRect(0, 0, viewport.width, viewport.height);
     }
-    const hurt = Math.max(...snapshot.fighters.map((fighter) => fighter.trauma.head + fighter.trauma.body));
-    if (hurt > 350) {
+    const hurt = hurtVignette(Math.max(...snapshot.fighters.map((fighter) => fighter.trauma.head + fighter.trauma.body)), settings.blood);
+    if (hurt > 0) {
       const vignette = ctx.createRadialGradient(viewport.width / 2, viewport.height / 2, viewport.width * 0.2, viewport.width / 2, viewport.height / 2, viewport.width * 0.72);
       vignette.addColorStop(0, "rgba(90,0,8,0)");
-      vignette.addColorStop(1, `rgba(75,0,8,${Math.min(0.3, hurt / 4600)})`);
+      vignette.addColorStop(1, `rgba(75,0,8,${hurt.toFixed(3)})`);
       ctx.fillStyle = vignette;
       ctx.fillRect(0, 0, viewport.width, viewport.height);
     }
+    if (!settings.reducedMotion) this.effects.drawLens(ctx, viewport.width, viewport.height);
     drawHud(ctx, viewport.width, viewport.height, snapshot, this.players, this.viewerId, this.frameSeconds >= this.finalRevealAt ? this.final : null, this.reconnectMs, this.simulation.tick_rate, this.roundStats, this.replay !== null ? "KNOCKOUT REPLAY" : null, this.lagWarned ? this.inputLatencyMs : null, this.frameSeconds < this.roundCalloutUntil ? `ROUND ${this.roundCalloutRound}` : this.eventCallout !== null && this.frameSeconds < this.eventCallout.until ? this.eventCallout.text : null, this.roundClock.ticks(snapshot), (player) => this.avatars.get(player), this.lastKnockdown?.knockdown.target_id ?? null, this.touchControls && snapshot.fighters.some((fighter) => fighter.player_id === this.viewerId));
     this.drawCaption(ctx, viewport.width, viewport.height, snapshot);
   }

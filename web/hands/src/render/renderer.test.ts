@@ -4,7 +4,7 @@ import { Avatars } from "./avatars";
 import { RoundClock } from "./hud";
 import { PROTOCOL_VERSION, type CombatEvent, type EngineSnapshot, type MatchResult } from "../types";
 import { releaseSharedGpu, disposeSkeletons } from "./graph";
-import { arcadeInjuryFor, canStartPunch, compileForComposer, CEREMONY_MARKS, ceremonyStep, contactParticipants, contactPresentationPlan, disposeComposer, cornersAtWork, FightRenderer, ownViewPhase, isArcadeInjuryCandidate, knockdownFinisher, presentationTickFor, refereeSpacing, replayCameraSide, sprayDirection, visualSeparation, resultCardTop } from "./renderer";
+import { arcadeInjuryFor, canStartPunch, compileForComposer, CEREMONY_MARKS, ceremonyStep, contactParticipants, contactPresentationPlan, disposeComposer, cornersAtWork, FightRenderer, hitFlash, hurtVignette, ownViewPhase, isArcadeInjuryCandidate, knockdownFinisher, presentationTickFor, refereeSpacing, replayCameraSide, sprayDirection, visualSeparation, resultCardTop } from "./renderer";
 import { RockedVision } from "./rocked";
 import { worldMapping } from "./world";
 
@@ -180,6 +180,55 @@ describe("a knockout by the count", () => {
     expect(finishing({ settings: () => ({ blood: "full", reducedMotion: true }) })).toBeNull();
     expect(finishing({ lastKnockdown: { knockdown: event("knockdown", ""), hit, finisher: null } })).toBeNull();
     expect(finishing({ lastKnockdown: null })).toBeNull();
+  });
+});
+
+describe("screen gore", () => {
+  const blow = (kind: string, amount: number) => ({ kind, amount });
+
+  it("flashes red hardest when the viewer's own fighter is hit or floored, and for any big clean punch with blood on", () => {
+    expect(hitFlash(blow("hit", 60), true, "off")).toBeCloseTo(0.5, 6);
+    expect(hitFlash(blow("knockdown", 2), true, "full")).toBe(1);
+    expect(hitFlash(blow("counter_hit", 140), false, "full")).toBeCloseTo(0.55, 6);
+    expect(hitFlash(blow("hit", 100), false, "full")).toBeGreaterThan(0.3);
+    expect(hitFlash(blow("hit", 100), false, "full")).toBeLessThan(hitFlash(blow("hit", 100), true, "full"));
+    expect(hitFlash(blow("knockdown", 1), false, "full")).toBeCloseTo(0.6, 6);
+    expect(hitFlash(blow("hit", 59), false, "full")).toBe(0);
+    expect(hitFlash(blow("hit", 140), false, "reduced")).toBeLessThan(hitFlash(blow("hit", 140), false, "full") * 0.5);
+    expect(hitFlash(blow("hit", 140), false, "off")).toBe(0);
+  });
+
+  it("darkens the hurt vignette from the first damage at full blood, as it always did otherwise", () => {
+    expect(hurtVignette(150, "full")).toBe(0);
+    expect(hurtVignette(300, "full")).toBeGreaterThan(0.1);
+    expect(hurtVignette(2000, "full")).toBeGreaterThan(0.3);
+    expect(hurtVignette(5000, "full")).toBe(0.55);
+    expect(hurtVignette(300, "reduced")).toBe(0);
+    expect(hurtVignette(5000, "off")).toBe(0.3);
+  });
+
+  it("flashes for the opponent's big clean punch, and draws the blood on the lens unless motion is reduced", async () => {
+    const { mockHudContext } = await import("../test/fixtures");
+    const event = { ...{ event_id: 3, tick: 40, kind: "counter_hit", actor_id: "two", target_id: "one", amount: 130, detail: "straight:head", blood: 60, direction: -1, action_id: null } };
+    const settings = { reducedMotion: false, blood: "full" };
+    const drawLens = vi.fn();
+    const stub = Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, {
+      pendingContacts: [{ event, presentationEvent: event, presentImpact: true, reactAmount: null, contactTick: 40, recipientIndex: 0, puncherIndex: 1, injury: null }],
+      buffer: { latest: () => snapshot() }, presentFightEvent: vi.fn(), mapping: worldMapping({ tick_rate: 30, ring_half_width: 500, ring_half_height: 500 }), contactPoint: new THREE.Vector3(), mouthPoint: new THREE.Vector3(),
+      effects: { addEvent: vi.fn(), spawnTeeth: vi.fn(), drawLens }, settings: () => settings, arena: { excite: vi.fn() }, viewerId: "two",
+      arcadeInjuries: [null, null], graphs: null, headWorldPose: () => null, knockOutMouthpiece: vi.fn(), onContact: null, viewerHitFlash: 0,
+      hudCanvas: { getBoundingClientRect: () => ({ width: 1280, height: 720 }), width: 0, height: 0, getContext: () => mockHudContext([]) },
+      hudViewport: { width: 0, height: 0 }, players: {}, final: null, frameSeconds: 0, finalRevealAt: 0, reconnectMs: 0, simulation: { tick_rate: 30 }, roundStats: null, replay: null, inputLatencyMs: null,
+      roundCalloutUntil: 0, roundCalloutRound: 0, eventCallout: null, roundClock: { ticks: () => null }, avatars: { get: () => null }, drawCaption: vi.fn(),
+    });
+    (FightRenderer.prototype as unknown as { fireContacts(this: unknown, tick: number): void }).fireContacts.call(stub, 50);
+    expect(stub.viewerHitFlash).toBeCloseTo(0.5, 6);
+    const overlay = (FightRenderer.prototype as unknown as { drawHudOverlay(this: unknown, frame: unknown): void }).drawHudOverlay;
+    overlay.call(stub, snapshot());
+    expect(drawLens).toHaveBeenCalledWith(expect.anything(), 1280, 720);
+    settings.reducedMotion = true;
+    overlay.call(stub, snapshot());
+    expect(drawLens).toHaveBeenCalledOnce();
   });
 });
 
@@ -511,6 +560,7 @@ describe("players' pictures", () => {
       roundClock: new RoundClock(),
       avatars,
       drawCaption: () => {},
+      effects: { drawLens: () => {} },
     };
     const overlay = (FightRenderer.prototype as unknown as { drawHudOverlay(this: unknown, frame: unknown): void }).drawHudOverlay;
     overlay.call(self, snapshot());

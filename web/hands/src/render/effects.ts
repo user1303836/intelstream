@@ -5,6 +5,7 @@ import { CanvasBlood, type RegionUploader } from "./canvas-blood";
 import { wearCornerColour } from "./gear";
 import { HARD_SHOT, MISTING_SHOT, ROCKING_COUNTER, TEARING_SHOT, bloodDropsFor, bloodShade, buildChunkGeometry, buildDropletGeometry, buildShardGeometry, buildWoundGeometry, closeCut, dropletShape, eyeTexture, jawWoundTexture, woundTexture, wristWoundTexture } from "./gore";
 import { EYE_LIDS, HEAD_SITES, HEAD_SWELL_CORE, InjuryShading } from "./injury";
+import { LensBlood } from "./lens-blood";
 import { LookShading, SCANNED_LOOK, lookShape, type FighterLook } from "./looks";
 import { SHIELD_RADIUS, buildMouthpieceGeometry, idleShield, stepShield, type ShieldState } from "./mouthpiece";
 import { CANVAS_TOP, RING_FIGHT_HALF, ROPE_LINE } from "./world";
@@ -68,6 +69,9 @@ export const NECK_WOUND_RADIUS = 0.068;
 const HAND_RADIUS = 0.085;
 const MAX_STEP = 0.05;
 const SIMULATION_STEP = 1 / 60;
+/** Blood reaches the camera's lens from a blow in the picture this far away or nearer, in metres, and soaks it from this near. */
+const LENS_REACH = 7;
+const LENS_NEAR = 2.5;
 
 interface Droplet {
   alive: boolean;
@@ -500,6 +504,9 @@ export class Effects3D {
   private ambientSeed = 0x5f37_59df;
   private shake = 0;
   private bloodLevel: BloodLevel = "full";
+  private readonly lens = new LensBlood();
+  private camera: THREE.Camera | null = null;
+  private readonly lensPoint = new THREE.Vector3();
 
   /** `bloodCanvasSize` is the resolution blood on the canvas is painted at, in pixels across the ring. */
   constructor(private readonly scene: THREE.Scene, bloodCanvasSize = 1024, private readonly budget: GoreBudget = DESKTOP_GORE) {
@@ -696,6 +703,21 @@ export class Effects3D {
     return standIns;
   }
 
+  /** The camera the picture is shot with, whose lens blood thrown at it lands on. */
+  setCamera(camera: THREE.Camera): void {
+    this.camera = camera;
+  }
+
+  /** Draws the blood on the lens over the picture, `width` by `height`. */
+  drawLens(ctx: CanvasRenderingContext2D, width: number, height: number): void {
+    this.lens.draw(ctx, width, height);
+  }
+
+  /** Drops of blood on the lens. */
+  get lensDrops(): number {
+    return this.lens.count;
+  }
+
   setBloodLevel(level: BloodLevel): void {
     if (level === this.bloodLevel) return;
     const previous = this.bloodLevel;
@@ -876,6 +898,8 @@ export class Effects3D {
       this.spawnGib(eye.socket.x, eye.socket.y, eye.socket.z, forward.x * (0.6 + rand() * 1.2) + Math.sin(angle) * 0.5, 0.6 + rand() * 1.2, forward.z * (0.6 + rand() * 1.2) + Math.cos(angle) * 0.5, rand, "flesh", index);
     }
     this.splatter(eye.socket.x + forward.x * 0.3, eye.socket.z + forward.z * 0.3, 1.2, rand, 10);
+    this.splashLens(eye.socket.x, eye.socket.y, eye.socket.z, 1, safeEventId);
+    this.shake = Math.min(0.22, this.shake + 0.06);
     this.writeEye(index);
   }
 
@@ -1169,6 +1193,21 @@ export class Effects3D {
     );
   }
 
+  /**
+   * Blood thrown from (x, y, z) lands on the lens when the blow is in the picture and near enough to the
+   * camera, more of it the nearer and the heavier `weight` is: a few small drops with reduced blood.
+   */
+  private splashLens(x: number, y: number, z: number, weight: number, seed: number): void {
+    const camera = this.camera;
+    if (camera === null || this.bloodLevel === "off" || !(weight > 0)) return;
+    const at = this.lensPoint.set(finite(x), finite(y, 1.5), finite(z));
+    const distance = at.distanceTo(camera.position);
+    at.project(camera);
+    if (!(at.z < 1) || Math.abs(at.x) > 1.15 || Math.abs(at.y) > 1.15) return;
+    const near = THREE.MathUtils.clamp((LENS_REACH - distance) / (LENS_REACH - LENS_NEAR), 0, 1);
+    this.lens.splash((at.x + 1) / 2, (1 - at.y) / 2, near * weight * (this.bloodLevel === "reduced" ? 0.25 : 1), seed);
+  }
+
   private ambientRandom(): number {
     this.ambientSeed = Math.imul(this.ambientSeed ^ (this.ambientSeed >>> 15), 1 | this.ambientSeed);
     this.ambientSeed ^= this.ambientSeed + Math.imul(this.ambientSeed ^ (this.ambientSeed >>> 7), 61 | this.ambientSeed);
@@ -1246,8 +1285,11 @@ export class Effects3D {
           ? Math.min(24, Math.round(event.blood * (blocked ? 0.12 : 0.24)))
           // The guard takes the punch, and half the blood it would have thrown.
           : this.forDevice(blocked ? Math.round(bloodDropsFor(event.blood, 0) / 2) : bloodDropsFor(event.blood, landed ? event.amount : 0));
-    if (!beat) this.shake = Math.min(0.09, this.shake + (blocked ? 0.008 : Math.max(0.012, event.amount / 2600)));
-    if (knockdown) this.shake = Math.min(0.14, this.shake + 0.06);
+    if (!beat) this.shake = Math.min(0.14, this.shake + (blocked ? 0.008 : Math.max(0.012, event.amount / 1500)));
+    if (knockdown) this.shake = Math.min(0.2, this.shake + 0.09);
+    // A punch that lands hard throws its blood at a camera near enough to it, and a man going down does.
+    const thrown = knockdown ? 0.8 : landed ? THREE.MathUtils.clamp((event.amount - 50) / 70, 0, 1) * (0.5 + Math.min(100, event.blood) / 200) : 0;
+    if (!reducedMotion && !beat && event.blood > 0) this.splashLens(origin.x, origin.y, origin.z, thrown, event.event_id);
 
     for (let i = 0; i < sweatCount; i += 1) {
       const angle = rand() * Math.PI * 2;
@@ -1518,6 +1560,8 @@ export class Effects3D {
       this.spawnMist(head.mesh.position.x + (rand() - 0.5) * 0.45, head.mesh.position.y + (rand() - 0.5) * 0.3, head.mesh.position.z + (rand() - 0.5) * 0.45, 1 + rand() * 1.6, 0.7 + rand() * 0.7);
     }
     this.splatter(head.mesh.position.x, head.mesh.position.z, 2, rand, 30);
+    this.splashLens(head.mesh.position.x, head.mesh.position.y, head.mesh.position.z, 1.6, safeEventId);
+    this.shake = Math.min(0.22, this.shake + 0.12);
   }
 
   /**
@@ -1580,7 +1624,8 @@ export class Effects3D {
       this.spawnMist(x + (rand() - 0.5) * 0.6, y + (rand() - 0.3) * 0.5, z + (rand() - 0.5) * 0.6, 1.2 + rand() * 1.8, 0.8 + rand() * 0.8);
     }
     this.splatter(x + launch.x * 0.3, z + launch.z * 0.3, 2.8, rand, 32);
-    this.shake = Math.min(0.16, this.shake + 0.1);
+    this.splashLens(x, y, z, 2, safeEventId);
+    this.shake = Math.min(0.22, this.shake + 0.14);
     stump.mesh.material = this.jawMaterial;
     stump.active = true;
     stump.fountainLife = BURST_FOUNTAIN_SECONDS;
@@ -1679,6 +1724,8 @@ export class Effects3D {
       );
     }
     this.splatter(hand.mesh.position.x, hand.mesh.position.z, 1.6, rand, 24);
+    this.splashLens(hand.mesh.position.x, hand.mesh.position.y, hand.mesh.position.z, 1.2, safeEventId);
+    this.shake = Math.min(0.22, this.shake + 0.08);
   }
 
   /**
@@ -1724,6 +1771,8 @@ export class Effects3D {
     scatter(teeth, "tooth");
     for (let puff = 0; puff < 16; puff += 1) this.spawnMist(x + (rand() - 0.5) * 0.3, y + (rand() - 0.5) * 0.24, z + (rand() - 0.5) * 0.3, 0.9 + rand() * 1.3, 0.6 + rand() * 0.6);
     this.splatter(x + out.x * 0.25 + launch.x * 0.3, z + out.z * 0.25 + launch.z * 0.3, 1.6, rand, 20);
+    this.splashLens(x, y, z, 1.2, safeEventId);
+    this.shake = Math.min(0.22, this.shake + 0.08);
     this.gush(index, position, out, TORN_GUSH_SECONDS, TORN_GUSH_RATE, safeEventId);
   }
 
@@ -2230,6 +2279,7 @@ export class Effects3D {
 
   update(dt: number): void {
     this.canvasBlood.update(safeStep(dt));
+    this.lens.update(safeStep(dt));
     this.simulationRemainder += safeStep(dt);
     while (this.simulationRemainder + 1e-9 >= SIMULATION_STEP) {
       this.simulationRemainder = Math.max(0, this.simulationRemainder - SIMULATION_STEP);
@@ -2353,6 +2403,7 @@ export class Effects3D {
   clearDynamic(): void {
     this.clearDroplets(false);
     this.clearMists();
+    this.lens.clear();
     this.clearGibs();
     this.clearMouthpieces();
     for (let index = 0; index < MAX_HEADS; index += 1) this.restoreFighter(index);
@@ -2366,6 +2417,7 @@ export class Effects3D {
   clearArcadeGore(): void {
     this.clearDroplets(true);
     this.clearMists();
+    this.lens.clear();
     this.clearGibs();
     for (let index = 0; index < MAX_HEADS; index += 1) this.restoreFighter(index);
     this.clearDecals();
