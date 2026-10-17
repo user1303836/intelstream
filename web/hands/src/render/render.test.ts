@@ -493,6 +493,15 @@ describe("effects", () => {
     for (const x of [21, 22]) spawn(x, 5);
     expect(flying()).toEqual([10, 11, 12, 13, 14, 20, 21, 22]);
     effects.dispose();
+    // A burst bigger than a full pool's batch of oldest drops gives up only old ones, however many it takes.
+    const big = new Effects3D(new THREE.Scene(), 256, { ...DESKTOP_GORE, droplets: 150 });
+    const spawnBig = (x: number): void => (big as unknown as { spawnDroplet(x: number, y: number, z: number, vx: number, vy: number, vz: number, color: { r: number; g: number; b: number }, life: number, blood: boolean): void }).spawnDroplet(x, 10, 0, 0, 0, 0, { r: 0.3, g: 0.01, b: 0.01 }, 5, true);
+    for (let drop = 0; drop < 150; drop += 1) spawnBig(-1);
+    big.update(1 / 60);
+    for (let drop = 0; drop < 150; drop += 1) spawnBig(drop);
+    const xs = Array.from({ length: 150 }, (_, index) => big.dropletBuffers.position.getX(index)).sort((a, b) => a - b);
+    expect(xs).toEqual(Array.from({ length: 150 }, (_, index) => index));
+    big.dispose();
   });
 
   it("sprays blood, teeth and severed parts along the line the punch travelled", () => {

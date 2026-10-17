@@ -69,6 +69,8 @@ export const NECK_WOUND_RADIUS = 0.068;
 const HAND_RADIUS = 0.085;
 const MAX_STEP = 0.05;
 const SIMULATION_STEP = 1 / 60;
+/** A full pool finds this many of its oldest drops at once to give up for new ones. */
+const STEAL_BATCH = 64;
 /** Blood reaches the camera's lens from a blow in the picture this far away or nearer, in metres, and soaks it from this near. */
 const LENS_REACH = 7;
 const LENS_NEAR = 2.5;
@@ -419,6 +421,8 @@ export class Effects3D {
   private readonly dropletColor = new THREE.Color();
   /** Live droplets fill the front of the pool, and only they are drawn and uploaded. */
   private liveDroplets = 0;
+  /** Slots of the live drops that have flown longest, oldest first, for a full pool to give up in turn. */
+  private readonly oldest: number[] = [];
 
   readonly mistPoints: THREE.Points;
   private readonly mists: Mist[] = [];
@@ -1085,18 +1089,27 @@ export class Effects3D {
     this.uploadDroplets(index, index + 1, true);
   }
 
-  /** The live droplet that has flown longest: about to land, where one just thrown has all its flight ahead of it. */
+  /**
+   * The live droplet that has flown longest: about to land, where one just thrown has all its flight ahead
+   * of it. They are found STEAL_BATCH at a time, oldest first and the lower slot first between equals; time
+   * ages every drop alike, so the order holds until a drop lands and the slots move.
+   */
   private oldestDroplet(): number {
-    let oldest = 0;
-    let flown = -1;
+    if (this.oldest.length === 0) this.findOldest();
+    return this.oldest.shift() ?? 0;
+  }
+
+  private findOldest(): void {
+    const oldest = this.oldest;
+    const flown = (slot: number): number => this.droplets[slot]!.maxLife - this.droplets[slot]!.life;
     for (let index = 0; index < this.liveDroplets; index += 1) {
-      const droplet = this.droplets[index]!;
-      if (droplet.maxLife - droplet.life > flown) {
-        flown = droplet.maxLife - droplet.life;
-        oldest = index;
-      }
+      const age = flown(index);
+      if (oldest.length === STEAL_BATCH && age <= flown(oldest[STEAL_BATCH - 1]!)) continue;
+      let at = oldest.length;
+      while (at > 0 && flown(oldest[at - 1]!) < age) at -= 1;
+      oldest.splice(at, 0, index);
+      if (oldest.length > STEAL_BATCH) oldest.pop();
     }
-    return oldest;
   }
 
   /** As many drops as a desktop throws, thinned for the device's budget. */
@@ -1118,6 +1131,7 @@ export class Effects3D {
 
   /** Retires the droplet in slot `index` and moves the last live droplet into its place. */
   private retireDroplet(index: number): void {
+    this.oldest.length = 0;
     const last = this.liveDroplets - 1;
     const retired = this.droplets[index]!;
     retired.alive = false;
