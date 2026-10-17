@@ -256,7 +256,9 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
     const flashOver = flash && t >= 2.5;
     const snapshot: EngineSnapshot = {
       tick, phase: decided || flashOver ? "complete" : introducing ? "countdown" : forcedRest ? "rest" : "fight", round_number: search.get("intro") === "1" ? 1 : 3, phase_ticks_remaining: decided ? 0 : introducing ? Math.max(0, 90 - tick) : forcedRest ? Math.max(0, 450 - tick) : Math.max(0, 5400 - tick),
-      fighters: [{ ...one }, { ...two }], events,
+      fighters: [{ ...one }, { ...two }],
+      referee: { x: 0, y: 140, facing_x: 0, facing_y: -1000, velocity_x: 0, velocity_y: 0, stunned_ticks: 0, alive: true, trauma: { head: 0, body: 0, left_eye: 0, right_eye: 0, left_cut: 0, right_cut: 0, swelling: 0, bleeding: 0 } },
+      events,
       result: flashOver ? {
         match_id: "fixture", activity_instance_id: "fixture", guild_id: "fixture", player_one_id: one.player_id, player_two_id: two.player_id, winner_id: one.player_id,
         finish_method: "flash_ko", round_number: 3, tick, scorecards: [], player_one_knockdowns: 0, player_two_knockdowns: 0, player_one_damage: 900, player_two_damage: 400,

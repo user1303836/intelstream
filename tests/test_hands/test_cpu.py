@@ -933,8 +933,8 @@ def test_the_champion_can_be_outboxed_or_outcountered_but_not_mashed() -> None:
 
 def test_over_a_connection_the_champion_is_harder_to_beat_than_the_contender() -> None:
     """At 50 ms, reacting to each punch as a person does, the scripted skilled player beats the
-    contender in most bouts and the champion in few (57% and 31% over 48 bouts; the scripted
-    counter-puncher 23% and 10%)."""
+    contender in about a third of bouts and the champion in fewer (31% and 21% over 48 bouts):
+    every punch now lands sooner than anyone can react, so neither computer reads many."""
     lag = Lag.over(50, (6, 9))
 
     def wins(level: str) -> int:
@@ -943,7 +943,7 @@ def test_over_a_connection_the_champion_is_harder_to_beat_than_the_contender() -
                 "skilled", level, seed, EngineConfig(), bout_styles("skilled", level, seed), lag
             ).winner_seat
             == 0
-            for seed in range(1, 7)
+            for seed in range(1, 13)
         )
 
     contender, champion = wins("contender"), wins("champion")

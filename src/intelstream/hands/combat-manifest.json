@@ -201,6 +201,18 @@
     "hold_distance": 60,
     "draw_speed": 6
   },
+  "referee": {
+    "radius": 34,
+    "health": 450,
+    "walk_speed": 6,
+    "standoff": 62,
+    "count_standoff": 90,
+    "stagger_base_ticks": 6,
+    "stagger_damage_divisor": 8,
+    "stagger_max_ticks": 30,
+    "down_ticks": 150,
+    "bleed_health_divisor": 60
+  },
   "corner": {
     "cut": {
       "worse_cut": 250,

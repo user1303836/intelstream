@@ -1,6 +1,6 @@
 import type { NetworkCallbacks } from "./network";
 import { PROTOCOL_VERSION, type EngineSnapshot, type ServerMessage } from "./types";
-import { fighter } from "./test/fixtures";
+import { fighter, referee } from "./test/fixtures";
 
 const mocks = vi.hoisted(() => {
   const sessionDestroy = vi.fn();
@@ -98,6 +98,7 @@ const makeSnapshot = (tick: number, phase: EngineSnapshot["phase"] = "fight"): E
   round_number: 1,
   phase_ticks_remaining: 1_205,
   fighters: [fighter("one", -100), fighter("two", 100)],
+  referee: referee(),
   events: [],
   result: null,
   checksum: "a".repeat(64),

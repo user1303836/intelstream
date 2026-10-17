@@ -423,6 +423,7 @@ export class HandsApp {
       fight: `Round ${this.state.snapshot?.round_number ?? 1} in progress.`,
       knockdown: `Knockdown count ${this.state.snapshot?.fighters.find((fighter) => fighter.player_id === this.state.playerId)?.get_up_count ?? 0}.`,
       foul_recovery: "Foul recovery in progress.",
+      referee_down: "The referee is down. The bout goes on without him.",
       rest: "Between-round rest.",
       paused: `Connection paused. ${Math.ceil(this.state.reconnectMs / 1000)} seconds remain.`,
       complete: this.cpuBout ? "Bout complete. Scorecards are displayed. Bouts against the computer are unrated." : "Bout complete. Scorecards and rating changes are displayed.",
@@ -432,7 +433,7 @@ export class HandsApp {
     this.setText(this.status, spectating ? `Spectating — ${labels[this.state.stage]}` : labels[this.state.stage]);
     // The result card says how the bout ended; the button sits in the card's footer.
     const resulted = this.state.stage === "complete" && this.state.final !== null;
-    this.status.hidden = resulted || ["select", "countdown", "fight", "knockdown", "foul_recovery", "rest"].includes(this.state.stage);
+    this.status.hidden = resulted || ["select", "countdown", "fight", "knockdown", "foul_recovery", "referee_down", "rest"].includes(this.state.stage);
     this.overlay.toggleAttribute("data-raised", this.state.snapshot !== null);
     this.overlay.toggleAttribute("data-result", resulted);
     // The engine's last snapshot arrives before the result does; the finish plays without the overlay.

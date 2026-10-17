@@ -1,7 +1,7 @@
 import manifest from "../../../../src/intelstream/hands/combat-manifest.json";
 import { ROCKED_BASE_TICKS, ROCKED_MAX_TICKS } from "../manifest";
 import { FIGHTER_STYLES } from "../protocol";
-import { fighter } from "../test/fixtures";
+import { fighter, referee } from "../test/fixtures";
 import { PROTOCOL_VERSION, type CombatEvent, type EngineSnapshot, type FighterSnapshot, type FinalMessage, type MatchPhase, type PublicPlayer } from "../types";
 import { CommentaryDirector, crowdTension, fillLine, holdFor, introductionScript, punchName, recordSpoken, spokenNumber, spokenSeconds, type CommentaryHooks } from "./commentary";
 
@@ -24,6 +24,7 @@ const state = (tick: number, phase: MatchPhase = "fight", edits: [Partial<Fighte
   round_number: 1,
   phase_ticks_remaining: 3000,
   fighters: [{ ...fighter("one", -100), ...edits[0] }, { ...fighter("two", 100), ...edits[1] }],
+  referee: referee(),
   events: [],
   result: null,
   checksum: "a".repeat(64),

@@ -74,6 +74,16 @@ from intelstream.hands.rules import (
     PUNCH_RULES,
     RECOVERY_CANCEL_PERCENT,
     RECOVERY_SPEED_PERCENT,
+    REFEREE_BLEED_HEALTH_DIVISOR,
+    REFEREE_COUNT_STANDOFF,
+    REFEREE_DOWN_TICKS,
+    REFEREE_HEALTH,
+    REFEREE_RADIUS,
+    REFEREE_SPEED,
+    REFEREE_STAGGER_BASE_TICKS,
+    REFEREE_STAGGER_DAMAGE_DIVISOR,
+    REFEREE_STAGGER_MAX_TICKS,
+    REFEREE_STANDOFF,
     REFEREE_WALK_SPEED,
     REST_CORNER_OFFSET,
     REST_TICKS,
@@ -125,6 +135,7 @@ from intelstream.hands.types import (
     Power,
     PunchAction,
     PunchClass,
+    RefereeSnapshot,
     SemanticAction,
     Stance,
     Target,
@@ -132,6 +143,10 @@ from intelstream.hands.types import (
 )
 
 PERFECT_BLOCK_TICKS: Final = 4
+# Who the referee is in an event: a punch that finds him, his bleeding, his going down.
+REFEREE_ID: Final = "referee"
+# How far past his body a punch can be off its line and still catch him: about a glove's width.
+REFEREE_GLOVE_REACH: Final = 18
 COUNTER_WINDOW_TICKS: Final = 15
 ROPE_OVERLAP_PASSES: Final = 8
 ROPE_OVERLAP_STEP: Final = 8
@@ -186,6 +201,21 @@ class Trauma:
     right_cut: int = 0
     swelling: int = 0
     bleeding: int = 0
+
+
+@dataclass(slots=True)
+class RefereeState:
+    x: int = 0
+    y: int = REFEREE_STANDOFF
+    facing_x: int = 0
+    facing_y: int = -FACING_SCALE
+    velocity_x: int = 0
+    velocity_y: int = 0
+    health: int = REFEREE_HEALTH
+    trauma: Trauma = field(default_factory=Trauma)
+    stunned_ticks: int = 0
+    alive: bool = True
+    last_hit_by: str | None = None
 
 
 @dataclass(slots=True)
@@ -588,6 +618,7 @@ class BoxingEngine:
             player_one_id: FighterState(player_one_id, -180, 0, 1, Stance.ORTHODOX, styles[0]),
             player_two_id: FighterState(player_two_id, 180, 0, -1, Stance.ORTHODOX, styles[1]),
         }
+        self._referee = RefereeState()
         self._events: list[CombatEvent] = []
         self._tick_events: list[CombatEvent] = []
         self._event_id = 0
@@ -679,8 +710,12 @@ class BoxingEngine:
             self._advance_knockdown()
         elif self.phase is MatchPhase.FOUL_RECOVERY:
             self._advance_foul_recovery()
+        elif self.phase is MatchPhase.REFEREE_DOWN:
+            self._advance_referee_down()
         elif self.phase is MatchPhase.REST:
             self._advance_rest()
+        if self.phase is not MatchPhase.COMPLETE:
+            self._advance_referee()
         return self.snapshot()
 
     def _advance_countdown(self) -> None:
@@ -732,6 +767,7 @@ class BoxingEngine:
             self._recover_resources(fighter)
             fighter.performance.control += self._ring_control(fighter, opponent)
             self._advance_bleeding(fighter)
+        self._advance_referee_bleeding()
 
         if self.phase_ticks_remaining <= 0:
             self._finish_round()
@@ -1006,12 +1042,17 @@ class BoxingEngine:
         effective_arc = rule.lateral_arc * (100 - vision_penalty) // 100
         forward_distance, lateral_distance = self._facing_components(attacker, dx, dy)
         in_front = forward_distance > FIGHTER_RADIUS // 3
-        if (
-            not in_front
-            or forward_distance > effective_reach
-            or distance_squared > effective_reach**2
-            or lateral_distance > effective_arc
-        ):
+        reaches = (
+            in_front
+            and forward_distance <= effective_reach
+            and distance_squared <= effective_reach**2
+            and lateral_distance <= effective_arc
+        )
+        in_the_way = self._referee_in_the_way(attacker, effective_reach, effective_arc)
+        if in_the_way is not None and (not reaches or in_the_way < forward_distance):
+            self._punch_referee(attacker, attack)
+            return
+        if not reaches:
             attacker.stamina = max(0, attacker.stamina - rule.whiff_cost)
             self._spend_conditioning(attacker, max(2, rule.whiff_cost // 10))
             self._emit(
@@ -1120,7 +1161,7 @@ class BoxingEngine:
         poise_damage = poise_damage * defender.style_rule.poise_taken_percent // 100
         shut_eye: str | None = None
         if action.target is Target.HEAD:
-            shut_eye = self._apply_head_damage(defender, action, damage, clean=not blocked)
+            shut_eye = self._apply_head_damage(defender.trauma, action, damage, clean=not blocked)
         else:
             defender.trauma.body = min(
                 1200, defender.trauma.body + damage * BODY_TRAUMA_PER_DAMAGE_PERCENT // 100
@@ -1251,17 +1292,16 @@ class BoxingEngine:
         fighter.stun_immune_until_tick = self.tick + STUN_IMMUNITY_TICKS
         fighter.rocked_immune_until_tick = self.tick + ROCKED_IMMUNITY_TICKS
 
+    @staticmethod
     def _apply_head_damage(
-        self, defender: FighterState, action: PunchAction, damage: int, *, clean: bool
+        trauma: Trauma, action: PunchAction, damage: int, *, clean: bool
     ) -> str | None:
         """Applies a head shot and returns the side of an eye it has just swollen shut, if any.
 
         Whatever gets through a guard still shakes the head, but only a clean punch marks the face.
         """
-        eyes_before = (defender.trauma.left_eye, defender.trauma.right_eye)
-        defender.trauma.head = min(
-            1400, defender.trauma.head + damage * HEAD_TRAUMA_PER_DAMAGE_PERCENT // 100
-        )
+        eyes_before = (trauma.left_eye, trauma.right_eye)
+        trauma.head = min(1400, trauma.head + damage * HEAD_TRAUMA_PER_DAMAGE_PERCENT // 100)
         if not clean:
             return None
         eye_damage = (
@@ -1274,24 +1314,24 @@ class BoxingEngine:
         if action.punch_class is PunchClass.JAB:
             cut = cut * JAB_CUT_PERCENT // 100
         if action.hand.value == "left":
-            defender.trauma.right_eye = min(1000, defender.trauma.right_eye + eye_damage)
-            if defender.trauma.right_eye > CUT_OPENS_EYE:
-                defender.trauma.right_cut = min(1000, defender.trauma.right_cut + cut)
+            trauma.right_eye = min(1000, trauma.right_eye + eye_damage)
+            if trauma.right_eye > CUT_OPENS_EYE:
+                trauma.right_cut = min(1000, trauma.right_cut + cut)
         else:
-            defender.trauma.left_eye = min(1000, defender.trauma.left_eye + eye_damage)
-            if defender.trauma.left_eye > CUT_OPENS_EYE:
-                defender.trauma.left_cut = min(1000, defender.trauma.left_cut + cut)
+            trauma.left_eye = min(1000, trauma.left_eye + eye_damage)
+            if trauma.left_eye > CUT_OPENS_EYE:
+                trauma.left_cut = min(1000, trauma.left_cut + cut)
         swelling = damage * SWELLING_PER_DAMAGE_PERCENT // 100
         if action.punch_class is PunchClass.JAB:
             swelling = swelling * JAB_SWELLING_PERCENT // 100
-        defender.trauma.swelling = min(1000, defender.trauma.swelling + swelling)
-        defender.trauma.bleeding = min(
+        trauma.swelling = min(1000, trauma.swelling + swelling)
+        trauma.bleeding = min(
             1000,
-            defender.trauma.bleeding
-            + (defender.trauma.left_cut + defender.trauma.right_cut + BLEEDING_CUT_DIVISOR - 1)
+            trauma.bleeding
+            + (trauma.left_cut + trauma.right_cut + BLEEDING_CUT_DIVISOR - 1)
             // BLEEDING_CUT_DIVISOR,
         )
-        eyes_after = (defender.trauma.left_eye, defender.trauma.right_eye)
+        eyes_after = (trauma.left_eye, trauma.right_eye)
         for side, before, after in zip(("left", "right"), eyes_before, eyes_after, strict=True):
             if before < BLIND_SIDE_EYE_THRESHOLD <= after:
                 return side
@@ -1468,6 +1508,185 @@ class BoxingEngine:
             self._foul_recovery_target = None
             self._emit("resume", detail="foul_recovery_complete")
 
+    def _referee_in_the_way(self, attacker: FighterState, reach: int, arc: int) -> int | None:
+        """How far along the punch the referee stands, if it would find him. A punch is aimed at
+        the other man, so it finds the referee only thrown through his body, however wide it
+        swings at a man."""
+        referee = self._referee
+        if not referee.alive:
+            return None
+        dx, dy = referee.x - attacker.x, referee.y - attacker.y
+        forward, lateral = self._facing_components(attacker, dx, dy)
+        if (
+            forward <= FIGHTER_RADIUS // 3
+            or forward > reach
+            or dx * dx + dy * dy > reach**2
+            or lateral > min(arc, REFEREE_RADIUS + REFEREE_GLOVE_REACH)
+        ):
+            return None
+        return forward
+
+    def _punch_referee(self, attacker: FighterState, attack: AttackState) -> None:
+        """The punch finds the referee first. He never guards, and nothing scores for it."""
+        action = attack.action
+        referee = self._referee
+        attack.landed = True
+        damage = max(1, attack.rule.impact * attacker.fatigue // 100)
+        if action.target is Target.HEAD:
+            self._apply_head_damage(referee.trauma, action, damage, clean=True)
+        else:
+            referee.trauma.body = min(1200, referee.trauma.body + damage)
+        referee.health -= damage
+        referee.last_hit_by = attacker.player_id
+        referee.stunned_ticks = min(
+            REFEREE_STAGGER_MAX_TICKS,
+            max(
+                referee.stunned_ticks,
+                REFEREE_STAGGER_BASE_TICKS + damage // REFEREE_STAGGER_DAMAGE_DIVISOR,
+            ),
+        )
+        referee.velocity_x = referee.velocity_y = 0
+        action_id = self._action_id(attacker, attack)
+        self._emit(
+            "referee_hit",
+            attacker.player_id,
+            REFEREE_ID,
+            amount=damage,
+            detail=f"{action.punch_class.value}:{action.target.value}",
+            blood=min(100, referee.trauma.bleeding // 5 + damage // 3),
+            direction=attacker.facing,
+            action_id=action_id,
+        )
+        if referee.health <= 0:
+            self._referee_goes_down(attacker.player_id, action_id)
+
+    def _referee_goes_down(self, by: str, action_id: str | None) -> None:
+        """Out cold for good. The bout stops while everyone watches it again, then goes on without
+        him: the count, the breaks and the bell all still happen."""
+        referee = self._referee
+        referee.alive = False
+        referee.health = 0
+        referee.stunned_ticks = 0
+        referee.velocity_x = referee.velocity_y = 0
+        self._emit("referee_down", by, REFEREE_ID, action_id=action_id)
+        if self.phase is not MatchPhase.FIGHT:
+            return
+        for fighter in self._fighters.values():
+            self._retain_action(fighter)
+            fighter.pending_actions.clear()
+            fighter.clinch_startup_ticks = 0
+            fighter.taunt_ticks = 0
+            fighter.velocity_x = fighter.velocity_y = 0
+            fighter.velocity_fixed_x = fighter.velocity_fixed_y = 0
+        self._paused_fight_ticks = self.phase_ticks_remaining
+        self.phase = MatchPhase.REFEREE_DOWN
+        self.phase_ticks_remaining = REFEREE_DOWN_TICKS
+
+    def _advance_referee_down(self) -> None:
+        self.phase_ticks_remaining -= 1
+        if self.phase_ticks_remaining <= 0:
+            self.phase = MatchPhase.FIGHT
+            self.phase_ticks_remaining = max(1, self._paused_fight_ticks)
+            self._emit("resume", detail="referee_down_complete")
+
+    def _advance_referee_bleeding(self) -> None:
+        referee = self._referee
+        if not referee.alive or referee.trauma.bleeding <= 0 or self.tick % TICKS_PER_SECOND:
+            return
+        referee.health -= max(1, referee.trauma.bleeding // REFEREE_BLEED_HEALTH_DIVISOR)
+        self._emit("bleed", REFEREE_ID, amount=referee.trauma.bleeding // 10, blood=25)
+        if referee.health <= 0 and referee.last_hit_by is not None:
+            self._referee_goes_down(referee.last_hit_by, None)
+
+    def _advance_referee(self) -> None:
+        """He follows the action close up on his own side of it, stands over a man on the canvas
+        and keeps to the middle between rounds. Hurt, he reels where he stands; down, he stays
+        where he fell. He gives way to a fighter who walks into him."""
+        referee = self._referee
+        if not referee.alive:
+            return
+        one = self._fighters[self._player_ids[0]]
+        two = self._fighters[self._player_ids[1]]
+        if referee.stunned_ticks > 0:
+            referee.stunned_ticks -= 1
+            referee.velocity_x = referee.velocity_y = 0
+        else:
+            target_x, target_y = self._referee_target(one, two)
+            dx, dy = target_x - referee.x, target_y - referee.y
+            distance = isqrt(dx * dx + dy * dy)
+            if distance > REFEREE_SPEED:
+                dx = _symmetric_divide(dx * REFEREE_SPEED, distance)
+                dy = _symmetric_divide(dy * REFEREE_SPEED, distance)
+            referee.x += dx
+            referee.y += dy
+            referee.velocity_x, referee.velocity_y = dx, dy
+        for fighter in (one, two):
+            self._keep_referee_clear(fighter)
+        referee.x, referee.y = _ring_point(referee.x, referee.y)[:2]
+        focus_x, focus_y = self._referee_focus(one, two)
+        look_x, look_y = focus_x - referee.x, focus_y - referee.y
+        look = isqrt(look_x * look_x + look_y * look_y)
+        if look > 0:
+            referee.facing_x = _symmetric_divide(look_x * FACING_SCALE, look)
+            referee.facing_y = _symmetric_divide(look_y * FACING_SCALE, look)
+
+    def _referee_focus(self, one: FighterState, two: FighterState) -> tuple[int, int]:
+        if self.phase is MatchPhase.KNOCKDOWN and self._downed_id is not None:
+            downed = self._fighters[self._downed_id]
+            return downed.x, downed.y
+        return _symmetric_divide(one.x + two.x, 2), _symmetric_divide(one.y + two.y, 2)
+
+    def _referee_target(self, one: FighterState, two: FighterState) -> tuple[int, int]:
+        referee = self._referee
+        if self.phase is MatchPhase.REST:
+            return 0, 0
+        if self.phase is MatchPhase.KNOCKDOWN and self._downed_id is not None:
+            downed = self._fighters[self._downed_id]
+            away_x, away_y = referee.x - downed.x, referee.y - downed.y
+            away = isqrt(away_x * away_x + away_y * away_y)
+            if away == 0:
+                away_x, away_y, away = 0, 1, 1
+            return (
+                downed.x + _symmetric_divide(away_x * REFEREE_COUNT_STANDOFF, away),
+                downed.y + _symmetric_divide(away_y * REFEREE_COUNT_STANDOFF, away),
+            )
+        mid_x, mid_y = self._referee_focus(one, two)
+        across_x, across_y = one.y - two.y, two.x - one.x
+        across = isqrt(across_x * across_x + across_y * across_y)
+        if across == 0:
+            across_x, across_y, across = 0, 1, 1
+        side = 1 if (referee.x - mid_x) * across_x + (referee.y - mid_y) * across_y >= 0 else -1
+        standoff = side * REFEREE_STANDOFF
+        return (
+            mid_x + _symmetric_divide(across_x * standoff, across),
+            mid_y + _symmetric_divide(across_y * standoff, across),
+        )
+
+    def _keep_referee_clear(self, fighter: FighterState) -> None:
+        """A fighter walking into the referee shoves him aside; pinned on the ropes, he stops the
+        fighter instead."""
+        referee = self._referee
+        minimum = FIGHTER_RADIUS + REFEREE_RADIUS
+        dx, dy = referee.x - fighter.x, referee.y - fighter.y
+        if dx * dx + dy * dy >= minimum * minimum:
+            return
+        distance = isqrt(dx * dx + dy * dy)
+        if distance == 0:
+            dx, dy, distance = 0, 1, 1
+        push = minimum - distance
+        referee.x, referee.y = _ring_point(
+            referee.x + _away_divide(dx * push, distance),
+            referee.y + _away_divide(dy * push, distance),
+        )[:2]
+        dx, dy = referee.x - fighter.x, referee.y - fighter.y
+        if dx * dx + dy * dy >= minimum * minimum:
+            return
+        distance = max(1, isqrt(dx * dx + dy * dy))
+        push = minimum - distance
+        fighter.x -= _away_divide(dx * push, distance)
+        fighter.y -= _away_divide(dy * push, distance)
+        self._clamp_to_ring(fighter)
+
     def _advance_clinch(self, one: FighterState, two: FighterState) -> None:
         one.attack = None
         two.attack = None
@@ -1492,7 +1711,12 @@ class BoxingEngine:
         self._clamp_to_ring(one)
         self._clamp_to_ring(two)
         self._separate_fighters(one, two)
-        self._emit("referee_break", one.player_id, two.player_id)
+        # With nobody left to part them, the hold simply comes apart.
+        self._emit(
+            "referee_break" if self._referee.alive else "clinch_break",
+            one.player_id,
+            two.player_id,
+        )
 
     def _draw_clinch_together(self, one: FighterState, two: FighterState) -> None:
         dx = two.x - one.x
@@ -2316,9 +2540,34 @@ class BoxingEngine:
             round_number=self.round_number,
             phase_ticks_remaining=self.phase_ticks_remaining,
             fighters=typed_fighters,
+            referee=self._referee_snapshot(),
             events=tuple(self._tick_events),
             result=self.result,
             checksum=checksum,
+        )
+
+    def _referee_snapshot(self) -> RefereeSnapshot:
+        referee = self._referee
+        trauma = referee.trauma
+        return RefereeSnapshot(
+            x=referee.x,
+            y=referee.y,
+            facing_x=referee.facing_x,
+            facing_y=referee.facing_y,
+            velocity_x=referee.velocity_x,
+            velocity_y=referee.velocity_y,
+            stunned_ticks=referee.stunned_ticks,
+            alive=referee.alive,
+            trauma=TraumaSnapshot(
+                head=trauma.head,
+                body=trauma.body,
+                left_eye=trauma.left_eye,
+                right_eye=trauma.right_eye,
+                left_cut=trauma.left_cut,
+                right_cut=trauma.right_cut,
+                swelling=trauma.swelling,
+                bleeding=trauma.bleeding,
+            ),
         )
 
     def _fighter_snapshot(self, fighter: FighterState) -> FighterSnapshot:
@@ -2518,6 +2767,7 @@ class BoxingEngine:
                 "round": self.round_number,
                 "remaining": self.phase_ticks_remaining,
                 "fighters": fighter_states,
+                "referee": self._referee,
                 "round_cards": self._round_cards,
                 "downed_id": self._downed_id,
                 "knockdown_count_ticks": self._knockdown_count_ticks,

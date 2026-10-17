@@ -58,6 +58,22 @@ RING_CORNER_REACH: int = _MANIFEST["corners"]["reach"]
 REST_CORNER_OFFSET: int = _MANIFEST["rest"]["corner_offset"]
 CLINCH_HOLD_DISTANCE: int = _MANIFEST["clinch"]["hold_distance"]
 CLINCH_DRAW_SPEED: int = _MANIFEST["clinch"]["draw_speed"]
+_REFEREE = _MANIFEST["referee"]
+REFEREE_RADIUS: int = _REFEREE["radius"]
+# How much beating the referee takes before he goes down for good. Nobody is shown it.
+REFEREE_HEALTH: int = _REFEREE["health"]
+REFEREE_SPEED: int = _REFEREE["walk_speed"]
+# How far to the side of the fighters he keeps, close enough that a wild punch can find him, and how
+# far from a man on the canvas he counts.
+REFEREE_STANDOFF: int = _REFEREE["standoff"]
+REFEREE_COUNT_STANDOFF: int = _REFEREE["count_standoff"]
+REFEREE_STAGGER_BASE_TICKS: int = _REFEREE["stagger_base_ticks"]
+REFEREE_STAGGER_DAMAGE_DIVISOR: int = _REFEREE["stagger_damage_divisor"]
+REFEREE_STAGGER_MAX_TICKS: int = _REFEREE["stagger_max_ticks"]
+# The bout stops this long when he goes down, for the replay.
+REFEREE_DOWN_TICKS: int = _REFEREE["down_ticks"]
+# A bleeding referee loses his bleeding over this in health every second.
+REFEREE_BLEED_HEALTH_DIVISOR: int = _REFEREE["bleed_health_divisor"]
 REST_WALK_SPEED: int = _MANIFEST["rest"]["walk_speed"]
 BLIND_SIDE_EYE_THRESHOLD: int = _MANIFEST["blind_side"]["eye_threshold"]
 BLIND_SIDE_IMPACT_PERCENT: int = _MANIFEST["blind_side"]["impact_percent"]
