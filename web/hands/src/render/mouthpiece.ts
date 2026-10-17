@@ -69,12 +69,12 @@ export function buildMouthpieceGeometry(): THREE.BufferGeometry {
   return geometry;
 }
 
-/** Whether a blow knocks the gum shield out: the punch that floors a man, a clean counter or a hard shot, to the head. */
+/** Whether a blow knocks the gum shield out: the punch that floors a man, a clean counter or a solid shot, to the head. */
 export function mouthpieceFlies(kind: string, amount: number, head: boolean): boolean {
   if (!head) return false;
   if (kind === "knockdown") return true;
-  if (kind === "counter_hit") return amount >= 65;
-  return kind === "hit" && amount >= 80;
+  if (kind === "counter_hit") return amount >= 50;
+  return kind === "hit" && amount >= 65;
 }
 
 const GRAVITY = 9.81;

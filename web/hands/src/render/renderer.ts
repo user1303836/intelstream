@@ -882,6 +882,17 @@ export function hitFlash(event: Pick<CombatEvent, "kind" | "amount">, own: boole
 }
 
 /**
+ * How long and how hard blood spurts from the nose and mouth of a man a clean punch lands on: from a punch of
+ * 50 to the head or 70 to the body, longer and harder the harder it lands and the worse he is cut.
+ */
+export function punchGush(event: Pick<CombatEvent, "kind" | "amount" | "blood" | "detail">): { seconds: number; rate: number } | null {
+  if (event.kind !== "hit" && event.kind !== "counter_hit") return null;
+  if (event.amount < (event.detail.endsWith(":body") ? 70 : 50)) return null;
+  const blood = Math.min(100, Math.max(0, event.blood));
+  return { seconds: 0.6 + blood / 50, rate: 150 + event.amount * 1.5 + blood * 2 };
+}
+
+/**
  * How dark the red hurt vignette is for the worst head and body damage in the ring: from the first damage
  * that counts at full blood, and from heavier damage, half as dark at most, otherwise.
  */
@@ -910,23 +921,23 @@ export function knockdownFinisher(hit: CombatEvent | null, snapshot: EngineSnaps
 
 const POOL_SEVERITY = 0.2;
 /** Spills a second into the pool under a downed fighter, and how far it spreads at most, in metres. */
-export const POOL_RATE = 3;
-const POOL_REACH = 0.7;
+export const POOL_RATE = 5;
+const POOL_REACH = 1.1;
 /**
  * Every finisher leaves an open wound that bleeds out whatever the engine says of his cuts: as badly as the
- * worst cut does (the pool's ceiling), three times as fast, and spreading out to 1.3 m from it, which takes about 18 s.
+ * worst cut does (the pool's ceiling), more than twice as fast, and spreading out to 2 m from it, which takes about 20 s.
  */
 const OPEN_WOUND_SEVERITY = 1.6;
-const OPEN_WOUND_POOL_RATE = 3;
-const OPEN_WOUND_POOL_REACH = 1.3;
+const OPEN_WOUND_POOL_RATE = 2.4;
+const OPEN_WOUND_POOL_REACH = 2;
 /** Under the chin, from the middle of the skull, in the head's frame. */
 const UNDER_THE_CHIN = new THREE.Vector3(0, -0.1, 0.08);
 /** The mouth, from the middle of the skull, and the way blood pours out of it, in the head's frame. */
 const MOUTH = new THREE.Vector3(0, -0.07, 0.1);
 const OUT_OF_THE_MOUTH = new THREE.Vector3(0, -0.35, 1);
 /** A man going down pours blood from his nose and mouth for this long, this many drops a second at first. */
-const KNOCKDOWN_GUSH_SECONDS = 1.6;
-const KNOCKDOWN_GUSH_RATE = 160;
+const KNOCKDOWN_GUSH_SECONDS = 3;
+const KNOCKDOWN_GUSH_RATE = 320;
 /** Teeth a broken jaw spills. */
 const JAW_TEETH = 8;
 /** How far toward the puncher from the middle of the skull, and from the chest bone, a punch lands on the face and the chest. */
@@ -941,7 +952,7 @@ const woundSite = (injury: ArcadeInjury | null): WoundSite => (injury === "shoul
  * wider the worse he bleeds, up to `reach`.
  */
 export function poolRadius(count: number, severity: number, reach = POOL_REACH): number {
-  return Math.min(reach, 0.06 + 0.06 * Math.sqrt(Math.max(0, count)) * Math.min(1.6, Math.max(0, severity)));
+  return Math.min(reach, 0.06 + 0.08 * Math.sqrt(Math.max(0, count)) * Math.min(1.6, Math.max(0, severity)));
 }
 
 /**
@@ -2260,6 +2271,9 @@ export class FightRenderer {
       if (presentImpact && recipientIndex >= 0 && !currentSettings.reducedMotion && mouthpieceFlies(event.kind, event.amount, presentationEvent.detail.endsWith(":head"))) {
         this.knockOutMouthpiece(recipientIndex, spray ?? presentationEvent.direction, event.event_id, false);
       }
+      // A clean punch makes his face spurt blood, and a man going down pours it from his nose and mouth as he falls.
+      const spurt = presentImpact && !currentSettings.reducedMotion ? punchGush(event) : null;
+      if (spurt !== null && recipientIndex >= 0) this.gushFromMouth(recipientIndex, event.event_id, spurt.seconds, spurt.rate);
       if (pending.presentImpact && recipientIndex >= 0 && event.kind === "knockdown" && !currentSettings.reducedMotion) this.gushFromMouth(recipientIndex, event.event_id, KNOCKDOWN_GUSH_SECONDS, KNOCKDOWN_GUSH_RATE);
       const teeth = presentImpact && recipientIndex >= 0 ? teethFor(event.kind, event.amount, presentationEvent.detail.endsWith(":head")) : 0;
       if (teeth > 0 && !currentSettings.reducedMotion && currentSettings.blood !== "off") {

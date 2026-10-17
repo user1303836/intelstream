@@ -28,14 +28,14 @@ describe("gum shield", () => {
     geometry.dispose();
   });
 
-  it("flies from the punch that floors a man and from clean counters and hard shots to the head", () => {
+  it("flies from the punch that floors a man and from clean counters and solid shots to the head", () => {
     expect(mouthpieceFlies("knockdown", 1, true)).toBe(true);
     expect(mouthpieceFlies("knockdown", 1, false)).toBe(false);
-    // A straight countered clean (52 damage, 28% more) or a power straight (79) knocks it out.
-    expect(mouthpieceFlies("counter_hit", 66, true)).toBe(true);
-    expect(mouthpieceFlies("counter_hit", 64, true)).toBe(false);
-    expect(mouthpieceFlies("hit", 80, true)).toBe(true);
-    expect(mouthpieceFlies("hit", 79, true)).toBe(false);
+    // A jab countered clean (34 damage, 28% more is 43) keeps it in; a straight countered (66) or a hook landed clean (64) does not.
+    expect(mouthpieceFlies("counter_hit", 50, true)).toBe(true);
+    expect(mouthpieceFlies("counter_hit", 49, true)).toBe(false);
+    expect(mouthpieceFlies("hit", 65, true)).toBe(true);
+    expect(mouthpieceFlies("hit", 64, true)).toBe(false);
     expect(mouthpieceFlies("counter_hit", 150, false)).toBe(false);
     expect(mouthpieceFlies("block", 150, true)).toBe(false);
   });

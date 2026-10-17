@@ -431,6 +431,19 @@ describe("blood on the canvas", () => {
     expect(pooled("full")).toBe(1);
     expect(pooled("reduced")).toBe(1);
     expect(pooled("off")).toBe(0);
+    // Reduced blood pools a fifth as wide.
+    const radius = (level: "full" | "reduced"): number => {
+      const spill = vi.spyOn(CanvasBlood.prototype, "pool");
+      const effects = new Effects3D(new THREE.Scene(), 256);
+      effects.setBloodLevel(level);
+      effects.pool(0.5, 0.5, 0.3, 1);
+      const spread = spill.mock.calls[0]![2];
+      spill.mockRestore();
+      effects.dispose();
+      return spread;
+    };
+    expect(radius("full")).toBeCloseTo(0.3, 9);
+    expect(radius("reduced")).toBeCloseTo(0.06, 9);
   });
 
   it("is soaked through a real bout, bloodier round by round, where it once painted the ring solid in the first", () => {
@@ -458,27 +471,27 @@ describe("blood on the canvas", () => {
       expect(darkest).toBeGreaterThan(0.9);
     }
     const [one, two, three] = after as [{ stained: number; soaked: number }, { stained: number; soaked: number }, { stained: number; soaked: number }];
-    // Hard punches splash a clean face's blood and the cut that opens 21 s into round 1 throws plenty more:
-    // by the bell about 6 m² of the 37 show blood and 2 m² are soaked through, the knockdown's pool among
-    // them, and the bout ends with half the canvas bloody. The ceilings are well past that, to catch a
-    // runaway painting the ring solid in a round; the floors keep the canvas from going back to a few spots.
-    expect(roundEnds[0]).toBeLessThan(4000);
-    expect(one.stained).toBeGreaterThan(4);
-    expect(one.stained).toBeLessThan(9);
-    expect(one.soaked).toBeGreaterThan(1);
-    expect(one.soaked).toBeLessThan(3.5);
+    // Grotesque on purpose: every solid punch splashes a clean face's blood and the cut that opens 21 s into
+    // round 1 throws far more, so by the bell about 15 m² of the 37 show blood and 9 m² are soaked through,
+    // and the bout ends with three quarters of the canvas bloody and more than half soaked. The ceilings
+    // catch a runaway that would paint the ring solid in a round; the floors keep it from going tame.
+    expect(roundEnds[0]).toBeLessThan(10_000);
+    expect(one.stained).toBeGreaterThan(10);
+    expect(one.stained).toBeLessThan(20);
+    expect(one.soaked).toBeGreaterThan(5);
+    expect(one.soaked).toBeLessThan(13);
     // Every round leaves more, the worst of the cut in round 2 most of all.
-    expect(two.stained).toBeGreaterThan(one.stained * 2);
+    expect(two.stained).toBeGreaterThan(one.stained * 1.5);
     expect(three.stained).toBeGreaterThan(two.stained);
-    expect(three.soaked).toBeGreaterThan(one.soaked * 3);
-    expect(three.stained).toBeLessThan(26);
+    expect(three.soaked).toBeGreaterThan(one.soaked * 2);
+    expect(three.stained).toBeLessThan(33);
   }, 60_000);
 
-  it("spreads fast at first and then slower, wider the worse the fighter bleeds, to 0.7 m", () => {
+  it("spreads fast at first and then slower, wider the worse the fighter bleeds, to 1.1 m", () => {
     expect(poolRadius(0, 1)).toBeCloseTo(0.06, 5);
     expect(poolRadius(4, 1) - poolRadius(0, 1)).toBeGreaterThan(poolRadius(16, 1) - poolRadius(12, 1));
     expect(poolRadius(16, 1.4)).toBeGreaterThan(poolRadius(16, 0.5));
-    expect(poolRadius(20, 1)).toBeGreaterThan(0.3);
-    expect(poolRadius(10_000, 10)).toBe(0.7);
+    expect(poolRadius(20, 1)).toBeGreaterThan(0.4);
+    expect(poolRadius(10_000, 10)).toBe(1.1);
   });
 });

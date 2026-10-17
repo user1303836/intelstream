@@ -20,8 +20,8 @@ export interface GoreBudget {
   readonly gibs: number;
   readonly shards: number;
 }
-export const DESKTOP_GORE: GoreBudget = { droplets: 2400, mist: 240, gibs: 192, shards: 48 };
-export const PHONE_GORE: GoreBudget = { droplets: 1200, mist: 120, gibs: 96, shards: 24 };
+export const DESKTOP_GORE: GoreBudget = { droplets: 4096, mist: 320, gibs: 320, shards: 72 };
+export const PHONE_GORE: GoreBudget = { droplets: 2048, mist: 160, gibs: 160, shards: 36 };
 const SHARDS_PER_BURST = 24;
 const BRAIN_PER_BURST = 24;
 const TEETH_PER_BURST = 10;
@@ -54,13 +54,17 @@ const DROP_STAIN = 0.7;
 const SPLASH_STAIN = 0.45;
 const KNOCKDOWN_STAIN = 0.6;
 const FINISHER_STAIN = 0.9;
-/** At full blood every stain soaks in this much darker and larger, so the canvas is soaked by the end. */
-const SOAK = 1.25;
+/** At full blood every stain soaks in this much darker and larger, so the canvas is soaked through. */
+const SOAK = 1.6;
 /** A cut's share of a punch's blood (the engine's bleeding over five) once it is open: bleeding of about 40. */
 const OPEN_WOUND = 8;
-/** A drop the size of a gob of blood (this radius, in metres) always stains where it lands at full blood, and fine spray six times in ten. */
+/** A drop the size of a gob of blood (this radius, in metres) always stains where it lands at full blood, and fine spray eight times in ten. */
 const GOB = 0.015;
-const FINE_SPRAY_STAINS = 0.6;
+const FINE_SPRAY_STAINS = 0.8;
+/** Drops of blood are drawn this much bigger at full blood: arcade splatter, gobs you can see from the cheap seats. */
+const CARTOON_DROPS = 1.35;
+/** A man going down throws this many drops of blood over what his punch's blood throws. */
+const KNOCKDOWN_DROPS = 250;
 /** The neck is close to round where it is cut. */
 export const NECK_WOUND_RADIUS = 0.068;
 const HAND_RADIUS = 0.085;
@@ -504,6 +508,8 @@ export class Effects3D {
   private simulationRemainder = 0;
   private ambientSeed = 0x5f37_59df;
   private shake = 0;
+  /** A client struggling to keep its frame rate throws half the blood. */
+  private lowTier = false;
   private bloodLevel: BloodLevel = "full";
   private readonly lens = new LensBlood();
   private camera: THREE.Camera | null = null;
@@ -754,6 +760,7 @@ export class Effects3D {
 
   setLowTier(low: boolean): void {
     this.canvasBlood.setLowTier(low);
+    this.lowTier = low;
   }
 
   get liveGibs(): number {
@@ -1109,9 +1116,9 @@ export class Effects3D {
     }
   }
 
-  /** As many drops as a desktop throws, thinned for the device's budget. */
+  /** As many drops as a desktop throws, thinned for the device's budget and by half again on a struggling client. */
   private forDevice(count: number): number {
-    return Math.round((count * this.budget.droplets) / DESKTOP_GORE.droplets);
+    return Math.round((count * this.budget.droplets * (this.lowTier ? 0.5 : 1)) / DESKTOP_GORE.droplets);
   }
 
   /** Draws only the live droplets and uploads the instances from `from` up to `to`. */
@@ -1166,7 +1173,7 @@ export class Effects3D {
     } else {
       this.dropletQuaternion.identity();
     }
-    const fade = Math.min(1, droplet.life / (droplet.maxLife * 0.3)) * this.dropletCloseness;
+    const fade = Math.min(1, droplet.life / (droplet.maxLife * 0.3)) * this.dropletCloseness * (droplet.blood && this.bloodLevel === "full" ? CARTOON_DROPS : 1);
     const shape = dropletShape(droplet.radius * fade, speed, this.dropletShape);
     this.dropletScale.set(shape.width, shape.length, shape.width);
     this.dropletMatrix.compose(this.dropletVelocity.set(droplet.x, droplet.y, droplet.z), this.dropletQuaternion, this.dropletScale);
@@ -1255,7 +1262,7 @@ export class Effects3D {
   pool(x: number, z: number, radius: number, stamp: number): void {
     if (this.bloodLevel === "off") return;
     const reduced = this.bloodLevel === "reduced";
-    this.canvasBlood.pool(finite(x), finite(z), Math.max(0.02, finite(radius, 0.1)) * (reduced ? 0.5 : 1), reduced ? 0.45 : 0.92, stamp);
+    this.canvasBlood.pool(finite(x), finite(z), Math.max(0.02, finite(radius, 0.1)) * (reduced ? 0.2 : 1), reduced ? 0.45 : 0.95, stamp);
   }
 
   /**
@@ -1296,7 +1303,7 @@ export class Effects3D {
         : this.bloodLevel === "reduced"
           ? Math.min(24, Math.round(event.blood * (blocked ? 0.12 : 0.24)))
           // The guard takes the punch, and half the blood it would have thrown.
-          : this.forDevice(blocked ? Math.round(bloodDropsFor(event.blood, 0) / 2) : bloodDropsFor(event.blood, landed ? event.amount : 0));
+          : this.forDevice(blocked ? Math.round(bloodDropsFor(event.blood, 0) / 2) : knockdown ? bloodDropsFor(event.blood, 0) + KNOCKDOWN_DROPS : bloodDropsFor(event.blood, landed ? event.amount : 0));
     if (!beat) this.shake = Math.min(0.14, this.shake + (blocked ? 0.008 : Math.max(0.012, event.amount / 1500)));
     if (knockdown) this.shake = Math.min(0.2, this.shake + 0.09);
     // A punch that lands hard throws its blood at a camera near enough to it, and a man going down does.
@@ -1388,7 +1395,7 @@ export class Effects3D {
       : (event.kind === "hit" && event.amount >= HARD_SHOT) || knockdown || event.kind === "counter_hit" || wound >= OPEN_WOUND * 2;
     if (!reducedMotion && event.blood > 0 && this.bloodLevel !== "off" && misty) {
       const puffs = full
-        ? this.forDevice(knockdown ? 24 : 10 + Math.min(16, Math.floor(wound / 3) + Math.floor(Math.max(0, event.amount - MISTING_SHOT) / 10)))
+        ? this.forDevice(knockdown ? 36 : 12 + Math.min(24, Math.floor(wound / 2) + Math.floor(Math.max(0, event.amount - MISTING_SHOT) / 6)))
         : (knockdown ? 3 : 2);
       const scale = full ? 1 : 0.35;
       for (let i = 0; i < puffs; i += 1) {
@@ -1397,17 +1404,17 @@ export class Effects3D {
     }
     // The canvas is splashed by what an open wound throws and by a man going down, and at full blood by any
     // punch that lands hard, cut or not; the drops that land paint the rest.
-    const hard = full && landed ? Math.max(0, Math.round((event.amount - 40) / 14)) : 0;
-    const stamps = knockdown ? (full ? 18 : 12) : Math.min(full ? 14 : 8, Math.round(wound / (full ? 3 : 4)) + hard);
+    const hard = full && landed ? Math.max(0, Math.round((event.amount - 30) / 10)) : 0;
+    const stamps = knockdown ? (full ? 30 : 12) : Math.min(full ? 24 : 8, Math.round(wound / (full ? 3 : 4)) + hard);
     if (stamps > 0 && this.bloodLevel !== "off") {
       const spread = knockdown ? 1 + Math.min(2, event.blood / 55) : 0.8 + Math.min(1.2, wound / 30);
       this.splatter(origin.x + (rand() - 0.5) * 0.6, origin.z + (rand() - 0.5) * 0.6, full ? spread * 1.3 : spread, rand, stamps, knockdown ? KNOCKDOWN_STAIN : SPLASH_STAIN);
     }
-    // A punch that rocks him tears flesh from a cut that has barely opened, and a hard one from any face.
+    // A punch that rocks him tears flesh from any cut at all, and a hard one from any face.
     const rocking = event.amount >= HARD_SHOT || (event.kind === "counter_hit" && event.amount >= ROCKING_COUNTER);
-    const tearing = landed && (event.amount >= TEARING_SHOT || (rocking && wound >= OPEN_WOUND / 2));
+    const tearing = landed && (event.amount >= TEARING_SHOT || (rocking && wound >= OPEN_WOUND / 4));
     if (full && !reducedMotion && tearing && !event.detail.endsWith(":body")) {
-      const chunks = Math.min(12, Math.max(2, Math.round((event.amount - 20) / 8)));
+      const chunks = Math.min(20, Math.max(3, Math.round((event.amount - 10) / 6)));
       for (let index = 0; index < chunks; index += 1) {
         const angle = rand() * Math.PI * 2;
         const speed = 0.5 + rand() * 1.8;
@@ -1981,12 +1988,12 @@ export class Effects3D {
   }
 
   /**
-   * Ejects teeth from the mouth on heavy head contact, in a spray of blood. Reduced blood knocks out half as
-   * many, none from a blow that would take only one, and cuts the spray to a few drops.
+   * Ejects teeth from the mouth on heavy head contact, in a spray of blood. Reduced blood knocks out one tooth,
+   * and only from a blow that would take three or more, and cuts the spray to a few drops.
    */
   spawnTeeth(mouthWorld: THREE.Vector3, direction: number | SprayDirection, count: number, eventId: number): void {
     if (this.bloodLevel === "off") return;
-    const teeth = Math.min(8, this.bloodLevel === "reduced" ? Math.floor(count / 2) : Math.max(1, Math.round(count)));
+    const teeth = this.bloodLevel === "reduced" ? (count >= 3 ? 1 : 0) : Math.min(12, Math.max(1, Math.round(count)));
     if (teeth <= 0) return;
     const rand = seeded((Number.isSafeInteger(eventId) ? eventId : 0) * 7331 + 91);
     const launch = unitSpray(direction);

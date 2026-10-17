@@ -172,8 +172,9 @@ describe("blood from the punch that lands", () => {
     const stub = Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, {
       pendingContacts: [{ event, presentationEvent: event, presentImpact: true, reactAmount: null, contactTick: 40, recipientIndex: 1, puncherIndex: 0, injury: null }],
       buffer: { latest: () => engine }, presentFightEvent: vi.fn(), mapping: worldMapping(SIMULATION), contactPoint: new THREE.Vector3(), mouthPoint: new THREE.Vector3(),
-      effects: { addEvent, spawnTeeth: vi.fn() }, settings: () => ({ reducedMotion: false, blood: "full" }), arena: { excite: vi.fn() }, viewerId: null,
+      effects: { addEvent, spawnTeeth: vi.fn(), gush: vi.fn() }, settings: () => ({ reducedMotion: false, blood: "full" }), arena: { excite: vi.fn() }, viewerId: null,
       arcadeInjuries: [null, null], headWorldPose: () => null, knockOutMouthpiece: vi.fn(), onContact: null, viewerHitFlash: 0,
+      woundPoint: new THREE.Vector3(), woundAxis: new THREE.Vector3(),
       ...overrides,
     });
     (FightRenderer.prototype as unknown as { fireContacts(this: unknown, tick: number): void }).fireContacts.call(stub, 50);
@@ -356,9 +357,9 @@ describe("blood on the canvas", () => {
     const calls = pools(renderer);
     expect(calls.length).toBeGreaterThan(50);
     const widest = Math.max(...calls.map((call) => call[2]!));
-    expect(widest).toBeGreaterThan(0.9);
-    expect(widest).toBeLessThanOrEqual(1.3);
-    for (const [x, z] of calls) expect(Math.hypot(x! - 0.6, z! + 0.2)).toBeLessThan(0.35);
+    expect(widest).toBeGreaterThan(1.4);
+    expect(widest).toBeLessThanOrEqual(2);
+    for (const [x, z] of calls) expect(Math.hypot(x! - 0.6, z! + 0.2)).toBeLessThan(0.51);
   });
 
   it("pools from a broken jaw as from any finisher's wound, and from a torn shoulder at the shoulder", () => {

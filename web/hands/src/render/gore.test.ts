@@ -1068,22 +1068,24 @@ describe("severed head close-up", () => {
 
 describe("gore from a real punch", () => {
   // Engine damage: a landed jab is about 30, a straight 50 to 80, a power counter up to about 150.
-  it("knocks teeth out with the punch that floors a man, with clean counters and with hard shots, more the harder they land", () => {
-    expect(teethFor("knockdown", 1, true)).toBe(3);
-    expect(teethFor("counter_hit", 60, true)).toBe(1);
-    expect(teethFor("counter_hit", 90, true)).toBe(2);
-    expect(teethFor("counter_hit", 130, true)).toBe(3);
-    expect(teethFor("counter_hit", 59, true)).toBe(0);
-    expect(teethFor("hit", 74, true)).toBe(0);
-    expect(teethFor("hit", 80, true)).toBe(1);
-    expect(teethFor("hit", 110, true)).toBe(2);
-    expect(teethFor("hit", 140, true)).toBe(3);
+  it("knocks teeth out with the punch that floors a man and with any solid punch to the head, more the harder it lands", () => {
+    expect(teethFor("knockdown", 1, true)).toBe(5);
+    expect(teethFor("counter_hit", 39, true)).toBe(0);
+    expect(teethFor("counter_hit", 40, true)).toBe(1);
+    expect(teethFor("counter_hit", 60, true)).toBe(2);
+    expect(teethFor("counter_hit", 90, true)).toBe(3);
+    expect(teethFor("counter_hit", 130, true)).toBe(5);
+    expect(teethFor("hit", 49, true)).toBe(0);
+    expect(teethFor("hit", 50, true)).toBe(1);
+    expect(teethFor("hit", 80, true)).toBe(2);
+    expect(teethFor("hit", 110, true)).toBe(3);
+    expect(teethFor("hit", 140, true)).toBe(4);
     expect(teethFor("counter_hit", 140, false)).toBe(0);
     expect(teethFor("knockdown", 1, false)).toBe(0);
     expect(teethFor("block", 140, true)).toBe(0);
   });
 
-  it("knocks teeth out with reduced blood only from the blows that take two or more, and half as many", () => {
+  it("knocks one tooth out with reduced blood, and only from the blows that take three or more", () => {
     const knocked = (level: "full" | "reduced", count: number): number => {
       const effects = new Effects3D(new THREE.Scene(), 256);
       effects.setBloodLevel(level);
@@ -1092,8 +1094,8 @@ describe("gore from a real punch", () => {
       effects.dispose();
       return teeth;
     };
-    expect([1, 2, 3, 8].map((count) => knocked("full", count))).toEqual([1, 2, 3, 8]);
-    expect([1, 2, 3, 8].map((count) => knocked("reduced", count))).toEqual([0, 1, 1, 4]);
+    expect([1, 2, 3, 8, 20].map((count) => knocked("full", count))).toEqual([1, 2, 3, 8, 12]);
+    expect([1, 2, 3, 8].map((count) => knocked("reduced", count))).toEqual([0, 0, 1, 1]);
   });
 
   it("throws dozens of drops off a clean face, more from a harder punch and far more from an open wound, up to a limit", () => {
@@ -1121,13 +1123,20 @@ describe("gore from a real punch", () => {
     expect(hook.blood).toBeGreaterThan(straight.blood + 15);
     for (const punch of [jab, straight, hook]) expect(punch.blood).toBeGreaterThan(punch.sweat * 5);
     expect(thrown(64, "hook:head", PHONE_GORE).blood).toBe(Math.round(hook.blood / 2));
+    // A client struggling to keep its frame rate throws half again.
+    const struggling = new Effects3D(new THREE.Scene(), 256);
+    struggling.setLowTier(true);
+    struggling.addEvent(punchOn("hit", 64, 0, "hook:head"), origin, false);
+    expect(struggling.liveBloodParticles).toBe(Math.round(hook.blood / 2));
+    struggling.dispose();
   });
 
   it("puts a mist in the air from a punch that lands hard, which a light one on a clean face does not", () => {
     const origin = new THREE.Vector3();
     const mist = (kind: string, amount: number): number => {
       const effects = new Effects3D(new THREE.Scene());
-      effects.addEvent({ event_id: 3, tick: 1, kind, actor_id: "one", target_id: "two", amount, detail: "straight:head", blood: 20, direction: 1, action_id: null }, origin, false);
+      // A clean face: all of the punch's blood is its weight's.
+      effects.addEvent({ event_id: 3, tick: 1, kind, actor_id: "one", target_id: "two", amount, detail: "straight:head", blood: Math.floor(amount / 3), direction: 1, action_id: null }, origin, false);
       const live = effects.liveMist;
       effects.dispose();
       return live;
@@ -1158,10 +1167,10 @@ describe("gore from a real punch", () => {
   it("splashes the canvas from a hard punch on any face, more from an open cut and most from a knockdown, but not from a jab on a clean one", () => {
     const splash = (event: CombatEvent): number => after(event, (effects) => effects.canvasStains);
     expect(splash(punchOn("hit", 34, 0, "jab:head"))).toBe(0);
-    expect(splash(punchOn("hit", 110, 0))).toBe(5);
-    expect(splash(punchOn("hit", 64, 130, "hook:head"))).toBe(11);
-    expect(splash(punchOn("counter_hit", 64, 320, "hook:head"))).toBe(14);
-    expect(splash({ ...punchOn("knockdown", 1, 0), blood: 18 })).toBe(18);
+    expect(splash(punchOn("hit", 110, 0))).toBe(8);
+    expect(splash(punchOn("hit", 64, 130, "hook:head"))).toBe(12);
+    expect(splash(punchOn("counter_hit", 64, 320, "hook:head"))).toBe(24);
+    expect(splash({ ...punchOn("knockdown", 1, 0), blood: 18 })).toBe(30);
     // Reduced blood splashes only from a cut, a quarter as many, as it always did.
     const reduced = new Effects3D(new THREE.Scene(), 256);
     reduced.setBloodLevel("reduced");
@@ -1184,6 +1193,26 @@ describe("gore from a real punch", () => {
     };
     expect(stained("full")).toBeGreaterThan(100);
     expect(stained("reduced")).toBeLessThan(40);
+  });
+
+  it("throws an explosion of blood as a man goes down, over what his punch threw", () => {
+    const thrown = after({ ...punchOn("knockdown", 1, 0), blood: 18 }, (effects) => effects.liveBloodParticles);
+    expect(thrown).toBe(bloodDropsFor(18, 0) + 250);
+  });
+
+  it("draws the blood in gobs at full blood, bigger than reduced blood draws the same drop and bigger than sweat", () => {
+    const drawn = (level: "full" | "reduced", blood: boolean): number => {
+      const effects = new Effects3D(new THREE.Scene(), 256);
+      effects.setBloodLevel(level);
+      (effects as unknown as { spawnDroplet(x: number, y: number, z: number, vx: number, vy: number, vz: number, color: { r: number; g: number; b: number }, life: number, blood: boolean, radius: number): void }).spawnDroplet(0, 1, 0, 0, 0, 0, bloodShade(0), 1, blood, 0.01);
+      const matrix = new THREE.Matrix4();
+      effects.dropletMesh.getMatrixAt(0, matrix);
+      const size = new THREE.Vector3().setFromMatrixScale(matrix).x;
+      effects.dispose();
+      return size;
+    };
+    expect(drawn("full", true) / drawn("reduced", true)).toBeCloseTo(1.35, 6);
+    expect(drawn("full", false)).toBeCloseTo(drawn("reduced", false), 9);
   });
 
   it("throws the blood from where the punch landed on him, or from a standing man's head over the spot under him", () => {
@@ -1234,20 +1263,19 @@ describe("gore from a real punch", () => {
     effects.dispose();
   });
 
-  it("tears flesh from any cut with a punch that rocks him, and from any face with a hard punch", () => {
+  it("tears flesh from any cut with a punch that rocks him, and from any face with a solid punch", () => {
     const torn = (event: CombatEvent): number => after(event, (effects) => effects.liveGibs);
-    expect(torn(punchOn("hit", HARD_SHOT, 130))).toBeGreaterThan(0);
-    expect(torn(punchOn("counter_hit", ROCKING_COUNTER, 130))).toBeGreaterThan(0);
-    expect(torn(punchOn("hit", HARD_SHOT - 1, 130))).toBe(0);
-    expect(torn(punchOn("counter_hit", ROCKING_COUNTER - 1, 130))).toBe(0);
-    // A cut that has only just opened tears under a punch that rocks him; an unmarked face only under a hard one.
-    expect(torn(punchOn("hit", HARD_SHOT, 20))).toBeGreaterThan(0);
-    expect(torn(punchOn("hit", HARD_SHOT, 0))).toBe(0);
-    expect(torn(punchOn("hit", TEARING_SHOT - 1, 0))).toBe(0);
+    // Any face loses flesh to a punch of TEARING_SHOT.
     expect(torn(punchOn("hit", TEARING_SHOT, 0))).toBeGreaterThan(0);
+    expect(torn(punchOn("hit", TEARING_SHOT - 1, 0))).toBe(0);
+    // A counter that rocks him tears it from a cut that has only just opened, but not from an unmarked face.
+    expect(torn(punchOn("counter_hit", ROCKING_COUNTER, 10))).toBeGreaterThan(0);
+    expect(torn(punchOn("counter_hit", ROCKING_COUNTER, 0))).toBe(0);
+    expect(torn(punchOn("counter_hit", ROCKING_COUNTER - 1, 130))).toBe(0);
     expect(torn(punchOn("counter_hit", BIG_SHOT, 0))).toBeGreaterThan(0);
     expect(torn(punchOn("hit", 120, 300, "hook:body"))).toBe(0);
     expect(torn(punchOn("counter_hit", 140, 300))).toBeGreaterThan(torn(punchOn("counter_hit", 60, 300)));
+    expect(torn(punchOn("counter_hit", 140, 300))).toBe(20);
     // Reduced blood tears nothing.
     const reduced = new Effects3D(new THREE.Scene(), 256);
     reduced.setBloodLevel("reduced");
@@ -1280,9 +1308,9 @@ describe("gore from a real punch", () => {
 
   it("throws a thicker mist off a punch the worse the cut it lands on", () => {
     const mist = (event: CombatEvent): number => after(event, (effects) => effects.liveMist);
-    expect(mist(punchOn("hit", 75, 0))).toBe(13);
+    expect(mist(punchOn("hit", 75, 0))).toBe(18);
     expect(mist(punchOn("hit", 75, 300))).toBeGreaterThan(mist(punchOn("hit", 75, 80)));
-    expect(mist(punchOn("hit", 75, 600))).toBe(26);
+    expect(mist(punchOn("hit", 75, 600))).toBe(36);
     // A face cut badly enough mists at every punch, a jab included.
     expect(mist(punchOn("hit", 34, 0, "jab:head"))).toBe(0);
     expect(mist(punchOn("hit", 34, 160, "jab:head"))).toBeGreaterThan(0);

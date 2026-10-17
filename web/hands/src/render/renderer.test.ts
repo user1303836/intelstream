@@ -4,7 +4,7 @@ import { Avatars } from "./avatars";
 import { RoundClock } from "./hud";
 import { PROTOCOL_VERSION, type CombatEvent, type EngineSnapshot, type MatchResult } from "../types";
 import { releaseSharedGpu, disposeSkeletons } from "./graph";
-import { arcadeInjuryFor, canStartPunch, compileForComposer, CEREMONY_MARKS, ceremonyStep, contactParticipants, contactPresentationPlan, disposeComposer, cornersAtWork, FightRenderer, hitFlash, hurtVignette, ownViewPhase, isArcadeInjuryCandidate, knockdownFinisher, presentationTickFor, refereeSpacing, replayCameraSide, sprayDirection, visualSeparation, resultCardTop } from "./renderer";
+import { arcadeInjuryFor, canStartPunch, compileForComposer, CEREMONY_MARKS, ceremonyStep, contactParticipants, contactPresentationPlan, disposeComposer, cornersAtWork, FightRenderer, hitFlash, hurtVignette, ownViewPhase, isArcadeInjuryCandidate, knockdownFinisher, presentationTickFor, punchGush, refereeSpacing, replayCameraSide, sprayDirection, visualSeparation, resultCardTop } from "./renderer";
 import { RockedVision } from "./rocked";
 import { worldMapping } from "./world";
 
@@ -196,6 +196,21 @@ describe("screen gore", () => {
     expect(hitFlash(blow("hit", 59), false, "full")).toBe(0);
     expect(hitFlash(blow("hit", 140), false, "reduced")).toBeLessThan(hitFlash(blow("hit", 140), false, "full") * 0.5);
     expect(hitFlash(blow("hit", 140), false, "off")).toBe(0);
+  });
+
+  it("spurts blood from the face of a man any solid punch lands on, longer and harder the harder it lands and the worse he is cut", () => {
+    const punch = (kind: string, amount: number, blood: number, detail = "straight:head") => ({ kind, amount, blood, detail });
+    expect(punchGush(punch("hit", 49, 16))).toBeNull();
+    expect(punchGush(punch("block", 120, 40))).toBeNull();
+    expect(punchGush(punch("hit", 65, 25, "hook:body"))).toBeNull();
+    const clean = punchGush(punch("hit", 64, 21, "hook:head"))!;
+    const cut = punchGush(punch("hit", 64, 81, "hook:head"))!;
+    expect(clean.seconds).toBeGreaterThan(0.9);
+    expect(cut.seconds).toBeGreaterThan(clean.seconds * 2);
+    expect(cut.rate).toBeGreaterThan(clean.rate);
+    expect(punchGush(punch("counter_hit", 140, 60))!.rate).toBeGreaterThan(cut.rate);
+    // A hard body shot makes him cough it up.
+    expect(punchGush(punch("hit", 80, 26, "hook:body"))).not.toBeNull();
   });
 
   it("darkens the hurt vignette from the first damage at full blood, as it always did otherwise", () => {

@@ -149,7 +149,7 @@ describe("a rendered frame", () => {
     const opponentHead = new THREE.Vector3(0.67, 1.6, 0);
     const moved = (camera: Settings["camera"]): { quiet: number; contact: number } => {
       const state = fighting({ x: -110 }, { x: 110 });
-      const effects = { drip: vi.fn(), stopDrip: vi.fn(), pool: vi.fn(), update: vi.fn(), shakeAmount: 0, setViewDistance: vi.fn(), addEvent: vi.fn(), spawnTeeth: vi.fn(), ejectMouthpiece: vi.fn(), gushing: () => false };
+      const effects = { drip: vi.fn(), stopDrip: vi.fn(), pool: vi.fn(), update: vi.fn(), shakeAmount: 0, setViewDistance: vi.fn(), addEvent: vi.fn(), spawnTeeth: vi.fn(), ejectMouthpiece: vi.fn(), gush: vi.fn(), gushing: () => false };
       const harness = frame(state, {
         fireContacts,
         effects,
@@ -159,6 +159,8 @@ describe("a rendered frame", () => {
         presentFightEvent: vi.fn(),
         applyArcadeInjury: vi.fn(),
         headWorldPose: () => ({ position: opponentHead, quaternion: new THREE.Quaternion() }),
+        woundPoint: new THREE.Vector3(),
+        woundAxis: new THREE.Vector3(),
         gearColor: () => 0xffffff,
         flashKnockout: null,
         onContact: null,
@@ -427,6 +429,30 @@ describe("around the fight", () => {
     method("setFinal").call(stub, { version: PROTOCOL_VERSION, type: "final", match_id: "m", winner_id: "one", method: "tko", round: 2, scorecards: [], ratings: {} });
     expect(applyArcadeInjury).not.toHaveBeenCalled();
     expect(waiting.injury).toBe("decapitation");
+  });
+
+  it("spurts blood from the face of a man a solid punch lands on, but not with reduced motion", () => {
+    const gush = vi.fn();
+    const hook = combat("hit", { event_id: 14, detail: "hook:head", amount: 80, blood: 50 });
+    const head = { position: new THREE.Vector3(0.6, 1.5, 0.1), quaternion: new THREE.Quaternion() };
+    const pending = () => [{ event: hook, presentationEvent: hook, presentImpact: true, reactAmount: hook.amount, contactTick: 40, recipientIndex: 1, puncherIndex: 0, injury: null }];
+    const stub = prototypeOf({
+      pendingContacts: pending(),
+      buffer: { latest: () => snapshot() }, presentFightEvent: vi.fn(), mapping: worldMapping(SIMULATION), contactPoint: new THREE.Vector3(), mouthPoint: new THREE.Vector3(), woundPoint: new THREE.Vector3(), woundAxis: new THREE.Vector3(), tmpA: new THREE.Vector3(), tmpB: new THREE.Vector3(),
+      effects: { addEvent: vi.fn(), spawnTeeth: vi.fn(), gush }, settings: () => ({ reducedMotion: false, blood: "full" }), arena: { excite: vi.fn() }, viewerId: null,
+      arcadeInjuries: [null, null], graphs: null, headWorldPose: () => ({ position: head.position.clone(), quaternion: head.quaternion }), knockOutMouthpiece: vi.fn(), onContact: null, viewerHitFlash: 0,
+    });
+    method("fireContacts").call(stub, 50);
+    expect(gush).toHaveBeenCalledOnce();
+    const [index, at, , seconds, rate, eventId] = gush.mock.calls[0]! as [number, THREE.Vector3, THREE.Vector3, number, number, number];
+    expect([index, eventId]).toEqual([1, 14]);
+    expect(at.distanceTo(new THREE.Vector3(0.6, 1.43, 0.2))).toBeLessThan(1e-6);
+    expect(seconds).toBeCloseTo(1.6, 6);
+    expect(rate).toBeCloseTo(370, 6);
+    stub.pendingContacts = pending();
+    stub.settings = () => ({ reducedMotion: true, blood: "full" });
+    method("fireContacts").call(stub, 50);
+    expect(gush).toHaveBeenCalledOnce();
   });
 
   it("pours blood from the mouth of a man going down, from his head as it is posed", () => {
