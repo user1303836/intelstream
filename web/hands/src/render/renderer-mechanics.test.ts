@@ -348,7 +348,7 @@ describe("the player's own slip, weave or pull behind his punch", () => {
     buffer: { latest: () => latest, interpolationDelayTicks: 2 }, viewerId: "one", replay: null, inputLatencyMs: 100,
     simulation: { tick_rate: 30 }, manualClock: true, lastManualTime: 1000, graphs: [graph, {}], evasion: new EvasionPrediction(),
   });
-  const ownPunch = (ticksToRecovery: number) => ({ ownPunchActive: true, ownTicksToRecovery: ticksToRecovery, cutOwnRecovery: vi.fn(), predict: vi.fn() });
+  const ownPunch = (ticksToRecovery: number) => ({ ownPunchActive: true, ownTicksToRecovery: ticksToRecovery, cutOwnRecovery: vi.fn(), keepOwnRecovery: vi.fn(), predict: vi.fn(), acknowledge: vi.fn() });
 
   it("shows at once behind a punch that has landed or missed, cutting the punch's recovery short for it", () => {
     const graph = ownPunch(0);
@@ -366,6 +366,31 @@ describe("the player's own slip, weave or pull behind his punch", () => {
     // A punch pressed meanwhile takes its place in the server's buffer.
     predictAction.call(renderer, { kind: "punch", id: "c5", hand: "left", class: "jab", target: "head", power: "normal" });
     expect(renderer.evasion.pose(1000 + 3 * (1000 / 30))).toBeNull();
+  });
+
+  it("leaves the punch's recovery alone once a punch press takes its place before it starts, or the server turns it down", () => {
+    const acknowledgeActions = (FightRenderer.prototype as unknown as { acknowledgeActions(this: unknown, snapshot: EngineSnapshot, events: readonly CombatEvent[]): void }).acknowledgeActions;
+    const punch: SemanticAction = { kind: "punch", id: "c5", hand: "left", class: "jab", target: "head", power: "normal" };
+    const replaced = ownPunch(3);
+    const beforeStart = stub(replaced);
+    predictAction.call(beforeStart, { kind: "weave", id: "c4" });
+    predictAction.call(beforeStart, punch);
+    expect(replaced.keepOwnRecovery).toHaveBeenCalledTimes(1);
+    // Once it has started there, on the press's time, the punch waits behind it and the recovery stays cut.
+    const behind = ownPunch(0);
+    const afterStart = stub(behind);
+    predictAction.call(afterStart, { kind: "weave", id: "c4" });
+    predictAction.call(afterStart, punch);
+    expect(behind.keepOwnRecovery).not.toHaveBeenCalled();
+    // Turned down: the frame that carried it is acknowledged with nothing started or waiting.
+    const turnedDown = ownPunch(3);
+    const refused = { ...stub(turnedDown), graphs: [turnedDown, { acknowledge: vi.fn() }], inputSequenceOf: (id: string) => (id === "c4" ? 41 : null) };
+    predictAction.call(refused, { kind: "weave", id: "c4" });
+    const base = snapshot(42);
+    acknowledgeActions.call(refused, { ...base, fighters: [{ ...base.fighters[0], last_input_sequence: 41, queued_actions: 1 }, base.fighters[1]] }, []);
+    expect(turnedDown.keepOwnRecovery).not.toHaveBeenCalled();
+    acknowledgeActions.call(refused, { ...base, fighters: [{ ...base.fighters[0], last_input_sequence: 41 }, base.fighters[1]] }, []);
+    expect(turnedDown.keepOwnRecovery).toHaveBeenCalledTimes(1);
   });
 
   it("leaves it to the server behind a punch it never predicted or anything else the server holds", () => {

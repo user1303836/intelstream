@@ -443,14 +443,18 @@ export class EvasionPrediction {
     this.started = false;
   }
 
-  /** Squares the pressed evasion with the newest snapshot; `sequenceOf` gives the frame that carried a press once it has gone out. */
-  acknowledge(server: FighterSnapshot, fighting: boolean, sequenceOf: ((actionId: string) => number | null) | null): void {
-    if (this.kind === null) return;
+  /**
+   * Squares the pressed evasion with the newest snapshot; `sequenceOf` gives the frame that carried a press once it has gone
+   * out. True when the server turned it down without starting it.
+   */
+  acknowledge(server: FighterSnapshot, fighting: boolean, sequenceOf: ((actionId: string) => number | null) | null): boolean {
+    if (this.kind === null) return false;
     this.sequence ??= sequenceOf?.(this.id) ?? null;
     if (server.defense === this.kind) this.started = true;
     const cutOff = !fighting || server.stunned_ticks > 0 || server.clinch_ticks > 0;
     const refused = !this.started && this.sequence !== null && server.last_input_sequence >= this.sequence && server.queued_actions === 0;
     if (cutOff || refused) this.kind = null;
+    return refused;
   }
 
   /** The evasion to show at `nowMs`, or null. */
@@ -469,8 +473,13 @@ export class EvasionPrediction {
     return this.kind !== null && nowMs >= this.startsAt && nowMs < this.endsAt;
   }
 
-  /** A newer press takes its place in the server's buffer, unless it has started there by now (on the press's time). */
-  drop(nowMs: number): void {
-    if (nowMs < this.startsAt) this.kind = null;
+  /**
+   * A newer press takes its place in the server's buffer, unless it has started there by now (on the press's time); true
+   * when one is dropped before it started.
+   */
+  drop(nowMs: number): boolean {
+    if (this.kind === null || nowMs >= this.startsAt) return false;
+    this.kind = null;
+    return true;
   }
 }

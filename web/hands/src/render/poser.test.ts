@@ -910,6 +910,34 @@ describe("own punch prediction", () => {
     expect(state(graph).ownActionId).toBeNull();
   });
 
+  it("recovers in full when the slip pressed to cut its recovery short is replaced or turned down before it starts", () => {
+    const timing = punchTiming("hook", "head", "normal");
+    const play = (slip: boolean): { shares: number[]; followUpFrame: number } => {
+      const { graph } = makeGraph();
+      const idle = facingOpponent(baseFighter("one"));
+      run(graph, idle, opponentFor("two"), 10, undefined);
+      graph.predict({ ...jab, class: "hook" }, 0, 30, 6);
+      // The server's word that it started the hook, so the give-up timer leaves it alone.
+      graph.acknowledge({ ...idle, action: "hook", action_hand: "left", action_target: "head", action_power: "normal", action_id: "own-1", action_key: "hook:left:head:normal", action_start_tick: 102, action_startup_ticks: timing.startup, action_active_ticks: timing.active, action_recovery_ticks: timing.recovery }, true);
+      let tick = run(graph, idle, opponentFor("two"), 2, undefined, 100);
+      if (slip) graph.cutOwnRecovery();
+      tick = run(graph, idle, opponentFor("two"), 2, undefined, tick, tick / 30);
+      if (slip) graph.keepOwnRecovery();
+      graph.predict({ ...jab, id: "own-2", hand: "right" }, tick / 30, 30, 6);
+      const shares: number[] = [];
+      let frame = 4;
+      for (; state(graph).ownActionId === "own-1" && frame < 200; frame += 1) {
+        shares.push(graph.ownFootwork);
+        tick = run(graph, idle, opponentFor("two"), 1, undefined, tick, tick / 30);
+      }
+      return { shares, followUpFrame: frame };
+    };
+    const unslipped = play(false);
+    expect(unslipped.shares).toContain(0.6);
+    expect(unslipped.followUpFrame).toBeGreaterThanOrEqual(2 * (timing.startup + timing.active + timing.recovery));
+    expect(play(true)).toEqual(unslipped);
+  });
+
   it("knows which of the player's own presses reached the target on screen, and not one pulled back or played on the server's clock", () => {
     const { graph } = makeGraph();
     const idle = facingOpponent(baseFighter("one"));

@@ -1139,6 +1139,11 @@ export class BoxingGraph {
     this.ownQueued = null;
   }
 
+  /** The slip, weave or pull pressed to cut the player's own punch's recovery short was replaced or turned down before it started. */
+  keepOwnRecovery(): void {
+    this.recoveryCut = false;
+  }
+
   /**
    * Squares the viewer's own punches with the newest snapshot, which is ahead of the one on screen by
    * the interpolation delay. `sequenceOf` gives the input frame that carried a press once it has gone

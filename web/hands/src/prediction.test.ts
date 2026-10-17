@@ -464,11 +464,11 @@ describe("the player's own defence", () => {
     expect(behind.pose(3 * tick)).toBe("slip_right");
     expect(behind.holdsFeet((3 + EVASION_TICKS - 1) * tick)).toBe(true);
     expect(behind.holdsFeet((3 + EVASION_TICKS) * tick)).toBe(false);
-    behind.drop(4 * tick);
+    expect(behind.drop(4 * tick)).toBe(false);
     expect(behind.pose(5 * tick)).toBe("slip_right");
     const replaced = new EvasionPrediction();
     replaced.press("slip_right", "c5", 0, 6, 30, EVASION_TICKS, 3 * tick);
-    replaced.drop(2 * tick);
+    expect(replaced.drop(2 * tick)).toBe(true);
     expect(replaced.pose(4 * tick)).toBeNull();
     expect(replaced.hidesServerEvasion(4 * tick)).toBe(false);
   });
@@ -487,24 +487,24 @@ describe("the player's own defence", () => {
     expect(evasion.hidesServerEvasion((6 + ticks - 1) * tick)).toBe(true);
   });
 
-  it("drops a slip the server turned down or a stun cut short", () => {
+  it("drops a slip the server turned down or a stun cut short, and tells when the server turned it down unstarted", () => {
     const sequenceOf = (id: string): number | null => (id === "c8" ? 41 : null);
     const refused = new EvasionPrediction();
     refused.press("pull", "c8", 0, 4, 30);
     // Snapshots before the frame went out say nothing about it.
-    refused.acknowledge({ ...open, last_input_sequence: 40 }, true, sequenceOf);
+    expect(refused.acknowledge({ ...open, last_input_sequence: 40 }, true, sequenceOf)).toBe(false);
     expect(refused.pose(10)).toBe("pull");
     // Not enough stamina there, or a punch pressed in the same tick took its place.
-    refused.acknowledge({ ...open, last_input_sequence: 41 }, true, sequenceOf);
+    expect(refused.acknowledge({ ...open, last_input_sequence: 41 }, true, sequenceOf)).toBe(true);
     expect(refused.pose(20)).toBeNull();
     const waiting = new EvasionPrediction();
     waiting.press("pull", "c8", 0, 4, 30);
-    waiting.acknowledge({ ...open, last_input_sequence: 41, queued_actions: 1 }, true, sequenceOf);
+    expect(waiting.acknowledge({ ...open, last_input_sequence: 41, queued_actions: 1 }, true, sequenceOf)).toBe(false);
     expect(waiting.pose(20)).toBe("pull");
     const stunned = new EvasionPrediction();
     stunned.press("weave", "c9", 0, 4, 30);
     stunned.acknowledge({ ...open, defense: "weave" }, true, null);
-    stunned.acknowledge({ ...open, stunned_ticks: 20 }, true, null);
+    expect(stunned.acknowledge({ ...open, stunned_ticks: 20 }, true, null)).toBe(false);
     expect(stunned.pose(20)).toBeNull();
     const bell = new EvasionPrediction();
     bell.press("weave", "c9", 0, 4, 30);

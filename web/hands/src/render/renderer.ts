@@ -2354,8 +2354,8 @@ export class FightRenderer {
     }
     // A fighter who cannot pay for it in full still throws it, as a slow arm punch (see predictedPunchTiming).
     if (action.kind !== "punch") return;
-    // It takes the place of a slip, weave or pull the server still holds behind a punch.
-    this.evasion.drop(now);
+    // It takes the place of a slip, weave or pull the server still holds behind a punch, which then recovers in full.
+    if (this.evasion.drop(now)) graph?.keepOwnRecovery();
     graph?.predict(action, performance.now() / 1000, this.simulation.tick_rate, leadTicks, predictedPunchTiming(fighter, action, latest.tick + 1), answerTicks);
   }
 
@@ -2366,7 +2366,7 @@ export class FightRenderer {
   private acknowledgeActions(snapshot: EngineSnapshot, events: readonly CombatEvent[]): void {
     for (const [index, fighter] of snapshot.fighters.entries()) {
       const viewer = fighter.player_id === this.viewerId;
-      if (viewer) this.evasion.acknowledge(fighter, snapshot.phase === "fight", this.inputSequenceOf);
+      if (viewer && this.evasion.acknowledge(fighter, snapshot.phase === "fight", this.inputSequenceOf)) this.graphs?.[index]?.keepOwnRecovery();
       const contacts = events.filter((event) => contactParticipants(event, snapshot).puncherIndex === index);
       this.graphs?.[index]?.acknowledge(fighter, snapshot.phase === "fight", contacts, viewer ? this.inputSequenceOf : null);
     }
