@@ -585,6 +585,18 @@ describe("a wound that gushes", () => {
   const mouth = new THREE.Vector3(0.3, 1.45, 0.1);
   const out = new THREE.Vector3(0, -0.35, 1).normalize();
 
+  it("stops pouring from the mouth once the head comes off or bursts", () => {
+    for (const finish of ["decapitate", "burst"] as const) {
+      const effects = new Effects3D(new THREE.Scene());
+      effects.gush(1, mouth, out, 3, 300, 12);
+      expect(effects.gushing(1)).toBe(true);
+      if (finish === "decapitate") effects.decapitate(1, new THREE.Vector3(0.3, 1.55, 0.1), new THREE.Quaternion(), 1, 13);
+      else effects.burstHead(1, new THREE.Vector3(0.3, 1.6, 0.1), 1, 14);
+      expect(effects.gushing(1)).toBe(false);
+      effects.dispose();
+    }
+  });
+
   it("pours out of the wound with every beat, slower and wider than an artery, easing off to nothing", () => {
     const effects = new Effects3D(new THREE.Scene());
     effects.gush(1, mouth, out, 2, 160, 12);
@@ -940,9 +952,12 @@ describe("referee and a head on the canvas", () => {
       effects, closeUpTarget: new THREE.Vector3(), replay: null, ceremony: null, settings: () => ({ reducedMotion: false, blood: "full" }),
     });
     const step = (FightRenderer.prototype as unknown as { updateReferee: (dt: number, time: number, snapshot: unknown, tick: number) => void }).updateReferee;
+    // A head landing beside him has him step briskly away, never jump, and keep clear of it from then on.
     for (let frame = 0; frame < 180; frame += 1) {
+      const before = stub.refereePosition.clone();
       step.call(stub, 1 / 60, frame / 60, null, frame / 2);
-      expect(Math.hypot(stub.refereePosition.x - head.x, stub.refereePosition.z - head.z)).toBeGreaterThanOrEqual(0.9 - 1e-6);
+      expect(before.distanceTo(stub.refereePosition)).toBeLessThanOrEqual(2.5 / 60 + 1e-6);
+      if (frame >= 30) expect(Math.hypot(stub.refereePosition.x - head.x, stub.refereePosition.z - head.z)).toBeGreaterThanOrEqual(0.9 - 1e-6);
     }
     expect(updated).toHaveLength(180);
     effects.dispose();

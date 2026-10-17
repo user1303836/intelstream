@@ -297,7 +297,7 @@ export class NetworkController {
       this.reconnectTicket = message.reconnect_ticket;
     } else if (message.type === "snapshot") {
       this.serverTick = Math.max(this.serverTick, message.payload.tick);
-      this.setInputActive(["countdown", "fight", "knockdown", "foul_recovery"].includes(message.payload.phase));
+      this.setInputActive(["countdown", "fight", "knockdown", "foul_recovery", "referee_down"].includes(message.payload.phase));
       this.resting = message.payload.phase === "rest";
       this.observeAcknowledgement(message.payload);
     } else if (message.type === "paused") {

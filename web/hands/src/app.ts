@@ -19,7 +19,7 @@ import { CAMERA_MODES, SettingsStore, type BloodLevel } from "./settings";
 import { initialState, reduceState, type GameState } from "./state";
 import type { CpuLevel, EngineSnapshot, PublicPlayer, ServerMessage } from "./types";
 
-const CONTACT_FEEDBACK_KINDS = new Set(["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown", "parry", "body_collapse", "eye_shut"]);
+const CONTACT_FEEDBACK_KINDS = new Set(["hit", "counter_hit", "block", "perfect_block", "guard_break", "knockdown", "parry", "body_collapse", "eye_shut", "referee_hit", "referee_down"]);
 // The room keeps the finished bout for its result hold (ten seconds by default); a rejoin inside
 // that window only replays the old final, so the rematch waits it out and retries if it still hits it.
 const REMATCH_HOLD_MS = 11_000;
@@ -493,7 +493,7 @@ export class HandsApp {
     if (showHint) this.setText(this.hint, controlHint(coarsePointer(), window.innerWidth));
     // Once the pads are up for the countdown, the touch hint moves to the empty stick side so it covers no pad.
     this.overlay.toggleAttribute("data-touch-hint", showHint && this.state.stage === "countdown" && coarsePointer());
-    const active = !spectating && ["countdown", "fight", "knockdown", "foul_recovery"].includes(this.state.stage);
+    const active = !spectating && ["countdown", "fight", "knockdown", "foul_recovery", "referee_down"].includes(this.state.stage);
     // Between rounds and through pauses the touch controls stay up, inert, so a thumb already in place counts at the bell.
     const resting = !spectating && this.state.snapshot !== null && (this.state.stage === "rest" || this.state.stage === "paused");
     this.input.setActive(active, active || resting);

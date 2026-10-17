@@ -265,7 +265,7 @@ describe("knockout replay injuries", () => {
       const restoreInjury = vi.fn();
       const stub = {
         simulation: { tick_rate: 30 }, frameSeconds: 0, final: null, graphs: null, commentary: { replay: vi.fn() }, restoreInjury,
-        arcadeInjuries: [null, injury], arcadeInjuryEvents: [null, impact], replayInjuries: [null, null], pendingContacts: [], effects: { returnMouthpiece: vi.fn() },
+        arcadeInjuries: [null, injury], arcadeInjuryEvents: [null, impact], replayInjuries: [null, null], pendingContacts: [], effects: { returnMouthpiece: vi.fn(), stopGush: vi.fn() },
         lastKnockdown: { knockdown: { ...impact, event_id: 31, kind: "knockdown" }, hit: impact, finisher: null }, liveFallTicks: [null, null],
       };
       startReplay.call(stub, { snapshots: [snapshot(380), snapshot(400)], impact, durationSeconds: 3 });
@@ -475,6 +475,14 @@ describe("decision ceremony", () => {
     for (let frame = 120; frame < 200; frame += 1) methods.ceremonyFighters.call(stub, ceremony, standing(), 1 / 60, frame / 60);
     expect(announced).toEqual(["level", "level"]);
     expect(raised.at(-1)).toEqual(["red", "blue"]);
+    // A referee lying dead on the canvas raises nobody's arm; the verdict is still announced.
+    const dead = { ...stub, referee: { isDown: true, raise: (...wrists: unknown[]) => raised.push(wrists) } };
+    const before = raised.length;
+    const afterHim: Staged = { winnerSeat: 0, positions: CEREMONY_MARKS.map(({ x, y }) => ({ x, y })), refereeArrived: true, arrivedAt: null, announced: false };
+    announced.length = 0;
+    for (let frame = 0; frame < 200; frame += 1) methods.ceremonyFighters.call(dead, afterHim, standing(), 1 / 60, frame / 60);
+    expect(announced).toEqual(["winner", "loser"]);
+    expect(raised.length).toBe(before);
   });
 });
 

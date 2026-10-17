@@ -54,6 +54,7 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
 
   let tick = 0;
   let eventId = 0;
+  const refereeBlowsShown = new Set<number>();
   let finalSent = false;
   let bellRung = false;
   let thrownWindow = -1;
@@ -269,9 +270,12 @@ export function runDevelopmentFixture(root: HTMLElement): () => void {
         if (t >= start && t < blow.at + 0.35) {
           Object.assign(one, { action: blow.punch, action_hand: blow.hand, action_target: "head", action_power: blow.power, action_id: `ref-${index}`, action_key: `${blow.punch}:${blow.hand}:head:${blow.power}`, action_start_tick: Math.round(start * 30), action_startup_ticks: 6, action_active_ticks: 2, action_recovery_ticks: 8 });
         }
-        if (t >= blow.at && t < blow.at + 0.25) {
-          events.push({ event_id: 900_000 + index * 2, tick: Math.round(blow.at * 30), kind: "referee_hit", actor_id: one.player_id, target_id: "referee", amount: blow.amount, detail: `${blow.punch}:head`, blood: 60, direction: 1, action_id: `ref-${index}` });
-          if (index === blows.length - 1) events.push({ event_id: 900_001 + index * 2, tick: Math.round(blow.at * 30), kind: "referee_down", actor_id: one.player_id, target_id: "referee", amount: 0, detail: "", blood: 0, direction: 0, action_id: `ref-${index}` });
+        if (t >= blow.at && !refereeBlowsShown.has(index)) {
+          refereeBlowsShown.add(index);
+          eventId += 1;
+          events.push({ event_id: eventId, tick: Math.round(blow.at * 30), kind: "referee_hit", actor_id: one.player_id, target_id: "referee", amount: blow.amount, detail: `${blow.punch}:head`, blood: 60, direction: 1, action_id: `ref-${index}` });
+          eventId += 1;
+          if (index === blows.length - 1) events.push({ event_id: eventId, tick: Math.round(blow.at * 30), kind: "referee_down", actor_id: one.player_id, target_id: "referee", amount: 0, detail: "", blood: 0, direction: 0, action_id: `ref-${index}` });
         }
         if (t >= blow.at) official = { ...official, trauma: { ...official.trauma, head: official.trauma.head + blow.amount, right_eye: official.trauma.right_eye + 200, right_cut: blow.cut, bleeding: blow.cut / 2, swelling: official.trauma.swelling + 150 } };
       }

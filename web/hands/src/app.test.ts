@@ -1086,6 +1086,23 @@ describe("the broadcast", () => {
     app.destroy();
   });
 
+  it("keeps a fighter's controls live through the referee's five seconds, and hears a punch on him and his death once, as shown", async () => {
+    const heard = vi.spyOn(AudioFeedback.prototype, "event");
+    const { app } = await launch();
+    send({ version: PROTOCOL_VERSION, type: "ready", players: [...players] });
+    const hit: CombatEvent = { event_id: 9, tick: 40, kind: "referee_hit", actor_id: "one", target_id: "referee", amount: 60, detail: "hook:head", blood: 20, direction: 1, action_id: "one@32" };
+    const down: CombatEvent = { ...hit, event_id: 10, kind: "referee_down", amount: 0, detail: "", blood: 0 };
+    send({ version: PROTOCOL_VERSION, type: "snapshot", payload: { ...makeSnapshot(40, "referee_down"), events: [hit, down] } });
+    expect(mocks.networkSetActive).toHaveBeenLastCalledWith(true);
+    const refereeSounds = (): string[] => heard.mock.calls.filter(([event]) => event.kind.startsWith("referee")).map(([event]) => event.kind);
+    expect(refereeSounds()).toEqual([]);
+    const renderer = mocks.renderers.at(-1)!;
+    renderer.onContact!(hit, false);
+    renderer.onContact!(down, false);
+    expect(refereeSounds()).toEqual(["referee_hit", "referee_down"]);
+    app.destroy();
+  });
+
   it("lets the crowd follow the fight", async () => {
     const tension = vi.spyOn(AudioFeedback.prototype, "tension");
     const chant = vi.spyOn(AudioFeedback.prototype, "chant");

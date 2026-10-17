@@ -6,7 +6,10 @@ import { Effects3D, REFEREE_GUSH } from "./effects";
 import { BoxingGraph, SkinnedBoxer, loadBoxerGlb } from "./graph";
 import { OFFICIAL_LOOKS } from "./looks";
 import { BLUE_CORNER_OUTFIT, REFEREE_OUTFIT } from "./outfit";
-import { FightRenderer, REFEREE_ID, punchGush } from "./renderer";
+import { RoundClock } from "./hud";
+import { FightRenderer, REFEREE_ID, REFEREE_REPLAY_DELAY_SECONDS, punchGush } from "./renderer";
+import { SnapshotBuffer } from "../interpolation";
+import { planKnockoutReplay, REFEREE_REPLAY } from "./replay";
 import { worldPosition } from "./rig";
 import { worldMapping } from "./world";
 
@@ -196,11 +199,13 @@ describe("the renderer's referee", () => {
   });
 
   it("knocks him out cold on his fall, says so, and replays it once it has played live", () => {
-    const { renderer, knockOut, addEvent } = moments();
+    const { renderer, knockOut, addEvent, onContact } = moments();
     const down = event("referee_down", 50, { amount: 0, blood: 0, detail: "" });
     (renderer.pendingRefereeEvents as CombatEvent[]).push(down);
     fire(renderer, 50);
     expect(knockOut).toHaveBeenCalledTimes(1);
+    // Heard as it is shown, not as its snapshot arrives.
+    expect(onContact).toHaveBeenCalledWith(down, false);
     expect(addEvent.mock.calls[0]![0]).toMatchObject({ kind: "knockdown" });
     expect(renderer.eventCallout).toMatchObject({ text: "THE REFEREE IS DEAD!" });
     expect(renderer.refereeReplayAt).toMatchObject({ impact: down });
@@ -239,9 +244,11 @@ describe("the renderer's referee", () => {
     // The replay stands him up with his live gush stopped, so its fall starts it again.
     const effects = new Effects3D(new THREE.Scene());
     effects.gush(REFEREE_GUSH, new THREE.Vector3(0, 1.5, 0), new THREE.Vector3(0, -0.3, 1), 3, 300, 50);
-    const replaying = Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, { simulation: { tick_rate: 30 }, frameSeconds: 0, commentary: { replay: vi.fn() }, referee: { resetTransient: vi.fn() }, effects });
+    const replaying = Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, { simulation: { tick_rate: 30 }, frameSeconds: 0, commentary: { replay: vi.fn() }, referee: { resetTransient: vi.fn(), primeReplayFall: vi.fn() }, effects });
     (FightRenderer.prototype as unknown as { startReplay(this: unknown, plan: unknown): void }).startReplay.call(replaying, { snapshots: [snapshot(40)], impact: down, durationSeconds: 3 });
     expect(effects.gushing(REFEREE_GUSH)).toBe(false);
+    // The physics runs his recorded fall again, so the replay leaves him where the live fall did.
+    expect((replaying.referee as { primeReplayFall: ReturnType<typeof vi.fn> }).primeReplayFall).toHaveBeenCalledOnce();
     effects.gush(REFEREE_GUSH, new THREE.Vector3(0, 1.5, 0), new THREE.Vector3(0, -0.3, 1), 3, 300, 50);
     expect(effects.gushing(REFEREE_GUSH)).toBe(true);
     effects.dispose();
@@ -259,6 +266,38 @@ describe("the renderer's referee", () => {
       expect(effects.gushing(REFEREE_GUSH)).toBe(false);
       effects.dispose();
     }
+  });
+
+  it("lands the punch that killed him again in his replay, as hard as a fall needs, and is heard again", () => {
+    const { renderer, react, onContact } = moments();
+    const blow = event("referee_hit", 50, { amount: 80, action_id: "one@42" });
+    const down = event("referee_down", 50, { amount: 0, blood: 0, detail: "", action_id: "one@42" });
+    renderer.history = [{ ...snapshot(50), events: [blow, down] }];
+    (FightRenderer.prototype as unknown as { fireRefereeFall(this: unknown, event: CombatEvent, live: EngineSnapshot, replayed: boolean): void }).fireRefereeFall.call(renderer, down, { ...snapshot(50), referee: engineReferee(0, 62) }, true);
+    expect(react).toHaveBeenCalledWith("hit", "head", 1, "hook", null, 140);
+    expect(onContact).toHaveBeenCalledWith(blow, false);
+    expect(onContact).toHaveBeenCalledWith(down, false);
+  });
+
+  it("neither waves off nor walks over to raise the winner's arm once he is dead, and the winner still celebrates", () => {
+    const finish = (alive: boolean) => {
+      const waveOff = vi.fn();
+      const celebrate = vi.fn();
+      const stub = Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, {
+        buffer: { latest: () => ({ ...snapshot(400), phase: "complete", referee: { ...engineReferee(0, 62), alive } }) }, referee: { waveOff },
+        headCacheValid: [false, false], settings: () => ({ reducedMotion: false }), frameSeconds: 10, graphs: [{ celebrate }, { celebrate: vi.fn() }],
+        stoppageWinner: -1, stoppageRaiseAt: Number.POSITIVE_INFINITY,
+      });
+      (FightRenderer.prototype as unknown as { presentFinish(this: unknown, final: unknown): void }).presentFinish.call(stub, { version: 1, type: "final", match_id: "m", winner_id: "one", method: "ko", round: 2, scorecards: [], ratings: {} });
+      return { waveOff, celebrate, raising: stub.stoppageWinner as number };
+    };
+    const living = finish(true);
+    expect(living.waveOff).toHaveBeenCalledOnce();
+    expect(living.raising).toBe(0);
+    const dead = finish(false);
+    expect(dead.waveOff).not.toHaveBeenCalled();
+    expect(dead.raising).toBe(-1);
+    expect(dead.celebrate).toHaveBeenCalledOnce();
   });
 
   it("drips his blood from his head while he bleeds", () => {
@@ -294,7 +333,189 @@ describe("the commentary on the referee", () => {
     expect(said([event("referee_down", 40)])[0]).not.toMatch(/bled out|blood/u);
   });
 
+  it("names the man who killed him in the replay of his fall, not the last man knocked down", () => {
+    const lines = new Set<string>();
+    for (let tick = 40; tick < 70; tick += 1) {
+      const director = new CommentaryDirector();
+      director.observe(snapshot(tick - 20), [event("knockdown", tick - 20, { actor_id: "one", target_id: "two", detail: "knockdown" })], players, 30, 0);
+      director.replay(30, { kind: "referee_down", actor_id: "two", tick });
+      for (let at = 30; at < 36; at += 0.25) {
+        const text = director.current(at)?.line.text;
+        if (text !== undefined && /Watch/u.test(text)) lines.add(text);
+      }
+    }
+    expect([...lines].some((text) => text.includes("Crimson Geometry"))).toBe(true);
+    expect([...lines].some((text) => text.includes("Azure Vector"))).toBe(false);
+  });
+
   it("notices nobody is left to break a clinch", () => {
     expect(said([event("clinch_break", 40, { actor_id: "one", target_id: "two", detail: "", amount: 0 })]).some((text) => /break|part/u.test(text))).toBe(true);
+  });
+});
+
+describe("the referee's death on screen, from the punch to the next bout", () => {
+  type Stub = Record<string, unknown> & { refereePosition: THREE.Vector3 };
+  const updateReferee = (FightRenderer.prototype as unknown as { updateReferee: (dt: number, time: number, snapshot: EngineSnapshot | null, tick: number) => void }).updateReferee;
+  const placed = (graph = new BoxingGraph(referee(), mapping, { referee: true, knockout: true }), a = -100, b = 100): Stub => Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, {
+    referee: graph, mapping, tmpA: new THREE.Vector3(mapping.x(a), 0, 0), tmpB: new THREE.Vector3(mapping.x(b), 0, 0),
+    refereePosition: new THREE.Vector3(0, 0, -2), refereeAway: new THREE.Vector3(), refereeVelocity: new THREE.Vector3(), refereeYaw: 0,
+    replay: null, ceremony: null, stoppageWinner: -1, stoppageRaiseAt: Number.POSITIVE_INFINITY, frameSeconds: 0, blobShadows: [], graphs: null,
+    effects: { severedHeadPosition: () => false, gushing: () => false, pool: vi.fn() }, closeUpTarget: new THREE.Vector3(), bodyPoint: new THREE.Vector3(),
+    pendingRefereeEvents: [], refereeReplayAt: null, settings: () => ({ reducedMotion: false, blood: "full" }),
+    refereeHead: new THREE.Vector3(), refereePoolAccumulator: 0, refereePoolCount: 0, lastKnockdown: null,
+  });
+  /** Runs `frames` frames of `state` and returns the longest single-frame step he took. */
+  const run = (stub: Stub, state: EngineSnapshot, frames: number, dt = 1 / 60, from = 0): number => {
+    let longest = 0;
+    for (let frame = 0; frame < frames; frame += 1) {
+      const before = stub.refereePosition.clone();
+      updateReferee.call(stub, dt, (from + frame) * dt, state, state.tick);
+      longest = Math.max(longest, before.distanceTo(stub.refereePosition));
+    }
+    return longest;
+  };
+  const down = (tick: number) => ({ event_id: 1, tick, kind: "referee_down", actor_id: "one", target_id: REFEREE_ID, amount: 0, detail: "", blood: 0, direction: 0, action_id: "x" });
+
+  it("replays his fall inside the engine's pause, with room for the playback delay", () => {
+    const history = Array.from({ length: 120 }, (_, index) => ({ ...snapshot(40 + index) }));
+    const plan = planKnockoutReplay(history, down(100), 30, REFEREE_REPLAY.speed, REFEREE_REPLAY.before, REFEREE_REPLAY.after)!;
+    expect(REFEREE_REPLAY_DELAY_SECONDS + plan.durationSeconds).toBeLessThanOrEqual(150 / 30 - 6 / 30);
+  });
+
+  it("starts the replay only while the bout still waits for it", () => {
+    const history = Array.from({ length: 200 }, (_, index) => ({ ...snapshot(40 + index) }));
+    const attempt = (live: EngineSnapshot): ReturnType<typeof vi.fn> => {
+      const startReplay = vi.fn();
+      const stub = Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, {
+        pendingContacts: [], replay: null, pendingRefereeEvents: [], refereeReplayAt: { at: 5, impact: down(100) }, frameSeconds: 9, history,
+        simulation: { tick_rate: 30 }, settings: () => ({ reducedMotion: false, blood: "full" }), startReplay, buffer: { latest: () => live },
+      });
+      (FightRenderer.prototype as unknown as { fireContacts(this: unknown, tick: number): void }).fireContacts.call(stub, live.tick);
+      expect(stub.refereeReplayAt).toBeNull();
+      return startReplay;
+    };
+    expect(attempt({ ...snapshot(124), phase: "referee_down", phase_ticks_remaining: 126 })).toHaveBeenCalledOnce();
+    // Long resumed (a hidden tab, a reconnect), or too little of the pause left: no replay over the fight.
+    expect(attempt({ ...snapshot(239), phase: "fight" })).not.toHaveBeenCalled();
+    expect(attempt({ ...snapshot(230), phase: "referee_down", phase_ticks_remaining: 20 })).not.toHaveBeenCalled();
+  });
+
+  it("stands in the killing punch's path in his replay until it lands, through the tick the recording says he died", () => {
+    const stub = placed(undefined, -130, 150);
+    const fightAt = (tick: number): EngineSnapshot => ({ ...snapshot(tick), fighters: [fighter("one", -130), fighter("two", 150)], referee: engineReferee(-55, 8) });
+    run(stub, fightAt(80), 60);
+    expect(stub.refereePosition.x).toBeCloseTo(mapping.x(-55), 2);
+    const buffer = new SnapshotBuffer(8, 30);
+    buffer.push(fightAt(82));
+    buffer.push(fightAt(83));
+    buffer.push({ ...fightAt(84), phase: "referee_down", referee: { ...engineReferee(-55, 8), alive: false } });
+    const sampled = buffer.sample(83.4)!;
+    expect(sampled.referee.alive).toBe(false);
+    stub.replay = { plan: { impact: { kind: "referee_down" } }, impactFired: false };
+    expect(run(stub, sampled, 1, 0.5 / 60, 60)).toBeLessThan(0.01);
+    expect(stub.refereePosition.x).toBeCloseTo(mapping.x(-55), 2);
+  });
+
+  it("never jumps or dashes when the fight stops or starts again: at a bell, a count or a foul", () => {
+    for (const phase of ["rest", "knockdown", "foul_recovery"] as const) {
+      const stub = placed();
+      const fight = { ...snapshot(80), referee: engineReferee(0, 62) };
+      run(stub, fight, 60);
+      const fighters = phase === "knockdown" ? [fighter("one", -100), { ...fighter("two", 100), is_downed: true }] : fight.fighters;
+      expect(run(stub, { ...fight, tick: 81, phase, fighters: fighters as EngineSnapshot["fighters"] }, 30)).toBeLessThan(3 / 60);
+    }
+    const stub = placed();
+    run(stub, { ...snapshot(80), phase: "rest", referee: engineReferee(0, 0) }, 60 * 4);
+    expect(run(stub, { ...snapshot(90), referee: engineReferee(0, 62) }, 60)).toBeLessThan(3 / 60);
+    // And he does get back to where the engine stands him.
+    expect(stub.refereePosition.distanceTo(new THREE.Vector3(mapping.x(0), 0, mapping.z(62)))).toBeLessThan(0.02);
+  });
+
+  it("is lying where the engine has him for a spectator who joins after he died", () => {
+    const graph = new BoxingGraph(referee(), mapping, { referee: true, knockout: true });
+    const stub = placed(graph);
+    // Already lying there on the first frame he is drawn, not falling in front of the newcomer.
+    run(stub, { ...snapshot(4000), referee: { ...engineReferee(30, 62), alive: false } }, 1);
+    expect(graph.isDown).toBe(true);
+    graph.boxer.root.updateMatrixWorld(true);
+    expect(graph.boxer.rig.bones.head.getWorldPosition(new THREE.Vector3()).y).toBeLessThan(0.6);
+    expect(stub.refereePosition.x).toBeCloseTo(mapping.x(30), 2);
+    expect(stub.refereePosition.z).toBeCloseTo(mapping.z(62), 2);
+  });
+
+  it("keeps his pool through the replay of his death rather than starting another", () => {
+    const stub = placed();
+    const pool = (stub.effects as { pool: ReturnType<typeof vi.fn> }).pool;
+    const dead = { ...snapshot(90), phase: "referee_down" as const, referee: { ...engineReferee(30, 62), alive: false } };
+    run(stub, dead, 60);
+    const live = pool.mock.calls.map((call) => call[2] as number);
+    stub.replay = { plan: { impact: { kind: "referee_down" } }, impactFired: false };
+    run(stub, { ...snapshot(70), referee: engineReferee(30, 62) }, 30);
+    stub.replay = null;
+    pool.mockClear();
+    run(stub, dead, 10);
+    expect(pool.mock.calls[0]![2] as number).toBeGreaterThanOrEqual(live.at(-1)!);
+  });
+
+  it("stays where he lies after a stoppage, raising nobody's arm, and a ceremony goes on without him", () => {
+    const graph = new BoxingGraph(referee(), mapping, { referee: true, knockout: true });
+    const raise = vi.spyOn(graph, "raise");
+    const stub = placed(graph);
+    graph.knockOut();
+    const dead = { ...snapshot(4000), phase: "complete" as const, referee: { ...engineReferee(30, 62), alive: false } };
+    run(stub, dead, 30);
+    const lying = stub.refereePosition.clone();
+    Object.assign(stub, { stoppageWinner: 0, stoppageRaiseAt: 0, frameSeconds: 10, stoppageSpot: null, raiseSpot: () => ({ x: 0.6, z: 0 }) });
+    run(stub, dead, 60 * 4);
+    expect(lying.distanceTo(stub.refereePosition)).toBeLessThan(1e-9);
+    expect(raise).not.toHaveBeenCalled();
+    const ceremony = { winnerSeat: 0, positions: [{ x: -102, y: -16 }, { x: 102, y: -16 }], marks: [0, 1], refereeArrived: false, arrivedAt: null, announced: false };
+    Object.assign(stub, { stoppageWinner: -1, ceremony });
+    run(stub, dead, 5);
+    expect(ceremony.refereeArrived).toBe(true);
+    expect(lying.distanceTo(stub.refereePosition)).toBeLessThan(1e-9);
+  });
+
+  it("stands up again for the next bout", () => {
+    const graph = new BoxingGraph(referee(), mapping, { referee: true, knockout: true });
+    const stub = placed(graph);
+    run(stub, { ...snapshot(4000), referee: { ...engineReferee(30, 62), alive: false } }, 30);
+    expect(graph.isDown).toBe(true);
+    run(stub, { ...snapshot(10), referee: engineReferee(0, 62) }, 5);
+    expect(graph.isDown).toBe(false);
+  });
+
+  it("staggers where he stands while he reels from a punch", () => {
+    const reeling = new BoxingGraph(referee(), mapping, { referee: true });
+    const steady = new BoxingGraph(referee(), mapping, { referee: true });
+    const self = { ...fighter("referee"), x: 0, y: 160, facing_x: 0, facing_y: -1000 };
+    const focus = { ...fighter("focus"), x: 0, y: -140 };
+    for (let frame = 0; frame < 40; frame += 1) {
+      reeling.update({ ...self, stunned_ticks: 12 }, focus, 1 / 60, frame / 60, false, "full", frame / 2);
+      steady.update(self, focus, 1 / 60, frame / 60, false, "full", frame / 2);
+    }
+    for (const graph of [reeling, steady]) graph.boxer.root.updateMatrixWorld(true);
+    expect(worldPosition(reeling.boxer.rig.bones.head, new THREE.Vector3()).distanceTo(worldPosition(steady.boxer.rig.bones.head, new THREE.Vector3()))).toBeGreaterThan(0.04);
+  });
+
+  it("puts his blob shadow under his body once he is down", () => {
+    const graph = new BoxingGraph(referee(), mapping, { referee: true, knockout: true });
+    const stub = placed(graph);
+    run(stub, { ...snapshot(4000), referee: { ...engineReferee(30, 62), alive: false } }, 30);
+    const body = graph.fallBody;
+    expect(body).not.toBeNull();
+    const shadows = [new THREE.Object3D(), new THREE.Object3D(), new THREE.Object3D()];
+    Object.assign(stub, { blobShadows: shadows, buffer: { latest: () => null }, flashKnockout: null, refereePosition: new THREE.Vector3(2, 0, 2) });
+    (FightRenderer.prototype as unknown as { updateBlobShadows(this: unknown): void }).updateBlobShadows.call(stub);
+    const centre = body!.centre(new THREE.Vector3());
+    expect(shadows[2]!.position.x).toBeCloseTo(centre.x, 5);
+    expect(shadows[2]!.position.z).toBeCloseTo(centre.z, 5);
+    expect(shadows[2]!.scale.x).toBeGreaterThan(1.5);
+  });
+
+  it("holds the round clock through his five seconds, as it does through a count", () => {
+    const clock = new RoundClock();
+    expect(clock.ticks({ ...snapshot(100), phase: "fight", phase_ticks_remaining: 4000 })).toBe(4000);
+    expect(clock.ticks({ ...snapshot(102), phase: "referee_down", phase_ticks_remaining: 150 })).toBe(4000);
   });
 });

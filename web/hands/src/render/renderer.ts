@@ -299,11 +299,16 @@ const OWN_EARLY_CONTACTS = new Set(["hit", "counter_hit", "block", "perfect_bloc
 const BOX_CALLOUT_SECONDS = 1.2;
 /** The referee's id in the engine's events: a punch that lands on him, his bleeding, his fall. */
 export const REFEREE_ID = "referee";
-/** How long his fall plays live before it is replayed, and how long the broadcast shouts about it. */
-const REFEREE_REPLAY_DELAY_SECONDS = 1;
+/**
+ * How long his fall plays live before it is replayed, and how long the broadcast shouts about it. The live fall and
+ * the replay (REFEREE_REPLAY) fit inside the engine's five-second referee_down phase, with room for the playback delay.
+ */
+export const REFEREE_REPLAY_DELAY_SECONDS = 0.8;
 const REFEREE_DOWN_CALLOUT_SECONDS = 2.4;
 /** How quickly the drawn referee closes on where the engine stands him: about 50 ms behind his own footwork. */
 const REFEREE_FOLLOW_RATE = 20;
+/** The fastest the drawn referee moves, in m/s: a brisk step (his break, REFEREE_BREAK_SPEED, fits under it), never a jump. */
+const REFEREE_DRAWN_SPEED = 2.5;
 const REFEREE_KINDS: ReadonlySet<string> = new Set(["referee_hit", "referee_down"]);
 
 /** The camera's kick from each landed power punch, in metres, and the most it builds to. */
@@ -1119,6 +1124,9 @@ export class FightRenderer {
   /** Spills into the pool under the dead referee due and made so far. */
   private refereePoolAccumulator = 0;
   private refereePoolCount = 0;
+  /** He was put down without his fall being seen, to be settled as soon as the physics has him. */
+  private refereeFallUnseen = false;
+  private refereePlaced = false;
   private readonly effects: Effects3D;
   private readonly director = new CameraDirector();
   private readonly fighterCam = new FighterCam();
@@ -1629,7 +1637,7 @@ export class FightRenderer {
         const bone = this.graphs?.[seat]?.boxer.rig.bones[mark === 0 ? "gloveL" : "gloveR"];
         return raised && bone !== undefined ? bone.getWorldPosition(this.ceremonyWrists[mark]) : null;
       };
-      this.referee?.raise(wrist(1), wrist(0));
+      if (this.referee?.isDown !== true) this.referee?.raise(wrist(1), wrist(0));
     }
     return this.drawnFighters;
   }
@@ -1674,7 +1682,8 @@ export class FightRenderer {
   }
 
   private presentFinish(final: FinalMessage): void {
-    this.referee?.waveOff();
+    const refereeDead = this.buffer.latest()?.referee.alive === false;
+    if (!refereeDead) this.referee?.waveOff();
     const fighters = this.buffer.latest()?.fighters;
     const loserIndex = fighters?.findIndex((fighter) => fighter.player_id !== final.winner_id && fighter.player_id !== null) ?? -1;
     if (loserIndex >= 0 && this.headCacheValid[loserIndex] && !this.settings().reducedMotion) {
@@ -1687,6 +1696,7 @@ export class FightRenderer {
     const index = fighters?.findIndex((fighter) => fighter.player_id === final.winner_id) ?? -1;
     if (index < 0) return;
     this.graphs?.[index]?.celebrate(WINNER_CELEBRATION_SECONDS);
+    if (refereeDead) return;
     this.stoppageWinner = index;
     this.stoppageRaiseAt = this.frameSeconds + STOPPAGE_RAISE_DELAY_SECONDS;
   }
@@ -1830,16 +1840,20 @@ export class FightRenderer {
     this.replay = { plan, buffer, startedAt: this.frameSeconds, impactFired: false, side: null };
     // The replay cuts to other moments: the fighters are drawn there at once, not eased across.
     this.drawnOffsetsLive = false;
-    this.commentary.replay(this.frameSeconds);
+    this.commentary.replay(this.frameSeconds, plan.impact);
     this.replayFollow = 0;
     this.replayFollowAt = 0;
     if (plan.impact.kind === "referee_down") {
       // He is back on his feet for the lead-up and goes down again at its impact; the fighters only box on.
       this.referee?.resetTransient(false);
+      // The physics runs his recorded fall again, so the replay leaves him where the live fall did, in his pool.
+      this.referee?.primeReplayFall();
       this.effects.stopGush(REFEREE_GUSH);
       return;
     }
     for (const index of [0, 1] as const) {
+      // Whatever was pouring from him live starts again with what the replay shows, not through its lead-up.
+      this.effects.stopGush(index);
       const injury = this.arcadeInjuries[index];
       const event = this.arcadeInjuryEvents[index];
       if (injury !== null && event !== null) {
@@ -1959,7 +1973,7 @@ export class FightRenderer {
     const mouth = this.settings().reducedMotion ? null : this.refereeMouth();
     if (mouth !== null) this.effects.gush(REFEREE_GUSH, mouth.position, mouth.axis, KNOCKDOWN_GUSH_SECONDS, KNOCKDOWN_GUSH_RATE, event.event_id);
     referee.knockOut();
-    if (replayed) this.onContact?.(event, false);
+    this.onContact?.(event, false);
   }
 
   /** Whether a punch that landed on the referee was a power punch, as a fighter's is told: from the snapshot it arrived in. */
@@ -2511,7 +2525,10 @@ export class FightRenderer {
     if (refereeReplay !== null && this.replay === null && this.frameSeconds >= refereeReplay.at) {
       this.refereeReplayAt = null;
       const plan = planKnockoutReplay(this.history, refereeReplay.impact, this.simulation.tick_rate, REFEREE_REPLAY.speed, REFEREE_REPLAY.before, REFEREE_REPLAY.after);
-      if (plan !== null && !this.settings().reducedMotion) this.startReplay(plan);
+      // It plays while the bout waits for it, and only then: never over the fight once it has resumed (a hidden tab, a reconnect).
+      const live = this.buffer.latest();
+      const waiting = plan !== null && live !== null && live.phase === "referee_down" && live.phase_ticks_remaining / this.simulation.tick_rate >= plan.durationSeconds;
+      if (plan !== null && waiting && !this.settings().reducedMotion) this.startReplay(plan);
     }
   }
 
@@ -2751,7 +2768,7 @@ export class FightRenderer {
     const replay = this.replay;
     if (replay !== null) {
       const elapsed = seconds - replay.startedAt;
-      if (elapsed >= replay.plan.durationSeconds) {
+      if (elapsed >= replay.plan.durationSeconds || (replay.plan.impact.kind === "referee_down" && latest?.phase !== "referee_down")) {
         this.endReplay();
       } else {
         sampledTick = replayTick(replay.plan, elapsed, this.simulation.tick_rate);
@@ -3159,13 +3176,13 @@ export class FightRenderer {
     for (const [index, blob] of this.blobShadows.entries()) {
       // A fighter's blob sits under his body on the canvas, or under the rendered fighter, who walks in from
       // his mark for the glove touch.
-      const graph = index < 2 ? this.graphs?.[index] : undefined;
+      const graph = index < 2 ? this.graphs?.[index] : this.referee ?? undefined;
       const fallen = graph?.fallBody?.centre(this.bodyPoint) ?? null;
       const anchor = fallen ?? (graph?.boxer.root.visible === true ? graph.currentRoot : anchors[index]!);
       blob.position.x = anchor.x;
       blob.position.z = anchor.z;
       const fighter = index < 2 ? this.buffer.latest()?.fighters[index] : undefined;
-      const downed = fighter !== undefined && fighterDown(fighter, graph, this.flashKnockout?.loserId);
+      const downed = index < 2 ? fighter !== undefined && fighterDown(fighter, graph, this.flashKnockout?.loserId) : graph?.isDown === true;
       blob.scale.set(downed ? 2.1 : 1.25, downed ? 0.9 : 0.85, 1);
     }
   }
@@ -3180,12 +3197,26 @@ export class FightRenderer {
     const shadow = this.blobShadows[2];
     if (shadow !== undefined) shadow.visible = shownInReplay;
     const official = snapshot?.referee ?? null;
+    const hisReplay = this.replay !== null && this.replay.plan.impact.kind === "referee_down" ? this.replay : null;
+    // The first time he is drawn he is put where the engine has him, rather than walked there from nowhere.
+    if (!this.refereePlaced && official !== null) {
+      this.refereePlaced = true;
+      this.refereePosition.set(this.mapping.x(official.x), 0, this.mapping.z(official.y));
+    }
+    const fallPending = this.refereeReplayAt !== null || this.pendingRefereeEvents.some((event) => event.kind === "referee_down");
     // Standing again in a new bout (or a rematch) after going down in the last one.
-    if (official?.alive === true && referee.isDown && this.replay === null && snapshot?.phase !== "referee_down" && !this.pendingRefereeEvents.some((event) => event.kind === "referee_down")) referee.resetTransient(false);
-    // While punches can land the engine stands him, so they land on him where he is drawn. Over a count, a foul or
-    // the rest he goes where the picture needs him; down, he stays where he fell.
-    const engine = snapshot?.phase === "fight" && official?.alive === true ? official : null;
-    const outCold = official?.alive === false && this.replay === null;
+    if (official?.alive === true && referee.isDown && this.replay === null && snapshot?.phase !== "referee_down" && !fallPending) referee.resetTransient(false);
+    // Dead before this client saw him fall (a spectator who joins, a reconnect): he is lying where the engine has him.
+    if (official !== null && !official.alive && !referee.isDown && this.replay === null && !fallPending) {
+      this.refereePosition.set(this.mapping.x(official.x), 0, this.mapping.z(official.y));
+      referee.knockOut();
+      this.refereeFallUnseen = true;
+    }
+    // While punches can land the engine stands him, so they land on him where he is drawn, and his replay has him
+    // where the recording does until the punch lands. Over a count, a foul or the rest he goes where the picture needs
+    // him; dead, he stays where he fell.
+    const engine = official !== null && ((snapshot?.phase === "fight" && official.alive) || (hisReplay !== null && !hisReplay.impactFired)) ? official : null;
+    const outCold = official?.alive === false && (hisReplay === null || hisReplay.impactFired);
     // He counts over the fighter who went down from the knockdown until "Box!": one who beats the count is
     // still counted to the mandatory eight, on his feet, and looked over.
     const counted = snapshot?.fighters.find((fighter) => fighter.is_downed)
@@ -3219,12 +3250,15 @@ export class FightRenderer {
     const ceremony = this.replay === null && this.ceremony?.positions !== null ? this.ceremony : null;
     // Once the fight is waved off, the referee goes to the winner's side: the side nearer the middle of the
     // ring, or the first one clear of the beaten fighter and his body (see raiseSpot).
-    const winner = ceremony === null && this.replay === null && this.stoppageWinner >= 0 && this.frameSeconds >= this.stoppageRaiseAt
+    const winner = !outCold && ceremony === null && this.replay === null && this.stoppageWinner >= 0 && this.frameSeconds >= this.stoppageRaiseAt
       ? (this.stoppageWinner === 0 ? this.tmpA : this.tmpB)
       : null;
     const spot = winner === null ? null : (this.stoppageSpot ??= this.raiseSpot(winner, this.stoppageWinner === 0 ? this.tmpB : this.tmpA));
     const side = spot !== null && spot.x < 0 ? -1 : 1;
-    if (winner !== null && spot !== null) {
+    if (outCold) {
+      // Where the fall left him; a ceremony goes on without him.
+      if (ceremony !== null) ceremony.refereeArrived = true;
+    } else if (winner !== null && spot !== null) {
       const step = ceremonyStep(this.refereePosition.x, this.refereePosition.z, { x: winner.x + spot.x, y: winner.z + spot.z }, CEREMONY_REFEREE_SPEED * dt);
       this.refereePosition.x = step.x;
       this.refereePosition.z = step.y;
@@ -3234,8 +3268,6 @@ export class FightRenderer {
       this.refereePosition.x = step.x;
       this.refereePosition.z = step.y;
       ceremony.refereeArrived = step.arrived;
-    } else if (outCold) {
-      // Where the fall left him.
     } else if (engine !== null) {
       // A quick step to wherever the engine has him, which he then keeps to.
       const rate = 1 - Math.exp(-REFEREE_FOLLOW_RATE * dt);
@@ -3276,6 +3308,18 @@ export class FightRenderer {
       this.refereePosition.x = step.x;
       this.refereePosition.z = step.z;
     }
+    // Wherever the picture wants him, he walks there no faster than a brisk referee: no jump at a bell, a count or a
+    // foul, and no dash back to the engine's place when the fighting resumes. His replay cuts to him where he was.
+    if (hisReplay === null && !outCold) {
+      const stepX = this.refereePosition.x - previousX;
+      const stepZ = this.refereePosition.z - previousZ;
+      const stepLength = Math.hypot(stepX, stepZ);
+      const most = REFEREE_DRAWN_SPEED * dt;
+      if (stepLength > most) {
+        this.refereePosition.x = previousX + (stepX / stepLength) * most;
+        this.refereePosition.z = previousZ + (stepZ / stepLength) * most;
+      }
+    }
     if (dt > 0) {
       this.refereeVelocity.set((this.refereePosition.x - previousX) / dt, 0, (this.refereePosition.z - previousZ) / dt);
     }
@@ -3300,6 +3344,10 @@ export class FightRenderer {
     // He bleeds at the blood level the player chose, and falls the way reduced motion asks.
     const settings = this.settings();
     referee.update(state.self, state.focus, dt, time, settings.reducedMotion, settings.blood, sampledTick);
+    if (this.refereeFallUnseen) {
+      this.refereeFallUnseen = false;
+      referee.fallBody?.settle();
+    }
     if (this.effects.gushing(REFEREE_GUSH)) {
       const mouth = this.refereeMouth();
       if (mouth !== null) this.effects.anchorGush(REFEREE_GUSH, mouth.position, mouth.axis);
@@ -3312,7 +3360,7 @@ export class FightRenderer {
    * under his head until it is as wide as one; a new bout, with him on his feet, starts the next one afresh.
    */
   private poolUnderReferee(dead: boolean, outCold: boolean, dt: number, blood: BloodLevel): void {
-    if (!dead) {
+    if (!dead && this.replay === null) {
       this.refereePoolAccumulator = 0;
       this.refereePoolCount = 0;
     }

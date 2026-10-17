@@ -445,7 +445,7 @@ export class RoundClock {
     }
     if (snapshot.phase === "fight") this.fightTicks = snapshot.phase_ticks_remaining;
     // A stoppage freezes the clock where the bout ended, as the broadcast does.
-    const held = snapshot.phase === "knockdown" || snapshot.phase === "foul_recovery" || snapshot.phase === "complete";
+    const held = snapshot.phase === "knockdown" || snapshot.phase === "foul_recovery" || snapshot.phase === "referee_down" || snapshot.phase === "complete";
     return held && this.fightTicks !== null ? this.fightTicks : snapshot.phase_ticks_remaining;
   }
 }

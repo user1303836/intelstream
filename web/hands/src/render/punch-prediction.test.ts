@@ -324,8 +324,9 @@ describe("follow-up pressed during a punch", () => {
   it("cuts a landed straight's recovery short at its cancel age, or at once when the press comes after it", () => {
     near(followUp(cancels + 4, { contacts: [contact("hit")], pressAge: 4 }).contact, cancels + hookTiming.startup);
     near(followUp(T0 + 14, { contacts: [contact("hit")], pressAge: 10 }).contact, T0 + 10 + hookTiming.startup);
-    // An ordinary block lets the combination through too.
+    // An ordinary block lets the combination through too, and so does a punch that found the referee in the way.
     near(followUp(cancels + 4, { contacts: [contact("block"), contact("hit")], pressAge: 4 }).contact, cancels + hookTiming.startup);
+    near(followUp(cancels + 4, { contacts: [contact("referee_hit")], pressAge: 4 }).contact, cancels + hookTiming.startup);
   });
 
   it("does not cut the recovery short for a parried straight or a contact that belongs to another punch", () => {

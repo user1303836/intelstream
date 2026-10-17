@@ -1536,6 +1536,8 @@ export class Effects3D {
     const safeEventId = Number.isSafeInteger(eventId) ? eventId : 0;
     const head = this.heads[index]!;
     if (head.active || this.lastDecapitationEvent[index] === safeEventId) return;
+    // The mouth it was pouring from has gone with the head; the neck's fountain takes over.
+    this.stopGush(index);
     this.applyBakedPart(head, baked, skinColor);
     const rand = seeded(safeEventId * 104729 + index * 8191 + 23);
     const launch = unitSpray(direction);
@@ -1623,6 +1625,7 @@ export class Effects3D {
     const stump = this.stumps[index]!;
     if (stump.active || this.lastBurstEvent[index] === safeEventId) return;
     this.lastBurstEvent[index] = safeEventId;
+    this.stopGush(index);
     const rand = seeded(safeEventId * 91_813 + index * 6151 + 41);
     const launch = unitSpray(direction);
     const x = finite(position.x);

@@ -114,7 +114,7 @@ describe("fight mechanics on screen", () => {
         simulation: { tick_rate: 30 }, frameSeconds: 0, final: null, graphs,
         commentary: { replay: vi.fn() }, arcadeInjuries: [null, null], arcadeInjuryEvents: [null, null], replayInjuries: [null, null],
         lastKnockdown: { knockdown: combat("knockdown", { event_id: 9, tick: 40, detail, amount: 1, action_id: "liver" }), hit, finisher: null },
-        pendingContacts: [], effects: { returnMouthpiece: vi.fn() }, liveFallTicks: [null, null],
+        pendingContacts: [], effects: { returnMouthpiece: vi.fn(), stopGush: vi.fn() }, liveFallTicks: [null, null],
       };
       startReplay.call(stub, { snapshots: [snapshot(20), snapshot(40)], impact: hit, durationSeconds: 3 });
       return graphs;
@@ -173,7 +173,7 @@ describe("a bout that ends on the punch itself", () => {
     const spies = { presentFinish: vi.fn(), applyArcadeInjury: vi.fn(), returnMouthpiece: vi.fn() };
     const stub = Object.assign(Object.create(FightRenderer.prototype) as Record<string, unknown>, pushStub(graphs), {
       commentary: { observe: vi.fn(), finish: vi.fn(), replay: vi.fn() },
-      effects: { addEvent: vi.fn(), returnMouthpiece: spies.returnMouthpiece },
+      effects: { addEvent: vi.fn(), returnMouthpiece: spies.returnMouthpiece, stopGush: vi.fn() },
       endCeremony: vi.fn(), presentFinish: spies.presentFinish, applyArcadeInjury: spies.applyArcadeInjury, restoreInjury: vi.fn(),
       arcadeInjuries: [null, null], arcadeInjuryEvents: [null, null], replayInjuries: [null, null],
       flashKnockout: null, replay: null, ceremony: null, finalRevealAt: 0, ovationUntil: 0,
@@ -218,7 +218,7 @@ describe("a bout that ends on the punch itself", () => {
       knockOutMouthpiece: vi.fn(), headWorldPose: () => null, mouthPoint: new THREE.Vector3(), reapplyReplayInjuries: vi.fn(),
       // Where the frame draws them, eased apart: fighter two 0.6 m out, his engine place 0.37 m.
       tmpA: new THREE.Vector3(-0.6, 0, 0), tmpB: new THREE.Vector3(0.6, 0, 0),
-      effects: { addEvent: (_event: CombatEvent, at: THREE.Vector3) => splashed.push(at.clone()), returnMouthpiece: vi.fn() },
+      effects: { addEvent: (_event: CombatEvent, at: THREE.Vector3) => splashed.push(at.clone()), returnMouthpiece: vi.fn(), stopGush: vi.fn() },
     });
     // The graphs' rendered roots are where the frame draws the fighters.
     for (const [index, graph] of (stub.graphs as unknown as Record<string, unknown>[]).entries()) {
@@ -245,11 +245,18 @@ describe("a bout that ends on the punch itself", () => {
 describe("the knockout replay's fall", () => {
   const startReplay = (FightRenderer.prototype as unknown as { startReplay(this: unknown, plan: unknown): void }).startReplay;
   const impact = combat("counter_hit", { event_id: 30, tick: 400, detail: "hook:head", amount: 120 });
+  const stopGush = vi.fn();
   const replayed = (graphs: unknown[], liveFallTicks: [number | null, number | null]) => startReplay.call({
     simulation: { tick_rate: 30 }, frameSeconds: 0, final: null, graphs, commentary: { replay: vi.fn() },
-    arcadeInjuries: [null, null], arcadeInjuryEvents: [null, null], replayInjuries: [null, null], pendingContacts: [], effects: { returnMouthpiece: vi.fn() },
+    arcadeInjuries: [null, null], arcadeInjuryEvents: [null, null], replayInjuries: [null, null], pendingContacts: [], effects: { returnMouthpiece: vi.fn(), stopGush },
     lastKnockdown: { knockdown: combat("knockdown", { event_id: 31, tick: 400, amount: 3 }), hit: impact, finisher: null }, liveFallTicks,
   }, { snapshots: [snapshot(380), snapshot(400)], impact, durationSeconds: 3 });
+
+  it("stops what was pouring from either man live, so the lead-up does not pour it", () => {
+    stopGush.mockClear();
+    replayed(fakeGraphs(), [null, null]);
+    expect(stopGush.mock.calls.map(([index]) => index)).toEqual([0, 1]);
+  });
 
   it("runs the recorded fall again only when it is this knockdown's", () => {
     const fallen = fakeGraphs();

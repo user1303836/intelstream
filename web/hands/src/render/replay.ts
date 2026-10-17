@@ -4,8 +4,11 @@ export const REPLAY_BEFORE_TICKS = 42;
 export const REPLAY_AFTER_TICKS = 33;
 export const REPLAY_SPEED = 0.4;
 export const REPLAY_TAIL_SECONDS = 0.5;
-/** The referee's fall is replayed while the bout waits for it, so it is shorter and a little quicker. */
-export const REFEREE_REPLAY = { before: 30, after: 27, speed: 0.5 } as const;
+/**
+ * The referee's fall is replayed while the bout waits for it, so it is shorter and a little quicker: 3.7 s with
+ * its tail, which with the live fall before it (REFEREE_REPLAY_DELAY_SECONDS) fits the engine's 5 s pause.
+ */
+export const REFEREE_REPLAY = { before: 24, after: 24, speed: 0.5 } as const;
 
 export interface ReplayPlan {
   readonly snapshots: readonly EngineSnapshot[];

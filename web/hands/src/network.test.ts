@@ -844,6 +844,21 @@ describe("corner instructions between rounds", () => {
     controller.dispose();
   });
 
+  it("keeps sending held input through the referee's five seconds, as it does through a count", () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket();
+    const controller = new NetworkController("ticket", () => ({ moveX: 1000, moveY: 0, defense: "none" as const, actions: [] }), callbacks(), () => socket);
+    controller.start();
+    socket.open();
+    socket.message(welcome());
+    socket.message(ready);
+    socket.message({ version: PROTOCOL_VERSION, type: "snapshot", payload: { ...snapshot(11), phase: "referee_down", phase_ticks_remaining: 150 } });
+    const before = socket.sent.length;
+    vi.advanceTimersByTime(200);
+    expect(socket.sent.length).toBeGreaterThan(before);
+    controller.dispose();
+  });
+
   it("never sends a corner instruction for a spectator", () => {
     const socket = new FakeSocket();
     const controller = new NetworkController("ticket", () => ({ moveX: 0, moveY: 0, defense: "none" as const, actions: [] }), callbacks(), () => socket);

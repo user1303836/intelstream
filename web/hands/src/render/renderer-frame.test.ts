@@ -6,6 +6,7 @@ import { CameraDirector, ceremonyShot, cornerPoint, FIGHTER_CAM_FOV_SCALE, Fight
 import { RoundStatsTracker } from "./hud";
 import { lookFor } from "./looks";
 import { FightRenderer, resultCardTop } from "./renderer";
+import { SnapshotBuffer } from "../interpolation";
 import { buildRing, disposeRing } from "./ring";
 import { RockedVision } from "./rocked";
 import { worldMapping } from "./world";
@@ -29,6 +30,7 @@ function graph() {
     setRefereeHead: vi.fn(),
     stayDown: vi.fn(),
     update: vi.fn(),
+    resetTransient: vi.fn(),
     fallBody: null,
     stoolVisible: false,
   };
@@ -398,6 +400,20 @@ describe("a rendered frame", () => {
       expect(aim.toArray()).toEqual([0.3, 1.62, -0.8]);
       expect(shown.setRefereeHead.mock.invocationCallOrder.at(-1)!).toBeLessThan(shown.update.mock.invocationCallOrder.at(-1)!);
     }
+  });
+
+  it("ends the replay of the referee's fall the moment the bout resumes, never playing it over the fight", () => {
+    const replayAfter = (phase: EngineSnapshot["phase"]): unknown => {
+      const buffer = new SnapshotBuffer(8, 30);
+      for (let tick = 20; tick <= 26; tick += 1) buffer.push(fighting({}, {}, { tick }));
+      const plan = { impact: { kind: "referee_down", tick: 40 }, durationSeconds: 10, fromTick: 20, toTick: 60, speed: 0.5, snapshots: [] };
+      const referee = { boxer: { root: new THREE.Object3D(), rig: { bones: { head: new THREE.Object3D() } } }, fallBody: null, isDown: false, setRefereeCount: vi.fn(), aimBreak: vi.fn(), update: vi.fn(), resetTransient: vi.fn() };
+      const { renderer, run } = frame(fighting({}, {}, { phase }), { referee, replayCameraPosition: new THREE.Vector3(), replayLookAt: new THREE.Vector3(), replay: { plan, buffer, startedAt: 1, impactFired: false, side: null } });
+      run();
+      return renderer.replay;
+    };
+    expect(replayAfter("fight")).toBeNull();
+    expect(replayAfter("referee_down")).not.toBeNull();
   });
 
   it("spreads a pool of blood under a bleeding fighter who is down", () => {

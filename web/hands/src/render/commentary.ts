@@ -446,9 +446,9 @@ export class CommentaryDirector {
     this.hooks.speak?.([`${opening}Your winner, by ${how}... ${name}!`]);
   }
 
-  /** The knockout replay has started. */
-  replay(now: number): void {
-    const knockdown = this.lastKnockdown;
+  /** A replay has started: of the referee's fall, whose punch it was; of a knockout, the knockdown's. */
+  replay(now: number, impact: Pick<CombatEvent, "kind" | "actor_id" | "tick"> | null = null): void {
+    const knockdown = impact?.kind === "referee_down" ? { actor: impact.actor_id, target: null, tick: impact.tick } : this.lastKnockdown;
     this.say("replay", knockdown?.tick ?? 0, now, { a: this.nameOf(knockdown?.actor ?? null), b: this.nameOf(knockdown?.target ?? null) }, "replay", 0.6, 6);
   }
 

@@ -3758,7 +3758,7 @@ const MIN_ANTICIPATION_RATE = 0.5;
 /** Presses closer together than this usually reach the server before the same step, where the newer one replaces the older. */
 const SAME_STEP_TICKS = 0.5;
 /** Contact events in which a punch met the opponent: a hit or a block, a parry included. */
-const CONNECTING_CONTACTS: ReadonlySet<string> = new Set(["hit", "counter_hit", "block", "perfect_block"]);
+const CONNECTING_CONTACTS: ReadonlySet<string> = new Set(["hit", "counter_hit", "block", "perfect_block", "referee_hit"]);
 const EVASION_POSES: ReadonlySet<string> = new Set(["slip_left", "slip_right", "weave", "pull"]);
 /** Rate the guards, slips, weaves and pulls ease in and out at: nine tenths of the way in under a sixteenth of a second. */
 const DEFENCE_RATE = 40;
