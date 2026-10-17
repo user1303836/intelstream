@@ -58,10 +58,7 @@ const FINISHER_STAIN = 0.9;
 const SOAK = 1.25;
 /** A cut's share of a punch's blood (the engine's bleeding over five) once it is open: bleeding of about 40. */
 const OPEN_WOUND = 8;
-/**
- * A drop the size of a gob of blood (this radius, in metres) always stains where it lands; at full blood
- * fine spray does six times in ten, and with reduced blood one time in four of the drops that stain at all.
- */
+/** A drop the size of a gob of blood (this radius, in metres) always stains where it lands at full blood, and fine spray six times in ten. */
 const GOB = 0.015;
 const FINE_SPRAY_STAINS = 0.6;
 /** The neck is close to round where it is cut. */

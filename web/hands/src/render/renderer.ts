@@ -909,7 +909,7 @@ export function knockdownFinisher(hit: CombatEvent | null, snapshot: EngineSnaps
 }
 
 const POOL_SEVERITY = 0.2;
-/** Spills a second into the pool under a downed fighter, which spreads to this many metres at most. */
+/** Spills a second into the pool under a downed fighter, and how far it spreads at most, in metres. */
 export const POOL_RATE = 3;
 const POOL_REACH = 0.7;
 /**
