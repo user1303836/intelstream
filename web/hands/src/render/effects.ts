@@ -1983,12 +1983,16 @@ export class Effects3D {
     }
   }
 
-  /** Ejects teeth from the mouth on heavy head contact, in a spray of blood that reduced blood cuts to a few drops. */
+  /**
+   * Ejects teeth from the mouth on heavy head contact, in a spray of blood. Reduced blood knocks out half as
+   * many, none from a blow that would take only one, and cuts the spray to a few drops.
+   */
   spawnTeeth(mouthWorld: THREE.Vector3, direction: number | SprayDirection, count: number, eventId: number): void {
     if (this.bloodLevel === "off") return;
+    const teeth = Math.min(8, this.bloodLevel === "reduced" ? Math.floor(count / 2) : Math.max(1, Math.round(count)));
+    if (teeth <= 0) return;
     const rand = seeded((Number.isSafeInteger(eventId) ? eventId : 0) * 7331 + 91);
     const launch = unitSpray(direction);
-    const teeth = Math.min(8, Math.max(1, Math.round(count * (this.bloodLevel === "reduced" ? 0.5 : 1))));
     for (let i = 0; i < teeth; i += 1) {
       const angle = rand() * Math.PI * 2;
       this.sprayGib(

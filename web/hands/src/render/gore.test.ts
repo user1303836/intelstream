@@ -1083,6 +1083,19 @@ describe("gore from a real punch", () => {
     expect(teethFor("block", 140, true)).toBe(0);
   });
 
+  it("knocks teeth out with reduced blood only from the blows that take two or more, and half as many", () => {
+    const knocked = (level: "full" | "reduced", count: number): number => {
+      const effects = new Effects3D(new THREE.Scene(), 256);
+      effects.setBloodLevel(level);
+      effects.spawnTeeth(new THREE.Vector3(0, 1.5, 0), 1, count, 3);
+      const teeth = effects.debrisCount("tooth");
+      effects.dispose();
+      return teeth;
+    };
+    expect([1, 2, 3, 8].map((count) => knocked("full", count))).toEqual([1, 2, 3, 8]);
+    expect([1, 2, 3, 8].map((count) => knocked("reduced", count))).toEqual([0, 1, 1, 4]);
+  });
+
   it("throws dozens of drops off a clean face, more from a harder punch and far more from an open wound, up to a limit", () => {
     // A clean jab carries the engine's blood of 11.
     expect(bloodDropsFor(11, 34)).toBeGreaterThan(45);
